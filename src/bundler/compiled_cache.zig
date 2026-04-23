@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const Module = @import("module.zig").Module;
+const ModuleGraph = @import("graph.zig").ModuleGraph;
 const emitter = @import("emitter.zig");
 const EmitOptions = emitter.EmitOptions;
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
@@ -194,13 +195,13 @@ pub fn computeOptionsHash(options: EmitOptions) u64 {
 /// 모듈 emit 결과에 영향을 주는 모든 외부 상태를 결합.
 /// `used_export_names == null` = "모두 사용" sentinel (tree-shaking 미적용).
 /// `options_hash` 는 caller 가 computeOptionsHash 로 1회 계산한 값 재사용.
-/// `modules` 는 `ModuleIndex` → path 조회용. `ModuleIndex` 자체는 빌드 간
+/// `graph` 는 `ModuleIndex` → path 조회용. `ModuleIndex` 자체는 빌드 간
 /// 재할당되므로 path 로 hash 해야 initial/rebuild 간 input_hash 가 안정적.
 pub fn computeInputHash(
     module: *const Module,
     options_hash: u64,
     used_export_names: ?[]const []const u8,
-    modules: []const Module,
+    graph: *const ModuleGraph,
 ) u64 {
     var h = InputHasher.init(0);
     h.addI128(module.mtime);
@@ -216,15 +217,14 @@ pub fn computeInputHash(
         h.addStr(rec.specifier);
         h.addBool(rec.is_external);
         h.addU32(@intFromEnum(rec.kind));
-        // resolved 는 `modules[index].path` 로 hash — ModuleIndex 는 빌드 간
+        // resolved 는 `graph.getModule(index).path` 로 hash — ModuleIndex 는 빌드 간
         // 재할당되므로 path 가 안정적. external/unresolved 는 specifier 만.
         if (rec.is_external or rec.resolved.isNone()) {
             h.addBool(false);
         } else {
             h.addBool(true);
-            const idx = rec.resolved.toU32();
-            if (idx < modules.len) {
-                h.addStr(modules[idx].path);
+            if (graph.getModule(rec.resolved)) |resolved_mod| {
+                h.addStr(resolved_mod.path);
             } else {
                 // 방어: 범위 밖이면 stable sentinel 로 hash (극히 이례적).
                 h.addStr("");

@@ -21,6 +21,7 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 pub const ChunkIndex = types.ChunkIndex;
 const Module = @import("module.zig").Module;
+const ModuleGraph = @import("graph.zig").ModuleGraph;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const Linker = @import("linker.zig").Linker;
 
@@ -315,10 +316,12 @@ const EntryInfo = struct {
 /// shaker가 null이 아니면 tree-shaking 결과를 반영하여 미포함 모듈을 스킵한다.
 pub fn generateChunks(
     allocator: std.mem.Allocator,
-    modules: []const Module,
+    graph: *const ModuleGraph,
     entry_points: []const []const u8,
     shaker: ?*const TreeShaker,
 ) !ChunkGraph {
+    const module_count = graph.moduleCount();
+
     // ── Phase 1: 엔트리 수집 ──
     // 유저 엔트리 (CLI 진입점) + dynamic import 대상을 모두 모은다.
     // 각각이 하나의 출력 청크가 된다.
@@ -326,14 +329,18 @@ pub fn generateChunks(
     defer entries.deinit(allocator);
 
     // Phase 1a: 유저 엔트리 — entry_points 경로와 일치하는 모듈을 찾는다.
-    for (modules, 0..) |m, i| {
-        for (entry_points) |ep| {
-            if (std.mem.eql(u8, m.path, ep)) {
-                try entries.append(allocator, .{
-                    .module_idx = @enumFromInt(@as(u32, @intCast(i))),
-                    .is_dynamic = false,
-                });
-                break;
+    {
+        var it = graph.modulesIterator();
+        var i: usize = 0;
+        while (it.next()) |m| : (i += 1) {
+            for (entry_points) |ep| {
+                if (std.mem.eql(u8, m.path, ep)) {
+                    try entries.append(allocator, .{
+                        .module_idx = ModuleIndex.fromUsize(i),
+                        .is_dynamic = false,
+                    });
+                    break;
+                }
             }
         }
     }
@@ -343,24 +350,27 @@ pub fn generateChunks(
     var dynamic_seen: std.AutoHashMap(u32, void) = .init(allocator);
     defer dynamic_seen.deinit();
 
-    for (modules) |m| {
-        for (m.dynamic_imports.items) |dyn_idx| {
-            const di = @intFromEnum(dyn_idx);
-            const gop = try dynamic_seen.getOrPut(di);
-            if (!gop.found_existing) {
-                // 이미 유저 엔트리로 등록된 모듈인지 확인
-                var is_user_entry = false;
-                for (entries.items) |e| {
-                    if (@intFromEnum(e.module_idx) == di and !e.is_dynamic) {
-                        is_user_entry = true;
-                        break;
+    {
+        var it = graph.modulesIterator();
+        while (it.next()) |m| {
+            for (m.dynamic_imports.items) |dyn_idx| {
+                const di = @intFromEnum(dyn_idx);
+                const gop = try dynamic_seen.getOrPut(di);
+                if (!gop.found_existing) {
+                    // 이미 유저 엔트리로 등록된 모듈인지 확인
+                    var is_user_entry = false;
+                    for (entries.items) |e| {
+                        if (@intFromEnum(e.module_idx) == di and !e.is_dynamic) {
+                            is_user_entry = true;
+                            break;
+                        }
                     }
-                }
-                if (!is_user_entry) {
-                    try entries.append(allocator, .{
-                        .module_idx = dyn_idx,
-                        .is_dynamic = true,
-                    });
+                    if (!is_user_entry) {
+                        try entries.append(allocator, .{
+                            .module_idx = dyn_idx,
+                            .is_dynamic = true,
+                        });
+                    }
                 }
             }
         }
@@ -368,16 +378,16 @@ pub fn generateChunks(
 
     const entry_count = entries.items.len;
     if (entry_count == 0) {
-        return ChunkGraph.init(allocator, modules.len);
+        return ChunkGraph.init(allocator, module_count);
     }
 
     // ChunkGraph 생성 — 모듈→청크 매핑 배열을 module_count 크기로 할당.
-    var chunk_graph = try ChunkGraph.init(allocator, modules.len);
+    var chunk_graph = try ChunkGraph.init(allocator, module_count);
     errdefer chunk_graph.deinit();
 
     // 모듈별 도달 가능성 BitSet — splitting_info[module_index]는
     // 그 모듈이 어떤 엔트리들에서 도달 가능한지를 나타낸다.
-    var splitting_info = try allocator.alloc(BitSet, modules.len);
+    var splitting_info = try allocator.alloc(BitSet, module_count);
     // 안전한 초기값 — init 실패 시 defer에서 deinit 호출해도 안전
     @memset(splitting_info, .{ .entries = &.{} });
     defer {
@@ -402,9 +412,8 @@ pub fn generateChunks(
         bits.setBit(@intCast(bit_idx));
 
         // 출력 파일명 = 모듈 파일명의 stem (확장자 제거)
-        const name = std.fs.path.stem(std.fs.path.basename(
-            modules[@intFromEnum(entry.module_idx)].path,
-        ));
+        const entry_mod = graph.getModule(entry.module_idx) orelse return error.InvalidEntryModule;
+        const name = std.fs.path.stem(std.fs.path.basename(entry_mod.path));
 
         var chunk = Chunk.init(.none, .{ .entry_point = .{
             .bit = @intCast(bit_idx),
@@ -430,17 +439,17 @@ pub fn generateChunks(
 
         while (queue.items.len > 0) {
             const mod_idx = queue.pop() orelse break;
+            const m = graph.getModule(mod_idx) orelse continue;
             const mi = @intFromEnum(mod_idx);
-            if (mi >= modules.len) continue;
 
             // 이미 이 비트가 설정되어 있으면 스킵 (순환 참조 방지)
             if (splitting_info[mi].hasBit(@intCast(bit_idx))) continue;
             splitting_info[mi].setBit(@intCast(bit_idx));
 
             // 정적 의존성만 따라감 — dynamic import는 별도 엔트리이므로 BFS 경계
-            for (modules[mi].dependencies.items) |dep_idx| {
+            for (m.dependencies.items) |dep_idx| {
                 const dep_i = @intFromEnum(dep_idx);
-                if (dep_i < modules.len and !splitting_info[dep_i].hasBit(@intCast(bit_idx))) {
+                if (dep_i < module_count and !splitting_info[dep_i].hasBit(@intCast(bit_idx))) {
                     try queue.append(allocator, dep_idx);
                 }
             }
@@ -452,14 +461,18 @@ pub fn generateChunks(
     // 동일한 BitSet을 가진 모듈들은 같은 청크에 묶인다.
     // 엔트리 청크의 BitSet과 일치하지 않는 새로운 BitSet 패턴이 나오면
     // 공통 청크(common chunk)를 새로 생성한다.
-    const sorted_indices = try allocator.alloc(usize, modules.len);
+    const sorted_indices = try allocator.alloc(usize, module_count);
     defer allocator.free(sorted_indices);
     for (sorted_indices, 0..) |*idx, i| idx.* = i;
-    std.mem.sort(usize, sorted_indices, modules, struct {
-        fn lessThan(mods: []const Module, a: usize, b: usize) bool {
-            return mods[a].exec_index < mods[b].exec_index;
+    const SortCtx = struct {
+        graph: *const ModuleGraph,
+        fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+            const ma = ctx.graph.getModule(ModuleIndex.fromUsize(a)).?;
+            const mb = ctx.graph.getModule(ModuleIndex.fromUsize(b)).?;
+            return ma.exec_index < mb.exec_index;
         }
-    }.lessThan);
+    };
+    std.mem.sort(usize, sorted_indices, SortCtx{ .graph = graph }, SortCtx.lessThan);
 
     for (sorted_indices) |mi| {
         // tree-shaking: 미포함 모듈 스킵
@@ -467,8 +480,9 @@ pub fn generateChunks(
             if (!s.isIncluded(@intCast(mi))) continue;
         }
 
+        const m = graph.getModule(ModuleIndex.fromUsize(mi)) orelse continue;
         // JS 모듈만 청크에 할당 (JSON, CSS 등은 별도 처리)
-        if (modules[mi].module_type != .javascript) continue;
+        if (m.module_type != .javascript) continue;
 
         // 비트가 비어있으면 어떤 엔트리에서도 도달 불가 → 스킵
         if (splitting_info[mi].isEmpty()) continue;
@@ -520,34 +534,43 @@ pub fn generateChunks(
 /// 각 모듈이 개별 출력 파일이 되며, cross-chunk import로 서로 연결된다.
 pub fn generatePreserveModulesChunks(
     allocator: std.mem.Allocator,
-    modules: []const Module,
+    graph: *const ModuleGraph,
     entry_points: []const []const u8,
     shaker: ?*const TreeShaker,
 ) !ChunkGraph {
-    var chunk_graph = try ChunkGraph.init(allocator, modules.len);
+    const module_count = graph.moduleCount();
+    var chunk_graph = try ChunkGraph.init(allocator, module_count);
     errdefer chunk_graph.deinit();
 
     // 엔트리 모듈 인덱스를 미리 수집 (entry_point 청크 판별용)
     var entry_set: std.AutoHashMap(u32, void) = .init(allocator);
     defer entry_set.deinit();
-    for (modules, 0..) |m, i| {
-        for (entry_points) |ep| {
-            if (std.mem.eql(u8, m.path, ep)) {
-                try entry_set.put(@intCast(i), {});
-                break;
+    {
+        var it = graph.modulesIterator();
+        var i: usize = 0;
+        while (it.next()) |m| : (i += 1) {
+            for (entry_points) |ep| {
+                if (std.mem.eql(u8, m.path, ep)) {
+                    try entry_set.put(@intCast(i), {});
+                    break;
+                }
             }
         }
     }
 
     // exec_index 순으로 정렬하여 결정론적 청크 순서 보장
-    const sorted_indices = try allocator.alloc(usize, modules.len);
+    const sorted_indices = try allocator.alloc(usize, module_count);
     defer allocator.free(sorted_indices);
     for (sorted_indices, 0..) |*idx, i| idx.* = i;
-    std.mem.sort(usize, sorted_indices, modules, struct {
-        fn lessThan(mods: []const Module, a: usize, b: usize) bool {
-            return mods[a].exec_index < mods[b].exec_index;
+    const SortCtx = struct {
+        graph: *const ModuleGraph,
+        fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+            const ma = ctx.graph.getModule(ModuleIndex.fromUsize(a)).?;
+            const mb = ctx.graph.getModule(ModuleIndex.fromUsize(b)).?;
+            return ma.exec_index < mb.exec_index;
         }
-    }.lessThan);
+    };
+    std.mem.sort(usize, sorted_indices, SortCtx{ .graph = graph }, SortCtx.lessThan);
 
     for (sorted_indices) |mi| {
         // tree-shaking: 미포함 모듈 스킵
@@ -555,8 +578,9 @@ pub fn generatePreserveModulesChunks(
             if (!s.isIncluded(@intCast(mi))) continue;
         }
 
+        const m = graph.getModule(ModuleIndex.fromUsize(mi)) orelse continue;
         // JS 모듈만 청크에 할당
-        if (modules[mi].module_type != .javascript) continue;
+        if (m.module_type != .javascript) continue;
 
         // 모듈 1개 = 청크 1개
         // BitSet은 비어있는 상태로 생성 (preserve-modules에서는 reachability 불필요)
@@ -564,7 +588,7 @@ pub fn generatePreserveModulesChunks(
         errdefer bits.deinit(allocator);
 
         const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(mi)));
-        const name = std.fs.path.stem(std.fs.path.basename(modules[mi].path));
+        const name = std.fs.path.stem(std.fs.path.basename(m.path));
 
         // 엔트리 모듈이면 bit 설정 (출력 시 엔트리 청크로 인식)
         if (entry_set.contains(@intCast(mi))) bits.setBit(0);
@@ -576,9 +600,9 @@ pub fn generatePreserveModulesChunks(
         } }, bits);
         chunk.name = name;
 
-        chunk.exec_order = modules[mi].exec_index;
+        chunk.exec_order = m.exec_index;
         // preserve-modules에서 chunk.rel_dir을 설정하여 디렉토리 구조 유지
-        chunk.rel_dir = modules[mi].path;
+        chunk.rel_dir = m.path;
 
         const ci = try chunk_graph.addChunk(chunk);
         chunk_graph.assignModuleToChunk(mod_idx, ci);
@@ -618,10 +642,12 @@ fn removeModuleFromList(list: *std.ArrayListUnmanaged(ModuleIndex), target: Modu
 /// 이 함수는 generateChunks 이후에 호출한다.
 pub fn computeCrossChunkLinks(
     chunk_graph: *ChunkGraph,
-    modules: []const Module,
+    graph: *const ModuleGraph,
     allocator: std.mem.Allocator,
     linker: ?*const Linker,
 ) !void {
+    const module_count = graph.moduleCount();
+
     // 먼저 모든 청크의 기존 데이터를 초기화 (exports_to는 다른 청크에서 기록하므로 분리)
     for (chunk_graph.chunks.items) |*chunk| {
         chunk.cross_chunk_imports.clearAndFree(allocator);
@@ -642,10 +668,12 @@ pub fn computeCrossChunkLinks(
         defer seen_dynamic.deinit(allocator);
 
         for (chunk.modules.items) |mod_idx| {
+            // 청크에 포함된 모듈은 반드시 graph 범위 내에 있어야 함
+            const m = graph.getModule(mod_idx) orelse {
+                std.debug.assert(false);
+                continue;
+            };
             const mi = @intFromEnum(mod_idx);
-            // 청크에 포함된 모듈은 반드시 modules 배열 내에 있어야 함
-            std.debug.assert(mi < modules.len);
-            const m = &modules[mi];
 
             // 정적 의존성 → cross_chunk_imports
             for (m.dependencies.items) |dep_idx| {
@@ -666,7 +694,7 @@ pub fn computeCrossChunkLinks(
                     // resolved binding으로 canonical 모듈을 찾는다
                     const rb = lnk.getResolvedBinding(@intCast(mi), ib.local_span) orelse continue;
                     const canonical_mi = @intFromEnum(rb.canonical.module_index);
-                    if (canonical_mi >= modules.len) continue;
+                    if (canonical_mi >= module_count) continue;
 
                     const src_chunk_idx = chunk_graph.getModuleChunk(rb.canonical.module_index);
                     if (src_chunk_idx.isNone()) continue;

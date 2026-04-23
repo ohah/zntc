@@ -19,11 +19,16 @@ fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_na
     const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
     defer allocator.free(entry);
 
+    // #1779 PR #2: Linker.graph 가 heap-stable 포인터여야 하므로 graph 를 heap 에 올린다.
+    // 기존엔 linker 가 `[]const Module` slice 를 들고 있어 호출자 지역 graph 의
+    // heap-backed slice pointer 로 안전했지만, 이제 graph 포인터가 필드라
+    // TestResult 반환으로 stack 주소가 이동하면 lifetime 이 깨진다.
     var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
-    var graph = ModuleGraph.init(allocator, &cache);
+    const graph = try allocator.create(ModuleGraph);
+    graph.* = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
 
-    var linker = Linker.init(allocator, graph.modules.items, .esm);
+    var linker = Linker.init(allocator, graph, .esm);
     try linker.link();
 
     return .{ .linker = linker, .graph = graph, .cache = cache };
@@ -37,7 +42,7 @@ test "linker: direct import resolves to export" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // a.ts의 import x가 b.ts의 export x에 연결
@@ -59,7 +64,7 @@ test "linker: re-export chain resolved" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -77,7 +82,7 @@ test "linker: missing export produces diagnostic" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // missing export → diagnostic
@@ -97,7 +102,7 @@ test "linker: export * resolves through re-export all" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -120,7 +125,7 @@ test "linker: export * from CJS resolves to CJS module" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -146,7 +151,7 @@ test "linker: namespace re-export resolves to local binding" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -178,7 +183,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
     defer graph.deinit();
     try graph.build(&.{entry});
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
     try linker.link();
 
@@ -199,7 +204,7 @@ test "linker: default import resolves" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -224,7 +229,7 @@ test "linker: external import not resolved (no binding)" {
     defer graph.deinit();
     try graph.build(&.{entry});
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
     try linker.link();
 
@@ -239,8 +244,17 @@ test "linker: external import not resolved (no binding)" {
 
 const TestResult = struct {
     linker: Linker,
-    graph: ModuleGraph,
+    /// heap-allocated ModuleGraph (Linker.graph 안정화 목적, #1779 PR #2).
+    graph: *ModuleGraph,
     cache: resolve_cache_mod.ResolveCache,
+
+    /// 기존 테스트들은 `defer r.graph.deinit()` 패턴을 사용했다. heap allocation
+    /// 도입으로 destroy 가 추가로 필요해졌으므로, graph.deinit() 호출 시
+    /// destroy 까지 한 번에 처리하도록 wrapper 를 제공한다.
+    fn destroyGraph(self: *TestResult) void {
+        self.graph.deinit();
+        std.testing.allocator.destroy(self.graph);
+    }
 };
 
 fn buildLinkAndRename(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !TestResult {
@@ -257,7 +271,7 @@ test "rename: no conflict — no rename" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // x는 b.ts에만 있으므로 충돌 없음 → canonical_names 비어 있음
@@ -272,7 +286,7 @@ test "rename: two modules same name — second gets $1" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // b.ts(exec_index 낮음)가 원본 유지, a.ts가 count$1
@@ -296,7 +310,7 @@ test "rename: three modules same name — $1 and $2" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // 3개 중 2개 리네임
@@ -315,7 +329,7 @@ test "rename: different names — no conflict" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), r.linker.canonical_strings.items.len);
@@ -329,7 +343,7 @@ test "rename: getCanonicalName returns renamed" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // 하나는 getCanonicalName으로 리네임 조회 가능
@@ -361,7 +375,7 @@ test "rename: non-exported top-level variables also detected (C1)" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // helper가 두 모듈에서 충돌 → 하나가 리네임됨
@@ -381,7 +395,7 @@ test "rename: nested scope conflict avoidance (hasNestedBinding)" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // x가 충돌. 리네임된 쪽이 x$1을 건너뛰고 x$2가 되어야 함
@@ -403,7 +417,7 @@ test "rename: default export local name conflict (L5)" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // foo가 두 모듈에서 충돌 (a.ts: default export의 local name, b.ts: named export)
@@ -426,7 +440,7 @@ test "linker: deep re-export chain (near depth limit)" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -448,7 +462,12 @@ test "isReservedName: JS reserved words" {
 
 test "isCandidateAvailable: 예약어/글로벌/nested 통합 확인" {
     // isCandidateAvailable은 Linker 인스턴스 필요 → 최소 셋업
-    var linker = Linker.init(std.testing.allocator, &.{}, .esm);
+    // 빈 graph 도 Linker 가 *ModuleGraph 를 받으므로 stack 변수로 충분.
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
 
     var name_to_owners = Linker.NameToOwnersMap.init(std.testing.allocator);
@@ -484,7 +503,7 @@ test "single-owner reserved name: candidate skips nested binding" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // b.ts의 console.log → console이 reserved_globals에 수집됨.
@@ -533,7 +552,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     defer graph.deinit();
     try graph.build(&.{entry});
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
     try linker.link();
 
@@ -572,7 +591,7 @@ test "clearCanonicalNames: 초기화 후 비어있음" {
     defer graph.deinit();
     try graph.build(&.{entry});
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
     try linker.link();
     try linker.computeRenames();
@@ -597,7 +616,7 @@ test "namespace: import * as creates namespace object preamble" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // namespace import는 resolved_bindings에 등록되지 않음 (resolveImports에서 skip)
@@ -617,7 +636,7 @@ test "namespace: export * from re-exports collected in namespace" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // barrel 모듈에서 export * 로 a, b의 export를 수집
@@ -640,7 +659,7 @@ test "re-export alias: export { J as render } resolves to J" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // entry의 import { render }가 impl.ts의 J에 연결
@@ -665,7 +684,7 @@ test "re-export alias: export { default as groupBy } — function declaration" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -686,7 +705,7 @@ test "re-export alias: export { default as X } — identifier reuses original na
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -712,7 +731,7 @@ test "rename: multiple export default identifiers use original names — no coll
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // x, y, z는 각각 다른 이름이므로 충돌 없음 → _default$ 리네임 0개
@@ -740,7 +759,7 @@ test "namespace: diamond export * dedup" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // entry에서 namespace import로 ns를 가져옴 — 무한 루프 없이 완료
@@ -759,7 +778,7 @@ test "namespace: circular export * no infinite loop" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // 무한 루프 없이 완료되면 성공
@@ -777,7 +796,7 @@ test "namespace: mixed named + default exports" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -795,7 +814,7 @@ test "namespace: re-export alias in namespace" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -818,7 +837,7 @@ test "re-export alias: double-hop chain (z -> y -> x)" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -841,7 +860,7 @@ test "re-export alias: default class declaration resolves to class name" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -867,7 +886,7 @@ test "rename: mixed function + expression defaults — identifier collision" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // expr1, expr2 모두 val → 하나가 val$1로 리네임
@@ -888,7 +907,7 @@ test "rename: default identifier reuses name — no _default collision" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // x, y는 다른 이름이므로 충돌 없음 → _default$ 리네임 0개
@@ -912,7 +931,7 @@ test "export * as: basic namespace re-export" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // entry의 import { math }가 barrel의 "math" export에 연결
@@ -931,7 +950,7 @@ test "export * as: binding_scanner registers named export" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // barrel 모듈(index 1)의 export_bindings에 "utils" 이름이 등록됨
@@ -961,7 +980,7 @@ test "namespace rewrite: ns.prop resolved in ns_member_rewrites" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // ns.prop만 사용 → ns_member_rewrites에 매핑 등록
@@ -1049,7 +1068,7 @@ test "export * as: does not pollute parent seen (name collision)" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // entry의 namespace import 확인
@@ -1071,7 +1090,8 @@ fn buildMetadataForModule(
     module_index: u32,
     is_entry: bool,
 ) !LinkingMetadata {
-    const ast: *const Ast = &(r.linker.modules[module_index].ast orelse return error.NoAst);
+    const mod = r.linker.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return error.NoAst;
+    const ast: *const Ast = &(mod.ast orelse return error.NoAst);
     return r.linker.buildMetadataForAst(ast, module_index, is_entry, null);
 }
 
@@ -1085,7 +1105,7 @@ test "preamble: CJS module import — named import generates require_xxx" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     // c.js가 CJS로 감지되었는지 확인
@@ -1113,7 +1133,7 @@ test "preamble: CJS module import — default import generates __toESM" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     var md = try buildMetadataForModule(&r, 0, true);
@@ -1137,7 +1157,7 @@ test "preamble: CJS module import — namespace import generates __toESM without
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     var md = try buildMetadataForModule(&r, 0, true);
@@ -1160,7 +1180,7 @@ test "preamble: unresolved import generates require()" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     var md = try buildMetadataForModule(&r, 0, true);
@@ -1185,7 +1205,7 @@ test "preamble: dev mode — named import uses namespace access pattern" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const ast: *const Ast = &(r.graph.getModule(ModuleIndex.fromUsize(0)).?.ast orelse unreachable);
@@ -1223,7 +1243,7 @@ test "preamble: dev mode — default import uses .default" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const ast: *const Ast = &(r.graph.getModule(ModuleIndex.fromUsize(0)).?.ast orelse unreachable);
@@ -1244,7 +1264,7 @@ test "preamble: dev mode — namespace import without .default" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     const ast: *const Ast = &(r.graph.getModule(ModuleIndex.fromUsize(0)).?.ast orelse unreachable);
@@ -1267,7 +1287,7 @@ test "preamble: no preamble for ESM-to-ESM import" {
 
     var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     var md = try buildMetadataForModule(&r, 0, true);
@@ -1322,12 +1342,12 @@ test "populateSymbolRefCounts: import이 source default symbol의 ref_count 증�
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
-    r.linker.populateReExportAliases(r.graph.modules.items);
-    r.linker.populateImportSymbols(r.graph.modules.items);
-    r.linker.populateSymbolRefCounts(r.graph.modules.items);
+    r.linker.populateReExportAliases();
+    r.linker.populateImportSymbols();
+    r.linker.populateSymbolRefCounts();
 
     // b.ts의 synthetic_default symbol이 참조되어 ref_count == 1.
     // #1328 Phase 4e-2b: _default는 semantic 공간에 등록됨.
@@ -1353,12 +1373,12 @@ test "populateSymbolRefCounts: 아무도 안 쓰는 export는 ref_count 0" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
-    r.linker.populateReExportAliases(r.graph.modules.items);
-    r.linker.populateImportSymbols(r.graph.modules.items);
-    r.linker.populateSymbolRefCounts(r.graph.modules.items);
+    r.linker.populateReExportAliases();
+    r.linker.populateImportSymbols();
+    r.linker.populateSymbolRefCounts();
 
     const b = r.graph.getModule(ModuleIndex.fromUsize(1)).?;
     const b_sem = b.semantic orelse return error.NoSemantic;
@@ -1385,11 +1405,11 @@ test "getCanonicalByRef: alias symbol의 canonical_name 반환" {
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
-    r.linker.populateReExportAliases(r.graph.modules.items);
-    r.linker.populateImportSymbols(r.graph.modules.items);
+    r.linker.populateReExportAliases();
+    r.linker.populateImportSymbols();
 
     // a.ts의 barrel re-export alias symbol 찾기
     const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
@@ -1417,7 +1437,7 @@ test "computeRenames: rename된 심볼의 canonical_name이 semantic.Symbol에 �
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
     try r.linker.computeRenames();
@@ -1462,22 +1482,27 @@ test "populateSymbolRefCounts: stale alias id 는 건너뜀 (bounds guard)" {
     };
 
     const module_mod = @import("module.zig");
-    var modules = [_]module_mod.Module{
-        module_mod.Module.init(@enumFromInt(0), "/a.ts"),
-        module_mod.Module.init(@enumFromInt(1), "/b.ts"),
-    };
+
+    // #1779 PR #2: Linker 는 `*ModuleGraph` 만 받으므로, 수동으로 구성한 모듈을
+    // graph.modules 에 직접 append 해서 최소 graph 를 만든다.
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(allocator, &cache);
+    defer graph.deinit();
+    try graph.modules.append(allocator, module_mod.Module.init(@enumFromInt(0), "/a.ts"));
+    try graph.modules.append(allocator, module_mod.Module.init(@enumFromInt(1), "/b.ts"));
+
     // importer module 의 import_bindings 를 주입.
     var ibs = [_]ImportBindingT{ib};
-    modules[0].import_bindings = &ibs;
+    graph.moduleAtMut(ModuleIndex.fromUsize(0)).?.import_bindings = &ibs;
     // source module 에 빈 alias_table 주입.
-    modules[1].alias_table = symbol_mod.AliasTable.init(allocator);
-    defer modules[1].alias_table.?.deinit();
+    graph.moduleAtMut(ModuleIndex.fromUsize(1)).?.alias_table = symbol_mod.AliasTable.init(allocator);
 
-    var linker = Linker.init(allocator, &modules, .esm);
+    var linker = Linker.init(allocator, &graph, .esm);
     defer linker.deinit();
 
     // 수정 전: `index 5, len 0` panic. 수정 후: 조용히 skip.
-    linker.populateSymbolRefCounts(&modules);
+    linker.populateSymbolRefCounts();
 }
 
 test "populateImportSymbols: named import의 local_symbol이 현재 모듈 semantic ref" {
@@ -1488,10 +1513,10 @@ test "populateImportSymbols: named import의 local_symbol이 현재 모듈 seman
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
     defer r.linker.deinit();
-    defer r.graph.deinit();
+    defer r.destroyGraph();
     defer r.cache.deinit();
 
-    r.linker.populateImportSymbols(r.graph.modules.items);
+    r.linker.populateImportSymbols();
 
     const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     var found = false;

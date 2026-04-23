@@ -553,7 +553,7 @@ pub const Bundler = struct {
         try worker_graph.build(&entry_arr);
 
         // 링킹
-        var worker_linker = Linker.init(arena_alloc, worker_graph.modules.items, .iife);
+        var worker_linker = Linker.init(arena_alloc, &worker_graph, .iife);
         // #1621: worker 청크도 minify 시 preamble 축약 이름 사용.
         worker_linker.minify_whitespace = self.options.minify_whitespace;
         try worker_linker.link();
@@ -561,10 +561,10 @@ pub const Bundler = struct {
         if (self.options.minify_identifiers) {
             try worker_linker.computeMangling();
         }
-        worker_linker.populateReExportAliases(worker_graph.modules.items);
-        worker_linker.populateImportSymbols(worker_graph.modules.items);
-        worker_linker.populateNamespaceAccesses(worker_graph.modules.items);
-        worker_linker.populateSymbolRefCounts(worker_graph.modules.items);
+        worker_linker.populateReExportAliases();
+        worker_linker.populateImportSymbols();
+        worker_linker.populateNamespaceAccesses();
+        worker_linker.populateSymbolRefCounts();
         defer worker_linker.deinit();
 
         // emit (IIFE 포맷)
@@ -751,7 +751,7 @@ pub const Bundler = struct {
         // 각 청크가 독립된 네임스페이스이므로 emitChunks에서 per-chunk로 처리.
         var link_scope = profile.begin(.link);
         var linker: ?Linker = if (self.options.scope_hoist or self.options.dev_mode) blk: {
-            var l = Linker.initWithGlobalIdentifiers(self.allocator, graph.modules.items, self.options.format, self.options.global_identifiers);
+            var l = Linker.initWithGlobalIdentifiers(self.allocator, &graph, self.options.format, self.options.global_identifiers);
             l.shim_missing_exports = self.options.shim_missing_exports;
             l.dev_mode = self.options.dev_mode;
             // #1621: preamble/metadata 가 __toESM/__toCommonJS 를 축약 이름으로 emit.
@@ -766,15 +766,15 @@ pub const Bundler = struct {
             }
             // Phase 3b (#1328): re_export_alias 심볼의 canonical_name 채우기.
             // computeRenames 이후에 호출해야 getCanonicalName이 최종 리네임을 반영.
-            l.populateReExportAliases(graph.modules.items);
+            l.populateReExportAliases();
             // ImportBinding.symbol(source-side) + local_symbol(current-side) 채움.
-            l.populateImportSymbols(graph.modules.items);
+            l.populateImportSymbols();
             // #1603 Phase 1b: `import { M }` → `export * as M from ...` (virtual namespace)
             // 패턴에서 소비자 측 AST 멤버 접근을 수집해 namespace_used_properties 채움.
             // tree-shaker가 source 모듈의 미사용 export를 정밀 prune 가능.
-            l.populateNamespaceAccesses(graph.modules.items);
+            l.populateNamespaceAccesses();
             // symbol-level ref_count 수집. tree-shaking companion metric.
-            l.populateSymbolRefCounts(graph.modules.items);
+            l.populateSymbolRefCounts();
             break :blk l;
         } else null;
         defer if (linker) |*l| l.deinit();
@@ -789,7 +789,7 @@ pub const Bundler = struct {
         // dev_mode에서는 tree-shaking 스킵 (개발 중 모든 코드 필요)
         var shake_scope = profile.begin(.shake);
         var shaker: ?TreeShaker = if (!self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking) blk: {
-            var s = try TreeShaker.init(self.allocator, graph.modules.items, &(linker.?));
+            var s = try TreeShaker.init(self.allocator, &graph, &(linker.?));
             try s.analyze(self.options.entry_points);
             break :blk s;
         } else null;
@@ -935,27 +935,27 @@ pub const Bundler = struct {
             var chunk_graph = if (self.options.preserve_modules)
                 try chunk_mod.generatePreserveModulesChunks(
                     self.allocator,
-                    graph.modules.items,
+                    &graph,
                     self.options.entry_points,
                     if (shaker) |*s| s else null,
                 )
             else
                 try chunk_mod.generateChunks(
                     self.allocator,
-                    graph.modules.items,
+                    &graph,
                     self.options.entry_points,
                     if (shaker) |*s| s else null,
                 );
             defer chunk_graph.deinit();
 
-            try chunk_mod.computeCrossChunkLinks(&chunk_graph, graph.modules.items, self.allocator, if (linker) |*l| l else null);
+            try chunk_mod.computeCrossChunkLinks(&chunk_graph, &graph, self.allocator, if (linker) |*l| l else null);
 
             var emit_opts = self.makeEmitOptions();
             emit_opts.preserve_modules = self.options.preserve_modules;
             emit_opts.preserve_modules_root = self.options.preserve_modules_root;
             outputs = try emitter.emitChunks(
                 self.allocator,
-                graph.modules.items,
+                &graph,
                 &chunk_graph,
                 emit_opts,
                 if (linker) |*l| l else null,
@@ -1109,7 +1109,7 @@ pub const Bundler = struct {
             for (self.options.entry_points) |ep| {
                 // 엔트리 경로 → 모듈 인덱스 찾기
                 const resolved = graph.path_to_module.get(ep) orelse continue;
-                if (css_emit.emitCssBundle(self.allocator, graph.modules.items, resolved, self.options.css_names)) |css_out| {
+                if (css_emit.emitCssBundle(self.allocator, &graph, resolved, self.options.css_names)) |css_out| {
                     css_output_files.append(self.allocator, css_out) catch {};
                 }
             }

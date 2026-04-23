@@ -392,8 +392,7 @@ pub fn emitEsmWrappedModule(
                 const source_mod_idx = module.import_records[rec_idx].resolved;
                 if (source_mod_idx.isNone()) continue;
                 const src_i = @intFromEnum(source_mod_idx);
-                if (src_i >= l.modules.len) continue;
-                const src_mod = &l.modules[src_i];
+                const src_mod = l.graph.getModule(source_mod_idx) orelse continue;
 
                 if (std.mem.eql(u8, eb.exported_name, "*")) {
                     seen.clearRetainingCapacity();
@@ -471,8 +470,7 @@ pub fn emitEsmWrappedModule(
                             // 자기 참조 getter를 만들지 않도록.
                             if (src_idx == module.index) break :re_export;
                             const si = @intFromEnum(src_idx);
-                            if (si >= l.modules.len) break :re_export;
-                            const src_mod = &l.modules[si];
+                            const src_mod = l.graph.getModule(src_idx) orelse break :re_export;
                             if (!src_mod.wrap_kind.isWrapped()) break :re_export;
 
                             const local_name = module.exportBindingLocalName(eb);
@@ -610,8 +608,7 @@ pub fn emitEsmWrappedModule(
         const source_mod_i = @intFromEnum(source_mod_idx);
 
         if (linker) |l| {
-            if (source_mod_i < l.modules.len) {
-                const source_mod = &l.modules[source_mod_i];
+            if (l.graph.getModule(source_mod_idx)) |source_mod| {
                 const eq = if (options.minify_whitespace) "=" else " = ";
 
                 try reexport_buf.appendSlice(allocator, def_name);
@@ -703,11 +700,11 @@ pub fn emitEsmWrappedModule(
             const source_mod_idx = module.import_records[rec_idx].resolved;
             if (source_mod_idx.isNone()) continue;
             const src_i = @intFromEnum(source_mod_idx);
-            if (src_i >= l.modules.len) continue;
+            const src_mod_ptr = l.graph.getModule(source_mod_idx) orelse continue;
             if (re_export_inited.contains(src_i)) continue;
             re_export_inited.put(src_i, {}) catch {};
 
-            try appendWrappedInitCall(&star_init_buf, allocator, &l.modules[src_i], options);
+            try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, options);
         }
 
         // Side-effect-only import (`import './x';`) → target이 ESM 래핑일 때만
@@ -720,9 +717,8 @@ pub fn emitEsmWrappedModule(
             if (rec.kind != .side_effect) continue;
             if (rec.resolved.isNone()) continue;
             const src_i = @intFromEnum(rec.resolved);
-            if (src_i >= l.modules.len) continue;
+            const src_mod = l.graph.getModule(rec.resolved) orelse continue;
             if (re_export_inited.contains(src_i)) continue;
-            const src_mod = &l.modules[src_i];
             if (src_mod.wrap_kind != .esm) continue;
             re_export_inited.put(src_i, {}) catch {};
 
@@ -740,7 +736,7 @@ pub fn emitEsmWrappedModule(
     defer rbm_code.deinit(allocator);
     if (module.is_entry_point and options.run_before_main.len > 0) {
         if (linker) |l| {
-            try appendRunBeforeMainCalls(&rbm_code, allocator, l.modules, options.run_before_main);
+            try appendRunBeforeMainCalls(&rbm_code, allocator, l.graph, options.run_before_main);
         }
     }
 
@@ -980,10 +976,9 @@ fn collectStarExportNames(
     seen: *std.StringHashMap(void),
     visited: *std.AutoHashMap(u32, void),
 ) !void {
-    if (mod_idx >= l.modules.len) return;
+    const m = l.graph.getModule(ModuleIndex.fromUsize(mod_idx)) orelse return;
     if (visited.contains(mod_idx)) return;
     try visited.put(mod_idx, {});
-    const m = &l.modules[mod_idx];
 
     // 직접 선언된 export 수집 (local + re_export + named re_export_all)
     for (m.export_bindings) |eb| {
@@ -1029,7 +1024,7 @@ fn makeStarGetterValue(
             // resolveExportChain으로 canonical 이름을 찾는다.
             if (l.resolveExportChain(@enumFromInt(src_i), name, 0)) |resolved| {
                 const canonical_mod_i = resolved.module_index.toU32();
-                const canonical_mod = &l.modules[canonical_mod_i];
+                const canonical_mod = l.graph.getModule(resolved.module_index) orelse return try allocator.dupe(u8, name);
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
                     const ev = try canonical_mod.allocExportsName(allocator);

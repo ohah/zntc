@@ -90,7 +90,8 @@ pub fn buildMetadataForAst(
     var scope = @import("../../profile.zig").begin(.metadata);
     defer scope.end();
 
-    if (module_index >= self.modules.len) {
+    const m_opt = self.graph.getModule(ModuleIndex.fromUsize(module_index));
+    if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
             .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
@@ -100,7 +101,7 @@ pub fn buildMetadataForAst(
         };
     }
 
-    const m = self.modules[module_index];
+    const m = m_opt.?.*;
 
     // 래핑 모듈 + semantic 없음: require_rewrites만 구축하고 조기 반환.
     // semantic 있으면 import_bindings 처리 경로로 진행하여
@@ -265,10 +266,11 @@ pub fn buildMetadataForAst(
             // 개별 구조분해 대신 namespace 객체 프로퍼티 접근을 사용한다 (rolldown 방식).
             // preamble에서 ns_var = __toESM(require_xxx()) 생성 + rename 등록.
             const is_synthetic = ib.isSynthetic();
-            if (!is_synthetic and m.wrap_kind == .esm and canonical_mod < self.modules.len and
-                (self.modules[canonical_mod].wrap_kind == .cjs or canonical_mod == module_index))
+            const canonical_m_opt = self.graph.getModule(ModuleIndex.fromUsize(canonical_mod));
+            if (!is_synthetic and m.wrap_kind == .esm and canonical_m_opt != null and
+                (canonical_m_opt.?.wrap_kind == .cjs or canonical_mod == module_index))
             {
-                if (ib.kind == .named and self.modules[canonical_mod].wrap_kind == .cjs) {
+                if (ib.kind == .named and canonical_m_opt.?.wrap_kind == .cjs) {
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                     const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
 
@@ -291,7 +293,7 @@ pub fn buildMetadataForAst(
             }
 
             // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
-            if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .cjs) {
+            if (canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .cjs) {
                 const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                 const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                 const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
@@ -307,10 +309,10 @@ pub fn buildMetadataForAst(
             // __esm 래핑 모듈에서 import: init_xxx() 호출을 preamble에 추가.
             // 호이스팅된 함수는 top-level에 있으므로 rename으로 참조 가능.
             // init 호출은 모듈당 1회만 (중복 방지는 esm_init_set으로).
-            if (canonical_mod < self.modules.len and self.modules[canonical_mod].wrap_kind == .esm) {
+            if (canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm) {
                 if (!esm_init_set.contains(@intCast(canonical_mod))) {
                     try esm_init_set.put(@intCast(canonical_mod), {});
-                    const target_mod = &self.modules[canonical_mod];
+                    const target_mod = canonical_m_opt.?;
                     if (target_mod.uses_top_level_await) try preamble.write("await ");
                     if (self.dev_mode) {
                         try preamble.write("__zts_modules[\"");
@@ -368,7 +370,8 @@ pub fn buildMetadataForAst(
             // → canonical = { cjs, "x" } → req_cjs().x (not .default)
             if (resolved) |rb| {
                 const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
-                if (cjs_mod < self.modules.len and self.modules[cjs_mod].wrap_kind == .cjs) {
+                const cjs_mod_opt = self.graph.getModule(rb.canonical.module_index);
+                if (cjs_mod_opt != null and cjs_mod_opt.?.wrap_kind == .cjs) {
                     const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, cjs_mod);
                     const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
@@ -383,17 +386,16 @@ pub fn buildMetadataForAst(
                     const local = self.resolveToLocalName(rb.canonical);
                     // namespace re-export 감지: export * as X → local_name == exported_name
                     // 이 경우 소스 모듈의 namespace 객체 preamble을 importer에 생성
-                    const cmod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
-                    if (cmod < self.modules.len) {
-                        for (self.modules[cmod].export_bindings) |eb| {
+                    if (self.graph.getModule(rb.canonical.module_index)) |cmod_ptr| {
+                        for (cmod_ptr.export_bindings) |eb| {
                             if (eb.kind.isReExportAll() and
                                 std.mem.eql(u8, eb.exported_name, rb.canonical.export_name) and
                                 !std.mem.eql(u8, eb.exported_name, "*"))
                             {
                                 // namespace re-export: ns_member_rewrites + 인라인 객체 등록
                                 if (eb.import_record_index) |rec_idx| {
-                                    if (rec_idx < self.modules[cmod].import_records.len) {
-                                        const src = self.modules[cmod].import_records[rec_idx].resolved;
+                                    if (rec_idx < cmod_ptr.import_records.len) {
+                                        const src = cmod_ptr.import_records[rec_idx].resolved;
                                         if (!src.isNone()) {
                                             const import_sym_id = module_scope.get(ib.local_name) orelse break :blk ib.imported_name;
                                             try self.registerNamespaceRewrites(
@@ -413,13 +415,13 @@ pub fn buildMetadataForAst(
                     // canonical의 export local_name이 namespace import인 경우 → 인라인 객체
                     const cmod2: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
                     const export_local = self.getExportLocalName(cmod2, rb.canonical.export_name) orelse rb.canonical.export_name;
-                    if (cmod2 < self.modules.len) {
-                        for (self.modules[cmod2].import_bindings) |cib| {
+                    if (self.graph.getModule(rb.canonical.module_index)) |cmod2_ptr| {
+                        for (cmod2_ptr.import_bindings) |cib| {
                             if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, export_local)) {
                                 // namespace import → 인라인 객체로 처리
                                 const imp_sym = module_scope.get(ib.local_name) orelse break;
-                                const ns_target_mod = if (cib.import_record_index < self.modules[cmod2].import_records.len)
-                                    @intFromEnum(self.modules[cmod2].import_records[cib.import_record_index].resolved)
+                                const ns_target_mod = if (cib.import_record_index < cmod2_ptr.import_records.len)
+                                    @intFromEnum(cmod2_ptr.import_records[cib.import_record_index].resolved)
                                 else
                                     break;
                                 try self.registerNamespaceRewrites(
@@ -447,8 +449,8 @@ pub fn buildMetadataForAst(
                     try renames.put(sym_idx, target_name);
                     // __esm → __esm live binding: __export getter override 등록 +
                     // 자체 rename 루프에서 덮어쓰기 방지
-                    if (m.wrap_kind == .esm and canonical_mod < self.modules.len and
-                        self.modules[canonical_mod].wrap_kind == .esm)
+                    if (m.wrap_kind == .esm and canonical_m_opt != null and
+                        canonical_m_opt.?.wrap_kind == .esm)
                     {
                         try export_getter_overrides.put(self.allocator, m.importBindingLocalName(ib), target_name);
                     }
@@ -465,10 +467,10 @@ pub fn buildMetadataForAst(
             for (m.import_records, 0..) |rec, rec_i| {
                 if (rec.resolved.isNone()) continue;
                 const tidx = @intFromEnum(rec.resolved);
-                if (tidx >= self.modules.len) continue;
-                if (self.modules[tidx].wrap_kind == .none) {
+                const tmod = self.graph.getModule(rec.resolved) orelse continue;
+                if (tmod.wrap_kind == .none) {
                     try hoisted_specifiers.put(rec.specifier, {});
-                } else if (self.modules[tidx].wrap_kind == .esm and tidx != module_index) {
+                } else if (tmod.wrap_kind == .esm and tidx != module_index) {
                     // __esm → __esm live binding: named import만 skip.
                     // namespace import는 body codegen이 exports_xxx 할당을 생성해야 함.
                     // self-import는 제외 (순환 자기 참조 시 body codegen이 처리).
@@ -539,7 +541,7 @@ pub fn buildMetadataForAst(
     const final_exports = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
 
     // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
-    const const_values = try self.buildCrossModuleConstValues(&self.modules[module_index], sem);
+    const const_values = try self.buildCrossModuleConstValues(self.graph.getModule(ModuleIndex.fromUsize(module_index)).?, sem);
 
     // ns_member_rewrites / ns_inline_objects 소유권 이동 + namespace preamble 생성.
     // finalizeNamespaceData가 리스트를 소비(deinit)하므로, 이후 에러 시
@@ -598,8 +600,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
             continue;
         }
         const target = @intFromEnum(rec.resolved);
-        if (target >= self.modules.len) continue;
-        const target_mod = &self.modules[target];
+        const target_mod = self.graph.getModule(rec.resolved) orelse continue;
 
         // 자기 자신을 require하는 경우: init 재귀 호출 없이 자신의 exports만 참조.
         // RN 패턴: ProgressBarAndroid.js가 require('./ProgressBarAndroid')로 자신을 참조.
@@ -701,9 +702,7 @@ pub fn buildCrossModuleConstValues(
         const rec = m.import_records[ib.import_record_index];
         if (rec.resolved.isNone()) continue;
         const canon = self.resolveExportChain(rec.resolved, ib.imported_name, 0) orelse continue;
-        const canon_mod_idx = canon.module_index.toU32();
-        if (canon_mod_idx >= self.modules.len) continue;
-        const target_module = self.modules[canon_mod_idx];
+        const target_module = self.graph.getModule(canon.module_index) orelse continue;
         const target_sem = target_module.semantic orelse continue;
         if (target_sem.scope_maps.len == 0) continue;
         // export_name → local_name 매핑
@@ -800,7 +799,8 @@ pub fn buildDevMetadataForAst(
     ast: *const Ast,
     module_index: u32,
 ) !LinkingMetadata {
-    if (module_index >= self.modules.len) {
+    const m_opt = self.graph.getModule(ModuleIndex.fromUsize(module_index));
+    if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
             .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
@@ -810,7 +810,7 @@ pub fn buildDevMetadataForAst(
         };
     }
 
-    const m = self.modules[module_index];
+    const m = m_opt.?.*;
 
     // CJS 래핑 모듈은 dev mode에서도 기존대로 유지
     if (m.wrap_kind == .cjs) {
@@ -944,12 +944,12 @@ pub fn buildDevMetadataForAst(
         const info = record_infos[i];
         if (info.default_local == null and info.namespace_local == null and info.named_count == 0) continue;
 
-        const resolved_mod = @intFromEnum(rec.resolved);
         // dev_id: 번들 진입 시 한 번 계산된 모듈 ID (ID 일원화)
-        const resolved_path = if (resolved_mod < self.modules.len) self.modules[resolved_mod].dev_id else rec.specifier;
+        const resolved_mod_ptr = self.graph.getModule(rec.resolved);
+        const resolved_path = if (resolved_mod_ptr) |rmp| rmp.dev_id else rec.specifier;
 
         // CJS 타겟이면 __toESM 래핑 (default/namespace import에서 CJS interop 필요)
-        const is_cjs_target = resolved_mod < self.modules.len and self.modules[resolved_mod].wrap_kind == .cjs;
+        const is_cjs_target = resolved_mod_ptr != null and resolved_mod_ptr.?.wrap_kind == .cjs;
 
         if (info.namespace_local) |ns_local| {
             try dev_preamble.writeDevRequireInterop(ns_local, resolved_path, null, is_cjs_target, false);
@@ -984,8 +984,7 @@ pub fn buildDevMetadataForAst(
                     if (iri < m.import_records.len) {
                         const irec = m.import_records[iri];
                         if (!irec.resolved.isNone()) {
-                            const re_mod = @intFromEnum(irec.resolved);
-                            const re_path = if (re_mod < self.modules.len) self.modules[re_mod].dev_id else irec.specifier;
+                            const re_path = if (self.graph.getModule(irec.resolved)) |re_m| re_m.dev_id else irec.specifier;
                             try buf.appendSlice(self.allocator, "exports.");
                             try buf.appendSlice(self.allocator, eb.exported_name);
                             try buf.appendSlice(self.allocator, " = __zts_require(\"");
@@ -1036,7 +1035,8 @@ pub fn buildDevMetadataForAst(
 
 /// 특정 모듈에 대한 LinkingMetadata를 생성한다 (원본 AST 기준, 테스트용).
 pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !LinkingMetadata {
-    if (module_index >= self.modules.len) {
+    const m_opt = self.graph.getModule(ModuleIndex.fromUsize(module_index));
+    if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
             .renames = std.AutoHashMap(u32, []const u8).init(self.allocator),
@@ -1046,7 +1046,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
         };
     }
 
-    const m = self.modules[module_index];
+    const m = m_opt.?.*;
     const ast = m.ast orelse {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),

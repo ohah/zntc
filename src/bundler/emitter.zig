@@ -410,7 +410,7 @@ pub fn emitWithTreeShaking(
                 continue; // mtime unknown → cache 비활성
             }
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            const input_hash = cache_mod.computeInputHash(m, options_hash, used_names, graph.modules.items);
+            const input_hash = cache_mod.computeInputHash(m, options_hash, used_names, graph);
             input_hashes[i] = input_hash;
             const hit = cache.tryHit(m.path, input_hash) orelse continue;
             results[i] = hit.dupe(allocator) catch continue;
@@ -536,7 +536,7 @@ pub fn emitWithTreeShaking(
         const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
         if (is_entry and options.run_before_main.len > 0 and m.wrap_kind != .esm) {
             const before_len = module_output.items.len;
-            try appendRunBeforeMainCalls(&module_output, allocator, graph.modules.items, options.run_before_main);
+            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main);
             module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
         }
 
@@ -884,9 +884,10 @@ pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator
 }
 
 /// run-before-main 모듈의 호출 코드를 output에 추가한다.
-pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, modules: anytype, run_before_main: []const []const u8) !void {
+pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8) !void {
     for (run_before_main) |rbm_path| {
-        for (modules) |*rbm| {
+        var it = graph.modulesIterator();
+        while (it.next()) |rbm| {
             if (std.mem.eql(u8, rbm.path, rbm_path)) {
                 try appendModuleCall(output, allocator, rbm);
                 break;
@@ -1433,8 +1434,7 @@ fn propagateCrossModulePurity(
         const resolved = linker.getResolvedBinding(module_index, ib.local_span) orelse continue;
 
         const canon_mod_idx = @intFromEnum(resolved.canonical.module_index);
-        if (canon_mod_idx >= linker.modules.len) continue;
-        const target_module = linker.modules[canon_mod_idx];
+        const target_module = linker.graph.getModule(resolved.canonical.module_index) orelse continue;
         const target_sem = target_module.semantic orelse continue;
 
         if (target_sem.scope_maps.len == 0) continue;
@@ -1536,7 +1536,7 @@ pub fn emitChunkRuntimeHelpers(
     output: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     chunk: *const Chunk,
-    modules: []const Module,
+    graph: *const ModuleGraph,
     options: EmitOptions,
     collected_helpers: ?RuntimeHelpers,
 ) !void {
@@ -1544,12 +1544,10 @@ pub fn emitChunkRuntimeHelpers(
     var needs_esm_wrap_runtime = false;
     var needs_to_binary = false;
     for (chunk.modules.items) |mod_idx| {
-        const mi = @intFromEnum(mod_idx);
-        if (mi < modules.len) {
-            if (modules[mi].wrap_kind == .cjs) needs_cjs_runtime = true;
-            if (modules[mi].wrap_kind == .esm) needs_esm_wrap_runtime = true;
-            if (modules[mi].loader == .binary) needs_to_binary = true;
-        }
+        const m = graph.getModule(mod_idx) orelse continue;
+        if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
+        if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
+        if (m.loader == .binary) needs_to_binary = true;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // 단일 번들 경로와 동일: Node ESM + CJS wrap이면 createRequire shim 필요 (#1456)

@@ -12,13 +12,15 @@ const writeFile = @import("test_helpers.zig").writeFile;
 const TestResult = struct {
     shaker: TreeShaker,
     linker: Linker,
-    graph: ModuleGraph,
+    /// heap-allocated ModuleGraph (Linker/TreeShaker.graph 안정화 목적, #1779 PR #2).
+    graph: *ModuleGraph,
     cache: resolve_cache_mod.ResolveCache,
 
     fn deinit(self: *TestResult) void {
         self.shaker.deinit();
         self.linker.deinit();
         self.graph.deinit();
+        std.testing.allocator.destroy(self.graph);
         self.cache.deinit();
     }
 
@@ -50,7 +52,8 @@ fn buildAndShakeWithOpts(
     defer allocator.free(entry);
 
     var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
-    var graph = ModuleGraph.init(allocator, &cache);
+    const graph = try allocator.create(ModuleGraph);
+    graph.* = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
 
     for (0..graph.moduleCount()) |i| {
@@ -63,11 +66,11 @@ fn buildAndShakeWithOpts(
         }
     }
 
-    var linker = Linker.init(allocator, graph.modules.items, .esm);
+    var linker = Linker.init(allocator, graph, .esm);
     try linker.link();
-    linker.populateImportSymbols(graph.modules.items);
+    linker.populateImportSymbols();
 
-    var shaker = try TreeShaker.init(allocator, graph.modules.items, &linker);
+    var shaker = try TreeShaker.init(allocator, graph, &linker);
     try shaker.analyze(&.{entry});
 
     return .{ .shaker = shaker, .linker = linker, .graph = graph, .cache = cache };
@@ -208,12 +211,12 @@ test "tree-shaking: empty module graph" {
     var graph = ModuleGraph.init(std.testing.allocator, &cache);
     defer graph.deinit();
 
-    var linker = Linker.init(std.testing.allocator, graph.modules.items, .esm);
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
     defer linker.deinit();
     try linker.link();
-    linker.populateImportSymbols(graph.modules.items);
+    linker.populateImportSymbols();
 
-    var shaker = try TreeShaker.init(std.testing.allocator, graph.modules.items, &linker);
+    var shaker = try TreeShaker.init(std.testing.allocator, &graph, &linker);
     defer shaker.deinit();
     try shaker.analyze(&.{});
 
