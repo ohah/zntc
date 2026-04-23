@@ -656,13 +656,25 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const name_node = self.ast.getNode(name_idx);
             const name_text = self.ast.getText(name_node.span);
 
-            // key: identifier_reference로 생성
-            const key_span = try self.ast.addString(name_text);
-            const key_node = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = key_span,
-                .data = .{ .string_ref = key_span },
-            });
+            // key: `aria-label`/`data-x` 등 valid JS identifier 가 아니면 string_literal 로
+            // 생성해야 object literal property key 로 유효. 그렇지 않으면 codegen 이
+            // raw 로 뱉어 `aria-label: ...` 같은 파싱 불가한 JS 를 만듦.
+            const key_node = if (isValidIdentifierName(name_text)) blk: {
+                const key_span = try self.ast.addString(name_text);
+                break :blk try self.ast.addNode(.{
+                    .tag = .identifier_reference,
+                    .span = key_span,
+                    .data = .{ .string_ref = key_span },
+                });
+            } else blk: {
+                const quoted = try quoteString(self, name_text);
+                const str_span = try self.ast.addString(quoted);
+                break :blk try self.ast.addNode(.{
+                    .tag = .string_literal,
+                    .span = str_span,
+                    .data = .{ .string_ref = str_span },
+                });
+            };
 
             // value: 없으면 true
             const val_node = if (value_idx.isNone()) blk: {
@@ -1015,6 +1027,22 @@ pub fn JsxLowering(comptime Transformer: type) type {
             }
 
             return buf[0..out_len];
+        }
+
+        /// ASCII 식별자 (ES IdentifierName) 규칙으로 JSX attribute name 검증.
+        /// object literal property key 는 reserved word 도 허용하므로 키워드 체크 불필요.
+        fn isValidIdentifierName(text: []const u8) bool {
+            if (text.len == 0) return false;
+            const first = text[0];
+            const first_ok = (first >= 'a' and first <= 'z') or
+                (first >= 'A' and first <= 'Z') or first == '_' or first == '$';
+            if (!first_ok) return false;
+            for (text[1..]) |c| {
+                const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                    (c >= '0' and c <= '9') or c == '_' or c == '$';
+                if (!ok) return false;
+            }
+            return true;
         }
 
         /// 텍스트를 "..."로 감싸고 특수 문자를 이스케이프.
