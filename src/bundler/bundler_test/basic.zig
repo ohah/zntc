@@ -4,6 +4,9 @@ const types = @import("../types.zig");
 const emitter = @import("../emitter.zig");
 const ResolveCache = @import("../resolve_cache.zig").ResolveCache;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
+const plugin_mod = @import("../plugin.zig");
+const Plugin = plugin_mod.Plugin;
+const PluginError = plugin_mod.PluginError;
 const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
@@ -705,6 +708,292 @@ test "Bundler: import.meta.glob import option" {
     try std.testing.expect(!result.hasErrors());
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "m.setup") != null);
+}
+
+// ============================================================
+// require.context emit (#1579 Phase 3) — webpackContext IIFE
+// ============================================================
+
+fn rcMatchAB(
+    _: ?*anyopaque,
+    _: []const u8,
+    _: bool,
+    _: ?[]const u8,
+    _: ?[]const u8,
+    _: []const u8,
+    allocator: std.mem.Allocator,
+) PluginError!?[]const []const u8 {
+    // Plugin contract: outer + inner 모두 allocator 소유 (graph 가 free).
+    const result = try allocator.alloc([]const u8, 2);
+    result[0] = try allocator.dupe(u8, "./a.tsx");
+    result[1] = try allocator.dupe(u8, "./b.tsx");
+    return result;
+}
+
+fn rcMatchEmpty(
+    _: ?*anyopaque,
+    _: []const u8,
+    _: bool,
+    _: ?[]const u8,
+    _: ?[]const u8,
+    _: []const u8,
+    allocator: std.mem.Allocator,
+) PluginError!?[]const []const u8 {
+    return try allocator.alloc([]const u8, 0);
+}
+
+/// escape 검증용 — 매치 경로에 `"`, `\`, 개행을 포함시켜 writeJsStringContent 적용 확인.
+fn rcMatchSpecialChars(
+    _: ?*anyopaque,
+    _: []const u8,
+    _: bool,
+    _: ?[]const u8,
+    _: ?[]const u8,
+    _: []const u8,
+    allocator: std.mem.Allocator,
+) PluginError!?[]const []const u8 {
+    const result = try allocator.alloc([]const u8, 1);
+    result[0] = try allocator.dupe(u8, "./weird\"name\\x.tsx");
+    return result;
+}
+
+fn rcMatchNoDotSlash(
+    _: ?*anyopaque,
+    _: []const u8,
+    _: bool,
+    _: ?[]const u8,
+    _: ?[]const u8,
+    _: []const u8,
+    allocator: std.mem.Allocator,
+) PluginError!?[]const []const u8 {
+    // dot-slash prefix 없는 경로도 emitJoinedPath 가 정규화하는지 확인.
+    const result = try allocator.alloc([]const u8, 1);
+    result[0] = try allocator.dupe(u8, "nested/a.tsx");
+    return result;
+}
+
+test "Bundler: require.context emits webpackContext IIFE (sync)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const ctx = require.context('./pages', true, /\.tsx?$/, 'sync');
+        \\console.log(ctx);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchAB }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // webpackContext runtime 핵심 구성요소
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var map={") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./a.tsx\":function(){return require(\"./pages/a.tsx\");}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./b.tsx\":function(){return require(\"./pages/b.tsx\");}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ctx.keys=function(){return Object.keys(map);}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ctx.resolve=function(req)") != null);
+    // 원본 `require.context(...)` 호출은 남으면 안 됨 — IIFE 로 교체되어야.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require.context(") == null);
+}
+
+test "Bundler: require.context emits empty map when no matches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const ctx = require.context('./empty-dir');
+        \\console.log(ctx);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchEmpty }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // map 은 비었지만 ctx 함수는 여전히 emit — keys() 는 [] 반환, ctx(x) 는 throw.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var map={}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ctx.keys=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") != null);
+}
+
+test "Bundler: require.context escapes match path special chars" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const ctx = require.context('./pages');\nconsole.log(ctx);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchSpecialChars }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // 원본 `"` 는 `\"` 로, `\` 는 `\\` 로 escape 되어야 JS 문자열 리터럴이 유효.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\\\"name\\\\x.tsx") != null);
+    // raw unescaped `"name` 는 없어야 (map 키 내부에 그대로 들어가면 JS 파싱 불가).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "weird\"name") == null);
+}
+
+test "Bundler: require.context normalizes trailing slash and missing ./" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // dir 에 trailing `/` → 매치 경로 join 시 중복 `//` 안 생김.
+    try writeFile(tmp.dir, "entry.ts", "const ctx = require.context('./pages/');\nconsole.log(ctx);");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchNoDotSlash }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // `./pages/` + `nested/a.tsx` → `./pages/nested/a.tsx` (정확히 slash 하나).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/nested/a.tsx\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./pages//") == null);
+}
+
+/// 호출 순서에 따라 다른 matches 를 돌려주는 callback — span 매칭 정확성 검증용.
+fn rcDispatchByCallCount(
+    _: ?*anyopaque,
+    _: []const u8,
+    _: bool,
+    _: ?[]const u8,
+    _: ?[]const u8,
+    _: []const u8,
+    allocator: std.mem.Allocator,
+) PluginError!?[]const []const u8 {
+    const S = struct {
+        var count: u32 = 0;
+    };
+    S.count += 1;
+    const result = try allocator.alloc([]const u8, 1);
+    if (S.count == 1) {
+        result[0] = try allocator.dupe(u8, "./first.tsx");
+    } else {
+        result[0] = try allocator.dupe(u8, "./second.tsx");
+    }
+    return result;
+}
+
+test "Bundler: multiple require.context calls resolve to distinct maps (span match)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const a = require.context('./pages');
+        \\const b = require.context('./other');
+        \\console.log(a, b);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcDispatchByCallCount }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // 첫 호출 (./pages) 는 first.tsx 만, 둘째 호출 (./other) 는 second.tsx 만.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/first.tsx\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./other/second.tsx\")") != null);
+    // cross-contamination 없음.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/second.tsx\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./other/first.tsx\")") == null);
+}
+
+test "Bundler: require.context coexists with import.meta.glob" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("mods");
+    try writeFile(tmp.dir, "mods/a.ts", "export const x = 1;");
+    try writeFile(tmp.dir, "entry.ts",
+        \\const g = import.meta.glob('./mods/*.ts', { eager: true });
+        \\const c = require.context('./pages');
+        \\console.log(g, c);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchAB }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // 양쪽 모두 AST 수준에서 교체되어야 — 원본 호출 둘 다 없음.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import.meta.glob(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require.context(") == null);
+    // glob: eager → `await import(` / require.context: webpackContext IIFE.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "await import(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") != null);
+}
+
+test "Bundler: no require.context in source → no webpackContext template emitted" {
+    // fast-path 플래그 검증: require.context 없으면 어떤 call expression 도 IIFE 로 변환되지 않음.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "function ctx(){return 1;}console.log(ctx());\n");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Object.keys(map)") == null);
 }
 
 test "Bundler: UMD external dependencies in wrapper" {
