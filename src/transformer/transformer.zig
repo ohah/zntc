@@ -62,10 +62,8 @@ const plugin_mod = @import("../bundler/plugin.zig");
 pub const Plugin = plugin_mod.Plugin;
 
 /// define 치환 엔트리. key=식별자 텍스트, value=치환 문자열.
-pub const DefineEntry = struct {
-    key: []const u8,
-    value: []const u8,
-};
+/// `parser.scan_results.DefineEntry` 와 동일 정의 — parser 의 inline scan 도 같은 entries 사용.
+pub const DefineEntry = @import("../parser/scan_results.zig").DefineEntry;
 
 /// 정규화 버퍼 크기. `process.env.NODE_ENV`류 식별자 체인은 훨씬 짧지만 여유.
 /// 초과 시 normalizeOptionalChain은 null을 반환해 치환을 스킵한다.

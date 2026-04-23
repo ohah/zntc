@@ -30,6 +30,8 @@ const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const CallFlags = @import("../parser/ast.zig").CallFlags;
 const MemberFlags = @import("../parser/ast.zig").MemberFlags;
+const scan_results = @import("../parser/scan_results.zig");
+const DefineEntry = scan_results.DefineEntry;
 const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
 const ImportRecord = types.ImportRecord;
@@ -52,6 +54,16 @@ pub const ScanResult = struct {
 /// AST를 순회하여 import/export/require를 추출하고 CJS 신호를 감지한다.
 /// ESM과 CJS 판별에 필요한 모든 정보를 한 번의 순회로 수집.
 pub fn extractImportsWithCjsDetection(allocator: std.mem.Allocator, ast: *const Ast) !ScanResult {
+    return extractImportsWithCjsDetectionAndDefines(allocator, ast, &.{});
+}
+
+/// `extractImportsWithCjsDetection` 의 defines 받는 버전. (#1579 Phase 2.6)
+/// require.context 의 `process.env.X` 같은 인자를 build-time 정적 평가.
+pub fn extractImportsWithCjsDetectionAndDefines(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    defines: []const DefineEntry,
+) !ScanResult {
     var records: std.ArrayList(ImportRecord) = .empty;
     var has_esm_syntax = false;
     var has_cjs_require = false;
@@ -89,7 +101,7 @@ pub fn extractImportsWithCjsDetection(allocator: std.mem.Allocator, ast: *const 
             .call_expression => {
                 // Order: require.context (specific, callee=member) → require (callee=ident) → glob (callee=meta).
                 // 더 specific 한 패턴 먼저 시도해야 일반 require 가 require.context 를 가리지 않는다.
-                if (tryExtractRequireContext(ast, node)) |record| {
+                if (tryExtractRequireContextWithDefines(ast, node, defines)) |record| {
                     has_cjs_require = true;
                     try records.append(allocator, record);
                 } else if (tryExtractRequire(ast, node)) |record| {
@@ -214,9 +226,17 @@ fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
 /// `tryExtractGlob` 와 같은 모양. Reference: Metro `processRequireContextCall`
 /// (`metro/src/ModuleGraph/worker/collectDependencies.js`).
 pub fn tryExtractRequireContext(ast: *const Ast, node: Node) ?ImportRecord {
+    return tryExtractRequireContextWithDefines(ast, node, &.{});
+}
+
+/// `tryExtractRequireContext` 의 defines 받는 버전. (#1579 Phase 2.6)
+pub fn tryExtractRequireContextWithDefines(
+    ast: *const Ast,
+    node: Node,
+    defines: []const DefineEntry,
+) ?ImportRecord {
     if (node.tag != .call_expression) return null;
     const e = node.data.extra;
-    // call_expression extra: [callee, args_start, args_len, flags]
     if (!ast.hasExtra(e, 3)) return null;
 
     const callee_idx = ast.readExtraNode(e, 0);
@@ -224,20 +244,22 @@ pub fn tryExtractRequireContext(ast: *const Ast, node: Node) ?ImportRecord {
     const args_len = ast.readExtra(e, 2);
     const call_flags = ast.readExtra(e, 3);
 
-    // `require?.context(...)` 무시
     if (call_flags & CallFlags.optional_chain != 0) return null;
 
-    return tryExtractRequireContextFromCallee(ast, callee_idx, args_start, args_len, node.span);
+    return tryExtractRequireContextFromCallee(ast, callee_idx, args_start, args_len, node.span, defines);
 }
 
 /// `tryExtractRequireContext` 의 callee+args 직접 받는 변형. (#1579 Phase 2)
 /// parser inline scan (call_expression 노드 만들기 *전*에 호출) 에서 사용.
+/// `defines`: build-time 정적 평가용 — `process.env.X` 같은 member chain 을 string 으로
+/// 평가 (Metro `path.evaluate()` 와 동등 능력). 비어있으면 evaluator 가 literal 만 처리. (#1579 Phase 2.6)
 pub fn tryExtractRequireContextFromCallee(
     ast: *const Ast,
     callee_idx: NodeIndex,
     args_start: u32,
     args_len: u32,
     call_span: Span,
+    defines: []const DefineEntry,
 ) ?ImportRecord {
     if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return null;
     const callee = ast.getNode(callee_idx);
@@ -298,10 +320,10 @@ pub fn tryExtractRequireContextFromCallee(
         }
     }
 
-    // arg[0]: directory (string literal, 필수)
+    // arg[0]: directory (string literal 또는 define-replaced string, 필수)
     {
         const arg_idx = ast.readExtraNode(args_start, 0);
-        if (getStringLiteralText(ast, arg_idx)) |s| {
+        if (evalToString(ast, arg_idx, defines)) |s| {
             record.specifier = s;
         } else {
             record.context_invalid_reason = "require.context first argument must be a string literal (directory)";
@@ -351,7 +373,7 @@ pub fn tryExtractRequireContextFromCallee(
         const arg_node = ast.getNode(arg_idx);
         if (isUndefinedLiteral(ast, arg_node)) {
             // default sync 유지
-        } else if (getStringLiteralText(ast, arg_idx)) |mode_str| {
+        } else if (evalToString(ast, arg_idx, defines)) |mode_str| {
             const mode = parseRequireContextMode(mode_str) orelse {
                 record.context_invalid_reason = "require.context fourth argument must be 'sync', 'eager', 'lazy', or 'lazy-once'";
                 return record;
@@ -364,6 +386,48 @@ pub fn tryExtractRequireContextFromCallee(
     }
 
     return record;
+}
+
+/// Identifier / member access / string literal 을 string 으로 정적 평가. (#1579 Phase 2.6)
+/// - `string_literal` → text (quotes 제거)
+/// - `identifier_reference` / `static_member_expression` → defines lookup 후 unquoted string
+/// - 그 외 → null (evaluator 가 처리 못하는 표현식)
+///
+/// Metro `path.evaluate()` 와 동등 능력 — `process.env.NODE_ENV` 같은 build-time 상수 평가.
+fn evalToString(ast: *const Ast, idx: NodeIndex, defines: []const DefineEntry) ?[]const u8 {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+
+    // 1. String literal — 직접 추출
+    if (getStringLiteralText(ast, idx)) |s| return s;
+
+    // 2. Identifier 또는 member access — defines lookup
+    if (defines.len == 0) return null;
+    const node = ast.getNode(idx);
+    const text = switch (node.tag) {
+        .identifier_reference, .static_member_expression => ast.getText(node.span),
+        else => return null,
+    };
+    for (defines) |def| {
+        if (std.mem.eql(u8, def.key, text)) {
+            return parseDefineStringValue(def.value);
+        }
+    }
+    return null;
+}
+
+/// Define value 가 quoted JS string (`"..."`, `'...'`, `` `...` `` template) 이면 unquote.
+/// 기타 (bool/number/표현식) 은 null — 호출자가 string 컨텍스트가 아니라고 판정.
+fn parseDefineStringValue(value: []const u8) ?[]const u8 {
+    if (value.len < 2) return null;
+    const first = value[0];
+    const last = value[value.len - 1];
+    if ((first == '"' and last == '"') or
+        (first == '\'' and last == '\'') or
+        (first == '`' and last == '`'))
+    {
+        return value[1 .. value.len - 1];
+    }
+    return null;
 }
 
 /// `undefined` identifier 리터럴 여부. 글로벌 undefined 가 가려진 경우는 무시 (관례).

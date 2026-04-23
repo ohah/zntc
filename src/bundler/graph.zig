@@ -69,6 +69,9 @@ pub const ModuleGraph = struct {
 
     /// dev mode: HMR을 위해 모든 모듈을 강제 래핑 (__esm).
     dev_mode: bool = false,
+    /// build-time 정적 평가 entries. parser inline scan (require.context 등 #1579 Phase 2.6) 활용.
+    /// bundler 가 BundleOptions.define 으로 설정. transformer 의 define 치환과 동일 entries.
+    defines: []const @import("../parser/scan_results.zig").DefineEntry = &.{},
     /// #1621: binary loader 가 생성하는 `__toBinary(...)` 소스에서 축약 이름 사용.
     /// bundler 에서 self.options.minify_whitespace 를 주입.
     minify_whitespace: bool = false,
@@ -1000,6 +1003,8 @@ pub const ModuleGraph = struct {
         }
         // Inline scanning: 파서가 AST를 구축하면서 import/export 레코드를 동시 수집
         parser.enable_scan = true;
+        // require.context 등 build-time 정적 평가용 define entries 전달 (#1579 Phase 2.6)
+        parser.scan_defines = self.defines;
         setup_scope.end();
         _ = parser.parse() catch {
             self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Parse failed", null);

@@ -894,6 +894,123 @@ test "require.context: Expo Router _ctx.ios.js pattern (filter regex with negati
 
 // ─── L. Edge — JSX/TSX 컨텍스트 ──────────────────────────
 
+// ─── P. Define table evaluator (#1579 Phase 2.6) ─────────
+
+const DefineEntry = @import("../parser/scan_results.zig").DefineEntry;
+
+fn parseAndExtractWithDefines(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    defines: []const DefineEntry,
+) ![]ImportRecord {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, source);
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    parser.scan_defines = defines;
+    _ = try parser.parse();
+
+    const result = try import_scanner.extractImportsWithCjsDetectionAndDefines(allocator, &parser.ast, defines);
+    return result.records;
+}
+
+test "require.context: process.env.X with define → string literal evaluation" {
+    const defines = [_]DefineEntry{
+        .{ .key = "process.env.EXPO_ROUTER_APP_ROOT", .value = "\"./app\"" },
+    };
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithDefines(
+        alloc,
+        "require.context(process.env.EXPO_ROUTER_APP_ROOT, true, /\\.tsx?$/, 'sync');",
+        &defines,
+    );
+    defer alloc.free(records);
+    const r = findContextRecord(records) orelse return error.TestExpectedRecord;
+    try expectValidContext(r, "./app", true, "\\.tsx?$", null, .sync);
+}
+
+test "require.context: process.env.X without define → invalid" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithDefines(
+        alloc,
+        "require.context(process.env.EXPO_ROUTER_APP_ROOT, true, /.*/, 'sync');",
+        &.{},
+    );
+    defer alloc.free(records);
+    const r = findContextRecord(records) orelse return error.TestExpectedRecord;
+    try std.testing.expect(r.context_invalid_reason != null);
+}
+
+test "require.context: process.env mode with define" {
+    const defines = [_]DefineEntry{
+        .{ .key = "process.env.EXPO_ROUTER_IMPORT_MODE", .value = "\"eager\"" },
+    };
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithDefines(
+        alloc,
+        "require.context('./app', true, /.*/, process.env.EXPO_ROUTER_IMPORT_MODE);",
+        &defines,
+    );
+    defer alloc.free(records);
+    const r = findContextRecord(records) orelse return error.TestExpectedRecord;
+    try expectValidContext(r, "./app", true, ".*", null, .eager);
+}
+
+test "require.context: identifier reference with define" {
+    const defines = [_]DefineEntry{
+        .{ .key = "MY_DIR", .value = "\"./pages\"" },
+    };
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithDefines(
+        alloc,
+        "require.context(MY_DIR);",
+        &defines,
+    );
+    defer alloc.free(records);
+    const r = findContextRecord(records) orelse return error.TestExpectedRecord;
+    try expectValidContext(r, "./pages", true, null, null, .sync);
+}
+
+test "require.context: define with non-string value (bool) → invalid" {
+    // value 가 quoted string 아니므로 evaluator 가 매칭 못 함
+    const defines = [_]DefineEntry{
+        .{ .key = "MY_FLAG", .value = "true" },
+    };
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithDefines(
+        alloc,
+        "require.context(MY_FLAG);",
+        &defines,
+    );
+    defer alloc.free(records);
+    const r = findContextRecord(records) orelse return error.TestExpectedRecord;
+    try std.testing.expect(r.context_invalid_reason != null);
+}
+
+test "require.context: Expo Router _ctx.ios.js full pattern with defines" {
+    const defines = [_]DefineEntry{
+        .{ .key = "process.env.EXPO_ROUTER_APP_ROOT", .value = "\"./app\"" },
+        .{ .key = "process.env.EXPO_ROUTER_IMPORT_MODE", .value = "\"sync\"" },
+    };
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithDefines(
+        alloc,
+        "export const ctx = require.context(process.env.EXPO_ROUTER_APP_ROOT, true, /^(?:\\.\\/)(?!.*\\+api).*\\.[tj]sx?$/, process.env.EXPO_ROUTER_IMPORT_MODE);",
+        &defines,
+    );
+    defer alloc.free(records);
+    const r = findContextRecord(records) orelse return error.TestExpectedRecord;
+    try std.testing.expectEqual(ImportKind.require_context, r.kind);
+    try std.testing.expect(r.context_invalid_reason == null);
+    try std.testing.expectEqualStrings("./app", r.specifier);
+    try std.testing.expectEqual(true, r.context_recursive);
+    try std.testing.expectEqual(RequireContextMode.sync, r.context_mode);
+}
+
 test "require.context: inside JSX expression container" {
     const alloc = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(alloc);
