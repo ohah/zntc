@@ -1606,18 +1606,27 @@ fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-/// 인덱스 시그니처 여부 판별: [key: string] 패턴
-/// (매핑 타입 [K in T]과 구분)
+/// 인덱스 시그니처 여부 판별: `[key: Type]` 또는 `[...rest]` 패턴.
+/// Computed property key (`[identRef]?: T`) 와 구분하기 위해 2-step lookahead 로
+/// `[ident` 뒤에 `:` 가 실제로 오는지 확인한다. 매핑 타입 `[K in T]`은 이 함수 호출
+/// 전에 isMappedType 에서 먼저 걸러진다. (#1767)
 fn isIndexSignature(self: *Parser) ParseError2!bool {
-    // [ 다음 토큰이 identifier이고, 그 다음이 : 또는 , 이면 인덱스 시그니처
-    // [ 다음이 ...이면 인덱스 시그니처
-    const next = try self.peekNextKind();
-    if (next == .dot3) return true;
-    // identifier가 아니면 인덱스 시그니처 아님
-    if (next != .identifier and next != .kw_this) return false;
-    // identifier 다음 토큰을 확인하려면 더 봐야 하지만,
-    // 매핑 타입은 isMappedType에서 먼저 걸러지므로 여기서는 true 반환
-    return true;
+    const saved = self.saveState();
+    defer self.restoreState(saved);
+
+    try self.advance(); // skip [
+
+    // [...rest]
+    if (self.current() == .dot3) return true;
+
+    // identifier/this 가 아니면 index signature 아님 (computed key 경로로 폴백)
+    if (self.current() != .identifier and self.current() != .kw_this) return false;
+
+    try self.advance(); // skip identifier/this
+
+    // [ident: Type] 만 index signature. 그 외 [ident], [ident.foo], [ident()] 등은
+    // computed property key 로 흘려보낸다.
+    return self.current() == .colon;
 }
 
 /// 인덱스 시그니처 파싱: [key: string]: Type
