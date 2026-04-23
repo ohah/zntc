@@ -2646,6 +2646,24 @@ fn expectNoParseErrorWithExt(source: []const u8, ext: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 }
 
+fn expectParseErrorWithExt(source: []const u8, ext: []const u8, check: ErrorCheck) !void {
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(ext);
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+
+    for (parser.errors.items) |err| {
+        const msg_match = if (check.message) |m| std.mem.eql(u8, err.message, m) else true;
+        const contains_match = if (check.message_contains) |c| std.mem.indexOf(u8, err.message, c) != null else true;
+        if (msg_match and contains_match) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
 fn expectNoParseErrorBundler(source: []const u8, ext: []const u8) !void {
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
@@ -3216,5 +3234,46 @@ test "TS object type: mix of index signature and plain members" {
         \\  normal: number;
         \\  readonly ro?: string;
         \\};
+    , ".ts");
+}
+
+// Error recovery — TS 공식 `isUnambiguouslyIndexSignature` 가 parse 는 통과시키는 케이스들.
+// ZTS 는 tsc 수준의 semantic checker 가 없으므로, invalid syntax 가 조용히 통과하지
+// 않도록 parser 단에서 diagnostic 을 찍고 토큰은 skip 해서 나머지 파싱은 계속한다.
+
+test "TS index signature: optional param `[k?: T]: V` is error" {
+    try expectParseErrorWithExt(
+        \\interface D { [k?: string]: number; }
+    , ".ts", .{ .message_contains = "question mark" });
+}
+
+test "TS index signature: optional param without type `[k?]: V` is error" {
+    try expectParseErrorWithExt(
+        \\interface D { [k?]: number; }
+    , ".ts", .{ .message_contains = "question mark" });
+}
+
+test "TS index signature: modifier `public` before param is error" {
+    try expectParseErrorWithExt(
+        \\interface D { [public k: string]: number; }
+    , ".ts", .{ .message_contains = "Modifiers cannot appear" });
+}
+
+test "TS index signature: modifier `private` before param is error" {
+    try expectParseErrorWithExt(
+        \\interface D { [private k: string]: number; }
+    , ".ts", .{ .message_contains = "Modifiers cannot appear" });
+}
+
+test "TS index signature: modifier `protected` before param is error" {
+    try expectParseErrorWithExt(
+        \\interface D { [protected k: string]: number; }
+    , ".ts", .{ .message_contains = "Modifiers cannot appear" });
+}
+
+test "TS object type: computed key with member access `[ns.k]`" {
+    try expectNoParseErrorWithExt(
+        \\declare const ns: { k: unique symbol };
+        \\interface A { [ns.k]: string; }
     , ".ts");
 }

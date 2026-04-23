@@ -1606,35 +1606,77 @@ fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
     });
 }
 
-/// 인덱스 시그니처 여부 판별: `[key: Type]` 또는 `[...rest]` 패턴.
-/// Computed property key (`[identRef]?: T`) 와 구분하기 위해 2-step lookahead 로
-/// `[ident` 뒤에 `:` 가 실제로 오는지 확인한다. 매핑 타입 `[K in T]`은 이 함수 호출
-/// 전에 isMappedType 에서 먼저 걸러진다. (#1767)
+/// Index signature 파라미터 앞에 올 수 있는 modifier 토큰 (error recovery 용).
+/// 정상 문법에선 index signature 에 modifier 불허지만 `[public k: T]: V` 같은
+/// malformed 입력을 index signature 로 파싱해야 의미 있는 에러 메시지가 나온다.
+/// TS 공식 parser 의 isModifierKind 상응.
+fn isIndexSignatureModifier(kind: Kind) bool {
+    return switch (kind) {
+        .kw_public, .kw_private, .kw_protected, .kw_static => true,
+        else => false,
+    };
+}
+
+/// 인덱스 시그니처 여부 판별. TS 공식 `isUnambiguouslyIndexSignature` (parser.ts) 이식.
+/// Computed property key (`[identRef]?: T`) 와 구분하기 위해 2~3-step lookahead.
+/// 매핑 타입 `[K in T]` 은 이 함수 호출 전에 isMappedType 에서 먼저 걸러진다. (#1767)
+///
+/// 허용 패턴:
+///   [...            [] (error recovery)
+///   [modifier id    (error recovery — [public id, [private id, [protected id, [static id)
+///   [id:   [id,     (정상 + error recovery)
+///   [id?:  [id?,  [id?]  (optional index param error recovery)
 fn isIndexSignature(self: *Parser) ParseError2!bool {
     const saved = self.saveState();
     defer self.restoreState(saved);
 
     try self.advance(); // skip [
 
-    // [...rest]
-    if (self.current() == .dot3) return true;
+    // [...rest] 또는 [] (error recovery)
+    if (self.current() == .dot3 or self.current() == .r_bracket) return true;
 
-    // identifier/this 가 아니면 index signature 아님 (computed key 경로로 폴백)
+    // [public id / [private id / [protected id / [static id (error recovery)
+    if (isIndexSignatureModifier(self.current())) {
+        try self.advance();
+        return self.current() == .identifier;
+    }
+
+    // identifier/this 가 아니면 computed key 경로로 폴백
     if (self.current() != .identifier and self.current() != .kw_this) return false;
 
     try self.advance(); // skip identifier/this
 
-    // [ident: Type] 만 index signature. 그 외 [ident], [ident.foo], [ident()] 등은
-    // computed property key 로 흘려보낸다.
-    return self.current() == .colon;
+    // [id: 또는 [id,
+    if (self.current() == .colon or self.current() == .comma) return true;
+
+    // [id? 뒤에 :, ,, ] 가 오면 optional index parameter (error recovery)
+    if (self.current() != .question) return false;
+
+    try self.advance(); // skip ?
+    return self.current() == .colon or self.current() == .comma or self.current() == .r_bracket;
 }
 
-/// 인덱스 시그니처 파싱: [key: string]: Type
+/// 인덱스 시그니처 파싱: `[key: string]: Type`.
+/// Error recovery 로 `[public k: T]`, `[k?: T]`, `[k?]` 같은 malformed 입력도
+/// 수용하여 의미 있는 semantic 에러 경로로 흘려보낸다. (#1767)
 pub fn parseIndexSignature(self: *Parser, start: u32, is_readonly: bool) ParseError2!NodeIndex {
     try self.advance(); // skip [
+
+    // Error recovery — index sig parameter 앞 modifier 에러 후 skip ([public k: T] 등)
+    if (isIndexSignatureModifier(self.current())) {
+        try self.addErrorCode(self.currentSpan(), "Modifiers cannot appear on index signature parameters", .ts_index_sig_modifier);
+        try self.advance();
+    }
+
     // 파라미터: key: Type
     const param_start = self.currentSpan().start;
     const param_name = try self.parsePropertyKey();
+
+    // Error recovery — optional marker 에러 후 skip ([k?: T], [k?])
+    if (self.current() == .question) {
+        try self.addErrorCode(self.currentSpan(), "An index signature parameter cannot have a question mark", .ts_index_sig_optional);
+        try self.advance();
+    }
     var param_type = NodeIndex.none;
     if (try self.eat(.colon)) {
         param_type = try parseType(self);
