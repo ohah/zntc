@@ -976,6 +976,45 @@ test "Bundler: require.context coexists with import.meta.glob" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") != null);
 }
 
+test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
+    // 회귀: esm_wrap.zig 의 body/func/hoist Codegen init 에 import_records 를 안 넘겨서
+    // __esm wrap 경로에서 has_require_context_records=false → IIFE 미emit → 원본
+    // `require.context(...)` 호출이 런타임 require 를 찾다가 ReferenceError.
+    // Expo Router `_ctx.ios.js` 가 이 패턴 (ESM export const ctx = require.context(...)).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export const ctx = require.context('./pages', true, /^\.\//, 'sync');
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchAB }};
+    var b = Bundler.init(alloc, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .platform = .react_native, // __esm wrapping 강제
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // __esm wrap + IIFE 둘 다 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var map={") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") != null);
+    // 원본 호출은 교체되어야
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require.context(") == null);
+}
+
 test "Bundler: no require.context in source → no webpackContext template emitted" {
     // fast-path 플래그 검증: require.context 없으면 어떤 call expression 도 IIFE 로 변환되지 않음.
     var tmp = std.testing.tmpDir(.{});
