@@ -3162,3 +3162,59 @@ test "Object literal inside class field: private generator is error" {
 test "Object literal inside class field: private async is error" {
     try expectParseError("class C { field = { async #m() {} } }", .{ .message_contains = "Private identifier" });
 }
+
+// ============================================================
+// TS object type literal: computed property key (#1767)
+// ============================================================
+
+test "TS object type: computed property key with symbol ref" {
+    try expectNoParseErrorWithExt(
+        \\declare const sym: unique symbol;
+        \\interface A { [sym]: string; }
+    , ".ts");
+}
+
+test "TS object type: optional computed property key" {
+    try expectNoParseErrorWithExt(
+        \\declare const sym: unique symbol;
+        \\interface A { [sym]?: boolean; }
+    , ".ts");
+}
+
+test "TS object type: computed property key in intersection type" {
+    try expectNoParseErrorWithExt(
+        \\const polyfillSymbol = Symbol.for('test');
+        \\function f(fetch: Function & { [polyfillSymbol]?: boolean }) { return fetch; }
+    , ".ts");
+}
+
+test "TS object type: computed property key in type literal" {
+    try expectNoParseErrorWithExt(
+        \\const s = Symbol();
+        \\type T = { [s]?: boolean };
+    , ".ts");
+}
+
+test "TS object type: index signature still parses" {
+    try expectNoParseErrorWithExt(
+        \\interface Dict { [key: string]: number; }
+        \\interface RO { readonly [i: number]: string; }
+    , ".ts");
+}
+
+test "TS object type: mapped type still parses" {
+    try expectNoParseErrorWithExt(
+        \\type Partial<T> = { [K in keyof T]?: T[K] };
+        \\type Readonly<T> = { readonly [K in keyof T]: T[K] };
+    , ".ts");
+}
+
+test "TS object type: mix of index signature and plain members" {
+    try expectNoParseErrorWithExt(
+        \\type Mixed = {
+        \\  [key: string]: any;
+        \\  normal: number;
+        \\  readonly ro?: string;
+        \\};
+    , ".ts");
+}
