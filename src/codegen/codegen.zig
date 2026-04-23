@@ -184,6 +184,10 @@ pub const Codegen = struct {
     /// parent emit(VariableDeclarator, Assignment, ObjectProperty 등)에서 설정,
     /// emitFunction/emitArrow/emitClass 진입 시 소비 후 null 로 초기화.
     pending_fn_name: ?[]const u8 = null,
+    /// hot-path fast-exit 플래그. tryEmitGlobObject/tryEmitRequireContextObject 가
+    /// 모든 call expression 에 대해 호출되므로, 해당 종류의 record 가 없으면 O(1) 로 빠짐.
+    has_glob_records: bool = false,
+    has_require_context_records: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
@@ -196,6 +200,18 @@ pub const Codegen = struct {
             builder.sources_content = options.sources_content;
         }
         const fm = if (options.sourcemap_function_map) FunctionMapBuilder.init(allocator) else null;
+
+        var has_glob = false;
+        var has_ctx = false;
+        for (options.import_records) |rec| {
+            switch (rec.kind) {
+                .glob => has_glob = true,
+                .require_context => has_ctx = true,
+                else => {},
+            }
+            if (has_glob and has_ctx) break;
+        }
+
         return .{
             .ast = ast,
             .allocator = allocator,
@@ -206,6 +222,8 @@ pub const Codegen = struct {
             .fn_map_builder = fm,
             .gen_line = 0,
             .gen_col = 0,
+            .has_glob_records = has_glob,
+            .has_require_context_records = has_ctx,
             // JSX 필드 제거: Transformer가 JSX lowering 담당
         };
     }
@@ -1886,11 +1904,9 @@ pub const Codegen = struct {
         const is_optional = (flags & CallFlags.optional_chain) != 0;
         const is_pure = (flags & CallFlags.is_pure) != 0;
 
-        // CJS require() 치환: require('specifier') → require_xxx()
         if (try self.tryRewriteRequire(callee, args_start, args_len)) return;
-
-        // import.meta.glob() → 객체 리터럴 직접 출력
         if (try self.tryEmitGlobObject(callee, args_start, args_len)) return;
+        if (try self.tryEmitRequireContextObject(node)) return;
 
         if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
         try self.emitNode(callee);
@@ -1900,13 +1916,11 @@ pub const Codegen = struct {
         try self.writeByte(')');
     }
 
-    /// import.meta.glob("pattern") 호출을 감지하고 매칭 파일 객체 리터럴을 직접 출력한다.
-    /// AST 수준 교체: 문자열 후처리보다 안전 (minify, 문자열 리터럴 내 패턴에 영향 안 받음).
+    /// AST 수준 교체 — 문자열 후처리보다 안전 (minify, 문자열 리터럴 내 패턴에 영향 안 받음).
     fn tryEmitGlobObject(self: *Codegen, callee: ast_mod.NodeIndex, args_start: u32, args_len: u32) !bool {
-        if (self.options.import_records.len == 0) return false;
+        if (!self.has_glob_records) return false;
         if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return false;
 
-        // callee: static_member_expression(import.meta.glob)
         const callee_node = self.ast.getNode(callee);
         if (callee_node.tag != .static_member_expression) return false;
 
@@ -1925,7 +1939,6 @@ pub const Codegen = struct {
         const prop_name = self.ast.getText(prop_node.span);
         if (!std.mem.eql(u8, prop_name, "glob")) return false;
 
-        // 첫 번째 인수에서 패턴 추출
         if (args_len == 0 or args_start >= extras.len) return false;
         const arg0_idx = @as(ast_mod.NodeIndex, @enumFromInt(extras[args_start]));
         if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= self.ast.nodes.items.len) return false;
@@ -1934,46 +1947,39 @@ pub const Codegen = struct {
         const raw = self.ast.getText(arg0_node.span);
         const pattern = Ast.stripStringQuotes(raw);
 
-        // import_records에서 매칭되는 glob 레코드 찾기
-        const ImportRecord = @import("../bundler/types.zig").ImportRecord;
         for (self.options.import_records) |rec| {
             if (rec.kind != .glob) continue;
             if (!std.mem.eql(u8, rec.specifier, pattern)) continue;
 
-            // 매칭 → 객체 리터럴 출력
             if (rec.glob_matches) |matches| {
                 try self.write("{\n");
                 for (matches, 0..) |match_path, i| {
                     if (i > 0) try self.write(",\n");
                     try self.write("  \"");
-                    try self.write(match_path);
+                    try self.writeJsStringContent(match_path);
                     try self.write("\": ");
 
                     if (rec.glob_eager) {
                         if (rec.glob_import_name) |import_name| {
-                            // eager + import: (await import("./a.ts")).setup
                             try self.write("(await import(\"");
-                            try self.write(match_path);
+                            try self.writeJsStringContent(match_path);
                             try self.write("\")).");
                             try self.write(import_name);
                         } else {
-                            // eager: await import("./a.ts")
                             try self.write("await import(\"");
-                            try self.write(match_path);
+                            try self.writeJsStringContent(match_path);
                             try self.write("\")");
                         }
                     } else {
                         if (rec.glob_import_name) |import_name| {
-                            // lazy + import: () => import("./a.ts").then(m => m.setup)
                             try self.write("() => import(\"");
-                            try self.write(match_path);
+                            try self.writeJsStringContent(match_path);
                             try self.write("\").then(m => m.");
                             try self.write(import_name);
                             try self.write(")");
                         } else {
-                            // lazy (default): () => import("./a.ts")
                             try self.write("() => import(\"");
-                            try self.write(match_path);
+                            try self.writeJsStringContent(match_path);
                             try self.write("\")");
                         }
                     }
@@ -1984,9 +1990,84 @@ pub const Codegen = struct {
             }
             return true;
         }
-        _ = ImportRecord;
 
         return false;
+    }
+
+    /// `require.context(...)` 호출을 webpackContext IIFE 로 emit.
+    /// Metro `contextModuleTemplates.js` 의 sync mode 패턴 mirror.
+    /// 매칭은 record.span (= call_expression span) 으로 — `tryExtractRequireContextFromCallee`
+    /// 가 record.span 을 call_span 으로 채우는 invariant 에 의존.
+    fn tryEmitRequireContextObject(self: *Codegen, node: Node) !bool {
+        if (!self.has_require_context_records) return false;
+
+        const ImportRecord = @import("../bundler/types.zig").ImportRecord;
+        const rec: *const ImportRecord = blk: {
+            for (self.options.import_records) |*r| {
+                if (r.kind == .require_context and std.meta.eql(r.span, node.span))
+                    break :blk r;
+            }
+            return false;
+        };
+
+        try self.write("(function(){var map={");
+        if (rec.context_matches) |matches| {
+            for (matches, 0..) |match_path, i| {
+                if (i > 0) try self.writeByte(',');
+                try self.writeByte('"');
+                try self.writeJsStringContent(match_path);
+                try self.write("\":function(){return require(\"");
+                try self.emitJoinedPath(rec.specifier, match_path);
+                try self.write("\");}");
+            }
+        }
+        try self.write(
+            \\};function ctx(req){var fn=map[req];if(!fn){var e=new Error("Cannot find module '"+req+"'");e.code="MODULE_NOT_FOUND";throw e;}return fn();}ctx.keys=function(){return Object.keys(map);};ctx.resolve=function(req){if(!(req in map)){var e=new Error("Cannot find module '"+req+"'");e.code="MODULE_NOT_FOUND";throw e;}return req;};return ctx;})()
+        );
+        return true;
+    }
+
+    /// dir="./pages", match="./a.tsx" → "./pages/a.tsx" (trailing `/`, leading `./` 정규화).
+    /// Escape 포함 — 경로 세그먼트에 `"`/`\` 가 들어와도 JS 문자열 리터럴이 깨지지 않음.
+    fn emitJoinedPath(self: *Codegen, dir: []const u8, match: []const u8) !void {
+        const dir_clean = if (dir.len > 0 and dir[dir.len - 1] == '/') dir[0 .. dir.len - 1] else dir;
+        const match_clean = if (match.len >= 2 and match[0] == '.' and match[1] == '/') match[2..] else match;
+        try self.writeJsStringContent(dir_clean);
+        try self.writeByte('/');
+        try self.writeJsStringContent(match_clean);
+    }
+
+    /// JS string 내용 부분 (따옴표 제외) 를 escape 해서 출력.
+    /// `\`, `"`, 제어 문자를 처리 — resolver/FS 경로가 예외적으로 포함할 수 있는 문자 대비.
+    /// 기존 `writeStringLiteral` 은 이미 quoted 소스 span 을 처리하는 용도라 raw string 에 부적합.
+    fn writeJsStringContent(self: *Codegen, s: []const u8) !void {
+        var flush_start: usize = 0;
+        var i: usize = 0;
+        while (i < s.len) : (i += 1) {
+            const c = s[i];
+            const esc: ?[]const u8 = switch (c) {
+                '\\' => "\\\\",
+                '"' => "\\\"",
+                '\n' => "\\n",
+                '\r' => "\\r",
+                '\t' => "\\t",
+                0x08 => "\\b",
+                0x0C => "\\f",
+                else => null,
+            };
+            if (esc) |e| {
+                if (i > flush_start) try self.write(s[flush_start..i]);
+                try self.write(e);
+                flush_start = i + 1;
+            } else if (c < 0x20) {
+                if (i > flush_start) try self.write(s[flush_start..i]);
+                const hex = "0123456789abcdef";
+                var buf: [6]u8 = .{ '\\', 'u', '0', '0', hex[(c >> 4) & 0xF], hex[c & 0xF] };
+                try self.write(&buf);
+                flush_start = i + 1;
+            }
+        }
+        if (flush_start < s.len) try self.write(s[flush_start..]);
     }
 
     /// string_literal 노드에서 specifier를 추출하고 require_rewrites 맵에서 조회.
