@@ -18,6 +18,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const Module = @import("module.zig").Module;
+const ModuleGraph = @import("graph.zig").ModuleGraph;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const Linker = @import("linker.zig").Linker;
@@ -35,7 +36,9 @@ pub const ALL_EXPORTS_SENTINEL: []const u8 = "*";
 
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
-    modules: []const Module,
+    /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
+    /// 필드를 대체. `analyze` 내부에서 `module.side_effects` 를 mutate 하므로 non-const.
+    graph: *ModuleGraph,
     linker: *const Linker,
     included: std.DynamicBitSet,
     used_exports: std.StringHashMap(void),
@@ -58,15 +61,16 @@ pub const TreeShaker = struct {
 
     const max_fixpoint_iterations: u32 = 100;
 
-    pub fn init(allocator: std.mem.Allocator, modules: []const Module, linker: *const Linker) !TreeShaker {
-        var included = try std.DynamicBitSet.initEmpty(allocator, modules.len);
+    pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *const Linker) !TreeShaker {
+        const mod_count = graph.moduleCount();
+        var included = try std.DynamicBitSet.initEmpty(allocator, mod_count);
         errdefer included.deinit();
-        var entry_set = try std.DynamicBitSet.initEmpty(allocator, modules.len);
+        var entry_set = try std.DynamicBitSet.initEmpty(allocator, mod_count);
         errdefer entry_set.deinit();
 
         return .{
             .allocator = allocator,
-            .modules = modules,
+            .graph = graph,
             .linker = linker,
             .included = included,
             .used_exports = std.StringHashMap(void).init(allocator),
@@ -116,8 +120,11 @@ pub const TreeShaker = struct {
     /// included는 단조가 아님 — 축소(미사용 제거)와 확장(canonical/side-effect 전파)이 교차.
     /// 변경이 없을 때 수렴하며, 실제로는 2-3회 이내.
     pub fn analyze(self: *TreeShaker, entry_points: []const []const u8) !void {
+        const mod_count = self.graph.moduleCount();
+
         // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용)
-        for (self.modules, 0..) |m, i| {
+        for (0..mod_count) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             for (entry_points) |ep| {
                 if (std.mem.eql(u8, m.path, ep)) {
                     self.entry_set.set(i);
@@ -130,20 +137,21 @@ pub const TreeShaker = struct {
         // (rolldown/esbuild 동작: package.json sideEffects 없어도 자동 감지)
         // 단, package.json sideEffects에 의해 결정된 값(user_defined)은 덮어쓰지 않는다
         // (rolldown DeterminedSideEffects::UserDefined 포팅).
-        for (self.modules, 0..) |m, i| {
+        for (0..mod_count) |i| {
+            const m = self.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
             if (!m.side_effects) continue;
             if (m.side_effects_user_defined) continue;
             if (self.entry_set.isSet(i)) continue;
             if (m.ast) |ast| {
                 const unresolved = if (m.semantic) |*s| &s.unresolved_references else null;
                 if (isModulePure(&ast, unresolved)) {
-                    const mutable_modules: [*]Module = @constCast(self.modules.ptr);
-                    mutable_modules[i].side_effects = false;
+                    m.side_effects = false;
                 }
             }
         }
 
-        for (self.modules, 0..) |m, i| {
+        for (0..mod_count) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             if (self.entry_set.isSet(i) or m.side_effects) {
                 self.included.set(i);
             }
@@ -151,13 +159,14 @@ pub const TreeShaker = struct {
 
         // dynamic import()의 target 모듈 집합. 정적 import_binding이 없어 심볼 도달성
         // 분석에서 누락되므로 별도 추적해 prune 단계에서 보호한다 (#1260).
-        var dyn_import_targets = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
+        var dyn_import_targets = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
         defer dyn_import_targets.deinit();
-        for (self.modules) |m| {
+        var dyn_it = self.graph.modulesIterator();
+        while (dyn_it.next()) |m| {
             for (m.import_records) |rec| {
                 if (rec.kind != .dynamic_import or rec.resolved.isNone()) continue;
                 const target = @intFromEnum(rec.resolved);
-                if (target < self.modules.len) {
+                if (target < mod_count) {
                     dyn_import_targets.set(target);
                     // dynamic import는 runtime에 임의 export에 접근할 수 있으므로
                     // 모든 export를 사용으로 마킹 (entry와 동일 취급).
@@ -168,29 +177,30 @@ pub const TreeShaker = struct {
         }
 
         // has_direct_used_export 배열 초기화 (hasAnyUsedExportDirect O(1) 조회용)
-        const has_due = try self.allocator.alloc(bool, self.modules.len);
+        const has_due = try self.allocator.alloc(bool, mod_count);
         @memset(has_due, false);
         self.has_direct_used_export = has_due;
 
         // entry 모듈의 모든 export를 사용으로 마킹
-        for (self.modules, 0..) |_, i| {
+        for (0..mod_count) |i| {
             if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
         }
 
         // StmtInfo 구축을 fixpoint 루프 전에 수행(#1558).
         // fixpoint 중에 BFS가 statement-level reachability를 사용하려면 미리 필요.
         // 모든 non-entry non-wrapped 모듈에 대해 구축 — included 여부는 이후 fixpoint에서 확장.
-        var module_stmt_infos = try self.allocator.alloc(?StmtInfos, self.modules.len);
+        var module_stmt_infos = try self.allocator.alloc(?StmtInfos, mod_count);
         for (module_stmt_infos) |*si| si.* = null;
         self.module_stmt_infos = module_stmt_infos;
 
-        const reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, self.modules.len);
+        const reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, mod_count);
         for (reachable_stmts) |*rs| rs.* = null;
         self.reachable_stmts = reachable_stmts;
 
-        var prebuilt_mask = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
+        var prebuilt_mask = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
         self.prebuilt_mask = prebuilt_mask;
-        for (self.modules, 0..) |m, i| {
+        for (0..mod_count) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             // wrapped(CJS/ESM wrap)는 body 전체가 한 function으로 래핑되어 statement 경계가
             // 무의미 — 모듈 단위 포함/제외만. entry 포함 non-wrapped 모두 stmt-level 도달성 분석.
             if (m.wrap_kind.isWrapped()) continue;
@@ -228,24 +238,26 @@ pub const TreeShaker = struct {
             try self.buildSymToIbMaps();
             try self.crossModuleBFS(module_stmt_infos, reachable_stmts);
 
-            for (self.modules, 0..) |m, i| {
+            for (0..mod_count) |i| {
                 if (!self.included.isSet(i)) continue;
+                const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
                 // wrapped만 StmtInfo 없음 → live 필터 불가. 나머지(entry 포함)는 live_mod_idx 경로.
                 const live_idx: ?u32 = if (m.wrap_kind.isWrapped()) null else @intCast(i);
-                if (try self.processModuleImportsInner(m, live_idx)) changed = true;
+                if (try self.processModuleImportsInner(m.*, live_idx)) changed = true;
             }
 
             if (try self.includeReExportSources(true)) changed = true;
 
-            for (self.modules, 0..) |m, i| {
+            for (0..mod_count) |i| {
                 if (!self.included.isSet(i)) continue;
+                const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
                 for (m.import_records) |rec| {
                     if (rec.resolved.isNone()) continue;
                     const target = @intFromEnum(rec.resolved);
-                    if (target >= self.modules.len) continue;
+                    const tmod = self.graph.getModule(rec.resolved) orelse continue;
                     if (self.included.isSet(target)) continue;
-                    if (rec.kind == .require or self.modules[target].side_effects or
-                        self.modules[target].wrap_kind.isWrapped())
+                    if (rec.kind == .require or tmod.side_effects or
+                        tmod.wrap_kind.isWrapped())
                     {
                         self.included.set(target);
                         changed = true;
@@ -259,8 +271,9 @@ pub const TreeShaker = struct {
         }
 
         // 미사용 sideEffects=false 모듈 제거.
-        for (self.modules, 0..) |m, i| {
+        for (0..mod_count) |i| {
             if (!self.included.isSet(i)) continue;
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
             if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
             if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
@@ -281,7 +294,7 @@ pub const TreeShaker = struct {
     }
 
     pub fn isIncluded(self: *const TreeShaker, module_index: u32) bool {
-        if (module_index >= self.modules.len) return false;
+        if (module_index >= self.graph.moduleCount()) return false;
         return self.included.isSet(module_index);
     }
 
@@ -300,7 +313,7 @@ pub const TreeShaker = struct {
             (self.module_stmt_infos[module_index] orelse return true)
         else
             return true;
-        const m = self.modules[module_index];
+        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return true;
         const sem = m.semantic orelse return true;
         if (sem.scope_maps.len == 0) return true;
         const sym_idx = sem.scope_maps[0].get(local_name) orelse return true;
@@ -390,13 +403,13 @@ pub const TreeShaker = struct {
     /// self.sym_to_ib 배열 자체는 첫 호출에서 할당.
     fn ensureSymToIbForModule(self: *TreeShaker, mod_idx: u32) !void {
         if (self.sym_to_ib.len == 0) {
-            const maps = try self.allocator.alloc(?[]?u32, self.modules.len);
+            const maps = try self.allocator.alloc(?[]?u32, self.graph.moduleCount());
             for (maps) |*m| m.* = null;
             self.sym_to_ib = maps;
         }
         if (mod_idx >= self.sym_to_ib.len) return;
         if (self.sym_to_ib[mod_idx] != null) return;
-        const mod = self.modules[mod_idx];
+        const mod = self.graph.getModule(ModuleIndex.fromUsize(mod_idx)) orelse return;
         const sem = mod.semantic orelse return;
         if (sem.scope_maps.len == 0 or mod.import_bindings.len == 0) return;
         const arr = try self.allocator.alloc(?u32, sem.symbols.items.len);
@@ -410,7 +423,7 @@ pub const TreeShaker = struct {
 
     /// 모든 included 모듈의 sym_to_ib 맵 구축/확장.
     fn buildSymToIbMaps(self: *TreeShaker) !void {
-        for (self.modules, 0..) |_, i| {
+        for (0..self.graph.moduleCount()) |i| {
             if (!self.included.isSet(i)) continue;
             try self.ensureSymToIbForModule(@intCast(i));
         }
@@ -427,12 +440,14 @@ pub const TreeShaker = struct {
         var queue: std.ArrayListUnmanaged(BfsItem) = .empty;
         defer queue.deinit(self.allocator);
 
-        var ov = try std.DynamicBitSet.initEmpty(self.allocator, self.modules.len);
+        const mod_count = self.graph.moduleCount();
+        var ov = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
         defer ov.deinit();
         self.opaque_visited = ov;
 
         // 시드 1: entry module의 export 선언 statement + side-effect statement
-        for (self.modules, 0..) |m, i| {
+        for (0..mod_count) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             const infos = module_stmt_infos[i] orelse {
                 // StmtInfo 없는 포함 모듈 (entry, CJS): import를 직접 시드
                 if (self.included.isSet(i) and (self.entry_set.isSet(i) or m.wrap_kind.isWrapped())) {
@@ -511,7 +526,8 @@ pub const TreeShaker = struct {
 
         // BFS 후: reachable statement 기반 used_exports 추가 마킹
         // BFS 중 markExportUsed로 마킹된 것은 유지 (clearUsedExports 하지 않음)
-        for (self.modules, 0..) |m, i| {
+        for (0..mod_count) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             const infos = module_stmt_infos[i] orelse continue;
             const sem = m.semantic orelse continue;
             if (sem.scope_maps.len == 0) continue;
@@ -574,15 +590,14 @@ pub const TreeShaker = struct {
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
-        if (mod_idx >= self.modules.len) return;
-        const m = self.modules[mod_idx];
+        const m = self.graph.getModule(ModuleIndex.fromUsize(mod_idx)) orelse return;
         if (ib_idx >= m.import_bindings.len) return;
         const ib = m.import_bindings[ib_idx];
         if (ib.import_record_index >= m.import_records.len) return;
         const rec = m.import_records[ib.import_record_index];
         if (rec.resolved.isNone()) return;
         const target = @intFromEnum(rec.resolved);
-        if (target >= self.modules.len) return;
+        if (self.graph.getModule(rec.resolved) == null) return;
 
         if (ib.kind == .namespace) {
             if (ib.namespace_used_properties) |props| {
@@ -609,14 +624,14 @@ pub const TreeShaker = struct {
         // 이렇게 하지 않으면 seedExport가 idx.ts의 "M"를 resolve해도 idx.ts scope에
         // "M" 로컬이 없어 enqueue가 실패 → source 모듈 statement 도달성 누락.
         if (ib.kind == .named and ib.namespace_used_properties != null) {
-            const target_module = self.modules[target];
+            const target_module = self.graph.getModule(rec.resolved).?;
             for (target_module.export_bindings) |eb| {
                 if (eb.kind != .re_export_namespace) continue;
                 if (!std.mem.eql(u8, eb.exported_name, ib.imported_name)) continue;
                 const rec_idx = eb.import_record_index orelse break;
                 if (rec_idx >= target_module.import_records.len) break;
                 const inner_src = @intFromEnum(target_module.import_records[rec_idx].resolved);
-                if (inner_src >= self.modules.len) break;
+                if (self.graph.getModule(target_module.import_records[rec_idx].resolved) == null) break;
 
                 // inner_src를 include + 각 member를 seed
                 if (!self.included.isSet(inner_src)) self.included.set(inner_src);
@@ -641,13 +656,14 @@ pub const TreeShaker = struct {
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
+        const mod_count = self.graph.moduleCount();
         const canonical = self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse {
             // 해석 실패: 전체 포함
-            if (target_mod < self.modules.len) self.included.set(target_mod);
+            if (target_mod < mod_count) self.included.set(target_mod);
             return;
         };
         const canon_mod = canonical.module_index.toU32();
-        if (canon_mod >= self.modules.len) return;
+        const canon_m = self.graph.getModule(canonical.module_index) orelse return;
 
         try self.markExportUsed(canon_mod, canonical.export_name);
         self.included.set(canon_mod);
@@ -655,11 +671,12 @@ pub const TreeShaker = struct {
         // namespace barrel re-export: canonical이 namespace import를 가리키면
         // 소스 모듈의 모든 export를 시드해야 함 (import * as z; export { z } 패턴)
         const canon_local = self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name;
-        for (self.modules[canon_mod].import_bindings) |cib| {
+        for (canon_m.import_bindings) |cib| {
             if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, canon_local)) {
-                if (cib.import_record_index < self.modules[canon_mod].import_records.len) {
-                    const ns_src = @intFromEnum(self.modules[canon_mod].import_records[cib.import_record_index].resolved);
-                    if (ns_src < self.modules.len) {
+                if (cib.import_record_index < canon_m.import_records.len) {
+                    const ns_src_idx = canon_m.import_records[cib.import_record_index].resolved;
+                    if (self.graph.getModule(ns_src_idx) != null) {
+                        const ns_src = @intFromEnum(ns_src_idx);
                         try self.markAllExportsUsed(@intCast(ns_src));
                         self.included.set(ns_src);
                         try self.seedAllStmts(@intCast(ns_src), queue, module_stmt_infos, reachable_stmts);
@@ -669,11 +686,11 @@ pub const TreeShaker = struct {
             }
         }
 
-        if (canon_mod != target_mod and target_mod < self.modules.len) {
+        if (canon_mod != target_mod and target_mod < mod_count) {
             try self.markExportUsed(@intCast(target_mod), imported_name);
             self.included.set(target_mod);
             // 중간 모듈의 export 선언 statement도 reachable로 마킹
-            const mid_module = self.modules[target_mod];
+            const mid_module = self.graph.getModule(ModuleIndex.fromUsize(target_mod)).?.*;
             if (mid_module.semantic) |mid_sem| {
                 if (mid_sem.scope_maps.len > 0) {
                     const mid_local = self.linker.getExportLocalName(@intCast(target_mod), imported_name) orelse imported_name;
@@ -691,7 +708,7 @@ pub const TreeShaker = struct {
             }
         }
 
-        const target_module = self.modules[canon_mod];
+        const target_module = canon_m;
         const target_sem = target_module.semantic orelse {
             try self.seedOpaqueModule(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
             return;
@@ -722,13 +739,12 @@ pub const TreeShaker = struct {
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
-        if (mod_idx >= self.modules.len) return;
+        const m = self.graph.getModule(ModuleIndex.fromUsize(mod_idx)) orelse return;
         if (self.opaque_visited) |ov| {
             if (ov.isSet(mod_idx)) return;
         }
         if (self.opaque_visited) |*ov| ov.set(mod_idx);
 
-        const m = self.modules[mod_idx];
         for (m.import_bindings) |ib| {
             // StmtInfo/reachability가 있으면 dead statement의 import는 배제.
             // 없으면(wrapped 등) 보수적으로 모두 시드 — 모듈 전체 포함되는 경로.
@@ -739,7 +755,7 @@ pub const TreeShaker = struct {
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
             const target = @intFromEnum(rec.resolved);
-            if (target >= self.modules.len) continue;
+            if (self.graph.getModule(rec.resolved) == null) continue;
 
             if (ib.kind == .namespace) {
                 if (ib.namespace_used_properties) |props| {
@@ -758,8 +774,9 @@ pub const TreeShaker = struct {
             if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
             if (eb.import_record_index) |rec_idx| {
                 if (rec_idx < m.import_records.len) {
-                    const src = @intFromEnum(m.import_records[rec_idx].resolved);
-                    if (src >= self.modules.len) continue;
+                    const src_idx = m.import_records[rec_idx].resolved;
+                    if (self.graph.getModule(src_idx) == null) continue;
+                    const src = @intFromEnum(src_idx);
                     if (eb.kind.isReExportAll()) {
                         try self.markAllExportsUsed(@intCast(src));
                         self.included.set(src);
@@ -799,14 +816,14 @@ pub const TreeShaker = struct {
         }
 
         // re-export 체인 전파: export * / named re-export 대상 모듈도 시드.
-        if (mod_idx >= self.modules.len) return;
-        const m = self.modules[mod_idx];
+        const m = self.graph.getModule(ModuleIndex.fromUsize(mod_idx)) orelse return;
         for (m.export_bindings) |eb| {
             if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
             const rec_idx = eb.import_record_index orelse continue;
             if (rec_idx >= m.import_records.len) continue;
-            const src = @intFromEnum(m.import_records[rec_idx].resolved);
-            if (src >= self.modules.len) continue;
+            const src_idx = m.import_records[rec_idx].resolved;
+            if (self.graph.getModule(src_idx) == null) continue;
+            const src = @intFromEnum(src_idx);
             if (eb.kind.isReExportAll()) {
                 self.included.set(src);
                 try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
@@ -821,7 +838,7 @@ pub const TreeShaker = struct {
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
             const target = @intFromEnum(rec.resolved);
-            if (target >= self.modules.len) continue;
+            if (self.graph.getModule(rec.resolved) == null) continue;
             self.included.set(target);
             try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
         }
@@ -829,15 +846,17 @@ pub const TreeShaker = struct {
 
     fn includeReExportSources(self: *TreeShaker, check_used: bool) !bool {
         var changed = false;
-        for (self.modules, 0..) |m, i| {
+        for (0..self.graph.moduleCount()) |i| {
             if (!self.included.isSet(i)) continue;
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             for (m.export_bindings) |eb| {
                 if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
                 if (check_used and !self.isExportUsed(@intCast(i), eb.exported_name)) continue;
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
-                        const src = @intFromEnum(m.import_records[rec_idx].resolved);
-                        if (src < self.modules.len) {
+                        const src_idx = m.import_records[rec_idx].resolved;
+                        if (self.graph.getModule(src_idx) != null) {
+                            const src = @intFromEnum(src_idx);
                             if (!self.included.isSet(src)) {
                                 self.included.set(src);
                                 changed = true;
@@ -872,7 +891,9 @@ pub const TreeShaker = struct {
         defer union_set.deinit(self.allocator);
 
         // 소비자 검색: 모든 모듈의 .named import_bindings에서 이 re-export 소비자 찾기
-        for (self.modules) |consumer| {
+        var cit = self.graph.modulesIterator();
+        while (cit.next()) |consumer_ptr| {
+            const consumer = consumer_ptr.*;
             for (consumer.import_bindings) |ib| {
                 if (!Linker.isReExportNsConsumer(consumer, ib, reexport_mod, reexport_name)) continue;
 
@@ -899,7 +920,7 @@ pub const TreeShaker = struct {
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
             const target_mod = @intFromEnum(rec.resolved);
-            if (target_mod >= self.modules.len) continue;
+            if (self.graph.getModule(rec.resolved) == null) continue;
 
             if (live_mod_idx) |idx| {
                 if (!self.isImportLiveInModule(idx, ib.local_name)) continue;
@@ -908,7 +929,7 @@ pub const TreeShaker = struct {
             const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
             if (canonical) |c| {
                 const canon_idx = c.module_index.toU32();
-                if (canon_idx < self.modules.len) {
+                if (self.graph.getModule(c.module_index) != null) {
                     try self.markExportUsed(canon_idx, c.export_name);
                     if (!self.included.isSet(canon_idx)) {
                         self.included.set(canon_idx);
@@ -931,7 +952,7 @@ pub const TreeShaker = struct {
                     for (props) |prop_name| {
                         if (self.linker.resolveExportChain(rec.resolved, prop_name, 0)) |c| {
                             const canon_idx = c.module_index.toU32();
-                            if (canon_idx < self.modules.len) {
+                            if (self.graph.getModule(c.module_index) != null) {
                                 try self.markExportUsed(canon_idx, c.export_name);
                                 if (!self.included.isSet(canon_idx)) {
                                     self.included.set(canon_idx);
@@ -961,30 +982,30 @@ pub const TreeShaker = struct {
     }
 
     fn markAllExportsUsed(self: *TreeShaker, module_index: u32) !void {
-        if (module_index >= self.modules.len) return;
+        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return;
         // 순환 export * 방지: 이미 처리한 모듈은 skip
         if (self.isExportUsed(module_index, ALL_EXPORTS_SENTINEL)) return;
         try self.markExportUsed(module_index, ALL_EXPORTS_SENTINEL);
-        const m = self.modules[module_index];
         for (m.export_bindings) |eb| {
             // re-export 소스 include는 sentinel skip 전에 처리
             if (eb.kind.isReExportAll() or eb.kind == .re_export) {
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
-                        const source_mod = @intFromEnum(m.import_records[rec_idx].resolved);
-                        if (source_mod < self.modules.len) {
+                        const source_idx = m.import_records[rec_idx].resolved;
+                        if (self.graph.getModule(source_idx) != null) {
+                            const source_mod = @intFromEnum(source_idx);
                             if (!self.included.isSet(source_mod)) self.included.set(source_mod);
                             if (eb.kind.isReExportAll()) {
                                 try self.markAllExportsUsed(@intCast(source_mod));
                             } else {
                                 // named re-export: canonical 모듈도 include
                                 if (self.linker.resolveExportChain(
-                                    m.import_records[rec_idx].resolved,
+                                    source_idx,
                                     m.exportBindingLocalName(eb),
                                     0,
                                 )) |canonical| {
                                     const canon_idx = canonical.module_index.toU32();
-                                    if (canon_idx < self.modules.len) {
+                                    if (self.graph.getModule(canonical.module_index) != null) {
                                         if (!self.included.isSet(canon_idx)) self.included.set(canon_idx);
                                         try self.markExportUsed(canon_idx, canonical.export_name);
                                     }
@@ -1002,8 +1023,8 @@ pub const TreeShaker = struct {
     }
 
     fn hasAnyUsedExport(self: *const TreeShaker, module_index: u32) bool {
-        if (module_index >= self.modules.len) return false;
-        for (self.modules[module_index].export_bindings) |eb| {
+        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return false;
+        for (m.export_bindings) |eb| {
             if (eb.kind.isReExportAll()) continue;
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
             if (self.isExportUsed(module_index, eb.exported_name)) return true;

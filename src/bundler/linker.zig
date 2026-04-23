@@ -16,6 +16,7 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
+const ModuleGraph = @import("graph.zig").ModuleGraph;
 pub const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
@@ -303,7 +304,10 @@ pub const ResolvedBinding = struct {
 
 pub const Linker = struct {
     allocator: std.mem.Allocator,
-    modules: []const Module,
+    /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
+    /// 필드를 대체. populate* 계열이 `moduleAtMut` 로 mutate 하므로 non-const.
+    /// SegmentedList 교체 (#1779 PR #3) 시 Linker 는 건드리지 않아도 된다.
+    graph: *ModuleGraph,
     /// 출력 포맷.
     format: types.Format,
 
@@ -409,14 +413,14 @@ pub const Linker = struct {
         span_key: u64,
     };
 
-    pub fn init(allocator: std.mem.Allocator, modules: []const Module, format: types.Format) Linker {
-        return initWithGlobalIdentifiers(allocator, modules, format, &.{});
+    pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, format: types.Format) Linker {
+        return initWithGlobalIdentifiers(allocator, graph, format, &.{});
     }
 
-    pub fn initWithGlobalIdentifiers(allocator: std.mem.Allocator, modules: []const Module, format: types.Format, global_identifiers: []const []const u8) Linker {
+    pub fn initWithGlobalIdentifiers(allocator: std.mem.Allocator, graph: *ModuleGraph, format: types.Format, global_identifiers: []const []const u8) Linker {
         return .{
             .allocator = allocator,
-            .modules = modules,
+            .graph = graph,
             .format = format,
             .export_map = std.StringHashMap(ExportEntry).init(allocator),
             .resolved_bindings = std.AutoHashMap(BindingKey, ResolvedBinding).init(allocator),
@@ -475,7 +479,8 @@ pub const Linker = struct {
 
         // re-export chain이 있으면 resolveExportChain 캐시 활성화.
         // 단순 그래프(re-export 없음)에서는 캐시 오버헤드가 이득보다 크므로 비활성.
-        for (self.modules) |m| {
+        var it = self.graph.modulesIterator();
+        while (it.next()) |m| {
             for (m.export_bindings) |eb| {
                 if (eb.kind == .re_export or eb.kind.isReExportAll()) {
                     self.chain_cache_enabled = true;
@@ -554,8 +559,8 @@ pub const Linker = struct {
                         const rec = m.import_records[ib.import_record_index];
                         if (rec.resolved.isNone()) break :blk true;
                         const target_idx = @intFromEnum(rec.resolved);
-                        if (target_idx >= self.modules.len) break :blk m.wrap_kind == .esm;
-                        const target_wrap = self.modules[target_idx].wrap_kind;
+                        if (target_idx >= self.graph.moduleCount()) break :blk m.wrap_kind == .esm;
+                        const target_wrap = self.graph.getModule(ModuleIndex.fromUsize(target_idx)).?.wrap_kind;
                         if (m.wrap_kind == .esm) {
                             // CJS-in-ESM-wrapped named import는 __ns_N.prop rename으로 처리되어
                             // top-level var가 emit되지 않음 (metadata.zig:262-281 + emitter.zig:1565).
@@ -691,7 +696,8 @@ pub const Linker = struct {
     /// Rolldown 방식: 하드코딩 목록 대신 실제 사용된 글로벌만 예약.
     pub fn collectReservedGlobals(self: *Linker) !void {
         self.reserved_globals.clearRetainingCapacity();
-        for (self.modules) |m| {
+        var mit = self.graph.modulesIterator();
+        while (mit.next()) |m| {
             const sem = m.semantic orelse continue;
             var it = sem.unresolved_references.iterator();
             while (it.next()) |entry| {
@@ -721,8 +727,9 @@ pub const Linker = struct {
             name_to_owners.deinit();
         }
 
-        for (self.modules, 0..) |m, i| {
-            try self.collectModuleNames(m, @intCast(i), &name_to_owners);
+        for (0..self.graph.moduleCount()) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
+            try self.collectModuleNames(m.*, @intCast(i), &name_to_owners);
         }
 
         // 1.5. 모듈별 중첩 스코프 바인딩 이름 집합을 구축.
@@ -741,7 +748,8 @@ pub const Linker = struct {
     /// import binding의 canonical name이 importer 모듈의 중첩 스코프에 같은 이름이
     /// 있으면, target module의 이름을 한 단계 더 rename하여 shadowing 충돌 방지.
     fn resolveNestedShadowConflicts(self: *Linker, name_to_owners: *const NameToOwnersMap) !void {
-        for (self.modules, 0..) |m, mod_i| {
+        for (0..self.graph.moduleCount()) |mod_i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(mod_i)) orelse continue;
             for (m.import_bindings) |ib| {
                 if (ib.kind == .namespace) continue;
                 const resolved = self.getResolvedBinding(@intCast(mod_i), ib.local_span) orelse continue;
@@ -770,10 +778,11 @@ pub const Linker = struct {
     pub fn collectUnifiedInput(self: *const Linker) !UnifiedCollect {
         const um = @import("../codegen/unified_mangler.zig");
 
-        const modules = try self.allocator.alloc(um.ModuleMangleInput, self.modules.len);
+        const mod_count = self.graph.moduleCount();
+        const modules = try self.allocator.alloc(um.ModuleMangleInput, mod_count);
         errdefer self.allocator.free(modules);
 
-        const bitsets = try self.allocator.alloc(std.DynamicBitSet, self.modules.len);
+        const bitsets = try self.allocator.alloc(std.DynamicBitSet, mod_count);
         var created: usize = 0;
         errdefer {
             for (bitsets[0..created]) |*b| b.deinit();
@@ -785,7 +794,8 @@ pub const Linker = struct {
 
         var exported = std.StringHashMap(void).init(self.allocator);
         defer exported.deinit();
-        for (self.modules) |m| {
+        var mit = self.graph.modulesIterator();
+        while (mit.next()) |m| {
             if (m.is_entry_point) {
                 for (m.export_bindings) |eb| {
                     try exported.put(eb.exported_name, {});
@@ -799,7 +809,8 @@ pub const Linker = struct {
             }
         }
 
-        for (self.modules, 0..) |m, mi| {
+        for (0..mod_count) |mi| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(mi)).?;
             const sem_opt = m.semantic;
             const sym_count = if (sem_opt) |s| s.symbols.items.len else 0;
             bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
@@ -920,8 +931,8 @@ pub const Linker = struct {
         for (collected.top_level_candidates) |cand| {
             const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
             const mangled = result.renames.get(key) orelse continue;
-            if (cand.module_index >= self.modules.len) continue;
-            const sem = self.modules[cand.module_index].semantic orelse continue;
+            const cand_mod = self.graph.getModule(ModuleIndex.fromUsize(cand.module_index)) orelse continue;
+            const sem = cand_mod.semantic orelse continue;
             if (cand.symbol_id >= sem.symbols.items.len) continue;
             const sym = &sem.symbols.items[cand.symbol_id];
             const dup = try self.allocator.dupe(u8, mangled);
@@ -967,8 +978,7 @@ pub const Linker = struct {
     /// scope_maps[0] → synthetic_name fallback으로 mutable Symbol 찾기.
     /// `lookupSymbolCanonical`도 이 logic 위에서 동작.
     fn findSymbolMutable(self: *const Linker, module_index: u32, name: []const u8) ?*semantic_symbol.Symbol {
-        if (module_index >= self.modules.len) return null;
-        const m = &self.modules[module_index];
+        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return null;
         const sem = m.semantic orelse return null;
         if (sem.scope_maps.len > 0) {
             if (sem.scope_maps[0].get(name)) |sym_idx| {
@@ -993,8 +1003,7 @@ pub const Linker = struct {
         }
 
         // fallback
-        if (module_index >= self.modules.len) return false;
-        const m = self.modules[module_index];
+        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return false;
         const sem = m.semantic orelse return false;
         for (sem.scope_maps, 0..) |scope_map, scope_idx| {
             if (scope_idx == 0) continue;
@@ -1006,10 +1015,12 @@ pub const Linker = struct {
     /// 모듈별 중첩 스코프 바인딩 이름을 하나의 HashSet으로 병합.
     /// computeRenames에서 한 번 호출하면, 이후 hasNestedBinding이 O(1)로 동작.
     fn buildNestedNameSets(self: *Linker) !void {
-        const sets = try self.allocator.alloc(std.StringHashMapUnmanaged(void), self.modules.len);
+        const count = self.graph.moduleCount();
+        const sets = try self.allocator.alloc(std.StringHashMapUnmanaged(void), count);
         for (sets) |*s| s.* = .{};
 
-        for (self.modules, 0..) |m, i| {
+        for (0..count) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             const sem = m.semantic orelse continue;
             for (sem.scope_maps, 0..) |scope_map, scope_idx| {
                 if (scope_idx == 0) continue; // 모듈 스코프는 스킵
@@ -1067,8 +1078,7 @@ pub const Linker = struct {
     /// #1338 Phase 4c-1: linker.export_map 해시 대신 Module 레지스트리 사용.
     /// 모듈당 export 선형 스캔 (< 20개 수준).
     pub fn getExportLocalName(self: *const Linker, module_index: u32, exported_name: []const u8) ?[]const u8 {
-        if (module_index >= self.modules.len) return null;
-        const m = &self.modules[module_index];
+        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return null;
         const eb = m.findExportBinding(exported_name) orelse return null;
         return m.exportBindingLocalName(eb.*);
     }
@@ -1090,7 +1100,7 @@ pub const Linker = struct {
     /// `.re_export` alias는 chain-resolved canonical을 쓰므로 final exports/scope
     /// hoisting에서 원하는 "현재 모듈 rename"과 다름 → 문자열 경로 유지.
     pub fn getCanonicalForExport(self: *const Linker, eb: ExportBinding, module_index: u32) []const u8 {
-        const m = &self.modules[module_index];
+        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)).?;
         const local = m.exportBindingLocalName(eb);
         if (eb.kind == .local) {
             return self.getCanonicalByRef(eb.symbol) orelse local;
@@ -1105,9 +1115,7 @@ pub const Linker = struct {
     /// 리네임 안 됐으면 null — caller가 원본 이름으로 fallback.
     pub fn getCanonicalByRef(self: *const Linker, ref: bundler_symbol.SymbolRef) ?[]const u8 {
         if (!ref.isValid()) return null;
-        const mod_i = @intFromEnum(ref.moduleIndex());
-        if (mod_i >= self.modules.len) return null;
-        const m = &self.modules[mod_i];
+        const m = self.graph.getModule(ref.moduleIndex()) orelse return null;
         return switch (ref) {
             .alias => |a| blk: {
                 const t = if (m.alias_table) |*at| at else break :blk null;
@@ -1141,7 +1149,8 @@ pub const Linker = struct {
         var scope = profile.begin(.link_build_export_map);
         defer scope.end();
 
-        for (self.modules, 0..) |m, i| {
+        for (0..self.graph.moduleCount()) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
             for (m.export_bindings) |eb| {
                 if (std.mem.eql(u8, eb.exported_name, "*")) continue;
@@ -1163,7 +1172,8 @@ pub const Linker = struct {
         var scope = profile.begin(.link_resolve_imports);
         defer scope.end();
 
-        for (self.modules, 0..) |m, i| {
+        for (0..self.graph.moduleCount()) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             for (m.import_bindings) |ib| {
                 if (ib.kind == .namespace) continue; // namespace import는 별도 처리 (후순위)
 
@@ -1217,7 +1227,7 @@ pub const Linker = struct {
         if (depth > max_chain_depth) return null;
 
         const mod_i = @intFromEnum(module_idx);
-        if (mod_i >= self.modules.len) return null;
+        if (mod_i >= self.graph.moduleCount()) return null;
 
         // 메모이제이션: chain_cache가 활성화된 경우에만 캐시 조회/저장.
         // re-export chain이 없는 단순 그래프에서는 캐시 오버헤드가 이득보다 큼.
@@ -1252,7 +1262,7 @@ pub const Linker = struct {
         if (depth > max_chain_depth) return null;
 
         const mod_i = @intFromEnum(module_idx);
-        if (mod_i >= self.modules.len) return null;
+        const m_any = self.graph.getModule(module_idx) orelse return null;
 
         // 1. 직접 export 확인
         var key_buf: [4096]u8 = undefined;
@@ -1261,7 +1271,7 @@ pub const Linker = struct {
             if (entry.binding.kind == .re_export) {
                 // re-export: 소스 모듈로 재귀
                 if (entry.binding.import_record_index) |rec_idx| {
-                    const m = self.modules[mod_i];
+                    const m = m_any;
                     if (rec_idx < m.import_records.len) {
                         const source_mod = m.import_records[rec_idx].resolved;
                         if (!source_mod.isNone()) {
@@ -1285,7 +1295,7 @@ pub const Linker = struct {
             // .local export: binding_scanner가 named barrel re-export는 .re_export로
             // 분류하지만, namespace barrel re-export는 .local로 유지한다.
             // namespace import인 경우 현재 모듈의 바인딩을 반환.
-            const m_local = self.modules[mod_i];
+            const m_local = m_any;
             for (m_local.import_bindings) |ib| {
                 if (std.mem.eql(u8, ib.local_name, entry.binding.local_name)) {
                     if (ib.kind == .namespace) {
@@ -1311,7 +1321,7 @@ pub const Linker = struct {
         }
 
         // 2. export * 확인 (re_export_all)
-        const m = self.modules[mod_i];
+        const m = m_any;
         for (m.export_bindings) |eb| {
             if (!eb.kind.isReExportAll()) continue;
             if (eb.import_record_index) |rec_idx| {
@@ -1333,9 +1343,8 @@ pub const Linker = struct {
     /// resolve 실패 시 CJS 모듈 자체를 반환하여 소비자가 require_xxx()로 접근.
     fn resolveOrCjsFallback(self: *const Linker, source_mod: ModuleIndex, name: []const u8, depth: u32) ?SymbolRef {
         if (self.resolveExportChainInner(source_mod, name, depth)) |result| return result;
-        const src_idx = @intFromEnum(source_mod);
-        if (src_idx < self.modules.len and self.modules[src_idx].wrap_kind == .cjs) {
-            return .{ .module_index = source_mod, .export_name = name };
+        if (self.graph.getModule(source_mod)) |sm| {
+            if (sm.wrap_kind == .cjs) return .{ .module_index = source_mod, .export_name = name };
         }
         return null;
     }
@@ -1559,12 +1568,14 @@ pub const Linker = struct {
     /// 직접 읽어 문자열 기반 `resolveExportChain` 호출을 제거한다.
     ///
     /// link() 이후에 호출되어야 한다 — export_map과 canonical_names가 준비된 상태를 전제.
-    pub fn populateReExportAliases(self: *const Linker, modules: []Module) void {
+    pub fn populateReExportAliases(self: *const Linker) void {
         var scope = profile.begin(.link_populate_re_export_aliases);
         defer scope.end();
 
-        for (modules, 0..) |*m, idx| {
-            const mod_idx: ModuleIndex = @enumFromInt(idx);
+        const count = self.graph.moduleCount();
+        for (0..count) |idx| {
+            const m = self.graph.moduleAtMut(ModuleIndex.fromUsize(idx)) orelse continue;
+            const mod_idx: ModuleIndex = ModuleIndex.fromUsize(idx);
             const table_ptr = if (m.alias_table) |*t| t else continue;
             for (m.export_bindings) |eb| {
                 if (eb.kind != .re_export) continue;
@@ -1594,15 +1605,16 @@ pub const Linker = struct {
     ///
     /// link() + populateReExportAliases() 이후에 호출되어야 한다.
     /// #1338 Phase 4c-2: ib.symbol로 직접 전환 — export_map 해시 lookup 제거.
-    pub fn populateSymbolRefCounts(_: *const Linker, modules: []Module) void {
-        for (modules) |*importer| {
+    pub fn populateSymbolRefCounts(self: *const Linker) void {
+        const count = self.graph.moduleCount();
+        for (0..count) |i| {
+            const importer = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             for (importer.import_bindings) |ib| {
                 if (!ib.symbol.isValid()) continue;
-                const source_i = @intFromEnum(ib.symbol.moduleIndex());
-                if (source_i >= modules.len) continue;
+                const source = self.graph.moduleAtMut(ib.symbol.moduleIndex()) orelse continue;
                 switch (ib.symbol) {
                     .alias => |a| {
-                        const table_ptr = if (modules[source_i].alias_table) |*t| t else continue;
+                        const table_ptr = if (source.alias_table) |*t| t else continue;
                         // Cached import_binding 이 rebuild 된 source 의 새 alias_table 보다
                         // 많은 alias id 를 가리킬 수 있어 (e.g. source 가 재파싱되며 re_export
                         // 엔트리가 줄어든 경우) 경계 검사. 벗어난 참조는 이번 build 에서
@@ -1611,7 +1623,7 @@ pub const Linker = struct {
                         table_ptr.incRefCount(a.symbol);
                     },
                     .semantic => |s| {
-                        const sem_ptr = if (modules[source_i].semantic) |*sem| sem else continue;
+                        const sem_ptr = if (source.semantic) |*sem| sem else continue;
                         const idx: u32 = @intFromEnum(s.symbol);
                         if (idx >= sem_ptr.symbols.items.len) continue;
                         sem_ptr.symbols.items[idx].reference_count += 1;
@@ -1626,11 +1638,13 @@ pub const Linker = struct {
     ///     invalid 유지는 source 모듈이 해당 export를 갖지 않는 경우.
     ///   - `local_symbol`: 현재 모듈 semantic top-level 심볼 (current-side 조회용).
     /// `populateReExportAliases` 이후에 호출되어야 alias canonical이 반영됨.
-    pub fn populateImportSymbols(_: *const Linker, modules: []Module) void {
+    pub fn populateImportSymbols(self: *const Linker) void {
         var scope = profile.begin(.link_populate_import_symbols);
         defer scope.end();
 
-        for (modules, 0..) |*importer, i| {
+        const count = self.graph.moduleCount();
+        for (0..count) |i| {
+            const importer = self.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
             const sem_opt = importer.semantic;
             const module_scope_opt = if (sem_opt) |sem|
                 if (sem.scope_maps.len > 0) sem.scope_maps[0] else null
@@ -1652,11 +1666,10 @@ pub const Linker = struct {
                 if (ib.import_record_index >= importer.import_records.len) continue;
                 const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
                 if (source_mod_idx.isNone()) continue;
-                const source_i = @intFromEnum(source_mod_idx);
-                if (source_i >= modules.len) continue;
+                const source = self.graph.getModule(source_mod_idx) orelse continue;
                 // namespace import는 개별 심볼이 아닌 모듈 전체를 가리킴 — skip.
                 if (ib.kind == .namespace) continue;
-                if (modules[source_i].findExportBinding(ib.imported_name)) |eb| {
+                if (source.findExportBinding(ib.imported_name)) |eb| {
                     ib.symbol = eb.symbol;
                 }
             }
@@ -1694,11 +1707,13 @@ pub const Linker = struct {
     ///    `analyzeNamespaceAccess`는 `semantic.symbol_ids` 기반이라 scope-aware.
     ///    `.namespace` 바인딩은 collectNamespaceAccesses 결과를 신뢰하지 않고
     ///    symbol-aware 판정으로 **덮어쓴다**.
-    pub fn populateNamespaceAccesses(self: *const Linker, modules: []Module) void {
+    pub fn populateNamespaceAccesses(self: *const Linker) void {
         var scope = profile.begin(.link_populate_namespace_accesses);
         defer scope.end();
 
-        for (modules) |*importer| {
+        const mod_count = self.graph.moduleCount();
+        for (0..mod_count) |i| {
+            const importer = self.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
             const sem = importer.semantic orelse continue;
             const ast = if (importer.ast) |*a| a else continue;
             // 결과 슬라이스는 module.parse_arena가 소유 — 모듈 수명 동안 유효하고
@@ -1738,13 +1753,11 @@ pub const Linker = struct {
                 if (ib.import_record_index >= importer.import_records.len) continue;
                 const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
                 if (source_mod_idx.isNone()) continue;
-                const source_i = @intFromEnum(source_mod_idx);
-                if (source_i >= modules.len) continue;
+                const source = self.graph.getModule(source_mod_idx) orelse continue;
 
                 // `.named` 경로는 virtual namespace (re_export_namespace 타겟)일 때만 처리.
                 // `.namespace`는 항상 대상 — collectNamespaceAccesses 결과를 scope-aware로 재평가.
                 if (is_named_candidate) {
-                    const source = modules[source_i];
                     var is_virtual_ns = false;
                     for (source.export_bindings) |eb| {
                         if (eb.kind == .re_export_namespace and std.mem.eql(u8, eb.exported_name, ib.imported_name)) {
@@ -1789,15 +1802,15 @@ pub const Linker = struct {
                 else
                     null;
 
-                var i: usize = 0;
+                var prop_i: usize = 0;
                 var it = access.members.iterator();
-                while (it.next()) |entry| : (i += 1) {
-                    props[i] = entry.key_ptr.*;
+                while (it.next()) |entry| : (prop_i += 1) {
+                    props[prop_i] = entry.key_ptr.*;
                     if (prop_stmts) |ps| {
                         const src = entry.value_ptr.items;
                         const dst = arena.alloc(u32, src.len) catch continue;
                         @memcpy(dst, src);
-                        ps[i] = dst;
+                        ps[prop_i] = dst;
                     }
                 }
                 ib.namespace_used_properties = props;
@@ -1932,7 +1945,8 @@ pub const Linker = struct {
         depth: u32,
     ) std.mem.Allocator.Error![]const u8 {
         if (depth > max_chain_depth) return try self.allocator.dupe(u8, "{}");
-        if (target_mod_idx >= self.modules.len) return try self.allocator.dupe(u8, "{}");
+        const target_any = self.graph.getModule(ModuleIndex.fromUsize(target_mod_idx)) orelse
+            return try self.allocator.dupe(u8, "{}");
 
         const mutable_self = @constCast(self);
 
@@ -1958,7 +1972,7 @@ pub const Linker = struct {
         try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
 
         // export * as ns 패턴 수집 (별도 처리 — 재귀 인라인 필요)
-        const target = self.modules[target_mod_idx];
+        const target = target_any;
         var ns_re_exports = std.StringHashMap(u32).init(self.allocator); // exported_name → source_mod
         defer ns_re_exports.deinit();
         for (target.export_bindings) |eb| {
@@ -2037,11 +2051,10 @@ pub const Linker = struct {
     ) std.mem.Allocator.Error!void {
         if (depth > max_chain_depth) return;
         const mod_i = @intFromEnum(module_idx);
-        if (mod_i >= self.modules.len) return;
+        const m = self.graph.getModule(module_idx) orelse return;
         // diamond export * 패턴에서 동일 모듈 재방문 방지
         if (visited.contains(mod_i)) return;
         try visited.put(mod_i, {});
-        const m = self.modules[mod_i];
 
         // namespace import를 O(1) 조회용 맵으로 수집 (local_name → import_record_index)
         var ns_imports = std.StringHashMap(u32).init(self.allocator);
@@ -2074,16 +2087,15 @@ pub const Linker = struct {
             } else if (eb.kind == .re_export) blk: {
                 if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
                     // canonical이 export * as ns 패턴인지 확인
-                    const cmod_i = canonical.module_index.toU32();
-                    if (cmod_i < self.modules.len) {
-                        for (self.modules[cmod_i].export_bindings) |ceb| {
+                    if (self.graph.getModule(canonical.module_index)) |cmod| {
+                        for (cmod.export_bindings) |ceb| {
                             if (ceb.kind.isReExportAll() and
                                 std.mem.eql(u8, ceb.exported_name, canonical.export_name) and
                                 !std.mem.eql(u8, ceb.exported_name, "*"))
                             {
                                 if (ceb.import_record_index) |rec_idx| {
-                                    if (rec_idx < self.modules[cmod_i].import_records.len) {
-                                        const src = self.modules[cmod_i].import_records[rec_idx].resolved;
+                                    if (rec_idx < cmod.import_records.len) {
+                                        const src = cmod.import_records[rec_idx].resolved;
                                         if (!src.isNone()) {
                                             break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
                                         }
@@ -2200,9 +2212,7 @@ pub const Linker = struct {
         // 미해결 참조 수집 (해당 청크의 모듈만)
         self.reserved_globals.clearRetainingCapacity();
         for (module_indices) |mod_idx| {
-            const i = @intFromEnum(mod_idx);
-            if (i >= self.modules.len) continue;
-            const m = self.modules[i];
+            const m = self.graph.getModule(mod_idx) orelse continue;
             const sem = m.semantic orelse continue;
             var urit = sem.unresolved_references.iterator();
             while (urit.next()) |entry| {
@@ -2233,9 +2243,8 @@ pub const Linker = struct {
         }
 
         for (module_indices) |mod_idx| {
-            const i = @intFromEnum(mod_idx);
-            if (i >= self.modules.len) continue;
-            try self.collectModuleNames(self.modules[i], @intCast(i), &name_to_owners);
+            const m = self.graph.getModule(mod_idx) orelse continue;
+            try self.collectModuleNames(m.*, mod_idx.toU32(), &name_to_owners);
         }
 
         // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
@@ -2452,7 +2461,7 @@ pub fn getOrCreateRequireVar(
     mod_idx: u32,
 ) ![]const u8 {
     if (cache.get(mod_idx)) |cached| return cached;
-    const target_path = self.modules[mod_idx].path;
+    const target_path = self.graph.getModule(ModuleIndex.fromUsize(mod_idx)).?.path;
     const name = try types.makeRequireVarName(self.allocator, target_path);
     try cache.put(mod_idx, name);
     return name;

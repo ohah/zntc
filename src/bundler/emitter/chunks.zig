@@ -36,11 +36,12 @@ const emitModule = parent.emitModule;
 
 pub fn emitChunks(
     allocator: std.mem.Allocator,
-    modules: []const Module,
+    graph: *const ModuleGraph,
     chunk_graph: *const ChunkGraph,
     options: EmitOptions,
     linker: ?*Linker,
 ) ![]OutputFile {
+    const module_count = graph.moduleCount();
     // Code splitting은 ESM 출력만 지원 — CJS/IIFE에서는 네이티브 import()가 없음
     if (options.format != .esm) return error.CodeSplittingRequiresESM;
 
@@ -94,7 +95,7 @@ pub fn emitChunks(
         }
 
         // 청크별 런타임 헬퍼 주입
-        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, modules, options, null);
+        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, options, null);
 
         // 크로스 청크 import deconfliction:
         // 여러 청크에서 같은 이름의 심볼을 import할 때 충돌 방지.
@@ -203,16 +204,14 @@ pub fn emitChunks(
         @memcpy(sorted_mods, chunk.modules.items);
 
         const ModSortCtx = struct {
-            mods: []const Module,
+            graph: *const ModuleGraph,
             fn lessThan(ctx: @This(), a: ModuleIndex, b: ModuleIndex) bool {
-                const ai = @intFromEnum(a);
-                const bi = @intFromEnum(b);
-                const a_exec = if (ai < ctx.mods.len) ctx.mods[ai].exec_index else std.math.maxInt(u32);
-                const b_exec = if (bi < ctx.mods.len) ctx.mods[bi].exec_index else std.math.maxInt(u32);
+                const a_exec = if (ctx.graph.getModule(a)) |ma| ma.exec_index else std.math.maxInt(u32);
+                const b_exec = if (ctx.graph.getModule(b)) |mb| mb.exec_index else std.math.maxInt(u32);
                 return a_exec < b_exec;
             }
         };
-        std.mem.sort(ModuleIndex, sorted_mods, ModSortCtx{ .mods = modules }, ModSortCtx.lessThan);
+        std.mem.sort(ModuleIndex, sorted_mods, ModSortCtx{ .graph = graph }, ModSortCtx.lessThan);
 
         // cross-chunk import 이름 수집 — 점유 이름으로 등록하여 로컬과 충돌 방지.
         // alias가 부여된 이름(x$2 등)도 점유 이름에 포함하여 로컬 변수와의 충돌 방지.
@@ -245,8 +244,8 @@ pub fn emitChunks(
 
         for (sorted_mods) |mod_idx| {
             const mi = @intFromEnum(mod_idx);
-            if (mi >= modules.len) continue;
-            const m = &modules[mi];
+            if (mi >= module_count) continue;
+            const m = graph.getModule(mod_idx) orelse continue;
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
             const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null, null, null) orelse continue;
@@ -307,7 +306,7 @@ pub fn emitChunks(
                     var found_local: ?[]const u8 = null;
                     for (sorted_mods) |mod_idx| {
                         const mi = @intFromEnum(mod_idx);
-                        if (mi >= modules.len) continue;
+                        if (mi >= module_count) continue;
                         if (l.getCanonicalName(@intCast(mi), name)) |renamed| {
                             found_local = renamed;
                             break;
@@ -848,13 +847,14 @@ const UsedNamesEntry = struct {
 /// `export * as X from './src'` 재export 소비자가 모두 precise(namespace_used_properties 설정)이면 true.
 /// 하나라도 null(opaque)이거나 소비자 0명이면 false — 호출자가 전체 fallback 사용.
 fn areAllReExportNsConsumersPrecise(
-    modules: []const Module,
+    graph: *const ModuleGraph,
     reexporter_idx: u32,
     reexport_name: []const u8,
 ) bool {
-    for (modules) |consumer| {
+    var it = graph.modulesIterator();
+    while (it.next()) |consumer| {
         for (consumer.import_bindings) |ib| {
-            if (!Linker.isReExportNsConsumer(consumer, ib, reexporter_idx, reexport_name)) continue;
+            if (!Linker.isReExportNsConsumer(consumer.*, ib, reexporter_idx, reexport_name)) continue;
             if (ib.namespace_used_properties == null) return false;
         }
     }
@@ -1036,7 +1036,7 @@ pub fn computeAllUsedNames(
                         // #1603 Phase 1b: 모든 소비자가 precise member 접근(namespace_used_properties
                         // 설정됨)이면 subset은 이미 line 957 루프에서 `isExportUsed` 기준으로 반영됨.
                         // 하나라도 opaque(null)이면 source 모듈 전체 export fallback.
-                        if (!areAllReExportNsConsumersPrecise(graph.modules.items, re.importer_module_index, re.exported_name)) {
+                        if (!areAllReExportNsConsumersPrecise(graph, re.importer_module_index, re.exported_name)) {
                             all_used = true;
                         }
                     },

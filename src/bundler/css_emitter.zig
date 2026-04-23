@@ -7,6 +7,7 @@
 const std = @import("std");
 const Module = @import("module.zig").Module;
 const ModuleIndex = @import("types.zig").ModuleIndex;
+const ModuleGraph = @import("graph.zig").ModuleGraph;
 const emitter = @import("emitter.zig");
 const OutputFile = emitter.OutputFile;
 
@@ -14,7 +15,7 @@ const OutputFile = emitter.OutputFile;
 /// CSS 모듈이 없으면 null을 반환한다.
 pub fn emitCssBundle(
     allocator: std.mem.Allocator,
-    modules: []const Module,
+    graph: *const ModuleGraph,
     entry_idx: ModuleIndex,
     css_names: []const u8,
 ) ?OutputFile {
@@ -25,7 +26,7 @@ pub fn emitCssBundle(
     var visited = std.AutoHashMap(ModuleIndex, void).init(allocator);
     defer visited.deinit();
 
-    collectCssModules(allocator, modules, entry_idx, &css_modules, &visited);
+    collectCssModules(allocator, graph, entry_idx, &css_modules, &visited);
 
     if (css_modules.items.len == 0) return null;
 
@@ -57,7 +58,7 @@ pub fn emitCssBundle(
     if (output.items.len == 0) return null;
 
     // 출력 파일명 결정
-    const entry_mod = &modules[@intFromEnum(entry_idx)];
+    const entry_mod = graph.getModule(entry_idx) orelse return null;
     const entry_path = entry_mod.path;
     const css_path = applyCssNamingPattern(allocator, css_names, entry_path) catch return null;
 
@@ -70,22 +71,19 @@ pub fn emitCssBundle(
 /// DFS로 모듈 그래프를 탐색하여 CSS 모듈을 수집한다.
 fn collectCssModules(
     allocator: std.mem.Allocator,
-    modules: []const Module,
+    graph: *const ModuleGraph,
     idx: ModuleIndex,
     result: *std.ArrayListUnmanaged(*const Module),
     visited: *std.AutoHashMap(ModuleIndex, void),
 ) void {
     if (idx == .none) return;
-    const i = @intFromEnum(idx);
-    if (i >= modules.len) return;
     if (visited.contains(idx)) return;
+    const mod = graph.getModule(idx) orelse return;
     visited.put(idx, {}) catch return;
-
-    const mod = &modules[i];
 
     // 의존성 먼저 방문 (DFS)
     for (mod.dependencies.items) |dep_idx| {
-        collectCssModules(allocator, modules, dep_idx, result, visited);
+        collectCssModules(allocator, graph, dep_idx, result, visited);
     }
 
     // CSS 모듈이면 결과에 추가
