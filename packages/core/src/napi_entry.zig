@@ -229,13 +229,14 @@ fn getObjectStringArray(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, 
 }
 
 /// JS 배열 값을 문자열 슬라이스로 변환. (key 없이 직접 배열 값을 받는 버전)
+/// 빈 배열은 명시적으로 빈 slice 반환 (caller 가 "0개" 와 "invalid" 를 구분 가능).
 fn parseStringArray(env: c.napi_env, val: c.napi_value, alloc: std.mem.Allocator) ?[]const []const u8 {
     var is_array: bool = false;
     _ = c.napi_is_array(env, val, &is_array);
     if (!is_array) return null;
     var len: u32 = 0;
     _ = c.napi_get_array_length(env, val, &len);
-    if (len == 0) return null;
+    if (len == 0) return alloc.alloc([]const u8, 0) catch return null;
     const result = alloc.alloc([]const u8, len) catch return null;
     var count: u32 = 0;
     for (0..len) |i| {
@@ -537,7 +538,7 @@ const NapiPlugin = struct {
     name: []const u8,
     tsfn: c.napi_threadsafe_function,
 
-    const HookType = enum { resolveId, load, transform, renderChunk, generateBundle, astFunction };
+    const HookType = enum { resolveId, load, transform, renderChunk, generateBundle, astFunction, resolveContext };
 
     const PluginResponse = struct {
         resolved_path: ?[]const u8 = null,
@@ -550,6 +551,10 @@ const NapiPlugin = struct {
         strip_directive: ?[]const u8 = null,
         /// AST plugin: 함수 뒤에 삽입할 코드 문자열 배열
         trailing_code: ?[]const []const u8 = null,
+        /// require.context: 매칭된 파일 경로 목록 (#1579 Phase 2.5).
+        /// JS plugin 의 onResolveContext 가 반환한 `{ context: string[] }` 의 string[] 부분.
+        /// outer slice = native_alloc 소유 (graph 가 free), inner string = JS lifetime.
+        context_matches: ?[]const []const u8 = null,
     };
 
     /// Per-call 요청 컨텍스트. 여러 워커 스레드가 동시에 호출해도 안전.
@@ -593,6 +598,10 @@ const NapiPlugin = struct {
         }
         if (getNamedProperty(env, js_result, "trailingCode")) |tc_val| {
             resp.trailing_code = parseStringArray(env, tc_val, native_alloc);
+        }
+        // require.context 응답 파싱: { context: string[] } (#1579 Phase 2.5)
+        if (getNamedProperty(env, js_result, "context")) |ctx_val| {
+            resp.context_matches = parseStringArray(env, ctx_val, native_alloc);
         }
         return resp;
     }
@@ -644,6 +653,7 @@ const NapiPlugin = struct {
             .renderChunk => "renderChunk",
             .generateBundle => "generateBundle",
             .astFunction => "astFunction",
+            .resolveContext => "resolveContext",
         };
         _ = c.napi_create_string_utf8(env, hook_name.ptr, hook_name.len, &hook_str);
 
@@ -804,6 +814,84 @@ const NapiPlugin = struct {
         _ = self.callHookFull(.generateBundle, "", null, output_files);
     }
 
+    /// JSON string field 인코딩 — `"` `\` 와 control char escape.
+    fn appendJsonString(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) !void {
+        try buf.append(alloc, '"');
+        for (s) |ch| switch (ch) {
+            '"' => try buf.appendSlice(alloc, "\\\""),
+            '\\' => try buf.appendSlice(alloc, "\\\\"),
+            '\n' => try buf.appendSlice(alloc, "\\n"),
+            '\r' => try buf.appendSlice(alloc, "\\r"),
+            '\t' => try buf.appendSlice(alloc, "\\t"),
+            else => if (ch < 0x20) {
+                var hex: [6]u8 = undefined;
+                const written = std.fmt.bufPrint(&hex, "\\u{x:0>4}", .{ch}) catch unreachable;
+                try buf.appendSlice(alloc, written);
+            } else {
+                try buf.append(alloc, ch);
+            },
+        };
+        try buf.append(alloc, '"');
+    }
+
+    /// `Plugin.resolveContext` wrapper — JS dispatcher 의 onResolveContext 호출. (#1579 Phase 2.5)
+    /// 5개 인자 (dir, recursive, filter, flags, importer) 를 JSON 으로 직렬화해 arg1 에 전달.
+    /// JS 결과 `{ context: string[] }` 를 PluginResponse.context_matches 로 받음.
+    fn pluginResolveContext(
+        ctx: ?*anyopaque,
+        dir: []const u8,
+        recursive: bool,
+        filter_pattern: ?[]const u8,
+        filter_flags: ?[]const u8,
+        importer: []const u8,
+        alloc: std.mem.Allocator,
+    ) PluginError!?[]const []const u8 {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+
+        // JSON 직렬화: { dir, recursive, filter?, flags?, importer }
+        var json_buf: std.ArrayList(u8) = .empty;
+        defer json_buf.deinit(native_alloc);
+        json_buf.append(native_alloc, '{') catch return null;
+        json_buf.appendSlice(native_alloc, "\"dir\":") catch return null;
+        appendJsonString(&json_buf, native_alloc, dir) catch return null;
+        json_buf.appendSlice(native_alloc, ",\"recursive\":") catch return null;
+        json_buf.appendSlice(native_alloc, if (recursive) "true" else "false") catch return null;
+        if (filter_pattern) |fp| {
+            json_buf.appendSlice(native_alloc, ",\"filter\":") catch return null;
+            appendJsonString(&json_buf, native_alloc, fp) catch return null;
+        }
+        if (filter_flags) |ff| {
+            json_buf.appendSlice(native_alloc, ",\"flags\":") catch return null;
+            appendJsonString(&json_buf, native_alloc, ff) catch return null;
+        }
+        json_buf.appendSlice(native_alloc, ",\"importer\":") catch return null;
+        appendJsonString(&json_buf, native_alloc, importer) catch return null;
+        json_buf.append(native_alloc, '}') catch return null;
+
+        const resp = self.callHookFull(.resolveContext, json_buf.items, null, null) orelse return null;
+        defer if (resp.context_matches) |m| native_alloc.free(m);
+        // inner string 들도 native_alloc 소유 (parseStringArray 가 dupe 함). 함께 free.
+        defer if (resp.context_matches) |m| {
+            for (m) |s| native_alloc.free(s);
+        };
+
+        const matches = resp.context_matches orelse return null;
+
+        // caller (graph) allocator 로 dupe — outer slice + inner strings.
+        // ImportRecord.context_matches 의 contract 에 맞춰: outer 는 graph 가 free,
+        // inner 는 plugin 책임 (여기선 NapiPlugin 이 alloc 했으므로 함께 graph alloc 으로).
+        const out = alloc.alloc([]const u8, matches.len) catch return null;
+        for (matches, 0..) |s, i| {
+            out[i] = alloc.dupe(u8, s) catch {
+                // 부분 실패: 이미 할당한 것들 free 후 null 반환
+                for (out[0..i]) |prev| alloc.free(prev);
+                alloc.free(out);
+                return null;
+            };
+        }
+        return out;
+    }
+
     fn toPlugin(self: *NapiPlugin) Plugin {
         return .{
             .name = self.name,
@@ -814,6 +902,7 @@ const NapiPlugin = struct {
             .renderChunk = pluginRenderChunk,
             .generateBundle = pluginGenerateBundle,
             .onFunction = pluginAstFunction,
+            .resolveContext = pluginResolveContext,
         };
     }
 

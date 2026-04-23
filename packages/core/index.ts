@@ -573,6 +573,28 @@ export interface PluginBuild {
     options: { filter: RegExp },
     callback: (info: AstFunctionInfo) => HookResult<AstFunctionResult>,
   ): void;
+  /**
+   * `require.context(dir, recursive, filter, mode)` 의 매칭 결과를 호스트 런타임에서 채운다. (#1579)
+   * ZTS 자체 regex executor 가 없어서 (#1771) host 의 RegExp 에 위임 — Node V8 / Bun JSC.
+   *
+   * `options.filter` 는 `dir` 에 적용 (예: `/^\.\/app/` 으로 특정 디렉토리만 처리).
+   * 콜백 반환:
+   *   - `{ context: string[] }` — 매칭된 파일 경로 배열 (빈 배열 = empty context)
+   *   - `null`/`undefined` — 다음 plugin 시도 (모두 null 이면 graph 가 require_context_no_handler diagnostic)
+   *
+   * 콜백 인자 `filter` 는 require.context 의 정규식 본문 (slashes 없이),
+   * `flags` 는 정규식 플래그. host 가 `new RegExp(filter, flags)` 로 컴파일 후 매칭.
+   */
+  onResolveContext(
+    options: { filter: RegExp },
+    callback: (args: {
+      dir: string;
+      recursive: boolean;
+      filter?: string;
+      flags?: string;
+      importer: string;
+    }) => HookResult<{ context: string[] }>,
+  ): void;
 }
 
 export interface AstFunctionInfo {
@@ -608,6 +630,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     load: [],
     transform: [],
     renderChunk: [],
+    resolveContext: [],
   };
   const generateBundleCallbacks: Array<(outputs: OutputFile[]) => void> = [];
   const astFunctionHooks: HookEntry[] = [];
@@ -631,6 +654,9 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
       },
       onAstFunction(opts, cb) {
         astFunctionHooks.push({ filter: opts.filter, callback: cb });
+      },
+      onResolveContext(opts, cb) {
+        hooks.resolveContext.push({ filter: opts.filter, callback: cb });
       },
     };
     plugin.setup(build);
@@ -660,6 +686,35 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
               if (result != null) return result;
             } catch {
               // 에러 시 해당 플러그인 건너뛰기
+            }
+          }
+        }
+      } catch {
+        // JSON 파싱 실패
+      }
+      return null;
+    }
+
+    // resolveContext: arg1 = JSON({ dir, recursive, filter, flags, importer }), arg2 = null. (#1579 Phase 2.5)
+    // 결과 형식: { context: string[] } — 매칭 파일 경로 배열. null/undefined 반환 시 graph 가
+    // require_context_no_handler diagnostic emit.
+    if (hookName === "resolveContext") {
+      if (hooks.resolveContext.length === 0) return null;
+      try {
+        const args = JSON.parse(arg1 as string) as {
+          dir: string;
+          recursive: boolean;
+          filter?: string;
+          flags?: string;
+          importer: string;
+        };
+        for (const h of hooks.resolveContext) {
+          if (h.filter.test(args.dir)) {
+            try {
+              const result = await h.callback(args);
+              if (result != null) return result;
+            } catch {
+              // 에러 시 다음 plugin 시도
             }
           }
         }
