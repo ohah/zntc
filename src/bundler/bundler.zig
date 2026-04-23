@@ -15,6 +15,7 @@ const std = @import("std");
 const plugin_mod = @import("plugin.zig");
 const types = @import("types.zig");
 const BundlerDiagnostic = types.BundlerDiagnostic;
+const ModuleIndex = types.ModuleIndex;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const Platform = @import("resolve_cache.zig").Platform;
@@ -477,7 +478,7 @@ pub const Bundler = struct {
         defer spec_to_filename.deinit();
         for (graph.worker_entries.items) |we| {
             const filename = worker_map.get(we.resolved_path) orelse continue;
-            const mod = &graph.modules.items[@intFromEnum(we.source_module)];
+            const mod = graph.getModule(we.source_module) orelse continue;
             if (we.record_index >= mod.import_records.len) continue;
             try spec_to_filename.put(mod.import_records[we.record_index].specifier, filename);
         }
@@ -700,8 +701,7 @@ pub const Bundler = struct {
                 if (inc_result.reparsed_indices.len > 0) {
                     const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);
                     for (inc_result.reparsed_indices, 0..) |mod_idx, i| {
-                        const mi = @intFromEnum(mod_idx);
-                        const src = if (mi < graph.modules.items.len) graph.modules.items[mi].path else "";
+                        const src = if (graph.getModule(mod_idx)) |m| m.path else "";
                         list[i] = try self.allocator.dupe(u8, src);
                     }
                     reparsed_paths_out = list;
@@ -912,8 +912,11 @@ pub const Bundler = struct {
             dev_emit_opts.polyfills = polyfill_entries.items;
             dev_emit_opts.run_before_main = self.options.run_before_main;
 
-            for (graph.modules.items) |*m| {
-                m.dev_id = emitter.makeModuleId(m.path, self.options.root_dir);
+            const la = graph.linkAccessor();
+            for (0..graph.moduleCount()) |i| {
+                const idx = ModuleIndex.fromUsize(i);
+                const m = graph.getModule(idx) orelse continue;
+                la.setDevId(idx, emitter.makeModuleId(m.path, self.options.root_dir));
             }
 
             const emit_result = try emitter.emitWithTreeShaking(
@@ -1026,12 +1029,13 @@ pub const Bundler = struct {
         } else null;
 
         // 5. 모듈 경로 수집 (dev server watch용)
-        const module_paths: ?[]const []const u8 = if (graph.modules.items.len > 0) blk: {
-            const paths = try self.allocator.alloc([]const u8, graph.modules.items.len);
+        const module_paths: ?[]const []const u8 = if (graph.moduleCount() > 0) blk: {
+            const paths = try self.allocator.alloc([]const u8, graph.moduleCount());
             errdefer self.allocator.free(paths);
             var path_count: usize = 0;
             errdefer for (paths[0..path_count]) |p| self.allocator.free(p);
-            for (graph.modules.items) |m| {
+            var it = graph.modulesIterator();
+            while (it.next()) |m| {
                 paths[path_count] = try self.allocator.dupe(u8, m.path);
                 path_count += 1;
             }
@@ -1043,15 +1047,19 @@ pub const Bundler = struct {
         // RN 런타임이 해상도별 파일을 로드할 수 있게 한다.
         const asset_outputs: ?[]OutputFile = blk: {
             var asset_count: usize = 0;
-            for (graph.modules.items) |m| {
-                if (m.asset_data) |ad| asset_count += 1 + ad.scale_variants.len;
+            {
+                var it = graph.modulesIterator();
+                while (it.next()) |m| {
+                    if (m.asset_data) |ad| asset_count += 1 + ad.scale_variants.len;
+                }
             }
             if (asset_count == 0) break :blk null;
 
             const outs = try self.allocator.alloc(OutputFile, asset_count);
             errdefer self.allocator.free(outs);
             var idx: usize = 0;
-            for (graph.modules.items) |m| {
+            var it = graph.modulesIterator();
+            while (it.next()) |m| {
                 if (m.asset_data) |ad| {
                     outs[idx] = .{
                         .path = try self.allocator.dupe(u8, ad.output_name),
@@ -1151,7 +1159,10 @@ pub const Bundler = struct {
         // putModule이 parse_arena 소유권을 store로 가져가므로
         // graph.deinit()에서 이중 해제가 발생하지 않는다.
         if (self.options.module_store) |store| {
-            for (graph.modules.items) |*m| {
+            for (0..graph.moduleCount()) |i| {
+                // store transfer 가 m.parse_arena 소유권 이동 → *Module mutable 필요.
+                // TODO #1c: store transfer 전용 accessor 메서드 도입 검토.
+                const m = graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
                 if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
                 // mtime 은 buildIncremental / build 가 이미 module.mtime 에 기록. 여기서 재-stat
                 // 하면 watcher-driven mtime cache 효과가 half-revert 됨 (Issue #1727 §3).
@@ -1199,7 +1210,8 @@ fn generateMetafileJson(
 
     // inputs
     var first_input = true;
-    for (graph.modules.items) |m| {
+    var mod_it = graph.modulesIterator();
+    while (mod_it.next()) |m| {
         if (m.path.len == 0) continue;
         if (!first_input) try buf.appendSlice(allocator, ",");
         first_input = false;
@@ -1213,12 +1225,11 @@ fn generateMetafileJson(
         for (m.import_records) |rec| {
             if (rec.is_external) continue;
             if (rec.resolved.isNone()) continue;
-            const dep_idx = @intFromEnum(rec.resolved);
-            if (dep_idx >= graph.modules.items.len) continue;
+            const dep = graph.getModule(rec.resolved) orelse continue;
             if (!first_imp) try buf.appendSlice(allocator, ", ");
             first_imp = false;
             try buf.appendSlice(allocator, "{ \"path\": ");
-            try appendJsonString(&buf, allocator, graph.modules.items[dep_idx].path);
+            try appendJsonString(&buf, allocator, dep.path);
             try buf.appendSlice(allocator, ", \"kind\": ");
             try appendJsonString(&buf, allocator, @tagName(rec.kind));
             try buf.appendSlice(allocator, " }");

@@ -58,6 +58,11 @@ pub const ModuleIndex = enum(u32) {
     pub inline fn toUsize(self: ModuleIndex) usize {
         return @intCast(@intFromEnum(self));
     }
+
+    /// iteration 시 usize → ModuleIndex 변환. `for (0..graph.moduleCount()) |i|` 패턴용.
+    pub inline fn fromUsize(i: usize) ModuleIndex {
+        return @enumFromInt(@as(u32, @intCast(i)));
+    }
 };
 
 // ============================================================
