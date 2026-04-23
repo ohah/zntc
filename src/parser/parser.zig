@@ -74,6 +74,11 @@ pub const Parser = struct {
     /// Enable inline scanning. Set to true by bundler before parsing.
     enable_scan: bool = false,
 
+    /// Define entries — `process.env.X` 같은 member access 를 string literal 로 평가.
+    /// require.context 인자 평가 (Phase 2.6) 와 미래 build-time 정적 평가에 활용.
+    /// bundler 가 parse 전 설정. 비어있으면 evaluator 가 define lookup 안 함. (#1579)
+    scan_defines: []const scan_results_mod.DefineEntry = &.{},
+
     /// arrow 파라미터 중복 검사용 임시 이름 수집 버퍼.
     param_name_spans: std.ArrayList(Span),
 

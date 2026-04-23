@@ -2259,6 +2259,7 @@ fn scanRequireContextCall(self: *Parser, callee: NodeIndex, arg_list: NodeList, 
         arg_list.start,
         arg_list.len,
         call_span,
+        self.scan_defines,
     ) orelse return;
 
     const mode: scan_results_mod.RequireContextMode = @enumFromInt(@intFromEnum(ir.context_mode));

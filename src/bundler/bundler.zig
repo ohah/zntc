@@ -660,6 +660,8 @@ pub const Bundler = struct {
         var graph_scope = profile.begin(.graph);
         var graph = ModuleGraph.init(self.allocator, self.getResolveCache());
         graph.dev_mode = self.options.dev_mode;
+        // require.context 등 parser inline scan 의 build-time 정적 평가에 사용 (#1579 Phase 2.6)
+        graph.defines = self.options.define;
         // #1621: binary loader 의 `$tb(...)` 축약 활성화.
         graph.minify_whitespace = self.options.minify_whitespace;
         graph.loader_overrides = self.options.loader_overrides;

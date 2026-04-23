@@ -29,6 +29,16 @@ pub const RequireContextMode = enum {
     lazy_once,
 };
 
+/// Define entry — bundler/transformer 의 DefineEntry 와 동일 layout.
+/// parser 가 bundler dep 없이 정적 평가에 사용. (#1579 Phase 2.6)
+pub const DefineEntry = struct {
+    /// 키: `process.env.NODE_ENV` 같은 식별자/멤버 체인 텍스트.
+    key: []const u8,
+    /// 치환 값: JS 표현식 문자열. 예: `"\"production\""` (JSON 인용 string),
+    /// `"true"` (bool), `"42"` (number) 등. evaluator 가 형식별로 해석.
+    value: []const u8,
+};
+
 /// 파서가 수집하는 import 레코드. bundler ImportRecord의 경량 버전.
 pub const ScanImportRecord = struct {
     /// 원본 import 경로 (따옴표 제거됨, 소스 코드 참조)
