@@ -6550,7 +6550,10 @@ var r: boolean = a instanceof a;`,
     );
   });
   test("instanceofOperatorWithInvalidOperands.es2015", async () => {
-    await expectError(
+    // tsc 의 type-check 단계 전용 에러. parse 수준에서는 valid TS 이므로 통과해야 맞다.
+    // #1767 이전에는 computed property key (`[Symbol.hasInstance]`) 를 index signature 로
+    // 오분류해 parse 가 깨졌기 때문에 expectError 가 우연히 pass 했던 것.
+    await expectPass(
       `class C {
     foo() { }
 }
@@ -6605,7 +6608,6 @@ var ra10 = o5 instanceof o4;
 // invalid @@hasInstance method return type on RHS
 declare var o6: {[Symbol.hasInstance](value: unknown): number;};
 var rb11 = x instanceof o6;`,
-      [],
     );
   });
   test("instanceofOperatorWithInvalidOperands", async () => {
@@ -6714,7 +6716,10 @@ var r4 = d instanceof x1;`,
     );
   });
   test("instanceofOperatorWithRHSHasSymbolHasInstance", async () => {
-    await expectError(
+    // tsc 의 type-check 단계 전용 에러. parse 수준에서는 valid TS 이므로 통과해야 맞다.
+    // #1767 이전에는 computed property key (`[Symbol.hasInstance]`) 를 index signature 로
+    // 오분류해 parse 가 깨졌기 때문에 expectError 가 우연히 pass 했던 것.
+    await expectPass(
       `
 interface Point { x: number, y: number }
 interface Point3D { x: number, y: number, z: number }
@@ -6848,7 +6853,6 @@ type Rhs15 = HasInstanceOf1 | HasInstanceOf2;
 declare const rhs15: Rhs15;
 lhs0 instanceof rhs15 && lhs0;
 `,
-      [],
     );
   });
   test("instanceofOperatorWithRHSIsSubtypeOfFunction", async () => {
@@ -16640,7 +16644,8 @@ if (obj18 instanceof Function) { // can't narrow type from 'any' to 'Function'
     );
   });
   test("typeGuardsWithInstanceOfBySymbolHasInstance", async () => {
-    await expectError(
+    // tsc type-check error only — parse level 통과 ([Symbol.hasInstance] computed method). (#1767)
+    await expectPass(
       `
 interface AConstructor {
     new (): A;

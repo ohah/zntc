@@ -95,6 +95,15 @@ exports[`TSC: es6/Symbols symbolDeclarationEmit4 1`] = `
 "
 `;
 
+exports[`TSC: es6/Symbols symbolDeclarationEmit5 1`] = `""`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit6 1`] = `""`;
+
+exports[`TSC: es6/Symbols symbolDeclarationEmit7 1`] = `
+"var obj;
+"
+`;
+
 exports[`TSC: es6/Symbols symbolDeclarationEmit8 1`] = `
 "var obj = { [Symbol.isConcatSpreadable]: 0 };
 "
@@ -112,6 +121,79 @@ var x = { [s]: 0, [s]() {
 }, get [s]() {
 	return 0;
 } };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty10 1`] = `
+"class C {
+	[Symbol.iterator];
+}
+var i;
+i = new C();
+var c = i;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty11 1`] = `
+"class C {
+}
+var i;
+i = new C();
+var c = i;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty12 1`] = `
+"class C {
+	[Symbol.iterator];
+}
+var i;
+i = new C();
+var c = i;
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty13 1`] = `
+"class C {
+	[Symbol.iterator];
+}
+foo(new C());
+var i;
+bar(i);
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty14 1`] = `
+"class C {
+	[Symbol.iterator];
+}
+foo(new C());
+var i;
+bar(i);
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty15 1`] = `
+"class C {
+}
+foo(new C());
+var i;
+bar(i);
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty16 1`] = `
+"class C {
+	[Symbol.iterator];
+}
+foo(new C());
+var i;
+bar(i);
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty17 1`] = `
+"var it = i[Symbol.iterator];
 "
 `;
 
@@ -141,6 +223,50 @@ var x = { [s]: 0, [s]() {
 }, get [s]() {
 	return 0;
 } };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty20 1`] = `
+"var i = { [Symbol.iterator]: (s) => s, [Symbol.toStringTag](n) {
+	return n;
+} };
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty21 1`] = `
+"foo({ [Symbol.isConcatSpreadable]: "", [Symbol.toPrimitive]: 0, [Symbol.unscopables]: true });
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty22 1`] = `
+"foo("", { [Symbol.unscopables]: (s) => s.length });
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty23 1`] = `
+"class C {
+	[Symbol.toPrimitive]() {
+		return true;
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty24 1`] = `
+"class C {
+	[Symbol.toPrimitive]() {
+		return "";
+	}
+}
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty25 1`] = `
+"class C {
+	[Symbol.toStringTag]() {
+		return "";
+	}
+}
 "
 `;
 
@@ -256,10 +382,16 @@ class C2 {
 "
 `;
 
+exports[`TSC: es6/Symbols symbolProperty35 1`] = `""`;
+
 exports[`TSC: es6/Symbols symbolProperty36 1`] = `
 "var x = { [Symbol.isConcatSpreadable]: 0, [Symbol.isConcatSpreadable]: 1 };
 "
 `;
+
+exports[`TSC: es6/Symbols symbolProperty37 1`] = `""`;
+
+exports[`TSC: es6/Symbols symbolProperty38 1`] = `""`;
 
 exports[`TSC: es6/Symbols symbolProperty39 1`] = `
 "class C {
@@ -458,6 +590,8 @@ exports[`TSC: es6/Symbols symbolProperty58 1`] = `
 "
 `;
 
+exports[`TSC: es6/Symbols symbolProperty59 1`] = `""`;
+
 exports[`TSC: es6/Symbols symbolProperty6 1`] = `
 "class C {
 	[Symbol.iterator] = 0;
@@ -471,6 +605,31 @@ exports[`TSC: es6/Symbols symbolProperty6 1`] = `
 "
 `;
 
+exports[`TSC: es6/Symbols symbolProperty60 1`] = `
+"// https://github.com/Microsoft/TypeScript/issues/20146
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty61 1`] = `
+"const observable = Symbol.obs;
+export class MyObservable {
+	constructor(_val) {
+		this._val = _val;
+	}
+	subscribe(next) {
+		next(this._val);
+	}
+	[observable]() {
+		return this;
+	}
+}
+function from(obs) {
+	return obs[Symbol.obs]();
+}
+from(new MyObservable(42));
+"
+`;
+
 exports[`TSC: es6/Symbols symbolProperty7 1`] = `
 "class C {
 	[Symbol()] = 0;
@@ -481,6 +640,18 @@ exports[`TSC: es6/Symbols symbolProperty7 1`] = `
 		return 0;
 	}
 }
+"
+`;
+
+exports[`TSC: es6/Symbols symbolProperty8 1`] = `""`;
+
+exports[`TSC: es6/Symbols symbolProperty9 1`] = `
+"class C {
+	[Symbol.iterator];
+}
+var i;
+i = new C();
+var c = i;
 "
 `;
 
