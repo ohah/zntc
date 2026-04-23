@@ -119,6 +119,7 @@ test {
     _ = @import("types_test.zig");
     _ = @import("module_test.zig");
     _ = @import("plugin_test.zig");
+    _ = @import("require_context_resolve_test.zig");
     _ = asset_meta;
     _ = block_list;
     _ = incremental;

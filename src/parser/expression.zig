@@ -874,14 +874,16 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 });
 
                 // Inline scan: require("specifier") → CJS import record
+                const call_span = Span{ .start = expr_start, .end = self.currentSpan().start };
                 if (self.enable_scan) {
                     scanRequireCall(self, expr, arg_list);
                     scanGlobCall(self, expr, arg_list);
+                    scanRequireContextCall(self, expr, arg_list, call_span);
                 }
 
                 expr = try self.ast.addNode(.{
                     .tag = .call_expression,
-                    .span = .{ .start = expr_start, .end = self.currentSpan().start },
+                    .span = call_span,
                     .data = .{ .extra = call_extra },
                 });
             },
@@ -2245,6 +2247,32 @@ fn scanGlobCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
         .glob_eager = opts.eager,
         .glob_import_name = opts.import_name,
     }) catch {};
+}
+
+/// require.context(...) 호출을 감지하여 require_context 레코드를 생성한다. (#1579)
+/// inline scan 시점에는 call_expression 노드가 아직 안 만들어져 있어 callee+args 직접 전달.
+/// import_scanner.tryExtractRequireContextFromCallee 에 위임 후 ScanImportRecord 로 변환.
+fn scanRequireContextCall(self: *Parser, callee: NodeIndex, arg_list: NodeList, call_span: Span) void {
+    const ir = import_scanner.tryExtractRequireContextFromCallee(
+        &self.ast,
+        callee,
+        arg_list.start,
+        arg_list.len,
+        call_span,
+    ) orelse return;
+
+    const mode: scan_results_mod.RequireContextMode = @enumFromInt(@intFromEnum(ir.context_mode));
+    self.scan_import_records.append(self.allocator, .{
+        .specifier = ir.specifier,
+        .kind = .require_context,
+        .span = ir.span,
+        .context_recursive = ir.context_recursive,
+        .context_filter = ir.context_filter,
+        .context_filter_flags = ir.context_filter_flags,
+        .context_mode = mode,
+        .context_invalid_reason = ir.context_invalid_reason,
+    }) catch {};
+    self.scan_result.has_cjs_require = true;
 }
 
 /// assignment_expression의 left에서 module.exports = ... / exports.x = ... 패턴을 감지한다.

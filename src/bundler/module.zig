@@ -357,6 +357,13 @@ pub const Module = struct {
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
         if (self.alias_table) |*t| t.deinit();
+        // require.context: plugin 이 채운 outer slice free (#1579 Phase 2).
+        // inner []const u8 은 plugin 책임 (source slice / static / plugin lifetime).
+        for (self.import_records) |record| {
+            if (record.kind == .require_context) {
+                if (record.context_matches) |matches| allocator.free(matches);
+            }
+        }
         // parse_arena가 Scanner/Parser/AST/source 메모리를 전부 소유.
         // ast.deinit()는 불필요 — arena.deinit()이 일괄 해제.
         if (self.parse_arena) |*arena| arena.deinit();

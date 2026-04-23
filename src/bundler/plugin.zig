@@ -25,6 +25,17 @@ pub const PluginError = error{
     OutOfMemory,
 };
 
+/// `Plugin.resolveContext` hook signature. (#1579 Phase 2)
+pub const ResolveContextFn = ?*const fn (
+    ctx: ?*anyopaque,
+    dir: []const u8,
+    recursive: bool,
+    filter_pattern: ?[]const u8,
+    filter_flags: ?[]const u8,
+    importer: []const u8,
+    allocator: std.mem.Allocator,
+) PluginError!?[]const []const u8;
+
 /// Rollup 호환 플러그인 인터페이스. 각 훅은 optional 함수 포인터 — null이면 해당 훅을 구현하지 않음.
 /// builtin 플러그인(worklet 등) 전용. JS 플러그인은 @zts/core NAPI 경로에서 처리된다.
 pub const Plugin = struct {
@@ -50,6 +61,22 @@ pub const Plugin = struct {
 
     /// 번들 생성 완료 알림. 모든 플러그인에 호출됨.
     generateBundle: ?*const fn (ctx: ?*anyopaque, output_files: []const OutputFile) void = null,
+
+    /// `require.context(dir, recursive, filter)` 매칭 결과 주입 (#1579 Phase 2).
+    /// ZTS 자체 regex executor 가 없어서 (#1771) host runtime 의 RegExp 에 위임.
+    ///
+    /// **mode 인자 미포함**: Metro/webpack 모두 매칭 자체엔 mode 영향 없음 (mode 는 codegen
+    /// 단계의 chunk 분할 결정만 좌우). 따라서 host plugin 은 파일 매칭에만 집중하고, mode 는
+    /// `record.context_mode` 로 codegen (Phase 3) 에서 직접 활용.
+    ///
+    /// **메모리 소유권**:
+    ///   - **outer slice** (`[]const u8`): `allocator` 로 할당 — Module.deinit 시 graph 가 free.
+    ///   - **inner `[]const u8`** (각 파일 경로): plugin 책임. source slice 참조, static literal,
+    ///     또는 plugin 자체 lifetime — 무엇이든 OK. graph 는 free 안 함.
+    ///
+    /// null 반환: 이 plugin 이 처리 안 함 (다음 plugin 시도 또는 graph 가 diagnostic emit).
+    /// 빈 슬라이스 `&.{}`: "매칭 0개 (empty context)" — 정상 동작.
+    resolveContext: ResolveContextFn = null,
 
     // ─── AST 훅 (transformer 내부에서 AST 노드 방문 시 호출) ───
 
@@ -139,6 +166,27 @@ pub const PluginRunner = struct {
         for (self.plugins) |p| {
             if (p.resolveId) |hook| {
                 if (try hook(p.context, specifier, importer, allocator)) |result| {
+                    return result;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// resolveContext: first 모드 — 첫 번째 non-null 반환값 사용. (#1579 Phase 2)
+    /// 모든 플러그인이 null 반환 시 null (graph 가 diagnostic 으로 처리).
+    pub fn runResolveContext(
+        self: *const PluginRunner,
+        dir: []const u8,
+        recursive: bool,
+        filter_pattern: ?[]const u8,
+        filter_flags: ?[]const u8,
+        importer: []const u8,
+        allocator: std.mem.Allocator,
+    ) PluginError!?[]const []const u8 {
+        for (self.plugins) |p| {
+            if (p.resolveContext) |hook| {
+                if (try hook(p.context, dir, recursive, filter_pattern, filter_flags, importer, allocator)) |result| {
                     return result;
                 }
             }
