@@ -354,7 +354,8 @@ test "CJS: ExportsKind promotion — .js required becomes CJS" {
 
     // graph에서 plain.js 모듈을 찾아서 exports_kind 확인
     var plain_found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "plain.js")) {
             // require()로 소비되었으므로 CJS로 승격되어야 함
             try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
@@ -452,7 +453,8 @@ test "CJS: require overrides ESM promotion (both import and require same module)
 
     // shared.js는 import와 require 모두로 소비됨 → require가 우선이므로 CJS
     var shared_found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "shared.js")) {
             try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
             try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
@@ -557,7 +559,8 @@ test "CJS: esm_with_dynamic_fallback module required — promoted to ESM wrap (g
 
     // hybrid.js: esm_with_dynamic_fallback + require 소비 → WrapKind.esm
     var hybrid_found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "hybrid.js")) {
             try std.testing.expectEqual(types.ExportsKind.esm_with_dynamic_fallback, m.exports_kind);
             try std.testing.expectEqual(types.WrapKind.esm, m.wrap_kind);
@@ -736,7 +739,8 @@ test "ESM wrap: pure ESM module required — WrapKind.esm (graph)" {
     try graph.build(&.{entry});
 
     var found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "esm-mod.js")) {
             try std.testing.expectEqual(types.ExportsKind.esm, m.exports_kind);
             try std.testing.expectEqual(types.WrapKind.esm, m.wrap_kind);
@@ -766,7 +770,8 @@ test "ESM wrap: CJS module required — still WrapKind.cjs (graph)" {
     try graph.build(&.{entry});
 
     var found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "cjs-mod.js")) {
             try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
             try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
@@ -796,7 +801,8 @@ test "ESM wrap: none module required — WrapKind.cjs (graph)" {
     try graph.build(&.{entry});
 
     var found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "plain.js")) {
             try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
             try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
@@ -879,7 +885,8 @@ test "ESM wrap: 2-pass promotion — require before import" {
 
     // shared.js: ESM + require 소비 → WrapKind.esm (import가 CJS로 덮어쓰지 않음)
     var found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "shared.js")) {
             try std.testing.expectEqual(types.WrapKind.esm, m.wrap_kind);
             found = true;
@@ -1462,7 +1469,8 @@ test "CJS: Flow import typeof does not make CJS module ESM (regression)" {
     try graph.build(&.{entry});
 
     var found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "rn.js")) {
             try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
             try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
@@ -1516,7 +1524,8 @@ test "CJS: TS import type does not make CJS module ESM" {
     try graph.build(&.{entry});
 
     var found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "lib.js")) {
             try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
             try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
@@ -1549,7 +1558,8 @@ test "CJS: export type re-export + module.exports stays CJS (regression)" {
     try graph.build(&.{entry});
 
     var found = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (std.mem.endsWith(u8, m.path, "rn-private.js")) {
             try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
             try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);

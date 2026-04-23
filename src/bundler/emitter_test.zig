@@ -5,6 +5,8 @@ const EmitOptions = emitter.EmitOptions;
 const appendRuntimeHelpers = emitter.appendRuntimeHelpers;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const types = @import("types.zig");
+const ModuleIndex = types.ModuleIndex;
 const chunk_mod = @import("chunk.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
@@ -1492,10 +1494,12 @@ test "emitter: lazy_sourcemap dev mode — ModuleDevCode.sm_builder 채워지고
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    for (result.graph.modules.items) |*m| {
+    for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         m.dev_id = try std.testing.allocator.dupe(u8, m.path);
     }
-    defer for (result.graph.modules.items) |*m| {
+    defer for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
         m.dev_id = "";
     };
@@ -1526,10 +1530,12 @@ test "emitter: per-module sm_builder lazy/eager JSON 바이트 동등" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    for (result.graph.modules.items) |*m| {
+    for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         m.dev_id = try std.testing.allocator.dupe(u8, m.path);
     }
-    defer for (result.graph.modules.items) |*m| {
+    defer for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
         m.dev_id = "";
     };
@@ -1616,10 +1622,12 @@ test "emitter: dev_mode + sourcemap 활성 시 per-module code 끝에 sourceURL 
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    for (result.graph.modules.items) |*m| {
+    for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         m.dev_id = try std.testing.allocator.dupe(u8, m.path);
     }
-    defer for (result.graph.modules.items) |*m| {
+    defer for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
         m.dev_id = "";
     };
@@ -1650,10 +1658,12 @@ test "emitter: dev_mode + sourcemap 비활성 시 sourceURL 주석 없음" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    for (result.graph.modules.items) |*m| {
+    for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         m.dev_id = try std.testing.allocator.dupe(u8, m.path);
     }
-    defer for (result.graph.modules.items) |*m| {
+    defer for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
         m.dev_id = "";
     };
@@ -1681,10 +1691,12 @@ test "emitter: multi-module 각각에 고유 sourceURL 포함" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    for (result.graph.modules.items) |*m| {
+    for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         m.dev_id = try std.testing.allocator.dupe(u8, m.path);
     }
-    defer for (result.graph.modules.items) |*m| {
+    defer for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
         m.dev_id = "";
     };
@@ -1730,10 +1742,12 @@ test "emitter: root_dir 설정 시 sourceURL 이 상대경로" {
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    for (result.graph.modules.items) |*m| {
+    for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         m.dev_id = try std.testing.allocator.dupe(u8, m.path);
     }
-    defer for (result.graph.modules.items) |*m| {
+    defer for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
         m.dev_id = "";
     };
@@ -1790,10 +1804,12 @@ test "emitter: sourceURL 은 IIFE 뒤에 위치 — HMR_PREAMBLE_LINES 오프셋
     defer result.graph.deinit();
     defer result.cache.deinit();
 
-    for (result.graph.modules.items) |*m| {
+    for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         m.dev_id = try std.testing.allocator.dupe(u8, m.path);
     }
-    defer for (result.graph.modules.items) |*m| {
+    defer for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
         m.dev_id = "";
     };
