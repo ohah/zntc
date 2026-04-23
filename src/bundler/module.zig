@@ -357,11 +357,14 @@ pub const Module = struct {
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
         if (self.alias_table) |*t| t.deinit();
-        // require.context: plugin 이 채운 outer slice free (#1579 Phase 2).
-        // inner []const u8 은 plugin 책임 (source slice / static / plugin lifetime).
+        // require.context: plugin 이 채운 outer slice + 각 inner string free (#1579 Phase 2).
+        // contract: plugin 이 allocator 로 dupe 한 상태로 반환 → graph 가 일괄 해제.
         for (self.import_records) |record| {
             if (record.kind == .require_context) {
-                if (record.context_matches) |matches| allocator.free(matches);
+                if (record.context_matches) |matches| {
+                    for (matches) |s| allocator.free(s);
+                    allocator.free(matches);
+                }
             }
         }
         // parse_arena가 Scanner/Parser/AST/source 메모리를 전부 소유.

@@ -69,10 +69,9 @@ pub const Plugin = struct {
     /// 단계의 chunk 분할 결정만 좌우). 따라서 host plugin 은 파일 매칭에만 집중하고, mode 는
     /// `record.context_mode` 로 codegen (Phase 3) 에서 직접 활용.
     ///
-    /// **메모리 소유권**:
-    ///   - **outer slice** (`[]const u8`): `allocator` 로 할당 — Module.deinit 시 graph 가 free.
-    ///   - **inner `[]const u8`** (각 파일 경로): plugin 책임. source slice 참조, static literal,
-    ///     또는 plugin 자체 lifetime — 무엇이든 OK. graph 는 free 안 함.
+    /// **메모리 소유권**: outer slice + 각 inner `[]const u8` 모두 `allocator` 로 할당해야 한다.
+    /// `Module.deinit` 시 graph 가 일괄 free. plugin 이 source slice / static literal 을 그대로
+    /// 반환하려면 `allocator.dupe(u8, s)` 로 복사 필수. 메모리 contract 단순화 위해 단일 정책.
     ///
     /// null 반환: 이 plugin 이 처리 안 함 (다음 plugin 시도 또는 graph 가 diagnostic emit).
     /// 빈 슬라이스 `&.{}`: "매칭 0개 (empty context)" — 정상 동작.

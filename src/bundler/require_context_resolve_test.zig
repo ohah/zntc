@@ -83,10 +83,11 @@ fn matchingCallback(
     _: []const u8,
     allocator: std.mem.Allocator,
 ) PluginError!?[]const []const u8 {
+    // contract: outer slice + inner string 모두 allocator 소유 (graph 가 free)
     const result = try allocator.alloc([]const u8, 3);
-    result[0] = "./a.tsx";
-    result[1] = "./b.tsx";
-    result[2] = "./c.tsx";
+    result[0] = try allocator.dupe(u8, "./a.tsx");
+    result[1] = try allocator.dupe(u8, "./b.tsx");
+    result[2] = try allocator.dupe(u8, "./c.tsx");
     return result;
 }
 
@@ -114,6 +115,12 @@ fn errorCallback(
     return error.PluginFailed;
 }
 
+/// Plugin contract 에 따라 outer + inner 모두 free.
+fn freeMatches(alloc: std.mem.Allocator, matches: []const []const u8) void {
+    for (matches) |s| alloc.free(s);
+    alloc.free(matches);
+}
+
 test "runResolveContext: empty plugins → null" {
     const runner = PluginRunner.init(&.{});
     const result = try runner.runResolveContext("./pages", true, null, null, "/tmp/foo.ts", std.testing.allocator);
@@ -133,7 +140,7 @@ test "runResolveContext: hook called with all args propagated" {
     const runner = PluginRunner.init(&plugins);
     const result = try runner.runResolveContext("./app", true, "\\.tsx?$", "i", "/proj/index.ts", std.testing.allocator);
     try std.testing.expect(result != null);
-    defer std.testing.allocator.free(result.?);
+    defer freeMatches(std.testing.allocator, result.?);
 
     try std.testing.expectEqual(@as(u32, 1), RecordedCall.call_count);
     try std.testing.expectEqualStrings("./app", RecordedCall.dir());
@@ -152,7 +159,7 @@ test "runResolveContext: first non-null wins (multiple plugins)" {
     const runner = PluginRunner.init(&plugins);
     const result = try runner.runResolveContext("./pages", true, null, null, "/proj/index.ts", std.testing.allocator);
     try std.testing.expect(result != null);
-    defer std.testing.allocator.free(result.?);
+    defer freeMatches(std.testing.allocator, result.?);
     try std.testing.expectEqual(@as(usize, 3), result.?.len);
 }
 
@@ -172,7 +179,7 @@ test "runResolveContext: plugin returns empty slice (matched 0 files) — valid"
     const runner = PluginRunner.init(&plugins);
     const result = try runner.runResolveContext("./empty-dir", true, null, null, "/proj/index.ts", std.testing.allocator);
     try std.testing.expect(result != null);
-    defer std.testing.allocator.free(result.?);
+    defer freeMatches(std.testing.allocator, result.?);
     try std.testing.expectEqual(@as(usize, 0), result.?.len);
 }
 
