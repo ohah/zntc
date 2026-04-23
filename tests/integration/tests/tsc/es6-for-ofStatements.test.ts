@@ -322,7 +322,8 @@ for (var v of new MyStringIterator) { }`,
     );
   });
   test("for-of29", async () => {
-    await expectError(
+    // tsc type-check error only — parse level 통과 (optional computed method signature). (#1767)
+    await expectPass(
       `//@target: ES6
 declare var iterableWithOptionalIterator: {
     [Symbol.iterator]?(): Iterator<string>

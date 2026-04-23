@@ -778,6 +778,20 @@ class C {
 "
 `;
 
+exports[`TSC: es6/computedProperties computedPropertyNames35_ES5 1`] = `
+"function foo() {
+	return "";
+}
+"
+`;
+
+exports[`TSC: es6/computedProperties computedPropertyNames35_ES6 1`] = `
+"function foo() {
+	return "";
+}
+"
+`;
+
 exports[`TSC: es6/computedProperties computedPropertyNames36_ES5 1`] = `
 "class Foo {
 	x;

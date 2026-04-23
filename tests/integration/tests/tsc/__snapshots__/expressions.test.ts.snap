@@ -5319,6 +5319,45 @@ var r = a instanceof a;
 "
 `;
 
+exports[`TSC: expressions instanceofOperatorWithInvalidOperands.es2015 1`] = `
+"class C {
+	foo() {
+	}
+}
+var x;
+// invalid left operand
+// the left operand is required to be of type Any, an object type, or a type parameter type
+var a4;
+var ra1 = a1 instanceof x;
+var ra2 = a2 instanceof x;
+var ra3 = a3 instanceof x;
+var ra4 = a4 instanceof x;
+var ra5 = 0 instanceof x;
+var ra6 = true instanceof x;
+var ra7 = "" instanceof x;
+var ra8 = null instanceof x;
+var ra9 = undefined instanceof x;
+// invalid right operand
+// the right operand to be of type Any or a subtype of the 'Function' interface type
+var b4;
+var rb1 = x instanceof b1;
+var rb2 = x instanceof b2;
+var rb3 = x instanceof b3;
+var rb4 = x instanceof b4;
+var rb5 = x instanceof 0;
+var rb6 = x instanceof true;
+var rb7 = x instanceof "";
+var rb8 = x instanceof o1;
+var rb9 = x instanceof o2;
+var rb10 = x instanceof o3;
+// both operands are invalid
+var rc1 = "" instanceof {};
+var ra10 = o5 instanceof o4;
+// invalid @@hasInstance method return type on RHS
+var rb11 = x instanceof o6;
+"
+`;
+
 exports[`TSC: expressions instanceofOperatorWithInvalidOperands 1`] = `
 "class C {
 	foo() {
@@ -5388,6 +5427,84 @@ exports[`TSC: expressions instanceofOperatorWithLHSIsTypeParameter 1`] = `
 	var x;
 	var r = t instanceof x;
 }
+"
+`;
+
+exports[`TSC: expressions instanceofOperatorWithRHSHasSymbolHasInstance 1`] = `
+"lhs0 instanceof rhs0 && lhs0;
+lhs0 instanceof rhs1 && lhs0;
+lhs0 instanceof rhs2 && lhs0;
+lhs0 instanceof rhs3 && lhs0;
+lhs0 instanceof rhs4 && lhs0;
+lhs0 instanceof rhs5 && lhs0;
+lhs0 instanceof rhs6 && lhs0;
+lhs0 instanceof Rhs7 && lhs0;
+lhs0 instanceof Rhs8 && lhs0;
+lhs0 instanceof Rhs9 && lhs0;
+lhs0 instanceof Rhs10 && lhs0;
+lhs0 instanceof Rhs11 && lhs0;
+lhs0 instanceof Rhs12 && lhs0;
+lhs0 instanceof Rhs13 && lhs0;
+lhs1 instanceof rhs0 && lhs1;
+lhs1 instanceof rhs1 && lhs1;
+lhs1 instanceof rhs2 && lhs1;
+lhs1 instanceof Rhs7 && lhs1;
+lhs1 instanceof Rhs8 && lhs1;
+lhs1 instanceof Rhs9 && lhs1;
+lhs2 instanceof rhs0 && lhs2;
+lhs2 instanceof rhs1 && lhs2;
+lhs2 instanceof rhs2 && lhs2;
+lhs2 instanceof rhs3 && lhs2;
+lhs2 instanceof rhs4 && lhs2;
+lhs2 instanceof rhs5 && lhs2;
+lhs2 instanceof Rhs7 && lhs2;
+lhs2 instanceof Rhs8 && lhs2;
+lhs2 instanceof Rhs9 && lhs2;
+lhs2 instanceof Rhs10 && lhs2;
+lhs2 instanceof Rhs11 && lhs2;
+lhs2 instanceof Rhs12 && lhs2;
+lhs3 instanceof rhs0 && lhs3;
+lhs3 instanceof rhs1 && lhs3;
+lhs3 instanceof rhs2 && lhs3;
+lhs3 instanceof rhs3 && lhs3;
+lhs3 instanceof rhs4 && lhs3;
+lhs3 instanceof rhs5 && lhs3;
+lhs3 instanceof rhs6 && lhs3;
+lhs3 instanceof Rhs7 && lhs3;
+lhs3 instanceof Rhs8 && lhs3;
+lhs3 instanceof Rhs9 && lhs3;
+lhs3 instanceof Rhs10 && lhs3;
+lhs3 instanceof Rhs11 && lhs3;
+lhs3 instanceof Rhs12 && lhs3;
+lhs3 instanceof Rhs13 && lhs3;
+lhs4 instanceof rhs0 && lhs4;
+lhs4 instanceof rhs1 && lhs4;
+lhs4 instanceof rhs2 && lhs4;
+lhs4 instanceof rhs3 && lhs4;
+lhs4 instanceof rhs4 && lhs4;
+lhs4 instanceof rhs5 && lhs4;
+lhs4 instanceof Rhs7 && lhs4;
+lhs4 instanceof Rhs8 && lhs4;
+lhs4 instanceof Rhs9 && lhs4;
+lhs4 instanceof Rhs10 && lhs4;
+lhs4 instanceof Rhs11 && lhs4;
+lhs4 instanceof Rhs12 && lhs4;
+// approximation of \`getInstanceType\` behavior, with one caveat: the checker versions unions the return types of
+// all construct signatures, but we have no way of extracting individual construct signatures from a type.
+// <- tests whether 'U' is 'any'
+if (obj instanceof A) {
+	obj;
+}
+// A
+if (obj instanceof B) {
+	obj;
+}
+// B
+// intersections
+// https://github.com/microsoft/TypeScript/issues/56536
+lhs0 instanceof rhs14 && lhs0;
+// unions
+lhs0 instanceof rhs15 && lhs0;
 "
 `;
 
@@ -12395,6 +12512,112 @@ if (obj14 instanceof G) {
 // a type with a prototype that has any type
 // high priority, but any type is ignored. interface has implicit \`prototype: any\`.
 // low priority
+if (obj15 instanceof H) {
+	// narrowed to H.
+	obj15.foo;
+	obj15.bar;
+}
+if (obj16 instanceof H) {
+	obj16.foo1;
+	obj16.foo2;
+}
+if (obj17 instanceof Object) {
+	// can't narrow type from 'any' to 'Object'
+	obj17.foo1;
+	obj17.foo2;
+}
+if (obj18 instanceof Function) {
+	// can't narrow type from 'any' to 'Function'
+	obj18.foo1;
+	obj18.foo2;
+}
+"
+`;
+
+exports[`TSC: expressions typeGuardsWithInstanceOfBySymbolHasInstance 1`] = `
+"if (obj1 instanceof A) {
+	// narrowed to A.
+	obj1.foo;
+	obj1.bar;
+}
+if (obj2 instanceof A) {
+	obj2.foo;
+	obj2.bar;
+}
+// a construct signature with generics
+if (obj3 instanceof B) {
+	// narrowed to B<number>.
+	obj3.foo = 1;
+	obj3.foo = "str";
+	obj3.bar = "str";
+}
+if (obj4 instanceof B) {
+	obj4.foo = "str";
+	obj4.foo = 1;
+	obj4.bar = "str";
+}
+// has multiple construct signature
+if (obj5 instanceof C) {
+	// narrowed to C1.
+	obj5.foo;
+	obj5.c;
+	obj5.bar1;
+	obj5.bar2;
+}
+if (obj6 instanceof C) {
+	obj6.foo;
+	obj6.bar1;
+	obj6.bar2;
+}
+// with object type literal
+if (obj7 instanceof D) {
+	// narrowed to D.
+	obj7.foo;
+	obj7.bar;
+}
+if (obj8 instanceof D) {
+	obj8.foo;
+	obj8.bar;
+}
+// a construct signature that returns a union type
+if (obj9 instanceof E) {
+	// narrowed to E1
+	obj9.foo;
+	obj9.bar1;
+	obj9.bar2;
+}
+if (obj10 instanceof E) {
+	obj10.foo;
+	obj10.bar1;
+	obj10.bar2;
+}
+// a construct signature that returns any
+if (obj11 instanceof F) {
+	// can't type narrowing, construct signature returns any.
+	obj11.foo;
+	obj11.bar;
+}
+if (obj12 instanceof F) {
+	obj12.foo;
+	obj12.bar;
+}
+// a type with a prototype, it overrides the construct signature
+// high priority
+// low priority
+// overrides priority
+if (obj13 instanceof G) {
+	// narrowed to G1. G1 is return type of prototype property.
+	obj13.foo1;
+	obj13.foo2;
+}
+if (obj14 instanceof G) {
+	obj14.foo1;
+	obj14.foo2;
+}
+// a type with a prototype that has any type
+// high priority, but any type is ignored. interface has implicit \`prototype: any\`.
+// low priority
+// overrides priority
 if (obj15 instanceof H) {
 	// narrowed to H.
 	obj15.foo;

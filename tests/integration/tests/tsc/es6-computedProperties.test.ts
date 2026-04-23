@@ -837,7 +837,8 @@ class C<T> {
     );
   });
   test("computedPropertyNames35_ES5", async () => {
-    await expectError(
+    // tsc type-check error only — parse level 통과. (#1767)
+    await expectPass(
       `function foo<T>() { return '' }
 interface I<T> {
     bar(): string;
@@ -847,7 +848,8 @@ interface I<T> {
     );
   });
   test("computedPropertyNames35_ES6", async () => {
-    await expectError(
+    // tsc type-check error only — parse level 통과. (#1767)
+    await expectPass(
       `function foo<T>() { return '' }
 interface I<T> {
     bar(): string;

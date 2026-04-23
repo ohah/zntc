@@ -273,6 +273,13 @@ for (var v of new MyStringIterator()) {
 "
 `;
 
+exports[`TSC: es6/for-ofStatements for-of29 1`] = `
+"//@target: ES6
+for (var v of iterableWithOptionalIterator) {
+}
+"
+`;
+
 exports[`TSC: es6/for-ofStatements for-of30 1`] = `
 "//@target: ES6
 class MyStringIterator {
