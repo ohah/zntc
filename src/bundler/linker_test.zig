@@ -41,7 +41,7 @@ test "linker: direct import resolves to export" {
     defer r.cache.deinit();
 
     // a.ts의 import x가 b.ts의 export x에 연결
-    const a = r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(a.import_bindings.len > 0);
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
@@ -62,7 +62,7 @@ test "linker: re-export chain resolved" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const a = r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // chain: a→b→c, canonical은 c(index 2)
@@ -100,7 +100,7 @@ test "linker: export * resolves through re-export all" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const a = r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // export * → c.ts(index 2)
@@ -123,14 +123,14 @@ test "linker: export * from CJS resolves to CJS module" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const a = r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // c.js는 CJS이므로, resolveExportChain이 c.js(index 2)를 반환
     try std.testing.expectEqual(@as(u32, 2), @intFromEnum(binding.?.canonical.module_index));
     try std.testing.expectEqualStrings("x", binding.?.canonical.export_name);
     // c.js가 실제로 CJS로 감지되었는지 확인
-    try std.testing.expectEqual(types.WrapKind.cjs, r.graph.modules.items[2].wrap_kind);
+    try std.testing.expectEqual(types.WrapKind.cjs, r.graph.getModule(ModuleIndex.fromUsize(2)).?.wrap_kind);
 }
 
 test "linker: namespace re-export resolves to local binding" {
@@ -149,7 +149,7 @@ test "linker: namespace re-export resolves to local binding" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const a = r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // namespace re-export는 b.ts(index 1)의 로컬 바인딩을 반환
@@ -183,7 +183,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
     try linker.link();
 
     // b.js가 CJS로 감지됨
-    try std.testing.expectEqual(types.WrapKind.cjs, graph.modules.items[1].wrap_kind);
+    try std.testing.expectEqual(types.WrapKind.cjs, graph.getModule(ModuleIndex.fromUsize(1)).?.wrap_kind);
 
     // CJS 모듈(index 1)에 직접 resolveExportChain 호출 → null
     // CJS는 정적 export가 없으므로 named export를 찾을 수 없다
@@ -202,7 +202,7 @@ test "linker: default import resolves" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const a = r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     try std.testing.expectEqualStrings("default", binding.?.canonical.export_name);
@@ -334,7 +334,7 @@ test "rename: getCanonicalName returns renamed" {
 
     // 하나는 getCanonicalName으로 리네임 조회 가능
     var found_rename = false;
-    for (r.graph.modules.items, 0..) |_, i| {
+    for (0..r.graph.moduleCount()) |i| {
         if (r.linker.getCanonicalName(@intCast(i), "count")) |renamed| {
             try std.testing.expect(std.mem.startsWith(u8, renamed, "count$"));
             found_rename = true;
@@ -344,7 +344,7 @@ test "rename: getCanonicalName returns renamed" {
 
     // 원본 유지되는 모듈은 getCanonicalName이 null
     var found_original = false;
-    for (r.graph.modules.items, 0..) |_, i| {
+    for (0..r.graph.moduleCount()) |i| {
         if (r.linker.getCanonicalName(@intCast(i), "count") == null) {
             found_original = true;
         }
@@ -429,7 +429,7 @@ test "linker: deep re-export chain (near depth limit)" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const a = r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // canonical은 e.ts(마지막 모듈)
@@ -540,7 +540,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     // 전체 3개 모듈을 글로벌 rename — 2개가 rename됨
     try linker.computeRenames();
     var global_rename_count: usize = 0;
-    for (graph.modules.items, 0..) |_, i| {
+    for (0..graph.moduleCount()) |i| {
         if (linker.getCanonicalName(@intCast(i), "x") != null) global_rename_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), global_rename_count);
@@ -549,7 +549,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     const subset = &[_]ModuleIndex{ @enumFromInt(0), @enumFromInt(1) };
     try linker.computeRenamesForModules(subset, &.{});
     var subset_rename_count: usize = 0;
-    for (graph.modules.items, 0..) |_, i| {
+    for (0..graph.moduleCount()) |i| {
         if (linker.getCanonicalName(@intCast(i), "x") != null) subset_rename_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), subset_rename_count);
@@ -602,7 +602,7 @@ test "namespace: import * as creates namespace object preamble" {
 
     // namespace import는 resolved_bindings에 등록되지 않음 (resolveImports에서 skip)
     // 대신 buildMetadataForAst에서 preamble로 처리
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
@@ -621,7 +621,7 @@ test "namespace: export * from re-exports collected in namespace" {
     defer r.cache.deinit();
 
     // barrel 모듈에서 export * 로 a, b의 export를 수집
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
@@ -644,7 +644,7 @@ test "re-export alias: export { J as render } resolves to J" {
     defer r.cache.deinit();
 
     // entry의 import { render }가 impl.ts의 J에 연결
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // canonical은 impl.ts의 "J" — re-export 체인을 따라 최종 모듈의 export 이름
@@ -668,7 +668,7 @@ test "re-export alias: export { default as groupBy } — function declaration" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // canonical은 impl.ts의 "default" → local_name = "hello" (함수명)
@@ -689,7 +689,7 @@ test "re-export alias: export { default as X } — identifier reuses original na
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // export default groupBy → local_name = "groupBy" (identifier 이름 재사용)
@@ -744,7 +744,7 @@ test "namespace: diamond export * dedup" {
     defer r.cache.deinit();
 
     // entry에서 namespace import로 ns를 가져옴 — 무한 루프 없이 완료
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
@@ -763,7 +763,7 @@ test "namespace: circular export * no infinite loop" {
     defer r.cache.deinit();
 
     // 무한 루프 없이 완료되면 성공
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
@@ -780,7 +780,7 @@ test "namespace: mixed named + default exports" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
@@ -798,7 +798,7 @@ test "namespace: re-export alias in namespace" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
@@ -821,7 +821,7 @@ test "re-export alias: double-hop chain (z -> y -> x)" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // 3-hop chain → 최종 origin.ts의 "x"
@@ -844,7 +844,7 @@ test "re-export alias: default class declaration resolves to class name" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // default class declaration → local_name = "MyWidget"
@@ -916,7 +916,7 @@ test "export * as: basic namespace re-export" {
     defer r.cache.deinit();
 
     // entry의 import { math }가 barrel의 "math" export에 연결
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     const binding = r.linker.getResolvedBinding(0, entry.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     try std.testing.expectEqualStrings("math", binding.?.canonical.export_name);
@@ -936,7 +936,8 @@ test "export * as: binding_scanner registers named export" {
 
     // barrel 모듈(index 1)의 export_bindings에 "utils" 이름이 등록됨
     var has_utils_export = false;
-    for (r.graph.modules.items) |m| {
+    var it = r.graph.modulesIterator();
+    while (it.next()) |m| {
         for (m.export_bindings) |eb| {
             if (std.mem.eql(u8, eb.exported_name, "utils")) {
                 has_utils_export = true;
@@ -964,7 +965,7 @@ test "namespace rewrite: ns.prop resolved in ns_member_rewrites" {
     defer r.cache.deinit();
 
     // ns.prop만 사용 → ns_member_rewrites에 매핑 등록
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
@@ -1052,7 +1053,7 @@ test "export * as: does not pollute parent seen (name collision)" {
     defer r.cache.deinit();
 
     // entry의 namespace import 확인
-    const entry = r.graph.modules.items[0];
+    const entry = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(entry.import_bindings.len > 0);
     try std.testing.expectEqual(ImportBinding.Kind.namespace, entry.import_bindings[0].kind);
 }
@@ -1088,7 +1089,7 @@ test "preamble: CJS module import — named import generates require_xxx" {
     defer r.cache.deinit();
 
     // c.js가 CJS로 감지되었는지 확인
-    try std.testing.expectEqual(types.WrapKind.cjs, r.graph.modules.items[1].wrap_kind);
+    try std.testing.expectEqual(types.WrapKind.cjs, r.graph.getModule(ModuleIndex.fromUsize(1)).?.wrap_kind);
 
     var md = try buildMetadataForModule(&r, 0, true);
     defer md.deinit();
@@ -1187,7 +1188,7 @@ test "preamble: dev mode — named import uses namespace access pattern" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
+    const ast: *const Ast = &(r.graph.getModule(ModuleIndex.fromUsize(0)).?.ast orelse unreachable);
     var md = try r.linker.buildDevMetadataForAst(ast, 0);
     defer md.deinit();
 
@@ -1225,7 +1226,7 @@ test "preamble: dev mode — default import uses .default" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
+    const ast: *const Ast = &(r.graph.getModule(ModuleIndex.fromUsize(0)).?.ast orelse unreachable);
     var md = try r.linker.buildDevMetadataForAst(ast, 0);
     defer md.deinit();
 
@@ -1246,7 +1247,7 @@ test "preamble: dev mode — namespace import without .default" {
     defer r.graph.deinit();
     defer r.cache.deinit();
 
-    const ast: *const Ast = &(r.graph.modules.items[0].ast orelse unreachable);
+    const ast: *const Ast = &(r.graph.getModule(ModuleIndex.fromUsize(0)).?.ast orelse unreachable);
     var md = try r.linker.buildDevMetadataForAst(ast, 0);
     defer md.deinit();
 
@@ -1330,7 +1331,7 @@ test "populateSymbolRefCounts: import이 source default symbol의 ref_count 증�
 
     // b.ts의 synthetic_default symbol이 참조되어 ref_count == 1.
     // #1328 Phase 4e-2b: _default는 semantic 공간에 등록됨.
-    const b = &r.graph.modules.items[1];
+    const b = r.graph.getModule(ModuleIndex.fromUsize(1)).?;
     const b_sem = b.semantic orelse return error.NoSemantic;
     var found_ref: u32 = 0;
     for (b_sem.symbols.items) |sym| {
@@ -1359,7 +1360,7 @@ test "populateSymbolRefCounts: 아무도 안 쓰는 export는 ref_count 0" {
     r.linker.populateImportSymbols(r.graph.modules.items);
     r.linker.populateSymbolRefCounts(r.graph.modules.items);
 
-    const b = &r.graph.modules.items[1];
+    const b = r.graph.getModule(ModuleIndex.fromUsize(1)).?;
     const b_sem = b.semantic orelse return error.NoSemantic;
     var found_ref: u32 = 0;
     var found_default = false;
@@ -1391,7 +1392,7 @@ test "getCanonicalByRef: alias symbol의 canonical_name 반환" {
     r.linker.populateImportSymbols(r.graph.modules.items);
 
     // a.ts의 barrel re-export alias symbol 찾기
-    const a = &r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     var alias_ref: ?@import("symbol.zig").SymbolRef = null;
     for (a.export_bindings) |eb| {
         if (eb.kind == .re_export and std.mem.eql(u8, eb.exported_name, "Foo")) {
@@ -1423,7 +1424,8 @@ test "computeRenames: rename된 심볼의 canonical_name이 semantic.Symbol에 �
 
     // m1 또는 m2 중 하나의 'x' 심볼이 canonical_name을 갖춰야 함
     var renamed_count: u32 = 0;
-    for (r.graph.modules.items) |m| {
+    var it = r.graph.modulesIterator();
+    while (it.next()) |m| {
         const sem = m.semantic orelse continue;
         if (sem.scope_maps.len == 0) continue;
         const sym_idx = sem.scope_maps[0].get("x") orelse continue;
@@ -1491,7 +1493,7 @@ test "populateImportSymbols: named import의 local_symbol이 현재 모듈 seman
 
     r.linker.populateImportSymbols(r.graph.modules.items);
 
-    const a = &r.graph.modules.items[0];
+    const a = r.graph.getModule(ModuleIndex.fromUsize(0)).?;
     var found = false;
     for (a.import_bindings) |ib| {
         if (std.mem.eql(u8, ib.local_name, "x")) {

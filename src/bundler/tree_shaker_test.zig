@@ -4,6 +4,8 @@ const TreeShaker = tree_shaker_mod.TreeShaker;
 const ALL_EXPORTS_SENTINEL = tree_shaker_mod.ALL_EXPORTS_SENTINEL;
 const Linker = @import("linker.zig").Linker;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const types = @import("types.zig");
+const ModuleIndex = types.ModuleIndex;
 const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 
@@ -22,7 +24,8 @@ const TestResult = struct {
 
     /// 모듈 경로 접미사로 인덱스 조회. 못 찾으면 null.
     fn findModule(self: *const TestResult, suffix: []const u8) ?u32 {
-        for (self.graph.modules.items, 0..) |m, i| {
+        for (0..self.graph.moduleCount()) |i| {
+            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
             if (std.mem.endsWith(u8, m.path, suffix)) return @intCast(i);
         }
         return null;
@@ -50,7 +53,8 @@ fn buildAndShakeWithOpts(
     var graph = ModuleGraph.init(allocator, &cache);
     try graph.build(&.{entry});
 
-    for (graph.modules.items) |*m| {
+    for (0..graph.moduleCount()) |i| {
+        const m = graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         for (no_side_effects) |suffix| {
             if (std.mem.endsWith(u8, m.path, suffix)) {
                 m.side_effects = false;
@@ -192,7 +196,7 @@ test "tree-shaking: included module's dependencies are propagated" {
     defer r.deinit();
 
     // a, b, c 모두 포함
-    for (r.graph.modules.items, 0..) |_, i| {
+    for (0..r.graph.moduleCount()) |i| {
         try std.testing.expect(r.shaker.isIncluded(@intCast(i)));
     }
 }
@@ -228,7 +232,7 @@ test "tree-shaking: diamond dependency — shared module included once" {
     var r = try buildAndShake(std.testing.allocator, &tmp, "a.ts");
     defer r.deinit();
 
-    for (r.graph.modules.items, 0..) |_, i| {
+    for (0..r.graph.moduleCount()) |i| {
         try std.testing.expect(r.shaker.isIncluded(@intCast(i)));
     }
     try std.testing.expect(r.shaker.isExportUsed(r.findModule("d.ts").?, "shared"));
@@ -303,7 +307,8 @@ test "esbuild: namespace import marks all exports as used" {
     defer r.deinit();
 
     var lib_idx: u32 = 0;
-    for (r.graph.modules.items, 0..) |m, i| {
+    for (0..r.graph.moduleCount()) |i| {
+        const m = r.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         if (std.mem.endsWith(u8, m.path, "lib.ts")) {
             lib_idx = @intCast(i);
             break;
@@ -337,7 +342,8 @@ test "rolldown: re-export chain preserves side-effect module" {
     defer r.deinit();
 
     // 모든 모듈 포함 (side_effects=true 기본이므로)
-    for (r.graph.modules.items, 0..) |m, i| {
+    for (0..r.graph.moduleCount()) |i| {
+        const m = r.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         if (std.mem.endsWith(u8, m.path, "sideeffect.ts")) {
             try std.testing.expect(r.shaker.isIncluded(@intCast(i)));
         }
@@ -380,7 +386,8 @@ test "rolldown: barrel file — only used re-exports tracked" {
     // mod-a의 a는 사용됨
     var mod_a_idx: u32 = 0;
     var mod_b_idx: u32 = 0;
-    for (r.graph.modules.items, 0..) |m, i| {
+    for (0..r.graph.moduleCount()) |i| {
+        const m = r.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         if (std.mem.endsWith(u8, m.path, "mod-a.ts")) mod_a_idx = @intCast(i);
         if (std.mem.endsWith(u8, m.path, "mod-b.ts")) mod_b_idx = @intCast(i);
     }
@@ -401,7 +408,8 @@ test "rolldown: export * — only used names tracked through star" {
     defer r.deinit();
 
     var lib_idx: u32 = 0;
-    for (r.graph.modules.items, 0..) |m, i| {
+    for (0..r.graph.moduleCount()) |i| {
+        const m = r.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         if (std.mem.endsWith(u8, m.path, "lib.ts")) {
             lib_idx = @intCast(i);
             break;
@@ -429,7 +437,8 @@ test "rollup: deconflict after tree-shaking" {
     defer r.deinit();
 
     var used_idx: u32 = 0;
-    for (r.graph.modules.items, 0..) |m, i| {
+    for (0..r.graph.moduleCount()) |i| {
+        const m = r.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         if (std.mem.endsWith(u8, m.path, "used.ts")) {
             used_idx = @intCast(i);
             break;
@@ -454,7 +463,8 @@ test "rollup: module with class instantiation has side effects" {
     defer r.deinit();
 
     // effects.ts는 side_effects=true (기본) → 포함
-    for (r.graph.modules.items, 0..) |m, i| {
+    for (0..r.graph.moduleCount()) |i| {
+        const m = r.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         if (std.mem.endsWith(u8, m.path, "effects.ts")) {
             try std.testing.expect(r.shaker.isIncluded(@intCast(i)));
         }
@@ -721,7 +731,8 @@ test "re-export-local: import then export { x } passes through" {
     defer r.deinit();
 
     // entry가 x를 사용 → mid 포함 → leaf 포함
-    for (r.graph.modules.items, 0..) |m, i| {
+    for (0..r.graph.moduleCount()) |i| {
+        const m = r.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         if (std.mem.endsWith(u8, m.path, "leaf.ts")) {
             try std.testing.expect(r.shaker.isIncluded(@intCast(i)));
         }
@@ -2099,7 +2110,7 @@ test "#1558 Phase 5: live export가 내부 private helper를 참조하면 dead �
 
     // privateHelper는 export는 아니지만 lib 모듈 내 선언이 reachable이어야
     // linker가 dangling reference 없이 번들 가능.
-    const lib_mod = r.graph.modules.items[lib];
+    const lib_mod = r.graph.getModule(ModuleIndex.fromUsize(lib)).?;
     const infos = r.shaker.getModuleStmtInfos(lib) orelse return error.NoStmtInfo;
     const sem = lib_mod.semantic orelse return error.NoSemantic;
     const helper_sym = sem.scope_maps[0].get("privateHelper") orelse return error.NoSym;

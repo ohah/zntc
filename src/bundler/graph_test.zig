@@ -4,6 +4,7 @@ const ModuleGraph = graph_mod.ModuleGraph;
 const determineExportsKind = graph_mod.determineExportsKind;
 const Module = @import("module.zig").Module;
 const types = @import("types.zig");
+const ModuleIndex = types.ModuleIndex;
 const import_scanner = @import("import_scanner.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const module_store_mod = @import("module_store.zig");
@@ -39,9 +40,9 @@ test "graph: single module, no imports" {
 
     try graph.build(&.{entry});
 
-    try std.testing.expectEqual(@as(usize, 1), graph.modules.items.len);
-    try std.testing.expectEqual(@as(u32, 0), graph.modules.items[0].exec_index);
-    try std.testing.expectEqual(Module.State.ready, graph.modules.items[0].state);
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    try std.testing.expectEqual(@as(u32, 0), graph.getModule(ModuleIndex.fromUsize(0)).?.exec_index);
+    try std.testing.expectEqual(Module.State.ready, graph.getModule(ModuleIndex.fromUsize(0)).?.state);
 }
 
 test "graph: A imports B — correct exec order" {
@@ -62,11 +63,11 @@ test "graph: A imports B — correct exec order" {
 
     try graph.build(&.{entry});
 
-    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
 
     // DFS 후위: B가 먼저 (exec_index=0), A가 나중 (exec_index=1)
-    const a_mod = graph.modules.items[0]; // a.ts가 먼저 addModule됨
-    const b_mod = graph.modules.items[1];
+    const a_mod = graph.getModule(ModuleIndex.fromUsize(0)).?; // a.ts가 먼저 addModule됨
+    const b_mod = graph.getModule(ModuleIndex.fromUsize(1)).?;
     try std.testing.expect(b_mod.exec_index < a_mod.exec_index);
 }
 
@@ -89,12 +90,12 @@ test "graph: chain A → B → C — correct exec order" {
 
     try graph.build(&.{entry});
 
-    try std.testing.expectEqual(@as(usize, 3), graph.modules.items.len);
+    try std.testing.expectEqual(@as(usize, 3), graph.moduleCount());
 
     // C=0, B=1, A=2 (후위 순서)
-    const a = graph.modules.items[0];
-    const b = graph.modules.items[1];
-    const c = graph.modules.items[2];
+    const a = graph.getModule(ModuleIndex.fromUsize(0)).?;
+    const b = graph.getModule(ModuleIndex.fromUsize(1)).?;
+    const c = graph.getModule(ModuleIndex.fromUsize(2)).?;
     try std.testing.expect(c.exec_index < b.exec_index);
     try std.testing.expect(b.exec_index < a.exec_index);
 }
@@ -120,12 +121,13 @@ test "graph: diamond A→B,C; B→D; C→D — no duplicate" {
     try graph.build(&.{entry});
 
     // D가 중복 없이 4개 모듈
-    try std.testing.expectEqual(@as(usize, 4), graph.modules.items.len);
+    try std.testing.expectEqual(@as(usize, 4), graph.moduleCount());
 
     // D가 가장 먼저 실행 (exec_index 최소)
     var min_exec: u32 = std.math.maxInt(u32);
     var min_path: []const u8 = "";
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         if (m.exec_index < min_exec) {
             min_exec = m.exec_index;
             min_path = m.path;
@@ -153,7 +155,7 @@ test "graph: circular dependency — warning emitted" {
     try graph.build(&.{entry});
 
     // 2개 모듈, 순환 경고 존재
-    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
 
     var has_circular_warning = false;
     for (graph.diagnostics.items) |d| {
@@ -180,7 +182,7 @@ test "graph: external module — not in graph" {
     try graph.build(&.{entry});
 
     // react는 external이므로 그래프에 안 들어감
-    try std.testing.expectEqual(@as(usize, 1), graph.modules.items.len);
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
 }
 
 test "graph: unresolved import — error diagnostic" {
@@ -227,9 +229,9 @@ test "graph: bidirectional edges (D078)" {
     try graph.build(&.{entry});
 
     // A.dependencies에 B
-    try std.testing.expectEqual(@as(usize, 1), graph.modules.items[0].dependencies.items.len);
+    try std.testing.expectEqual(@as(usize, 1), graph.getModule(ModuleIndex.fromUsize(0)).?.dependencies.items.len);
     // B.importers에 A
-    try std.testing.expectEqual(@as(usize, 1), graph.modules.items[1].importers.items.len);
+    try std.testing.expectEqual(@as(usize, 1), graph.getModule(ModuleIndex.fromUsize(1)).?.importers.items.len);
 }
 
 test "graph: re-export adds dependency" {
@@ -250,8 +252,8 @@ test "graph: re-export adds dependency" {
 
     try graph.build(&.{entry});
 
-    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
-    try std.testing.expectEqual(@as(usize, 1), graph.modules.items[0].dependencies.items.len);
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
+    try std.testing.expectEqual(@as(usize, 1), graph.getModule(ModuleIndex.fromUsize(0)).?.dependencies.items.len);
 }
 
 test "graph: multiple entry points" {
@@ -274,10 +276,10 @@ test "graph: multiple entry points" {
 
     try graph.build(&.{ e1, e2 });
 
-    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
     // 둘 다 exec_index가 할당됨 (maxInt 아님)
-    try std.testing.expect(graph.modules.items[0].exec_index != std.math.maxInt(u32));
-    try std.testing.expect(graph.modules.items[1].exec_index != std.math.maxInt(u32));
+    try std.testing.expect(graph.getModule(ModuleIndex.fromUsize(0)).?.exec_index != std.math.maxInt(u32));
+    try std.testing.expect(graph.getModule(ModuleIndex.fromUsize(1)).?.exec_index != std.math.maxInt(u32));
 }
 
 test "graph: dynamic import stored in dynamic_imports" {
@@ -298,10 +300,10 @@ test "graph: dynamic import stored in dynamic_imports" {
 
     try graph.build(&.{entry});
 
-    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
     // 동적 import는 dynamic_imports에, dependencies에는 없음
-    try std.testing.expectEqual(@as(usize, 0), graph.modules.items[0].dependencies.items.len);
-    try std.testing.expectEqual(@as(usize, 1), graph.modules.items[0].dynamic_imports.items.len);
+    try std.testing.expectEqual(@as(usize, 0), graph.getModule(ModuleIndex.fromUsize(0)).?.dependencies.items.len);
+    try std.testing.expectEqual(@as(usize, 1), graph.getModule(ModuleIndex.fromUsize(0)).?.dynamic_imports.items.len);
 }
 
 test "graph: JSON module — no AST, in graph" {
@@ -322,9 +324,9 @@ test "graph: JSON module — no AST, in graph" {
 
     try graph.build(&.{entry});
 
-    try std.testing.expectEqual(@as(usize, 2), graph.modules.items.len);
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
     // JSON 모듈은 ESM AST로 변환됨 (export default <json>)
-    const json_mod = graph.modules.items[1];
+    const json_mod = graph.getModule(ModuleIndex.fromUsize(1)).?;
     try std.testing.expect(json_mod.ast != null);
     try std.testing.expectEqual(types.ModuleType.json, json_mod.module_type);
     try std.testing.expectEqual(types.ExportsKind.esm, json_mod.exports_kind);
@@ -347,7 +349,7 @@ test "graph: semantic data preserved after build" {
 
     try graph.build(&.{entry});
 
-    const m = graph.modules.items[0];
+    const m = graph.getModule(ModuleIndex.fromUsize(0)).?;
     // semantic 데이터가 보존되어야 함
     try std.testing.expect(m.semantic != null);
     const sem = m.semantic.?;
@@ -379,9 +381,9 @@ test "graph: semantic data null for non-JS modules" {
     try graph.build(&.{entry});
 
     // a.ts는 semantic 있음
-    try std.testing.expect(graph.modules.items[0].semantic != null);
+    try std.testing.expect(graph.getModule(ModuleIndex.fromUsize(0)).?.semantic != null);
     // data.json도 ESM AST로 변환되므로 semantic 있음
-    try std.testing.expect(graph.modules.items[1].semantic != null);
+    try std.testing.expect(graph.getModule(ModuleIndex.fromUsize(1)).?.semantic != null);
 }
 
 test "graph: semantic exported_names tracks default export" {
@@ -401,7 +403,7 @@ test "graph: semantic exported_names tracks default export" {
 
     try graph.build(&.{entry});
 
-    const sem = graph.modules.items[0].semantic.?;
+    const sem = graph.getModule(ModuleIndex.fromUsize(0)).?.semantic.?;
     try std.testing.expect(sem.exported_names.get("default") != null);
 }
 
@@ -424,7 +426,7 @@ test "graph: import/export bindings preserved after build" {
     try graph.build(&.{entry});
 
     // a.ts: import_bindings에 x가 있어야 함
-    const a = graph.modules.items[0];
+    const a = graph.getModule(ModuleIndex.fromUsize(0)).?;
     try std.testing.expect(a.import_bindings.len > 0);
     try std.testing.expectEqualStrings("x", a.import_bindings[0].local_name);
     try std.testing.expectEqualStrings("x", a.import_bindings[0].imported_name);
@@ -434,7 +436,7 @@ test "graph: import/export bindings preserved after build" {
     try std.testing.expectEqualStrings("y", a.export_bindings[0].exported_name);
 
     // b.ts: export_bindings에 x가 있어야 함
-    const b = graph.modules.items[1];
+    const b = graph.getModule(ModuleIndex.fromUsize(1)).?;
     try std.testing.expect(b.export_bindings.len > 0);
     try std.testing.expectEqualStrings("x", b.export_bindings[0].exported_name);
 }
@@ -601,7 +603,8 @@ fn populateStoreForChangedFilesTest(
     var graph = ModuleGraph.init(std.testing.allocator, cache);
     defer graph.deinit();
     try graph.build(&.{entry});
-    for (graph.modules.items) |*m| {
+    for (0..graph.moduleCount()) |i| {
+        const m = graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
         if (m.parse_arena == null) continue;
         store.putModule(m.path, m, m.mtime);
     }
@@ -729,8 +732,8 @@ test "buildIncremental: changed_files=empty + cache miss (new module) → 강제
 
     // changed_files 에 없지만 store 에도 없으므로 skip 조건 불성립 → stat → 신규 파싱.
     try std.testing.expectEqual(@as(usize, 1), r.reparsed_indices.len);
-    try std.testing.expectEqual(@as(usize, 1), graph.modules.items.len);
-    try std.testing.expectEqual(Module.State.ready, graph.modules.items[0].state);
+    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    try std.testing.expectEqual(Module.State.ready, graph.getModule(ModuleIndex.fromUsize(0)).?.state);
 }
 
 // ============================================================================

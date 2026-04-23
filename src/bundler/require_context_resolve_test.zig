@@ -331,7 +331,8 @@ test "graph: require.context with plugin → context_matches populated, no diagn
 
     // record.context_matches 채워졌는지 확인. 메모리는 module.deinit 가 자동 free.
     var found_matches = false;
-    for (graph.modules.items) |m| {
+    var it = graph.modulesIterator();
+    while (it.next()) |m| {
         for (m.import_records) |r| {
             if (r.kind == .require_context and r.context_matches != null and r.context_matches.?.len == 3) {
                 found_matches = true;
