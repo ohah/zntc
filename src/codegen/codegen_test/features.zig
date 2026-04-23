@@ -323,6 +323,74 @@ test "Codegen: JSX fragment" {
     try std.testing.expectEqualStrings("const x=React.createElement(React.Fragment,null,\"hello\");", r.output);
 }
 
+// --- JSX: attribute name quoting (hyphenated / non-identifier props) ---
+
+test "JSX: aria- prop quoted as string key" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <button aria-label=\"Copy\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"aria-label\":\"Copy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "aria-label:") == null);
+}
+
+test "JSX: data- prop quoted as string key" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div data-testid=\"root\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"data-testid\":\"root\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "data-testid:") == null);
+}
+
+test "JSX: normal prop stays as bare identifier" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div className=\"c\" />;");
+    defer r.deinit();
+    // className 은 valid identifier 라 quote 불필요 — 회귀 방지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "className:\"c\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"className\":") == null);
+}
+
+test "JSX: mixed hyphenated and normal props" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <button onClick={f} aria-label=\"x\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "onClick:f") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"aria-label\":\"x\"") != null);
+}
+
+test "JSX: hyphenated prop with expression value" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div aria-hidden={isHidden} />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"aria-hidden\":isHidden") != null);
+}
+
+test "JSX: hyphenated boolean shorthand prop" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div data-x />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"data-x\":true") != null);
+}
+
+test "JSX: dollar/underscore identifiers stay bare" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <div $foo=\"a\" _bar=\"b\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "$foo:\"a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_bar:\"b\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"$foo\"") == null);
+}
+
+test "JSX: multiple hyphenated props on same element" {
+    var r = try e2eJSX(std.testing.allocator, "const x = <input data-a=\"1\" data-b=\"2\" aria-busy=\"true\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"data-a\":\"1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"data-b\":\"2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"aria-busy\":\"true\"") != null);
+}
+
+test "JSX: reserved word as bare identifier key (legal in object literal)" {
+    // JSX attribute 이름이 JS 예약어 (for, class) 라도 object literal key 로 허용되므로
+    // identifier_reference 로 유지 — 회귀 방지 (isValidIdentifierName 이 reserved word 체크 X)
+    var r = try e2eJSX(std.testing.allocator, "const x = <label for=\"id\" />;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "for:\"id\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"for\":") == null);
+}
+
 // --- JSX: closing tag 뒤 텍스트 (children 모드 복원) ---
 
 test "JSX: text after closing child element" {
