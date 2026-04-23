@@ -16,6 +16,10 @@ const resolve_cache_mod = @import("resolve_cache.zig");
 /// 모듈 소유권은 호출자가 유지 — `TestGraph.deinit` 은 graph 의 aux 필드와
 /// backing resolve_cache 만 정리하고 module 는 건드리지 않는다.
 /// chunk 테스트들이 slice 기반으로 modules 를 직접 구성하기 때문에 필요.
+///
+/// **TODO (#1779 PR #3)**: ModuleGraph.modules 가 `std.SegmentedList` 로 교체되면
+/// `.items = modules, .capacity = 0` hack 이 깨진다. 그 시점에 테스트 패턴을
+/// `graph.modules.append(...)` 순서로 재작성하거나, 명시적 non-owning wrapper API 도입.
 const TestGraph = struct {
     graph: ModuleGraph,
     cache: *resolve_cache_mod.ResolveCache,
@@ -24,8 +28,7 @@ const TestGraph = struct {
         const cache_ptr = try alloc.create(resolve_cache_mod.ResolveCache);
         cache_ptr.* = resolve_cache_mod.ResolveCache.init(alloc, .{});
         var graph = ModuleGraph.init(alloc, cache_ptr);
-        // 기존 modules slice 를 ArrayList 에 직접 태우되 capacity=0 으로 두어
-        // deinit path 가 slice 를 free 하지 않도록 한다 (테스트가 defer 로 소유).
+        // ArrayList 내부 필드를 직접 치환. capacity=0 이면 deinit 이 free 를 시도하지 않는다.
         graph.modules = .{ .items = modules, .capacity = 0 };
         return .{ .graph = graph, .cache = cache_ptr };
     }

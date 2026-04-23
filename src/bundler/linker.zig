@@ -473,6 +473,16 @@ pub const Linker = struct {
         self.diagnostics.deinit(self.allocator);
     }
 
+    /// 내부 단축 helper. `self.graph.getModule(ModuleIndex.fromUsize(idx))` 의 반복 방지.
+    pub inline fn getModule(self: *const Linker, idx: u32) ?*const Module {
+        return self.graph.getModule(ModuleIndex.fromUsize(idx));
+    }
+
+    /// mutate 필요한 경로용.
+    pub inline fn moduleAtMut(self: *const Linker, idx: u32) ?*Module {
+        return self.graph.moduleAtMut(ModuleIndex.fromUsize(idx));
+    }
+
     /// 링킹 실행: export 맵 구축 → import 바인딩 해결.
     pub fn link(self: *Linker) !void {
         try self.buildExportMap();
@@ -560,7 +570,7 @@ pub const Linker = struct {
                         if (rec.resolved.isNone()) break :blk true;
                         const target_idx = @intFromEnum(rec.resolved);
                         if (target_idx >= self.graph.moduleCount()) break :blk m.wrap_kind == .esm;
-                        const target_wrap = self.graph.getModule(ModuleIndex.fromUsize(target_idx)).?.wrap_kind;
+                        const target_wrap = self.getModule(target_idx).?.wrap_kind;
                         if (m.wrap_kind == .esm) {
                             // CJS-in-ESM-wrapped named import는 __ns_N.prop rename으로 처리되어
                             // top-level var가 emit되지 않음 (metadata.zig:262-281 + emitter.zig:1565).
@@ -728,7 +738,7 @@ pub const Linker = struct {
         }
 
         for (0..self.graph.moduleCount()) |i| {
-            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
+            const m = self.getModule(@intCast(i)) orelse continue;
             try self.collectModuleNames(m.*, @intCast(i), &name_to_owners);
         }
 
@@ -749,7 +759,7 @@ pub const Linker = struct {
     /// 있으면, target module의 이름을 한 단계 더 rename하여 shadowing 충돌 방지.
     fn resolveNestedShadowConflicts(self: *Linker, name_to_owners: *const NameToOwnersMap) !void {
         for (0..self.graph.moduleCount()) |mod_i| {
-            const m = self.graph.getModule(ModuleIndex.fromUsize(mod_i)) orelse continue;
+            const m = self.getModule(@intCast(mod_i)) orelse continue;
             for (m.import_bindings) |ib| {
                 if (ib.kind == .namespace) continue;
                 const resolved = self.getResolvedBinding(@intCast(mod_i), ib.local_span) orelse continue;
@@ -810,7 +820,7 @@ pub const Linker = struct {
         }
 
         for (0..mod_count) |mi| {
-            const m = self.graph.getModule(ModuleIndex.fromUsize(mi)).?;
+            const m = self.getModule(@intCast(mi)).?;
             const sem_opt = m.semantic;
             const sym_count = if (sem_opt) |s| s.symbols.items.len else 0;
             bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
@@ -931,7 +941,7 @@ pub const Linker = struct {
         for (collected.top_level_candidates) |cand| {
             const key: um.ModuleSymKey = .{ .module_index = cand.module_index, .symbol_id = cand.symbol_id };
             const mangled = result.renames.get(key) orelse continue;
-            const cand_mod = self.graph.getModule(ModuleIndex.fromUsize(cand.module_index)) orelse continue;
+            const cand_mod = self.getModule(cand.module_index) orelse continue;
             const sem = cand_mod.semantic orelse continue;
             if (cand.symbol_id >= sem.symbols.items.len) continue;
             const sym = &sem.symbols.items[cand.symbol_id];
@@ -978,7 +988,7 @@ pub const Linker = struct {
     /// scope_maps[0] → synthetic_name fallback으로 mutable Symbol 찾기.
     /// `lookupSymbolCanonical`도 이 logic 위에서 동작.
     fn findSymbolMutable(self: *const Linker, module_index: u32, name: []const u8) ?*semantic_symbol.Symbol {
-        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return null;
+        const m = self.getModule(module_index) orelse return null;
         const sem = m.semantic orelse return null;
         if (sem.scope_maps.len > 0) {
             if (sem.scope_maps[0].get(name)) |sym_idx| {
@@ -1003,7 +1013,7 @@ pub const Linker = struct {
         }
 
         // fallback
-        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return false;
+        const m = self.getModule(module_index) orelse return false;
         const sem = m.semantic orelse return false;
         for (sem.scope_maps, 0..) |scope_map, scope_idx| {
             if (scope_idx == 0) continue;
@@ -1020,7 +1030,7 @@ pub const Linker = struct {
         for (sets) |*s| s.* = .{};
 
         for (0..count) |i| {
-            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
+            const m = self.getModule(@intCast(i)) orelse continue;
             const sem = m.semantic orelse continue;
             for (sem.scope_maps, 0..) |scope_map, scope_idx| {
                 if (scope_idx == 0) continue; // 모듈 스코프는 스킵
@@ -1078,7 +1088,7 @@ pub const Linker = struct {
     /// #1338 Phase 4c-1: linker.export_map 해시 대신 Module 레지스트리 사용.
     /// 모듈당 export 선형 스캔 (< 20개 수준).
     pub fn getExportLocalName(self: *const Linker, module_index: u32, exported_name: []const u8) ?[]const u8 {
-        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)) orelse return null;
+        const m = self.getModule(module_index) orelse return null;
         const eb = m.findExportBinding(exported_name) orelse return null;
         return m.exportBindingLocalName(eb.*);
     }
@@ -1100,7 +1110,7 @@ pub const Linker = struct {
     /// `.re_export` alias는 chain-resolved canonical을 쓰므로 final exports/scope
     /// hoisting에서 원하는 "현재 모듈 rename"과 다름 → 문자열 경로 유지.
     pub fn getCanonicalForExport(self: *const Linker, eb: ExportBinding, module_index: u32) []const u8 {
-        const m = self.graph.getModule(ModuleIndex.fromUsize(module_index)).?;
+        const m = self.getModule(module_index).?;
         const local = m.exportBindingLocalName(eb);
         if (eb.kind == .local) {
             return self.getCanonicalByRef(eb.symbol) orelse local;
@@ -1150,7 +1160,7 @@ pub const Linker = struct {
         defer scope.end();
 
         for (0..self.graph.moduleCount()) |i| {
-            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
+            const m = self.getModule(@intCast(i)) orelse continue;
             const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
             for (m.export_bindings) |eb| {
                 if (std.mem.eql(u8, eb.exported_name, "*")) continue;
@@ -1173,7 +1183,7 @@ pub const Linker = struct {
         defer scope.end();
 
         for (0..self.graph.moduleCount()) |i| {
-            const m = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
+            const m = self.getModule(@intCast(i)) orelse continue;
             for (m.import_bindings) |ib| {
                 if (ib.kind == .namespace) continue; // namespace import는 별도 처리 (후순위)
 
@@ -1574,7 +1584,7 @@ pub const Linker = struct {
 
         const count = self.graph.moduleCount();
         for (0..count) |idx| {
-            const m = self.graph.moduleAtMut(ModuleIndex.fromUsize(idx)) orelse continue;
+            const m = self.moduleAtMut(@intCast(idx)) orelse continue;
             const mod_idx: ModuleIndex = ModuleIndex.fromUsize(idx);
             const table_ptr = if (m.alias_table) |*t| t else continue;
             for (m.export_bindings) |eb| {
@@ -1608,7 +1618,7 @@ pub const Linker = struct {
     pub fn populateSymbolRefCounts(self: *const Linker) void {
         const count = self.graph.moduleCount();
         for (0..count) |i| {
-            const importer = self.graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
+            const importer = self.getModule(@intCast(i)) orelse continue;
             for (importer.import_bindings) |ib| {
                 if (!ib.symbol.isValid()) continue;
                 const source = self.graph.moduleAtMut(ib.symbol.moduleIndex()) orelse continue;
@@ -1644,7 +1654,7 @@ pub const Linker = struct {
 
         const count = self.graph.moduleCount();
         for (0..count) |i| {
-            const importer = self.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
+            const importer = self.moduleAtMut(@intCast(i)) orelse continue;
             const sem_opt = importer.semantic;
             const module_scope_opt = if (sem_opt) |sem|
                 if (sem.scope_maps.len > 0) sem.scope_maps[0] else null
@@ -1713,7 +1723,7 @@ pub const Linker = struct {
 
         const mod_count = self.graph.moduleCount();
         for (0..mod_count) |i| {
-            const importer = self.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
+            const importer = self.moduleAtMut(@intCast(i)) orelse continue;
             const sem = importer.semantic orelse continue;
             const ast = if (importer.ast) |*a| a else continue;
             // 결과 슬라이스는 module.parse_arena가 소유 — 모듈 수명 동안 유효하고
@@ -1945,7 +1955,7 @@ pub const Linker = struct {
         depth: u32,
     ) std.mem.Allocator.Error![]const u8 {
         if (depth > max_chain_depth) return try self.allocator.dupe(u8, "{}");
-        const target_any = self.graph.getModule(ModuleIndex.fromUsize(target_mod_idx)) orelse
+        const target_any = self.getModule(target_mod_idx) orelse
             return try self.allocator.dupe(u8, "{}");
 
         const mutable_self = @constCast(self);
@@ -2461,7 +2471,7 @@ pub fn getOrCreateRequireVar(
     mod_idx: u32,
 ) ![]const u8 {
     if (cache.get(mod_idx)) |cached| return cached;
-    const target_path = self.graph.getModule(ModuleIndex.fromUsize(mod_idx)).?.path;
+    const target_path = self.getModule(mod_idx).?.path;
     const name = try types.makeRequireVarName(self.allocator, target_path);
     try cache.put(mod_idx, name);
     return name;

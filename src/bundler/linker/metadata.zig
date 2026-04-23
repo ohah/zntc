@@ -90,7 +90,7 @@ pub fn buildMetadataForAst(
     var scope = @import("../../profile.zig").begin(.metadata);
     defer scope.end();
 
-    const m_opt = self.graph.getModule(ModuleIndex.fromUsize(module_index));
+    const m_opt = self.getModule(module_index);
     if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
@@ -266,7 +266,7 @@ pub fn buildMetadataForAst(
             // 개별 구조분해 대신 namespace 객체 프로퍼티 접근을 사용한다 (rolldown 방식).
             // preamble에서 ns_var = __toESM(require_xxx()) 생성 + rename 등록.
             const is_synthetic = ib.isSynthetic();
-            const canonical_m_opt = self.graph.getModule(ModuleIndex.fromUsize(canonical_mod));
+            const canonical_m_opt = self.getModule(canonical_mod);
             if (!is_synthetic and m.wrap_kind == .esm and canonical_m_opt != null and
                 (canonical_m_opt.?.wrap_kind == .cjs or canonical_mod == module_index))
             {
@@ -541,7 +541,7 @@ pub fn buildMetadataForAst(
     const final_exports = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
 
     // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
-    const const_values = try self.buildCrossModuleConstValues(self.graph.getModule(ModuleIndex.fromUsize(module_index)).?, sem);
+    const const_values = try self.buildCrossModuleConstValues(self.getModule(module_index).?, sem);
 
     // ns_member_rewrites / ns_inline_objects 소유권 이동 + namespace preamble 생성.
     // finalizeNamespaceData가 리스트를 소비(deinit)하므로, 이후 에러 시
@@ -799,7 +799,7 @@ pub fn buildDevMetadataForAst(
     ast: *const Ast,
     module_index: u32,
 ) !LinkingMetadata {
-    const m_opt = self.graph.getModule(ModuleIndex.fromUsize(module_index));
+    const m_opt = self.getModule(module_index);
     if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
@@ -1035,7 +1035,7 @@ pub fn buildDevMetadataForAst(
 
 /// 특정 모듈에 대한 LinkingMetadata를 생성한다 (원본 AST 기준, 테스트용).
 pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !LinkingMetadata {
-    const m_opt = self.graph.getModule(ModuleIndex.fromUsize(module_index));
+    const m_opt = self.getModule(module_index);
     if (m_opt == null) {
         return .{
             .skip_nodes = try std.DynamicBitSet.initEmpty(self.allocator, 0),
