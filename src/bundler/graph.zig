@@ -53,7 +53,11 @@ pub const LinkAccessor = phase_mod.LinkAccessor;
 
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
-    modules: std.ArrayList(Module),
+    /// Module storage. SegmentedList 는 append 시에도 기존 포인터를 무효화하지
+    /// 않아서 worker race-safety 를 보장한다 (#1779 PR #3). prealloc_item_count=0
+    /// 은 전량 heap chunk 사용 — hot path 에서 static 영역을 쓸 수 없는 ModuleGraph
+    /// 특성상 기본값으로 충분.
+    modules: std.SegmentedList(Module, 0) = .{},
     path_to_module: std.StringHashMap(ModuleIndex),
     diagnostics: std.ArrayList(BundlerDiagnostic),
     resolve_cache: *ResolveCache,
@@ -132,7 +136,7 @@ pub const ModuleGraph = struct {
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
             .allocator = allocator,
-            .modules = .empty,
+            // modules 는 default (.{}) 로 빈 SegmentedList.
             .path_to_module = std.StringHashMap(ModuleIndex).init(allocator),
             .diagnostics = .empty,
             .resolve_cache = resolve_cache,
@@ -140,7 +144,8 @@ pub const ModuleGraph = struct {
     }
 
     pub fn deinit(self: *ModuleGraph) void {
-        for (self.modules.items) |*m| {
+        var mod_it = self.modules.iterator(0);
+        while (mod_it.next()) |m| {
             // import_records, import_bindings, export_bindings는 parse_arena 소유.
             // parse_arena.deinit()이 일괄 해제하므로 명시적 free 불필요.
             m.deinit(self.allocator); // parse_arena.deinit() + dependencies/importers 해제
@@ -163,11 +168,11 @@ pub const ModuleGraph = struct {
     }
 
     // ============================================================
-    // Module accessor API (#1779 PR #1a)
+    // Module accessor API (#1779 PR #1a + PR #3)
     //
-    // 외부 코드는 `self.modules.items[idx]` 직접 접근 대신 아래 메서드 사용.
-    // worker race-safety 와 향후 SegmentedList storage 교체 (#1779 PR #3) 를
-    // 위해 storage 접근을 단일 진입점으로 모은다.
+    // 외부 코드는 `modules` storage 에 직접 접근하지 않고 아래 메서드 사용.
+    // SegmentedList 로 교체 (#1779 PR #3) 하면서 append 시에도 기존 *Module
+    // 포인터가 유효하게 유지된다 — worker race-safety 의 핵심 불변식.
     //
     // - read 는 누구나: `getModule(idx)` → `?*const Module`
     // - mutate 는 phase-tagged accessor 경유: `parseAccessor()` / `resolveAccessor()` /
@@ -175,31 +180,30 @@ pub const ModuleGraph = struct {
     // - `moduleAtMut` 는 accessor 내부 전용. 다른 호출자는 phase accessor 를 쓸 것.
     // ============================================================
 
-    /// idx 검증 → modules slice 의 in-range index 반환. read/mut 양쪽 진입점에서 공유.
+    /// idx 검증 → modules storage 의 in-range index 반환. read/mut 양쪽 진입점에서 공유.
     inline fn validModuleSlot(self: *const ModuleGraph, idx: ModuleIndex) ?usize {
         if (idx.isNone()) return null;
         const i = idx.toUsize();
-        if (i >= self.modules.items.len) return null;
+        if (i >= self.modules.count()) return null;
         return i;
     }
 
     /// idx 에 해당하는 module 의 read-only 포인터. 범위 밖이면 null.
     pub inline fn getModule(self: *const ModuleGraph, idx: ModuleIndex) ?*const Module {
         const i = self.validModuleSlot(idx) orelse return null;
-        return &self.modules.items[i];
+        return self.modules.at(i);
     }
 
-    /// 등록된 module 개수. `self.modules.items.len` 의 캡슐화 진입점.
+    /// 등록된 module 개수. storage 내부 구조 캡슐화 진입점.
     pub inline fn moduleCount(self: *const ModuleGraph) usize {
-        return self.modules.items.len;
+        return self.modules.count();
     }
 
     /// **Accessor 전용**. 직접 호출 금지 — `parseAccessor()` 등 phase accessor 의
     /// setter 메서드를 사용하라. 외부 mutable pointer 노출은 worker race 의 root.
-    /// SegmentedList 교체 (#1779 PR #3) 시 내부 구현만 변경된다.
     pub inline fn moduleAtMut(self: *ModuleGraph, idx: ModuleIndex) ?*Module {
         const i = self.validModuleSlot(idx) orelse return null;
-        return &self.modules.items[i];
+        return self.modules.at(i);
     }
 
     /// Parse phase mutation accessor 발급. parser/scanner worker 가 자기 module 의
@@ -218,23 +222,13 @@ pub const ModuleGraph = struct {
         return .{ .graph = self };
     }
 
-    /// 모든 module 을 순회하는 read-only iterator. `for (graph.modules.items) |m|`
-    /// 의 캡슐화 진입점. SegmentedList 교체 (#1779 PR #3) 시 chunk 경계를 처리.
+    /// 모든 module 을 순회하는 read-only iterator. SegmentedList 의 chunk 경계를
+    /// 투명하게 처리하는 ConstIterator 를 그대로 노출.
     pub inline fn modulesIterator(self: *const ModuleGraph) ModulesIterator {
-        return .{ .graph = self, .index = 0 };
+        return self.modules.constIterator(0);
     }
 
-    pub const ModulesIterator = struct {
-        graph: *const ModuleGraph,
-        index: usize,
-
-        pub fn next(self: *ModulesIterator) ?*const Module {
-            if (self.index >= self.graph.modules.items.len) return null;
-            const m = &self.graph.modules.items[self.index];
-            self.index += 1;
-            return m;
-        }
-    };
+    pub const ModulesIterator = std.SegmentedList(Module, 0).ConstIterator;
 
     /// 확장자에 대한 로더를 결정한다.
     /// --loader 오버라이드가 있으면 우선 사용, 없으면 확장자 기본값.
@@ -291,8 +285,8 @@ pub const ModuleGraph = struct {
             var spawned_up_to: usize = 0;
 
             // 초기 모듈(엔트리 + inject) 스폰
-            while (spawned_up_to < self.modules.items.len) : (spawned_up_to += 1) {
-                const m = &self.modules.items[spawned_up_to];
+            while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
+                const m = self.modules.at(spawned_up_to);
                 if (m.state == .ready) continue; // disabled 모듈은 스킵
                 const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
                 pool.spawn(scanWorker, .{ self, idx, &channel }) catch {
@@ -311,46 +305,19 @@ pub const ModuleGraph = struct {
                 defer apply_scope.end();
 
                 const mod_idx = @intFromEnum(result.module_idx);
-                self.applySideEffectsFromPackageJson(&self.modules.items[mod_idx]);
-                self.modules.items[mod_idx].state = .ready;
+                const mod_ptr = self.modules.at(mod_idx);
+                self.applySideEffectsFromPackageJson(mod_ptr);
+                mod_ptr.state = .ready;
 
-                const records = self.modules.items[mod_idx].import_records;
+                const records = mod_ptr.import_records;
                 const resolves = result.resolve_outputs;
 
-                // 포인터 안전: applyResolveResult → addModule → realloc 가능.
-                // 워커가 실행 중이면 realloc은 댕글링 포인터를 만듦.
-                // → capacity가 부족하면 inflight 워커를 전부 drain한 후 재할당.
-                const needed = self.modules.items.len + records.len;
-                if (needed > self.modules.capacity and inflight > 0) {
-                    // 결과를 버퍼에 모아두고 drain 후 일괄 적용
-                    var pending = std.ArrayListUnmanaged(ScanResult).initBuffer(
-                        self.allocator.alloc(ScanResult, inflight) catch &.{},
-                    );
-                    defer if (pending.capacity > 0) self.allocator.free(pending.allocatedSlice());
-                    while (inflight > 0) {
-                        pending.appendAssumeCapacity(channel.recv());
-                        inflight -= 1;
-                    }
-                    // 워커가 모두 종료됨 → 안전하게 realloc
-                    try self.modules.ensureTotalCapacity(self.allocator, needed * 2);
+                // SegmentedList (#1779 PR #3): append 가 기존 포인터를 무효화하지
+                // 않으므로 inflight 워커가 보유한 *Module 포인터는 계속 유효.
+                // 이전 ArrayList 구현이 필요로 했던 "capacity 부족 → drain → realloc"
+                // 2단계 분기가 사라짐. 결과를 그대로 적용.
 
-                    // 버퍼에 모아둔 결과 적용
-                    for (pending.items) |pending_result| {
-                        const p_idx = @intFromEnum(pending_result.module_idx);
-                        self.applySideEffectsFromPackageJson(&self.modules.items[p_idx]);
-                        self.modules.items[p_idx].state = .ready;
-                        const p_records = self.modules.items[p_idx].import_records;
-                        const p_resolves = pending_result.resolve_outputs;
-                        for (p_records, 0..) |rec, ri| {
-                            if (ri < p_resolves.len) {
-                                try self.applyResolveResult(p_idx, ri, rec, p_resolves[ri].resolved, p_resolves[ri].is_error);
-                            }
-                        }
-                        if (p_resolves.len > 0) self.allocator.free(p_resolves);
-                    }
-                }
-
-                // resolve 결과 적용 (capacity 충분 보장됨)
+                // resolve 결과 적용
                 for (records, 0..) |record, rec_i| {
                     if (rec_i < resolves.len) {
                         try self.applyResolveResult(mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
@@ -359,8 +326,8 @@ pub const ModuleGraph = struct {
                 if (resolves.len > 0) self.allocator.free(resolves);
 
                 // 새로 발견된 모듈 즉시 워커에 디스패치
-                while (spawned_up_to < self.modules.items.len) : (spawned_up_to += 1) {
-                    const m = &self.modules.items[spawned_up_to];
+                while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
+                    const m = self.modules.at(spawned_up_to);
                     if (m.state == .ready) continue;
                     const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
                     pool.spawn(scanWorker, .{ self, idx, &channel }) catch {
@@ -372,14 +339,15 @@ pub const ModuleGraph = struct {
         } else {
             // 순차 폴백 (스레드 풀 없음)
             var parse_start: usize = 0;
-            while (parse_start < self.modules.items.len) {
-                const parse_end = self.modules.items.len;
+            while (parse_start < self.modules.count()) {
+                const parse_end = self.modules.count();
                 for (parse_start..parse_end) |j| {
                     self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
                 }
                 for (parse_start..parse_end) |i| {
-                    self.applySideEffectsFromPackageJson(&self.modules.items[i]);
-                    self.modules.items[i].state = .ready;
+                    const m_ptr = self.modules.at(i);
+                    self.applySideEffectsFromPackageJson(m_ptr);
+                    m_ptr.state = .ready;
                 }
                 for (parse_start..parse_end) |i| {
                     try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
@@ -394,7 +362,7 @@ pub const ModuleGraph = struct {
             for (entry_points) |entry_path| {
                 if (self.path_to_module.get(entry_path)) |entry_idx| {
                     const ei = @intFromEnum(entry_idx);
-                    if (ei < self.modules.items.len) {
+                    if (ei < self.modules.count()) {
                         for (inject_indices.items) |inject_idx| {
                             try self.linkDependency(entry_idx, inject_idx);
                         }
@@ -413,7 +381,7 @@ pub const ModuleGraph = struct {
         var scope = profile.begin(.graph_finalize);
         defer scope.end();
 
-        const count = self.modules.items.len;
+        const count = self.modules.count();
         if (count == 0) return;
 
         var visited = try std.DynamicBitSet.initEmpty(self.allocator, count);
@@ -424,8 +392,8 @@ pub const ModuleGraph = struct {
         for (entry_points) |entry_path| {
             if (self.path_to_module.get(entry_path)) |idx| {
                 const ei = @intFromEnum(idx);
-                if (ei < self.modules.items.len) {
-                    self.modules.items[ei].is_entry_point = true;
+                if (ei < self.modules.count()) {
+                    self.modules.at(ei).is_entry_point = true;
                 }
                 try self.dfs(idx, &visited, &in_stack);
             }
@@ -442,7 +410,9 @@ pub const ModuleGraph = struct {
     /// 재귀. rolldown CIRCULAR_REEXPORT처럼 빌드 단계에서 거부. default re-export는
     /// 별도 경로에서 이미 안전 처리되므로 제외.
     fn checkSelfReExport(self: *ModuleGraph) void {
-        for (self.modules.items, 0..) |*m, i| {
+        var it = self.modules.iterator(0);
+        var i: usize = 0;
+        while (it.next()) |m| : (i += 1) {
             const self_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
             for (m.export_bindings) |eb| {
                 if (eb.kind != .re_export) continue;
@@ -511,10 +481,10 @@ pub const ModuleGraph = struct {
 
         // 순차 처리 — 증분 빌드는 캐시 히트가 대부분이므로 스레드 풀 오버헤드보다 효율적.
         var parse_start: usize = 0;
-        while (parse_start < self.modules.items.len) {
-            const parse_end = self.modules.items.len;
+        while (parse_start < self.modules.count()) {
+            const parse_end = self.modules.count();
             for (parse_start..parse_end) |i| {
-                var mod = &self.modules.items[i];
+                var mod = self.modules.at(i);
                 if (mod.state == .ready) continue; // disabled 모듈 등
 
                 const mod_path = mod.path;
@@ -571,9 +541,10 @@ pub const ModuleGraph = struct {
                 } else {
                     // 캐시 미스: 정상 파싱
                     self.parseModule(@enumFromInt(@as(u32, @intCast(i))));
-                    self.applySideEffectsFromPackageJson(&self.modules.items[i]);
-                    self.modules.items[i].mtime = mtime;
-                    self.modules.items[i].state = .ready;
+                    const m_ptr = self.modules.at(i);
+                    self.applySideEffectsFromPackageJson(m_ptr);
+                    m_ptr.mtime = mtime;
+                    m_ptr.state = .ready;
                     try reparsed.append(self.allocator, @enumFromInt(@as(u32, @intCast(i))));
                 }
             }
@@ -584,7 +555,7 @@ pub const ModuleGraph = struct {
             }
 
             // 새 모듈이 추가되었으면 그래프 변경
-            if (self.modules.items.len > parse_end) {
+            if (self.modules.count() > parse_end) {
                 graph_changed = true;
             }
             parse_start = parse_end;
@@ -595,7 +566,7 @@ pub const ModuleGraph = struct {
             for (entry_points) |entry_path| {
                 if (self.path_to_module.get(entry_path)) |entry_idx| {
                     const ei = @intFromEnum(entry_idx);
-                    if (ei < self.modules.items.len) {
+                    if (ei < self.modules.count()) {
                         for (inject_indices.items) |inject_idx| {
                             try self.linkDependency(entry_idx, inject_idx);
                         }
@@ -639,7 +610,7 @@ pub const ModuleGraph = struct {
         }
 
         // 새 모듈 슬롯 할당
-        const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.items.len)));
+        const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
         const path_owned = try self.allocator.dupe(u8, abs_path);
 
         var module = Module.init(index, path_owned);
@@ -672,7 +643,7 @@ pub const ModuleGraph = struct {
             return existing;
         }
 
-        const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.items.len)));
+        const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
         var module = Module.init(index, disabled_path);
         module.module_type = .javascript;
         module.exports_kind = .commonjs;
@@ -710,21 +681,24 @@ pub const ModuleGraph = struct {
         if (is_error) {
             // Worker resolve 실패 → 경고만 (메인 빌드 중단하지 않음)
             if (record.kind == .worker) {
-                self.addDiag(.unresolved_import, .warning, self.modules.items[mod_idx].path, record.span, .resolve, "Cannot resolve worker module", record.specifier);
+                self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve worker module", record.specifier);
                 return;
             }
             // ModuleNotFound — browser에서 Node 빌트인은 빈 CJS로 대체
             if (self.resolve_cache.platform.isBrowserLike() and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
                 const dep_idx = try self.addDisabledModule(record.specifier);
-                self.modules.items[mod_idx].import_records[rec_i].resolved = dep_idx;
+                // addDisabledModule 후 *Module 포인터 다시 획득 — SegmentedList 는
+                // realloc 없지만 모듈 소유 slice 를 update 하는 것이므로 재조회해도 동일.
+                const src_mod = self.modules.at(mod_idx);
+                src_mod.import_records[rec_i].resolved = dep_idx;
                 if (record.kind == .dynamic_import) {
-                    try self.modules.items[mod_idx].addDynamicImport(self.allocator, dep_idx);
+                    try src_mod.addDynamicImport(self.allocator, dep_idx);
                 } else {
                     try self.linkDependency(mod_index, dep_idx);
                 }
             } else {
                 const sev: types.BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
-                self.addDiag(.unresolved_import, sev, self.modules.items[mod_idx].path, record.span, .resolve, "Cannot resolve module", record.specifier);
+                self.addDiag(.unresolved_import, sev, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve module", record.specifier);
             }
             return;
         }
@@ -745,9 +719,10 @@ pub const ModuleGraph = struct {
 
             if (r.disabled) {
                 const dep_idx = try self.addDisabledModule(record.specifier);
-                self.modules.items[mod_idx].import_records[rec_i].resolved = dep_idx;
+                const src_mod = self.modules.at(mod_idx);
+                src_mod.import_records[rec_i].resolved = dep_idx;
                 if (record.kind == .dynamic_import) {
-                    try self.modules.items[mod_idx].addDynamicImport(self.allocator, dep_idx);
+                    try src_mod.addDynamicImport(self.allocator, dep_idx);
                 } else {
                     try self.linkDependency(mod_index, dep_idx);
                 }
@@ -755,20 +730,21 @@ pub const ModuleGraph = struct {
             }
 
             const dep_idx = try self.addModule(r.path);
+            const src_mod = self.modules.at(mod_idx);
 
-            if (r.is_module_field or self.modules.items[mod_idx].is_module_field) {
-                self.modules.items[@intFromEnum(dep_idx)].is_module_field = true;
+            if (r.is_module_field or src_mod.is_module_field) {
+                self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
             }
 
-            self.modules.items[mod_idx].import_records[rec_i].resolved = dep_idx;
+            src_mod.import_records[rec_i].resolved = dep_idx;
 
             if (record.kind == .dynamic_import) {
-                try self.modules.items[mod_idx].addDynamicImport(self.allocator, dep_idx);
+                try src_mod.addDynamicImport(self.allocator, dep_idx);
             } else {
                 try self.linkDependency(mod_index, dep_idx);
             }
         } else {
-            self.modules.items[mod_idx].import_records[rec_i].is_external = true;
+            self.modules.at(mod_idx).import_records[rec_i].is_external = true;
         }
     }
 
@@ -793,25 +769,26 @@ pub const ModuleGraph = struct {
         self.parseModule(idx);
 
         const mod_idx = @intFromEnum(idx);
-        if (mod_idx >= self.modules.items.len) {
+        if (mod_idx >= self.modules.count()) {
             channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
             return;
         }
 
-        const records = self.modules.items[mod_idx].import_records;
+        const mod_ptr = self.modules.at(mod_idx);
+        const records = mod_ptr.import_records;
         if (records.len == 0) {
             channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
             return;
         }
 
         var results = self.allocator.alloc(ResolveOutput, records.len) catch {
-            self.addDiag(.resolve_error, .@"error", self.modules.items[mod_idx].path, Span.EMPTY, .resolve, "Out of memory allocating resolve results", null);
+            self.addDiag(.resolve_error, .@"error", mod_ptr.path, Span.EMPTY, .resolve, "Out of memory allocating resolve results", null);
             channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
             return;
         };
         for (results) |*r| r.* = .{};
 
-        const module_path = self.modules.items[mod_idx].path;
+        const module_path = mod_ptr.path;
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
 
         const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
@@ -820,9 +797,9 @@ pub const ModuleGraph = struct {
             null;
 
         // import.meta.glob: 워커에서 glob 확장 수행
-        expandGlobRecords(self.allocator, self.modules.items[mod_idx].import_records, source_dir);
+        expandGlobRecords(self.allocator, mod_ptr.import_records, source_dir);
         // require.context: host plugin 으로 매칭 결과 주입 (#1579 Phase 2)
-        expandRequireContextRecords(self, module_path, self.modules.items[mod_idx].import_records);
+        expandRequireContextRecords(self, module_path, mod_ptr.import_records);
 
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
@@ -867,9 +844,9 @@ pub const ModuleGraph = struct {
     /// import_records는 graph allocator로 별도 할당 (specifier가 source를 참조).
     fn parseModule(self: *ModuleGraph, idx: ModuleIndex) void {
         const mod_idx = @intFromEnum(idx);
-        if (mod_idx >= self.modules.items.len) return;
+        if (mod_idx >= self.modules.count()) return;
 
-        var module = &self.modules.items[mod_idx];
+        var module = self.modules.at(mod_idx);
         module.state = .parsing;
         // compiled_cache key 는 mtime 을 요구한다. first build 경로는 여기서 처음 계산,
         // rebuild 경로는 cache lookup 시 이미 설정됐으므로 fsStat 재호출 없이 통과.
@@ -1439,11 +1416,12 @@ pub const ModuleGraph = struct {
     /// modules 배열이 커질 수 있으므로, 포인터가 아닌 인덱스로만 접근.
     fn resolveModuleImports(self: *ModuleGraph, idx: ModuleIndex) !void {
         const mod_idx = @intFromEnum(idx);
-        if (mod_idx >= self.modules.items.len) return;
+        if (mod_idx >= self.modules.count()) return;
 
-        const module_path = self.modules.items[mod_idx].path;
+        const mod_ptr = self.modules.at(mod_idx);
+        const module_path = mod_ptr.path;
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
-        const records = self.modules.items[mod_idx].import_records;
+        const records = mod_ptr.import_records;
 
         // Plugin: resolveId 훅용 runner를 루프 밖에서 한 번만 생성
         const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
@@ -1452,9 +1430,9 @@ pub const ModuleGraph = struct {
             null;
 
         // import.meta.glob: glob 레코드를 파일 시스템에서 확장
-        expandGlobRecords(self.allocator, self.modules.items[mod_idx].import_records, source_dir);
+        expandGlobRecords(self.allocator, mod_ptr.import_records, source_dir);
         // require.context: host plugin 으로 매칭 결과 주입 (#1579 Phase 2)
-        expandRequireContextRecords(self, module_path, self.modules.items[mod_idx].import_records);
+        expandRequireContextRecords(self, module_path, mod_ptr.import_records);
 
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
@@ -1501,7 +1479,7 @@ pub const ModuleGraph = struct {
         defer stack.deinit(self.allocator);
 
         const start = @intFromEnum(start_idx);
-        if (start >= self.modules.items.len) return;
+        if (start >= self.modules.count()) return;
         if (visited.isSet(start)) return;
 
         try stack.append(self.allocator, .{ .idx = start, .post = false });
@@ -1513,7 +1491,7 @@ pub const ModuleGraph = struct {
                 // 후처리: exec_index 부여 + in_stack 해제
                 in_stack.unset(entry.idx);
                 visited.set(entry.idx);
-                self.modules.items[entry.idx].exec_index = self.exec_counter;
+                self.modules.at(entry.idx).exec_index = self.exec_counter;
                 self.exec_counter += 1;
                 continue;
             }
@@ -1523,11 +1501,12 @@ pub const ModuleGraph = struct {
             // 순환 감지 (D065)
             if (in_stack.isSet(entry.idx)) {
                 self.cycle_counter += 1;
-                self.modules.items[entry.idx].cycle_group = self.cycle_counter;
+                const entry_mod = self.modules.at(entry.idx);
+                entry_mod.cycle_group = self.cycle_counter;
                 self.addDiag(
                     .circular_dependency,
                     .warning,
-                    self.modules.items[entry.idx].path,
+                    entry_mod.path,
                     Span.EMPTY,
                     .link,
                     "Circular dependency detected",
@@ -1542,12 +1521,12 @@ pub const ModuleGraph = struct {
             try stack.append(self.allocator, .{ .idx = entry.idx, .post = true });
 
             // 의존성을 역순으로 push (원래 순서대로 방문하기 위해)
-            const deps = self.modules.items[entry.idx].dependencies.items;
+            const deps = self.modules.at(entry.idx).dependencies.items;
             var j: usize = deps.len;
             while (j > 0) {
                 j -= 1;
                 const dep = @intFromEnum(deps[j]);
-                if (dep < self.modules.items.len and !visited.isSet(dep)) {
+                if (dep < self.modules.count() and !visited.isSet(dep)) {
                     try stack.append(self.allocator, .{ .idx = dep, .post = false });
                 }
             }
@@ -1563,46 +1542,52 @@ pub const ModuleGraph = struct {
         // Pass 1: require() 소비 처리 (래핑 결정)
         // 모든 모듈의 require를 먼저 처리해야 함 — 다른 모듈의 import가
         // 같은 타겟을 ESM으로 승격시키기 전에 wrap_kind가 결정되어야 한다.
-        for (self.modules.items) |m| {
-            for (m.import_records) |rec| {
-                if (rec.kind != .require) continue;
-                if (rec.resolved.isNone()) continue;
-                const target_idx = @intFromEnum(rec.resolved);
-                if (target_idx >= self.modules.items.len) continue;
+        {
+            var it = self.modules.iterator(0);
+            while (it.next()) |m| {
+                for (m.import_records) |rec| {
+                    if (rec.kind != .require) continue;
+                    if (rec.resolved.isNone()) continue;
+                    const target_idx = @intFromEnum(rec.resolved);
+                    if (target_idx >= self.modules.count()) continue;
 
-                var target = &self.modules.items[target_idx];
+                    var target = self.modules.at(target_idx);
 
-                if (target.module_type == .json) {
-                    target.exports_kind = .commonjs;
-                    target.wrap_kind = .cjs;
-                } else if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
-                    target.wrap_kind = .esm;
-                } else {
-                    target.exports_kind = .commonjs;
-                    target.wrap_kind = .cjs;
+                    if (target.module_type == .json) {
+                        target.exports_kind = .commonjs;
+                        target.wrap_kind = .cjs;
+                    } else if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
+                        target.wrap_kind = .esm;
+                    } else {
+                        target.exports_kind = .commonjs;
+                        target.wrap_kind = .cjs;
+                    }
                 }
             }
         }
 
         // Pass 2: import 소비 처리 (래핑 안 된 .none 모듈만 승격)
-        for (self.modules.items) |m| {
-            for (m.import_records) |rec| {
-                if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
-                if (rec.resolved.isNone()) continue;
-                const target_idx = @intFromEnum(rec.resolved);
-                if (target_idx >= self.modules.items.len) continue;
+        {
+            var it = self.modules.iterator(0);
+            while (it.next()) |m| {
+                for (m.import_records) |rec| {
+                    if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
+                    if (rec.resolved.isNone()) continue;
+                    const target_idx = @intFromEnum(rec.resolved);
+                    if (target_idx >= self.modules.count()) continue;
 
-                var target = &self.modules.items[target_idx];
+                    var target = self.modules.at(target_idx);
 
-                // 이미 래핑된 모듈은 건드리지 않음
-                if (target.wrap_kind != .none) continue;
+                    // 이미 래핑된 모듈은 건드리지 않음
+                    if (target.wrap_kind != .none) continue;
 
-                if (target.exports_kind == .none) {
-                    if (self.isImplicitCjs(target)) {
-                        target.exports_kind = .commonjs;
-                        target.wrap_kind = .cjs;
-                    } else {
-                        target.exports_kind = .esm;
+                    if (target.exports_kind == .none) {
+                        if (self.isImplicitCjs(target)) {
+                            target.exports_kind = .commonjs;
+                            target.wrap_kind = .cjs;
+                        } else {
+                            target.exports_kind = .esm;
+                        }
                     }
                 }
             }
@@ -1617,7 +1602,8 @@ pub const ModuleGraph = struct {
             var changed = true;
             while (changed) {
                 changed = false;
-                for (self.modules.items) |m| {
+                var it = self.modules.iterator(0);
+                while (it.next()) |m| {
                     if (m.wrap_kind == .none) continue;
                     for (m.export_bindings) |eb| {
                         if (!eb.kind.isAnyReExport()) continue;
@@ -1634,7 +1620,8 @@ pub const ModuleGraph = struct {
         // - dev mode: HMR을 위해 모든 모듈이 개별 팩토리 함수로 래핑되어야 함
         //   (scope-hoisted flat 모듈은 개별 교체 불가)
         if (self.resolve_cache.platform == .react_native or self.dev_mode) {
-            for (self.modules.items) |*m| {
+            var it = self.modules.iterator(0);
+            while (it.next()) |m| {
                 if (m.wrap_kind == .none and (m.exports_kind == .esm or m.exports_kind == .esm_with_dynamic_fallback)) {
                     m.wrap_kind = .esm;
                 }
@@ -1647,7 +1634,8 @@ pub const ModuleGraph = struct {
     /// getExportsName으로 이름을 조회해 중복 할당을 피한다.
     /// OOM/semantic 없음 → 조용히 skip, fallback 경로가 기존 동작 유지.
     fn registerWrapperSymbols(self: *ModuleGraph) void {
-        for (self.modules.items) |*m| {
+        var it = self.modules.iterator(0);
+        while (it.next()) |m| {
             if (m.wrap_kind == .none) continue;
             // incremental rebuild: 이미 등록된 모듈은 skip.
             if (m.init_symbol != null or m.exports_symbol != null) continue;
@@ -1684,8 +1672,8 @@ pub const ModuleGraph = struct {
         const target_mod_idx = m.import_records[rec_idx].resolved;
         if (target_mod_idx.isNone()) return null;
         const target_idx = @intFromEnum(target_mod_idx);
-        if (target_idx >= self.modules.items.len) return null;
-        return &self.modules.items[target_idx];
+        if (target_idx >= self.modules.count()) return null;
+        return self.modules.at(target_idx);
     }
 
     /// `.none` 상태의 ESM 모듈을 `.esm`으로 promote. 이미 래핑됐거나 ESM이 아니면
@@ -1728,15 +1716,18 @@ pub const ModuleGraph = struct {
     /// 역방향 BFS O(n + edges): 역의존성 맵을 빌드한 뒤,
     /// TLA 모듈에서 시작하여 importers를 따라 전파한다.
     fn propagateTopLevelAwait(self: *ModuleGraph) void {
-        const count = self.modules.items.len;
+        const count = self.modules.count();
         if (count == 0) return;
 
         // Fast path: TLA 모듈이 없으면 전파할 것도 없다.
         var has_tla = false;
-        for (self.modules.items) |m| {
-            if (m.uses_top_level_await) {
-                has_tla = true;
-                break;
+        {
+            var it = self.modules.iterator(0);
+            while (it.next()) |m| {
+                if (m.uses_top_level_await) {
+                    has_tla = true;
+                    break;
+                }
             }
         }
         if (!has_tla) return;
@@ -1749,13 +1740,17 @@ pub const ModuleGraph = struct {
         }
         for (reverse_deps) |*list| list.* = .empty;
 
-        for (self.modules.items, 0..) |m, src_idx| {
-            for (m.import_records) |rec| {
-                if (rec.resolved.isNone()) continue;
-                if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
-                const target_idx = @intFromEnum(rec.resolved);
-                if (target_idx >= count) continue;
-                reverse_deps[target_idx].append(self.allocator, @intCast(src_idx)) catch return;
+        {
+            var it = self.modules.iterator(0);
+            var src_idx: usize = 0;
+            while (it.next()) |m| : (src_idx += 1) {
+                for (m.import_records) |rec| {
+                    if (rec.resolved.isNone()) continue;
+                    if (rec.kind != .static_import and rec.kind != .side_effect and rec.kind != .re_export) continue;
+                    const target_idx = @intFromEnum(rec.resolved);
+                    if (target_idx >= count) continue;
+                    reverse_deps[target_idx].append(self.allocator, @intCast(src_idx)) catch return;
+                }
             }
         }
 
@@ -1765,10 +1760,14 @@ pub const ModuleGraph = struct {
         var queue: std.ArrayListUnmanaged(u32) = .empty;
         defer queue.deinit(self.allocator);
 
-        for (self.modules.items, 0..) |m, idx| {
-            if (m.uses_top_level_await) {
-                visited.set(idx);
-                queue.append(self.allocator, @intCast(idx)) catch return;
+        {
+            var it = self.modules.iterator(0);
+            var idx: usize = 0;
+            while (it.next()) |m| : (idx += 1) {
+                if (m.uses_top_level_await) {
+                    visited.set(idx);
+                    queue.append(self.allocator, @intCast(idx)) catch return;
+                }
             }
         }
 
@@ -1779,7 +1778,7 @@ pub const ModuleGraph = struct {
             for (reverse_deps[tla_idx].items) |importer_idx| {
                 if (visited.isSet(importer_idx)) continue;
                 visited.set(importer_idx);
-                self.modules.items[importer_idx].uses_top_level_await = true;
+                self.modules.at(importer_idx).uses_top_level_await = true;
                 queue.append(self.allocator, importer_idx) catch return;
             }
         }
