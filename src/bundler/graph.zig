@@ -396,7 +396,7 @@ pub const ModuleGraph = struct {
                     const ei = @intFromEnum(entry_idx);
                     if (ei < self.modules.items.len) {
                         for (inject_indices.items) |inject_idx| {
-                            try self.modules.items[ei].addDependency(self.allocator, inject_idx, self.modules.items);
+                            try self.linkDependency(entry_idx, inject_idx);
                         }
                     }
                 }
@@ -597,7 +597,7 @@ pub const ModuleGraph = struct {
                     const ei = @intFromEnum(entry_idx);
                     if (ei < self.modules.items.len) {
                         for (inject_indices.items) |inject_idx| {
-                            try self.modules.items[ei].addDependency(self.allocator, inject_idx, self.modules.items);
+                            try self.linkDependency(entry_idx, inject_idx);
                         }
                     }
                 }
@@ -686,6 +686,17 @@ pub const ModuleGraph = struct {
         return index;
     }
 
+    /// 양방향 의존성 등록. from → to (dependencies) + to → from (importers) 를 동시에 append.
+    /// ArrayList(Module) pointer-unstable 시대의 `Module.addDependency(..., all_modules)` 를 대체.
+    /// #1779: graph 가 양방향 관계 책임을 캡슐화 → #3 에서 storage 만 SegmentedList 로 교체.
+    pub fn linkDependency(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !void {
+        if (to.isNone()) return;
+        const from_mod = self.moduleAtMut(from) orelse return;
+        const to_mod = self.moduleAtMut(to) orelse return;
+        try from_mod.dependencies.append(self.allocator, to);
+        try to_mod.importers.append(self.allocator, from);
+    }
+
     /// resolve 결과를 모듈 그래프에 적용한다 (addModule, addDependency 등).
     /// resolveModuleImports와 resolveModuleImportsBatchParallel 공통.
     fn applyResolveResult(
@@ -709,7 +720,7 @@ pub const ModuleGraph = struct {
                 if (record.kind == .dynamic_import) {
                     try self.modules.items[mod_idx].addDynamicImport(self.allocator, dep_idx);
                 } else {
-                    try self.modules.items[mod_idx].addDependency(self.allocator, dep_idx, self.modules.items);
+                    try self.linkDependency(@enumFromInt(@as(u32, @intCast(mod_idx))), dep_idx);
                 }
             } else {
                 const sev: types.BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
@@ -738,7 +749,7 @@ pub const ModuleGraph = struct {
                 if (record.kind == .dynamic_import) {
                     try self.modules.items[mod_idx].addDynamicImport(self.allocator, dep_idx);
                 } else {
-                    try self.modules.items[mod_idx].addDependency(self.allocator, dep_idx, self.modules.items);
+                    try self.linkDependency(@enumFromInt(@as(u32, @intCast(mod_idx))), dep_idx);
                 }
                 return;
             }
@@ -754,7 +765,7 @@ pub const ModuleGraph = struct {
             if (record.kind == .dynamic_import) {
                 try self.modules.items[mod_idx].addDynamicImport(self.allocator, dep_idx);
             } else {
-                try self.modules.items[mod_idx].addDependency(self.allocator, dep_idx, self.modules.items);
+                try self.linkDependency(@enumFromInt(@as(u32, @intCast(mod_idx))), dep_idx);
             }
         } else {
             self.modules.items[mod_idx].import_records[rec_i].is_external = true;
