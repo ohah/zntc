@@ -176,6 +176,8 @@ pub const Code = enum(u16) {
     ts_type_expected = 912,
     ts_mapped_type_in = 913,
     flow_opaque_type = 914,
+    ts_index_sig_modifier = 915,
+    ts_index_sig_optional = 916,
 
     // ═══════════════════════════════════════════════════════
     // 1000-1099: 시맨틱 — 재선언/스코프
@@ -385,6 +387,8 @@ pub const Code = enum(u16) {
             .ts_type_expected => "Type expected",
             .ts_mapped_type_in => "Expected 'in' in mapped type",
             .flow_opaque_type => "Expected 'type' after 'opaque'",
+            .ts_index_sig_modifier => "Modifiers cannot appear on index signature parameters",
+            .ts_index_sig_optional => "An index signature parameter cannot have a question mark",
             // 시맨틱: 재선언
             .identifier_redeclared => "Identifier has already been declared",
             .binding_strict_mode => "Cannot be used as a binding identifier in strict mode",
