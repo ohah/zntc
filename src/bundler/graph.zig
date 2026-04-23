@@ -54,10 +54,9 @@ pub const LinkAccessor = phase_mod.LinkAccessor;
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
     /// Module storage. SegmentedList 는 append 시에도 기존 포인터를 무효화하지
-    /// 않아서 worker race-safety 를 보장한다 (#1779 PR #3). prealloc_item_count=0
-    /// 은 전량 heap chunk 사용 — hot path 에서 static 영역을 쓸 수 없는 ModuleGraph
-    /// 특성상 기본값으로 충분.
-    modules: std.SegmentedList(Module, 0) = .{},
+    /// 않아서 worker race-safety 를 보장한다 (#1779 PR #3). prealloc=0 은 전량
+    /// heap chunk — Module 이 수백 바이트라 stack pre-alloc 비효율.
+    modules: ModuleList = .{},
     path_to_module: std.StringHashMap(ModuleIndex),
     diagnostics: std.ArrayList(BundlerDiagnostic),
     resolve_cache: *ResolveCache,
@@ -228,7 +227,9 @@ pub const ModuleGraph = struct {
         return self.modules.constIterator(0);
     }
 
-    pub const ModulesIterator = std.SegmentedList(Module, 0).ConstIterator;
+    /// modules storage 타입. prealloc_item_count 변경은 여기 한 곳만 수정.
+    pub const ModuleList = std.SegmentedList(Module, 0);
+    pub const ModulesIterator = ModuleList.ConstIterator;
 
     /// 확장자에 대한 로더를 결정한다.
     /// --loader 오버라이드가 있으면 우선 사용, 없으면 확장자 기본값.
