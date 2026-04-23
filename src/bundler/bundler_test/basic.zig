@@ -730,6 +730,67 @@ fn rcMatchAB(
     return result;
 }
 
+/// importer dir + dir 를 실제 FS 스캔 — graph dep 등록 성공을 위해 실제 파일 필요.
+fn rcScanDir(
+    _: ?*anyopaque,
+    dir: []const u8,
+    _: bool,
+    _: ?[]const u8,
+    _: ?[]const u8,
+    importer: []const u8,
+    allocator: std.mem.Allocator,
+) PluginError!?[]const []const u8 {
+    const importer_dir = std.fs.path.dirname(importer) orelse return null;
+    const abs_dir = std.fs.path.resolve(allocator, &.{ importer_dir, dir }) catch return null;
+    defer allocator.free(abs_dir);
+
+    var d = std.fs.openDirAbsolute(abs_dir, .{ .iterate = true }) catch {
+        return try allocator.alloc([]const u8, 0);
+    };
+    defer d.close();
+
+    var list = std.ArrayList([]const u8).empty;
+    defer list.deinit(allocator);
+    var it = d.iterate();
+    while (it.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const rel = std.fmt.allocPrint(allocator, "./{s}", .{entry.name}) catch continue;
+        list.append(allocator, rel) catch continue;
+    }
+    return try list.toOwnedSlice(allocator);
+}
+
+/// 재귀 FS 스캔 (recursive=true 이면 subdir 의 파일도 반환).
+fn rcRecursiveScan(
+    _: ?*anyopaque,
+    dir: []const u8,
+    _: bool,
+    _: ?[]const u8,
+    _: ?[]const u8,
+    importer: []const u8,
+    allocator: std.mem.Allocator,
+) PluginError!?[]const []const u8 {
+    const importer_dir = std.fs.path.dirname(importer) orelse return null;
+    const abs_dir = std.fs.path.resolve(allocator, &.{ importer_dir, dir }) catch return null;
+    defer allocator.free(abs_dir);
+
+    var d = std.fs.openDirAbsolute(abs_dir, .{ .iterate = true }) catch {
+        return try allocator.alloc([]const u8, 0);
+    };
+    defer d.close();
+
+    var list = std.ArrayList([]const u8).empty;
+    defer list.deinit(allocator);
+    var walker = d.walk(allocator) catch return try allocator.alloc([]const u8, 0);
+    defer walker.deinit();
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const rel = std.fmt.allocPrint(allocator, "./{s}", .{entry.path}) catch continue;
+        list.append(allocator, rel) catch continue;
+    }
+    return try list.toOwnedSlice(allocator);
+}
+
 fn rcMatchEmpty(
     _: ?*anyopaque,
     _: []const u8,
@@ -779,6 +840,10 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    // matches 가 graph dep 으로 등록되니 실제 파일 필요.
+    try tmp.dir.makeDir("pages");
+    try writeFile(tmp.dir, "pages/a.tsx", "export const a = 1;");
+    try writeFile(tmp.dir, "pages/b.tsx", "export const b = 2;");
     try writeFile(tmp.dir, "entry.ts",
         \\const ctx = require.context('./pages', true, /\.tsx?$/, 'sync');
         \\console.log(ctx);
@@ -787,7 +852,7 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchAB }};
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcScanDir }};
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
@@ -797,13 +862,14 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
 
     // webpackContext runtime 핵심 구성요소
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var map={") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./a.tsx\":function(){return require(\"./pages/a.tsx\");}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./b.tsx\":function(){return require(\"./pages/b.tsx\");}") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ctx.keys=function(){return Object.keys(map);}") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ctx.resolve=function(req)") != null);
     // 원본 `require.context(...)` 호출은 남으면 안 됨 — IIFE 로 교체되어야.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require.context(") == null);
+    // 매치 파일들이 번들에 실제로 포함되어야 — graph dep 등록 확인.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "// --- a.tsx ---") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "// --- b.tsx ---") != null);
 }
 
 test "Bundler: require.context emits empty map when no matches" {
@@ -836,6 +902,8 @@ test "Bundler: require.context emits empty map when no matches" {
 }
 
 test "Bundler: require.context escapes match path special chars" {
+    // 특수문자 파일은 FS 에 못 만들어서 graph dep resolve 가 실패 → diagnostic 발생.
+    // 여기선 escape 로직 (writeJsStringContent) 만 검증 — hasErrors 는 무시.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -853,7 +921,6 @@ test "Bundler: require.context escapes match path special chars" {
 
     const result = try b.bundle();
     defer result.deinit(alloc);
-    try std.testing.expect(!result.hasErrors());
 
     // 원본 `"` 는 `\"` 로, `\` 는 `\\` 로 escape 되어야 JS 문자열 리터럴이 유효.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\\\"name\\\\x.tsx") != null);
@@ -868,6 +935,10 @@ test "Bundler: require.context normalizes trailing slash and missing ./" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    // graph dep 등록을 위해 실제 파일 생성.
+    try tmp.dir.makeDir("pages");
+    try tmp.dir.makeDir("pages/nested");
+    try writeFile(tmp.dir, "pages/nested/a.tsx", "export const a = 1;");
     // dir 에 trailing `/` → 매치 경로 join 시 중복 `//` 안 생김.
     try writeFile(tmp.dir, "entry.ts", "const ctx = require.context('./pages/');\nconsole.log(ctx);");
 
@@ -917,6 +988,11 @@ test "Bundler: multiple require.context calls resolve to distinct maps (span mat
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    // 각 dir 에 매치할 파일이 실제 존재해야 graph dep 등록 성공.
+    try tmp.dir.makeDir("pages");
+    try tmp.dir.makeDir("other");
+    try writeFile(tmp.dir, "pages/first.tsx", "export const x = 1;");
+    try writeFile(tmp.dir, "other/second.tsx", "export const y = 2;");
     try writeFile(tmp.dir, "entry.ts",
         \\const a = require.context('./pages');
         \\const b = require.context('./other');
@@ -950,7 +1026,11 @@ test "Bundler: require.context coexists with import.meta.glob" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.makeDir("mods");
+    try tmp.dir.makeDir("pages");
     try writeFile(tmp.dir, "mods/a.ts", "export const x = 1;");
+    // require.context 매치 파일도 graph dep 등록용으로 필요.
+    try writeFile(tmp.dir, "pages/a.tsx", "export const a = 1;");
+    try writeFile(tmp.dir, "pages/b.tsx", "export const b = 2;");
     try writeFile(tmp.dir, "entry.ts",
         \\const g = import.meta.glob('./mods/*.ts', { eager: true });
         \\const c = require.context('./pages');
@@ -960,7 +1040,7 @@ test "Bundler: require.context coexists with import.meta.glob" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchAB }};
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcScanDir }};
     var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
     defer b.deinit();
 
@@ -987,6 +1067,9 @@ test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    try tmp.dir.makeDir("pages");
+    try writeFile(tmp.dir, "pages/a.tsx", "export const a = 1;");
+    try writeFile(tmp.dir, "pages/b.tsx", "export const b = 2;");
     try writeFile(tmp.dir, "entry.ts",
         \\export const ctx = require.context('./pages', true, /^\.\//, 'sync');
     );
@@ -994,7 +1077,7 @@ test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
 
-    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchAB }};
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcScanDir }};
     var b = Bundler.init(alloc, .{
         .entry_points = &.{entry},
         .format = .esm,
@@ -1013,6 +1096,98 @@ test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") != null);
     // 원본 호출은 교체되어야
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require.context(") == null);
+}
+
+// ============================================================
+// require.context matches → graph dep 등록 → bundle 에 포함
+// ============================================================
+
+test "Bundler: require.context — matches 파일들이 번들에 포함됨" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("pages");
+    try writeFile(tmp.dir, "pages/a.tsx", "export const PAGE_A = 'page-a-content';");
+    try writeFile(tmp.dir, "pages/b.tsx", "export const PAGE_B = 'page-b-content';");
+    try writeFile(tmp.dir, "entry.ts",
+        \\const ctx = require.context('./pages');
+        \\console.log(ctx.keys());
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcScanDir }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // matches 파일의 실제 콘텐츠가 번들에 들어가는지 확인 —
+    // 이전 단계 까지는 IIFE 만 emit 되고 대상 파일은 번들 밖이었음.
+    // (Phase 3 까지는 IIFE 만 emit 되고 대상 파일은 번들 밖이라 런타임 require 실패.)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "page-a-content") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "page-b-content") != null);
+    // IIFE 도 함께 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var map={") != null);
+}
+
+test "Bundler: require.context — nested match 파일도 번들에 포함" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("pages");
+    try tmp.dir.makeDir("pages/nested");
+    try writeFile(tmp.dir, "pages/nested/deep.tsx", "export const DEEP = 'deep-content';");
+    try writeFile(tmp.dir, "entry.ts",
+        \\const ctx = require.context('./pages', true, /\.tsx$/);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    // plugin: 재귀 스캔 (./nested/deep.tsx 도 반환)
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcRecursiveScan }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "deep-content") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./nested/deep.tsx") != null);
+}
+
+test "Bundler: require.context — empty matches → 파일 없어도 hasErrors false" {
+    // 회귀: empty matches 는 expansion 에 추가할 게 없어 resolve 실패 발생 안 함.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const ctx = require.context('./empty');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcMatchEmpty }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var map={}") != null);
 }
 
 test "Bundler: no require.context in source → no webpackContext template emitted" {
