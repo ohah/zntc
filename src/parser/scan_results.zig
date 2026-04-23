@@ -18,6 +18,15 @@ pub const ImportKind = enum {
     require,
     worker,
     glob,
+    require_context,
+};
+
+/// require.context mode — bundler types.RequireContextMode와 1:1.
+pub const RequireContextMode = enum {
+    sync,
+    eager,
+    lazy,
+    lazy_once,
 };
 
 /// 파서가 수집하는 import 레코드. bundler ImportRecord의 경량 버전.
@@ -34,6 +43,16 @@ pub const ScanImportRecord = struct {
     glob_eager: bool = false,
     /// import.meta.glob: named export 추출 (e.g., "setup")
     glob_import_name: ?[]const u8 = null,
+    /// require.context: recursive 인자 (default true). #1579
+    context_recursive: bool = true,
+    /// require.context: filter regex 패턴 본문 (slashes 제외)
+    context_filter: ?[]const u8 = null,
+    /// require.context: filter regex flags
+    context_filter_flags: ?[]const u8 = null,
+    /// require.context: 매칭 mode (default sync)
+    context_mode: RequireContextMode = .sync,
+    /// require.context: invalid 인자 reason (graph 가 BundlerDiagnostic 으로 변환)
+    context_invalid_reason: ?[]const u8 = null,
 };
 
 /// import 바인딩 종류.

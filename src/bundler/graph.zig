@@ -728,9 +728,12 @@ pub const ModuleGraph = struct {
 
         // import.meta.glob: 워커에서 glob 확장 수행
         expandGlobRecords(self.allocator, self.modules.items[mod_idx].import_records, source_dir);
+        // require.context: host plugin 으로 매칭 결과 주입 (#1579 Phase 2)
+        expandRequireContextRecords(self, module_path, self.modules.items[mod_idx].import_records);
 
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
+            if (record.kind == .require_context) continue;
 
             if (plugin_runner) |runner| {
                 const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
@@ -1095,6 +1098,7 @@ pub const ModuleGraph = struct {
             };
             for (scan_records, 0..) |sr, i| {
                 const ik: ImportKind = @enumFromInt(@intFromEnum(sr.kind));
+                const ctx_mode: types.RequireContextMode = @enumFromInt(@intFromEnum(sr.context_mode));
                 records[i] = .{
                     .specifier = sr.specifier,
                     .kind = ik,
@@ -1102,6 +1106,11 @@ pub const ModuleGraph = struct {
                     .url_span = sr.url_span,
                     .glob_eager = sr.glob_eager,
                     .glob_import_name = sr.glob_import_name,
+                    .context_recursive = sr.context_recursive,
+                    .context_filter = sr.context_filter,
+                    .context_filter_flags = sr.context_filter_flags,
+                    .context_mode = ctx_mode,
+                    .context_invalid_reason = sr.context_invalid_reason,
                 };
             }
             module.import_records = records;
@@ -1349,9 +1358,12 @@ pub const ModuleGraph = struct {
 
         // import.meta.glob: glob 레코드를 파일 시스템에서 확장
         expandGlobRecords(self.allocator, self.modules.items[mod_idx].import_records, source_dir);
+        // require.context: host plugin 으로 매칭 결과 주입 (#1579 Phase 2)
+        expandRequireContextRecords(self, module_path, self.modules.items[mod_idx].import_records);
 
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
+            if (record.kind == .require_context) continue;
 
             // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌
             if (plugin_runner) |runner| {
@@ -2335,6 +2347,76 @@ fn expandGlobRecords(allocator: std.mem.Allocator, records: []types.ImportRecord
         if (record.kind == .glob) {
             record.glob_matches = expandGlob(allocator, source_dir, record.specifier) catch &.{};
         }
+    }
+}
+
+/// require.context(...) 레코드의 매칭 파일 목록을 host plugin (resolveContext) 으로 채운다.
+/// (#1579 Phase 2). ZTS 자체 regex executor 가 없어서 host runtime 의 RegExp 위임 (#1771).
+///
+/// 처리 순서:
+///   1. invalid record (`context_invalid_reason != null`) → require_context_invalid error.
+///   2. plugin runner 호출 (first non-null wins) → 결과를 record.context_matches 에 저장.
+///   3. plugin 미구현 → require_context_no_handler warning (record.context_matches 는 null 유지).
+///
+/// `self`: ModuleGraph (addDiag, plugins 접근용)
+/// `module_path`: 현재 모듈 경로 (importer)
+/// `records`: 모듈의 import_records (in-place 수정)
+fn expandRequireContextRecords(self: *ModuleGraph, module_path: []const u8, records: []types.ImportRecord) void {
+    // require_context 레코드 존재 여부 빠른 체크 (대다수 모듈은 0개 — early return 으로 cheap)
+    var has_any = false;
+    for (records) |r| {
+        if (r.kind == .require_context) {
+            has_any = true;
+            break;
+        }
+    }
+    if (!has_any) return;
+
+    const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
+        plugin_mod.PluginRunner.init(self.plugins)
+    else
+        null;
+
+    for (records) |*record| {
+        if (record.kind != .require_context) continue;
+        // scanWorker + resolveModuleImports 양쪽에서 호출됨. context_matches 가 채워졌으면 (성공/실패
+        // 무관) 이미 처리된 record — diag 중복/plugin 재호출 방지.
+        if (record.context_matches != null) continue;
+
+        // Invalid 인자 → diagnostic (Phase 1 의 reason 텍스트 그대로 사용). empty slice 로 마킹.
+        if (record.context_invalid_reason) |reason| {
+            self.addDiag(.require_context_invalid, .@"error", module_path, record.span, .resolve, reason, null);
+            record.context_matches = &.{};
+            continue;
+        }
+
+        // Plugin 호출
+        if (plugin_runner) |runner| {
+            const matches = runner.runResolveContext(
+                record.specifier,
+                record.context_recursive,
+                record.context_filter,
+                record.context_filter_flags,
+                module_path,
+                self.allocator,
+            ) catch null;
+            if (matches) |m| {
+                record.context_matches = m;
+                continue;
+            }
+        }
+
+        // Plugin 미구현 → warning. empty slice 로 마킹 (Phase 3 codegen 이 빈 stub 으로 emit).
+        self.addDiag(
+            .require_context_no_handler,
+            .warning,
+            module_path,
+            record.span,
+            .resolve,
+            "require.context requires a host plugin to match files (ZTS regex executor not yet implemented — see #1771)",
+            null,
+        );
+        record.context_matches = &.{};
     }
 }
 

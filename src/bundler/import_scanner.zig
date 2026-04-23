@@ -213,7 +213,7 @@ fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
 ///
 /// `tryExtractGlob` 와 같은 모양. Reference: Metro `processRequireContextCall`
 /// (`metro/src/ModuleGraph/worker/collectDependencies.js`).
-fn tryExtractRequireContext(ast: *const Ast, node: Node) ?ImportRecord {
+pub fn tryExtractRequireContext(ast: *const Ast, node: Node) ?ImportRecord {
     if (node.tag != .call_expression) return null;
     const e = node.data.extra;
     // call_expression extra: [callee, args_start, args_len, flags]
@@ -227,8 +227,21 @@ fn tryExtractRequireContext(ast: *const Ast, node: Node) ?ImportRecord {
     // `require?.context(...)` 무시
     if (call_flags & CallFlags.optional_chain != 0) return null;
 
+    return tryExtractRequireContextFromCallee(ast, callee_idx, args_start, args_len, node.span);
+}
+
+/// `tryExtractRequireContext` 의 callee+args 직접 받는 변형. (#1579 Phase 2)
+/// parser inline scan (call_expression 노드 만들기 *전*에 호출) 에서 사용.
+pub fn tryExtractRequireContextFromCallee(
+    ast: *const Ast,
+    callee_idx: NodeIndex,
+    args_start: u32,
+    args_len: u32,
+    call_span: Span,
+) ?ImportRecord {
     if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return null;
     const callee = ast.getNode(callee_idx);
+    const extras = ast.extra_data.items;
 
     // callee 는 static_member_expression `require.context` 여야 한다
     if (callee.tag != .static_member_expression) return null;
@@ -257,7 +270,7 @@ fn tryExtractRequireContext(ast: *const Ast, node: Node) ?ImportRecord {
     var record = ImportRecord{
         .specifier = "",
         .kind = .require_context,
-        .span = node.span,
+        .span = call_span,
     };
 
     // 인자 0개 → invalid (no args)
@@ -272,7 +285,7 @@ fn tryExtractRequireContext(ast: *const Ast, node: Node) ?ImportRecord {
         return record;
     }
 
-    if (args_start + args_len > ast.extra_data.items.len) return null;
+    if (args_start + args_len > extras.len) return null;
 
     // spread element 검사 (전체 인자 사전 스캔)
     var i: u32 = 0;

@@ -412,6 +412,10 @@ pub const ImportRecord = struct {
     /// require.context: invalid arguments 발견 시 reason. graph 단계에서 BundlerDiagnostic 으로
     /// 변환되어 사용자에게 표시. null 이면 valid.
     context_invalid_reason: ?[]const u8 = null,
+    /// require.context: 매칭된 파일 목록. host plugin (`resolveContext`) 또는 내장 fallback 이
+    /// graph 단계에서 채운다. codegen 이 이 목록을 보고 webpackContext 함수를 emit (Phase 3).
+    /// null = 아직 평가 안 됨, &.{} = 매칭 0개 (empty context).
+    context_matches: ?[]const []const u8 = null,
 };
 
 // ============================================================
@@ -455,6 +459,10 @@ pub const BundlerDiagnostic = struct {
         json_parse_error,
         /// 확장자에 대한 로더 미설정 (esbuild 호환: "No loader is configured for ...")
         no_loader,
+        /// require.context 인자가 invalid (Phase 1 의 context_invalid_reason 노출). #1579
+        require_context_invalid,
+        /// require.context 매칭 핸들러 미구현 (host plugin resolveContext hook 없음). #1579 / #1771
+        require_context_no_handler,
     };
 
     pub const Severity = enum {
