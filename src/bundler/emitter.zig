@@ -213,7 +213,8 @@ pub fn emitWithTreeShaking(
     var sorted: std.ArrayList(*const Module) = .empty;
     defer sorted.deinit(allocator);
 
-    for (graph.modules.items, 0..) |*m, i| {
+    for (0..graph.moduleCount()) |i| {
+        const m = graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         const is_asset = m.loader.isAsset() and m.source.len > 0;
         const is_js = (m.module_type == .javascript or m.module_type == .json) and (m.ast != null or m.is_disabled or is_asset);
         if (is_js) {

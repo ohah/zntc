@@ -909,7 +909,8 @@ pub fn computeAllUsedNames(
     }
 
     // 모든 모듈의 import_bindings + export_bindings(re-export)를 순회하여 역방향 맵 구축
-    for (graph.modules.items) |*importer| {
+    var mod_it = graph.modulesIterator();
+    while (mod_it.next()) |importer| {
         const imp_i: u32 = importer.index.toU32();
 
         // export_bindings 중 re_export / re_export_all → 타겟 모듈로 역매핑

@@ -256,6 +256,11 @@ pub const LinkAccessor = struct {
     pub inline fn setCycleGroup(self: LinkAccessor, idx: ModuleIndex, value: u32) void {
         if (self.graph.moduleAtMut(idx)) |m| m.cycle_group = value;
     }
+
+    /// dev mode 모듈 ID. bundler 가 build() 끝 emit 직전 단계에서 한 번만 write.
+    pub inline fn setDevId(self: LinkAccessor, idx: ModuleIndex, dev_id: []const u8) void {
+        if (self.graph.moduleAtMut(idx)) |m| m.dev_id = dev_id;
+    }
 };
 
 // ============================================================
