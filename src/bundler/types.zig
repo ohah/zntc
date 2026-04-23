@@ -100,6 +100,20 @@ pub const ImportKind = enum {
     worker,
     /// import.meta.glob("./pages/*.tsx") — Vite 호환
     glob,
+    /// require.context("./pages", true, /\.tsx$/, "sync") — webpack/Metro 호환 (#1579)
+    require_context,
+};
+
+/// require.context mode. Metro/webpack 명세상 4가지.
+pub const RequireContextMode = enum {
+    /// 즉시 모든 매칭 파일 require (default, Expo Router 등)
+    sync,
+    /// dynamic import 로 포함하지만 번들엔 동기 로드 (sync 와 사실상 동일)
+    eager,
+    /// 각 파일이 개별 chunk (code splitting 필요)
+    lazy,
+    /// 전체가 하나의 chunk
+    lazy_once,
 };
 
 // ============================================================
@@ -385,6 +399,19 @@ pub const ImportRecord = struct {
     glob_import_name: ?[]const u8 = null,
     /// glob: 확장된 매칭 파일 목록 (resolve 후 graph가 설정)
     glob_matches: ?[]const []const u8 = null,
+    /// require.context: recursive flag (default true) — `require.context(dir, recursive)` 두 번째 인자
+    context_recursive: bool = true,
+    /// require.context: filter regex 패턴 본문 (slashes 제외, default `^\./.*$`).
+    /// `/foo\.tsx?$/i` 의 `foo\.tsx?$` 부분.
+    context_filter: ?[]const u8 = null,
+    /// require.context: filter regex flags (default 빈 string).
+    /// `/foo/im` 의 `im` 부분. flags 차이로 dependency identity 가 달라진다 (Metro 동작).
+    context_filter_flags: ?[]const u8 = null,
+    /// require.context: code splitting mode (default sync)
+    context_mode: RequireContextMode = .sync,
+    /// require.context: invalid arguments 발견 시 reason. graph 단계에서 BundlerDiagnostic 으로
+    /// 변환되어 사용자에게 표시. null 이면 valid.
+    context_invalid_reason: ?[]const u8 = null,
 };
 
 // ============================================================
