@@ -170,6 +170,12 @@ pub const ModuleGraph = struct {
     /// Phase 1: 모든 모듈 등록 + 파싱 + import resolve (BFS)
     /// Phase 2: DFS로 exec_index + 순환 감지
     pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
+        // worker thread 가 `&self.modules.items[idx]` 로 module pointer 를 capture 한
+        // 상태에서 main thread 의 modules.append 가 realloc 을 trigger 하면 그 pointer
+        // 가 dangling 됨. capacity 를 충분히 pre-allocate 해 realloc 자체를 회피.
+        // 실측: bungae ExpoApp (route + RN deps) ~600 모듈, monorepo 규모 ~2000.
+        try self.modules.ensureTotalCapacity(self.allocator, 8192);
+
         // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
         if (self.entry_dir.len == 0 and entry_points.len > 0) {
             self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
@@ -235,15 +241,21 @@ pub const ModuleGraph = struct {
                 self.applySideEffectsFromPackageJson(&self.modules.items[mod_idx]);
                 self.modules.items[mod_idx].state = .ready;
 
+                // require.context expansion 은 main thread 에서 — worker race 회피.
+                expandRequireContextRecords(self, mod_idx);
+
                 const records = self.modules.items[mod_idx].import_records;
                 const resolves = result.resolve_outputs;
 
                 // 포인터 안전: applyResolveResult → addModule → realloc 가능.
                 // 워커가 실행 중이면 realloc은 댕글링 포인터를 만듦.
                 // → capacity가 부족하면 inflight 워커를 전부 drain한 후 재할당.
-                // context_deps 도 applyContextDepResults 에서 addModule 가능해 합산.
-                const needed = self.modules.items.len + records.len + self.modules.items[mod_idx].context_expansion_deps.len;
-                if (needed > self.modules.capacity and inflight > 0) {
+                // context_deps 는 applyContextDepResults 가 addModule 을 반드시 호출하므로
+                // realloc 가능성 확정 → inflight > 0 이면 무조건 drain.
+                const ctx_deps_len = self.modules.items[mod_idx].context_expansion_deps.len;
+                const needed = self.modules.items.len + records.len + ctx_deps_len;
+                const must_drain_for_ctx = ctx_deps_len > 0 and inflight > 0;
+                if ((needed > self.modules.capacity or must_drain_for_ctx) and inflight > 0) {
                     // 결과를 버퍼에 모아두고 drain 후 일괄 적용
                     var pending = std.ArrayListUnmanaged(ScanResult).initBuffer(
                         self.allocator.alloc(ScanResult, inflight) catch &.{},
@@ -261,6 +273,7 @@ pub const ModuleGraph = struct {
                         const p_idx = @intFromEnum(pending_result.module_idx);
                         self.applySideEffectsFromPackageJson(&self.modules.items[p_idx]);
                         self.modules.items[p_idx].state = .ready;
+                        expandRequireContextRecords(self, p_idx);
                         const p_records = self.modules.items[p_idx].import_records;
                         const p_resolves = pending_result.resolve_outputs;
                         for (p_records, 0..) |rec, ri| {
@@ -761,8 +774,9 @@ pub const ModuleGraph = struct {
 
         // import.meta.glob: 워커에서 glob 확장 수행
         expandGlobRecords(self.allocator, self.modules.items[mod_idx].import_records, source_dir);
-        // require.context: plugin 으로 matches 주입 + context_expansion_deps 로 수집.
-        expandRequireContextRecords(self, mod_idx);
+        // require.context expansion 은 receiver (main thread) 에서 — 큰 모노레포에서
+        // 다수 require.context 가 있을 때 main bottleneck 이지만, ZTS 의 worker
+        // race-safety 가 정식 정리되기 전 까지 임시로 main 에서만 처리.
 
         const records = self.modules.items[mod_idx].import_records;
         var results = self.allocator.alloc(ResolveOutput, records.len) catch {
@@ -832,12 +846,17 @@ pub const ModuleGraph = struct {
         // Plugin: load 훅 — 모든 module_type 분기 전에 플러그인에게 기회를 줌.
         // 플러그인이 내용을 반환하면 JS 모듈로 전환 (예: .css → JS export).
         if (plugin_runner) |runner| {
-            // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
-            var tmp_arena = std.heap.ArenaAllocator.init(self.allocator);
+            // 임시 arena (heap-alloc) 로 load 결과 확인 (성공 시 module 에 소유권 이전)
+            const tmp_arena = self.allocator.create(std.heap.ArenaAllocator) catch {
+                module.state = .ready;
+                return;
+            };
+            tmp_arena.* = std.heap.ArenaAllocator.init(self.allocator);
             const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
                 error.PluginFailed => null,
                 error.OutOfMemory => {
                     tmp_arena.deinit();
+                    self.allocator.destroy(tmp_arena);
                     module.state = .ready;
                     return;
                 },
@@ -852,6 +871,7 @@ pub const ModuleGraph = struct {
                 // (아래 "모듈별 Arena" 블록은 parse_arena가 이미 설정되어 있으므로 건너뜀)
             } else {
                 tmp_arena.deinit();
+                self.allocator.destroy(tmp_arena);
             }
         }
 
@@ -859,8 +879,13 @@ pub const ModuleGraph = struct {
         // `export default <json_value>;` 형태의 AST를 생성하여
         // semantic → import_scanner → binding_scanner를 공유한다.
         if (module.module_type == .json) {
-            module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
-            const arena_alloc = module.parse_arena.?.allocator();
+            const arena = self.allocator.create(std.heap.ArenaAllocator) catch {
+                module.state = .ready;
+                return;
+            };
+            arena.* = std.heap.ArenaAllocator.init(self.allocator);
+            module.parse_arena = arena;
+            const arena_alloc = arena.allocator();
             module.source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 10 * 1024 * 1024) catch "";
 
             module.ast = json_to_esm.convert(arena_alloc, module.source) catch {
@@ -958,7 +983,12 @@ pub const ModuleGraph = struct {
         // 모듈별 Arena: Scanner/Parser/AST 메모리를 소유 (D061)
         // 플러그인 load 훅에서 이미 설정된 경우 건너뜀
         if (module.parse_arena == null) {
-            module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+            const arena = self.allocator.create(std.heap.ArenaAllocator) catch {
+                module.state = .ready;
+                return;
+            };
+            arena.* = std.heap.ArenaAllocator.init(self.allocator);
+            module.parse_arena = arena;
         }
         const arena_alloc = module.parse_arena.?.allocator();
 
@@ -1603,7 +1633,7 @@ pub const ModuleGraph = struct {
             // incremental rebuild: 이미 등록된 모듈은 skip.
             if (m.init_symbol != null or m.exports_symbol != null) continue;
             const sem_ptr = if (m.semantic) |*s| s else continue;
-            const arena = if (m.parse_arena) |*a| a.allocator() else continue;
+            const arena = if (m.parse_arena) |a| a.allocator() else continue;
 
             const init_name = types.makeInitVarName(arena, m.path) catch continue;
             const exports_name = types.makeExportsVarName(arena, m.path) catch continue;
@@ -1742,8 +1772,13 @@ pub const ModuleGraph = struct {
     fn parseCssModule(self: *ModuleGraph, module: *Module) void {
         const css_scanner_mod = @import("css_scanner.zig");
 
-        module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
-        const arena_alloc = module.parse_arena.?.allocator();
+        const arena = self.allocator.create(std.heap.ArenaAllocator) catch {
+            module.state = .ready;
+            return;
+        };
+        arena.* = std.heap.ArenaAllocator.init(self.allocator);
+        module.parse_arena = arena;
+        const arena_alloc = arena.allocator();
 
         // 파일 읽기
         if (module.source.len == 0) {
@@ -1788,7 +1823,12 @@ pub const ModuleGraph = struct {
     /// asset_registry 모드의 .file/.copy는 loader를 .javascript로 바꿔 fall-through
     /// 신호를 보내고, 호출자가 일반 JS 파이프라인을 이어 실행한다.
     fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
-        module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
+        const arena = self.allocator.create(std.heap.ArenaAllocator) catch {
+            module.state = .ready;
+            return;
+        };
+        arena.* = std.heap.ArenaAllocator.init(self.allocator);
+        module.parse_arena = arena;
         const arena_alloc = module.parse_arena.?.allocator();
 
         switch (module.loader) {
@@ -2431,7 +2471,7 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
         null;
 
     // arena 에서 append — self.allocator 와 섞이면 capacity/free mismatch 발생.
-    const arena_alloc = if (module.parse_arena) |*a| a.allocator() else self.allocator;
+    const arena_alloc = if (module.parse_arena) |a| a.allocator() else self.allocator;
     var expansion = std.ArrayList(types.ImportRecord).empty;
 
     for (records) |*record| {

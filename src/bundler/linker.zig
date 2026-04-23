@@ -1703,7 +1703,7 @@ pub const Linker = struct {
             const ast = if (importer.ast) |*a| a else continue;
             // 결과 슬라이스는 module.parse_arena가 소유 — 모듈 수명 동안 유효하고
             // deinit 시 자동 해제. linker.allocator를 쓰면 누수 위험.
-            const arena = if (importer.parse_arena) |*pa| pa.allocator() else continue;
+            const arena = if (importer.parse_arena) |pa| pa.allocator() else continue;
 
             if (sem.scope_maps.len == 0) continue;
 

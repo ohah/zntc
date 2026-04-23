@@ -41,7 +41,10 @@ pub const PersistentModuleStore = struct {
 
     fn freeCachedModule(self: *PersistentModuleStore, cached: *CachedModule) void {
         // parse_arena / alias_table 가 아직 store 에 있으면 해제.
-        if (cached.module.parse_arena) |*arena| arena.deinit();
+        if (cached.module.parse_arena) |arena| {
+            arena.deinit();
+            self.allocator.destroy(arena);
+        }
         if (cached.module.alias_table) |*t| t.deinit();
         // dependencies/importers/dynamic_imports ArrayList 해제
         cached.module.dependencies.deinit(self.allocator);
@@ -96,14 +99,20 @@ pub const PersistentModuleStore = struct {
                 .module = cached_module,
                 .import_specifiers = specs,
             }) catch {
-                if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.parse_arena) |a| {
+                    a.deinit();
+                    self.allocator.destroy(a);
+                }
                 if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
             };
         } else {
             const key = self.allocator.dupe(u8, path) catch {
-                if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.parse_arena) |a| {
+                    a.deinit();
+                    self.allocator.destroy(a);
+                }
                 if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
@@ -116,7 +125,10 @@ pub const PersistentModuleStore = struct {
                 .import_specifiers = specs,
             }) catch {
                 self.allocator.free(key);
-                if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.parse_arena) |a| {
+                    a.deinit();
+                    self.allocator.destroy(a);
+                }
                 if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);

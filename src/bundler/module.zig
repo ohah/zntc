@@ -86,7 +86,10 @@ pub const Module = struct {
     /// 모든 export 가 사용 가능해야.
     is_context_dep: bool = false,
     /// 모듈별 Arena — Scanner/Parser/AST/Semantic 메모리를 소유. graph.deinit에서 해제.
-    parse_arena: ?std.heap.ArenaAllocator,
+    /// heap-alloc pointer — Module 이 ArrayList grow 로 memcpy 되어도 arena 위치 안정.
+    /// `arena.allocator()` 가 반환하는 Allocator 의 state ptr (=&arena.state) 가
+    /// dangling 되지 않으므로 worker thread 가 capture 후 사용 가능.
+    parse_arena: ?*std.heap.ArenaAllocator,
     /// semantic analyzer 결과. parse_arena가 소유. linker에서 사용.
     semantic: ?ModuleSemanticData,
     /// Semantic Analyzer에서 사전 구축한 StmtInfo. parse_arena가 소유.
@@ -377,7 +380,10 @@ pub const Module = struct {
         }
         // parse_arena가 Scanner/Parser/AST/source 메모리를 전부 소유.
         // ast.deinit()는 불필요 — arena.deinit()이 일괄 해제.
-        if (self.parse_arena) |*arena| arena.deinit();
+        if (self.parse_arena) |arena| {
+            arena.deinit();
+            allocator.destroy(arena);
+        }
     }
 
     /// Lazy 초기화. graph allocator로 합성 심볼 테이블을 만든다.
