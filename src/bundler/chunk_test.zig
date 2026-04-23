@@ -601,14 +601,16 @@ test "generateChunks: circular dependency stays in same chunk" {
         makeTestModule(alloc, 1, "b.ts"),
         makeTestModule(alloc, 2, "c.ts"),
     };
-    // a → b, b → c, c → b (순환)
-    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
-    try modules[1].addDependency(alloc, @enumFromInt(2), &modules);
-    try modules[2].addDependency(alloc, @enumFromInt(1), &modules);
     defer for (&modules) |*m| m.deinit(alloc);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    // a → b, b → c, c → b (순환)
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(2));
+    try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(1));
+
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, null);
     defer cg.deinit();
 
@@ -628,12 +630,14 @@ test "generateChunks: static + dynamic import same module" {
         makeTestModule(alloc, 0, "a.ts"),
         makeTestModule(alloc, 1, "b.ts"),
     };
-    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
-    try modules[0].addDynamicImport(alloc, @enumFromInt(1));
     defer for (&modules) |*m| m.deinit(alloc);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try modules[0].addDynamicImport(alloc, @enumFromInt(1));
+
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, null);
     defer cg.deinit();
 
@@ -653,15 +657,17 @@ test "generateChunks: three entries sharing a module" {
         makeTestModule(alloc, 2, "c.ts"),
         makeTestModule(alloc, 3, "shared.ts"),
     };
-    // 3개 엔트리가 모두 dynamic import로 생성됨
-    // a→shared, b→shared, c→shared (static deps)
-    try modules[0].addDependency(alloc, @enumFromInt(3), &modules);
-    try modules[1].addDependency(alloc, @enumFromInt(3), &modules);
-    try modules[2].addDependency(alloc, @enumFromInt(3), &modules);
     defer for (&modules) |*m| m.deinit(alloc);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    // 3개 엔트리가 모두 dynamic import로 생성됨
+    // a→shared, b→shared, c→shared (static deps)
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(3));
+    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(3));
+    try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(3));
+
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts", "c.ts" }, null);
     defer cg.deinit();
 
@@ -686,11 +692,13 @@ test "generateChunks: entry imports another entry statically" {
         makeTestModule(alloc, 0, "a.ts"),
         makeTestModule(alloc, 1, "b.ts"),
     };
-    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
     defer for (&modules) |*m| m.deinit(alloc);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts" }, null);
     defer cg.deinit();
 
@@ -712,13 +720,15 @@ test "generateChunks: deep chain with dynamic import at middle" {
         makeTestModule(alloc, 2, "c.ts"),
         makeTestModule(alloc, 3, "d.ts"),
     };
-    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
-    try modules[1].addDynamicImport(alloc, @enumFromInt(2));
-    try modules[2].addDependency(alloc, @enumFromInt(3), &modules);
     defer for (&modules) |*m| m.deinit(alloc);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try modules[1].addDynamicImport(alloc, @enumFromInt(2));
+    try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(3));
+
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, null);
     defer cg.deinit();
 
@@ -755,10 +765,11 @@ test "computeCrossChunkLinks: no cross-chunk deps — 모든 모듈이 같은 �
         makeTestModule(alloc, 1, "b.ts"),
     };
     defer for (&modules) |*m| m.deinit(alloc);
-    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
 
     // 청크 하나에 모듈 0,1 할당
     var cg = try ChunkGraph.init(alloc, 2);
@@ -788,10 +799,11 @@ test "computeCrossChunkLinks: static cross-chunk import" {
         makeTestModule(alloc, 1, "b.ts"),
     };
     defer for (&modules) |*m| m.deinit(alloc);
-    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
 
     var cg = try ChunkGraph.init(alloc, 2);
     defer cg.deinit();
@@ -874,11 +886,12 @@ test "computeCrossChunkLinks: deduplication — 여러 모듈이 같은 청크�
         makeTestModule(alloc, 2, "c.ts"),
     };
     defer for (&modules) |*m| m.deinit(alloc);
-    try modules[0].addDependency(alloc, @enumFromInt(2), &modules);
-    try modules[1].addDependency(alloc, @enumFromInt(2), &modules);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2));
+    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(2));
 
     var cg = try ChunkGraph.init(alloc, 3);
     defer cg.deinit();
@@ -917,11 +930,12 @@ test "computeCrossChunkLinks: bidirectional — A↔B 상호 의존" {
         makeTestModule(alloc, 1, "b.ts"),
     };
     defer for (&modules) |*m| m.deinit(alloc);
-    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
-    try modules[1].addDependency(alloc, @enumFromInt(0), &modules);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(0));
 
     var cg = try ChunkGraph.init(alloc, 2);
     defer cg.deinit();
@@ -962,14 +976,16 @@ test "generateChunks: entry module reassignment removes from old chunk" {
         makeTestModule(alloc, 1, "b.ts"), // 공유 모듈
         makeTestModule(alloc, 2, "c.ts"), // 엔트리 1 + A가 static import
     };
-    // a → b (static), a → c (static), c → b (static)
-    try modules[0].addDependency(alloc, @enumFromInt(1), &modules);
-    try modules[0].addDependency(alloc, @enumFromInt(2), &modules);
-    try modules[2].addDependency(alloc, @enumFromInt(1), &modules);
     defer for (&modules) |*m| m.deinit(alloc);
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
+
+    // a → b (static), a → c (static), c → b (static)
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2));
+    try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(1));
+
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "c.ts" }, null);
     defer cg.deinit();
 

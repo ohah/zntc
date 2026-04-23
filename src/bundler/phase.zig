@@ -219,10 +219,9 @@ pub const ResolveAccessor = struct {
         if (self.graph.moduleAtMut(idx)) |m| m.uses_top_level_await = value;
     }
 
-    /// 인접 리스트 append. PR #2 에서 Module.addDependency 시그니처 변경 시 함께 정리.
+    /// 양방향 인접 리스트 등록. ModuleGraph.linkDependency 로 위임.
     pub fn appendDependency(self: ResolveAccessor, idx: ModuleIndex, dep: ModuleIndex) !void {
-        const m = self.graph.moduleAtMut(idx) orelse return;
-        try m.addDependency(self.graph.allocator, dep, self.graph.modules.items);
+        try self.graph.linkDependency(idx, dep);
     }
 
     pub fn appendDynamicImport(self: ResolveAccessor, idx: ModuleIndex, dep: ModuleIndex) !void {

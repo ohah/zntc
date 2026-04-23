@@ -321,23 +321,6 @@ pub const Module = struct {
         };
     }
 
-    /// 양방향 의존성 추가 (D078).
-    /// self → dep 순방향 + dep → self 역방향을 동시에 업데이트.
-    pub fn addDependency(
-        self: *Module,
-        allocator: std.mem.Allocator,
-        dep_index: ModuleIndex,
-        all_modules: []Module,
-    ) !void {
-        if (dep_index.isNone()) return;
-        const idx = @intFromEnum(dep_index);
-        if (idx >= all_modules.len) return;
-
-        try self.dependencies.append(allocator, dep_index);
-        var dep = &all_modules[idx];
-        try dep.importers.append(allocator, self.index);
-    }
-
     /// 동적 import 추가.
     pub fn addDynamicImport(
         self: *Module,
