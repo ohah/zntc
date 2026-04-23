@@ -45,6 +45,11 @@ const mime = @import("../server/mime.zig");
 const plugin_mod = @import("plugin.zig");
 const MpscChannel = @import("mpsc_channel.zig").MpscChannel;
 pub const module_store = @import("module_store.zig");
+const phase_mod = @import("phase.zig");
+pub const ModulePhase = phase_mod.ModulePhase;
+pub const ParseAccessor = phase_mod.ParseAccessor;
+pub const ResolveAccessor = phase_mod.ResolveAccessor;
+pub const LinkAccessor = phase_mod.LinkAccessor;
 
 pub const ModuleGraph = struct {
     allocator: std.mem.Allocator,
@@ -156,6 +161,80 @@ pub const ModuleGraph = struct {
         self.worker_entries.deinit(self.allocator);
         if (self.jsx_specifier_cache) |s| self.allocator.free(s);
     }
+
+    // ============================================================
+    // Module accessor API (#1779 PR #1a)
+    //
+    // 외부 코드는 `self.modules.items[idx]` 직접 접근 대신 아래 메서드 사용.
+    // worker race-safety 와 향후 SegmentedList storage 교체 (#1779 PR #3) 를
+    // 위해 storage 접근을 단일 진입점으로 모은다.
+    //
+    // - read 는 누구나: `getModule(idx)` → `?*const Module`
+    // - mutate 는 phase-tagged accessor 경유: `parseAccessor()` / `resolveAccessor()` /
+    //   `linkAccessor()` (정의는 phase.zig)
+    // - `moduleAtMut` 는 accessor 내부 전용. 다른 호출자는 phase accessor 를 쓸 것.
+    // ============================================================
+
+    /// idx 검증 → modules slice 의 in-range index 반환. read/mut 양쪽 진입점에서 공유.
+    inline fn validModuleSlot(self: *const ModuleGraph, idx: ModuleIndex) ?usize {
+        if (idx.isNone()) return null;
+        const i = idx.toUsize();
+        if (i >= self.modules.items.len) return null;
+        return i;
+    }
+
+    /// idx 에 해당하는 module 의 read-only 포인터. 범위 밖이면 null.
+    pub inline fn getModule(self: *const ModuleGraph, idx: ModuleIndex) ?*const Module {
+        const i = self.validModuleSlot(idx) orelse return null;
+        return &self.modules.items[i];
+    }
+
+    /// 등록된 module 개수. `self.modules.items.len` 의 캡슐화 진입점.
+    pub inline fn moduleCount(self: *const ModuleGraph) usize {
+        return self.modules.items.len;
+    }
+
+    /// **Accessor 전용**. 직접 호출 금지 — `parseAccessor()` 등 phase accessor 의
+    /// setter 메서드를 사용하라. 외부 mutable pointer 노출은 worker race 의 root.
+    /// SegmentedList 교체 (#1779 PR #3) 시 내부 구현만 변경된다.
+    pub inline fn moduleAtMut(self: *ModuleGraph, idx: ModuleIndex) ?*Module {
+        const i = self.validModuleSlot(idx) orelse return null;
+        return &self.modules.items[i];
+    }
+
+    /// Parse phase mutation accessor 발급. parser/scanner worker 가 자기 module 의
+    /// AST/semantic/source 등을 write 할 때 사용. 정의는 phase.zig.
+    pub inline fn parseAccessor(self: *ModuleGraph) phase_mod.ParseAccessor {
+        return .{ .graph = self };
+    }
+
+    /// Resolve phase mutation accessor 발급. main thread 의 import 매칭 결과 적용용.
+    pub inline fn resolveAccessor(self: *ModuleGraph) phase_mod.ResolveAccessor {
+        return .{ .graph = self };
+    }
+
+    /// Link phase mutation accessor 발급. DFS exec_index/cycle_group 부여용.
+    pub inline fn linkAccessor(self: *ModuleGraph) phase_mod.LinkAccessor {
+        return .{ .graph = self };
+    }
+
+    /// 모든 module 을 순회하는 read-only iterator. `for (graph.modules.items) |m|`
+    /// 의 캡슐화 진입점. SegmentedList 교체 (#1779 PR #3) 시 chunk 경계를 처리.
+    pub inline fn modulesIterator(self: *const ModuleGraph) ModulesIterator {
+        return .{ .graph = self, .index = 0 };
+    }
+
+    pub const ModulesIterator = struct {
+        graph: *const ModuleGraph,
+        index: usize,
+
+        pub fn next(self: *ModulesIterator) ?*const Module {
+            if (self.index >= self.graph.modules.items.len) return null;
+            const m = &self.graph.modules.items[self.index];
+            self.index += 1;
+            return m;
+        }
+    };
 
     /// 확장자에 대한 로더를 결정한다.
     /// --loader 오버라이드가 있으면 우선 사용, 없으면 확장자 기본값.
