@@ -28,6 +28,8 @@ const std = @import("std");
 const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const CallFlags = @import("../parser/ast.zig").CallFlags;
+const MemberFlags = @import("../parser/ast.zig").MemberFlags;
 const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
 const ImportRecord = types.ImportRecord;
@@ -85,7 +87,12 @@ pub fn extractImportsWithCjsDetection(allocator: std.mem.Allocator, ast: *const 
                 }
             },
             .call_expression => {
-                if (tryExtractRequire(ast, node)) |record| {
+                // Order: require.context (specific, callee=member) → require (callee=ident) → glob (callee=meta).
+                // 더 specific 한 패턴 먼저 시도해야 일반 require 가 require.context 를 가리지 않는다.
+                if (tryExtractRequireContext(ast, node)) |record| {
+                    has_cjs_require = true;
+                    try records.append(allocator, record);
+                } else if (tryExtractRequire(ast, node)) |record| {
                     has_cjs_require = true;
                     try records.append(allocator, record);
                 } else if (tryExtractGlob(ast, node)) |record| {
@@ -196,6 +203,181 @@ fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
         .kind = .dynamic_import,
         .span = arg_node.span,
     };
+}
+
+/// require.context(dir, recursive?, filter?, mode?) 호출 감지 (#1579 Phase 1).
+/// callee 가 static_member_expression `require.context` 인 경우만 처리.
+/// 4 인자를 literal 정적 평가 (string/bool/regex/mode string literal). undefined 는 default 폴백.
+/// invalid 인자는 record 의 context_invalid_reason 에 기록 (graph 단계에서 diagnostic emit).
+/// 다른 callee (Symbol.context, require['context'], require?.context 등) 는 무시 — null 리턴.
+///
+/// `tryExtractGlob` 와 같은 모양. Reference: Metro `processRequireContextCall`
+/// (`metro/src/ModuleGraph/worker/collectDependencies.js`).
+fn tryExtractRequireContext(ast: *const Ast, node: Node) ?ImportRecord {
+    if (node.tag != .call_expression) return null;
+    const e = node.data.extra;
+    // call_expression extra: [callee, args_start, args_len, flags]
+    if (!ast.hasExtra(e, 3)) return null;
+
+    const callee_idx = ast.readExtraNode(e, 0);
+    const args_start = ast.readExtra(e, 1);
+    const args_len = ast.readExtra(e, 2);
+    const call_flags = ast.readExtra(e, 3);
+
+    // `require?.context(...)` 무시
+    if (call_flags & CallFlags.optional_chain != 0) return null;
+
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return null;
+    const callee = ast.getNode(callee_idx);
+
+    // callee 는 static_member_expression `require.context` 여야 한다
+    if (callee.tag != .static_member_expression) return null;
+    if (!ast.hasExtra(callee.data.extra, 2)) return null;
+
+    const member_obj_idx = ast.readExtraNode(callee.data.extra, 0);
+    const member_prop_idx = ast.readExtraNode(callee.data.extra, 1);
+    const member_flags = ast.readExtra(callee.data.extra, 2);
+
+    // `require?.context` 무시
+    if (member_flags & MemberFlags.optional_chain != 0) return null;
+
+    if (member_obj_idx.isNone() or member_prop_idx.isNone()) return null;
+    if (@intFromEnum(member_obj_idx) >= ast.nodes.items.len or @intFromEnum(member_prop_idx) >= ast.nodes.items.len) return null;
+    const obj_node = ast.getNode(member_obj_idx);
+    const prop_node = ast.getNode(member_prop_idx);
+
+    // object: identifier_reference "require"
+    if (obj_node.tag != .identifier_reference) return null;
+    if (!std.mem.eql(u8, ast.getText(obj_node.span), "require")) return null;
+
+    // property: text 가 "context" 여야 함 (identifier 또는 escaped_keyword)
+    if (!std.mem.eql(u8, ast.getText(prop_node.span), "context")) return null;
+
+    // 여기까지 왔으면 require.context(...) 호출 확정. record 생성 + 인자 평가.
+    var record = ImportRecord{
+        .specifier = "",
+        .kind = .require_context,
+        .span = node.span,
+    };
+
+    // 인자 0개 → invalid (no args)
+    if (args_len == 0) {
+        record.context_invalid_reason = "require.context requires at least one argument (directory)";
+        return record;
+    }
+
+    // 인자 5개 이상 → invalid (too many args)
+    if (args_len > 4) {
+        record.context_invalid_reason = "require.context expects at most 4 arguments";
+        return record;
+    }
+
+    if (args_start + args_len > ast.extra_data.items.len) return null;
+
+    // spread element 검사 (전체 인자 사전 스캔)
+    var i: u32 = 0;
+    while (i < args_len) : (i += 1) {
+        const arg_idx = ast.readExtraNode(args_start, i);
+        if (@intFromEnum(arg_idx) >= ast.nodes.items.len) return null;
+        if (ast.getNode(arg_idx).tag == .spread_element) {
+            record.context_invalid_reason = "require.context arguments cannot use spread";
+            return record;
+        }
+    }
+
+    // arg[0]: directory (string literal, 필수)
+    {
+        const arg_idx = ast.readExtraNode(args_start, 0);
+        if (getStringLiteralText(ast, arg_idx)) |s| {
+            record.specifier = s;
+        } else {
+            record.context_invalid_reason = "require.context first argument must be a string literal (directory)";
+            return record;
+        }
+    }
+
+    // arg[1]: recursive (boolean literal, default true). undefined 는 default 폴백.
+    if (args_len >= 2) {
+        const arg_idx = ast.readExtraNode(args_start, 1);
+        const arg_node = ast.getNode(arg_idx);
+        if (isUndefinedLiteral(ast, arg_node)) {
+            // default true 유지
+        } else if (arg_node.tag == .boolean_literal) {
+            record.context_recursive = std.mem.eql(u8, ast.getText(arg_node.span), "true");
+        } else {
+            record.context_invalid_reason = "require.context second argument must be a boolean literal (recursive)";
+            return record;
+        }
+    }
+
+    // arg[2]: filter (regex literal, default null). undefined 는 default 폴백.
+    if (args_len >= 3) {
+        const arg_idx = ast.readExtraNode(args_start, 2);
+        const arg_node = ast.getNode(arg_idx);
+        if (isUndefinedLiteral(ast, arg_node)) {
+            // default null 유지
+        } else if (arg_node.tag == .regexp_literal) {
+            if (parseRegexLiteral(ast.getText(arg_node.span))) |parts| {
+                record.context_filter = parts.pattern;
+                if (parts.flags.len > 0) {
+                    record.context_filter_flags = parts.flags;
+                }
+            } else {
+                record.context_invalid_reason = "require.context third argument must be a regular expression literal (filter)";
+                return record;
+            }
+        } else {
+            record.context_invalid_reason = "require.context third argument must be a regular expression literal (filter)";
+            return record;
+        }
+    }
+
+    // arg[3]: mode (string literal one of sync/eager/lazy/lazy-once, default 'sync'). undefined 폴백.
+    if (args_len >= 4) {
+        const arg_idx = ast.readExtraNode(args_start, 3);
+        const arg_node = ast.getNode(arg_idx);
+        if (isUndefinedLiteral(ast, arg_node)) {
+            // default sync 유지
+        } else if (getStringLiteralText(ast, arg_idx)) |mode_str| {
+            const mode = parseRequireContextMode(mode_str) orelse {
+                record.context_invalid_reason = "require.context fourth argument must be 'sync', 'eager', 'lazy', or 'lazy-once'";
+                return record;
+            };
+            record.context_mode = mode;
+        } else {
+            record.context_invalid_reason = "require.context fourth argument must be a string literal (mode)";
+            return record;
+        }
+    }
+
+    return record;
+}
+
+/// `undefined` identifier 리터럴 여부. 글로벌 undefined 가 가려진 경우는 무시 (관례).
+fn isUndefinedLiteral(ast: *const Ast, node: Node) bool {
+    if (node.tag != .identifier_reference) return false;
+    return std.mem.eql(u8, ast.getText(node.span), "undefined");
+}
+
+/// `/pattern/flags` 형태의 regex literal 텍스트를 분해. 마지막 `/` 이후를 flags 로 취급.
+fn parseRegexLiteral(text: []const u8) ?struct { pattern: []const u8, flags: []const u8 } {
+    if (text.len < 2 or text[0] != '/') return null;
+    var i: usize = text.len;
+    while (i > 1) : (i -= 1) {
+        if (text[i - 1] == '/') {
+            return .{ .pattern = text[1 .. i - 1], .flags = text[i..] };
+        }
+    }
+    return null;
+}
+
+fn parseRequireContextMode(s: []const u8) ?@import("types.zig").RequireContextMode {
+    const Mode = @import("types.zig").RequireContextMode;
+    if (std.mem.eql(u8, s, "sync")) return Mode.sync;
+    if (std.mem.eql(u8, s, "eager")) return Mode.eager;
+    if (std.mem.eql(u8, s, "lazy")) return Mode.lazy;
+    if (std.mem.eql(u8, s, "lazy-once")) return Mode.lazy_once;
+    return null;
 }
 
 /// require("string_literal") 호출을 감지하여 ImportRecord로 변환.
