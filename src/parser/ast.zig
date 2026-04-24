@@ -360,6 +360,10 @@ pub const Node = struct {
         flow_exact_object_type,
         /// match (expr) { ... } — Flow match expression
         flow_match_expression,
+        /// match expression 의 개별 arm: `pattern => body`. binary = { left=pattern,
+        /// right=body }. `visitFlowMatch` 가 arms list 를 iterate 하며 각 arm 의
+        /// binary.left/right 를 읽는다. `#1822` 에서 outer expr 와 tag 분리.
+        flow_match_arm,
         /// Flow component with ref → React.forwardRef wrapper
         /// extra = [func_decl, const_decl]
         /// func_decl: function Name_withRef({...props}, ref) { body }
@@ -565,6 +569,9 @@ pub const Node = struct {
                 // ESM `import ... with { type: "json" }` 의 각 attr. key/value 가
                 // 실존하므로 leaf 가 아닌 binary layout.
                 .import_attribute,
+                // flow_match_arm: binary = { left=pattern, right=body, flags }
+                // outer flow_match_expression (extra layout) 의 arms list 구성원.
+                .flow_match_arm,
                 => .{ .kind = .binary },
 
                 // === ternary ===
