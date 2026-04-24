@@ -1793,12 +1793,11 @@ test "Minify non-fast-path: self-reference keeps name (#1596)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // static method 가 self-ref 하므로 이름 보존
     try std.testing.expect(std.mem.indexOf(u8, result.output, "SelfRef") != null);
 }
 
 test "Minify non-fast-path: static field blocks anonymization (#1596)" {
-    // static field → `ClassName.x = ...` emit 필요하므로 익명화 불가.
+    // static field 가 `ClassName.x = ...` 형태로 emit 되므로 이름 참조가 살아남아야 한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
@@ -1822,14 +1821,12 @@ test "Minify non-fast-path: static field blocks anonymization (#1596)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // static field 가 `WithStatic.version = 1` 형태로 emit 되므로 이름 참조 존재
     try std.testing.expect(std.mem.indexOf(u8, result.output, "WithStatic") != null);
 }
 
 test "Minify non-fast-path: experimental decorator blocks anonymization (#1596)" {
-    // @decorator 가 __decorateClass argument 로 class 를 받으므로 이름은 사실 optional 이나
-    // class member decorator 는 transformExperimentalDecorators 경로에서 class name 기반
-    // helper 를 생성할 수 있어 보수적으로 이름 유지.
+    // class 자체는 __decorateClass 의 argument 로 받아 이름 없이 써도 되지만,
+    // method decorator 의 member 접근 helper 가 class name 을 참조할 수 있어 보수적으로 보존.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
@@ -1854,12 +1851,11 @@ test "Minify non-fast-path: experimental decorator blocks anonymization (#1596)"
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // decorator 가 있으면 이름 유지
     try std.testing.expect(std.mem.indexOf(u8, result.output, "DecoratedExpr") != null);
 }
 
 test "Minify non-fast-path: instance field allows anonymization (#1596)" {
-    // instance field (non-static) 는 constructor 로 이동되므로 class name 참조 불필요.
+    // instance field 는 constructor 로 이동되므로 class name 참조가 남지 않는다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",

@@ -138,7 +138,6 @@ test "anonymize non-fast-path: instance field only → anonymized (#1596)" {
 }
 
 test "anonymize non-fast-path: static field blocks (#1596)" {
-    // `ClassName.x = ...` emit 되므로 이름 필요
     var r = try eAssign(std.testing.allocator,
         \\const c = class WithStatic extends Error {
         \\  static version = 1;
@@ -179,7 +178,6 @@ test "anonymize non-fast-path: minify_syntax=false disables (#1596)" {
 // ============================================================
 
 test "anonymize non-fast-path: experimental_decorators flag without actual decorators → anonymized (#1596)" {
-    // 플래그만 true 이고 실제 decorator 가 없으면 익명화 가능
     var r = try eExpDeco(std.testing.allocator,
         \\const c = class NoDecorator extends Error {};
     );

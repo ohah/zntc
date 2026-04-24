@@ -425,18 +425,15 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         .data = .{ .list = body_list },
     });
 
-    // #1596: non-fast-path 에서도 미참조 class_expression name 익명화.
-    //   class name 이 런타임에 실제로 필요한 경우에만 보존:
-    //     - static field — `ClassName.x = ...` emit 필요
-    //     - static block 다운레벨 — block 내부 `this` 를 class name 으로 치환
-    //     - decorator (class/member/ctor param) — __decorateClass argument
-    //     - static private field — brand check helper 가 class name 참조 (해당 경로는 fast path 만 다운레벨 처리)
-    //   위 요소가 하나라도 있으면 익명화 불가. 그 외에는 fast path 와 동일.
+    const old_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
+    const has_any_decorator = old_deco_len > 0 or
+        member_decorators.items.len > 0 or
+        ctor_param_decos.items.len > 0;
+
+    // #1596: fast path (#1587) 와 동일 최적화를 non-fast-path 에도 적용.
+    // class name 이 runtime 에 참조되는 경우 — static field (`Foo.x=...`),
+    // static block 다운레벨 (`this` 치환), decorator 중 하나라도 있으면 보존.
     if (shouldDropClassExprName(self, node.tag, raw_name_idx)) {
-        const old_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
-        const has_any_decorator = old_deco_len > 0 or
-            member_decorators.items.len > 0 or
-            ctor_param_decos.items.len > 0;
         const has_static_extras = static_field_assignments.items.len > 0 or
             static_block_iifes.items.len > 0;
         if (!has_any_decorator and !has_static_extras) {
@@ -447,9 +444,8 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
     // experimentalDecorators — decorator를 class에서 제거하고 __decorateClass 호출 생성
     if (self.options.experimental_decorators) {
         const old_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
-        const old_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
 
-        if (old_deco_len > 0 or member_decorators.items.len > 0 or ctor_param_decos.items.len > 0) {
+        if (has_any_decorator) {
             return try self.transformExperimentalDecorators(
                 node,
                 new_name,
@@ -469,7 +465,7 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
 
     // decorator 리스트 복사 (experimental이 아닌 경우)
     const new_decos = if (!self.options.experimental_decorators)
-        try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = self.readU32(e, ast_mod.ClassExtra.deco_len) })
+        try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = old_deco_len })
     else
         NodeList{ .start = 0, .len = 0 };
 
