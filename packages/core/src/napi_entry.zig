@@ -953,6 +953,124 @@ const NapiPlugin = struct {
     }
 };
 
+// ─── NapiManualChunksResolver: `manualChunks(id)` JS 함수 브리지 (#1027 Phase 2) ───
+// Rollup manualChunks 동일 시그니처. 모듈당 1회 sync 호출 (pre-pass 에서 수집).
+// worker thread 에서 call → tsfn 으로 main dispatch → condvar 대기 → 결과 반환.
+// NapiPlugin 의 축약 버전 (1 hook, no filter, sync only, promise 불필요).
+
+const NapiManualChunksResolver = struct {
+    tsfn: c.napi_threadsafe_function,
+
+    const CallContext = struct {
+        id: []const u8,
+        result: ?[]const u8 = null,
+        ready: bool = false,
+        mutex: std.Thread.Mutex = .{},
+        cond: std.Thread.Condition = .{},
+    };
+
+    /// threadsafe function 의 call_js 콜백 (main thread).
+    fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
+        const ctx: *CallContext = @ptrCast(@alignCast(data.?));
+
+        var js_id: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, ctx.id.ptr, ctx.id.len, &js_id);
+
+        var js_undefined: c.napi_value = undefined;
+        _ = c.napi_get_undefined(env, &js_undefined);
+
+        var js_result: c.napi_value = undefined;
+        const args = [_]c.napi_value{js_id};
+        if (c.napi_call_function(env, js_undefined, js_callback, 1, &args, &js_result) != c.napi_ok) {
+            signalResult(ctx, null);
+            return;
+        }
+
+        // null / undefined / string 만 허용. Promise 등 object 는 에러로 간주 (null).
+        var vtype: c.napi_valuetype = undefined;
+        _ = c.napi_typeof(env, js_result, &vtype);
+        if (vtype != c.napi_string) {
+            signalResult(ctx, null);
+            return;
+        }
+
+        // UTF-8 길이 측정 → 할당 → 복사. CallContext.result 는 native_alloc 소유.
+        var len: usize = 0;
+        _ = c.napi_get_value_string_utf8(env, js_result, null, 0, &len);
+        const buf = native_alloc.alloc(u8, len) catch {
+            signalResult(ctx, null);
+            return;
+        };
+        var written: usize = 0;
+        _ = c.napi_get_value_string_utf8(env, js_result, buf.ptr, len + 1, &written);
+        signalResult(ctx, buf[0..written]);
+    }
+
+    fn signalResult(ctx: *CallContext, result: ?[]const u8) void {
+        ctx.mutex.lock();
+        ctx.result = result;
+        ctx.ready = true;
+        ctx.cond.signal();
+        ctx.mutex.unlock();
+    }
+
+    /// Zig resolver 인터페이스 — `ManualChunksResolveFn` 과 동일 시그니처.
+    /// worker thread 에서 호출됨. JS 호출 후 동기 대기.
+    fn resolve(ctx_ptr: ?*anyopaque, id: []const u8) ?[]const u8 {
+        const self: *NapiManualChunksResolver = @ptrCast(@alignCast(ctx_ptr.?));
+        var call_ctx = CallContext{ .id = id };
+
+        if (c.napi_call_threadsafe_function(self.tsfn, &call_ctx, c.napi_tsfn_blocking) != c.napi_ok) {
+            return null;
+        }
+
+        call_ctx.mutex.lock();
+        while (!call_ctx.ready) call_ctx.cond.wait(&call_ctx.mutex);
+        call_ctx.mutex.unlock();
+
+        return call_ctx.result;
+    }
+
+    fn deinit(self: *NapiManualChunksResolver) void {
+        _ = c.napi_release_threadsafe_function(self.tsfn, c.napi_tsfn_release);
+        native_alloc.destroy(self);
+    }
+};
+
+/// JS 함수 값 → NapiManualChunksResolver 생성 + BundleOptions 에 설치.
+/// 성공 시 resolver 포인터 반환 (caller 가 deinit 책임), 실패 시 null.
+fn installManualChunksResolver(
+    env: c.napi_env,
+    fn_val: c.napi_value,
+    opts: *BundleOptions,
+) ?*NapiManualChunksResolver {
+    const resolver = native_alloc.create(NapiManualChunksResolver) catch return null;
+    resolver.* = .{ .tsfn = undefined };
+
+    var resource_name: c.napi_value = undefined;
+    _ = c.napi_create_string_utf8(env, "zts_manual_chunks", "zts_manual_chunks".len, &resource_name);
+    if (c.napi_create_threadsafe_function(
+        env,
+        fn_val,
+        null,
+        resource_name,
+        0, // unlimited queue
+        1, // initial thread count
+        null,
+        null,
+        @ptrCast(resolver),
+        NapiManualChunksResolver.callJsCallback,
+        &resolver.tsfn,
+    ) != c.napi_ok) {
+        native_alloc.destroy(resolver);
+        return null;
+    }
+
+    opts.manual_chunks_resolver = NapiManualChunksResolver.resolve;
+    opts.manual_chunks_ctx = @ptrCast(resolver);
+    return resolver;
+}
+
 const appendJsonEscaped = zts_lib.string_escape.appendEscaped;
 
 /// FunctionInfo를 JSON 문자열로 직렬화한다.
@@ -1088,6 +1206,8 @@ const BuildAsyncData = struct {
     // NAPI 플러그인 (JS 콜백 기반)
     napi_plugins: std.ArrayList(*NapiPlugin),
     zig_plugins: std.ArrayList(Plugin),
+    // manualChunks JS resolver — 소유 (deinit 시 TSFN release)
+    napi_manual_chunks: ?*NapiManualChunksResolver = null,
     // 결과
     result: ?bundler_mod.BundleResult = null,
     err_msg: ?[*:0]const u8 = null,
@@ -1122,6 +1242,7 @@ fn buildCompleteTsfn(env: c.napi_env, _: c.napi_value, _: ?*anyopaque, data: ?*a
         for (async_data.napi_plugins.items) |np| np.deinit();
         async_data.napi_plugins.deinit(native_alloc);
         async_data.zig_plugins.deinit(native_alloc);
+        if (async_data.napi_manual_chunks) |mc| mc.deinit();
         native_alloc.destroy(async_data);
     }
 
@@ -1221,6 +1342,16 @@ fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
         opts.plugins = async_data.zig_plugins.items;
     }
 
+    // _manualChunks JS 함수가 있으면 TSFN 으로 감싸 Zig resolver 로 연결 (#1027 Phase 2).
+    if (getNamedProperty(env, argv[0], "_manualChunks")) |fn_val| {
+        if (installManualChunksResolver(env, fn_val, &opts)) |resolver| {
+            async_data.napi_manual_chunks = resolver;
+        } else {
+            native_alloc.destroy(async_data);
+            return throwError(env, "failed to install manualChunks resolver");
+        }
+    }
+
     async_data.options = opts;
 
     // Promise 생성
@@ -1272,6 +1403,8 @@ const WatchAsyncData = struct {
     // NAPI 플러그인 (JS 콜백 기반)
     napi_plugins: std.ArrayList(*NapiPlugin),
     zig_plugins: std.ArrayList(Plugin),
+    // manualChunks JS resolver — 소유 (deinit 시 TSFN release)
+    napi_manual_chunks: ?*NapiManualChunksResolver = null,
     // Watch-specific
     ready_tsfn: c.napi_threadsafe_function,
     rebuild_tsfn: c.napi_threadsafe_function,
@@ -1306,6 +1439,7 @@ const WatchAsyncData = struct {
         for (self.napi_plugins.items) |np| np.deinit();
         self.napi_plugins.deinit(native_alloc);
         self.zig_plugins.deinit(native_alloc);
+        if (self.napi_manual_chunks) |mc| mc.deinit();
         self.compiled_cache.deinit();
         self.sm_cache.deinit(native_alloc);
         native_alloc.destroy(self);
@@ -2389,6 +2523,16 @@ fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
         async_data.napi_plugins.append(native_alloc, np) catch {};
         async_data.zig_plugins.append(native_alloc, np.toPlugin()) catch {};
         opts.plugins = async_data.zig_plugins.items;
+    }
+
+    // _manualChunks JS 함수가 있으면 TSFN 으로 감싸 Zig resolver 로 연결 (#1027 Phase 2).
+    if (getNamedProperty(env, argv[0], "_manualChunks")) |fn_val| {
+        if (installManualChunksResolver(env, fn_val, &opts)) |resolver| {
+            async_data.napi_manual_chunks = resolver;
+        } else {
+            native_alloc.destroy(async_data);
+            return throwError(env, "failed to install manualChunks resolver");
+        }
     }
 
     async_data.options = opts;
