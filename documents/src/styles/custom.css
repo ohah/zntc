@@ -13,7 +13,9 @@
   --sl-font-mono:
     "JetBrains Mono Variable", "SFMono-Regular", Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
+}
 
+:root[data-theme="dark"] {
   --sl-color-bg: #0d0a07;
   --sl-color-bg-nav: var(--color-surface-950);
   --sl-color-bg-sidebar: var(--color-surface-950);

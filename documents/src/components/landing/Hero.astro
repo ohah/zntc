@@ -35,11 +35,11 @@ const {
   </div>
   <div class="mx-auto max-w-6xl px-6 py-20 sm:py-24 lg:py-28">
     <div class="grid items-center gap-10 lg:grid-cols-2 lg:gap-14">
-      <div class="flex flex-col gap-6">
+      <div class="flex flex-col items-center gap-6 text-center lg:items-start lg:text-left">
         <p class="font-mono text-xs uppercase tracking-[0.2em] text-zig-400">
           {eyebrow}
         </p>
-        <h1 class="text-4xl font-bold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl">
+        <h1 class="whitespace-pre-line text-4xl font-bold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl">
           <span class="bg-gradient-to-br from-zig-200 via-zig-400 to-zig-600 bg-clip-text text-transparent">
             {title}
           </span>
@@ -47,13 +47,13 @@ const {
         <p class="max-w-xl text-lg leading-relaxed text-[color:var(--sl-color-gray-2)]">
           {subtitle}
         </p>
-        <div class="mt-2 flex flex-wrap gap-3">
+        <div class="mt-2 flex flex-wrap justify-center gap-3 lg:justify-start">
           {
             actions.map((a) => (
               <a
                 href={a.href}
                 class:list={[
-                  "inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors",
+                  "inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold no-underline transition-colors",
                   a.primary
                     ? "bg-zig-500 text-zig-950 hover:bg-zig-400"
                     : "border border-[color:var(--sl-color-gray-5)] text-[color:var(--sl-color-white)] hover:border-zig-500 hover:text-zig-400",
