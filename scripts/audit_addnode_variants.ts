@@ -50,6 +50,17 @@ const LEAF_VARIANTS = new Set(["none", "string_ref", "number_bytes"]);
 const KINDS = new Set(["leaf", "unary", "binary", "ternary", "list", "extra"]);
 const ALL_DATA_VARIANTS = new Set([...LEAF_VARIANTS, "unary", "binary", "ternary", "list", "extra"]);
 
+/**
+ * cosmetic fail-gate 예외 — `--strict-cosmetic` 모드에서 허용되는 의도된 mismatch.
+ *
+ * - `flow_match_expression`: outer expression 은 `.extra` (discriminant + arms
+ *   list), 각 arm 은 `.binary` (pattern + body) 로 **동일 tag 를 dual-site 재사용**.
+ *   transformer `visitFlowMatch` 가 두 구조를 모두 읽는다. 단일 layout 선택
+ *   불가능. 해결책은 arm tag 를 분리 (예: `flow_match_arm`) 하는 것이나
+ *   audit 정리 범위 밖.
+ */
+const COSMETIC_EXEMPT_TAGS = new Set(["flow_match_expression"]);
+
 
 function findMatchingBrace(text: string, openIdx: number): number {
 	let depth = 0;
@@ -428,6 +439,7 @@ function walk(dir: string): string[] {
 
 function main(): number {
 	const verbose = process.argv.includes("--verbose") || process.argv.includes("-v");
+	const strictCosmetic = process.argv.includes("--strict-cosmetic");
 	const layout = parseLayoutTable(readFileSync(AST_FILE, "utf8"));
 	const readerFiles = DATA_READER_DIRS.flatMap((d) => walk(d));
 	const dataReads = analyzeDataReaders(readerFiles);
@@ -489,19 +501,40 @@ function main(): number {
 		}
 	}
 
-	if (real.length === 0) {
-		console.log("\n✓ 0 REAL mismatches (#1797 class silent failures)");
-		return 0;
+	if (real.length > 0) {
+		console.log(`\n✗ ${real.length} REAL mismatch(es):\n`);
+		for (const { path, lineNo, tag, variant, expected, reads } of real) {
+			const rel = relative(ROOT, path);
+			const readsS = Array.from(reads).sort().join(", ");
+			console.log(`  ${rel}:${lineNo}`);
+			console.log(`    tag=.${tag}  stored=.${variant}  layout=.${expected}  readers use: {${readsS}}`);
+		}
+		return 1;
 	}
+	console.log("\n✓ 0 REAL mismatches (#1797 class silent failures)");
 
-	console.log(`\n✗ ${real.length} REAL mismatch(es):\n`);
-	for (const { path, lineNo, tag, variant, expected, reads } of real) {
-		const rel = relative(ROOT, path);
-		const readsS = Array.from(reads).sort().join(", ");
-		console.log(`  ${rel}:${lineNo}`);
-		console.log(`    tag=.${tag}  stored=.${variant}  layout=.${expected}  readers use: {${readsS}}`);
+	// --strict-cosmetic: #1802 최종 gate — 의도된 예외 (`COSMETIC_EXEMPT_TAGS`)
+	// 를 제외한 cosmetic 이 0 이어야 한다. 신규 PR 이 cosmetic mismatch 를
+	// 도입하면 CI 실패.
+	if (strictCosmetic) {
+		const unexpected = cosmeticList.filter((m) => !COSMETIC_EXEMPT_TAGS.has(m.tag));
+		if (unexpected.length > 0) {
+			console.log(
+				`\n✗ --strict-cosmetic: ${unexpected.length} unexempted cosmetic mismatch(es) — ` +
+					`add to COSMETIC_EXEMPT_TAGS only with justification.`,
+			);
+			for (const { path, lineNo, tag, variant, expected } of unexpected) {
+				console.log(`  ${relative(ROOT, path)}:${lineNo}  tag=.${tag}  stored=.${variant}  layout=.${expected}`);
+			}
+			return 1;
+		}
+		const exemptCount = cosmeticList.length;
+		console.log(
+			`✓ --strict-cosmetic: 0 unexempted cosmetic (${exemptCount} exempted by design: ` +
+				`${Array.from(COSMETIC_EXEMPT_TAGS).join(", ")})`,
+		);
 	}
-	return 1;
+	return 0;
 }
 
 process.exit(main());
