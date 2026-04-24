@@ -133,7 +133,7 @@ export default defineConfig({
           items: [{ label: "Playground", link: "/playground/" }],
         },
       ],
-      customCss: ["./src/styles/custom.css"],
+      customCss: ["./src/styles/tailwind.css", "./src/styles/custom.css"],
     }),
     react(),
   ],

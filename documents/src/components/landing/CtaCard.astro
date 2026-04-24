@@ -1,0 +1,40 @@
+---
+import Section from "./Section.astro";
+
+interface Button {
+  text: string;
+  href: string;
+}
+
+interface Props {
+  heading: string;
+  description: string;
+  primary: Button;
+  secondary: Button;
+}
+
+const { heading, description, primary, secondary } = Astro.props;
+---
+
+<Section padding="pb-24">
+  <div class="flex flex-col items-start gap-6 rounded-xl border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-10 sm:flex-row sm:items-center sm:justify-between">
+    <div class="flex flex-col gap-2">
+      <h2 class="text-2xl font-bold tracking-tight">{heading}</h2>
+      <p class="text-sm text-[color:var(--sl-color-gray-2)]">{description}</p>
+    </div>
+    <div class="flex flex-wrap gap-3">
+      <a
+        href={primary.href}
+        class="inline-flex items-center gap-2 rounded-md bg-zig-500 px-4 py-2 text-sm font-semibold text-zig-950 no-underline transition-colors hover:bg-zig-400"
+      >
+        {primary.text}
+      </a>
+      <a
+        href={secondary.href}
+        class="inline-flex items-center gap-2 rounded-md border border-[color:var(--sl-color-gray-5)] px-4 py-2 text-sm font-semibold no-underline transition-colors hover:border-zig-500 hover:text-zig-400"
+      >
+        {secondary.text}
+      </a>
+    </div>
+  </div>
+</Section>

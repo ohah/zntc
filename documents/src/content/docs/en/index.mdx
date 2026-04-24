@@ -9,6 +9,8 @@ hero:
 import Hero from "../../../components/landing/Hero.astro";
 import StatsStrip from "../../../components/landing/StatsStrip.astro";
 import FeatureGrid from "../../../components/landing/FeatureGrid.astro";
+import Section from "../../../components/landing/Section.astro";
+import CtaCard from "../../../components/landing/CtaCard.astro";
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 <Hero
@@ -33,12 +35,12 @@ const { code } = await transpile({
 
 <StatsStrip
   stats={[
-    { value: "6", unit: "ms", label: "Transpile", caption: "100 LOC · TypeScript" },
-    { value: "4", unit: "ms", label: "Bundle", caption: "10 modules" },
-    { value: "13", unit: "×", label: "faster", caption: "vs rolldown (small)" },
+    { value: "2", unit: "ms", label: "Transpile", caption: "100 LOC · TypeScript" },
+    { value: "3", unit: "ms", label: "Bundle", caption: "10 modules" },
+    { value: "19", unit: "×", label: "faster", caption: "vs rolldown (small)" },
     { value: "340", unit: "+", label: "Doc pages", caption: "ko · en" },
   ]}
-  note="As of 2026-04-10 · darwin arm64 · re-measurement pending"
+  note="As of 2026-04-24 · darwin arm64 · 5-run average"
 />
 
 <FeatureGrid
@@ -68,89 +70,66 @@ const { code } = await transpile({
   ]}
 />
 
-<div class="not-content">
-  <div class="mx-auto max-w-6xl px-6 py-20">
-    <div class="mb-8 flex flex-col gap-3">
-      <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Usage</h2>
-      <p class="max-w-2xl text-base text-[color:var(--sl-color-gray-2)]">
-        From a single CLI invocation to Vite integration — pick the style that fits your project.
-      </p>
-    </div>
-
-    <Tabs>
-      <TabItem label="CLI">
-        ```bash
-        # install
-        npm install -g @zts/core
-
-        # bundle
-        zts build src/index.ts --bundle --outdir dist
-
-        # watch mode
-        zts build src/index.ts --bundle --watch
-        ```
-      </TabItem>
-
-      <TabItem label="JS API">
-        ```ts
-        import { build } from "@zts/core";
-
-        const result = await build({
-          entryPoints: ["src/index.ts"],
-          bundle: true,
-          outdir: "dist",
-          target: "es2020",
-          platform: "browser",
-        });
-
-        console.log(`${result.outputFiles.length} files emitted`);
-        ```
-      </TabItem>
-
-      <TabItem label="Vite Plugin">
-        ```ts
-        // vite.config.ts
-        import { defineConfig } from "vite";
-        import zts from "@zts/vite-plugin-zts";
-
-        export default defineConfig({
-          plugins: [
-            zts({
-              jsx: "automatic",
-              target: "es2022",
-            }),
-          ],
-        });
-        ```
-      </TabItem>
-    </Tabs>
-
+<Section>
+  <div class="mb-8 flex flex-col gap-3">
+    <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Usage</h2>
+    <p class="max-w-2xl text-base text-[color:var(--sl-color-gray-2)]">
+      From a single CLI invocation to Vite integration — pick the style that fits your project.
+    </p>
   </div>
-</div>
 
-<div class="not-content">
-  <div class="mx-auto max-w-6xl px-6 pb-24">
-    <div class="flex flex-col items-start gap-6 rounded-xl border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-10 sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex flex-col gap-2">
-        <h2 class="text-2xl font-bold tracking-tight">Start building today</h2>
-        <p class="text-sm text-[color:var(--sl-color-gray-2)]">
-          First bundle in 5 minutes. Or try it right in the browser via Playground.
-        </p>
-      </div>
-      <div class="flex flex-wrap gap-3">
-        <a
-          href="/zts/en/guides/installation/"
-          class="inline-flex items-center gap-2 rounded-md bg-zig-500 px-4 py-2 text-sm font-semibold text-zig-950 transition-colors hover:bg-zig-400"
-        >
-          Install guide →
-        </a>
-        <a
-          href="/zts/en/playground/"
-          class="inline-flex items-center gap-2 rounded-md border border-[color:var(--sl-color-gray-5)] px-4 py-2 text-sm font-semibold transition-colors hover:border-zig-500 hover:text-zig-400"
-        >
-          Playground
-        </a>
-      </div>
-    </div>
-  </div>
-</div>
+  <Tabs>
+    <TabItem label="CLI">
+      ```bash
+      # install
+      npm install -g @zts/core
+
+      # bundle
+      zts build src/index.ts --bundle --outdir dist
+
+      # watch mode
+      zts build src/index.ts --bundle --watch
+      ```
+    </TabItem>
+
+    <TabItem label="JS API">
+      ```ts
+      import { build } from "@zts/core";
+
+      const result = await build({
+        entryPoints: ["src/index.ts"],
+        bundle: true,
+        outdir: "dist",
+        target: "es2020",
+        platform: "browser",
+      });
+
+      console.log(`${result.outputFiles.length} files emitted`);
+      ```
+    </TabItem>
+
+    <TabItem label="Vite Plugin">
+      ```ts
+      // vite.config.ts
+      import { defineConfig } from "vite";
+      import zts from "@zts/vite-plugin-zts";
+
+      export default defineConfig({
+        plugins: [
+          zts({
+            jsx: "automatic",
+            target: "es2022",
+          }),
+        ],
+      });
+      ```
+    </TabItem>
+  </Tabs>
+</Section>
+
+<CtaCard
+  heading="Start building today"
+  description="First bundle in 5 minutes. Or try it right in the browser via Playground."
+  primary={{ text: "Install guide →", href: "/zts/en/guides/installation/" }}
+  secondary={{ text: "Playground", href: "/zts/en/playground/" }}
+/>

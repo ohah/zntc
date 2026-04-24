@@ -19,19 +19,17 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-// Tool colors
 const TOOL_COLORS: Record<string, string> = {
-  ZTS: "#3b82f6",       // blue
-  esbuild: "#eab308",   // yellow
-  SWC: "#ef4444",       // red
-  Bun: "#a855f7",       // purple
-  oxc: "#f97316",       // orange
-  rolldown: "#14b8a6",  // teal
-  rspack: "#f59e0b",    // amber
-  webpack: "#06b6d4",   // cyan
+  ZTS: "#f7a41d",
+  esbuild: "#eab308",
+  SWC: "#ef4444",
+  Bun: "#a855f7",
+  oxc: "#f97316",
+  rolldown: "#14b8a6",
+  rspack: "#f59e0b",
+  webpack: "#06b6d4",
 };
 
-// Pipeline stage colors
 const PIPELINE_COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa"];
 
 type BenchEntry = {
@@ -47,15 +45,13 @@ function useIsDark(): boolean {
 
   useEffect(() => {
     const check = () => {
-      setIsDark(document.documentElement.dataset.theme === "dark" ||
-        document.documentElement.classList.contains("dark") ||
-        document.querySelector("[data-theme='dark']") !== null);
+      setIsDark(document.documentElement.dataset.theme === "dark");
     };
     check();
     const observer = new MutationObserver(check);
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["data-theme", "class"],
+      attributeFilter: ["data-theme"],
     });
     return () => observer.disconnect();
   }, []);
@@ -224,35 +220,26 @@ export default function BenchmarkCharts() {
   const chartStyle = { height: 400, width: "100%" };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
-      <div>
-        <ReactEChartsCore
-          echarts={echarts}
-          option={transpileOption}
-          style={chartStyle}
-          notMerge
-          lazyUpdate
-        />
-      </div>
-      <div>
-        <ReactEChartsCore
-          echarts={echarts}
-          option={bundleOption}
-          style={chartStyle}
-          notMerge
-          lazyUpdate
-        />
-      </div>
-      <div>
-        <ReactEChartsCore
-          echarts={echarts}
-          option={pipelineOption}
-          style={chartStyle}
-          notMerge
-          lazyUpdate
-        />
-      </div>
-      <p style={{ color: isDark ? "#9ca3af" : "#6b7280", fontSize: "0.875rem", textAlign: "center" }}>
+    <div className="flex flex-col gap-8">
+      <ReactEChartsCore
+        echarts={echarts}
+        option={transpileOption}
+        style={chartStyle}
+        lazyUpdate
+      />
+      <ReactEChartsCore
+        echarts={echarts}
+        option={bundleOption}
+        style={chartStyle}
+        lazyUpdate
+      />
+      <ReactEChartsCore
+        echarts={echarts}
+        option={pipelineOption}
+        style={chartStyle}
+        lazyUpdate
+      />
+      <p className="text-center text-sm text-neutral-500 dark:text-neutral-400">
         Measured on {benchmarkData.platform} | {benchmarkData.date} | {benchmarkData.iterations} iterations avg
       </p>
     </div>

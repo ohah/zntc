@@ -2,9 +2,9 @@
 @import "@fontsource-variable/jetbrains-mono";
 
 :root {
-  --sl-color-accent-low: #431407;
-  --sl-color-accent: #f7a41d;
-  --sl-color-accent-high: #fed7aa;
+  --sl-color-accent-low: var(--color-zig-950);
+  --sl-color-accent: var(--color-zig-500);
+  --sl-color-accent-high: var(--color-zig-200);
   --sl-content-pad-x: 1.5rem;
 
   --sl-font:
@@ -15,26 +15,26 @@
     "Liberation Mono", "Courier New", monospace;
 
   --sl-color-bg: #0d0a07;
-  --sl-color-bg-nav: #141110;
-  --sl-color-bg-sidebar: #141110;
-  --sl-color-bg-inline-code: #1c1816;
-  --sl-color-hairline-light: #2a2422;
-  --sl-color-hairline: #1c1816;
-  --sl-color-hairline-shade: #141110;
+  --sl-color-bg-nav: var(--color-surface-950);
+  --sl-color-bg-sidebar: var(--color-surface-950);
+  --sl-color-bg-inline-code: var(--color-surface-900);
+  --sl-color-hairline-light: var(--color-surface-800);
+  --sl-color-hairline: var(--color-surface-900);
+  --sl-color-hairline-shade: var(--color-surface-950);
 
-  --sl-color-gray-1: #f5f5f4;
+  --sl-color-gray-1: var(--color-surface-100);
   --sl-color-gray-2: #d4d4d4;
   --sl-color-gray-3: #a1a1a0;
   --sl-color-gray-4: #6d6a68;
-  --sl-color-gray-5: #3a3432;
+  --sl-color-gray-5: var(--color-surface-700);
   --sl-color-gray-6: #231e1c;
-  --sl-color-gray-7: #1c1816;
+  --sl-color-gray-7: var(--color-surface-900);
 }
 
 :root[data-theme="light"] {
-  --sl-color-accent-low: #fff7ed;
-  --sl-color-accent: #c2410c;
-  --sl-color-accent-high: #431407;
+  --sl-color-accent-low: var(--color-zig-50);
+  --sl-color-accent: var(--color-zig-700);
+  --sl-color-accent-high: var(--color-zig-950);
 }
 
 /* 본문 넓히기: Starlight calc 레이아웃을 flex로 교체하여 TOC 공간 유지 */
@@ -54,26 +54,21 @@
     flex-shrink: 0;
   }
 
-  /* .sl-container가 max-width: 45rem으로 본문을 좁히고
-     margin-inline: auto 0으로 오른쪽 정렬하는 것을 해제 */
   .main-pane .sl-container {
     max-width: 100% !important;
     margin-inline: 0 !important;
   }
 }
 
-/* TOC 링크 텍스트가 잘리지 않도록 */
 starlight-toc a {
   white-space: normal;
   word-break: break-word;
 }
 
-/* 오른쪽 TOC 패딩 */
 .right-sidebar-panel {
   padding-inline: 1rem;
 }
 
-/* 표 스타일 개선 */
 .sl-markdown-content table {
   border-collapse: separate;
   border-spacing: 0;
@@ -110,7 +105,6 @@ starlight-toc a {
   border-bottom: none;
 }
 
-/* 인라인 코드 스타일 */
 .sl-markdown-content :not(pre) > code {
   background: var(--sl-color-gray-6);
   padding: 0.125rem 0.375rem;
@@ -141,11 +135,9 @@ body {
   line-height: 1.7;
 }
 
-/* Monaco Editor: Starlight CSS 충돌 방지
-   Starlight의 .sl-markdown-content :not()+:not() 셀렉터가
-   Monaco 내부 DOM에 margin-top을 주입하여 커서/드래그가 어긋나는 문제.
-   not-content 클래스로 Starlight 예외를 활성화하고,
-   혹시 누수될 경우를 대비해 !important로 이중 차단. */
+/* Starlight 의 .sl-markdown-content :not()+:not() 셀렉터가 Monaco 내부 DOM 에
+   margin-top 을 주입해 커서/드래그가 어긋나는 문제. not-content 로 예외
+   + !important 로 이중 차단. */
 .sl-markdown-content .not-content * {
   margin-top: 0 !important;
 }
@@ -161,8 +153,7 @@ body {
   margin-top: 0 !important;
 }
 
-/* Playground not-content: --sl-content-gap-y를 0으로 설정하여
-   Starlight 셀렉터의 margin-top 값 자체를 제거 */
+/* Starlight 셀렉터의 margin-top 값 자체를 제거 */
 .playground-root {
   --sl-content-gap-y: 0;
 }
