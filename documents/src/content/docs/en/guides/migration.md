@@ -14,26 +14,59 @@ ZTS supports nearly identical CLI options to esbuild. In most cases, replace `es
 | `esbuild src/index.ts --bundle` | `zts --bundle src/index.ts` | Same |
 | `--outfile=dist/out.js` | `-o dist/out.js` | Short form supported |
 | `--outdir=dist` | `--outdir dist` | Same |
+| `--outbase=src` | `--outbase=src` | Same |
 | `--format=esm` | `--format=esm` | Same (esm/cjs/iife/umd/amd) |
 | `--platform=node` | `--platform=node` | Same (browser/node/neutral/react-native) |
-| `--minify` | `--minify` | Same (`--minify-{whitespace,syntax,identifiers}` granular toggles) |
-| `--sourcemap` | `--sourcemap` | Same |
-| `--splitting` | `--splitting` | Same |
-| `--target=es2020` | `--target=es2020` | Same |
+| `--target=es2020` | `--target=es2020` | Same (engine targets: `chrome80`, `node20`) |
+| `--bundle` | `--bundle` | Same |
+| `--splitting` | `--splitting` | Same (`--outdir` required) |
+| `--packages=external` | `--packages=external` | Same |
 | `--external:react` | `--external react` | Space instead of `:` |
+| `--minify` | `--minify` | Same (`--minify-{whitespace,syntax,identifiers}` granular) |
+| `--sourcemap` | `--sourcemap` | Same |
+| (config only: `sourceRoot`) | `--source-root=...` | ZTS exposes as CLI flag |
+| `--sources-content=false` | `--sources-content=false` | Same |
 | `--define:X=Y` | `--define:X=Y` | Same |
-| `--loader:.css=text` | `--loader:.css=text` | Same |
-| `--watch` | `--watch` or `-w` | Same |
-| `--serve` | `--serve` | Same |
-| `--metafile=meta.json` | `--metafile=meta.json` | Same |
-| `--legal-comments=eof` | `--legal-comments=eof` | Same |
-| `--keep-names` | `--keep-names` | Same |
-| `--drop:console` | `--drop=console` | `=` instead of `:` |
-| `--inject:./shim.js` | `--inject:./shim.js` | Same |
 | `--alias:react=preact/compat` | `--alias:react=preact/compat` | Same |
+| `--inject:./shim.js` | `--inject:./shim.js` | Same |
+| `--pure:Pure.*` | `--pure:Pure.*` | Same (DCE hint) |
+| `--drop:console` | `--drop=console` | `=` instead of `:` (`console`/`debugger`) |
+| `--drop-labels=DEV` | `--drop-labels=DEV` | Same |
+| `--keep-names` | `--keep-names` | Same |
+| `--banner:js=...` | `--banner:js=...` | Same |
+| `--footer:js=...` | `--footer:js=...` | Same |
+| `--global-name=foo` | `--global-name=foo` | IIFE/UMD global name |
+| `--public-path=/static/` | `--public-path=/static/` | Same |
+| `--out-extension:.js=.mjs` | `--out-extension:.js=.mjs` | Same |
 | `--entry-names=[name]-[hash]` | `--entry-names=[name]-[hash]` | Same |
 | `--chunk-names=chunks/[hash]` | `--chunk-names=chunks/[hash]` | Same |
 | `--asset-names=assets/[hash]` | `--asset-names=assets/[hash]` | Same |
+| `--loader:.css=text` | `--loader:.css=text` | Same (`text`/`file`/`dataurl`/`json`/`copy`) |
+| `--jsx=automatic` | `--jsx=automatic` | Same (`classic`/`automatic`/`automatic-dev`) |
+| `--jsx-dev` | `--jsx-dev` | Same |
+| `--jsx-factory=h` | `--jsx-factory=h` | Same |
+| `--jsx-fragment=Fragment` | `--jsx-fragment=Fragment` | Same |
+| `--jsx-import-source=preact` | `--jsx-import-source=preact` | Same |
+| `--jsx-side-effects` | `--jsx-side-effects` | Same |
+| `--tsconfig=tsconfig.json` | `-p tsconfig.json` or `--tsconfig-path=...` | `-p` short form |
+| `--tsconfig-raw='{...}'` | `--tsconfig-raw='{...}'` | Same |
+| `--conditions=prod,foo` | `--conditions=prod,foo` | Same |
+| `--main-fields=browser,main` | `--main-fields=browser,main` | Same |
+| `--resolve-extensions=.ts,.js` | `--resolve-extensions=.ts,.js` | Same (RN `.ios.ts` etc.) |
+| `--preserve-symlinks` | `--preserve-symlinks` | Same |
+| `--node-paths=...` | `--node-paths=...` | Same |
+| `--charset=utf8` | `--charset=utf8` | Same (preserve UTF-8) |
+| `--charset=ascii` | `--ascii-only` | ZTS uses dedicated flag; escapes non-ASCII to `\uXXXX` |
+| `--legal-comments=eof` | `--legal-comments=eof` | Same (`none`/`inline`/`eof`/`linked`/`external`) |
+| `--metafile=meta.json` | `--metafile=meta.json` | Same |
+| `--analyze` | `--analyze` | Same (JSON now, tree format planned) |
+| `--log-level=warning` | `--log-level=warning` | Same (`silent`/`error`/`warning`/`info`/`debug`) |
+| `--log-limit=10` | `--log-limit=10` | Same |
+| `--line-limit=80` | `--line-limit=80` | Same |
+| `--ignore-annotations` | `--ignore-annotations` | Same |
+| `--allow-overwrite` | `--allow-overwrite` | Same |
+| `--watch` | `--watch` or `-w` | Same |
+| `--serve` | `--serve` | Same (`--port` supported) |
 
 ### esbuild Build API migration
 
@@ -61,7 +94,7 @@ await build({
 
 ### esbuild plugin migration
 
-ZTS plugins use Rollup/Vite-style hooks.
+ZTS native plugins use the **esbuild-style** `setup(build)` structure directly. Return value keys (`path`/`contents`) are identical.
 
 ```typescript
 // esbuild plugin
@@ -79,31 +112,60 @@ const myPlugin = {
   },
 };
 
-// ZTS plugin — Rollup/Vite style
-const myPlugin = {
+// ZTS plugin — same esbuild style (use path prefix instead of namespace)
+import type { ZtsPlugin } from '@zts/core';
+
+const myPlugin: ZtsPlugin = {
   name: 'my-plugin',
-  resolveId(source) {
-    if (source.startsWith('virtual:')) {
-      return { path: '\0' + source };
-    }
-    return null;
-  },
-  load(id) {
-    if (id.startsWith('\0virtual:')) {
-      return { contents: 'export default 42' };
-    }
-    return null;
+  setup(build) {
+    build.onResolve({ filter: /^virtual:/ }, args => ({
+      path: '\0' + args.path,
+    }));
+    build.onLoad({ filter: /^\0virtual:/ }, args => ({
+      contents: 'export default 42',
+    }));
   },
 };
+```
+
+If you want to use Rollup/Vite-style plugins (`resolveId`/`load`/`transform`) as-is, wrap them with `vitePlugin()`.
+
+```typescript
+import { vitePlugin } from '@zts/core';
+
+export default defineConfig({
+  plugins: [
+    vitePlugin({
+      name: 'virtual-loader',
+      resolveId(source) {
+        if (source.startsWith('virtual:')) return '\0' + source;
+        return null;
+      },
+      load(id) {
+        if (id.startsWith('\0virtual:')) return { code: 'export default 42' };
+        return null;
+      },
+    }),
+  ],
+});
 ```
 
 ### Unsupported esbuild options
 
 | esbuild option | Alternative |
 |-------------|------|
-| `--format=umd` | Not supported. Use IIFE + manual UMD wrapper |
-| `--mangle-props` | Not supported |
-| `--analyze` (detailed tree) | `--analyze` (JSON output, tree format planned) |
+| `--mangle-props=<regex>` | Not supported (mangling limited to `--minify-identifiers` on internal names) |
+| `--mangle-cache=<path>` | Not supported |
+| `--mangle-quoted` | Not supported |
+| `--analyze` (tree format) | `--analyze` (JSON only, tree format planned) |
+| `--servedir=<path>` | `--serve <dir>` (positional arg) |
+| `--bundle=false` (off by default) | Same default. ZTS transpiles only without `--bundle` |
+| `--splitting=false` | Off by default. No flag means default |
+| `--tree-shaking=false` | Not supported. Workaround: `--packages=external` or per-package `--external` |
+| `--color=true|false` | Not supported. Auto-detected from terminal |
+| `--log-override:X=Y` | Not supported. Only `--log-level` |
+| `--supported:bigint=false` | Not supported. Use `--target` for global control |
+| `--reserve-props=<regex>` | Not supported |
 
 ## Migrating from Vite
 
@@ -140,39 +202,60 @@ export default defineConfig({
 
 ### Vite plugin → ZTS plugin
 
-Vite/Rollup plugin hooks (`resolveId`, `load`, `transform`) work identically in ZTS.
+Vite/Rollup plugin hooks (`resolveId`/`load`/`transform`) work when wrapped with `vitePlugin()`. Return value keys follow the Rollup convention (`{ id, code }`).
 
 ```typescript
 // zts.config.ts
-import { defineConfig } from '@zts/core';
+import { defineConfig, vitePlugin } from '@zts/core';
+import fs from 'node:fs';
 
 export default defineConfig({
   plugins: [
-    {
+    vitePlugin({
       name: 'svg-loader',
       load(id) {
         if (id.endsWith('.svg')) {
-          const fs = require('fs');
           const svg = fs.readFileSync(id, 'utf8');
-          return { contents: `export default ${JSON.stringify(svg)}` };
+          return { code: `export default ${JSON.stringify(svg)}` };
         }
         return null;
       },
-    },
+    }),
   ],
 });
 ```
 
-### Unsupported Vite features
+To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 
-| Vite feature | ZTS alternative |
+### Vite feature mapping
+
+| Vite feature | ZTS equivalent |
 |----------|---------|
+| `vite` (dev server) | `zts --serve --bundle <entry>` (HMR supported) |
+| `vite build` | `zts --bundle <entry> --outdir dist --splitting --minify --sourcemap` |
+| `vite preview` | Not supported. Use `zts --serve dist` for static serving |
+| `import.meta.env.MODE` | `--define:import.meta.env.MODE=\"production\"` |
+| `import.meta.env.DEV` | `--define:import.meta.env.DEV=true` (manual) |
+| `.env` / `.env.production` auto-load | Not supported. Use `dotenv` + `--define` to inject manually |
 | `import.meta.glob` | Not supported (planned) |
-| `import.meta.env` | `--define:import.meta.env.MODE="production"` |
-| CSS Modules | Lightning CSS plugin |
-| `@vitejs/plugin-react` | `--jsx=automatic` (automatic React JSX) |
-| HMR (`import.meta.hot`) | `--serve --bundle` (supported) |
-| HTML entry | Not supported. Use JS entry |
+| `import.meta.hot` | Supported (`--serve --bundle`) |
+| `import.meta.url` | Supported (ESM standard) |
+| `@vitejs/plugin-react` | `--jsx=automatic` (automatic runtime built-in) |
+| `@vitejs/plugin-react` Fast Refresh | Built-in HMR (React Refresh) |
+| `@vitejs/plugin-vue` | Not supported |
+| `@vitejs/plugin-legacy` | Partial via `--target=es5` etc. |
+| CSS Modules (`.module.css`) | Built-in Lightning CSS post-processing (auto-detected) |
+| CSS `@import` | Built-in Lightning CSS or `--loader:.css=text` |
+| PostCSS (`postcss.config.js`) | Not supported. Replaced by Lightning CSS post-processing |
+| Sass/Less/Stylus | Not supported. Pre-compile before build |
+| `public/` static directory | Not supported. Copy manually or use `--loader:.svg=file` |
+| HTML entry (`index.html`) | Not supported. Only JS/TS entries |
+| `resolve.alias` | `--alias:name=target` |
+| `resolve.conditions` | `--conditions=...` |
+| `optimizeDeps` (pre-bundling) | Not needed (handled during bundling) |
+| `ssr` / SSR build | Not supported |
+| `worker.format` | Not supported (general Worker bundle support separate) |
+| Rollup plugin compat | `resolveId`/`load`/`transform` hooks compatible |
 
 ## Migrating from webpack
 
@@ -204,9 +287,48 @@ module.exports = {
 
 | webpack loader | ZTS equivalent |
 |-------------|---------|
-| `ts-loader` / `babel-loader` | Not needed (ZTS handles TS/JSX directly) |
-| `css-loader` + `style-loader` | `--loader:.css=text` or Lightning CSS plugin |
+| `ts-loader` / `babel-loader` | Not needed. ZTS handles TS/JSX directly |
+| `@swc/swc-loader` / `esbuild-loader` | Not needed. Replaced by ZTS |
+| `css-loader` + `style-loader` | `--loader:.css=text` or built-in Lightning CSS post-processing |
 | `file-loader` / `asset/resource` | `--loader:.png=file` |
 | `url-loader` / `asset/inline` | `--loader:.png=dataurl` |
 | `raw-loader` / `asset/source` | `--loader:.txt=text` |
-| `svg-loader` | `--loader:.svg=text` or plugin |
+| `svg-loader` / `@svgr/webpack` | `--loader:.svg=text`/`file`/`dataurl` or plugin |
+| `json-loader` | `--loader:.json=json` (built-in default) |
+| `sass-loader` / `less-loader` / `stylus-loader` | Not supported. Pre-compile needed |
+| `postcss-loader` | Not supported. Replaced by Lightning CSS post-processing |
+| `html-loader` | Not supported. `--loader:.html=text` for string conversion |
+| `worker-loader` | Not supported (general Worker bundle support separate) |
+| `thread-loader` | Not needed. ZTS has built-in parallel pipeline (`--jobs=N`) |
+| `cache-loader` | Not needed. Uses `.zig-cache` / module-level cache |
+
+### webpack plugins → ZTS equivalents
+
+| webpack plugin | ZTS equivalent |
+|----------------|---------|
+| `DefinePlugin` | `--define:KEY=VALUE` |
+| `ProvidePlugin` | `--inject:./shim.js` |
+| `IgnorePlugin` | `--external <pkg>` or `--block-list=<pattern>` |
+| `BannerPlugin` | `--banner:js=...` |
+| `SplitChunksPlugin` | `--splitting` (automatic) |
+| `MiniCssExtractPlugin` | Built-in Lightning CSS post-processing (separate CSS chunks) |
+| `HtmlWebpackPlugin` | Not supported. Manage static `index.html` manually |
+| `CopyWebpackPlugin` | Not supported. Per-asset copy via `--loader:.svg=copy` |
+| `TerserPlugin` | `--minify` built-in |
+| `CssMinimizerPlugin` | Handled by Lightning CSS post-processing |
+| `CompressionPlugin` (gzip/brotli) | Not supported. Handle in post-build |
+| `webpack.ContextReplacementPlugin` | Not supported |
+| Module Federation | Not supported |
+| DllPlugin / DllReferencePlugin | Not supported |
+
+### Unsupported webpack features
+
+| webpack feature | Alternative |
+|-------------|------|
+| `require.context` | Supported (`require.context(dir, deep, regex)` — resolved via plugin `onResolveContext` hook) |
+| Lazy chunk (`import(/* webpackChunkName: "x" */ ...)`) | Dynamic import itself supported. Magic comments are not |
+| `webpack.config.js` function / multi-config | Not supported. Single-export `zts.config.ts` |
+| `devServer.proxy` | Not supported. `--serve` serves static/bundle only |
+| Dev server overlay | Not supported (HMR errors go to console) |
+| Persistent cache (`cache.type: 'filesystem'`) | Not needed. Built-in cache |
+| Stats JSON | `--metafile=meta.json` provides similar info |

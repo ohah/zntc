@@ -73,12 +73,24 @@ starlight-toc a {
 }
 
 .sl-markdown-content table {
+  display: table;
+  width: 100%;
   border-collapse: separate;
   border-spacing: 0;
   border: 1px solid var(--sl-color-gray-5);
   border-radius: 0.375rem;
   overflow: hidden;
   font-size: 0.875rem;
+}
+
+.sl-markdown-content table thead th:first-child,
+.sl-markdown-content table tbody td:first-child {
+  padding-inline-start: 1rem;
+}
+
+.sl-markdown-content table thead th:last-child,
+.sl-markdown-content table tbody td:last-child {
+  padding-inline-end: 1rem;
 }
 
 .sl-markdown-content table thead th {
