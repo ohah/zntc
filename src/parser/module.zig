@@ -77,6 +77,26 @@ fn finalizeImportDeclaration(
     });
 }
 
+/// `export_all_declaration` extra schema.
+/// `export * from "x"` 는 exported_name = .none, `export * as ns from "x"` 는
+/// namespace identifier. `from "x" with { ... }` 의 attrs 는 하단 두 슬롯.
+pub const ExportAllExtras = struct {
+    exported_name: NodeIndex,
+    source: NodeIndex,
+    attrs_start: u32,
+    attrs_len: u32,
+};
+
+pub fn readExportAllExtras(ast: anytype, e: u32) ExportAllExtras {
+    const slots = ast.extra_data.items[e .. e + 4];
+    return .{
+        .exported_name = @enumFromInt(slots[0]),
+        .source = @enumFromInt(slots[1]),
+        .attrs_start = slots[2],
+        .attrs_len = slots[3],
+    };
+}
+
 /// `export_named_declaration` extra schema. codegen/transformer 읽기 사이트가
 /// 이 헬퍼를 통해서만 슬롯 의미를 알도록 강제한다 (`ImportDeclExtras` 와 동일 패턴).
 pub const ExportNamedExtras = struct {
@@ -658,8 +678,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         }
         try self.expect(.kw_from);
         const source_node = try parseModuleSource(self);
-        // export *에서도 attributes 가능 (parser 진행을 위해 소비, AST 보존은 후속 작업)
-        _ = try parseImportAttributes(self);
+        const attrs = try parseImportAttributes(self);
         try self.expectSemicolon();
 
         if (is_type_only_export) return NodeIndex.none;
@@ -696,10 +715,16 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         }
 
         if (!is_export_equals) self.has_module_syntax = true;
+        const extra_start = try self.ast.addExtras(&.{
+            @intFromEnum(exported_name),
+            @intFromEnum(source_node),
+            attrs.start,
+            attrs.len,
+        });
         return try self.ast.addNode(.{
             .tag = .export_all_declaration,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = exported_name, .right = source_node, .flags = 0 } },
+            .data = .{ .extra = extra_start },
         });
     }
 

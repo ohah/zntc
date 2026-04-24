@@ -31,6 +31,7 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const CallFlags = @import("../parser/ast.zig").CallFlags;
 const MemberFlags = @import("../parser/ast.zig").MemberFlags;
 const scan_results = @import("../parser/scan_results.zig");
+const module_parser = @import("../parser/module.zig");
 const DefineEntry = scan_results.DefineEntry;
 const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
@@ -168,7 +169,8 @@ fn tryExtractImportDecl(ast: *const Ast, node: Node) ?ImportRecord {
 
 /// export * from "./foo": binary { left=exported_name, right=source_node }
 fn tryExtractExportAll(ast: *const Ast, node: Node) ?ImportRecord {
-    const source_idx = node.data.binary.right;
+    const x = module_parser.readExportAllExtras(ast, node.data.extra);
+    const source_idx = x.source;
     const specifier = getStringLiteralText(ast, source_idx) orelse return null;
     const source_node = ast.getNode(source_idx);
 
