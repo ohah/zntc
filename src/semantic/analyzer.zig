@@ -1299,9 +1299,19 @@ pub const SemanticAnalyzer = struct {
                     self.resolveIdentifier(name, idx, .{ .read = true });
                 }
             },
-            // JSX member expression: <Foo.Bar> → left(Foo)를 재귀 방문하여 symbol 등록
+            // <Foo.Bar> / <foo.bar>: root 식별자는 항상 변수 reference (대소문자 무관).
+            // 위 .jsx_identifier 분기는 단독 태그(<x>)의 intrinsic 구별을 위해 대문자만
+            // resolve 하므로 member context 에서는 별도로 처리. 누락 시 lowerJSXMemberExpr 의
+            // propagateSymbolId 가 null 을 복사 → 번들러 rename 미적용으로 ReferenceError
+            // (예: `<react_native_safe_area_context_1.SafeAreaProvider>`).
             .jsx_member_expression => {
-                try self.visitNode(node.data.binary.left);
+                var cur_idx = node.data.binary.left;
+                while (self.ast.getNode(cur_idx).tag == .jsx_member_expression) {
+                    cur_idx = self.ast.getNode(cur_idx).data.binary.left;
+                }
+                const root = self.ast.getNode(cur_idx);
+                std.debug.assert(root.tag == .jsx_identifier);
+                self.resolveIdentifier(self.ast.getSourceText(root.span), cur_idx, .{ .read = true });
             },
 
             // ---- 일반 표현식 순회 (private name 참조 등을 위해) ----

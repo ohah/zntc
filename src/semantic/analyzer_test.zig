@@ -1274,11 +1274,18 @@ const RefFixture = struct {
     parser: Parser,
     ana: SemanticAnalyzer,
 
+    const Options = struct { jsx: bool = false };
+
     fn init(source: []const u8) !RefFixture {
+        return initOpts(source, .{});
+    }
+
+    fn initOpts(source: []const u8, opts: Options) !RefFixture {
         var scanner = try Scanner.init(std.testing.allocator, source);
         errdefer scanner.deinit();
         var parser = Parser.init(std.testing.allocator, &scanner);
         errdefer parser.deinit();
+        parser.is_jsx = opts.jsx;
         _ = try parser.parse();
         var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
         errdefer ana.deinit();
@@ -1551,4 +1558,55 @@ test "Redecl: module top-level duplicate function" {
 
 test "Redecl: strict IIFE block const vs var" {
     try analyzeHasError("(function() { 'use strict'; { const f = 1; var f; } })", "already been declared");
+}
+
+// ============================================================
+// JSX member tag root resolution
+// ============================================================
+
+// JSX `<ns.Comp />` root resolved regardless of case — otherwise propagateSymbolId
+// copies null → bundler skips rename → ReferenceError (ExpoRoot.js case).
+test "JSX: lowercase root of <ns.Comp/> resolves as variable ref" {
+    var fx = try RefFixture.initOpts(
+        "var ns = require('x'); function F() { return <ns.Comp />; }",
+        .{ .jsx = true },
+    );
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("ns", &refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.items.len);
+    try std.testing.expect(refs.items[0].flags.read);
+}
+
+test "JSX: lowercase root of nested <a.b.Comp/> resolves" {
+    var fx = try RefFixture.initOpts(
+        "var a = { b: { Comp: function () {} } }; function F() { return <a.b.Comp />; }",
+        .{ .jsx = true },
+    );
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("a", &refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.items.len);
+    try std.testing.expect(refs.items[0].flags.read);
+}
+
+// Bare `<div />` stays an intrinsic — guards the member-branch fix from over-reaching.
+test "JSX: bare lowercase tag <div/> is intrinsic, not a variable ref" {
+    var fx = try RefFixture.initOpts(
+        "var div = 1; function F() { return <div />; }",
+        .{ .jsx = true },
+    );
+    defer fx.deinit();
+
+    var refs: std.ArrayList(symbol_mod.Reference) = .empty;
+    defer refs.deinit(std.testing.allocator);
+    try fx.collectRefs("div", &refs);
+
+    try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
