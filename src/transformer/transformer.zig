@@ -1282,40 +1282,24 @@ pub const Transformer = struct {
                     if (std.mem.eql(u8, text, "arguments")) {
                         self.needs_arguments_var = true;
                         const args_span = try self.ast.addString("_arguments");
-                        return self.ast.addNode(.{
+                        const new_idx = try self.ast.addNode(.{
                             .tag = .identifier_reference,
                             .span = args_span,
                             .data = .{ .string_ref = args_span },
                         });
+                        self.propagateSymbolId(idx, new_idx);
+                        return new_idx;
                     }
                 }
-                // ES2015 block scoping 격리: 리네이밍된 변수 참조 교체
-                if (self.options.unsupported.block_scoping and self.block_rename_stack.items.len > 0) {
-                    const text = self.ast.getText(node.data.string_ref);
-                    if (self.lookupBlockRename(text)) |new_name| {
-                        const new_span = try self.ast.addString(new_name);
-                        return self.ast.addNode(.{
-                            .tag = .identifier_reference,
-                            .span = new_span,
-                            .data = .{ .string_ref = new_span },
-                        });
-                    }
-                }
+                if (try self.tryRenameIdentifierLike(idx, node, .identifier_reference)) |i| return i;
                 return self.copyNodeDirect(idx);
             },
             .binding_identifier => {
-                // ES2015 block scoping 격리: 리네이밍된 변수 선언 교체
-                if (self.options.unsupported.block_scoping and self.block_rename_stack.items.len > 0) {
-                    const text = self.ast.getText(node.data.string_ref);
-                    if (self.lookupBlockRename(text)) |new_name| {
-                        const new_span = try self.ast.addString(new_name);
-                        return self.ast.addNode(.{
-                            .tag = .binding_identifier,
-                            .span = new_span,
-                            .data = .{ .string_ref = new_span },
-                        });
-                    }
-                }
+                if (try self.tryRenameIdentifierLike(idx, node, .binding_identifier)) |i| return i;
+                return self.copyNodeDirect(idx);
+            },
+            .assignment_target_identifier => {
+                if (try self.tryRenameIdentifierLike(idx, node, .assignment_target_identifier)) |i| return i;
                 return self.copyNodeDirect(idx);
             },
             .template_element => blk: {
@@ -1342,7 +1326,6 @@ pub const Transformer = struct {
             .jsx_closing_element,
             .jsx_opening_fragment,
             .jsx_closing_fragment,
-            .assignment_target_identifier,
             => self.copyNodeDirect(idx),
 
             // JSX leaf — jsx_text는 별도 처리 (jsx_transform 시 lowerJSXText)
@@ -1416,6 +1399,31 @@ pub const Transformer = struct {
     fn copyNodeDirect(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         _ = self;
         return idx;
+    }
+
+    /// ES2015 block scoping 격리: outer scope 와 충돌하는 inner `let`/`const` 가
+    /// `block_rename_stack` 에 등록되어 있으면 `name$N` 으로 치환된 새 노드 반환.
+    /// identifier_reference / binding_identifier / assignment_target_identifier 가 공유.
+    /// 호출 후 새 노드의 symbol_id 를 반드시 전파 — 누락 시 linker rename 미적용으로
+    /// 정의/사용 비대칭 (`acc = acc$1 + n` 같은 strict-mode ReferenceError) 발생.
+    fn tryRenameIdentifierLike(
+        self: *Transformer,
+        idx: NodeIndex,
+        node: Node,
+        comptime tag: Tag,
+    ) Error!?NodeIndex {
+        if (!self.options.unsupported.block_scoping) return null;
+        if (self.block_rename_stack.items.len == 0) return null;
+        const text = self.ast.getText(node.data.string_ref);
+        const new_name = self.lookupBlockRename(text) orelse return null;
+        const new_span = try self.ast.addString(new_name);
+        const new_idx = try self.ast.addNode(.{
+            .tag = tag,
+            .span = new_span,
+            .data = .{ .string_ref = new_span },
+        });
+        self.propagateSymbolId(idx, new_idx);
+        return new_idx;
     }
 
     /// 클래스 이름 노드에서 Span 추출. 익명 클래스(none)면 null 반환.
