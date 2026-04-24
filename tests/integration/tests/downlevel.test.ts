@@ -1827,6 +1827,112 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("a:1,b:2,c:3");
     });
 
+    // #1829: #1813 (daa198e3) 머지 후 동일 패턴 재현 가드.
+    // 이슈 본문이 명시한 미커버 변종 — `const` 선언 + try/finally + 후속 closure +
+    // 실제 npm 패키지(color@4.2.3) 핵심 패턴 — 을 회귀 테스트로 고정한다.
+
+    test("for-of + const closure + unlabeled continue (#1829-const)", async () => {
+      // 이슈 본문 최소 재현 — `const` 변종 가드 (이슈 #1829 가 명시적으로 지목).
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const convert: Record<string, { labels: string } | null> = {
+              a: { labels: 'rgb' }, b: { labels: 'xyz' }, keyword: null,
+            };
+            const skippedModels = ['keyword'];
+            const out: Record<string, () => unknown> = {};
+            for (const model of Object.keys(convert)) {
+              if (skippedModels.includes(model)) {
+                continue;
+              }
+              out[model] = () => convert[model];
+            }
+            console.log(Object.keys(out).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a,b");
+    });
+
+    test("for-of + let closure + continue inside try/finally (#1829-try-finally)", async () => {
+      // try/catch 케이스(#1807-cont-try)는 있지만 finally + 후속 closure 조합이 빠져있음.
+      // try block 안 continue 가 _loop 함수에서 return 으로 바뀌어도 finally 는 반드시
+      // 실행되어야 한다 (JS 의미). 이 테스트는 cleanup 카운트와 closure 결과 둘 다 검증.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 2, 3, 4];
+            const fns: Array<() => number> = [];
+            let cleanups = 0;
+            for (let x of arr) {
+              try {
+                if (x % 2 === 0) continue;
+              } finally {
+                cleanups++;
+              }
+              fns.push(() => x);
+            }
+            console.log('cleanups=' + cleanups + '|fns=' + fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("cleanups=4|fns=1,3");
+    });
+
+    test("for-of + closure + unlabeled continue: color@4.2.3 핵심 패턴 (#1829-color)", async () => {
+      // 실제 bungae RN 부팅 실패 원인이었던 `color` 패키지 (index.js:404-433) 의 핵심 구조.
+      // const + skippedModels.includes(model) early continue + destructured channels +
+      // 두 개의 closure (Color.prototype[model], Color[model]) 가 model 을 캡처.
+      // 미니 fixture 로 회귀 가드 — 이 패턴이 깨지면 전체 npm `color` 패키지가 깨진다.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const Color: any = function (this: any, value?: any, model?: string) {
+              this.value = value; this.model = model;
+            };
+            const convert: Record<string, { channels: number } | null> = {
+              rgb: { channels: 3 }, xyz: { channels: 3 }, keyword: null,
+            };
+            const skippedModels = ['keyword'];
+            for (const model of Object.keys(convert)) {
+              if (skippedModels.includes(model)) {
+                continue;
+              }
+              const entry = convert[model];
+              if (!entry) continue;
+              const { channels } = entry;
+              Color.prototype[model] = function (this: any) {
+                if (this.model === model) return new Color(this.value, model);
+                return channels;
+              };
+              Color[model] = function (...args: any[]) {
+                return new Color(args, model);
+              };
+            }
+            const c = new Color('init');
+            console.log(
+              'proto=' + Object.keys(Color.prototype).join(',') +
+              '|ctor=' + Color.rgb('a', 'b').model +
+              '|call=' + c.rgb.call({ model: 'xyz' })
+            );
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("proto=rgb,xyz|ctor=rgb|call=3");
+    });
+
     test("for-of + let closure + continue does NOT wrap when no capture (#1807-cont-no-capture)", async () => {
       // closure capture 가 없으면 _loop 추출 자체가 일어나지 않아야 하고 continue
       // 는 원본 for_statement body 에 그대로 남는다. SyntaxError 없이 정상 동작
