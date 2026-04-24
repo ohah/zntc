@@ -5,10 +5,18 @@ template: splash
 head:
   - tag: style
     content: |
-      main > .content-panel:first-child { display: none; }
-      main > .content-panel { padding: 0; border-top: 0; }
-      main > .content-panel > .sl-container { max-width: 100%; margin-inline: 0; }
-      main > .content-panel > .sl-container > .sl-markdown-content { max-width: 100%; }
+      main > .content-panel:first-child { display: none !important; }
+      main > .content-panel { padding: 0 !important; border-top: 0 !important; }
+      main > .content-panel > .sl-container { max-width: 100% !important; margin-inline: 0 !important; }
+      main > .content-panel > .sl-container > .sl-markdown-content { max-width: 100% !important; }
+      section.not-content .mx-auto { margin-inline: auto !important; }
+      section.not-content .mt-2 { margin-top: .5rem !important; }
+      section.not-content .mt-6 { margin-top: 1.5rem !important; }
+      section.not-content .mb-2 { margin-bottom: .5rem !important; }
+      section.not-content .mb-3 { margin-bottom: .75rem !important; }
+      section.not-content .mb-8 { margin-bottom: 2rem !important; }
+      section.not-content .mb-12 { margin-bottom: 3rem !important; }
+      section.not-content .ml-2 { margin-left: .5rem !important; }
 ---
 
 import Hero from "../../components/landing/Hero.astro";
