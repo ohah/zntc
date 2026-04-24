@@ -67,17 +67,17 @@ jobs:
         run: zig fmt --check src/
 
       # #1797 follow-up — AST Tag↔variant mismatch static audit.
-      # Detects #1797 class silent failures (codegen reads `data.X` while
-      # parser stores a different variant). Exits non-zero on real mismatch.
-      # Cosmetic mismatches (layout-only) are reported but not fatal yet
-      # — tracked in #1802.
+      # Detects #1797 class silent failures (readers consume `data.X` while
+      # parser stores a different variant). --strict-cosmetic (#1802) 도
+      # 활성 — 의도된 exemption (COSMETIC_EXEMPT_TAGS) 외 모든 layout
+      # mismatch 를 CI fail 로 승격.
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      - name: Audit AST addNode variants (#1797)
-        run: bun scripts/audit_addnode_variants.ts
+      - name: Audit AST addNode variants (#1797, #1802)
+        run: bun scripts/audit_addnode_variants.ts --strict-cosmetic
 
   napi:
     name: NAPI Build & Test
