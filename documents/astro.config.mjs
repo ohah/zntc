@@ -61,26 +61,55 @@ export default defineConfig({
       ],
       sidebar: [
         {
-          label: "시작하기",
-          translations: { en: "Getting Started" },
+          label: "가이드",
+          translations: { en: "Guides" },
           items: [
             { label: "소개", slug: "guides/introduction", translations: { en: "Introduction" } },
             { label: "설치", slug: "guides/installation", translations: { en: "Installation" } },
             { label: "빠른 시작", slug: "guides/quick-start", translations: { en: "Quick Start" } },
+            { label: "설정 파일", slug: "guides/config-file", translations: { en: "Config File" } },
           ],
         },
         {
-          label: "가이드",
-          translations: { en: "Guides" },
+          label: "트랜스파일",
+          translations: { en: "Transpile" },
           items: [
-            { label: "트랜스파일", slug: "guides/transpile", translations: { en: "Transpile" } },
-            { label: "설정 파일", slug: "guides/config-file", translations: { en: "Config File" } },
-            { label: "번들링", slug: "guides/bundling", translations: { en: "Bundling" } },
+            { label: "개요", slug: "guides/transpile", translations: { en: "Overview" } },
+          ],
+        },
+        {
+          label: "번들러",
+          translations: { en: "Bundler" },
+          items: [
+            { label: "개요", slug: "guides/bundling", translations: { en: "Overview" } },
+          ],
+        },
+        {
+          label: "React Native",
+          items: [
+            { label: "개요", slug: "guides/react-native", translations: { en: "Overview" } },
+          ],
+        },
+        {
+          label: "플러그인",
+          translations: { en: "Plugins" },
+          items: [
             { label: "플러그인", slug: "guides/plugins", translations: { en: "Plugins" } },
             { label: "플러그인 레시피", slug: "guides/plugin-recipes", translations: { en: "Plugin Recipes" } },
-            { label: "마이그레이션", slug: "guides/migration", translations: { en: "Migration" } },
+          ],
+        },
+        {
+          label: "마이그레이션",
+          translations: { en: "Migration" },
+          items: [
+            { label: "다른 도구에서 이관", slug: "guides/migration", translations: { en: "From Other Tools" } },
             { label: "Babel 이관 (RN)", slug: "guides/babel-migration", translations: { en: "Babel Migration (RN)" } },
-            { label: "React Native", slug: "guides/react-native" },
+          ],
+        },
+        {
+          label: "레시피",
+          translations: { en: "Recipes" },
+          items: [
             { label: "Dev Server (SSE/MCP)", slug: "guides/dev-server" },
           ],
         },
