@@ -388,16 +388,22 @@ export default function Playground() {
   };
 
   return (
-    <div className="not-content playground-root" style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 64px)", overflow: "hidden", background: "#1a1a2e" }}>
-      {/* 상단 툴바 */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", background: "#16162a", borderBottom: "1px solid #2d2d4a", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={() => setShowConfig(!showConfig)} style={btnStyle}>{showConfig ? "◀" : "▶"}</button>
-          <a href="/zts/" style={{ fontWeight: 700, fontSize: 14, color: "#e2e8f0", textDecoration: "none" }}>ZTS Playground</a>
-          {loading && <Badge color="#1e3a5f" text="Loading WASM..." />}
-          {!loading && !error && <Badge color="#065f46" text="Ready" textColor="#6ee7b7" />}
+    <div
+      className="not-content playground-root flex flex-col overflow-hidden bg-surface-950"
+      style={{ height: "calc(100vh - 64px)" }}
+    >
+      <div className="flex shrink-0 items-center justify-between border-b border-surface-800 bg-surface-900 px-4 py-2">
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setShowConfig(!showConfig)} className={BTN_CLASS}>
+            {showConfig ? "◀" : "▶"}
+          </button>
+          <a href="/zts/" className="text-sm font-bold text-neutral-200 no-underline">
+            ZTS Playground
+          </a>
+          {loading && <Badge variant="loading" text="Loading WASM..." />}
+          {!loading && !error && <Badge variant="ready" text="Ready" />}
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div className="flex items-center gap-2">
           <select
             aria-label="예제"
             onChange={(e) => {
@@ -406,22 +412,23 @@ export default function Playground() {
               e.target.value = "";
             }}
             defaultValue=""
-            style={{ ...btnStyle, padding: "4px 8px" }}
+            className={SELECT_BTN_CLASS}
           >
             <option value="" disabled>예제 선택…</option>
             {EXAMPLES.map((ex) => (
               <option key={ex.label} value={ex.label}>{ex.label}</option>
             ))}
           </select>
-          <button onClick={handleShare} style={btnStyle}>Share</button>
-          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" style={{ ...btnStyle, textDecoration: "none" }}>GitHub</a>
+          <button type="button" onClick={handleShare} className={BTN_CLASS}>Share</button>
+          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" className={`${BTN_CLASS} no-underline`}>
+            GitHub
+          </a>
         </div>
       </div>
 
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* 왼쪽 설정 패널 */}
+      <div className="flex flex-1 overflow-hidden">
         {showConfig && (
-          <div className="pg-config" style={{ width: 240, minWidth: 240, background: "#16162a", borderRight: "1px solid #2d2d4a", overflowY: "auto", padding: 12, flexShrink: 0, fontSize: 13 }}>
+          <div className="pg-config w-60 min-w-[15rem] shrink-0 overflow-y-auto border-r border-surface-800 bg-surface-900 p-3 text-[13px]">
             <Section title="Parser">
               <Sel label="Language" value={options.filename} onChange={(v) => updateOption("filename", v)} options={[["input.tsx","TypeScript+JSX"],["input.ts","TypeScript"],["input.jsx","JavaScript+JSX"],["input.js","JavaScript"]]} />
               <Chk label="Flow" checked={options.flow} onChange={(v) => updateOption("flow", v)} />
@@ -462,21 +469,32 @@ export default function Playground() {
           </div>
         )}
 
-        {/* 에디터 */}
-        <div className="pg-editors" style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-          <EditorPanel header={<span>Input <span style={{ opacity: 0.5, fontSize: 11 }}>{options.filename}</span></span>}>
+        <div className="pg-editors flex flex-1 overflow-hidden">
+          <EditorPanel
+            header={
+              <span>
+                Input <span className="text-[11px] opacity-50">{options.filename}</span>
+              </span>
+            }
+          >
             <Editor height="100%" language={inputLang} theme="vs-dark" value={input} onChange={handleInputChange} onMount={handleInputMount} options={editorOpts} />
           </EditorPanel>
-          <div className="pg-divider" style={{ width: 2, background: "#2d2d4a", flexShrink: 0 }} />
-          <EditorPanel header={
-            <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
-              <div style={{ display: "flex" }}>
-                <Tab active={outputTab === "code"} onClick={() => setOutputTab("code")}>Output</Tab>
-                {options.sourcemap && <Tab active={outputTab === "sourcemap"} onClick={() => setOutputTab("sourcemap")}>Sourcemap</Tab>}
+          <div className="pg-divider w-[2px] shrink-0 bg-surface-800" />
+          <EditorPanel
+            header={
+              <div className="flex w-full items-center justify-between">
+                <div className="flex">
+                  <Tab active={outputTab === "code"} onClick={() => setOutputTab("code")}>Output</Tab>
+                  {options.sourcemap && (
+                    <Tab active={outputTab === "sourcemap"} onClick={() => setOutputTab("sourcemap")}>
+                      Sourcemap
+                    </Tab>
+                  )}
+                </div>
+                {error && <span className="text-[11px] text-red-400">Error</span>}
               </div>
-              {error && <span style={{ color: "#f87171", fontSize: 11 }}>Error</span>}
-            </div>
-          }>
+            }
+          >
             {outputTab === "code" ? (
               <Editor height="100%" language={error ? "plaintext" : "javascript"} theme="vs-dark" value={error || output} onMount={handleOutputMount} options={{ ...editorOpts, readOnly: true }} />
             ) : (
@@ -489,37 +507,54 @@ export default function Playground() {
   );
 }
 
-// ─── Sub-components ───
+const BTN_BASE =
+  "cursor-pointer rounded border border-surface-800 bg-transparent text-[13px] text-neutral-200 transition-colors hover:border-zig-500 hover:text-zig-400";
+const BTN_CLASS = `${BTN_BASE} px-3 py-1`;
+const SELECT_BTN_CLASS = `${BTN_BASE} px-2 py-1`;
 
-function Badge({ color, text, textColor = "#93c5fd" }: { color: string; text: string; textColor?: string }) {
-  return <span style={{ padding: "2px 8px", borderRadius: 9999, fontSize: 10, fontWeight: 600, background: color, color: textColor }}>{text}</span>;
+function Badge({ variant, text }: { variant: "loading" | "ready"; text: string }) {
+  const tone =
+    variant === "loading"
+      ? "bg-sky-950 text-sky-300"
+      : "bg-emerald-950 text-emerald-300";
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}`}>
+      {text}
+    </span>
+  );
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#94a3b8", marginBottom: 6, paddingBottom: 4, borderBottom: "1px solid #2d2d4a" }}>{title}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{children}</div>
+    <div className="mb-3">
+      <div className="mb-1.5 border-b border-surface-800 pb-1 text-[11px] font-bold uppercase tracking-[0.08em] text-neutral-400">
+        {title}
+      </div>
+      <div className="flex flex-col gap-1.5">{children}</div>
     </div>
   );
 }
 
 function Chk({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label style={{ display: "flex", alignItems: "center", gap: 6, color: "#cbd5e1", fontSize: 13, cursor: "pointer" }}>
+    <label className="flex cursor-pointer items-center gap-1.5 text-[13px] text-neutral-300">
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       {label}
     </label>
   );
 }
 
+const FIELD_CLASS =
+  "max-w-[130px] rounded border border-surface-800 bg-surface-950 px-1 py-0.5 text-[12px] text-neutral-200";
+
 function Sel({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: [string, string][] }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: "#cbd5e1", fontSize: 13 }}>
+    <div className="flex items-center justify-between text-[13px] text-neutral-300">
       <span>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)}
-        style={{ padding: "2px 4px", borderRadius: 4, border: "1px solid #2d2d4a", background: "#1a1a2e", color: "#e2e8f0", fontSize: 12, maxWidth: 130 }}>
-        {options.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={FIELD_CLASS}>
+        {options.map(([v, t]) => (
+          <option key={v} value={v}>{t}</option>
+        ))}
       </select>
     </div>
   );
@@ -527,33 +562,41 @@ function Sel({ label, value, onChange, options }: { label: string; value: string
 
 function Txt({ label, value, placeholder, onChange }: { label: string; value: string; placeholder?: string; onChange: (v: string) => void }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: "#cbd5e1", fontSize: 13 }}>
+    <div className="flex items-center justify-between text-[13px] text-neutral-300">
       <span>{label}</span>
-      <input type="text" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)}
-        style={{ padding: "2px 4px", borderRadius: 4, border: "1px solid #2d2d4a", background: "#1a1a2e", color: "#e2e8f0", fontSize: 12, maxWidth: 130, width: 130 }} />
+      <input
+        type="text"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${FIELD_CLASS} w-[130px]`}
+      />
     </div>
   );
 }
 
 function EditorPanel({ header, children }: { header: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", padding: "6px 12px", background: "#16162a", borderBottom: "1px solid #2d2d4a", fontSize: 12, fontWeight: 600, color: "#94a3b8", flexShrink: 0 }}>
+    <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex shrink-0 items-center border-b border-surface-800 bg-surface-900 px-3 py-1.5 text-[12px] font-semibold text-neutral-400">
         {header}
       </div>
-      <div style={{ flex: 1 }}>{children}</div>
+      <div className="flex-1">{children}</div>
     </div>
   );
 }
 
 function Tab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  const state = active
+    ? "border-zig-500 text-neutral-200 font-semibold"
+    : "border-transparent text-neutral-500 font-normal";
   return (
-    <button onClick={onClick} style={{ padding: "4px 12px", border: "none", background: "transparent", color: active ? "#e2e8f0" : "#64748b", fontWeight: active ? 600 : 400, fontSize: 12, cursor: "pointer", borderBottom: active ? "2px solid #4ade80" : "2px solid transparent" }}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`cursor-pointer border-b-2 bg-transparent px-3 py-1 text-[12px] transition-colors ${state}`}
+    >
       {children}
     </button>
   );
 }
-
-const btnStyle: React.CSSProperties = {
-  padding: "4px 12px", borderRadius: 4, border: "1px solid #2d2d4a", background: "transparent", color: "#e2e8f0", fontSize: 13, cursor: "pointer",
-};
