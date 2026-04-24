@@ -260,6 +260,21 @@ interface BuildOptionsCommon {
   inject?: string[];
   jobs?: number;
   plugins?: ZtsPlugin[];
+  /** 사용자 정의 청크 분할 — Rollup/rolldown `manualChunks` 호환 (#1027).
+   * 모듈 id (절대경로) 를 받아 청크 이름을 반환하면 해당 모듈은 그 이름의 청크로 묶임.
+   * null/undefined 반환 시 기존 자동 분배. transitive dependency 도 같은 청크로 따라감
+   * (cross-chunk 순환 회피). dynamic import target 은 async chunk 대신 manual 우선.
+   *
+   * 예:
+   * ```ts
+   * manualChunks: (id) => {
+   *   if (/node_modules\/react/.test(id)) return 'react';
+   *   if (id.includes('/src/components/')) return 'ui';
+   *   return null;
+   * }
+   * ```
+   */
+  manualChunks?: (id: string) => string | null | undefined;
   /** 확장자별 로더 오버라이드 (예: { ".png": "file", ".svg": "text" }) */
   loader?: Record<string, string>;
   /** package.json exports 커스텀 조건 */
@@ -796,6 +811,12 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   delete napiOptions.outdir;
   delete napiOptions.plugins;
   delete napiOptions.allowOverwrite;
+  // manualChunks 는 `_manualChunks` 전용 슬롯으로 재전달 (plugin dispatcher 패턴).
+  // napi_entry.zig 가 TSFN 으로 감싸 Zig resolver 로 변환.
+  delete napiOptions.manualChunks;
+  if (options.manualChunks) {
+    napiOptions._manualChunks = options.manualChunks;
+  }
   // blockList: RegExp는 .source로 추출해 string[]으로 넘긴다 (NAPI는 string만).
   if (options.blockList) {
     napiOptions.blockList = options.blockList.map((p) => {
