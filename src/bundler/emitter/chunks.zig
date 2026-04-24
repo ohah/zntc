@@ -381,9 +381,39 @@ pub fn emitChunks(
             try chunk_output.insertSlice(allocator, 0, hoisted_directives.items);
         }
 
+        // rolldown `chunk.moduleIds` 호환 — 이 chunk 에 포함된 모듈 경로 목록.
+        // exec_index 순으로 정렬된 sorted_mods 에서 JS 모듈만 수집 (asset/CSS 제외).
+        const module_ids = blk: {
+            var ids: std.ArrayList([]const u8) = .empty;
+            errdefer {
+                for (ids.items) |p| allocator.free(p);
+                ids.deinit(allocator);
+            }
+            for (sorted_mods) |mod_idx| {
+                const m = graph.getModule(mod_idx) orelse continue;
+                try ids.append(allocator, try allocator.dupe(u8, m.path));
+            }
+            break :blk try ids.toOwnedSlice(allocator);
+        };
+        // 이 chunk 가 export 하는 심볼 이름 목록 — 이미 chunk.exports_to 로 수집됨.
+        const export_names = blk: {
+            var names: std.ArrayList([]const u8) = .empty;
+            errdefer {
+                for (names.items) |n| allocator.free(n);
+                names.deinit(allocator);
+            }
+            var eit = chunk.exports_to.iterator();
+            while (eit.next()) |entry| {
+                try names.append(allocator, try allocator.dupe(u8, entry.key_ptr.*));
+            }
+            break :blk try names.toOwnedSlice(allocator);
+        };
+
         try outputs.append(allocator, .{
             .path = filename,
             .contents = try chunk_output.toOwnedSlice(allocator),
+            .module_ids = module_ids,
+            .exports = export_names,
         });
     }
 

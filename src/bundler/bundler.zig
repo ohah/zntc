@@ -326,10 +326,7 @@ pub const BundleResult = struct {
         if (self.sourcemap) |sm| allocator.free(sm);
         if (self.sourcemap_builder) |sm| sm.destroy(allocator);
         if (self.outputs) |outs| {
-            for (outs) |o| {
-                allocator.free(o.path);
-                allocator.free(o.contents);
-            }
+            for (outs) |o| o.deinit(allocator);
             allocator.free(outs);
         }
         if (self.diagnostics) |diags| {

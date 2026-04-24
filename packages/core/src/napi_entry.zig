@@ -410,6 +410,26 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.n
             _ = c.napi_create_string_utf8(env, out.contents.ptr, out.contents.len, &js_text);
             _ = c.napi_set_named_property(env, js_file, "text", js_text);
 
+            // rolldown chunk.moduleIds 호환 — string[]
+            var js_ids: c.napi_value = undefined;
+            _ = c.napi_create_array(env, &js_ids);
+            for (out.module_ids, 0..) |id, k| {
+                var s: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, id.ptr, id.len, &s);
+                _ = c.napi_set_element(env, js_ids, @intCast(k), s);
+            }
+            _ = c.napi_set_named_property(env, js_file, "moduleIds", js_ids);
+
+            // exports 심볼 이름들 — cross-chunk 검증용
+            var js_exports: c.napi_value = undefined;
+            _ = c.napi_create_array(env, &js_exports);
+            for (out.exports, 0..) |ex, k| {
+                var s: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, ex.ptr, ex.len, &s);
+                _ = c.napi_set_element(env, js_exports, @intCast(k), s);
+            }
+            _ = c.napi_set_named_property(env, js_file, "exports", js_exports);
+
             _ = c.napi_set_element(env, js_outputs, @intCast(i), js_file);
         }
     } else {
