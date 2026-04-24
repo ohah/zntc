@@ -139,11 +139,13 @@ fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
 
     // Attributes
     const scratch_top = self.saveScratch();
+    // `{...p} key={k}` 패턴에서 parseJSXAttribute 가 Ast.has_jsx_key_after_spread 를 세팅.
+    // (jsx_lowering 의 `_createElement` fallback → bundler 의 react import 주입 신호).
+    var saw_spread = false;
     while (self.current() != .r_angle and self.current() != .slash and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
-        const attr = try parseJSXAttribute(self);
+        const attr = try parseJSXAttribute(self, &saw_spread);
         try self.scratch.append(self.allocator, attr);
-
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
     const attrs = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -253,7 +255,7 @@ fn parseJSXTagName(self: *Parser) ParseError2!NodeIndex {
     return NodeIndex.none;
 }
 
-fn parseJSXAttribute(self: *Parser) ParseError2!NodeIndex {
+fn parseJSXAttribute(self: *Parser, saw_spread: *bool) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
 
     // spread attribute: {...expr}
@@ -271,6 +273,7 @@ fn parseJSXAttribute(self: *Parser) ParseError2!NodeIndex {
                 });
             }
             try self.scanner.nextInsideJSXElement();
+            saw_spread.* = true;
             return try self.ast.addNode(.{
                 .tag = .jsx_spread_attribute,
                 .span = .{ .start = start, .end = self.currentSpan().start },
@@ -284,6 +287,10 @@ fn parseJSXAttribute(self: *Parser) ParseError2!NodeIndex {
     // name="value" or name={expr}
     const name_span = self.currentSpan();
     try self.scanner.nextInsideJSXElement(); // skip attribute name
+
+    if (saw_spread.* and std.mem.eql(u8, self.ast.getText(name_span), "key")) {
+        self.ast.has_jsx_key_after_spread = true;
+    }
 
     const name = try self.ast.addNode(.{
         .tag = .jsx_identifier,

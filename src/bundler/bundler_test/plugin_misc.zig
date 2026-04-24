@@ -2153,3 +2153,41 @@ test "RN preset: async/await도 ES5 매트릭스로 다운레벨 (보수적 정�
     // async function이 더 이상 native 형태로 남지 않음 (state machine으로 변환)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "async function f") == null);
 }
+
+// Regression: JSX automatic runtime 의 `<Comp {...props} key={x} />` 패턴은 jsxDEV/jsx
+// 의 signature 로 표현할 수 없어 jsx_lowering 이 `_createElement(tag, {...props, key: x})`
+// fallback 을 emit. single-file transpile 은 `import { createElement as _createElement } from "react";`
+// 를 prepend 하지만 bundle mode 는 jsx_import_info 를 무시해 `_createElement` 가 free variable
+// 로 남는다. expo-router 의 `useScreens.js` 등 컴파일된 패키지에서 이 패턴이 흔해 RN 부팅 시
+// ReferenceError.
+test "JSX automatic: _createElement import injected when key-after-spread used" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App(props) {
+        \\  return <div {...props} key={props.id} />;
+        \\}
+    );
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        .external = &.{ "react/jsx-dev-runtime", "react" },
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // key-after-spread fallback 이 실제로 트리거되어야 — `_createElement(` 호출 존재.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_createElement(") != null);
+    // `_createElement` 는 `react` 의 createElement 로 정의되어야 — free variable 이면 안 됨.
+    // bundle mode 에서는 var 선언 or 할당 형태로 emit.
+    const has_def = std.mem.indexOf(u8, result.output, "_createElement = ") != null or
+        std.mem.indexOf(u8, result.output, "var _createElement") != null;
+    try std.testing.expect(has_def);
+    // `react` package 에서 createElement 를 가져오는 require 가 번들에 주입되어야.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"react\")") != null);
+}
