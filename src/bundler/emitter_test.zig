@@ -1166,6 +1166,30 @@ test "banner/footer — CJS format" {
 // globalName Tests
 // ============================================================
 
+test "IIFE + globals: epilogue emits factory call args (#1824)" {
+    // external 이 없는 그래프라도 `options.globals` 가 설정되어 있으면 external
+    // 수집이 활성화되지만 ext_specifiers 가 비어있으면 기존 `})();\n` 경로.
+    // 이 테스트는 "globals 옵션이 비어있을 때는 기존 epilogue 유지" 를 확인.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    // globals 비어있음 → 기존 IIFE 경로
+    const emit_result = try emit(std.testing.allocator, &result.graph, .{
+        .format = .iife,
+        .globals = &.{},
+    }, null);
+    defer emit_result.deinit(std.testing.allocator);
+
+    // 정적 factory_fn ("(() => {\n") + 빈 factory call ("})();\n")
+    try std.testing.expect(std.mem.startsWith(u8, emit_result.output, "(() => {\n"));
+    try std.testing.expect(std.mem.endsWith(u8, emit_result.output, "})();\n"));
+}
+
 test "globalName — IIFE wrapping" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

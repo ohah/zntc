@@ -122,6 +122,9 @@ pub const BundleOptions = struct {
     footer_js: ?[]const u8 = null,
     /// IIFE 포맷에서 export를 바인딩할 글로벌 변수명 (--global-name)
     global_name: ?[]const u8 = null,
+    /// IIFE external → 전역 식별자 매핑 (--globals, rollup `output.globals` 호환, #1824).
+    /// emitter 가 IIFE factory 호출 인자로 사용. 매핑되지 않은 external 은 에러.
+    globals: []const types.GlobalEntry = &.{},
     /// 출력 파일 확장자 오버라이드 (--out-extension:.js=.mjs)
     out_extension_js: ?[]const u8 = null,
     /// 소스맵 관련 옵션 묶음 (enable/debug_ids/function_map/lazy/source_root/sources_content).
@@ -466,6 +469,7 @@ pub const Bundler = struct {
             .banner_js = self.options.banner_js,
             .footer_js = self.options.footer_js,
             .global_name = self.options.global_name,
+            .globals = self.options.globals,
             .out_extension_js = self.options.out_extension_js,
             .sourcemap = self.options.sourcemap,
             .output_filename = self.options.output_filename,
@@ -780,6 +784,8 @@ pub const Bundler = struct {
             l.minify_whitespace = self.options.minify_whitespace;
             // #1791 Phase D: value-ref 0 binding elision 정책을 transformer 와 동기화.
             l.verbatim_module_syntax = self.options.verbatim_module_syntax;
+            // #1824: IIFE external globals 매핑 — linker 가 매핑 유무로 preamble 경로 분기.
+            l.iife_globals = self.options.globals;
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
             if (!self.options.code_splitting) {

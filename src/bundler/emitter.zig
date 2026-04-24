@@ -99,6 +99,10 @@ pub const EmitOptions = struct {
     footer_js: ?[]const u8 = null,
     /// IIFE 포맷에서 export를 바인딩할 글로벌 변수명
     global_name: ?[]const u8 = null,
+    /// IIFE external → 전역 식별자 매핑 (rollup `output.globals` 호환, #1824).
+    /// 예: `{ specifier="react", global_name="React" }` →
+    /// `var Lib = (function(react){...})(React);`. 비어있으면 IIFE 는 external 없이 emit.
+    globals: []const types.GlobalEntry = &.{},
     /// 출력 파일 확장자 오버라이드 (.mjs, .cjs 등)
     out_extension_js: ?[]const u8 = null,
     /// 출력 파일명 (소스맵 참조용, 예: "out.js")
@@ -249,20 +253,32 @@ pub fn emitWithTreeShaking(
     // arrow 전환이 시맨틱을 바꾸지 않는다. ES5 타겟처럼 arrow 미지원 환경에서만
     // 기존 `function` 형태를 유지 (#1580, esbuild 관행과 동일).
     const use_arrow = !options.unsupported.arrow;
-    const factory_fn = if (has_tla)
-        (if (use_arrow) "(async () => {\n" else "(async function() {\n")
-    else
-        (if (use_arrow) "(() => {\n" else "(function() {\n");
 
-    // UMD/AMD: external specifier 수집 (dependency array + factory params 생성용)
+    // UMD/AMD/IIFE: external specifier 수집 (dependency array + factory params 생성용).
+    // IIFE 는 globals 매핑된 spec 만 수집 — 매핑 안 된 external 은 unresolved 로 취급되어
+    // linker 가 fatal_diagnostics 로 에러 발행 (#1791).
     var ext_specifiers: std.ArrayList([]const u8) = .empty;
     defer ext_specifiers.deinit(allocator);
-    if (options.format == .umd or options.format == .amd) {
+    // IIFE 는 globals 매핑된 spec 에 대응되는 전역 인자를 수집한다. UMD/AMD 는 사용 안 함.
+    var iife_ext_globals: std.ArrayList([]const u8) = .empty;
+    defer iife_ext_globals.deinit(allocator);
+    const collect_externals = options.format == .umd or options.format == .amd or
+        (options.format == .iife and options.globals.len > 0);
+    if (collect_externals) {
         var seen = std.StringHashMap(void).init(allocator);
         defer seen.deinit();
         for (sorted.items) |m| {
             for (m.import_records) |rec| {
-                if (rec.is_external and !seen.contains(rec.specifier)) {
+                if (!rec.is_external or seen.contains(rec.specifier)) continue;
+                if (options.format == .iife) {
+                    // IIFE: globals 매핑이 있는 spec 만 factory 파라미터에 수록.
+                    // 매핑이 없는 external 은 linker 가 fatal diagnostic 으로 처리.
+                    if (types.GlobalEntry.lookup(options.globals, rec.specifier)) |gname| {
+                        try seen.put(rec.specifier, {});
+                        try ext_specifiers.append(allocator, rec.specifier);
+                        try iife_ext_globals.append(allocator, gname);
+                    }
+                } else {
                     try seen.put(rec.specifier, {});
                     try ext_specifiers.append(allocator, rec.specifier);
                 }
@@ -270,7 +286,7 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    // UMD/AMD: specifier → factory 매개변수명 precompute
+    // specifier → factory 매개변수명 precompute (UMD/AMD/IIFE 공통)
     var ext_param_names: std.ArrayList([]const u8) = .empty;
     defer {
         for (ext_param_names.items) |n| allocator.free(n);
@@ -279,6 +295,35 @@ pub fn emitWithTreeShaking(
     for (ext_specifiers.items) |spec| {
         try ext_param_names.append(allocator, try types.specifierToParamName(allocator, spec));
     }
+
+    // IIFE + externals 가 있으면 factory_fn 을 param 포함 형태로 조립 (#1824).
+    // 예: `(function(React, ReactDom) {\n`. 그 외에는 정적 문자열 사용.
+    const factory_fn_static = if (has_tla)
+        (if (use_arrow) "(async () => {\n" else "(async function() {\n")
+    else
+        (if (use_arrow) "(() => {\n" else "(function() {\n");
+    const factory_fn_owned: ?[]const u8 = blk: {
+        if (options.format != .iife or ext_param_names.items.len == 0) break :blk null;
+        const prefix = if (has_tla)
+            (if (use_arrow) "(async (" else "(async function(")
+        else
+            (if (use_arrow) "((" else "(function(");
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(allocator);
+        try buf.appendSlice(allocator, prefix);
+        for (ext_param_names.items, 0..) |n, i| {
+            if (i > 0) try buf.appendSlice(allocator, ", ");
+            try buf.appendSlice(allocator, n);
+        }
+        if (use_arrow) {
+            try buf.appendSlice(allocator, ") => {\n");
+        } else {
+            try buf.appendSlice(allocator, ") {\n");
+        }
+        break :blk try buf.toOwnedSlice(allocator);
+    };
+    defer if (factory_fn_owned) |s| allocator.free(s);
+    const factory_fn: []const u8 = factory_fn_owned orelse factory_fn_static;
 
     // emit_prelude: 포맷 prologue + polyfill 주입 + runtime helper 준비.
     // emit_module_pass 시작점 (`Phase 1: used_names`) 직전에 end.
@@ -696,7 +741,7 @@ pub fn emitWithTreeShaking(
     }
 
     // 포맷별 epilogue
-    try emitFormatEpilogue(&output, allocator, options.format);
+    try emitFormatEpilogue(&output, allocator, options.format, iife_ext_globals.items);
 
     // legal comments (eof 모드): 모든 모듈의 legal comment를 파일 끝에 모아서 출력
     const lc_mode = resolveDefaultLegalComments(options.legal_comments, options.minify_whitespace);
@@ -1812,9 +1857,27 @@ fn writeParamList(output: *std.ArrayList(u8), allocator: std.mem.Allocator, name
 }
 
 /// 포맷별 epilogue를 output에 추가한다.
-fn emitFormatEpilogue(output: *std.ArrayList(u8), allocator: std.mem.Allocator, format: types.Format) !void {
+/// `iife_globals_args` 는 IIFE + external globals 매핑이 있을 때만 non-empty —
+/// `})(React, ReactDom);` 형태로 factory 호출 인자를 부착한다 (#1824).
+fn emitFormatEpilogue(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    format: types.Format,
+    iife_globals_args: []const []const u8,
+) !void {
     switch (format) {
-        .iife => try output.appendSlice(allocator, "})();\n"),
+        .iife => {
+            if (iife_globals_args.len > 0) {
+                try output.appendSlice(allocator, "})(");
+                for (iife_globals_args, 0..) |arg, i| {
+                    if (i > 0) try output.appendSlice(allocator, ", ");
+                    try output.appendSlice(allocator, arg);
+                }
+                try output.appendSlice(allocator, ");\n");
+            } else {
+                try output.appendSlice(allocator, "})();\n");
+            }
+        },
         .umd, .amd => try output.appendSlice(allocator, "});\n"),
         .cjs, .esm => {},
     }
