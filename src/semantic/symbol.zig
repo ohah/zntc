@@ -357,9 +357,24 @@ pub const Reference = struct {
 ///   - `{ .read = true, .write = true }` — `x += 1`, `x++`, `--x` 등 compound/update
 ///   - `{ .declare = true }`            — 선언 위치 (#1669 부터 모든 scope). node_index 는 NodeIndex.none
 ///     (선언 span 을 Reference 에 싣지 않음 — buildFromSemantic 은 scope_id==0 + stmt_idx 로 bucket 분배)
+///
+/// #1791 type-context flag (oxc 식 `ReferenceFlags::Type` / `ValueAsType` 에 대응):
+///   - `{ .read = true, .type_context = true }` — `x: T`, `interface I extends T` 등 type 문맥 내 참조
+///   - `{ .read = true, .value_as_type = true }` — `typeof x`, `keyof x` — value id 를 type 으로 사용
+///   - 두 flag 모두 false 인 `.read` 는 "값으로 참조됨" — import binding elision (#1791 Phase D)
+///     판정의 근거. `reference_count` 는 mangler 전용이라 이 판정에는 부적절 (false positive).
 pub const ReferenceFlags = packed struct(u8) {
     read: bool = false,
     write: bool = false,
     declare: bool = false,
-    _reserved: u5 = 0,
+    /// 참조가 TypeScript type 문맥 (`x: T`, `extends T`, `T[]` 등) 내에서 발생.
+    /// 기존 analyzer 가 type node 를 순회하지 않아 이 플래그는 현재 미사용이지만, #1791 에서
+    /// type node 진입 시 식별자를 기록할 때 세팅할 예정. Phase D 는 "모든 read 가 이 bit 를
+    /// 가지면 value 미사용" 으로 판정.
+    type_context: bool = false,
+    /// `typeof X` / `keyof X` 처럼 **value 식별자를 type 으로 사용**. `type_context` 와는
+    /// 별개 bit — 회색지대 분석 (isolated declarations 등) 에서 구분이 필요할 수 있음.
+    /// Phase D 판정에선 `type_context` 와 동일하게 "value 사용 아님" 취급.
+    value_as_type: bool = false,
+    _reserved: u3 = 0,
 };
