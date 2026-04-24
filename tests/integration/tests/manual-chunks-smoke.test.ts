@@ -839,6 +839,133 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     expect(entry!.text).toMatch(/from\s*["'][^"']*date-utils[^"']*["']/);
   });
 
+  test("imports 메타: multi-group — entry 가 vendor + ui 둘 다 import", async () => {
+    // manualChunks 로 vendor, ui 각각 분리 시 entry 의 imports 가 양쪽 모두 포함.
+    const fixture = await createFixture({
+      "vendor/math.ts": `export function add(a: number, b: number) { return a + b; }`,
+      "ui/button.ts": `export function renderBtn() { return "<btn>"; }`,
+      "entry.ts": `
+        import { add } from "./vendor/math";
+        import { renderBtn } from "./ui/button";
+        console.log(add(1, 2) + renderBtn());
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      manualChunks: (id) => {
+        if (id.includes("/vendor/")) return "vendor";
+        if (id.includes("/ui/")) return "ui";
+        return null;
+      },
+    });
+
+    const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"))!;
+    expect(entry.imports).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/vendor.*\.js$/),
+        expect.stringMatching(/ui.*\.js$/),
+      ]),
+    );
+    expect(entry.imports!.length).toBe(2);
+  });
+
+  test("imports 메타: shared vendor — 두 엔트리가 같은 chunk 를 import", async () => {
+    // pageA + pageB 가 shared vendor 를 각각 import. rolldown 에서도 동일 결과.
+    const fixture = await createFixture({
+      "vendor/shared.ts": `export const VALUE = "SHARED";`,
+      "pageA.ts": `
+        import { VALUE } from "./vendor/shared";
+        console.log("A:" + VALUE);
+      `,
+      "pageB.ts": `
+        import { VALUE } from "./vendor/shared";
+        console.log("B:" + VALUE);
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "pageA.ts"), join(fixture.dir, "pageB.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      manualChunks: (id) => (id.includes("/vendor/") ? "vendor" : null),
+    });
+
+    const pageA = result.outputFiles.find((o) => o.path.includes("pageA"))!;
+    const pageB = result.outputFiles.find((o) => o.path.includes("pageB"))!;
+    const vendor = result.outputFiles.find((o) => o.path.includes("vendor"))!;
+
+    // 두 엔트리 모두 vendor 를 import
+    expect(pageA.imports).toEqual(expect.arrayContaining([expect.stringMatching(/vendor.*\.js$/)]));
+    expect(pageB.imports).toEqual(expect.arrayContaining([expect.stringMatching(/vendor.*\.js$/)]));
+    // 두 엔트리의 imports 에서 vendor path 는 동일해야 (같은 실제 파일 가리킴)
+    const aVendorRef = pageA.imports!.find((p) => p.includes("vendor"));
+    const bVendorRef = pageB.imports!.find((p) => p.includes("vendor"));
+    expect(aVendorRef).toBe(bVendorRef);
+    // vendor 는 leaf
+    expect(vendor.imports).toEqual([]);
+  });
+
+  test("imports 메타: 단일 청크는 imports 비어있음", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `console.log("SINGLE");`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+    });
+
+    expect(result.outputFiles.length).toBe(1);
+    expect(result.outputFiles[0].imports).toEqual([]);
+  });
+
+  test.skipIf(!hasPackage("react") || !hasPackage("immer"))(
+    "imports 메타 실 라이브러리: react-vendor + vendor 둘 다 import",
+    async () => {
+      const fixture = await createFixture({
+        "entry.tsx": `
+          import { createElement } from "react";
+          import { produce } from "immer";
+          const state = produce({ n: 0 }, (d: any) => { d.n = 1; });
+          console.log(createElement("div", null, state.n));
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.tsx")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => {
+          if (id.includes("/react/") || id.includes("/scheduler/")) return "react-vendor";
+          if (id.includes("node_modules")) return "vendor";
+          return null;
+        },
+      });
+
+      const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"))!;
+      // entry 가 두 chunk 를 모두 import
+      expect(entry.imports).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/react-vendor.*\.js$/),
+          expect.stringMatching(/vendor.*\.js$/),
+        ]),
+      );
+    },
+  );
+
   test("엔트리 모듈이 manualChunks 매칭: 엔트리 청크로 유지 (정책)", async () => {
     // 엔트리 모듈 자체가 manualChunks 패턴에 매칭되면 어떻게?
     // Phase 4 가드로 엔트리는 manual 로 강제 이동하지 않음 — entry chunk 유지.
