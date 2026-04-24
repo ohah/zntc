@@ -77,6 +77,39 @@ fn finalizeImportDeclaration(
     });
 }
 
+/// `export_named_declaration` extra schema. codegen/transformer 읽기 사이트가
+/// 이 헬퍼를 통해서만 슬롯 의미를 알도록 강제한다 (`ImportDeclExtras` 와 동일 패턴).
+pub const ExportNamedExtras = struct {
+    decl: NodeIndex,
+    specs_start: u32,
+    specs_len: u32,
+    source: NodeIndex,
+    attrs_start: u32,
+    attrs_len: u32,
+};
+
+pub fn readExportNamedExtras(ast: anytype, e: u32) ExportNamedExtras {
+    const slots = ast.extra_data.items[e .. e + 6];
+    return .{
+        .decl = @enumFromInt(slots[0]),
+        .specs_start = slots[1],
+        .specs_len = slots[2],
+        .source = @enumFromInt(slots[3]),
+        .attrs_start = slots[4],
+        .attrs_len = slots[5],
+    };
+}
+
+/// dynamic `import(arg, options?)` 에서 `,` 소비 후 options 를 파싱.
+/// `(` 와 `arg` 는 caller 책임. options 가 없으면 `.none` 반환.
+fn parseImportCallOptions(self: *Parser) ParseError2!NodeIndex {
+    if (!try self.eat(.comma)) return .none;
+    if (self.current() == .r_paren) return .none;
+    const options = try self.parseAssignmentExpression();
+    _ = try self.eat(.comma); // trailing comma
+    return options;
+}
+
 /// import() / import.source() / import.defer() 호출의 인자를 파싱한다.
 /// `(` 를 소비하고, 1~2개 인자를 파싱하고, `)` 를 기대한다.
 /// import() 내부에서는 `in` 연산자를 허용 (+In context).
@@ -85,13 +118,9 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
     const saved_ctx = self.enterAllowInContext(true);
     defer self.restoreContext(saved_ctx);
     const arg = try self.parseAssignmentExpression();
-    // 두 번째 인자 (import attributes/options) — 있으면 파싱하고 무시
-    if (try self.eat(.comma)) {
-        if (self.current() != .r_paren) {
-            _ = try self.parseAssignmentExpression();
-            _ = try self.eat(.comma); // trailing comma
-        }
-    }
+    // ES2024 dynamic import 두 번째 인자 (import attributes/options). AST 에 보존해
+    // codegen 에서 그대로 출력한다 (ESM 출력이 Node 런타임에 그대로 흘러갈 때 필요).
+    const options = try parseImportCallOptions(self);
     try self.expect(.r_paren);
 
     // Inline scan: dynamic import — 인자가 string_literal이면 레코드 추가
@@ -107,7 +136,7 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
     return try self.ast.addNode(.{
         .tag = .import_expression,
         .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
+        .data = .{ .binary = .{ .left = arg, .right = options, .flags = 0 } },
     });
 }
 
@@ -220,11 +249,12 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         // 수동으로 import expression 생성.
         try self.expect(.l_paren);
         const arg = try self.parseAssignmentExpression();
+        const options = try parseImportCallOptions(self);
         try self.expect(.r_paren);
         const import_expr = try self.ast.addNode(.{
             .tag = .import_expression,
             .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .unary = .{ .operand = arg, .flags = 0 } },
+            .data = .{ .binary = .{ .left = arg, .right = options, .flags = 0 } },
         });
         // 후속 .then() 등의 member/call 체이닝 처리
         _ = try self.eat(.semicolon);
@@ -690,10 +720,10 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
 
         // re-export: export { a } from "module"
         var source_node = NodeIndex.none;
+        var attrs: NodeList = .{ .start = 0, .len = 0 };
         if (try self.eat(.kw_from)) {
             source_node = try parseModuleSource(self);
-            // export { x } from "..." with { ... } — attributes 소비 (AST 보존은 후속)
-            _ = try parseImportAttributes(self);
+            attrs = try parseImportAttributes(self);
         }
         try self.expectSemicolon();
 
@@ -778,12 +808,14 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
 
         if (is_type_only_export) return NodeIndex.none;
 
-        // extra_data layout: [declaration, specifiers_start, specifiers_len, source]
+        // extra_data layout: [declaration, specifiers_start, specifiers_len, source, attrs_start, attrs_len]
         const extra_start = try self.ast.addExtras(&.{
             @intFromEnum(NodeIndex.none), // declaration 없음
             specifiers.start,
             specifiers.len,
             @intFromEnum(source_node),
+            attrs.start,
+            attrs.len,
         });
 
         if (!is_export_equals) self.has_module_syntax = true;
@@ -835,12 +867,14 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
 
     if (!is_export_equals) self.has_module_syntax = true;
 
-    // extra_data layout: [declaration, specifiers_start, specifiers_len, source]
+    // extra_data layout: [declaration, specifiers_start, specifiers_len, source, attrs_start, attrs_len]
     const extra_start = try self.ast.addExtras(&.{
         @intFromEnum(decl),
         0, // specifiers_start (사용 안 함)
         0, // specifiers_len = 0
         @intFromEnum(NodeIndex.none), // source 없음
+        0, // attrs_start
+        0, // attrs_len
     });
     return try self.ast.addNode(.{
         .tag = .export_named_declaration,

@@ -848,7 +848,6 @@ pub const Transformer = struct {
             .computed_property_key,
             .break_statement,
             .continue_statement,
-            .import_expression,
             .static_block,
             => self.visitUnaryNode(idx),
 
@@ -943,6 +942,8 @@ pub const Transformer = struct {
             .jsx_attribute,
             .jsx_namespaced_name,
             .jsx_member_expression,
+            // ES2024: import(x, opts) — binary { left=arg, right=options }
+            .import_expression,
             => self.visitBinaryNode(idx),
 
             // === member expression: extra = [object, property, flags] ===
@@ -4262,19 +4263,20 @@ pub const Transformer = struct {
         return true;
     }
 
-    /// export_named_declaration: extra_data = [declaration, specifiers_start, specifiers_len, source]
+    /// export_named_declaration: `module_parser.ExportNamedExtras` 참고.
+    /// attrs 는 string literal 쌍이라 visit 불필요 — 원본 리스트 그대로 전달.
     fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
-        const new_decl = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_specs = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
-        const new_source = try self.visitNode(self.readNodeIdx(e, 3));
+        const x = module_parser.readExportNamedExtras(self.ast, node.data.extra);
+        const new_decl = try self.visitNode(x.decl);
+        const new_specs = try self.visitExtraList(.{ .start = x.specs_start, .len = x.specs_len });
+        const new_source = try self.visitNode(x.source);
         // export interface/type alias 등 타입 선언만 있으면 빈 export {} 제거
         // export { type Foo } from './a' 같은 re-export는 source가 있으므로 유지
         if (new_decl.isNone() and new_specs.len == 0 and new_source.isNone()) {
             // `@dec export class Named`: Stage 3 decorator pass가 outer_var_decl을
             // pending_nodes로 hoist하고 `.none`을 반환한 경우 — 원본 class 이름으로
             // `export { Named };` specifier를 합성해 export 키워드가 drop되지 않게 한다.
-            const orig_decl_idx = self.readNodeIdx(e, 0);
+            const orig_decl_idx = x.decl;
             if (!orig_decl_idx.isNone()) {
                 const orig_decl = self.ast.getNode(orig_decl_idx);
                 if (orig_decl.tag == .class_declaration) {
@@ -4295,6 +4297,7 @@ pub const Transformer = struct {
                         const specs = try self.ast.addNodeList(&.{specifier});
                         return self.addExtraNode(.export_named_declaration, node.span, &.{
                             @intFromEnum(NodeIndex.none), specs.start, specs.len, @intFromEnum(NodeIndex.none),
+                            0, 0, // attrs empty
                         });
                     }
                 }
@@ -4303,6 +4306,7 @@ pub const Transformer = struct {
         }
         return self.addExtraNode(.export_named_declaration, node.span, &.{
             @intFromEnum(new_decl), new_specs.start, new_specs.len, @intFromEnum(new_source),
+            x.attrs_start,          x.attrs_len,
         });
     }
 

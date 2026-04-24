@@ -202,7 +202,7 @@ fn tryExtractExportNamed(ast: *const Ast, node: Node) ?ImportRecord {
 /// import("./foo"): unary { operand=arg }
 /// operand가 string_literal이면 추출, 아니면 null (computed → 정적 분석 불가).
 fn tryExtractDynamicImport(ast: *const Ast, node: Node) ?ImportRecord {
-    const arg_idx = node.data.unary.operand;
+    const arg_idx = node.data.binary.left;
     if (arg_idx.isNone()) return null;
 
     const arg_node = ast.getNode(arg_idx);

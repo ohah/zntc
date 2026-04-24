@@ -112,12 +112,13 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
             .data = .{ .extra = var_extra },
         });
 
-        // extras: [declaration, specifiers_start, specifiers_len, source]
+        // extras: [declaration, specifiers_start, specifiers_len, source, attrs_start, attrs_len]
         const none_node: u32 = @intFromEnum(NodeIndex.none);
         const export_extra = try ast.addExtras(&.{
             @intFromEnum(var_decl),
             0,         0, // specifiers empty
             none_node,
+            0, 0, // attrs empty
         });
         const export_node = try ast.addNode(.{
             .tag = .export_named_declaration,
