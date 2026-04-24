@@ -1214,64 +1214,43 @@ test "verbatimModuleSyntax=true: 미사용 default import 보존" {
 }
 
 // ============================================================
-// type-only import binding elision (#1791)
-// analyzer 가 TS type node 를 순회하지 않아 type 위치 identifier 는
-// reference_count == 0 이 된다. inline `type` modifier 없이도 "값으로
-// 참조되지 않는 binding" 을 import 레벨에서 drop.
+// type-only import binding elision (#1791, oxc-style Reference flags)
+//
+// analyzer 가 TS type node 에 진입할 때 `type_context_depth` 를 올려 내부 식별자의
+// Reference 에 `flags.type_context=true` 를 기록한다. Phase D 는 이 flag 를 근거로
+// **named specifier** 에 한정해 "value 참조 0" 인 binding 을 drop.
+//
+// 회귀 방지 설계 (#1793 revert 원인):
+// - default/namespace import 는 JSX pragma / CSS-in-JS default export / namespace
+//   member access 같은 implicit value use 가 많아 elision 대상에서 제외
+// - `export { X }` re-export 의 local 은 analyzer 가 value 참조로 등록 (이전에는
+//   검증만 하고 Reference 를 만들지 않아 Phase D 가 오판)
+// - `typeof X` / `keyof X` 는 `value_as_type` bit 로 구분 — type 전용 사용 간주
 // ============================================================
 
-test "type-only usage elision: named/default/namespace/alias + verbatim 보존" {
+test "#1791 type-only elision: positive + negative cases" {
     const Case = struct {
         name: []const u8,
         src: []const u8,
+        path: []const u8 = "input.ts",
         verbatim: bool = false,
         must_contain: []const []const u8 = &.{},
         must_not_contain: []const []const u8 = &.{},
     };
     const cases = [_]Case{
+        // ---------- POSITIVE: elide 되어야 할 것 ----------
         .{
-            // named 중 type 위치에서만 쓰이는 specifier 만 선택적으로 drop.
-            .name = "named specifier elide (mixed)",
+            .name = "named mixed: type-only specifier 만 drop",
             .src =
             \\import { A, B } from "./lib";
             \\export function f(x: A): void {}
             \\export const v = B();
             ,
             .must_contain = &.{"import { B } from \"./lib\""},
-            .must_not_contain = &.{ " A,", ", A " },
+            .must_not_contain = &.{ " A,", ", A ", "{ A," },
         },
         .{
-            // default binding 이 type 으로만 쓰이면 declaration 전체 drop.
-            .name = "default drop",
-            .src =
-            \\import Foo from "./lib";
-            \\export function f(x: Foo): void {}
-            ,
-            .must_not_contain = &.{ "import", "./lib" },
-        },
-        .{
-            // namespace binding 이 type 으로만 쓰이면 drop.
-            .name = "namespace drop",
-            .src =
-            \\import * as NS from "./lib";
-            \\export function f(x: NS.Foo): void {}
-            ,
-            .must_not_contain = &.{ "import", "./lib", "NS" },
-        },
-        .{
-            // alias 의 local 이 type 으로만 쓰이면 해당 specifier 만 drop.
-            .name = "alias local-type-only",
-            .src =
-            \\import { X as Y, Z } from "./lib";
-            \\export function f(x: Y): void {}
-            \\export const v = Z();
-            ,
-            .must_contain = &.{"import { Z } from \"./lib\""},
-            .must_not_contain = &.{ " Y,", "X as Y" },
-        },
-        .{
-            // 모든 named specifier 가 type-only 사용 → declaration 전체 drop.
-            .name = "all-named drop",
+            .name = "named all type-only → declaration 전체 drop",
             .src =
             \\import { A, B } from "./lib";
             \\export function f(x: A): B { return undefined; }
@@ -1279,8 +1258,122 @@ test "type-only usage elision: named/default/namespace/alias + verbatim 보존" 
             .must_not_contain = &.{ "import", "./lib" },
         },
         .{
-            // verbatim=true: 사용자가 원본 import 유지를 명시 → elision skip.
-            .name = "verbatim preserves type-only usage",
+            .name = "named alias: local 이 type-only 면 해당 specifier 만 drop",
+            .src =
+            \\import { X as Y, Z } from "./lib";
+            \\export function f(x: Y): void {}
+            \\export const v = Z();
+            ,
+            .must_contain = &.{"import { Z } from \"./lib\""},
+            .must_not_contain = &.{ "X as Y", " Y,", "{ Y," },
+        },
+        .{
+            .name = "nested generic: Array<Map<string, A>> 안의 A 는 type-only",
+            .src =
+            \\import { A, Util } from "./lib";
+            \\export type T = Array<Map<string, A>>;
+            \\export const v = Util();
+            ,
+            .must_contain = &.{"import { Util } from \"./lib\""},
+            .must_not_contain = &.{"{ A,"},
+        },
+        .{
+            .name = "typeof X: value_as_type 로 분류되어 drop",
+            .src =
+            \\import { X, Used } from "./lib";
+            \\export type T = typeof X;
+            \\export const v = Used();
+            ,
+            .must_contain = &.{"import { Used } from \"./lib\""},
+            .must_not_contain = &.{"{ X,"},
+        },
+
+        // ---------- NEGATIVE: keep 되어야 할 것 (false positive 방지) ----------
+        .{
+            // #1793 revert 의 직접 원인 — `export { React }` 의 React 가 value 참조.
+            // analyzer 가 이 local 을 resolveIdentifier 로 등록하므로 Phase D 가 유지.
+            .name = "export re-export: named specifier 는 유지",
+            .src =
+            \\import { A, B } from "./lib";
+            \\export { A, B };
+            ,
+            .must_contain = &.{"import { A, B } from \"./lib\""},
+        },
+        .{
+            // default 는 JSX pragma / CSS-in-JS default 등 implicit value use 가 많아
+            // Phase D elision 대상에서 제외 — 설령 type 위치에서만 보여도 유지.
+            .name = "default binding: type-only 사용 이어도 유지",
+            .src =
+            \\import Foo from "./lib";
+            \\export function f(x: Foo): void {}
+            ,
+            .must_contain = &.{"import Foo from \"./lib\""},
+        },
+        .{
+            .name = "namespace binding: type-only 사용 이어도 유지",
+            .src =
+            \\import * as NS from "./lib";
+            \\export function f(x: NS.Foo): void {}
+            ,
+            .must_contain = &.{"import * as NS from \"./lib\""},
+        },
+        .{
+            .name = "namespace member access: value 참조로 유지",
+            .src =
+            \\import * as React from "react";
+            \\export const C = React.forwardRef((a: any, r: any) => null);
+            ,
+            .must_contain = &.{"import * as React from \"react\""},
+        },
+        .{
+            .name = "class extends: base 는 value 참조로 유지",
+            .src =
+            \\import { Base } from "./lib";
+            \\export class Derived extends Base {}
+            ,
+            .must_contain = &.{"import { Base } from \"./lib\""},
+        },
+        .{
+            // 함수 호출의 인자 — 가장 일반적인 value 참조.
+            .name = "function argument: value 참조로 유지",
+            .src =
+            \\import { handler, Token } from "./di";
+            \\export const result = handler(Token);
+            ,
+            .must_contain = &.{"import { handler, Token } from \"./di\""},
+        },
+        .{
+            // 조건식 / 연산 — value 참조.
+            .name = "conditional expression: value 참조로 유지",
+            .src =
+            \\import { flag, fallback } from "./lib";
+            \\export const v = flag ? 1 : fallback();
+            ,
+            .must_contain = &.{"import { flag, fallback } from \"./lib\""},
+        },
+        .{
+            // `import type { X }` 전체 type-only 는 parse 단계에서 drop.
+            .name = "import type 전체 선언은 parse 단계에서 drop",
+            .src =
+            \\import type { A } from "./lib";
+            \\export const x = 1;
+            ,
+            .must_not_contain = &.{ "import", "./lib" },
+        },
+        .{
+            // `import { type X, Y }` inline type modifier — X 만 drop.
+            .name = "inline type modifier: 해당 specifier 만 drop",
+            .src =
+            \\import { type A, B } from "./lib";
+            \\export function f(x: A): void { B(); }
+            ,
+            .must_contain = &.{"import { B } from \"./lib\""},
+            .must_not_contain = &.{ "type A", "{ A,", ", A }" },
+        },
+
+        // ---------- VERBATIM: 명시적 보존 ----------
+        .{
+            .name = "verbatim=true: named type-only 도 보존",
             .src =
             \\import { A, B } from "./lib";
             \\export function f(x: A): void { B(); }
@@ -1288,12 +1381,57 @@ test "type-only usage elision: named/default/namespace/alias + verbatim 보존" 
             .verbatim = true,
             .must_contain = &.{"import { A, B } from \"./lib\""},
         },
+        .{
+            .name = "verbatim=true: 완전 unused named 도 보존",
+            .src =
+            \\import { A } from "./lib";
+            \\export const x = 1;
+            ,
+            .verbatim = true,
+            .must_contain = &.{"import { A } from \"./lib\""},
+        },
+
+        // ---------- UNUSED (Phase D 가 value-unused 도 포괄) ----------
+        .{
+            // named binding 이 아예 참조되지 않은 경우 — declare Reference 만 존재.
+            // value read 가 없으므로 elide. value-unused 경로 검증.
+            .name = "named completely unused: drop",
+            .src =
+            \\import { A } from "./lib";
+            \\export const x = 1;
+            ,
+            .must_not_contain = &.{ "import", "./lib" },
+        },
+
+        // ---------- SIDE-EFFECT IMPORT: 항상 유지 ----------
+        .{
+            .name = "side-effect import: 항상 유지",
+            .src =
+            \\import "./side-effect";
+            \\export const x = 1;
+            ,
+            .must_contain = &.{"./side-effect"},
+        },
+
+        // ---------- JSX: default import 유지 확인 (.tsx) ----------
+        .{
+            // JSX classic transform 은 `React.createElement` 를 주입 — React 가 value
+            // 참조. Phase D 가 default 를 건드리지 않으므로 직접 드롭되지 않지만,
+            // 회귀 방지 차원에서 명시 확인.
+            .name = "JSX pragma: default React 는 JSX 있는 파일에서 유지",
+            .src =
+            \\import React from "react";
+            \\export const App = () => <div />;
+            ,
+            .path = "input.tsx",
+            .must_contain = &.{"import React from \"react\""},
+        },
     };
     for (cases) |c| {
         var result = try transpile_mod.transpile(
             std.testing.allocator,
             c.src,
-            "input.ts",
+            c.path,
             .{ .verbatim_module_syntax = c.verbatim },
         );
         defer result.deinit(std.testing.allocator);

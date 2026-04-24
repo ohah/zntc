@@ -833,3 +833,105 @@ test "TypeScript: verbatimModuleSyntax=true preserves external type-only preambl
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var TypeAlpha = require(\"external-lib\").TypeAlpha") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var useValue = require(\"external-lib\").useValue") != null);
 }
+
+test "TypeScript: external + export re-export → preamble require 유지 (#1793 revert 원인)" {
+    // `import { X } from 'ext'; export { X };` 에서 X 는 analyzer 가 value 참조로
+    // 등록해야 Phase D 가 drop 하지 않음. #1793 revert 의 직접 실패 경로.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { ExportMe } from "external-pkg";
+        \\export { ExportMe };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"external-pkg"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var ExportMe = require(\"external-pkg\").ExportMe") != null);
+}
+
+test "TypeScript: external + namespace member access → preamble 유지 (namespace 는 elision 제외)" {
+    // `import * as React; React.forwardRef()` — Phase D 는 namespace 를 elision 대상에서
+    // 제외. bungae 의 React$250='19.2.0' crash 회귀 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import * as React from "react";
+        \\export const Slot = React.forwardRef((a: any, r: any) => null);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // namespace import 는 preamble 에 유지되어 React.forwardRef 호출 가능.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "React") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "forwardRef") != null);
+}
+
+test "TypeScript: external + default import → Phase D 는 default 를 elide 하지 않음" {
+    // JSX pragma / CSS-in-JS default export 등 implicit value use 가 많아 default 는
+    // elision 제외. 회귀 방지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import DefaultX from "external-mod";
+        \\export function f(x: DefaultX): void {}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"external-mod"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"external-mod\")") != null);
+}
+
+test "TypeScript: external + named mixed → type-only 만 elide, value-used 유지" {
+    // Phase D 의 핵심 기능 — bundle 레벨에서 confirm.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { TypeX, UtilY, TypeZ } from "external-kit";
+        \\export function f(a: TypeX, b: TypeZ): void {}
+        \\export const v = UtilY();
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"external-kit"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // value-used 만 preamble 에 남음.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var UtilY = require(\"external-kit\").UtilY") != null);
+    // type-only 는 preamble 에 없음.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TypeX") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TypeZ") == null);
+}
