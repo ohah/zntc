@@ -262,6 +262,12 @@ pub const Transformer = struct {
     /// 비어 있으면 unused import 제거 비활성.
     symbols: []const Symbol = &.{},
 
+    /// #1791 per-reference 기록 (`semantic/analyzer::SemanticAnalyzer.references`).
+    /// import binding elision 판정은 `Symbol.reference_count` 대신 여기서 symbol 별
+    /// Reference 를 돌며 **value-use 가 하나라도 있는지** 로 판단한다. 비어있으면
+    /// elision 비활성 (보수적 보존). caller 가 symbols 와 함께 설정.
+    references: []const @import("../semantic/symbol.zig").Reference = &.{},
+
     /// define value의 string_table Span 캐시. options.define과 동일 인덱스.
     /// transform() 시작 시 한 번 빌드하여, tryDefineReplace에서 addString 중복 호출을 방지.
     define_spans: []Span = &.{},
@@ -1347,8 +1353,10 @@ pub const Transformer = struct {
             },
 
             // === import/export specifiers ===
-            // inline `type` modifier (flags&1) 또는 value-ref==0 → elision.
-            // visitExtraList 가 `.none` 을 필터링하여 specifier list 에서 제거.
+            // #1791 Phase D: inline `type` modifier (flags&1) 또는 named specifier 의
+            // value-ref 0 (type 위치에서만 사용) 이면 elide. visitExtraList 가 `.none` 을
+            // 필터링. default/namespace 는 JSX pragma 등 implicit value use 위험이 커
+            // `shouldElideImportSpecifier` 에서 이미 false 를 반환하므로 elision 비활성.
             .import_specifier => blk: {
                 if (node.data.binary.flags & 1 != 0) break :blk NodeIndex.none;
                 if (self.shouldElideImportSpecifier(idx, node)) break :blk NodeIndex.none;
@@ -1358,7 +1366,6 @@ pub const Transformer = struct {
             // default/namespace specifier는 string_ref(span) 복사 — 자식 노드 없음
             .import_default_specifier,
             .import_namespace_specifier,
-            => if (self.shouldElideImportSpecifier(idx, node)) NodeIndex.none else self.copyNodeDirect(idx),
             .import_attribute,
             => self.copyNodeDirect(idx),
 
@@ -4224,27 +4231,36 @@ pub const Transformer = struct {
     }
 
     /// 단일 import specifier 의 local binding 이 value 로 참조된 적이 있는지 조회.
-    /// babel 식 type-only usage elision — type 위치에서만 쓰이는 binding 은 analyzer 가
-    /// reference 에 포함시키지 않아 `reference_count == 0`. `areAllSpecifiersUnused` (전체
-    /// drop) 와 개별 specifier elision (visit switch) 양쪽에서 공유.
+    /// #1791 oxc 식 판정: symbol 의 Reference 들 중 **type_context / value_as_type 이
+    /// 모두 false 인 read** (= 순수 value 사용) 가 하나라도 있으면 false. 하나도 없으면
+    /// true (= elide 가능).
     ///
-    /// symbol_id 조회 실패 시 보수적으로 "사용 중" 간주 — 한 번이라도 누락하면 프로덕션
-    /// 런타임 에러가 나므로 불확실하면 유지한다.
+    /// 기존 `reference_count` 기반 접근은 false positive — `export { X }` / JSX tag /
+    /// namespace member access 같은 경로가 analyzer 에서 카운트되지 않아 value-use 가
+    /// 있음에도 "미사용" 으로 오판했음 (PR #1793 revert 원인).
+    ///
+    /// `self.references` 가 비어있으면 보수적으로 "사용 중" 간주. symbol_id 조회 실패도 동일.
     fn isImportSpecifierUnused(self: *const Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
-        // 심볼 ID 조회 대상 노드: named 는 binary.right (local), default/namespace 는 specifier 자체
-        const sym_node_idx: u32 = switch (spec_node.tag) {
-            .import_specifier => blk: {
-                const local_idx = spec_node.data.binary.right;
-                break :blk if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
-            },
-            .import_default_specifier, .import_namespace_specifier => @intFromEnum(spec_idx),
-            else => return false,
-        };
+        // #1791: Phase D 를 **named specifier 한정**. default/namespace 는 JSX pragma,
+        // CSS-in-JS default export, namespace member access 같은 implicit value use 가
+        // 많아 false positive 위험이 큼 (#1793 revert 원인). bungae 의 실제 crash 경로
+        // (`import { HeaderBarButtonItem }`) 는 named 이므로 이 제한으로도 해결.
+        if (spec_node.tag != .import_specifier) return false;
+        const local_idx = spec_node.data.binary.right;
+        const sym_node_idx: u32 = if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
 
         if (sym_node_idx >= self.symbol_ids.items.len) return false;
         const sym_id = self.symbol_ids.items[sym_node_idx] orelse return false;
         if (sym_id >= self.symbols.len) return false;
-        return self.symbols[sym_id].reference_count == 0;
+
+        // Reference 들 중 value-use 하나라도 있으면 keep.
+        for (self.references) |r| {
+            if (@intFromEnum(r.symbol_id) != sym_id) continue;
+            if (r.flags.declare) continue;
+            if (r.flags.type_context or r.flags.value_as_type) continue;
+            return false;
+        }
+        return true;
     }
 
     /// export_named_declaration: extra_data = [declaration, specifiers_start, specifiers_len, source]

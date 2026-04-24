@@ -27,19 +27,32 @@ const isReservedName = Linker.isReservedName;
 const NamePair = PreambleWriter.NamePair;
 const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
 
-/// #1791 Phase D: import binding 의 local 이 value 로 참조된 적이 없는지. semantic.analyzer
-/// 는 TS type node 를 순회하지 않아 type 위치의 identifier 는 reference_count 에 집계되지
-/// 않는다 — `reference_count == 0` 이 "type 전용 사용" 과 "완전 미사용" 을 모두 포괄한다.
-/// true 이면 preamble 생성과 canonical rename 을 생략해 bare `require()` fallback (RN factory
+/// #1791 Phase D: import binding 의 local 이 value 로 참조된 적이 있는지 조회 (oxc 식).
+/// analyzer 가 각 Reference 에 `type_context` / `value_as_type` flag 를 기록하므로,
+/// symbol 의 Reference 들 중 **순수 value read** 가 하나라도 있으면 false. 하나도 없으면
+/// true → preamble / canonical rename 을 skip 해 bare `require()` fallback (RN factory
 /// ReferenceError) 을 방지.
 ///
+/// 기존 `reference_count == 0` 접근은 mangler 전용 카운트를 재활용해 false positive 가
+/// 났음 (#1793 revert). 이제 Reference 단위로 value/type 문맥을 구분.
+///
 /// synthetic binding (JSX runtime 등) 은 semantic 이 추적하지 않으므로 "사용 중" 간주.
-/// 호출자가 `verbatim_module_syntax` 를 먼저 확인해 true 이면 이 경로를 bypass.
+/// `references` 가 비어있어도 보수적 보존. 호출자가 `verbatim_module_syntax` 를 먼저
+/// 확인해 true 이면 이 경로를 bypass.
 inline fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
     if (ib.isSynthetic()) return false;
+    // named 한정 — default / namespace 는 JSX pragma 등 implicit value use 위험이
+    // 큼 (#1793 revert 원인). transformer 와 동일 제한.
+    if (ib.kind != .named) return false;
     const sym_idx = ib.local_symbol.semanticIndex() orelse return false;
     if (sym_idx >= sem.symbols.items.len) return false;
-    return sem.symbols.items[sym_idx].reference_count == 0;
+    for (sem.references) |r| {
+        if (@intFromEnum(r.symbol_id) != sym_idx) continue;
+        if (r.flags.declare) continue;
+        if (r.flags.type_context or r.flags.value_as_type) continue;
+        return false;
+    }
+    return true;
 }
 
 pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_imports: bool) !std.DynamicBitSet {

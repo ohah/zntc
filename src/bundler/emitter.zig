@@ -991,6 +991,7 @@ pub fn emitModule(
     if (module.semantic) |sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return error.OutOfMemory;
         transformer.symbols = sem.symbols.items;
+        transformer.references = sem.references;
     }
     // jsxDEV source info 계산용 line offsets
     transformer.line_offsets = module.line_offsets;
