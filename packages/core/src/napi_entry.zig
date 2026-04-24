@@ -982,6 +982,14 @@ const NapiManualChunksResolver = struct {
         var js_result: c.napi_value = undefined;
         const args = [_]c.napi_value{js_id};
         if (c.napi_call_function(env, js_undefined, js_callback, 1, &args, &js_result) != c.napi_ok) {
+            // JS exception 은 uncaught 로 전파되기 전에 clear — 번들 중단 방지.
+            // manualChunks 가 throw 하면 해당 모듈은 null (auto 분배) 로 취급.
+            var is_pending: bool = false;
+            _ = c.napi_is_exception_pending(env, &is_pending);
+            if (is_pending) {
+                var exception: c.napi_value = undefined;
+                _ = c.napi_get_and_clear_last_exception(env, &exception);
+            }
             signalResult(ctx, null);
             return;
         }

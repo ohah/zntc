@@ -1,8 +1,11 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
 import { mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { createFixture } from "./helpers";
+import { join, resolve } from "node:path";
+import { createFixture, hasPackage } from "./helpers";
 import { init, close, build } from "../../../packages/core/index";
+
+const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
+const ROOT_NODE_MODULES = join(PROJECT_ROOT, "node_modules");
 
 // manualChunks 스모크 테스트 — 실제 번들 → Node 로 실행 → 출력 검증.
 // Zig unit + NAPI integration 테스트와 달리 **최종 런타임 동작**까지 확인.
@@ -320,6 +323,103 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     expect(entry.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
     // minify_whitespace 효과 — 공백 기반 pattern 축소
     expect(vendor.text.length).toBeLessThan(200);
+  });
+
+  test.skipIf(!hasPackage("clsx"))("실 라이브러리: clsx 를 vendor 청크로 분리", async () => {
+    // 실제 node_modules 의 clsx 를 사용자 앱에서 import 하는 현실적 시나리오.
+    // manualChunks 로 node_modules 전체를 vendor 에 몰아넣는 가장 흔한 패턴.
+    const fixture = await createFixture({
+      "ui.ts": `
+          import clsx from "clsx";
+          export const label = clsx("a", { b: true, c: false }, ["d"]);
+        `,
+      "entry.ts": `
+          import { label } from "./ui";
+          console.log("RESULT:" + label);
+        `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      nodePaths: [ROOT_NODE_MODULES],
+      manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+    });
+
+    // vendor 청크에 clsx 구현이 들어가야 함
+    const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+    expect(vendor).toBeDefined();
+    // clsx 의 특징적 function body pattern
+    expect(vendor!.text).toMatch(/function/);
+    expect(vendor!.text.length).toBeGreaterThan(50);
+
+    // entry 에는 clsx 구현 없이 ui/app 코드만 + vendor import
+    const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"));
+    expect(entry).toBeDefined();
+    expect(entry!.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
+  });
+
+  test("대형 가상 vendor: date-utils 스타일 다중 모듈 → vendor 합병", async () => {
+    // 실 라이브러리 install 없이 "대형 라이브러리" 구조 시뮬레이션.
+    // node_modules 패키지처럼 여러 파일에 걸쳐 분할된 vendor 가 한 chunk 로 통합되는지.
+    const fixture = await createFixture({
+      "libs/date-utils/format.ts": `
+        export function formatDate(d: Date) { return d.toISOString(); }
+        export function formatTime(d: Date) { return d.toTimeString(); }
+      `,
+      "libs/date-utils/parse.ts": `
+        export function parseISO(s: string) { return new Date(s); }
+        export function parseUnix(n: number) { return new Date(n * 1000); }
+      `,
+      "libs/date-utils/diff.ts": `
+        import { parseISO } from "./parse";
+        export function daysBetween(a: string, b: string) {
+          const ms = parseISO(b).getTime() - parseISO(a).getTime();
+          return Math.floor(ms / 86400000);
+        }
+      `,
+      "libs/date-utils/index.ts": `
+        export { formatDate, formatTime } from "./format";
+        export { parseISO, parseUnix } from "./parse";
+        export { daysBetween } from "./diff";
+      `,
+      "app/calendar.ts": `
+        import { formatDate, daysBetween } from "../libs/date-utils/index";
+        export const header = formatDate(new Date(0));
+        export const diff = daysBetween("2024-01-01", "2024-12-31");
+      `,
+      "entry.ts": `
+        import { header, diff } from "./app/calendar";
+        console.log("CAL_MARKER:" + header + ":" + diff);
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      manualChunks: (id) => (id.includes("/libs/date-utils/") ? "date-utils" : null),
+    });
+
+    // date-utils 청크에 4개 모듈의 코드가 모두 들어가야 함
+    const vendor = result.outputFiles.find((o) => o.path.includes("date-utils"));
+    expect(vendor).toBeDefined();
+    expect(vendor!.text).toMatch(/function\s+formatDate\s*\(/);
+    expect(vendor!.text).toMatch(/function\s+parseISO\s*\(/);
+    expect(vendor!.text).toMatch(/function\s+daysBetween\s*\(/);
+    // index.ts 는 barrel re-export 라 tree-shake 로 제거되거나 pass-through
+    // 어느 쪽이든 vendor chunk 에 해당 export 가 살아있어야
+    expect(vendor!.text).toMatch(/export\s*\{/);
+
+    // entry 청크엔 vendor 구현 없음 + cross-chunk import
+    const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"));
+    expect(entry!.text).not.toMatch(/function\s+formatDate/);
+    expect(entry!.text).toMatch(/from\s*["'][^"']*date-utils[^"']*["']/);
   });
 
   test("엔트리 모듈이 manualChunks 매칭: 엔트리 청크로 유지 (정책)", async () => {
