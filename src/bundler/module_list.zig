@@ -236,3 +236,63 @@ test "StableSegmentedList: mutable iterator" {
     try std.testing.expectEqual(@as(u32, 20), list.at(1).*);
     try std.testing.expectEqual(@as(u32, 30), list.at(2).*);
 }
+
+// #1779 CI fail 의 정확한 reproduction: worker thread 가 at(i) 반복 read 하는 동안
+// main thread 가 append 로 shelf grow 유발. std.SegmentedList 였으면 dynamic_segments
+// 가 ArrayListUnmanaged realloc → reader 의 pointer stale → segfault 또는 value 불일치.
+// StableSegmentedList 는 shelves 배열 고정이라 read 가 항상 안전해야 함.
+test "StableSegmentedList: concurrent reader survives grower appends (race-safety)" {
+    const allocator = std.testing.allocator;
+    var list = StableSegmentedList(u64){};
+    defer list.deinit(allocator);
+
+    // 초기 items 100 개 — reader 가 이 slot 들을 불변으로 관찰.
+    const N_INITIAL: u64 = 100;
+    {
+        var i: u64 = 0;
+        while (i < N_INITIAL) : (i += 1) {
+            try list.append(allocator, i);
+        }
+    }
+
+    var stop = std.atomic.Value(bool).init(false);
+    var mismatch = std.atomic.Value(bool).init(false);
+
+    const readerFn = struct {
+        fn run(l: *StableSegmentedList(u64), m: *std.atomic.Value(bool), s: *std.atomic.Value(bool)) void {
+            while (!s.load(.acquire)) {
+                var k: u64 = 0;
+                while (k < N_INITIAL) : (k += 1) {
+                    const p = l.at(@intCast(k));
+                    if (p.* != k) {
+                        m.store(true, .release);
+                        return;
+                    }
+                }
+            }
+        }
+    }.run;
+
+    const N_READERS = 4;
+    var readers: [N_READERS]std.Thread = undefined;
+    for (&readers) |*r| {
+        r.* = try std.Thread.spawn(.{}, readerFn, .{ &list, &mismatch, &stop });
+    }
+
+    // Main 이 동시에 append — 100 → 10000 (shelves 7-13 신규 alloc 유발).
+    // std.SegmentedList 라면 이 시점에 dynamic_segments realloc 여러 번 발생.
+    {
+        var i: u64 = N_INITIAL;
+        while (i < 10_000) : (i += 1) {
+            try list.append(allocator, i);
+        }
+    }
+
+    stop.store(true, .release);
+    for (&readers) |r| r.join();
+
+    try std.testing.expect(!mismatch.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 10_000), list.count());
+    try std.testing.expectEqual(@as(u64, 0), list.at(0).*);
+    try std.testing.expectEqual(@as(u64, 9_999), list.at(9_999).*);
+}
