@@ -866,6 +866,12 @@ pub const Ast = struct {
     }
 
     /// 노드를 추가하고 인덱스를 반환한다.
+    ///
+    /// 가능하면 `addBinaryNode` / `addUnaryNode` / `addTernaryNode` / `addExtraNode` /
+    /// `addListNode` / `addLeafNode` 같은 variant-typed helper 를 사용할 것. Debug
+    /// 빌드에서 tag 의 `dataKind()` 와 전달한 variant 의 매칭을 assertion 으로 검증해
+    /// `object_property` 에 `.extra` 를, `unary_expression` 에 `.unary` 를 쓰는 식의
+    /// silent failure (#1797) 를 조기 포착. release 에선 zero-cost.
     pub fn addNode(self: *Ast, node: Node) !NodeIndex {
         const index: u32 = @intCast(self.nodes.items.len);
         try self.nodes.append(self.allocator, node);
@@ -878,6 +884,76 @@ pub const Ast = struct {
             );
         }
         return @enumFromInt(index);
+    }
+
+    /// `binary` variant 를 쓰는 노드 (object_property, assignment_expression 등) 를
+    /// 안전하게 추가. Debug 빌드에서 tag↔variant 매칭 assertion.
+    pub fn addBinaryNode(self: *Ast, tag: Node.Tag, span: Span, left: NodeIndex, right: NodeIndex, flags: u16) !NodeIndex {
+        assertDataKind(tag, .binary);
+        return self.addNode(.{
+            .tag = tag,
+            .span = span,
+            .data = .{ .binary = .{ .left = left, .right = right, .flags = flags } },
+        });
+    }
+
+    /// `unary` variant 를 쓰는 노드 (return_statement, expression_statement 등).
+    pub fn addUnaryNode(self: *Ast, tag: Node.Tag, span: Span, operand: NodeIndex, flags: u16) !NodeIndex {
+        assertDataKind(tag, .unary);
+        return self.addNode(.{
+            .tag = tag,
+            .span = span,
+            .data = .{ .unary = .{ .operand = operand, .flags = flags } },
+        });
+    }
+
+    /// `ternary` variant 를 쓰는 노드 (if_statement, conditional_expression 등).
+    pub fn addTernaryNode(self: *Ast, tag: Node.Tag, span: Span, a: NodeIndex, b: NodeIndex, c: NodeIndex) !NodeIndex {
+        assertDataKind(tag, .ternary);
+        return self.addNode(.{
+            .tag = tag,
+            .span = span,
+            .data = .{ .ternary = .{ .a = a, .b = b, .c = c } },
+        });
+    }
+
+    /// `extra` variant 를 쓰는 노드 (function_declaration, call_expression 등).
+    /// `extra_idx` 는 사전에 `addExtras` 로 얻은 인덱스.
+    pub fn addExtraNode(self: *Ast, tag: Node.Tag, span: Span, extra_idx: u32) !NodeIndex {
+        assertDataKind(tag, .extra);
+        return self.addNode(.{
+            .tag = tag,
+            .span = span,
+            .data = .{ .extra = extra_idx },
+        });
+    }
+
+    /// `list` variant 를 쓰는 노드 (block_statement, array_expression 등).
+    pub fn addListNode(self: *Ast, tag: Node.Tag, span: Span, list: NodeList) !NodeIndex {
+        assertDataKind(tag, .list);
+        return self.addNode(.{
+            .tag = tag,
+            .span = span,
+            .data = .{ .list = list },
+        });
+    }
+
+    /// `leaf` variant (자식 없음) — `none` / `string_ref` / `number_bytes` 서브 variant
+    /// 중 하나. 호출자가 이미 Data union 을 구성해 전달.
+    pub fn addLeafNode(self: *Ast, tag: Node.Tag, span: Span, data: Node.Data) !NodeIndex {
+        assertDataKind(tag, .leaf);
+        return self.addNode(.{ .tag = tag, .span = span, .data = data });
+    }
+
+    inline fn assertDataKind(tag: Node.Tag, expected: Node.Tag.DataKind) void {
+        if (@import("builtin").mode != .Debug) return;
+        const actual = tag.dataKind();
+        if (actual != expected) {
+            std.debug.panic(
+                "addNode: tag '{s}' expects dataKind .{s} but .{s} was passed",
+                .{ @tagName(tag), @tagName(actual), @tagName(expected) },
+            );
+        }
     }
 
     /// Debug-only invariant 검증 (D1 디버깅 인프라).
