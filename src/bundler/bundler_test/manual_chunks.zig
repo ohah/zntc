@@ -251,6 +251,90 @@ test "manualChunks: dynamic import target 은 manual 에서 제외 — async chu
     try std.testing.expect(!hasChunk(outs, "vendor"));
 }
 
+test "manualChunks: dynamic entry 의 static dep 은 manual 로 들어감" {
+    // dynamic entry (libmart) 자체는 제외되지만, 그 static dep 인 libshared 는
+    // 정상적으로 manual 청크에 포함. cross-chunk export 도 올바르게 emit.
+    // 청크명 충돌을 피하려고 엔트리/dep 경로에 "vendor" 를 포함시키지 않음.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { SHARED_VAL } from "./libshared";
+        \\const lazy = import("./libmart");
+        \\console.log(SHARED_VAL, lazy);
+    );
+    try writeFile(tmp.dir, "libshared.ts", "export const SHARED_VAL = \"SHARED_MARKER\";");
+    try writeFile(tmp.dir, "libmart.ts",
+        \\import { SHARED_VAL } from "./libshared";
+        \\export const lazyData = { shared: SHARED_VAL, label: "LAZY_MARKER" };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{
+            .{ .name = "vendor", .patterns = &.{"lib"} },
+        },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // libshared 는 static import → vendor 청크로
+    const shared_chunk = chunkContaining(outs, "SHARED_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, shared_chunk, "vendor") != null);
+    // libmart 는 dynamic entry 라 제외 — 청크 이름은 모듈 stem "libmart.js"
+    const lazy_chunk = chunkContaining(outs, "LAZY_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, lazy_chunk, "libmart") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lazy_chunk, "vendor") == null);
+    // cross-chunk export emit 은 integration smoke (realistic-shared) 에서 검증.
+}
+
+test "manualChunks resolver: dynamic entry 반환 이름 무시" {
+    // resolver 가 dynamic entry 에 대해 이름 반환해도 무시 (dynamic 은 정책상 제외).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { stat } from "./static-lib";
+        \\const dyn = import("./dyn-lib");
+        \\console.log(stat, dyn);
+    );
+    try writeFile(tmp.dir, "static-lib.ts", "export const stat = \"STATIC_MARKER\";");
+    try writeFile(tmp.dir, "dyn-lib.ts", "export const dyn = \"DYN_MARKER\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    // resolver 가 모든 모듈에 "bucket" 반환 — dynamic 도 bucket 에 넣으려 시도
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks_resolver = struct {
+            fn r(_: ?*anyopaque, _: []const u8) ?[]const u8 {
+                return "bucket";
+            }
+        }.r,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // static-lib 는 bucket 에
+    const stat_chunk = chunkContaining(outs, "STATIC_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, stat_chunk, "bucket") != null);
+    // dyn-lib 은 bucket 거부 → 별도 async chunk
+    const dyn_chunk = chunkContaining(outs, "DYN_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, dyn_chunk, "bucket") == null);
+}
+
 // ============================================================
 // Phase 2: function resolver (Rollup `manualChunks(id)` 호환)
 // ============================================================
