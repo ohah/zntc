@@ -105,6 +105,14 @@ pub const GlobalEntry = struct {
     }
 };
 
+/// Rollup `manualChunks(id)` 호환 콜백 (#1027 Phase 2).
+/// 모듈 절대경로 `id` 를 받아 청크 이름을 반환하면 그 이름의 manual 청크로 묶인다.
+/// null 반환이면 기존 auto 분배. resolver 로 동적 생성된 청크는 `ManualChunkEntry`
+/// record 와 동일 파이프라인 (bit 할당 / BFS / transitive dep 포함) 을 탄다.
+///
+/// `ctx` 는 caller 가 원하는 상태 (TSFN 핸들, 카운터 등) 를 전달하는 슬롯.
+pub const ManualChunksResolveFn = *const fn (ctx: ?*anyopaque, id: []const u8) ?[]const u8;
+
 /// 사용자 정의 청크 분할 (#1027 / Rollup `manualChunks` 호환 Phase 1).
 /// Rollup record form `{ "vendor": ["lodash", "react"] }` 를 네이티브 슬라이스로 1:1 매핑.
 /// 모듈 절대경로에 `patterns` 중 하나가 substring 으로 포함되면 `name` 청크에 할당.

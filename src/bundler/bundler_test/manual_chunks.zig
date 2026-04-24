@@ -248,6 +248,196 @@ test "manualChunks: dynamic import target hoisted into manual chunk" {
     try std.testing.expect(std.mem.indexOf(u8, lazy_chunk, "vendor") != null);
 }
 
+// ============================================================
+// Phase 2: function resolver (Rollup `manualChunks(id)` 호환)
+// ============================================================
+// resolver 반환 이름은 동적으로 manual 청크를 생성. record 와 공존 시 resolver 우선.
+
+fn resolverVendorSubstring(_: ?*anyopaque, id: []const u8) ?[]const u8 {
+    if (std.mem.indexOf(u8, id, "vendor-lib") != null) return "vendor";
+    return null;
+}
+
+fn resolverAlwaysNull(_: ?*anyopaque, _: []const u8) ?[]const u8 {
+    return null;
+}
+
+fn resolverTwoGroups(_: ?*anyopaque, id: []const u8) ?[]const u8 {
+    if (std.mem.indexOf(u8, id, "ui-") != null) return "ui";
+    if (std.mem.indexOf(u8, id, "data-") != null) return "data";
+    return null;
+}
+
+/// ctx 로 호출 카운터 전달 — 호출 검증용.
+fn resolverCountingSink(ctx: ?*anyopaque, id: []const u8) ?[]const u8 {
+    const counter: *usize = @ptrCast(@alignCast(ctx.?));
+    counter.* += 1;
+    if (std.mem.indexOf(u8, id, "match") != null) return "sink";
+    return null;
+}
+
+test "manualChunks resolver: returns chunk name → 해당 청크로 할당" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./vendor-lib";
+        \\console.log(a);
+    );
+    try writeFile(tmp.dir, "vendor-lib.ts", "export const a = \"VENDOR_MARKER\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks_resolver = resolverVendorSubstring,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    const vendor_chunk = chunkContaining(outs, "VENDOR_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, vendor_chunk, "vendor") != null);
+}
+
+test "manualChunks resolver: returning null → 기존 자동 분배" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./lib";
+        \\console.log(a);
+    );
+    try writeFile(tmp.dir, "lib.ts", "export const a = \"ONLY\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks_resolver = resolverAlwaysNull,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+    try std.testing.expect(std.mem.indexOf(u8, outs[0].contents, "ONLY") != null);
+}
+
+test "manualChunks resolver: multiple names → 각자 다른 청크로 동적 생성" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./ui-lib";
+        \\import { b } from "./data-lib";
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "ui-lib.ts", "export const a = \"UI\";");
+    try writeFile(tmp.dir, "data-lib.ts", "export const b = \"DATA\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks_resolver = resolverTwoGroups,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    const ui_chunk = chunkContaining(outs, "UI") orelse return error.TestUnexpectedResult;
+    const data_chunk = chunkContaining(outs, "DATA") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, ui_chunk, "ui") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data_chunk, "data") != null);
+    try std.testing.expect(!std.mem.eql(u8, ui_chunk, data_chunk));
+}
+
+test "manualChunks resolver: ctx 로 호출 카운터 전달" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./match-a";
+        \\import { b } from "./lib-b";
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "match-a.ts", "export const a = \"A_MATCH\";");
+    try writeFile(tmp.dir, "lib-b.ts", "export const b = \"B\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var counter: usize = 0;
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks_resolver = resolverCountingSink,
+        .manual_chunks_ctx = &counter,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // resolver 는 최소 3 모듈 (entry + 2 dep) 에 대해 호출됨
+    try std.testing.expect(counter >= 3);
+    // "match-a" 는 sink 청크, "lib-b" 는 auto
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    const a_chunk = chunkContaining(outs, "A_MATCH") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, a_chunk, "sink") != null);
+}
+
+test "manualChunks resolver + record 공존: resolver 우선" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./vendor-lib";
+        \\console.log(a);
+    );
+    try writeFile(tmp.dir, "vendor-lib.ts", "export const a = \"MIX\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    // record 는 "record-chunk", resolver 는 "vendor" — 모듈이 둘 다 매칭
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{
+            .{ .name = "record-chunk", .patterns = &.{"vendor-lib"} },
+        },
+        .manual_chunks_resolver = resolverVendorSubstring,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // resolver 결과 ("vendor") 가 우선. "record-chunk" 는 생성되지 않음.
+    const chunk = chunkContaining(outs, "MIX") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, chunk, "vendor") != null);
+    try std.testing.expect(!hasChunk(outs, "record-chunk"));
+}
+
 test "manualChunks: no match → 엔트리 청크에 머묾 (기존 동작)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

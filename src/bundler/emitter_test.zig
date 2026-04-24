@@ -370,7 +370,7 @@ test "inline (bundle): shared module 내부 inline — emitChunks 경로" {
     const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
     defer std.testing.allocator.free(ep_b);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{}, null, null);
     defer cg.deinit();
 
     const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, .{}, null);
@@ -430,7 +430,7 @@ test "emitChunks: single chunk produces one OutputFile" {
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, null, &.{}, null, null);
     defer cg.deinit();
 
     const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, .{}, null);
@@ -465,7 +465,7 @@ test "emitChunks: two entries with shared module — 3 OutputFiles" {
     const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
     defer std.testing.allocator.free(ep_b);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{}, null, null);
     defer cg.deinit();
     try chunk_mod.computeCrossChunkLinks(&cg, &result.graph, std.testing.allocator, null);
 
@@ -514,7 +514,7 @@ test "CodeSplitting: dynamic import path rewritten to chunk filename" {
     const lazy_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "lazy.ts" });
     defer std.testing.allocator.free(lazy_path);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ entry_path, lazy_path }, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ entry_path, lazy_path }, null, &.{}, null, null);
     defer cg.deinit();
 
     const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, .{}, null);
@@ -573,7 +573,7 @@ test "CodeSplitting: multiple dynamic imports rewritten" {
     const pageB_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "pageB.ts" });
     defer std.testing.allocator.free(pageB_path);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ entry_path, pageA_path, pageB_path }, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ entry_path, pageA_path, pageB_path }, null, &.{}, null, null);
     defer cg.deinit();
 
     const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, .{}, null);
@@ -619,7 +619,7 @@ test "chunkStem: common chunk uses hex hash, not index" {
     const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
     defer std.testing.allocator.free(ep_b);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{}, null, null);
     defer cg.deinit();
     try chunk_mod.computeCrossChunkLinks(&cg, &result.graph, std.testing.allocator, null);
 
@@ -669,7 +669,7 @@ test "chunkStem: same modules produce same hash (deterministic)" {
     const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
     defer std.testing.allocator.free(ep_b);
 
-    var cg1 = try chunk_mod.generateChunks(std.testing.allocator, &result1.graph, &.{ ep_a, ep_b }, null, &.{});
+    var cg1 = try chunk_mod.generateChunks(std.testing.allocator, &result1.graph, &.{ ep_a, ep_b }, null, &.{}, null, null);
     defer cg1.deinit();
     try chunk_mod.computeCrossChunkLinks(&cg1, &result1.graph, std.testing.allocator, null);
 
@@ -687,7 +687,7 @@ test "chunkStem: same modules produce same hash (deterministic)" {
     defer result2.graph.deinit();
     defer result2.cache.deinit();
 
-    var cg2 = try chunk_mod.generateChunks(std.testing.allocator, &result2.graph, &.{ ep_a, ep_b }, null, &.{});
+    var cg2 = try chunk_mod.generateChunks(std.testing.allocator, &result2.graph, &.{ ep_a, ep_b }, null, &.{}, null, null);
     defer cg2.deinit();
     try chunk_mod.computeCrossChunkLinks(&cg2, &result2.graph, std.testing.allocator, null);
 
@@ -791,7 +791,7 @@ test "naming pattern: entry-names with hash" {
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, null, &.{}, null, null);
     defer cg.deinit();
 
     const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, .{
@@ -832,7 +832,7 @@ test "naming pattern: chunk-names with directory" {
     const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
     defer std.testing.allocator.free(ep_b);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{}, null, null);
     defer cg.deinit();
     try chunk_mod.computeCrossChunkLinks(&cg, &result.graph, std.testing.allocator, null);
 
@@ -879,7 +879,7 @@ test "content hash: cross-chunk import uses content hash" {
     const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
     defer std.testing.allocator.free(ep_b);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{}, null, null);
     defer cg.deinit();
     try chunk_mod.computeCrossChunkLinks(&cg, &result.graph, std.testing.allocator, null);
 
@@ -946,7 +946,7 @@ test "CJS runtime: __commonJS only in chunks containing CJS modules" {
     const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
     defer std.testing.allocator.free(ep_b);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, null, &.{}, null, null);
     defer cg.deinit();
 
     const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, .{}, null);
@@ -981,7 +981,7 @@ test "CodeSplitting: static import not rewritten" {
     const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
     defer std.testing.allocator.free(entry_path);
 
-    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, null, &.{});
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, null, &.{}, null, null);
     defer cg.deinit();
 
     const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, .{}, null);
