@@ -313,6 +313,21 @@ function collectDirectAccesses(
 	DATA_ACCESS_RE.lastIndex = 0;
 }
 
+/**
+ * 함수 body 가 "tag-dispatcher" 패턴인지 — `switch (X.tag)` 로 tag 별 분기하는
+ * 함수. dispatcher 의 variants 는 "처리 가능한 모든 tag 의 union" 이 되므로
+ * 재귀/호출자에 전파되면 over-attribution. 호출자 tag 의 실제 reader variant 는
+ * 해당 switch arm scan 이 직접 캡처하므로 dispatcher 자체는 fnVariants 에서
+ * 제외해도 정확도 손실 없음.
+ *
+ * direct `.data.X` 접근 유무와 무관하게 판정 — `visitNode` / `visitNodeInner`
+ * 처럼 dispatcher + inline reader hybrid 인 경우도 tag-level attribution 은
+ * 해당 arm 이 직접 잡으므로 본체 통째 제외가 안전 (#1823).
+ */
+function isDispatcher(body: string): boolean {
+	return /\bswitch\s*\(\s*[\w.]+\.tag\s*\)/.test(body);
+}
+
 function analyzeArmBody(
 	armBody: string,
 	armFileOffset: number,
@@ -358,10 +373,15 @@ function analyzeDataReaders(files: string[]): Map<string, VariantLocations> {
 		}
 	}
 
+	// Dispatcher 검출: entry 중 하나라도 "switch-only + no direct data access"
+	// 면 해당 entry 는 skip. 동명 함수가 여러 파일에 있을 때 dispatcher 인 body
+	// 만 제외하고 real reader 인 body 는 수집한다 (cross-file collision 정밀
+	// 처리 — #1823).
 	const fnVariants = new Map<string, VariantLocations>();
 	for (const [name, entries] of fnEntries) {
 		const locs: VariantLocations = new Map();
 		for (const { body, fileOffset, fileText, displayPath } of entries) {
+			if (isDispatcher(body)) continue;
 			collectDirectAccesses(body, fileOffset, fileText, displayPath, locs);
 		}
 		fnVariants.set(name, locs);
@@ -498,6 +518,7 @@ function walk(dir: string): string[] {
 function main(): number {
 	const verbose = process.argv.includes("--verbose") || process.argv.includes("-v");
 	const strictCosmetic = process.argv.includes("--strict-cosmetic");
+	const dumpReads = process.argv.includes("--dump-reads");
 	const layout = parseLayoutTable(readFileSync(AST_FILE, "utf8"));
 	const readerFiles = DATA_READER_DIRS.flatMap((d) => walk(d));
 	const dataReads = analyzeDataReaders(readerFiles);
@@ -507,6 +528,29 @@ function main(): number {
 		`data reader set: ${readerFiles.length} files scanned (codegen / transformer / semantic), ` +
 			`${dataReads.size} tags tracked, ${nonEmpty} with non-empty variants`,
 	);
+
+	// --dump-reads: 모든 tag 의 reads variant 카운트 히스토그램. over-attribution
+	// 진단용 (#1823).
+	if (dumpReads) {
+		const entries = Array.from(dataReads.entries())
+			.map(([tag, vs]) => ({ tag, count: vs.size }))
+			.sort((a, b) => b.count - a.count);
+		const byCount = new Map<number, number>();
+		for (const { count } of entries) byCount.set(count, (byCount.get(count) ?? 0) + 1);
+		console.log(`\n--- reads distribution (--dump-reads) ---`);
+		for (const [count, freq] of Array.from(byCount.entries()).sort((a, b) => b[0] - a[0])) {
+			console.log(`  ${count} variants: ${freq} tags`);
+		}
+		console.log(`\ntop 15 tags by reads count:`);
+		for (const { tag, count } of entries.slice(0, 15)) {
+			const reads = dataReads.get(tag)!;
+			console.log(`  ${tag} (${count}): {${Array.from(reads.keys()).sort().join(",")}}`);
+			for (const [variant, locs] of Array.from(reads.entries()).sort()) {
+				const sample = Array.from(locs).sort().slice(0, 2);
+				console.log(`    .${variant}: ${sample.join(", ")}${locs.size > sample.length ? ` (+${locs.size - sample.length})` : ""}`);
+			}
+		}
+	}
 
 	type Mismatch = {
 		path: string;
