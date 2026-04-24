@@ -261,12 +261,10 @@ fn wrapClassExprInIIFE(
 /// experimental decorator를 __decorateClass 호출로 변환한다.
 pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeIndex {
     // TODO(es2021): apply same IIFE wrapping for class_expression with private methods — see wrapClassExprInIIFE in fast path
-    // NOTE(#1587): class expression anonymization은 fast path에서만 적용한다. 이 경로는
-    //   experimental decorator / useDefineForClassFields=false 등으로 body를 멤버 단위로
-    //   분류하므로 reference_count 기반 판단을 재평가해야 한다. 후속 작업.
     const e = node.data.extra;
     const has_super = !self.readNodeIdx(e, ast_mod.ClassExtra.super).isNone();
-    const new_name = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.name));
+    const raw_name_idx = self.readNodeIdx(e, ast_mod.ClassExtra.name);
+    var new_name = try self.visitNode(raw_name_idx);
     const new_super = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.super));
 
     // 원본 class_body를 직접 순회
@@ -426,6 +424,25 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, node: Node) Error!NodeI
         .span = body_node.span,
         .data = .{ .list = body_list },
     });
+
+    // #1596: non-fast-path 에서도 미참조 class_expression name 익명화.
+    //   class name 이 런타임에 실제로 필요한 경우에만 보존:
+    //     - static field — `ClassName.x = ...` emit 필요
+    //     - static block 다운레벨 — block 내부 `this` 를 class name 으로 치환
+    //     - decorator (class/member/ctor param) — __decorateClass argument
+    //     - static private field — brand check helper 가 class name 참조 (해당 경로는 fast path 만 다운레벨 처리)
+    //   위 요소가 하나라도 있으면 익명화 불가. 그 외에는 fast path 와 동일.
+    if (shouldDropClassExprName(self, node.tag, raw_name_idx)) {
+        const old_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
+        const has_any_decorator = old_deco_len > 0 or
+            member_decorators.items.len > 0 or
+            ctor_param_decos.items.len > 0;
+        const has_static_extras = static_field_assignments.items.len > 0 or
+            static_block_iifes.items.len > 0;
+        if (!has_any_decorator and !has_static_extras) {
+            new_name = NodeIndex.none;
+        }
+    }
 
     // experimentalDecorators — decorator를 class에서 제거하고 __decorateClass 호출 생성
     if (self.options.experimental_decorators) {
