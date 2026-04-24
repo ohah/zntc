@@ -27,21 +27,6 @@ const isReservedName = Linker.isReservedName;
 const NamePair = PreambleWriter.NamePair;
 const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
 
-/// #1791 Phase D: import binding 의 local 이 value 로 참조된 적이 없는지. semantic.analyzer
-/// 는 TS type node 를 순회하지 않아 type 위치의 identifier 는 reference_count 에 집계되지
-/// 않는다 — `reference_count == 0` 이 "type 전용 사용" 과 "완전 미사용" 을 모두 포괄한다.
-/// true 이면 preamble 생성과 canonical rename 을 생략해 bare `require()` fallback (RN factory
-/// ReferenceError) 을 방지.
-///
-/// synthetic binding (JSX runtime 등) 은 semantic 이 추적하지 않으므로 "사용 중" 간주.
-/// 호출자가 `verbatim_module_syntax` 를 먼저 확인해 true 이면 이 경로를 bypass.
-inline fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
-    if (ib.isSynthetic()) return false;
-    const sym_idx = ib.local_symbol.semanticIndex() orelse return false;
-    if (sym_idx >= sem.symbols.items.len) return false;
-    return sem.symbols.items[sym_idx].reference_count == 0;
-}
-
 pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_imports: bool) !std.DynamicBitSet {
     const node_count = ast.nodes.items.len;
     var skip_nodes = try std.DynamicBitSet.initEmpty(allocator, node_count);
@@ -237,10 +222,6 @@ pub fn buildMetadataForAst(
         for (m.import_bindings) |ib| {
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
-
-            // Phase D elision: transformer 가 AST 에서 specifier 를 drop 하는 것과 대칭으로
-            // linker 도 preamble 생성을 건너뛴다. verbatim_module_syntax=true 면 양쪽 모두 보존.
-            if (!self.verbatim_module_syntax and isImportBindingTypeOnly(&sem, ib)) continue;
 
             // resolve 미완료: external 또는 resolve 실패.
             if (rec.resolved.isNone()) {

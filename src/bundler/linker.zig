@@ -370,11 +370,6 @@ pub const Linker = struct {
     /// --shim-missing-exports: missing export에 대해 `var xxx = void 0;` shim 생성.
     shim_missing_exports: bool = false,
 
-    /// #1791 Phase D: value 참조가 0 인 import binding 을 preamble 생성에서 elide할지.
-    /// tsconfig `verbatimModuleSyntax=true` 일 때는 transformer 와 동일하게 유지해
-    /// 사용자 의도 (원본 import 보존) 를 존중한다. bundler 가 init 후 설정.
-    verbatim_module_syntax: bool = false,
-
     /// --mangle-report 수집기 (#1760). `null` 이면 instrumentation skip.
     /// Bundler 가 생성 및 소유. Linker 는 참조만 보유.
     mangle_report: ?*MangleReportCollector = null,
