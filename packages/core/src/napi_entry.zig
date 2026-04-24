@@ -1061,7 +1061,6 @@ const NapiManualChunksResolver = struct {
         var js_id: c.napi_value = undefined;
         _ = c.napi_create_string_utf8(env, ctx.id.ptr, ctx.id.len, &js_id);
 
-        // meta 객체 — graph 가 있을 때만 `getModuleInfo` 노출.
         var js_meta: c.napi_value = undefined;
         _ = c.napi_create_object(env, &js_meta);
         if (ctx.graph) |g| {

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test
 import { join } from "node:path";
 import { createFixture } from "./helpers";
 import { init, close, build } from "../../../packages/core/index";
+import type { ManualChunksModuleInfo } from "../../../packages/core/index";
 
 // Phase 2 NAPI 브리지 integration 테스트 — JS manualChunks 함수가 Zig resolver 로
 // 연결되는지 실제 번들 결과로 검증. Zig 유닛테스트 (bundler_test/manual_chunks.zig)
@@ -161,7 +162,6 @@ describe("manualChunks NAPI bridge", () => {
     });
     cleanup = fixture.cleanup;
 
-    let call = 0;
     const result = await build({
       entryPoints: [join(fixture.dir, "entry.ts")],
       splitting: true,
@@ -174,7 +174,6 @@ describe("manualChunks NAPI bridge", () => {
       }) as (id: string) => string | null | undefined,
     });
 
-    void call;
     // 모든 모듈이 null 취급되어 단일 청크
     const outs = result.outputFiles!;
     expect(outs.length).toBe(1);
@@ -187,6 +186,25 @@ describe("manualChunks NAPI bridge", () => {
   // manualChunks(id, meta) — Rollup/rolldown 호환 meta 파라미터
   // ============================================================
 
+  // meta.getModuleInfo 를 각 모듈에 대해 호출해 pick 결과를 Map 으로 수집.
+  async function collectMeta<T>(
+    dir: string,
+    entries: string[],
+    pick: (info: ManualChunksModuleInfo) => T,
+  ): Promise<Map<string, T>> {
+    const seen = new Map<string, T>();
+    await build({
+      entryPoints: entries.map((e) => join(dir, e)),
+      splitting: true,
+      manualChunks: (id, meta) => {
+        const info = meta.getModuleInfo(id);
+        if (info) seen.set(id, pick(info));
+        return null;
+      },
+    });
+    return seen;
+  }
+
   test("meta.getModuleInfo: 엔트리 모듈 isEntry=true, 일반 모듈 isEntry=false", async () => {
     const fixture = await createFixture({
       "entry.ts": `import { a } from "./lib"; console.log(a);`,
@@ -194,25 +212,13 @@ describe("manualChunks NAPI bridge", () => {
     });
     cleanup = fixture.cleanup;
 
-    const entryPath = join(fixture.dir, "entry.ts");
-    const seen = new Map<string, { isEntry: boolean }>();
-    await build({
-      entryPoints: [entryPath],
-      splitting: true,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      manualChunks: ((id: string, meta: any) => {
-        const info = meta?.getModuleInfo?.(id);
-        if (info) seen.set(id, { isEntry: info.isEntry });
-        return null;
-      }) as (id: string) => string | null,
-    });
-
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.isEntry);
     const entryInfo = [...seen.entries()].find(([k]) => k.endsWith("entry.ts"));
     const libInfo = [...seen.entries()].find(([k]) => k.endsWith("lib.ts"));
     expect(entryInfo).toBeDefined();
     expect(libInfo).toBeDefined();
-    expect(entryInfo![1].isEntry).toBe(true);
-    expect(libInfo![1].isEntry).toBe(false);
+    expect(entryInfo![1]).toBe(true);
+    expect(libInfo![1]).toBe(false);
   });
 
   test("meta.getModuleInfo: importers — 누가 이 모듈을 import 하는가", async () => {
@@ -223,19 +229,7 @@ describe("manualChunks NAPI bridge", () => {
     });
     cleanup = fixture.cleanup;
 
-    // 두 엔트리 — shared 는 양쪽에서 import
-    const seen = new Map<string, string[]>();
-    await build({
-      entryPoints: [join(fixture.dir, "entry.ts"), join(fixture.dir, "other.ts")],
-      splitting: true,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      manualChunks: ((id: string, meta: any) => {
-        const info = meta?.getModuleInfo?.(id);
-        if (info) seen.set(id, info.importers ?? []);
-        return null;
-      }) as (id: string) => string | null,
-    });
-
+    const seen = await collectMeta(fixture.dir, ["entry.ts", "other.ts"], (info) => info.importers);
     const sharedEntry = [...seen.entries()].find(([k]) => k.endsWith("shared.ts"));
     expect(sharedEntry).toBeDefined();
     const importers = sharedEntry![1];
@@ -256,18 +250,7 @@ describe("manualChunks NAPI bridge", () => {
     });
     cleanup = fixture.cleanup;
 
-    const seen = new Map<string, string[]>();
-    await build({
-      entryPoints: [join(fixture.dir, "entry.ts")],
-      splitting: true,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      manualChunks: ((id: string, meta: any) => {
-        const info = meta?.getModuleInfo?.(id);
-        if (info) seen.set(id, info.importedIds ?? []);
-        return null;
-      }) as (id: string) => string | null,
-    });
-
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.importedIds);
     const entryIds = [...seen.entries()].find(([k]) => k.endsWith("entry.ts"))![1];
     expect(entryIds.length).toBe(2);
     expect(entryIds.some((p) => p.endsWith("foo.ts"))).toBe(true);
@@ -288,12 +271,11 @@ describe("manualChunks NAPI bridge", () => {
     const result = await build({
       entryPoints: [join(fixture.dir, "pageA.ts"), join(fixture.dir, "pageB.ts")],
       splitting: true,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      manualChunks: ((id: string, meta: any) => {
-        const info = meta?.getModuleInfo?.(id);
-        if (info && info.importers && info.importers.length >= 2) return "shared-chunk";
+      manualChunks: (id, meta) => {
+        const info = meta.getModuleInfo(id);
+        if (info && info.importers.length >= 2) return "shared-chunk";
         return null;
-      }) as (id: string) => string | null,
+      },
     });
 
     const sharedChunk = result.outputFiles!.find((o) => o.path.includes("shared-chunk"));
