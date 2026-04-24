@@ -361,6 +361,10 @@ pub fn generateChunks(
     manual_chunks: []const types.ManualChunkEntry,
     manual_resolver: ?types.ManualChunksResolveFn,
     manual_resolver_ctx: ?*anyopaque,
+    /// true 이면 dynamic import target 을 별도 chunk 로 분리하지 않고 importer 와 같은
+    /// chunk 에 포함. Rollup `output.inlineDynamicImports` 의 구조 부분만 구현 (A 범위).
+    /// 런타임 `import()` rewriting 은 후속 PR.
+    inline_dynamic_imports: bool,
 ) !ChunkGraph {
     const module_count = graph.moduleCount();
 
@@ -389,10 +393,12 @@ pub fn generateChunks(
 
     // Phase 1b: dynamic import 대상 — 이미 유저 엔트리인 모듈은 스킵.
     // dynamic import 대상은 별도의 청크 경계를 형성한다 (code splitting의 핵심).
+    // `inline_dynamic_imports` 가 true 면 이 단계 전체를 skip → dynamic target 이
+    // 별도 chunk 로 나뉘지 않고 Phase 2 BFS 에서 importer 와 같은 chunk 로 흡수.
     var dynamic_seen: std.AutoHashMap(u32, void) = .init(allocator);
     defer dynamic_seen.deinit();
 
-    {
+    if (!inline_dynamic_imports) {
         var it = graph.modulesIterator();
         while (it.next()) |m| {
             for (m.dynamic_imports.items) |dyn_idx| {
@@ -575,11 +581,21 @@ pub fn generateChunks(
             if (splitting_info[mi].hasBit(@intCast(bit_idx))) continue;
             splitting_info[mi].setBit(@intCast(bit_idx));
 
-            // 정적 의존성만 따라감 — dynamic import는 별도 엔트리이므로 BFS 경계
+            // 정적 의존성 + (inline_dynamic_imports 일 때) dynamic edge 도 따라감.
+            // 후자는 dynamic target 이 별도 entry 가 아니기 때문에 importer 경로로
+            // 흡수시키기 위함.
             for (m.dependencies.items) |dep_idx| {
                 const dep_i = @intFromEnum(dep_idx);
                 if (dep_i < module_count and !splitting_info[dep_i].hasBit(@intCast(bit_idx))) {
                     try queue.append(allocator, dep_idx);
+                }
+            }
+            if (inline_dynamic_imports) {
+                for (m.dynamic_imports.items) |dep_idx| {
+                    const dep_i = @intFromEnum(dep_idx);
+                    if (dep_i < module_count and !splitting_info[dep_i].hasBit(@intCast(bit_idx))) {
+                        try queue.append(allocator, dep_idx);
+                    }
                 }
             }
         }
@@ -623,6 +639,14 @@ pub fn generateChunks(
                     const dep_i = @intFromEnum(dep_idx);
                     if (dep_i < module_count and !splitting_info[dep_i].hasBit(manual_bit)) {
                         try queue.append(allocator, dep_idx);
+                    }
+                }
+                if (inline_dynamic_imports) {
+                    for (m.dynamic_imports.items) |dep_idx| {
+                        const dep_i = @intFromEnum(dep_idx);
+                        if (dep_i < module_count and !splitting_info[dep_i].hasBit(manual_bit)) {
+                            try queue.append(allocator, dep_idx);
+                        }
                     }
                 }
             }

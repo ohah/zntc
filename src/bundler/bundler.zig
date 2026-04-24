@@ -72,6 +72,12 @@ pub const BundleOptions = struct {
     /// code splitting 활성화. true이면 dynamic import 경계에서 청크를 분리하고
     /// 공유 모듈을 공통 청크로 추출한다. 결과는 BundleResult.outputs에 다중 파일로 반환.
     code_splitting: bool = false,
+    /// Rollup `output.inlineDynamicImports` — **chunk 구조만 구현**.
+    /// true 이면 dynamic import target 이 별도 async chunk 로 분리되지 않고 importer 의
+    /// chunk (entry 또는 manual) 에 흡수된다. `code_splitting=true` 와 조합해야 의미 있음.
+    /// 런타임 `import()` 호출은 same-chunk 여도 원본 specifier 를 유지하며, 모듈 registry
+    /// 기반 re-entry 는 아직 미구현 — 번들 출력을 Node/브라우저로 바로 실행하려면 후속 PR 필요.
+    inline_dynamic_imports: bool = false,
     /// 사용자 정의 청크 분할 (Rollup `manualChunks` 호환 Phase 1 / #1027).
     /// code_splitting=true 일 때만 동작. 매칭된 모듈은 pseudo-entry 로 BFS 에 참여
     /// → transitive dependency 도 같은 청크로, dynamic import target 도 manual 우선.
@@ -985,6 +991,7 @@ pub const Bundler = struct {
                     self.options.manual_chunks,
                     self.options.manual_chunks_resolver,
                     self.options.manual_chunks_ctx,
+                    self.options.inline_dynamic_imports,
                 );
             defer chunk_graph.deinit();
 
