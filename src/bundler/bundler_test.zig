@@ -33,5 +33,6 @@ comptime {
     _ = @import("bundler_test/function_map.zig");
     _ = @import("bundler_test/virtual_ns_treeshake.zig");
     _ = @import("bundler_test/ns_member_shadow.zig");
+    _ = @import("bundler_test/exports_name_dedup.zig");
     _ = @import("namespace_access_test.zig");
 }
