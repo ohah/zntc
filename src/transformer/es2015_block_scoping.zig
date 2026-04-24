@@ -189,9 +189,27 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         pub const FlowResult = struct {
             has_return: bool = false,
             has_break: bool = false,
+            /// for-of body 최상단의 unlabeled `continue`. body 가 `_loop` 함수로 추출될 때
+            /// 해당 `continue` 는 반드시 `return;` 으로 변환되어야 — 안 그러면 SyntaxError
+            /// (Illegal continue statement: no surrounding iteration statement).
+            has_continue: bool = false,
             has_labeled_break: bool = false,
             has_labeled_continue: bool = false,
             labels: std.ArrayList([]const u8) = .empty,
+
+            /// 호출부에 `var _ret = _loop(x); if (...) ...` 체크 체인이 필요한지.
+            /// `return` / `break` / labeled 는 호출부가 값을 검사해 outer 루프를 종료하거나
+            /// 함수를 return 해야 한다. unlabeled `continue` 는 body 안에서 `return;` 으로만
+            /// 변환하면 되고 호출부는 `_loop(x);` 그대로 — `_ret` 불필요.
+            pub fn needsRetVar(self: *const FlowResult) bool {
+                return self.has_return or self.has_break or self.has_labeled_break or self.has_labeled_continue;
+            }
+
+            /// body 를 재작성해야 하는지 (break/continue/return → return 문 치환).
+            /// `needsRetVar` 보다 넓음 — `has_continue` 단독으로도 true.
+            pub fn needsTransform(self: *const FlowResult) bool {
+                return self.needsRetVar() or self.has_continue;
+            }
         };
 
         /// for 루프 body를 _loop 함수로 추출하고 호출로 대체한다.
@@ -209,11 +227,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const loop_name = try self.buildUniqueName(loop_prefix, &self.loop_counter);
             defer if (loop_name.ptr != loop_prefix.ptr) self.allocator.free(loop_name);
 
-            const needs_ret_var = flow.has_return or flow.has_break or flow.has_labeled_break or flow.has_labeled_continue;
+            const needs_ret_var = flow.needsRetVar();
 
-            // --- body 내��� break/continue/return 변환 ---
+            // --- body 재작성 (break/continue/return → return "..." / return; / return{v:...}) ---
             var transformed_body = visited_body;
-            if (needs_ret_var) {
+            if (flow.needsTransform()) {
                 transformed_body = try transformControlFlow(self, visited_body, flow);
             }
 
@@ -369,7 +387,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         continue;
                     },
                     .continue_statement => {
-                        if (!node.data.unary.operand.isNone()) {
+                        if (node.data.unary.operand.isNone()) {
+                            // unlabeled continue. loop_depth==0 이면 추출된 _loop 의
+                            // outer for-of 를 타겟으로 하는 것이므로 `return;` 으로 변환 필요.
+                            // 중첩 loop(>0) 안의 continue 는 해당 inner loop 가 그대로 받는다.
+                            if (loop_depth == 0) flow.has_continue = true;
+                        } else {
                             flow.has_labeled_continue = true;
                             appendUniqueLabel(flow, self.allocator, self.ast.getText(self.ast.getNode(node.data.unary.operand).span));
                         }
@@ -404,10 +427,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             body_idx: NodeIndex,
             flow: *const FlowResult,
         ) Transformer.Error!NodeIndex {
-            // body는 block_statement. 각 문을 재귀적으로 변환.
             if (body_idx.isNone()) return body_idx;
             const body = self.ast.getNode(body_idx);
-            if (body.tag != .block_statement) return body_idx;
+            // body 가 block 이 아닐 때도 transformStmtFlow 로 재귀 변환해야 한다.
+            // e.g. `for (let x of a) if (cond) continue;` — body 가 if_statement 이고
+            // 내부 continue 는 반드시 `return;` 으로 바뀌어야 한다 (#1807 후속).
+            if (body.tag != .block_statement) {
+                return transformStmtFlow(self, body_idx, flow, 0, 0);
+            }
 
             const list = body.data.list;
             const scratch_top = self.scratch.items.len;
@@ -637,14 +664,18 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         const test_node: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
                         const case_stmts_start = self.ast.extra_data.items[ce + 1];
                         const case_stmts_len = self.ast.extra_data.items[ce + 2];
-                        // case body의 각 문을 재귀 변환
+                        // case body 의 각 문을 재귀 변환. inner_scratch 는 transform
+                        // 으로 생긴 임시 stmt 인덱스들만 추적 — addNodeList 로 복사된
+                        // 뒤에는 즉시 shrink 해야 뒤따르는 switch_case append 가
+                        // scratch_top 바로 위에 놓인다 (shrink 가 append 이후에 일어나면
+                        // 방금 추가한 switch_case 까지 잘려나간다).
                         const inner_scratch = self.scratch.items.len;
-                        defer self.scratch.shrinkRetainingCapacity(inner_scratch);
                         for (0..case_stmts_len) |si| {
                             const stmt_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[case_stmts_start + si]);
                             try self.scratch.append(self.allocator, try transformStmtFlow(self, stmt_idx, flow, loop_depth, switch_depth));
                         }
                         const new_stmts = try self.ast.addNodeList(self.scratch.items[inner_scratch..]);
+                        self.scratch.shrinkRetainingCapacity(inner_scratch);
                         try self.scratch.append(self.allocator, try self.addExtraNode(.switch_case, case_node.span, &.{
                             @intFromEnum(test_node), new_stmts.start, new_stmts.len,
                         }));

@@ -1563,6 +1563,294 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("1,2,3");
     });
 
+    // #1807 후속: for-of body 의 unlabeled `continue` 가 `_loop` 함수로 추출될 때
+    // `return;` 으로 변환되지 않아 "Illegal continue statement: no surrounding
+    // iteration statement" SyntaxError 발생. RN ExampleApp (`_drawTraceUpdatesLegacy`)
+    // 번들이 이 패턴으로 파싱 실패하던 것이 CI 의 es5-rn 실패 원인이었다.
+    //
+    // 검증 전략: 모든 변종(conditions/nesting/sibling control-flow)에서
+    //   (1) bundle exitCode == 0
+    //   (2) runOutput 이 각 케이스 의미 그대로 나오는지
+    // 둘 다 확인 — 단순 컴파일 성공이 아닌 런타임 의미 보존.
+
+    test("for-of + let closure + unlabeled continue: plain (#1807-cont)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 2, 3, 4, 5];
+            const fns: Array<() => number> = [];
+            for (let x of arr) {
+              if (x % 2 === 0) continue;
+              fns.push(() => x);
+            }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // 짝수(2,4) 건너뛰고 홀수만 캡처 — per-iteration binding 도 함께 검증
+      expect(result.runOutput).toBe("1,3,5");
+    });
+
+    test("for-of + let closure + unlabeled continue: single-stmt if body (#1807-cont-if)", async () => {
+      // #1807 원본 + continue 조합 — body 가 braces 없는 if 이고 내부에 continue
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 2, 3, 4];
+            const fns: Array<() => number> = [];
+            for (let x of arr)
+              if (x % 2 === 0) { continue; } else { fns.push(() => x); }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,3");
+    });
+
+    test("for-of + let closure + continue in nested if-else (#1807-cont-nested-if)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [-1, 0, 1, 2, -3, 4];
+            const fns: Array<() => number> = [];
+            for (let x of arr) {
+              if (x < 0) {
+                continue;
+              } else if (x === 0) {
+                continue;
+              }
+              fns.push(() => x);
+            }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // 양수만 (1, 2, 4) 캡처
+      expect(result.runOutput).toBe("1,2,4");
+    });
+
+    test("for-of + let closure + continue inside nested inner loop (#1807-cont-inner-loop)", async () => {
+      // 내부 while 의 continue 는 while 을 타겟. _loop 함수 body 에서 제거하면
+      // 안 되고 그대로 유지되어야 한다 (loop_depth > 0 판정 검증).
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [3, 5];
+            const fns: Array<() => number> = [];
+            for (let x of arr) {
+              let remaining = x;
+              while (remaining > 0) {
+                remaining--;
+                if (remaining % 2 === 0) continue;
+                fns.push(() => x);
+              }
+            }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // x=3: remaining 2→1→0, 홀수(1)일 때만 push → [3]
+      // x=5: remaining 4→3→2→1→0, 홀수(3,1) 2회 → [5,5]
+      expect(result.runOutput).toBe("3,5,5");
+    });
+
+    test("for-of + let closure + continue inside switch (#1807-cont-switch)", async () => {
+      // switch 안의 continue 는 switch 가 iteration 이 아니므로 for-of 를 타겟.
+      // _loop 로 추출되면 `return;` 으로 변환 필요. loop_depth==0 유지 검증.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 2, 3, 4];
+            const fns: Array<() => number> = [];
+            for (let x of arr) {
+              switch (x % 3) {
+                case 0: continue;
+                case 1: fns.push(() => x); break;
+                default: fns.push(() => x * 10); break;
+              }
+            }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // x=1: case1 push 1; x=2: default push 20; x=3: case0 continue; x=4: case1 push 4
+      expect(result.runOutput).toBe("1,20,4");
+    });
+
+    test("for-of + let closure + continue combined with break (#1807-cont-break-mix)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 2, 3, 99, 4, 5];
+            const fns: Array<() => number> = [];
+            for (let x of arr) {
+              if (x === 99) break;
+              if (x % 2 === 0) continue;
+              fns.push(() => x);
+            }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // 99 에서 break (4,5 미도달), 짝수 2 건너뜀 → [1, 3]
+      expect(result.runOutput).toBe("1,3");
+    });
+
+    test("for-of + let closure + continue combined with return (#1807-cont-return-mix)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function pick(arr: number[]): number[] {
+              const out: Array<() => number> = [];
+              for (let x of arr) {
+                if (x < 0) return out.map(f => f());
+                if (x % 2 === 0) continue;
+                out.push(() => x);
+              }
+              return out.map(f => f());
+            }
+            console.log(pick([1, 2, 3, -1, 4, 5]).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // 1 push, 2 skip, 3 push, -1 return → [1, 3]
+      expect(result.runOutput).toBe("1,3");
+    });
+
+    test("for-of + let closure + continue inside nested for-of (#1807-cont-nested-for-of)", async () => {
+      // 바깥 for-of 와 안쪽 for-of 모두 closure capture — 양쪽 모두 _loop 로
+      // 추출. 각 continue 가 해당 loop 만 타겟해야 한다 (depth 판정 정확성).
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const a = [1, 2, 3];
+            const b = [10, 20];
+            const fns: Array<() => string> = [];
+            for (let x of a) {
+              if (x === 2) continue; // 외부 for-of continue
+              for (let y of b) {
+                if (y === 20) continue; // 내부 for-of continue
+                fns.push(() => x + '-' + y);
+              }
+            }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // x=1: y=10 push "1-10", y=20 skip → [1-10]
+      // x=2: outer skip
+      // x=3: y=10 push "3-10", y=20 skip → [1-10, 3-10]
+      expect(result.runOutput).toBe("1-10,3-10");
+    });
+
+    test("for-of + let closure + continue inside try/catch (#1807-cont-try)", async () => {
+      // try block 안의 continue. try/catch 는 iteration 이 아니므로 for-of 를 타겟.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 0, 2, 0, 3];
+            const fns: Array<() => number> = [];
+            for (let x of arr) {
+              try {
+                if (x === 0) continue;
+                fns.push(() => 100 / x);
+              } catch (e) {
+                // unused
+              }
+            }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // 0 건너뛰고 100/1, 100/2, 100/3 캡처 (per-iteration x 바인딩)
+      expect(result.runOutput).toBe("100,50,33.333333333333336");
+    });
+
+    test("for-of + let closure + continue with destructuring (#1807-cont-destructure)", async () => {
+      // RN ExampleApp `_drawTraceUpdatesLegacy` 실제 패턴 재현:
+      // `for (let [a, b] of entries)` + early `continue` + closure capture of destructured vars
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const entries: [string, number][] = [['a', 1], ['skip', 0], ['b', 2], ['skip', 0], ['c', 3]];
+            const fns: Array<() => string> = [];
+            for (let [key, val] of entries) {
+              if (key === 'skip') {
+                continue;
+              }
+              fns.push(() => key + ':' + val);
+            }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("a:1,b:2,c:3");
+    });
+
+    test("for-of + let closure + continue does NOT wrap when no capture (#1807-cont-no-capture)", async () => {
+      // closure capture 가 없으면 _loop 추출 자체가 일어나지 않아야 하고 continue
+      // 는 원본 for_statement body 에 그대로 남는다. SyntaxError 없이 정상 동작
+      // 해야 negative-control 검증.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 2, 3, 4, 5];
+            let sum = 0;
+            for (let x of arr) {
+              if (x % 2 === 0) continue;
+              sum += x;
+            }
+            console.log(sum);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("9");
+    });
+
     // --- SWC 대비 추가 테스트: Spread ---
 
     // #783: spread in new에서 bind.apply()를 괄호로 감싸기
