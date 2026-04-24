@@ -217,6 +217,21 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 transformed_body = try transformControlFlow(self, visited_body, flow);
             }
 
+            // #1807: FunctionExpression.body 는 spec 상 BlockStatement 여야 하므로
+            // braces 없는 단일 statement body (e.g. `for (..) if (..)`) 는 감싸야
+            // codegen 이 `function(x) { if (..) }` 로 emit 한다.
+            if (!transformed_body.isNone()) {
+                const body_node = self.ast.getNode(transformed_body);
+                if (body_node.tag != .block_statement) {
+                    const wrapped_list = try self.ast.addNodeList(&.{transformed_body});
+                    transformed_body = try self.ast.addNode(.{
+                        .tag = .block_statement,
+                        .span = body_node.span,
+                        .data = .{ .list = wrapped_list },
+                    });
+                }
+            }
+
             // --- function params: 캡처된 변수 ---
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);

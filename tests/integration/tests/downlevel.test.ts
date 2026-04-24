@@ -1462,6 +1462,107 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("60");
     });
 
+    // #1807: for-of + let + closure capture + braces 없는 single statement body
+    // → `_loop` 함수 body 가 block_statement 로 감싸지지 않아 SyntaxError.
+    // 현업 케이스: esbuild 의 `__copyProps` (@radix-ui 등) 가 이 패턴을 그대로 사용.
+
+    test("for-of + let closure: expression_statement body (#1807)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 2, 3];
+            const fns: Array<() => number> = [];
+            for (let x of arr) fns.push(() => x);
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,2,3");
+    });
+
+    test("for-of + let closure: if_statement body (#1807)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const from: Record<string, string> = { a: 'A', b: 'B', c: 'C' };
+            const to: Record<string, string> = {};
+            const except = 'skip';
+            for (let key of Object.getOwnPropertyNames(from))
+              if (key !== except)
+                Object.defineProperty(to, key, { get: () => from[key], enumerable: true });
+            console.log(to.a + to.b + to.c);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ABC");
+    });
+
+    test("for-of + let closure: while_statement body (#1807)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [2, 3];
+            const fns: Array<() => number> = [];
+            for (let x of arr)
+              while (x-- > 0) fns.push(() => x);
+            console.log(fns.length);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // x=2 → x--=1,0 (2 pushes); x=3 → x--=2,1,0 (3 pushes) → 5
+      expect(result.runOutput).toBe("5");
+    });
+
+    test("for-of + let closure: nested for-of body (#1807)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const a = [1, 2];
+            const b = [10, 20];
+            const fns: Array<() => number> = [];
+            for (let x of a)
+              for (let y of b) fns.push(() => x + y);
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("11,21,12,22");
+    });
+
+    test("for-of + let closure: block_statement body stays correct (#1807)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const arr = [1, 2, 3];
+            const fns: Array<() => number> = [];
+            for (let x of arr) { fns.push(() => x); }
+            console.log(fns.map(f => f()).join(','));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1,2,3");
+    });
+
     // --- SWC 대비 추가 테스트: Spread ---
 
     // #783: spread in new에서 bind.apply()를 괄호로 감싸기
