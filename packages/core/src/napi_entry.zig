@@ -3124,6 +3124,7 @@ fn parseBuildOptions(
         .minify_identifiers = if (minify) true else getObjectBool(env, opts_obj, "minifyIdentifiers", false),
         .minify_syntax = if (minify) true else getObjectBool(env, opts_obj, "minifySyntax", false),
         .code_splitting = getObjectBool(env, opts_obj, "splitting", false),
+        .inline_dynamic_imports = getObjectBool(env, opts_obj, "inlineDynamicImports", false),
         .sourcemap = .{
             .enable = getObjectBool(env, opts_obj, "sourcemap", false),
             .debug_ids = getObjectBool(env, opts_obj, "sourcemapDebugIds", false),

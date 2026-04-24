@@ -232,6 +232,13 @@ interface BuildOptionsCommon {
   minifyIdentifiers?: boolean;
   minifySyntax?: boolean;
   splitting?: boolean;
+  /** Rollup `output.inlineDynamicImports` — dynamic import target 을 별도 async chunk 로
+   * 분리하지 않고 importer 의 chunk 에 포함. `splitting: true` 와 조합해야 의미 있음.
+   *
+   * 주의: 이 플래그의 구조 부분만 구현 — async chunk 는 사라지지만 런타임 `import()`
+   * 호출은 원본 specifier 를 유지. 완전한 런타임 re-entry 는 후속 작업.
+   */
+  inlineDynamicImports?: boolean;
   sourcemap?: boolean;
   sourcemapDebugIds?: boolean;
   sourcesContent?: boolean;
