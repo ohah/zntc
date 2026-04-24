@@ -37,6 +37,10 @@ const DATA_READER_DIRS = [
 	join(ROOT, "src", "codegen"),
 	join(ROOT, "src", "transformer"),
 	join(ROOT, "src", "semantic"),
+	join(ROOT, "src", "bundler"),
+	// parser 내부 — ast_walk / 재방문 코드가 data 를 읽는다. parser 가 addNode
+	// 을 하는 파일이지만 동시에 data reader 이기도 해서 넣어야 일관성 확보.
+	join(ROOT, "src", "parser"),
 ];
 
 const DATA_VARIANT_RE = /\.data\s*=\s*\.\{\s*\.(\w+)\s*=/;
@@ -90,12 +94,15 @@ function stripStringsAndComments(text: string): string {
 			i = stop;
 			continue;
 		}
-		// String literal
+		// String literal — Zig 정규 문자열 / 쿼트된 식별자 `@"var"` 모두 한 줄
+		// 이내에서 닫힌다 (multi-line 은 `\\` prefix 를 사용). newline 경계에서
+		// 강제 종료해야 `.@"var"` 같은 quoted identifier 가 거대 영역을 잘못
+		// strip 하는 버그 방지.
 		if (c === '"') {
 			out[i] = " ";
 			let j = i + 1;
-			while (j < n && text[j] !== '"') {
-				if (text[j] === "\\" && j + 1 < n) {
+			while (j < n && text[j] !== '"' && text[j] !== "\n") {
+				if (text[j] === "\\" && j + 1 < n && text[j + 1] !== "\n") {
 					out[j] = " ";
 					out[j + 1] = " ";
 					j += 2;
@@ -158,9 +165,12 @@ function parseLayoutTable(text: string): Map<string, string> {
 	return mapping;
 }
 
-function extractFunctionBodies(text: string): Map<string, string> {
+/** 함수 본문 + 해당 body 가 파일 내에서 시작하는 절대 offset. */
+type FnBody = { body: string; fileOffset: number };
+
+function extractFunctionBodies(text: string): Map<string, FnBody[]> {
 	const clean = stripStringsAndComments(text);
-	const fns = new Map<string, string>();
+	const fns = new Map<string, FnBody[]>();
 	for (const m of clean.matchAll(/\bfn\s+(\w+)\s*\(/g)) {
 		const fnName = m[1];
 		const parenStart = m.index! + m[0].length - 1;
@@ -183,9 +193,23 @@ function extractFunctionBodies(text: string): Map<string, string> {
 		} catch {
 			continue;
 		}
-		fns.set(fnName, text.slice(brace + 1, end - 1));
+		let list = fns.get(fnName);
+		if (!list) {
+			list = [];
+			fns.set(fnName, list);
+		}
+		list.push({ body: text.slice(brace + 1, end - 1), fileOffset: brace + 1 });
 	}
 	return fns;
+}
+
+/** text 에서 offset 위치의 1-based line 번호. */
+function offsetToLine(text: string, offset: number): number {
+	let line = 1;
+	for (let i = 0; i < offset && i < text.length; i++) {
+		if (text[i] === "\n") line++;
+	}
+	return line;
 }
 
 function splitTopLevelCommas(body: string): { offset: number; arm: string }[] {
@@ -242,90 +266,121 @@ function findSwitches(text: string): { start: number; end: number }[] {
 	return out;
 }
 
-function analyzeArmBody(armBody: string, fnVariants: Map<string, Set<string>>): Set<string> {
-	const variants = new Set<string>();
-	for (const m of armBody.matchAll(DATA_ACCESS_RE)) {
-		if (ALL_DATA_VARIANTS.has(m[1])) variants.add(m[1]);
-	}
-	DATA_ACCESS_RE.lastIndex = 0;
-	for (const m of armBody.matchAll(/(?:try\s+)?self\.(\w+)\s*\(/g)) {
-		const fv = fnVariants.get(m[1]);
-		if (fv) for (const v of fv) variants.add(v);
-	}
-	return variants;
-}
+/** variant → Set<"path:line"> — 어느 위치에서 해당 variant 를 읽었는지. */
+type VariantLocations = Map<string, Set<string>>;
 
-/** Union sets in place. */
-function unionInto(dst: Set<string>, src: Set<string>): boolean {
+/** Union `src` into `dst`, reporting if anything was added (variant key or
+ * location membership). */
+function unionVariantLocations(dst: VariantLocations, src: VariantLocations): boolean {
 	let changed = false;
-	for (const v of src) {
-		if (!dst.has(v)) {
-			dst.add(v);
+	for (const [variant, locs] of src) {
+		let cur = dst.get(variant);
+		if (!cur) {
+			cur = new Set();
+			dst.set(variant, cur);
 			changed = true;
+		}
+		for (const loc of locs) {
+			if (!cur.has(loc)) {
+				cur.add(loc);
+				changed = true;
+			}
 		}
 	}
 	return changed;
 }
 
-/**
- * Scan all reader files, build a single `tag→variants` map spanning them.
- *
- * Cross-file function propagation: same-name functions in different files
- * have their variant-sets merged conservatively (if any file's `makeX` reads
- * `.binary`, callers of `makeX` anywhere get `.binary` attributed). This can
- * over-attribute for namespace-colliding names but in practice that surfaces
- * as extra cosmetic entries, not false REAL mismatches (caller must still
- * store an aliased variant).
- */
-function analyzeDataReaders(files: string[]): Map<string, Set<string>> {
-	// Per-file text kept for switch scanning. Function bodies merged globally.
-	const fileTexts = files.map((f) => readFileSync(f, "utf8"));
+function addLoc(dst: VariantLocations, variant: string, loc: string): void {
+	let cur = dst.get(variant);
+	if (!cur) {
+		cur = new Set();
+		dst.set(variant, cur);
+	}
+	cur.add(loc);
+}
 
-	// Build merged fnVariants: union bodies for same name across files.
-	const fnBodies = new Map<string, string[]>();
-	for (const text of fileTexts) {
-		for (const [name, body] of extractFunctionBodies(text)) {
-			let list = fnBodies.get(name);
+/** body 에서 DATA_ACCESS 매치를 돌면서 각 접근의 절대 위치 를 수집. */
+function collectDirectAccesses(
+	body: string,
+	bodyFileOffset: number,
+	fullText: string,
+	displayPath: string,
+	out: VariantLocations,
+): void {
+	for (const m of body.matchAll(DATA_ACCESS_RE)) {
+		const variant = m[1];
+		if (!ALL_DATA_VARIANTS.has(variant)) continue;
+		const line = offsetToLine(fullText, bodyFileOffset + m.index!);
+		addLoc(out, variant, `${displayPath}:${line}`);
+	}
+	DATA_ACCESS_RE.lastIndex = 0;
+}
+
+function analyzeArmBody(
+	armBody: string,
+	armFileOffset: number,
+	fullText: string,
+	displayPath: string,
+	fnVariants: Map<string, VariantLocations>,
+): VariantLocations {
+	const out: VariantLocations = new Map();
+	collectDirectAccesses(armBody, armFileOffset, fullText, displayPath, out);
+	for (const m of armBody.matchAll(/(?:try\s+)?self\.(\w+)\s*\(/g)) {
+		const fv = fnVariants.get(m[1]);
+		if (fv) unionVariantLocations(out, fv);
+	}
+	return out;
+}
+
+/**
+ * Scan all reader files, build a single `tag → (variant → Set<file:line>)` map.
+ *
+ * Cross-file function propagation: same-name functions in different files have
+ * their variant-location maps merged conservatively. Over-attribution surfaces
+ * as cosmetic noise, never false REAL.
+ */
+function analyzeDataReaders(files: string[]): Map<string, VariantLocations> {
+	// Per-file text kept for switch scanning. Function bodies merged globally.
+	const fileTexts = files.map((f) => ({ path: f, text: readFileSync(f, "utf8") }));
+
+	// Build merged fn entries keyed by name. Each entry remembers the origin
+	// file + offset so location attribution stays accurate.
+	type FnEntry = { body: string; fileOffset: number; fileText: string; displayPath: string };
+	const fnEntries = new Map<string, FnEntry[]>();
+	for (const { path, text } of fileTexts) {
+		const displayPath = relative(ROOT, path);
+		for (const [name, bodies] of extractFunctionBodies(text)) {
+			let list = fnEntries.get(name);
 			if (!list) {
 				list = [];
-				fnBodies.set(name, list);
+				fnEntries.set(name, list);
 			}
-			list.push(body);
+			for (const { body, fileOffset } of bodies) {
+				list.push({ body, fileOffset, fileText: text, displayPath });
+			}
 		}
 	}
 
-	const fnVariants = new Map<string, Set<string>>();
-	for (const [name, bodies] of fnBodies) {
-		const v = new Set<string>();
-		for (const body of bodies) {
-			for (const m of body.matchAll(DATA_ACCESS_RE)) {
-				if (ALL_DATA_VARIANTS.has(m[1])) v.add(m[1]);
-			}
+	const fnVariants = new Map<string, VariantLocations>();
+	for (const [name, entries] of fnEntries) {
+		const locs: VariantLocations = new Map();
+		for (const { body, fileOffset, fileText, displayPath } of entries) {
+			collectDirectAccesses(body, fileOffset, fileText, displayPath, locs);
 		}
-		fnVariants.set(name, v);
+		fnVariants.set(name, locs);
 	}
 
-	// NOTE: 의도적으로 "전이적 propagation" 없음.
-	//
-	// 원래는 A → B → C 호출 체인의 C 에서 data 를 읽으면 A 에 전파되도록 여러
-	// pass 를 돌렸다. 그러나 ZTS 의 codegen/transformer 구조가 switch-dispatcher
-	// 기반 (A 는 switch-only; 각 tag 별 concrete B 함수에 dispatch; B 가 data
-	// 직접 접근) 이므로 tag-level variant 는 switch arm scan 이 직접 매칭한다
-	// (arm tail 의 1-level callee 조회면 충분).
-	//
-	// 전이적 propagation 은 dispatcher 자체 variant 가 "모든 tag 의 union" 이
-	// 되어 호출자를 오염시키는 false-cosmetic 경로를 만들었다 (#1802 B2 리뷰 중
-	// `ts_import_equals_declaration` 이 `reads={모든 variant}` 로 과잉 매칭). tag
-	// 별 정확도를 희생시키지 않으면서 오염을 없애려면 — propagation 제거가
-	// 정답. 2+ level helper 체인이 실제로 data 를 읽는 극소수 경우는 follow-up
-	// 으로 arm body 내에서 해당 helper 를 직접 참조하면 같이 잡힌다.
+	// NOTE: 전이적 propagation 은 의도적으로 없다. switch-dispatcher 아키텍처
+	// 에서 tag-level variant 는 switch arm 의 1-level callee 조회로 충분하고,
+	// dispatcher 의 variants ("모든 tag union") 가 호출자를 오염시키던
+	// false-cosmetic 경로를 차단하기 위함 (#1802 B2 리뷰에서 확립).
 
-	// Scan switches in every reader file; accumulate into a single tag map.
-	const tagVariants = new Map<string, Set<string>>();
-	for (const text of fileTexts) {
+	const tagVariants = new Map<string, VariantLocations>();
+	for (const { path, text } of fileTexts) {
+		const displayPath = relative(ROOT, path);
 		for (const { start, end } of findSwitches(text)) {
 			const body = text.slice(start, end);
-			for (const { arm } of splitTopLevelCommas(body)) {
+			for (const { offset, arm } of splitTopLevelCommas(body)) {
 				const arrow = arm.indexOf("=>");
 				if (arrow < 0) continue;
 				const head = arm.slice(0, arrow);
@@ -334,14 +389,15 @@ function analyzeDataReaders(files: string[]): Map<string, Set<string>> {
 					(t) => !KINDS.has(t),
 				);
 				if (tags.length === 0) continue;
-				const variants = analyzeArmBody(tail, fnVariants);
+				const tailFileOffset = start + offset + arrow + 2;
+				const variants = analyzeArmBody(tail, tailFileOffset, text, displayPath, fnVariants);
 				for (const tag of tags) {
 					let cur = tagVariants.get(tag);
 					if (!cur) {
-						cur = new Set();
+						cur = new Map();
 						tagVariants.set(tag, cur);
 					}
-					unionInto(cur, variants);
+					unionVariantLocations(cur, variants);
 				}
 			}
 		}
@@ -426,6 +482,11 @@ function resolveKind(variant: string): string {
 	return `unknown<${variant}>`;
 }
 
+function formatReads(reads: VariantLocations): string {
+	if (reads.size === 0) return "∅";
+	return Array.from(reads.keys()).sort().join(",");
+}
+
 function walk(dir: string): string[] {
 	const out: string[] = [];
 	for (const name of readdirSync(dir)) {
@@ -450,7 +511,14 @@ function main(): number {
 			`${dataReads.size} tags tracked, ${nonEmpty} with non-empty variants`,
 	);
 
-	type Mismatch = { path: string; lineNo: number; tag: string; variant: string; expected: string; reads: Set<string> };
+	type Mismatch = {
+		path: string;
+		lineNo: number;
+		tag: string;
+		variant: string;
+		expected: string;
+		reads: VariantLocations;
+	};
 	const real: Mismatch[] = [];
 	const cosmeticList: Mismatch[] = [];
 	let total = 0;
@@ -462,7 +530,7 @@ function main(): number {
 			if (!expected) continue;
 			const actualKind = resolveKind(variant);
 			if (actualKind === expected) continue;
-			const reads = dataReads.get(tag) ?? new Set<string>();
+			const reads = dataReads.get(tag) ?? new Map<string, Set<string>>();
 			if (reads.size === 0 || reads.has(variant)) {
 				cosmeticList.push({ path, lineNo, tag, variant, expected, reads });
 				continue;
@@ -490,13 +558,18 @@ function main(): number {
 		}
 		for (const [tag, list] of Array.from(byTag.entries()).sort((a, b) => b[1].length - a[1].length)) {
 			const first = list[0];
-			const readsS = first.reads.size === 0 ? "∅" : Array.from(first.reads).sort().join(",");
+			const readsS = formatReads(first.reads);
 			const variants = Array.from(new Set(list.map((m) => m.variant))).sort().join(",");
 			console.log(
 				`  ${tag} (${list.length}, layout=${first.expected}, stored={${variants}}, reads={${readsS}})`,
 			);
 			for (const m of list) {
 				console.log(`    ${relative(ROOT, m.path)}:${m.lineNo} .${m.variant}`);
+			}
+			// --verbose 에서는 각 variant 의 대표 reader 위치 (최대 3개) 를 같이 보여줌.
+			for (const [variant, locs] of Array.from(first.reads.entries()).sort()) {
+				const sample = Array.from(locs).sort().slice(0, 3);
+				console.log(`      reader.${variant}: ${sample.join(", ")}${locs.size > sample.length ? `, ...(+${locs.size - sample.length})` : ""}`);
 			}
 		}
 	}
@@ -505,9 +578,12 @@ function main(): number {
 		console.log(`\n✗ ${real.length} REAL mismatch(es):\n`);
 		for (const { path, lineNo, tag, variant, expected, reads } of real) {
 			const rel = relative(ROOT, path);
-			const readsS = Array.from(reads).sort().join(", ");
 			console.log(`  ${rel}:${lineNo}`);
-			console.log(`    tag=.${tag}  stored=.${variant}  layout=.${expected}  readers use: {${readsS}}`);
+			console.log(`    tag=.${tag}  stored=.${variant}  layout=.${expected}  readers use: {${formatReads(reads)}}`);
+			for (const [v, locs] of Array.from(reads.entries()).sort()) {
+				const sample = Array.from(locs).sort().slice(0, 3);
+				console.log(`      reader.${v}: ${sample.join(", ")}${locs.size > sample.length ? `, ...(+${locs.size - sample.length})` : ""}`);
+			}
 		}
 		return 1;
 	}
