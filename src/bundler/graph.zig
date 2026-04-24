@@ -1678,17 +1678,42 @@ pub const ModuleGraph = struct {
     /// 심볼을 semantic 공간에 등록한다. Emitter/linker가 Module.getInitName/
     /// getExportsName으로 이름을 조회해 중복 할당을 피한다.
     /// OOM/semantic 없음 → 조용히 skip, fallback 경로가 기존 동작 유지.
+    ///
+    /// `makeVarNameWithPrefix` 는 path 의 마지막 `node_modules/` 이후만 사용해 이름을
+    /// 생성하므로, bun lockfile 처럼 `node_modules/.bun/<HASH>/node_modules/<pkg>/...`
+    /// 형태로 같은 패키지의 다른 hash 사본이 동시에 존재하면 두 사본의 init/exports
+    /// 변수 이름이 동일해진다. emitter 가 같은 변수를 두 번 선언 + 같은 export object 의
+    /// getter 를 두 번 정의 → 두번째가 첫번째를 덮어써서 사용처에서 undefined 참조.
+    /// 충돌 감지 시 `$<N>` suffix 로 deconflict.
     fn registerWrapperSymbols(self: *ModuleGraph) void {
+        // key 들은 module 의 parse_arena (graph teardown 까지 살아있음 — `Module.deinit`
+        // 까지) 에서 빌리거나 본 함수 안의 arena 에서 새로 할당. used_names 는 이 함수
+        // 안에서 defer deinit 되므로 모든 키가 map 보다 오래 산다.
+        var used_names: std.StringHashMap(u32) = std.StringHashMap(u32).init(self.allocator);
+        defer used_names.deinit();
+
+        // 이미 등록된 모듈 (incremental rebuild) 의 이름을 먼저 seed — 새 모듈이 같은
+        // base 를 쓰면 collision 이 재발하므로. seed 후 카운터는 1 (다음 충돌 시 $2 부여).
+        // base 자체가 이미 suffix 형태일 수도 있지만 contains-check 만 쓰는 uniqueName
+        // 의 retry 루프로 안전하게 처리.
+        var seed_it = self.modules.iterator(0);
+        while (seed_it.next()) |m| {
+            if (m.wrap_kind == .none) continue;
+            if (m.getInitName()) |n| _ = used_names.put(n, 1) catch {};
+            if (m.getExportsName()) |n| _ = used_names.put(n, 1) catch {};
+        }
+
         var it = self.modules.iterator(0);
         while (it.next()) |m| {
             if (m.wrap_kind == .none) continue;
-            // incremental rebuild: 이미 등록된 모듈은 skip.
             if (m.init_symbol != null or m.exports_symbol != null) continue;
             const sem_ptr = if (m.semantic) |*s| s else continue;
             const arena = if (m.parse_arena) |*a| a.allocator() else continue;
 
-            const init_name = types.makeInitVarName(arena, m.path) catch continue;
-            const exports_name = types.makeExportsVarName(arena, m.path) catch continue;
+            const init_base = types.makeInitVarName(arena, m.path) catch continue;
+            const exports_base = types.makeExportsVarName(arena, m.path) catch continue;
+            const init_name = uniqueName(arena, init_base, &used_names) catch continue;
+            const exports_name = uniqueName(arena, exports_base, &used_names) catch continue;
 
             m.init_symbol = semantic_symbol.extendSymbol(
                 arena,
@@ -1707,6 +1732,28 @@ pub const ModuleGraph = struct {
                 exports_name,
                 Span.EMPTY,
             ) catch null;
+        }
+    }
+
+    /// 같은 base name 이 여러 모듈에서 나오면 `$2`, `$3`... suffix 로 unique 화.
+    /// 이미 등록된 suffix 와도 충돌하면 다음 N 으로 retry — incremental rebuild 에서
+    /// `{base, base$2}` 가 이미 seed 된 상태에서 새 모듈이 들어오면 `$3` 으로 회피.
+    fn uniqueName(
+        name_arena: std.mem.Allocator,
+        base: []const u8,
+        used: *std.StringHashMap(u32),
+    ) std.mem.Allocator.Error![]const u8 {
+        if (!used.contains(base)) {
+            try used.put(base, 1);
+            return base;
+        }
+        var n: u32 = 2;
+        while (true) : (n += 1) {
+            const candidate = try std.fmt.allocPrint(name_arena, "{s}${d}", .{ base, n });
+            if (!used.contains(candidate)) {
+                try used.put(candidate, 1);
+                return candidate;
+            }
         }
     }
 
