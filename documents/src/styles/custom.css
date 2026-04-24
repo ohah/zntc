@@ -1,14 +1,14 @@
 :root {
-  --sl-color-accent-low: #1a3a2a;
-  --sl-color-accent: #4ade80;
-  --sl-color-accent-high: #bbf7d0;
+  --sl-color-accent-low: #431407;
+  --sl-color-accent: #f7a41d;
+  --sl-color-accent-high: #fed7aa;
   --sl-content-pad-x: 1.5rem;
 }
 
 :root[data-theme="light"] {
-  --sl-color-accent-low: #dcfce7;
-  --sl-color-accent: #16a34a;
-  --sl-color-accent-high: #052e16;
+  --sl-color-accent-low: #fff7ed;
+  --sl-color-accent: #c2410c;
+  --sl-color-accent-high: #431407;
 }
 
 /* 본문 넓히기: Starlight calc 레이아웃을 flex로 교체하여 TOC 공간 유지 */

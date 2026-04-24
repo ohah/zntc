@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+@theme {
+  --color-zig-50: #fff7ed;
+  --color-zig-100: #ffedd5;
+  --color-zig-200: #fed7aa;
+  --color-zig-300: #fdba74;
+  --color-zig-400: #fb923c;
+  --color-zig-500: #f7a41d;
+  --color-zig-600: #ea580c;
+  --color-zig-700: #c2410c;
+  --color-zig-800: #9a3412;
+  --color-zig-900: #7c2d12;
+  --color-zig-950: #431407;
+}
