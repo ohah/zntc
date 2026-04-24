@@ -834,6 +834,11 @@ pub const Ast = struct {
     /// 파싱 중 JSX element/fragment가 발견되었는지 (automatic JSX import 주입용)
     has_jsx: bool = false,
 
+    /// `<Tag {...props} key={k} />` 가 있는가. jsx_lowering 이 이 패턴에 대해
+    /// `_createElement` fallback 을 emit 하므로 bundler 가 `react` synthetic import
+    /// 주입 여부를 이 플래그로 결정.
+    has_jsx_key_after_spread: bool = false,
+
     /// D1 (RFC #1672) 디버그 인프라. Transformer.init 시점의 `nodes.items.len` snapshot.
     /// null = 미변환. boundary 이상의 노드는 transformer 가 append 한 것.
     /// D1a 부터 clone 경로 (Transformer.init → cloneForTransformer) 에서 활성.
@@ -881,6 +886,7 @@ pub const Ast = struct {
             .string_table = .empty,
             .source = source_ast.source,
             .has_jsx = source_ast.has_jsx,
+            .has_jsx_key_after_spread = source_ast.has_jsx_key_after_spread,
             .allocator = allocator,
         };
         // 세 appendSlice 중 하나라도 실패하면 이미 할당된 ArrayList 버퍼를 정리해야 한다.

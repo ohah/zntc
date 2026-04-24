@@ -1300,26 +1300,35 @@ pub const ModuleGraph = struct {
                 .has_exports_dot = parser.scan_result.has_exports_dot,
             };
 
-            // JSX automatic: AST에 JSX가 있으면 synthetic import를 추가한다.
+            // JSX automatic synthetic imports. `react` 는 key-after-spread 일 때만 주입 —
+            // 모든 JSX 모듈에 일괄 주입하면 `createElement` 문자열이 노출되어
+            // `createElement 미노출` 회귀 테스트를 깬다.
             var jsx_injected = false;
-            if (self.jsx_runtime != .classic) {
-                if (parser.ast.has_jsx) {
-                    if (self.jsx_specifier_cache == null) {
-                        const is_dev = self.jsx_runtime == .automatic_dev;
-                        self.jsx_specifier_cache = std.fmt.allocPrint(
-                            self.allocator,
-                            "{s}/{s}",
-                            .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
-                        ) catch null;
+            var react_injected = false;
+            if (self.jsx_runtime != .classic and parser.ast.has_jsx) {
+                if (self.jsx_specifier_cache == null) {
+                    const is_dev = self.jsx_runtime == .automatic_dev;
+                    self.jsx_specifier_cache = std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}/{s}",
+                        .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
+                    ) catch null;
+                }
+                if (self.jsx_specifier_cache) |specifier| {
+                    var specs_buf: [2][]const u8 = undefined;
+                    specs_buf[0] = specifier;
+                    var n: usize = 1;
+                    if (parser.ast.has_jsx_key_after_spread) {
+                        specs_buf[n] = self.jsx_import_source;
+                        n += 1;
                     }
-                    if (self.jsx_specifier_cache) |specifier| {
-                        module.import_records = injectJsxRuntimeImport(
-                            specifier,
-                            arena_alloc,
-                            records,
-                        ) catch records;
-                        jsx_injected = (module.import_records.len > records.len);
-                    }
+                    module.import_records = injectJsxRuntimeImports(
+                        specs_buf[0..n],
+                        arena_alloc,
+                        records,
+                    ) catch records;
+                    jsx_injected = (module.import_records.len > records.len);
+                    react_injected = (n == 2) and jsx_injected;
                 }
             }
 
@@ -1329,11 +1338,13 @@ pub const ModuleGraph = struct {
             // JSX synthetic import bindings 추가
             if (jsx_injected) {
                 const jsx_record_idx: u32 = @intCast(records.len);
+                const react_record_idx: ?u32 = if (react_injected) jsx_record_idx + 1 else null;
                 module.import_bindings = createJsxImportBindings(
                     self.jsx_runtime,
                     arena_alloc,
                     module.import_bindings,
                     jsx_record_idx,
+                    react_record_idx,
                 ) catch module.import_bindings;
             }
         }
@@ -2380,59 +2391,70 @@ const JsxRuntime = @import("../codegen/codegen.zig").JsxRuntime;
 const ImportBinding = binding_scanner_mod.ImportBinding;
 
 /// JSX automatic import를 synthetic하게 추가한다.
-/// 기존 import_records 배열 끝에 jsx-runtime import record를 1개 추가.
-fn injectJsxRuntimeImport(
-    specifier: []const u8,
+/// 기존 import_records 배열 끝에 각 specifier 를 static_import record 로 append.
+/// 한 번의 alloc + memcpy 로 처리해 중간 버퍼 낭비를 피한다.
+fn injectJsxRuntimeImports(
+    specifiers: []const []const u8,
     arena_alloc: std.mem.Allocator,
     existing_records: []ImportRecord,
 ) ![]ImportRecord {
-    const new_record = ImportRecord{
-        .specifier = specifier,
-        .kind = .static_import,
-        .span = Span.EMPTY,
-    };
-
-    // 기존 records + 새 record를 합친 새 슬라이스 생성
-    const new_records = try arena_alloc.alloc(ImportRecord, existing_records.len + 1);
+    const new_records = try arena_alloc.alloc(ImportRecord, existing_records.len + specifiers.len);
     @memcpy(new_records[0..existing_records.len], existing_records);
-    new_records[existing_records.len] = new_record;
+    for (specifiers, 0..) |specifier, i| {
+        new_records[existing_records.len + i] = .{
+            .specifier = specifier,
+            .kind = .static_import,
+            .span = Span.EMPTY,
+        };
+    }
     return new_records;
 }
 
-/// JSX automatic import에 대한 synthetic import bindings를 생성한다.
+/// JSX automatic import 의 synthetic bindings. `react_record_index` 가 있으면
+/// key-after-spread fallback 용 `_createElement` 도 포함.
 fn createJsxImportBindings(
     jsx_runtime: JsxRuntime,
     arena_alloc: std.mem.Allocator,
     existing_bindings: []ImportBinding,
     jsx_record_index: u32,
+    react_record_index: ?u32,
 ) ![]ImportBinding {
     const is_dev = jsx_runtime == .automatic_dev;
 
-    // dev: jsxDEV, Fragment | prod: jsx, jsxs, Fragment
-    const jsx_bindings: []const struct { local: []const u8, imported: []const u8 } = if (is_dev)
-        &.{
-            .{ .local = "_jsxDEV", .imported = "jsxDEV" },
-            .{ .local = "_Fragment", .imported = "Fragment" },
-        }
-    else
-        &.{
-            .{ .local = "_jsx", .imported = "jsx" },
-            .{ .local = "_jsxs", .imported = "jsxs" },
-            .{ .local = "_Fragment", .imported = "Fragment" },
-        };
+    const Entry = struct { local: []const u8, imported: []const u8, record: u32 };
+    var buf: [4]Entry = undefined;
+    var len: usize = 0;
+    if (is_dev) {
+        buf[len] = .{ .local = "_jsxDEV", .imported = "jsxDEV", .record = jsx_record_index };
+        len += 1;
+        buf[len] = .{ .local = "_Fragment", .imported = "Fragment", .record = jsx_record_index };
+        len += 1;
+    } else {
+        buf[len] = .{ .local = "_jsx", .imported = "jsx", .record = jsx_record_index };
+        len += 1;
+        buf[len] = .{ .local = "_jsxs", .imported = "jsxs", .record = jsx_record_index };
+        len += 1;
+        buf[len] = .{ .local = "_Fragment", .imported = "Fragment", .record = jsx_record_index };
+        len += 1;
+    }
+    if (react_record_index) |rr| {
+        buf[len] = .{ .local = "_createElement", .imported = "createElement", .record = rr };
+        len += 1;
+    }
 
-    const new_bindings = try arena_alloc.alloc(ImportBinding, existing_bindings.len + jsx_bindings.len);
+    const entries = buf[0..len];
+    const new_bindings = try arena_alloc.alloc(ImportBinding, existing_bindings.len + entries.len);
     @memcpy(new_bindings[0..existing_bindings.len], existing_bindings);
-    for (jsx_bindings, 0..) |jb, i| {
+    for (entries, 0..) |e, i| {
         // 각 synthetic binding에 고유 sentinel span 부여.
         // Span.EMPTY(0,0)를 공유하면 linker의 spanKey 기반 HashMap에서 덮어쓰기 발생.
         const sentinel_start: u32 = ImportBinding.SYNTHETIC_SPAN_BASE + @as(u32, @intCast(i));
         new_bindings[existing_bindings.len + i] = .{
             .kind = .named,
-            .local_name = jb.local,
-            .imported_name = jb.imported,
+            .local_name = e.local,
+            .imported_name = e.imported,
             .local_span = .{ .start = sentinel_start, .end = sentinel_start },
-            .import_record_index = jsx_record_index,
+            .import_record_index = e.record,
         };
     }
     return new_bindings;
