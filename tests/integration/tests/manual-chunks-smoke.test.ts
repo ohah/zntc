@@ -546,6 +546,207 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     },
   );
 
+  test.skipIf(!hasPackage("react") || !hasPackage("react-dom"))(
+    "실 라이브러리: react + react-dom → vendor 청크 (가장 흔한 패턴)",
+    async () => {
+      // "react is huge, put in vendor" 실전 패턴. scheduler 등 내부 dep 까지 따라감.
+      // React 19 는 기본 CJS — CJS module 도 manualChunks 와 잘 상호작용하는지.
+      const fixture = await createFixture({
+        "entry.tsx": `
+          import { createElement } from "react";
+          import { renderToString } from "react-dom/server";
+          const el = createElement("div", { id: "app" }, "REACT_MARKER");
+          const html = renderToString(el);
+          console.log(html);
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.tsx")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+      });
+
+      const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+      const entry = result.outputFiles.find((o) => o.path.includes("entry"));
+      expect(vendor).toBeDefined();
+      expect(entry).toBeDefined();
+
+      // React 는 큰 라이브러리 — vendor 크기 유의미 (createElement + renderToString + 내부)
+      expect(vendor!.text.length).toBeGreaterThan(5000);
+      // entry 는 로컬 REACT_MARKER 만
+      expect(entry!.text).toContain("REACT_MARKER");
+      // CJS (React 19) 는 side-effect import `import "./vendor.js"` 형태 — ESM `from` 또는 side-effect 둘 다 허용
+      expect(entry!.text).toMatch(/["'][^"']*vendor[^"']*\.js["']/);
+      // entry 크기가 vendor 대비 극소 (실제 구현은 전부 vendor 로)
+      expect(entry!.text.length * 10).toBeLessThan(vendor!.text.length);
+    },
+  );
+
+  test.skipIf(!hasPackage("preact"))("실 라이브러리: preact — 경량 대안도 잘 분리", async () => {
+    // preact 는 React 보다 10x 작은 대안. ESM 지원 안 될 수 있어 compat 경로 확인.
+    const fixture = await createFixture({
+      "entry.tsx": `
+          import { h } from "preact";
+          const el = h("div", { id: "x" }, "PREACT_MARKER");
+          console.log(el.type);
+        `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.tsx")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      nodePaths: [ROOT_NODE_MODULES],
+      manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+    });
+
+    const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+    expect(vendor).toBeDefined();
+    // preact 는 작지만 여전히 h 구현 포함
+    expect(vendor!.text.length).toBeGreaterThan(500);
+  });
+
+  test.skipIf(!hasPackage("immer"))("실 라이브러리: immer — state management vendor", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+          import { produce } from "immer";
+          const base = { count: 0, items: [1, 2, 3] };
+          const next = produce(base, (draft: any) => { draft.count = 1; });
+          console.log("IMMER:" + next.count);
+        `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      nodePaths: [ROOT_NODE_MODULES],
+      manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+    });
+
+    const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+    const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"));
+    expect(vendor).toBeDefined();
+    expect(entry!.text).toContain("IMMER:");
+    // immer 는 중형 라이브러리 (Proxy 기반 로직)
+    expect(vendor!.text.length).toBeGreaterThan(3000);
+  });
+
+  test.skipIf(!hasPackage("date-fns"))(
+    "실 라이브러리: date-fns — tree-shakable 함수형 라이브러리",
+    async () => {
+      // date-fns 는 각 함수별 ESM 파일. 사용하는 함수만 번들됨 + manualChunks vendor.
+      const fixture = await createFixture({
+        "entry.ts": `
+          import { format, addDays } from "date-fns";
+          const d = addDays(new Date(0), 7);
+          const s = format(d, "yyyy-MM-dd");
+          console.log("DATE:" + s);
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.ts")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+      });
+
+      const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+      const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"));
+      expect(vendor).toBeDefined();
+      // format + addDays + 각 함수의 내부 dep (locale, addMilliseconds 등)
+      expect(vendor!.text.length).toBeGreaterThan(2000);
+      expect(entry!.text).toContain("DATE:");
+    },
+  );
+
+  test.skipIf(!hasPackage("rxjs"))("실 라이브러리: rxjs — Observable 체이닝 vendor", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+          import { of } from "rxjs";
+          import { map, filter } from "rxjs/operators";
+          of(1, 2, 3, 4)
+            .pipe(filter((n: number) => n % 2 === 0), map((n: number) => n * 10))
+            .subscribe((n: number) => console.log("RX:" + n));
+        `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      nodePaths: [ROOT_NODE_MODULES],
+      manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+    });
+
+    const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+    const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"));
+    expect(vendor).toBeDefined();
+    // rxjs 는 큰 라이브러리 (Observable, Subject 등)
+    expect(vendor!.text.length).toBeGreaterThan(5000);
+    expect(entry!.text).toContain("RX:");
+  });
+
+  test.skipIf(!hasPackage("react") || !hasPackage("react-dom") || !hasPackage("immer"))(
+    "실 라이브러리 조합: react + react-dom 은 'react-vendor', immer 는 'vendor' (세밀 분리)",
+    async () => {
+      // 실제 React 앱에서 가장 흔한 패턴: React 는 고정 업데이트 빈도라 별도 청크,
+      // 기타 라이브러리는 vendor 청크. 캐시 수명 차별화.
+      const fixture = await createFixture({
+        "entry.tsx": `
+          import { createElement } from "react";
+          import { renderToString } from "react-dom/server";
+          import { produce } from "immer";
+          const state = produce({ n: 0 }, (d: any) => { d.n = 42; });
+          const el = createElement("div", null, "combo:" + state.n);
+          console.log(renderToString(el));
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.tsx")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => {
+          if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("/scheduler/"))
+            return "react-vendor";
+          if (id.includes("node_modules")) return "vendor";
+          return null;
+        },
+      });
+
+      const reactChunk = result.outputFiles.find((o) => o.path.includes("react-vendor"));
+      const vendorChunk = result.outputFiles.find(
+        (o) => o.path.includes("vendor") && !o.path.includes("react"),
+      );
+      expect(reactChunk).toBeDefined();
+      expect(vendorChunk).toBeDefined();
+
+      // react-vendor 크기는 vendor (immer) 보다 크거나 비슷해야 함
+      expect(reactChunk!.text.length).toBeGreaterThan(5000);
+      // 서로 코드 섞이면 안 됨
+      expect(reactChunk!.text).not.toMatch(/\bimmer\b/i);
+    },
+  );
+
   test("대형 가상 vendor: date-utils 스타일 다중 모듈 → vendor 합병", async () => {
     // 실 라이브러리 install 없이 "대형 라이브러리" 구조 시뮬레이션.
     // node_modules 패키지처럼 여러 파일에 걸쳐 분할된 vendor 가 한 chunk 로 통합되는지.
