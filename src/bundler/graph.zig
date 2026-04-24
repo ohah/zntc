@@ -2520,8 +2520,11 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
     else
         null;
 
-    // arena 에서 append — self.allocator 와 섞이면 capacity/free mismatch 발생.
-    const arena_alloc = if (module.parse_arena) |*a| a.allocator() else self.allocator;
+    // require.context 는 parse 산출물이라 arena 가 항상 존재. 없으면 (disabled/asset 등)
+    // expand 자체가 의미 없고, graph allocator fallback 은 module.deinit 에서 free 누락 →
+    // leak. 안전하게 early return.
+    const arena = if (module.parse_arena) |*a| a else return;
+    const arena_alloc = arena.allocator();
     var expansion = std.ArrayList(types.ImportRecord).empty;
 
     for (records) |*record| {

@@ -10,6 +10,7 @@ const PluginError = plugin_mod.PluginError;
 const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
+const threadSafeArena = test_helpers.threadSafeArena;
 
 test "Bundler: single file bundle" {
     var tmp = std.testing.tmpDir(.{});
@@ -665,7 +666,7 @@ test "Bundler: import.meta.glob eager option" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -694,7 +695,7 @@ test "Bundler: import.meta.glob import option" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -845,7 +846,7 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
     // mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -887,7 +888,7 @@ test "Bundler: require.context emits empty map when no matches" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -921,7 +922,7 @@ test "Bundler: require.context escapes match path special chars" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -949,7 +950,7 @@ test "Bundler: require.context normalizes trailing slash and missing ./" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -1005,7 +1006,7 @@ test "Bundler: multiple require.context calls resolve to distinct maps (span mat
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -1045,7 +1046,7 @@ test "Bundler: require.context coexists with import.meta.glob" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -1090,7 +1091,7 @@ test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -1135,7 +1136,7 @@ test "Bundler: require.context — matches 파일들이 번들에 포함됨" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -1173,7 +1174,7 @@ test "Bundler: require.context — nested match 파일도 번들에 포함" {
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
@@ -1207,7 +1208,7 @@ test "Bundler: require.context — empty matches → 파일 없어도 hasErrors 
     defer arena.deinit();
     // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
     // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
-    var ts: std.heap.ThreadSafeAllocator = .{ .child_allocator = arena.allocator() };
+    var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
     var tmp = std.testing.tmpDir(.{});
