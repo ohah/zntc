@@ -152,13 +152,13 @@ pub fn getModulePathByIndex(graph_opaque: ?*const anyopaque, idx: ModuleIndex) ?
     return m.path;
 }
 
-/// 사용자 정의 청크 분할 (#1027 / Rollup `manualChunks` 호환 Phase 1).
-/// Rollup record form `{ "vendor": ["lodash", "react"] }` 를 네이티브 슬라이스로 1:1 매핑.
+/// 사용자 정의 청크 분할 — Rollup `manualChunks` record form 호환 (#1027).
+/// Rollup `{ "vendor": ["lodash", "react"] }` 를 네이티브 슬라이스로 1:1 매핑.
 /// 모듈 절대경로에 `patterns` 중 하나가 substring 으로 포함되면 `name` 청크에 할당.
 ///
 /// 매칭된 모듈은 pseudo-entry 로 BFS 에 참여 → transitive dependency 도 자동으로
 /// 같은 청크에 따라가고, dynamic import target 도 async chunk 대신 manual 청크에 포함.
-/// regex/function 지원 및 순환 의존 diagnostic 은 Phase 2 에서.
+/// regex / 순환 의존 diagnostic 은 미구현 (function form 은 `ManualChunksResolveFn`).
 pub const ManualChunkEntry = struct {
     name: []const u8,
     patterns: []const []const u8,
