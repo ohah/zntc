@@ -337,12 +337,30 @@ const EntryInfo = struct {
 ///          여러 엔트리에서 도달 가능한 모듈은 공통 청크(common chunk)로 분리.
 ///
 /// shaker가 null이 아니면 tree-shaking 결과를 반영하여 미포함 모듈을 스킵한다.
+/// manual chunk 이름을 slot index 로 매핑. 이미 있으면 기존 slot 반환, 없으면 새 slot 생성.
+/// record entries + resolver 동적 결과의 dedup 통합 지점.
+fn ensureNameSlot(
+    name_to_slot: *std.StringHashMap(usize),
+    effective_names: *std.ArrayList([]const u8),
+    allocator: std.mem.Allocator,
+    name: []const u8,
+) !usize {
+    const gop = try name_to_slot.getOrPut(name);
+    if (!gop.found_existing) {
+        gop.value_ptr.* = effective_names.items.len;
+        try effective_names.append(allocator, name);
+    }
+    return gop.value_ptr.*;
+}
+
 pub fn generateChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     entry_points: []const []const u8,
     shaker: ?*const TreeShaker,
     manual_chunks: []const types.ManualChunkEntry,
+    manual_resolver: ?types.ManualChunksResolveFn,
+    manual_resolver_ctx: ?*anyopaque,
 ) !ChunkGraph {
     const module_count = graph.moduleCount();
 
@@ -409,7 +427,35 @@ pub fn generateChunks(
     // BFS 단계에서 매칭 모듈의 transitive deps 에 manual bit 가 전파되어
     // `rolldown advanced_chunks/include_dependencies_recursively` 와 동일한
     // 정책 (dep 도 같은 manual 청크로) 을 자동으로 얻는다.
-    const manual_count = manual_chunks.len;
+    //
+    // effective_names[i] = i 번째 manual slot 의 청크 이름. record + resolver 동적
+    // 결과를 순서대로 병합. resolver 가 반환한 name 이 record 와 겹치면 동일 slot.
+    var effective_names: std.ArrayList([]const u8) = .empty;
+    defer effective_names.deinit(allocator);
+    var name_to_slot = std.StringHashMap(usize).init(allocator);
+    defer name_to_slot.deinit();
+    for (manual_chunks) |mc| {
+        _ = try ensureNameSlot(&name_to_slot, &effective_names, allocator, mc.name);
+    }
+
+    // Resolver 결과 미리 수집 — 모듈당 1회 호출. NAPI TSFN 경로에서도 재호출 없음.
+    // resolver 없으면 배열 할당 자체 skip (빌드당 module_count × 16B 절약).
+    var resolver_assignments: ?[]?usize = null;
+    defer if (resolver_assignments) |ra| allocator.free(ra);
+    if (manual_resolver) |fn_ptr| {
+        const ra = try allocator.alloc(?usize, module_count);
+        resolver_assignments = ra;
+        @memset(ra, null);
+        var it = graph.modulesIterator();
+        var mi: usize = 0;
+        while (it.next()) |m| : (mi += 1) {
+            if (fn_ptr(manual_resolver_ctx, m.path)) |chunk_name| {
+                ra[mi] = try ensureNameSlot(&name_to_slot, &effective_names, allocator, chunk_name);
+            }
+        }
+    }
+
+    const manual_count = effective_names.items.len;
     const total_bits = entry_count + manual_count;
 
     // ChunkGraph 생성 — 모듈→청크 매핑 배열을 module_count 크기로 할당.
@@ -459,7 +505,7 @@ pub fn generateChunks(
 
     // Phase 1d: manual chunks — 실제 매칭 모듈 seed 수집 + 비어있지 않으면 Chunk 등록.
     // 매칭 없는 manual chunk 는 빈 출력 파일을 만들지 않도록 skip. 실제 BFS 전파는 Phase 2.5.
-    // `manual_seeds[i].items.len > 0` 이 곧 "이 청크 등록됨" 의 signal — 별도 flag 불필요.
+    // Resolver 결과 우선, 없으면 record substring 매칭으로 fallback.
     const manual_seeds = try allocator.alloc(std.ArrayList(ModuleIndex), manual_count);
     defer {
         for (manual_seeds) |*s| s.deinit(allocator);
@@ -471,20 +517,27 @@ pub fn generateChunks(
         var it = graph.modulesIterator();
         var mi: usize = 0;
         while (it.next()) |m| : (mi += 1) {
+            if (resolver_assignments) |ra| {
+                if (ra[mi]) |slot| {
+                    try manual_seeds[slot].append(allocator, ModuleIndex.fromUsize(mi));
+                    continue;
+                }
+            }
             const idx = types.ManualChunkEntry.lookup(manual_chunks, m.path) orelse continue;
+            // record name 의 slot index (effective_names 병합으로 record 가 먼저 등록됨).
             try manual_seeds[idx].append(allocator, ModuleIndex.fromUsize(mi));
         }
     }
 
-    for (manual_chunks, 0..) |mc, i| {
+    for (effective_names.items, 0..) |name, i| {
         if (manual_seeds[i].items.len == 0) continue;
         const manual_bit: u32 = @intCast(entry_count + i);
         var bits = try BitSet.init(allocator, @intCast(total_bits));
         errdefer bits.deinit(allocator);
         bits.setBit(manual_bit);
 
-        var chunk = Chunk.init(.none, .{ .manual = .{ .bit = manual_bit, .name = mc.name } }, bits);
-        chunk.name = mc.name;
+        var chunk = Chunk.init(.none, .{ .manual = .{ .bit = manual_bit, .name = name } }, bits);
+        chunk.name = name;
 
         const ci = try chunk_graph.addChunk(chunk);
         try bits_to_chunk.put(allocator, bits, ci);

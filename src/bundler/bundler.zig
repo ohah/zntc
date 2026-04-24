@@ -76,6 +76,12 @@ pub const BundleOptions = struct {
     /// code_splitting=true 일 때만 동작. 매칭된 모듈은 pseudo-entry 로 BFS 에 참여
     /// → transitive dependency 도 같은 청크로, dynamic import target 도 manual 우선.
     manual_chunks: []const types.ManualChunkEntry = &.{},
+    /// Rollup `manualChunks(id)` 함수 시그니처 호환 (#1027 Phase 2).
+    /// 모듈 경로마다 호출해 반환한 이름으로 동적 manual 청크 생성. null 반환이면 auto.
+    /// resolver + record 공존 시 **resolver 결과 우선**.
+    manual_chunks_resolver: ?types.ManualChunksResolveFn = null,
+    /// resolver 에 전달할 user context (TSFN 핸들, 상태 포인터 등).
+    manual_chunks_ctx: ?*anyopaque = null,
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
@@ -980,6 +986,8 @@ pub const Bundler = struct {
                     self.options.entry_points,
                     if (shaker) |*s| s else null,
                     self.options.manual_chunks,
+                    self.options.manual_chunks_resolver,
+                    self.options.manual_chunks_ctx,
                 );
             defer chunk_graph.deinit();
 
