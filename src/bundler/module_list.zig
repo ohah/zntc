@@ -246,12 +246,15 @@ test "StableSegmentedList: concurrent reader survives grower appends (race-safet
     var list = StableSegmentedList(u64){};
     defer list.deinit(allocator);
 
-    // 초기 items 100 개 — reader 가 이 slot 들을 불변으로 관찰.
-    const N_INITIAL: u64 = 100;
+    const N_INITIAL: usize = 100;
+    const N_READERS: usize = 4;
+    const FINAL_SIZE: usize = 10_000;
+
+    // 초기 items — reader 가 이 slot 들을 불변으로 관찰.
     {
-        var i: u64 = 0;
+        var i: usize = 0;
         while (i < N_INITIAL) : (i += 1) {
-            try list.append(allocator, i);
+            try list.append(allocator, @intCast(i));
         }
     }
 
@@ -261,30 +264,31 @@ test "StableSegmentedList: concurrent reader survives grower appends (race-safet
     const readerFn = struct {
         fn run(l: *StableSegmentedList(u64), m: *std.atomic.Value(bool), s: *std.atomic.Value(bool)) void {
             while (!s.load(.acquire)) {
-                var k: u64 = 0;
+                var k: usize = 0;
                 while (k < N_INITIAL) : (k += 1) {
-                    const p = l.at(@intCast(k));
-                    if (p.* != k) {
+                    const p = l.at(k);
+                    if (p.* != @as(u64, @intCast(k))) {
                         m.store(true, .release);
                         return;
                     }
                 }
+                // busy-wait 회피 — graph_test.zig:935 parallelWorker 와 동일 패턴.
+                std.Thread.yield() catch {};
             }
         }
     }.run;
 
-    const N_READERS = 4;
     var readers: [N_READERS]std.Thread = undefined;
     for (&readers) |*r| {
         r.* = try std.Thread.spawn(.{}, readerFn, .{ &list, &mismatch, &stop });
     }
 
-    // Main 이 동시에 append — 100 → 10000 (shelves 7-13 신규 alloc 유발).
-    // std.SegmentedList 라면 이 시점에 dynamic_segments realloc 여러 번 발생.
+    // Main 이 동시에 append 로 shelf grow 유발. std.SegmentedList 였으면 이 시점에
+    // dynamic_segments realloc 여러 번 → reader 의 shelf pointer stale.
     {
-        var i: u64 = N_INITIAL;
-        while (i < 10_000) : (i += 1) {
-            try list.append(allocator, i);
+        var i: usize = N_INITIAL;
+        while (i < FINAL_SIZE) : (i += 1) {
+            try list.append(allocator, @intCast(i));
         }
     }
 
@@ -292,7 +296,7 @@ test "StableSegmentedList: concurrent reader survives grower appends (race-safet
     for (&readers) |r| r.join();
 
     try std.testing.expect(!mismatch.load(.acquire));
-    try std.testing.expectEqual(@as(usize, 10_000), list.count());
+    try std.testing.expectEqual(FINAL_SIZE, list.count());
     try std.testing.expectEqual(@as(u64, 0), list.at(0).*);
-    try std.testing.expectEqual(@as(u64, 9_999), list.at(9_999).*);
+    try std.testing.expectEqual(@as(u64, FINAL_SIZE - 1), list.at(FINAL_SIZE - 1).*);
 }
