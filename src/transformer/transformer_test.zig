@@ -41,12 +41,11 @@ test "Transformer: strip type alias declaration" {
     var old_ast = Ast.init(std_lib.testing.allocator, "type Foo = string;");
     defer old_ast.deinit();
 
-    // type alias node
-    const type_node = try old_ast.addNode(.{
-        .tag = .ts_type_alias_declaration,
-        .span = .{ .start = 0, .end = 18 },
-        .data = .{ .none = 0 },
-    });
+    // type alias node — layout=.extra (strip-target, empty children)
+    const type_node = try old_ast.addEmptyExtraNode(
+        .ts_type_alias_declaration,
+        .{ .start = 0, .end = 18 },
+    );
 
     const list = try old_ast.addNodeList(&.{type_node});
     _ = try old_ast.addNode(.{

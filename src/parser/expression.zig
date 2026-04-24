@@ -1377,14 +1377,15 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
 
             try self.advance(); // skip (
 
-            // 빈 괄호: () → arrow function의 빈 파라미터 리스트
+            // 빈 괄호: () → arrow function의 빈 파라미터 리스트 (operand 없음).
             if (self.current() == .r_paren) {
                 try self.advance(); // skip )
-                return try self.ast.addNode(.{
-                    .tag = .parenthesized_expression,
-                    .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .none = 0 },
-                });
+                return try self.ast.addUnaryNode(
+                    .parenthesized_expression,
+                    .{ .start = span.start, .end = self.currentSpan().start },
+                    .none,
+                    0,
+                );
             }
 
             // `(a, ...b) => {}` 형태의 rest 파라미터를 cover grammar으로 지원.
