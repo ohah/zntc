@@ -247,14 +247,11 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         if (next == .eq) {
             // import-equals는 TS CJS 호환 구문 → module syntax로 취급하지 않음.
             //
-            // NOTE: ts_import_equals_declaration 은 strip target 이 *아님* —
+            // ts_import_equals_declaration 은 strip target 이 *아님* —
             // `transformer.zig::visitImportEqualsDeclaration` (:2540) 이
             // `data.binary.left` (name) 와 `data.binary.right` (value) 를 읽어
-            // `const F = require("x")` 런타임 코드로 변환한다. `getLayout` 이
-            // `.extra` 로 선언되어 있지만 실체 저장은 `.binary` 로 유지해야 한다
-            // (extern union offset aliasing). audit cosmetic 에 걸려도 절대 empty
-            // `.extra` 로 치환 금지 — #1802 B2 리뷰 시 실제로 이 사례가 뒤늦게
-            // surface 됨 (audit 이 codegen 만 스캔하고 transformer 는 안 봄).
+            // `const F = require("x")` 런타임 코드로 변환한다. layout=`.binary`
+            // (ast.zig getLayout) 와 일치.
             const name_span = self.currentSpan();
             try self.advance(); // skip name
             try self.advance(); // skip =

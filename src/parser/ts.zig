@@ -641,40 +641,49 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
 fn parseUnionType(self: *Parser) ParseError2!NodeIndex {
     // 선행 | 허용: | A | B (oxc L247)
     if (self.current() == .pipe) try self.advance();
-    var left = try parseIntersectionType(self);
+    const first = try parseIntersectionType(self);
+    if (self.current() != .pipe) return first;
 
+    // `A | B | C` — flat NodeList 로 저장 (layout=.list).
+    const scratch_top = self.saveScratch();
+    defer self.restoreScratch(scratch_top);
+    try self.scratch.append(self.allocator, first);
+    const start = self.ast.getNode(first).span.start;
     while (self.current() == .pipe) {
-        const start = self.ast.getNode(left).span.start;
         try self.advance();
-        const right = try parseIntersectionType(self);
-        left = try self.ast.addNode(.{
-            .tag = .ts_union_type,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = left, .right = right, .flags = 0 } },
-        });
+        const next = try parseIntersectionType(self);
+        try self.scratch.append(self.allocator, next);
     }
-
-    return left;
+    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return try self.ast.addListNode(
+        .ts_union_type,
+        .{ .start = start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
 fn parseIntersectionType(self: *Parser) ParseError2!NodeIndex {
     // 선행 & 허용: & A & B
     if (self.current() == .amp) try self.advance();
-    var left = try parseTypeOperatorOrHigher(self);
+    const first = try parseTypeOperatorOrHigher(self);
+    if (self.current() != .amp) return first;
 
-    // 인터섹션: A & B & C
+    // `A & B & C` — flat NodeList 로 저장 (layout=.list).
+    const scratch_top = self.saveScratch();
+    defer self.restoreScratch(scratch_top);
+    try self.scratch.append(self.allocator, first);
+    const start = self.ast.getNode(first).span.start;
     while (self.current() == .amp) {
-        const start = self.ast.getNode(left).span.start;
         try self.advance(); // skip &
-        const right = try parseTypeOperatorOrHigher(self);
-        left = try self.ast.addNode(.{
-            .tag = .ts_intersection_type,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = left, .right = right, .flags = 0 } },
-        });
+        const next = try parseTypeOperatorOrHigher(self);
+        try self.scratch.append(self.allocator, next);
     }
-
-    return left;
+    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return try self.ast.addListNode(
+        .ts_intersection_type,
+        .{ .start = start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
 /// oxc parse_type_operator_or_higher: keyof/unique/readonly/infer → postfix

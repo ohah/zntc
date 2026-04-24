@@ -1021,11 +1021,13 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 else blk: {
                     const tmpl_span = self.currentSpan();
                     try self.advance();
-                    break :blk try self.ast.addNode(.{
-                        .tag = .template_literal,
-                        .span = tmpl_span,
-                        .data = .{ .none = 0 },
-                    });
+                    // no-substitution template — text 는 span 에서 직접 읽으므로
+                    // 자식 리스트는 비어 있다. layout=.list 에 맞춰 빈 NodeList 저장.
+                    break :blk try self.ast.addListNode(
+                        .template_literal,
+                        tmpl_span,
+                        .{ .start = 0, .len = 0 },
+                    );
                 };
                 {
                     const te = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(tmpl), 0 });
@@ -1494,11 +1496,13 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 try self.addErrorCode(span, "Invalid escape sequence in template literal", .template_invalid_escape);
             }
             try self.advance();
-            return try self.ast.addNode(.{
-                .tag = .template_literal,
-                .span = span,
-                .data = .{ .none = 0 },
-            });
+            // no-substitution template — text 는 span 에서 직접 읽으므로
+            // 자식 리스트는 비어 있다. layout=.list 에 맞춰 빈 NodeList 저장.
+            return try self.ast.addListNode(
+                .template_literal,
+                span,
+                .{ .start = 0, .len = 0 },
+            );
         },
         .template_head => {
             // 보간 있는 템플릿 리터럴: `text${expr}...`
