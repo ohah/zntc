@@ -182,4 +182,124 @@ describe("manualChunks NAPI bridge", () => {
     expect(outs[0].text).toContain("B_MARKER");
     expect(outs[0].text).toContain("C_MARKER");
   });
+
+  // ============================================================
+  // manualChunks(id, meta) — Rollup/rolldown 호환 meta 파라미터
+  // ============================================================
+
+  test("meta.getModuleInfo: 엔트리 모듈 isEntry=true, 일반 모듈 isEntry=false", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `import { a } from "./lib"; console.log(a);`,
+      "lib.ts": 'export const a = "LIB";',
+    });
+    cleanup = fixture.cleanup;
+
+    const entryPath = join(fixture.dir, "entry.ts");
+    const seen = new Map<string, { isEntry: boolean }>();
+    await build({
+      entryPoints: [entryPath],
+      splitting: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      manualChunks: ((id: string, meta: any) => {
+        const info = meta?.getModuleInfo?.(id);
+        if (info) seen.set(id, { isEntry: info.isEntry });
+        return null;
+      }) as (id: string) => string | null,
+    });
+
+    const entryInfo = [...seen.entries()].find(([k]) => k.endsWith("entry.ts"));
+    const libInfo = [...seen.entries()].find(([k]) => k.endsWith("lib.ts"));
+    expect(entryInfo).toBeDefined();
+    expect(libInfo).toBeDefined();
+    expect(entryInfo![1].isEntry).toBe(true);
+    expect(libInfo![1].isEntry).toBe(false);
+  });
+
+  test("meta.getModuleInfo: importers — 누가 이 모듈을 import 하는가", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `import { a } from "./shared"; console.log(a);`,
+      "other.ts": `import { a } from "./shared"; export const x = a;`,
+      "shared.ts": 'export const a = "S";',
+    });
+    cleanup = fixture.cleanup;
+
+    // 두 엔트리 — shared 는 양쪽에서 import
+    const seen = new Map<string, string[]>();
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts"), join(fixture.dir, "other.ts")],
+      splitting: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      manualChunks: ((id: string, meta: any) => {
+        const info = meta?.getModuleInfo?.(id);
+        if (info) seen.set(id, info.importers ?? []);
+        return null;
+      }) as (id: string) => string | null,
+    });
+
+    const sharedEntry = [...seen.entries()].find(([k]) => k.endsWith("shared.ts"));
+    expect(sharedEntry).toBeDefined();
+    const importers = sharedEntry![1];
+    expect(importers.length).toBe(2);
+    expect(importers.some((p) => p.endsWith("entry.ts"))).toBe(true);
+    expect(importers.some((p) => p.endsWith("other.ts"))).toBe(true);
+  });
+
+  test("meta.getModuleInfo: importedIds — 이 모듈이 import 하는 것", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { a } from "./foo";
+        import { b } from "./bar";
+        console.log(a, b);
+      `,
+      "foo.ts": 'export const a = "FOO";',
+      "bar.ts": 'export const b = "BAR";',
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = new Map<string, string[]>();
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      manualChunks: ((id: string, meta: any) => {
+        const info = meta?.getModuleInfo?.(id);
+        if (info) seen.set(id, info.importedIds ?? []);
+        return null;
+      }) as (id: string) => string | null,
+    });
+
+    const entryIds = [...seen.entries()].find(([k]) => k.endsWith("entry.ts"))![1];
+    expect(entryIds.length).toBe(2);
+    expect(entryIds.some((p) => p.endsWith("foo.ts"))).toBe(true);
+    expect(entryIds.some((p) => p.endsWith("bar.ts"))).toBe(true);
+  });
+
+  test("meta 기반 실용 패턴: shared 모듈만 vendor 로", async () => {
+    // 실전 "importers 수 >= 2 면 shared 로" 패턴 — 자동 청크 분할 규칙 커스터마이즈
+    const fixture = await createFixture({
+      "pageA.ts": `import { s } from "./shared"; import { a } from "./only-a"; console.log(s, a);`,
+      "pageB.ts": `import { s } from "./shared"; import { b } from "./only-b"; console.log(s, b);`,
+      "shared.ts": 'export const s = "SHARED";',
+      "only-a.ts": 'export const a = "A";',
+      "only-b.ts": 'export const b = "B";',
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "pageA.ts"), join(fixture.dir, "pageB.ts")],
+      splitting: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      manualChunks: ((id: string, meta: any) => {
+        const info = meta?.getModuleInfo?.(id);
+        if (info && info.importers && info.importers.length >= 2) return "shared-chunk";
+        return null;
+      }) as (id: string) => string | null,
+    });
+
+    const sharedChunk = result.outputFiles!.find((o) => o.path.includes("shared-chunk"));
+    expect(sharedChunk).toBeDefined();
+    expect(sharedChunk!.moduleIds!.some((id) => id.endsWith("shared.ts"))).toBe(true);
+    // only-a, only-b 는 shared-chunk 에 안 들어감 (importers=1)
+    expect(sharedChunk!.moduleIds!.every((id) => !id.includes("only-"))).toBe(true);
+  });
 });
