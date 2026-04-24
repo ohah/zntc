@@ -367,8 +367,10 @@ export default function Playground() {
     }, 100);
   }
 
-  const inputLang = options.filename.endsWith(".tsx") || options.filename.endsWith(".jsx")
-    ? "typescript" : options.filename.endsWith(".ts") ? "typescript" : "javascript";
+  const inputLang =
+    options.filename.endsWith(".ts") || options.filename.endsWith(".tsx")
+      ? "typescript"
+      : "javascript";
 
   const editorOpts = {
     minimap: { enabled: false },
@@ -400,8 +402,8 @@ export default function Playground() {
           <a href="/zts/" className="text-sm font-bold text-neutral-200 no-underline">
             ZTS Playground
           </a>
-          {loading && <Badge variant="loading" text="Loading WASM..." />}
-          {!loading && !error && <Badge variant="ready" text="Ready" />}
+          {loading && <Badge variant="loading" />}
+          {!loading && !error && <Badge variant="ready" />}
         </div>
         <div className="flex items-center gap-2">
           <select
@@ -420,7 +422,7 @@ export default function Playground() {
             ))}
           </select>
           <button type="button" onClick={handleShare} className={BTN_CLASS}>Share</button>
-          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" className={`${BTN_CLASS} no-underline`}>
+          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" className={BTN_CLASS}>
             GitHub
           </a>
         </div>
@@ -508,15 +510,15 @@ export default function Playground() {
 }
 
 const BTN_BASE =
-  "cursor-pointer rounded border border-surface-800 bg-transparent text-[13px] text-neutral-200 transition-colors hover:border-zig-500 hover:text-zig-400";
+  "cursor-pointer rounded border border-surface-800 bg-transparent text-[13px] text-neutral-200 no-underline transition-colors hover:border-zig-500 hover:text-zig-400";
 const BTN_CLASS = `${BTN_BASE} px-3 py-1`;
 const SELECT_BTN_CLASS = `${BTN_BASE} px-2 py-1`;
 
-function Badge({ variant, text }: { variant: "loading" | "ready"; text: string }) {
-  const tone =
+function Badge({ variant }: { variant: "loading" | "ready" }) {
+  const { tone, text } =
     variant === "loading"
-      ? "bg-sky-950 text-sky-300"
-      : "bg-emerald-950 text-emerald-300";
+      ? { tone: "bg-sky-950 text-sky-300", text: "Loading WASM..." }
+      : { tone: "bg-emerald-950 text-emerald-300", text: "Ready" };
   return (
     <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}`}>
       {text}
