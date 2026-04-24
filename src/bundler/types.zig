@@ -105,13 +105,49 @@ pub const GlobalEntry = struct {
     }
 };
 
-/// Rollup `manualChunks(id)` 호환 콜백 (#1027 Phase 2).
+/// Rollup `manualChunks(id, meta)` 호환 콜백.
 /// 모듈 절대경로 `id` 를 받아 청크 이름을 반환하면 그 이름의 manual 청크로 묶인다.
 /// null 반환이면 기존 auto 분배. resolver 로 동적 생성된 청크는 `ManualChunkEntry`
 /// record 와 동일 파이프라인 (bit 할당 / BFS / transitive dep 포함) 을 탄다.
 ///
-/// `ctx` 는 caller 가 원하는 상태 (TSFN 핸들, 카운터 등) 를 전달하는 슬롯.
-pub const ManualChunksResolveFn = *const fn (ctx: ?*anyopaque, id: []const u8) ?[]const u8;
+/// `ctx` 는 caller 가 원하는 상태 (TSFN 핸들, 카운터 등) 를 전달.
+/// `graph` 는 ModuleGraph opaque — `getModuleInfo` 로 meta 조회용. null 이면 meta 미지원.
+pub const ManualChunksResolveFn = *const fn (
+    ctx: ?*anyopaque,
+    id: []const u8,
+    graph: ?*const anyopaque,
+) ?[]const u8;
+
+/// Rollup `manualChunks(id, meta)` 의 `meta.getModuleInfo(id)` 반환 타입.
+/// 모든 slice 는 graph 수명 동안 borrowed — 추가 alloc/free 없음.
+/// NAPI 레이어는 `importers` / `imported_ids` 의 ModuleIndex 를
+/// `getModulePathByIndex` 로 순회해 JS string 배열을 직접 만든다.
+pub const ModuleInfo = struct {
+    id: []const u8,
+    importers: []const ModuleIndex,
+    imported_ids: []const ModuleIndex,
+    is_entry: bool,
+};
+
+/// `id` 로 모듈 메타를 조회. 없으면 null. Zero allocation — graph 내부 slice borrow.
+pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInfo {
+    const graph = @as(?*const @import("graph.zig").ModuleGraph, @ptrCast(@alignCast(graph_opaque))) orelse return null;
+    const idx = graph.path_to_module.get(id) orelse return null;
+    const m = graph.getModule(idx) orelse return null;
+    return .{
+        .id = m.path,
+        .importers = m.importers.items,
+        .imported_ids = m.dependencies.items,
+        .is_entry = m.is_entry_point,
+    };
+}
+
+/// ModuleIndex 로 모듈 경로 조회. importers/imported_ids 배열 순회용.
+pub fn getModulePathByIndex(graph_opaque: ?*const anyopaque, idx: ModuleIndex) ?[]const u8 {
+    const graph = @as(?*const @import("graph.zig").ModuleGraph, @ptrCast(@alignCast(graph_opaque))) orelse return null;
+    const m = graph.getModule(idx) orelse return null;
+    return m.path;
+}
 
 /// 사용자 정의 청크 분할 (#1027 / Rollup `manualChunks` 호환 Phase 1).
 /// Rollup record form `{ "vendor": ["lodash", "react"] }` 를 네이티브 슬라이스로 1:1 매핑.

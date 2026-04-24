@@ -1054,7 +1054,8 @@ const NapiManualChunksResolver = struct {
 
     /// Zig resolver 인터페이스 — `ManualChunksResolveFn` 과 동일 시그니처.
     /// worker thread 에서 호출됨. JS 호출 후 동기 대기.
-    fn resolve(ctx_ptr: ?*anyopaque, id: []const u8) ?[]const u8 {
+    fn resolve(ctx_ptr: ?*anyopaque, id: []const u8, graph: ?*const anyopaque) ?[]const u8 {
+        _ = graph;
         const self: *NapiManualChunksResolver = @ptrCast(@alignCast(ctx_ptr.?));
         var call_ctx = CallContext{ .id = id };
 
