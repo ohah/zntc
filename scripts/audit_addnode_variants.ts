@@ -57,13 +57,10 @@ const ALL_DATA_VARIANTS = new Set([...LEAF_VARIANTS, "unary", "binary", "ternary
 /**
  * cosmetic fail-gate 예외 — `--strict-cosmetic` 모드에서 허용되는 의도된 mismatch.
  *
- * - `flow_match_expression`: outer expression 은 `.extra` (discriminant + arms
- *   list), 각 arm 은 `.binary` (pattern + body) 로 **동일 tag 를 dual-site 재사용**.
- *   transformer `visitFlowMatch` 가 두 구조를 모두 읽는다. 단일 layout 선택
- *   불가능. 해결책은 arm tag 를 분리 (예: `flow_match_arm`) 하는 것이나
- *   audit 정리 범위 밖.
+ * #1822 에서 `flow_match_expression` 의 arm 을 별도 `flow_match_arm` tag 로
+ * 분리하며 이 세트는 비어 있음. 새 exemption 이 필요할 경우 정당화와 함께 추가.
  */
-const COSMETIC_EXEMPT_TAGS = new Set(["flow_match_expression"]);
+const COSMETIC_EXEMPT_TAGS = new Set<string>();
 
 
 function findMatchingBrace(text: string, openIdx: number): number {

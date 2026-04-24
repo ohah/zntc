@@ -1449,17 +1449,17 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
             _ = try self.eat(.comma);
         }
 
-        // arm: binary { left=pattern, right=body }. outer expr 는 extra layout
-        // (discriminant + arms_start + arms_len) 이지만 여기 arm 은 `.binary` 로
-        // 저장. transformer `visitFlowMatch` (transformer.zig:~1937) 가 각 arm 에서
-        // `data.binary.left` (pattern) / `data.binary.right` (body) 를 실제로 읽는다.
-        // audit 에 "cosmetic" 으로 나타나더라도 이 arm 의 저장은 유지 — `.extra` 로
-        // 치환하면 silent failure (#1797 류).
-        const arm = try self.ast.addNode(.{
-            .tag = .flow_match_expression, // arm 도 같은 태그 재사용 (구분은 위치로)
-            .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = pattern, .right = body, .flags = 0 } },
-        });
+        // arm: binary { left=pattern, right=body }. 별도 tag (`flow_match_arm`)
+        // 로 outer `flow_match_expression` (extra layout) 과 분리 — 이전엔 tag
+        // 를 재사용해서 audit cosmetic exemption 이 필요했다 (#1802). #1822
+        // 에서 분리 후 audit exemption 제거.
+        const arm = try self.ast.addBinaryNode(
+            .flow_match_arm,
+            .{ .start = loop_guard_pos, .end = self.currentSpan().start },
+            pattern,
+            body,
+            0,
+        );
         try self.scratch.append(self.allocator, arm);
 
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
