@@ -74,6 +74,8 @@ export * as ns from "./data.json" with { type: "json" };
 ```
 
 > Local JSON imports are already inlined during bundling based on extension. `with { type }` matters when the bundle output runs on Node as ESM, or when emitting sources that require spec-compliant JSON module syntax.
+>
+> **Policy (same as rolldown)**: `with { type }` is round-trip metadata. Loader selection is purely **extension-based** — attrs will not force a loader (`.txt` → JSON) nor error on unknown type values. esbuild treats attrs as an override tool, while ZTS/rolldown treat them as spec pass-through only. ([DECISIONS D102](https://github.com/ohah/zts/blob/main/docs/DECISIONS.md))
 
 ## Output Options
 

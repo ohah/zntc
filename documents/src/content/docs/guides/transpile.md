@@ -74,6 +74,8 @@ export * as ns from "./data.json" with { type: "json" };
 ```
 
 > 로컬 JSON import 는 확장자 기반으로 이미 번들에 인라인됩니다. `with { type }` 은 번들 산출물을 ESM 으로 Node 런타임에 흘려보낼 때, 또는 JSON 모듈 스펙에 호환되는 소스 생성이 필요할 때 유용합니다.
+>
+> **정책 (rolldown 동일)**: `with { type }` 은 라운드트립 메타데이터. loader 선택은 오직 **확장자 기반**이며, attrs 값으로 loader 를 강제하거나 (`.txt` → JSON) 알 수 없는 type 에 에러를 내지 않습니다. esbuild 는 override 도구로 쓰는 반면 ZTS/rolldown 은 스펙 pass-through 로만 처리합니다. ([DECISIONS D102](https://github.com/ohah/zts/blob/main/docs/DECISIONS.md))
 
 ## 출력 옵션
 
