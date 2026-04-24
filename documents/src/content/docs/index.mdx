@@ -1,35 +1,156 @@
 ---
 title: ZTS
 description: Zig로 작성한 TypeScript 트랜스파일러 & 번들러
+template: splash
 hero:
-  tagline: 빠르고 가벼운 TypeScript 트랜스파일러 & 번들러
-  actions:
-    - text: 시작하기
-      link: /zts/guides/introduction/
-      icon: right-arrow
-    - text: Playground
-      link: /zts/playground/
-      variant: minimal
-      icon: external
-    - text: GitHub
-      link: https://github.com/ohah/zts
-      variant: minimal
-      icon: github
+  tagline: " "
 ---
 
-import { Card, CardGrid } from "@astrojs/starlight/components";
+import Hero from "../../components/landing/Hero.astro";
+import StatsStrip from "../../components/landing/StatsStrip.astro";
+import FeatureGrid from "../../components/landing/FeatureGrid.astro";
+import { Tabs, TabItem } from "@astrojs/starlight/components";
 
-<CardGrid>
-  <Card title="TypeScript/JSX 트랜스파일" icon="seti:typescript">
-    타입 어노테이션, 인터페이스, enum, decorator를 빠르게 스트리핑합니다.
-  </Card>
-  <Card title="번들링" icon="seti:javascript">
-    Tree-shaking, 코드 스플리팅, preserve-modules를 지원하는 프로덕션 번들러.
-  </Card>
-  <Card title="React Native" icon="seti:react">
-    Metro 호환 RN 번들링, Flow 스트리핑, Hermes 바이트코드 호환.
-  </Card>
-  <Card title="플러그인" icon="puzzle">
-    Rollup/Vite 호환 플러그인 시스템. JS/TS로 확장 가능.
-  </Card>
-</CardGrid>
+<Hero
+  eyebrow="Zig TypeScript Transpiler & Bundler"
+  title={`빠르고 가벼운\nTypeScript 트랜스파일러`}
+  subtitle="Zig 로 작성한 트랜스파일러 + 번들러. JavaScript · TypeScript · JSX · Flow 를 네이티브 속도로 처리하고, Vite/Rollup 호환 플러그인 시스템을 제공합니다."
+  actions={[
+    { text: "시작하기 →", href: "/zts/guides/introduction/", primary: true },
+    { text: "Playground", href: "/zts/playground/" },
+    { text: "GitHub", href: "https://github.com/ohah/zts" },
+  ]}
+  codeFilename="example.ts"
+  codeLang="ts"
+  codeExample={`import { transpile } from '@zts/core';
+
+const { code } = await transpile({
+  code: source,
+  jsx: 'preserve',
+  target: 'es2020',
+});`}
+/>
+
+<StatsStrip
+  stats={[
+    { value: "6", unit: "ms", label: "트랜스파일", caption: "100 LOC · TypeScript" },
+    { value: "4", unit: "ms", label: "번들링", caption: "10 modules" },
+    { value: "13", unit: "×", label: "faster", caption: "vs rolldown (small)" },
+    { value: "340", unit: "+", label: "문서 페이지", caption: "ko · en 지원" },
+  ]}
+  note="2026-04-10 기준 · darwin arm64 · 재측정 예정"
+/>
+
+<FeatureGrid
+  heading="왜 ZTS 인가"
+  subheading="기존 도구의 장점을 조합한 JavaScript/TypeScript 툴체인."
+  features={[
+    {
+      icon: "TS",
+      title: "타입 어노테이션 제거",
+      body: "TypeScript 타입 · 인터페이스 · enum · decorator 를 네이티브 속도로 스트리핑합니다. Flow 도 독립 파이프라인으로 지원.",
+    },
+    {
+      icon: "⌘",
+      title: "프로덕션 번들러",
+      body: "Tree-shaking · 코드 스플리팅 · preserve-modules · 소스맵. ESM · CommonJS · IIFE 출력. rolldown/esbuild 동급 속도.",
+    },
+    {
+      icon: "RN",
+      title: "React Native 대응",
+      body: "Metro 호환 번들링 · InitializeCore · Hermes 바이트코드 · Flow 스트리핑. Babel 이관 가이드 제공.",
+    },
+    {
+      icon: "◎",
+      title: "확장 가능한 플러그인",
+      body: "Rollup/Vite 호환 플러그인 API. JS/TS 로 확장, Vite 어댑터 · Rollup 어댑터 · AST 플러그인 지원.",
+    },
+  ]}
+/>
+
+<div class="not-content">
+  <div class="mx-auto max-w-6xl px-6 py-20">
+    <div class="mb-8 flex flex-col gap-3">
+      <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">사용 예시</h2>
+      <p class="max-w-2xl text-base text-[color:var(--sl-color-gray-2)]">
+        CLI 한 줄부터 Vite 통합까지. 선호하는 방식으로 바로 시작할 수 있습니다.
+      </p>
+    </div>
+
+    <Tabs>
+      <TabItem label="CLI">
+        ```bash
+        # 설치
+        npm install -g @zts/core
+
+        # 번들
+        zts build src/index.ts --bundle --outdir dist
+
+        # watch 모드
+        zts build src/index.ts --bundle --watch
+        ```
+      </TabItem>
+
+      <TabItem label="JS API">
+        ```ts
+        import { build } from "@zts/core";
+
+        const result = await build({
+          entryPoints: ["src/index.ts"],
+          bundle: true,
+          outdir: "dist",
+          target: "es2020",
+          platform: "browser",
+        });
+
+        console.log(`${result.outputFiles.length} files emitted`);
+        ```
+      </TabItem>
+
+      <TabItem label="Vite Plugin">
+        ```ts
+        // vite.config.ts
+        import { defineConfig } from "vite";
+        import zts from "@zts/vite-plugin-zts";
+
+        export default defineConfig({
+          plugins: [
+            zts({
+              jsx: "automatic",
+              target: "es2022",
+            }),
+          ],
+        });
+        ```
+      </TabItem>
+    </Tabs>
+
+  </div>
+</div>
+
+<div class="not-content">
+  <div class="mx-auto max-w-6xl px-6 pb-24">
+    <div class="flex flex-col items-start gap-6 rounded-xl border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-10 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex flex-col gap-2">
+        <h2 class="text-2xl font-bold tracking-tight">지금 바로 시작하세요</h2>
+        <p class="text-sm text-[color:var(--sl-color-gray-2)]">
+          5분이면 첫 번들이 나옵니다. Playground 에서 브라우저 안에서도 바로 실행 가능.
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-3">
+        <a
+          href="/zts/guides/installation/"
+          class="inline-flex items-center gap-2 rounded-md bg-zig-500 px-4 py-2 text-sm font-semibold text-zig-950 transition-colors hover:bg-zig-400"
+        >
+          설치 가이드 →
+        </a>
+        <a
+          href="/zts/playground/"
+          class="inline-flex items-center gap-2 rounded-md border border-[color:var(--sl-color-gray-5)] px-4 py-2 text-sm font-semibold transition-colors hover:border-zig-500 hover:text-zig-400"
+        >
+          Playground
+        </a>
+      </div>
+    </div>
+  </div>
+</div>

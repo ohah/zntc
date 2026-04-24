@@ -1,0 +1,49 @@
+---
+interface Feature {
+  title: string;
+  body: string;
+  icon?: string;
+}
+
+interface Props {
+  heading: string;
+  subheading?: string;
+  features: Feature[];
+}
+
+const { heading, subheading, features } = Astro.props;
+---
+
+<section class="not-content">
+  <div class="mx-auto max-w-6xl px-6 py-20">
+    <div class="mb-12 flex flex-col gap-3">
+      <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
+        {heading}
+      </h2>
+      {
+        subheading && (
+          <p class="max-w-2xl text-base text-[color:var(--sl-color-gray-2)]">
+            {subheading}
+          </p>
+        )
+      }
+    </div>
+    <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-2">
+      {
+        features.map((f) => (
+          <div class="group relative rounded-lg border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-6 transition-colors hover:border-zig-500/50">
+            <div class="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-md bg-zig-500/10 text-zig-400 ring-1 ring-zig-500/30">
+              <span class="font-mono text-sm">{f.icon ?? "◆"}</span>
+            </div>
+            <h3 class="mb-2 text-lg font-semibold text-[color:var(--sl-color-white)]">
+              {f.title}
+            </h3>
+            <p class="text-sm leading-relaxed text-[color:var(--sl-color-gray-2)]">
+              {f.body}
+            </p>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

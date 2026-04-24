@@ -1,35 +1,156 @@
 ---
 title: ZTS
 description: A TypeScript Transpiler & Bundler written in Zig
+template: splash
 hero:
-  tagline: Fast and lightweight TypeScript Transpiler & Bundler
-  actions:
-    - text: Get Started
-      link: /zts/en/guides/introduction/
-      icon: right-arrow
-    - text: Playground
-      link: /zts/en/playground/
-      variant: minimal
-      icon: external
-    - text: GitHub
-      link: https://github.com/ohah/zts
-      variant: minimal
-      icon: github
+  tagline: " "
 ---
 
-import { Card, CardGrid } from "@astrojs/starlight/components";
+import Hero from "../../../components/landing/Hero.astro";
+import StatsStrip from "../../../components/landing/StatsStrip.astro";
+import FeatureGrid from "../../../components/landing/FeatureGrid.astro";
+import { Tabs, TabItem } from "@astrojs/starlight/components";
 
-<CardGrid>
-  <Card title="TypeScript/JSX Transpile" icon="seti:typescript">
-    Strip type annotations, interfaces, enums, and decorators at blazing speed.
-  </Card>
-  <Card title="Bundling" icon="seti:javascript">
-    Production bundler with tree-shaking, code splitting, and preserve-modules.
-  </Card>
-  <Card title="React Native" icon="seti:react">
-    Metro-compatible bundling, Flow stripping, and Hermes bytecode compatibility.
-  </Card>
-  <Card title="Plugins" icon="puzzle">
-    Rollup/Vite-compatible plugin system. Extensible with JS/TS.
-  </Card>
-</CardGrid>
+<Hero
+  eyebrow="Zig TypeScript Transpiler & Bundler"
+  title={`Fast, lightweight\nTypeScript toolchain`}
+  subtitle="A transpiler + bundler written in Zig. JavaScript · TypeScript · JSX · Flow at native speed, with a Vite/Rollup-compatible plugin system."
+  actions={[
+    { text: "Get Started →", href: "/zts/en/guides/introduction/", primary: true },
+    { text: "Playground", href: "/zts/en/playground/" },
+    { text: "GitHub", href: "https://github.com/ohah/zts" },
+  ]}
+  codeFilename="example.ts"
+  codeLang="ts"
+  codeExample={`import { transpile } from '@zts/core';
+
+const { code } = await transpile({
+  code: source,
+  jsx: 'preserve',
+  target: 'es2020',
+});`}
+/>
+
+<StatsStrip
+  stats={[
+    { value: "6", unit: "ms", label: "Transpile", caption: "100 LOC · TypeScript" },
+    { value: "4", unit: "ms", label: "Bundle", caption: "10 modules" },
+    { value: "13", unit: "×", label: "faster", caption: "vs rolldown (small)" },
+    { value: "340", unit: "+", label: "Doc pages", caption: "ko · en" },
+  ]}
+  note="As of 2026-04-10 · darwin arm64 · re-measurement pending"
+/>
+
+<FeatureGrid
+  heading="Why ZTS"
+  subheading="A JS/TS toolchain that combines the strengths of existing tools."
+  features={[
+    {
+      icon: "TS",
+      title: "Type stripping",
+      body: "Strip TypeScript annotations, interfaces, enums, and decorators at native speed. Flow has an independent pipeline.",
+    },
+    {
+      icon: "⌘",
+      title: "Production bundler",
+      body: "Tree-shaking · code splitting · preserve-modules · sourcemaps. ESM · CommonJS · IIFE output. On-par with rolldown/esbuild.",
+    },
+    {
+      icon: "RN",
+      title: "React Native ready",
+      body: "Metro-compatible bundling · InitializeCore · Hermes bytecode · Flow stripping. Babel migration guide included.",
+    },
+    {
+      icon: "◎",
+      title: "Pluggable",
+      body: "Rollup/Vite-compatible plugin API. Extensible in JS/TS, with Vite · Rollup · AST plugin adapters.",
+    },
+  ]}
+/>
+
+<div class="not-content">
+  <div class="mx-auto max-w-6xl px-6 py-20">
+    <div class="mb-8 flex flex-col gap-3">
+      <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Usage</h2>
+      <p class="max-w-2xl text-base text-[color:var(--sl-color-gray-2)]">
+        From a single CLI invocation to Vite integration — pick the style that fits your project.
+      </p>
+    </div>
+
+    <Tabs>
+      <TabItem label="CLI">
+        ```bash
+        # install
+        npm install -g @zts/core
+
+        # bundle
+        zts build src/index.ts --bundle --outdir dist
+
+        # watch mode
+        zts build src/index.ts --bundle --watch
+        ```
+      </TabItem>
+
+      <TabItem label="JS API">
+        ```ts
+        import { build } from "@zts/core";
+
+        const result = await build({
+          entryPoints: ["src/index.ts"],
+          bundle: true,
+          outdir: "dist",
+          target: "es2020",
+          platform: "browser",
+        });
+
+        console.log(`${result.outputFiles.length} files emitted`);
+        ```
+      </TabItem>
+
+      <TabItem label="Vite Plugin">
+        ```ts
+        // vite.config.ts
+        import { defineConfig } from "vite";
+        import zts from "@zts/vite-plugin-zts";
+
+        export default defineConfig({
+          plugins: [
+            zts({
+              jsx: "automatic",
+              target: "es2022",
+            }),
+          ],
+        });
+        ```
+      </TabItem>
+    </Tabs>
+
+  </div>
+</div>
+
+<div class="not-content">
+  <div class="mx-auto max-w-6xl px-6 pb-24">
+    <div class="flex flex-col items-start gap-6 rounded-xl border border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30 p-10 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex flex-col gap-2">
+        <h2 class="text-2xl font-bold tracking-tight">Start building today</h2>
+        <p class="text-sm text-[color:var(--sl-color-gray-2)]">
+          First bundle in 5 minutes. Or try it right in the browser via Playground.
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-3">
+        <a
+          href="/zts/en/guides/installation/"
+          class="inline-flex items-center gap-2 rounded-md bg-zig-500 px-4 py-2 text-sm font-semibold text-zig-950 transition-colors hover:bg-zig-400"
+        >
+          Install guide →
+        </a>
+        <a
+          href="/zts/en/playground/"
+          class="inline-flex items-center gap-2 rounded-md border border-[color:var(--sl-color-gray-5)] px-4 py-2 text-sm font-semibold transition-colors hover:border-zig-500 hover:text-zig-400"
+        >
+          Playground
+        </a>
+      </div>
+    </div>
+  </div>
+</div>

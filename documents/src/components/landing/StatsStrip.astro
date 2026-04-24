@@ -1,0 +1,51 @@
+---
+interface Stat {
+  value: string;
+  unit?: string;
+  label: string;
+  caption?: string;
+}
+
+interface Props {
+  stats: Stat[];
+  note?: string;
+}
+
+const { stats, note } = Astro.props;
+---
+
+<section class="not-content border-y border-[color:var(--sl-color-gray-5)] bg-[color:var(--sl-color-gray-7)]/30">
+  <div class="mx-auto max-w-6xl px-6 py-10">
+    <div class="grid grid-cols-2 gap-8 sm:grid-cols-4">
+      {
+        stats.map((s) => (
+          <div class="flex flex-col gap-1">
+            <div class="flex items-baseline gap-1">
+              <span class="font-mono text-3xl font-bold text-zig-400 sm:text-4xl">
+                {s.value}
+              </span>
+              {s.unit && (
+                <span class="font-mono text-sm text-[color:var(--sl-color-gray-3)]">
+                  {s.unit}
+                </span>
+              )}
+            </div>
+            <p class="text-sm font-medium text-[color:var(--sl-color-white)]">
+              {s.label}
+            </p>
+            {s.caption && (
+              <p class="text-xs text-[color:var(--sl-color-gray-3)]">
+                {s.caption}
+              </p>
+            )}
+          </div>
+        ))
+      }
+    </div>
+    {
+      note && (
+        <p class="mt-6 text-xs text-[color:var(--sl-color-gray-3)]">{note}</p>
+      )
+    }
+  </div>
+</section>
