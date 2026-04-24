@@ -227,8 +227,11 @@ pub const ModuleGraph = struct {
         return self.modules.constIterator(0);
     }
 
-    /// modules storage 타입. prealloc_item_count 변경은 여기 한 곳만 수정.
-    pub const ModuleList = std.SegmentedList(Module, 0);
+    /// modules storage. `std.SegmentedList` 대신 `StableSegmentedList` 사용 — 후자가
+    /// shelf pointer 배열도 고정 크기라 append 가 절대 pointer 무효화 안 함 (#1779).
+    /// `std.SegmentedList` 는 `dynamic_segments` (ArrayListUnmanaged) 가 grow 시 realloc →
+    /// worker 가 shelf pointer 읽는 중이면 stale (CI Stress test 에서 재현된 race).
+    pub const ModuleList = @import("module_list.zig").StableSegmentedList(Module);
     pub const ModulesIterator = ModuleList.ConstIterator;
 
     /// 확장자에 대한 로더를 결정한다.
