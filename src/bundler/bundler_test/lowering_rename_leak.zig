@@ -23,7 +23,7 @@ const writeFile = helpers.writeFile;
 fn fnBody(code: []const u8, sig: []const u8, ret_marker: []const u8) ?[]const u8 {
     const start = std.mem.indexOf(u8, code, sig) orelse return null;
     const ret_idx = std.mem.indexOfPos(u8, code, start, ret_marker) orelse return null;
-    return code[start..ret_idx + ret_marker.len];
+    return code[start .. ret_idx + ret_marker.len];
 }
 
 fn bundleEntry(backing: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !helpers.Bundled {
