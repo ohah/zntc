@@ -2025,9 +2025,16 @@ pub const Codegen = struct {
                 else
                     null;
                 if (resolved_abs) |abs| {
-                    try self.write("__zts_modules[\"");
+                    // `ctx(req)` 는 Metro/webpack 의 require.context semantic 대로 module
+                    // exports 를 반환해야 한다. `fn()` 만 호출하면 init 은 실행되지만 exports
+                    // 는 undefined — expo-router 가 `ctx(req)` 반환값을 route module 로 사용해
+                    // tree 구성이 실패하고 "Unmatched Route" 로 fallback.
+                    // 다른 require 호출과 동일한 `(fn(), __toCommonJS(.exports))` 패턴으로 emit.
+                    try self.write("(__zts_modules[\"");
                     try self.writeJsStringContent(abs);
-                    try self.write("\"].fn()");
+                    try self.write("\"].fn(),__toCommonJS(__zts_modules[\"");
+                    try self.writeJsStringContent(abs);
+                    try self.write("\"].exports))");
                 } else {
                     try self.write("(function(){throw new Error(\"require.context match unresolved: \"+");
                     try self.writeByte('"');
