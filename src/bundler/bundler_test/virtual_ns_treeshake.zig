@@ -4,47 +4,14 @@
 
 const std = @import("std");
 const testing = std.testing;
-const Bundler = @import("../bundler.zig").Bundler;
-const BundleResult = @import("../bundler.zig").BundleResult;
-const resolve_cache_mod = @import("../resolve_cache.zig");
-const writeFile = @import("../test_helpers.zig").writeFile;
+const helpers = @import("../test_helpers.zig");
+const writeFile = helpers.writeFile;
 
-/// 테스트 전용 랩퍼: BundleResult + arena (linker 관련 로컬 할당 수명 보장).
-const Bundled = struct {
-    arena: std.heap.ArenaAllocator,
-    result: BundleResult,
-
-    fn code(self: *const Bundled) []const u8 {
-        return self.result.output;
-    }
-
-    fn deinit(self: *Bundled) void {
-        self.result.deinit(self.arena.child_allocator);
-        self.arena.deinit();
-    }
-};
-
-fn bundleEntry(backing: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !Bundled {
-    var arena = std.heap.ArenaAllocator.init(backing);
-    errdefer arena.deinit();
-    const arena_alloc = arena.allocator();
-
-    const dp = try tmp.dir.realpathAlloc(arena_alloc, ".");
-    const entry = try std.fs.path.resolve(arena_alloc, &.{ dp, entry_name });
-
-    var cache = resolve_cache_mod.ResolveCache.init(backing, .{});
-    defer cache.deinit();
-
-    var bundler = Bundler.initWithResolveCache(backing, .{
-        .entry_points = &.{entry},
-        .format = .iife,
+fn bundleEntry(backing: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !helpers.Bundled {
+    return helpers.bundleEntry(backing, tmp, entry_name, .{
         .scope_hoist = true,
         .tree_shaking = true,
-    }, &cache);
-    defer bundler.deinit();
-
-    const result = try bundler.bundle();
-    return .{ .arena = arena, .result = result };
+    });
 }
 
 test "virtual ns (#1603): import { M } from re_export_namespace — 미사용 member prune" {

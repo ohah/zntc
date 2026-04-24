@@ -408,6 +408,9 @@ pub const Linker = struct {
     /// 키: target_mod_idx. 같은 타겟을 여러 모듈이 namespace import 할 때
     /// `collectExportsRecursive` DFS 를 한 번만 수행하도록 linker 전역 공유.
     /// 값 slice 와 `owned=true` 인 local 문자열 모두 linker 소유 — deinit 에서 일괄 해제.
+    /// Invariant: metadata 단계에서 append-only (put 만, remove/replace 없음).
+    /// 슬라이스는 `allocator.dupe` 한 독립 할당이라 다른 키의 put 으로도 무효화되지 않음 —
+    /// lock 해제 후에도 안전하게 읽기 가능.
     ns_export_cache: std.AutoHashMapUnmanaged(u32, []NsExportPair) = .{},
     /// buildInlineObjectStr 결과 캐시. 키: target_mod_idx. 값 문자열 linker 소유.
     ns_inline_cache: std.AutoHashMapUnmanaged(u32, []const u8) = .{},
@@ -1876,10 +1879,15 @@ pub const Linker = struct {
     /// buildMetadataForAst 내 3곳에서 동일 패턴을 공유. 캐시는 linker 전역
     /// (`self.ns_export_cache` / `self.ns_inline_cache`) — 같은 target 을 여러
     /// importer 가 namespace import 할 때 collectExportsRecursive DFS 를 단 한 번만 수행.
+    ///
+    /// `force_inline`: caller 가 isNamespaceUsedAsValue / exported_locals 등으로 결정한
+    /// 강제 inline 신호. shadow 충돌은 함수 안에서 자체 감지하여 ns_inline_list 를 활성화.
     pub fn registerNamespaceRewrites(
         self: *const Linker,
         ns_rewrite_list: *std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry),
-        ns_inline_list: ?*std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
+        ns_inline_list: *std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
+        force_inline: bool,
+        importer_mod_idx: u32,
         symbol_id: u32,
         target_mod_idx: u32,
         var_name: []const u8,
@@ -1927,10 +1935,17 @@ pub const Linker = struct {
             break :blk owned_slice;
         };
 
-        // 캐시된 exports로 inner_map 구축.
-        // owned 문자열은 캐시가 소유하므로, inner_map에서 사용할 복사본 생성.
+        // importer 의 nested binding 과 충돌하는 export 는 inline 시 self-shadow 무한
+        // 재귀 위험 → 매핑 등록을 건너뛰고 has_shadow 로 추적.
+        // (예: `const setSelectedLog = (i) => LogBoxData.setSelectedLog(i);` 가
+        //  `const setSelectedLog = (i) => setSelectedLog(i);` 로 inline 되는 케이스)
         var inner_map = std.StringHashMap([]const u8).init(self.allocator);
+        var has_shadow = false;
         for (cached_exports) |exp| {
+            if (self.hasNestedBinding(importer_mod_idx, exp.exported)) {
+                has_shadow = true;
+                continue;
+            }
             const local = if (exp.owned)
                 try self.allocator.dupe(u8, exp.local)
             else
@@ -1942,16 +1957,17 @@ pub const Linker = struct {
             .map = inner_map,
         });
 
-        if (ns_inline_list) |list| {
+        // ns_inline_list 활성화 조건: caller 가 명시 (force_inline) 또는 shadow 충돌 발생.
+        // 후자의 경우 codegen fallback 이 namespace 객체 access 로 emit 할 수 있도록 객체가 필요.
+        if (force_inline or has_shadow) {
             const obj_str = try self.buildInlineObjectStr(target_mod_idx, 0);
-            // seen 맵 재구성 — makeUniqueNsVarName에서 export 이름 충돌 확인용
             var seen = std.StringHashMap(void).init(self.allocator);
             defer seen.deinit();
             for (cached_exports) |exp| {
                 try seen.put(exp.exported, {});
             }
             const ns_var_name = try self.makeUniqueNsVarName(var_name, &seen);
-            try list.append(self.allocator, .{
+            try ns_inline_list.append(self.allocator, .{
                 .symbol_id = symbol_id,
                 .object_literal = obj_str,
                 .var_name = ns_var_name,
