@@ -368,7 +368,7 @@ pub const Reference = struct {
 ///   - `{ .declare = true }`            — 선언 위치 (#1669 부터 모든 scope). node_index 는 NodeIndex.none
 ///     (선언 span 을 Reference 에 싣지 않음 — buildFromSemantic 은 scope_id==0 + stmt_idx 로 bucket 분배)
 ///
-/// #1791 type-context flag (oxc 식 `ReferenceFlags::Type` / `ValueAsType` 에 대응):
+/// #1791 type-context flag:
 ///   - `{ .read = true, .type_context = true }` — `x: T`, `interface I extends T` 등 type 문맥 내 참조
 ///   - `{ .read = true, .value_as_type = true }` — `typeof x`, `keyof x` — value id 를 type 으로 사용
 ///   - 두 flag 모두 false 인 `.read` 는 "값으로 참조됨" — import binding elision (#1791 Phase D)

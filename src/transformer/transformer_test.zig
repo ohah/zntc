@@ -1214,7 +1214,7 @@ test "verbatimModuleSyntax=true: 미사용 default import 보존" {
 }
 
 // ============================================================
-// type-only import binding elision (#1791, oxc-style Reference flags)
+// type-only import binding elision (#1791)
 //
 // analyzer 가 TS type node 에 진입할 때 `type_context_depth` 를 올려 내부 식별자의
 // Reference 에 `flags.type_context=true` 를 기록한다. Phase D 는 이 flag 를 근거로

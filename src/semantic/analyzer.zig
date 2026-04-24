@@ -143,7 +143,7 @@ pub const SemanticAnalyzer = struct {
     /// would produce an Early Error, the extension is not applied."
     in_annex_b_context: bool = false,
 
-    /// #1791 oxc 식 type-context 추적. 양수이면 현재 방문 중인 식별자가 TypeScript type
+    /// #1791 type-context 추적. 양수이면 현재 방문 중인 식별자가 TypeScript type
     /// 문맥 (`x: T`, `interface I extends T`, `T[]` 등) 내에 있음. `resolveIdentifier` 가
     /// 생성하는 `Reference.flags` 에 `type_context=true` 로 반영되어, import binding
     /// elision (#1791 Phase D) 이 value-use 와 type-use 를 구분할 수 있게 한다.
