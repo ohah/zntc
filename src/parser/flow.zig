@@ -192,11 +192,10 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
                 // 배열 타입: T[]
                 try self.advance(); // [
                 try self.advance(); // ]
-                base = try self.ast.addNode(.{
-                    .tag = .flow_array_type,
-                    .span = .{ .start = start, .end = self.currentSpan().start },
-                    .data = .{ .unary = .{ .operand = base, .flags = 0 } },
-                });
+                base = try self.ast.addEmptyExtraNode(
+                    .flow_array_type,
+                    .{ .start = start, .end = self.currentSpan().start },
+                );
             } else {
                 // Indexed access type: Type['key'] / Type[number]
                 try self.advance(); // skip [
@@ -395,12 +394,11 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         // typeof T
         .kw_typeof => {
             try self.advance();
-            const operand = try parseTypeReference(self);
-            return try self.ast.addNode(.{
-                .tag = .flow_type_query,
-                .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
-            });
+            _ = try parseTypeReference(self);
+            return try self.ast.addEmptyExtraNode(
+                .flow_type_query,
+                .{ .start = span.start, .end = self.currentSpan().start },
+            );
         },
         // 음수 리터럴 타입: -1
         .minus => {
@@ -538,12 +536,7 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
     const span = self.currentSpan();
 
     // variance: +T (covariant) 또는 -T (contravariant)
-    var flags: u16 = 0;
-    if (self.current() == .plus) {
-        flags = 1; // covariant
-        try self.advance();
-    } else if (self.current() == .minus) {
-        flags = 2; // contravariant
+    if (self.current() == .plus or self.current() == .minus) {
         try self.advance();
     }
 
@@ -555,13 +548,9 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
     try self.advance(); // type param name
 
     // constraint: T: Type (Flow 클래식) 또는 T extends Type (Flow 최신, RN 0.76+)
-    var constraint = NodeIndex.none;
-    if (self.current() == .colon) {
+    if (self.current() == .colon or self.current() == .kw_extends) {
         try self.advance();
-        constraint = try parseType(self);
-    } else if (self.current() == .kw_extends) {
-        try self.advance();
-        constraint = try parseType(self);
+        _ = try parseType(self);
     }
 
     // default: T = Type
@@ -569,11 +558,10 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
         _ = try parseType(self); // default type (파싱만 하고 스킵)
     }
 
-    return try self.ast.addNode(.{
-        .tag = .flow_type_parameter,
-        .span = .{ .start = span.start, .end = self.currentSpan().start },
-        .data = .{ .unary = .{ .operand = constraint, .flags = flags } },
-    });
+    return try self.ast.addEmptyExtraNode(
+        .flow_type_parameter,
+        .{ .start = span.start, .end = self.currentSpan().start },
+    );
 }
 
 // ================================================================
@@ -1450,9 +1438,14 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
             _ = try self.eat(.comma);
         }
 
-        // arm: binary { left=pattern, right=body }
+        // arm: binary { left=pattern, right=body }. outer expr 는 extra layout
+        // (discriminant + arms_start + arms_len) 이지만 여기 arm 은 `.binary` 로
+        // 저장. transformer `visitFlowMatch` (transformer.zig:~1937) 가 각 arm 에서
+        // `data.binary.left` (pattern) / `data.binary.right` (body) 를 실제로 읽는다.
+        // audit 에 "cosmetic" 으로 나타나더라도 이 arm 의 저장은 유지 — `.extra` 로
+        // 치환하면 silent failure (#1797 류).
         const arm = try self.ast.addNode(.{
-            .tag = .flow_match_expression, // arm도 같은 태그 재사용 (구분은 위치로)
+            .tag = .flow_match_expression, // arm 도 같은 태그 재사용 (구분은 위치로)
             .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
             .data = .{ .binary = .{ .left = pattern, .right = body, .flags = 0 } },
         });

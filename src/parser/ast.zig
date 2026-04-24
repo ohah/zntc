@@ -936,6 +936,21 @@ pub const Ast = struct {
         });
     }
 
+    /// 자식 없는 `extra` 노드 — TS/Flow strip-target 타입 표기 전용 (#1802 B2).
+    /// getLayout 이 `.extra, child_offsets = &.{}` 로 선언되어 있고 codegen/
+    /// transformer/semantic 어디도 data 를 읽지 않는 tag 에 사용. parse 부수효과
+    /// (advance, parseX) 만 필요한 경우 이 helper 로 node 만 등록.
+    /// empty `addExtras` 호출은 zero-alloc (ensureUnusedCapacity(0) no-op).
+    pub fn addEmptyExtraNode(self: *Ast, tag: Node.Tag, span: Span) !NodeIndex {
+        assertDataKind(tag, .extra);
+        const extra_idx = try self.addExtras(&.{});
+        return self.addNode(.{
+            .tag = tag,
+            .span = span,
+            .data = .{ .extra = extra_idx },
+        });
+    }
+
     /// `list` variant 를 쓰는 노드 (block_statement, array_expression 등).
     pub fn addListNode(self: *Ast, tag: Node.Tag, span: Span, list: NodeList) !NodeIndex {
         assertDataKind(tag, .list);
