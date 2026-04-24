@@ -610,12 +610,18 @@ fn rewriteDynamicImports(
     var result = try allocator.dupe(u8, code);
     errdefer allocator.free(result);
 
+    const source_chunk_idx = chunk_graph.getModuleChunk(module.index);
+
     for (module.import_records) |rec| {
         if (rec.kind != .dynamic_import) continue;
         if (rec.resolved == .none) continue;
 
         const target_chunk_idx = chunk_graph.getModuleChunk(rec.resolved);
         if (target_chunk_idx == .none) continue;
+
+        // target 이 같은 chunk 에 있으면 specifier 그대로 둔다 (inline_dynamic_imports
+        // 또는 우연한 same-chunk 케이스). 런타임에서 original path 로 해석되도록 위임.
+        if (source_chunk_idx != .none and target_chunk_idx == source_chunk_idx) continue;
 
         const target_chunk = chunk_graph.getChunk(target_chunk_idx);
 
