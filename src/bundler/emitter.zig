@@ -168,6 +168,28 @@ pub const EmitOptions = struct {
 pub const OutputFile = struct {
     path: []const u8,
     contents: []const u8,
+    /// code splitting 시 이 chunk 에 포함된 모듈들의 절대경로 (rolldown `chunk.moduleIds` 호환).
+    /// 단일 번들 모드 및 asset output 은 빈 slice. caller 가 소유 — deinit 에서 해제.
+    module_ids: []const []const u8 = &.{},
+    /// 이 chunk 가 import 하는 다른 chunk 들의 출력 path 목록.
+    imports: []const []const u8 = &.{},
+    /// 이 chunk 가 export 하는 심볼 이름 (cross-chunk 검증용).
+    exports: []const []const u8 = &.{},
+    /// "chunk" (JS/TS 번들 결과) / "asset" (binary/text/file/dataurl 로더 output).
+    kind: Kind = .chunk,
+
+    pub const Kind = enum { chunk, asset };
+
+    pub fn deinit(self: OutputFile, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        allocator.free(self.contents);
+        for (self.module_ids) |id| allocator.free(id);
+        if (self.module_ids.len > 0) allocator.free(self.module_ids);
+        for (self.imports) |im| allocator.free(im);
+        if (self.imports.len > 0) allocator.free(self.imports);
+        for (self.exports) |ex| allocator.free(ex);
+        if (self.exports.len > 0) allocator.free(self.exports);
+    }
 };
 
 /// 번들 출력 결과. output + 소스맵.

@@ -27,6 +27,11 @@ import { buildOptionsJson, ES_TARGET_BITS, browserslistToUnsupported } from "../
 interface OutputFile {
   path: string;
   text: string;
+  /** code splitting 시 이 chunk 에 포함된 모듈 절대경로 (rolldown `chunk.moduleIds` 호환).
+   * 단일 번들 / asset output 은 빈 배열. */
+  moduleIds?: string[];
+  /** 이 chunk 가 export 하는 심볼 이름 목록 (cross-chunk 검증용). */
+  exports?: string[];
 }
 
 interface Diagnostic {

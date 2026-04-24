@@ -66,10 +66,21 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     expect(vendor).toBeDefined();
     expect(entry).toBeDefined();
 
-    // vendor 청크에 수학/string-utils 구현 전부 (transitive dep 포함 정책)
+    // rolldown `chunk.moduleIds` 호환: 구조적 검증 (regex 없이)
+    expect(vendor!.moduleIds).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/vendor\/math\.ts$/),
+        expect.stringMatching(/vendor\/string-utils\.ts$/),
+      ]),
+    );
+    // 보조: vendor 청크에 수학/string-utils 구현 전부 (transitive dep 포함 정책)
     expect(vendor!.text).toMatch(/function\s+add\s*\(/);
     expect(vendor!.text).toMatch(/function\s+toUpper\s*\(/);
     expect(vendor!.text).toMatch(/function\s+multiply\s*\(/);
+
+    // moduleIds 는 entry / vendor 가 서로 겹치지 않아야 함
+    expect(entry!.moduleIds).toEqual(expect.arrayContaining([expect.stringMatching(/entry\.ts$/)]));
+    expect(entry!.moduleIds!.find((id) => id.includes("/vendor/"))).toBeUndefined();
 
     // entry 청크엔 ui/formatter 만, vendor 구현 없음
     expect(entry!.text).toMatch(/function\s+format\s*\(/);
@@ -502,6 +513,11 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
       // common chunk 로 분리되지 않았는지 — 단일 vendor 만 존재
       const vendors = result.outputFiles.filter((o) => o.path.includes("vendor"));
       expect(vendors.length).toBe(1);
+
+      // 구조적 검증: vendor 는 zod 내부 파일들만, entry 는 자기 자신만
+      expect(vendor!.moduleIds!.length).toBeGreaterThan(3);
+      expect(vendor!.moduleIds!.every((id) => id.includes("node_modules"))).toBe(true);
+      expect(entry!.moduleIds!.find((id) => id.includes("node_modules"))).toBeUndefined();
     },
   );
 
@@ -744,6 +760,15 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
       expect(reactChunk!.text.length).toBeGreaterThan(5000);
       // 서로 코드 섞이면 안 됨
       expect(reactChunk!.text).not.toMatch(/\bimmer\b/i);
+
+      // 구조적 검증: 각 chunk 가 정확한 모듈 집합만 소유
+      expect(reactChunk!.moduleIds!.every((id) => /\/(react|react-dom|scheduler)\//.test(id))).toBe(
+        true,
+      );
+      expect(vendorChunk!.moduleIds!.some((id) => id.includes("/immer/"))).toBe(true);
+      expect(
+        vendorChunk!.moduleIds!.find((id) => /\/(react|scheduler)\//.test(id)),
+      ).toBeUndefined();
     },
   );
 
