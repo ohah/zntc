@@ -1,8 +1,18 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
 :root {
   --sl-color-accent-low: #431407;
   --sl-color-accent: #f7a41d;
   --sl-color-accent-high: #fed7aa;
   --sl-content-pad-x: 1.5rem;
+
+  --sl-font:
+    "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --sl-font-mono:
+    "JetBrains Mono Variable", "SFMono-Regular", Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
 
   --sl-color-bg: #0d0a07;
   --sl-color-bg-nav: #141110;
@@ -107,6 +117,28 @@ starlight-toc a {
   border-radius: 0.25rem;
   font-size: 0.85em;
   border: 1px solid var(--sl-color-gray-5);
+}
+
+body {
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+.sl-markdown-content h1 {
+  letter-spacing: -0.03em;
+}
+
+.sl-markdown-content p,
+.sl-markdown-content li {
+  line-height: 1.7;
 }
 
 /* Monaco Editor: Starlight CSS 충돌 방지
