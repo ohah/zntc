@@ -225,8 +225,7 @@ pub const ResolveAccessor = struct {
     }
 
     pub fn appendDynamicImport(self: ResolveAccessor, idx: ModuleIndex, dep: ModuleIndex) !void {
-        const m = self.graph.moduleAtMut(idx) orelse return;
-        try m.addDynamicImport(self.graph.allocator, dep);
+        try self.graph.linkDynamicImport(idx, dep);
     }
 
     /// alias_table lazy 초기화 (existing Module.ensureAliasTable wrapper).
