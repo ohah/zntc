@@ -26,4 +26,5 @@ comptime {
     _ = @import("codegen_test/function_map.zig");
     _ = @import("codegen_test/skip_nodes_blank.zig");
     _ = @import("codegen_test/import_attributes.zig");
+    _ = @import("codegen_test/class_expr_anonymize.zig");
 }
