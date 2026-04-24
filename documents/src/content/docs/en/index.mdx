@@ -2,6 +2,13 @@
 title: ZTS
 description: A TypeScript Transpiler & Bundler written in Zig
 template: splash
+head:
+  - tag: style
+    content: |
+      main > .content-panel:first-child { display: none; }
+      main > .content-panel { padding: 0; border-top: 0; }
+      main > .content-panel > .sl-container { max-width: 100%; margin-inline: 0; }
+      main > .content-panel > .sl-container > .sl-markdown-content { max-width: 100%; }
 ---
 
 import Hero from "../../../components/landing/Hero.astro";
