@@ -558,6 +558,10 @@ pub const Node = struct {
                 // ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
                 // codegen::emitNamespaceIIFEInner 가 data.binary.left/right 를 읽는다.
                 .ts_module_declaration,
+                // ts_import_equals_declaration: binary = { left=name, right=value, flags }
+                // transformer::visitImportEqualsDeclaration 가 data.binary.left/right
+                // 를 읽어 `const X = require(...)` 런타임 코드로 변환한다.
+                .ts_import_equals_declaration,
                 => .{ .kind = .binary },
 
                 // === ternary ===
@@ -676,7 +680,6 @@ pub const Node = struct {
                 .ts_getter_signature,
                 .ts_setter_signature,
                 .ts_enum_declaration,
-                .ts_import_equals_declaration,
                 .ts_external_module_reference,
                 .ts_export_assignment,
                 .ts_namespace_export_declaration,

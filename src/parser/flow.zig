@@ -124,40 +124,50 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
 /// 선행 | 허용: | A | B
 fn parseUnionType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .pipe) try self.advance();
-    var left = try parseIntersectionType(self);
+    const first = try parseIntersectionType(self);
+    if (self.current() != .pipe) return first;
 
+    // `A | B | C` — flat NodeList 로 저장 (layout=.list).
+    const scratch_top = self.saveScratch();
+    defer self.restoreScratch(scratch_top);
+    try self.scratch.append(self.allocator, first);
+    const start = self.ast.getNode(first).span.start;
     while (self.current() == .pipe) {
-        const start = self.ast.getNode(left).span.start;
         try self.advance();
-        const right = try parseIntersectionType(self);
-        left = try self.ast.addNode(.{
-            .tag = .flow_union_type,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = left, .right = right, .flags = 0 } },
-        });
+        const next = try parseIntersectionType(self);
+        try self.scratch.append(self.allocator, next);
     }
-
-    return left;
+    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return try self.ast.addListNode(
+        .flow_union_type,
+        .{ .start = start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
 /// Intersection 타입: A & B & C
 /// 선행 & 허용: & A & B
 fn parseIntersectionType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .amp) try self.advance();
-    var left = try parsePrefixType(self);
+    const first = try parsePrefixType(self);
+    if (self.current() != .amp) return first;
 
+    // `A & B & C` — flat NodeList 로 저장 (layout=.list).
+    const scratch_top = self.saveScratch();
+    defer self.restoreScratch(scratch_top);
+    try self.scratch.append(self.allocator, first);
+    const start = self.ast.getNode(first).span.start;
     while (self.current() == .amp) {
-        const start = self.ast.getNode(left).span.start;
         try self.advance();
-        const right = try parsePrefixType(self);
-        left = try self.ast.addNode(.{
-            .tag = .flow_intersection_type,
-            .span = .{ .start = start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = left, .right = right, .flags = 0 } },
-        });
+        const next = try parsePrefixType(self);
+        try self.scratch.append(self.allocator, next);
     }
-
-    return left;
+    const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return try self.ast.addListNode(
+        .flow_intersection_type,
+        .{ .start = start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
 // ================================================================
@@ -486,13 +496,13 @@ pub fn parseTypeArguments(self: *Parser) ParseError2!NodeIndex {
 
     try self.expectClosingAngleBracket();
     const items = self.scratch.items[scratch_top..];
-    const extra = try self.ast.addNodeList(items);
+    const list = try self.ast.addNodeList(items);
     self.scratch.shrinkRetainingCapacity(scratch_top);
-    return try self.ast.addNode(.{
-        .tag = .flow_type_parameter_instantiation,
-        .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .extra = extra.start },
-    });
+    return try self.ast.addListNode(
+        .flow_type_parameter_instantiation,
+        .{ .start = start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
 /// 타입 인자 (식 컨텍스트, speculative).
@@ -522,13 +532,13 @@ pub fn parseTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
 
     try self.expectClosingAngleBracket();
     const items = self.scratch.items[scratch_top..];
-    const extra = try self.ast.addNodeList(items);
+    const list = try self.ast.addNodeList(items);
     self.scratch.shrinkRetainingCapacity(scratch_top);
-    return try self.ast.addNode(.{
-        .tag = .flow_type_parameter_declaration,
-        .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .extra = extra.start },
-    });
+    return try self.ast.addListNode(
+        .flow_type_parameter_declaration,
+        .{ .start = start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
 /// 개별 타입 파라미터: T, T: SuperType, T = DefaultType, +T, -T
@@ -775,11 +785,12 @@ fn parseExactObjectType(self: *Parser) ParseError2!NodeIndex {
         if (try self.ensureLoopProgress(loop_guard_pos)) break;
     }
 
-    return try self.ast.addNode(.{
-        .tag = .flow_exact_object_type,
-        .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .none = 0 },
-    });
+    // strip-only — 내부 멤버는 파싱 후 버리므로 빈 NodeList 저장 (layout=.list).
+    return try self.ast.addListNode(
+        .flow_exact_object_type,
+        .{ .start = start, .end = self.currentSpan().start },
+        .{ .start = 0, .len = 0 },
+    );
 }
 
 // ================================================================
@@ -802,13 +813,13 @@ fn parseTupleType(self: *Parser) ParseError2!NodeIndex {
 
     try self.expect(.r_bracket);
     const items = self.scratch.items[scratch_top..];
-    const extra = try self.ast.addNodeList(items);
+    const list = try self.ast.addNodeList(items);
     self.scratch.shrinkRetainingCapacity(scratch_top);
-    return try self.ast.addNode(.{
-        .tag = .flow_tuple_type,
-        .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .extra = extra.start },
-    });
+    return try self.ast.addListNode(
+        .flow_tuple_type,
+        .{ .start = start, .end = self.currentSpan().start },
+        list,
+    );
 }
 
 // ================================================================
