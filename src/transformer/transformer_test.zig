@@ -994,6 +994,197 @@ test "ES5 downlevel: labeled non-for-of statement unchanged" {
 }
 
 // ================================================================
+// #1797 for-of + let closure capture — ES5 down-level 시 per-iteration fresh
+// binding semantics 유지 (body 를 `var _loopN = function(key){...}` 로 추출).
+// 회귀 시 `for (let k of ...) arr.push(() => k)` 가 모든 클로저에서 마지막
+// k 를 공유 → bungae 의 `@radix-ui/react-slot __copyProps` 가 getter 로
+// 마지막 key 만 반환해 `React.forwardRef is not a function (it is '19.2.0')`.
+// ================================================================
+
+test "#1797 for-of + let + arrow closure: body 를 _loop 함수로 추출" {
+    const source =
+        \\for (let key of keys) {
+        \\  arr.push(() => from[key]);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // body 가 _loop 함수로 추출되고 루프 내부는 _loop(key) 호출만 남음.
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "function(key)") != null or
+        std.mem.indexOf(u8, code, "function (key)") != null);
+    // 루프 내부에 arr.push 가 직접 emit 되면 회귀 — _loop 안으로 들어가야.
+    const push_pos = std.mem.indexOf(u8, code, "arr.push") orelse unreachable;
+    const loop_pos = std.mem.indexOf(u8, code, "_loop") orelse unreachable;
+    try std.testing.expect(push_pos > loop_pos);
+}
+
+test "#1797 for-of + let + function expression closure: 동일 변환" {
+    const source =
+        \\for (let k of arr) {
+        \\  cbs.push(function() { return k; });
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // 파라미터로 k 가 전달
+    try std.testing.expect(std.mem.indexOf(u8, code, "(k)") != null);
+}
+
+test "#1797 for-of + const + closure: const 도 lexical 이므로 동일 변환" {
+    const source =
+        \\for (const k of arr) {
+        \\  cbs.push(() => k);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+}
+
+test "#1797 for-of + let destructuring + closure: 여러 binding 모두 params" {
+    const source =
+        \\for (let { a, b } of arr) {
+        \\  cbs.push(() => a + b);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // 두 binding (a, b) 모두 _loop 파라미터로.
+    try std.testing.expect(std.mem.indexOf(u8, code, "a, b") != null or
+        std.mem.indexOf(u8, code, "a,b") != null);
+}
+
+test "#1797 for-of + let + closure + break: 제어흐름 처리" {
+    const source =
+        \\for (let k of arr) {
+        \\  if (k === 'stop') break;
+        \\  cbs.push(() => k);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // buildLoopClosureWithFlow 가 break 를 return sentinel 로 변환.
+    try std.testing.expect(std.mem.indexOf(u8, code, "return") != null);
+}
+
+test "#1797 negative: for-of + let 인데 closure 없으면 _loop 변환 안 함" {
+    // body 내부가 직접 값 사용 — closure capture 없음 → 기존 경로 유지.
+    const source =
+        \\for (let k of arr) {
+        \\  total = total + k;
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") == null);
+    // body 는 여전히 var k = _e.value; total = total + k; 형태.
+    try std.testing.expect(std.mem.indexOf(u8, code, "var k") != null);
+}
+
+test "#1797 negative: for-of + var (non-lexical) + closure → 변환 안 함" {
+    // var 는 function scope 이므로 원래 per-iteration fresh binding 이 없다.
+    // 개발자가 var 를 쓴 의도 존중 — _loop 변환 비활성.
+    const source =
+        \\for (var k of arr) {
+        \\  cbs.push(() => k);
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") == null);
+}
+
+test "#1797 negative: for-of down-level 꺼져있으면 변환 자체 비활성" {
+    // for_of=false 이면 ES2015 native for-of 유지 — closure capture 변환 불필요.
+    const source =
+        \\for (let k of arr) cbs.push(() => k);
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = false, .block_scoping = false } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "for (let k of") != null);
+}
+
+test "#1797 bungae __copyProps pattern: getter 가 iteration-local key 캡처" {
+    // @radix-ui/react-slot 이 esbuild 로 빌드한 `__copyProps` 의 정확한 패턴.
+    // RN Hermes 에서 `React$250 = '19.2.0'` crash 를 재현한 입력.
+    const source =
+        \\for (let key of __getOwnPropNames(from)) {
+        \\  if (!__hasOwnProp.call(to, key) && key !== except)
+        \\    __defProp(to, key, {
+        \\      get: () => from[key],
+        \\      enumerable: true,
+        \\    });
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // 루프 body 에서 직접 __defProp 가 호출되면 회귀 (closure 공유) — _loop 함수 내부로.
+    const defprop_pos = std.mem.indexOf(u8, code, "__defProp") orelse unreachable;
+    const loop_pos = std.mem.indexOf(u8, code, "_loop") orelse unreachable;
+    try std.testing.expect(defprop_pos > loop_pos);
+}
+
+// ================================================================
 // ES2022 top-level await (#1384)
 // ================================================================
 

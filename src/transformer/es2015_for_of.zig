@@ -44,6 +44,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 pub fn ES2015ForOf(comptime Transformer: type) type {
     return struct {
@@ -169,11 +170,46 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // var x = _e.value
             const elem_assign = try es_helpers.buildForOfLoopVarAssign(self, left, step_value, span);
 
+            // #1797: ES5 down-level 시 `for (let x of ...)` 의 body 가 closure (arrow /
+            // function expression) 로 `x` 를 캡처하면, `var x = _e.value` 로 단순 치환
+            // 시 per-iteration fresh binding semantics 가 깨져 모든 closure 가 마지막
+            // iteration 값을 공유한다 (`__copyProps` 의 getter 가 항상 마지막 key 를
+            // 반환 → RN 에서 `React.forwardRef is not a function (it is '19.2.0')`).
+            //
+            // block_scoping down-level 이 활성이고 left 가 let/const 이고 body 에 capture
+            // 가 있으면 body 를 `var _loopN = function(x) { ...body... }` 로 추출하고
+            // 루프 내부는 `_loopN(x);` 만 호출하도록 변환. break/continue/return 제어
+            // 흐름도 `buildLoopClosureWithFlow` 가 함께 처리.
+            var loop_fn_decl: ?NodeIndex = null;
+            var body_after_closure = new_body;
+            if (self.options.unsupported.block_scoping) {
+                const BlockScoping = es2015_block_scoping.ES2015BlockScoping(@TypeOf(self.*));
+                var lexical_names = try BlockScoping.collectLexicalVarNames(self, left);
+                defer lexical_names.deinit(self.allocator);
+
+                if (lexical_names.items.len > 0 and BlockScoping.hasCapturedClosure(self, body, lexical_names.items)) {
+                    var flow = BlockScoping.FlowResult{};
+                    flow.labels = .empty;
+                    defer flow.labels.deinit(self.allocator);
+                    BlockScoping.analyzeControlFlow(self, body, &flow, 0, 0);
+
+                    const result = try BlockScoping.buildLoopClosureWithFlow(
+                        self,
+                        new_body,
+                        lexical_names.items,
+                        &flow,
+                        span,
+                    );
+                    loop_fn_decl = result.loop_fn;
+                    body_after_closure = result.call_and_check;
+                }
+            }
+
             // prepend to body
-            const final_body = if (!new_body.isNone())
-                try self.prependStatementsToBody(new_body, &.{elem_assign})
+            const final_body = if (!body_after_closure.isNone())
+                try self.prependStatementsToBody(body_after_closure, &.{elem_assign})
             else
-                new_body;
+                body_after_closure;
 
             // --- for_statement ---
             const for_extra = try self.ast.addExtras(&.{
@@ -358,9 +394,14 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 .data = .{ .ternary = .{ .a = try_block, .b = catch_clause, .c = outer_finally_block } },
             });
 
-            // 4개 statement를 block으로 래핑하여 단일 노드로 반환.
+            // 4(+1)개 statement를 block으로 래핑하여 단일 노드로 반환.
             // pending_nodes를 쓰면 중첩 for-of에서 inner가 outer body 밖으로 빠져나감.
-            const wrapper_list = try self.ast.addNodeList(&.{ inc_decl, die_decl, ie_decl, try_catch_finally });
+            // loop_fn_decl 이 있으면 try-catch 밖 가장 앞에 삽입 — 루프가 매 iteration
+            // 마다 이 함수를 호출해 캡처 변수를 파라미터로 받아 fresh binding 효과를 낸다.
+            const wrapper_list = if (loop_fn_decl) |decl|
+                try self.ast.addNodeList(&.{ decl, inc_decl, die_decl, ie_decl, try_catch_finally })
+            else
+                try self.ast.addNodeList(&.{ inc_decl, die_decl, ie_decl, try_catch_finally });
             return self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
