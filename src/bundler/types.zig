@@ -120,12 +120,13 @@ pub const ManualChunksResolveFn = *const fn (
 
 /// Rollup `manualChunks(id, meta)` 의 `meta.getModuleInfo(id)` 반환 타입.
 /// 모든 slice 는 graph 수명 동안 borrowed — 추가 alloc/free 없음.
-/// NAPI 레이어는 `importers` / `imported_ids` 의 ModuleIndex 를
-/// `getModulePathByIndex` 로 순회해 JS string 배열을 직접 만든다.
+/// NAPI 레이어는 ModuleIndex 배열을 `getModulePathByIndex` 로 순회해 JS string 배열을 만든다.
 pub const ModuleInfo = struct {
     id: []const u8,
     importers: []const ModuleIndex,
+    dynamic_importers: []const ModuleIndex,
     imported_ids: []const ModuleIndex,
+    dynamically_imported_ids: []const ModuleIndex,
     is_entry: bool,
 };
 
@@ -137,7 +138,9 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
     return .{
         .id = m.path,
         .importers = m.importers.items,
+        .dynamic_importers = m.dynamic_importers.items,
         .imported_ids = m.dependencies.items,
+        .dynamically_imported_ids = m.dynamic_imports.items,
         .is_entry = m.is_entry_point,
     };
 }

@@ -117,6 +117,8 @@ pub const Module = struct {
     importers: std.ArrayList(ModuleIndex),
     /// 동적 import (별도 관리, code splitting용)
     dynamic_imports: std.ArrayList(ModuleIndex),
+    /// 나를 dynamic import 하는 모듈들 (역방향). `ModuleGraph.linkDynamicImport` 가 채움.
+    dynamic_importers: std.ArrayList(ModuleIndex),
 
     module_type: ModuleType,
     /// 모듈의 로딩 방식 (file/dataurl/text/binary/copy 등).
@@ -321,6 +323,7 @@ pub const Module = struct {
             .dependencies = .empty,
             .importers = .empty,
             .dynamic_imports = .empty,
+            .dynamic_importers = .empty,
             .module_type = .unknown,
             .side_effects = true,
             .exec_index = std.math.maxInt(u32),
@@ -347,6 +350,7 @@ pub const Module = struct {
         self.dependencies.deinit(allocator);
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
+        self.dynamic_importers.deinit(allocator);
         if (self.alias_table) |*t| t.deinit();
         // require.context: plugin 이 채운 outer slice + 각 inner string free (#1579 Phase 2).
         // contract: plugin 이 allocator 로 dupe 한 상태로 반환 → graph 가 일괄 해제.

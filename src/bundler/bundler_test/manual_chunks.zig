@@ -566,10 +566,12 @@ const MetaSeen = struct {
         is_entry: bool,
         importer_count: usize,
         imported_count: usize,
+        dynamic_importer_count: usize,
+        dynamically_imported_count: usize,
     }) = .empty,
     allocator: std.mem.Allocator,
 
-    // ModuleInfo.id / importers / imported_ids 는 graph 수명 동안 borrowed.
+    // ModuleInfo slice 들은 graph 수명 동안 borrowed.
     // bundle() 리턴 시 graph 가 deinit 되므로, 테스트에서는 record 시점에 dupe 해서 보관.
     fn record(self: *MetaSeen, info: types.ModuleInfo) !void {
         const owned_id = try self.allocator.dupe(u8, info.id);
@@ -579,6 +581,8 @@ const MetaSeen = struct {
             .is_entry = info.is_entry,
             .importer_count = info.importers.len,
             .imported_count = info.imported_ids.len,
+            .dynamic_importer_count = info.dynamic_importers.len,
+            .dynamically_imported_count = info.dynamically_imported_ids.len,
         });
     }
 
@@ -744,4 +748,68 @@ test "manualChunks meta.getModuleInfo: 다중 엔트리 + shared 모듈 토폴�
     try std.testing.expect(a_seen);
     try std.testing.expect(b_seen);
     try std.testing.expect(shared_seen);
+}
+
+// dynamic entry 모듈은 resolver 가 건너뛰므로 (chunk.zig policy),
+// dyn-dep 의 역방향 정보는 entry resolver 안에서 직접 graph 조회로 검증.
+const DynamicMetaProbe = struct {
+    // entry 에서 직접 조회할 dyn-dep 경로
+    dyn_dep_path: []const u8,
+    // entry resolver 호출 시점에 dyn-dep 의 dynamic_importers 길이 기록
+    dyn_dep_dynamic_importer_count: ?usize = null,
+    dyn_dep_static_importer_count: ?usize = null,
+};
+
+fn resolverDynamicProbe(ctx: ?*anyopaque, id: []const u8, graph: ?*const anyopaque) ?[]const u8 {
+    const probe: *DynamicMetaProbe = @ptrCast(@alignCast(ctx.?));
+    if (std.mem.endsWith(u8, id, "entry.ts")) {
+        if (types.getModuleInfo(graph, probe.dyn_dep_path)) |info| {
+            probe.dyn_dep_dynamic_importer_count = info.dynamic_importers.len;
+            probe.dyn_dep_static_importer_count = info.importers.len;
+        }
+    }
+    return null;
+}
+
+test "manualChunks meta.getModuleInfo: dynamic import 는 static importers/importedIds 에 안 잡히고 dynamic 쪽으로" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { s } from "./static-dep";
+        \\export async function load() { return (await import("./dyn-dep")).default; }
+        \\console.log(s);
+    );
+    try writeFile(tmp.dir, "static-dep.ts", "export const s = 1;");
+    try writeFile(tmp.dir, "dyn-dep.ts", "export default 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const dyn_dep = try absPath(&tmp, "dyn-dep.ts");
+    defer std.testing.allocator.free(dyn_dep);
+
+    // 1차 — MetaSeen 으로 entry / static-dep 측 assertion.
+    var seen = MetaSeen{ .allocator = std.testing.allocator };
+    defer seen.deinit();
+
+    // 같은 resolver 가 MetaSeen 과 DynamicMetaProbe 둘 다 만질 순 없으니
+    // ctx 에 probe 만 넘기고 MetaSeen 기록은 여기서 포기. 정적 쪽은
+    // 기존 "isEntry / importers" 테스트가 이미 커버.
+    var probe = DynamicMetaProbe{ .dyn_dep_path = dyn_dep };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks_resolver = resolverDynamicProbe,
+        .manual_chunks_ctx = &probe,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    // entry resolver 가 호출됐고 dyn-dep 를 찾을 수 있었다면 각 값 set.
+    try std.testing.expect(probe.dyn_dep_dynamic_importer_count != null);
+    try std.testing.expectEqual(@as(usize, 1), probe.dyn_dep_dynamic_importer_count.?);
+    try std.testing.expectEqual(@as(usize, 0), probe.dyn_dep_static_importer_count.?);
 }

@@ -452,4 +452,67 @@ describe("manualChunks NAPI bridge", () => {
     expect(all).toContain("B_MARK");
     expect(all).toContain("C_MARK");
   });
+
+  test("meta.getModuleInfo: entry.dynamicallyImportedIds — entry 가 dynamic 으로 import 하는 것", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { s } from "./static-dep";
+        export async function load() { return (await import("./dyn-dep")).default; }
+        console.log(s);
+      `,
+      "static-dep.ts": "export const s = 1;",
+      "dyn-dep.ts": "export default 42;",
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => ({
+      imported: info.importedIds,
+      dyn: info.dynamicallyImportedIds,
+    }));
+    const entry = [...seen.entries()].find(([k]) => k.endsWith("entry.ts"))![1];
+    expect(entry.imported.some((p) => p.endsWith("static-dep.ts"))).toBe(true);
+    expect(entry.imported.some((p) => p.endsWith("dyn-dep.ts"))).toBe(false);
+    expect(entry.dyn.some((p) => p.endsWith("dyn-dep.ts"))).toBe(true);
+    expect(entry.dyn.some((p) => p.endsWith("static-dep.ts"))).toBe(false);
+  });
+
+  test("meta.getModuleInfo: dynamic-dep.dynamicImporters — 누가 dynamic 으로 import 하는가", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        async function main() {
+          const m = await import("./dyn-dep");
+          console.log(m.default);
+        }
+        main();
+      `,
+      "dyn-dep.ts": 'export default "DYN_VALUE";',
+    });
+    cleanup = fixture.cleanup;
+
+    // dyn-dep 은 resolver 호출에서 제외되는 dynamic entry 라 직접 조회가 안 된다.
+    // 대신 entry resolver 안에서 entry.dynamicallyImportedIds 로 dyn-dep 의 실제 저장 경로를
+    // 받아 그대로 조회 (macOS /private prefix 같은 경로 정규화 이슈 회피).
+    const results: Array<{ importers: string[]; dynamicImporters: string[] }> = [];
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (!id.endsWith("entry.ts")) return null;
+        const entryInfo = meta.getModuleInfo(id);
+        if (!entryInfo) return null;
+        const dynPath = entryInfo.dynamicallyImportedIds.find((p) => p.endsWith("dyn-dep.ts"));
+        if (!dynPath) return null;
+        const info = meta.getModuleInfo(dynPath);
+        if (info) {
+          results.push({ importers: info.importers, dynamicImporters: info.dynamicImporters });
+        }
+        return null;
+      },
+    });
+
+    expect(results.length).toBe(1);
+    expect(results[0].importers.length).toBe(0);
+    expect(results[0].dynamicImporters.length).toBe(1);
+    expect(results[0].dynamicImporters[0].endsWith("entry.ts")).toBe(true);
+  });
 });
