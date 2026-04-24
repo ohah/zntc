@@ -389,6 +389,7 @@ pub fn transpileWithCallback(
     });
     transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
     transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
     transformer.line_offsets = scanner.line_offsets.items;
     const root = transformer.transform() catch return error.TransformError;
 
