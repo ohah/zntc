@@ -18,6 +18,14 @@ const helpers = @import("../test_helpers.zig");
 const compat = @import("../../transformer/compat.zig");
 const writeFile = helpers.writeFile;
 
+/// fn 정의 한 개의 body 만 잘라낸다 — `function <sig>` ~ `return <ret>` 까지.
+/// 그 다음 정의로 spill 하지 않도록 trailing slack 없이 정확히 자른다.
+fn fnBody(code: []const u8, sig: []const u8, ret_marker: []const u8) ?[]const u8 {
+    const start = std.mem.indexOf(u8, code, sig) orelse return null;
+    const ret_idx = std.mem.indexOfPos(u8, code, start, ret_marker) orelse return null;
+    return code[start..ret_idx + ret_marker.len];
+}
+
 fn bundleEntry(backing: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !helpers.Bundled {
     // RN/Hermes 환경 시뮬레이션: block_scoping (let → var) 강제 lowering.
     return helpers.bundleEntry(backing, tmp, entry_name, .{
@@ -54,13 +62,10 @@ test "rename leak: assignment LHS 가 block-rename suffix 적용됨 (compound fo
 
     // `var acc$1 = 0` 정의 + `acc$1 = acc$1 + i` 로 양쪽 rename. 좌변 `acc =` (suffix 없음) 가
     // 함수 body 안에 있으면 BUG.
-    const fn_idx = std.mem.indexOf(u8, code, "function sum(n)") orelse return error.TestUnexpectedResult;
-    const fn_end = std.mem.indexOfPos(u8, code, fn_idx, "return acc") orelse code.len;
-    const fn_body = code[fn_idx..@min(fn_end + 20, code.len)];
-
-    try testing.expect(std.mem.indexOf(u8, fn_body, "var acc$1 = 0") != null);
-    try testing.expect(std.mem.indexOf(u8, fn_body, "acc = acc$1 + i") == null);
-    try testing.expect(std.mem.indexOf(u8, fn_body, "acc$1 = acc$1 + i") != null);
+    const body = fnBody(code, "function sum(n)", "return acc") orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, body, "var acc$1 = 0") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "acc = acc$1 + i") == null);
+    try testing.expect(std.mem.indexOf(u8, body, "acc$1 = acc$1 + i") != null);
 }
 
 // for-of + template literal 조합 (실제 whatwg-url-minimum.mjs 패턴).
@@ -87,24 +92,13 @@ test "rename leak: for-of body 의 template literal compound assign 도 일관 r
     defer r.deinit();
     const code = r.code();
 
-    const fn_idx = std.mem.indexOf(u8, code, "function serializePath(e)") orelse return error.TestUnexpectedResult;
-    const fn_end = std.mem.indexOfPos(u8, code, fn_idx, "return t") orelse code.len;
-    const fn_body = code[fn_idx..@min(fn_end + 20, code.len)];
-
-    // 정의가 `var t$1 = ""` 으로 rename 되어야 + compound assign 좌변도 같은 suffix.
-    try testing.expect(std.mem.indexOf(u8, fn_body, "var t$1 = \"\"") != null);
-    // BUG 패턴: 좌변 `t +=` (suffix 없음) 가 함수 body 안에 있으면 안 됨.
-    // suffix 가 붙은 정의 (`t$1 +=`) 는 OK.
-    try testing.expect(std.mem.indexOf(u8, fn_body, "t$1 += ") != null);
-    // word-boundary 검사: `t += ...` 직전이 식별자 일부 (`$N` 등) 가 아닌 케이스만 BUG.
-    var search: usize = 0;
-    while (std.mem.indexOfPos(u8, fn_body, search, "t += ")) |idx| : (search = idx + 1) {
-        // 직전 문자가 alphanumeric / `$` / `_` 면 다른 식별자의 일부 (e.g. `t$1 += `).
-        if (idx == 0) return error.TestUnexpectedResult; // 함수 body 시작이 `t +=` 면 명백한 BUG.
-        const prev = fn_body[idx - 1];
-        const is_ident_char = std.ascii.isAlphanumeric(prev) or prev == '$' or prev == '_';
-        if (!is_ident_char) return error.TestUnexpectedResult;
-    }
+    const body = fnBody(code, "function serializePath(e)", "return t") orelse return error.TestUnexpectedResult;
+    // 정의 + compound assign 좌변 모두 `t$1` suffix.
+    // 좌변 `t +=` (suffix 없음) 검색은 substring 매칭이 식별자 경계를 자동으로 인식 —
+    // `t$1 += ` 는 `t += ` 와 매칭되지 않으므로 indexOf 만으로 충분.
+    try testing.expect(std.mem.indexOf(u8, body, "var t$1 = \"\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "t$1 += ") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "t += ") == null);
 }
 
 // 충돌 없는 단일 let 은 rename 없이 유지 (over-fix 방지).

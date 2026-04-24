@@ -1290,15 +1290,15 @@ pub const Transformer = struct {
                         return new_idx;
                     }
                 }
-                if (try self.tryRenameIdentifierLike(idx, node, .identifier_reference)) |i| return i;
+                if (try self.tryRenameIdentifierLike(idx, .identifier_reference)) |i| return i;
                 return self.copyNodeDirect(idx);
             },
             .binding_identifier => {
-                if (try self.tryRenameIdentifierLike(idx, node, .binding_identifier)) |i| return i;
+                if (try self.tryRenameIdentifierLike(idx, .binding_identifier)) |i| return i;
                 return self.copyNodeDirect(idx);
             },
             .assignment_target_identifier => {
-                if (try self.tryRenameIdentifierLike(idx, node, .assignment_target_identifier)) |i| return i;
+                if (try self.tryRenameIdentifierLike(idx, .assignment_target_identifier)) |i| return i;
                 return self.copyNodeDirect(idx);
             },
             .template_element => blk: {
@@ -1408,11 +1408,11 @@ pub const Transformer = struct {
     fn tryRenameIdentifierLike(
         self: *Transformer,
         idx: NodeIndex,
-        node: Node,
         comptime tag: Tag,
     ) Error!?NodeIndex {
         if (!self.options.unsupported.block_scoping) return null;
         if (self.block_rename_stack.items.len == 0) return null;
+        const node = self.ast.getNode(idx);
         const text = self.ast.getText(node.data.string_ref);
         const new_name = self.lookupBlockRename(text) orelse return null;
         const new_span = try self.ast.addString(new_name);
