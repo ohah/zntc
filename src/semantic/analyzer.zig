@@ -1529,7 +1529,22 @@ pub const SemanticAnalyzer = struct {
             // `type_context=true` flag 와 함께. `typeof` (ts_type_query) 는 별도
             // `value_as_type` bit 로 구분. type_context_depth / value_as_type_depth 가
             // 중첩을 지원.
-            .ts_type_reference,
+            //
+            // 대부분의 TS type node 는 `ast.zig` 의 `child_offsets = &.{}` 로 선언되어
+            // ast_walk.children 으로는 내부 식별자에 도달할 수 없다 (런타임 워커 가정).
+            // `ts_type_reference` 는 extra = [name_start, name_end, type_args] 로
+            // raw span 을 저장하므로 analyzer 가 직접 name 을 resolve 한다.
+            .ts_type_reference => {
+                self.type_context_depth += 1;
+                defer self.type_context_depth -= 1;
+                try self.visitTypeReferenceNode(idx, node);
+            },
+            .ts_type_query => {
+                // typeof X — 자식 identifier 는 value identifier 지만 type 으로 사용
+                self.value_as_type_depth += 1;
+                defer self.value_as_type_depth -= 1;
+                try self.visitTypeContextNode(idx, node);
+            },
             .ts_qualified_name,
             .ts_array_type,
             .ts_tuple_type,
@@ -1568,12 +1583,6 @@ pub const SemanticAnalyzer = struct {
             => {
                 try self.visitTypeContextNode(idx, node);
             },
-            .ts_type_query => {
-                // typeof X — 자식 identifier 는 value identifier 지만 type 으로 사용
-                self.value_as_type_depth += 1;
-                defer self.value_as_type_depth -= 1;
-                try self.visitTypeContextNode(idx, node);
-            },
 
             // ---- 스킵 (TS 타입 keyword, 리터럴, 식별자 등) ----
             else => {},
@@ -1593,6 +1602,33 @@ pub const SemanticAnalyzer = struct {
             if (child.isNone()) continue;
             try self.visitNode(child);
         }
+    }
+
+    /// `ts_type_reference` 는 `extra = [name_start, name_end, type_args_idx]` layout
+    /// 으로 이름을 raw span 으로 저장 (`ast.zig` `child_offsets = &.{}`). analyzer 가
+    /// 직접 source 에서 name 을 추출해 `resolveIdentifier` 로 scope 조회하고, 찾은
+    /// symbol 의 Reference 에 `type_context=true` 를 기록. type arguments (generic
+    /// `T<U>`) 는 재귀 방문.
+    fn visitTypeReferenceNode(self: *SemanticAnalyzer, idx: NodeIndex, node: Node) AllocError!void {
+        const e = node.data.extra;
+        const extras = self.ast.extra_data.items;
+        if (e + 2 >= extras.len) return;
+        const name_start = extras[e];
+        const name_end = extras[e + 1];
+        if (name_start <= name_end and name_end <= self.ast.source.len) {
+            const name = self.ast.source[name_start..name_end];
+            // qualified name (Foo.Bar) 은 `.` 기준으로 base segment 만 resolve —
+            // `Bar` 는 `Foo` 의 property 이므로 scope 에는 없음.
+            const base = if (std.mem.indexOfScalar(u8, name, '.')) |dot|
+                name[0..dot]
+            else
+                name;
+            if (base.len > 0) {
+                self.resolveIdentifier(base, idx, .{ .read = true });
+            }
+        }
+        const type_args: NodeIndex = @enumFromInt(extras[e + 2]);
+        if (!type_args.isNone()) try self.visitNode(type_args);
     }
 
     fn visitNodeList(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
@@ -2876,6 +2912,11 @@ pub const SemanticAnalyzer = struct {
                                 // transpile 에서 이름을 보존하고, specifier 출력이 원본 이름을
                                 // 그대로 쓰더라도 참조 정합성이 유지된다.
                                 self.markSymbolExported(local_name, false);
+                                // #1791: export specifier 의 local 은 value 참조.
+                                // 기존 analyzer 는 존재 검증만 하고 Reference 를 만들지
+                                // 않았는데, 이 경우 Phase D 가 `export { X }` 의 X 를
+                                // 미사용으로 오판 → import drop → ReferenceError.
+                                self.resolveIdentifier(local_name, local_idx, .{ .read = true });
                             }
                         }
                     }
