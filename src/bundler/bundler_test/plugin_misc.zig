@@ -2191,3 +2191,39 @@ test "JSX automatic: _createElement import injected when key-after-spread used" 
     // `react` package 에서 createElement 를 가져오는 require 가 번들에 주입되어야.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"react\")") != null);
 }
+
+// Regression: expo-router 의 `useScreens.js` 처럼 .js 확장자 + JSX 인 케이스.
+// 실제 expo-router 빌드 산출물의 routeToScreen() 형태를 그대로 재현.
+// .tsx 가 아닌 .js 에서도 동일 fix 가 동작해야 함 (JSX 활성은 확장자가 아니라 ast.has_jsx).
+test "JSX automatic: _createElement injected for .js source (expo-router useScreens shape)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\const primitives = { Screen: function() { return null; } };
+        \\export function routeToScreen(route, opts = {}) {
+        \\  const { options, getId, ...props } = opts;
+        \\  return (<primitives.Screen {...props} name={route.route} key={route.route} getId={getId} options={options}/>);
+        \\}
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .jsx_runtime = .automatic_dev,
+        // RN 프리셋과 동일하게 .js 에서 JSX 파싱 활성화 — bungae 가 react-native platform 으로
+        // 호출 시 자동으로 true. 이게 없으면 .js 의 JSX 가 syntax error.
+        .jsx_in_js = true,
+        .external = &.{ "react/jsx-dev-runtime", "react" },
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_createElement(") != null);
+    const has_def = std.mem.indexOf(u8, result.output, "_createElement = ") != null or
+        std.mem.indexOf(u8, result.output, "var _createElement") != null;
+    try std.testing.expect(has_def);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"react\")") != null);
+}
