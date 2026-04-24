@@ -1008,6 +1008,11 @@ test {
     _ = @import("phase.zig");
 }
 
+// module_list (StableSegmentedList) sanity check (#1779 PR #3 follow-up)
+test {
+    _ = @import("module_list.zig");
+}
+
 // ============================================================
 // ModuleGraph.linkDependency tests (#1779 PR #2)
 // ============================================================
