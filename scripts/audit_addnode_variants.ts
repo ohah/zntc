@@ -395,9 +395,13 @@ function analyzeDataReaders(files: string[]): Map<string, VariantLocations> {
 	const tagVariants = new Map<string, VariantLocations>();
 	for (const { path, text } of fileTexts) {
 		const displayPath = relative(ROOT, path);
+		// splitTopLevelCommas 는 `{}/()/[]` depth 로 top-level 콤마를 분리하므로
+		// 반드시 clean text 를 써야 한다. raw body 는 주석/문자열 안의 unbalanced
+		// brace 때문에 depth 가 꼬여 arm 이 하나로 합쳐지는 bug (#1823 2차 디버깅).
+		const clean = stripStringsAndComments(text);
 		for (const { start, end } of findSwitches(text)) {
-			const body = text.slice(start, end);
-			for (const { offset, arm } of splitTopLevelCommas(body)) {
+			const cleanBody = clean.slice(start, end);
+			for (const { offset, arm } of splitTopLevelCommas(cleanBody)) {
 				const arrow = arm.indexOf("=>");
 				if (arrow < 0) continue;
 				const head = arm.slice(0, arrow);
