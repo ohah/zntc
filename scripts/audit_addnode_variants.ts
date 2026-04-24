@@ -4,17 +4,24 @@
  *
  * Two-pass analysis:
  *   1. Extract the Tag→DataKind table from src/parser/ast.zig::getLayout.
- *   2. Parse codegen.zig switches with proper brace-tracking and follow each
- *      arm's emit-function body (or inline `data.X` access) to collect the
- *      variants codegen reads for each tag.
+ *   2. Parse `DATA_READER_DIRS` switches with proper brace-tracking and follow
+ *      each arm's body (or inline `data.X` access) to collect the variants
+ *      each reader file reads per tag. Function-variant propagation spans all
+ *      reader files (same-name functions union their variants conservatively)
+ *      to catch cross-file indirections like `visitNode → visitImportEquals`.
  *
  * For every `.addNode(.{ .tag = X, ..., .data = .{ .Y = ... } })` call in src/:
- *   - If Y ≠ layout-expected kind AND codegen reads a *different* variant for
+ *   - If Y ≠ layout-expected kind AND a reader reads a *different* variant for
  *     that tag, flag as a **REAL** (#1797-class) silent failure.
  *   - Otherwise surface as cosmetic and continue.
  *
  * Exits non-zero when any REAL mismatch is found. Cosmetic mismatches are
  * reported but do not fail the audit (tracked separately in #1802).
+ *
+ * Why multi-file scan: codegen is not the only data consumer. Transformer /
+ * semantic analyzer also read `node.data.binary.left` etc. — restricting the
+ * read-set to codegen.zig was how #1802 B2 initially misclassified
+ * `ts_import_equals_declaration` / `flow_match_expression` arm as cosmetic.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, dirname } from "node:path";
@@ -23,7 +30,14 @@ import { fileURLToPath } from "node:url";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, "..");
 const AST_FILE = join(ROOT, "src", "parser", "ast.zig");
-const CODEGEN_FILE = join(ROOT, "src", "codegen", "codegen.zig");
+/** Files that read `node.data.<variant>` and decide tag layout. Scanned for
+ * switch arms and function bodies; results unioned into a single tag→variants
+ * map. Order doesn't matter. */
+const DATA_READER_DIRS = [
+	join(ROOT, "src", "codegen"),
+	join(ROOT, "src", "transformer"),
+	join(ROOT, "src", "semantic"),
+];
 
 const DATA_VARIANT_RE = /\.data\s*=\s*\.\{\s*\.(\w+)\s*=/;
 const TAG_RE = /\.tag\s*=\s*\.(\w+)\s*,/;
@@ -35,6 +49,7 @@ const DATA_ACCESS_RE = /\.data\.(\w+)\b/g;
 const LEAF_VARIANTS = new Set(["none", "string_ref", "number_bytes"]);
 const KINDS = new Set(["leaf", "unary", "binary", "ternary", "list", "extra"]);
 const ALL_DATA_VARIANTS = new Set([...LEAF_VARIANTS, "unary", "binary", "ternary", "list", "extra"]);
+
 
 function findMatchingBrace(text: string, openIdx: number): number {
 	let depth = 0;
@@ -223,63 +238,100 @@ function analyzeArmBody(armBody: string, fnVariants: Map<string, Set<string>>): 
 	}
 	DATA_ACCESS_RE.lastIndex = 0;
 	for (const m of armBody.matchAll(/(?:try\s+)?self\.(\w+)\s*\(/g)) {
-		const callee = m[1];
-		const fv = fnVariants.get(callee);
+		const fv = fnVariants.get(m[1]);
 		if (fv) for (const v of fv) variants.add(v);
 	}
 	return variants;
 }
 
-function analyzeCodegen(text: string): Map<string, Set<string>> {
-	const fns = extractFunctionBodies(text);
+/** Union sets in place. */
+function unionInto(dst: Set<string>, src: Set<string>): boolean {
+	let changed = false;
+	for (const v of src) {
+		if (!dst.has(v)) {
+			dst.add(v);
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+/**
+ * Scan all reader files, build a single `tag→variants` map spanning them.
+ *
+ * Cross-file function propagation: same-name functions in different files
+ * have their variant-sets merged conservatively (if any file's `makeX` reads
+ * `.binary`, callers of `makeX` anywhere get `.binary` attributed). This can
+ * over-attribute for namespace-colliding names but in practice that surfaces
+ * as extra cosmetic entries, not false REAL mismatches (caller must still
+ * store an aliased variant).
+ */
+function analyzeDataReaders(files: string[]): Map<string, Set<string>> {
+	// Per-file text kept for switch scanning. Function bodies merged globally.
+	const fileTexts = files.map((f) => readFileSync(f, "utf8"));
+
+	// Build merged fnVariants: union bodies for same name across files.
+	const fnBodies = new Map<string, string[]>();
+	for (const text of fileTexts) {
+		for (const [name, body] of extractFunctionBodies(text)) {
+			let list = fnBodies.get(name);
+			if (!list) {
+				list = [];
+				fnBodies.set(name, list);
+			}
+			list.push(body);
+		}
+	}
+
 	const fnVariants = new Map<string, Set<string>>();
-	for (const [name, body] of fns) {
+	for (const [name, bodies] of fnBodies) {
 		const v = new Set<string>();
-		for (const m of body.matchAll(DATA_ACCESS_RE)) {
-			if (ALL_DATA_VARIANTS.has(m[1])) v.add(m[1]);
+		for (const body of bodies) {
+			for (const m of body.matchAll(DATA_ACCESS_RE)) {
+				if (ALL_DATA_VARIANTS.has(m[1])) v.add(m[1]);
+			}
 		}
 		fnVariants.set(name, v);
 	}
-	// Propagate direct `self.fn2(...)` callee variants (up to 3 levels).
-	for (let pass = 0; pass < 3; pass++) {
-		let changed = false;
-		for (const [name, body] of fns) {
-			const before = fnVariants.get(name)!;
-			for (const m of body.matchAll(/(?:try\s+)?self\.(\w+)\s*\(/g)) {
-				const callee = m[1];
-				const callV = fnVariants.get(callee);
-				if (!callV) continue;
-				for (const v of callV) {
-					if (!before.has(v)) {
-						before.add(v);
-						changed = true;
-					}
-				}
-			}
-		}
-		if (!changed) break;
-	}
 
+	// NOTE: 의도적으로 "전이적 propagation" 없음.
+	//
+	// 원래는 A → B → C 호출 체인의 C 에서 data 를 읽으면 A 에 전파되도록 여러
+	// pass 를 돌렸다. 그러나 ZTS 의 codegen/transformer 구조가 switch-dispatcher
+	// 기반 (A 는 switch-only; 각 tag 별 concrete B 함수에 dispatch; B 가 data
+	// 직접 접근) 이므로 tag-level variant 는 switch arm scan 이 직접 매칭한다
+	// (arm tail 의 1-level callee 조회면 충분).
+	//
+	// 전이적 propagation 은 dispatcher 자체 variant 가 "모든 tag 의 union" 이
+	// 되어 호출자를 오염시키는 false-cosmetic 경로를 만들었다 (#1802 B2 리뷰 중
+	// `ts_import_equals_declaration` 이 `reads={모든 variant}` 로 과잉 매칭). tag
+	// 별 정확도를 희생시키지 않으면서 오염을 없애려면 — propagation 제거가
+	// 정답. 2+ level helper 체인이 실제로 data 를 읽는 극소수 경우는 follow-up
+	// 으로 arm body 내에서 해당 helper 를 직접 참조하면 같이 잡힌다.
+
+	// Scan switches in every reader file; accumulate into a single tag map.
 	const tagVariants = new Map<string, Set<string>>();
-	for (const { start, end } of findSwitches(text)) {
-		const body = text.slice(start, end);
-		for (const { arm } of splitTopLevelCommas(body)) {
-			const arrow = arm.indexOf("=>");
-			if (arrow < 0) continue;
-			const head = arm.slice(0, arrow);
-			const tail = arm.slice(arrow + 2);
-			const tags = Array.from(head.matchAll(/\.([a-zA-Z_][a-zA-Z_0-9]*)/g), (m) => m[1]).filter(
-				(t) => !KINDS.has(t),
-			);
-			if (tags.length === 0) continue;
-			const variants = analyzeArmBody(tail, fnVariants);
-			for (const tag of tags) {
-				let cur = tagVariants.get(tag);
-				if (!cur) {
-					cur = new Set();
-					tagVariants.set(tag, cur);
+	for (const text of fileTexts) {
+		for (const { start, end } of findSwitches(text)) {
+			const body = text.slice(start, end);
+			for (const { arm } of splitTopLevelCommas(body)) {
+				const arrow = arm.indexOf("=>");
+				if (arrow < 0) continue;
+				const head = arm.slice(0, arrow);
+				const tail = arm.slice(arrow + 2);
+				const tags = Array.from(head.matchAll(/\.([a-zA-Z_][a-zA-Z_0-9]*)/g), (m) => m[1]).filter(
+					(t) => !KINDS.has(t),
+				);
+				if (tags.length === 0) continue;
+				const variants = analyzeArmBody(tail, fnVariants);
+				for (const tag of tags) {
+					let cur = tagVariants.get(tag);
+					if (!cur) {
+						cur = new Set();
+						tagVariants.set(tag, cur);
+					}
+					unionInto(cur, variants);
 				}
-				for (const v of variants) cur.add(v);
 			}
 		}
 	}
@@ -375,14 +427,20 @@ function walk(dir: string): string[] {
 }
 
 function main(): number {
+	const verbose = process.argv.includes("--verbose") || process.argv.includes("-v");
 	const layout = parseLayoutTable(readFileSync(AST_FILE, "utf8"));
-	const codegenReads = analyzeCodegen(readFileSync(CODEGEN_FILE, "utf8"));
-	const nonEmpty = Array.from(codegenReads.values()).filter((v) => v.size > 0).length;
+	const readerFiles = DATA_READER_DIRS.flatMap((d) => walk(d));
+	const dataReads = analyzeDataReaders(readerFiles);
+	const nonEmpty = Array.from(dataReads.values()).filter((v) => v.size > 0).length;
 	console.log(`layout table: ${layout.size} tag entries`);
-	console.log(`codegen read-set: ${codegenReads.size} tags scanned, ${nonEmpty} with non-empty variants`);
+	console.log(
+		`data reader set: ${readerFiles.length} files scanned (codegen / transformer / semantic), ` +
+			`${dataReads.size} tags tracked, ${nonEmpty} with non-empty variants`,
+	);
 
-	const real: { path: string; lineNo: number; tag: string; variant: string; expected: string; reads: Set<string> }[] = [];
-	let cosmetic = 0;
+	type Mismatch = { path: string; lineNo: number; tag: string; variant: string; expected: string; reads: Set<string> };
+	const real: Mismatch[] = [];
+	const cosmeticList: Mismatch[] = [];
 	let total = 0;
 
 	for (const path of walk(join(ROOT, "src")).sort()) {
@@ -392,13 +450,9 @@ function main(): number {
 			if (!expected) continue;
 			const actualKind = resolveKind(variant);
 			if (actualKind === expected) continue;
-			const reads = codegenReads.get(tag) ?? new Set<string>();
-			if (reads.size === 0) {
-				cosmetic++;
-				continue;
-			}
-			if (reads.has(variant)) {
-				cosmetic++;
+			const reads = dataReads.get(tag) ?? new Set<string>();
+			if (reads.size === 0 || reads.has(variant)) {
+				cosmeticList.push({ path, lineNo, tag, variant, expected, reads });
 				continue;
 			}
 			real.push({ path, lineNo, tag, variant, expected, reads });
@@ -407,7 +461,33 @@ function main(): number {
 	}
 
 	console.log(`\nscanned ${total} .zig files`);
-	console.log(`cosmetic mismatches (layout inconsistency, codegen reads no data or reads same variant): ${cosmetic}`);
+	console.log(
+		`cosmetic mismatches (layout inconsistency, readers use no data or use same variant): ${cosmeticList.length}`,
+	);
+
+	if (verbose && cosmeticList.length > 0) {
+		console.log(`\n--- cosmetic detail (--verbose) ---`);
+		const byTag = new Map<string, Mismatch[]>();
+		for (const m of cosmeticList) {
+			let list = byTag.get(m.tag);
+			if (!list) {
+				list = [];
+				byTag.set(m.tag, list);
+			}
+			list.push(m);
+		}
+		for (const [tag, list] of Array.from(byTag.entries()).sort((a, b) => b[1].length - a[1].length)) {
+			const first = list[0];
+			const readsS = first.reads.size === 0 ? "∅" : Array.from(first.reads).sort().join(",");
+			const variants = Array.from(new Set(list.map((m) => m.variant))).sort().join(",");
+			console.log(
+				`  ${tag} (${list.length}, layout=${first.expected}, stored={${variants}}, reads={${readsS}})`,
+			);
+			for (const m of list) {
+				console.log(`    ${relative(ROOT, m.path)}:${m.lineNo} .${m.variant}`);
+			}
+		}
+	}
 
 	if (real.length === 0) {
 		console.log("\n✓ 0 REAL mismatches (#1797 class silent failures)");
@@ -419,7 +499,7 @@ function main(): number {
 		const rel = relative(ROOT, path);
 		const readsS = Array.from(reads).sort().join(", ");
 		console.log(`  ${rel}:${lineNo}`);
-		console.log(`    tag=.${tag}  stored=.${variant}  layout=.${expected}  codegen reads: {${readsS}}`);
+		console.log(`    tag=.${tag}  stored=.${variant}  layout=.${expected}  readers use: {${readsS}}`);
 	}
 	return 1;
 }
