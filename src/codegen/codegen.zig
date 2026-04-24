@@ -2255,7 +2255,11 @@ pub const Codegen = struct {
 
     fn emitImportExpr(self: *Codegen, node: Node) !void {
         try self.write("import(");
-        try self.emitNode(node.data.unary.operand);
+        try self.emitNode(node.data.binary.left);
+        if (!node.data.binary.right.isNone()) {
+            try self.write(if (self.options.minify_whitespace) "," else ", ");
+            try self.emitNode(node.data.binary.right);
+        }
         try self.writeByte(')');
     }
 
@@ -2990,42 +2994,41 @@ pub const Codegen = struct {
     }
 
     fn emitExportNamed(self: *Codegen, node: Node) !void {
-        const e = node.data.extra;
-        const extras = self.ast.extra_data.items[e .. e + 4];
-        const decl: NodeIndex = @enumFromInt(extras[0]);
-        const specs_start = extras[1];
-        const specs_len = extras[2];
-        const source: NodeIndex = @enumFromInt(extras[3]);
+        const x = module_parser.readExportNamedExtras(self.ast, node.data.extra);
 
         if (self.options.module_format == .cjs) {
-            return self.emitExportNamedCJS(decl, specs_start, specs_len, source);
+            return self.emitExportNamedCJS(x.decl, x.specs_start, x.specs_len, x.source);
         }
 
         // 번들 모드: export 키워드 생략, declaration만 출력.
         // 단일 파일 transpile 은 rename map 전달용으로만 linking_metadata 를 쓰므로 분기 제외.
         if (self.options.linking_metadata) |lm| {
-            if (lm.is_bundle_context and !decl.isNone()) {
-                try self.emitNode(decl);
+            if (lm.is_bundle_context and !x.decl.isNone()) {
+                try self.emitNode(x.decl);
                 return;
             }
         }
 
         try self.write("export ");
-        if (!decl.isNone()) {
-            try self.emitNode(decl);
+        if (!x.decl.isNone()) {
+            try self.emitNode(x.decl);
         } else {
             try self.writeByte('{');
             if (self.options.minify_whitespace) {
-                try self.emitNodeList(specs_start, specs_len, ",");
+                try self.emitNodeList(x.specs_start, x.specs_len, ",");
             } else {
                 try self.writeByte(' ');
-                try self.emitNodeList(specs_start, specs_len, ", ");
+                try self.emitNodeList(x.specs_start, x.specs_len, ", ");
                 try self.writeByte(' ');
             }
             try self.writeByte('}');
-            if (!source.isNone()) {
+            if (!x.source.isNone()) {
                 try self.write(" from ");
-                try self.emitNode(source);
+                try self.emitNode(x.source);
+                if (x.attrs_len > 0) {
+                    try self.write(" with ");
+                    try self.emitImportAttributes(x.attrs_start, x.attrs_len);
+                }
             }
             try self.writeByte(';');
         }

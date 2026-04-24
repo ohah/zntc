@@ -508,7 +508,6 @@ pub const Node = struct {
                 .computed_property_key,
                 .break_statement,
                 .continue_statement,
-                .import_expression,
                 .static_block,
                 // unary_expression, update_expression → extra 섹션에서 처리
                 .assignment_target_rest,
@@ -569,6 +568,10 @@ pub const Node = struct {
                 // ESM `import ... with { type: "json" }` 의 각 attr. key/value 가
                 // 실존하므로 leaf 가 아닌 binary layout.
                 .import_attribute,
+                // import_expression: binary = { left=arg, right=options, flags }
+                // `import(x)` 는 right=none. `import(x, { with: {...} })` 는 options 를
+                // 일반 ObjectExpression 으로 보존. codegen 이 right 유무로 ", opts" 출력 결정.
+                .import_expression,
                 // flow_match_arm: binary = { left=pattern, right=body, flags }
                 // outer flow_match_expression (extra layout) 의 arms list 구성원.
                 .flow_match_arm,
@@ -654,7 +657,7 @@ pub const Node = struct {
                 // import_declaration: extra = [specs_start, specs_len, source(2), phase_flags, attrs_start, attrs_len]
                 // phase_flags: u32. low 4 bits = ImportPhase (0=none, 1=defer, 2=source)
                 .import_declaration => .{ .kind = .extra, .child_offsets = &.{2} },
-                // export_named: extra = [decl(0), specs_start, specs_len, source(3)]
+                // export_named: extra = [decl(0), specs_start, specs_len, source(3), attrs_start(4), attrs_len(5)]
                 .export_named_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 3 } },
                 // export_default: unary = { operand: decl, flags: 0 }
                 .export_default_declaration => .{ .kind = .unary },
