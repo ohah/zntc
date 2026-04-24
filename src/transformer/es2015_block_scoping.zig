@@ -647,14 +647,16 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
         /// { v: expr } 객체 리터럴을 생성한다 (return 변환용).
         fn buildReturnObject(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            // object_property 는 `binary = { left=key, right=value, flags }` layout.
+            // 이전 구현은 `.extra` 로 생성해 codegen 의 `emitObjectProperty` 가
+            // `node.data.binary.left/right` 로 garbage 메모리를 읽어 panic (#1797 알려진
+            // 제약). 기존 `es_helpers.zig:31-35` 등 다른 object_property 생성 사이트와
+            // 동일한 binary layout 으로 수정.
             const key = try es_helpers.makeIdentifierRef(self, "v");
-            const prop_extra = try self.ast.addExtras(&.{
-                @intFromEnum(key), @intFromEnum(value), 0,
-            });
             const prop = try self.ast.addNode(.{
                 .tag = .object_property,
                 .span = span,
-                .data = .{ .extra = prop_extra },
+                .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
             });
             const obj_list = try self.ast.addNodeList(&.{prop});
             return self.ast.addNode(.{
@@ -682,10 +684,17 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // if (typeof _ret === "object") return _ret.v;
             if (flow.has_return) {
                 const ret_ref = try es_helpers.makeIdentifierRef(self, "_ret");
+                // unary_expression 의 data layout 은 `.extra = [operand, operator]`.
+                // 기존 `.unary` variant 로 생성하면 codegen 이 operand 대신 operator 토큰
+                // 문자열(`<=`)을 출력 → `if (<= === "object")` 문법 에러.
+                const typeof_extra = try self.ast.addExtras(&.{
+                    @intFromEnum(ret_ref),
+                    @intFromEnum(token_mod.Kind.kw_typeof),
+                });
                 const typeof_expr = try self.ast.addNode(.{
                     .tag = .unary_expression,
                     .span = span,
-                    .data = .{ .unary = .{ .operand = ret_ref, .flags = @intFromEnum(token_mod.Kind.kw_typeof) } },
+                    .data = .{ .extra = typeof_extra },
                 });
                 const obj_str = try es_helpers.buildStringNode(self, "\"object\"", span);
                 const typeof_check = try self.ast.addNode(.{

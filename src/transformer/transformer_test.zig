@@ -1101,6 +1101,77 @@ test "#1797 for-of + let + closure + break: 제어흐름 처리" {
     try std.testing.expect(std.mem.indexOf(u8, code, "return") != null);
 }
 
+test "#1797 for-of + let + closure + return: return expression 안의 closure 도 정상 변환" {
+    // 이전 알려진 제약: object_property 와 unary_expression 의 data layout 을
+    // 잘못 생성해 codegen panic / 잘못된 typeof emit. buildReturnObject 와
+    // buildControlFlowCheck 의 layout 수정으로 해소.
+    const source =
+        \\function find(arr) {
+        \\  for (let k of arr) {
+        \\    if (k === 'target') return () => k;
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    // _loop 함수로 body 추출됨.
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    // return sentinel 경로: typeof _ret === "object" 체크 emit.
+    try std.testing.expect(std.mem.indexOf(u8, code, "typeof _ret") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\"object\"") != null);
+    // sentinel 객체 `{ v: ... }` 형태 — object_property 정상 emit.
+    try std.testing.expect(std.mem.indexOf(u8, code, "v:") != null or
+        std.mem.indexOf(u8, code, "v :") != null);
+}
+
+test "#1797 for-of + const + closure + return: const 도 동일 변환" {
+    const source =
+        \\function findConst(arr) {
+        \\  for (const x of arr) {
+        \\    if (x === 1) return () => x;
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .for_of = true, .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "typeof _ret") != null);
+}
+
+test "#1797 for-loop + let + closure + return: for-loop 경로에도 동일 fix 적용" {
+    // visitForStatement 경로도 buildReturnObject / buildControlFlowCheck 를
+    // 공유하므로 같은 fix 로 panic 해소. 기존 숨어있던 버그.
+    const source =
+        \\function indexFind(arr) {
+        \\  for (let i = 0; i < arr.length; i++) {
+        \\    if (arr[i] === 'x') return () => arr[i];
+        \\  }
+        \\}
+    ;
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        source,
+        .{ .unsupported = .{ .block_scoping = true } },
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer std.testing.allocator.free(code);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_loop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "typeof _ret") != null);
+}
+
 test "#1797 negative: for-of + let 인데 closure 없으면 _loop 변환 안 함" {
     // body 내부가 직접 값 사용 — closure capture 없음 → 기존 경로 유지.
     const source =
