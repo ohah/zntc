@@ -147,11 +147,14 @@ pub const TreeShaker = struct {
         // (rolldown/esbuild 동작: package.json sideEffects 없어도 자동 감지)
         // 단, package.json sideEffects에 의해 결정된 값(user_defined)은 덮어쓰지 않는다
         // (rolldown DeterminedSideEffects::UserDefined 포팅).
+        // require.context match 로 등록된 모듈 (is_context_dep) 도 건드리지 않음 —
+        // runtime require 로 접근하므로 AST 상 pure 여도 제거하면 안 됨.
         for (0..mod_count) |i| {
             const m = self.moduleAtMut(@intCast(i)) orelse continue;
             if (!m.side_effects) continue;
             if (m.side_effects_user_defined) continue;
             if (self.entry_set.isSet(i)) continue;
+            if (m.is_context_dep) continue;
             if (m.ast) |ast| {
                 const unresolved = if (m.semantic) |*s| &s.unresolved_references else null;
                 if (isModulePure(&ast, unresolved)) {
@@ -162,7 +165,7 @@ pub const TreeShaker = struct {
 
         for (0..mod_count) |i| {
             const m = self.getModule(@intCast(i)) orelse continue;
-            if (self.entry_set.isSet(i) or m.side_effects) {
+            if (self.entry_set.isSet(i) or m.side_effects or m.is_context_dep) {
                 self.included.set(i);
             }
         }
@@ -191,9 +194,11 @@ pub const TreeShaker = struct {
         @memset(has_due, false);
         self.has_direct_used_export = has_due;
 
-        // entry 모듈의 모든 export를 사용으로 마킹
+        // entry / context_dep 모듈의 모든 export를 사용으로 마킹 — runtime require 로
+        // 접근하는 모듈은 어떤 export 가 쓰일지 정적으로 알 수 없음 (dynamic import 와 유사).
         for (0..mod_count) |i| {
-            if (self.entry_set.isSet(i)) try self.markAllExportsUsed(@intCast(i));
+            const m = self.getModule(@intCast(i)) orelse continue;
+            if (self.entry_set.isSet(i) or m.is_context_dep) try self.markAllExportsUsed(@intCast(i));
         }
 
         // StmtInfo 구축을 fixpoint 루프 전에 수행(#1558).
@@ -286,6 +291,7 @@ pub const TreeShaker = struct {
             const m = self.getModule(@intCast(i)) orelse continue;
             if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
             if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
+            if (m.is_context_dep) continue; // require.context match 는 runtime require 대상
             if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
                 self.included.unset(i);
             }

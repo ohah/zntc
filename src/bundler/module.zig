@@ -77,6 +77,14 @@ pub const Module = struct {
     ast: ?Ast,
     /// import_scanner가 추출한 레코드. graph allocator에서 할당 (소스 텍스트를 참조).
     import_records: []ImportRecord,
+    /// require.context matches 기반 추가 deps. `import_records` 와 분리되어 있어
+    /// `import_bindings.import_record_index` / `scan_result.records` 같은 index-based
+    /// 참조가 영향 받지 않음. parse_arena 소유.
+    context_expansion_deps: []ImportRecord = &.{},
+    /// 이 모듈이 다른 모듈의 require.context match 로 등록된 경우 true. tree-shaker 가
+    /// static import 없어도 root 취급해 번들에서 제거 안 함 — runtime require 대상이므로
+    /// 모든 export 가 사용 가능해야.
+    is_context_dep: bool = false,
     /// 모듈별 Arena — Scanner/Parser/AST/Semantic 메모리를 소유. graph.deinit에서 해제.
     parse_arena: ?std.heap.ArenaAllocator,
     /// semantic analyzer 결과. parse_arena가 소유. linker에서 사용.

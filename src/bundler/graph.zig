@@ -324,6 +324,8 @@ pub const ModuleGraph = struct {
                         try self.applyResolveResult(mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
                     }
                 }
+                // require.context matches → graph dep 등록 (#1579 Phase 4).
+                try self.applyContextDepResults(mod_idx);
                 if (resolves.len > 0) self.allocator.free(resolves);
 
                 // 새로 발견된 모듈 즉시 워커에 디스패치
@@ -668,8 +670,43 @@ pub const ModuleGraph = struct {
         try to_mod.importers.append(self.allocator, from);
     }
 
-    /// resolve 결과를 모듈 그래프에 적용한다 (addModule, linkDependency 등).
-    /// resolveModuleImports와 resolveModuleImportsBatchParallel 공통.
+    /// context_expansion_deps 를 resolve 하고 graph 에 module + dependency 로 등록 (#1579 Phase 4).
+    /// scanModules receiver / resolveModuleImports 양쪽 경로에서 호출. SegmentedList 로
+    /// append 해도 기존 *Module 포인터는 유효 (#1779 INVARIANTS.md).
+    fn applyContextDepResults(self: *ModuleGraph, mod_idx: usize) !void {
+        const mod_index = ModuleIndex.fromUsize(mod_idx);
+        const mod_ptr = self.modules.at(mod_idx);
+        const context_deps = mod_ptr.context_expansion_deps;
+        if (context_deps.len == 0) return;
+
+        const module_path = mod_ptr.path;
+        const source_dir = std.fs.path.dirname(module_path) orelse ".";
+        for (context_deps) |dep| {
+            const resolved = self.resolve_cache.resolveThreadSafe(source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
+                error.ModuleNotFound => {
+                    self.addDiag(
+                        .unresolved_import,
+                        .warning,
+                        module_path,
+                        dep.span,
+                        .resolve,
+                        "Cannot resolve require.context match",
+                        dep.specifier,
+                    );
+                    continue;
+                },
+                else => |e| return e,
+            };
+            if (resolved) |r| {
+                defer self.allocator.free(r.path);
+                const dep_idx = try self.addModule(r.path);
+                // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
+                self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
+                try self.linkDependency(mod_index, dep_idx);
+            }
+        }
+    }
+
     fn applyResolveResult(
         self: *ModuleGraph,
         mod_idx: usize,
@@ -776,18 +813,10 @@ pub const ModuleGraph = struct {
         }
 
         const mod_ptr = self.modules.at(mod_idx);
-        const records = mod_ptr.import_records;
-        if (records.len == 0) {
+        if (mod_ptr.import_records.len == 0) {
             channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
             return;
         }
-
-        var results = self.allocator.alloc(ResolveOutput, records.len) catch {
-            self.addDiag(.resolve_error, .@"error", mod_ptr.path, Span.EMPTY, .resolve, "Out of memory allocating resolve results", null);
-            channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
-            return;
-        };
-        for (results) |*r| r.* = .{};
 
         const module_path = mod_ptr.path;
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
@@ -799,8 +828,17 @@ pub const ModuleGraph = struct {
 
         // import.meta.glob: 워커에서 glob 확장 수행
         expandGlobRecords(self.allocator, mod_ptr.import_records, source_dir);
-        // require.context: host plugin 으로 매칭 결과 주입 (#1579 Phase 2)
-        expandRequireContextRecords(self, module_path, mod_ptr.import_records);
+        // require.context: plugin 으로 matches 주입 + context_expansion_deps 로 수집 (#1579 Phase 4).
+        // import_records 는 건드리지 않으므로 len 변화 없음.
+        expandRequireContextRecords(self, mod_idx);
+
+        const records = mod_ptr.import_records;
+        var results = self.allocator.alloc(ResolveOutput, records.len) catch {
+            self.addDiag(.resolve_error, .@"error", module_path, Span.EMPTY, .resolve, "Out of memory allocating resolve results", null);
+            channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
+            return;
+        };
+        for (results) |*r| r.* = .{};
 
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
@@ -1422,7 +1460,6 @@ pub const ModuleGraph = struct {
         const mod_ptr = self.modules.at(mod_idx);
         const module_path = mod_ptr.path;
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
-        const records = mod_ptr.import_records;
 
         // Plugin: resolveId 훅용 runner를 루프 밖에서 한 번만 생성
         const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
@@ -1432,9 +1469,10 @@ pub const ModuleGraph = struct {
 
         // import.meta.glob: glob 레코드를 파일 시스템에서 확장
         expandGlobRecords(self.allocator, mod_ptr.import_records, source_dir);
-        // require.context: host plugin 으로 매칭 결과 주입 (#1579 Phase 2)
-        expandRequireContextRecords(self, module_path, mod_ptr.import_records);
+        // require.context: plugin 으로 matches 주입 + context_expansion_deps 로 수집 (#1579 Phase 4).
+        expandRequireContextRecords(self, mod_idx);
 
+        const records = mod_ptr.import_records;
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
             if (record.kind == .require_context) continue;
@@ -1466,6 +1504,9 @@ pub const ModuleGraph = struct {
             };
             try self.applyResolveResult(mod_idx, rec_i, record, resolved, false);
         }
+
+        // require.context context_expansion_deps 도 resolve + addDep.
+        try self.applyContextDepResults(mod_idx);
     }
 
     /// Phase 2: 반복 DFS 후위 순서 순회. exec_index 부여 + 순환 감지 (D065, D076).
@@ -2456,8 +2497,14 @@ fn expandGlobRecords(allocator: std.mem.Allocator, records: []types.ImportRecord
 /// `self`: ModuleGraph (addDiag, plugins 접근용)
 /// `module_path`: 현재 모듈 경로 (importer)
 /// `records`: 모듈의 import_records (in-place 수정)
-fn expandRequireContextRecords(self: *ModuleGraph, module_path: []const u8, records: []types.ImportRecord) void {
-    // require_context 레코드 존재 여부 빠른 체크 (대다수 모듈은 0개 — early return 으로 cheap)
+fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
+    const module = self.modules.at(mod_idx);
+
+    // scanWorker + resolveModuleImports 양쪽에서 호출됨. 이미 expand 됐으면 즉시 리턴
+    // (has_any 루프보다 먼저 체크 — 재진입 시 records 전체 순회 회피).
+    if (module.context_expansion_deps.len > 0) return;
+
+    const records = module.import_records;
     var has_any = false;
     for (records) |r| {
         if (r.kind == .require_context) {
@@ -2467,15 +2514,18 @@ fn expandRequireContextRecords(self: *ModuleGraph, module_path: []const u8, reco
     }
     if (!has_any) return;
 
+    const module_path = module.path;
     const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
         plugin_mod.PluginRunner.init(self.plugins)
     else
         null;
 
+    // arena 에서 append — self.allocator 와 섞이면 capacity/free mismatch 발생.
+    const arena_alloc = if (module.parse_arena) |*a| a.allocator() else self.allocator;
+    var expansion = std.ArrayList(types.ImportRecord).empty;
+
     for (records) |*record| {
         if (record.kind != .require_context) continue;
-        // scanWorker + resolveModuleImports 양쪽에서 호출됨. context_matches 가 채워졌으면 (성공/실패
-        // 무관) 이미 처리된 record — diag 중복/plugin 재호출 방지.
         if (record.context_matches != null) continue;
 
         // Invalid 인자 → diagnostic (Phase 1 의 reason 텍스트 그대로 사용). empty slice 로 마킹.
@@ -2497,6 +2547,16 @@ fn expandRequireContextRecords(self: *ModuleGraph, module_path: []const u8, reco
             ) catch null;
             if (matches) |m| {
                 record.context_matches = m;
+                // match 별로 일반 require record 생성해 별도 slice 에 저장 —
+                // import_records 를 건드리지 않아 index-based 참조 (import_bindings 등) 안전.
+                for (m) |match_path| {
+                    const joined = joinContextPath(arena_alloc, record.specifier, match_path) orelse continue;
+                    expansion.append(arena_alloc, .{
+                        .specifier = joined,
+                        .kind = .require,
+                        .span = record.span,
+                    }) catch {};
+                }
                 continue;
             }
         }
@@ -2513,6 +2573,21 @@ fn expandRequireContextRecords(self: *ModuleGraph, module_path: []const u8, reco
         );
         record.context_matches = &.{};
     }
+
+    module.context_expansion_deps = expansion.toOwnedSlice(arena_alloc) catch &.{};
+}
+
+/// record.specifier (e.g. "./app" 또는 "../foo") 와 match_path (e.g. "./a.tsx") 를 결합.
+/// codegen 의 emitJoinedPath 와 동일 로직 — dir trailing `/`, match `./` prefix 정규화.
+/// 결과는 모듈 resolver 가 일반 require 처럼 처리할 수 있는 specifier.
+fn joinContextPath(alloc: std.mem.Allocator, dir: []const u8, match: []const u8) ?[]u8 {
+    const dir_clean = if (dir.len > 0 and dir[dir.len - 1] == '/') dir[0 .. dir.len - 1] else dir;
+    const match_clean = if (match.len >= 2 and match[0] == '.' and match[1] == '/') match[2..] else match;
+    const out = alloc.alloc(u8, dir_clean.len + 1 + match_clean.len) catch return null;
+    @memcpy(out[0..dir_clean.len], dir_clean);
+    out[dir_clean.len] = '/';
+    @memcpy(out[dir_clean.len + 1 ..], match_clean);
+    return out;
 }
 
 // ============================================================
