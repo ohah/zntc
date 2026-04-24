@@ -4231,7 +4231,7 @@ pub const Transformer = struct {
     }
 
     /// 단일 import specifier 의 local binding 이 value 로 참조된 적이 있는지 조회.
-    /// #1791 oxc 식 판정: symbol 의 Reference 들 중 **type_context / value_as_type 이
+    /// #1791 Phase D 판정: symbol 의 Reference 들 중 **type_context / value_as_type 이
     /// 모두 false 인 read** (= 순수 value 사용) 가 하나라도 있으면 false. 하나도 없으면
     /// true (= elide 가능).
     ///

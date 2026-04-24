@@ -27,7 +27,7 @@ const isReservedName = Linker.isReservedName;
 const NamePair = PreambleWriter.NamePair;
 const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
 
-/// #1791 Phase D: import binding 의 local 이 value 로 참조된 적이 있는지 조회 (oxc 식).
+/// #1791 Phase D: import binding 의 local 이 value 로 참조된 적이 있는지 조회.
 /// analyzer 가 각 Reference 에 `type_context` / `value_as_type` flag 를 기록하므로,
 /// symbol 의 Reference 들 중 **순수 value read** 가 하나라도 있으면 false. 하나도 없으면
 /// true → preamble / canonical rename 을 skip 해 bare `require()` fallback (RN factory
