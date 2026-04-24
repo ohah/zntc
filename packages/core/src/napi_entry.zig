@@ -993,11 +993,66 @@ const NapiManualChunksResolver = struct {
 
     const CallContext = struct {
         id: []const u8,
+        graph: ?*const anyopaque,
         result: ?[]const u8 = null,
         ready: bool = false,
         mutex: std.Thread.Mutex = .{},
         cond: std.Thread.Condition = .{},
     };
+
+    /// ModuleIndex 배열 → JS string[]. invalid index 는 skip 해서 compact 한 배열 반환.
+    fn pathArrayFromIndices(
+        env: c.napi_env,
+        graph: ?*const anyopaque,
+        indices: []const types_mod.ModuleIndex,
+    ) c.napi_value {
+        var js_arr: c.napi_value = undefined;
+        _ = c.napi_create_array(env, &js_arr);
+        var write_idx: u32 = 0;
+        for (indices) |idx| {
+            const p = types_mod.getModulePathByIndex(graph, idx) orelse continue;
+            var js_p: c.napi_value = undefined;
+            _ = c.napi_create_string_utf8(env, p.ptr, p.len, &js_p);
+            _ = c.napi_set_element(env, js_arr, write_idx, js_p);
+            write_idx += 1;
+        }
+        return js_arr;
+    }
+
+    /// JS `meta.getModuleInfo(id)` 구현. napi function 의 data 슬롯에 graph 포인터를
+    /// 담아 전달받는다. 동일 bundle() 안에서 모든 resolver 호출이 같은 graph 를 공유.
+    fn getModuleInfoCallback(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+        var js_null: c.napi_value = undefined;
+        _ = c.napi_get_null(env, &js_null);
+
+        var argc: usize = 1;
+        var argv: [1]c.napi_value = undefined;
+        var data: ?*anyopaque = null;
+        if (c.napi_get_cb_info(env, info, &argc, &argv, null, &data) != c.napi_ok) return js_null;
+        if (argc < 1) return js_null;
+
+        const id = getStringArg(env, argv[0], native_alloc) orelse return js_null;
+        defer native_alloc.free(id);
+
+        const graph: ?*const anyopaque = @ptrCast(data);
+        const mod_info = types_mod.getModuleInfo(graph, id) orelse return js_null;
+
+        var js_obj: c.napi_value = undefined;
+        _ = c.napi_create_object(env, &js_obj);
+
+        var js_id_str: c.napi_value = undefined;
+        _ = c.napi_create_string_utf8(env, mod_info.id.ptr, mod_info.id.len, &js_id_str);
+        _ = c.napi_set_named_property(env, js_obj, "id", js_id_str);
+
+        var js_is_entry: c.napi_value = undefined;
+        _ = c.napi_get_boolean(env, mod_info.is_entry, &js_is_entry);
+        _ = c.napi_set_named_property(env, js_obj, "isEntry", js_is_entry);
+
+        _ = c.napi_set_named_property(env, js_obj, "importers", pathArrayFromIndices(env, graph, mod_info.importers));
+        _ = c.napi_set_named_property(env, js_obj, "importedIds", pathArrayFromIndices(env, graph, mod_info.imported_ids));
+
+        return js_obj;
+    }
 
     /// threadsafe function 의 call_js 콜백 (main thread).
     fn callJsCallback(env: c.napi_env, js_callback: c.napi_value, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
@@ -1006,12 +1061,28 @@ const NapiManualChunksResolver = struct {
         var js_id: c.napi_value = undefined;
         _ = c.napi_create_string_utf8(env, ctx.id.ptr, ctx.id.len, &js_id);
 
+        // meta 객체 — graph 가 있을 때만 `getModuleInfo` 노출.
+        var js_meta: c.napi_value = undefined;
+        _ = c.napi_create_object(env, &js_meta);
+        if (ctx.graph) |g| {
+            var js_get_mod_info: c.napi_value = undefined;
+            _ = c.napi_create_function(
+                env,
+                "getModuleInfo",
+                "getModuleInfo".len,
+                getModuleInfoCallback,
+                @constCast(g),
+                &js_get_mod_info,
+            );
+            _ = c.napi_set_named_property(env, js_meta, "getModuleInfo", js_get_mod_info);
+        }
+
         var js_undefined: c.napi_value = undefined;
         _ = c.napi_get_undefined(env, &js_undefined);
 
         var js_result: c.napi_value = undefined;
-        const args = [_]c.napi_value{js_id};
-        if (c.napi_call_function(env, js_undefined, js_callback, 1, &args, &js_result) != c.napi_ok) {
+        const args = [_]c.napi_value{ js_id, js_meta };
+        if (c.napi_call_function(env, js_undefined, js_callback, 2, &args, &js_result) != c.napi_ok) {
             // JS exception 은 uncaught 로 전파되기 전에 clear — 번들 중단 방지.
             // manualChunks 가 throw 하면 해당 모듈은 null (auto 분배) 로 취급.
             var is_pending: bool = false;
@@ -1055,9 +1126,8 @@ const NapiManualChunksResolver = struct {
     /// Zig resolver 인터페이스 — `ManualChunksResolveFn` 과 동일 시그니처.
     /// worker thread 에서 호출됨. JS 호출 후 동기 대기.
     fn resolve(ctx_ptr: ?*anyopaque, id: []const u8, graph: ?*const anyopaque) ?[]const u8 {
-        _ = graph;
         const self: *NapiManualChunksResolver = @ptrCast(@alignCast(ctx_ptr.?));
-        var call_ctx = CallContext{ .id = id };
+        var call_ctx = CallContext{ .id = id, .graph = graph };
 
         if (c.napi_call_threadsafe_function(self.tsfn, &call_ctx, c.napi_tsfn_blocking) != c.napi_ok) {
             return null;
