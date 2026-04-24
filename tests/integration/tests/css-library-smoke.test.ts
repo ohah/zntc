@@ -184,12 +184,17 @@ describe.skipIf(!hasEmotionReact)("CSS Library Smoke — @emotion/react", () => 
       "stylis",
     ]);
 
+    // `--format=esm` 명시: 라이브러리 번들링 의도. `--platform=browser` 기본이
+    // `is_bundle && !bundle_format_explicit` 일 때 IIFE 로 자동 승격되는데 (#1791),
+    // IIFE 는 factory 스코프에 require/import 가 없어 external react 를 담을 수
+    // 없다. 라이브러리 배포 포맷은 ESM/CJS 가 표준이므로 여기도 ESM 을 쓴다.
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
       "--bundle",
       join(fixture.dir, "index.tsx"),
       "-o",
       outFile,
+      "--format=esm",
       "--external",
       "react",
       "--external",
@@ -286,12 +291,14 @@ describe.skipIf(!hasStyledComponents)("CSS Library Smoke — Styled-Components",
       "shallowequal",
     ]);
 
+    // `--format=esm` 명시: 라이브러리 번들링 의도 (#1791 follow-up, css-smoke).
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
       "--bundle",
       join(fixture.dir, "index.ts"),
       "-o",
       outFile,
+      "--format=esm",
       "--external",
       "react",
       "--external",
@@ -328,12 +335,14 @@ describe.skipIf(!hasStyledComponents)("CSS Library Smoke — Styled-Components",
       "shallowequal",
     ]);
 
+    // `--format=esm` 명시: 라이브러리 번들링 의도 (#1791 follow-up, css-smoke).
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
       "--bundle",
       join(fixture.dir, "index.ts"),
       "-o",
       outFile,
+      "--format=esm",
       "--external",
       "react",
       "--external",
