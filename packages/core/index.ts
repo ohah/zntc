@@ -199,6 +199,20 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
 
 export type { OutputFile, Diagnostic };
 
+/** Rollup `manualChunks(id, meta)` 의 `meta.getModuleInfo(id)` 반환. */
+export interface ManualChunksModuleInfo {
+  id: string;
+  isEntry: boolean;
+  importers: string[];
+  importedIds: string[];
+}
+
+/** `manualChunks` 콜백의 두 번째 인자 — 모듈 그래프 토폴로지 조회. */
+export interface ManualChunksMeta {
+  /** `id` 로 모듈 정보 조회. 없으면 null. */
+  getModuleInfo(id: string): ManualChunksModuleInfo | null;
+}
+
 /**
  * Common build options shared by all platforms.
  * `platform` + `target` 조합은 `BuildOptions` 에서 discriminated union으로 제한됨.
@@ -273,16 +287,19 @@ interface BuildOptionsCommon {
    * null/undefined 반환 시 기존 자동 분배. transitive dependency 도 같은 청크로 따라감
    * (cross-chunk 순환 회피). dynamic import target 은 async chunk 대신 manual 우선.
    *
+   * 두 번째 인자 `meta.getModuleInfo(id)` 는 그래프 토폴로지 조회 — Rollup 호환.
+   *
    * 예:
    * ```ts
-   * manualChunks: (id) => {
+   * manualChunks: (id, meta) => {
+   *   const info = meta.getModuleInfo(id);
+   *   if (info && info.importers.length >= 2) return 'shared';
    *   if (/node_modules\/react/.test(id)) return 'react';
-   *   if (id.includes('/src/components/')) return 'ui';
    *   return null;
    * }
    * ```
    */
-  manualChunks?: (id: string) => string | null | undefined;
+  manualChunks?: (id: string, meta: ManualChunksMeta) => string | null | undefined;
   /** 확장자별 로더 오버라이드 (예: { ".png": "file", ".svg": "text" }) */
   loader?: Record<string, string>;
   /** package.json exports 커스텀 조건 */
