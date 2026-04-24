@@ -87,7 +87,10 @@ pub inline fn moduleAtMut(self: *ModuleGraph, idx: ModuleIndex) ?*Module;
 | **link only** | exec_index, cycle_group, dev_id |
 
 `context_expansion_deps` 는 parse 단계의 `expandRequireContextRecords` 가 plugin
-matches 를 모아 채운다. parse_arena 소유라 graph.deinit 시 자동 해제.
+matches 를 모아 채운다 (write). parse_arena 소유라 graph.deinit 시 자동 해제.
+resolve 단계의 `applyContextDepResults` 가 read-only 로 순회해 각 dep 를
+addModule + linkDependency. parse_arena lifetime 이 resolve 끝까지 유지되므로
+use-after-free 없음.
 
 `is_context_dep` 는 resolve 단계의 `applyContextDepResults` 가 require.context
 match 로 등록된 module 에 마킹. tree-shaker 가 runtime require root 로 보존.

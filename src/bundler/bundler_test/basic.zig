@@ -664,8 +664,6 @@ test "Bundler: import.meta.glob eager option" {
     // glob_matches의 기존 메모리 릭 (expandGlob 할당)을 우회하기 위해 arena 사용
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -693,8 +691,6 @@ test "Bundler: import.meta.glob eager option" {
 test "Bundler: import.meta.glob import option" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -841,9 +837,6 @@ fn rcMatchNoDotSlash(
 }
 
 test "Bundler: require.context emits webpackContext IIFE (sync)" {
-    // ArenaAllocator 는 thread-safe 가 아님. 번들러는 worker threads 에서도 self.allocator 로
-    // 할당하므로 (#1779 INVARIANTS 의 storage-level race-safety 와 별개) 테스트 arena 를 감싸서
-    // mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var ts = threadSafeArena(&arena);
@@ -886,8 +879,6 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
 test "Bundler: require.context emits empty map when no matches" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -920,8 +911,6 @@ test "Bundler: require.context escapes match path special chars" {
     // 여기선 escape 로직 (writeJsStringContent) 만 검증 — hasErrors 는 무시.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -948,8 +937,6 @@ test "Bundler: require.context escapes match path special chars" {
 test "Bundler: require.context normalizes trailing slash and missing ./" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -1004,8 +991,6 @@ fn rcDispatchByCallCount(
 test "Bundler: multiple require.context calls resolve to distinct maps (span match)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -1044,8 +1029,6 @@ test "Bundler: multiple require.context calls resolve to distinct maps (span mat
 test "Bundler: require.context coexists with import.meta.glob" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -1089,8 +1072,6 @@ test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
     // Expo Router `_ctx.ios.js` 가 이 패턴 (ESM export const ctx = require.context(...)).
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -1134,8 +1115,6 @@ test "Bundler: require.context emits IIFE inside __esm wrapper (RN platform)" {
 test "Bundler: require.context — matches 파일들이 번들에 포함됨" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -1172,8 +1151,6 @@ test "Bundler: require.context — matches 파일들이 번들에 포함됨" {
 test "Bundler: require.context — nested match 파일도 번들에 포함" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
@@ -1206,8 +1183,6 @@ test "Bundler: require.context — empty matches → 파일 없어도 hasErrors 
     // 회귀: empty matches 는 expansion 에 추가할 게 없어 resolve 실패 발생 안 함.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // ArenaAllocator 는 thread-safe 가 아닌데 bundler worker 에서 self.allocator 로 동시 할당
-    // 가능 → ThreadSafeAllocator 로 감싸서 mutex 보호. 프로덕션 (bungae) 은 GPA thread-safe 기본.
     var ts = threadSafeArena(&arena);
     const alloc = ts.allocator();
 
