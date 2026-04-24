@@ -284,4 +284,172 @@ describe("manualChunks NAPI bridge", () => {
     // only-a, only-b 는 shared-chunk 에 안 들어감 (importers=1)
     expect(sharedChunk!.moduleIds!.every((id) => !id.includes("only-"))).toBe(true);
   });
+
+  // ============================================================
+  // meta API 경계값 / 토폴로지 / 실사용 패턴
+  // ============================================================
+
+  test("meta.getModuleInfo: 빈 문자열 / 존재하지 않는 경로 → null", async () => {
+    const fixture = await createFixture({
+      "entry.ts": "console.log(1);",
+    });
+    cleanup = fixture.cleanup;
+
+    const results: Array<{ empty: unknown; missing: unknown }> = [];
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        results.push({
+          empty: meta.getModuleInfo(""),
+          missing: meta.getModuleInfo("/does-not-exist.ts"),
+        });
+        return null;
+      },
+    });
+
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) {
+      expect(r.empty).toBeNull();
+      expect(r.missing).toBeNull();
+    }
+  });
+
+  test("meta.getModuleInfo: resolver 안 다회 호출 안전 (NAPI reentrance)", async () => {
+    const fixture = await createFixture({
+      "entry.ts": 'import { a } from "./lib"; console.log(a);',
+      "lib.ts": "export const a = 1;",
+    });
+    cleanup = fixture.cleanup;
+
+    let callCount = 0;
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        // 동일 id 로 여러 번 + 서로 다른 id 로도 섞어서
+        meta.getModuleInfo(id);
+        meta.getModuleInfo(id);
+        meta.getModuleInfo(id);
+        callCount++;
+        return null;
+      },
+    });
+    expect(callCount).toBeGreaterThan(0);
+  });
+
+  test("meta.getModuleInfo: deep chain (A → B → C) 토폴로지", async () => {
+    const fixture = await createFixture({
+      "a.ts": 'import { b } from "./b"; console.log(b);',
+      "b.ts": 'export { c as b } from "./c";',
+      "c.ts": "export const c = 1;",
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["a.ts"], (info) => ({
+      importers: info.importers,
+      imported: info.importedIds,
+    }));
+
+    const a = [...seen.entries()].find(([k]) => k.endsWith("a.ts"))![1];
+    const b = [...seen.entries()].find(([k]) => k.endsWith("b.ts"))![1];
+    const c = [...seen.entries()].find(([k]) => k.endsWith("c.ts"))![1];
+
+    expect(a.importers.length).toBe(0);
+    expect(a.imported.some((p) => p.endsWith("b.ts"))).toBe(true);
+    expect(b.importers.some((p) => p.endsWith("a.ts"))).toBe(true);
+    expect(b.imported.some((p) => p.endsWith("c.ts"))).toBe(true);
+    expect(c.importers.some((p) => p.endsWith("b.ts"))).toBe(true);
+    expect(c.imported.length).toBe(0);
+  });
+
+  test("meta.getModuleInfo: 순환 의존 (A ↔ B) 양방향", async () => {
+    const fixture = await createFixture({
+      "a.ts": 'import { b } from "./b"; export const a = b + 1;',
+      "b.ts": 'import { a } from "./a"; export const b = 1; export const ab = a;',
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["a.ts"], (info) => ({
+      importers: info.importers,
+      imported: info.importedIds,
+    }));
+
+    const a = [...seen.entries()].find(([k]) => k.endsWith("a.ts"))![1];
+    const b = [...seen.entries()].find(([k]) => k.endsWith("b.ts"))![1];
+    expect(a.imported.some((p) => p.endsWith("b.ts"))).toBe(true);
+    expect(a.importers.some((p) => p.endsWith("b.ts"))).toBe(true);
+    expect(b.imported.some((p) => p.endsWith("a.ts"))).toBe(true);
+    expect(b.importers.some((p) => p.endsWith("a.ts"))).toBe(true);
+  });
+
+  test("meta.getModuleInfo: dynamic import 는 importedIds 에 포함 안 됨 (Rollup 스펙)", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { s } from "./static-dep";
+        export async function load() { return (await import("./dynamic-dep")).default; }
+        console.log(s);
+      `,
+      "static-dep.ts": "export const s = 1;",
+      "dynamic-dep.ts": 'export default "DYNAMIC";',
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.importedIds);
+    const entryIds = [...seen.entries()].find(([k]) => k.endsWith("entry.ts"))![1];
+    expect(entryIds.some((p) => p.endsWith("static-dep.ts"))).toBe(true);
+    expect(entryIds.some((p) => p.endsWith("dynamic-dep.ts"))).toBe(false);
+  });
+
+  test("meta.getModuleInfo: 엔트리가 자기 자신 조회 시 isEntry=true", async () => {
+    const fixture = await createFixture({
+      "entry.ts": "console.log(1);",
+    });
+    cleanup = fixture.cleanup;
+
+    let entryIsEntry: boolean | undefined;
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          entryIsEntry = meta.getModuleInfo(id)?.isEntry;
+        }
+        return null;
+      },
+    });
+    expect(entryIsEntry).toBe(true);
+  });
+
+  test("meta.getModuleInfo: 일부 모듈에서만 조회해도 나머지 정상 번들 (lazy 패턴)", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { a } from "./a";
+        import { b } from "./b";
+        import { c } from "./c";
+        console.log(a, b, c);
+      `,
+      "a.ts": 'export const a = "A_MARK";',
+      "b.ts": 'export const b = "B_MARK";',
+      "c.ts": 'export const c = "C_MARK";',
+    });
+    cleanup = fixture.cleanup;
+
+    // b.ts 에서만 meta.getModuleInfo 호출. 나머지는 touch 안 함.
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("b.ts")) {
+          void meta.getModuleInfo(id);
+        }
+        return null;
+      },
+    });
+
+    const all = result.outputFiles!.map((o) => o.text).join("\n");
+    expect(all).toContain("A_MARK");
+    expect(all).toContain("B_MARK");
+    expect(all).toContain("C_MARK");
+  });
 });
