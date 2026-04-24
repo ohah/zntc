@@ -362,6 +362,190 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     expect(entry!.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
   });
 
+  test.skipIf(!hasPackage("lodash-es"))(
+    "실 라이브러리: lodash-es 여러 함수 import + tree-shake",
+    async () => {
+      // 사용자가 lodash-es 에서 몇 개 함수만 쓰고 vendor 청크 분리. ESM 지원 라이브러리
+      // 라 tree-shake 가 동작해야 — 쓰지 않은 debounce/throttle/cloneDeep 등은 제거.
+      const fixture = await createFixture({
+        "entry.ts": `
+          import { chunk, take } from "lodash-es";
+          const arr = take(chunk([1,2,3,4,5,6], 2), 2);
+          console.log("LODASH_RESULT:" + JSON.stringify(arr));
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.ts")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+      });
+
+      const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+      const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"));
+      expect(vendor).toBeDefined();
+      // vendor 에 chunk/take 구현이 들어가야
+      expect(vendor!.text.length).toBeGreaterThan(200);
+      // entry 엔 로컬 LODASH_RESULT 만, vendor import
+      expect(entry!.text).toContain("LODASH_RESULT");
+      expect(entry!.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
+    },
+  );
+
+  test.skipIf(!hasPackage("nanoid"))(
+    "실 라이브러리: nanoid — single ESM file vendor 분리",
+    async () => {
+      // nanoid 는 작은 단일 ESM 파일. vendor 분리 시 entry 에 로컬 코드만.
+      const fixture = await createFixture({
+        "entry.ts": `
+        import { nanoid } from "nanoid";
+        const id = nanoid(10);
+        console.log("NANO_LEN:" + id.length);
+      `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.ts")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+      });
+
+      const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+      expect(vendor).toBeDefined();
+      const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"));
+      expect(entry!.text).toContain("NANO_LEN");
+      expect(entry!.text).not.toMatch(/function\s+nanoid/); // 구현은 vendor 에
+    },
+  );
+
+  test.skipIf(!hasPackage("lodash-es") || !hasPackage("clsx") || !hasPackage("nanoid"))(
+    "실 라이브러리 조합: lodash + clsx + nanoid 를 한 vendor 청크로",
+    async () => {
+      // 실전 시나리오 — 여러 작은 vendor 를 하나의 청크로 묶어 HTTP/2 multiplexing 친화.
+      const fixture = await createFixture({
+        "entry.ts": `
+          import { chunk } from "lodash-es";
+          import clsx from "clsx";
+          import { nanoid } from "nanoid";
+          const parts = chunk([1,2,3,4], 2);
+          const cls = clsx("base", { active: true });
+          const id = nanoid(8);
+          console.log("COMBO:" + parts.length + ":" + cls + ":" + id.length);
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.ts")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+      });
+
+      // 단 하나의 vendor 청크에 3 라이브러리 모두
+      const vendors = result.outputFiles.filter((o) => o.path.includes("vendor"));
+      expect(vendors.length).toBe(1);
+      // vendor 청크 크기가 lodash + clsx + nanoid 합치므로 유의미한 사이즈
+      expect(vendors[0].text.length).toBeGreaterThan(500);
+    },
+  );
+
+  test.skipIf(!hasPackage("zod"))(
+    "실 라이브러리: zod — 복잡한 multi-module 라이브러리 vendor 분리",
+    async () => {
+      // zod 는 수십 개 내부 파일로 분할된 복잡한 구조. manualChunks 로 전체를 vendor 로
+      // 몰아넣을 때 모든 dep 가 따라가는지 + cross-chunk import 정상 생성되는지.
+      const fixture = await createFixture({
+        "entry.ts": `
+          import { z } from "zod";
+          const schema = z.object({ name: z.string(), age: z.number() });
+          const ok = schema.safeParse({ name: "alice", age: 30 });
+          console.log("ZOD_OK:" + ok.success);
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.ts")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => (id.includes("node_modules") ? "vendor" : null),
+      });
+
+      const vendor = result.outputFiles.find((o) => o.path.includes("vendor"));
+      const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"));
+      expect(vendor).toBeDefined();
+      expect(entry).toBeDefined();
+
+      // zod 는 큰 라이브러리 — vendor 크기 유의미
+      expect(vendor!.text.length).toBeGreaterThan(10000);
+
+      // entry 는 로컬 마커 + vendor import
+      expect(entry!.text).toContain("ZOD_OK");
+      expect(entry!.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
+
+      // entry 에 zod 내부 구현은 없어야 (vendor 와 최소 10배 이상 차이)
+      expect(entry!.text.length * 10).toBeLessThan(vendor!.text.length);
+
+      // common chunk 로 분리되지 않았는지 — 단일 vendor 만 존재
+      const vendors = result.outputFiles.filter((o) => o.path.includes("vendor"));
+      expect(vendors.length).toBe(1);
+    },
+  );
+
+  test.skipIf(!hasPackage("lodash-es") || !hasPackage("clsx"))(
+    "실 라이브러리 selective split: lodash 는 'lodash' 청크, 나머지는 'vendor'",
+    async () => {
+      // React-style 세밀 청킹 — 자주 바뀌지 않는 lodash 를 별도 청크로 캐시 수명 연장.
+      const fixture = await createFixture({
+        "entry.ts": `
+          import { chunk } from "lodash-es";
+          import clsx from "clsx";
+          const parts = chunk([1,2,3,4], 2);
+          const cls = clsx("a", "b");
+          console.log("SELECTIVE:" + parts.length + ":" + cls);
+        `,
+      });
+      cleanup = fixture.cleanup;
+
+      const result = await build({
+        entryPoints: [join(fixture.dir, "entry.ts")],
+        splitting: true,
+        outdir: join(fixture.dir, "dist"),
+        write: false,
+        nodePaths: [ROOT_NODE_MODULES],
+        manualChunks: (id) => {
+          if (id.includes("/lodash-es/")) return "lodash";
+          if (id.includes("node_modules")) return "vendor";
+          return null;
+        },
+      });
+
+      // lodash + vendor 각각 생성
+      const lodashChunk = result.outputFiles.find((o) => o.path.includes("lodash"));
+      const vendorChunk = result.outputFiles.find(
+        (o) => o.path.includes("vendor") && !o.path.includes("lodash"),
+      );
+      expect(lodashChunk).toBeDefined();
+      expect(vendorChunk).toBeDefined();
+
+      // vendor 는 clsx 만, lodash 는 lodash-es 만 (서로 섞이지 않음)
+      expect(lodashChunk!.text).not.toMatch(/clsx/i);
+    },
+  );
+
   test("대형 가상 vendor: date-utils 스타일 다중 모듈 → vendor 합병", async () => {
     // 실 라이브러리 install 없이 "대형 라이브러리" 구조 시뮬레이션.
     // node_modules 패키지처럼 여러 파일에 걸쳐 분할된 vendor 가 한 chunk 로 통합되는지.
