@@ -158,6 +158,55 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     expect(vendorChunk).toBeUndefined();
   });
 
+  test("realistic: dynamic entry 가 vendor dep 을 static import — 번들 구조 일치", async () => {
+    // 전형적 "lazy route 가 shared vendor 사용" 시나리오.
+    // vendor/shared 는 static 으로 entry + lazy 양쪽에서 import → vendor 청크로
+    // vendor/lazy 는 dynamic entry → async chunk (vendor 제외 정책)
+    // 결과: vendor.js 가 cross-chunk export 로 entry / lazy 에 symbol 공급
+    const fixture = await createFixture({
+      "vendor/shared.ts": `export const SHARED = "SHARED_MARKER";`,
+      "vendor/lazy.ts": `
+        import { SHARED } from "./shared";
+        export const run = () => "lazy:" + SHARED;
+      `,
+      "entry.ts": `
+        import { SHARED } from "./vendor/shared";
+        const mod = await import("./vendor/lazy");
+        console.log(SHARED + "|" + mod.run());
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      manualChunks: (id) => (id.includes("/vendor/") ? "vendor" : null),
+    });
+
+    // 최소 3개 청크: entry, vendor, lazy
+    const vendor = result.outputFiles.find(
+      (o) => o.path.includes("vendor") && !o.path.includes("lazy"),
+    )!;
+    const lazyChunk = result.outputFiles.find((o) => o.text.includes("lazy:"))!;
+    const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"))!;
+    expect(vendor).toBeDefined();
+    expect(lazyChunk).toBeDefined();
+
+    // vendor 에 shared 코드 + cross-chunk export 구문
+    expect(vendor.text).toContain("SHARED_MARKER");
+    expect(vendor.text).toMatch(/export\s*\{/);
+
+    // lazy chunk 는 vendor 가 아닌 별도 경로 + vendor 에서 SHARED import
+    expect(lazyChunk.path).not.toContain("vendor");
+    expect(lazyChunk.text).toMatch(/from\s+["'][^"']*vendor[^"']*["']/);
+
+    // entry 도 vendor 에서 SHARED import, dynamic import("./lazy") 사용
+    expect(entry.text).toMatch(/from\s+["'][^"']*vendor[^"']*["']/);
+    expect(entry.text).toMatch(/import\s*\(/);
+  });
+
   test("manualChunks 안 쓸 때 vs 쓸 때 번들 크기 비교", async () => {
     const files = {
       "vendor/big-lib.ts": `
