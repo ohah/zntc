@@ -430,6 +430,16 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.n
             }
             _ = c.napi_set_named_property(env, js_file, "exports", js_exports);
 
+            // imports — cross-chunk 로 참조하는 다른 chunk 들의 최종 filename
+            var js_imports: c.napi_value = undefined;
+            _ = c.napi_create_array(env, &js_imports);
+            for (out.imports, 0..) |im, k| {
+                var s: c.napi_value = undefined;
+                _ = c.napi_create_string_utf8(env, im.ptr, im.len, &s);
+                _ = c.napi_set_element(env, js_imports, @intCast(k), s);
+            }
+            _ = c.napi_set_named_property(env, js_file, "imports", js_imports);
+
             _ = c.napi_set_element(env, js_outputs, @intCast(i), js_file);
         }
     } else {

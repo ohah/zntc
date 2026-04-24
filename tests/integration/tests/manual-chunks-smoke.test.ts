@@ -82,6 +82,13 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     expect(entry!.moduleIds).toEqual(expect.arrayContaining([expect.stringMatching(/entry\.ts$/)]));
     expect(entry!.moduleIds!.find((id) => id.includes("/vendor/"))).toBeUndefined();
 
+    // rolldown `chunk.imports` 호환: entry 는 vendor.js 를 import
+    expect(entry!.imports).toEqual(
+      expect.arrayContaining([expect.stringMatching(/vendor.*\.js$/)]),
+    );
+    // vendor 는 leaf chunk — 아무 것도 import 안 함
+    expect(vendor!.imports).toEqual([]);
+
     // entry 청크엔 ui/formatter 만, vendor 구현 없음
     expect(entry!.text).toMatch(/function\s+format\s*\(/);
     expect(entry!.text).not.toMatch(/function\s+add\s*\(/);

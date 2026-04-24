@@ -687,6 +687,34 @@ fn resolveContentHashes(
         allocator.free(out.path);
         out.path = new_path;
     }
+
+    // 3단계: imports 메타 채우기 (rolldown `chunk.imports` 호환).
+    // path 가 content-hash 까지 확정된 이후에 각 chunk 의 cross_chunk_imports 를
+    // 최종 filename 배열로 변환. chunk idx → output idx 역매핑으로 O(N) lookup.
+    var chunk_to_out = try allocator.alloc(?usize, chunk_graph.chunks.items.len);
+    defer allocator.free(chunk_to_out);
+    @memset(chunk_to_out, null);
+    for (sorted_indices, 0..) |ci, out_idx| {
+        if (out_idx >= outputs.len) break;
+        chunk_to_out[ci] = out_idx;
+    }
+
+    for (sorted_indices, 0..) |ci, out_idx| {
+        if (out_idx >= outputs.len) break;
+        const chunk = &chunk_graph.chunks.items[ci];
+        if (chunk.cross_chunk_imports.items.len == 0) continue;
+
+        var imps: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (imps.items) |p| allocator.free(p);
+            imps.deinit(allocator);
+        }
+        for (chunk.cross_chunk_imports.items) |dep_ci| {
+            const dep_out = chunk_to_out[@intFromEnum(dep_ci)] orelse continue;
+            try imps.append(allocator, try allocator.dupe(u8, outputs[dep_out].path));
+        }
+        outputs[out_idx].imports = try imps.toOwnedSlice(allocator);
+    }
 }
 
 /// placeholder 해시 길이 (8자리 hex).

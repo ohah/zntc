@@ -32,6 +32,9 @@ interface OutputFile {
   moduleIds?: string[];
   /** 이 chunk 가 export 하는 심볼 이름 목록 (cross-chunk 검증용). */
   exports?: string[];
+  /** 이 chunk 가 import 하는 다른 chunk 의 최종 filename 배열 (rolldown `chunk.imports` 호환).
+   * content-hash 까지 확정된 경로. */
+  imports?: string[];
 }
 
 interface Diagnostic {
