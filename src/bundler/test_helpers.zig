@@ -3,6 +3,7 @@ const Bundler = @import("bundler.zig").Bundler;
 const BundleResult = @import("bundler.zig").BundleResult;
 const BundleOptions = @import("bundler.zig").BundleOptions;
 const resolve_cache_mod = @import("resolve_cache.zig");
+const OutputFile = @import("emitter.zig").OutputFile;
 
 /// 테스트용 번들 결과 wrapper: arena 가 linker 관련 로컬 할당의 수명을 보장.
 pub const Bundled = struct {
@@ -65,6 +66,22 @@ pub fn absPath(tmp: *std.testing.TmpDir, rel: []const u8) ![]const u8 {
     const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(dp);
     return try std.fs.path.resolve(std.testing.allocator, &.{ dp, rel });
+}
+
+/// code_splitting=true 번들 결과에서 이름이 포함된 청크 존재 확인.
+pub fn hasChunk(outs: []const OutputFile, name: []const u8) bool {
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.path, name) != null) return true;
+    }
+    return false;
+}
+
+/// 특정 marker 문자열이 포함된 청크의 path 반환 (없으면 null).
+pub fn chunkContaining(outs: []const OutputFile, marker: []const u8) ?[]const u8 {
+    for (outs) |o| {
+        if (std.mem.indexOf(u8, o.contents, marker) != null) return o.path;
+    }
+    return null;
 }
 
 /// 테스트용 헬퍼: ArenaAllocator 를 ThreadSafeAllocator 로 감싸 worker 동시 alloc 보호.
