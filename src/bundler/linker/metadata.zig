@@ -425,11 +425,14 @@ pub fn buildMetadataForAst(
 
                 // esbuild 방식: ns.prop → 직접 치환, ns 값 사용 → 변수 선언 + 참조.
                 // export { ns } 패턴도 값 사용 — namespace 객체를 preamble 변수로 생성 필요.
-                const need_inline = isNamespaceUsedAsValue(self.allocator, ast, effective_syms, ns_sym_id) or
+                // shadow 충돌은 registerNamespaceRewrites 가 자체 감지해 ns_inline_list 활성화.
+                const force_inline = isNamespaceUsedAsValue(self.allocator, ast, effective_syms, ns_sym_id) or
                     exported_locals.contains(local_name);
                 try self.registerNamespaceRewrites(
                     &ns_rewrite_list,
-                    if (need_inline) &ns_inline_list else null,
+                    &ns_inline_list,
+                    force_inline,
+                    module_index,
                     ns_sym_id,
                     @intCast(canonical_mod),
                     local_name,
@@ -488,6 +491,8 @@ pub fn buildMetadataForAst(
                                             try self.registerNamespaceRewrites(
                                                 &ns_rewrite_list,
                                                 &ns_inline_list,
+                                                true,
+                                                module_index,
                                                 @intCast(import_sym_id),
                                                 @intFromEnum(src),
                                                 ib.local_name,
@@ -514,6 +519,8 @@ pub fn buildMetadataForAst(
                                 try self.registerNamespaceRewrites(
                                     &ns_rewrite_list,
                                     &ns_inline_list,
+                                    true,
+                                    module_index,
                                     @intCast(imp_sym),
                                     @intCast(ns_target_mod),
                                     ib.local_name,
