@@ -14,3 +14,11 @@ pub fn absPath(tmp: *std.testing.TmpDir, rel: []const u8) ![]const u8 {
     defer std.testing.allocator.free(dp);
     return try std.fs.path.resolve(std.testing.allocator, &.{ dp, rel });
 }
+
+/// 테스트용 헬퍼: ArenaAllocator 를 ThreadSafeAllocator 로 감싸 worker 동시 alloc 보호.
+/// bundler worker 가 self.allocator 로 동시 할당하므로 단일 thread arena 는 race.
+/// 프로덕션 (bungae) 은 GPA thread-safe 가 기본이라 영향 없음 — 테스트만의 보호.
+/// 사용: `var ts = threadSafeArena(&arena); const alloc = ts.allocator();`
+pub fn threadSafeArena(arena: *std.heap.ArenaAllocator) std.heap.ThreadSafeAllocator {
+    return .{ .child_allocator = arena.allocator() };
+}

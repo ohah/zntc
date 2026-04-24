@@ -82,9 +82,15 @@ pub inline fn moduleAtMut(self: *ModuleGraph, idx: ModuleIndex) ?*Module;
 
 | Phase | Fields |
 |-------|--------|
-| **parse only** | source, ast, semantic, parse_arena, import_bindings, export_bindings, line_offsets, legal_comments, prebuilt_stmt_info, mtime, loader, def_format, state, asset_data, css_data |
-| **resolve only** | is_module_field, side_effects_user_defined, is_disabled, is_entry_point |
+| **parse only** | source, ast, semantic, parse_arena, import_bindings, export_bindings, line_offsets, legal_comments, prebuilt_stmt_info, mtime, loader, def_format, state, asset_data, css_data, context_expansion_deps |
+| **resolve only** | is_module_field, side_effects_user_defined, is_disabled, is_entry_point, is_context_dep |
 | **link only** | exec_index, cycle_group, dev_id |
+
+`context_expansion_deps` 는 parse 단계의 `expandRequireContextRecords` 가 plugin
+matches 를 모아 채운다. parse_arena 소유라 graph.deinit 시 자동 해제.
+
+`is_context_dep` 는 resolve 단계의 `applyContextDepResults` 가 require.context
+match 로 등록된 module 에 마킹. tree-shaker 가 runtime require root 로 보존.
 
 ### Multi-phase field (5개)
 
