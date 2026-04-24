@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
@@ -141,6 +142,17 @@ pub const SemanticAnalyzer = struct {
     /// ECMAScript B.3.2/B.3.3: "If replacing the FunctionDeclaration with a VariableStatement
     /// would produce an Early Error, the extension is not applied."
     in_annex_b_context: bool = false,
+
+    /// #1791 oxc 식 type-context 추적. 양수이면 현재 방문 중인 식별자가 TypeScript type
+    /// 문맥 (`x: T`, `interface I extends T`, `T[]` 등) 내에 있음. `resolveIdentifier` 가
+    /// 생성하는 `Reference.flags` 에 `type_context=true` 로 반영되어, import binding
+    /// elision (#1791 Phase D) 이 value-use 와 type-use 를 구분할 수 있게 한다.
+    /// 중첩 (`A<B<C>>`) 을 위해 counter. enter/exit 을 짝으로 호출.
+    type_context_depth: u16 = 0,
+    /// `typeof X` / `keyof X` 처럼 **value 식별자를 type 으로 사용** 할 때 양수. 별도
+    /// bit 로 관리해 isolated declarations 등 downstream 에서 구분 가능. Phase D 판정에선
+    /// `type_context` 와 동일 취급.
+    value_as_type_depth: u16 = 0,
 
     // ================================================================
     // StmtInfo 사전 수집 (번들러 최적화)
@@ -780,15 +792,27 @@ pub const SemanticAnalyzer = struct {
     fn resolveIdentifier(self: *SemanticAnalyzer, name: []const u8, node_idx: NodeIndex, flags: symbol_mod.ReferenceFlags) void {
         var scope_id = self.current_scope;
 
+        // #1791 caller 의 flags 에 현재 type-context 상태를 얹어 per-reference 기록.
+        // mangler 용 reference_count / write_count 는 영향 받지 않음 (bit 만 추가).
+        var effective = flags;
+        if (self.type_context_depth > 0) effective.type_context = true;
+        if (self.value_as_type_depth > 0) effective.value_as_type = true;
+
         // 스코프 체인을 따라 올라가며 심볼 검색
         while (!scope_id.isNone()) {
             const idx = scope_id.toIndex();
             if (idx >= self.scope_maps.items.len) break;
 
             if (self.scope_maps.items[idx].get(name)) |sym_idx| {
-                // 심볼을 찾음 — reference_count 증가
-                self.symbols.items[sym_idx].reference_count += 1;
-                if (flags.write) self.symbols.items[sym_idx].write_count += 1;
+                // reference_count / write_count 는 value 참조만 집계 (#1791 호환).
+                // mangler / tree-shaker 는 이 카운트를 "runtime 에 살아있는 참조 수" 로
+                // 사용하므로, type 문맥 (TS type annotation 등) 의 식별자는 runtime 에
+                // 존재하지 않으니 카운트에서 제외. per-reference 기록은 항상 수행.
+                const is_type_only_use = effective.type_context or effective.value_as_type;
+                if (!is_type_only_use) {
+                    self.symbols.items[sym_idx].reference_count += 1;
+                    if (flags.write) self.symbols.items[sym_idx].write_count += 1;
+                }
                 // symbol_ids + references 기록. node_idx 는 non-none 으로 강제 (NodeIndex
                 // 타입). nullable 경로를 우회하면 mangler liveness 에 silent 누락이 생기므로
                 // 타입 수준에서 차단한다.
@@ -802,7 +826,7 @@ pub const SemanticAnalyzer = struct {
                     .symbol_id = @enumFromInt(sym_idx),
                     .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
                     .scope_stmt_idx = self.current_stmt_idx,
-                    .flags = flags,
+                    .flags = effective,
                 }) catch {};
 
                 return;
@@ -1501,8 +1525,73 @@ pub const SemanticAnalyzer = struct {
                 try self.visitAsWriteTarget(idx);
             },
 
-            // ---- 스킵 (TS 타입 노드, 리터럴, 식별자 등) ----
+            // #1791 TypeScript type 문맥 진입 — 내부 식별자를 Reference 로 기록하되
+            // `type_context=true` flag 와 함께. `typeof` (ts_type_query) 는 별도
+            // `value_as_type` bit 로 구분. type_context_depth / value_as_type_depth 가
+            // 중첩을 지원.
+            .ts_type_reference,
+            .ts_qualified_name,
+            .ts_array_type,
+            .ts_tuple_type,
+            .ts_named_tuple_member,
+            .ts_union_type,
+            .ts_intersection_type,
+            .ts_conditional_type,
+            .ts_type_operator,
+            .ts_optional_type,
+            .ts_rest_type,
+            .ts_indexed_access_type,
+            .ts_type_literal,
+            .ts_function_type,
+            .ts_constructor_type,
+            .ts_mapped_type,
+            .ts_template_literal_type,
+            .ts_infer_type,
+            .ts_parenthesized_type,
+            .ts_import_type,
+            .ts_literal_type,
+            .ts_type_predicate,
+            .ts_type_alias_declaration,
+            .ts_interface_declaration,
+            .ts_interface_body,
+            .ts_property_signature,
+            .ts_method_signature,
+            .ts_call_signature,
+            .ts_construct_signature,
+            .ts_index_signature,
+            .ts_getter_signature,
+            .ts_setter_signature,
+            .ts_type_parameter,
+            .ts_type_parameter_declaration,
+            .ts_type_parameter_instantiation,
+            .ts_class_implements,
+            => {
+                try self.visitTypeContextNode(idx, node);
+            },
+            .ts_type_query => {
+                // typeof X — 자식 identifier 는 value identifier 지만 type 으로 사용
+                self.value_as_type_depth += 1;
+                defer self.value_as_type_depth -= 1;
+                try self.visitTypeContextNode(idx, node);
+            },
+
+            // ---- 스킵 (TS 타입 keyword, 리터럴, 식별자 등) ----
             else => {},
+        }
+    }
+
+    /// TS type node 의 children 을 `type_context_depth` 를 올린 채 순회.
+    /// `ast_walk.children` iterator 로 각 child NodeIndex 를 얻어 재귀 visit —
+    /// 내부에 도달한 `identifier_reference` 는 `resolveIdentifier` 가 type_context
+    /// flag 와 함께 Reference 에 기록.
+    fn visitTypeContextNode(self: *SemanticAnalyzer, idx: NodeIndex, node: Node) AllocError!void {
+        _ = idx;
+        self.type_context_depth += 1;
+        defer self.type_context_depth -= 1;
+        var it = ast_walk.children(self.ast, node);
+        while (it.next()) |child| {
+            if (child.isNone()) continue;
+            try self.visitNode(child);
         }
     }
 
