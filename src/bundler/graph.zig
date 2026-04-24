@@ -2550,16 +2550,34 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
             ) catch null;
             if (matches) |m| {
                 record.context_matches = m;
-                // match 별로 일반 require record 생성해 별도 slice 에 저장 —
-                // import_records 를 건드리지 않아 index-based 참조 (import_bindings 등) 안전.
-                for (m) |match_path| {
-                    const joined = joinContextPath(arena_alloc, record.specifier, match_path) orelse continue;
+                // 매치별 abs path resolve 결과를 record.context_resolved_paths 에 1:1 저장.
+                // codegen 이 webpackContext IIFE 의 module wrapper 호출 (`__zts_modules[<abs>]`) 에 사용.
+                // null 슬롯 = resolve 실패 — codegen 이 throw stub 으로 emit.
+                const source_dir = std.fs.path.dirname(module_path) orelse ".";
+                const resolved_paths_opt: ?[]?[]const u8 = arena_alloc.alloc(?[]const u8, m.len) catch null;
+                for (m, 0..) |match_path, i| {
+                    const joined = joinContextPath(arena_alloc, record.specifier, match_path) orelse {
+                        if (resolved_paths_opt) |paths| paths[i] = null;
+                        continue;
+                    };
+                    if (resolved_paths_opt) |paths| {
+                        const r = self.resolve_cache.resolveThreadSafe(source_dir, joined, .require) catch null;
+                        if (r) |res| {
+                            // resolve_cache 가 self.allocator 로 path 할당 → arena 로 dupe 후 free.
+                            paths[i] = arena_alloc.dupe(u8, res.path) catch null;
+                            self.allocator.free(res.path);
+                        } else {
+                            paths[i] = null;
+                        }
+                    }
+                    // graph dep 등록은 applyContextDepResults 에서 (cache hit 라 빠름).
                     expansion.append(arena_alloc, .{
                         .specifier = joined,
                         .kind = .require,
                         .span = record.span,
                     }) catch {};
                 }
+                if (resolved_paths_opt) |paths| record.context_resolved_paths = paths;
                 continue;
             }
         }

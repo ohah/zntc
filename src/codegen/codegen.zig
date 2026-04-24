@@ -2016,9 +2016,25 @@ pub const Codegen = struct {
                 if (i > 0) try self.writeByte(',');
                 try self.writeByte('"');
                 try self.writeJsStringContent(match_path);
-                try self.write("\":function(){return require(\"");
-                try self.emitJoinedPath(rec.specifier, match_path);
-                try self.write("\");}");
+                try self.write("\":function(){return ");
+                // RN/Hermes runtime 에는 `require` global 이 없으므로 graph 에 등록된
+                // module wrapper 호출로 emit. abs path 가 있으면 직접 호출, 없으면
+                // (resolve 실패 등) throw — raw `require()` fallback 은 런타임 폭발 유발.
+                const resolved_abs: ?[]const u8 = if (i < rec.context_resolved_paths.len)
+                    rec.context_resolved_paths[i]
+                else
+                    null;
+                if (resolved_abs) |abs| {
+                    try self.write("__zts_modules[\"");
+                    try self.writeJsStringContent(abs);
+                    try self.write("\"].fn()");
+                } else {
+                    try self.write("(function(){throw new Error(\"require.context match unresolved: \"+");
+                    try self.writeByte('"');
+                    try self.writeJsStringContent(match_path);
+                    try self.write("\");})()");
+                }
+                try self.write(";}");
             }
         }
         try self.write(

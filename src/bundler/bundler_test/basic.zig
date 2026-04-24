@@ -960,8 +960,12 @@ test "Bundler: require.context normalizes trailing slash and missing ./" {
     defer result.deinit(alloc);
     try std.testing.expect(!result.hasErrors());
 
-    // `./pages/` + `nested/a.tsx` → `./pages/nested/a.tsx` (정확히 slash 하나).
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/nested/a.tsx\")") != null);
+    // plugin 이 dot-slash 없이 반환 → key 도 그대로. value 는 __zts_modules wrapper (#1579 follow-up).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"nested/a.tsx\":function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_modules[") != null);
+    // raw `require(./...)` 는 IIFE 안에 없어야 — RN/Hermes runtime 호환.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/") == null);
+    // emitJoinedPath 가 중복 slash 안 만들어야.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "./pages//") == null);
 }
 
@@ -1019,11 +1023,13 @@ test "Bundler: multiple require.context calls resolve to distinct maps (span mat
     try std.testing.expect(!result.hasErrors());
 
     // 첫 호출 (./pages) 는 first.tsx 만, 둘째 호출 (./other) 는 second.tsx 만.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/first.tsx\")") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./other/second.tsx\")") != null);
-    // cross-contamination 없음.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/second.tsx\")") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./other/first.tsx\")") == null);
+    // matches key (relative) + __zts_modules wrapper (raw require 회피, #1579 follow-up).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./first.tsx\":function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"./second.tsx\":function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_modules[") != null);
+    // cross-contamination 또는 raw require 없음.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./pages/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"./other/") == null);
 }
 
 test "Bundler: require.context coexists with import.meta.glob" {
@@ -1221,6 +1227,53 @@ test "Bundler: no require.context in source → no webpackContext template emitt
 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_NOT_FOUND") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Object.keys(map)") == null);
+}
+
+// RN/Hermes runtime 호환성 invariant: webpackContext IIFE 안에 raw `require(` 호출이
+// 절대 없어야 한다. RN runtime 에는 `require` global 이 없으므로 raw require 가 emit 되면
+// 사용자 앱이 `Property 'require' doesn't exist` 로 폭발 (이전 회귀 사례, #1579 follow-up).
+test "Bundler: require.context IIFE has no raw require call (RN runtime invariant)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ts = threadSafeArena(&arena);
+    const alloc = ts.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("pages");
+    try writeFile(tmp.dir, "pages/a.tsx", "export const a = 1;");
+    try writeFile(tmp.dir, "pages/b.tsx", "export const b = 2;");
+    try writeFile(tmp.dir, "entry.ts", "const ctx = require.context('./pages');\nconsole.log(ctx.keys());");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{.{ .name = "rc", .resolveContext = rcScanDir }};
+    var b = Bundler.init(alloc, .{ .entry_points = &.{entry}, .plugins = &plugins });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(alloc);
+    try std.testing.expect(!result.hasErrors());
+
+    // 모든 webpackContext IIFE 영역에 대해 raw require 부재 검증.
+    // IIFE 시작 마커: `(function(){var map={` (codegen.tryEmitRequireContextObject).
+    var pos: usize = 0;
+    var found_iife = false;
+    const start_marker = "(function(){var map={";
+    while (std.mem.indexOfPos(u8, result.output, pos, start_marker)) |start| {
+        found_iife = true;
+        const end = std.mem.indexOfPos(u8, result.output, start, "})()") orelse break;
+        const iife = result.output[start..end];
+        // raw require 호출 패턴 (앞에 `.` 같은 멤버 access 없는 경우만 검사 — `__zts_modules[...]`
+        // 같은 정상 호출은 require 와 무관).
+        try std.testing.expect(std.mem.indexOf(u8, iife, "return require(") == null);
+        try std.testing.expect(std.mem.indexOf(u8, iife, " require(\"./") == null);
+        // 정상 emit 검증: __zts_modules wrapper 호출.
+        try std.testing.expect(std.mem.indexOf(u8, iife, "__zts_modules[") != null);
+        pos = end + 4;
+    }
+    try std.testing.expect(found_iife);
 }
 
 test "Bundler: UMD external dependencies in wrapper" {

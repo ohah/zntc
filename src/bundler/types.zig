@@ -421,6 +421,12 @@ pub const ImportRecord = struct {
     /// graph 단계에서 채운다. codegen 이 이 목록을 보고 webpackContext 함수를 emit (Phase 3).
     /// null = 아직 평가 안 됨, &.{} = 매칭 0개 (empty context).
     context_matches: ?[]const []const u8 = null,
+    /// require.context: context_matches 와 1:1 매핑되는 resolved abs path. Phase 4 의
+    /// `applyContextDepResults` 가 채움 (parse_arena 소유). codegen 의 webpackContext IIFE 가
+    /// 매치별 `__zts_modules[<abs_path>].fn()` 호출에 사용. RN/Hermes runtime 이 raw `require()` 를
+    /// 못 받기 때문에 wrapper module 호출로 emit (#1579 Phase 4 follow-up).
+    /// element 가 null = 해당 매치 resolve 실패 (codegen 이 throw stub 으로 emit).
+    context_resolved_paths: []const ?[]const u8 = &.{},
 };
 
 // ============================================================
