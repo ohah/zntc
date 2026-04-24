@@ -4253,12 +4253,11 @@ pub const Transformer = struct {
         const sym_id = self.symbol_ids.items[sym_node_idx] orelse return false;
         if (sym_id >= self.symbols.len) return false;
 
-        // Reference 들 중 value-use 하나라도 있으면 keep.
+        // Reference 들 중 value-use 하나라도 있으면 keep. 판정은 `Reference.isValueUse`
+        // 가 공통으로 수행 — linker 의 `isImportBindingTypeOnly` 와 동일 기준.
         for (self.references) |r| {
             if (@intFromEnum(r.symbol_id) != sym_id) continue;
-            if (r.flags.declare) continue;
-            if (r.flags.type_context or r.flags.value_as_type) continue;
-            return false;
+            if (r.isValueUse()) return false;
         }
         return true;
     }

@@ -347,6 +347,16 @@ pub const Reference = struct {
     flags: ReferenceFlags = .{},
 
     pub const NO_STMT: u32 = std.math.maxInt(u32);
+
+    /// #1791: runtime 에 값이 실제로 필요한 참조인지 판정.
+    /// `declare` 는 선언 위치 (값 사용 아님), `type_context` / `value_as_type` 는 TS
+    /// type 문맥 (런타임 제거됨). 셋 다 false 인 read/write 만 "value-use" 로 취급.
+    /// Phase D 가 transformer/linker 양쪽에서 동일 기준으로 공유.
+    pub fn isValueUse(self: Reference) bool {
+        if (self.flags.declare) return false;
+        if (self.flags.type_context or self.flags.value_as_type) return false;
+        return self.flags.read or self.flags.write;
+    }
 };
 
 /// 참조 종류 플래그 (packed bitset).
