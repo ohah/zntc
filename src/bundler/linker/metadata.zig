@@ -192,6 +192,18 @@ pub fn buildMetadataForAst(
         ns_var_list.deinit(self.allocator);
     }
 
+    // #1791 IIFE unresolved build-time diag. 정상 경로에서는 emitter 가 serial 로
+    // `linker.fatal_diagnostics` 에 flush. item.message 는 allocator 소유.
+    var pending_diags: std.ArrayListUnmanaged(@import("../types.zig").BundlerDiagnostic) = .empty;
+    errdefer {
+        for (pending_diags.items) |d| self.allocator.free(d.message);
+        pending_diags.deinit(self.allocator);
+    }
+    // IIFE dedupe 맵은 실제 IIFE 포맷 + unresolved 발생 시에만 lazy init — ESM/CJS
+    // 빌드 (실측 99%+ 모듈) 에서 해시맵 backing alloc 비용을 피한다.
+    var iife_diag_seen: ?std.StringHashMap(void) = null;
+    defer if (iife_diag_seen) |*seen_map| seen_map.deinit();
+
     // namespace import / inline object 캐시는 linker 전역 필드(`self.ns_export_cache`,
     // `self.ns_inline_cache`) 로 이동 — 같은 target 을 여러 모듈이 namespace import 해도
     // collectExportsRecursive DFS 를 한 번만 수행하도록 공유 (#1734).
@@ -242,8 +254,34 @@ pub fn buildMetadataForAst(
                             try preamble.write(ib.imported_name);
                             try preamble.write(";\n");
                         }
+                    } else if (self.format == .iife and !ib.isSynthetic()) {
+                        // #1791 IIFE: unresolved external 은 의미 자체가 성립 안 함
+                        // (factory 스코프에 require 없음, top-level import 도 불가).
+                        // build-time 에러로 pending_diagnostics 에 쌓고 emitter 가 flush.
+                        // specifier 단위로 dedupe — 같은 spec 의 binding 여러 개에 대해 한 번만.
+                        if (iife_diag_seen == null) iife_diag_seen = std.StringHashMap(void).init(self.allocator);
+                        const seen_gop = try iife_diag_seen.?.getOrPut(rec.specifier);
+                        if (!seen_gop.found_existing) {
+                            const msg = try std.fmt.allocPrint(
+                                self.allocator,
+                                "unresolved import \"{s}\" cannot be emitted in IIFE format (no require/import available in factory scope)",
+                                .{rec.specifier},
+                            );
+                            errdefer self.allocator.free(msg);
+                            try pending_diags.append(self.allocator, .{
+                                .code = .unresolved_import,
+                                .severity = .@"error",
+                                .message = msg,
+                                .file_path = m.path,
+                                .span = rec.span,
+                                .step = .resolve,
+                                .suggestion = null,
+                            });
+                        }
                     } else {
-                        // ESM/CJS/IIFE: require() preamble 생성
+                        // ESM/CJS: require() preamble 생성. ESM 출력에서도 esbuild 호환으로
+                        // require() 를 유지 — Node.js 가 `import` 없는 출력을 CJS 로 파싱하여
+                        // `var X; var X;` 재선언을 허용하게 한다 (`emitter.zig` 상단 주석 참조).
                         if (is_synthetic_esm) {
                             try preamble.writeUnresolvedRequireAssignOnly(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
                         } else {
@@ -561,6 +599,12 @@ pub fn buildMetadataForAst(
     else
         null;
 
+    // #1791 IIFE unresolved 진단 소유권 이전
+    const pending_diags_slice: []const @import("../types.zig").BundlerDiagnostic = if (pending_diags.items.len > 0)
+        try pending_diags.toOwnedSlice(self.allocator)
+    else
+        &.{};
+
     return .{
         .skip_nodes = skip_nodes,
         .renames = renames,
@@ -575,6 +619,7 @@ pub fn buildMetadataForAst(
         .export_getter_overrides = export_getter_overrides,
         .owned_rename_values = owned_nested_renames,
         .dev_ns_vars = dev_ns_vars,
+        .pending_diagnostics = pending_diags_slice,
         .allocator = self.allocator,
     };
 }
