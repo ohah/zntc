@@ -62,6 +62,26 @@
   }
 }
 
+/* 자작 랜딩 (splash + sl-markdown-content 의 첫 자식이 .not-content section):
+   기본 PageTitle h1 컨테이너 숨기고, 뒤따르는 content-panel 은 전폭 해제. */
+main:has(.sl-markdown-content > section.not-content:first-child) > .content-panel:first-child {
+  display: none;
+}
+
+main:has(.sl-markdown-content > section.not-content:first-child) > .content-panel {
+  padding: 0;
+  border-top: 0;
+}
+
+main:has(.sl-markdown-content > section.not-content:first-child) > .content-panel > .sl-container {
+  max-width: 100%;
+  margin-inline: 0;
+}
+
+main:has(.sl-markdown-content > section.not-content:first-child) > .content-panel > .sl-container > .sl-markdown-content {
+  max-width: 100%;
+}
+
 starlight-toc a {
   white-space: normal;
   word-break: break-word;
