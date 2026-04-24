@@ -66,6 +66,19 @@ jobs:
       - name: Check formatting
         run: zig fmt --check src/
 
+      # #1797 follow-up — AST Tag↔variant mismatch static audit.
+      # Detects #1797 class silent failures (codegen reads `data.X` while
+      # parser stores a different variant). Exits non-zero on real mismatch.
+      # Cosmetic mismatches (layout-only) are reported but not fatal yet
+      # — tracked in #1802.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Audit AST addNode variants (#1797)
+        run: bun scripts/audit_addnode_variants.ts
+
   napi:
     name: NAPI Build & Test
     runs-on: ${{ matrix.os }}
