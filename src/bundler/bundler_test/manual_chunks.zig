@@ -1,0 +1,280 @@
+//! manualChunks 테스트 — 사용자 정의 청크 분할 (#1027).
+//!
+//! 최초 구현 범위 (Phase 1):
+//!   - `ManualChunkEntry { name, patterns }` 으로 모듈 경로 substring 매칭
+//!   - 매칭된 모듈을 지정 청크 이름으로 묶음
+//!   - code_splitting=true 전제 (단일 파일 모드에서는 의미 없음)
+//!
+//! 향후 (Phase 2+):
+//!   - regex 패턴, function callback (Rollup `manualChunks(id)` 시그니처)
+//!   - async chunk 와의 우선순위 / 순환 의존 diagnostic
+
+const std = @import("std");
+const Bundler = @import("../bundler.zig").Bundler;
+const types = @import("../types.zig");
+const test_helpers = @import("../test_helpers.zig");
+const writeFile = test_helpers.writeFile;
+const absPath = test_helpers.absPath;
+const hasChunk = test_helpers.hasChunk;
+const chunkContaining = test_helpers.chunkContaining;
+
+// ============================================================
+// Baseline: manual_chunks 비어있으면 기존 자동 분할 동작
+// ============================================================
+
+test "manualChunks: empty list → 기존 code splitting 동작" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./lib";
+        \\console.log(a);
+    );
+    try writeFile(tmp.dir, "lib.ts", "export const a = 1;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // 동적 import 없으므로 단일 청크
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+}
+
+// ============================================================
+// Phase 1: substring 매칭 — 지정 모듈을 전용 청크로 분리
+// ============================================================
+
+test "manualChunks: substring match → 지정 청크에 모듈 할당" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./vendor-lib";
+        \\import { b } from "./app-lib";
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "vendor-lib.ts", "export const a = \"VENDOR_MARKER\";");
+    try writeFile(tmp.dir, "app-lib.ts", "export const b = \"APP_MARKER\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{
+            .{ .name = "vendor", .patterns = &.{"vendor-lib"} },
+        },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // vendor 청크 존재
+    try std.testing.expect(hasChunk(outs, "vendor"));
+    // vendor 모듈 코드는 vendor 청크에
+    const vendor_chunk = chunkContaining(outs, "VENDOR_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, vendor_chunk, "vendor") != null);
+    // 매칭 안 된 app-lib 은 entry 청크에 (vendor 에 안 들어감)
+    const app_chunk = chunkContaining(outs, "APP_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, app_chunk, "vendor") == null);
+}
+
+test "manualChunks: multi-pattern → 여러 모듈을 한 청크로" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./alpha";
+        \\import { b } from "./beta";
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "alpha.ts", "export const a = \"ALPHA\";");
+    try writeFile(tmp.dir, "beta.ts", "export const b = \"BETA\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{
+            .{ .name = "shared", .patterns = &.{ "alpha", "beta" } },
+        },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // shared 청크에 두 마커가 모두 있어야 함
+    const alpha_chunk = chunkContaining(outs, "ALPHA") orelse return error.TestUnexpectedResult;
+    const beta_chunk = chunkContaining(outs, "BETA") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, alpha_chunk, "shared") != null);
+    try std.testing.expect(std.mem.indexOf(u8, beta_chunk, "shared") != null);
+    try std.testing.expectEqualStrings(alpha_chunk, beta_chunk);
+}
+
+test "manualChunks: multiple groups → 서로 다른 청크로 분리" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./ui-lib";
+        \\import { b } from "./data-lib";
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "ui-lib.ts", "export const a = \"UI\";");
+    try writeFile(tmp.dir, "data-lib.ts", "export const b = \"DATA\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{
+            .{ .name = "ui", .patterns = &.{"ui-lib"} },
+            .{ .name = "data", .patterns = &.{"data-lib"} },
+        },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    const ui_chunk = chunkContaining(outs, "UI") orelse return error.TestUnexpectedResult;
+    const data_chunk = chunkContaining(outs, "DATA") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, ui_chunk, "ui") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data_chunk, "data") != null);
+    try std.testing.expect(!std.mem.eql(u8, ui_chunk, data_chunk));
+}
+
+// ============================================================
+// rolldown parity 개념 (검증 개념만 이식, ZTS Phase 1 API 기준)
+// ============================================================
+
+test "manualChunks: transitive dependency follows matched module (rolldown include_dependencies_recursively)" {
+    // 출처 개념: rolldown `advanced_chunks/include_dependencies_recursively`.
+    // test regex 가 `foo.js` 만 매칭해도 snapshot 에서 `bar.js` (foo 의 dep) 가
+    // 같은 vendor 청크에 들어감. 이유: dep 을 다른 청크로 두면 순서 보장/순환 이슈.
+    // ZTS Phase 1 정책도 동일 — 매칭 모듈의 단독 dep 은 같은 청크로.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { foo } from "./foo";
+        \\console.log(foo);
+    );
+    try writeFile(tmp.dir, "foo.ts",
+        \\import { bar } from "./bar";
+        \\export const foo = "FOO_MARKER " + bar;
+    );
+    try writeFile(tmp.dir, "bar.ts", "export const bar = \"BAR_MARKER\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{
+            .{ .name = "vendor", .patterns = &.{"foo"} },
+        },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // foo 와 bar 가 모두 vendor 청크에
+    const foo_chunk = chunkContaining(outs, "FOO_MARKER") orelse return error.TestUnexpectedResult;
+    const bar_chunk = chunkContaining(outs, "BAR_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, foo_chunk, "vendor") != null);
+    try std.testing.expectEqualStrings(foo_chunk, bar_chunk);
+}
+
+test "manualChunks: dynamic import target hoisted into manual chunk" {
+    // 출처 개념: rolldown `dynamic_entry_shared_module_not_merged` 를 단순화.
+    // dynamic import 로만 참조되는 모듈이 manualChunks 패턴에 매칭되면,
+    // 기본 async chunk 대신 지정된 manual 청크에 포함. Rollup/rolldown 모두 동일.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const lazy = import("./lazy");
+        \\console.log(lazy);
+    );
+    try writeFile(tmp.dir, "lazy.ts", "export const v = \"LAZY_MARKER\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{
+            .{ .name = "vendor", .patterns = &.{"lazy"} },
+        },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+
+    // lazy 가 vendor 청크로 (async chunk 가 아니라 manual chunk 우선)
+    const lazy_chunk = chunkContaining(outs, "LAZY_MARKER") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, lazy_chunk, "vendor") != null);
+}
+
+test "manualChunks: no match → 엔트리 청크에 머묾 (기존 동작)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./lib";
+        \\console.log(a);
+    );
+    try writeFile(tmp.dir, "lib.ts", "export const a = \"ONLY\";");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks = &.{
+            .{ .name = "vendor", .patterns = &.{"nonexistent-pattern"} },
+        },
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    // 매칭 없음 → vendor 청크 생성 안 됨, 단일 entry 청크만
+    try std.testing.expectEqual(@as(usize, 1), outs.len);
+    try std.testing.expect(std.mem.indexOf(u8, outs[0].contents, "ONLY") != null);
+}

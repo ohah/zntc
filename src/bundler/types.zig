@@ -105,6 +105,29 @@ pub const GlobalEntry = struct {
     }
 };
 
+/// 사용자 정의 청크 분할 (#1027 / Rollup `manualChunks` 호환 Phase 1).
+/// Rollup record form `{ "vendor": ["lodash", "react"] }` 를 네이티브 슬라이스로 1:1 매핑.
+/// 모듈 절대경로에 `patterns` 중 하나가 substring 으로 포함되면 `name` 청크에 할당.
+///
+/// 매칭된 모듈은 pseudo-entry 로 BFS 에 참여 → transitive dependency 도 자동으로
+/// 같은 청크에 따라가고, dynamic import target 도 async chunk 대신 manual 청크에 포함.
+/// regex/function 지원 및 순환 의존 diagnostic 은 Phase 2 에서.
+pub const ManualChunkEntry = struct {
+    name: []const u8,
+    patterns: []const []const u8,
+
+    /// 모듈 경로가 어느 entry 에 매칭되는지 찾는다. 없으면 null.
+    /// 다중 매칭 시 **먼저 선언된 엔트리** 우선 (사용자 의도 반영).
+    pub fn lookup(entries: []const ManualChunkEntry, module_path: []const u8) ?usize {
+        for (entries, 0..) |e, i| {
+            for (e.patterns) |p| {
+                if (std.mem.indexOf(u8, module_path, p) != null) return i;
+            }
+        }
+        return null;
+    }
+};
+
 // ============================================================
 // Import 종류
 // ============================================================

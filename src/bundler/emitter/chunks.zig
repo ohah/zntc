@@ -236,10 +236,10 @@ pub fn emitChunks(
             try l.computeRenamesForModules(sorted_mods, occupied.items);
         }
 
-        // 엔트리 모듈 인덱스 (final exports용)
+        // 엔트리 모듈 인덱스 (final exports용). manual/common 은 엔트리 모듈 없음.
         const entry_mod_idx: ?u32 = switch (chunk.kind) {
             .entry_point => |info| @intFromEnum(info.module),
-            .common => null,
+            .common, .manual => null,
         };
 
         for (sorted_mods) |mod_idx| {

@@ -72,6 +72,10 @@ pub const BundleOptions = struct {
     /// code splitting 활성화. true이면 dynamic import 경계에서 청크를 분리하고
     /// 공유 모듈을 공통 청크로 추출한다. 결과는 BundleResult.outputs에 다중 파일로 반환.
     code_splitting: bool = false,
+    /// 사용자 정의 청크 분할 (Rollup `manualChunks` 호환 Phase 1 / #1027).
+    /// code_splitting=true 일 때만 동작. 매칭된 모듈은 pseudo-entry 로 BFS 에 참여
+    /// → transitive dependency 도 같은 청크로, dynamic import target 도 manual 우선.
+    manual_chunks: []const types.ManualChunkEntry = &.{},
     /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
@@ -975,6 +979,7 @@ pub const Bundler = struct {
                     &graph,
                     self.options.entry_points,
                     if (shaker) |*s| s else null,
+                    self.options.manual_chunks,
                 );
             defer chunk_graph.deinit();
 

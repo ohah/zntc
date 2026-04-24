@@ -75,6 +75,23 @@ pub const BitSet = struct {
         self.entries[byte_idx] &= ~(@as(u8, 1) << @intCast(bit % 8));
     }
 
+    /// [start, start+count) 범위에 설정된 비트가 하나라도 있는지.
+    pub fn hasAnyBitInRange(self: BitSet, start: u32, count: u32) bool {
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            if (self.hasBit(start + i)) return true;
+        }
+        return false;
+    }
+
+    /// [start, start+count) 범위의 모든 비트를 해제한다.
+    pub fn clearBitRange(self: *BitSet, start: u32, count: u32) void {
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            self.clearBit(start + i);
+        }
+    }
+
     /// 설정된 비트의 개수를 반환한다.
     pub fn bitCount(self: BitSet) u32 {
         var count: u32 = 0;
@@ -125,7 +142,7 @@ pub const BitSetContext = struct {
 // ChunkKind — 청크 종류
 // ============================================================
 
-/// 청크의 종류: 진입점(entry_point) 또는 공통 모듈(common).
+/// 청크의 종류: 진입점(entry_point) / 공통(common) / 사용자 정의(manual).
 pub const ChunkKind = union(enum) {
     /// 진입점에서 생성된 청크
     entry_point: struct {
@@ -138,6 +155,12 @@ pub const ChunkKind = union(enum) {
     },
     /// 여러 진입점이 공유하는 공통 청크
     common,
+    /// `manual_chunks` 옵션이 지정한 사용자 정의 청크 (#1027).
+    /// 이 청크에 해당하는 BitSet bit 를 소유하며, 매칭된 모듈은 항상 이 청크로 간다.
+    manual: struct {
+        bit: u32,
+        name: []const u8,
+    },
 };
 
 // ============================================================
@@ -319,6 +342,7 @@ pub fn generateChunks(
     graph: *const ModuleGraph,
     entry_points: []const []const u8,
     shaker: ?*const TreeShaker,
+    manual_chunks: []const types.ManualChunkEntry,
 ) !ChunkGraph {
     const module_count = graph.moduleCount();
 
@@ -381,12 +405,19 @@ pub fn generateChunks(
         return ChunkGraph.init(allocator, module_count);
     }
 
+    // manual chunks 는 entry 뒤에 bit 를 할당 — splitting_info 총 비트폭 = entry + manual.
+    // BFS 단계에서 매칭 모듈의 transitive deps 에 manual bit 가 전파되어
+    // `rolldown advanced_chunks/include_dependencies_recursively` 와 동일한
+    // 정책 (dep 도 같은 manual 청크로) 을 자동으로 얻는다.
+    const manual_count = manual_chunks.len;
+    const total_bits = entry_count + manual_count;
+
     // ChunkGraph 생성 — 모듈→청크 매핑 배열을 module_count 크기로 할당.
     var chunk_graph = try ChunkGraph.init(allocator, module_count);
     errdefer chunk_graph.deinit();
 
     // 모듈별 도달 가능성 BitSet — splitting_info[module_index]는
-    // 그 모듈이 어떤 엔트리들에서 도달 가능한지를 나타낸다.
+    // 그 모듈이 어떤 엔트리/manual 청크에서 도달 가능한지를 나타낸다.
     var splitting_info = try allocator.alloc(BitSet, module_count);
     // 안전한 초기값 — init 실패 시 defer에서 deinit 호출해도 안전
     @memset(splitting_info, .{ .entries = &.{} });
@@ -395,7 +426,7 @@ pub fn generateChunks(
         allocator.free(splitting_info);
     }
     for (splitting_info) |*bs| {
-        bs.* = try BitSet.init(allocator, @intCast(entry_count));
+        bs.* = try BitSet.init(allocator, @intCast(total_bits));
     }
 
     // BitSet → ChunkIndex HashMap (Phase 3에서 O(1) 청크 lookup에 사용).
@@ -407,7 +438,7 @@ pub fn generateChunks(
 
     // Phase 1c: 엔트리별 Chunk 생성
     for (entries.items, 0..) |entry, bit_idx| {
-        var bits = try BitSet.init(allocator, @intCast(entry_count));
+        var bits = try BitSet.init(allocator, @intCast(total_bits));
         errdefer bits.deinit(allocator);
         bits.setBit(@intCast(bit_idx));
 
@@ -421,6 +452,39 @@ pub fn generateChunks(
             .is_dynamic = entry.is_dynamic,
         } }, bits);
         chunk.name = name;
+
+        const ci = try chunk_graph.addChunk(chunk);
+        try bits_to_chunk.put(allocator, bits, ci);
+    }
+
+    // Phase 1d: manual chunks — 실제 매칭 모듈 seed 수집 + 비어있지 않으면 Chunk 등록.
+    // 매칭 없는 manual chunk 는 빈 출력 파일을 만들지 않도록 skip. 실제 BFS 전파는 Phase 2.5.
+    // `manual_seeds[i].items.len > 0` 이 곧 "이 청크 등록됨" 의 signal — 별도 flag 불필요.
+    const manual_seeds = try allocator.alloc(std.ArrayList(ModuleIndex), manual_count);
+    defer {
+        for (manual_seeds) |*s| s.deinit(allocator);
+        allocator.free(manual_seeds);
+    }
+    for (manual_seeds) |*s| s.* = .empty;
+
+    if (manual_count > 0) {
+        var it = graph.modulesIterator();
+        var mi: usize = 0;
+        while (it.next()) |m| : (mi += 1) {
+            const idx = types.ManualChunkEntry.lookup(manual_chunks, m.path) orelse continue;
+            try manual_seeds[idx].append(allocator, ModuleIndex.fromUsize(mi));
+        }
+    }
+
+    for (manual_chunks, 0..) |mc, i| {
+        if (manual_seeds[i].items.len == 0) continue;
+        const manual_bit: u32 = @intCast(entry_count + i);
+        var bits = try BitSet.init(allocator, @intCast(total_bits));
+        errdefer bits.deinit(allocator);
+        bits.setBit(manual_bit);
+
+        var chunk = Chunk.init(.none, .{ .manual = .{ .bit = manual_bit, .name = mc.name } }, bits);
+        chunk.name = mc.name;
 
         const ci = try chunk_graph.addChunk(chunk);
         try bits_to_chunk.put(allocator, bits, ci);
@@ -453,6 +517,40 @@ pub fn generateChunks(
                     try queue.append(allocator, dep_idx);
                 }
             }
+        }
+    }
+
+    // ── Phase 2.5: manual chunks — 매칭 모듈 + transitive dep 에 manual bit 전파 ──
+    // rolldown advanced_chunks/include_dependencies_recursively 와 동일 정책:
+    // 매칭 모듈만이 아니라 그 의존성까지 같은 청크로 내려야 cross-chunk 순환을 피할 수 있음.
+    if (manual_count > 0) {
+        for (0..manual_count) |i| {
+            if (manual_seeds[i].items.len == 0) continue;
+            const manual_bit: u32 = @intCast(entry_count + i);
+            queue.clearRetainingCapacity();
+            for (manual_seeds[i].items) |seed| try queue.append(allocator, seed);
+
+            while (queue.items.len > 0) {
+                const mod_idx = queue.pop() orelse break;
+                const m = graph.getModule(mod_idx) orelse continue;
+                const mi = @intFromEnum(mod_idx);
+                if (splitting_info[mi].hasBit(manual_bit)) continue;
+                splitting_info[mi].setBit(manual_bit);
+                for (m.dependencies.items) |dep_idx| {
+                    const dep_i = @intFromEnum(dep_idx);
+                    if (dep_i < module_count and !splitting_info[dep_i].hasBit(manual_bit)) {
+                        try queue.append(allocator, dep_idx);
+                    }
+                }
+            }
+        }
+
+        // manual bit 가 켜진 모듈은 entry bit 를 모두 제거 — Phase 3 BitSet lookup 이
+        // `{entry=n, manual=1}` 이 아닌 정확히 `{manual=1}` 패턴으로 manual 청크에 귀속.
+        // dynamic import target 도 여기서 async chunk 에서 빠져나와 manual 청크로 합류.
+        for (splitting_info) |*bs| {
+            if (!bs.hasAnyBitInRange(@intCast(entry_count), @intCast(manual_count))) continue;
+            bs.clearBitRange(0, @intCast(entry_count));
         }
     }
 
@@ -510,6 +608,7 @@ pub fn generateChunks(
 
     // 엔트리 모듈은 반드시 자신의 엔트리 청크에 할당되어야 함.
     // Phase 3에서 공통 청크에 배정되었을 수 있으므로, 강제로 엔트리 청크로 이동.
+    // 단, manual chunk 에 배정된 경우는 manual 우선 정책이라 그대로 유지.
     for (entries.items, 0..) |entry, ci| {
         const chunk_idx: ChunkIndex = @enumFromInt(@as(u32, @intCast(ci)));
         const current = chunk_graph.getModuleChunk(entry.module_idx);
@@ -518,6 +617,7 @@ pub fn generateChunks(
             chunk_graph.assignModuleToChunk(entry.module_idx, chunk_idx);
             try chunk_graph.getChunkMut(chunk_idx).addModule(allocator, entry.module_idx);
         } else if (current != chunk_idx) {
+            if (chunk_graph.getChunk(current).kind == .manual) continue;
             // 공통 청크에 잘못 배정됨 → 이전 청크에서 제거 후 엔트리 청크로 이동
             const old_chunk = chunk_graph.getChunkMut(current);
             removeModuleFromList(&old_chunk.modules, entry.module_idx);
