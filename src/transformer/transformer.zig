@@ -1347,11 +1347,18 @@ pub const Transformer = struct {
             },
 
             // === import/export specifiers ===
-            .import_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(idx),
+            // inline `type` modifier (flags&1) 또는 value-ref==0 → elision.
+            // visitExtraList 가 `.none` 을 필터링하여 specifier list 에서 제거.
+            .import_specifier => blk: {
+                if (node.data.binary.flags & 1 != 0) break :blk NodeIndex.none;
+                if (self.shouldElideImportSpecifier(idx, node)) break :blk NodeIndex.none;
+                break :blk self.visitBinaryNode(idx);
+            },
             .export_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(idx),
             // default/namespace specifier는 string_ref(span) 복사 — 자식 노드 없음
             .import_default_specifier,
             .import_namespace_specifier,
+            => if (self.shouldElideImportSpecifier(idx, node)) NodeIndex.none else self.copyNodeDirect(idx),
             .import_attribute,
             => self.copyNodeDirect(idx),
 
@@ -4202,30 +4209,42 @@ pub const Transformer = struct {
             if (spec_node.tag == .import_specifier and spec_node.data.binary.flags & 1 != 0) continue;
             if (spec_node.tag == .export_specifier) continue; // 방어적: export specifier는 여기 없지만
 
-            // 심볼 ID를 찾을 노드 인덱스 결정
-            const sym_node_idx: u32 = switch (spec_node.tag) {
-                // import_specifier: binary.right가 local name 노드
-                .import_specifier => blk: {
-                    const local_idx = spec_node.data.binary.right;
-                    break :blk if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
-                },
-                // import_default_specifier, import_namespace_specifier: spec 노드 자체가 심볼
-                else => @intFromEnum(spec_idx),
-            };
-
-            // symbol_ids에서 심볼 ID 조회
-            if (sym_node_idx < self.symbol_ids.items.len) {
-                if (self.symbol_ids.items[sym_node_idx]) |sym_id| {
-                    if (sym_id < self.symbols.len) {
-                        if (self.symbols[sym_id].reference_count > 0) return false;
-                        continue; // 미사용 — 다음 specifier 확인
-                    }
-                }
-            }
-            // symbol_id를 찾지 못하면 보수적으로 유지 (사용 중으로 간주)
-            return false;
+            if (!self.isImportSpecifierUnused(spec_idx, spec_node)) return false;
         }
         return true;
+    }
+
+    /// visit switch 용 wrapper — `verbatim_module_syntax` 와 symbol table 준비 여부를
+    /// 먼저 가드한 뒤 `isImportSpecifierUnused` 에 위임. #1791 Phase D 의 elision 조건을
+    /// default/named/namespace 세 switch arm 이 동일하게 적용하도록 모아둔다.
+    fn shouldElideImportSpecifier(self: *const Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
+        if (self.options.verbatim_module_syntax) return false;
+        if (self.symbols.len == 0) return false;
+        return self.isImportSpecifierUnused(spec_idx, spec_node);
+    }
+
+    /// 단일 import specifier 의 local binding 이 value 로 참조된 적이 있는지 조회.
+    /// babel 식 type-only usage elision — type 위치에서만 쓰이는 binding 은 analyzer 가
+    /// reference 에 포함시키지 않아 `reference_count == 0`. `areAllSpecifiersUnused` (전체
+    /// drop) 와 개별 specifier elision (visit switch) 양쪽에서 공유.
+    ///
+    /// symbol_id 조회 실패 시 보수적으로 "사용 중" 간주 — 한 번이라도 누락하면 프로덕션
+    /// 런타임 에러가 나므로 불확실하면 유지한다.
+    fn isImportSpecifierUnused(self: *const Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
+        // 심볼 ID 조회 대상 노드: named 는 binary.right (local), default/namespace 는 specifier 자체
+        const sym_node_idx: u32 = switch (spec_node.tag) {
+            .import_specifier => blk: {
+                const local_idx = spec_node.data.binary.right;
+                break :blk if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
+            },
+            .import_default_specifier, .import_namespace_specifier => @intFromEnum(spec_idx),
+            else => return false,
+        };
+
+        if (sym_node_idx >= self.symbol_ids.items.len) return false;
+        const sym_id = self.symbol_ids.items[sym_node_idx] orelse return false;
+        if (sym_id >= self.symbols.len) return false;
+        return self.symbols[sym_id].reference_count == 0;
     }
 
     /// export_named_declaration: extra_data = [declaration, specifiers_start, specifiers_len, source]

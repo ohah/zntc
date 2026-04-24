@@ -778,6 +778,8 @@ pub const Bundler = struct {
             l.dev_mode = self.options.dev_mode;
             // #1621: preamble/metadata 가 __toESM/__toCommonJS 를 축약 이름으로 emit.
             l.minify_whitespace = self.options.minify_whitespace;
+            // #1791 Phase D: value-ref 0 binding elision 정책을 transformer 와 동기화.
+            l.verbatim_module_syntax = self.options.verbatim_module_syntax;
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
             if (!self.options.code_splitting) {
