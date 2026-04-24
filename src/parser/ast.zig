@@ -451,7 +451,6 @@ pub const Node = struct {
                 .assignment_target_identifier,
                 .import_default_specifier,
                 .import_namespace_specifier,
-                .import_attribute,
                 .jsx_empty_expression,
                 .jsx_text,
                 .jsx_identifier,
@@ -562,6 +561,10 @@ pub const Node = struct {
                 // transformer::visitImportEqualsDeclaration 가 data.binary.left/right
                 // 를 읽어 `const X = require(...)` 런타임 코드로 변환한다.
                 .ts_import_equals_declaration,
+                // import_attribute: binary = { left=key, right=value, flags }
+                // ESM `import ... with { type: "json" }` 의 각 attr. key/value 가
+                // 실존하므로 leaf 가 아닌 binary layout.
+                .import_attribute,
                 => .{ .kind = .binary },
 
                 // === ternary ===

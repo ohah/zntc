@@ -13,7 +13,9 @@ const ast_mod = @import("ast.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
-const Kind = @import("../lexer/token.zig").Kind;
+const token_mod = @import("../lexer/token.zig");
+const Kind = token_mod.Kind;
+const Span = token_mod.Span;
 
 /// TS 키워드 타입 이름 → AST Tag 매핑 (parsePrimaryType에서 사용)
 const ts_type_keywords = std.StaticStringMap(Tag).initComptime(.{
@@ -1558,18 +1560,14 @@ fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
 
     // this 파라미터: this: Type
     // destructuring: [a, b]: Type, {x, y}: Type
-    const name = if (self.current() == .kw_this) blk: {
-        const this_span = self.currentSpan();
+    // 결과 NodeIndex 는 strip-only 대상이라 소비처 없음 — parser 진행용 부수효과만.
+    if (self.current() == .kw_this) {
         try self.advance();
-        break :blk try self.ast.addNode(.{
-            .tag = .this_expression,
-            .span = this_span,
-            .data = .{ .none = 0 },
-        });
-    } else if (self.current() == .l_bracket or self.current() == .l_curly)
-        try self.parseBindingName()
-    else
-        try self.parsePropertyKey();
+    } else if (self.current() == .l_bracket or self.current() == .l_curly) {
+        _ = try self.parseBindingName();
+    } else {
+        _ = try self.parsePropertyKey();
+    }
 
     _ = try self.eat(.question); // optional
     var type_ann = NodeIndex.none;
@@ -1581,12 +1579,16 @@ fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
         _ = try self.parseAssignmentExpression();
     }
 
-    const tag: Tag = if (is_rest) .ts_rest_type else .ts_property_signature;
-    return try self.ast.addNode(.{
-        .tag = tag,
-        .span = .{ .start = param_start, .end = self.currentSpan().start },
-        .data = .{ .binary = .{ .left = name, .right = type_ann, .flags = 0 } },
-    });
+    // 두 tag 의 layout 이 다름:
+    //   ts_rest_type         = .unary (operand = rest 대상 타입)
+    //   ts_property_signature = .extra (strip-only; empty)
+    // 공통 NodeIndex 조합 (`name`/`type_ann`) 을 읽는 consumer 는 없으므로
+    // 각 layout 에 맞춰 분기 — audit cosmetic mismatch 해소.
+    const member_span: Span = .{ .start = param_start, .end = self.currentSpan().start };
+    if (is_rest) {
+        return try self.ast.addUnaryNode(.ts_rest_type, member_span, type_ann, 0);
+    }
+    return try self.ast.addEmptyExtraNode(.ts_property_signature, member_span);
 }
 
 /// Index signature 파라미터 앞에 올 수 있는 modifier 토큰 (error recovery 용).
