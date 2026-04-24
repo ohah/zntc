@@ -27,6 +27,8 @@ const CODEGEN_FILE = join(ROOT, "src", "codegen", "codegen.zig");
 
 const DATA_VARIANT_RE = /\.data\s*=\s*\.\{\s*\.(\w+)\s*=/;
 const TAG_RE = /\.tag\s*=\s*\.(\w+)\s*,/;
+/** `.tag = someVar,` — variable-typed tag (needs backward lookup). */
+const TAG_VAR_RE = /\.tag\s*=\s*([a-zA-Z_][a-zA-Z_0-9]*)\s*,/;
 const ADDNODE_START_RE = /\.addNode\(\s*\.\{/g;
 const DATA_ACCESS_RE = /\.data\.(\w+)\b/g;
 
@@ -290,8 +292,35 @@ function extractStructLiteral(text: string, startDotBrace: number): { literal: s
 	return { literal: text.slice(startDotBrace, end), end };
 }
 
-function auditFile(path: string): { lineNo: number; tag: string; variant: string }[] {
+/**
+ * `.tag = someVar,` 로 쓰인 경우, 호출 사이트 위쪽 function scope 내에서
+ * `const <var>: ... = if (...) .tagA else .tagB;` 또는
+ * `const <var> = .tagA;` 패턴을 찾아 가능한 tag 값들을 돌려준다.
+ *
+ * `cleanText` 는 `stripStringsAndComments` 결과. 오프셋이 `fileText` 와 동일하게
+ * 유지되므로 문자열/주석 안의 false-positive 를 차단하면서도 `lastIndexOf` /
+ * regex 결과를 그대로 인덱스로 쓸 수 있다.
+ */
+function resolveTagVariable(cleanText: string, callStart: number, varName: string): string[] {
+	const fnStart = Math.max(cleanText.lastIndexOf("\nfn ", callStart), cleanText.lastIndexOf("\npub fn ", callStart), 0);
+	const scope = cleanText.slice(fnStart, callStart);
+	const re = new RegExp(
+		`\\bconst\\s+${varName}\\b[^=]*=\\s*([^;]+?);`,
+		"s",
+	);
+	const m = re.exec(scope);
+	if (!m) return [];
+	const rhs = m[1];
+	const tags = Array.from(rhs.matchAll(/\.([a-zA-Z_][a-zA-Z_0-9]*)\b/g), (x) => x[1]);
+	// variant/kind 이름은 걸러냄. identifier fragments 가 섞일 수 있어 getLayout 에
+	// 등록된 이름만 추린다 (호출자가 필터).
+	return tags.filter((t) => !KINDS.has(t) && !ALL_DATA_VARIANTS.has(t));
+}
+
+function auditFile(path: string, layout: Map<string, string>): { lineNo: number; tag: string; variant: string }[] {
 	const text = readFileSync(path, "utf8");
+	// 파일당 1회만 string/comment strip — 변수형 tag 리졸브가 매번 재작업하지 않도록.
+	let cleanText: string | null = null;
 	const findings: { lineNo: number; tag: string; variant: string }[] = [];
 	for (const m of text.matchAll(ADDNODE_START_RE)) {
 		const start = m.index!;
@@ -307,12 +336,22 @@ function auditFile(path: string): { lineNo: number; tag: string; variant: string
 			continue;
 		}
 
-		const tagMatch = TAG_RE.exec(lit);
 		const varMatch = DATA_VARIANT_RE.exec(lit);
-		if (!tagMatch || !varMatch) continue;
+		if (!varMatch) continue;
 
 		const lineNo = text.slice(0, start).split("\n").length;
-		findings.push({ lineNo, tag: tagMatch[1], variant: varMatch[1] });
+		const tagMatch = TAG_RE.exec(lit);
+		if (tagMatch) {
+			findings.push({ lineNo, tag: tagMatch[1], variant: varMatch[1] });
+			continue;
+		}
+		// Fallback: variable-typed `.tag = name,`. 가능한 tag 값 전개.
+		const tagVarMatch = TAG_VAR_RE.exec(lit);
+		if (!tagVarMatch) continue;
+		if (cleanText === null) cleanText = stripStringsAndComments(text);
+		for (const t of resolveTagVariable(cleanText, start, tagVarMatch[1])) {
+			if (layout.has(t)) findings.push({ lineNo, tag: t, variant: varMatch[1] });
+		}
 	}
 	ADDNODE_START_RE.lastIndex = 0;
 	return findings;
@@ -348,7 +387,7 @@ function main(): number {
 
 	for (const path of walk(join(ROOT, "src")).sort()) {
 		if (path === AST_FILE) continue;
-		for (const { lineNo, tag, variant } of auditFile(path)) {
+		for (const { lineNo, tag, variant } of auditFile(path, layout)) {
 			const expected = layout.get(tag);
 			if (!expected) continue;
 			const actualKind = resolveKind(variant);

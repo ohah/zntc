@@ -518,6 +518,15 @@ pub const Node = struct {
                 .ts_type_operator,
                 .ts_non_null_expression,
                 .flow_nullable_type,
+                // TS/Flow type-cast / assertion expressions — codegen emitter 가
+                // data.unary.operand 만 출력 (type 부분 스트리핑).
+                // codegen.zig::emitExpression 의 .ts_as_expression 등 arm 참고.
+                .ts_as_expression,
+                .ts_satisfies_expression,
+                .ts_type_assertion,
+                .ts_instantiation_expression,
+                .flow_as_expression,
+                .flow_type_cast_expression,
                 => .{ .kind = .unary },
 
                 // === binary ===
@@ -546,6 +555,9 @@ pub const Node = struct {
                 .ts_type_predicate,
                 .ts_enum_member,
                 .flow_qualified_name,
+                // ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
+                // codegen::emitNamespaceIIFEInner 가 data.binary.left/right 를 읽는다.
+                .ts_module_declaration,
                 => .{ .kind = .binary },
 
                 // === ternary ===
@@ -664,7 +676,6 @@ pub const Node = struct {
                 .ts_getter_signature,
                 .ts_setter_signature,
                 .ts_enum_declaration,
-                .ts_module_declaration,
                 .ts_import_equals_declaration,
                 .ts_external_module_reference,
                 .ts_export_assignment,
@@ -672,10 +683,6 @@ pub const Node = struct {
                 .ts_type_parameter,
                 .ts_this_parameter,
                 .ts_class_implements,
-                .ts_as_expression,
-                .ts_satisfies_expression,
-                .ts_type_assertion,
-                .ts_instantiation_expression,
                 => .{ .kind = .extra, .child_offsets = &.{} },
                 // Flow declarations — 타입 전용
                 .flow_type_reference,
@@ -688,8 +695,6 @@ pub const Node = struct {
                 .flow_type_alias_declaration,
                 .flow_opaque_type,
                 .flow_interface_declaration,
-                .flow_as_expression,
-                .flow_type_cast_expression,
                 .flow_match_expression,
                 => .{ .kind = .extra, .child_offsets = &.{} },
             };
