@@ -835,5 +835,23 @@
   - `packages/plugin/` (886줄), `src/bundler/subprocess_plugin.zig` (790줄), 통합 테스트 `plugin.test.ts`(700줄) + `config-options.test.ts`(246줄) 제거 — 총 ~2600줄 감소.
   - `zts.config.json` (JSON-only) 자동 로드는 유지 (D099).
 
+### D102: Import attributes `with { type }` — loader override 미지원 (rolldown 정책) (2026-04-25)
+- **결정**: ES2024 `with { type }` 는 **pass-through 메타데이터** 로만 취급. 파싱 + AST 보존 + codegen 라운드트립까지 수행하되, **loader 선택은 오직 확장자 기반** (`ModuleType.fromExtension`). attrs 기반 loader override 는 도입하지 않음.
+- **실측 비교 (2026-04-25)**:
+  - **esbuild**: attrs = loader override 도구. `.txt` + `type: "json"` → JSON 로더 강제, 알 수 없는 type (`yaml` 등) → 명시적 에러.
+  - **rolldown**: attrs = 스펙 준수용 pass-through. 확장자 우선, attrs 는 출력 라운드트립만. 검증 없음.
+- **이유**:
+  1. ZTS 는 이미 확장자 기반 loader 선택으로 Node/Vite/rolldown 생태계와 호환. 추가 기능 없이도 실사용 시나리오 전부 커버.
+  2. `.txt` 파일에 `with { type: "json" }` 쓰는 실사용 사례 희박. override 는 사내 convention 등 엣지 케이스용.
+  3. 검증 엄격성은 런타임 (Node ESM) 책임. 번들러가 spec-policing 할 위치 아님.
+  4. rolldown-vite 가 Vite 2 기반이라 ZTS 가 rolldown 철학과 맞추는 게 사용자 혼란 적음.
+- **라운드트립 완성 범위 (PR #1836, #1838)**:
+  - static `import x from "./y" with { ... }`
+  - dynamic `import("./y", { with: {...} })`
+  - re-export `export { x } from "./y" with { ... }`
+  - `export * from "./y" with { ... }` / `export * as ns from "./y" with { ... }`
+  - `assert` → `with` 자동 마이그레이션 (static import 한정)
+- **미구현으로 남긴 것**: attrs → loader override, 알 수 없는 type 검증, 확장자 mismatch diagnostic. **필요 발생 시 재검토** 하되 현 시점엔 Won't Fix.
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)
