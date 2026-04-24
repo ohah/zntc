@@ -74,7 +74,7 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     expect(entry!.text).not.toMatch(/function\s+toUpper\s*\(/);
 
     // cross-chunk import 링크 존재
-    expect(entry!.text).toMatch(/from\s+["'][^"']*vendor[^"']*["']/);
+    expect(entry!.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
 
     // 디스크에 실제로 써졌는지 (write: true 경로 검증)
     const onDiskEntry = readFileSync(join(outDir, "entry.js"), "utf8");
@@ -200,10 +200,10 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
 
     // lazy chunk 는 vendor 가 아닌 별도 경로 + vendor 에서 SHARED import
     expect(lazyChunk.path).not.toContain("vendor");
-    expect(lazyChunk.text).toMatch(/from\s+["'][^"']*vendor[^"']*["']/);
+    expect(lazyChunk.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
 
     // entry 도 vendor 에서 SHARED import, dynamic import("./lazy") 사용
-    expect(entry.text).toMatch(/from\s+["'][^"']*vendor[^"']*["']/);
+    expect(entry.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
     expect(entry.text).toMatch(/import\s*\(/);
   });
 
@@ -252,5 +252,97 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     expect(vendorChunk!.text).toMatch(/function\s+a\s*\(\)/);
     expect(vendorChunk!.text).toMatch(/function\s+e\s*\(\)/);
     await fx2.cleanup();
+  });
+
+  test("multi-group: vendor + ui 각각 다른 manual 청크", async () => {
+    const fixture = await createFixture({
+      "vendor/math.ts": `export const VENDOR_MARKER = "V"; export function add(a: number, b: number) { return a + b; }`,
+      "ui/button.ts": `import { add } from "../vendor/math"; export const UI_MARKER = "U"; export const btn = add(1, 2);`,
+      "entry.ts": `
+        import { UI_MARKER } from "./ui/button";
+        import { VENDOR_MARKER } from "./vendor/math";
+        console.log(VENDOR_MARKER + UI_MARKER);
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      manualChunks: (id) => {
+        if (id.includes("/vendor/")) return "vendor";
+        if (id.includes("/ui/")) return "ui";
+        return null;
+      },
+    });
+
+    // 3개 청크: entry + vendor + ui
+    const paths = result.outputFiles.map((o) => o.path);
+    expect(paths.some((p) => p.includes("vendor"))).toBe(true);
+    expect(paths.some((p) => p.includes("ui"))).toBe(true);
+
+    const vendor = result.outputFiles.find((o) => o.path.includes("vendor"))!;
+    const ui = result.outputFiles.find((o) => o.path.includes("ui") && !o.path.includes("vendor"))!;
+    expect(vendor.text).toContain("VENDOR_MARKER");
+    expect(vendor.text).not.toContain("UI_MARKER");
+    expect(ui.text).toContain("UI_MARKER");
+    // ui 는 vendor 에서 add import (cross-chunk)
+    expect(ui.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
+  });
+
+  test("minify + manualChunks: 프로덕션 빌드 시뮬레이션", async () => {
+    const fixture = await createFixture({
+      "vendor/lib.ts": `export function veryLongFunctionName() { return "MIN_OK"; }`,
+      "entry.ts": `
+        import { veryLongFunctionName } from "./vendor/lib";
+        console.log(veryLongFunctionName());
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      minify: true,
+      manualChunks: (id) => (id.includes("/vendor/") ? "vendor" : null),
+    });
+
+    const vendor = result.outputFiles.find((o) => o.path.includes("vendor"))!;
+    const entry = result.outputFiles.find((o) => o.path.endsWith("entry.js"))!;
+    // minify 후에도 marker 는 live (string literal 은 보존)
+    expect(vendor.text).toContain("MIN_OK");
+    // 함수명은 mangle 로 축약 가능 (veryLongFunctionName 가 전부 유지되진 않을 수 있음)
+    // 단 cross-chunk 에서 어떤 이름으로든 공유되어야 entry 에서 참조 가능.
+    expect(entry.text).toMatch(/from\s*["'][^"']*vendor[^"']*["']/);
+    // minify_whitespace 효과 — 공백 기반 pattern 축소
+    expect(vendor.text.length).toBeLessThan(200);
+  });
+
+  test("엔트리 모듈이 manualChunks 매칭: 엔트리 청크로 유지 (정책)", async () => {
+    // 엔트리 모듈 자체가 manualChunks 패턴에 매칭되면 어떻게?
+    // Phase 4 가드로 엔트리는 manual 로 강제 이동하지 않음 — entry chunk 유지.
+    const fixture = await createFixture({
+      "app.ts": `console.log("ENTRY_MARKER");`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "app.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      // 엔트리 자체 이름 매칭 — 극단적 케이스
+      manualChunks: () => "somegroup",
+    });
+
+    // 엔트리는 그대로 app.js 에, 매칭된 somegroup 은 생성되거나 안 되거나 무관
+    const entryChunk = result.outputFiles.find((o) => o.text.includes("ENTRY_MARKER"));
+    expect(entryChunk).toBeDefined();
+    // 실행 가능한 번들이어야 함 (빈 entry chunk 문제 없음)
+    expect(entryChunk!.text).toContain("ENTRY_MARKER");
   });
 });

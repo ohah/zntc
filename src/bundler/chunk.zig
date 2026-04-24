@@ -588,7 +588,21 @@ pub fn generateChunks(
     // ── Phase 2.5: manual chunks — 매칭 모듈 + transitive dep 에 manual bit 전파 ──
     // rolldown advanced_chunks/include_dependencies_recursively 와 동일 정책:
     // 매칭 모듈만이 아니라 그 의존성까지 같은 청크로 내려야 cross-chunk 순환을 피할 수 있음.
+    //
+    // 다른 slot 의 seed 인 모듈은 BFS 에서 skip — 그 모듈은 자기 slot 에서 처리됨.
+    // 이 가드 없으면 multi-group (vendor + ui) 에서 ui seed 의 dep (vendor seed 인 모듈)
+    // 이 두 manual bit 모두 켜져 공통 청크로 빠짐.
     if (manual_count > 0) {
+        var module_primary_slot = try allocator.alloc(?usize, module_count);
+        defer allocator.free(module_primary_slot);
+        @memset(module_primary_slot, null);
+        for (0..manual_count) |i| {
+            for (manual_seeds[i].items) |seed| {
+                const si = @intFromEnum(seed);
+                if (module_primary_slot[si] == null) module_primary_slot[si] = i;
+            }
+        }
+
         for (0..manual_count) |i| {
             if (manual_seeds[i].items.len == 0) continue;
             const manual_bit: u32 = @intCast(entry_count + i);
@@ -600,6 +614,10 @@ pub fn generateChunks(
                 const m = graph.getModule(mod_idx) orelse continue;
                 const mi = @intFromEnum(mod_idx);
                 if (splitting_info[mi].hasBit(manual_bit)) continue;
+                // 다른 slot 의 seed 면 skip — 그쪽에서 처리됨
+                if (module_primary_slot[mi]) |other| {
+                    if (other != i) continue;
+                }
                 splitting_info[mi].setBit(manual_bit);
                 for (m.dependencies.items) |dep_idx| {
                     const dep_i = @intFromEnum(dep_idx);
