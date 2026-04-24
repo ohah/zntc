@@ -55,6 +55,26 @@ zts --use-define-for-class-fields=false app.ts
 zts --flow app.js
 ```
 
+### Import attributes (ES2024)
+
+`with { type: "json" }` is preserved as a round-trip across every import/export form.
+Legacy `assert` on static imports is auto-migrated to `with` (Node 20+ deprecates `assert`).
+
+```ts
+// static
+import data from "./data.json" with { type: "json" };
+
+// dynamic — the second argument is preserved too
+const mod = await import("./data.json", { with: { type: "json" } });
+
+// re-export
+export { default as data } from "./data.json" with { type: "json" };
+export * from "./data.json" with { type: "json" };
+export * as ns from "./data.json" with { type: "json" };
+```
+
+> Local JSON imports are already inlined during bundling based on extension. `with { type }` matters when the bundle output runs on Node as ESM, or when emitting sources that require spec-compliant JSON module syntax.
+
 ## Output Options
 
 ### Module Format
@@ -88,7 +108,7 @@ zts --minify app.ts  # All three
 
 # Granular (esbuild-compatible)
 zts --minify-whitespace app.ts    # Whitespace/semicolons/newlines (debuggable)
-zts --minify-syntax app.ts        # true→!0, paren removal, constant folding
+zts --minify-syntax app.ts        # true→!0, paren removal, constant folding, drop unreferenced class expression names
 zts --minify-identifiers app.ts   # Shorten local identifiers
 ```
 

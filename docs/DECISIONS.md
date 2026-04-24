@@ -106,7 +106,9 @@
   - **BOM 처리**: UTF-8 BOM(0xEF 0xBB 0xBF)을 파일 시작에서 스킵, 출력에는 넣지 않음
   - **줄 끝 문자**: `\n`, `\r\n`, `\r`, U+2028, U+2029 전부 줄바꿈으로 인식
   - **유니코드 식별자**: `\uXXXX`, `\u{XXXX}` 이스케이프 시퀀스 지원 + 정규화
-  - **import attributes**: `with { type: "json" }` + deprecated `assert { type: "json" }` 둘 다 파싱
+  - **import attributes**: ES2024 `with { type: "json" }` + deprecated `assert { ... }` 둘 다 파싱. 네 경로 모두 AST 보존 + codegen 라운드트립:
+    - static `import x from "./y" with { ... }` · dynamic `import("./y", { with: {...} })` · `export { x } from "./y" with { ... }` · `export * / export * as ns from "./y" with { ... }`
+    - `assert` 는 static 에서 `with` 로 자동 마이그레이션 (ES2024 표준 통일)
   - **direct eval 감지**: `eval()` 직접 호출 감지 → 해당 스코프 변수 최적화 비활성화
 
 ### D020: define (전역 치환)

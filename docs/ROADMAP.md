@@ -49,6 +49,8 @@
 | 36. import.meta.glob | Vite 호환 `import.meta.glob()`, eager/import 옵션 | ✅ |
 | 37. Stage 3 decorators | TC39 Stage 3 데코레이터 (method/getter/setter/field/accessor/class, MobX 6 호환). ES5 타겟 lowering 포함 완료 — 단 `accessor #x` / `accessor [k]` 는 미구현 (실사용 라이브러리 없음, 필요 시 추가) | ✅ |
 | 38. CSS 번들링 | @import 인라이닝, 별도 .css 파일 emit, Lightning CSS minify 연동 | ✅ |
+| 39. Minify 확장 | 미참조 class expression name 익명화 — fast/non-fast path 통합 (#1587 + #1596) | ✅ |
+| 40. Import attributes | ES2024 `with {...}` 라운드트립: static / dynamic / export named / export * 네 경로 전부 AST 보존. `assert` → `with` 자동 마이그레이션 | ✅ |
 
 ## 번들러 성능 현황 (2026-04-10 실측)
 

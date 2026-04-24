@@ -55,6 +55,26 @@ zts --use-define-for-class-fields=false app.ts
 zts --flow app.js
 ```
 
+### Import attributes (ES2024)
+
+`with { type: "json" }` 구문을 모든 import/export 경로에서 라운드트립으로 보존합니다.
+구버전 `assert` 는 static import 에 한해 `with` 로 자동 변환 (Node 20+ 가 `assert` 를 deprecate).
+
+```ts
+// static
+import data from "./data.json" with { type: "json" };
+
+// dynamic — 두 번째 인자도 그대로 보존
+const mod = await import("./data.json", { with: { type: "json" } });
+
+// re-export
+export { default as data } from "./data.json" with { type: "json" };
+export * from "./data.json" with { type: "json" };
+export * as ns from "./data.json" with { type: "json" };
+```
+
+> 로컬 JSON import 는 확장자 기반으로 이미 번들에 인라인됩니다. `with { type }` 은 번들 산출물을 ESM 으로 Node 런타임에 흘려보낼 때, 또는 JSON 모듈 스펙에 호환되는 소스 생성이 필요할 때 유용합니다.
+
 ## 출력 옵션
 
 ### 모듈 포맷
@@ -88,7 +108,7 @@ zts --minify app.ts  # 세 가지 모두
 
 # 세분화 (esbuild 호환)
 zts --minify-whitespace app.ts    # 공백·세미콜론·줄바꿈 (디버깅 가능)
-zts --minify-syntax app.ts        # true→!0, 괄호 제거, constant folding
+zts --minify-syntax app.ts        # true→!0, 괄호 제거, constant folding, 미참조 class expression name 제거
 zts --minify-identifiers app.ts   # 지역 변수명 단축
 ```
 
