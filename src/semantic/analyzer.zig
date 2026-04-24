@@ -12,6 +12,7 @@
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
+const module_parser = @import("../parser/module.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
@@ -3034,8 +3035,8 @@ pub const SemanticAnalyzer = struct {
 
     /// export * as name — name을 등록한다.
     fn visitExportAllDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
-        // binary: { left = exported_name, right = source }
-        const name_idx = node.data.binary.left;
+        const x = module_parser.readExportAllExtras(self.ast, node.data.extra);
+        const name_idx = x.exported_name;
         if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
             const name_node = self.ast.getNode(name_idx);
             const name = self.ast.getText(name_node.span);

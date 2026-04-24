@@ -549,7 +549,6 @@ pub const Node = struct {
                 .assignment_target_with_default,
                 .import_specifier,
                 .export_specifier,
-                .export_all_declaration,
                 .jsx_attribute,
                 .jsx_namespaced_name,
                 .jsx_member_expression,
@@ -659,6 +658,9 @@ pub const Node = struct {
                 .import_declaration => .{ .kind = .extra, .child_offsets = &.{2} },
                 // export_named: extra = [decl(0), specs_start, specs_len, source(3), attrs_start(4), attrs_len(5)]
                 .export_named_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 3 } },
+                // export_all: extra = [exported_name(0), source(1), attrs_start(2), attrs_len(3)]
+                // `export *` 은 exported_name = .none, `export * as ns` 는 namespace identifier.
+                .export_all_declaration => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
                 // export_default: unary = { operand: decl, flags: 0 }
                 .export_default_declaration => .{ .kind = .unary },
                 // jsx_element: extra = [tag(0), attrs_start, attrs_len, children_start, children_len]

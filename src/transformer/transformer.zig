@@ -1189,7 +1189,7 @@ pub const Transformer = struct {
             .import_declaration => self.visitImportDeclaration(node),
             .export_named_declaration => self.visitExportNamedDeclaration(node),
             .export_default_declaration => self.visitExportDefaultDeclaration(node),
-            .export_all_declaration => self.visitBinaryNode(idx),
+            .export_all_declaration => self.visitExportAllDeclaration(node),
             .catch_clause => {
                 if (self.options.unsupported.optional_catch_binding) {
                     return es2019.ES2019(Transformer).lowerOptionalCatchBinding(self, node);
@@ -4261,6 +4261,20 @@ pub const Transformer = struct {
             if (r.isValueUse()) return false;
         }
         return true;
+    }
+
+    /// export_all_declaration: `module_parser.ExportAllExtras` 참고.
+    /// attrs 는 string literal 쌍이라 visit 불필요 — 원본 리스트 그대로 전달.
+    fn visitExportAllDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        const x = module_parser.readExportAllExtras(self.ast, node.data.extra);
+        const new_name = try self.visitNode(x.exported_name);
+        const new_source = try self.visitNode(x.source);
+        return self.addExtraNode(.export_all_declaration, node.span, &.{
+            @intFromEnum(new_name),
+            @intFromEnum(new_source),
+            x.attrs_start,
+            x.attrs_len,
+        });
     }
 
     /// export_named_declaration: `module_parser.ExportNamedExtras` 참고.

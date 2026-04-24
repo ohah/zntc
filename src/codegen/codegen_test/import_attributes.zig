@@ -92,11 +92,10 @@ test "import attributes: export named re-export with clause preserved" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\"json\"") != null);
 }
 
-// TODO(export-all-attrs): `export * from "x" with {...}` / `export * as ns from "x" with {...}`
-// export_all_declaration 은 현재 .binary 레이아웃이라 attrs 를 담으려면 .extra 로 전환 필요.
-// 사용처(linker/bundler/semantic) 다수라 별도 PR 에서 처리. 본 PR 은 export_named 만.
+// export_all_declaration 의 .extra layout 전환으로 attrs 슬롯 확보되어
+// export * / export * as ns 에도 with clause 라운드트립 가능.
 
-test "import attributes: export * from without clause stays intact (export-all baseline)" {
+test "import attributes: export * from without clause stays intact" {
     var r = try e2e(std.testing.allocator,
         \\export * from "./other.json";
     );
@@ -105,13 +104,31 @@ test "import attributes: export * from without clause stays intact (export-all b
     try std.testing.expect(std.mem.indexOf(u8, r.output, "with") == null);
 }
 
-test "import attributes: export * as ns from without clause stays intact (export-all baseline)" {
+test "import attributes: export * as ns from without clause stays intact" {
     var r = try e2e(std.testing.allocator,
         \\export * as ns from "./other.json";
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "./other.json") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "with") == null);
+}
+
+test "import attributes: export * from with clause preserved" {
+    var r = try e2e(std.testing.allocator,
+        \\export * from "./other.json" with { type: "json" };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "with") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"json\"") != null);
+}
+
+test "import attributes: export * as ns from with clause preserved" {
+    var r = try e2e(std.testing.allocator,
+        \\export * as ns from "./other.json" with { type: "json" };
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "with") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"json\"") != null);
 }
 
 test "import attributes: export without source ignores attributes syntax" {

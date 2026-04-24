@@ -17,6 +17,7 @@ const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
+const module_parser = @import("../parser/module.zig");
 const ModuleIndex = types.ModuleIndex;
 const symbol_mod = @import("symbol.zig");
 const AliasTable = symbol_mod.AliasTable;
@@ -389,9 +390,9 @@ pub fn extractExportBindings(
                 });
             },
             .export_all_declaration => {
-                // binary { left=exported_name, right=source_node }
-                const exported_name_idx = node.data.binary.left;
-                const source_idx = node.data.binary.right;
+                const x = module_parser.readExportAllExtras(ast, node.data.extra);
+                const exported_name_idx = x.exported_name;
+                const source_idx = x.source;
                 if (source_idx.isNone()) continue;
                 const src_node = ast.getNode(source_idx);
                 const rec_idx = source_to_record.get(types.spanKey(src_node.span));

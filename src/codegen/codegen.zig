@@ -3276,23 +3276,27 @@ pub const Codegen = struct {
     }
 
     fn emitExportAll(self: *Codegen, node: Node) !void {
+        const x = module_parser.readExportAllExtras(self.ast, node.data.extra);
         if (self.options.module_format == .cjs) {
             // export * from './bar' → Object.assign(exports,require('./bar'));
             try self.write("Object.assign(exports,require(");
-            try self.emitNode(node.data.binary.right);
+            try self.emitNode(x.source);
             try self.write("));");
             return;
         }
-        // export * as ns from './foo' → left=ns, right=source
-        // export * from './foo'       → left=none, right=source
-        if (node.data.binary.left != .none) {
+        // export * as ns from './foo' / export * from './foo'
+        if (!x.exported_name.isNone()) {
             try self.write("export * as ");
-            try self.emitNode(node.data.binary.left);
+            try self.emitNode(x.exported_name);
             try self.write(" from ");
         } else {
             try self.write("export * from ");
         }
-        try self.emitNode(node.data.binary.right);
+        try self.emitNode(x.source);
+        if (x.attrs_len > 0) {
+            try self.write(" with ");
+            try self.emitImportAttributes(x.attrs_start, x.attrs_len);
+        }
         try self.writeByte(';');
     }
 
