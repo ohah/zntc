@@ -180,7 +180,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 1. __classCallCheck(this, ClassName) — constructor body 맨 앞
             {
                 const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
-                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
+                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
                 const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                 func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
@@ -387,7 +387,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             {
                 const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
-                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
+                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
                 const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                 func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});
@@ -421,7 +421,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // classCallCheck
             {
                 const check_id = try es_helpers.makeRuntimeHelperRef(self, "__classCallCheck");
-                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
+                const this_expr = try self.ast.addNode(.{ .tag = .this_expression, .span = span, .data = .{ .none = 0 } });
                 const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                 const call = try es_helpers.makeCallExpr(self, check_id, &.{ this_expr, class_ref }, span);
                 func_node = try prependToFunctionBody(self, func_node, &.{try es_helpers.makeExprStmt(self, call, span)});

@@ -969,7 +969,7 @@ fn makeThisPrivateField(self: *Transformer, storage_span: Span) Error!NodeIndex 
     const this_node = try self.ast.addNode(.{
         .tag = .this_expression,
         .span = zero_span,
-        .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+        .data = .{ .none = 0 },
     });
     const storage_ref = try self.ast.addNode(.{
         .tag = .private_identifier,
@@ -2060,7 +2060,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                     const this_node = try self.ast.addNode(.{
                         .tag = .this_expression,
                         .span = zero_span,
-                        .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+                        .data = .{ .none = 0 },
                     });
                     const callee = try makeIdentifier(self, "__runInitializers");
                     const init_arr = try makeIdentifier(self, init_name);
@@ -2147,7 +2147,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
                             const this_node = try self.ast.addNode(.{
                                 .tag = .this_expression,
                                 .span = zero_span,
-                                .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+                                .data = .{ .none = 0 },
                             });
                             const callee = try makeIdentifier(self, "__runInitializers");
                             const init_arr_ref = try makeIdentifier(self, names.init_name);
@@ -2254,7 +2254,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         const this_node = try self.ast.addNode(.{
             .tag = .this_expression,
             .span = zero_span,
-            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+            .data = .{ .none = 0 },
         });
         const assign = try self.ast.addNode(.{
             .tag = .assignment_expression,
@@ -2390,7 +2390,7 @@ pub fn transformStage3Decorators(self: *Transformer, node: Node) Error!NodeIndex
         const this_node = try self.ast.addNode(.{
             .tag = .this_expression,
             .span = zero_span,
-            .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+            .data = .{ .none = 0 },
         });
         const run_init = try self.buildRunInitializersCall2(this_node, ctor_init_name);
         const run_init_stmt = try self.ast.addNode(.{
@@ -2703,7 +2703,7 @@ pub fn buildEsDecorateCall(self: *Transformer, info: Stage3MemberInfo) Error!Nod
     const arg1 = if (std.mem.eql(u8, info.kind, "field"))
         try makeIdentifier(self, "null")
     else
-        try self.ast.addNode(.{ .tag = .this_expression, .span = zero_span, .data = .{ .unary = .{ .operand = .none, .flags = 0 } } });
+        try self.ast.addNode(.{ .tag = .this_expression, .span = zero_span, .data = .{ .none = 0 } });
 
     // arg2: null (public) 또는 _descriptor = { value: __setFunctionName(fn, "#name") } (private method)
     const arg2 = if (info.descriptor_name) |dname| blk: {
@@ -3521,7 +3521,7 @@ fn buildPiggybackedInitCall(self: *Transformer, prev_extra_name: []const u8, ini
     const prev_this = try self.ast.addNode(.{
         .tag = .this_expression,
         .span = zero_span,
-        .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+        .data = .{ .none = 0 },
     });
     const prev_callee = try makeIdentifier(self, "__runInitializers");
     const prev_arr = try makeIdentifier(self, prev_extra_name);

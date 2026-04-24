@@ -484,6 +484,11 @@ pub const Node = struct {
                 .flow_this_type,
                 .flow_mixed_keyword,
                 .flow_empty_keyword,
+                // literal type: 파서가 키워드 리터럴(true/false)일 때 .none,
+                // 값 리터럴(string/number/bigint/template)일 때 .string_ref 로 저장.
+                // 실체가 leaf 이며 codegen 이 data 를 읽지 않음 (TS/Flow strip 대상).
+                .ts_literal_type,
+                .flow_literal_type,
                 => .{ .kind = .leaf },
 
                 // === unary ===
@@ -538,11 +543,9 @@ pub const Node = struct {
                 .jsx_namespaced_name,
                 .jsx_member_expression,
                 .ts_qualified_name,
-                .ts_literal_type,
                 .ts_type_predicate,
                 .ts_enum_member,
                 .flow_qualified_name,
-                .flow_literal_type,
                 => .{ .kind = .binary },
 
                 // === ternary ===
