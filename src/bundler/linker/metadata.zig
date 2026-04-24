@@ -46,11 +46,12 @@ inline fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSem
     if (ib.kind != .named) return false;
     const sym_idx = ib.local_symbol.semanticIndex() orelse return false;
     if (sym_idx >= sem.symbols.items.len) return false;
+    // 판정 로직은 `Reference.isValueUse` 에 집약 — transformer 의
+    // `isImportSpecifierUnused` 와 동일 기준. TODO #1791: `references` 를 매번 linear
+    // scan 하는 대신 모듈별 `symbol_id → Reference indices` 맵 사전 구축 고려 (실측 후).
     for (sem.references) |r| {
         if (@intFromEnum(r.symbol_id) != sym_idx) continue;
-        if (r.flags.declare) continue;
-        if (r.flags.type_context or r.flags.value_as_type) continue;
-        return false;
+        if (r.isValueUse()) return false;
     }
     return true;
 }
