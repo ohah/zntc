@@ -203,8 +203,14 @@ export type { OutputFile, Diagnostic };
 export interface ManualChunksModuleInfo {
   id: string;
   isEntry: boolean;
+  /** 이 모듈을 static import 하는 모듈들. */
   importers: string[];
+  /** 이 모듈을 dynamic import (`import()`) 하는 모듈들. */
+  dynamicImporters: string[];
+  /** 이 모듈이 static import 하는 모듈들. */
   importedIds: string[];
+  /** 이 모듈이 dynamic import (`import()`) 하는 모듈들. */
+  dynamicallyImportedIds: string[];
 }
 
 /** `manualChunks` 콜백의 두 번째 인자 — 모듈 그래프 토폴로지 조회. */

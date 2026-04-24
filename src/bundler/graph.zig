@@ -673,6 +673,15 @@ pub const ModuleGraph = struct {
         try to_mod.importers.append(self.allocator, from);
     }
 
+    /// 양방향 dynamic import 등록. `linkDependency` 의 dynamic 버전.
+    pub fn linkDynamicImport(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !void {
+        if (to.isNone()) return;
+        const from_mod = self.moduleAtMut(from) orelse return;
+        const to_mod = self.moduleAtMut(to) orelse return;
+        try from_mod.dynamic_imports.append(self.allocator, to);
+        try to_mod.dynamic_importers.append(self.allocator, from);
+    }
+
     /// context_expansion_deps 를 resolve 하고 graph 에 module + dependency 로 등록 (#1579 Phase 4).
     /// scanModules receiver / resolveModuleImports 양쪽 경로에서 호출. SegmentedList 로
     /// append 해도 기존 *Module 포인터는 유효 (#1779 INVARIANTS.md).
@@ -733,7 +742,7 @@ pub const ModuleGraph = struct {
                 const src_mod = self.modules.at(mod_idx);
                 src_mod.import_records[rec_i].resolved = dep_idx;
                 if (record.kind == .dynamic_import) {
-                    try src_mod.addDynamicImport(self.allocator, dep_idx);
+                    try self.linkDynamicImport(mod_index, dep_idx);
                 } else {
                     try self.linkDependency(mod_index, dep_idx);
                 }
@@ -763,7 +772,7 @@ pub const ModuleGraph = struct {
                 const src_mod = self.modules.at(mod_idx);
                 src_mod.import_records[rec_i].resolved = dep_idx;
                 if (record.kind == .dynamic_import) {
-                    try src_mod.addDynamicImport(self.allocator, dep_idx);
+                    try self.linkDynamicImport(mod_index, dep_idx);
                 } else {
                     try self.linkDependency(mod_index, dep_idx);
                 }
@@ -780,7 +789,7 @@ pub const ModuleGraph = struct {
             src_mod.import_records[rec_i].resolved = dep_idx;
 
             if (record.kind == .dynamic_import) {
-                try src_mod.addDynamicImport(self.allocator, dep_idx);
+                try self.linkDynamicImport(mod_index, dep_idx);
             } else {
                 try self.linkDependency(mod_index, dep_idx);
             }

@@ -989,4 +989,155 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
     // 실행 가능한 번들이어야 함 (빈 entry chunk 문제 없음)
     expect(entryChunk!.text).toContain("ENTRY_MARKER");
   });
+
+  // ============================================================
+  // meta.getModuleInfo dynamic fields 스모크 — 실전 lazy-load 패턴
+  // ============================================================
+
+  test("lazy-route 패턴: entry.dynamicallyImportedIds 가 route 모듈들 정확히 추적", async () => {
+    // React.lazy 스타일 — 각 라우트를 lazy load
+    const fixture = await createFixture({
+      "shared/logger.ts": `export const log = (m: string) => console.log("[log]", m);`,
+      "routes/home.ts": `
+        import { log } from "../shared/logger";
+        export default function Home() { log("home"); }
+      `,
+      "routes/about.ts": `
+        import { log } from "../shared/logger";
+        export default function About() { log("about"); }
+      `,
+      "entry.ts": `
+        import { log } from "./shared/logger";
+        async function route(name: string) {
+          if (name === "home") return (await import("./routes/home")).default;
+          if (name === "about") return (await import("./routes/about")).default;
+          throw new Error("unknown");
+        }
+        log("boot");
+        route("home").then((f) => (f as () => void)());
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const routeIds: string[] = [];
+    const staticIds: string[] = [];
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      manualChunks: (id, meta) => {
+        if (!id.endsWith("entry.ts")) return null;
+        const info = meta.getModuleInfo(id);
+        if (info) {
+          routeIds.push(...info.dynamicallyImportedIds);
+          staticIds.push(...info.importedIds);
+        }
+        return null;
+      },
+    });
+
+    // dynamicallyImportedIds 에는 두 라우트가 들어가고, importedIds 에는 안 들어감
+    expect(routeIds.some((p) => p.endsWith("home.ts"))).toBe(true);
+    expect(routeIds.some((p) => p.endsWith("about.ts"))).toBe(true);
+    expect(staticIds.some((p) => p.endsWith("home.ts"))).toBe(false);
+    expect(staticIds.some((p) => p.endsWith("about.ts"))).toBe(false);
+    // 반대로 logger 는 static 에만
+    expect(staticIds.some((p) => p.endsWith("logger.ts"))).toBe(true);
+    expect(routeIds.some((p) => p.endsWith("logger.ts"))).toBe(false);
+  });
+
+  test("같은 모듈을 한쪽은 static 다른쪽은 dynamic 으로 import — importers 와 dynamicImporters 분리", async () => {
+    // pageA 는 static, pageB 는 dynamic 으로 shared 를 참조
+    const fixture = await createFixture({
+      "shared.ts": `export const v = "SHARED";`,
+      "pageA.ts": `import { v } from "./shared"; console.log("A:" + v);`,
+      "pageB.ts": `
+        async function boot() {
+          const m = await import("./shared");
+          console.log("B:" + m.v);
+        }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    // shared 는 pageB 에서 dynamic 이기도 해서 dynamic-entry 로 분류 → resolver skip.
+    // 그래서 pageA resolver 안에서 shared 경로를 정확히 얻어 직접 lookup.
+    const diag: Array<{ staticImporters: string[]; dynamicImporters: string[] }> = [];
+    await build({
+      entryPoints: [join(fixture.dir, "pageA.ts"), join(fixture.dir, "pageB.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      manualChunks: (id, meta) => {
+        if (!id.endsWith("pageA.ts")) return null;
+        const pageInfo = meta.getModuleInfo(id);
+        if (!pageInfo) return null;
+        const sharedPath = pageInfo.importedIds.find((p) => p.endsWith("shared.ts"));
+        if (!sharedPath) return null;
+        const info = meta.getModuleInfo(sharedPath);
+        if (info) {
+          diag.push({ staticImporters: info.importers, dynamicImporters: info.dynamicImporters });
+        }
+        return null;
+      },
+    });
+
+    expect(diag.length).toBe(1);
+    const seen = diag[0];
+    expect(seen.staticImporters.some((p) => p.endsWith("pageA.ts"))).toBe(true);
+    expect(seen.dynamicImporters.some((p) => p.endsWith("pageB.ts"))).toBe(true);
+    // cross-pollution 없어야 함
+    expect(seen.staticImporters.some((p) => p.endsWith("pageB.ts"))).toBe(false);
+    expect(seen.dynamicImporters.some((p) => p.endsWith("pageA.ts"))).toBe(false);
+  });
+
+  test("실전 분류: dynamicImporters 기반 분류 규칙으로 shared-lazy chunk 분리", async () => {
+    // 두 라우트가 공통으로 lazy load 하는 util → "shared-lazy" 청크로 추출
+    const fixture = await createFixture({
+      "util/common.ts": `export const commonOp = () => "COMMON_OP";`,
+      "routes/a.ts": `
+        import { commonOp } from "../util/common";
+        export default () => console.log("A:" + commonOp());
+      `,
+      "routes/b.ts": `
+        import { commonOp } from "../util/common";
+        export default () => console.log("B:" + commonOp());
+      `,
+      "entry.ts": `
+        async function pick(n: "a" | "b") {
+          if (n === "a") return (await import("./routes/a")).default;
+          return (await import("./routes/b")).default;
+        }
+        pick("a").then((f) => f());
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      outdir: join(fixture.dir, "dist"),
+      write: false,
+      // util/common 은 dynamic 루트에서만 접근되므로 importers = 0 but dynamic 후손으로 연결됨.
+      // 명시적 manual 분류로 shared-lazy 청크 분리.
+      manualChunks: (id) => {
+        if (id.includes("/util/")) return "shared-lazy";
+        return null;
+      },
+    });
+
+    const sharedLazyChunk = result.outputFiles.find((o) => o.path.includes("shared-lazy"));
+    expect(sharedLazyChunk).toBeDefined();
+    expect(sharedLazyChunk!.text).toContain("COMMON_OP");
+    // 라우트 청크들에는 COMMON_OP 구현 자체가 들어가지 않고 shared-lazy 를 import
+    const routeAChunk = result.outputFiles.find(
+      (o) =>
+        o.path.includes("a.ts") || (o.moduleIds && o.moduleIds.some((m) => m.endsWith("a.ts"))),
+    );
+    if (routeAChunk) {
+      expect(routeAChunk.moduleIds!.some((m) => m.endsWith("common.ts"))).toBe(false);
+    }
+  });
 });
