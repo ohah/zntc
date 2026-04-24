@@ -1047,6 +1047,20 @@ pub fn emitModule(
         if (override_syms) |syms| {
             md.symbol_ids = syms;
         }
+        // #1791 IIFE unresolved build-time diag 를 linker 의 공용 `fatal_diagnostics`
+        // 로 소유권 이전. mutex 는 공용 리스트의 append 만 보호 — `md.pending_diagnostics`
+        // 자체는 per-module 이라 경쟁 없음. `@constCast` 는 `ns_cache_mutex` (linker.zig:1877)
+        // 와 동일 관행. free 후 필드를 비워 md.deinit 의 double-free 방지.
+        if (md.pending_diagnostics.len > 0) {
+            const linker_mut = @constCast(l);
+            linker_mut.diagnostics_mutex.lock();
+            defer linker_mut.diagnostics_mutex.unlock();
+            for (md.pending_diagnostics) |d| {
+                try linker_mut.fatal_diagnostics.append(l.allocator, d);
+            }
+            l.allocator.free(md.pending_diagnostics);
+            md.pending_diagnostics = &.{};
+        }
         // statement-level tree-shaking: StmtInfo 기반 도달성 분석으로 미사용 statement 제거.
         // rolldown 방식: 심볼 인덱스로 추적하여 linker rename 후에도 정확한 판정.
         //

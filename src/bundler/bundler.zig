@@ -361,6 +361,28 @@ pub const BundleResult = struct {
     }
 };
 
+/// BundlerDiagnostic 을 allocator-owned OwnedDiagnostic 으로 deep copy 해 `dest` 에 채운다.
+/// `filled` 는 이미 채워진 item 수 — 루프 내부에서 매 entry 성공 후 증가한다 (호출자의
+/// errdefer 가 부분 할당분을 정확히 해제할 수 있도록).
+fn copyDiagnostics(
+    allocator: std.mem.Allocator,
+    dest: []BundleResult.OwnedDiagnostic,
+    src: []const types.BundlerDiagnostic,
+    filled: *usize,
+) !void {
+    for (src) |d| {
+        dest[filled.*] = .{
+            .code = d.code,
+            .severity = d.severity,
+            .message = try allocator.dupe(u8, d.message),
+            .file_path = try allocator.dupe(u8, d.file_path),
+            .step = d.step,
+            .suggestion = if (d.suggestion) |s| try allocator.dupe(u8, s) else null,
+        };
+        filled.* += 1;
+    }
+}
+
 pub const Bundler = struct {
     allocator: std.mem.Allocator,
     options: BundleOptions,
@@ -1003,9 +1025,12 @@ pub const Bundler = struct {
         // 이 `t_graph/t_link/t_shake/t_emit` 은 `BundleResult.timings` 를 채워
         // NAPI `WatchRebuildEvent.phaseDurations` 로 노출 (HMR 관측성).
 
-        // 4. 진단 메시지 deep copy (graph.deinit 후에도 문자열 유효하도록)
-        const diagnostics: ?[]BundleResult.OwnedDiagnostic = if (graph.diagnostics.items.len > 0) blk: {
-            const diags = try self.allocator.alloc(BundleResult.OwnedDiagnostic, graph.diagnostics.items.len);
+        // 4. 진단 메시지 deep copy (graph.deinit 후에도 문자열 유효하도록).
+        // graph.diagnostics + linker.fatal_diagnostics (IIFE unresolved 등, #1791) 병합.
+        const link_diag_len = if (linker) |*l| l.fatal_diagnostics.items.len else 0;
+        const diagnostics: ?[]BundleResult.OwnedDiagnostic = if (graph.diagnostics.items.len > 0 or link_diag_len > 0) blk: {
+            const total = graph.diagnostics.items.len + link_diag_len;
+            const diags = try self.allocator.alloc(BundleResult.OwnedDiagnostic, total);
             errdefer self.allocator.free(diags);
             // M1 수정: 부분 할당 후 OOM 시 이미 복사한 문자열 해제
             var filled: usize = 0;
@@ -1014,16 +1039,9 @@ pub const Bundler = struct {
                 self.allocator.free(d.file_path);
                 if (d.suggestion) |s| self.allocator.free(s);
             };
-            for (graph.diagnostics.items, 0..) |d, i| {
-                diags[i] = .{
-                    .code = d.code,
-                    .severity = d.severity,
-                    .message = try self.allocator.dupe(u8, d.message),
-                    .file_path = try self.allocator.dupe(u8, d.file_path),
-                    .step = d.step,
-                    .suggestion = if (d.suggestion) |s| try self.allocator.dupe(u8, s) else null,
-                };
-                filled = i + 1;
+            try copyDiagnostics(self.allocator, diags, graph.diagnostics.items, &filled);
+            if (linker) |*l| {
+                try copyDiagnostics(self.allocator, diags, l.fatal_diagnostics.items, &filled);
             }
             break :blk diags;
         } else null;

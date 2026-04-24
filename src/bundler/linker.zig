@@ -203,6 +203,11 @@ pub const LinkingMetadata = struct {
     /// 기본값 true 는 현재 모든 생성 지점이 번들러(`buildMetadataForAst` 계열)라는 사실에
     /// 의존한다. 비-번들러 생성 지점을 추가할 때는 반드시 false 를 명시할 것.
     is_bundle_context: bool = true,
+    /// #1791: build-time 에러 (e.g. IIFE 포맷 + unresolved import). `buildMetadataForAst`
+    /// 가 병렬 호출되므로 직접 `linker.diagnostics` 에 append 하면 race. 대신 이 리스트에
+    /// 쌓고 emitter 가 serial 경로에서 `linker.fatal_diagnostics` 로 flush.
+    /// item.message 는 allocator 소유 — flush 시 소유권 이전, deinit 에서 free.
+    pending_diagnostics: []const BundlerDiagnostic = &.{},
     allocator: std.mem.Allocator,
 
     pub const NsMemberRewrites = struct {
@@ -283,6 +288,12 @@ pub const LinkingMetadata = struct {
             for (vars) |v| self.allocator.free(v);
             self.allocator.free(vars);
         }
+        // Ownership: 정상 경로는 emitter 가 message 소유권을 `linker.fatal_diagnostics`
+        // 로 이전한 후 slice 를 비우므로 여기서 no-op. flush 전 에러 경로에서만 해제.
+        if (self.pending_diagnostics.len > 0) {
+            for (self.pending_diagnostics) |d| self.allocator.free(d.message);
+            self.allocator.free(self.pending_diagnostics);
+        }
     }
 };
 
@@ -318,6 +329,14 @@ pub const Linker = struct {
     resolved_bindings: std.AutoHashMap(BindingKey, ResolvedBinding),
 
     diagnostics: std.ArrayList(BundlerDiagnostic),
+    /// #1791 사용자 노출용 치명 진단 (예: IIFE 포맷에서 unresolved import).
+    /// 기존 `diagnostics` 는 내부/테스트 전용 — bundler 가 BundleResult 로 wire 하지
+    /// 않는다. 이 필드로 들어온 항목만 사용자에게 `build error` 로 노출된다.
+    /// message 는 allocator 소유 (allocPrint) — linker.deinit 에서 일괄 해제.
+    fatal_diagnostics: std.ArrayList(BundlerDiagnostic) = .empty,
+    /// #1791 emitter 가 `emitModuleThread` 로 병렬 emit 중 `LinkingMetadata.pending_diagnostics`
+    /// 를 linker 의 `fatal_diagnostics` 버퍼로 flush. 병렬 append 보호.
+    diagnostics_mutex: std.Thread.Mutex = .{},
 
     /// semantic.Symbol.canonical_name 슬라이스의 backing 저장소. linker가 소유 —
     /// deinit에서 일괄 해제. AliasTable.canonical_name은 caller-owned (별도 모델).
@@ -470,6 +489,9 @@ pub const Linker = struct {
         var nic_it = self.ns_inline_cache.valueIterator();
         while (nic_it.next()) |v| self.allocator.free(v.*);
         self.ns_inline_cache.deinit(self.allocator);
+        // #1791 fatal diag message 해제 (allocPrint owned)
+        for (self.fatal_diagnostics.items) |d| self.allocator.free(d.message);
+        self.fatal_diagnostics.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
     }
 
