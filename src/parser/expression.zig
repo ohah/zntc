@@ -815,18 +815,21 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
         if (!is_as and !is_satisfies) break;
         const expr_start = self.ast.getNode(expr).span.start;
         try self.advance();
-        const ty = try self.parseType();
+        _ = try self.parseType();
         const tag: @import("ast.zig").Node.Tag = if (is_satisfies)
             .ts_satisfies_expression
         else if (self.is_flow)
             .flow_as_expression
         else
             .ts_as_expression;
-        expr = try self.ast.addNode(.{
-            .tag = tag,
-            .span = .{ .start = expr_start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = expr, .right = ty, .flags = 0 } },
-        });
+        // codegen 은 operand 만 출력하고 type annotation 은 스트리핑하므로
+        // type 참조는 저장하지 않는다. layout=.unary (ast.zig getLayout 참고).
+        expr = try self.ast.addUnaryNode(
+            tag,
+            .{ .start = expr_start, .end = self.currentSpan().start },
+            expr,
+            0,
+        );
     }
 
     return expr;
