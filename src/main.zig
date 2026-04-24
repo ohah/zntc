@@ -187,6 +187,12 @@ const CliOptions = struct {
     preserve_modules: bool = false,
     /// --preserve-modules-root=<dir>: 출력 디렉토리 구조의 기준 경로
     preserve_modules_root: ?[]const u8 = null,
+    /// --globals=SPEC=GLOBAL (rollup output.globals 호환, #1824).
+    /// IIFE 포맷에서 external specifier → 전역 식별자 매핑. 반복/comma 분리 지원.
+    /// 예: `--globals react=React --globals react-dom=ReactDOM`
+    ///     `--globals=react=React,react-dom=ReactDOM`
+    /// ArrayList 로 보관하고 BundleOptions 에 slice 로 전달. dedupe/정규화는 emitter 단에서.
+    globals_list: std.ArrayList(lib.bundler.types.GlobalEntry) = .empty,
 
     const RnPlatform = enum {
         none,
@@ -235,8 +241,29 @@ const CliOptions = struct {
         self.watch_roots_list.deinit(alloc);
         self.watch_include_list.deinit(alloc);
         self.watch_exclude_list.deinit(alloc);
+        self.globals_list.deinit(alloc);
     }
 };
+
+/// `--globals SPEC=GLOBAL` 인자를 파싱하여 `opts.globals_list` 에 추가한다.
+/// comma 로 여러 항목 구분 가능. 유효하지 않으면 stderr 에 경고 후 무시.
+fn parseGlobalsArg(opts: *CliOptions, allocator: std.mem.Allocator, val: []const u8, stderr: anytype) !void {
+    var it = std.mem.splitScalar(u8, val, ',');
+    while (it.next()) |part| {
+        if (part.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, part, '=') orelse {
+            try stderr.print("zts: --globals requires SPEC=GLOBAL format: '{s}' (skipped)\n", .{part});
+            continue;
+        };
+        const spec = part[0..eq];
+        const name = part[eq + 1 ..];
+        if (spec.len == 0 or name.len == 0) {
+            try stderr.print("zts: --globals empty spec or name: '{s}' (skipped)\n", .{part});
+            continue;
+        }
+        try opts.globals_list.append(allocator, .{ .specifier = spec, .global_name = name });
+    }
+}
 
 /// 엔진 타겟 문자열을 파싱. "chrome80,safari14,node16" → UnsupportedFeatures.
 fn parseEngineTargets(val: []const u8) ?lib.transformer.TransformOptions.compat.UnsupportedFeatures {
@@ -541,6 +568,15 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             if (val.len > 0) {
                 try opts.external_list.append(allocator, val);
             }
+        } else if (std.mem.eql(u8, arg, "--globals")) {
+            // --globals react=React (다음 인자)
+            if (i + 1 < args.len) {
+                i += 1;
+                try parseGlobalsArg(&opts, allocator, args[i], stderr);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--globals=")) {
+            const val = arg["--globals=".len..];
+            if (val.len > 0) try parseGlobalsArg(&opts, allocator, val, stderr);
         } else if (std.mem.startsWith(u8, arg, "--conditions=")) {
             const val = arg["--conditions=".len..];
             // 쉼표로 분리된 조건 목록 (esbuild 호환: --conditions=production,development)
@@ -1717,6 +1753,7 @@ pub fn main() !void {
             .banner_js = opts.banner_js,
             .footer_js = opts.footer_js,
             .global_name = opts.global_name,
+            .globals = opts.globals_list.items,
             .out_extension_js = opts.out_extension_js,
             .charset_utf8 = opts.charset_utf8,
             .entry_names = opts.entry_names,
@@ -2557,6 +2594,8 @@ fn printUsage(writer: anytype) !void {
         \\  --preserve-modules               One file per module (library builds, requires --outdir)
         \\  --preserve-modules-root=<dir>    Root directory for output structure
         \\  --external <pkg>                 Exclude package (repeatable)
+        \\  --globals SPEC=GLOBAL            IIFE external → global mapping (rollup output.globals)
+        \\  --globals=SPEC=GLOBAL[,...]      Same, comma-separated form
         \\  --conditions=<cond,...>          Custom export conditions (e.g. production)
         \\  --platform=browser|node|neutral  Target platform (default: browser)
         \\  --rn-platform=ios|android        RN sub-platform (.ios.*/.android.* extensions)

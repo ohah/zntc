@@ -184,26 +184,34 @@ describe.skipIf(!hasEmotionReact)("CSS Library Smoke — @emotion/react", () => 
       "stylis",
     ]);
 
-    // `--format=esm` 명시: 라이브러리 번들링 의도. `--platform=browser` 기본이
-    // `is_bundle && !bundle_format_explicit` 일 때 IIFE 로 자동 승격되는데 (#1791),
-    // IIFE 는 factory 스코프에 require/import 가 없어 external react 를 담을 수
-    // 없다. 라이브러리 배포 포맷은 ESM/CJS 가 표준이므로 여기도 ESM 을 쓴다.
+    // #1824: `--format=iife` + `--globals` 로 external 을 factory-param 에 주입.
+    // rollup `output.globals` 호환 — React/ReactDOM 은 런타임에 전역에서 가져온다.
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
       "--bundle",
       join(fixture.dir, "index.tsx"),
       "-o",
       outFile,
-      "--format=esm",
+      "--format=iife",
+      "--global-name=MyLib",
       "--external",
       "react",
       "--external",
       "react-dom",
+      "--globals",
+      "react=React",
+      "--globals",
+      "react-dom=ReactDOM",
     ]);
     expect(bundle.exitCode).toBe(0);
 
     const js = await readFile(outFile, "utf-8");
     expect(js).toContain("serializeStyles");
+    // IIFE factory: 실제 import 된 external 만 param 으로 수록.
+    // emotion 은 react 만 쓰므로 `var MyLib = ((React) => {` + `})(React);` 패턴.
+    // (react-dom import 가 없으면 globals 매핑이 있어도 factory 에서 생략)
+    expect(js).toMatch(/var MyLib = \(\(React\)? (?:=>|\)\s*=>)/);
+    expect(js).toMatch(/\}\)\(React[^)]*\);\s*$/);
     expect(js.length).toBeGreaterThan(10000);
   });
 });
@@ -291,18 +299,23 @@ describe.skipIf(!hasStyledComponents)("CSS Library Smoke — Styled-Components",
       "shallowequal",
     ]);
 
-    // `--format=esm` 명시: 라이브러리 번들링 의도 (#1791 follow-up, css-smoke).
+    // #1824: IIFE + --globals 로 rollup 호환 라이브러리 번들.
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
       "--bundle",
       join(fixture.dir, "index.ts"),
       "-o",
       outFile,
-      "--format=esm",
+      "--format=iife",
+      "--global-name=Styled",
       "--external",
       "react",
       "--external",
       "react-dom",
+      "--globals",
+      "react=React",
+      "--globals",
+      "react-dom=ReactDOM",
     ]);
 
     expect(bundle.exitCode).toBe(0);
@@ -310,6 +323,8 @@ describe.skipIf(!hasStyledComponents)("CSS Library Smoke — Styled-Components",
     const js = await readFile(outFile, "utf-8");
     expect(js).toContain("styled");
     expect(js).toContain("stylis");
+    expect(js).toMatch(/var Styled = \(\(React/);
+    expect(js).toMatch(/\}\)\(React[^)]*\);\s*$/);
     expect(js.length).toBeGreaterThan(5000);
   });
 
@@ -335,18 +350,23 @@ describe.skipIf(!hasStyledComponents)("CSS Library Smoke — Styled-Components",
       "shallowequal",
     ]);
 
-    // `--format=esm` 명시: 라이브러리 번들링 의도 (#1791 follow-up, css-smoke).
+    // #1824: IIFE + --globals 로 rollup 호환 라이브러리 번들.
     const outFile = join(fixture.dir, "out.js");
     const bundle = await runZts([
       "--bundle",
       join(fixture.dir, "index.ts"),
       "-o",
       outFile,
-      "--format=esm",
+      "--format=iife",
+      "--global-name=StyledKf",
       "--external",
       "react",
       "--external",
       "react-dom",
+      "--globals",
+      "react=React",
+      "--globals",
+      "react-dom=ReactDOM",
     ]);
 
     expect(bundle.exitCode).toBe(0);
@@ -354,5 +374,7 @@ describe.skipIf(!hasStyledComponents)("CSS Library Smoke — Styled-Components",
     const js = await readFile(outFile, "utf-8");
     // keyframes 함수가 번들에 포함
     expect(js).toContain("keyframes");
+    expect(js).toMatch(/var StyledKf = \(\(React/);
+    expect(js).toMatch(/\}\)\(React[^)]*\);\s*$/);
   });
 });

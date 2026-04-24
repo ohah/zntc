@@ -1276,6 +1276,72 @@ test "Bundler: require.context IIFE has no raw require call (RN runtime invarian
     try std.testing.expect(found_iife);
 }
 
+test "Bundler: IIFE + --globals maps external to factory arg (#1824)" {
+    // 목표: rollup output.globals 호환 — IIFE factory 에 external 을 param 으로 수록하고
+    // 닫는 호출에 매핑된 전역 식별자를 인자로 전달. named import 는 `var useState = React.useState`
+    // preamble 로 linker 가 생성 (UMD/AMD 와 동일 경로).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.ts",
+        \\import { useState } from 'react';
+        \\import ReactDOM from 'react-dom';
+        \\console.log(useState, ReactDOM);
+    );
+    const entry = try absPath(&tmp, "app.ts");
+    defer std.testing.allocator.free(entry);
+
+    const globals = [_]types.GlobalEntry{
+        .{ .specifier = "react", .global_name = "React" },
+        .{ .specifier = "react-dom", .global_name = "ReactDOM" },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .external = &.{ "react", "react-dom" },
+        .globals = &globals,
+        .global_name = "MyLib",
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+
+    // factory signature: `var MyLib = ((React, ReactDom) => {` (arrow, ES target 기본값)
+    try std.testing.expect(std.mem.indexOf(u8, output, "var MyLib = ((React, ReactDom) => {") != null);
+    // factory call args: 매핑된 전역 (`React, ReactDOM`)
+    try std.testing.expect(std.mem.endsWith(u8, output, "})(React, ReactDOM);\n"));
+    // named import preamble: `var useState = React.useState;`
+    try std.testing.expect(std.mem.indexOf(u8, output, "var useState = React.useState") != null);
+    // default import → factory param 직접 사용
+    try std.testing.expect(std.mem.indexOf(u8, output, "ReactDom") != null);
+    // body 에 bare require 없음
+    try std.testing.expect(std.mem.indexOf(u8, output, "require(\"react\")") == null);
+}
+
+test "Bundler: IIFE without --globals on external → error (#1824 regression)" {
+    // 매핑 안 된 external 은 기존 IIFE unresolved 에러 경로 유지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "app.ts", "import { useState } from 'react';\nconsole.log(useState);");
+    const entry = try absPath(&tmp, "app.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    // globals 매핑이 없으므로 unresolved import 에러.
+    try std.testing.expect(result.hasErrors());
+}
+
 test "Bundler: UMD external dependencies in wrapper" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

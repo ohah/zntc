@@ -375,6 +375,12 @@ pub const Linker = struct {
     /// 사용자 의도 (원본 import 보존) 를 존중한다. bundler 가 init 후 설정.
     verbatim_module_syntax: bool = false,
 
+    /// #1824 IIFE `--globals SPEC=GLOBAL` 매핑 (rollup `output.globals` 호환).
+    /// `format == .iife` 일 때만 의미 있음. 매핑된 external specifier 는 UMD/AMD 와
+    /// 동일한 factory-param preamble 경로로 처리되고, 매핑 안 된 external 은
+    /// 기존 IIFE unresolved 에러 경로를 탄다. bundler 가 init 후 설정 — borrowed.
+    iife_globals: []const types.GlobalEntry = &.{},
+
     /// --mangle-report 수집기 (#1760). `null` 이면 instrumentation skip.
     /// Bundler 가 생성 및 소유. Linker 는 참조만 보유.
     mangle_report: ?*MangleReportCollector = null,

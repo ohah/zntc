@@ -85,6 +85,26 @@ pub const FallbackEntry = struct {
     to: ?[]const u8,
 };
 
+/// IIFE 포맷 external 전역 매핑 (rollup `output.globals` 호환, #1824).
+/// `specifier` (예: "react") → `global_name` (예: "React"). IIFE prologue 의
+/// factory 호출 인자로 그대로 사용된다: `var Lib = (function(react){...})(React);`
+/// UMD/AMD 는 기존대로 `specifierToParamName` 만으로도 동작하며, 이 매핑은
+/// IIFE 에서 "어떤 external 을 어떤 전역에서 읽을지" 를 명시한다.
+pub const GlobalEntry = struct {
+    specifier: []const u8,
+    global_name: []const u8,
+
+    /// `entries` 에서 `specifier` 에 대응되는 전역 이름을 linear search.
+    /// 매핑은 보통 수 개 (`--globals react=React react-dom=ReactDOM`) 라
+    /// HashMap overhead 보다 linear 가 더 싸다.
+    pub fn lookup(entries: []const GlobalEntry, specifier: []const u8) ?[]const u8 {
+        for (entries) |g| {
+            if (std.mem.eql(u8, g.specifier, specifier)) return g.global_name;
+        }
+        return null;
+    }
+};
+
 // ============================================================
 // Import 종류
 // ============================================================
