@@ -438,6 +438,15 @@ pub fn generateChunks(
         _ = try ensureNameSlot(&name_to_slot, &effective_names, allocator, mc.name);
     }
 
+    // Dynamic import target 모듈은 manual chunk 에서 제외 (정책 — Rollup/rolldown 동일).
+    // lazy load 의미상 vendor 합치면 의도 반전 + scope hoisting 후 namespace 전체 export
+    // 재구성 이슈 (#1848/#1849). 강제 흡수는 #1850 에서 근본 수정 검토.
+    var dynamic_entry_modules: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer dynamic_entry_modules.deinit(allocator);
+    for (entries.items) |e| {
+        if (e.is_dynamic) try dynamic_entry_modules.put(allocator, @intFromEnum(e.module_idx), {});
+    }
+
     // Resolver 결과 미리 수집 — 모듈당 1회 호출. NAPI TSFN 경로에서도 재호출 없음.
     // resolver 없으면 배열 할당 자체 skip (빌드당 module_count × 16B 절약).
     var resolver_assignments: ?[]?usize = null;
@@ -449,6 +458,7 @@ pub fn generateChunks(
         var it = graph.modulesIterator();
         var mi: usize = 0;
         while (it.next()) |m| : (mi += 1) {
+            if (dynamic_entry_modules.contains(@intCast(mi))) continue;
             if (fn_ptr(manual_resolver_ctx, m.path)) |chunk_name| {
                 ra[mi] = try ensureNameSlot(&name_to_slot, &effective_names, allocator, chunk_name);
             }
@@ -517,6 +527,8 @@ pub fn generateChunks(
         var it = graph.modulesIterator();
         var mi: usize = 0;
         while (it.next()) |m| : (mi += 1) {
+            // dynamic import target 은 정책상 manual 청크 제외 (#1848/#1849, 근본수정 #1850)
+            if (dynamic_entry_modules.contains(@intCast(mi))) continue;
             if (resolver_assignments) |ra| {
                 if (ra[mi]) |slot| {
                     try manual_seeds[slot].append(allocator, ModuleIndex.fromUsize(mi));

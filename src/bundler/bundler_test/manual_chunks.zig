@@ -213,10 +213,11 @@ test "manualChunks: transitive dependency follows matched module (rolldown inclu
     try std.testing.expectEqualStrings(foo_chunk, bar_chunk);
 }
 
-test "manualChunks: dynamic import target hoisted into manual chunk" {
-    // 출처 개념: rolldown `dynamic_entry_shared_module_not_merged` 를 단순화.
-    // dynamic import 로만 참조되는 모듈이 manualChunks 패턴에 매칭되면,
-    // 기본 async chunk 대신 지정된 manual 청크에 포함. Rollup/rolldown 모두 동일.
+test "manualChunks: dynamic import target 은 manual 에서 제외 — async chunk 유지 (#1848/#1849 회피)" {
+    // 정책: dynamic import target 모듈은 manualChunks 매칭돼도 별도 async chunk 유지.
+    // 이유: dynamic import = "lazy load" 의미상 vendor 로 합치면 의도 반전. 또한 scope
+    // hoisting 후 manual chunk 가 namespace 전체 export 를 재구성하는 건 scope hoisting
+    // 의 핵심 가정과 충돌 (#1850 에서 근본 수정 검토). Rollup/rolldown 동일 정책.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
@@ -243,9 +244,11 @@ test "manualChunks: dynamic import target hoisted into manual chunk" {
     try std.testing.expect(!result.hasErrors());
     const outs = result.outputs orelse return error.TestUnexpectedResult;
 
-    // lazy 가 vendor 청크로 (async chunk 가 아니라 manual chunk 우선)
+    // lazy 는 vendor 청크로 가지 않고 async chunk 에 남아야 함.
     const lazy_chunk = chunkContaining(outs, "LAZY_MARKER") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, lazy_chunk, "vendor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lazy_chunk, "vendor") == null);
+    // manual 매칭되는 다른 모듈이 없으므로 vendor 청크 자체가 생성되지 않아야 함.
+    try std.testing.expect(!hasChunk(outs, "vendor"));
 }
 
 // ============================================================
