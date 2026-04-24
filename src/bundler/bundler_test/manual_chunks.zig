@@ -315,7 +315,7 @@ test "manualChunks resolver: dynamic entry 반환 이름 무시" {
         .entry_points = &.{entry},
         .code_splitting = true,
         .manual_chunks_resolver = struct {
-            fn r(_: ?*anyopaque, _: []const u8) ?[]const u8 {
+            fn r(_: ?*anyopaque, _: []const u8, _: ?*const anyopaque) ?[]const u8 {
                 return "bucket";
             }
         }.r,
@@ -340,23 +340,23 @@ test "manualChunks resolver: dynamic entry 반환 이름 무시" {
 // ============================================================
 // resolver 반환 이름은 동적으로 manual 청크를 생성. record 와 공존 시 resolver 우선.
 
-fn resolverVendorSubstring(_: ?*anyopaque, id: []const u8) ?[]const u8 {
+fn resolverVendorSubstring(_: ?*anyopaque, id: []const u8, _: ?*const anyopaque) ?[]const u8 {
     if (std.mem.indexOf(u8, id, "vendor-lib") != null) return "vendor";
     return null;
 }
 
-fn resolverAlwaysNull(_: ?*anyopaque, _: []const u8) ?[]const u8 {
+fn resolverAlwaysNull(_: ?*anyopaque, _: []const u8, _: ?*const anyopaque) ?[]const u8 {
     return null;
 }
 
-fn resolverTwoGroups(_: ?*anyopaque, id: []const u8) ?[]const u8 {
+fn resolverTwoGroups(_: ?*anyopaque, id: []const u8, _: ?*const anyopaque) ?[]const u8 {
     if (std.mem.indexOf(u8, id, "ui-") != null) return "ui";
     if (std.mem.indexOf(u8, id, "data-") != null) return "data";
     return null;
 }
 
 /// ctx 로 호출 카운터 전달 — 호출 검증용.
-fn resolverCountingSink(ctx: ?*anyopaque, id: []const u8) ?[]const u8 {
+fn resolverCountingSink(ctx: ?*anyopaque, id: []const u8, _: ?*const anyopaque) ?[]const u8 {
     const counter: *usize = @ptrCast(@alignCast(ctx.?));
     counter.* += 1;
     if (std.mem.indexOf(u8, id, "match") != null) return "sink";
@@ -554,4 +554,194 @@ test "manualChunks: no match → 엔트리 청크에 머묾 (기존 동작)" {
     // 매칭 없음 → vendor 청크 생성 안 됨, 단일 entry 청크만
     try std.testing.expectEqual(@as(usize, 1), outs.len);
     try std.testing.expect(std.mem.indexOf(u8, outs[0].contents, "ONLY") != null);
+}
+
+// ============================================================
+// Phase 3: meta.getModuleInfo — Rollup `manualChunks(id, meta)` 호환
+// ============================================================
+
+const MetaSeen = struct {
+    entries: std.ArrayList(struct {
+        id: []const u8,
+        is_entry: bool,
+        importer_count: usize,
+        imported_count: usize,
+    }) = .empty,
+    allocator: std.mem.Allocator,
+
+    // ModuleInfo.id / importers / imported_ids 는 graph 수명 동안 borrowed.
+    // bundle() 리턴 시 graph 가 deinit 되므로, 테스트에서는 record 시점에 dupe 해서 보관.
+    fn record(self: *MetaSeen, info: types.ModuleInfo) !void {
+        const owned_id = try self.allocator.dupe(u8, info.id);
+        errdefer self.allocator.free(owned_id);
+        try self.entries.append(self.allocator, .{
+            .id = owned_id,
+            .is_entry = info.is_entry,
+            .importer_count = info.importers.len,
+            .imported_count = info.imported_ids.len,
+        });
+    }
+
+    fn deinit(self: *MetaSeen) void {
+        for (self.entries.items) |e| self.allocator.free(e.id);
+        self.entries.deinit(self.allocator);
+    }
+};
+
+fn resolverMeta(ctx: ?*anyopaque, id: []const u8, graph: ?*const anyopaque) ?[]const u8 {
+    const seen: *MetaSeen = @ptrCast(@alignCast(ctx.?));
+    const info = types.getModuleInfo(graph, id) orelse return null;
+    seen.record(info) catch return null;
+    return null;
+}
+
+test "manualChunks meta.getModuleInfo: isEntry / importers / imported_ids 수집" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./lib";
+        \\console.log(a);
+    );
+    try writeFile(tmp.dir, "lib.ts", "export const a = 1;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var seen = MetaSeen{ .allocator = std.testing.allocator };
+    defer seen.deinit();
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks_resolver = resolverMeta,
+        .manual_chunks_ctx = &seen,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    var entry_seen = false;
+    var lib_seen = false;
+    for (seen.entries.items) |e| {
+        if (std.mem.endsWith(u8, e.id, "entry.ts")) {
+            try std.testing.expect(e.is_entry);
+            try std.testing.expectEqual(@as(usize, 0), e.importer_count);
+            try std.testing.expectEqual(@as(usize, 1), e.imported_count);
+            entry_seen = true;
+        } else if (std.mem.endsWith(u8, e.id, "lib.ts")) {
+            try std.testing.expect(!e.is_entry);
+            try std.testing.expectEqual(@as(usize, 1), e.importer_count);
+            try std.testing.expectEqual(@as(usize, 0), e.imported_count);
+            lib_seen = true;
+        }
+    }
+    try std.testing.expect(entry_seen);
+    try std.testing.expect(lib_seen);
+}
+
+test "getModuleInfo / getModulePathByIndex: null graph / invalid id 안전하게 null" {
+    try std.testing.expect(types.getModuleInfo(null, "anything") == null);
+    try std.testing.expect(types.getModulePathByIndex(null, @enumFromInt(0)) == null);
+}
+
+// resolver 안에서 graph 가 valid 한 동안 missing path / invalid idx 조회 테스트.
+// bundle 종료 후엔 graph 해제되므로 resolver 콜백 타이밍에만 할 수 있다.
+const NullChecks = struct {
+    missing_id_null: bool = false,
+    invalid_idx_null: bool = false,
+};
+
+fn resolverNullChecks(ctx: ?*anyopaque, _: []const u8, graph: ?*const anyopaque) ?[]const u8 {
+    const checks: *NullChecks = @ptrCast(@alignCast(ctx.?));
+    if (types.getModuleInfo(graph, "/totally/does-not-exist.ts") == null) {
+        checks.missing_id_null = true;
+    }
+    if (types.getModulePathByIndex(graph, @enumFromInt(999_999)) == null) {
+        checks.invalid_idx_null = true;
+    }
+    return null;
+}
+
+test "getModuleInfo / getModulePathByIndex: graph valid 상태에서 missing / OOB 조회" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "console.log(1);");
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var checks = NullChecks{};
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .manual_chunks_resolver = resolverNullChecks,
+        .manual_chunks_ctx = &checks,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(checks.missing_id_null);
+    try std.testing.expect(checks.invalid_idx_null);
+}
+
+test "manualChunks meta.getModuleInfo: 다중 엔트리 + shared 모듈 토폴로지" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "pageA.ts",
+        \\import { s } from "./shared";
+        \\console.log(s);
+    );
+    try writeFile(tmp.dir, "pageB.ts",
+        \\import { s } from "./shared";
+        \\console.log(s);
+    );
+    try writeFile(tmp.dir, "shared.ts", "export const s = 1;");
+
+    const page_a = try absPath(&tmp, "pageA.ts");
+    defer std.testing.allocator.free(page_a);
+    const page_b = try absPath(&tmp, "pageB.ts");
+    defer std.testing.allocator.free(page_b);
+
+    var seen = MetaSeen{ .allocator = std.testing.allocator };
+    defer seen.deinit();
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{ page_a, page_b },
+        .code_splitting = true,
+        .manual_chunks_resolver = resolverMeta,
+        .manual_chunks_ctx = &seen,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    var a_seen = false;
+    var b_seen = false;
+    var shared_seen = false;
+    for (seen.entries.items) |e| {
+        if (std.mem.endsWith(u8, e.id, "pageA.ts")) {
+            try std.testing.expect(e.is_entry);
+            try std.testing.expectEqual(@as(usize, 0), e.importer_count);
+            try std.testing.expectEqual(@as(usize, 1), e.imported_count);
+            a_seen = true;
+        } else if (std.mem.endsWith(u8, e.id, "pageB.ts")) {
+            try std.testing.expect(e.is_entry);
+            try std.testing.expectEqual(@as(usize, 0), e.importer_count);
+            try std.testing.expectEqual(@as(usize, 1), e.imported_count);
+            b_seen = true;
+        } else if (std.mem.endsWith(u8, e.id, "shared.ts")) {
+            try std.testing.expect(!e.is_entry);
+            try std.testing.expectEqual(@as(usize, 2), e.importer_count);
+            try std.testing.expectEqual(@as(usize, 0), e.imported_count);
+            shared_seen = true;
+        }
+    }
+    try std.testing.expect(a_seen);
+    try std.testing.expect(b_seen);
+    try std.testing.expect(shared_seen);
 }

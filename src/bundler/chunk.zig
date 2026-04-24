@@ -459,7 +459,7 @@ pub fn generateChunks(
         var mi: usize = 0;
         while (it.next()) |m| : (mi += 1) {
             if (dynamic_entry_modules.contains(@intCast(mi))) continue;
-            if (fn_ptr(manual_resolver_ctx, m.path)) |chunk_name| {
+            if (fn_ptr(manual_resolver_ctx, m.path, @ptrCast(graph))) |chunk_name| {
                 ra[mi] = try ensureNameSlot(&name_to_slot, &effective_names, allocator, chunk_name);
             }
         }
