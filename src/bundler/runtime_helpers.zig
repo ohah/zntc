@@ -744,22 +744,28 @@ pub const REFRESH_STUB =
 ///
 /// 1. `__zts_guarded(fn)` — 각 module init 호출 site (entry trigger / linker preamble /
 ///    re-export / side-effect init) 가 통과. throw 를 silent swallow 해서 부팅 진행.
-///    Metro `guardedLoadModule` 의 `inGuard` pattern 은 채택하지 않음 (그건 native
-///    fatal handler `ErrorUtils.reportFatalError` → `RN$handleException` 와 조합인데,
-///    iOS 26.4+ 에서 handler 가 "runtime not ready" 로 부팅 정지시킴). 디버그 toggle:
-///    `globalThis.__ZTS_DEBUG_GUARD = true`.
+///    Metro 의 `guardedLoadModule` 와 동등 mechanism — Metro 도 module 평가는 eager
+///    이지만 top-level `__r(N)` 호출이 try/catch wrap 되어 있어 throw 가 LogBox 로
+///    흘러가고 RN runtime 자체는 살아있음. ZTS 는 entry trigger 를 raw 로 emit 했었기
+///    때문에 동일 throw 가 Hermes 까지 propagate → 부팅 정지. 이 wrapper 부재가 부팅
+///    실패의 결정 요인.
 ///
-/// 2. `console.error` setter intercept — Hermes (iOS 26.4+) 가 spec global
-///    (`Location` / `TextEncoderStream` / `TextDecoderStream`) 을 native (`configurable:
-///    false`) 로 사전 등록 → expo `installGlobal` 이 가드 거치지 않고 `console.error
-///    ('Failed to set polyfill. X is not configurable.')` 직접 출력 (throw 안 함).
-///    기능 영향 0 이지만 dev 콘솔 노이즈. Metro 는 `inlineRequires` 로 lazy 평가되어
-///    부팅 시점에 호출 안 됨 → 안 뜸. ZTS 는 eager 평가 → 뜸.
+///    Metro 의 `inGuard` flag (nested 호출 무력화) 는 채택하지 않음 — 그건 native
+///    `ErrorUtils.reportFatalError` → `RN$handleException` 와 짝인데, iOS 26.4+
+///    환경에서는 그 handler 가 "runtime not ready" 로 부팅 정지시킴. ZTS 는 silent
+///    swallow + 디버그 toggle: `globalThis.__ZTS_DEBUG_GUARD = true`.
 ///
-///    단순 wrap 은 RN `setUpDeveloperTools` 가 그 위에 LogBox/ExceptionsManager wrap
-///    덧씌워서 무력화됨. 따라서 `Object.defineProperty(console, "error", { set })` 로
-///    set 자체를 가로채 RN 의 새 wrap 을 한 번 더 wrap → 우리 필터가 영구 outermost.
-///    `LogBox.ignoreLogs` 와 달리 LogBox + DevTools 콘솔 양쪽 모두 깨끗.
+/// 2. `console.error` setter intercept — iOS 26.x 에서 host platform 이 spec global
+///    (`Location` / `TextEncoderStream` / `TextDecoderStream`) 을 placeholder
+///    (`configurable: false`) 로 사전 등록. expo `installGlobal.ts:96` 이 가드 거치고
+///    `console.error('Failed to set polyfill. X is not configurable.')` 출력 + return
+///    (throw 안 함 — 부팅에는 영향 없음). 단지 dev 콘솔 노이즈.
+///
+///    Metro 도 동일 메시지 출력하지만 LogBox 만 표시되고 콘솔 자체는 안 보이게 처리됨
+///    (RN `setUpDeveloperTools` 가 console.error 를 LogBox 로 redirect). ZTS 도 같은
+///    redirect 가 적용되지만 dev 환경에서 DevTools 가 backend.js 로 console 을
+///    추가로 hook 하면서 노이즈가 노출됨. setter intercept 로 RN wrap 위에 우리 wrap
+///    을 덧씌워 영구 outermost 필터 유지 → LogBox + DevTools 콘솔 양쪽 모두 깨끗.
 pub const GUARDED_RUNTIME =
     \\function __zts_guarded(fn) {
     \\  try { return fn(); }
