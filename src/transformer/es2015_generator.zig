@@ -244,7 +244,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         const sent_stmt = try buildSentExprStmt(self, stmt.span);
                         try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = sent_stmt } });
                     } else if (expr.tag == .assignment_expression) {
-                        // x = yield value / x = await value 패턴 감지
+                        // x = yield value / x = await value / x += await value 패턴 감지.
+                        // compound (`+=`, `-=`, ...) 의 경우 expr.data.binary.flags 가 op kind
+                        // (Kind.plus_eq 등) 를 보존 — assignment node 만들 때 그대로 전달해야
+                        // `sum += _state.sent()` 가 `sum = _state.sent()` 로 떨어지지 않음 (#1896).
                         const right_idx = expr.data.binary.right;
                         const right = self.ast.getNode(right_idx);
                         if (right.tag == .yield_expression or right.tag == .await_expression) {
@@ -255,7 +258,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                             const new_left = try self.visitNode(expr.data.binary.left);
                             const sent_call = try buildSentCall(self, stmt.span);
-                            const assign_stmt = try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span);
+                            const new_left_node = self.ast.getNode(new_left);
+                            const is_destructuring = new_left_node.tag == .object_pattern or new_left_node.tag == .array_pattern;
+                            const assign_stmt = if (is_destructuring)
+                                // Destructuring 은 spec 상 compound op 불가 (`{a} += x` invalid) → flags=0.
+                                try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span)
+                            else blk: {
+                                const assign = try self.ast.addNode(.{
+                                    .tag = .assignment_expression,
+                                    .span = stmt.span,
+                                    .data = .{ .binary = .{ .left = new_left, .right = sent_call, .flags = expr.data.binary.flags } },
+                                });
+                                break :blk try es_helpers.makeExprStmt(self, assign, stmt.span);
+                            };
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                         } else if (containsYield(self, right_idx)) {
                             // x = [yield 5, yield 6] — 우측에 중첩 yield가 있는 assignment
@@ -1185,60 +1200,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// destructuring 패턴은 개별 identifier로 분해하여 호이스팅.
         /// (var {a, b} = expr → var a, b; 로 호이스팅. var {a, b}; 는 문법 에러)
         fn collectHoistedVarsRange(self: *Transformer, stmts_start: u32, stmts_len: u32, hoisted: *std.ArrayList(NodeIndex)) Transformer.Error!void {
-            // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+            // 모든 stmt 를 collectHoistedVarFromNode 에 위임 — single source of truth
+            // (이전엔 두 함수가 별도 case 분기 가지고 있어 변경 시 한쪽만 update 되어 누락
+            // 발생. #1901 의 for_await_of 가 그 예).
             var i_loop: u32 = 0;
             while (i_loop < stmts_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[stmts_start + i_loop];
-                const node = self.ast.getNode(@enumFromInt(raw_idx));
-                if (node.tag == .variable_declaration) {
-                    const e = node.data.extra;
-                    const list_start = self.readU32(e, 1);
-                    const list_len = self.readU32(e, 2);
-                    // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
-                    var j_loop: u32 = 0;
-                    while (j_loop < list_len) : (j_loop += 1) {
-                        const decl_raw = self.ast.extra_data.items[list_start + j_loop];
-                        const decl = self.ast.getNode(@enumFromInt(decl_raw));
-                        if (decl.tag != .variable_declarator) continue;
-                        const binding: NodeIndex = self.readNodeIdx(decl.data.extra, 0);
-                        if (!binding.isNone()) {
-                            try collectBindingIdentifiers(self, binding, hoisted);
-                        }
-                    }
-                } else if (node.tag == .block_statement or node.tag == .function_body) {
-                    try collectHoistedVarsRange(self, node.data.list.start, node.data.list.len, hoisted);
-                } else if (node.tag == .if_statement) {
-                    // then/else body 재귀
-                    try collectHoistedVarFromNode(self, node.data.ternary.b, hoisted);
-                    try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
-                } else if (node.tag == .for_statement) {
-                    const e = node.data.extra;
-                    // extras를 collectHoistedVarFromNode 전에 모두 읽기 (재할당 방지)
-                    const init_node_idx: NodeIndex = self.readNodeIdx(e, 0);
-                    const body_node_idx: NodeIndex = self.readNodeIdx(e, 3);
-                    try collectHoistedVarFromNode(self, init_node_idx, hoisted);
-                    try collectHoistedVarFromNode(self, body_node_idx, hoisted);
-                } else if (node.tag == .while_statement or node.tag == .do_while_statement) {
-                    try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
-                } else if (node.tag == .for_in_statement or node.tag == .for_of_statement) {
-                    // loop variable (const/let/var x)도 호이스팅 — state machine에서 접근 필요
-                    try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
-                    try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
-                } else if (node.tag == .try_statement) {
-                    // try body + catch body + finally body 재귀
-                    try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
-                    if (!node.data.ternary.b.isNone()) {
-                        const catch_node = self.ast.getNode(node.data.ternary.b);
-                        // catch 파라미터를 var로 호이스팅 (state machine에서 접근 가능하도록)
-                        if (!catch_node.data.binary.left.isNone()) {
-                            try collectBindingIdentifiers(self, catch_node.data.binary.left, hoisted);
-                        }
-                        try collectHoistedVarFromNode(self, catch_node.data.binary.right, hoisted);
-                    }
-                    try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
-                } else if (node.tag == .labeled_statement) {
-                    try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
-                }
+                try collectHoistedVarFromNode(self, @enumFromInt(raw_idx), hoisted);
             }
         }
 
@@ -1277,6 +1245,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
             } else if (node.tag == .if_statement) {
                 try collectHoistedVarFromNode(self, node.data.ternary.b, hoisted);
+                try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
+            } else if (node.tag == .try_statement) {
+                // try.a = try block, try.b = catch_clause, try.c = finalizer block.
+                try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
+                try collectHoistedVarFromNode(self, node.data.ternary.b, hoisted);
+                try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
+            } else if (node.tag == .catch_clause) {
+                // catch.left = param (state machine 안에서 접근 가능하도록 hoist), right = body
+                if (!node.data.binary.left.isNone()) {
+                    try collectBindingIdentifiers(self, node.data.binary.left, hoisted);
+                }
+                try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
+            } else if (node.tag == .switch_statement) {
+                // switch.left = discriminant, switch.right = list of switch_case
+                try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
+            } else if (node.tag == .for_await_of_statement) {
+                // (#1901) ternary.a = left (var v 인 경우), c = body. helper var 들 (_iter,
+                // _step, _ret, _errObj, _err) 은 lowerForAwaitOf 가 generator_temp_var_spans
+                // 로 직접 push.
+                try collectHoistedVarFromNode(self, node.data.ternary.a, hoisted);
                 try collectHoistedVarFromNode(self, node.data.ternary.c, hoisted);
             }
         }
@@ -1642,6 +1630,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // temp 변수에 _state.sent() 결과 저장
                 // temp_span을 node.span 대신 사용 — 번들러에서 다른 모듈의 source span과 충돌 방지
                 const temp_span = try es_helpers.makeTempVarSpan(self);
+                // 임시 변수를 호이스팅 리스트에 등록 — 기존엔 외부 binding (var x = await ...)
+                // 이 있을 때만 hoist 됐지만, nested await 또는 for-await-of 의 cond 안 await
+                // (#1901) 의 경우 외부 binding 이 없어서 temp 가 어디에도 declare 안 됐음.
+                try self.generator_temp_var_spans.append(self.allocator, temp_span);
                 const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
                 const sent_call = try buildSentCall(self, temp_span);
                 const assign = try self.ast.addNode(.{

@@ -72,24 +72,30 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const new_right = try self.visitNode(right);
 
             // =====================================================
-            // 1. var _iter = __asyncValues(iterable), _step, _ret, _errObj;
+            // 1. _iter = __asyncValues(iterable);  (helper var 들은 함수 top hoist)
             // =====================================================
+            // (#1901) 4 helper var (_iter, _step, _ret, _errObj) + catch param (_err) 을
+            // generator_temp_var_spans 로 hoist — generator state machine 의 buildStateMachine
+            // 이 함수 top 에 합쳐 emit. 기존엔 outer_var (var declaration) 으로 emit 했지만
+            // collectOperations 의 var → assignment 변환 path 가 raw for_await_of 안 traverse
+            // 못 해서 binding 들이 함수 top 에 안 올라가는 문제. lower 가 직접 push 하는 게
+            // 정통 — `collectForOperations` 의 `generator_temp_var_spans.append(idx_span, arr_span)` 와 동일 패턴.
+            try self.generator_temp_var_spans.append(self.allocator, iter_span);
+            try self.generator_temp_var_spans.append(self.allocator, step_span);
+            try self.generator_temp_var_spans.append(self.allocator, ret_span);
+            try self.generator_temp_var_spans.append(self.allocator, errobj_span);
+            try self.generator_temp_var_spans.append(self.allocator, err_span);
+
+            // _iter = __asyncValues(iterable) — assignment statement (declaration 아님).
             const async_values_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncValues");
             const async_values_call = try es_helpers.makeCallExpr(self, async_values_ref, &.{new_right}, span);
-
-            const iter_binding = try es_helpers.makeBindingIdentifier(self, iter_span);
-            const iter_decl = try es_helpers.makeDeclarator(self, iter_binding, async_values_call, span);
-
-            const step_binding = try es_helpers.makeBindingIdentifier(self, step_span);
-            const step_decl = try es_helpers.makeDeclarator(self, step_binding, .none, span);
-
-            const ret_binding = try es_helpers.makeBindingIdentifier(self, ret_span);
-            const ret_decl = try es_helpers.makeDeclarator(self, ret_binding, .none, span);
-
-            const errobj_binding = try es_helpers.makeBindingIdentifier(self, errobj_span);
-            const errobj_decl = try es_helpers.makeDeclarator(self, errobj_binding, .none, span);
-
-            const outer_var = try es_helpers.makeVarDeclaration(self, &.{ iter_decl, step_decl, ret_decl, errobj_decl }, .@"var", span);
+            const iter_lhs = try es_helpers.makeIdentifierRefFromSpan(self, iter_span);
+            const iter_assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = iter_lhs, .right = async_values_call, .flags = 0 } },
+            });
+            const outer_var = try es_helpers.makeExprStmt(self, iter_assign, span);
 
             // =====================================================
             // 2. while test: !(_step = await _iter.next()).done
