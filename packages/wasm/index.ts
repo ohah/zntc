@@ -331,7 +331,11 @@ let bundlerMemory: WebAssembly.Memory | null = null;
 let bundlerVfs: VirtualFileSystem | null = null;
 
 function readBundlerString(ptr: number, len: number): string {
-  return decoder.decode(new Uint8Array(bundlerMemory!.buffer, ptr, len));
+  // bundlerMemory 는 SharedArrayBuffer (threads features 로 shared:true). 해당 view 를
+  // 그대로 TextDecoder.decode 에 전달하면 브라우저가 거부 ("must not be shared") —
+  // .slice() 로 새 ArrayBuffer 복사 후 decode.
+  const view = new Uint8Array(bundlerMemory!.buffer, ptr, len);
+  return decoder.decode(view.slice());
 }
 
 /// host 가 wasm 메모리에 buffer 확보 + 데이터 복사 → packed (ptr<<32 | len) 반환.
@@ -461,7 +465,9 @@ export function build(entryPath: string): BundleResult | null {
 
     const outPtr = Number(packed >> 32n);
     const outLen = Number(packed & 0xffffffffn);
-    const code = decoder.decode(new Uint8Array(bundlerMemory.buffer, outPtr, outLen));
+    // SharedArrayBuffer view 는 TextDecoder.decode 가 거부 — .slice() 로 복사.
+    const view = new Uint8Array(bundlerMemory.buffer, outPtr, outLen);
+    const code = decoder.decode(view.slice());
     bundler.dealloc(outPtr, outLen);
     return { code };
   } finally {
