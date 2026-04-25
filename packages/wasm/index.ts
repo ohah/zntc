@@ -337,6 +337,9 @@ interface BundlerExports {
     optionsJsonPtr: number,
     optionsJsonLen: number,
   ): bigint;
+  /// 직전 build/build_chunks 가 0 반환했을 때 호출 — 의미 있는 에러 메시지 반환.
+  /// 0 = no error. 결과 ptr/len 은 wasm 내부 buffer (caller 가 dealloc 호출 금지).
+  last_error_message_get(): bigint;
 }
 
 let bundler: BundlerExports | null = null;
@@ -460,8 +463,8 @@ export interface BundleResult {
 
 /// build() / buildChunks() 가 받는 옵션. ZTS bundler 의 BundleOptions minimal subset.
 export interface BundleOptionsInput {
-  /// 출력 모듈 형식. 기본 "esm".
-  format?: "esm" | "cjs" | "iife";
+  /// 출력 모듈 형식. 기본 "esm". umd/amd 는 IIFE 계열 (함수 래퍼).
+  format?: "esm" | "cjs" | "iife" | "umd" | "amd";
   /// 타겟 플랫폼. 기본 "browser". import.meta polyfill / Node 빌트인 처리 등 영향.
   platform?: "browser" | "node" | "neutral" | "react-native";
   /// 외부 처리할 모듈 specifier 목록 (와일드카드 `*` 지원).
@@ -496,8 +499,22 @@ function encodeBundleOptions(options?: BundleOptionsInput): { ptr: number; len: 
   return { ptr, len: optsBytes.length };
 }
 
+/// 직전 build / buildChunks 호출이 실패해 null 을 반환했을 때 의미 있는 에러
+/// 메시지를 가져온다. 호출이 성공했거나 메시지가 없으면 빈 문자열.
+export function bundlerLastErrorMessage(): string {
+  if (!bundler || !bundlerMemory) return "";
+  const packed = bundler.last_error_message_get();
+  if (packed === 0n) return "";
+  const ptr = Number(packed >> 32n);
+  const len = Number(packed & 0xffffffffn);
+  // 결과 buffer 는 wasm 내부 소유 — dealloc 안 함. SharedArrayBuffer 라 .slice() 복사.
+  const view = new Uint8Array(bundlerMemory.buffer, ptr, len);
+  return decoder.decode(view.slice());
+}
+
 /// VFS entry path + 옵션으로 bundler 호출 후 단일 파일 번들 코드 반환.
-/// 옵션 미전달 시 esm/browser 기본. 빈 출력 또는 실패 시 null.
+/// 옵션 미전달 시 esm/browser 기본. 빈 출력 또는 실패 시 null —
+/// 자세한 에러는 `bundlerLastErrorMessage()` 로 조회.
 export function build(entryPath: string, options?: BundleOptionsInput): BundleResult | null {
   if (!bundler || !bundlerMemory) {
     throw new Error("zts-wasm: bundler not initialized. Call initBundler() first.");
