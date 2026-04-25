@@ -1583,6 +1583,34 @@ test "Async helper: __generator(this) preserves outer this through bundler emit"
     try std.testing.expect(std.mem.indexOf(u8, result.output, ".call(this)") != null);
 }
 
+test "Async generator: __asyncGenerator + __await runtime emit (#1911)" {
+    // async function* — __asyncGenerator + __await runtime helper 정확히 한 번씩 emit.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function* g() { yield 1; await Promise.resolve(); yield 2; }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __asyncGenerator"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __await"));
+    // wrapper 호출 형식 보존 (bundler default = non-minified, space 포함).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__asyncGenerator(this, arguments,") != null);
+    // body 안 await → __await(...) wrap.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__await(") != null);
+}
+
 test "Async helper: multi-module with async in one — single emit (edge)" {
     // 여러 모듈 중 한 곳만 async 사용 → helper 1회만 emit
     var tmp = std.testing.tmpDir(.{});

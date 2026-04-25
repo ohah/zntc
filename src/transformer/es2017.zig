@@ -23,6 +23,113 @@ const Span = token_mod.Span;
 
 pub fn ES2017(comptime Transformer: type) type {
     return struct {
+        /// async generator (`async function*`) body 안 await 표현을 `yield __await(value)` 로
+        /// 변환. nested function/arrow scope 는 traversal 안 함 (own this/await context 가짐).
+        /// (#1911)
+        fn rewriteAwaitToYieldAwait(self: *Transformer, node_idx: NodeIndex) Transformer.Error!void {
+            if (node_idx.isNone()) return;
+            const node = self.ast.getNode(node_idx);
+            switch (node.tag) {
+                .await_expression => {
+                    // 자식 먼저 — nested await 도 변환.
+                    try rewriteAwaitToYieldAwait(self, node.data.unary.operand);
+                    // __await(operand) call 만들기.
+                    self.runtime_helpers.await_helper = true;
+                    const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
+                    const await_call = try es_helpers.makeCallExpr(self, await_ref, &.{node.data.unary.operand}, node.span);
+                    // node 자체를 in-place 로 yield_expression 으로 교체 (operand = __await(value)).
+                    var n = self.ast.nodes.items[@intFromEnum(node_idx)];
+                    n.tag = .yield_expression;
+                    n.data = .{ .unary = .{ .operand = await_call, .flags = 0 } };
+                    self.ast.nodes.items[@intFromEnum(node_idx)] = n;
+                },
+                // 자체 async/await context 를 가진 nested scope — skip.
+                .function_declaration, .function_expression, .arrow_function_expression, .method_definition => {},
+                else => {
+                    // 일반 노드 — child iterator 로 모든 자식 traversal.
+                    const ast_walk = @import("../parser/ast_walk.zig");
+                    var it = ast_walk.children(self.ast, node);
+                    while (it.next()) |child| {
+                        try rewriteAwaitToYieldAwait(self, child);
+                    }
+                },
+            }
+        }
+
+        /// async generator (`async function*`) → `function() { return __asyncGenerator(this, arguments,
+        /// function*() { /* await → yield __await */ }); }`. (#1911)
+        /// generator 자체도 unsupported 면 inner function* 가 다시 ES5 generator state machine 으로 lower.
+        pub fn lowerAsyncGeneratorToStateMachine(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            const e = node.data.extra;
+            const span = node.span;
+
+            const name_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const params_list = self.ast.functionParamsList(node);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 2);
+            const flags = self.readU32(e, 3);
+
+            const new_name = try self.visitNode(name_idx);
+            const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
+
+            // body 안 await → yield __await(value) 변환 (in-place AST 편집).
+            try rewriteAwaitToYieldAwait(self, body_idx);
+
+            // inner function*(): 일반 generator (async flag 제거). visitNode 거치면 ES5 target 시
+            // 자동으로 generator state machine 으로 lower.
+            const inner_flags = (flags & ~@as(u32, ast_mod.FunctionFlags.is_async)) | @as(u32, ast_mod.FunctionFlags.is_generator);
+            const inner_params_node = try self.ast.addFormalParameters(new_params, span);
+            const none = @intFromEnum(NodeIndex.none);
+            const inner_extra = try self.ast.addExtras(&.{
+                none, // anonymous
+                @intFromEnum(inner_params_node),
+                @intFromEnum(body_idx),
+                inner_flags,
+                none,
+            });
+            const inner_func = try self.ast.addNode(.{
+                .tag = .function_expression,
+                .span = span,
+                .data = .{ .extra = inner_extra },
+            });
+            // inner function 자체도 visitNode 거쳐 generator/await downlevel 적용.
+            const lowered_inner = try self.visitNode(inner_func);
+
+            // __asyncGenerator(this, arguments, function*() {...})
+            self.runtime_helpers.async_generator = true;
+            self.runtime_helpers.await_helper = true;
+            const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncGenerator");
+            const this_arg = try es_helpers.makeThisExpr(self, span);
+            const args_ref = try es_helpers.makeIdentifierRef(self, "arguments");
+            const helper_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ this_arg, args_ref, lowered_inner }, span);
+
+            // outer wrapper: function name(<params>) { return __asyncGenerator(...); }
+            const return_stmt = try self.ast.addNode(.{
+                .tag = .return_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = helper_call, .flags = 0 } },
+            });
+            const outer_body_list = try self.ast.addNodeList(&.{return_stmt});
+            const outer_body = try self.ast.addNode(.{
+                .tag = .block_statement,
+                .span = span,
+                .data = .{ .list = outer_body_list },
+            });
+            const outer_params_node = try self.ast.addFormalParameters(new_params, span);
+            const outer_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
+            const outer_extra = try self.ast.addExtras(&.{
+                @intFromEnum(new_name),
+                @intFromEnum(outer_params_node),
+                @intFromEnum(outer_body),
+                outer_flags,
+                none,
+            });
+            return self.ast.addNode(.{
+                .tag = node.tag,
+                .span = span,
+                .data = .{ .extra = outer_extra },
+            });
+        }
+
         /// `await expr` → `(yield expr)`
         pub fn lowerAwaitExpression(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const new_operand = try self.visitNode(node.data.unary.operand);
