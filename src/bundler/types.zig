@@ -131,15 +131,26 @@ pub const ModuleInfo = struct {
     /// `external` 패턴 매칭으로 번들에 포함되지 않는 모듈인지 여부 (Rollup `isExternal` 호환).
     is_external: bool,
     /// 모듈이 side effect 를 가질 수 있는지 (Rollup `hasModuleSideEffects` 호환).
-    /// `package.json` `sideEffects` 필드 또는 `treeShaking.moduleSideEffects` 옵션으로 결정.
-    /// false 면 unused 시 tree-shaker 가 제거 가능.
     has_module_side_effects: bool,
     /// 모듈 source 코드 (Rollup `code` 호환). external / asset / 미파싱 모듈은 null.
-    /// graph 수명 동안 borrowed (parse_arena 소유). NAPI 가 JS string 으로 복사.
     code: ?[]const u8,
+    /// tree-shake 후 번들에 포함된 모듈인지 (Rollup `isIncluded` 호환).
+    is_included: bool,
+    /// 모듈의 export binding 목록 (Rollup `exports` 호환). NAPI 가 `.exported_name` 으로 투영.
+    /// external 모듈은 빈 슬라이스. `m.export_bindings` 의 borrow.
+    export_bindings: []const @import("binding_scanner.zig").ExportBinding,
+    /// Plugin 이 정의한 synthetic named exports (Rollup `syntheticNamedExports` 호환).
+    /// ZTS 는 plugin 시스템 확장 (Phase B) 까지 항상 false. 노출 시그니처만 맞춤.
+    synthetic_named_exports: bool,
+    /// `this.emitFile` 의 `implicitlyLoadedAfterOneOf` 옵션 결과 (Rollup 호환).
+    /// ZTS 는 plugin context API (Phase B) 까지 항상 빈 배열.
+    implicitly_loaded_after_one_of: []const ModuleIndex,
+    /// 위와 반대 방향 — 이 모듈을 implicitly 로드 후에 로드돼야 하는 모듈들.
+    implicitly_loaded_before: []const ModuleIndex,
 };
 
-/// `id` 로 모듈 메타를 조회. 없으면 null. Zero allocation — graph 내부 slice borrow.
+/// `id` 로 모듈 메타를 조회. 없으면 null. Zero allocation — 모든 slice 가 graph borrow.
+/// `exports` 는 ExportBinding 슬라이스를 그대로 노출 — caller 가 `.exported_name` 으로 투영.
 pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInfo {
     const graph = @as(?*const @import("graph.zig").ModuleGraph, @ptrCast(@alignCast(graph_opaque))) orelse return null;
     const idx = graph.path_to_module.get(id) orelse return null;
@@ -155,6 +166,12 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
         .has_module_side_effects = m.side_effects,
         // External phantom 은 source 없음, asset/binary 모듈은 source 비어있을 수 있음.
         .code = if (m.is_external or m.source.len == 0) null else m.source,
+        .is_included = m.is_included,
+        .export_bindings = if (m.is_external) &.{} else m.export_bindings,
+        // Phase B (plugin context API) 까지 placeholder 값.
+        .synthetic_named_exports = false,
+        .implicitly_loaded_after_one_of = &.{},
+        .implicitly_loaded_before = &.{},
     };
 }
 

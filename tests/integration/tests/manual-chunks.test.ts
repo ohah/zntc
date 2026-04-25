@@ -1011,4 +1011,91 @@ describe("manualChunks NAPI bridge", () => {
     expect(vendorChunk!.moduleIds!.some((m) => m.endsWith("annotated.ts"))).toBe(true);
     expect(vendorChunk!.moduleIds!.some((m) => m.endsWith("plain.ts"))).toBe(false);
   });
+
+  // ============================================================
+  // Phase A — Rollup ModuleInfo 추가 필드 (exports / isIncluded / 기타 placeholder)
+  // ============================================================
+
+  test("meta.getModuleInfo: exports — 모듈이 export 하는 이름 목록", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `import { a, b } from "./lib"; console.log(a, b);`,
+      "lib.ts": `
+        export const a = 1;
+        export const b = 2;
+        export default "DEF";
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.exports);
+    const libExports = [...seen.entries()].find(([k]) => k.endsWith("lib.ts"))![1];
+    expect(libExports).toContain("a");
+    expect(libExports).toContain("b");
+    expect(libExports).toContain("default");
+  });
+
+  test("meta.getModuleInfo: external 의 exports 는 빈 배열", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `import { x } from "ext"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    let extExports: string[] | undefined;
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["ext"],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) extExports = meta.getModuleInfo("ext")?.exports;
+        return null;
+      },
+    });
+    expect(extExports).toEqual([]);
+  });
+
+  test("meta.getModuleInfo: isIncluded — tree-shake 후 사용된 모듈만 true", async () => {
+    // entry 가 used 모듈만 import. unused 모듈은 사용자 코드라서 fixture 에 안 만들고
+    // 모든 모듈이 included=true 인지 확인 (모두 reachable).
+    const fixture = await createFixture({
+      "entry.ts": `import { a } from "./lib"; console.log(a);`,
+      "lib.ts": "export const a = 1;",
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.isIncluded);
+    const libIncluded = [...seen.entries()].find(([k]) => k.endsWith("lib.ts"))![1];
+    const entryIncluded = [...seen.entries()].find(([k]) => k.endsWith("entry.ts"))![1];
+    expect(entryIncluded).toBe(true);
+    expect(libIncluded).toBe(true);
+  });
+
+  test("meta.getModuleInfo: Phase B placeholder 필드들 — 시그니처만 맞춤", async () => {
+    // syntheticNamedExports / implicitlyLoaded* 는 plugin context API (후속) 까지 default.
+    const fixture = await createFixture({
+      "entry.ts": "console.log(1);",
+    });
+    cleanup = fixture.cleanup;
+
+    let entryInfo: { syn: boolean; before: string[]; after: string[] } | undefined;
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          const info = meta.getModuleInfo(id)!;
+          entryInfo = {
+            syn: info.syntheticNamedExports,
+            before: info.implicitlyLoadedBefore,
+            after: info.implicitlyLoadedAfterOneOf,
+          };
+        }
+        return null;
+      },
+    });
+
+    expect(entryInfo).toBeDefined();
+    expect(entryInfo!.syn).toBe(false);
+    expect(entryInfo!.before).toEqual([]);
+    expect(entryInfo!.after).toEqual([]);
+  });
 });

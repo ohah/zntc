@@ -296,6 +296,13 @@ pub const TreeShaker = struct {
                 self.included.unset(i);
             }
         }
+
+        // ModuleInfo `isIncluded` 노출용 — 최종 included BitSet 을 Module 에 mirror.
+        // chunk gen / NAPI 가 BitSet 직접 보유 안 해도 `m.is_included` 로 조회 가능.
+        for (0..mod_count) |i| {
+            const m = self.moduleAtMut(@intCast(i)) orelse continue;
+            m.is_included = self.included.isSet(i);
+        }
     }
 
     pub fn isStmtReachable(self: *const TreeShaker, module_index: u32, stmt_idx: u32) bool {

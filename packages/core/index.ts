@@ -211,9 +211,23 @@ export interface ManualChunksModuleInfo {
    * `false` 면 unused 시 tree-shaker 가 제거 가능. */
   hasModuleSideEffects: boolean;
   /** 모듈 source 코드 (Rollup `code` 호환).
-   * external / asset / 미파싱 모듈은 null. UTF-8 디코딩 실패 시도 null.
-   * `meta.getModuleInfo` 호출 시점에 graph 의 source 를 JS 문자열로 복사 — 큰 모듈은 비용 있음. */
+   * external / asset / 미파싱 모듈은 null. UTF-8 디코딩 실패 시도 null. */
   code: string | null;
+  /** tree-shake 후 번들에 포함된 모듈인지 (Rollup `isIncluded` 호환).
+   * `treeShaking: false` 일 땐 모든 모듈이 false 처럼 보일 수 있음 — Module 의 mirror flag 라
+   * tree-shaker 가 안 돌면 기본값 그대로. */
+  isIncluded: boolean;
+  /** 이 모듈이 export 하는 이름 목록 (Rollup `exports` 호환). default / re-export 별표 모두 포함.
+   * external 은 빈 배열 (graph 가 export 정보 없음). */
+  exports: string[];
+  /** Plugin 이 정의한 synthetic named exports (Rollup `syntheticNamedExports` 호환).
+   * ZTS 는 plugin context API 확장 (Phase B) 까지 항상 false. */
+  syntheticNamedExports: boolean;
+  /** `this.emitFile` 의 `implicitlyLoadedAfterOneOf` 옵션 결과 (Rollup 호환).
+   * ZTS plugin context API (Phase B) 까지 항상 빈 배열. */
+  implicitlyLoadedAfterOneOf: string[];
+  /** 위와 반대 방향 — 이 모듈을 implicitly 로드 후에 로드돼야 하는 모듈들. */
+  implicitlyLoadedBefore: string[];
   /** 이 모듈을 static import 하는 모듈들. external 도 importer 목록에 포함됨
    * (자기 자신은 external 일 때 in-graph 모듈이 importer). */
   importers: string[];
