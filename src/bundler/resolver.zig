@@ -449,12 +449,7 @@ pub const Resolver = struct {
     /// 디렉토리 내 package.json에서 module/main 필드를 읽어 resolve 시도.
     /// fp-ts 등에서 사용하는 서브패스 package.json 패턴 지원.
     fn tryDirectoryPackageJson(self: *Resolver, dir_path: []const u8) ResolveError!?ResolveResult {
-        // pkg_json.parsePackageJson 이 std.fs.Dir 핸들 직접 요구 — fs.zig 추상화 보류
-        // (#1885 Phase 1 후속). path 기반 시그니처 또는 fs.openDir 추가 필요.
-        var dir = std.fs.cwd().openDir(dir_path, .{}) catch return null;
-        defer dir.close();
-
-        var parsed = pkg_json.parsePackageJson(self.allocator, dir) catch return null;
+        var parsed = pkg_json.parsePackageJson(self.allocator, dir_path) catch return null;
         defer parsed.deinit();
 
         return self.resolveByMainFields(&parsed, dir_path);
@@ -549,12 +544,8 @@ pub const Resolver = struct {
     /// 패키지 디렉토리에서 엔트리포인트를 해석한다.
     /// 우선순위: exports → module → main → index 파일
     fn resolvePackage(self: *Resolver, pkg_dir_path: []const u8, subpath: []const u8) ResolveError!?ResolveResult {
-        // pkg_json.parsePackageJson 이 std.fs.Dir 핸들 직접 요구 — fs.zig 추상화 보류 (#1885).
-        var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return null;
-        defer pkg_dir.close();
-
         // package.json 파싱 시도
-        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir) catch |err| switch (err) {
+        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir_path) catch |err| switch (err) {
             error.FileNotFound => {
                 // package.json 없으면 index 파일 탐색
                 return self.tryDirectoryIndex(pkg_dir_path);
@@ -619,11 +610,7 @@ pub const Resolver = struct {
     fn resolveSubpathImports(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
         var current_dir = source_dir;
         while (true) {
-            // pkg_json.parsePackageJson 이 std.fs.Dir 핸들 직접 요구 — fs.zig 추상화 보류 (#1885).
-            var dir = std.fs.cwd().openDir(current_dir, .{}) catch break;
-            defer dir.close();
-
-            if (pkg_json.parsePackageJson(self.allocator, dir)) |*parsed_result| {
+            if (pkg_json.parsePackageJson(self.allocator, current_dir)) |*parsed_result| {
                 var parsed = parsed_result.*;
                 defer parsed.deinit();
 
