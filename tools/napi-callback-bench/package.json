@@ -1,0 +1,7 @@
+{
+  "name": "napi-callback-bench",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "NAPI callback hot-path micro-bench for #1891"
+}
