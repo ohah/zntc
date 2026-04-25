@@ -613,7 +613,7 @@ pub fn emitWithTreeShaking(
         const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
         if (is_entry and options.run_before_main.len > 0 and m.wrap_kind != .esm) {
             const before_len = module_output.items.len;
-            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options);
+            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, &options);
             module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
         }
 
@@ -769,7 +769,7 @@ pub fn emitWithTreeShaking(
                 if (results[ei_idx].entry_chain) |chain| {
                     try output.appendSlice(allocator, chain);
                 }
-                try appendGuardedModuleCall(&output, allocator, em, options);
+                try appendGuardedModuleCall(&output, allocator, em, &options);
                 break;
             }
         }
@@ -971,7 +971,7 @@ pub fn appendGuardedModuleCall(
     output: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     mod: anytype,
-    options: EmitOptions,
+    options: *const EmitOptions,
 ) !void {
     if (!mod.shouldGuard(options.entry_error_guard)) {
         try appendModuleCall(output, allocator, mod);
@@ -992,7 +992,7 @@ pub fn appendGuardedModuleCall(
 /// `entry_error_guard` 활성 시 각 rbm 호출도 `__zts_guarded(...)` 로 wrap —
 /// Metro `getAppendScripts` 가 `runBeforeMainModule` 의 각 path 마다 별도
 /// `__r(N);` (= guardedLoadModule outer 호출) 을 emit 하는 것과 동등.
-pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8, options: EmitOptions) !void {
+pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8, options: *const EmitOptions) !void {
     for (run_before_main) |rbm_path| {
         var it = graph.modulesIterator();
         while (it.next()) |rbm| {
