@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
-    "prebuild": "cp ../zig-out/bin/zts-core.wasm public/zts-core.wasm 2>/dev/null || true",
-    "predev": "cp ../zig-out/bin/zts-core.wasm public/zts-core.wasm 2>/dev/null || true",
+    "prebuild": "cp ../zig-out/bin/zts.wasm public/zts.wasm 2>/dev/null && cp ../zig-out/bin/zts-bundler.wasm public/zts-bundler.wasm 2>/dev/null; true",
+    "predev": "cp ../zig-out/bin/zts.wasm public/zts.wasm 2>/dev/null && cp ../zig-out/bin/zts-bundler.wasm public/zts-bundler.wasm 2>/dev/null; true",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"

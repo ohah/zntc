@@ -1,6 +1,14 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import type { TranspileResult } from "../../../packages/shared/index";
+import {
+  BTN_CLASS,
+  Badge,
+  EditorPanel,
+  SELECT_BTN_CLASS,
+  editorOpts as sharedEditorOpts,
+  inferLanguage,
+} from "./playground-shared";
 
 const EXAMPLES: { label: string; code: string }[] = [
   {
@@ -280,7 +288,7 @@ export default function Playground() {
       try {
         const mod = await import("../../../packages/wasm/index.ts");
         const base = "/zts/";
-        const wasmUrl = new URL(`${base}zts-core.wasm`, window.location.origin);
+        const wasmUrl = new URL(`${base}zts.wasm`, window.location.origin);
         await mod.init(wasmUrl);
         transpileFnRef.current = mod.transpile;
         setLoading(false);
@@ -367,27 +375,8 @@ export default function Playground() {
     }, 100);
   }
 
-  const inputLang =
-    options.filename.endsWith(".ts") || options.filename.endsWith(".tsx")
-      ? "typescript"
-      : "javascript";
-
-  const editorOpts = {
-    minimap: { enabled: false },
-    fontSize: 13,
-    fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
-    fontLigatures: false,
-    lineNumbers: "on" as const,
-    scrollBeyondLastLine: false,
-    wordWrap: "on" as const,
-    tabSize: 2,
-    automaticLayout: true,
-    padding: { top: 8, bottom: 8 },
-    renderLineHighlight: "none" as const,
-    overviewRulerLanes: 0,
-    hideCursorInOverviewRuler: true,
-    scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
-  };
+  const inputLang = inferLanguage(options.filename);
+  const editorOpts = sharedEditorOpts;
 
   return (
     <div
@@ -402,7 +391,7 @@ export default function Playground() {
           <a href="/zts/" className="text-sm font-bold text-neutral-200 no-underline">
             ZTS Playground
           </a>
-          {loading && <Badge variant="loading" />}
+          {loading && <Badge variant="loading" text="Loading WASM..." />}
           {!loading && !error && <Badge variant="ready" />}
         </div>
         <div className="flex items-center gap-2">
@@ -509,23 +498,6 @@ export default function Playground() {
   );
 }
 
-const BTN_BASE =
-  "cursor-pointer rounded border border-surface-800 bg-transparent text-[13px] text-neutral-200 no-underline transition-colors hover:border-zig-500 hover:text-zig-400";
-const BTN_CLASS = `${BTN_BASE} px-3 py-1`;
-const SELECT_BTN_CLASS = `${BTN_BASE} px-2 py-1`;
-
-function Badge({ variant }: { variant: "loading" | "ready" }) {
-  const { tone, text } =
-    variant === "loading"
-      ? { tone: "bg-sky-950 text-sky-300", text: "Loading WASM..." }
-      : { tone: "bg-emerald-950 text-emerald-300", text: "Ready" };
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}`}>
-      {text}
-    </span>
-  );
-}
-
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="mb-3">
@@ -573,17 +545,6 @@ function Txt({ label, value, placeholder, onChange }: { label: string; value: st
         onChange={(e) => onChange(e.target.value)}
         className={`${FIELD_CLASS} w-[130px]`}
       />
-    </div>
-  );
-}
-
-function EditorPanel({ header, children }: { header: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center border-b border-surface-800 bg-surface-900 px-3 py-1.5 text-[12px] font-semibold text-neutral-400">
-        {header}
-      </div>
-      <div className="flex-1">{children}</div>
     </div>
   );
 }
