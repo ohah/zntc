@@ -252,7 +252,7 @@ pub fn emitChunks(
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
-            const code = try rewriteDynamicImports(allocator, raw_code, m, chunk_graph, options.public_path, ext, options);
+            const code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options);
             defer allocator.free(code);
 
             // entry 모듈(또는 preserve-modules의 단일 모듈)의 directive prologue 추출.
@@ -579,6 +579,7 @@ fn rewriteDynamicImports(
     allocator: std.mem.Allocator,
     code: []const u8,
     module: *const Module,
+    graph: *const ModuleGraph,
     chunk_graph: *const ChunkGraph,
     public_path: []const u8,
     out_ext: []const u8,
@@ -619,9 +620,39 @@ fn rewriteDynamicImports(
         const target_chunk_idx = chunk_graph.getModuleChunk(rec.resolved);
         if (target_chunk_idx == .none) continue;
 
-        // target 이 같은 chunk 에 있으면 specifier 그대로 둔다 (inline_dynamic_imports
-        // 또는 우연한 same-chunk 케이스). 런타임에서 original path 로 해석되도록 위임.
-        if (source_chunk_idx != .none and target_chunk_idx == source_chunk_idx) continue;
+        const same_chunk = source_chunk_idx != .none and target_chunk_idx == source_chunk_idx;
+
+        // inlineDynamicImports + same-chunk: `import("./x")` 호출을 wrap factory 호출로
+        // 재작성. ESM 래핑은 `(init_x(), exports_x)`, CJS 는 `require_x()` 패턴.
+        if (same_chunk and graph.inline_dynamic_imports) {
+            const target_mod = graph.getModule(rec.resolved) orelse continue;
+            const replacement_expr = switch (target_mod.wrap_kind) {
+                .esm => blk: {
+                    const init_name = try target_mod.allocInitName(allocator);
+                    defer allocator.free(init_name);
+                    const exports_name = try target_mod.allocExportsName(allocator);
+                    defer allocator.free(exports_name);
+                    break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
+                },
+                .cjs => blk: {
+                    const require_name = try types.makeRequireVarName(allocator, target_mod.path);
+                    defer allocator.free(require_name);
+                    break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
+                },
+                .none => continue,
+            };
+            defer allocator.free(replacement_expr);
+
+            const new_result_opt = try rewriteImportCallToWrapper(allocator, result, rec.specifier, replacement_expr);
+            if (new_result_opt) |new_result| {
+                allocator.free(result);
+                result = new_result;
+            }
+            continue;
+        }
+
+        // 그 외 same-chunk 는 specifier 그대로 (런타임 위임 — A 범위 잔여 동작)
+        if (same_chunk) continue;
 
         const target_chunk = chunk_graph.getChunk(target_chunk_idx);
 
@@ -647,6 +678,33 @@ fn rewriteDynamicImports(
     }
 
     return result;
+}
+
+/// `import("specifier")` 호출 전체를 미리 만들어진 expression 으로 교체.
+/// 매칭 실패 시 null. codegen 출력 형태 (`import("./x")`) 만 처리 — import attributes
+/// 같은 second-arg 폼은 미지원 (현재 codegen 이 emit 하지 않음).
+fn rewriteImportCallToWrapper(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    specifier: []const u8,
+    replacement: []const u8,
+) !?[]u8 {
+    const spec_pos = std.mem.indexOf(u8, code, specifier) orelse return null;
+    // `import("` 또는 `import('` 가 specifier 앞에 와야 함.
+    if (spec_pos < "import(\"".len) return null;
+    const opener = code[spec_pos - "import(\"".len .. spec_pos];
+    if (!std.mem.eql(u8, opener, "import(\"") and !std.mem.eql(u8, opener, "import('")) return null;
+    const quote = code[spec_pos - 1];
+
+    const after_spec = spec_pos + specifier.len;
+    if (after_spec + 1 >= code.len) return null;
+    if (code[after_spec] != quote) return null;
+    if (code[after_spec + 1] != ')') return null;
+
+    const call_start = spec_pos - "import(\"".len;
+    const call_end = after_spec + 2; // include ')'
+
+    return try std.mem.concat(allocator, u8, &.{ code[0..call_start], replacement, code[call_end..] });
 }
 
 const PlaceholderInfo = struct {

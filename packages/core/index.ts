@@ -232,11 +232,14 @@ interface BuildOptionsCommon {
   minifyIdentifiers?: boolean;
   minifySyntax?: boolean;
   splitting?: boolean;
-  /** Rollup `output.inlineDynamicImports` — dynamic import target 을 별도 async chunk 로
-   * 분리하지 않고 importer 의 chunk 에 포함. `splitting: true` 와 조합해야 의미 있음.
+  /** Rollup `output.inlineDynamicImports` — dynamic import target 을 importer 의 chunk 에
+   * 흡수하고 `import("./x")` 호출을 `__esm` 래퍼 init/exports 호출로 재작성.
+   * `splitting: true` 와 조합. 결과 번들은 단일 파일로 실행 가능.
    *
-   * 주의: 이 플래그의 구조 부분만 구현 — async chunk 는 사라지지만 런타임 `import()`
-   * 호출은 원본 specifier 를 유지. 완전한 런타임 re-entry 는 후속 작업.
+   * 보존 보장:
+   * - namespace identity: `(await import("./x")) === (await import("./x"))`
+   * - top-level side effect 1회 실행 (캐싱)
+   * - live binding (모듈이 `export let` 을 mutate 하면 caller 측에서도 반영)
    */
   inlineDynamicImports?: boolean;
   sourcemap?: boolean;

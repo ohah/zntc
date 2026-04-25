@@ -77,6 +77,10 @@ pub const ModuleGraph = struct {
 
     /// dev mode: HMR을 위해 모든 모듈을 강제 래핑 (__esm).
     dev_mode: bool = false,
+    /// `output.inlineDynamicImports` 런타임 부분. true 면 dynamic-import target 모듈을
+    /// `__esm` 래핑해서 lazy 평가 + 모듈 namespace 동일성 보존. emitter 가 `import("./x")`
+    /// 호출을 래퍼 init/exports 호출로 재작성한다.
+    inline_dynamic_imports: bool = false,
     /// build-time 정적 평가 entries. parser inline scan (require.context 등 #1579 Phase 2.6) 활용.
     /// bundler 가 BundleOptions.define 으로 설정. transformer 의 define 치환과 동일 entries.
     defines: []const @import("../parser/scan_results.zig").DefineEntry = &.{},
@@ -1690,6 +1694,19 @@ pub const ModuleGraph = struct {
                 if (m.wrap_kind == .none and (m.exports_kind == .esm or m.exports_kind == .esm_with_dynamic_fallback)) {
                     m.wrap_kind = .esm;
                 }
+            }
+        }
+
+        // Pass 4: inlineDynamicImports — dynamic-import target 만 __esm 래핑.
+        // 일반 모듈은 scope-hoisting 그대로, dynamic target 만 lazy factory 로
+        // 묶어서 emitter 가 `import("./x")` 호출을 init/exports 호출로 재작성.
+        if (self.inline_dynamic_imports) {
+            var it = self.modules.iterator(0);
+            while (it.next()) |m| {
+                if (m.dynamic_importers.items.len == 0) continue;
+                if (m.wrap_kind != .none) continue;
+                if (m.exports_kind != .esm and m.exports_kind != .esm_with_dynamic_fallback) continue;
+                m.wrap_kind = .esm;
             }
         }
     }
