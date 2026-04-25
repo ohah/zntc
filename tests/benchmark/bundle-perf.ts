@@ -7,8 +7,10 @@
  * "보이지 않는 perf 회귀" 가 누적되는 것 방지.
  *
  * 실행:
- *   bun run tests/benchmark/bundle-perf.ts          # baseline 과 비교
- *   bun run tests/benchmark/bundle-perf.ts --write  # baseline 갱신
+ *   bun run tests/benchmark/bundle-perf.ts                    # baseline 과 비교
+ *   bun run tests/benchmark/bundle-perf.ts --write            # baseline 갱신
+ *   bun run tests/benchmark/bundle-perf.ts --output <path>    # 결과 JSON 덤프
+ *   bun run tests/benchmark/bundle-perf.ts --no-fail          # 회귀 시도 exit 0
  *
  * 측정 방법론:
  *   - 워밍업 5회 (mtime/dentry 캐시 워밍)
@@ -17,7 +19,8 @@
  *
  * 머신 의존성:
  *   - 절대값은 머신마다 다름 — 같은 머신에서 PR 전후 비교 의미 있음
- *   - CI 통합 시엔 baseline 을 CI 머신에서 갱신 + 거기서만 회귀 체크
+ *   - CI 에선 absolute 비교 무의미 → `--no-fail --output` 으로 결과만 수집,
+ *     artifact 업로드해 PR 코멘트 / 트렌드 추적용으로 활용.
  */
 
 import { spawnSync } from "node:child_process";
@@ -208,7 +211,24 @@ function fmtMs(n: number): string {
   return n.toFixed(2) + "ms";
 }
 
-async function main(writeMode: boolean) {
+interface CliArgs {
+  write: boolean;
+  noFail: boolean;
+  output: string | null;
+}
+
+function parseArgs(argv: string[]): CliArgs {
+  const args: CliArgs = { write: false, noFail: false, output: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--write") args.write = true;
+    else if (a === "--no-fail") args.noFail = true;
+    else if (a === "--output") args.output = argv[++i] ?? null;
+  }
+  return args;
+}
+
+async function main(cli: CliArgs) {
   buildBin();
   console.log(`[bundle-perf] zts ${getCommit()} | warmup=${WARMUP} iter=${ITERATIONS}`);
   console.log();
@@ -223,14 +243,20 @@ async function main(writeMode: boolean) {
     results.push(r);
   }
 
-  if (writeMode) {
-    const baseline: BaselineFile = {
-      version: 1,
-      generated_at: new Date().toISOString(),
-      zts_commit: getCommit(),
-      fixtures: results,
-    };
-    writeFileSync(BASELINE_PATH, JSON.stringify(baseline, null, 2) + "\n");
+  const runReport: BaselineFile = {
+    version: 1,
+    generated_at: new Date().toISOString(),
+    zts_commit: getCommit(),
+    fixtures: results,
+  };
+
+  if (cli.output) {
+    writeFileSync(cli.output, JSON.stringify(runReport, null, 2) + "\n");
+    console.log(`\n[bundle-perf] run report written: ${cli.output}`);
+  }
+
+  if (cli.write) {
+    writeFileSync(BASELINE_PATH, JSON.stringify(runReport, null, 2) + "\n");
     console.log(`\n[bundle-perf] baseline written: ${BASELINE_PATH}`);
     return;
   }
@@ -238,7 +264,8 @@ async function main(writeMode: boolean) {
   if (!existsSync(BASELINE_PATH)) {
     console.log(`\n[bundle-perf] no baseline at ${BASELINE_PATH}`);
     console.log("Run with --write to create baseline.");
-    process.exit(1);
+    if (!cli.noFail) process.exit(1);
+    return;
   }
 
   const baseline = JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as BaselineFile;
@@ -265,10 +292,11 @@ async function main(writeMode: boolean) {
   }
 
   if (regressed > 0) {
-    console.log(`\n[bundle-perf] ${regressed} regression(s) — fail`);
-    process.exit(1);
+    console.log(`\n[bundle-perf] ${regressed} regression(s)`);
+    if (!cli.noFail) process.exit(1);
+    return;
   }
   console.log("\n[bundle-perf] no regression");
 }
 
-await main(process.argv.slice(2).includes("--write"));
+await main(parseArgs(process.argv.slice(2)));

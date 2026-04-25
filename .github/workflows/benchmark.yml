@@ -65,11 +65,21 @@ jobs:
           cd tests/benchmark
           bun run napi-bench.ts 2>&1 | tee -a bench-output.txt
 
+      - name: Run bundle perf regression check
+        # baseline 은 dev 머신 절대값 — CI 머신과 다르므로 회귀 비교는 informational.
+        # `--no-fail` 로 회귀 시도 CI 통과, JSON 결과는 artifact 로 트렌드 추적.
+        shell: bash
+        run: |
+          cd tests/benchmark
+          bun run bundle-perf.ts --no-fail --output bundle-perf-${{ matrix.os }}.json 2>&1 | tee -a bench-output.txt
+
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-${{ matrix.os }}
-          path: tests/benchmark/bench-output.txt
+          path: |
+            tests/benchmark/bench-output.txt
+            tests/benchmark/bundle-perf-${{ matrix.os }}.json
 
   comment:
     name: Post Results
