@@ -59,8 +59,10 @@ pub const ResolvedModule = union(fs.Namespace) {
     /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 방식).
     /// `resolver.ResolveResult.disabled = true` 와 동등 semantic — 변환 helper
     /// fromLegacy/toLegacy 가 정확 매핑. PR 4d 에서 단일 표현으로 통합.
+    /// module_type 보존 — resolve_cache 의 cache lookup 정보 손실 방지.
     disabled: struct {
         path: []const u8,
+        module_type: ModuleType = .unknown,
     },
     /// 사용자 plugin 의 자유 namespace.
     custom: struct {
@@ -73,7 +75,10 @@ pub const ResolvedModule = union(fs.Namespace) {
 /// 기존 `ResolveResult` (struct) → `ResolvedModule` (union) 변환.
 /// PR 4b/4c 마이그레이션 중간 호환 layer. 모든 마이그레이션 완료 시 제거 (PR 4d).
 pub fn fromLegacy(r: ResolveResult) ResolvedModule {
-    if (r.disabled) return .{ .disabled = .{ .path = r.path } };
+    if (r.disabled) return .{ .disabled = .{
+        .path = r.path,
+        .module_type = r.module_type,
+    } };
     return .{ .file = .{
         .path = r.path,
         .module_type = r.module_type,
@@ -94,7 +99,7 @@ pub fn toLegacy(m: ResolvedModule) ?ResolveResult {
         },
         .disabled => |d| .{
             .path = d.path,
-            .module_type = .unknown,
+            .module_type = d.module_type,
             .disabled = true,
             .is_module_field = false,
         },

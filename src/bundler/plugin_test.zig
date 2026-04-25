@@ -442,9 +442,12 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
         else => return error.TestUnexpectedResult,
     }
 
-    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js" } };
+    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js", .module_type = .javascript } };
     switch (dis) {
-        .disabled => |x| try std.testing.expectEqualStrings("/abs/disabled.js", x.path),
+        .disabled => |x| {
+            try std.testing.expectEqualStrings("/abs/disabled.js", x.path);
+            try std.testing.expectEqual(ModuleType.javascript, x.module_type);
+        },
         else => return error.TestUnexpectedResult,
     }
 
@@ -458,7 +461,7 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
     }
 }
 
-test "fromLegacy: ResolveResult { disabled=true } → .disabled variant" {
+test "fromLegacy: ResolveResult { disabled=true } → .disabled variant + module_type 보존" {
     const legacy: ResolveResult = .{
         .path = "/abs/x.js",
         .module_type = .javascript,
@@ -466,7 +469,10 @@ test "fromLegacy: ResolveResult { disabled=true } → .disabled variant" {
     };
     const m = fromLegacy(legacy);
     switch (m) {
-        .disabled => |d| try std.testing.expectEqualStrings("/abs/x.js", d.path),
+        .disabled => |d| {
+            try std.testing.expectEqualStrings("/abs/x.js", d.path);
+            try std.testing.expectEqual(ModuleType.javascript, d.module_type);
+        },
         else => return error.TestUnexpectedResult,
     }
 }
