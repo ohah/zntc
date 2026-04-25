@@ -738,7 +738,7 @@ pub fn emitEsmWrappedModule(
     defer rbm_code.deinit(allocator);
     if (module.is_entry_point and options.run_before_main.len > 0) {
         if (linker) |l| {
-            try appendRunBeforeMainCalls(&rbm_code, allocator, l.graph, options.run_before_main, &options);
+            try appendRunBeforeMainCalls(&rbm_code, allocator, l.graph, options.run_before_main, options);
         }
     }
 
@@ -955,7 +955,7 @@ fn appendWrappedInitCall(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     src_mod: *const Module,
-    options: EmitOptions,
+    options: *const EmitOptions,
 ) !void {
     const is_tla = src_mod.wrap_kind == .esm and src_mod.uses_top_level_await;
     const guard = src_mod.shouldGuard(options.entry_error_guard);

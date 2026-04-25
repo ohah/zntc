@@ -32,7 +32,7 @@ pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, m
 
 /// Asset 모듈(file/copy 로더)을 CJS wrap 패턴으로 출력. source엔 값 표현식이 저장됨.
 /// linker가 `require_X()` 호출을 생성하므로, 모든 포맷에서 CJS 패턴을 사용.
-pub fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, options: EmitOptions) !?[]const u8 {
+pub fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, options: *const EmitOptions) !?[]const u8 {
     if (module.source.len == 0) return null;
     return emitCjsWrapper(allocator, module.path, module.source, options.minify_whitespace);
 }

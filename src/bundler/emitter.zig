@@ -231,7 +231,7 @@ pub const EmitResult = struct {
 pub fn emit(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
-    options: EmitOptions,
+    options: *const EmitOptions,
     linker: ?*const Linker,
 ) !EmitResult {
     return emitWithTreeShaking(allocator, graph, options, linker, null);
@@ -241,7 +241,7 @@ pub fn emit(
 pub fn emitWithTreeShaking(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
-    options: EmitOptions,
+    options: *const EmitOptions,
     linker: ?*const Linker,
     shaker: ?*const TreeShaker,
 ) !EmitResult {
@@ -613,7 +613,7 @@ pub fn emitWithTreeShaking(
         const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
         if (is_entry and options.run_before_main.len > 0 and m.wrap_kind != .esm) {
             const before_len = module_output.items.len;
-            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, &options);
+            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options);
             module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
         }
 
@@ -769,7 +769,7 @@ pub fn emitWithTreeShaking(
                 if (results[ei_idx].entry_chain) |chain| {
                     try output.appendSlice(allocator, chain);
                 }
-                try appendGuardedModuleCall(&output, allocator, em, &options);
+                try appendGuardedModuleCall(&output, allocator, em, options);
                 break;
             }
         }
@@ -907,7 +907,7 @@ pub const makeModuleId = dev.makeModuleId;
 
 /// 소스맵 sources 배열에 사용할 경로를 반환.
 /// RN 플랫폼은 Metro 호환 절대 경로, 다른 플랫폼은 root_dir 기준 상대 경로.
-pub fn sourcemapSourcePath(path: []const u8, options: EmitOptions) []const u8 {
+pub fn sourcemapSourcePath(path: []const u8, options: *const EmitOptions) []const u8 {
     if (options.platform == .react_native) return path;
     return makeModuleId(path, options.root_dir);
 }
@@ -1007,7 +1007,7 @@ pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.A
 fn emitModuleThread(
     allocator: std.mem.Allocator,
     module: *const Module,
-    options: EmitOptions,
+    options: *const EmitOptions,
     linker: ?*const Linker,
     is_entry: bool,
     used_names: ?[]const []const u8,
@@ -1023,7 +1023,7 @@ fn emitModuleThread(
 pub fn emitModule(
     allocator: std.mem.Allocator,
     module: *const Module,
-    options: EmitOptions,
+    options: *const EmitOptions,
     linker: ?*const Linker,
     is_entry: bool,
     used_export_names: ?[]const []const u8,
@@ -1626,7 +1626,7 @@ fn emitBundleRuntimeHelpers(
     output: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     sorted_modules: []const *const Module,
-    options: EmitOptions,
+    options: *const EmitOptions,
 ) !void {
     // 런타임 헬퍼 주입: 래핑 모듈 유형에 따라 필요한 헬퍼 결정.
     var needs_cjs_runtime = false;
@@ -1674,7 +1674,7 @@ pub fn emitChunkRuntimeHelpers(
     allocator: std.mem.Allocator,
     chunk: *const Chunk,
     graph: *const ModuleGraph,
-    options: EmitOptions,
+    options: *const EmitOptions,
     collected_helpers: ?RuntimeHelpers,
 ) !void {
     var needs_cjs_runtime = false;
