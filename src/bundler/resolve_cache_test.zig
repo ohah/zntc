@@ -169,6 +169,9 @@ fn freeResolvedPath(m: ResolvedModule) void {
     switch (m) {
         .file => |f| std.testing.allocator.free(f.path),
         .disabled => |d| std.testing.allocator.free(d.path),
+        // Phase 1 cache 는 file/disabled 만 저장 — virtual/dataurl/external/custom variant
+        // 가 cache 에서 반환되지 않음. 향후 그 variant 검증 테스트 추가 시 plugin_data
+        // 등 payload 별 cleanup 을 helper 에 추가.
         else => {},
     }
 }
