@@ -24,9 +24,11 @@ const wasm_alloc = std.heap.c_allocator;
 pub fn main() void {}
 
 /// Bundler ABI version. host 가 호환성 체크용.
-/// v4 — last_error_message_get export 추가, build() 가 실패 시 의미 있는 메시지 노출.
+/// v5 — BuildOptionsJson 에 transpile 계열 옵션 추가 (target unsupported bitmask,
+/// jsx runtime / factory / fragment / importSource, flow, jsxInJs, decorators,
+/// useDefineForClassFields, charsetUtf8, keepNames, sourcemap).
 export fn bundler_version() u32 {
-    return 4;
+    return 5;
 }
 
 /// JS 측이 entry path 등 입력 메모리 확보용.
@@ -90,7 +92,30 @@ const BuildOptionsJson = struct {
     codeSplitting: ?bool = null,
     /// build_chunks 에서만 의미 있음. true 면 모듈 1개 = 출력 1개 (rollup preserveModules).
     preserveModules: ?bool = null,
+    /// transpile 계열 옵션 — 각 모듈 transform 단계에 적용 (Phase 3 PR D).
+    /// target → unsupported bitmask. JS 측에서 packages/shared 의 targetToUnsupported() 로 변환 후 전달.
+    unsupported: ?u32 = null,
+    /// "classic" | "automatic" | "automatic-dev"
+    jsx: ?[]const u8 = null,
+    jsxFactory: ?[]const u8 = null,
+    jsxFragment: ?[]const u8 = null,
+    jsxImportSource: ?[]const u8 = null,
+    flow: ?bool = null,
+    jsxInJs: ?bool = null,
+    experimentalDecorators: ?bool = null,
+    emitDecoratorMetadata: ?bool = null,
+    useDefineForClassFields: ?bool = null,
+    charsetUtf8: ?bool = null,
+    keepNames: ?bool = null,
+    sourcemap: ?bool = null,
 };
+
+fn parseJsxRuntime(s: []const u8) ?@import("zts_lib").codegen.codegen.JsxRuntime {
+    if (std.mem.eql(u8, s, "classic")) return .classic;
+    if (std.mem.eql(u8, s, "automatic")) return .automatic;
+    if (std.mem.eql(u8, s, "automatic-dev") or std.mem.eql(u8, s, "automatic_dev")) return .automatic_dev;
+    return null;
+}
 
 fn parseFormat(s: []const u8) ?Format {
     if (std.mem.eql(u8, s, "esm")) return .esm;
@@ -161,6 +186,23 @@ fn applyOptionsJson(
     if (o.minifySyntax) |b| base.minify_syntax = b;
     if (o.codeSplitting) |b| base.code_splitting = b;
     if (o.preserveModules) |b| base.preserve_modules = b;
+
+    // transpile 계열 옵션 — 각 모듈 transform 단계 적용.
+    if (o.unsupported) |bits| base.unsupported = @bitCast(bits);
+    if (o.jsx) |s| if (parseJsxRuntime(s)) |r| {
+        base.jsx_runtime = r;
+    };
+    if (o.jsxFactory) |s| base.jsx_factory = s;
+    if (o.jsxFragment) |s| base.jsx_fragment = s;
+    if (o.jsxImportSource) |s| base.jsx_import_source = s;
+    if (o.flow) |b| base.flow = b;
+    if (o.jsxInJs) |b| base.jsx_in_js = b;
+    if (o.experimentalDecorators) |b| base.experimental_decorators = b;
+    if (o.emitDecoratorMetadata) |b| base.emit_decorator_metadata = b;
+    if (o.useDefineForClassFields) |b| base.use_define_for_class_fields = b;
+    if (o.charsetUtf8) |b| base.charset_utf8 = b;
+    if (o.keepNames) |b| base.keep_names = b;
+    if (o.sourcemap) |b| base.sourcemap.enable = b;
 }
 
 /// bundle() 결과의 fatal diagnostic 첫 번째를 last_error_msg 로 캡처 (있으면).
