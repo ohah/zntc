@@ -459,8 +459,9 @@ pub const ResolveCache = struct {
         return result;
     }
 
-    /// CachedResult.resolved (ResolvedModule) 의 path 추출 — file/disabled variant 만 사용
-    /// (Phase 1 의 cache 가 그 두 variant 만 저장). dead variant 진입 시 빈 slice → free no-op.
+    /// CachedResult.resolved (ResolvedModule) 의 path 추출.
+    /// **불변식**: Phase 1 의 cache 는 file/disabled variant 만 저장 (putCache 호출처 검증).
+    /// 다른 variant 도달은 BUG — `else => ""` 는 free no-op safety net.
     fn cachedPath(m: ResolvedModule) []const u8 {
         return switch (m) {
             .file => |f| f.path,
