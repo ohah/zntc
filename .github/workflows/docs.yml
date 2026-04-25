@@ -40,15 +40,14 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Build WASM
-        run: zig build wasm
+      - name: Build WASM (transpile + bundler)
+        run: zig build wasm wasm-bundler
 
       - name: Install dependencies
         run: bun install
 
-      - name: Copy WASM to public
-        run: cp zig-out/bin/zts.wasm documents/public/zts-core.wasm
-
+      # documents/package.json 의 prebuild 가 zig-out/bin/zts.wasm + zts-bundler.wasm 을
+      # public/ 으로 복사 — playground (transpile) + playground/bundler 둘 다 동작.
       - name: Build docs
         run: cd documents && bun run build
 

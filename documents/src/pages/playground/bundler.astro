@@ -1,0 +1,38 @@
+---
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+---
+<StarlightPage
+  frontmatter={{
+    title: "Bundler Playground",
+    description: "브라우저에서 ZTS 번들러를 직접 사용해보세요. 멀티파일 입력, 모듈 wrap 출력 시연.",
+    tableOfContents: false,
+    pagefind: false,
+    template: "splash",
+  }}
+>
+  <div id="playground-bundler-mount" class="not-content" style="min-height: calc(100vh - 200px);"></div>
+  <script>
+    import('../../components/playground-bundler-mount.ts');
+  </script>
+</StarlightPage>
+
+<style>
+  /* Bundler Playground: content 패딩/타이틀 제거 — Playground.astro 와 동일 */
+  :global(.playground-page .content-panel) {
+    padding: 0 !important;
+  }
+  :global(.playground-page h1) {
+    display: none !important;
+  }
+  :global(.playground-page .sl-markdown-content) {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  :global(.playground-page .pagination-links) {
+    display: none !important;
+  }
+</style>
+
+<script is:inline>
+  document.documentElement.classList.add('playground-page');
+</script>
