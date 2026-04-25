@@ -184,25 +184,26 @@ pub fn e2eES5Async(allocator: std.mem.Allocator, source: []const u8) !TestResult
 /// 정상은 forward jump (`[3,M]` with M > N) 또는 end (`[2]`). 모든 `_state.sent();return [3,M]` 출현
 /// 별로 그 직전 `case N:` 를 찾아 N == M 이면 self-loop. case 수 무제한.
 /// (zts/issues/1887 회귀 방지 — `collectIfOperations` sentinel/fixup 패턴 검증.)
+///
+/// 패턴은 emitter 의 minified emit format 에 의존 — `es2015_generator.zig` 의 `__generator`
+/// state machine 출력 + `_state` identifier (mangle 대상 제외) + `case N:` 형태.
+/// emit 형식 변경 시 false negative 방지를 위해 self-test (`testing-detection-positive`) 동반.
 pub fn assertNoAsyncSelfLoop(output: []const u8) !void {
-    const sent_marker = "_state.sent();return [3,";
     var search_start: usize = 0;
-    while (std.mem.indexOfPos(u8, output, search_start, sent_marker)) |sent_pos| {
-        const target_start = sent_pos + sent_marker.len;
+    while (std.mem.indexOfPos(u8, output, search_start, ASYNC_SENT_RETURN_PREFIX)) |sent_pos| {
+        const target_start = sent_pos + ASYNC_SENT_RETURN_PREFIX.len;
         const target_end = std.mem.indexOfScalarPos(u8, output, target_start, ']') orelse break;
         const target_str = std.mem.trim(u8, output[target_start..target_end], " ");
         const target_label = std.fmt.parseInt(u32, target_str, 10) catch {
             search_start = target_end;
             continue;
         };
-        // `_state.sent()` 직전 가장 가까운 `case N:` 찾기.
-        const case_marker = "case ";
         const before = output[0..sent_pos];
-        const case_pos = std.mem.lastIndexOf(u8, before, case_marker) orelse {
+        const case_pos = std.mem.lastIndexOf(u8, before, ASYNC_CASE_PREFIX) orelse {
             search_start = target_end;
             continue;
         };
-        const num_start = case_pos + case_marker.len;
+        const num_start = case_pos + ASYNC_CASE_PREFIX.len;
         const num_end = std.mem.indexOfScalarPos(u8, output, num_start, ':') orelse break;
         const case_label = std.fmt.parseInt(u32, output[num_start..num_end], 10) catch {
             search_start = target_end;
@@ -214,6 +215,30 @@ pub fn assertNoAsyncSelfLoop(output: []const u8) !void {
         }
         search_start = target_end;
     }
+}
+
+/// `assertNoAsyncSelfLoop` 가 의존하는 emitter 출력 markers. emitter 변경 시 동반 update.
+/// 출처: `src/transformer/es2015_generator.zig` 의 `__generator` state machine + `_state.sent()`.
+const ASYNC_SENT_RETURN_PREFIX = "_state.sent();return [3,";
+const ASYNC_CASE_PREFIX = "case ";
+
+test "assertNoAsyncSelfLoop: positive control — detect intentional self-loop" {
+    // emitter 출력 형식이 silent 하게 변경돼서 assertion 이 false negative 로 통과하는 회귀 방지.
+    // 인공 self-loop string → detection 작동 확인.
+    const synthetic = "case 1:_state.sent();return [3,1];case 2:return [2];";
+    try std.testing.expectError(error.AsyncSelfLoopDetected, assertNoAsyncSelfLoop(synthetic));
+}
+
+test "assertNoAsyncSelfLoop: positive control — accept forward jump" {
+    // 정상 forward jump (case 1 → label 2) 은 통과해야.
+    const synthetic = "case 1:_state.sent();return [3,2];case 2:return [2];";
+    try assertNoAsyncSelfLoop(synthetic);
+}
+
+test "assertNoAsyncSelfLoop: positive control — accept multiple cases without self-loop" {
+    // 여러 await — 각 case 의 jump target 이 자기보다 큰 label 이면 모두 정상.
+    const synthetic = "case 1:_state.sent();return [3,3];case 2:_state.sent();return [3,5];case 6:return [2];";
+    try assertNoAsyncSelfLoop(synthetic);
 }
 
 // --- Flow helpers ---

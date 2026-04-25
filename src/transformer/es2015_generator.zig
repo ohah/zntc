@@ -392,19 +392,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try self.visitNode(condition);
             const has_else = !else_body.isNone();
 
-            // `collectForOperations` 와 동일 sentinel/fixup 패턴 — else_label / end_label
-            // 을 미리 할당하면 then body 안 yield 가 같은 label 값을 yield-resume 으로 사용해
-            // self-loop 발생 (#1887). for/while/switch 는 이미 sentinel pattern, if 만
-            // 빠져있던 버그.
+            // `collectForOperations` 와 동일 sentinel/fixup 패턴 — end_label 을 미리 할당
+            // 하면 then body 안 yield 가 같은 label 값을 yield-resume 으로 사용해 self-loop
+            // 발생 (#1887). for/while/switch 는 이미 sentinel pattern, if 만 누락이었음.
+            //
+            // else_label 은 sentinel 안 씀 — `break_when_false` 의 ops 인덱스를 알므로 직접
+            // patch (linear scan 회피). end_label 만 fixupSentinel 1 회.
             const if_ops_start = ops.items.len;
+            const break_when_false_idx = if_ops_start;
 
-            // if (!cond) goto else_label or end_label  (sentinel)
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
-                .arg = .{ .label_and_node = .{
-                    .label = if (has_else) IF_ELSE_SENTINEL else IF_END_SENTINEL,
-                    .node = new_cond,
-                } },
+                .arg = .{ .label_and_node = .{ .label = IF_END_SENTINEL, .node = new_cond } },
             });
 
             try collectBodyOperations(self, then_body, ops, next_label);
@@ -418,7 +417,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const else_label = next_label.*;
                 next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-                fixupSentinel(ops.items[if_ops_start..], IF_ELSE_SENTINEL, else_label);
+                // 직접 patch — break_when_false 가 인덱스 위치에 있음을 보장.
+                ops.items[break_when_false_idx].arg.label_and_node.label = else_label;
                 try collectBodyOperations(self, else_body, ops, next_label);
             }
 
@@ -780,13 +780,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         const LABEL_SENTINEL_BASE = std.math.maxInt(u32);
 
         // Sentinel reserved ranges (모두 LABEL_SENTINEL_BASE 의 offset). fixupSentinel 가
-        // ops_start 이후만 처리하므로 nested scope 끼리는 충돌 안 함. 같은 scope 안 동시
-        // 사용은 서로 다른 offset 필요.
+        // ops_start 이후만 처리하므로 nested scope 끼리는 충돌 안 함.
         //   0..depth*2  → break/continue (nesting depth 별 — `breakSentinel`/`continueSentinel`)
         //   100..       → switch case fall-through (`collectSwitchOperations`)
-        //   200, 201    → if-end / if-else (`collectIfOperations`)
+        //   200         → if-end (`collectIfOperations`)
+        //   if-else 는 break_when_false 의 인덱스 직접 patch — sentinel 불필요.
         const IF_END_SENTINEL = LABEL_SENTINEL_BASE - 200;
-        const IF_ELSE_SENTINEL = LABEL_SENTINEL_BASE - 201;
 
         /// nesting depth에 따라 고유한 break/continue sentinel 생성.
         /// 중첩 labeled scope에서 sentinel 충돌을 방지.
