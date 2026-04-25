@@ -618,7 +618,7 @@ pub const Bundler = struct {
         const worker_result = try emitter.emitWithTreeShaking(
             arena_alloc,
             &worker_graph,
-            emit_opts,
+            &emit_opts,
             &worker_linker,
             null,
         );
@@ -973,7 +973,7 @@ pub const Bundler = struct {
             const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
-                dev_emit_opts,
+                &dev_emit_opts,
                 if (linker) |*l| l else null,
                 null, // dev mode: tree-shaking 비활성
             );
@@ -1009,7 +1009,7 @@ pub const Bundler = struct {
                 self.allocator,
                 &graph,
                 &chunk_graph,
-                emit_opts,
+                &emit_opts,
                 if (linker) |*l| l else null,
             );
             errdefer if (outputs) |outs| {
@@ -1030,7 +1030,7 @@ pub const Bundler = struct {
             const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
                 &graph,
-                emit_opts,
+                &emit_opts,
                 if (linker) |*l| l else null,
                 if (shaker) |*s| s else null,
             );

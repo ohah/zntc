@@ -38,7 +38,7 @@ pub fn emitChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     chunk_graph: *const ChunkGraph,
-    options: EmitOptions,
+    options: *const EmitOptions,
     linker: ?*Linker,
 ) ![]OutputFile {
     const module_count = graph.moduleCount();
@@ -583,7 +583,7 @@ fn rewriteDynamicImports(
     chunk_graph: *const ChunkGraph,
     public_path: []const u8,
     out_ext: []const u8,
-    emit_options: EmitOptions,
+    emit_options: *const EmitOptions,
 ) ![]const u8 {
     // dynamic import가 없으면 그대로 복사해서 반환
     if (module.import_records.len == 0) {
@@ -798,7 +798,7 @@ fn buildPlaceholder(chunk: *const Chunk, ph: *[HASH_PLACEHOLDER_PREFIX.len + HAS
 /// 청크의 placeholder stem을 반환한다 (확장자 없음).
 /// cross-chunk import 등 content가 아직 없는 시점에서 사용.
 /// 최종 출력 시 placeholder를 content hash로 치환한다.
-fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: EmitOptions) []const u8 {
+fn chunkPlaceholderStem(chunk: *const Chunk, buf: []u8, options: *const EmitOptions) []const u8 {
     const is_entry = chunk.name != null;
     const base_name = chunk.name orelse "chunk";
     const pattern = if (is_entry) options.entry_names else options.chunk_names;

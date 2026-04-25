@@ -103,7 +103,7 @@ comptime {
 }
 
 /// EmitOptions 의 emit 결과에 영향을 주는 모든 필드를 순차 hash.
-pub fn hashEmitOptions(h: *InputHasher, options: EmitOptions) void {
+pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addU32(@intFromEnum(options.format));
     h.addBool(options.minify_whitespace);
     h.addBool(options.minify_syntax);
@@ -188,7 +188,7 @@ pub fn hashEmitOptions(h: *InputHasher, options: EmitOptions) void {
 }
 
 /// 전체 emit 에 1회만 계산하면 되는 options_hash 를 캐싱용으로 반환.
-pub fn computeOptionsHash(options: EmitOptions) u64 {
+pub fn computeOptionsHash(options: *const EmitOptions) u64 {
     var h = InputHasher.init(0);
     hashEmitOptions(&h, options);
     return h.final();
