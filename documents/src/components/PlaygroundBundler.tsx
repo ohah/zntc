@@ -69,6 +69,63 @@ export const counter: Counter = {
       },
     ],
   },
+  {
+    label: "Dynamic import — 코드 스플리팅 시연",
+    entry: "/main.ts",
+    files: [
+      {
+        path: "/main.ts",
+        language: "typescript",
+        content: `// "Code splitting" 옵션을 켜면 dynamic import 가 별도 chunk 로 분리.
+// 각 chunk 가 우측 상단 탭으로 표시.
+import { greet } from "./shared";
+
+console.log(greet("entry"));
+
+document.querySelector("#load")?.addEventListener("click", async () => {
+  const { heavy } = await import("./heavy");
+  heavy();
+});
+`,
+      },
+      {
+        path: "/shared.ts",
+        language: "typescript",
+        content: `export const greet = (s: string): string => \`hello, \${s}\`;
+`,
+      },
+      {
+        path: "/heavy.ts",
+        language: "typescript",
+        content: `// 별도 chunk 후보 — main 의 dynamic import 만 참조.
+import { greet } from "./shared";
+
+export function heavy() {
+  console.log(greet("dynamic"));
+}
+`,
+      },
+    ],
+  },
+  {
+    label: "External — react 를 외부 처리",
+    entry: "/app.tsx",
+    files: [
+      {
+        path: "/app.tsx",
+        language: "typescript",
+        content: `// "External" 패널에 \`react\` 를 추가하면 import 가 그대로 보존됨
+// (런타임이 외부에서 제공한다고 가정 — CDN, host 환경 등).
+import { useState } from "react";
+
+export function Counter() {
+  const [n, setN] = useState(0);
+  return <button onClick={() => setN(n + 1)}>{n}</button>;
+}
+`,
+      },
+    ],
+  },
 ];
 
 type WasmModule = typeof import("../../../packages/wasm/index.ts");
@@ -87,6 +144,8 @@ interface BundleOpts {
   minifySyntax: boolean;
   codeSplitting: boolean;
   preserveModules: boolean;
+  /// 한 줄에 specifier 하나 (`react`, `react-dom/*` 등 와일드카드 지원).
+  externalText: string;
 }
 
 const DEFAULT_OPTS: BundleOpts = {
@@ -98,9 +157,18 @@ const DEFAULT_OPTS: BundleOpts = {
   minifySyntax: false,
   codeSplitting: false,
   preserveModules: false,
+  externalText: "",
 };
 
+function parseExternal(text: string): string[] {
+  return text
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 function toApiOptions(opts: BundleOpts): BundleOptionsInput {
+  const external = parseExternal(opts.externalText);
   return {
     format: opts.format,
     platform: opts.platform,
@@ -110,6 +178,7 @@ function toApiOptions(opts: BundleOpts): BundleOptionsInput {
     minifySyntax: opts.minifySyntax,
     codeSplitting: opts.codeSplitting,
     preserveModules: opts.preserveModules,
+    ...(external.length > 0 ? { external } : {}),
   };
 }
 
@@ -443,6 +512,16 @@ export default function PlaygroundBundler() {
                   label="Preserve modules"
                   checked={opts.preserveModules}
                   onChange={(v) => updateOpt("preserveModules", v)}
+                />
+              </Section>
+              <Section title="External">
+                <textarea
+                  value={opts.externalText}
+                  onChange={(e) => updateOpt("externalText", e.target.value)}
+                  placeholder={"한 줄에 하나\nreact\nreact-dom/*"}
+                  rows={3}
+                  spellCheck={false}
+                  className="w-full resize-y rounded border border-surface-800 bg-surface-950 px-1.5 py-1 text-[12px] text-neutral-200 placeholder:text-neutral-600"
                 />
               </Section>
             </div>
