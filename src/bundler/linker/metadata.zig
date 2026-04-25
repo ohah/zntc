@@ -402,7 +402,7 @@ pub fn buildMetadataForAst(
                     try esm_init_set.put(@intCast(canonical_mod), {});
                     const target_mod = canonical_m_opt.?;
                     const is_tla = target_mod.uses_top_level_await;
-                    const guard = self.entry_error_guard and !is_tla;
+                    const guard = target_mod.shouldGuard(self.entry_error_guard);
                     if (is_tla) try preamble.write("await ");
                     if (guard) try preamble.write(rt.GUARD_LAMBDA_OPEN);
                     if (self.dev_mode) {

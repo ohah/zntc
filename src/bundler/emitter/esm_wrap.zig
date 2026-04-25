@@ -964,7 +964,7 @@ fn appendWrappedInitCall(
     options: EmitOptions,
 ) !void {
     const is_tla = src_mod.wrap_kind == .esm and src_mod.uses_top_level_await;
-    const guard = options.entry_error_guard and !is_tla and src_mod.wrap_kind != .none;
+    const guard = src_mod.shouldGuard(options.entry_error_guard);
     switch (src_mod.wrap_kind) {
         .esm => {
             if (is_tla) try buf.appendSlice(allocator, "await ");

@@ -952,9 +952,9 @@ pub fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator,
 /// run-before-main, 엔트리 자동 호출, star export init 등에서 공용.
 pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator, mod: anytype) !void {
     const call_name = if (mod.wrap_kind == .cjs)
-        types.makeRequireVarName(allocator, mod.path) catch return
+        try types.makeRequireVarName(allocator, mod.path)
     else
-        mod.allocInitName(allocator) catch return;
+        try mod.allocInitName(allocator);
     defer allocator.free(call_name);
     if (mod.wrap_kind != .cjs and mod.uses_top_level_await) {
         try output.appendSlice(allocator, "await ");
@@ -973,15 +973,14 @@ pub fn appendGuardedModuleCall(
     mod: anytype,
     error_guard: bool,
 ) !void {
-    const tla = mod.wrap_kind != .cjs and mod.uses_top_level_await;
-    if (!error_guard or tla) {
+    if (!mod.shouldGuard(error_guard)) {
         try appendModuleCall(output, allocator, mod);
         return;
     }
     const call_name = if (mod.wrap_kind == .cjs)
-        types.makeRequireVarName(allocator, mod.path) catch return
+        try types.makeRequireVarName(allocator, mod.path)
     else
-        mod.allocInitName(allocator) catch return;
+        try mod.allocInitName(allocator);
     defer allocator.free(call_name);
     // `__zts_guarded(callName)` — fn 인자로 함수 식별자만 전달. helper 가 fn() 호출.
     try output.appendSlice(allocator, "__zts_guarded(");
