@@ -4,6 +4,7 @@ const ResolveCache = resolve_cache.ResolveCache;
 const matchGlob = resolve_cache.matchGlob;
 const isNodeBuiltin = resolve_cache.isNodeBuiltin;
 const profile = @import("../profile.zig");
+const ResolvedModule = @import("plugin.zig").ResolvedModule;
 
 // ============================================================
 // Tests
@@ -160,4 +161,76 @@ test "resolve: profile .resolve 비활성 시 누적 없음" {
 
     try std.testing.expectEqual(@as(u32, 0), profile.count(.resolve));
     try std.testing.expectEqual(@as(u64, 0), profile.totalNs(.resolve));
+}
+
+// resolveAsModule API (#1885 PR 4c-1) — ResolvedModule 직접 반환
+
+fn freeResolvedPath(m: ResolvedModule) void {
+    switch (m) {
+        .file => |f| std.testing.allocator.free(f.path),
+        .disabled => |d| std.testing.allocator.free(d.path),
+        else => {},
+    }
+}
+
+test "resolveAsModule: 일반 파일 → .file variant" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "foo.ts", .data = "" });
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    const result = (try cache.resolveAsModule(dir_path, "./foo", .static_import)).?;
+    defer freeResolvedPath(result);
+
+    switch (result) {
+        .file => |f| try std.testing.expect(std.mem.endsWith(u8, f.path, "foo.ts")),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "resolveAsModule: external pattern → null (resolve 와 동일 의미)" {
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"react"} });
+    defer cache.deinit();
+
+    const result = try cache.resolveAsModule("/some/dir", "react", .static_import);
+    try std.testing.expect(result == null);
+}
+
+test "resolveAsModule: not found → ModuleNotFound" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    const result = cache.resolveAsModule(dir_path, "./nonexistent", .static_import);
+    try std.testing.expectError(error.ModuleNotFound, result);
+}
+
+test "resolveAsModuleThreadSafe: 동작 검증" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "bar.ts", .data = "" });
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+
+    const result = (try cache.resolveAsModuleThreadSafe(dir_path, "./bar", .static_import)).?;
+    defer freeResolvedPath(result);
+
+    switch (result) {
+        .file => |f| try std.testing.expect(std.mem.endsWith(u8, f.path, "bar.ts")),
+        else => return error.TestUnexpectedResult,
+    }
 }
