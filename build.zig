@@ -200,7 +200,10 @@ pub fn build(b: *std.Build) void {
         });
         wasm_bundler_exe.rdynamic = true;
         wasm_bundler_exe.entry = .disabled;
-        // Threading 활성: wasi-libc 의 pthread 활용 (wasm32-wasip1-threads 패턴).
+        // wasi-libc — Zig 0.15 wasm_allocator 가 multi-threaded 미지원이라
+        // c_allocator (musl thread-safe malloc) 필요. JS 측은 wasi_snapshot_preview1
+        // 의 모든 fn 을 stub 으로 제공 (createWasiImports 확장).
+        wasm_bundler_exe.linkLibC();
         wasm_bundler_exe.import_memory = true;
         wasm_bundler_exe.shared_memory = true;
         wasm_bundler_exe.max_memory = 4 * 1024 * 1024 * 1024; // 4 GiB

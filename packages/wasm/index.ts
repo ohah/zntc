@@ -39,6 +39,11 @@ const decoder = new TextDecoder();
 // ─── 최소 WASI shim ───
 
 function createWasiImports(memory: () => WebAssembly.Memory) {
+  // bundler 빌드 (wasi-musl) 가 dispatch 하는 모든 wasi_snapshot_preview1 fn stub 제공.
+  // transpile 빌드는 일부 fn 만 호출 — 미호출 stub 은 link 영향 0.
+  // 대부분 stub 은 0 (errno_success) 반환 — bundler 가 실제 OS 의존 호출 안 한다는 가정.
+  const ok = () => 0;
+
   return {
     wasi_snapshot_preview1: {
       fd_write(fd: number, iovs_ptr: number, iovs_len: number, nwritten_ptr: number): number {
@@ -55,18 +60,17 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
         mem.setUint32(nwritten_ptr, written, true);
         return 0;
       },
-      fd_read(): number {
-        return 8;
-      },
-      fd_seek(): number {
-        return 8;
-      },
-      fd_pwrite(): number {
-        return 8;
-      },
-      fd_filestat_get(): number {
-        return 8;
-      },
+      fd_read: ok,
+      fd_seek: ok,
+      fd_pwrite: ok,
+      fd_pread: ok,
+      fd_close: ok,
+      fd_fdstat_get: ok,
+      fd_fdstat_set_flags: ok,
+      fd_filestat_get: ok,
+      fd_prestat_get: () => 8, // BADF — 더 이상 prestat 없음
+      fd_prestat_dir_name: ok,
+      fd_sync: ok,
       random_get(buf_ptr: number, buf_len: number): number {
         const bytes = new Uint8Array(memory().buffer, buf_ptr, buf_len);
         if (typeof globalThis.crypto !== "undefined") {
@@ -88,6 +92,42 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
         mem.setBigUint64(ts_ptr, ns, true);
         return 0;
       },
+      clock_res_get(_clock_id: number, ts_ptr: number): number {
+        const mem = new DataView(memory().buffer);
+        mem.setBigUint64(ts_ptr, 1_000_000n, true); // 1 ms resolution
+        return 0;
+      },
+      // args/environ — bundler 는 명시적 옵션 전달, args/env 미사용.
+      args_sizes_get(argc_ptr: number, argv_buf_size_ptr: number): number {
+        const mem = new DataView(memory().buffer);
+        mem.setUint32(argc_ptr, 0, true);
+        mem.setUint32(argv_buf_size_ptr, 0, true);
+        return 0;
+      },
+      args_get: ok,
+      environ_sizes_get(envc_ptr: number, env_buf_size_ptr: number): number {
+        const mem = new DataView(memory().buffer);
+        mem.setUint32(envc_ptr, 0, true);
+        mem.setUint32(env_buf_size_ptr, 0, true);
+        return 0;
+      },
+      environ_get: ok,
+      proc_exit(code: number): void {
+        throw new Error(`zts-wasm: proc_exit(${code})`);
+      },
+      sched_yield: ok,
+      poll_oneoff: ok,
+      // path_* — bundler 는 fs.zig 의 zts_fs callback 통과, wasi path_* 미호출.
+      // 단 wasi-musl 의 일부 함수 (e.g. realpath) 가 path_filestat_get 호출 시도 가능.
+      path_open: () => 8,
+      path_filestat_get: () => 8,
+      path_unlink_file: ok,
+      path_create_directory: ok,
+      path_remove_directory: ok,
+      path_rename: ok,
+      path_link: ok,
+      path_symlink: ok,
+      path_readlink: () => 8,
     },
   };
 }
@@ -269,27 +309,29 @@ export class VirtualFileSystem {
 }
 
 interface BundlerExports {
-  memory: WebAssembly.Memory;
   alloc(len: number): number;
   dealloc(ptr: number, len: number): void;
   bundler_version(): number;
-  // build() export 는 PR 6-2c
+  /// minimal build (PR 6-2c-1) — entry path → VFS readFile echo. 실제 bundler.bundle()
+  /// 호출은 PR 6-2c-2.
+  build(entryPathPtr: number, entryPathLen: number): bigint;
 }
 
 let bundler: BundlerExports | null = null;
+let bundlerMemory: WebAssembly.Memory | null = null;
 let bundlerVfs: VirtualFileSystem | null = null;
 
 function readBundlerString(ptr: number, len: number): string {
-  return decoder.decode(new Uint8Array(bundler!.memory.buffer, ptr, len));
+  return decoder.decode(new Uint8Array(bundlerMemory!.buffer, ptr, len));
 }
 
 /// host 가 wasm 메모리에 buffer 확보 + 데이터 복사 → packed (ptr<<32 | len) 반환.
 /// 0 = error sentinel (alloc 실패 또는 미존재).
 function packBytes(data: Uint8Array): bigint {
-  if (!bundler) return 0n;
+  if (!bundler || !bundlerMemory) return 0n;
   const ptr = bundler.alloc(data.length);
   if (ptr === 0) return 0n;
-  new Uint8Array(bundler.memory.buffer, ptr, data.length).set(data);
+  new Uint8Array(bundlerMemory.buffer, ptr, data.length).set(data);
   return (BigInt(ptr) << 32n) | BigInt(data.length);
 }
 
@@ -316,9 +358,9 @@ function createBundlerImports(memory: () => WebAssembly.Memory) {
         const path = readBundlerString(pathPtr, pathLen);
         const data = bundlerVfs?.get(path);
         if (!data) return 1; // NotFound
-        const view = new DataView(bundler!.memory.buffer);
+        const view = new DataView(bundlerMemory!.buffer);
         view.setBigUint64(outSize, BigInt(data.length), true);
-        new Uint8Array(bundler!.memory.buffer, outKind, 1)[0] = 0; // file
+        new Uint8Array(bundlerMemory!.buffer, outKind, 1)[0] = 0; // file
         view.setBigUint64(outMtimeLo, 0n, true);
         view.setBigUint64(outMtimeHi, 0n, true);
         return 0; // ok
@@ -357,12 +399,24 @@ export async function initBundler(
   if (bundler) return;
   const source = await resolveWasmSource(input, "zts-bundler.wasm");
 
-  let memory: WebAssembly.Memory;
-  const imports = createBundlerImports(() => memory);
+  // wasm32-wasi + threads features → shared_memory 강제 → env.memory import 필요.
+  // wasi-musl libc 가 stack/heap 위해 ~257 page 요구 — 1024 (64 MiB) initial 로 여유.
+  // 65536 page = 4 GiB max (build.zig:max_memory 와 일치).
+  const memory = new WebAssembly.Memory({
+    initial: 1024,
+    maximum: 65536,
+    shared: true,
+  });
+
+  const bundlerImports = createBundlerImports(() => memory);
+  const imports: WebAssembly.Imports = {
+    ...bundlerImports,
+    env: { memory },
+  };
   const instance = await instantiateWasm(source, imports);
 
-  memory = instance.exports.memory as WebAssembly.Memory;
   bundler = instance.exports as unknown as BundlerExports;
+  bundlerMemory = memory;
   bundlerVfs = vfs;
 }
 
@@ -372,4 +426,34 @@ export function bundlerVersion(): number {
     throw new Error("zts-wasm: bundler not initialized. Call initBundler() first.");
   }
   return bundler.bundler_version();
+}
+
+export interface BundleResult {
+  code: string;
+}
+
+/// PR 6-2c-1 minimal build — VFS 의 entry path 읽어 contents 그대로 반환 (echo).
+/// 실제 bundler.bundle() 호출은 PR 6-2c-2 — 그때 multi-file + chunk + manualChunks 지원.
+export function build(entryPath: string): BundleResult | null {
+  if (!bundler || !bundlerMemory) {
+    throw new Error("zts-wasm: bundler not initialized. Call initBundler() first.");
+  }
+
+  const entryBytes = encoder.encode(entryPath);
+  const entryPtr = bundler.alloc(entryBytes.length);
+  if (entryPtr === 0) throw new Error("zts-wasm: bundler alloc failed");
+  new Uint8Array(bundlerMemory.buffer, entryPtr, entryBytes.length).set(entryBytes);
+
+  try {
+    const packed = bundler.build(entryPtr, entryBytes.length);
+    if (packed === 0n) return null;
+
+    const outPtr = Number(packed >> 32n);
+    const outLen = Number(packed & 0xffffffffn);
+    const code = decoder.decode(new Uint8Array(bundlerMemory.buffer, outPtr, outLen));
+    bundler.dealloc(outPtr, outLen);
+    return { code };
+  } finally {
+    bundler.dealloc(entryPtr, entryBytes.length);
+  }
 }
