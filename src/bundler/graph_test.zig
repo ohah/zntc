@@ -164,7 +164,7 @@ test "graph: circular dependency — warning emitted" {
     try std.testing.expect(has_circular_warning);
 }
 
-test "graph: external module — not in graph" {
+test "graph: external module — phantom 으로 graph 에 등록 (Rollup parity)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.ts", "import 'react';");
@@ -181,8 +181,14 @@ test "graph: external module — not in graph" {
 
     try graph.build(&.{entry});
 
-    // react는 external이므로 그래프에 안 들어감
-    try std.testing.expectEqual(@as(usize, 1), graph.moduleCount());
+    // a.ts + phantom react = 2 modules. react phantom 의 is_external = true.
+    try std.testing.expectEqual(@as(usize, 2), graph.moduleCount());
+    const react_idx = graph.path_to_module.get("react") orelse return error.TestUnexpectedResult;
+    const react_mod = graph.getModule(react_idx) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(react_mod.is_external);
+    // record 의 is_external 도 그대로 set (emit/linker 호환)
+    const a_mod = graph.getModule(@enumFromInt(0)) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(a_mod.import_records[0].is_external);
 }
 
 test "graph: unresolved import — error diagnostic" {

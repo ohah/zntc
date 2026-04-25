@@ -203,13 +203,17 @@ export type { OutputFile, Diagnostic };
 export interface ManualChunksModuleInfo {
   id: string;
   isEntry: boolean;
-  /** 이 모듈을 static import 하는 모듈들. */
+  /** `external` 패턴 매칭으로 번들에 포함되지 않는 모듈. AST/source 없음 — graph
+   * traversal 1급 노드로만 노출됨. */
+  isExternal: boolean;
+  /** 이 모듈을 static import 하는 모듈들. external 도 importer 목록에 포함됨
+   * (자기 자신은 external 일 때 in-graph 모듈이 importer). */
   importers: string[];
   /** 이 모듈을 dynamic import (`import()`) 하는 모듈들. */
   dynamicImporters: string[];
-  /** 이 모듈이 static import 하는 모듈들. */
+  /** 이 모듈이 static import 하는 모듈들. external 모듈도 포함. */
   importedIds: string[];
-  /** 이 모듈이 dynamic import (`import()`) 하는 모듈들. */
+  /** 이 모듈이 dynamic import (`import()`) 하는 모듈들. external 도 포함. */
   dynamicallyImportedIds: string[];
 }
 

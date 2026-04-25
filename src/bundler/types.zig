@@ -128,6 +128,8 @@ pub const ModuleInfo = struct {
     imported_ids: []const ModuleIndex,
     dynamically_imported_ids: []const ModuleIndex,
     is_entry: bool,
+    /// `external` 패턴 매칭으로 번들에 포함되지 않는 모듈인지 여부 (Rollup `isExternal` 호환).
+    is_external: bool,
 };
 
 /// `id` 로 모듈 메타를 조회. 없으면 null. Zero allocation — graph 내부 slice borrow.
@@ -142,6 +144,7 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
         .imported_ids = m.dependencies.items,
         .dynamically_imported_ids = m.dynamic_imports.items,
         .is_entry = m.is_entry_point,
+        .is_external = m.is_external,
     };
 }
 

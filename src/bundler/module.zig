@@ -140,6 +140,10 @@ pub const Module = struct {
     /// platform=browser에서 Node 빌트인 모듈을 빈 CJS로 대체 (esbuild "(disabled)" 방식).
     /// AST가 없고, emitter가 빈 __commonJS wrapper를 출력한다.
     is_disabled: bool = false,
+    /// `external` 패턴 매칭으로 번들에 포함되지 않는 모듈. graph 에는 phantom 으로 등록되어
+    /// `meta.getModuleInfo` / `info.importedIds` 등 graph traversal API 의 1급 노드로 보이지만
+    /// chunk 배정 / emit / tree-shake 에선 제외. AST 없음, source 없음, path = original specifier.
+    is_external: bool = false,
     /// package.json "module" 필드를 통해 resolve된 파일.
     /// .js 확장자라도 ESM으로 파싱해야 함.
     is_module_field: bool = false,
