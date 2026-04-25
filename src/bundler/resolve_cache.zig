@@ -572,7 +572,9 @@ pub const ResolveCache = struct {
     /// package.json 의 browser 필드를 4 축 (path/module × disabled/remap) 으로 수집.
     /// 키 prefix 로 분류: "./foo" → path-key, 나머지는 bare module key (#1530).
     fn buildBrowserOverrides(self: *ResolveCache, pkg_dir_path: []const u8) ?BrowserOverrides {
-        var parsed = pkg_json.parsePackageJson(std.heap.page_allocator, pkg_dir_path) catch return null;
+        // self.allocator 통과 — page_allocator 가 wasm32 multi-threaded 미지원 (#1885 Phase 2).
+        // parsed.deinit() 이 같은 allocator 로 free 하므로 leak 없음.
+        var parsed = pkg_json.parsePackageJson(self.allocator, pkg_dir_path) catch return null;
         defer parsed.deinit();
 
         const browser_map = parsed.pkg.browser_map orelse return null;
