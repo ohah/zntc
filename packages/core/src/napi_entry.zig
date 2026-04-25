@@ -562,7 +562,6 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.n
 const plugin_mod = bundler_mod.plugin;
 const Plugin = plugin_mod.Plugin;
 const PluginError = plugin_mod.PluginError;
-const ResolveResult = bundler_mod.ResolveResult;
 
 const NapiPlugin = struct {
     name: []const u8,
@@ -796,7 +795,7 @@ const NapiPlugin = struct {
         return null;
     }
 
-    fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator) PluginError!?ResolveResult {
+    fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator) PluginError!?bundler_mod.plugin.ResolvedModule {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
         const resp = self.callHook(.resolveId, specifier, importer) orelse return null;
         defer {
@@ -808,18 +807,17 @@ const NapiPlugin = struct {
         // Metro `{ type: 'empty' }` 매핑, webpack `resolve.fallback: false`와 동등.
         if (resp.is_disabled) {
             const id_path = resp.resolved_path orelse specifier;
-            return .{
+            return .{ .disabled = .{
                 .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
                 .module_type = .javascript,
-                .disabled = true,
-            };
+            } };
         }
 
         if (resp.resolved_path) |path| {
-            return .{
+            return .{ .file = .{
                 .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
                 .module_type = .javascript,
-            };
+            } };
         }
         return null;
     }
