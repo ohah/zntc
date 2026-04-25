@@ -394,3 +394,135 @@ test "Plugin integration: transform hook is called for user source files (#964)"
     // 유저 소스 파일(non-node_modules)에 대해 호출되어야 함
     try std.testing.expect(transform_all_user_file_seen);
 }
+
+// ============================================================
+// 단위 테스트: ResolvedModule union(enum) (#1885 Phase 1 PR 4a)
+// ============================================================
+
+const ResolvedModule = plugin_mod.ResolvedModule;
+const fromLegacy = plugin_mod.fromLegacy;
+const toLegacy = plugin_mod.toLegacy;
+const ModuleType = @import("types.zig").ModuleType;
+
+test "ResolvedModule: file variant 보존" {
+    const m: ResolvedModule = .{ .file = .{
+        .path = "/abs/foo.ts",
+        .module_type = .javascript,
+        .is_module_field = true,
+    } };
+    switch (m) {
+        .file => |f| {
+            try std.testing.expectEqualStrings("/abs/foo.ts", f.path);
+            try std.testing.expectEqual(ModuleType.javascript, f.module_type);
+            try std.testing.expect(f.is_module_field);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" {
+    const v: ResolvedModule = .{ .virtual = .{ .path = "virtual:foo" } };
+    switch (v) {
+        .virtual => |x| try std.testing.expectEqualStrings("virtual:foo", x.path),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const d: ResolvedModule = .{ .dataurl = .{ .mime = "image/png", .data = "AAAA" } };
+    switch (d) {
+        .dataurl => |x| {
+            try std.testing.expectEqualStrings("image/png", x.mime);
+            try std.testing.expectEqualStrings("AAAA", x.data);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const e: ResolvedModule = .{ .external = .{ .path = "react" } };
+    switch (e) {
+        .external => |x| try std.testing.expectEqualStrings("react", x.path),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js" } };
+    switch (dis) {
+        .disabled => |x| try std.testing.expectEqualStrings("/abs/disabled.js", x.path),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const c: ResolvedModule = .{ .custom = .{ .name = "my-plugin", .path = "/x" } };
+    switch (c) {
+        .custom => |x| {
+            try std.testing.expectEqualStrings("my-plugin", x.name);
+            try std.testing.expectEqualStrings("/x", x.path);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "fromLegacy: ResolveResult { disabled=true } → .disabled variant" {
+    const legacy: ResolveResult = .{
+        .path = "/abs/x.js",
+        .module_type = .javascript,
+        .disabled = true,
+    };
+    const m = fromLegacy(legacy);
+    switch (m) {
+        .disabled => |d| try std.testing.expectEqualStrings("/abs/x.js", d.path),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "fromLegacy: ResolveResult { disabled=false } → .file variant + flags 보존" {
+    const legacy: ResolveResult = .{
+        .path = "/abs/y.ts",
+        .module_type = .javascript,
+        .is_module_field = true,
+    };
+    const m = fromLegacy(legacy);
+    switch (m) {
+        .file => |f| {
+            try std.testing.expectEqualStrings("/abs/y.ts", f.path);
+            try std.testing.expectEqual(ModuleType.javascript, f.module_type);
+            try std.testing.expect(f.is_module_field);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "toLegacy: .file → ResolveResult, .disabled → ResolveResult, 그 외 null" {
+    const f: ResolvedModule = .{ .file = .{
+        .path = "/a",
+        .module_type = .javascript,
+        .is_module_field = true,
+    } };
+    const f_legacy = toLegacy(f).?;
+    try std.testing.expectEqualStrings("/a", f_legacy.path);
+    try std.testing.expect(!f_legacy.disabled);
+    try std.testing.expect(f_legacy.is_module_field);
+
+    const d: ResolvedModule = .{ .disabled = .{ .path = "/b" } };
+    const d_legacy = toLegacy(d).?;
+    try std.testing.expect(d_legacy.disabled);
+    try std.testing.expectEqualStrings("/b", d_legacy.path);
+
+    // virtual/dataurl/external/custom 은 legacy 모델에 표현 불가
+    try std.testing.expect(toLegacy(.{ .virtual = .{ .path = "v" } }) == null);
+    try std.testing.expect(toLegacy(.{ .external = .{ .path = "react" } }) == null);
+    try std.testing.expect(toLegacy(.{ .custom = .{ .name = "p", .path = "/x" } }) == null);
+}
+
+test "ResolvedModule: roundtrip (legacy → union → legacy) 동등성" {
+    const original: ResolveResult = .{
+        .path = "/abs/round.ts",
+        .module_type = .javascript,
+        .disabled = false,
+        .is_module_field = true,
+    };
+    const restored = toLegacy(fromLegacy(original)).?;
+    try std.testing.expectEqualStrings(original.path, restored.path);
+    try std.testing.expectEqual(original.module_type, restored.module_type);
+    try std.testing.expectEqual(original.disabled, restored.disabled);
+    try std.testing.expectEqual(original.is_module_field, restored.is_module_field);
+}
+
+// Note: ResolvedModule = union(fs.Namespace) 자체가 컴파일 타임에 모든 Namespace
+// variant 의 payload 정의 강제 — 별도 exhaustive 검증 테스트 불필요.
