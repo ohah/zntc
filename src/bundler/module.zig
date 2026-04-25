@@ -227,6 +227,16 @@ pub const Module = struct {
         return self.syntheticName(self.init_symbol);
     }
 
+    /// `entry_error_guard` 활성 시 이 모듈의 init 호출을 `__zts_guarded(...)` 로 wrap 할지 결정.
+    /// TLA (`uses_top_level_await`) 인 ESM 모듈은 await 가 lambda 안에 못 들어가므로 wrap 안 함.
+    /// `wrap_kind == .none` (래핑 없음) 도 호출할 init 함수 자체가 없어 wrap 무의미.
+    pub fn shouldGuard(self: *const Module, error_guard: bool) bool {
+        if (!error_guard) return false;
+        if (self.wrap_kind == .none) return false;
+        if (self.wrap_kind == .esm and self.uses_top_level_await) return false;
+        return true;
+    }
+
     pub fn getExportsName(self: *const Module) ?[]const u8 {
         return self.syntheticName(self.exports_symbol);
     }
