@@ -50,9 +50,12 @@ pub const EntryKind = enum {
 
 /// VirtualFS (WASM) 가 호스트로부터 받을 수 있는 최소 정보만 노출.
 /// std.fs.File.Stat 의 inode/mode_t 같은 OS-dependent 필드는 의도적 제외.
+/// mtime 은 HMR 의 cache key (#1894) 에 사용 — RealFS 는 항상 stat.mtime 으로 채우고,
+/// VirtualFS 는 host 가 mtime 미제공 시 0 으로 두면 HMR 의 mtime=0 virtual 분기로 자연 fallback.
 pub const FileStat = struct {
     size: u64,
     is_dir: bool,
+    mtime: i128,
 };
 
 pub const FsError = error{
@@ -67,6 +70,25 @@ pub const FsError = error{
 /// 빌드 타겟별 fs 구현 (comptime 선택, vtable 비용 0).
 /// bun 의 `pub const Implementation = RealFS;` 패턴 — `references/bun/src/fs.zig:1475`.
 pub const Implementation = if (is_wasm_build) VirtualFS else RealFS;
+
+/// Implementation default instance 사용 — 호출처가 환경 무관하게 `fs.readFile(...)` 형태로
+/// 호출. state 보유가 필요해지는 환경 (Phase 2 VirtualFS host_callback) 에선 ModuleGraph 등이
+/// fs.Implementation 인스턴스 필드로 보유하는 패턴으로 전환.
+pub fn readFile(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) FsError!LoadedModule {
+    return Implementation.init().readFile(alloc, path, max_bytes);
+}
+
+pub fn statFile(path: []const u8) FsError!FileStat {
+    return Implementation.init().statFile(path);
+}
+
+pub fn access(path: []const u8) FsError!void {
+    return Implementation.init().access(path);
+}
+
+pub fn listDir(alloc: std.mem.Allocator, path: []const u8) FsError![]DirEntry {
+    return Implementation.init().listDir(alloc, path);
+}
 
 /// 호스트 OS 의 std.fs.cwd() 를 wrapping. NAPI / CLI 빌드의 default 구현.
 pub const RealFS = struct {
@@ -88,6 +110,7 @@ pub const RealFS = struct {
         return .{
             .size = stat.size,
             .is_dir = stat.kind == .directory,
+            .mtime = stat.mtime,
         };
     }
 

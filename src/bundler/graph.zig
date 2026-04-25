@@ -32,6 +32,7 @@ const resolver_mod = @import("resolver.zig");
 const import_scanner = @import("import_scanner.zig");
 const binding_scanner_mod = @import("binding_scanner.zig");
 const json_to_esm = @import("json_to_esm.zig");
+const fs = @import("fs.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -607,7 +608,7 @@ pub const ModuleGraph = struct {
         if (path.len == 0) return error.InvalidPath;
         if (std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidPath;
         if (path.len >= std.fs.max_path_bytes) return error.NameTooLong;
-        const stat = try std.fs.cwd().statFile(path);
+        const stat = try fs.statFile(path);
         return stat.mtime;
     }
 
@@ -975,7 +976,7 @@ pub const ModuleGraph = struct {
         if (module.module_type == .json) {
             module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
             const arena_alloc = module.parse_arena.?.allocator();
-            module.source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 10 * 1024 * 1024) catch "";
+            module.source = if (fs.readFile(arena_alloc, module.path, 10 * 1024 * 1024)) |loaded| loaded.contents else |_| "";
 
             module.ast = json_to_esm.convert(arena_alloc, module.source) catch {
                 self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Invalid JSON", null);
@@ -1079,12 +1080,7 @@ pub const ModuleGraph = struct {
 
         // 파일 시스템에서 읽기 (플러그인이 source를 이미 설정한 경우 건너뜀)
         if (module.source.len == 0) {
-            const source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
-                self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .resolve, "Cannot read file", null);
-                module.state = .ready;
-                return;
-            };
-            module.source = source;
+            module.source = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .resolve) orelse return;
         }
 
         // Plugin: transform 훅 — 소스 읽기 후, 파싱 전에 호출 (Rolldown 호환).
@@ -1412,6 +1408,8 @@ pub const ModuleGraph = struct {
         if (cached) |c| return c;
 
         var info: PkgInfo = .{ .is_module = false, .side_effects = .unknown };
+        // pkg_json.parsePackageJson 이 std.fs.Dir 핸들 직접 요구 — fs.zig 추상화 보류
+        // (#1885 Phase 1 후속). path 기반 리팩터링 또는 fs.zig 에 openDir 추가 필요.
         if (std.fs.cwd().openDir(pkg_dir_path, .{})) |dir_val| {
             var pkg_dir = dir_val;
             defer pkg_dir.close();
@@ -1966,11 +1964,7 @@ pub const ModuleGraph = struct {
 
         // 파일 읽기
         if (module.source.len == 0) {
-            module.source = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
-                self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
-                module.state = .ready;
-                return;
-            };
+            module.source = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
         }
 
         // @import 규칙 추출 (arena에 할당)
@@ -2013,11 +2007,7 @@ pub const ModuleGraph = struct {
         switch (module.loader) {
             .text => {
                 // UTF-8 문자열로 읽어서 JS 문자열 리터럴 생성
-                const content = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
-                    self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
-                    module.state = .ready;
-                    return;
-                };
+                const content = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
                 const escaped = escapeJsString(arena_alloc, content) catch {
                     module.state = .ready;
                     return;
@@ -2031,11 +2021,7 @@ pub const ModuleGraph = struct {
             },
             .dataurl => {
                 // 바이너리 읽기 → base64 인코딩 → data URL 문자열
-                const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
-                    self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
-                    module.state = .ready;
-                    return;
-                };
+                const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
                 const encoded = base64Encode(arena_alloc, raw) catch {
                     module.state = .ready;
                     return;
@@ -2053,11 +2039,7 @@ pub const ModuleGraph = struct {
             },
             .binary => {
                 // 바이너리 읽기 → base64 인코딩 → __toBinary("...") 호출 표현식
-                const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
-                    self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
-                    module.state = .ready;
-                    return;
-                };
+                const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
                 const encoded = base64Encode(arena_alloc, raw) catch {
                     module.state = .ready;
                     return;
@@ -2071,11 +2053,7 @@ pub const ModuleGraph = struct {
             },
             .file, .copy => {
                 // 파일 읽기 → content hash → 출력 경로 생성 → URL 문자열
-                const raw = std.fs.cwd().readFileAlloc(arena_alloc, module.path, 100 * 1024 * 1024) catch {
-                    self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, .parse, "Cannot read file", null);
-                    module.state = .ready;
-                    return;
-                };
+                const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
                 const hash = contentHash(raw);
                 const ext = std.fs.path.extension(module.path);
                 const basename = std.fs.path.basename(module.path);
@@ -2153,6 +2131,23 @@ pub const ModuleGraph = struct {
         module.wrap_kind = .cjs;
         module.side_effects = false;
         module.state = .ready;
+    }
+
+    /// fs.readFile + 실패 시 read_error diagnostic 추가 + module.state=ready 마킹.
+    /// caller 는 `orelse return` 으로 함수 종료. 5+곳 중복 catch handler 통일.
+    fn readModuleSource(
+        self: *ModuleGraph,
+        module: *Module,
+        alloc: std.mem.Allocator,
+        max_bytes: usize,
+        step: BundlerDiagnostic.Step,
+    ) ?[]const u8 {
+        const loaded = fs.readFile(alloc, module.path, max_bytes) catch {
+            self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
+            module.state = .ready;
+            return null;
+        };
+        return loaded.contents;
     }
 
     fn addDiag(
@@ -2294,7 +2289,7 @@ fn findProjectRoot(alloc: std.mem.Allocator, start_dir: []const u8) ![]const u8 
     while (dir.len > 0) {
         const candidate = try std.fs.path.join(alloc, &.{ dir, "package.json" });
         defer alloc.free(candidate);
-        if (std.fs.cwd().access(candidate, .{})) |_| {
+        if (fs.access(candidate)) |_| {
             return dir;
         } else |_| {}
         const parent = std.fs.path.dirname(dir) orelse break;
@@ -2418,9 +2413,9 @@ fn collectScaleVariants(
         const variant_path = try std.fs.path.join(alloc, &.{ fs_dir, variant_name });
         defer alloc.free(variant_path);
 
-        std.fs.cwd().access(variant_path, .{}) catch continue;
-        const raw = std.fs.cwd().readFileAlloc(alloc, variant_path, 100 * 1024 * 1024) catch continue;
-        const hash = contentHash(raw);
+        fs.access(variant_path) catch continue;
+        const loaded = fs.readFile(alloc, variant_path, 100 * 1024 * 1024) catch continue;
+        const hash = contentHash(loaded.contents);
         const variant_basename = try std.fmt.allocPrint(alloc, "{s}@{d}x", .{ name_without_ext, scale });
         defer alloc.free(variant_basename);
         const output_name = try applyAssetNamingPattern(alloc, asset_names, variant_basename, &hash, ext, dir_pattern);
@@ -2429,7 +2424,7 @@ fn collectScaleVariants(
         try variants.append(alloc, .{
             .scale = scale,
             .output_name = output_name,
-            .raw_content = raw,
+            .raw_content = loaded.contents,
         });
     }
 
@@ -2575,9 +2570,12 @@ fn expandGlob(allocator: std.mem.Allocator, source_dir: []const u8, pattern: []c
     const glob_dir_abs = try std.fs.path.resolve(allocator, &.{ source_dir, glob_dir_rel });
     defer allocator.free(glob_dir_abs);
 
-    // 디렉토리 열기
-    var dir = std.fs.cwd().openDir(glob_dir_abs, .{ .iterate = true }) catch return &.{};
-    defer dir.close();
+    // 디렉토리 항목 수집
+    const entries = fs.listDir(allocator, glob_dir_abs) catch return &.{};
+    defer {
+        for (entries) |e| allocator.free(e.name);
+        allocator.free(entries);
+    }
 
     var results: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -2591,9 +2589,8 @@ fn expandGlob(allocator: std.mem.Allocator, source_dir: []const u8, pattern: []c
     else
         std.fs.path.basename(prefix);
 
-    var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        if (entry.kind != .file and entry.kind != .sym_link) continue;
+    for (entries) |entry| {
+        if (entry.kind != .file and entry.kind != .symlink) continue;
         const name = entry.name;
 
         // prefix 매칭
