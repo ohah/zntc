@@ -58,4 +58,5 @@ bun run tests/benchmark/bundle-perf.ts --write
 - fixture 3종 (small 10 / medium 100 / large 200 모듈, externals 포함)
 - 워밍업 5회 + 측정 20회 → median 비교
 - baseline 은 `tests/benchmark/baselines/bundle-perf.json` 에 commit
-- 머신 의존 — CI 통합 시 동일 머신에서 baseline 갱신 + 거기서만 회귀 체크
+- 머신 의존 — 절대값은 머신마다 다름. dev 머신 비교는 의미 있고, CI 절대값은 다름
+- CI: `benchmark.yml` 가 PR 마다 `--no-fail --output` 로 실행 → JSON artifact 업로드 (트렌드 추적용, 회귀 fail 안 함)
