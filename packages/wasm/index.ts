@@ -321,10 +321,17 @@ interface BundlerExports {
   alloc(len: number): number;
   dealloc(ptr: number, len: number): void;
   bundler_version(): number;
-  /// entry path + 옵션 JSON 으로 bundler.Bundler.init + bundle() 호출 후
-  /// result.output (단일 파일 모드 번들 코드) 반환. 0 = error 또는 빈 출력.
-  /// options_json_ptr=0 이면 기본 옵션 (esm/browser).
+  /// 단일 파일 번들 코드 반환. 0 = error 또는 빈 출력.
+  /// optionsJsonPtr=0 이면 기본 옵션 (esm/browser).
   build(
+    entryPathPtr: number,
+    entryPathLen: number,
+    optionsJsonPtr: number,
+    optionsJsonLen: number,
+  ): bigint;
+  /// multi-output 번들 결과를 JSON 배열 (`[{"path","code"}, ...]`) 로 반환.
+  /// code splitting / preserve modules 시 multi-chunk, 그 외엔 단일 chunk wrap.
+  build_chunks(
     entryPathPtr: number,
     entryPathLen: number,
     optionsJsonPtr: number,
@@ -451,8 +458,7 @@ export interface BundleResult {
   code: string;
 }
 
-/// build() 가 받는 옵션. ZTS bundler 의 BundleOptions 의 minimal subset —
-/// 후속 PR 에서 sourcemap / target / jsx 등 추가.
+/// build() / buildChunks() 가 받는 옵션. ZTS bundler 의 BundleOptions minimal subset.
 export interface BundleOptionsInput {
   /// 출력 모듈 형식. 기본 "esm".
   format?: "esm" | "cjs" | "iife";
@@ -466,6 +472,28 @@ export interface BundleOptionsInput {
   minifyWhitespace?: boolean;
   minifyIdentifiers?: boolean;
   minifySyntax?: boolean;
+  /// `buildChunks` 에서만 의미. true 면 dynamic import / 공유 모듈을 별도 chunk 로 분리.
+  codeSplitting?: boolean;
+  /// `buildChunks` 에서만 의미. true 면 모듈 1개 = 출력 1개 (rollup preserveModules).
+  preserveModules?: boolean;
+}
+
+/// 옵션을 wasm 메모리에 JSON 으로 인코딩 + 복사. ptr=0/len=0 이면 옵션 미전달 의미.
+/// caller 가 dealloc 책임. minify shorthand 는 여기서 펼쳐 wasm 측은 항상 개별 키만 봄.
+function encodeBundleOptions(options?: BundleOptionsInput): { ptr: number; len: number } {
+  if (!options) return { ptr: 0, len: 0 };
+  const expanded: BundleOptionsInput = { ...options };
+  if (expanded.minify) {
+    expanded.minifyWhitespace = expanded.minifyWhitespace ?? true;
+    expanded.minifyIdentifiers = expanded.minifyIdentifiers ?? true;
+    expanded.minifySyntax = expanded.minifySyntax ?? true;
+  }
+  delete expanded.minify;
+  const optsBytes = encoder.encode(JSON.stringify(expanded));
+  const ptr = bundler!.alloc(optsBytes.length);
+  if (ptr === 0) throw new Error("zts-wasm: bundler alloc failed");
+  new Uint8Array(bundlerMemory!.buffer, ptr, optsBytes.length).set(optsBytes);
+  return { ptr, len: optsBytes.length };
 }
 
 /// VFS entry path + 옵션으로 bundler 호출 후 단일 파일 번들 코드 반환.
@@ -480,27 +508,7 @@ export function build(entryPath: string, options?: BundleOptionsInput): BundleRe
   if (entryPtr === 0) throw new Error("zts-wasm: bundler alloc failed");
   new Uint8Array(bundlerMemory.buffer, entryPtr, entryBytes.length).set(entryBytes);
 
-  let optsPtr = 0;
-  let optsLen = 0;
-  if (options) {
-    // minify shorthand 펼치기 — 개별 옵션이 명시되어 있으면 그게 우선.
-    const expanded = { ...options };
-    if (expanded.minify) {
-      expanded.minifyWhitespace = expanded.minifyWhitespace ?? true;
-      expanded.minifyIdentifiers = expanded.minifyIdentifiers ?? true;
-      expanded.minifySyntax = expanded.minifySyntax ?? true;
-    }
-    delete expanded.minify;
-    const json = JSON.stringify(expanded);
-    const optsBytes = encoder.encode(json);
-    optsPtr = bundler.alloc(optsBytes.length);
-    if (optsPtr === 0) {
-      bundler.dealloc(entryPtr, entryBytes.length);
-      throw new Error("zts-wasm: bundler alloc failed");
-    }
-    new Uint8Array(bundlerMemory.buffer, optsPtr, optsBytes.length).set(optsBytes);
-    optsLen = optsBytes.length;
-  }
+  const { ptr: optsPtr, len: optsLen } = encodeBundleOptions(options);
 
   try {
     const packed = bundler.build(entryPtr, entryBytes.length, optsPtr, optsLen);
@@ -513,6 +521,44 @@ export function build(entryPath: string, options?: BundleOptionsInput): BundleRe
     const code = decoder.decode(view.slice());
     bundler.dealloc(outPtr, outLen);
     return { code };
+  } finally {
+    bundler.dealloc(entryPtr, entryBytes.length);
+    if (optsPtr) bundler.dealloc(optsPtr, optsLen);
+  }
+}
+
+/// 번들 결과의 단일 chunk. multi-output (code splitting / preserve modules) 시 여러 개,
+/// 단일 파일 모드 시 한 개 (path="bundle.js" 로 wrap).
+export interface OutputChunk {
+  path: string;
+  code: string;
+}
+
+/// VFS entry path + 옵션으로 bundler 호출 후 multi-output 결과 반환.
+/// `codeSplitting=true` 또는 `preserveModules=true` 시 multi-chunk, 그 외엔 단일 chunk.
+/// 실패 시 null. 빈 array 는 정상 (entry 가 빈 출력).
+export function buildChunks(entryPath: string, options?: BundleOptionsInput): OutputChunk[] | null {
+  if (!bundler || !bundlerMemory) {
+    throw new Error("zts-wasm: bundler not initialized. Call initBundler() first.");
+  }
+
+  const entryBytes = encoder.encode(entryPath);
+  const entryPtr = bundler.alloc(entryBytes.length);
+  if (entryPtr === 0) throw new Error("zts-wasm: bundler alloc failed");
+  new Uint8Array(bundlerMemory.buffer, entryPtr, entryBytes.length).set(entryBytes);
+
+  const { ptr: optsPtr, len: optsLen } = encodeBundleOptions(options);
+
+  try {
+    const packed = bundler.build_chunks(entryPtr, entryBytes.length, optsPtr, optsLen);
+    if (packed === 0n) return null;
+
+    const outPtr = Number(packed >> 32n);
+    const outLen = Number(packed & 0xffffffffn);
+    const view = new Uint8Array(bundlerMemory.buffer, outPtr, outLen);
+    const json = decoder.decode(view.slice());
+    bundler.dealloc(outPtr, outLen);
+    return JSON.parse(json) as OutputChunk[];
   } finally {
     bundler.dealloc(entryPtr, entryBytes.length);
     if (optsPtr) bundler.dealloc(optsPtr, optsLen);
