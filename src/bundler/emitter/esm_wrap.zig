@@ -778,25 +778,15 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, " \"+id)};");
             try wrapped.appendSlice(allocator, "__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
         }
-        if (rbm_code.items.len > 0) {
-            if (unroll_entry_chain) {
-                try entry_chain_buf.appendSlice(allocator, rbm_code.items);
-            } else try wrapped.appendSlice(allocator, rbm_code.items);
-        }
+        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_entry_chain, false);
         if (func_code.len > 0) {
             func_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
             try wrapped.appendSlice(allocator, func_code);
         }
         if (preamble_code) |p| {
-            if (unroll_entry_chain) {
-                try entry_chain_buf.appendSlice(allocator, p);
-            } else try wrapped.appendSlice(allocator, p);
+            try writeChainPiece(&entry_chain_buf, &wrapped, allocator, p, unroll_entry_chain, false);
         }
-        if (star_init_buf.items.len > 0) {
-            if (unroll_entry_chain) {
-                try entry_chain_buf.appendSlice(allocator, star_init_buf.items);
-            } else try wrapped.appendSlice(allocator, star_init_buf.items);
-        }
+        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, star_init_buf.items, unroll_entry_chain, false);
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         if (has_refresh) {
@@ -834,14 +824,7 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, "\t\treturn function(t) { return t; };\n");
             try wrapped.appendSlice(allocator, "\t};\n");
         }
-        if (rbm_code.items.len > 0) {
-            if (unroll_entry_chain) {
-                try entry_chain_buf.appendSlice(allocator, rbm_code.items);
-            } else {
-                try wrapped.append(allocator, '\t');
-                try appendIndented(&wrapped, allocator, rbm_code.items);
-            }
-        }
+        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_entry_chain, true);
         // func_code를 preamble 앞에 배치: 순환 참조에서 preamble이 의존 모듈을 init할 때
         // 이 모듈의 함수가 이미 할당된 상태여야 한다. (#1092)
         if (func_code.len > 0) {
@@ -850,21 +833,9 @@ pub fn emitEsmWrappedModule(
             try appendIndented(&wrapped, allocator, func_code);
         }
         if (preamble_code) |p| {
-            if (unroll_entry_chain) {
-                try entry_chain_buf.appendSlice(allocator, p);
-            } else {
-                try wrapped.append(allocator, '\t');
-                try appendIndented(&wrapped, allocator, p);
-            }
+            try writeChainPiece(&entry_chain_buf, &wrapped, allocator, p, unroll_entry_chain, true);
         }
-        if (star_init_buf.items.len > 0) {
-            if (unroll_entry_chain) {
-                try entry_chain_buf.appendSlice(allocator, star_init_buf.items);
-            } else {
-                try wrapped.append(allocator, '\t');
-                try appendIndented(&wrapped, allocator, star_init_buf.items);
-            }
-        }
+        try writeChainPiece(&entry_chain_buf, &wrapped, allocator, star_init_buf.items, unroll_entry_chain, true);
         body_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         if (body_code.len > 0) {
             try wrapped.append(allocator, '\t');
@@ -948,6 +919,29 @@ pub fn emitEsmWrappedModule(
         .mappings = mappings,
         .entry_chain = entry_chain_owned,
     };
+}
+
+/// rbm / preamble / star_init chunk 를 entry chain unroll 모드면 chain_buf 에, 아니면
+/// wrapped factory body 에 emit. `indent=true` 면 factory body 안에서 한 칸 들여쓰기.
+fn writeChainPiece(
+    chain_buf: *std.ArrayList(u8),
+    wrapped: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    src: []const u8,
+    unroll: bool,
+    indent: bool,
+) !void {
+    if (src.len == 0) return;
+    if (unroll) {
+        try chain_buf.appendSlice(allocator, src);
+        return;
+    }
+    if (indent) {
+        try wrapped.append(allocator, '\t');
+        try appendIndented(wrapped, allocator, src);
+    } else {
+        try wrapped.appendSlice(allocator, src);
+    }
 }
 
 /// 래핑된 소스 모듈의 init/require 호출을 buffer에 추가한다.
