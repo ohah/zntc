@@ -1093,3 +1093,51 @@ test "generateChunks: inline_dynamic_imports — dynamic target 의 transitive s
     try std.testing.expect(cg.getModuleChunk(@enumFromInt(1)) == entry_chunk);
     try std.testing.expect(cg.getModuleChunk(@enumFromInt(2)) == entry_chunk);
 }
+
+test "generateChunks: external phantom 은 chunk 배정 받지 않음" {
+    const alloc = std.testing.allocator;
+
+    var modules: [2]Module = .{
+        makeTestModule(alloc, 0, "entry.ts"),
+        makeTestModule(alloc, 1, "react"),
+    };
+    var tg = try TestGraph.init(alloc, &modules);
+    defer tg.deinit(alloc);
+
+    // module 1 을 external 로 표시 + entry → react static link
+    tg.graph.modules.at(1).is_external = true;
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{});
+    defer cg.deinit();
+
+    // entry chunk 1개. external phantom 은 어느 chunk 에도 안 들어감.
+    try std.testing.expectEqual(@as(usize, 1), cg.chunks.items.len);
+    const entry_chunk = cg.getModuleChunk(@enumFromInt(0));
+    try std.testing.expect(!entry_chunk.isNone());
+    const react_chunk = cg.getModuleChunk(@enumFromInt(1));
+    try std.testing.expect(react_chunk.isNone());
+}
+
+test "generateChunks: external 가 manual pattern 매칭돼도 manual chunk 안 만들어짐" {
+    // Phase 1d 에서 phantom 의 path = "vendor-react" 가 manual pattern "vendor-" 매칭해도
+    // is_external 가드로 seeds 에 안 들어가야. 빈 manual chunk 회피.
+    const alloc = std.testing.allocator;
+
+    var modules: [2]Module = .{
+        makeTestModule(alloc, 0, "entry.ts"),
+        makeTestModule(alloc, 1, "vendor-react"),
+    };
+    var tg = try TestGraph.init(alloc, &modules);
+    defer tg.deinit(alloc);
+
+    tg.graph.modules.at(1).is_external = true;
+    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+
+    const manual_entries = [_]types.ManualChunkEntry{.{ .name = "vendor", .patterns = &.{"vendor-"} }};
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .manual_chunks = &manual_entries });
+    defer cg.deinit();
+
+    // entry chunk 만. vendor manual chunk 는 매칭 모듈 0 이라 생성 안 됨.
+    try std.testing.expectEqual(@as(usize, 1), cg.chunks.items.len);
+}
