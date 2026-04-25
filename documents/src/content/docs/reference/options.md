@@ -57,6 +57,16 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 | `asciiOnly` | `boolean` | `false` | 비-ASCII 문자를 hex 이스케이프로 치환 |
 | `charsetUtf8` | `boolean` | `false` | 비-ASCII 문자 그대로 유지 |
 
+### Code Splitting / Chunks
+
+| 옵션 | 타입 | 기본값 | 설명 |
+|---|---|---|---|
+| `splitting` | `boolean` | `false` | dynamic import 경계에서 청크 분리 + 공유 모듈 추출 |
+| `manualChunks` | `(id, meta) => string \| null` | — | Rollup 호환 사용자 정의 분할. [상세 가이드](/zts/guides/manual-chunks/) |
+| `inlineDynamicImports` | `boolean` | `false` | dynamic import target 을 importer chunk 로 흡수 + `__esm` 래핑 (단일 파일 출력) |
+| `external` | `string[]` | `[]` | 번들에서 제외할 specifier 목록. graph 에는 phantom Module 로 등록 |
+| `preserveModules` | `boolean` | `false` | 번들 대신 원본 디렉토리 구조 유지 (Rollup 호환) |
+
 ### Minify
 
 | 옵션 | 타입 | 기본값 | 설명 |
