@@ -209,11 +209,15 @@ print("RES:" + arr.join(","));`;
     expect(result.stdout?.toString() ?? "").toContain("RES:6");
   });
 
+  // Hermes vanilla 가 `Symbol.asyncIterator` 미지원 — RN production 은 init script 가 polyfill
+  // 하지만 standalone Hermes 는 그대로 throw. RN-like 환경 시뮬용 polyfill prepend.
+  const ASYNC_ITER_POLYFILL = `if (typeof Symbol !== "undefined" && !Symbol.asyncIterator) Symbol.asyncIterator = Symbol("Symbol.asyncIterator");\n`;
+
   test("for-await-of var hoist (#1901)", () => {
     if (!hermes) return;
     // `for await (var v of arr)` 의 `var v` + helper temps 모두 함수 top hoist.
     const tmp = `/tmp/zts-forawait-${Date.now()}.js`;
-    const ts = `(async function() {
+    const ts = `${ASYNC_ITER_POLYFILL}(async function() {
   var arr = [Promise.resolve(1), Promise.resolve(2), Promise.resolve(3)];
   var sum = 0;
   for await (var v of arr) sum += v;
@@ -230,7 +234,7 @@ print("RES:" + arr.join(","));`;
     if (!hermes) return;
     // for await of 가 async generator 의 Symbol.asyncIterator 사용 — Promise unwrap.
     const tmp = `/tmp/zts-asyncgen-${Date.now()}.js`;
-    const ts = `async function* g() { yield 1; await Promise.resolve(); yield 2; yield 3; }
+    const ts = `${ASYNC_ITER_POLYFILL}async function* g() { yield 1; await Promise.resolve(); yield 2; yield 3; }
 (async function() {
   var arr = [];
   for await (var v of g()) arr.push(v);
