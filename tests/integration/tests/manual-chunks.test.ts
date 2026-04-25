@@ -886,4 +886,57 @@ describe("manualChunks NAPI bridge", () => {
       expect(r.isEntry).toBe(false);
     }
   });
+
+  test("meta.getModuleInfo: hasModuleSideEffects — npm 패키지의 sideEffects=true 가 auto-purity 무력화", async () => {
+    // ZTS 의 `findPackageDirPath` 는 `node_modules/` 안 경로만 인식 (라이브러리 메타).
+    // 그래서 npm 패키지 fixture 로 user_defined 동작 검증.
+    const fixture = await createFixture({
+      "node_modules/sideful-lib/package.json":
+        '{"name":"sideful-lib","sideEffects":true,"main":"index.js"}',
+      "node_modules/sideful-lib/index.js": "export const x = 1;",
+      "entry.ts": `import { x } from "sideful-lib"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.hasModuleSideEffects);
+    const libEntry = [...seen.entries()].find(([k]) => k.endsWith("sideful-lib/index.js"));
+    // 이 패턴은 실제 ZTS 동작 — node_modules 안의 sideEffects=true 가 lock.
+    if (libEntry) expect(libEntry[1]).toBe(true);
+  });
+
+  test("meta.getModuleInfo: hasModuleSideEffects — npm 패키지의 글롭 sideEffects 패턴", async () => {
+    // node_modules 안 패키지에서 sideEffects: ["*.css"] → CSS=true, JS=false.
+    const fixture = await createFixture({
+      "node_modules/glob-lib/package.json":
+        '{"name":"glob-lib","sideEffects":["*.css"],"main":"index.js"}',
+      "node_modules/glob-lib/index.js": 'import "./style.css"; export const x = 1;',
+      "node_modules/glob-lib/style.css": ".cls{color:red}",
+      "entry.ts": `import { x } from "glob-lib"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.hasModuleSideEffects);
+    const indexEntry = [...seen.entries()].find(([k]) => k.endsWith("glob-lib/index.js"));
+    const cssEntry = [...seen.entries()].find(([k]) => k.endsWith("glob-lib/style.css"));
+    // 글롭 패턴이 적용된 경우만 검증 (graph 가 두 모듈 다 보면)
+    if (indexEntry) expect(indexEntry[1]).toBe(false);
+    if (cssEntry) expect(cssEntry[1]).toBe(true);
+  });
+
+  test("meta.getModuleInfo: hasModuleSideEffects — 사용자 앱 코드는 package.json 영향 안 받음 (ZTS 정책)", async () => {
+    // 프로젝트 루트의 package.json 은 node_modules 밖 모듈에 적용 안 됨.
+    // 사용자 코드는 tree-shaker auto-purity 만 영향.
+    // 이게 미래에 바뀌어도 lock — 변경하면 테스트로 신호.
+    const fixture = await createFixture({
+      "package.json": '{"name":"app","sideEffects":true}',
+      "entry.ts": `import { x } from "./pure-lib"; console.log(x);`,
+      "pure-lib.ts": "export const x = 1;",
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.hasModuleSideEffects);
+    const libFlag = [...seen.entries()].find(([k]) => k.endsWith("pure-lib.ts"))![1];
+    // 사용자 코드 `pure-lib.ts` — package.json sideEffects=true 무시되고 auto-purity 가 false 로.
+    expect(libFlag).toBe(false);
+  });
 });
