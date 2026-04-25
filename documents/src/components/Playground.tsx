@@ -411,6 +411,9 @@ export default function Playground() {
             ))}
           </select>
           <button type="button" onClick={handleShare} className={BTN_CLASS}>Share</button>
+          <a href={`${(import.meta.env.BASE_URL ?? "/").replace(/\/?$/, "/")}playground/bundler/`} className={BTN_CLASS}>
+            Bundler 모드
+          </a>
           <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" className={BTN_CLASS}>
             GitHub
           </a>
