@@ -40,6 +40,7 @@ pub const ReactNativeBoolPreset = struct {
     configurable_exports: bool = true, // RN/Hermes: defineProperty에 configurable: true 필요
     strict_execution_order: bool = true, // Babel worklet 호환: 함수 호이스팅 방지
     worklet_transform: bool = true, // Reanimated worklet 네이티브 변환
+    entry_error_guard: bool = true, // Metro guardedLoadModule 호환: entry trigger throw → ErrorUtils
 };
 pub const RN_BOOL_PRESET: ReactNativeBoolPreset = .{};
 
@@ -213,6 +214,10 @@ pub const BundleOptions = struct {
     /// Babel worklet 등이 function → var로 변환하면 init 순서가 깨지므로,
     /// 모든 코드를 factory 안에 유지. --platform=react-native에서 자동 활성화.
     strict_execution_order: bool = false,
+    /// Metro `guardedLoadModule` 호환: entry trigger 호출을 try/catch +
+    /// `ErrorUtils.reportFatalError(e)` 로 wrap. 자세한 설명은
+    /// `EmitOptions.entry_error_guard`. RN preset 자동 활성.
+    entry_error_guard: bool = false,
     /// Reanimated worklet 네이티브 변환. --platform=react-native에서 자동 활성화.
     worklet_transform: bool = false,
     /// worklet의 `__pluginVersion` 값. null이면 ZTS 기본 상수 사용.
@@ -503,6 +508,7 @@ pub const Bundler = struct {
             .run_before_main = self.options.run_before_main,
             .configurable_exports = self.options.configurable_exports,
             .strict_execution_order = self.options.strict_execution_order,
+            .entry_error_guard = self.options.entry_error_guard,
             .worklet_transform = self.options.worklet_transform,
             .worklet_plugin_version = self.options.worklet_plugin_version,
             .compiled_cache = self.options.compiled_cache,
@@ -794,6 +800,7 @@ pub const Bundler = struct {
             var l = Linker.initWithGlobalIdentifiers(self.allocator, &graph, self.options.format, self.options.global_identifiers);
             l.shim_missing_exports = self.options.shim_missing_exports;
             l.dev_mode = self.options.dev_mode;
+            l.entry_error_guard = self.options.entry_error_guard;
             // #1621: preamble/metadata 가 __toESM/__toCommonJS 를 축약 이름으로 emit.
             l.minify_whitespace = self.options.minify_whitespace;
             // #1791 Phase D: value-ref 0 binding elision 정책을 transformer 와 동기화.

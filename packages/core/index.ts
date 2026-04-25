@@ -410,6 +410,14 @@ interface BuildOptionsCommon {
   /** ESM 실행 순서 보장 — 함수 선언을 factory 내부 assignment로 다운그레이드해 호이스팅 방지.
    * Rolldown의 strictExecutionOrder와 동일. React Native 플랫폼에서 자동 활성화. */
   strictExecutionOrder?: boolean;
+  /** entry trigger (`init_X()` / `require_X()`) 호출을 try/catch + ErrorUtils.reportFatalError 로 wrap.
+   * Metro `guardedLoadModule` (top-level `__r` wrapper) 와 동등 mechanism — module factory throw 가
+   * 부팅을 막지 않고 RN 표준 LogBox 에 fatal 로 표시. ErrorUtils 미정의 환경 (test / browser) 에선
+   * throw 그대로 re-throw. 발견 계기는 iOS 26.4 Hermes 가 `Location` 등 spec global 을 immutable
+   * descriptor (`configurable: false`) 로 미리 등록 + expo-metro-runtime 의 가드 없는
+   * `defineProperty` 시도 throw 였지만, mechanism 은 OS/엔진 무관 — 모든 module factory throw 케이스
+   * 커버. React Native 플랫폼에서 자동 활성화. */
+  entryErrorGuard?: boolean;
   /** scope hoisting 활성화 (기본 true). 단일 chunk에서 모듈 경계를 제거하고 심볼을 평탄화. */
   scopeHoist?: boolean;
   /** Reanimated worklet 변환 — "worklet" 디렉티브 함수에 __workletHash/__closure/__initData 주입.

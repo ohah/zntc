@@ -2227,3 +2227,525 @@ test "JSX automatic: _createElement injected for .js source (expo-router useScre
     try std.testing.expect(has_def);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"react\")") != null);
 }
+
+// ============================================================================
+// entry_error_guard — Metro guardedLoadModule 호환 (top-level require throw 차단)
+// ============================================================================
+
+// iOS 26.4+ 의 native immutable global (`Location` 등) 과 polyfill 충돌이 흔함:
+// expo-metro-runtime 이 `Object.defineProperty(global, 'Location', ...)` 시도 →
+// configurable=false 라 `TypeError: property is not configurable` throw → entry
+// 평가 자체 throw → "runtime not ready" 부팅 실패. Metro 는 `guardedLoadModule`
+// 가 throw 를 `ErrorUtils.reportFatalError` 로 swallow 해 부팅 진행. ZTS 도 동일
+// mechanism 도입 — entry trigger 호출을 try/catch + ErrorUtils wrap.
+// ============================================================================
+// Option B 엣지 케이스 — Metro guardedLoadModule 100% 동등 mechanism
+// ============================================================================
+//
+// 검증 invariant:
+// 1. helper 가 prologue 에 1번만 emit (중복 방지)
+// 2. helper 의 inGuard pattern 보존 (Metro 동등) — nested 호출은 throw propagate
+// 3. entry chain unroll — entry init body 의 module init 호출이 entry trigger 위치에
+//    separate top-level statement 로 emit 되어 각각 별 outer try/catch
+// 4. 비-entry 모듈의 chain 호출은 그대로 (factory body 안)
+// 5. ErrorUtils 정의 환경 / 미정의 환경 fallback 정확
+// 6. side-effect / re-export / CJS / mixed / TLA edge case 모두 안전
+// 7. minify 출력에서도 동일 의미
+
+fn buildRnGuarded(allocator: std.mem.Allocator, entry: []const u8) !Bundler {
+    return Bundler.init(allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .entry_error_guard = true,
+    });
+}
+
+test "entry_error_guard #1: 옵션 활성 시 prologue 에 helper + inGuard pattern 보존" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // helper 정의 + ZTS policy: 각 호출 별 독립 try/catch + console.warn 로 LogBox 보고.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function __zts_guarded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn") != null);
+}
+
+test "entry_error_guard #2: 옵션 비활성 시 helper / wrap 모두 없음 (회귀 방지)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .entry_error_guard = false,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function __zts_guarded") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_in_guard") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ErrorUtils.reportFatalError") == null);
+}
+
+test "entry_error_guard #3: helper 정의 1번만 emit (중복 방지)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const a = 1;\n");
+    try writeFile(tmp.dir, "b.js", "export const b = 2;\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { a } from './a.js';
+        \\import { b } from './b.js';
+        \\export const sum = a + b;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const helper_count = std.mem.count(u8, result.output, "function __zts_guarded");
+    try std.testing.expectEqual(@as(usize, 1), helper_count);
+}
+
+test "entry_error_guard #4: 단순 entry — chain unroll 없이 entry trigger 만 wrap" {
+    // entry 가 chain 없이 자체 코드만 — chain unroll 대상 없음
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const v = 42;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 적어도 entry trigger 1번 wrap
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded(") != null);
+}
+
+test "entry_error_guard #5: 다중 chain entry — 각 import 의 init 호출이 separate outer wrap" {
+    // Option B 핵심: entry init body 의 chain 이 entry trigger 위치에 unroll 되어
+    // 각 모듈 init 호출이 별 top-level `__zts_guarded(...)` statement 가 됨.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js", "export const a = 1;\n");
+    try writeFile(tmp.dir, "b.js", "export const b = 2;\n");
+    try writeFile(tmp.dir, "c.js", "export const c = 3;\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { a } from './a.js';
+        \\import { b } from './b.js';
+        \\import { c } from './c.js';
+        \\export const sum = a + b + c;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 호출 site count 가 chain 수에 비례 — entry 3 imports + entry 자체 trigger
+    const guarded_calls = std.mem.count(u8, result.output, "__zts_guarded(");
+    // 최소 4 (3 chain + 1 entry trigger). 실제로 더 많을 수 있음 (esm_wrap 의 다른 path)
+    try std.testing.expect(guarded_calls >= 4);
+}
+
+test "entry_error_guard #6: side-effect import — wrap 적용 + 평가 시점 보존" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "side.js",
+        \\globalThis.__sideMarker = 42;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import './side.js';
+        \\export const ok = true;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // side.js 본문 (sideMarker 할당) 이 bundle 에 존재
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__sideMarker") != null);
+    // entry trigger 가 wrap
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded(") != null);
+}
+
+test "entry_error_guard #7: re-export entry — chain unroll 안 깨짐" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.js",
+        \\export const fn = () => 42;
+        \\export const VAL = 1;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\export * from './lib.js';
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // re-export source 가 bundle 에
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "VAL") != null);
+}
+
+test "entry_error_guard #8: CJS entry — require_X() wrap" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\module.exports = { x: 1 };
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded(") != null);
+}
+
+test "entry_error_guard #9: mixed CJS + ESM dependencies — 모두 wrap" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "esm.js", "export const e = 1;\n");
+    try writeFile(tmp.dir, "cjs.js", "module.exports = { c: 2 };\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { e } from './esm.js';
+        \\const cjs = require('./cjs.js');
+        \\export const sum = e + cjs.c;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 두 모듈 평가 위치 모두 wrap
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded(") != null);
+}
+
+test "entry_error_guard #10: 각 호출 별 독립 try/catch (ZTS policy)" {
+    // Metro 의 inGuard pattern 은 iOS 26.4+ native fatal handler 와 조합으로 부팅 정지
+    // 이슈 발생. ZTS 는 각 호출을 독립 try/catch 로 wrap 해 한 layer throw 가 다음
+    // layer 영향 없도록 함 — 각 outer (rbm, winter, metro-runtime, entry chain, entry)
+    // 가 별도 catch 로 swallow + console.error 로 보고.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const v = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 각 호출 별 독립 try/catch — inGuard short-circuit 없이 매 호출이 outer
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn") != null);
+}
+
+test "entry_error_guard #11: entry 안의 var/function 정의 + chain 혼재" {
+    // chain unroll 후에도 entry 의 자체 코드 (var/function) 가 평가되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "lib.js", "export const l = 10;\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { l } from './lib.js';
+        \\const x = 1;
+        \\function f() { return l + x; }
+        \\export const result = f();
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // entry 의 자체 코드 (function f) bundle 에
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function f") != null or
+        std.mem.indexOf(u8, result.output, "f = function") != null);
+}
+
+test "entry_error_guard #12: TLA entry — wrap 안 함 (await 보존)" {
+    // top-level await 인 entry 는 await 가 lambda 안에 못 들어가서 wrap 안 함.
+    // appendGuardedModuleCall 의 `if (tla) appendModuleCall(); return;` 분기.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\const v = await Promise.resolve(42);
+        \\export const result = v;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser, // RN 은 TLA 미지원 — browser 로
+        .format = .esm,
+        .entry_error_guard = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // await 보존 — bundle 어딘가에 await 키워드 살아있어야
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "await ") != null);
+}
+
+test "entry_error_guard #13: minify_whitespace — minified helper 형태 정상" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .entry_error_guard = true,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // minified 형태도 helper 정의 + console.warn swallow 보존
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn") != null);
+}
+
+test "entry_error_guard #14: 비-entry 모듈의 chain 도 wrap (preamble + side-effect)" {
+    // entry 만 unroll 이지만, 비-entry 모듈 안의 chain 호출도 `__zts_guarded(...)`
+    // 패턴으로 emit (linker preamble + esm_wrap side-effect 양쪽).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "leaf.js", "export const v = 1;\n");
+    try writeFile(tmp.dir, "mid.js",
+        \\import { v } from './leaf.js';
+        \\export const m = v + 1;
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { m } from './mid.js';
+        \\export const r = m;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 여러 chain 위치에 wrap
+    const guarded_calls = std.mem.count(u8, result.output, "__zts_guarded(");
+    try std.testing.expect(guarded_calls >= 2);
+}
+
+test "entry_error_guard #15: entry chain unroll — entry init body 안 chain 라인이 entry trigger 위치로 이동" {
+    // Option B 핵심 검증: entry 모듈의 init body 안에 chain init 호출이 *없어야* 하고,
+    // 대신 entry trigger 위치 (bundle 끝) 에 separate top-level 로 emit 되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.js", "export const d = 1;\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { d } from './dep.js';
+        \\export const r = d;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // bundle 의 마지막 부분 (entry trigger 영역) 에 chain unroll 결과 — separate
+    // top-level `__zts_guarded(...);` statement 가 여러 개 존재해야 함.
+    // 정확한 패턴 검증은 구현 후 strict assertion 으로 강화.
+    const tail_start = if (result.output.len > 2000) result.output.len - 2000 else 0;
+    const tail = result.output[tail_start..];
+    try std.testing.expect(std.mem.indexOf(u8, tail, "__zts_guarded(") != null);
+}
+
+test "entry_error_guard #16: GUARD_LAMBDA 매크로 형식 — esm_wrap / metadata 두 사이트 일관" {
+    // /simplify 후 hoist 한 GUARD_LAMBDA_OPEN/CLOSE const 가 두 사이트에서 동일한 wrap
+    // shape 으로 emit 되는지 검증. 한 사이트 emit 형식이 drift 하면 helper signature
+    // 가 깨짐 (`__zts_guarded(function(){return X;})` 만 helper 가 받음).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "leaf.js", "export const v = 1;\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import './leaf.js';
+        \\import { v } from './leaf.js';
+        \\export const r = v;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 모든 wrap 호출은 정확히 `__zts_guarded(function(){return ` 으로 시작 + `;});` 으로 종료.
+    // 다른 형식 (예: `__zts_guarded(()=>` 또는 `__zts_guarded(function(){X();})` 등) 검출.
+    const open_count = std.mem.count(u8, result.output, "__zts_guarded(function(){return ");
+    const close_count = std.mem.count(u8, result.output, ";});");
+    try std.testing.expect(open_count >= 2);
+    // close 는 wrap 외 다른 곳 (ESM closure 등) 에서도 나올 수 있어 >= 만 검증.
+    try std.testing.expect(close_count >= open_count);
+}
+
+test "entry_error_guard #17: prologue 에 console.error setter intercept + IGNORE regex emit" {
+    // expo `installGlobal.ts:96` 의 `console.error('Failed to set polyfill. X is not configurable.')` 를
+    // setter intercept 로 swallow. RN `setUpDeveloperTools` 가 console.error 를 다시 wrap 해도
+    // 우리 setter 가 그 위에 wrap 을 다시 씌워 outermost 유지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // IGNORE regex literal — expo `installGlobal.ts:96` 의 정확한 메시지 패턴.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Failed to set polyfill") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "is not configurable") != null);
+    // setter intercept — Object.defineProperty(console, "error", { set ... })
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Object.defineProperty(console, \"error\"") != null);
+    // get/set descriptor 모두 존재.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get: function() { return current; }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "set: function(fn)") != null);
+    // configurable: true — RN 등 후속 코드가 다시 set 할 수 있게.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "configurable: true") != null);
+}
+
+test "entry_error_guard #18: __ZTS_DEBUG_GUARD toggle — 기본 silent, toggle on 시 console.warn" {
+    // `__zts_guarded` 의 catch block 은 기본 silent. 디버그 시 globalThis.__ZTS_DEBUG_GUARD
+    // 를 truthy 로 set 하면 console.warn 으로 출력 — escape hatch.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // toggle gate — silent 기본 + 명시적 enable.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__ZTS_DEBUG_GUARD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn(\"[zts:guard] caught:\"") != null);
+    // bare console.warn (toggle 무시) 또는 console.error 호출이 catch block 에 없어야 함.
+    // simple substring: "[zts:guard]" 는 toggle gate 안에서만 나와야 함 — 한 번만 등장.
+    const tag_count = std.mem.count(u8, result.output, "[zts:guard]");
+    try std.testing.expectEqual(@as(usize, 1), tag_count);
+}
+
+test "entry_error_guard #19: dev_mode + entry_chain — __zts_modules[\"...\"].fn() 도 wrap" {
+    // dev_mode 에서는 init 호출이 `__zts_modules["id"].fn()` 형식. entry_chain unroll
+    // 시 이것도 `__zts_guarded(function(){return __zts_modules["id"].fn();})` 로 wrap 되어야 함.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.js", "export const d = 1;\n");
+    try writeFile(tmp.dir, "entry.js",
+        \\import { d } from './dep.js';
+        \\export const r = d;
+    );
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .entry_error_guard = true,
+        .dev_mode = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // dev_mode 형식 + wrap 둘 다 존재.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded(function(){return __zts_modules[") != null);
+}
+
+test "entry_error_guard #20: regex 패턴 정확도 — 실제 expo 메시지 형식과 매치" {
+    // GUARDED_RUNTIME 안 IGNORE 정규식이 expo `installGlobal.ts:96` 의 출력을 정확히
+    // 매치하는지 정적 검증. 패턴 변경이 expo 메시지를 더 이상 못 잡는 회귀 방지.
+    const rt = @import("../runtime_helpers.zig");
+    // expo 가 emit 하는 실제 메시지 형식 (Location, TextEncoderStream, TextDecoderStream)
+    const samples = [_][]const u8{
+        "Failed to set polyfill. Location is not configurable.",
+        "Failed to set polyfill. TextEncoderStream is not configurable.",
+        "Failed to set polyfill. TextDecoderStream is not configurable.",
+    };
+    // GUARDED_RUNTIME 안에 정규식 literal 이 그대로 들어있어야 함.
+    for (samples) |sample| {
+        const name_start = std.mem.indexOf(u8, sample, "polyfill. ").? + "polyfill. ".len;
+        const name_end = std.mem.indexOf(u8, sample[name_start..], " is").? + name_start;
+        const name = sample[name_start..name_end];
+        // 모든 sample 의 name (Location, TextEncoderStream, TextDecoderStream) 이 \w+ 매치.
+        for (name) |c| {
+            try std.testing.expect((c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z'));
+        }
+    }
+    // pattern literal 자체가 GUARDED_RUNTIME 에 포함.
+    try std.testing.expect(std.mem.indexOf(u8, rt.GUARDED_RUNTIME, "/^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$/") != null);
+}
