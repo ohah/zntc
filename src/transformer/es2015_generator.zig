@@ -260,17 +260,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             const sent_call = try buildSentCall(self, stmt.span);
                             const new_left_node = self.ast.getNode(new_left);
                             const is_destructuring = new_left_node.tag == .object_pattern or new_left_node.tag == .array_pattern;
+                            // Destructuring 은 spec 상 compound op 불가 (`{a} += x` invalid) → 전용 helper (flags=0 + paren wrap).
                             const assign_stmt = if (is_destructuring)
-                                // Destructuring 은 spec 상 compound op 불가 (`{a} += x` invalid) → flags=0.
                                 try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span)
-                            else blk: {
-                                const assign = try self.ast.addNode(.{
-                                    .tag = .assignment_expression,
-                                    .span = stmt.span,
-                                    .data = .{ .binary = .{ .left = new_left, .right = sent_call, .flags = expr.data.binary.flags } },
-                                });
-                                break :blk try es_helpers.makeExprStmt(self, assign, stmt.span);
-                            };
+                            else
+                                try es_helpers.makeAssignStmt(self, new_left, sent_call, stmt.span, expr.data.binary.flags);
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                         } else if (containsYield(self, right_idx)) {
                             // x = [yield 5, yield 6] — 우측에 중첩 yield가 있는 assignment

@@ -80,22 +80,13 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             // collectOperations 의 var → assignment 변환 path 가 raw for_await_of 안 traverse
             // 못 해서 binding 들이 함수 top 에 안 올라가는 문제. lower 가 직접 push 하는 게
             // 정통 — `collectForOperations` 의 `generator_temp_var_spans.append(idx_span, arr_span)` 와 동일 패턴.
-            try self.generator_temp_var_spans.append(self.allocator, iter_span);
-            try self.generator_temp_var_spans.append(self.allocator, step_span);
-            try self.generator_temp_var_spans.append(self.allocator, ret_span);
-            try self.generator_temp_var_spans.append(self.allocator, errobj_span);
-            try self.generator_temp_var_spans.append(self.allocator, err_span);
+            try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ iter_span, step_span, ret_span, errobj_span, err_span });
 
             // _iter = __asyncValues(iterable) — assignment statement (declaration 아님).
             const async_values_ref = try es_helpers.makeRuntimeHelperRef(self, "__asyncValues");
             const async_values_call = try es_helpers.makeCallExpr(self, async_values_ref, &.{new_right}, span);
             const iter_lhs = try es_helpers.makeIdentifierRefFromSpan(self, iter_span);
-            const iter_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = iter_lhs, .right = async_values_call, .flags = 0 } },
-            });
-            const outer_var = try es_helpers.makeExprStmt(self, iter_assign, span);
+            const outer_var = try es_helpers.makeAssignStmt(self, iter_lhs, async_values_call, span, 0);
 
             // =====================================================
             // 2. while test: !(_step = await _iter.next()).done
