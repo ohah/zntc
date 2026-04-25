@@ -16,13 +16,24 @@ const types = @import("types.zig");
 
 const is_wasm_build = builtin.target.cpu.arch == .wasm32;
 
-/// 모듈의 namespace 분류. `union(enum) ResolveResult` (PR 4 plugin.zig) 의
-/// tag 로도 사용 — `file` 만 fs 통과, 나머지는 plugin 책임.
+/// `plugin.ResolvedModule` (union(enum)) 의 tag 로 사용되는 namespace 분류.
+///
+/// **위치 주의**: 진짜 fs layer 책임은 `file` 뿐. `virtual / dataurl / external /
+/// disabled / custom` 은 모두 plugin/resolver layer 의 분류이며, 단일 enum 동기화
+/// 부담을 피하기 위해 통합 정의. PR 4d (ResolveResult 제거) 시점에 plugin.zig 로
+/// 이동 검토 — 그때 fs.LoadedModule 의 namespace 필드도 함께 결정.
 pub const Namespace = enum {
+    /// fs 가 직접 읽음 (RealFS) 또는 host VirtualFS (WASM)
     file,
+    /// plugin 의 메모리 모듈
     virtual,
+    /// data: URL — 인라인 base64 asset
     dataurl,
+    /// 번들 미포함 — 런타임 import 유지
     external,
+    /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 호환)
+    disabled,
+    /// 사용자 plugin 의 자유 namespace
     custom,
 };
 

@@ -13,6 +13,9 @@ const std = @import("std");
 const resolver_mod = @import("resolver.zig");
 const ResolveResult = resolver_mod.ResolveResult;
 const OutputFile = @import("emitter.zig").OutputFile;
+const fs = @import("fs.zig");
+const types = @import("types.zig");
+const ModuleType = types.ModuleType;
 const ast_plugin_mod = @import("../transformer/ast_plugin.zig");
 pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
 pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
@@ -24,6 +27,80 @@ pub const PluginError = error{
     PluginFailed,
     OutOfMemory,
 };
+
+/// Plugin resolveId 응답의 통합 모델 (#1885 Phase 1 PR 4 — 옵션 B).
+///
+/// origin 별 type-safe 분기 — esbuild 의 string namespace 보다 컴파일 타임 안전.
+/// rolldown 의 풍부한 ResolvedId 와 비슷하지만 tag 가 fs.Namespace 와 통일.
+///
+/// PR 4a 단계: 타입 정의 + 변환 helper 만. 호출처 (graph/resolver/cache) 의
+/// `ResolveResult` 직접 사용은 PR 4b/4c 에서 점진 마이그레이션.
+pub const ResolvedModule = union(fs.Namespace) {
+    /// fs 또는 plugin 이 제공한 실제 파일. 절대 경로 + module_type + ESM hint.
+    file: struct {
+        path: []const u8,
+        module_type: ModuleType = .unknown,
+        is_module_field: bool = false,
+    },
+    /// 메모리 모듈 (plugin only). plugin_data 로 plugin context 전달.
+    virtual: struct {
+        path: []const u8,
+        plugin_data: ?*anyopaque = null,
+    },
+    /// data: URL — 인라인 base64 asset.
+    dataurl: struct {
+        mime: []const u8,
+        data: []const u8,
+    },
+    /// 번들 미포함 — 런타임 import 유지.
+    external: struct {
+        path: []const u8,
+    },
+    /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 방식).
+    /// `resolver.ResolveResult.disabled = true` 와 동등 semantic — 변환 helper
+    /// fromLegacy/toLegacy 가 정확 매핑. PR 4d 에서 단일 표현으로 통합.
+    disabled: struct {
+        path: []const u8,
+    },
+    /// 사용자 plugin 의 자유 namespace.
+    custom: struct {
+        name: []const u8,
+        path: []const u8,
+        plugin_data: ?*anyopaque = null,
+    },
+};
+
+/// 기존 `ResolveResult` (struct) → `ResolvedModule` (union) 변환.
+/// PR 4b/4c 마이그레이션 중간 호환 layer. 모든 마이그레이션 완료 시 제거 (PR 4d).
+pub fn fromLegacy(r: ResolveResult) ResolvedModule {
+    if (r.disabled) return .{ .disabled = .{ .path = r.path } };
+    return .{ .file = .{
+        .path = r.path,
+        .module_type = r.module_type,
+        .is_module_field = r.is_module_field,
+    } };
+}
+
+/// `ResolvedModule` (union) → 기존 `ResolveResult` (struct) 변환.
+/// `file` / `disabled` 만 변환 가능 — virtual/dataurl/external/custom 은 legacy
+/// 모델에 표현 불가 → null 반환. caller (graph/resolver) 가 별도 분기 필요.
+pub fn toLegacy(m: ResolvedModule) ?ResolveResult {
+    return switch (m) {
+        .file => |f| .{
+            .path = f.path,
+            .module_type = f.module_type,
+            .disabled = false,
+            .is_module_field = f.is_module_field,
+        },
+        .disabled => |d| .{
+            .path = d.path,
+            .module_type = .unknown,
+            .disabled = true,
+            .is_module_field = false,
+        },
+        .virtual, .dataurl, .external, .custom => null,
+    };
+}
 
 /// `Plugin.resolveContext` hook signature. (#1579 Phase 2)
 pub const ResolveContextFn = ?*const fn (
