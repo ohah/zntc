@@ -119,7 +119,12 @@ function computeStats(samples: number[]): Stats {
   const mean = samples.reduce((a, b) => a + b, 0) / n;
   const trimmed = sorted.slice(1, -1);
   const trimmed_mean = trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
-  const p95 = sorted[Math.min(Math.floor(n * 0.95), n - 1)];
+  // 선형 보간 percentile — `Math.floor(n*0.95)` 는 n=20 에서 19=max 가 돼 p95==max 가 됨.
+  // (n-1)*p 인덱스 + 보간으로 보편적 의미 회복.
+  const idx = (n - 1) * 0.95;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  const p95 = lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
   return { median, mean, min: sorted[0], max: sorted[n - 1], p95, trimmed_mean };
 }
 
