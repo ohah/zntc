@@ -136,9 +136,10 @@ pub const ModuleInfo = struct {
     code: ?[]const u8,
     /// tree-shake 후 번들에 포함된 모듈인지 (Rollup `isIncluded` 호환).
     is_included: bool,
-    /// 모듈의 export binding 목록 (Rollup `exports` 호환). NAPI 가 `.exported_name` 으로 투영.
-    /// external 모듈은 빈 슬라이스. `m.export_bindings` 의 borrow.
-    export_bindings: []const @import("binding_scanner.zig").ExportBinding,
+    /// 모듈이 export 하는 이름 목록 (Rollup `exports` 호환). default / re-export 별표 모두 포함.
+    /// `Module.exported_names` 의 borrow — graph 에서 이미 평탄 투영됨 (#1883).
+    /// external 모듈은 빈 슬라이스.
+    exports: []const []const u8,
     /// Plugin 이 정의한 synthetic named exports (Rollup `syntheticNamedExports` 호환).
     /// ZTS 는 plugin 시스템 확장 (#1880) 까지 항상 false. 노출 시그니처만 맞춤.
     synthetic_named_exports: bool,
@@ -150,7 +151,6 @@ pub const ModuleInfo = struct {
 };
 
 /// `id` 로 모듈 메타를 조회. 없으면 null. Zero allocation — 모든 slice 가 graph borrow.
-/// `exports` 는 ExportBinding 슬라이스를 그대로 노출 — caller 가 `.exported_name` 으로 투영.
 pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInfo {
     const graph = @as(?*const @import("graph.zig").ModuleGraph, @ptrCast(@alignCast(graph_opaque))) orelse return null;
     const idx = graph.path_to_module.get(id) orelse return null;
@@ -167,7 +167,7 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
         // External phantom 은 source 없음, asset/binary 모듈은 source 비어있을 수 있음.
         .code = if (m.is_external or m.source.len == 0) null else m.source,
         .is_included = m.is_included,
-        .export_bindings = if (m.is_external) &.{} else m.export_bindings,
+        .exports = if (m.is_external) &.{} else m.exported_names,
         // Phase B (plugin context API) 까지 placeholder 값.
         .synthetic_named_exports = false,
         .implicitly_loaded_after_one_of = &.{},

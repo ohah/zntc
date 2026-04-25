@@ -1075,12 +1075,11 @@ const NapiManualChunksResolver = struct {
         _ = c.napi_get_boolean(env, mod_info.synthetic_named_exports, &js_synthetic);
         _ = c.napi_set_named_property(env, js_obj, "syntheticNamedExports", js_synthetic);
 
-        // exports — ExportBinding[] → exported_name string array.
         var js_exports: c.napi_value = undefined;
         _ = c.napi_create_array(env, &js_exports);
-        for (mod_info.export_bindings, 0..) |eb, i| {
+        for (mod_info.exports, 0..) |name, i| {
             var js_name: c.napi_value = undefined;
-            _ = c.napi_create_string_utf8(env, eb.exported_name.ptr, eb.exported_name.len, &js_name);
+            _ = c.napi_create_string_utf8(env, name.ptr, name.len, &js_name);
             _ = c.napi_set_element(env, js_exports, @intCast(i), js_name);
         }
         _ = c.napi_set_named_property(env, js_obj, "exports", js_exports);
