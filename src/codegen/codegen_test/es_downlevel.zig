@@ -2360,3 +2360,52 @@ test "unicode_escape: es2015 no-op" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{1F600}") != null);
 }
+
+// === ES5 async transform regression suite (zts/issues 1896, 1901, 1903) ===
+
+test "ES5: compound assignment with await RHS preserves operator (#1896)" {
+    // `sum += await x()` 가 `sum = _state.sent()` 으로 변환되어 += 누락 → 누적 안 됨.
+    // for-loop / while-loop 둘 다 동일 root cause. Babel/TS 는 `sum += _state.sent()`
+    // 또는 `sum = sum + _state.sent()` 로 emit.
+    var r = try e2eES5Async(std.testing.allocator, "async function f() { var sum = 0; for (var i = 0; i < 3; i++) { sum += await Promise.resolve(i + 1); } return sum; }");
+    defer r.deinit();
+    // 정확한 + 또는 += 보존. `sum=_state.sent()` (단순 = 으로 덮어쓰기) 면 fail.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "sum=_state.sent()") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "sum =_state.sent()") == null);
+}
+
+test "ES5: compound assignment +/while await RHS preserves operator (#1896)" {
+    var r = try e2eES5Async(std.testing.allocator, "async function f() { var i = 0; var sum = 0; while (i < 3) { sum += await Promise.resolve(i); i++; } return sum; }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "sum=_state.sent()") == null);
+}
+
+test "ES5: for-await-of hoists loop var to function top (#1901)" {
+    // `for await (var v of arr)` 의 `var v` 가 함수 top 에 hoist 안 되면 strict mode
+    // 에서 `v is not defined` throw. Babel/TS 는 함수 top 에 모든 var (loop binding +
+    // synthetic helpers) hoist.
+    var r = try e2eTarget(std.testing.allocator, "async function f() { var arr = [Promise.resolve(1)]; for await (var v of arr) {} return v; }", .es5);
+    defer r.deinit();
+    // 함수 top 의 var 선언에 `v` 포함 — `var sum,arr` 같은 형태에 v 추가되어 있어야.
+    // 정확한 hoist 검증: emit 안 어딘가에 함수 top-level `var ` 안 `v` 포함.
+    // 간단화: `var ` + 식별자 chain 안 `v` 가 있어야. 현재 (bug) 는 v 가 없음.
+    // false-negative 회피용으로 substring 검사 — minify 시 `var v,` 또는 `,v,` 또는 `,v;`.
+    const has_v_decl =
+        std.mem.indexOf(u8, r.output, "var v;") != null or
+        std.mem.indexOf(u8, r.output, "var v=") != null or
+        std.mem.indexOf(u8, r.output, "var v,") != null or
+        std.mem.indexOf(u8, r.output, ",v;") != null or
+        std.mem.indexOf(u8, r.output, ",v=") != null or
+        std.mem.indexOf(u8, r.output, ",v,") != null;
+    try std.testing.expect(has_v_decl);
+}
+
+test "ES5: await in default param of nested async function (#1903)" {
+    // `async function inner(x = await ...)` 가 ES spec 상 허용 (default param 은 async
+    // function body 의 일부, await 가능). 현재 ZTS parser 가 `await not allowed` 로 reject.
+    // 단순 transform 후 parser 가 통과해야 (정확한 emit 검증은 fix 후 별도).
+    var r = try e2eTarget(std.testing.allocator, "async function f() { async function inner(x = await Promise.resolve(7)) { return x; } return await inner(); }", .es5);
+    defer r.deinit();
+    // 통과만 확인 (parser reject 면 위 line 에서 errdefer/error 로 fail).
+    try std.testing.expect(r.output.len > 0);
+}
