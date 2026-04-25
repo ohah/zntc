@@ -1056,6 +1056,17 @@ const NapiManualChunksResolver = struct {
         _ = c.napi_get_boolean(env, mod_info.has_module_side_effects, &js_has_side_effects);
         _ = c.napi_set_named_property(env, js_obj, "hasModuleSideEffects", js_has_side_effects);
 
+        var js_code: c.napi_value = undefined;
+        if (mod_info.code) |src| {
+            // UTF-8 검증 실패 시 null 로 fallback (binary loader 등 비-UTF8 source 대응)
+            if (c.napi_create_string_utf8(env, src.ptr, src.len, &js_code) != c.napi_ok) {
+                _ = c.napi_get_null(env, &js_code);
+            }
+        } else {
+            _ = c.napi_get_null(env, &js_code);
+        }
+        _ = c.napi_set_named_property(env, js_obj, "code", js_code);
+
         _ = c.napi_set_named_property(env, js_obj, "importers", pathArrayFromIndices(env, graph, mod_info.importers));
         _ = c.napi_set_named_property(env, js_obj, "dynamicImporters", pathArrayFromIndices(env, graph, mod_info.dynamic_importers));
         _ = c.napi_set_named_property(env, js_obj, "importedIds", pathArrayFromIndices(env, graph, mod_info.imported_ids));

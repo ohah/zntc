@@ -210,6 +210,10 @@ export interface ManualChunksModuleInfo {
    * `package.json` `sideEffects` 필드 또는 `treeShaking.moduleSideEffects` 옵션으로 결정.
    * `false` 면 unused 시 tree-shaker 가 제거 가능. */
   hasModuleSideEffects: boolean;
+  /** 모듈 source 코드 (Rollup `code` 호환).
+   * external / asset / 미파싱 모듈은 null. UTF-8 디코딩 실패 시도 null.
+   * `meta.getModuleInfo` 호출 시점에 graph 의 source 를 JS 문자열로 복사 — 큰 모듈은 비용 있음. */
+  code: string | null;
   /** 이 모듈을 static import 하는 모듈들. external 도 importer 목록에 포함됨
    * (자기 자신은 external 일 때 in-graph 모듈이 importer). */
   importers: string[];
