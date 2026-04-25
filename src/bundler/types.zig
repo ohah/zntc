@@ -130,6 +130,10 @@ pub const ModuleInfo = struct {
     is_entry: bool,
     /// `external` 패턴 매칭으로 번들에 포함되지 않는 모듈인지 여부 (Rollup `isExternal` 호환).
     is_external: bool,
+    /// 모듈이 side effect 를 가질 수 있는지 (Rollup `hasModuleSideEffects` 호환).
+    /// `package.json` `sideEffects` 필드 또는 `treeShaking.moduleSideEffects` 옵션으로 결정.
+    /// false 면 unused 시 tree-shaker 가 제거 가능.
+    has_module_side_effects: bool,
 };
 
 /// `id` 로 모듈 메타를 조회. 없으면 null. Zero allocation — graph 내부 slice borrow.
@@ -145,6 +149,7 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
         .dynamically_imported_ids = m.dynamic_imports.items,
         .is_entry = m.is_entry_point,
         .is_external = m.is_external,
+        .has_module_side_effects = m.side_effects,
     };
 }
 
