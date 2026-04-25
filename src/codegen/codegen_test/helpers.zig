@@ -170,6 +170,52 @@ pub fn expectAsyncStateMachine(output: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, output, "yield") == null);
 }
 
+/// `e2eTarget(.es5)` + 표준 async state-machine 검증 (`expectAsyncStateMachine` +
+/// `assertNoAsyncSelfLoop`). 호출자는 deinit 만 책임 + 추가 assertion 자유.
+pub fn e2eES5Async(allocator: std.mem.Allocator, source: []const u8) !TestResult {
+    var r = try e2eTarget(allocator, source, .es5);
+    errdefer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try assertNoAsyncSelfLoop(r.output);
+    return r;
+}
+
+/// `case N:_state.sent();return [3,N]` (await resume 직후 자기 case label 으로 jump = self-loop).
+/// 정상은 forward jump (`[3,M]` with M > N) 또는 end (`[2]`). 모든 `_state.sent();return [3,M]` 출현
+/// 별로 그 직전 `case N:` 를 찾아 N == M 이면 self-loop. case 수 무제한.
+/// (zts/issues/1887 회귀 방지 — `collectIfOperations` sentinel/fixup 패턴 검증.)
+pub fn assertNoAsyncSelfLoop(output: []const u8) !void {
+    const sent_marker = "_state.sent();return [3,";
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, output, search_start, sent_marker)) |sent_pos| {
+        const target_start = sent_pos + sent_marker.len;
+        const target_end = std.mem.indexOfScalarPos(u8, output, target_start, ']') orelse break;
+        const target_str = std.mem.trim(u8, output[target_start..target_end], " ");
+        const target_label = std.fmt.parseInt(u32, target_str, 10) catch {
+            search_start = target_end;
+            continue;
+        };
+        // `_state.sent()` 직전 가장 가까운 `case N:` 찾기.
+        const case_marker = "case ";
+        const before = output[0..sent_pos];
+        const case_pos = std.mem.lastIndexOf(u8, before, case_marker) orelse {
+            search_start = target_end;
+            continue;
+        };
+        const num_start = case_pos + case_marker.len;
+        const num_end = std.mem.indexOfScalarPos(u8, output, num_start, ':') orelse break;
+        const case_label = std.fmt.parseInt(u32, output[num_start..num_end], 10) catch {
+            search_start = target_end;
+            continue;
+        };
+        if (case_label == target_label) {
+            std.debug.print("\nself-loop detected: case {d} → return [3,{d}] in:\n{s}\n", .{ case_label, target_label, output });
+            return error.AsyncSelfLoopDetected;
+        }
+        search_start = target_end;
+    }
+}
+
 // --- Flow helpers ---
 
 pub fn e2eFlow(backing_allocator: std.mem.Allocator, source: []const u8) !TestResult {

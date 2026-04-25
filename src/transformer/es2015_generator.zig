@@ -391,41 +391,42 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             else
                 try self.visitNode(condition);
             const has_else = !else_body.isNone();
-            // else 없으면 else_label 할당하지 않음 (nop 수와 label 수 일치)
-            const else_label = if (has_else) blk: {
-                const l = next_label.*;
-                next_label.* += 1;
-                break :blk l;
-            } else @as(u32, 0);
-            const end_label = next_label.*;
-            next_label.* += 1;
 
-            // if (!cond) goto else_label or end_label
+            // `collectForOperations` 와 동일 sentinel/fixup 패턴 — else_label / end_label
+            // 을 미리 할당하면 then body 안 yield 가 같은 label 값을 yield-resume 으로 사용해
+            // self-loop 발생 (#1887). for/while/switch 는 이미 sentinel pattern, if 만
+            // 빠져있던 버그.
+            const if_ops_start = ops.items.len;
+
+            // if (!cond) goto else_label or end_label  (sentinel)
             try ops.append(self.allocator, .{
                 .code = .break_when_false,
                 .arg = .{ .label_and_node = .{
-                    .label = if (has_else) else_label else end_label,
+                    .label = if (has_else) IF_ELSE_SENTINEL else IF_END_SENTINEL,
                     .node = new_cond,
                 } },
             });
 
-            // then body
             try collectBodyOperations(self, then_body, ops, next_label);
 
-            // goto end (then body가 return/break로 끝나면 생략 — dead code 방지)
+            // goto end (sentinel) — then body가 return/break로 끝나면 생략 (dead code 방지)
             if (ops.items.len == 0 or (ops.items[ops.items.len - 1].code != .return_op and ops.items[ops.items.len - 1].code != .break_op)) {
-                try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_label } });
+                try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = IF_END_SENTINEL } });
             }
 
-            // else label
-            if (!else_body.isNone()) {
-                // mark else_label (nop으로 case 경계)
+            if (has_else) {
+                const else_label = next_label.*;
+                next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+                fixupSentinel(ops.items[if_ops_start..], IF_ELSE_SENTINEL, else_label);
                 try collectBodyOperations(self, else_body, ops, next_label);
             }
 
-            // mark end_label
+            // end_label: then/else body 처리 *후* 에 할당 → yield 와 충돌 안 함.
+            const end_label = next_label.*;
+            next_label.* += 1;
             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+            fixupSentinel(ops.items[if_ops_start..], IF_END_SENTINEL, end_label);
         }
 
         /// for문의 연산 수집.
@@ -777,6 +778,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         }
 
         const LABEL_SENTINEL_BASE = std.math.maxInt(u32);
+
+        // Sentinel reserved ranges (모두 LABEL_SENTINEL_BASE 의 offset). fixupSentinel 가
+        // ops_start 이후만 처리하므로 nested scope 끼리는 충돌 안 함. 같은 scope 안 동시
+        // 사용은 서로 다른 offset 필요.
+        //   0..depth*2  → break/continue (nesting depth 별 — `breakSentinel`/`continueSentinel`)
+        //   100..       → switch case fall-through (`collectSwitchOperations`)
+        //   200, 201    → if-end / if-else (`collectIfOperations`)
+        const IF_END_SENTINEL = LABEL_SENTINEL_BASE - 200;
+        const IF_ELSE_SENTINEL = LABEL_SENTINEL_BASE - 201;
 
         /// nesting depth에 따라 고유한 break/continue sentinel 생성.
         /// 중첩 labeled scope에서 sentinel 충돌을 방지.
