@@ -9,11 +9,15 @@
  */
 import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
+import type { BundleOptionsInput } from "../../../packages/wasm/index.ts";
 import {
   BTN_CLASS,
   Badge,
+  Chk,
   EditorPanel,
   SELECT_BTN_CLASS,
+  Section,
+  Sel,
   editorOpts,
   inferLanguage,
 } from "./playground-shared";
@@ -77,10 +81,40 @@ const BUNDLE_DEBOUNCE_MS = 200;
 
 const BASE_URL = (import.meta.env.BASE_URL ?? "/").replace(/\/?$/, "/");
 
+interface BundleOpts {
+  format: "esm" | "cjs" | "iife";
+  platform: "browser" | "node" | "neutral" | "react-native";
+  minify: boolean;
+  minifyWhitespace: boolean;
+  minifyIdentifiers: boolean;
+  minifySyntax: boolean;
+}
+
+const DEFAULT_OPTS: BundleOpts = {
+  format: "esm",
+  platform: "browser",
+  minify: false,
+  minifyWhitespace: false,
+  minifyIdentifiers: false,
+  minifySyntax: false,
+};
+
+function toApiOptions(opts: BundleOpts): BundleOptionsInput {
+  return {
+    format: opts.format,
+    platform: opts.platform,
+    minify: opts.minify,
+    minifyWhitespace: opts.minifyWhitespace,
+    minifyIdentifiers: opts.minifyIdentifiers,
+    minifySyntax: opts.minifySyntax,
+  };
+}
+
 export default function PlaygroundBundler() {
   const [files, setFiles] = useState<VfsFile[]>(PRESETS[0].files);
   const [activePath, setActivePath] = useState<string>(PRESETS[0].entry);
   const [entryPath, setEntryPath] = useState<string>(PRESETS[0].entry);
+  const [opts, setOpts] = useState<BundleOpts>(DEFAULT_OPTS);
   const [output, setOutput] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -89,7 +123,7 @@ export default function PlaygroundBundler() {
   const vfsRef = useRef<InstanceType<WasmModule["VirtualFileSystem"]> | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function runBundle(nextFiles: VfsFile[], entry: string) {
+  function runBundle(nextFiles: VfsFile[], entry: string, nextOpts: BundleOpts) {
     const wasm = wasmRef.current;
     const vfs = vfsRef.current;
     if (!wasm || !vfs) return;
@@ -98,7 +132,7 @@ export default function PlaygroundBundler() {
     for (const f of nextFiles) vfs.set(f.path, f.content);
 
     try {
-      const result = wasm.build(entry);
+      const result = wasm.build(entry, toApiOptions(nextOpts));
       if (result === null) {
         setOutput("");
         setError(`Bundle failed — entry "${entry}" 가 빈 출력을 반환했거나 해석 실패`);
@@ -112,13 +146,16 @@ export default function PlaygroundBundler() {
     }
   }
 
-  function scheduleBundle(nextFiles: VfsFile[], entry: string) {
+  function scheduleBundle(nextFiles: VfsFile[], entry: string, nextOpts: BundleOpts) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => runBundle(nextFiles, entry), BUNDLE_DEBOUNCE_MS);
+    debounceRef.current = setTimeout(
+      () => runBundle(nextFiles, entry, nextOpts),
+      BUNDLE_DEBOUNCE_MS,
+    );
   }
 
   useEffect(() => {
-    // Init 한 번만 — files/entryPath 변경은 핸들러에서 직접 scheduleBundle 호출.
+    // Init 한 번만 — files/entryPath/opts 변경은 핸들러에서 직접 scheduleBundle 호출.
     (async () => {
       try {
         const mod = await import("../../../packages/wasm/index.ts");
@@ -129,7 +166,7 @@ export default function PlaygroundBundler() {
         wasmRef.current = mod;
         vfsRef.current = vfs;
         setLoading(false);
-        runBundle(files, entryPath);
+        runBundle(files, entryPath, opts);
       } catch (err) {
         setError(`WASM bundler load failed: ${err}`);
         setLoading(false);
@@ -147,7 +184,7 @@ export default function PlaygroundBundler() {
     const code = value ?? "";
     const next = files.map((f) => (f.path === activePath ? { ...f, content: code } : f));
     setFiles(next);
-    scheduleBundle(next, entryPath);
+    scheduleBundle(next, entryPath, opts);
   }
 
   function handleAddFile() {
@@ -157,7 +194,7 @@ export default function PlaygroundBundler() {
     const next = [...files, { path, content: "", language: inferLanguage(path) }];
     setFiles(next);
     setActivePath(path);
-    runBundle(next, entryPath);
+    runBundle(next, entryPath, opts);
   }
 
   function handleRenameFile(oldPath: string) {
@@ -172,7 +209,7 @@ export default function PlaygroundBundler() {
     setFiles(next);
     setActivePath(newPath);
     if (nextEntry !== entryPath) setEntryPath(nextEntry);
-    runBundle(next, nextEntry);
+    runBundle(next, nextEntry, opts);
   }
 
   function handleDeleteFile(path: string) {
@@ -183,12 +220,12 @@ export default function PlaygroundBundler() {
     setFiles(next);
     if (nextActive !== activePath) setActivePath(nextActive);
     if (nextEntry !== entryPath) setEntryPath(nextEntry);
-    runBundle(next, nextEntry);
+    runBundle(next, nextEntry, opts);
   }
 
   function handleSetEntry(path: string) {
     setEntryPath(path);
-    runBundle(files, path);
+    runBundle(files, path, opts);
   }
 
   function handlePreset(label: string) {
@@ -197,7 +234,22 @@ export default function PlaygroundBundler() {
     setFiles(preset.files);
     setActivePath(preset.entry);
     setEntryPath(preset.entry);
-    runBundle(preset.files, preset.entry);
+    runBundle(preset.files, preset.entry, opts);
+  }
+
+  function updateOpt<K extends keyof BundleOpts>(key: K, value: BundleOpts[K]) {
+    setOpts((prev) => {
+      const next = { ...prev, [key]: value };
+      // minify shorthand 토글 시 개별 minify* 모두 동기화 (transpile playground 와 동일).
+      if (key === "minify") {
+        const b = value as boolean;
+        next.minifyWhitespace = b;
+        next.minifyIdentifiers = b;
+        next.minifySyntax = b;
+      }
+      runBundle(files, entryPath, next);
+      return next;
+    });
   }
 
   return (
@@ -324,10 +376,57 @@ export default function PlaygroundBundler() {
               })}
             </ul>
             <div className="mt-3 border-t border-surface-800 pt-2 text-[11px] text-neutral-500">
-              <p className="mb-1">
+              <p>
                 <span className="text-zig-400">●</span> = entry point
               </p>
-              <p>esm / browser 고정 (Phase 2)</p>
+            </div>
+
+            <div className="mt-4">
+              <Section title="Bundler">
+                <Sel
+                  label="Format"
+                  value={opts.format}
+                  onChange={(v) => updateOpt("format", v as BundleOpts["format"])}
+                  options={[
+                    ["esm", "ESM"],
+                    ["cjs", "CJS"],
+                    ["iife", "IIFE"],
+                  ]}
+                />
+                <Sel
+                  label="Platform"
+                  value={opts.platform}
+                  onChange={(v) => updateOpt("platform", v as BundleOpts["platform"])}
+                  options={[
+                    ["browser", "Browser"],
+                    ["node", "Node"],
+                    ["neutral", "Neutral"],
+                    ["react-native", "React Native"],
+                  ]}
+                />
+              </Section>
+              <Section title="Output">
+                <Chk
+                  label="Minify (all)"
+                  checked={opts.minify}
+                  onChange={(v) => updateOpt("minify", v)}
+                />
+                <Chk
+                  label="Whitespace"
+                  checked={opts.minifyWhitespace}
+                  onChange={(v) => updateOpt("minifyWhitespace", v)}
+                />
+                <Chk
+                  label="Identifiers"
+                  checked={opts.minifyIdentifiers}
+                  onChange={(v) => updateOpt("minifyIdentifiers", v)}
+                />
+                <Chk
+                  label="Syntax"
+                  checked={opts.minifySyntax}
+                  onChange={(v) => updateOpt("minifySyntax", v)}
+                />
+              </Section>
             </div>
           </div>
         )}

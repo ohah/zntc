@@ -4,8 +4,12 @@ import type { TranspileResult } from "../../../packages/shared/index";
 import {
   BTN_CLASS,
   Badge,
+  Chk,
   EditorPanel,
   SELECT_BTN_CLASS,
+  Section,
+  Sel,
+  Txt,
   editorOpts as sharedEditorOpts,
   inferLanguage,
 } from "./playground-shared";
@@ -497,57 +501,6 @@ export default function Playground() {
           </EditorPanel>
         </div>
       </div>
-    </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="mb-3">
-      <div className="mb-1.5 border-b border-surface-800 pb-1 text-[11px] font-bold uppercase tracking-[0.08em] text-neutral-400">
-        {title}
-      </div>
-      <div className="flex flex-col gap-1.5">{children}</div>
-    </div>
-  );
-}
-
-function Chk({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <label className="flex cursor-pointer items-center gap-1.5 text-[13px] text-neutral-300">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      {label}
-    </label>
-  );
-}
-
-const FIELD_CLASS =
-  "max-w-[130px] rounded border border-surface-800 bg-surface-950 px-1 py-0.5 text-[12px] text-neutral-200";
-
-function Sel({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: [string, string][] }) {
-  return (
-    <div className="flex items-center justify-between text-[13px] text-neutral-300">
-      <span>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={FIELD_CLASS}>
-        {options.map(([v, t]) => (
-          <option key={v} value={v}>{t}</option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function Txt({ label, value, placeholder, onChange }: { label: string; value: string; placeholder?: string; onChange: (v: string) => void }) {
-  return (
-    <div className="flex items-center justify-between text-[13px] text-neutral-300">
-      <span>{label}</span>
-      <input
-        type="text"
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        className={`${FIELD_CLASS} w-[130px]`}
-      />
     </div>
   );
 }
