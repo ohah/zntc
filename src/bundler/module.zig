@@ -144,6 +144,10 @@ pub const Module = struct {
     /// `meta.getModuleInfo` / `info.importedIds` 등 graph traversal API 의 1급 노드로 보이지만
     /// chunk 배정 / emit / tree-shake 에선 제외. AST 없음, source 없음, path = original specifier.
     is_external: bool = false,
+    /// tree-shake 결과 — 번들에 포함된 모듈인지 (Rollup `info.isIncluded` 호환).
+    /// `TreeShaker.analyze` 가 finalize 후 set. 기본 false 라 tree-shaking 비활성 시
+    /// 의미 없음 — chunk gen 단계에서도 `m.side_effects or entry_set.isSet` 으로 항상 alive 처리.
+    is_included: bool = false,
     /// package.json "module" 필드를 통해 resolve된 파일.
     /// .js 확장자라도 ESM으로 파싱해야 함.
     is_module_field: bool = false,
