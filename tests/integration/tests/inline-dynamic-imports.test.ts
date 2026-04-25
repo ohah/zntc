@@ -98,9 +98,10 @@ describe("inlineDynamicImports (structural)", () => {
     expect(outs[0].text).toContain("UTIL_MARK");
   });
 
-  test("true: same-chunk dynamic import 는 specifier 그대로 유지 (런타임 위임)", async () => {
-    // inline 모드에서도 `import("./lazy")` 호출 텍스트는 남아있어야 한다 (A 범위 스펙).
-    // 런타임 registry 를 통한 해석은 후속 PR.
+  test("true: same-chunk dynamic import 가 __esm wrapper 호출로 재작성", async () => {
+    // B 범위 — `import("./x")` 가 `Promise.resolve().then(()=>(init_x(),exports_x))` 로
+    // 재작성. 결과적으로 (1) 원본 import() 텍스트는 사라지고 (2) __esm + exports 객체
+    // 패턴이 들어간다.
     const fixture = await createFixture({
       "entry.ts": `
         async function boot() { const m = await import("./lazy"); console.log(m.v); }
@@ -116,9 +117,14 @@ describe("inlineDynamicImports (structural)", () => {
       inlineDynamicImports: true,
     });
 
-    // 청크 파일명으로 specifier 가 재작성되지 않고 원본 유지되는지
-    // (재작성됐으면 "./lazy.js" 같은 .js 확장자가 따라붙는다)
-    expect(result.outputFiles![0].text).toMatch(/import\s*\(\s*["']\.\/lazy["']\s*\)/);
+    const text = result.outputFiles![0].text;
+    // import("./lazy") 가 재작성되어 사라짐
+    expect(text).not.toMatch(/import\s*\(\s*["']\.\/lazy["']\s*\)/);
+    // wrapper 호출 패턴 등장
+    expect(text).toMatch(/Promise\.resolve\(\)\.then/);
+    expect(text).toMatch(/__esm\(\{/);
+    expect(text).toMatch(/exports_lazy/);
+    expect(text).toMatch(/init_lazy/);
   });
 
   test("meta.getModuleInfo 는 dynamic 관계를 그대로 관찰", async () => {

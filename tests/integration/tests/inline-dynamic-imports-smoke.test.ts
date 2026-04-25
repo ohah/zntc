@@ -1,4 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createFixture, hasPackage } from "./helpers";
 import { init, close, build } from "../../../packages/core/index";
@@ -6,8 +8,16 @@ import { init, close, build } from "../../../packages/core/index";
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
 const ROOT_NODE_MODULES = join(PROJECT_ROOT, "node_modules");
 
+// 빌드 결과를 Node 로 실행해 stdout 캡처. B 범위 런타임 정합성 검증용.
+function runBundleInNode(outDir: string, entryFile: string): string {
+  const r = spawnSync("node", [entryFile], { stdio: "pipe", timeout: 15000, cwd: outDir });
+  if (r.status !== 0) {
+    throw new Error(`node failed (${r.status}): ${r.stderr?.toString().slice(0, 1000)}`);
+  }
+  return r.stdout.toString();
+}
+
 // `inlineDynamicImports` 스모크 — 실전 크기의 fixture + 라이브러리로 구조 검증.
-// 런타임 실행은 A 범위 밖 (후속 PR).
 
 describe("inlineDynamicImports smoke", () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -223,4 +233,142 @@ describe("inlineDynamicImports smoke", () => {
       expect(outs[0].moduleIds!.some((m) => m.includes("clsx"))).toBe(true);
     },
   );
+
+  // ============================================================
+  // 런타임 정합성 — Node 실행 + stdout 검증
+  // ============================================================
+
+  test("런타임: import() 결과 가 정상 namespace 객체 (exports 접근 가능)", async () => {
+    const fixture = await createFixture({
+      "package.json": '{"type":"module"}',
+      "lazy.ts": `
+        export const greeting = "HELLO_FROM_LAZY";
+        export function answer() { return 42; }
+      `,
+      "entry.ts": `
+        async function boot() {
+          const m = await import("./lazy");
+          console.log("OUT:" + m.greeting + "|" + m.answer());
+        }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outDir = join(fixture.dir, "dist");
+    mkdirSync(outDir, { recursive: true });
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      inlineDynamicImports: true,
+      outdir: outDir,
+      write: true,
+    });
+
+    const stdout = runBundleInNode(outDir, "entry.js");
+    expect(stdout).toContain("OUT:HELLO_FROM_LAZY|42");
+  });
+
+  test("런타임: 같은 모듈 두 번 import() 시 namespace identity 보존 (===)", async () => {
+    const fixture = await createFixture({
+      "package.json": '{"type":"module"}',
+      "lazy.ts": "export const v = 1;",
+      "entry.ts": `
+        async function boot() {
+          const a = await import("./lazy");
+          const b = await import("./lazy");
+          console.log("IDENTITY:" + (a === b));
+        }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outDir = join(fixture.dir, "dist");
+    mkdirSync(outDir, { recursive: true });
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      inlineDynamicImports: true,
+      outdir: outDir,
+      write: true,
+    });
+
+    const stdout = runBundleInNode(outDir, "entry.js");
+    expect(stdout).toContain("IDENTITY:true");
+  });
+
+  test("런타임: top-level side effect 가 정확히 1회 실행 (캐싱)", async () => {
+    const fixture = await createFixture({
+      "package.json": '{"type":"module"}',
+      "lazy.ts": `
+        console.log("SIDE_EFFECT");
+        export const v = 1;
+      `,
+      "entry.ts": `
+        async function boot() {
+          await import("./lazy");
+          await import("./lazy");
+          await import("./lazy");
+          console.log("DONE");
+        }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outDir = join(fixture.dir, "dist");
+    mkdirSync(outDir, { recursive: true });
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      inlineDynamicImports: true,
+      outdir: outDir,
+      write: true,
+    });
+
+    const stdout = runBundleInNode(outDir, "entry.js");
+    // SIDE_EFFECT 가 정확히 1번
+    const sideEffectCount = stdout.split("SIDE_EFFECT").length - 1;
+    expect(sideEffectCount).toBe(1);
+    expect(stdout).toContain("DONE");
+  });
+
+  test("런타임: live binding — exports 가 모듈 함수 호출 후 변경 사항 반영", async () => {
+    const fixture = await createFixture({
+      "package.json": '{"type":"module"}',
+      "lazy.ts": `
+        export let counter = 0;
+        export function inc() { counter++; }
+      `,
+      "entry.ts": `
+        async function boot() {
+          const m = await import("./lazy");
+          console.log("BEFORE:" + m.counter);
+          m.inc();
+          m.inc();
+          console.log("AFTER:" + m.counter);
+        }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outDir = join(fixture.dir, "dist");
+    mkdirSync(outDir, { recursive: true });
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      inlineDynamicImports: true,
+      outdir: outDir,
+      write: true,
+    });
+
+    const stdout = runBundleInNode(outDir, "entry.js");
+    expect(stdout).toContain("BEFORE:0");
+    expect(stdout).toContain("AFTER:2");
+  });
+
+  // 미사용 import 회피
+  void writeFileSync;
 });
