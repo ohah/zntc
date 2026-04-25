@@ -281,11 +281,49 @@ function toApiOptions(opts: BundleOpts): BundleOptionsInput {
   };
 }
 
+interface SharePayload {
+  files: { path: string; content: string }[];
+  entry: string;
+  opts?: Partial<BundleOpts>;
+}
+
+interface InitialState {
+  files: VfsFile[];
+  entry: string;
+  opts: BundleOpts;
+}
+
+function decodeShareHash(): InitialState | null {
+  if (typeof window === "undefined") return null;
+  const hash = window.location.hash.slice(1);
+  if (!hash) return null;
+  try {
+    const decoded = decodeURIComponent(escape(atob(hash)));
+    const parsed = JSON.parse(decoded) as SharePayload;
+    if (!Array.isArray(parsed.files) || parsed.files.length === 0) return null;
+    return {
+      files: parsed.files.map((f) => ({
+        path: f.path,
+        content: f.content,
+        language: inferLanguage(f.path),
+      })),
+      entry: parsed.entry || parsed.files[0].path,
+      opts: { ...DEFAULT_OPTS, ...parsed.opts },
+    };
+  } catch {
+    return null;
+  }
+}
+
 export default function PlaygroundBundler() {
-  const [files, setFiles] = useState<VfsFile[]>(PRESETS[0].files);
-  const [activePath, setActivePath] = useState<string>(PRESETS[0].entry);
-  const [entryPath, setEntryPath] = useState<string>(PRESETS[0].entry);
-  const [opts, setOpts] = useState<BundleOpts>(DEFAULT_OPTS);
+  const initial = decodeShareHash();
+  const initFiles = initial?.files ?? PRESETS[0].files;
+  const initEntry = initial?.entry ?? PRESETS[0].entry;
+  const initOpts = initial?.opts ?? DEFAULT_OPTS;
+  const [files, setFiles] = useState<VfsFile[]>(initFiles);
+  const [activePath, setActivePath] = useState<string>(initEntry);
+  const [entryPath, setEntryPath] = useState<string>(initEntry);
+  const [opts, setOpts] = useState<BundleOpts>(initOpts);
   const [chunks, setChunks] = useState<OutputChunk[]>([]);
   const [activeChunkPath, setActiveChunkPath] = useState<string>("");
   const [error, setError] = useState("");
@@ -403,6 +441,25 @@ export default function PlaygroundBundler() {
     runBundle(files, path, opts);
   }
 
+  function handleShare() {
+    // 기본값과 다른 옵션만 포함해 URL 길이 최소화. files 의 language 는 path 에서
+    // 추론 가능하니 share payload 에서 제외 (decode 시 inferLanguage).
+    const changedOpts: Partial<BundleOpts> = {};
+    for (const [k, v] of Object.entries(opts)) {
+      if (v !== (DEFAULT_OPTS as Record<string, unknown>)[k]) {
+        (changedOpts as Record<string, unknown>)[k] = v;
+      }
+    }
+    const payload: SharePayload = {
+      files: files.map((f) => ({ path: f.path, content: f.content })),
+      entry: entryPath,
+      ...(Object.keys(changedOpts).length > 0 ? { opts: changedOpts } : {}),
+    };
+    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    const url = `${window.location.origin}${window.location.pathname}#${encoded}`;
+    navigator.clipboard.writeText(url).catch(() => {});
+  }
+
   function handlePreset(label: string) {
     const preset = PRESETS.find((p) => p.label === label);
     if (!preset) return;
@@ -472,6 +529,9 @@ export default function PlaygroundBundler() {
               </option>
             ))}
           </select>
+          <button type="button" onClick={handleShare} className={BTN_CLASS}>
+            Share
+          </button>
           <a href={`${BASE_URL}playground/`} className={BTN_CLASS}>
             Transpile 모드
           </a>
