@@ -263,3 +263,19 @@ Zig 코어 (parser + transformer + codegen)
 - **도입 시점**: Phase 6 초반에 C ABI 노출 → N-API 바인딩 → npm 패키지 → 플러그인 래퍼
 - **핵심**: N-API 바인딩 하나만 만들면 Vite/Webpack/Rollup 플러그인은 JS 래퍼 수십 줄
 - esbuild, SWC가 동일한 구조로 생태계 확장에 성공한 검증된 패턴
+
+## WASM 빌드 사이즈 (#1885 / #1899)
+
+WASM 모듈은 **transpile-only** 와 **bundler** 두 binary 로 분리해서 빌드한다 — bundler 는 graph/resolver/linker + wasi-libc (thread support) 가 포함되어 ~1.7배 크기.
+playground 가 trans pile-only 모드에선 작은 binary 만 다운로드, bundler 모드 진입 시 lazy 로드 (`initBundler()`) — 두 함수가 별도 entry point 라 자연 lazy.
+
+`zig build wasm wasm-bundler` (둘 다 `.optimize = .ReleaseSmall`) 후 `bun scripts/measure-wasm-size.ts` 로 측정한 사이즈:
+
+| Target | Role | Raw | Gzip (-9) | Brotli (q=11) |
+|---|---|---:|---:|---:|
+| `zts.wasm` | transpile-only | 908.5 KiB | 321.0 KiB | 250.0 KiB |
+| `zts-bundler.wasm` | bundler | 1.57 MiB | 512.6 KiB | 393.7 KiB |
+
+- 분리 결정: 단일 binary (1.57 MiB) 면 transpile-only playground 도 풀 bundler 다운로드 강제 → 분리 우위. 후속 wasm-opt (binaryen) 적용 시 추가 10-30% 절감 가능 (별도 follow-up).
+- `playground/bundler` 페이지에서만 `initBundler()` 호출 → bundler binary 가 lazy 로드.
+- 회귀 추적: `bun scripts/measure-wasm-size.ts` 를 빌드 후 실행. CI 통합은 후속 PR.
