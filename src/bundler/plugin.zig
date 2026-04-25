@@ -28,13 +28,10 @@ pub const PluginError = error{
     OutOfMemory,
 };
 
-/// Plugin resolveId 응답의 통합 모델 (#1885 Phase 1 PR 4 — 옵션 B).
+/// Plugin resolveId 응답의 통합 모델 (#1885).
 ///
 /// origin 별 type-safe 분기 — esbuild 의 string namespace 보다 컴파일 타임 안전.
 /// rolldown 의 풍부한 ResolvedId 와 비슷하지만 tag 가 fs.Namespace 와 통일.
-///
-/// PR 4a 단계: 타입 정의 + 변환 helper 만. 호출처 (graph/resolver/cache) 의
-/// `ResolveResult` 직접 사용은 PR 4b/4c 에서 점진 마이그레이션.
 pub const ResolvedModule = union(fs.Namespace) {
     /// fs 또는 plugin 이 제공한 실제 파일. 절대 경로 + module_type + ESM hint.
     file: struct {
@@ -57,8 +54,7 @@ pub const ResolvedModule = union(fs.Namespace) {
         path: []const u8,
     },
     /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 방식).
-    /// `resolver.ResolveResult.disabled = true` 와 동등 semantic — 변환 helper
-    /// fromLegacy/toLegacy 가 정확 매핑. PR 4d 에서 단일 표현으로 통합.
+    /// `resolver.ResolveResult.disabled = true` 와 동등 semantic.
     /// module_type 보존 — resolve_cache 의 cache lookup 정보 손실 방지.
     disabled: struct {
         path: []const u8,
@@ -73,7 +69,8 @@ pub const ResolvedModule = union(fs.Namespace) {
 };
 
 /// 기존 `ResolveResult` (struct) → `ResolvedModule` (union) 변환.
-/// PR 4b/4c 마이그레이션 중간 호환 layer. 모든 마이그레이션 완료 시 제거 (PR 4d).
+/// 현재 graph 의 plugin runner 응답 변환에 사용 — plugin runner 가 union 직접
+/// 반환으로 마이그레이션되면 제거 가능 (TODO).
 pub fn fromLegacy(r: ResolveResult) ResolvedModule {
     if (r.disabled) return .{ .disabled = .{
         .path = r.path,
