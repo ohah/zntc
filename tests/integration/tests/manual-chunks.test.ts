@@ -515,4 +515,38 @@ describe("manualChunks NAPI bridge", () => {
     expect(results[0].dynamicImporters.length).toBe(1);
     expect(results[0].dynamicImporters[0].endsWith("entry.ts")).toBe(true);
   });
+
+  test("meta.getModuleInfo: external 모듈도 phantom 으로 graph 에 등록 + isExternal=true", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `import { x } from "external-pkg"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const observed: { id: string; isExternal: boolean }[] = [];
+    let entryImportedIds: string[] = [];
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["external-pkg"],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        const info = meta.getModuleInfo(id);
+        if (info) observed.push({ id: info.id, isExternal: info.isExternal });
+        if (id.endsWith("entry.ts") && info) entryImportedIds = info.importedIds;
+        // external 도 직접 조회 가능해야 함
+        const ext = meta.getModuleInfo("external-pkg");
+        if (ext) observed.push({ id: ext.id, isExternal: ext.isExternal });
+        return null;
+      },
+    });
+
+    // external phantom 은 resolver 에 직접 안 옴 (modulesIterator 가 외부도 보지만
+    // 정책상 chunk 배정 받지 않으므로 manual_chunks resolver loop 는 외부 가드 추가 가능 —
+    // 일단 entry resolver 안에서 external-pkg 를 lookup 해 검증).
+    const ext = observed.find((o) => o.id === "external-pkg");
+    expect(ext).toBeDefined();
+    expect(ext!.isExternal).toBe(true);
+
+    // entry 의 importedIds 에 external-pkg 가 포함됨 (Rollup parity)
+    expect(entryImportedIds.some((i) => i === "external-pkg")).toBe(true);
+  });
 });

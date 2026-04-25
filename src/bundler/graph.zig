@@ -667,6 +667,25 @@ pub const ModuleGraph = struct {
         return index;
     }
 
+    /// `external` 패턴 매칭된 specifier 를 phantom Module 로 graph 에 등록.
+    /// 같은 specifier 의 여러 import 는 한 Module 을 공유 — Rollup `getModuleInfo("react")`
+    /// 동일 식별자 의미. AST/source 없음, chunk/emit/tree-shake 에선 별도 가드로 제외.
+    fn addExternalModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex {
+        if (self.path_to_module.get(specifier)) |existing| return existing;
+
+        const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
+        const path_owned = try self.allocator.dupe(u8, specifier);
+        var module = Module.init(index, path_owned);
+        module.is_external = true;
+        module.module_type = .javascript;
+        module.exports_kind = .esm;
+        module.side_effects = true;
+        module.state = .ready;
+        try self.modules.append(self.allocator, module);
+        try self.path_to_module.put(path_owned, index);
+        return index;
+    }
+
     /// 양방향 의존성 등록. from → to (dependencies) + to → from (importers) 를 동시에 append.
     /// graph 가 양방향 관계 책임을 캡슐화. storage 가 SegmentedList 로 바뀌어도 caller 영향 없음.
     pub fn linkDependency(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !void {
@@ -798,7 +817,18 @@ pub const ModuleGraph = struct {
                 try self.linkDependency(mod_index, dep_idx);
             }
         } else {
-            self.modules.at(mod_idx).import_records[rec_i].is_external = true;
+            // external — phantom Module 로 graph 에 등록 + 양방향 link.
+            // 핵심 정책: `record.resolved` 는 `.none` 그대로 둔다. emit/linker 의 기존
+            // `rec.resolved.isNone()` 외부 검출 코드를 깨지 않으면서 ModuleInfo /
+            // graph traversal 에서만 phantom 노드가 보이도록 분리.
+            const ext_idx = try self.addExternalModule(record.specifier);
+            const src_mod = self.modules.at(mod_idx);
+            src_mod.import_records[rec_i].is_external = true;
+            if (record.kind == .dynamic_import) {
+                try self.linkDynamicImport(mod_index, ext_idx);
+            } else {
+                try self.linkDependency(mod_index, ext_idx);
+            }
         }
     }
 

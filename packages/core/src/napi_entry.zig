@@ -1048,6 +1048,10 @@ const NapiManualChunksResolver = struct {
         _ = c.napi_get_boolean(env, mod_info.is_entry, &js_is_entry);
         _ = c.napi_set_named_property(env, js_obj, "isEntry", js_is_entry);
 
+        var js_is_external: c.napi_value = undefined;
+        _ = c.napi_get_boolean(env, mod_info.is_external, &js_is_external);
+        _ = c.napi_set_named_property(env, js_obj, "isExternal", js_is_external);
+
         _ = c.napi_set_named_property(env, js_obj, "importers", pathArrayFromIndices(env, graph, mod_info.importers));
         _ = c.napi_set_named_property(env, js_obj, "dynamicImporters", pathArrayFromIndices(env, graph, mod_info.dynamic_importers));
         _ = c.napi_set_named_property(env, js_obj, "importedIds", pathArrayFromIndices(env, graph, mod_info.imported_ids));
