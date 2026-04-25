@@ -9,6 +9,7 @@ import {
   bundlerVersion,
   build,
   buildChunks,
+  bundlerLastErrorMessage,
 } from "./index";
 
 beforeAll(() => {
@@ -281,8 +282,8 @@ describe("Bundler (minimal)", () => {
     await initBundler(vfs, wasmBytes);
   });
 
-  test("bundlerVersion = ABI v3 (build_chunks 추가)", () => {
-    expect(bundlerVersion()).toBe(3);
+  test("bundlerVersion = ABI v4 (last_error_message_get 추가)", () => {
+    expect(bundlerVersion()).toBe(4);
   });
 
   test("build: 단일 entry → bundle 코드 (TS 어노테이션 strip + 모듈 wrap)", () => {
@@ -360,9 +361,18 @@ describe("Bundler (minimal)", () => {
     expect(chunks![0].code).toContain('"use strict"');
   });
 
-  test("buildChunks: 존재하지 않는 entry → null", () => {
+  test("buildChunks: 존재하지 않는 entry → null + 에러 메시지", () => {
     const chunks = buildChunks("/nonexistent.ts");
     expect(chunks).toBeNull();
+    const msg = bundlerLastErrorMessage();
+    expect(msg.length).toBeGreaterThan(0);
+    // bundle 단계 실패 또는 빈 출력 — 둘 중 하나로 분류되며 메시지에 표시.
+    expect(msg).toMatch(/bundle|nonexistent|빈 출력/);
+  });
+
+  test("bundlerLastErrorMessage: 성공 호출 후엔 비어있음", () => {
+    buildChunks("/index.ts"); // 성공
+    expect(bundlerLastErrorMessage()).toBe("");
   });
 
   test("buildChunks: JSON escape — code 안의 특수 문자 round-trip", () => {

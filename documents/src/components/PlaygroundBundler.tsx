@@ -123,6 +123,50 @@ function greet(name: string): string {
     ],
   },
   {
+    label: "UMD — 브라우저 + Node 양쪽 호환",
+    entry: "/lib.ts",
+    opts: { format: "umd", platform: "neutral" },
+    files: [
+      {
+        path: "/lib.ts",
+        language: "typescript",
+        content: `// format=umd — UMD wrapper: AMD (define) / CJS (exports) / global 자동 분기.
+// 브라우저 <script> 직접 로드 + Node require + RequireJS 모두 지원하는 라이브러리.
+export function greet(name: string): string {
+  return \`Hello, \${name}!\`;
+}
+
+export const VERSION = "1.0.0";
+`,
+      },
+    ],
+  },
+  {
+    label: "AMD — RequireJS 호환",
+    entry: "/module.ts",
+    opts: { format: "amd", platform: "browser" },
+    files: [
+      {
+        path: "/module.ts",
+        language: "typescript",
+        content: `// format=amd — \`define(["dep"], function (dep) { ... })\` 래퍼.
+// RequireJS / SystemJS 같은 AMD 로더 환경 (legacy 또는 dynamic 로딩).
+import { greet } from "./helpers";
+
+export function run(name: string): void {
+  console.log(greet(name));
+}
+`,
+      },
+      {
+        path: "/helpers.ts",
+        language: "typescript",
+        content: `export const greet = (name: string): string => \`Hi, \${name}\`;
+`,
+      },
+    ],
+  },
+  {
     label: "Dynamic import — 코드 스플리팅 시연",
     entry: "/main.ts",
     opts: { codeSplitting: true },
@@ -191,7 +235,7 @@ const BUNDLE_DEBOUNCE_MS = 200;
 const BASE_URL = (import.meta.env.BASE_URL ?? "/").replace(/\/?$/, "/");
 
 interface BundleOpts {
-  format: "esm" | "cjs" | "iife";
+  format: "esm" | "cjs" | "iife" | "umd" | "amd";
   platform: "browser" | "node" | "neutral" | "react-native";
   minify: boolean;
   minifyWhitespace: boolean;
@@ -263,7 +307,8 @@ export default function PlaygroundBundler() {
       const result = wasm.buildChunks(entry, toApiOptions(nextOpts));
       if (result === null || result.length === 0) {
         setChunks([]);
-        setError(`Bundle failed — entry "${entry}" 가 빈 출력을 반환했거나 해석 실패`);
+        const detail = wasm.bundlerLastErrorMessage();
+        setError(detail || `entry "${entry}" 번들 실패`);
         return;
       }
       setChunks(result);
@@ -525,6 +570,8 @@ export default function PlaygroundBundler() {
                     ["esm", "ESM"],
                     ["cjs", "CJS"],
                     ["iife", "IIFE"],
+                    ["umd", "UMD"],
+                    ["amd", "AMD"],
                   ]}
                 />
                 <Sel
