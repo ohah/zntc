@@ -718,7 +718,7 @@ pub const ModuleGraph = struct {
         const module_path = mod_ptr.path;
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
         for (context_deps) |dep| {
-            const resolved = self.resolve_cache.resolveAsModuleThreadSafe(source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
+            const resolved = self.resolve_cache.resolveThreadSafe(source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
                 error.ModuleNotFound => {
                     self.addDiag(
                         .unresolved_import,
@@ -913,7 +913,7 @@ pub const ModuleGraph = struct {
                 }
             }
 
-            const resolved = self.resolve_cache.resolveAsModuleThreadSafe(
+            const resolved = self.resolve_cache.resolveThreadSafe(
                 source_dir,
                 record.specifier,
                 record.kind,
@@ -1560,7 +1560,7 @@ pub const ModuleGraph = struct {
                 // null이면 기본 resolver로 fall through
             }
 
-            const resolved = self.resolve_cache.resolveAsModule(
+            const resolved = self.resolve_cache.resolve(
                 source_dir,
                 record.specifier,
                 record.kind,
@@ -2702,7 +2702,7 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
                     if (resolved_paths_opt) |paths| {
                         // default null — file variant 만 dupe 성공 시 덮어씀.
                         paths[i] = null;
-                        if (self.resolve_cache.resolveAsModuleThreadSafe(source_dir, joined, .require) catch null) |res| switch (res) {
+                        if (self.resolve_cache.resolveThreadSafe(source_dir, joined, .require) catch null) |res| switch (res) {
                             // resolve_cache 가 self.allocator 로 path 할당 → arena 로 dupe 후 free.
                             .file => |f| {
                                 paths[i] = arena_alloc.dupe(u8, f.path) catch null;

@@ -263,7 +263,7 @@ pub const ResolveCache = struct {
     /// specifier를 해석한다. 캐시 히트 시 캐시에서 반환.
     /// 결과는 `ResolvedModule` (union(enum)) — caller 가 variant 분기 처리.
     /// Phase 1 단계에선 file/disabled variant 만 반환.
-    pub fn resolveAsModule(
+    pub fn resolve(
         self: *ResolveCache,
         source_dir: []const u8,
         specifier: []const u8,
@@ -272,8 +272,8 @@ pub const ResolveCache = struct {
         return self.resolveInner(false, source_dir, specifier, kind);
     }
 
-    /// 스레드 안전 resolveAsModule. 병렬 resolve 의 union 직접 사용.
-    pub fn resolveAsModuleThreadSafe(
+    /// 스레드 안전 resolve. 병렬 resolve 의 union 직접 사용.
+    pub fn resolveThreadSafe(
         self: *ResolveCache,
         source_dir: []const u8,
         specifier: []const u8,
