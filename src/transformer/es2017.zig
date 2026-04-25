@@ -37,14 +37,24 @@ pub fn ES2017(comptime Transformer: type) type {
                     self.runtime_helpers.await_helper = true;
                     const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
                     const await_call = try es_helpers.makeCallExpr(self, await_ref, &.{node.data.unary.operand}, node.span);
-                    // node 자체를 in-place 로 yield_expression 으로 교체 (operand = __await(value)).
-                    var n = self.ast.nodes.items[@intFromEnum(node_idx)];
-                    n.tag = .yield_expression;
-                    n.data = .{ .unary = .{ .operand = await_call, .flags = 0 } };
-                    self.ast.nodes.items[@intFromEnum(node_idx)] = n;
+                    // span 보존하면서 await_expression → yield __await(value).
+                    self.ast.replaceNode(node_idx, .{
+                        .tag = .yield_expression,
+                        .span = node.span,
+                        .data = .{ .unary = .{ .operand = await_call, .flags = 0 } },
+                    });
                 },
-                // 자체 async/await context 를 가진 nested scope — skip.
-                .function_declaration, .function_expression, .arrow_function_expression, .method_definition => {},
+                // 자체 async/await context 를 가진 nested scope — skip. `es2022_tla.hasTopLevelAwait`
+                // 의 boundary set 과 동일 (function/method/class 모두). class body 안 method
+                // 도 자체 컨텍스트라 await rewrite 에서 제외.
+                .function_declaration,
+                .function_expression,
+                .function,
+                .arrow_function_expression,
+                .method_definition,
+                .class_declaration,
+                .class_expression,
+                => {},
                 else => {
                     // 일반 노드 — child iterator 로 모든 자식 traversal.
                     const ast_walk = @import("../parser/ast_walk.zig");
@@ -71,11 +81,9 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
             const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
 
-            // body 안 await → yield __await(value) 변환 (in-place AST 편집).
             try rewriteAwaitToYieldAwait(self, body_idx);
 
-            // inner function*(): 일반 generator (async flag 제거). visitNode 거치면 ES5 target 시
-            // 자동으로 generator state machine 으로 lower.
+            // inner function*(): visitNode 거치면 ES5 target 시 자동으로 generator state machine 으로 lower.
             const inner_flags = (flags & ~@as(u32, ast_mod.FunctionFlags.is_async)) | @as(u32, ast_mod.FunctionFlags.is_generator);
             const inner_params_node = try self.ast.addFormalParameters(new_params, span);
             const none = @intFromEnum(NodeIndex.none);
@@ -115,7 +123,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 .data = .{ .list = outer_body_list },
             });
             const outer_params_node = try self.ast.addFormalParameters(new_params, span);
-            const outer_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
+            const outer_flags = flags & ~(@as(u32, ast_mod.FunctionFlags.is_async) | @as(u32, ast_mod.FunctionFlags.is_generator));
             const outer_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_name),
                 @intFromEnum(outer_params_node),

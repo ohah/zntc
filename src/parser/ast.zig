@@ -1034,6 +1034,13 @@ pub const Ast = struct {
         self.nodes.items[@intFromEnum(index)].tag = new_tag;
     }
 
+    /// 노드 in-place 교체. 주로 transformer 의 cover-grammar / await→yield rewrite 같이
+    /// 하위 트리는 보존하면서 같은 인덱스의 tag/data 만 새 형태로 바꿀 때. span 은 caller 가
+    /// 보존하든 변경하든 자유 — 일반적으로는 source 위치 유지를 위해 기존 span 유지.
+    pub fn replaceNode(self: *Ast, index: NodeIndex, new_node: Node) void {
+        self.nodes.items[@intFromEnum(index)] = new_node;
+    }
+
     /// variable_declaration 노드의 kind를 typed enum으로 반환.
     /// node.tag == .variable_declaration 가정. extra[0]에 저장된 u32를 디코드.
     pub inline fn variableDeclarationKind(self: *const Ast, node: Node) VariableDeclarationKind {
