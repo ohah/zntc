@@ -70,7 +70,8 @@ pub fn StableSegmentedList(comptime T: type) type {
 
             // Lazy shelf alloc (shelf 당 최대 1회). len 증가 전에 write 완료 → race-free.
             if (self.shelves[shelf_idx] == null) {
-                const shelf_size = @as(usize, 1) << shelf_idx;
+                // wasm32 (32-bit usize) 에서 shift amount type 이 u5 — @intCast 로 truncate.
+                const shelf_size = @as(usize, 1) << @intCast(shelf_idx);
                 const buf = try allocator.alloc(T, shelf_size);
                 self.shelves[shelf_idx] = buf.ptr;
             }
@@ -137,7 +138,7 @@ pub fn StableSegmentedList(comptime T: type) type {
 
         inline fn boxInShelf(list_index: usize, shelf_idx: ShelfIndex) usize {
             // inner = list_index - (2^shelf_idx - 1)
-            return list_index + 1 - (@as(usize, 1) << shelf_idx);
+            return list_index + 1 - (@as(usize, 1) << @intCast(shelf_idx));
         }
     };
 }

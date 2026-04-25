@@ -252,9 +252,10 @@ pub const VirtualFS = struct {
     }
 
     pub fn listDir(_: VirtualFS, _: std.mem.Allocator, _: []const u8) FsError![]DirEntry {
-        // Phase 2 후속 — JSON 파싱 비용 회피 위해 minimal use case 에선 제외.
-        // require.context / glob import 사용 시 channel 통과.
-        @compileError("VirtualFS.listDir: Phase 2 후속 — host JSON ABI 미구현");
+        // Phase 2 minimal — require.context / glob import 미사용 가정. 빈 slice 반환으로
+        // 호출처 (graph.expandRequireContextRecords 등) 가 silent fallback.
+        // 후속 PR 에서 host JSON ABI 추가 시 실 구현.
+        return &.{};
     }
 };
 
