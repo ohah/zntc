@@ -68,21 +68,6 @@ pub const ResolvedModule = union(fs.Namespace) {
     },
 };
 
-/// 기존 `ResolveResult` (struct) → `ResolvedModule` (union) 변환.
-/// 현재 graph 의 plugin runner 응답 변환에 사용 — plugin runner 가 union 직접
-/// 반환으로 마이그레이션되면 제거 가능 (TODO).
-pub fn fromLegacy(r: ResolveResult) ResolvedModule {
-    if (r.disabled) return .{ .disabled = .{
-        .path = r.path,
-        .module_type = r.module_type,
-    } };
-    return .{ .file = .{
-        .path = r.path,
-        .module_type = r.module_type,
-        .is_module_field = r.is_module_field,
-    } };
-}
-
 /// `Plugin.resolveContext` hook signature. (#1579 Phase 2)
 pub const ResolveContextFn = ?*const fn (
     ctx: ?*anyopaque,
@@ -103,7 +88,7 @@ pub const Plugin = struct {
 
     /// 모듈 경로 해석 커스텀 (alias, virtual module).
     /// non-null 반환 시 기본 resolver를 건너뜀.
-    resolveId: ?*const fn (ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, allocator: std.mem.Allocator) PluginError!?ResolveResult = null,
+    resolveId: ?*const fn (ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, allocator: std.mem.Allocator) PluginError!?ResolvedModule = null,
 
     /// 모듈 내용 로딩 (virtual module, 커스텀 로더).
     /// non-null 반환 시 파일 시스템 읽기를 건너뜀.
@@ -219,7 +204,7 @@ pub const PluginRunner = struct {
         specifier: []const u8,
         importer: ?[]const u8,
         allocator: std.mem.Allocator,
-    ) PluginError!?ResolveResult {
+    ) PluginError!?ResolvedModule {
         for (self.plugins) |p| {
             if (p.resolveId) |hook| {
                 if (try hook(p.context, specifier, importer, allocator)) |result| {

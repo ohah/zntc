@@ -39,12 +39,12 @@ test "PluginRunner: empty plugins is no-op" {
 
 // --- resolveId 훅 테스트 ---
 
-fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?ResolveResult {
+fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
     if (std.mem.eql(u8, specifier, "virtual:config")) {
-        return .{
+        return .{ .file = .{
             .path = try allocator.dupe(u8, "/virtual/config.js"),
             .module_type = .javascript,
-        };
+        } };
     }
     return null;
 }
@@ -58,8 +58,12 @@ test "PluginRunner: resolveId first mode" {
     // 매칭되는 specifier → non-null
     const result = try runner.runResolveId("virtual:config", null, std.testing.allocator);
     try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings("/virtual/config.js", result.?.path);
-    std.testing.allocator.free(result.?.path);
+    const path = switch (result.?) {
+        .file => |f| f.path,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqualStrings("/virtual/config.js", path);
+    std.testing.allocator.free(path);
 
     // 매칭 안 되는 specifier → null (기본 resolver 사용)
     const result2 = try runner.runResolveId("./normal", null, std.testing.allocator);
@@ -289,7 +293,7 @@ test "Plugin integration: multiple plugins chain transforms" {
 
 // --- resolveId가 null 반환 시 기본 resolver fall through ---
 
-fn nullResolveHook(_: ?*anyopaque, _: []const u8, _: ?[]const u8, _: std.mem.Allocator) plugin_mod.PluginError!?ResolveResult {
+fn nullResolveHook(_: ?*anyopaque, _: []const u8, _: ?[]const u8, _: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
     return null;
 }
 
@@ -400,7 +404,6 @@ test "Plugin integration: transform hook is called for user source files (#964)"
 // ============================================================
 
 const ResolvedModule = plugin_mod.ResolvedModule;
-const fromLegacy = plugin_mod.fromLegacy;
 const ModuleType = @import("types.zig").ModuleType;
 
 test "ResolvedModule: file variant 보존" {
@@ -460,41 +463,5 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
     }
 }
 
-test "fromLegacy: ResolveResult { disabled=true } → .disabled variant + module_type 보존" {
-    const legacy: ResolveResult = .{
-        .path = "/abs/x.js",
-        .module_type = .javascript,
-        .disabled = true,
-    };
-    const m = fromLegacy(legacy);
-    switch (m) {
-        .disabled => |d| {
-            try std.testing.expectEqualStrings("/abs/x.js", d.path);
-            try std.testing.expectEqual(ModuleType.javascript, d.module_type);
-        },
-        else => return error.TestUnexpectedResult,
-    }
-}
-
-test "fromLegacy: ResolveResult { disabled=false } → .file variant + flags 보존" {
-    const legacy: ResolveResult = .{
-        .path = "/abs/y.ts",
-        .module_type = .javascript,
-        .is_module_field = true,
-    };
-    const m = fromLegacy(legacy);
-    switch (m) {
-        .file => |f| {
-            try std.testing.expectEqualStrings("/abs/y.ts", f.path);
-            try std.testing.expectEqual(ModuleType.javascript, f.module_type);
-            try std.testing.expect(f.is_module_field);
-        },
-        else => return error.TestUnexpectedResult,
-    }
-}
-
 // Note: ResolvedModule = union(fs.Namespace) 자체가 컴파일 타임에 모든 Namespace
 // variant 의 payload 정의 강제 — 별도 exhaustive 검증 테스트 불필요.
-// toLegacy 는 PR 4d 에서 제거 (resolve_cache 가 union 직접 반환). fromLegacy 만
-// plugin runner 응답 변환 (ResolveResult → ResolvedModule) 용도로 유지 — PR 5 의
-// plugin runner 마이그레이션 시 함께 제거.

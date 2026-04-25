@@ -908,7 +908,7 @@ pub const ModuleGraph = struct {
                     },
                 };
                 if (resolve_result) |plugin_result| {
-                    results[rec_i] = .{ .resolved = plugin_mod.fromLegacy(plugin_result), .is_error = false };
+                    results[rec_i] = .{ .resolved = plugin_result, .is_error = false };
                     continue;
                 }
             }
@@ -1554,7 +1554,7 @@ pub const ModuleGraph = struct {
                 };
                 // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀
                 if (resolve_result) |plugin_result| {
-                    try self.applyResolveResult(mod_idx, rec_i, record, plugin_mod.fromLegacy(plugin_result), false);
+                    try self.applyResolveResult(mod_idx, rec_i, record, plugin_result, false);
                     continue;
                 }
                 // null이면 기본 resolver로 fall through
