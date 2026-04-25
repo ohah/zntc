@@ -232,15 +232,19 @@ pub const LinkingMetadata = struct {
         entries: []const Entry = &.{},
 
         pub const Entry = struct {
-            symbol_id: u32,
+            /// `null` = declaration-only (preamble 에 `var X_ns = {...};` 만 emit, codegen
+            /// `get(sid)` lookup 은 항상 miss). `re_export_namespace` 가 만든 hoisted ns_var
+            /// 에 사용 (#1928).
+            symbol_id: ?u32,
             object_literal: []const u8,
-            /// namespace 변수명 (동적 접근 시 변수 참조용)
             var_name: []const u8,
         };
 
         pub fn get(self: *const NsInlineObjects, sym_id: u32) ?*const Entry {
             for (self.entries) |*e| {
-                if (e.symbol_id == sym_id) return e;
+                if (e.symbol_id) |sid| {
+                    if (sid == sym_id) return e;
+                }
             }
             return null;
         }
@@ -441,6 +445,11 @@ pub const Linker = struct {
         /// buildInlineObjectStr에서 할당된 문자열인 경우 true.
         /// exports ArrayList 해제 시 owned=true인 local만 free.
         owned: bool = false,
+        /// re_export_namespace (`export * as Foo from './src'`) / `import * as X; export {X}`
+        /// 패턴에서 source 모듈 인덱스. registerNamespaceRewrites 가 이 정보로
+        /// hoisted ns_var (예: `Foo_ns`) 를 한 번 declare 하고 inner_map 매핑을
+        /// 변수명으로 둔다 (per-access inline literal 중복 emit 방지, #1928).
+        ns_target_mod: ?u32 = null,
     };
 
     /// re-export 체인 순환 방지 깊이 제한.
@@ -1891,6 +1900,9 @@ pub const Linker = struct {
         self: *const Linker,
         ns_rewrite_list: *std.ArrayList(LinkingMetadata.NsMemberRewrites.Entry),
         ns_inline_list: *std.ArrayList(LinkingMetadata.NsInlineObjects.Entry),
+        /// 같은 importer 안에서 여러 namespace import 가 같은 target source 의 inline ns_var
+        /// 를 공유하도록 caller 가 owned. `cjs_var_cache` 와 같은 패턴 (`metadata.zig`).
+        ns_target_to_var: *std.AutoHashMap(u32, []const u8),
         force_inline: bool,
         importer_mod_idx: u32,
         symbol_id: u32,
@@ -1940,15 +1952,45 @@ pub const Linker = struct {
             break :blk owned_slice;
         };
 
+        var seen_exports = std.StringHashMap(void).init(self.allocator);
+        defer seen_exports.deinit();
+        for (cached_exports) |exp| {
+            try seen_exports.put(exp.exported, {});
+        }
+
         // importer 의 nested binding 과 충돌하는 export 는 inline 시 self-shadow 무한
         // 재귀 위험 → 매핑 등록을 건너뛰고 has_shadow 로 추적.
         // (예: `const setSelectedLog = (i) => LogBoxData.setSelectedLog(i);` 가
         //  `const setSelectedLog = (i) => setSelectedLog(i);` 로 inline 되는 케이스)
+        //
+        // 또한 ns_target_mod 가 있는 export (re_export_namespace 등) 는 target_mod 별
+        // hoisted ns_var 를 만들고 inner_map 매핑은 그 변수명으로 둔다 — emitStaticMember
+        // 가 access site 마다 객체 literal 을 inline emit 하는 회귀 방지 (#1928).
         var inner_map = std.StringHashMap([]const u8).init(self.allocator);
         var has_shadow = false;
         for (cached_exports) |exp| {
             if (self.hasNestedBinding(importer_mod_idx, exp.exported)) {
                 has_shadow = true;
+                continue;
+            }
+            if (exp.ns_target_mod) |target| {
+                const ns_var = if (ns_target_to_var.get(target)) |cached|
+                    cached
+                else blk: {
+                    const fresh = try self.makeUniqueNsVarName(exp.exported, &seen_exports);
+                    try ns_target_to_var.put(target, fresh);
+                    const obj_str = try self.buildInlineObjectStr(target, 0);
+                    try ns_inline_list.append(self.allocator, .{
+                        .symbol_id = null,
+                        .object_literal = obj_str,
+                        .var_name = fresh,
+                    });
+                    break :blk fresh;
+                };
+                // inner_map 은 ns_inline_list.entry.var_name pointer 를 borrow — ns_inline
+                // 이 owner. inner_map.deinit 은 backing 만 해제, value pointer 는 안 건드림 →
+                // 같은 메모리 double-free 없음.
+                try inner_map.put(exp.exported, ns_var);
                 continue;
             }
             const local = if (exp.owned)
@@ -1966,12 +2008,7 @@ pub const Linker = struct {
         // 후자의 경우 codegen fallback 이 namespace 객체 access 로 emit 할 수 있도록 객체가 필요.
         if (force_inline or has_shadow) {
             const obj_str = try self.buildInlineObjectStr(target_mod_idx, 0);
-            var seen = std.StringHashMap(void).init(self.allocator);
-            defer seen.deinit();
-            for (cached_exports) |exp| {
-                try seen.put(exp.exported, {});
-            }
-            const ns_var_name = try self.makeUniqueNsVarName(var_name, &seen);
+            const ns_var_name = try self.makeUniqueNsVarName(var_name, &seen_exports);
             try ns_inline_list.append(self.allocator, .{
                 .symbol_id = symbol_id,
                 .object_literal = obj_str,
@@ -1979,6 +2016,7 @@ pub const Linker = struct {
             });
         }
     }
+
 
     /// namespace preamble 변수명을 export 이름과 충돌하지 않도록 생성.
     /// "z" → "z_ns", 충돌 시 "z_ns2", "z_ns3", ...
@@ -2103,6 +2141,16 @@ pub const Linker = struct {
         return try self.allocator.dupe(u8, result);
     }
 
+    /// `import_records[idx].resolved` 가 valid 면 모듈 인덱스 반환, 아니면 null.
+    /// `collectExportsRecursive` 의 3개 분기에서 공유.
+    inline fn resolvedRecordModule(records: anytype, rec_idx_opt: ?u32) ?u32 {
+        const rec_idx = rec_idx_opt orelse return null;
+        if (rec_idx >= records.len) return null;
+        const src = records[rec_idx].resolved;
+        if (src.isNone()) return null;
+        return @intFromEnum(src);
+    }
+
     /// 모듈의 모든 export를 재귀적으로 수집 (export * 체인 포함).
     /// seen: export 이름 dedup, visited: 모듈 수준 dedup (diamond export * 방지).
     fn collectExportsRecursive(
@@ -2137,52 +2185,36 @@ pub const Linker = struct {
             try seen.put(eb.exported_name, {});
 
             const eb_local = m.exportBindingLocalName(eb);
+            // ns_target_mod: hoisted ns_var 가 필요한 source 모듈 (registerNamespaceRewrites
+            // 가 처리). inline literal 을 직접 만들어 inner_map 에 넣으면 emitStaticMember
+            // 가 access site 마다 객체 literal 을 inline emit (#1928). 대신 source mod_idx
+            // 만 기록하고 ns_var 등록은 호출 site 가 일임.
+            var ns_target_mod: ?u32 = null;
             const actual_local = if (eb.kind == .re_export_namespace) blk: {
-                // export * as ns — 소스 모듈의 인라인 객체를 생성 (재귀)
-                if (eb.import_record_index) |rec_idx| {
-                    if (rec_idx < m.import_records.len) {
-                        const src = m.import_records[rec_idx].resolved;
-                        if (!src.isNone()) {
-                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
-                        }
-                    }
-                }
+                ns_target_mod = resolvedRecordModule(m.import_records, eb.import_record_index);
                 break :blk eb_local;
             } else if (eb.kind == .re_export) blk: {
                 if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
-                    // canonical이 export * as ns 패턴인지 확인
                     if (self.graph.getModule(canonical.module_index)) |cmod| {
                         for (cmod.export_bindings) |ceb| {
                             if (ceb.kind.isReExportAll() and
                                 std.mem.eql(u8, ceb.exported_name, canonical.export_name) and
                                 !std.mem.eql(u8, ceb.exported_name, "*"))
                             {
-                                if (ceb.import_record_index) |rec_idx| {
-                                    if (rec_idx < cmod.import_records.len) {
-                                        const src = cmod.import_records[rec_idx].resolved;
-                                        if (!src.isNone()) {
-                                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
-                                        }
-                                    }
+                                if (resolvedRecordModule(cmod.import_records, ceb.import_record_index)) |src_mod| {
+                                    ns_target_mod = src_mod;
                                 }
                             }
                         }
                     }
-                    break :blk self.resolveToLocalName(canonical);
+                    if (ns_target_mod == null) break :blk self.resolveToLocalName(canonical);
+                    break :blk eb_local;
                 }
                 break :blk eb_local;
             } else blk: {
-                // .local export: namespace import를 re-export하는 경우 인라인 객체 생성
-                // 예: import * as X from './Module'; export { X }
-                if (ns_imports.get(eb_local)) |rec_idx| {
-                    if (rec_idx < m.import_records.len) {
-                        const src = m.import_records[rec_idx].resolved;
-                        if (!src.isNone()) {
-                            break :blk try self.buildInlineObjectStr(@intFromEnum(src), depth + 1);
-                        }
-                    }
-                }
-                break :blk self.getCanonicalByRef(eb.symbol) orelse eb_local;
+                ns_target_mod = resolvedRecordModule(m.import_records, ns_imports.get(eb_local));
+                if (ns_target_mod == null) break :blk self.getCanonicalByRef(eb.symbol) orelse eb_local;
+                break :blk eb_local;
             };
 
             const safe_local = self.safeIdentifierName(actual_local, @intCast(mod_i));
@@ -2190,9 +2222,8 @@ pub const Linker = struct {
             try exports.append(self.allocator, .{
                 .exported = eb.exported_name,
                 .local = safe_local,
-                // actual_local로 체크: "{"이면 buildInlineObjectStr이 할당한 문자열.
-                // safeIdentifierName은 소유권을 변경하지 않음 (canonical 참조 반환).
-                .owned = actual_local.len > 0 and actual_local[0] == '{',
+                .owned = false,
+                .ns_target_mod = ns_target_mod,
             });
         }
 
