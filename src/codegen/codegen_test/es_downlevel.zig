@@ -11,6 +11,8 @@ const CodegenOptions = helpers.CodegenOptions;
 const TestResult = helpers.TestResult;
 const e2eTarget = helpers.e2eTarget;
 const expectAsyncStateMachine = helpers.expectAsyncStateMachine;
+const e2eES5Async = helpers.e2eES5Async;
+const assertNoAsyncSelfLoop = helpers.assertNoAsyncSelfLoop;
 
 // ES Downlevel Tests (--target)
 // ============================================================
@@ -275,6 +277,198 @@ test "ES5: async function with if/await" {
     var r = try e2eTarget(std.testing.allocator, "async function foo(x) { if (x) { await a(); } await b(); }", .es5);
     defer r.deinit();
     try expectAsyncStateMachine(r.output);
+}
+
+test "ES5: async if-await as last statement — no self-loop in resume case" {
+    // Regression: `if (cond) { await x(); }` 가 함수의 마지막 statement 일 때 await
+    // resume 후 case 가 자기 자신으로 jump 하는 self-loop 발생 (collectIfOperations 의
+    // end_label 을 yield 전 미리 할당해서 yield resume label 과 충돌).
+    // 실제 발견 — ExpoApp ExternalLink 에서 in-app browser 닫으면 무한 루프 → 모든 onPress dead.
+    var r = try e2eTarget(std.testing.allocator, "async function f(x) { if (x) { await a(); } }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    // self-loop pattern — `_state.sent()` 직후 `return [3, N]` 의 N 이 자기 case 의 label.
+    // 이 함수에서 await yield label 은 1 (label 0 은 시작), end label 은 2 여야 함.
+    // bug 시: `case 1:_state.sent();return [3,1]` (자기 self-jump → 무한 루프).
+    // fix 시: `case 1:_state.sent();return [2]` (end) 또는 `return [3,2]` (forward jump).
+    // (e2eTarget 은 minify_whitespace=true 라 space 제거된 형태로 검사.)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent();return [3,1]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_state.sent();return [3, 1]") == null);
+}
+
+test "ES5: async if-await with later statements — case fall-through correctness" {
+    // 위 테스트의 동반 — if 후 trailing statement 가 있을 때도 await resume 이 정상 fall-through
+    // 해야 함. 이 케이스는 기존에 동작하던 패턴 (회귀 방지용).
+    var r = try e2eTarget(std.testing.allocator, "async function f(x) { if (x) { await a(); } var y = 1; }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var y") != null);
+}
+
+// === async generator state-machine edge cases (#1887 회귀 방지 + control-flow generic) ===
+//
+// `assertNoAsyncSelfLoop` 가 case-label-aware 라 `_state.sent();return [3,N]` 의 N 이
+// 자기 case 의 label 인 경우 (= 무한 루프) 만 fail. forward jump 는 정상.
+// `e2eES5Async` wrapper 가 ES5 transform + state-machine 검증 + self-loop 검사 자동.
+
+test "ES5: if-await edge — last statement (#1887 reproduction)" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { if (x) { await a(); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — multi-statement then body (real ExpoApp ExternalLink pattern)" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(e, h) { if (e !== 'web') { e.preventDefault(); await openBrowserAsync(h); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — if-else with await in then only" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { if (x) { await a(); } else { b(); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — if-else with await in else only" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { if (x) { a(); } else { await b(); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — if-else with await in both branches" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { if (x) { await a(); } else { await b(); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — nested if with inner await" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x, y) { if (x) { if (y) { await a(); } } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — deeply nested if (3 levels)" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(a, b, c) { if (a) { if (b) { if (c) { await x(); } } } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — sequential if-await blocks" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x, y) { if (x) { await a(); } if (y) { await b(); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — sibling if-await inside same parent if" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(p, x, y) { if (p) { if (x) { await a(); } if (y) { await b(); } } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — await inside for-loop body" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(arr) { for (var i = 0; i < arr.length; i++) { if (arr[i]) { await a(); } } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — await inside while-loop body" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { while (x) { if (x.flag) { await a(); } x = x.next; } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — try-catch wrapping if-await" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { try { if (x) { await a(); } } catch (e) { b(e); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — if-await as arrow function body (last expression)" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "var f = async (e) => { if (e !== 'web') { await a(); } };");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — early return after if-await" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { if (x) { await a(); } return 1; }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — multiple awaits in same then block" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { if (x) { await a(); await b(); await c(); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — condition expression contains await" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f() { if (await check()) { await a(); } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await edge — empty then block (no statements)" {
+    // 빈 then — degenerate 케이스. emit 깨지지 않아야 (await 없으니 self-loop assertion N/A).
+    var r = try e2eTarget(std.testing.allocator,
+        "async function f(x) { if (x) {} await a(); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+}
+
+// === 다른 control-flow + await 회귀 방지 (이미 sentinel pattern 적용된 site 들) ===
+
+test "ES5: try-catch + await — no self-loop" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f() { try { await a(); } catch (e) {} }");
+    defer r.deinit();
+}
+
+test "ES5: try-finally + await — no self-loop" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f() { try { await a(); } finally { b(); } }");
+    defer r.deinit();
+}
+
+test "ES5: switch case body + await — no self-loop" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { switch (x) { case 1: await a(); break; case 2: await b(); break; } }");
+    defer r.deinit();
+}
+
+test "ES5: do-while + await — no self-loop" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { do { await a(); } while (x); }");
+    defer r.deinit();
+}
+
+test "ES5: for-of + await — no self-loop" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(arr) { for (var x of arr) { await x; } }");
+    defer r.deinit();
+}
+
+test "ES5: labeled outer break + await — no self-loop" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f() { outer: for (;;) { if (true) { await a(); break outer; } } }");
+    defer r.deinit();
+}
+
+test "ES5: loop break in if-await — no self-loop" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f() { for (;;) { if (true) { await a(); break; } } }");
+    defer r.deinit();
+}
+
+test "ES5: if-await + try-catch combined — no self-loop" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f(x) { if (x) { try { await a(); } catch (e) {} } }");
+    defer r.deinit();
+}
+
+test "ES5: nested async function inside async function — no self-loop in outer" {
+    var r = try e2eES5Async(std.testing.allocator,
+        "async function f() { var inner = async function() { if (true) { await b(); } }; await inner(); }");
+    defer r.deinit();
 }
 
 test "ES5: async with destructuring var hoisting" {
