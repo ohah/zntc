@@ -426,6 +426,14 @@ interface BuildOptionsCommon {
    * `defineProperty` 시도 throw 였지만, mechanism 은 OS/엔진 무관 — 모든 module factory throw 케이스
    * 커버. React Native 플랫폼에서 자동 활성화. */
   entryErrorGuard?: boolean;
+  /** Prologue 에 `console.error` setter intercept 주입 — RegExp source string 배열의 어느 하나라도
+   * match 하는 console.error 호출은 silent swallow. `entryErrorGuard` 와 직교. consumer 가 환경
+   * (e.g. expo) 감지 후 패턴 주입. 비어있거나 미지정 시 wrap 자체 emit 안 됨 → vanilla RN CLI 빌드는
+   * dead code 0. RN preset 에서도 자동 활성화 안 함 (trigger 가 environment-specific 이므로).
+   *
+   * 예: `["^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$"]`
+   * (expo `installGlobal.ts` + RN `polyfillObjectProperty` 의 native immutable global 충돌 메시지) */
+  silentConsoleErrorPatterns?: string[];
   /** scope hoisting 활성화 (기본 true). 단일 chunk에서 모듈 경계를 제거하고 심볼을 평탄화. */
   scopeHoist?: boolean;
   /** Reanimated worklet 변환 — "worklet" 디렉티브 함수에 __workletHash/__closure/__initData 주입.

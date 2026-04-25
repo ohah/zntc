@@ -740,32 +740,25 @@ pub const REFRESH_STUB =
     "var $RefreshReg$ = function() {};\n" ++
     "var $RefreshSig$ = function() { return function(type) { return type; }; };\n";
 
-/// `entry_error_guard` 활성 시 prologue 에 주입. 두 부분으로 구성:
+/// `entry_error_guard` 활성 시 prologue 에 주입. `__zts_guarded(fn)` helper —
+/// 각 module init 호출 site (entry trigger / linker preamble / re-export / side-effect
+/// init) 가 통과. throw 를 silent swallow 해서 부팅 진행. Metro 의 `metro-runtime/src/
+/// polyfills/require.js:178` `guardedLoadModule` 와 등가 mechanism — Metro 도 module
+/// 평가는 eager 이지만 top-level `__r(N)` 호출이 try/catch wrap 되어 있어 throw 가
+/// LogBox 로 흘러가고 RN runtime 자체는 살아있음. ZTS 는 자체 module 시스템
+/// (`__esm`/`__commonJS`) 사용해 metro require.js 를 안 써서 이 invariant 가 빠져있었음.
 ///
-/// 1. `__zts_guarded(fn)` — 각 module init 호출 site (entry trigger / linker preamble /
-///    re-export / side-effect init) 가 통과. throw 를 silent swallow 해서 부팅 진행.
-///    Metro 의 `guardedLoadModule` 와 동등 mechanism — Metro 도 module 평가는 eager
-///    이지만 top-level `__r(N)` 호출이 try/catch wrap 되어 있어 throw 가 LogBox 로
-///    흘러가고 RN runtime 자체는 살아있음. ZTS 는 entry trigger 를 raw 로 emit 했었기
-///    때문에 동일 throw 가 Hermes 까지 propagate → 부팅 정지. 이 wrapper 부재가 부팅
-///    실패의 결정 요인.
+/// Metro 의 `inGuard` flag (nested 호출 무력화) 는 채택하지 않음 — 그건 native
+/// `ErrorUtils.reportFatalError` → `RN$handleException` 와 짝인데, iOS native immutable
+/// global 이 trigger 한 상황 (관측: iPad iOS 26.4 + Expo SDK 55) 에서는 그 handler 가
+/// "runtime not ready" 로 부팅 정지시킴. ZTS 는 silent swallow + 디버그 toggle:
+/// `globalThis.__ZTS_DEBUG_GUARD = true`.
 ///
-///    Metro 의 `inGuard` flag (nested 호출 무력화) 는 채택하지 않음 — 그건 native
-///    `ErrorUtils.reportFatalError` → `RN$handleException` 와 짝인데, iOS 26.4+
-///    환경에서는 그 handler 가 "runtime not ready" 로 부팅 정지시킴. ZTS 는 silent
-///    swallow + 디버그 toggle: `globalThis.__ZTS_DEBUG_GUARD = true`.
-///
-/// 2. `console.error` setter intercept — iOS 26.x 에서 host platform 이 spec global
-///    (`Location` / `TextEncoderStream` / `TextDecoderStream`) 을 placeholder
-///    (`configurable: false`) 로 사전 등록. expo `installGlobal.ts:96` 이 가드 거치고
-///    `console.error('Failed to set polyfill. X is not configurable.')` 출력 + return
-///    (throw 안 함 — 부팅에는 영향 없음). 단지 dev 콘솔 노이즈.
-///
-///    Metro 도 동일 메시지 출력하지만 LogBox 만 표시되고 콘솔 자체는 안 보이게 처리됨
-///    (RN `setUpDeveloperTools` 가 console.error 를 LogBox 로 redirect). ZTS 도 같은
-///    redirect 가 적용되지만 dev 환경에서 DevTools 가 backend.js 로 console 을
-///    추가로 hook 하면서 노이즈가 노출됨. setter intercept 로 RN wrap 위에 우리 wrap
-///    을 덧씌워 영구 outermost 필터 유지 → LogBox + DevTools 콘솔 양쪽 모두 깨끗.
+/// 별도 `console.error` setter intercept (`emitConsoleErrorIntercept`) 는 RN preset 자동
+/// 활성 안 함 — `silent_console_error_patterns` 옵션이 비어있으면 emit X. trigger 가
+/// expo winter polyfill (TextEncoderStream/TextDecoderStream/Location) ↔ iOS native
+/// immutable 충돌처럼 specific 환경에서만 발생하므로, consumer (bungae 등) 가 환경 감지
+/// 후 패턴 주입. vanilla RN CLI 빌드는 dead code 0.
 pub const GUARDED_RUNTIME =
     \\function __zts_guarded(fn) {
     \\  try { return fn(); }
@@ -776,31 +769,82 @@ pub const GUARDED_RUNTIME =
     \\    }
     \\  }
     \\}
-    \\(function() {
-    \\  if (typeof console === "undefined" || typeof console.error !== "function") return;
-    \\  var IGNORE = /^Failed to set polyfill\.\s+\w+\s+is not configurable\.?$/;
-    \\  function wrap(fn) {
-    \\    return function() {
-    \\      var first = arguments[0];
-    \\      if (typeof first === "string" && IGNORE.test(first)) return;
-    \\      return fn.apply(this, arguments);
-    \\    };
-    \\  }
-    \\  var current = wrap(console.error);
-    \\  try {
-    \\    Object.defineProperty(console, "error", {
-    \\      configurable: true,
-    \\      get: function() { return current; },
-    \\      set: function(fn) { current = wrap(fn); }
-    \\    });
-    \\  } catch (e) {}
-    \\})();
     \\
 ;
 
 pub const GUARDED_RUNTIME_MIN =
-    "function __zts_guarded(fn){try{return fn()}catch(e){if(typeof globalThis!==\"undefined\"&&globalThis.__ZTS_DEBUG_GUARD&&typeof console!==\"undefined\"&&console.warn)console.warn(\"[zts:guard] caught:\",e)}}" ++
-    "(function(){if(typeof console===\"undefined\"||typeof console.error!==\"function\")return;var I=/^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$/;function w(fn){return function(){var f=arguments[0];if(typeof f===\"string\"&&I.test(f))return;return fn.apply(this,arguments)}}var c=w(console.error);try{Object.defineProperty(console,\"error\",{configurable:true,get:function(){return c},set:function(fn){c=w(fn)}})}catch(e){}})();\n";
+    "function __zts_guarded(fn){try{return fn()}catch(e){if(typeof globalThis!==\"undefined\"&&globalThis.__ZTS_DEBUG_GUARD&&typeof console!==\"undefined\"&&console.warn)console.warn(\"[zts:guard] caught:\",e)}}\n";
+
+/// `silent_console_error_patterns` 가 비어있지 않을 때 prologue 에 주입.
+/// `Object.defineProperty(console, "error", { set })` setter intercept — RN
+/// `setUpDeveloperTools` 가 console.error 를 LogBox/ExceptionsManager 로 wrap 하지만
+/// 우리 setter 가 그 위에 한 번 더 wrap 을 덧씌워 영구 outermost 필터 유지.
+///
+/// 현재 알려진 trigger:
+/// - expo `installGlobal.ts:96` — winter polyfill (TextEncoderStream/TextDecoderStream/
+///   Location) 이 iOS native immutable global 위에 redefine 시도 → console.error (throw 안 함)
+/// - vanilla RN `Libraries/Utilities/PolyfillFunctions.js:41` — 동일 메시지 형식이지만
+///   RN core 가 polyfill 하는 globals (Promise/setTimeout/URL 등) 가 iOS native immutable
+///   대상과 안 겹쳐 실측에선 trigger 안 됨. 미래 OS 가 RN core polyfill 영역도 immutable 로
+///   깔면 그때 trigger 가능.
+///
+/// 패턴은 사용자가 RegExp source string 으로 주입. ZTS 는 expo 모름.
+pub fn emitConsoleErrorInterceptInto(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    patterns: []const []const u8,
+    minify: bool,
+) !void {
+    if (patterns.len == 0) return;
+    if (minify) {
+        try buf.appendSlice(allocator, "(function(){if(typeof console===\"undefined\"||typeof console.error!==\"function\")return;var I=[");
+        for (patterns, 0..) |p, i| {
+            if (i > 0) try buf.append(allocator, ',');
+            try buf.append(allocator, '/');
+            try buf.appendSlice(allocator, p);
+            try buf.append(allocator, '/');
+        }
+        try buf.appendSlice(allocator, "];function w(fn){return function(){var f=arguments[0];if(typeof f===\"string\"){for(var i=0;i<I.length;i++){if(I[i].test(f))return}}return fn.apply(this,arguments)}}var c=w(console.error);try{Object.defineProperty(console,\"error\",{configurable:true,get:function(){return c},set:function(fn){c=w(fn)}})}catch(e){}})();\n");
+        return;
+    }
+    try buf.appendSlice(allocator,
+        \\(function() {
+        \\  if (typeof console === "undefined" || typeof console.error !== "function") return;
+        \\  var IGNORE = [
+    );
+    try buf.append(allocator, '\n');
+    for (patterns, 0..) |p, i| {
+        try buf.appendSlice(allocator, "    /");
+        try buf.appendSlice(allocator, p);
+        try buf.append(allocator, '/');
+        if (i + 1 < patterns.len) try buf.append(allocator, ',');
+        try buf.append(allocator, '\n');
+    }
+    try buf.appendSlice(allocator,
+        \\  ];
+        \\  function wrap(fn) {
+        \\    return function() {
+        \\      var first = arguments[0];
+        \\      if (typeof first === "string") {
+        \\        for (var i = 0; i < IGNORE.length; i++) {
+        \\          if (IGNORE[i].test(first)) return;
+        \\        }
+        \\      }
+        \\      return fn.apply(this, arguments);
+        \\    };
+        \\  }
+        \\  var current = wrap(console.error);
+        \\  try {
+        \\    Object.defineProperty(console, "error", {
+        \\      configurable: true,
+        \\      get: function() { return current; },
+        \\      set: function(fn) { current = wrap(fn); }
+        \\    });
+        \\  } catch (e) {}
+        \\})();
+        \\
+    );
+}
 
 /// `__zts_guarded(function(){return <expr>;})` wrap 매크로 — esm_wrap / linker preamble /
 /// emitter 의 entry chain unroll 모두 같은 형식이라 한 곳에서 정의. 패턴 변경 시 여기만.

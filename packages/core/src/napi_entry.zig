@@ -3091,6 +3091,13 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
+    // silentConsoleErrorPatterns: string[] (RegExp source strings)
+    const silent_console_error_patterns = getObjectStringArray(env, opts_obj, "silentConsoleErrorPatterns", native_alloc);
+    if (silent_console_error_patterns) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
     // dropLabels: string[]
     const drop_labels = getObjectStringArray(env, opts_obj, "dropLabels", native_alloc);
     if (drop_labels) |arr| {
@@ -3214,6 +3221,7 @@ fn parseBuildOptions(
         .global_identifiers = global_identifiers orelse &.{},
         .polyfills = polyfills orelse &.{},
         .run_before_main = run_before_main orelse &.{},
+        .silent_console_error_patterns = silent_console_error_patterns orelse &.{},
     };
 }
 
