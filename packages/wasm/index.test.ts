@@ -280,8 +280,8 @@ describe("Bundler (minimal)", () => {
     await initBundler(vfs, wasmBytes);
   });
 
-  test("bundlerVersion = ABI v1", () => {
-    expect(bundlerVersion()).toBe(1);
+  test("bundlerVersion = ABI v2 (옵션 JSON 인자 추가)", () => {
+    expect(bundlerVersion()).toBe(2);
   });
 
   test("build: 단일 entry → bundle 코드 (TS 어노테이션 strip + 모듈 wrap)", () => {
@@ -304,5 +304,43 @@ describe("Bundler (minimal)", () => {
   test("build: 존재하지 않는 entry → null", () => {
     const result = build("/nonexistent.ts");
     expect(result).toBeNull();
+  });
+
+  test("build: format=cjs 옵션 → CJS prologue (`use strict`) 추가", () => {
+    const esmOut = build("/index.ts", { format: "esm" });
+    const cjsOut = build("/index.ts", { format: "cjs" });
+    expect(cjsOut).not.toBeNull();
+    // CJS 모드는 `"use strict"` prologue 를 자동 추가 (esm 은 미추가).
+    expect(cjsOut?.code).toContain('"use strict"');
+    expect(esmOut?.code).not.toContain('"use strict"');
+  });
+
+  test("build: minifyWhitespace 옵션 → 공백 압축", () => {
+    const baseline = build("/utils.ts");
+    const minified = build("/utils.ts", { minifyWhitespace: true });
+    expect(baseline).not.toBeNull();
+    expect(minified).not.toBeNull();
+    // 압축 시 baseline 보다 작거나 같음 (보통 작음).
+    expect(minified!.code.length).toBeLessThan(baseline!.code.length);
+  });
+
+  test("build: minify shorthand → whitespace + identifiers + syntax 모두 활성", () => {
+    const baseline = build("/utils.ts");
+    const minified = build("/utils.ts", { minify: true });
+    expect(minified).not.toBeNull();
+    expect(minified!.code.length).toBeLessThan(baseline!.code.length);
+  });
+
+  test("build: 잘못된 옵션 값 (unknown format) → 무시 + 기본값 사용", () => {
+    // Zig 측 parseFormat 가 unknown 이면 default (.esm) 유지.
+    const result = build("/index.ts", { format: "made-up" as any });
+    expect(result).not.toBeNull();
+    expect(result?.code).toContain("export { x }");
+  });
+
+  test("build: 미지원 옵션 필드 → ignore (forward compat)", () => {
+    // ignore_unknown_fields=true 이라 신규 필드는 silent skip.
+    const result = build("/index.ts", { someFutureOption: 42 } as any);
+    expect(result).not.toBeNull();
   });
 });

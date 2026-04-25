@@ -2,14 +2,14 @@
 //!
 //! wasm32-wasip1-threads 타겟용 — bundler 전용. transpile-only 빌드 (wasm_entry.zig)
 //! 와 분리해서 brower 호환성/번들 사이즈 트레이드오프 분리.
-//!
-//! PR 6-2c-2c: build() 가 bundler.Bundler.init + bundle() 진짜 호출.
 
 const std = @import("std");
 const zts_lib = @import("zts_lib");
 const bundler_mod = zts_lib.bundler;
 const Bundler = bundler_mod.Bundler;
 const BundleOptions = bundler_mod.BundleOptions;
+const Format = bundler_mod.types.Format;
+const Platform = bundler_mod.Platform;
 
 pub const panic = zts_lib.crash_handler.panic;
 
@@ -23,8 +23,9 @@ const wasm_alloc = std.heap.c_allocator;
 pub fn main() void {}
 
 /// Bundler ABI version. host 가 호환성 체크용.
+/// v2 — build() 가 options_json (ptr/len) 인자 추가.
 export fn bundler_version() u32 {
-    return 1;
+    return 2;
 }
 
 /// JS 측이 entry path 등 입력 메모리 확보용.
@@ -40,13 +41,45 @@ export fn dealloc(ptr: u32, len: u32) void {
     wasm_alloc.free(slice[0..len]);
 }
 
-/// PR 6-2c-2c build() — VFS entry path 로 bundler.Bundler.init + bundle() 실 호출.
-/// Phase 2 minimal: 단일 entry, 기본 옵션 (esm/browser). 옵션 JSON / multi-entry /
-/// chunk 출력은 후속 PR.
+/// JSON 옵션 스키마 — JS bridge 의 BundleOptions 와 동기. 모든 필드 optional —
+/// 누락 시 BundleOptions 기본값 적용. 미지원 필드는 ignore_unknown_fields 로 무시.
+const BuildOptionsJson = struct {
+    format: ?[]const u8 = null,
+    platform: ?[]const u8 = null,
+    external: ?[]const []const u8 = null,
+    minifyWhitespace: ?bool = null,
+    minifyIdentifiers: ?bool = null,
+    minifySyntax: ?bool = null,
+};
+
+fn parseFormat(s: []const u8) ?Format {
+    if (std.mem.eql(u8, s, "esm")) return .esm;
+    if (std.mem.eql(u8, s, "cjs")) return .cjs;
+    if (std.mem.eql(u8, s, "iife")) return .iife;
+    if (std.mem.eql(u8, s, "umd")) return .umd;
+    if (std.mem.eql(u8, s, "amd")) return .amd;
+    return null;
+}
+
+fn parsePlatform(s: []const u8) ?Platform {
+    if (std.mem.eql(u8, s, "browser")) return .browser;
+    if (std.mem.eql(u8, s, "node")) return .node;
+    if (std.mem.eql(u8, s, "neutral")) return .neutral;
+    if (std.mem.eql(u8, s, "react_native") or std.mem.eql(u8, s, "react-native")) return .react_native;
+    return null;
+}
+
+/// build() — VFS entry path + 옵션 JSON 으로 bundler.bundle() 호출.
+/// options_json_ptr=0 이면 기본 옵션 (esm/browser).
 ///
-/// ABI: 반환 packed u64 (ptr<<32 | len), 0 = error 또는 빈 출력. caller (JS) 가 dealloc 책임.
-/// 결과 = single bundle code string (result.output — 단일 파일 모드).
-export fn build(entry_path_ptr: u32, entry_path_len: u32) u64 {
+/// ABI: 반환 packed u64 (ptr<<32 | len), 0 = error 또는 빈 출력. caller (JS) 가
+/// 결과 dealloc 책임. 옵션 JSON 파싱 실패는 silent — 기본 옵션으로 진행 (best effort).
+export fn build(
+    entry_path_ptr: u32,
+    entry_path_len: u32,
+    options_json_ptr: u32,
+    options_json_len: u32,
+) u64 {
     if (entry_path_ptr == 0 or entry_path_len == 0) return 0;
     const entry_path: []const u8 = @as([*]const u8, @ptrFromInt(entry_path_ptr))[0..entry_path_len];
 
@@ -59,11 +92,34 @@ export fn build(entry_path_ptr: u32, entry_path_len: u32) u64 {
     const entry_dupe = arena_alloc.dupe(u8, entry_path) catch return 0;
     const entry_points: []const []const u8 = &.{entry_dupe};
 
-    const options: BundleOptions = .{
+    var options: BundleOptions = .{
         .entry_points = entry_points,
         .format = .esm,
         .platform = .browser,
     };
+
+    if (options_json_ptr != 0 and options_json_len != 0) {
+        const json_bytes: []const u8 = @as([*]const u8, @ptrFromInt(options_json_ptr))[0..options_json_len];
+        const parsed = std.json.parseFromSlice(
+            BuildOptionsJson,
+            arena_alloc,
+            json_bytes,
+            .{ .ignore_unknown_fields = true },
+        ) catch null;
+        if (parsed) |p| {
+            const o = p.value;
+            if (o.format) |s| if (parseFormat(s)) |f| {
+                options.format = f;
+            };
+            if (o.platform) |s| if (parsePlatform(s)) |pf| {
+                options.platform = pf;
+            };
+            if (o.external) |list| options.external = list;
+            if (o.minifyWhitespace) |b| options.minify_whitespace = b;
+            if (o.minifyIdentifiers) |b| options.minify_identifiers = b;
+            if (o.minifySyntax) |b| options.minify_syntax = b;
+        }
+    }
 
     var bundler = Bundler.init(arena_alloc, options);
     const result = bundler.bundle() catch return 0;
