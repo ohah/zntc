@@ -25,7 +25,15 @@ interface VfsFile {
   language: "typescript" | "javascript";
 }
 
-const PRESETS: { label: string; entry: string; files: VfsFile[] }[] = [
+interface Preset {
+  label: string;
+  entry: string;
+  files: VfsFile[];
+  /// 선택 시 자동 적용할 권장 BundleOpts (subset). 미지정 필드는 현재 값 유지.
+  opts?: Partial<BundleOpts>;
+}
+
+const PRESETS: Preset[] = [
   {
     label: "기본 — entry + utils",
     entry: "/index.ts",
@@ -70,8 +78,54 @@ export const counter: Counter = {
     ],
   },
   {
+    label: "CJS — Node.js 호환 출력",
+    entry: "/index.ts",
+    opts: { format: "cjs", platform: "node" },
+    files: [
+      {
+        path: "/index.ts",
+        language: "typescript",
+        content: `// format=cjs / platform=node — Node.js 의 require/exports 로 emit.
+// 출력 상단에 "use strict" prologue 자동 추가.
+import { format } from "./formatter";
+
+export function main(name: string) {
+  console.log(format(name));
+}
+`,
+      },
+      {
+        path: "/formatter.ts",
+        language: "typescript",
+        content: `export const format = (name: string): string => \`Hi, \${name}!\`;
+`,
+      },
+    ],
+  },
+  {
+    label: "IIFE — 브라우저 즉시 실행 함수",
+    entry: "/main.ts",
+    opts: { format: "iife", platform: "browser" },
+    files: [
+      {
+        path: "/main.ts",
+        language: "typescript",
+        content: `// format=iife — \`(function () { ... })()\` 래퍼로 emit.
+// <script> 태그로 즉시 로드 / 실행하는 단일 페이지 / 라이브러리 시나리오.
+const root = document.querySelector("#app");
+if (root) root.textContent = greet("World");
+
+function greet(name: string): string {
+  return \`Hello, \${name}!\`;
+}
+`,
+      },
+    ],
+  },
+  {
     label: "Dynamic import — 코드 스플리팅 시연",
     entry: "/main.ts",
+    opts: { codeSplitting: true },
     files: [
       {
         path: "/main.ts",
@@ -110,11 +164,12 @@ export function heavy() {
   {
     label: "External — react 를 외부 처리",
     entry: "/app.tsx",
+    opts: { externalText: "react" },
     files: [
       {
         path: "/app.tsx",
         language: "typescript",
-        content: `// "External" 패널에 \`react\` 를 추가하면 import 가 그대로 보존됨
+        content: `// "External" 패널에 \`react\` 가 자동 입력됨 — import 가 그대로 보존
 // (런타임이 외부에서 제공한다고 가정 — CDN, host 환경 등).
 import { useState } from "react";
 
@@ -306,10 +361,14 @@ export default function PlaygroundBundler() {
   function handlePreset(label: string) {
     const preset = PRESETS.find((p) => p.label === label);
     if (!preset) return;
+    // preset 의 권장 옵션은 default 위에 merge — 이전 preset 의 옵션이 새 preset 에
+    // 새어들어가지 않도록 default reset 후 적용.
+    const nextOpts: BundleOpts = { ...DEFAULT_OPTS, ...preset.opts };
     setFiles(preset.files);
     setActivePath(preset.entry);
     setEntryPath(preset.entry);
-    runBundle(preset.files, preset.entry, opts);
+    setOpts(nextOpts);
+    runBundle(preset.files, preset.entry, nextOpts);
   }
 
   function updateOpt<K extends keyof BundleOpts>(key: K, value: BundleOpts[K]) {
