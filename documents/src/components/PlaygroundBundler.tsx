@@ -2,14 +2,11 @@
  * PlaygroundBundler — `/playground/bundler` 라우트 메인 컴포넌트.
  *
  * transpile playground 와 분리: 별도 wasm binary (`zts-bundler.wasm`) lazy 로드,
- * 멀티파일 입력 (좌측 사이드바 + Monaco model swap), 단일 output editor.
- *
- * `bundler.build(entry)` 호출은 esm/browser 고정 — 옵션 패널은 ABI 가 옵션 JSON
- * 받도록 확장된 후 활성화.
+ * 멀티파일 입력 (좌측 사이드바 + Monaco model swap), output 패널은 chunk 별 탭.
  */
 import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
-import type { BundleOptionsInput } from "../../../packages/wasm/index.ts";
+import type { BundleOptionsInput, OutputChunk } from "../../../packages/wasm/index.ts";
 import {
   BTN_CLASS,
   Badge,
@@ -88,6 +85,8 @@ interface BundleOpts {
   minifyWhitespace: boolean;
   minifyIdentifiers: boolean;
   minifySyntax: boolean;
+  codeSplitting: boolean;
+  preserveModules: boolean;
 }
 
 const DEFAULT_OPTS: BundleOpts = {
@@ -97,6 +96,8 @@ const DEFAULT_OPTS: BundleOpts = {
   minifyWhitespace: false,
   minifyIdentifiers: false,
   minifySyntax: false,
+  codeSplitting: false,
+  preserveModules: false,
 };
 
 function toApiOptions(opts: BundleOpts): BundleOptionsInput {
@@ -107,6 +108,8 @@ function toApiOptions(opts: BundleOpts): BundleOptionsInput {
     minifyWhitespace: opts.minifyWhitespace,
     minifyIdentifiers: opts.minifyIdentifiers,
     minifySyntax: opts.minifySyntax,
+    codeSplitting: opts.codeSplitting,
+    preserveModules: opts.preserveModules,
   };
 }
 
@@ -115,7 +118,8 @@ export default function PlaygroundBundler() {
   const [activePath, setActivePath] = useState<string>(PRESETS[0].entry);
   const [entryPath, setEntryPath] = useState<string>(PRESETS[0].entry);
   const [opts, setOpts] = useState<BundleOpts>(DEFAULT_OPTS);
-  const [output, setOutput] = useState("");
+  const [chunks, setChunks] = useState<OutputChunk[]>([]);
+  const [activeChunkPath, setActiveChunkPath] = useState<string>("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [showSidebar, setShowSidebar] = useState(true);
@@ -132,16 +136,18 @@ export default function PlaygroundBundler() {
     for (const f of nextFiles) vfs.set(f.path, f.content);
 
     try {
-      const result = wasm.build(entry, toApiOptions(nextOpts));
-      if (result === null) {
-        setOutput("");
+      const result = wasm.buildChunks(entry, toApiOptions(nextOpts));
+      if (result === null || result.length === 0) {
+        setChunks([]);
         setError(`Bundle failed — entry "${entry}" 가 빈 출력을 반환했거나 해석 실패`);
         return;
       }
-      setOutput(result.code);
+      setChunks(result);
+      // 활성 chunk 가 새 result 에 없으면 첫 chunk 로 reset.
+      setActiveChunkPath((prev) => (result.some((c) => c.path === prev) ? prev : result[0].path));
       setError("");
     } catch (err) {
-      setOutput("");
+      setChunks([]);
       setError(String(err));
     }
   }
@@ -427,6 +433,18 @@ export default function PlaygroundBundler() {
                   onChange={(v) => updateOpt("minifySyntax", v)}
                 />
               </Section>
+              <Section title="Splitting">
+                <Chk
+                  label="Code splitting"
+                  checked={opts.codeSplitting}
+                  onChange={(v) => updateOpt("codeSplitting", v)}
+                />
+                <Chk
+                  label="Preserve modules"
+                  checked={opts.preserveModules}
+                  onChange={(v) => updateOpt("preserveModules", v)}
+                />
+              </Section>
             </div>
           </div>
         )}
@@ -452,8 +470,36 @@ export default function PlaygroundBundler() {
           <div className="w-[2px] shrink-0 bg-surface-800" />
           <EditorPanel
             header={
-              <div className="flex w-full items-center justify-between">
-                <span>Bundle Output</span>
+              <div className="flex w-full items-center justify-between gap-2">
+                {chunks.length > 1 ? (
+                  <div className="flex flex-1 items-center gap-1 overflow-x-auto">
+                    {chunks.map((c) => {
+                      const active = c.path === activeChunkPath;
+                      return (
+                        <button
+                          type="button"
+                          key={c.path}
+                          onClick={() => setActiveChunkPath(c.path)}
+                          className={`shrink-0 cursor-pointer rounded-t border-b-2 bg-transparent px-2 py-0.5 text-[12px] transition-colors ${
+                            active
+                              ? "border-zig-500 text-neutral-200 font-semibold"
+                              : "border-transparent text-neutral-500 hover:text-neutral-300"
+                          }`}
+                          title={c.path}
+                        >
+                          {c.path}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <span>
+                    Output{" "}
+                    {chunks.length === 1 && (
+                      <span className="text-[11px] opacity-50">{chunks[0].path}</span>
+                    )}
+                  </span>
+                )}
                 {error && <span className="text-[11px] text-red-400">Error</span>}
               </div>
             }
@@ -462,7 +508,7 @@ export default function PlaygroundBundler() {
               height="100%"
               language={error ? "plaintext" : "javascript"}
               theme="vs-dark"
-              value={error || output}
+              value={error || (chunks.find((c) => c.path === activeChunkPath)?.code ?? chunks[0]?.code ?? "")}
               options={{ ...editorOpts, readOnly: true }}
             />
           </EditorPanel>
