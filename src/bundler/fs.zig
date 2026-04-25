@@ -169,33 +169,111 @@ pub const RealFS = struct {
     }
 };
 
-/// WASM 빌드용 placeholder. Phase 2 PR 6 에서 host JS callback (zts_plugins
-/// import) 으로 실제 구현. 현재는 wasm 빌드 시 호출하면 컴파일 에러.
+/// WASM host import. JS 측 `zts_fs` namespace 에 fn 들 노출 — wasm_entry 가
+/// instantiate 시 imports 로 주입. comptime 분기로 NAPI 빌드는 link 영향 X.
+///
+/// ABI:
+/// - readFile(path_ptr, path_len, max_bytes) → packed u64: (data_ptr<<32) | data_len.
+///   0 = error (NotFound/IoError 통합). caller (Zig) 가 데이터 dupe 후 hostFreeBytes 호출.
+/// - statFile(path_ptr, path_len, out_size, out_kind, out_mtime_lo, out_mtime_hi) → status u32.
+///   0 = ok. EntryKind: 0=file, 1=directory, 2=symlink, 3=other.
+/// - access(path_ptr, path_len) → status u32 (0=ok, 1=NotFound, 2=PermissionDenied, 3=IoError).
+/// - realpath(path_ptr, path_len) → packed u64 (data_ptr<<32 | data_len), 0=error.
+/// - listDir(path_ptr, path_len) → packed u64 (json_ptr<<32 | json_len), 0=error.
+///   JSON: `[{"name":"a","kind":0}, ...]`.
+/// - hostFreeBytes(ptr, len) — host 가 alloc 한 버퍼 해제.
+const wasm_imports = if (is_wasm_build) struct {
+    extern "zts_fs" fn readFile(path_ptr: u32, path_len: u32, max_bytes: u32) u64;
+    extern "zts_fs" fn statFile(path_ptr: u32, path_len: u32, out_size: *u64, out_kind: *u8, out_mtime_lo: *u64, out_mtime_hi: *u64) u32;
+    extern "zts_fs" fn access(path_ptr: u32, path_len: u32) u32;
+    extern "zts_fs" fn realpath(path_ptr: u32, path_len: u32) u64;
+    extern "zts_fs" fn listDir(path_ptr: u32, path_len: u32) u64;
+    extern "zts_fs" fn hostFreeBytes(ptr: u32, len: u32) void;
+} else struct {};
+
+/// host 반환의 packed (ptr<<32 | len) 디코드 — 0 = error sentinel.
+inline fn decodePacked(packed_val: u64) ?struct { ptr: u32, len: u32 } {
+    if (packed_val == 0) return null;
+    return .{
+        .ptr = @intCast(packed_val >> 32),
+        .len = @intCast(packed_val & 0xffff_ffff),
+    };
+}
+
+/// host packed bytes → caller 소유 dupe + hostFreeBytes. readFile/realpath 공통.
+fn readPackedBytes(allocator: std.mem.Allocator, packed_val: u64) FsError![]u8 {
+    const decoded = decodePacked(packed_val) orelse return FsError.NotFound;
+    const bytes_ptr: [*]u8 = @ptrFromInt(decoded.ptr);
+    defer wasm_imports.hostFreeBytes(decoded.ptr, decoded.len);
+    return allocator.dupe(u8, bytes_ptr[0..decoded.len]) catch FsError.OutOfMemory;
+}
+
+/// WASM 빌드의 fs 구현. host JS callback (zts_fs namespace) 위임.
+/// listDir 는 후속 PR — Phase 2 의 minimal use case (단일 entry + 명시 imports) 는
+/// require.context 미사용이라 제외.
 pub const VirtualFS = struct {
     pub fn init() VirtualFS {
         return .{};
     }
 
-    pub fn readFile(_: VirtualFS, _: std.mem.Allocator, _: []const u8, _: usize) FsError!LoadedModule {
-        @compileError("VirtualFS.readFile: WASM fs callback 미구현 (Phase 2 PR 6)");
+    pub fn readFile(_: VirtualFS, allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) FsError!LoadedModule {
+        const packed_result = wasm_imports.readFile(@intCast(@intFromPtr(path.ptr)), @intCast(path.len), @intCast(max_bytes));
+        const dupe = try readPackedBytes(allocator, packed_result);
+        return .{
+            .contents = dupe,
+            .path = path,
+            .namespace = .file,
+        };
     }
 
-    pub fn statFile(_: VirtualFS, _: []const u8) FsError!FileStat {
-        @compileError("VirtualFS.statFile: WASM fs callback 미구현 (Phase 2 PR 6)");
+    pub fn statFile(_: VirtualFS, path: []const u8) FsError!FileStat {
+        var size: u64 = 0;
+        var kind: u8 = 0;
+        var mtime_lo: u64 = 0;
+        var mtime_hi: u64 = 0;
+        const status = wasm_imports.statFile(@intCast(@intFromPtr(path.ptr)), @intCast(path.len), &size, &kind, &mtime_lo, &mtime_hi);
+        if (status != 0) return mapStatusError(status);
+        return .{
+            .size = size,
+            .is_dir = kind == 1,
+            .mtime = (@as(i128, @intCast(mtime_hi)) << 64) | @as(i128, @intCast(mtime_lo)),
+            .kind = mapStatusKind(kind),
+        };
     }
 
-    pub fn access(_: VirtualFS, _: []const u8) FsError!void {
-        @compileError("VirtualFS.access: WASM fs callback 미구현 (Phase 2 PR 6)");
+    pub fn access(_: VirtualFS, path: []const u8) FsError!void {
+        const status = wasm_imports.access(@intCast(@intFromPtr(path.ptr)), @intCast(path.len));
+        if (status != 0) return mapStatusError(status);
     }
 
-    pub fn realpath(_: VirtualFS, _: std.mem.Allocator, _: []const u8) FsError![]const u8 {
-        @compileError("VirtualFS.realpath: WASM fs callback 미구현 (Phase 2 PR 6)");
+    pub fn realpath(_: VirtualFS, allocator: std.mem.Allocator, path: []const u8) FsError![]const u8 {
+        const packed_result = wasm_imports.realpath(@intCast(@intFromPtr(path.ptr)), @intCast(path.len));
+        return readPackedBytes(allocator, packed_result);
     }
 
     pub fn listDir(_: VirtualFS, _: std.mem.Allocator, _: []const u8) FsError![]DirEntry {
-        @compileError("VirtualFS.listDir: WASM fs callback 미구현 (Phase 2 PR 6)");
+        // Phase 2 후속 — JSON 파싱 비용 회피 위해 minimal use case 에선 제외.
+        // require.context / glob import 사용 시 channel 통과.
+        @compileError("VirtualFS.listDir: Phase 2 후속 — host JSON ABI 미구현");
     }
 };
+
+fn mapStatusError(status: u32) FsError {
+    return switch (status) {
+        1 => FsError.NotFound,
+        2 => FsError.PermissionDenied,
+        else => FsError.IoError,
+    };
+}
+
+fn mapStatusKind(kind: u8) EntryKind {
+    return switch (kind) {
+        0 => .file,
+        1 => .directory,
+        2 => .symlink,
+        else => .other,
+    };
+}
 
 /// std.fs 의 OS error 를 fs 도메인 error 로 통일 매핑.
 /// readFile/statFile/access/openDir 공통.
