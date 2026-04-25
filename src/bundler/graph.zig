@@ -1022,6 +1022,7 @@ pub const ModuleGraph = struct {
             module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &(module.ast.?), scan_result.records) catch &.{};
             binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &(module.ast.?), module.import_bindings) catch {};
             module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &(module.ast.?), scan_result.records, module.import_bindings) catch &.{};
+            module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
 
             // Phase 1 (#1328): 합성 심볼 테이블 초기화 + export default 등록.
             module.ensureAliasTable(self.allocator);
@@ -1302,6 +1303,7 @@ pub const ModuleGraph = struct {
                     };
                 }
                 module.export_bindings = ebindings;
+                module.exported_names = projectExportedNames(arena_alloc, ebindings);
             } else |_| {}
 
             // Worker 패턴 보완: new Worker(new URL(...)) 는 inline scan에서 감지하지 않으므로
@@ -1460,6 +1462,16 @@ pub const ModuleGraph = struct {
             },
             .unknown => {},
         }
+    }
+
+    /// `ExportBinding[]` → `[]const []const u8` 평탄 이름 슬라이스 (#1883).
+    /// `ModuleInfo` 가 binding_scanner internal struct 를 노출 안 하도록 사전 투영.
+    /// 실패 시 빈 슬라이스 — caller 가 fallback 가능하게.
+    fn projectExportedNames(allocator: std.mem.Allocator, bindings: []const binding_scanner_mod.ExportBinding) []const []const u8 {
+        if (bindings.len == 0) return &.{};
+        const out = allocator.alloc([]const u8, bindings.len) catch return &.{};
+        for (bindings, 0..) |b, i| out[i] = b.exported_name;
+        return out;
     }
 
     /// sideEffects 글롭 패턴 매칭.

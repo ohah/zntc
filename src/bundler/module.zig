@@ -101,6 +101,9 @@ pub const Module = struct {
     import_bindings: []ImportBinding = &.{},
     /// export 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
     export_bindings: []ExportBinding = &.{},
+    /// `export_bindings.exported_name` 의 평탄 slice 프리컴퓨트 (ModuleInfo 노출용 #1883).
+    /// graph allocator 소유. 이름 자체는 source/AST text 의 borrow 라 별도 free 불필요.
+    exported_names: []const []const u8 = &.{},
     /// Bundler-local 합성 심볼 테이블 (cross-module linking용). #1328 Phase 1.
     /// graph allocator 소유. null = 미초기화 (asset/disabled 모듈 등).
     alias_table: ?AliasTable = null,
