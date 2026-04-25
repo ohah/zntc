@@ -118,6 +118,64 @@ test "parsePackageJson: missing file" {
     try std.testing.expectError(error.FileNotFound, result);
 }
 
+// path-based 시그니처의 회귀 방지 — std.fs.Dir 핸들 우회 후 새로 노출되는 경로:
+
+test "parsePackageJson: symlink-to-directory 안의 package.json (bun/.bun 패턴)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // 실제 패키지 디렉토리
+    try tmp.dir.makeDir("real_pkg");
+    var real_dir = try tmp.dir.openDir("real_pkg", .{});
+    defer real_dir.close();
+    try real_dir.writeFile(.{
+        .sub_path = "package.json",
+        .data =
+        \\{"name":"linked-pkg","main":"./index.js"}
+        ,
+    });
+
+    // bun/.bun 같은 symlink-to-directory
+    tmp.dir.symLink("real_pkg", "linked_pkg", .{ .is_directory = true }) catch |err| switch (err) {
+        // Windows / 권한 부족 환경 skip
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp.dir.realpath(".", &buf);
+
+    // symlink 경로로 parsePackageJson 호출 — std.fs.path.join 후 readFile 가
+    // symlink 를 따라가 target 의 package.json 읽음
+    var join_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const linked_path = try std.fmt.bufPrint(&join_buf, "{s}/linked_pkg", .{tmp_path});
+
+    var result = try parsePackageJson(std.testing.allocator, linked_path);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("linked-pkg", result.pkg.name.?);
+}
+
+test "parsePackageJson: OutOfMemory 는 별도로 throw (silent swallow 방지)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "package.json",
+        .data =
+        \\{"name":"oom-test"}
+        ,
+    });
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmpDirPath(&tmp, &buf);
+
+    // failingAllocator 0 byte 허용 — std.fs.path.join 의 첫 alloc 부터 실패
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = parsePackageJson(failing.allocator(), dir_path);
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
 test "resolveExports: string shorthand" {
     const source =
         \\{"exports":"./index.js"}
