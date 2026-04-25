@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createFixture, hasPackage } from "./helpers";
 import { init, close, build } from "../../../packages/core/index";
@@ -449,7 +449,4 @@ describe("inlineDynamicImports smoke", () => {
     expect(stdout).toContain("FIRST:BOOM");
     expect(stdout).toContain("SECOND:BOOM");
   });
-
-  // 미사용 import 회피
-  void writeFileSync;
 });
