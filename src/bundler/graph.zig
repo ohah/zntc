@@ -718,7 +718,7 @@ pub const ModuleGraph = struct {
         const module_path = mod_ptr.path;
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
         for (context_deps) |dep| {
-            const resolved = self.resolve_cache.resolveThreadSafe(source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
+            const resolved = self.resolve_cache.resolveAsModuleThreadSafe(source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
                 error.ModuleNotFound => {
                     self.addDiag(
                         .unresolved_import,
@@ -733,13 +733,38 @@ pub const ModuleGraph = struct {
                 },
                 else => |e| return e,
             };
-            if (resolved) |r| {
-                defer self.allocator.free(r.path);
-                const dep_idx = try self.addModule(r.path);
-                // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
-                self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
-                try self.linkDependency(mod_index, dep_idx);
-            }
+            if (resolved) |m| switch (m) {
+                .file => |f| {
+                    defer self.allocator.free(f.path);
+                    const dep_idx = try self.addModule(f.path);
+                    // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
+                    self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
+                    try self.linkDependency(mod_index, dep_idx);
+                },
+                // require.context 의 disabled / virtual 등 variant 는 Phase 1 cache 에서 반환되지 않음.
+                .disabled => |d| self.allocator.free(d.path),
+                .virtual, .dataurl, .external, .custom => unreachable,
+            };
+        }
+    }
+
+    /// 의존성 인덱스를 import_records 에 기록하고 graph 에 link.
+    /// dynamic_import 는 별도 link 경로 — 그 외는 일반 dependency.
+    /// SegmentedList 는 realloc 없지만 모듈 소유 slice 를 update 하므로 *Module 재조회 안전.
+    fn recordResolvedDep(
+        self: *ModuleGraph,
+        mod_index: ModuleIndex,
+        mod_idx: usize,
+        rec_i: usize,
+        dep_idx: ModuleIndex,
+        kind: types.ImportKind,
+    ) !void {
+        const src_mod = self.modules.at(mod_idx);
+        src_mod.import_records[rec_i].resolved = dep_idx;
+        if (kind == .dynamic_import) {
+            try self.linkDynamicImport(mod_index, dep_idx);
+        } else {
+            try self.linkDependency(mod_index, dep_idx);
         }
     }
 
@@ -748,7 +773,7 @@ pub const ModuleGraph = struct {
         mod_idx: usize,
         rec_i: usize,
         record: types.ImportRecord,
-        resolved: ?resolver_mod.ResolveResult,
+        resolved: ?plugin_mod.ResolvedModule,
         is_error: bool,
     ) !void {
         const mod_index = ModuleIndex.fromUsize(mod_idx);
@@ -761,15 +786,7 @@ pub const ModuleGraph = struct {
             // ModuleNotFound — browser에서 Node 빌트인은 빈 CJS로 대체
             if (self.resolve_cache.platform.isBrowserLike() and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
                 const dep_idx = try self.addDisabledModule(record.specifier);
-                // addDisabledModule 후 *Module 포인터 다시 획득 — SegmentedList 는
-                // realloc 없지만 모듈 소유 slice 를 update 하는 것이므로 재조회해도 동일.
-                const src_mod = self.modules.at(mod_idx);
-                src_mod.import_records[rec_i].resolved = dep_idx;
-                if (record.kind == .dynamic_import) {
-                    try self.linkDynamicImport(mod_index, dep_idx);
-                } else {
-                    try self.linkDependency(mod_index, dep_idx);
-                }
+                try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
             } else {
                 const sev: types.BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
                 self.addDiag(.unresolved_import, sev, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve module", record.specifier);
@@ -777,45 +794,36 @@ pub const ModuleGraph = struct {
             return;
         }
 
-        if (resolved) |r| {
-            defer self.allocator.free(r.path);
+        if (resolved) |m| {
+            // Phase 1 의 cache 와 plugin (fromLegacy 통과) 는 file/disabled variant 만 반환.
+            // virtual/dataurl/external/custom 은 PR 5 plugin layer 도입 시 처리.
+            switch (m) {
+                .file => |f| {
+                    defer self.allocator.free(f.path);
 
-            // Worker: 메인 그래프에 모듈로 추가하지 않고 경로만 수집
-            if (record.kind == .worker) {
-                const path_dupe = try self.allocator.dupe(u8, r.path);
-                try self.worker_entries.append(self.allocator, .{
-                    .resolved_path = path_dupe,
-                    .source_module = @enumFromInt(mod_idx),
-                    .record_index = @intCast(rec_i),
-                });
-                return;
-            }
+                    // Worker: 메인 그래프에 모듈로 추가하지 않고 경로만 수집
+                    if (record.kind == .worker) {
+                        const path_dupe = try self.allocator.dupe(u8, f.path);
+                        try self.worker_entries.append(self.allocator, .{
+                            .resolved_path = path_dupe,
+                            .source_module = @enumFromInt(mod_idx),
+                            .record_index = @intCast(rec_i),
+                        });
+                        return;
+                    }
 
-            if (r.disabled) {
-                const dep_idx = try self.addDisabledModule(record.specifier);
-                const src_mod = self.modules.at(mod_idx);
-                src_mod.import_records[rec_i].resolved = dep_idx;
-                if (record.kind == .dynamic_import) {
-                    try self.linkDynamicImport(mod_index, dep_idx);
-                } else {
-                    try self.linkDependency(mod_index, dep_idx);
-                }
-                return;
-            }
-
-            const dep_idx = try self.addModule(r.path);
-            const src_mod = self.modules.at(mod_idx);
-
-            if (r.is_module_field or src_mod.is_module_field) {
-                self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
-            }
-
-            src_mod.import_records[rec_i].resolved = dep_idx;
-
-            if (record.kind == .dynamic_import) {
-                try self.linkDynamicImport(mod_index, dep_idx);
-            } else {
-                try self.linkDependency(mod_index, dep_idx);
+                    const dep_idx = try self.addModule(f.path);
+                    if (f.is_module_field or self.modules.at(mod_idx).is_module_field) {
+                        self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
+                    }
+                    try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
+                },
+                .disabled => |d| {
+                    self.allocator.free(d.path);
+                    const dep_idx = try self.addDisabledModule(record.specifier);
+                    try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
+                },
+                .virtual, .dataurl, .external, .custom => unreachable,
             }
         } else {
             // external — phantom Module 로 graph 에 등록 + 양방향 link.
@@ -835,7 +843,7 @@ pub const ModuleGraph = struct {
 
     /// resolve 결과를 저장하는 구조체. scanWorker가 기록, 메인 스레드가 적용.
     const ResolveOutput = struct {
-        resolved: ?resolver_mod.ResolveResult = null,
+        resolved: ?plugin_mod.ResolvedModule = null,
         is_error: bool = false,
     };
 
@@ -900,12 +908,12 @@ pub const ModuleGraph = struct {
                     },
                 };
                 if (resolve_result) |plugin_result| {
-                    results[rec_i] = .{ .resolved = plugin_result, .is_error = false };
+                    results[rec_i] = .{ .resolved = plugin_mod.fromLegacy(plugin_result), .is_error = false };
                     continue;
                 }
             }
 
-            const resolved = self.resolve_cache.resolveThreadSafe(
+            const resolved = self.resolve_cache.resolveAsModuleThreadSafe(
                 source_dir,
                 record.specifier,
                 record.kind,
@@ -1546,13 +1554,13 @@ pub const ModuleGraph = struct {
                 };
                 // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀
                 if (resolve_result) |plugin_result| {
-                    try self.applyResolveResult(mod_idx, rec_i, record, plugin_result, false);
+                    try self.applyResolveResult(mod_idx, rec_i, record, plugin_mod.fromLegacy(plugin_result), false);
                     continue;
                 }
                 // null이면 기본 resolver로 fall through
             }
 
-            const resolved = self.resolve_cache.resolve(
+            const resolved = self.resolve_cache.resolveAsModule(
                 source_dir,
                 record.specifier,
                 record.kind,
@@ -2692,14 +2700,17 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
                         continue;
                     };
                     if (resolved_paths_opt) |paths| {
-                        const r = self.resolve_cache.resolveThreadSafe(source_dir, joined, .require) catch null;
-                        if (r) |res| {
+                        // default null — file variant 만 dupe 성공 시 덮어씀.
+                        paths[i] = null;
+                        if (self.resolve_cache.resolveAsModuleThreadSafe(source_dir, joined, .require) catch null) |res| switch (res) {
                             // resolve_cache 가 self.allocator 로 path 할당 → arena 로 dupe 후 free.
-                            paths[i] = arena_alloc.dupe(u8, res.path) catch null;
-                            self.allocator.free(res.path);
-                        } else {
-                            paths[i] = null;
-                        }
+                            .file => |f| {
+                                paths[i] = arena_alloc.dupe(u8, f.path) catch null;
+                                self.allocator.free(f.path);
+                            },
+                            .disabled => |d| self.allocator.free(d.path),
+                            .virtual, .dataurl, .external, .custom => {},
+                        };
                     }
                     // graph dep 등록은 applyContextDepResults 에서 (cache hit 라 빠름).
                     expansion.append(arena_alloc, .{
