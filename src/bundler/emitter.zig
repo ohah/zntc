@@ -145,6 +145,16 @@ pub const EmitOptions = struct {
     /// 호이스팅이 깨지므로, 모든 코드를 factory 안에 유지하여 init 순서 보장.
     /// React Native 빌드에서 기본 활성화 권장.
     strict_execution_order: bool = false,
+    /// Metro `guardedLoadModule` 호환: entry trigger (`init_X()` 또는
+    /// `require_X()`) 호출을 try/catch + `ErrorUtils.reportFatalError(e)` 로 wrap.
+    /// module factory 가 throw 해도 부팅이 막히지 않고 RN 표준 LogBox 에 fatal 로
+    /// 표시. Metro 의 `guardedLoadModule` (top-level `__r` wrapper) 와 동등 mechanism.
+    /// `ErrorUtils` 미정의 환경 (test / browser) 에선 throw 그대로 re-throw.
+    /// 발견 계기: iOS 26.4 Hermes 가 `Location` 등 spec global 을 immutable
+    /// descriptor (`configurable: false`) 로 미리 등록 + expo-metro-runtime 가
+    /// 가드 없이 `defineProperty` 호출 → throw → 부팅 실패. mechanism 은 OS/엔진
+    /// 무관이라 모든 module factory throw 케이스 커버. RN 플랫폼 default 활성 권장.
+    entry_error_guard: bool = false,
     /// preserve-modules: 모듈 1개 = 출력 파일 1개
     preserve_modules: bool = false,
     /// preserve-modules-root: 출력 디렉토리 구조의 기준 경로
@@ -506,7 +516,7 @@ pub fn emitWithTreeShaking(
             if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json) catch null;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain) catch null;
         }
     }
 
@@ -603,7 +613,7 @@ pub fn emitWithTreeShaking(
         const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
         if (is_entry and options.run_before_main.len > 0 and m.wrap_kind != .esm) {
             const before_len = module_output.items.len;
-            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main);
+            try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options.entry_error_guard);
             module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
         }
 
@@ -751,12 +761,15 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    // 래핑된 엔트리 자동 호출: __commonJS → require_xxx(), __esm → init_xxx().
-    // RN 플랫폼에서는 엔트리도 __esm 래핑되므로 init_xxx() 호출이 필요.
+    // 래핑된 엔트리 자동 호출. Metro `getAppendScripts` 와 동등 — `runBeforeMainModule`
+    // + entry 각 path 마다 separate `__r(N);` (= 독립 outer `__zts_guarded(...)`) 로 emit.
     if (entry_idx) |ei| {
-        for (sorted.items) |em| {
+        for (sorted.items, 0..) |em, ei_idx| {
             if (em.index.toU32() == ei and em.wrap_kind.isWrapped()) {
-                try appendModuleCall(&output, allocator, em);
+                if (results[ei_idx].entry_chain) |chain| {
+                    try output.appendSlice(allocator, chain);
+                }
+                try appendGuardedModuleCall(&output, allocator, em, options.entry_error_guard);
                 break;
             }
         }
@@ -950,13 +963,42 @@ pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator
     try output.appendSlice(allocator, "();\n");
 }
 
+/// `entry_error_guard` 활성 시 init 호출을 `__zts_guarded(callName)` 패턴으로 emit.
+/// helper (`__zts_guarded`) 는 prologue 에 주입되어 outermost 호출만 실제 wrap.
+/// 비활성 시 기존 `appendModuleCall` 와 동등.
+/// TLA (`uses_top_level_await`) 인 경우 `await` 가 lambda 안에 들어가야 하므로 wrap 안 함.
+pub fn appendGuardedModuleCall(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    mod: anytype,
+    error_guard: bool,
+) !void {
+    const tla = mod.wrap_kind != .cjs and mod.uses_top_level_await;
+    if (!error_guard or tla) {
+        try appendModuleCall(output, allocator, mod);
+        return;
+    }
+    const call_name = if (mod.wrap_kind == .cjs)
+        types.makeRequireVarName(allocator, mod.path) catch return
+    else
+        mod.allocInitName(allocator) catch return;
+    defer allocator.free(call_name);
+    // `__zts_guarded(callName)` — fn 인자로 함수 식별자만 전달. helper 가 fn() 호출.
+    try output.appendSlice(allocator, "__zts_guarded(");
+    try output.appendSlice(allocator, call_name);
+    try output.appendSlice(allocator, ");\n");
+}
+
 /// run-before-main 모듈의 호출 코드를 output에 추가한다.
-pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8) !void {
+/// `entry_error_guard` 활성 시 각 rbm 호출도 `__zts_guarded(...)` 로 wrap —
+/// Metro `getAppendScripts` 가 `runBeforeMainModule` 의 각 path 마다 별도
+/// `__r(N);` (= guardedLoadModule outer 호출) 을 emit 하는 것과 동등.
+pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8, error_guard: bool) !void {
     for (run_before_main) |rbm_path| {
         var it = graph.modulesIterator();
         while (it.next()) |rbm| {
             if (std.mem.eql(u8, rbm.path, rbm_path)) {
-                try appendModuleCall(output, allocator, rbm);
+                try appendGuardedModuleCall(output, allocator, rbm, error_guard);
                 break;
             }
         }
@@ -973,7 +1015,7 @@ fn emitModuleThread(
     shaker: ?*const TreeShaker,
     result: *CompiledModule,
 ) void {
-    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json) catch null;
+    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json, &result.entry_chain) catch null;
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
@@ -991,6 +1033,7 @@ pub fn emitModule(
     mappings_out: ?*?[]const SourceMap.Mapping,
     preamble_lines_out: ?*u32,
     fn_map_json_out: ?*?[]const u8,
+    entry_chain_out: ?*?[]const u8,
 ) !?[]const u8 {
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
@@ -1284,6 +1327,14 @@ pub fn emitModule(
         // ESM 모듈의 소스맵 매핑을 결과에 반영
         if (mappings_out) |mout| {
             mout.* = esm_result.mappings;
+        }
+        // entry_error_guard + entry: chain 을 entry_chain_out 으로 전달.
+        // 비-entry 또는 비-guard 면 entry_chain == null.
+        if (entry_chain_out) |out| {
+            out.* = esm_result.entry_chain;
+        } else if (esm_result.entry_chain) |c| {
+            // out 을 받지 않으면 owned chain 을 누수 — 안전하게 free.
+            allocator.free(c);
         }
         return esm_result.code;
     }
@@ -1609,6 +1660,11 @@ fn emitBundleRuntimeHelpers(
     } else if (options.react_refresh) {
         // 비-dev 모드에서 react_refresh만 활성화된 경우 스텁 주입
         try output.appendSlice(allocator, rt.REFRESH_STUB);
+    }
+    // entry_error_guard: Metro `guardedLoadModule` 동등 mechanism 의 helper 주입.
+    // 실제 wrap 은 emit 단계에서 module init 호출 site 별로 `__zts_guarded(fn)` 으로 emit.
+    if (options.entry_error_guard) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) rt.GUARDED_RUNTIME_MIN else rt.GUARDED_RUNTIME);
     }
 }
 

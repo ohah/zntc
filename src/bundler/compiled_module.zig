@@ -20,12 +20,17 @@ pub const CompiledModule = struct {
     preamble_lines: u32 = 0,
     /// per-source function map JSON. null = 비활성/함수 없음.
     fn_map_json: ?[]const u8 = null,
+    /// `entry_error_guard` 활성 + entry 모듈에서 factory body 와 분리해 emitter 가
+    /// 별 top-level statement 로 unroll. 각 chain 이 독립 `__zts_guarded(...)` 가 되어
+    /// 한 layer throw 가 다른 layer 부팅을 막지 않음 (Metro `__r(N)` per-path 와 동등).
+    entry_chain: ?[]const u8 = null,
 
-    /// 모듈 소유 자원 해제 (code/mappings/fn_map_json).
+    /// 모듈 소유 자원 해제 (code/mappings/fn_map_json/entry_chain).
     pub fn deinit(self: CompiledModule, allocator: std.mem.Allocator) void {
         if (self.code) |c| allocator.free(c);
         if (self.mappings) |m| allocator.free(m);
         if (self.fn_map_json) |j| allocator.free(j);
+        if (self.entry_chain) |c| allocator.free(c);
     }
 
     /// 모든 slice 자원을 `allocator` 로 복사한 새 CompiledModule 반환.
@@ -36,12 +41,15 @@ pub const CompiledModule = struct {
         const mappings = if (self.mappings) |m| try allocator.dupe(SourceMap.Mapping, m) else null;
         errdefer if (mappings) |m| allocator.free(m);
         const fn_map = if (self.fn_map_json) |j| try allocator.dupe(u8, j) else null;
+        errdefer if (fn_map) |j| allocator.free(j);
+        const ec = if (self.entry_chain) |c| try allocator.dupe(u8, c) else null;
         return .{
             .code = code,
             .helpers = self.helpers,
             .mappings = mappings,
             .preamble_lines = self.preamble_lines,
             .fn_map_json = fn_map,
+            .entry_chain = ec,
         };
     }
 };

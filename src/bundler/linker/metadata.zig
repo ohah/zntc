@@ -396,21 +396,26 @@ pub fn buildMetadataForAst(
             // __esm 래핑 모듈에서 import: init_xxx() 호출을 preamble에 추가.
             // 호이스팅된 함수는 top-level에 있으므로 rename으로 참조 가능.
             // init 호출은 모듈당 1회만 (중복 방지는 esm_init_set으로).
+            // `entry_error_guard` 활성 시 wrap. TLA 는 await 가 lambda 안에 못 들어가서 제외.
             if (canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm) {
                 if (!esm_init_set.contains(@intCast(canonical_mod))) {
                     try esm_init_set.put(@intCast(canonical_mod), {});
                     const target_mod = canonical_m_opt.?;
-                    if (target_mod.uses_top_level_await) try preamble.write("await ");
+                    const is_tla = target_mod.uses_top_level_await;
+                    const guard = self.entry_error_guard and !is_tla;
+                    if (is_tla) try preamble.write("await ");
+                    if (guard) try preamble.write(rt.GUARD_LAMBDA_OPEN);
                     if (self.dev_mode) {
                         try preamble.write("__zts_modules[\"");
                         try preamble.write(target_mod.dev_id);
-                        try preamble.write("\"].fn();\n");
+                        try preamble.write("\"].fn()");
                     } else {
                         const init_name = try target_mod.allocInitName(self.allocator);
                         defer self.allocator.free(init_name);
                         try preamble.write(init_name);
-                        try preamble.write("();\n");
+                        try preamble.write("()");
                     }
+                    try preamble.write(if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
                 }
                 // import binding은 아래의 rename 경로로 처리 (continue하지 않음)
             }

@@ -71,6 +71,8 @@ fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
 pub const EsmEmitResult = struct {
     code: []const u8,
     mappings: ?[]const SourceMap.Mapping = null,
+    /// `CompiledModule.entry_chain` 참조. emitter 로 전달되는 unroll 버퍼.
+    entry_chain: ?[]const u8 = null,
 };
 
 pub fn emitEsmWrappedModule(
@@ -736,11 +738,21 @@ pub fn emitEsmWrappedModule(
     defer rbm_code.deinit(allocator);
     if (module.is_entry_point and options.run_before_main.len > 0) {
         if (linker) |l| {
-            try appendRunBeforeMainCalls(&rbm_code, allocator, l.graph, options.run_before_main);
+            try appendRunBeforeMainCalls(&rbm_code, allocator, l.graph, options.run_before_main, options.entry_error_guard);
         }
     }
 
     const is_async = module.uses_top_level_await;
+
+    // Option B (entry chain unroll): entry+entry_error_guard 활성 시 factory body 의
+    // chain init 호출 (rbm + preamble + star_init) 을 별 buffer 로 capture 후
+    // EsmEmitResult.entry_chain 으로 export. emitter 가 entry trigger 위치에서
+    // separate top-level statement 로 unroll emit → 각 chain 호출이 별 outer
+    // `__zts_guarded(...)` (Metro `__r(N)` 와 동등). nested 호출은 inGuard 로
+    // wrap 효과 없이 throw propagate (Metro 100% 동등 mechanism).
+    const unroll_entry_chain = module.is_entry_point and options.entry_error_guard;
+    var entry_chain_buf: std.ArrayList(u8) = .empty;
+    errdefer entry_chain_buf.deinit(allocator);
 
     // React Fast Refresh: body_code에 $RefreshReg$(_c, ...) 호출이 있을 때만
     // 모듈별 save/restore + boundary accept를 주입. 비컴포넌트 모듈은 건너뜀.
@@ -766,13 +778,25 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, " \"+id)};");
             try wrapped.appendSlice(allocator, "__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
         }
-        if (rbm_code.items.len > 0) try wrapped.appendSlice(allocator, rbm_code.items);
+        if (rbm_code.items.len > 0) {
+            if (unroll_entry_chain) {
+                try entry_chain_buf.appendSlice(allocator, rbm_code.items);
+            } else try wrapped.appendSlice(allocator, rbm_code.items);
+        }
         if (func_code.len > 0) {
             func_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
             try wrapped.appendSlice(allocator, func_code);
         }
-        if (preamble_code) |p| try wrapped.appendSlice(allocator, p);
-        if (star_init_buf.items.len > 0) try wrapped.appendSlice(allocator, star_init_buf.items);
+        if (preamble_code) |p| {
+            if (unroll_entry_chain) {
+                try entry_chain_buf.appendSlice(allocator, p);
+            } else try wrapped.appendSlice(allocator, p);
+        }
+        if (star_init_buf.items.len > 0) {
+            if (unroll_entry_chain) {
+                try entry_chain_buf.appendSlice(allocator, star_init_buf.items);
+            } else try wrapped.appendSlice(allocator, star_init_buf.items);
+        }
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         if (has_refresh) {
@@ -811,8 +835,12 @@ pub fn emitEsmWrappedModule(
             try wrapped.appendSlice(allocator, "\t};\n");
         }
         if (rbm_code.items.len > 0) {
-            try wrapped.append(allocator, '\t');
-            try appendIndented(&wrapped, allocator, rbm_code.items);
+            if (unroll_entry_chain) {
+                try entry_chain_buf.appendSlice(allocator, rbm_code.items);
+            } else {
+                try wrapped.append(allocator, '\t');
+                try appendIndented(&wrapped, allocator, rbm_code.items);
+            }
         }
         // func_code를 preamble 앞에 배치: 순환 참조에서 preamble이 의존 모듈을 init할 때
         // 이 모듈의 함수가 이미 할당된 상태여야 한다. (#1092)
@@ -822,12 +850,20 @@ pub fn emitEsmWrappedModule(
             try appendIndented(&wrapped, allocator, func_code);
         }
         if (preamble_code) |p| {
-            try wrapped.append(allocator, '\t');
-            try appendIndented(&wrapped, allocator, p);
+            if (unroll_entry_chain) {
+                try entry_chain_buf.appendSlice(allocator, p);
+            } else {
+                try wrapped.append(allocator, '\t');
+                try appendIndented(&wrapped, allocator, p);
+            }
         }
         if (star_init_buf.items.len > 0) {
-            try wrapped.append(allocator, '\t');
-            try appendIndented(&wrapped, allocator, star_init_buf.items);
+            if (unroll_entry_chain) {
+                try entry_chain_buf.appendSlice(allocator, star_init_buf.items);
+            } else {
+                try wrapped.append(allocator, '\t');
+                try appendIndented(&wrapped, allocator, star_init_buf.items);
+            }
         }
         body_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
         if (body_code.len > 0) {
@@ -900,40 +936,58 @@ pub fn emitEsmWrappedModule(
         }
     }
 
+    // entry_chain: unroll 모드에서 caller (emitter.zig) 에 전달. 빈 buffer 면 null.
+    const entry_chain_owned: ?[]const u8 = if (unroll_entry_chain and entry_chain_buf.items.len > 0)
+        try allocator.dupe(u8, entry_chain_buf.items)
+    else
+        null;
+    entry_chain_buf.deinit(allocator);
+
     return .{
         .code = try allocator.dupe(u8, wrapped.items),
         .mappings = mappings,
+        .entry_chain = entry_chain_owned,
     };
 }
 
 /// 래핑된 소스 모듈의 init/require 호출을 buffer에 추가한다.
 /// re-export (`export * from`, `export { x } from`) 및 side-effect-only import
 /// (`import './x';`)에서 소스 모듈 초기화 코드를 생성할 때 공용으로 쓴다.
+///
+/// `entry_error_guard` 활성 시 `__zts_guarded(function(){return <call>;})` 으로 wrap.
+/// helper 의 `__zts_in_guard` state 가 nested 호출을 자동 skip 하므로 outermost
+/// (entry trigger 등) 만 실제 catch. TLA 모듈은 await 가 lambda 안에 못 들어가서 wrap 안 함.
 fn appendWrappedInitCall(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     src_mod: *const Module,
     options: EmitOptions,
 ) !void {
+    const is_tla = src_mod.wrap_kind == .esm and src_mod.uses_top_level_await;
+    const guard = options.entry_error_guard and !is_tla and src_mod.wrap_kind != .none;
     switch (src_mod.wrap_kind) {
         .esm => {
-            if (src_mod.uses_top_level_await) try buf.appendSlice(allocator, "await ");
+            if (is_tla) try buf.appendSlice(allocator, "await ");
+            if (guard) try buf.appendSlice(allocator, rt.GUARD_LAMBDA_OPEN);
             if (options.dev_mode) {
                 try buf.appendSlice(allocator, "__zts_modules[\"");
                 try buf.appendSlice(allocator, src_mod.dev_id);
-                try buf.appendSlice(allocator, "\"].fn();\n");
+                try buf.appendSlice(allocator, "\"].fn()");
             } else {
                 const iv = try src_mod.allocInitName(allocator);
                 defer allocator.free(iv);
                 try buf.appendSlice(allocator, iv);
-                try buf.appendSlice(allocator, "();\n");
+                try buf.appendSlice(allocator, "()");
             }
+            try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
         },
         .cjs => {
             const rv = try types.makeRequireVarName(allocator, src_mod.path);
             defer allocator.free(rv);
+            if (guard) try buf.appendSlice(allocator, rt.GUARD_LAMBDA_OPEN);
             try buf.appendSlice(allocator, rv);
-            try buf.appendSlice(allocator, "();\n");
+            try buf.appendSlice(allocator, "()");
+            try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
         },
         .none => {},
     }

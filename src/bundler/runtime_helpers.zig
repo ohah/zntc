@@ -697,29 +697,35 @@ pub const HMR_RUNTIME =
     \\    } catch(e) { console.error("[zts] HMR update failed:", e); __zts_reload(); }
     \\  }
     \\}
-    \\// 글로벌 $RefreshReg$/$RefreshSig$ fallback (noop).
-    \\// 실제 등록은 emitter가 모듈별로 save/restore 패턴을 주입하여 처리.
-    \\__zts_g.$RefreshReg$ = function() {};
-    \\__zts_g.$RefreshSig$ = function() { return function(type) { return type; }; };
-    \\// HMR API + 런타임 헬퍼를 전역에 노출 (모듈 스코프에서 eval 접근용)
-    \\__zts_g.__zts_apply_update = __zts_apply_update;
-    \\__zts_g.__zts_reload = __zts_reload;
-    \\__zts_g.__zts_make_hot = __zts_make_hot;
-    \\__zts_g.__zts_modules = __zts_modules;
-    \\__zts_g.__zts_resolveRefresh = __zts_resolveRefresh;
-    \\__zts_g.__zts_isReactRefreshBoundary = __zts_isReactRefreshBoundary;
-    \\__zts_g.__zts_enqueueUpdate = __zts_enqueueUpdate;
-    \\if (typeof __esm !== "undefined") __zts_g.__esm = __esm;
-    \\if (typeof __export !== "undefined") __zts_g.__export = __export;
-    \\if (typeof __commonJS !== "undefined") __zts_g.__commonJS = __commonJS;
-    \\if (typeof __defProp !== "undefined") __zts_g.__defProp = __defProp;
-    \\if (typeof __toESM !== "undefined") __zts_g.__toESM = __toESM;
-    \\if (typeof __toCommonJS !== "undefined") __zts_g.__toCommonJS = __toCommonJS;
+    \\// 글로벌 $RefreshReg$/$RefreshSig$ + HMR API + 런타임 헬퍼 전역 노출.
+    \\// Metro 와 동등하게 IIFE 안 function scope 에서 globalThis assignment 수행.
+    \\// top-level 의 `globalThis.X = ...` 구문은 Hermes 가 (특히 iOS 26+) spec global
+    \\// (`Location`, `TextEncoderStream` 등) placeholder lazy registration 을 trigger
+    \\// 할 수 있으므로 IIFE 로 scope 격리. Metro bundle 의 `(function(global){ ...
+    \\// global.__r = metroRequire; ... })(globalThis)` 패턴과 동등.
+    \\(function(g) {
+    \\  'use strict';
+    \\  g.$RefreshReg$ = function() {};
+    \\  g.$RefreshSig$ = function() { return function(type) { return type; }; };
+    \\  g.__zts_apply_update = __zts_apply_update;
+    \\  g.__zts_reload = __zts_reload;
+    \\  g.__zts_make_hot = __zts_make_hot;
+    \\  g.__zts_modules = __zts_modules;
+    \\  g.__zts_resolveRefresh = __zts_resolveRefresh;
+    \\  g.__zts_isReactRefreshBoundary = __zts_isReactRefreshBoundary;
+    \\  g.__zts_enqueueUpdate = __zts_enqueueUpdate;
+    \\  if (typeof __esm !== "undefined") g.__esm = __esm;
+    \\  if (typeof __export !== "undefined") g.__export = __export;
+    \\  if (typeof __commonJS !== "undefined") g.__commonJS = __commonJS;
+    \\  if (typeof __defProp !== "undefined") g.__defProp = __defProp;
+    \\  if (typeof __toESM !== "undefined") g.__toESM = __toESM;
+    \\  if (typeof __toCommonJS !== "undefined") g.__toCommonJS = __toCommonJS;
+    \\})(__zts_g);
     \\
 ;
 
 pub const HMR_RUNTIME_MIN =
-    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={},__zts_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zts_reload=function(){if(typeof location!=="undefined")location.reload();else if(__zts_g.nativeModuleProxy&&__zts_g.nativeModuleProxy.DevSettings)__zts_g.nativeModuleProxy.DevSettings.reload()};function __zts_resolveRefresh(){if(__zts_g.__ReactRefresh)return __zts_g.__ReactRefresh;try{var r=require("react-refresh/runtime");__zts_g.__ReactRefresh=r;__zts_g.__REACT_REFRESH_RUNTIME__=r;return r}catch(e){}return null}function __zts_isReactRefreshBoundary(m){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(!rt)return false;if(rt.isLikelyComponentType(m))return true;if(m==null||typeof m!=="object")return false;var h=false;for(var k in m){if(k==="__esModule")continue;h=true;if(!rt.isLikelyComponentType(m[k]))return false}return h}var __zts_refreshTimer;function __zts_enqueueUpdate(){if(__zts_refreshTimer!=null)return;__zts_refreshTimer=setTimeout(function(){__zts_refreshTimer=null;var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)rt.performReactRefresh()},50)}function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){__zts_reload()},get refresh(){return __zts_g.__ReactRefresh||__zts_resolveRefresh()},refreshUtils:{isReactRefreshBoundary:__zts_isReactRefreshBoundary,enqueueUpdate:__zts_enqueueUpdate}}}var __zts_oc=typeof __commonJS!=="undefined"?__commonJS:null,__zts_oe=typeof __esm!=="undefined"?__esm:null;if(__zts_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zts_oc(cb,mod);__zts_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zts_oc(cb);__zts_modules[id].fn=fn}};return fn};if(__zts_oe)__esm=function(fn,res,eo){var id=Object.keys(fn)[0];var init=__zts_oe(fn,res);__zts_modules[id]={type:"esm",fn:init,exports:eo,reset:function(){init=__zts_oe(fn);__zts_modules[id].fn=init}};return init};function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){__zts_reload();return}try{if(c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}var ev=__zts_g.globalEvalWithSourceUrl;if(ev){ev(u[i].code,"hmr-update:"+id)}else{(0,eval)(u[i].code)}var ent=__zts_modules[id];if(ent&&ent.fn)ent.fn();if(typeof c.accept==="function"){c.accept(ent&&ent.exports?ent.exports:{})}}catch(e){console.error("[zts] HMR update failed:",e);__zts_reload()}}}__zts_g.$RefreshReg$=function(){};__zts_g.$RefreshSig$=function(){return function(t){return t}};__zts_g.__zts_apply_update=__zts_apply_update;__zts_g.__zts_reload=__zts_reload;__zts_g.__zts_make_hot=__zts_make_hot;__zts_g.__zts_modules=__zts_modules;__zts_g.__zts_resolveRefresh=__zts_resolveRefresh;__zts_g.__zts_isReactRefreshBoundary=__zts_isReactRefreshBoundary;__zts_g.__zts_enqueueUpdate=__zts_enqueueUpdate;if(typeof __esm!=="undefined")__zts_g.__esm=__esm;if(typeof __export!=="undefined")__zts_g.__export=__export;if(typeof __commonJS!=="undefined")__zts_g.__commonJS=__commonJS;if(typeof __defProp!=="undefined")__zts_g.__defProp=__defProp;if(typeof __toESM!=="undefined")__zts_g.__toESM=__toESM;if(typeof __toCommonJS!=="undefined")__zts_g.__toCommonJS=__toCommonJS
+    \\var __zts_modules={},__zts_hot_cbs={},__zts_hot_data={},__zts_g=typeof globalThis!=="undefined"?globalThis:typeof global!=="undefined"?global:typeof window!=="undefined"?window:this,__zts_reload=function(){if(typeof location!=="undefined")location.reload();else if(__zts_g.nativeModuleProxy&&__zts_g.nativeModuleProxy.DevSettings)__zts_g.nativeModuleProxy.DevSettings.reload()};function __zts_resolveRefresh(){if(__zts_g.__ReactRefresh)return __zts_g.__ReactRefresh;try{var r=require("react-refresh/runtime");__zts_g.__ReactRefresh=r;__zts_g.__REACT_REFRESH_RUNTIME__=r;return r}catch(e){}return null}function __zts_isReactRefreshBoundary(m){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(!rt)return false;if(rt.isLikelyComponentType(m))return true;if(m==null||typeof m!=="object")return false;var h=false;for(var k in m){if(k==="__esModule")continue;h=true;if(!rt.isLikelyComponentType(m[k]))return false}return h}var __zts_refreshTimer;function __zts_enqueueUpdate(){if(__zts_refreshTimer!=null)return;__zts_refreshTimer=setTimeout(function(){__zts_refreshTimer=null;var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)rt.performReactRefresh()},50)}function __zts_make_hot(id){if(!__zts_hot_cbs[id])__zts_hot_cbs[id]={};return{get data(){return __zts_hot_data[id]},accept:function(d,c){if(typeof d==="function"){c=d;d=void 0}__zts_hot_cbs[id].accept=c||true;if(Array.isArray(d))__zts_hot_cbs[id].acceptDeps=d},dispose:function(c){__zts_hot_cbs[id].dispose=c},prune:function(c){__zts_hot_cbs[id].prune=c},invalidate:function(){__zts_reload()},get refresh(){return __zts_g.__ReactRefresh||__zts_resolveRefresh()},refreshUtils:{isReactRefreshBoundary:__zts_isReactRefreshBoundary,enqueueUpdate:__zts_enqueueUpdate}}}var __zts_oc=typeof __commonJS!=="undefined"?__commonJS:null,__zts_oe=typeof __esm!=="undefined"?__esm:null;if(__zts_oc)__commonJS=function(cb,mod){var id=Object.keys(cb)[0];var fn=__zts_oc(cb,mod);__zts_modules[id]={type:"cjs",fn:fn,reset:function(){fn=__zts_oc(cb);__zts_modules[id].fn=fn}};return fn};if(__zts_oe)__esm=function(fn,res,eo){var id=Object.keys(fn)[0];var init=__zts_oe(fn,res);__zts_modules[id]={type:"esm",fn:init,exports:eo,reset:function(){init=__zts_oe(fn);__zts_modules[id].fn=init}};return init};function __zts_apply_update(u){for(var i=0;i<u.length;i++){var id=u[i].id;var c=__zts_hot_cbs[id];if(!c||!c.accept){__zts_reload();return}try{if(c.dispose){__zts_hot_data[id]={};c.dispose(__zts_hot_data[id])}var ev=__zts_g.globalEvalWithSourceUrl;if(ev){ev(u[i].code,"hmr-update:"+id)}else{(0,eval)(u[i].code)}var ent=__zts_modules[id];if(ent&&ent.fn)ent.fn();if(typeof c.accept==="function"){c.accept(ent&&ent.exports?ent.exports:{})}}catch(e){console.error("[zts] HMR update failed:",e);__zts_reload()}}}(function(g){"use strict";g.$RefreshReg$=function(){};g.$RefreshSig$=function(){return function(t){return t}};g.__zts_apply_update=__zts_apply_update;g.__zts_reload=__zts_reload;g.__zts_make_hot=__zts_make_hot;g.__zts_modules=__zts_modules;g.__zts_resolveRefresh=__zts_resolveRefresh;g.__zts_isReactRefreshBoundary=__zts_isReactRefreshBoundary;g.__zts_enqueueUpdate=__zts_enqueueUpdate;if(typeof __esm!=="undefined")g.__esm=__esm;if(typeof __export!=="undefined")g.__export=__export;if(typeof __commonJS!=="undefined")g.__commonJS=__commonJS;if(typeof __defProp!=="undefined")g.__defProp=__defProp;if(typeof __toESM!=="undefined")g.__toESM=__toESM;if(typeof __toCommonJS!=="undefined")g.__toCommonJS=__toCommonJS})(__zts_g)
 ;
 
 /// HMR 런타임의 줄 수 (소스맵 오프셋 계산용, comptime)
@@ -733,6 +739,68 @@ pub const HMR_RUNTIME_LINES = blk: {
 pub const REFRESH_STUB =
     "var $RefreshReg$ = function() {};\n" ++
     "var $RefreshSig$ = function() { return function(type) { return type; }; };\n";
+
+/// `entry_error_guard` 활성 시 prologue 에 주입. 두 부분으로 구성:
+///
+/// 1. `__zts_guarded(fn)` — 각 module init 호출 site (entry trigger / linker preamble /
+///    re-export / side-effect init) 가 통과. throw 를 silent swallow 해서 부팅 진행.
+///    Metro `guardedLoadModule` 의 `inGuard` pattern 은 채택하지 않음 (그건 native
+///    fatal handler `ErrorUtils.reportFatalError` → `RN$handleException` 와 조합인데,
+///    iOS 26.4+ 에서 handler 가 "runtime not ready" 로 부팅 정지시킴). 디버그 toggle:
+///    `globalThis.__ZTS_DEBUG_GUARD = true`.
+///
+/// 2. `console.error` setter intercept — Hermes (iOS 26.4+) 가 spec global
+///    (`Location` / `TextEncoderStream` / `TextDecoderStream`) 을 native (`configurable:
+///    false`) 로 사전 등록 → expo `installGlobal` 이 가드 거치지 않고 `console.error
+///    ('Failed to set polyfill. X is not configurable.')` 직접 출력 (throw 안 함).
+///    기능 영향 0 이지만 dev 콘솔 노이즈. Metro 는 `inlineRequires` 로 lazy 평가되어
+///    부팅 시점에 호출 안 됨 → 안 뜸. ZTS 는 eager 평가 → 뜸.
+///
+///    단순 wrap 은 RN `setUpDeveloperTools` 가 그 위에 LogBox/ExceptionsManager wrap
+///    덧씌워서 무력화됨. 따라서 `Object.defineProperty(console, "error", { set })` 로
+///    set 자체를 가로채 RN 의 새 wrap 을 한 번 더 wrap → 우리 필터가 영구 outermost.
+///    `LogBox.ignoreLogs` 와 달리 LogBox + DevTools 콘솔 양쪽 모두 깨끗.
+pub const GUARDED_RUNTIME =
+    \\function __zts_guarded(fn) {
+    \\  try { return fn(); }
+    \\  catch (e) {
+    \\    if (typeof globalThis !== "undefined" && globalThis.__ZTS_DEBUG_GUARD &&
+    \\        typeof console !== "undefined" && console.warn) {
+    \\      console.warn("[zts:guard] caught:", e);
+    \\    }
+    \\  }
+    \\}
+    \\(function() {
+    \\  if (typeof console === "undefined" || typeof console.error !== "function") return;
+    \\  var IGNORE = /^Failed to set polyfill\.\s+\w+\s+is not configurable\.?$/;
+    \\  function wrap(fn) {
+    \\    return function() {
+    \\      var first = arguments[0];
+    \\      if (typeof first === "string" && IGNORE.test(first)) return;
+    \\      return fn.apply(this, arguments);
+    \\    };
+    \\  }
+    \\  var current = wrap(console.error);
+    \\  try {
+    \\    Object.defineProperty(console, "error", {
+    \\      configurable: true,
+    \\      get: function() { return current; },
+    \\      set: function(fn) { current = wrap(fn); }
+    \\    });
+    \\  } catch (e) {}
+    \\})();
+    \\
+;
+
+pub const GUARDED_RUNTIME_MIN =
+    "function __zts_guarded(fn){try{return fn()}catch(e){if(typeof globalThis!==\"undefined\"&&globalThis.__ZTS_DEBUG_GUARD&&typeof console!==\"undefined\"&&console.warn)console.warn(\"[zts:guard] caught:\",e)}}" ++
+    "(function(){if(typeof console===\"undefined\"||typeof console.error!==\"function\")return;var I=/^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$/;function w(fn){return function(){var f=arguments[0];if(typeof f===\"string\"&&I.test(f))return;return fn.apply(this,arguments)}}var c=w(console.error);try{Object.defineProperty(console,\"error\",{configurable:true,get:function(){return c},set:function(fn){c=w(fn)}})}catch(e){}})();\n";
+
+/// `__zts_guarded(function(){return <expr>;})` wrap 매크로 — esm_wrap / linker preamble /
+/// emitter 의 entry chain unroll 모두 같은 형식이라 한 곳에서 정의. 패턴 변경 시 여기만.
+pub const GUARD_LAMBDA_OPEN = "__zts_guarded(function(){return ";
+pub const GUARD_LAMBDA_CLOSE = ";});\n";
+pub const INIT_CALL_END = ";\n";
 
 // ============================================================
 // Using (Explicit Resource Management, ES2025)

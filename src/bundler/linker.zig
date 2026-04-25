@@ -361,6 +361,11 @@ pub const Linker = struct {
     /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
     dev_mode: bool = false,
 
+    /// `EmitOptions.entry_error_guard` propagate. preamble 의 module init 호출을
+    /// `__zts_guarded(fn)` 으로 wrap 하여 outermost 에서 `ErrorUtils.reportFatalError`
+    /// 로 swallow. helper 자체는 emitter prologue 에 주입.
+    entry_error_guard: bool = false,
+
     /// #1621: minify 시 preamble/metadata 에서 __toESM/__toCommonJS 등을
     /// $tE/$tC 등 축약 이름으로 emit. bundler 가 `self.options.minify_whitespace`
     /// 를 linker 생성 직후 설정한다. dev_mode 에서는 `__zts_g.__xxx` 경로를
