@@ -14,6 +14,7 @@
 const std = @import("std");
 const plugin_mod = @import("plugin.zig");
 const types = @import("types.zig");
+const fs = @import("fs.zig");
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const ModuleIndex = types.ModuleIndex;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
@@ -675,12 +676,12 @@ pub const Bundler = struct {
             const init_core_rel = "node_modules/react-native/Libraries/Core/InitializeCore.js";
 
             auto_init_core_path = blk: {
-                // entry_dir 기준 탐색
+                // entry_dir 기준 탐색 → fs.realpath 통과 (#1885: VirtualFS 호환)
                 const full = std.fs.path.join(self.allocator, &.{ entry_dir, init_core_rel }) catch break :blk null;
                 defer self.allocator.free(full);
-                if (std.fs.cwd().realpathAlloc(self.allocator, full)) |real| break :blk real else |_| {}
+                if (fs.realpath(self.allocator, full)) |real| break :blk real else |_| {}
                 // CWD 기준 탐색
-                break :blk std.fs.cwd().realpathAlloc(self.allocator, init_core_rel) catch null;
+                break :blk fs.realpath(self.allocator, init_core_rel) catch null;
             };
 
             if (auto_init_core_path) |init_path| {
@@ -913,13 +914,14 @@ pub const Bundler = struct {
             const raw = blk2: {
                 const full_path = std.fs.path.join(self.allocator, &.{ entry_dir, dev_path }) catch break :blk;
                 defer self.allocator.free(full_path);
-                if (std.fs.cwd().realpathAlloc(self.allocator, full_path)) |real| {
+                // fs.realpath / fs.readFile 통과 → wasm VirtualFS 호환 (#1885 Phase 2).
+                if (fs.realpath(self.allocator, full_path)) |real| {
                     defer self.allocator.free(real);
-                    if (std.fs.cwd().readFileAlloc(self.allocator, real, 1024 * 1024)) |r| break :blk2 r else |_| {}
+                    if (fs.readFile(self.allocator, real, 1024 * 1024)) |r| break :blk2 r.contents else |_| {}
                 } else |_| {}
-                if (std.fs.cwd().realpathAlloc(self.allocator, dev_path)) |real| {
+                if (fs.realpath(self.allocator, dev_path)) |real| {
                     defer self.allocator.free(real);
-                    if (std.fs.cwd().readFileAlloc(self.allocator, real, 1024 * 1024)) |r| break :blk2 r else |_| {}
+                    if (fs.readFile(self.allocator, real, 1024 * 1024)) |r| break :blk2 r.contents else |_| {}
                 } else |_| {}
                 std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
                 break :blk;
