@@ -2261,6 +2261,18 @@ fn buildRnGuarded(allocator: std.mem.Allocator, entry: []const u8) !Bundler {
     });
 }
 
+const expo_polyfill_pattern = "^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$";
+
+fn buildRnGuardedWithSilentPatterns(allocator: std.mem.Allocator, entry: []const u8, patterns: []const []const u8) !Bundler {
+    return Bundler.init(allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .iife,
+        .entry_error_guard = true,
+        .silent_console_error_patterns = patterns,
+    });
+}
+
 test "entry_error_guard #1: 옵션 활성 시 prologue 에 helper + inGuard pattern 보존" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2644,9 +2656,9 @@ test "entry_error_guard #16: GUARD_LAMBDA 매크로 형식 — esm_wrap / metada
     try std.testing.expect(close_count >= open_count);
 }
 
-test "entry_error_guard #17: prologue 에 console.error setter intercept + IGNORE regex emit" {
-    // expo `installGlobal.ts:96` 의 `console.error('Failed to set polyfill. X is not configurable.')` 를
-    // setter intercept 로 swallow. RN `setUpDeveloperTools` 가 console.error 를 다시 wrap 해도
+test "entry_error_guard #17: silent_console_error_patterns 주입 시 setter intercept emit" {
+    // 패턴 배열 주입 시 prologue 에 `Object.defineProperty(console, "error", { set })` 등장 +
+    // IGNORE regex literal 포함. RN `setUpDeveloperTools` 가 console.error 를 다시 wrap 해도
     // 우리 setter 가 그 위에 wrap 을 다시 씌워 outermost 유지.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2654,13 +2666,14 @@ test "entry_error_guard #17: prologue 에 console.error setter intercept + IGNOR
     const entry = try absPath(&tmp, "entry.js");
     defer std.testing.allocator.free(entry);
 
-    var b = try buildRnGuarded(std.testing.allocator, entry);
+    const patterns = [_][]const u8{expo_polyfill_pattern};
+    var b = try buildRnGuardedWithSilentPatterns(std.testing.allocator, entry, &patterns);
     defer b.deinit();
     const result = try b.bundle();
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // IGNORE regex literal — expo `installGlobal.ts:96` 의 정확한 메시지 패턴.
+    // IGNORE regex literal — 주입한 패턴 그대로 emit.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Failed to set polyfill") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "is not configurable") != null);
     // setter intercept — Object.defineProperty(console, "error", { set ... })
@@ -2670,6 +2683,27 @@ test "entry_error_guard #17: prologue 에 console.error setter intercept + IGNOR
     try std.testing.expect(std.mem.indexOf(u8, result.output, "set: function(fn)") != null);
     // configurable: true — RN 등 후속 코드가 다시 set 할 수 있게.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "configurable: true") != null);
+}
+
+test "entry_error_guard #17b: silent_console_error_patterns 비어있으면 setter intercept emit X" {
+    // 패턴 비어있으면 vanilla RN 빌드처럼 console wrap 자체 emit 안 됨 → dead code 0.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = try buildRnGuarded(std.testing.allocator, entry); // patterns 비어있음
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // setter intercept 없음.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Object.defineProperty(console, \"error\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Failed to set polyfill") == null);
+    // 단 __zts_guarded helper 는 entry_error_guard 활성이라 emit.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function __zts_guarded") != null);
 }
 
 test "entry_error_guard #18: __ZTS_DEBUG_GUARD toggle — 기본 silent, toggle on 시 console.warn" {
@@ -2726,26 +2760,61 @@ test "entry_error_guard #19: dev_mode + entry_chain — __zts_modules[\"...\"].f
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded(function(){return __zts_modules[") != null);
 }
 
-test "entry_error_guard #20: regex 패턴 정확도 — 실제 expo 메시지 형식과 매치" {
-    // GUARDED_RUNTIME 안 IGNORE 정규식이 expo `installGlobal.ts:96` 의 출력을 정확히
-    // 매치하는지 정적 검증. 패턴 변경이 expo 메시지를 더 이상 못 잡는 회귀 방지.
-    const rt = @import("../runtime_helpers.zig");
-    // expo 가 emit 하는 실제 메시지 형식 (Location, TextEncoderStream, TextDecoderStream)
+test "entry_error_guard #20: silent_console_error_patterns 정확도 — 실제 expo 메시지 형식과 매치" {
+    // 주입한 expo polyfill 패턴이 console intercept emit 결과에 정확한 regex literal 로 들어있어야 함.
+    // expo 메시지 형식 (Location, TextEncoderStream, TextDecoderStream) 의 name 부분이 `\w+` 매칭.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    const patterns = [_][]const u8{expo_polyfill_pattern};
+    var b = try buildRnGuardedWithSilentPatterns(std.testing.allocator, entry, &patterns);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 주입한 패턴이 정확히 regex literal 로 emit (escape 보존).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$/") != null);
+
+    // 의미 검증 — sample 메시지 들의 name 부분이 모두 ASCII letter (`\w+` 매치 가능).
     const samples = [_][]const u8{
         "Failed to set polyfill. Location is not configurable.",
         "Failed to set polyfill. TextEncoderStream is not configurable.",
         "Failed to set polyfill. TextDecoderStream is not configurable.",
     };
-    // GUARDED_RUNTIME 안에 정규식 literal 이 그대로 들어있어야 함.
     for (samples) |sample| {
         const name_start = std.mem.indexOf(u8, sample, "polyfill. ").? + "polyfill. ".len;
         const name_end = std.mem.indexOf(u8, sample[name_start..], " is").? + name_start;
         const name = sample[name_start..name_end];
-        // 모든 sample 의 name (Location, TextEncoderStream, TextDecoderStream) 이 \w+ 매치.
         for (name) |c| {
             try std.testing.expect((c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z'));
         }
     }
-    // pattern literal 자체가 GUARDED_RUNTIME 에 포함.
-    try std.testing.expect(std.mem.indexOf(u8, rt.GUARDED_RUNTIME, "/^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$/") != null);
+}
+
+test "entry_error_guard #21: silent_console_error_patterns 다중 패턴 — 모두 IGNORE array 에 emit" {
+    // 사용자가 여러 RegExp 주입 시 [...,...] 배열로 emit. 각 패턴 독립 test.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const x = 1;\n");
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    const patterns = [_][]const u8{
+        expo_polyfill_pattern,
+        "^Some other warning$",
+    };
+    var b = try buildRnGuardedWithSilentPatterns(std.testing.allocator, entry, &patterns);
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/^Failed to set polyfill") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "/^Some other warning$/") != null);
+    // 배열 loop 으로 검사 (단일 regex .test 가 아니라 IGNORE.length loop).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "for (var i = 0; i < IGNORE.length") != null);
 }

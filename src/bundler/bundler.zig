@@ -218,6 +218,10 @@ pub const BundleOptions = struct {
     /// `ErrorUtils.reportFatalError(e)` 로 wrap. 자세한 설명은
     /// `EmitOptions.entry_error_guard`. RN preset 자동 활성.
     entry_error_guard: bool = false,
+    /// Prologue 에 `console.error` setter intercept 주입 — RegExp source string 배열 의
+    /// 어느 하나라도 match 하면 silent swallow. `entry_error_guard` 와 직교. consumer 가
+    /// 환경 (e.g. expo) 감지 후 패턴 주입. 비어있으면 wrap 자체 emit X.
+    silent_console_error_patterns: []const []const u8 = &.{},
     /// Reanimated worklet 네이티브 변환. --platform=react-native에서 자동 활성화.
     worklet_transform: bool = false,
     /// worklet의 `__pluginVersion` 값. null이면 ZTS 기본 상수 사용.
@@ -509,6 +513,7 @@ pub const Bundler = struct {
             .configurable_exports = self.options.configurable_exports,
             .strict_execution_order = self.options.strict_execution_order,
             .entry_error_guard = self.options.entry_error_guard,
+            .silent_console_error_patterns = self.options.silent_console_error_patterns,
             .worklet_transform = self.options.worklet_transform,
             .worklet_plugin_version = self.options.worklet_plugin_version,
             .compiled_cache = self.options.compiled_cache,

@@ -155,6 +155,11 @@ pub const EmitOptions = struct {
     /// 가드 없이 `defineProperty` 호출 → throw → 부팅 실패. mechanism 은 OS/엔진
     /// 무관이라 모든 module factory throw 케이스 커버. RN 플랫폼 default 활성 권장.
     entry_error_guard: bool = false,
+    /// Prologue 에 `console.error` setter intercept 주입 — 각 RegExp source string 이
+    /// match 하는 console.error 호출을 silent swallow. 비어있으면 intercept 자체 emit X.
+    /// `entry_error_guard` 와 직교 — consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.
+    /// vanilla RN CLI 빌드는 비어있어 dead code 0.
+    silent_console_error_patterns: []const []const u8 = &.{},
     /// preserve-modules: 모듈 1개 = 출력 파일 1개
     preserve_modules: bool = false,
     /// preserve-modules-root: 출력 디렉토리 구조의 기준 경로
@@ -1665,6 +1670,9 @@ fn emitBundleRuntimeHelpers(
     if (options.entry_error_guard) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.GUARDED_RUNTIME_MIN else rt.GUARDED_RUNTIME);
     }
+    // silent_console_error_patterns: 패턴 비어있으면 emit X — vanilla RN 등 trigger 없는
+    // 환경에서 dead code 0. consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.
+    try rt.emitConsoleErrorInterceptInto(output, allocator, options.silent_console_error_patterns, options.minify_whitespace);
 }
 
 /// 청크별 런타임 헬퍼 주입.
