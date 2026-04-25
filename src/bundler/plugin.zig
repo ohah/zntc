@@ -86,27 +86,6 @@ pub fn fromLegacy(r: ResolveResult) ResolvedModule {
     } };
 }
 
-/// `ResolvedModule` (union) → 기존 `ResolveResult` (struct) 변환.
-/// `file` / `disabled` 만 변환 가능 — virtual/dataurl/external/custom 은 legacy
-/// 모델에 표현 불가 → null 반환. caller (graph/resolver) 가 별도 분기 필요.
-pub fn toLegacy(m: ResolvedModule) ?ResolveResult {
-    return switch (m) {
-        .file => |f| .{
-            .path = f.path,
-            .module_type = f.module_type,
-            .disabled = false,
-            .is_module_field = f.is_module_field,
-        },
-        .disabled => |d| .{
-            .path = d.path,
-            .module_type = d.module_type,
-            .disabled = true,
-            .is_module_field = false,
-        },
-        .virtual, .dataurl, .external, .custom => null,
-    };
-}
-
 /// `Plugin.resolveContext` hook signature. (#1579 Phase 2)
 pub const ResolveContextFn = ?*const fn (
     ctx: ?*anyopaque,

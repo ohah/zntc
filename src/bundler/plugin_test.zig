@@ -401,7 +401,6 @@ test "Plugin integration: transform hook is called for user source files (#964)"
 
 const ResolvedModule = plugin_mod.ResolvedModule;
 const fromLegacy = plugin_mod.fromLegacy;
-const toLegacy = plugin_mod.toLegacy;
 const ModuleType = @import("types.zig").ModuleType;
 
 test "ResolvedModule: file variant 보존" {
@@ -494,41 +493,8 @@ test "fromLegacy: ResolveResult { disabled=false } → .file variant + flags 보
     }
 }
 
-test "toLegacy: .file → ResolveResult, .disabled → ResolveResult, 그 외 null" {
-    const f: ResolvedModule = .{ .file = .{
-        .path = "/a",
-        .module_type = .javascript,
-        .is_module_field = true,
-    } };
-    const f_legacy = toLegacy(f).?;
-    try std.testing.expectEqualStrings("/a", f_legacy.path);
-    try std.testing.expect(!f_legacy.disabled);
-    try std.testing.expect(f_legacy.is_module_field);
-
-    const d: ResolvedModule = .{ .disabled = .{ .path = "/b" } };
-    const d_legacy = toLegacy(d).?;
-    try std.testing.expect(d_legacy.disabled);
-    try std.testing.expectEqualStrings("/b", d_legacy.path);
-
-    // virtual/dataurl/external/custom 은 legacy 모델에 표현 불가
-    try std.testing.expect(toLegacy(.{ .virtual = .{ .path = "v" } }) == null);
-    try std.testing.expect(toLegacy(.{ .external = .{ .path = "react" } }) == null);
-    try std.testing.expect(toLegacy(.{ .custom = .{ .name = "p", .path = "/x" } }) == null);
-}
-
-test "ResolvedModule: roundtrip (legacy → union → legacy) 동등성" {
-    const original: ResolveResult = .{
-        .path = "/abs/round.ts",
-        .module_type = .javascript,
-        .disabled = false,
-        .is_module_field = true,
-    };
-    const restored = toLegacy(fromLegacy(original)).?;
-    try std.testing.expectEqualStrings(original.path, restored.path);
-    try std.testing.expectEqual(original.module_type, restored.module_type);
-    try std.testing.expectEqual(original.disabled, restored.disabled);
-    try std.testing.expectEqual(original.is_module_field, restored.is_module_field);
-}
-
 // Note: ResolvedModule = union(fs.Namespace) 자체가 컴파일 타임에 모든 Namespace
 // variant 의 payload 정의 강제 — 별도 exhaustive 검증 테스트 불필요.
+// toLegacy 는 PR 4d 에서 제거 (resolve_cache 가 union 직접 반환). fromLegacy 만
+// plugin runner 응답 변환 (ResolveResult → ResolvedModule) 용도로 유지 — PR 5 의
+// plugin runner 마이그레이션 시 함께 제거.

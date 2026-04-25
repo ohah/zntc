@@ -19,6 +19,7 @@ const plugin_mod = @import("plugin.zig");
 const ResolvedModule = plugin_mod.ResolvedModule;
 const ResolveError = resolver_mod.ResolveError;
 const types = @import("types.zig");
+const ModuleType = types.ModuleType;
 const ImportKind = types.ImportKind;
 const pkg_json = @import("package_json.zig");
 const profile = @import("../profile.zig");
@@ -262,36 +263,15 @@ pub const ResolveCache = struct {
     }
 
     /// specifier를 해석한다. 캐시 히트 시 캐시에서 반환.
-    pub fn resolve(
-        self: *ResolveCache,
-        source_dir: []const u8,
-        specifier: []const u8,
-        kind: ImportKind,
-    ) ResolveError!?ResolveResult {
-        return self.resolveInner(false, source_dir, specifier, kind);
-    }
-
-    /// 스레드 안전 resolve. 병렬 resolve에서 사용.
-    pub fn resolveThreadSafe(
-        self: *ResolveCache,
-        source_dir: []const u8,
-        specifier: []const u8,
-        kind: ImportKind,
-    ) ResolveError!?ResolveResult {
-        return self.resolveInner(true, source_dir, specifier, kind);
-    }
-
-    /// `resolve` 와 동일하지만 결과를 `ResolvedModule` (union(enum)) 으로 반환 (#1885 PR 4c).
-    /// caller 가 union variant 분기 처리 — virtual/dataurl/external/custom variant 도 향후
-    /// plugin layer 도입 시 표현 가능. Phase 1 단계에선 file/disabled 만 반환.
+    /// 결과는 `ResolvedModule` (union(enum)) — caller 가 variant 분기 처리.
+    /// Phase 1 단계에선 file/disabled variant 만 반환.
     pub fn resolveAsModule(
         self: *ResolveCache,
         source_dir: []const u8,
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolvedModule {
-        const legacy = (try self.resolveInner(false, source_dir, specifier, kind)) orelse return null;
-        return plugin_mod.fromLegacy(legacy);
+        return self.resolveInner(false, source_dir, specifier, kind);
     }
 
     /// 스레드 안전 resolveAsModule. 병렬 resolve 의 union 직접 사용.
@@ -301,8 +281,7 @@ pub const ResolveCache = struct {
         specifier: []const u8,
         kind: ImportKind,
     ) ResolveError!?ResolvedModule {
-        const legacy = (try self.resolveInner(true, source_dir, specifier, kind)) orelse return null;
-        return plugin_mod.fromLegacy(legacy);
+        return self.resolveInner(true, source_dir, specifier, kind);
     }
 
     /// resolve 공통 구현. thread_safe=true이면 mutex로 캐시 접근 보호 + resolver 스택 복사.
@@ -312,7 +291,7 @@ pub const ResolveCache = struct {
         source_dir: []const u8,
         specifier: []const u8,
         kind: ImportKind,
-    ) ResolveError!?ResolveResult {
+    ) ResolveError!?ResolvedModule {
         var scope = profile.begin(.resolve);
         defer scope.end();
 
@@ -346,18 +325,17 @@ pub const ResolveCache = struct {
             if (self.cache.get(cache_key)) |cached| {
                 return switch (cached) {
                     // Phase 1 의 cache 는 file/disabled 만 저장 (putCache 호출처 검증).
-                    // 명시적 unreachable — 새 variant 추가 시 컴파일러가 dispatch 강제.
+                    // path 만 caller 소유로 dupe — 다른 필드는 by-value copy.
                     .resolved => |m| switch (m) {
-                        .file => |f| ResolveResult{
-                            .path = self.allocator.dupe(u8, f.path) catch return error.OutOfMemory,
-                            .module_type = f.module_type,
-                            .is_module_field = f.is_module_field,
-                        },
-                        .disabled => |d| ResolveResult{
-                            .path = self.allocator.dupe(u8, d.path) catch return error.OutOfMemory,
-                            .module_type = d.module_type,
-                            .disabled = true,
-                        },
+                        .file => |f| fileResult(
+                            self.allocator.dupe(u8, f.path) catch return error.OutOfMemory,
+                            f.module_type,
+                            f.is_module_field,
+                        ),
+                        .disabled => |d| disabledResult(
+                            self.allocator.dupe(u8, d.path) catch return error.OutOfMemory,
+                            d.module_type,
+                        ),
                         .virtual, .dataurl, .external, .custom => unreachable,
                     },
                     .not_found => error.ModuleNotFound,
@@ -384,11 +362,7 @@ pub const ResolveCache = struct {
                             .path = self.allocator.dupe(u8, disabled_path) catch return error.OutOfMemory,
                             .module_type = .javascript,
                         } } }) catch {};
-                        return ResolveResult{
-                            .path = disabled_path,
-                            .module_type = .javascript,
-                            .disabled = true,
-                        };
+                        return disabledResult(disabled_path, .javascript);
                     },
                     .remap => |rep| {
                         remap_buf[remap_depth] = effective_spec;
@@ -434,11 +408,7 @@ pub const ResolveCache = struct {
                             .path = cache_path,
                             .module_type = result.module_type,
                         } } }) catch {};
-                        return ResolveResult{
-                            .path = result.path,
-                            .module_type = result.module_type,
-                            .disabled = true,
-                        };
+                        return disabledResult(result.path, result.module_type);
                     },
                     .remap => |rep| {
                         // rep 는 package-root 상대. Resolver.resolve(pkg_root, "./rep") 로
@@ -451,7 +421,7 @@ pub const ResolveCache = struct {
                                     .path = cache_path,
                                     .module_type = result.module_type,
                                 } } }) catch {};
-                                return result;
+                                return fileResult(result.path, result.module_type, result.is_module_field);
                             };
                             defer self.allocator.free(spec_buf);
                             if (thread_safe) self.cache_mutex.unlock();
@@ -463,7 +433,7 @@ pub const ResolveCache = struct {
                                     .path = cache_path,
                                     .module_type = replaced.module_type,
                                 } } }) catch {};
-                                return replaced;
+                                return fileResult(replaced.path, replaced.module_type, replaced.is_module_field);
                             } else |_| {
                                 // fallthrough — replacement 해결 실패 시 원본 사용.
                             }
@@ -480,7 +450,17 @@ pub const ResolveCache = struct {
             } } }) catch {};
         }
 
-        return result;
+        return fileResult(result.path, result.module_type, result.is_module_field);
+    }
+
+    /// 7곳에서 반복하던 ResolvedModule.file/disabled 생성 통일 (#1885 PR 4d /simplify).
+    /// path 는 caller 가 이미 dupe 한 것을 전달 — caller 가 메모리 owner.
+    fn fileResult(path: []const u8, module_type: ModuleType, is_module_field: bool) ResolvedModule {
+        return .{ .file = .{ .path = path, .module_type = module_type, .is_module_field = is_module_field } };
+    }
+
+    fn disabledResult(path: []const u8, module_type: ModuleType) ResolvedModule {
+        return .{ .disabled = .{ .path = path, .module_type = module_type } };
     }
 
     /// CachedResult.resolved (ResolvedModule) 의 path 추출.
