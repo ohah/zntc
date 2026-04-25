@@ -539,14 +539,153 @@ describe("manualChunks NAPI bridge", () => {
       },
     });
 
-    // external phantom 은 resolver 에 직접 안 옴 (modulesIterator 가 외부도 보지만
-    // 정책상 chunk 배정 받지 않으므로 manual_chunks resolver loop 는 외부 가드 추가 가능 —
-    // 일단 entry resolver 안에서 external-pkg 를 lookup 해 검증).
+    // external phantom 은 resolver 에 직접 안 옴 (chunk.zig 의 is_external 가드).
+    // entry resolver 안에서 external-pkg 를 lookup 해 검증.
     const ext = observed.find((o) => o.id === "external-pkg");
     expect(ext).toBeDefined();
     expect(ext!.isExternal).toBe(true);
 
     // entry 의 importedIds 에 external-pkg 가 포함됨 (Rollup parity)
     expect(entryImportedIds.some((i) => i === "external-pkg")).toBe(true);
+  });
+
+  test("meta.getModuleInfo: external 은 manualChunks resolver 에 직접 호출되지 않음", async () => {
+    // 회귀 가드 — chunk.zig 의 is_external 가드가 빠지면 resolver 가 phantom external 도
+    // 호출하게 되어 사용자 콜백이 bare specifier 를 받아 혼란.
+    const fixture = await createFixture({
+      "entry.ts": `import { x } from "external-pkg"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const seenIds: string[] = [];
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["external-pkg"],
+      splitting: true,
+      manualChunks: (id) => {
+        seenIds.push(id);
+        return null;
+      },
+    });
+
+    expect(seenIds.length).toBeGreaterThan(0);
+    // external phantom 의 path = "external-pkg" 가 resolver 에 안 옴
+    expect(seenIds).not.toContain("external-pkg");
+  });
+
+  test("meta.getModuleInfo: external 패턴이 manualChunks 매칭돼도 빈 청크 안 만듦", async () => {
+    // 회귀 가드 — phantom 의 path 가 manual chunk pattern 과 매칭하면 빈 청크 생성 위험.
+    // is_external 가드로 phantom 은 manual seeds 에 안 들어가야.
+    const fixture = await createFixture({
+      "entry.ts": `import { x } from "external-pkg"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["external-pkg"],
+      splitting: true,
+      manualChunks: (id) => {
+        if (id.includes("external-pkg")) return "vendor"; // 의도적 매칭 시도
+        return null;
+      },
+    });
+
+    // vendor 청크가 만들어지지 않아야 (in-graph 모듈이 매칭되지 않음)
+    const vendorChunk = result.outputFiles!.find((o) => o.path.includes("vendor"));
+    expect(vendorChunk).toBeUndefined();
+    // 모든 chunk 가 비지 않음
+    for (const f of result.outputFiles!) {
+      expect(f.text.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("meta.getModuleInfo: 같은 external 을 여러 모듈이 import 해도 phantom 1개 공유", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { x } from "shared-ext";
+        import { y } from "./b";
+        console.log(x, y);
+      `,
+      "b.ts": `import { z } from "shared-ext"; export const y = z;`,
+    });
+    cleanup = fixture.cleanup;
+
+    let extImporters: string[] = [];
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["shared-ext"],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          const ext = meta.getModuleInfo("shared-ext");
+          if (ext) extImporters = ext.importers;
+        }
+        return null;
+      },
+    });
+
+    // 두 모듈이 모두 importer 로 등록되어야 함
+    expect(extImporters.length).toBe(2);
+    expect(extImporters.some((p) => p.endsWith("entry.ts"))).toBe(true);
+    expect(extImporters.some((p) => p.endsWith("b.ts"))).toBe(true);
+  });
+
+  test("meta.getModuleInfo: dynamic external — dynamicImporters 에만 포함", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        async function boot() { const m = await import("dyn-ext"); console.log(m.x); }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    let extInfo:
+      | { importers: string[]; dynamicImporters: string[]; isExternal: boolean }
+      | undefined;
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["dyn-ext"],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          const ext = meta.getModuleInfo("dyn-ext");
+          if (ext)
+            extInfo = {
+              importers: ext.importers,
+              dynamicImporters: ext.dynamicImporters,
+              isExternal: ext.isExternal,
+            };
+        }
+        return null;
+      },
+    });
+
+    expect(extInfo).toBeDefined();
+    expect(extInfo!.isExternal).toBe(true);
+    expect(extInfo!.importers.length).toBe(0);
+    expect(extInfo!.dynamicImporters.length).toBe(1);
+    expect(extInfo!.dynamicImporters[0].endsWith("entry.ts")).toBe(true);
+  });
+
+  test("meta.getModuleInfo: 존재하지 않는 external specifier → null", async () => {
+    const fixture = await createFixture({
+      "entry.ts": "console.log(1);",
+    });
+    cleanup = fixture.cleanup;
+
+    let probed: unknown = "untouched";
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          probed = meta.getModuleInfo("never-imported-ext");
+        }
+        return null;
+      },
+    });
+
+    expect(probed).toBeNull();
   });
 });

@@ -386,10 +386,12 @@ pub fn generateChunks(
     defer entries.deinit(allocator);
 
     // Phase 1a: 유저 엔트리 — entry_points 경로와 일치하는 모듈을 찾는다.
+    // External phantom 은 chunk 배정 대상이 아니므로 모든 phase 에서 skip.
     {
         var it = graph.modulesIterator();
         var i: usize = 0;
         while (it.next()) |m| : (i += 1) {
+            if (m.is_external) continue;
             for (entry_points) |ep| {
                 if (std.mem.eql(u8, m.path, ep)) {
                     try entries.append(allocator, .{
@@ -414,6 +416,10 @@ pub fn generateChunks(
         while (it.next()) |m| {
             for (m.dynamic_imports.items) |dyn_idx| {
                 const di = @intFromEnum(dyn_idx);
+                // External phantom 이 dyn-imported 면 async chunk 만들 필요 없음 (번들 외부)
+                if (graph.getModule(dyn_idx)) |dyn_mod| {
+                    if (dyn_mod.is_external) continue;
+                }
                 const gop = try dynamic_seen.getOrPut(di);
                 if (!gop.found_existing) {
                     // 이미 유저 엔트리로 등록된 모듈인지 확인
@@ -475,6 +481,7 @@ pub fn generateChunks(
         var it = graph.modulesIterator();
         var mi: usize = 0;
         while (it.next()) |m| : (mi += 1) {
+            if (m.is_external) continue;
             if (dynamic_entry_modules.contains(@intCast(mi))) continue;
             if (fn_ptr(manual_resolver_ctx, m.path, @ptrCast(graph))) |chunk_name| {
                 ra[mi] = try ensureNameSlot(&name_to_slot, &effective_names, allocator, chunk_name);
@@ -544,6 +551,7 @@ pub fn generateChunks(
         var it = graph.modulesIterator();
         var mi: usize = 0;
         while (it.next()) |m| : (mi += 1) {
+            if (m.is_external) continue;
             // dynamic import target 은 정책상 manual 청크 제외 (#1848/#1849, 근본수정 #1850)
             if (dynamic_entry_modules.contains(@intCast(mi))) continue;
             if (resolver_assignments) |ra| {
@@ -587,6 +595,8 @@ pub fn generateChunks(
             const mod_idx = queue.pop() orelse break;
             const m = graph.getModule(mod_idx) orelse continue;
             const mi = @intFromEnum(mod_idx);
+            // External phantom 은 chunk 에 안 들어감 — 비트 설정 / 큐 추가 모두 skip.
+            if (m.is_external) continue;
 
             // 이미 이 비트가 설정되어 있으면 스킵 (순환 참조 방지)
             if (splitting_info[mi].hasBit(@intCast(bit_idx))) continue;
@@ -640,6 +650,7 @@ pub fn generateChunks(
                 const mod_idx = queue.pop() orelse break;
                 const m = graph.getModule(mod_idx) orelse continue;
                 const mi = @intFromEnum(mod_idx);
+                if (m.is_external) continue;
                 if (splitting_info[mi].hasBit(manual_bit)) continue;
                 // 다른 slot 의 seed 면 skip — 그쪽에서 처리됨
                 if (module_primary_slot[mi]) |other| {
