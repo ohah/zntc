@@ -226,6 +226,23 @@ print("RES:" + arr.join(","));`;
     expect(result.stdout?.toString() ?? "").toContain("RES:6");
   });
 
+  test("async generator (async function*) yields via __asyncGenerator (#1911)", () => {
+    if (!hermes) return;
+    // for await of 가 async generator 의 Symbol.asyncIterator 사용 — Promise unwrap.
+    const tmp = `/tmp/zts-asyncgen-${Date.now()}.js`;
+    const ts = `async function* g() { yield 1; await Promise.resolve(); yield 2; yield 3; }
+(async function() {
+  var arr = [];
+  for await (var v of g()) arr.push(v);
+  print("RES:" + arr.join(","));
+})();`;
+    require("fs").writeFileSync(tmp + ".ts", ts);
+    const zts = Bun.spawnSync([ZTS_BIN, tmp + ".ts", "--target=es5", "-o", tmp]);
+    expect(zts.exitCode).toBe(0);
+    const result = Bun.spawnSync([hermes!, tmp]);
+    expect(result.stdout?.toString() ?? "").toContain("RES:1,2,3");
+  });
+
   test("if-await self-loop fix (#1887)", () => {
     if (!hermes) return;
     // `if (cond) { await x(); }` 가 마지막 statement 인 패턴 — 이전엔 무한 루프 → 통과 = 정상 종료.

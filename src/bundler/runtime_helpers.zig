@@ -441,6 +441,44 @@ pub const GENERATOR_RUNTIME =
 ;
 pub const GENERATOR_RUNTIME_MIN = "var " ++ NAMES.GENERATOR_MIN ++ "=function(){var __iterProto={};__iterProto[Symbol.iterator]=function(){return this};var __genProto=Object.create(__iterProto);return function(thisArg,body,genFn){var _={label:0,sent:function(){if(t[0]&1)throw t[1];return t[1]},trys:[],ops:[]},f,y,t,g;if(genFn){if(!genFn.__proto_set){Object.setPrototypeOf(genFn.prototype,__genProto);genFn.__proto_set=true}g=Object.create(genFn.prototype)}else{g={};g[Symbol.iterator]=function(){return this}}g.next=verb(0);g[\"throw\"]=verb(1);g[\"return\"]=verb(2);return g;function verb(n){return function(v){return step([n,v])}}function step(op){if(f)throw new TypeError(\"Generator is already executing.\");while(g&&(g=0,op[0]&&(_=0)),_)try{if(f=1,y&&(t=op[0]&2?y[\"return\"]:op[0]?y[\"throw\"]||((t=y[\"return\"])&&t.call(y),0):y.next)&&!(t=t.call(y,op[1])).done)return t;if(y=0,t)op=[op[0]&2,t.value];switch(op[0]){case 0:case 1:t=op;break;case 4:_.label++;return{value:op[1],done:false};case 5:_.label++;y=op[1];op=[0];continue;case 7:op=_.ops.pop();_.trys.pop();continue;default:if(!(t=_.trys,t=t.length>0&&t[t.length-1])&&(op[0]===6||op[0]===2)){_=0;continue}if(op[0]===3&&(!t||(op[1]>t[0]&&op[1]<t[3]))){_.label=op[1];break}if(op[0]===6&&_.label<t[1]){_.label=t[1];t=op;break}if(t&&_.label<t[2]){_.label=t[2];_.ops.push(op);break}if(t[2])_.ops.pop();_.trys.pop();continue}op=body.call(thisArg,_)}catch(e){op=[6,e];y=0}finally{f=t=0}if(op[0]&5)throw op[1];return{value:op[0]?op[1]:void 0,done:true}}}}();";
 
+/// __await: async generator 안 await 표현의 wrapper. (#1911)
+/// `await x` 는 async generator body 안에서 `yield __await(x)` 로 변환되며,
+/// `__asyncGenerator` 의 step() 가 `r.value instanceof __await` 으로 인식해 Promise resolve.
+pub const AWAIT_RUNTIME =
+    \\var __await = function(v) {
+    \\  return this instanceof __await ? (this.v = v, this) : new __await(v);
+    \\};
+    \\
+;
+pub const AWAIT_RUNTIME_MIN = "var __await=function(v){return this instanceof __await?(this.v=v,this):new __await(v)};";
+
+/// __asyncGenerator: async generator (`async function*`) → Symbol.asyncIterator 객체 반환.
+/// tslib 호환. (#1911) `yield value` 는 그대로 yield, `await x` 는 `yield __await(x)` 로
+/// transform 단계에서 변환되어 step() 가 `__await` instance 인 경우 Promise.resolve 후 resume.
+pub const ASYNC_GENERATOR_RUNTIME =
+    \\var __asyncGenerator = function(thisArg, _arguments, generator) {
+    \\  if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
+    \\  var g = generator.apply(thisArg, _arguments || []), q = [], i;
+    \\  return i = {}, verb("next"), verb("throw", function(e) { return Promise.reject(e); }), verb("return"),
+    \\    i[Symbol.asyncIterator] = function() { return this; }, i;
+    \\  function verb(n, f) {
+    \\    if (g[n]) i[n] = function(v) { return new Promise(function(a, b) { q.push([n, v, a, b]) > 1 || resume(n, v); }); };
+    \\    if (f) i[n] = f(i[n]);
+    \\  }
+    \\  function resume(n, v) { try { step(g[n](v)); } catch (e) { settle(q[0][3], e); } }
+    \\  function step(r) {
+    \\    r.value instanceof __await
+    \\      ? Promise.resolve(r.value.v).then(fulfill, reject)
+    \\      : settle(q[0][2], r);
+    \\  }
+    \\  function fulfill(value) { resume("next", value); }
+    \\  function reject(value) { resume("throw", value); }
+    \\  function settle(f, v) { if (f(v), q.shift(), q.length) resume(q[0][0], q[0][1]); }
+    \\};
+    \\
+;
+pub const ASYNC_GENERATOR_RUNTIME_MIN = "var __asyncGenerator=function(thisArg,_arguments,generator){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var g=generator.apply(thisArg,_arguments||[]),q=[],i;return i={},verb(\"next\"),verb(\"throw\",function(e){return Promise.reject(e)}),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i;function verb(n,f){if(g[n])i[n]=function(v){return new Promise(function(a,b){q.push([n,v,a,b])>1||resume(n,v)})};if(f)i[n]=f(i[n])}function resume(n,v){try{step(g[n](v))}catch(e){settle(q[0][3],e)}}function step(r){r.value instanceof __await?Promise.resolve(r.value.v).then(fulfill,reject):settle(q[0][2],r)}function fulfill(value){resume(\"next\",value)}function reject(value){resume(\"throw\",value)}function settle(f,v){if(f(v),q.shift(),q.length)resume(q[0][0],q[0][1])}};";
+
 /// __values: iterable → iterator 변환 (ES2015 yield* / for-of helper). tslib 호환.
 /// `Symbol.iterator` 호출 가능하면 그 결과 반환. 없으면 `length` 기반 array-like fallback.
 /// (#1910) `yield* 'abc'` 같이 raw iterable 을 generator state machine 의 op[5] 가 받을 때
@@ -1024,6 +1062,14 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     // 그 안에서 typeof __values 체크하므로 함께 emit 필요.
     if (helpers.values or helpers.async_values) {
         try buf.appendSlice(allocator, if (minify) VALUES_RUNTIME_MIN else VALUES_RUNTIME);
+    }
+    // __await 는 async generator step() 안에서 instanceof check 사용 — async_generator 가
+    // 켜져 있으면 함께 emit. (#1911)
+    if (helpers.await_helper or helpers.async_generator) {
+        try buf.appendSlice(allocator, if (minify) AWAIT_RUNTIME_MIN else AWAIT_RUNTIME);
+    }
+    if (helpers.async_generator) {
+        try buf.appendSlice(allocator, if (minify) ASYNC_GENERATOR_RUNTIME_MIN else ASYNC_GENERATOR_RUNTIME);
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);

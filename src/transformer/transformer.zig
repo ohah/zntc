@@ -218,7 +218,11 @@ pub const RuntimeHelpers = packed struct(u32) {
     async_values: bool = false,
     /// __classPrivateFieldSet: instance private field set with return value (#1488).
     class_private_field_set: bool = false,
-    _padding: u14 = 0,
+    /// __asyncGenerator: `async function*` → Symbol.asyncIterator 객체 (ES2018, #1911)
+    async_generator: bool = false,
+    /// __await: async generator body 안 await 표현 wrapper (ES2018, #1911)
+    await_helper: bool = false,
+    _padding: u12 = 0,
 };
 
 /// 단일 AST append-only 변환기.
@@ -1073,6 +1077,10 @@ pub const Transformer = struct {
                 const e = node.data.extra;
                 const flags = self.readU32(e, 3);
                 if (self.options.unsupported.async_await and (flags & ast_mod.FunctionFlags.is_async) != 0) {
+                    // async generator (`async function*`) → __asyncGenerator wrapper. (#1911)
+                    if ((flags & ast_mod.FunctionFlags.is_generator) != 0) {
+                        return es2017_mod.ES2017(Transformer).lowerAsyncGeneratorToStateMachine(self, node);
+                    }
                     // async + generator 둘 다 unsupported → 직접 state machine 생성
                     if (self.options.unsupported.generator) {
                         return es2017_mod.ES2017(Transformer).lowerAsyncToStateMachine(self, node);

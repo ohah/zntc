@@ -386,6 +386,31 @@ test "ES5: yield* nested generator still works (#1910 regression)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
 }
 
+// === #1911: async generator (async function*) — __asyncGenerator wrapper ===
+
+test "ES5: async generator emits __asyncGenerator wrapper call (#1911)" {
+    // Note: e2eTarget = transform+codegen 만 — runtime helper 정의 emit 은 bundler 영역.
+    // 여기선 호출 site 만 검증; helper 정의는 bundler_test/basic.zig 에서.
+    var r = try e2eTarget(std.testing.allocator, "async function* g() { yield 1; yield 2; }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator(this,arguments,") != null);
+}
+
+test "ES5: async generator with await wraps via __await (#1911)" {
+    // body 안 `await x` 가 `yield __await(x)` 로 변환.
+    var r = try e2eTarget(std.testing.allocator, "async function* g() { yield await Promise.resolve(1); }", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__await(") != null);
+}
+
+test "ES5: regular async function still uses __async (not __asyncGenerator) (#1911 regression)" {
+    // is_async + !is_generator 케이스가 새 분기로 잘못 빠지지 않게 회귀 방지.
+    var r = try e2eTarget(std.testing.allocator, "async function f() { return await Promise.resolve(1); }", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__asyncGenerator") == null);
+}
+
 test "ES5: if-await edge — empty then block (no statements)" {
     // 빈 then — await 없으니 e2eES5Async 의 self-loop assertion N/A. emit 깨지지 않는지만.
     var r = try e2eTarget(std.testing.allocator, "async function f(x) { if (x) {} await a(); }", .es5);
