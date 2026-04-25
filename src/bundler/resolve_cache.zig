@@ -397,6 +397,18 @@ pub const ResolveCache = struct {
             if (thread_safe) self.cache_mutex.lock();
             defer if (thread_safe) self.cache_mutex.unlock();
 
+            // resolver 가 `--fallback:NAME=false` (또는 다른 disabled 경로) 로 빈 모듈을
+            // 반환한 경우 — disabled variant 로 캐싱 + 반환. 이 분기 없이는 `.file` 로
+            // cache 되어 graph 단계에서 일반 파싱 시도 → "No loader configured" 에러.
+            if (result.disabled) {
+                const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+                self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
+                    .path = cache_path,
+                    .module_type = result.module_type,
+                } } }) catch {};
+                return disabledResult(result.path, result.module_type);
+            }
+
             if (self.platform.isBrowserLike()) {
                 const override = self.getBrowserOverride(result.path);
                 switch (override) {
