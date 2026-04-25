@@ -704,4 +704,186 @@ describe("manualChunks NAPI bridge", () => {
     const libFlag = [...seen.entries()].find(([k]) => k.endsWith("lib.ts"))![1];
     expect(libFlag).toBe(false);
   });
+
+  // ============================================================
+  // 회귀 가드 추가 — external + 다른 기능 조합
+  // ============================================================
+
+  test("external 여러 specifier 가 한 모듈에 동시 import — 모두 phantom 등록", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { x } from "ext-a";
+        import { y } from "ext-b";
+        import { z } from "ext-c";
+        console.log(x, y, z);
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    let entryImportedIds: string[] = [];
+    let extAFound = false;
+    let extBFound = false;
+    let extCFound = false;
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["ext-a", "ext-b", "ext-c"],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          entryImportedIds = meta.getModuleInfo(id)?.importedIds ?? [];
+          extAFound = meta.getModuleInfo("ext-a")?.isExternal === true;
+          extBFound = meta.getModuleInfo("ext-b")?.isExternal === true;
+          extCFound = meta.getModuleInfo("ext-c")?.isExternal === true;
+        }
+        return null;
+      },
+    });
+
+    expect(extAFound).toBe(true);
+    expect(extBFound).toBe(true);
+    expect(extCFound).toBe(true);
+    // 3개 external 모두 entry.importedIds 에 포함
+    expect(entryImportedIds).toContain("ext-a");
+    expect(entryImportedIds).toContain("ext-b");
+    expect(entryImportedIds).toContain("ext-c");
+  });
+
+  test("external 의 importedIds / dynamicallyImportedIds 는 빈 배열", async () => {
+    // Rollup 스펙 — external 은 graph traversal 끝점, 자체 import 정보 없음.
+    const fixture = await createFixture({
+      "entry.ts": `import { x } from "lib-x"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    let extInfo: { importedIds: string[]; dynamicallyImportedIds: string[] } | undefined;
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["lib-x"],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          const info = meta.getModuleInfo("lib-x");
+          if (info)
+            extInfo = {
+              importedIds: info.importedIds,
+              dynamicallyImportedIds: info.dynamicallyImportedIds,
+            };
+        }
+        return null;
+      },
+    });
+
+    expect(extInfo).toBeDefined();
+    expect(extInfo!.importedIds).toEqual([]);
+    expect(extInfo!.dynamicallyImportedIds).toEqual([]);
+  });
+
+  test("external + inlineDynamicImports — dynamic external 은 inline 안 됨 (런타임 import 유지)", async () => {
+    // external 은 번들 외부라 inlineDynamicImports 의 wrap 변환 대상 아님.
+    // 출력에 `Promise.resolve().then(...)` 변환 패턴 등장 안 함, 원본 import() 유지.
+    const fixture = await createFixture({
+      "entry.ts": `
+        async function boot() {
+          const m = await import("ext-dyn");
+          console.log(m);
+        }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["ext-dyn"],
+      splitting: true,
+      inlineDynamicImports: true,
+    });
+
+    const text = result.outputFiles![0].text;
+    // external dynamic import 는 그대로 남아야 (런타임에 native ESM 동적 import)
+    expect(text).toMatch(/import\s*\(\s*["']ext-dyn["']\s*\)/);
+    // wrap 변환 패턴은 안 들어가야
+    expect(text).not.toContain("init_ext-dyn");
+  });
+
+  test("external 이 manualChunks resolver 로부터 chunk 이름 받아도 무시 (graph 가드)", async () => {
+    // resolver 가 external 에 대해 호출되지 않음을 이미 다른 테스트가 lock — 추가로 만약
+    // 사용자가 명시적으로 lookup 후 분류 시도해도 graph 측 가드로 빈 chunk 안 만들어지는지.
+    const fixture = await createFixture({
+      "entry.ts": `import { x } from "react-mock"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["react-mock"],
+      splitting: true,
+      manualChunks: (id) => {
+        // bare "react-mock" 가 들어왔다면 vendor 로 가게 시도. 실제로는 external 가드로
+        // resolver 에 호출 안 옴.
+        if (id === "react-mock") return "vendor-react";
+        return null;
+      },
+    });
+
+    // vendor-react chunk 가 만들어지지 않아야 (resolver 가 external 에 호출 안 됐기에)
+    const vendorChunk = result.outputFiles!.find((o) => o.path.includes("vendor-react"));
+    expect(vendorChunk).toBeUndefined();
+  });
+
+  test("external + tree-shaking — external import 는 tree-shake 되지 않음", async () => {
+    // external 은 런타임에 외부 의존성이라 사용 표면적이 모르므로 항상 보존.
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { used } from "ext-side";
+        console.log(used);
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["ext-side"],
+      splitting: true,
+    });
+
+    const text = result.outputFiles![0].text;
+    // external 은 보존 — `require("ext-side")` 또는 `import "ext-side"` 흔적이 남아야
+    const hasExternalRef =
+      /require\(["']ext-side["']\)/.test(text) ||
+      /from\s*["']ext-side["']/.test(text) ||
+      /import\s*["']ext-side["']/.test(text);
+    expect(hasExternalRef).toBe(true);
+  });
+
+  test("manualChunks meta 다회 호출 안전 — 같은 id 여러번 lookup", async () => {
+    // 사용자 코드가 같은 id 여러 번 lookup 해도 zero-alloc 경로라 leak 없음 + 같은 결과 반환.
+    const fixture = await createFixture({
+      "entry.ts": `import { a } from "./lib"; console.log(a);`,
+      "lib.ts": 'export const a = "L";',
+    });
+    cleanup = fixture.cleanup;
+
+    const results: { iter: number; importers: number; isEntry: boolean }[] = [];
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (!id.endsWith("lib.ts")) return null;
+        for (let i = 0; i < 5; i++) {
+          const info = meta.getModuleInfo(id);
+          if (info)
+            results.push({ iter: i, importers: info.importers.length, isEntry: info.isEntry });
+        }
+        return null;
+      },
+    });
+
+    expect(results.length).toBe(5);
+    // 모든 호출 결과 동일
+    for (const r of results) {
+      expect(r.importers).toBe(1);
+      expect(r.isEntry).toBe(false);
+    }
+  });
 });

@@ -369,6 +369,87 @@ describe("inlineDynamicImports smoke", () => {
     expect(stdout).toContain("AFTER:2");
   });
 
+  test("런타임: 다중 lazy 모듈이 같은 shared 의존성 — shared 도 1회만 init", async () => {
+    // route-a, route-b 둘 다 shared util 정적 import. inline 모드에서 shared 가
+    // entry chunk 로 흡수되고, 두 라우트 lazy 호출에서 shared 의 side-effect 는 1회만.
+    const fixture = await createFixture({
+      "package.json": '{"type":"module"}',
+      "shared.ts": `
+        console.log("SHARED_INIT");
+        export const greet = (n: string) => "hi " + n;
+      `,
+      "route-a.ts": `
+        import { greet } from "./shared";
+        export default () => console.log("A:" + greet("a"));
+      `,
+      "route-b.ts": `
+        import { greet } from "./shared";
+        export default () => console.log("B:" + greet("b"));
+      `,
+      "entry.ts": `
+        async function boot() {
+          const a = await import("./route-a");
+          const b = await import("./route-b");
+          a.default();
+          b.default();
+        }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outDir = join(fixture.dir, "dist");
+    mkdirSync(outDir, { recursive: true });
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      inlineDynamicImports: true,
+      outdir: outDir,
+      write: true,
+    });
+
+    const stdout = runBundleInNode(outDir, "entry.js");
+    // shared 의 init log 정확히 1회
+    const sharedInitCount = stdout.split("SHARED_INIT").length - 1;
+    expect(sharedInitCount).toBe(1);
+    // 두 라우트 모두 실행 결과 확인
+    expect(stdout).toContain("A:hi a");
+    expect(stdout).toContain("B:hi b");
+  });
+
+  test("런타임: throw 하는 lazy 모듈의 1회차 실패 + 재호출 시 같은 에러 던짐", async () => {
+    // __esm 헬퍼는 첫 호출에서 throw 시 fn 을 복원해서 재시도 가능. 같은 에러여도 throw 함.
+    const fixture = await createFixture({
+      "package.json": '{"type":"module"}',
+      "broken.ts": `
+        if (true) throw new Error("BOOM");
+        export const x = 1;
+      `,
+      "entry.ts": `
+        async function boot() {
+          try { await import("./broken"); } catch(e) { console.log("FIRST:" + (e as Error).message); }
+          try { await import("./broken"); } catch(e) { console.log("SECOND:" + (e as Error).message); }
+        }
+        boot();
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const outDir = join(fixture.dir, "dist");
+    mkdirSync(outDir, { recursive: true });
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      inlineDynamicImports: true,
+      outdir: outDir,
+      write: true,
+    });
+
+    const stdout = runBundleInNode(outDir, "entry.js");
+    expect(stdout).toContain("FIRST:BOOM");
+    expect(stdout).toContain("SECOND:BOOM");
+  });
+
   // 미사용 import 회피
   void writeFileSync;
 });
