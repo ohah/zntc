@@ -45,25 +45,75 @@ test "RealFS.access — 존재하면 void, 없으면 NotFound" {
     try testing.expectError(fs.FsError.NotFound, real.access("/zts/no_such_path/abcdef"));
 }
 
-test "RealFS.statFile — 파일 size + is_dir" {
+test "RealFS.statFile — file kind + size 정확" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try tmp.dir.writeFile(.{ .sub_path = "size.txt", .data = "12345" });
-    try tmp.dir.makeDir("a_dir");
 
-    var buf1: [std.fs.max_path_bytes]u8 = undefined;
-    var buf2: [std.fs.max_path_bytes]u8 = undefined;
-    const file_path = try tmp.dir.realpath("size.txt", &buf1);
-    const dir_path = try tmp.dir.realpath("a_dir", &buf2);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const file_path = try tmp.dir.realpath("size.txt", &buf);
 
     const real = fs.RealFS.init();
-    const file_stat = try real.statFile(file_path);
-    try testing.expectEqual(@as(u64, 5), file_stat.size);
-    try testing.expect(!file_stat.is_dir);
+    const stat = try real.statFile(file_path);
+    try testing.expectEqual(@as(u64, 5), stat.size);
+    try testing.expect(!stat.is_dir);
+    try testing.expectEqual(fs.EntryKind.file, stat.kind);
+}
 
-    const dir_stat = try real.statFile(dir_path);
-    try testing.expect(dir_stat.is_dir);
+test "RealFS.statFile — directory kind" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("a_dir");
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath("a_dir", &buf);
+
+    const real = fs.RealFS.init();
+    const stat = try real.statFile(dir_path);
+    try testing.expect(stat.is_dir);
+    try testing.expectEqual(fs.EntryKind.directory, stat.kind);
+}
+
+test "RealFS.statFile — symlink-to-file 은 kind=.file (symlink 따라감)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "target.txt", .data = "x" });
+    tmp.dir.symLink("target.txt", "link.txt", .{}) catch |err| switch (err) {
+        // Windows 등 symlink 권한 부족 환경 skip
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link_path = try tmp.dir.realpath("link.txt", &buf);
+
+    const real = fs.RealFS.init();
+    const stat = try real.statFile(link_path);
+    // statFile (vs lstat) 은 symlink 를 따라가서 target 의 kind 반환 — resolver.fileExists 의
+    // node_modules 에 있는 bun/pnpm symlink 동작과 일치.
+    try testing.expectEqual(fs.EntryKind.file, stat.kind);
+}
+
+test "RealFS.statFile — symlink-to-directory 는 kind=.directory" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("target_dir");
+    tmp.dir.symLink("target_dir", "link_dir", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link_path = try tmp.dir.realpath("link_dir", &buf);
+
+    const real = fs.RealFS.init();
+    const stat = try real.statFile(link_path);
+    try testing.expectEqual(fs.EntryKind.directory, stat.kind);
+    try testing.expect(stat.is_dir);
 }
 
 test "RealFS.listDir — 항목 수집 + free" {
@@ -108,6 +158,64 @@ test "RealFS.listDir — 항목 수집 + free" {
 test "RealFS.listDir — 존재하지 않는 디렉토리는 NotFound" {
     const real = fs.RealFS.init();
     const result = real.listDir(testing.allocator, "/zts/no_such_dir/abcdef");
+    try testing.expectError(fs.FsError.NotFound, result);
+}
+
+test "RealFS.listDir — symlink 은 kind=.symlink (target 따라가지 않음, lstat)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "real.txt", .data = "" });
+    tmp.dir.symLink("real.txt", "link.txt", .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &buf);
+
+    const real = fs.RealFS.init();
+    const entries = try real.listDir(testing.allocator, dir_path);
+    defer {
+        for (entries) |e| testing.allocator.free(e.name);
+        testing.allocator.free(entries);
+    }
+
+    var saw_symlink = false;
+    for (entries) |e| {
+        if (std.mem.eql(u8, e.name, "link.txt")) {
+            saw_symlink = true;
+            // resolver 의 readdir 캐시가 symlink 를 file/dir 양쪽에 등록하는 동작에 필수.
+            try testing.expectEqual(fs.EntryKind.symlink, e.kind);
+        }
+    }
+    try testing.expect(saw_symlink);
+}
+
+test "RealFS.realpath — symlink 정규화" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "real.txt", .data = "x" });
+    tmp.dir.symLink("real.txt", "link.txt", .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link_path = try tmp.dir.realpath("link.txt", &buf);
+
+    const real = fs.RealFS.init();
+    const resolved = try real.realpath(testing.allocator, link_path);
+    defer testing.allocator.free(resolved);
+
+    // realpath 결과는 link 가 아닌 target (real.txt) 의 정규화 경로
+    try testing.expect(std.mem.endsWith(u8, resolved, "real.txt"));
+}
+
+test "RealFS.realpath — 존재하지 않는 path 는 NotFound" {
+    const real = fs.RealFS.init();
+    const result = real.realpath(testing.allocator, "/zts/no_such_path/xyz");
     try testing.expectError(fs.FsError.NotFound, result);
 }
 

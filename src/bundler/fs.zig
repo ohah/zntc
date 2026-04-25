@@ -52,10 +52,13 @@ pub const EntryKind = enum {
 /// std.fs.File.Stat 의 inode/mode_t 같은 OS-dependent 필드는 의도적 제외.
 /// mtime 은 HMR 의 cache key (#1894) 에 사용 — RealFS 는 항상 stat.mtime 으로 채우고,
 /// VirtualFS 는 host 가 mtime 미제공 시 0 으로 두면 HMR 의 mtime=0 virtual 분기로 자연 fallback.
+/// kind 는 file / directory / symlink 정확 분류 — symlink-to-file 과 file 을 구분해야 하는
+/// resolver 의 fileExists 같은 use case 에서 필요.
 pub const FileStat = struct {
     size: u64,
     is_dir: bool,
     mtime: i128,
+    kind: EntryKind,
 };
 
 pub const FsError = error{
@@ -86,6 +89,10 @@ pub fn access(path: []const u8) FsError!void {
     return Implementation.init().access(path);
 }
 
+pub fn realpath(alloc: std.mem.Allocator, path: []const u8) FsError![]const u8 {
+    return Implementation.init().realpath(alloc, path);
+}
+
 pub fn listDir(alloc: std.mem.Allocator, path: []const u8) FsError![]DirEntry {
     return Implementation.init().listDir(alloc, path);
 }
@@ -107,15 +114,23 @@ pub const RealFS = struct {
 
     pub fn statFile(_: RealFS, path: []const u8) FsError!FileStat {
         const stat = std.fs.cwd().statFile(path) catch |err| return mapFsError(err);
+        const kind = mapEntryKind(stat.kind);
         return .{
             .size = stat.size,
-            .is_dir = stat.kind == .directory,
+            .is_dir = kind == .directory,
             .mtime = stat.mtime,
+            .kind = kind,
         };
     }
 
     pub fn access(_: RealFS, path: []const u8) FsError!void {
         std.fs.cwd().access(path, .{}) catch |err| return mapFsError(err);
+    }
+
+    /// symlink 정규화. resolver 의 preserve_symlinks=false 경로에 사용 (bun/.bun, pnpm/.pnpm).
+    /// caller 가 반환 slice 의 메모리 소유.
+    pub fn realpath(_: RealFS, allocator: std.mem.Allocator, path: []const u8) FsError![]const u8 {
+        return std.fs.cwd().realpathAlloc(allocator, path) catch |err| return mapFsError(err);
     }
 
     /// 디렉토리 항목을 ArrayList 에 모아 반환. caller 가 메모리 소유.
@@ -160,6 +175,10 @@ pub const VirtualFS = struct {
 
     pub fn access(_: VirtualFS, _: []const u8) FsError!void {
         @compileError("VirtualFS.access: WASM fs callback 미구현 (Phase 2 PR 6)");
+    }
+
+    pub fn realpath(_: VirtualFS, _: std.mem.Allocator, _: []const u8) FsError![]const u8 {
+        @compileError("VirtualFS.realpath: WASM fs callback 미구현 (Phase 2 PR 6)");
     }
 
     pub fn listDir(_: VirtualFS, _: std.mem.Allocator, _: []const u8) FsError![]DirEntry {
