@@ -15,6 +15,8 @@ const std = @import("std");
 const resolver_mod = @import("resolver.zig");
 const Resolver = resolver_mod.Resolver;
 const ResolveResult = resolver_mod.ResolveResult;
+const plugin_mod = @import("plugin.zig");
+const ResolvedModule = plugin_mod.ResolvedModule;
 const ResolveError = resolver_mod.ResolveError;
 const types = @import("types.zig");
 const ImportKind = types.ImportKind;
@@ -105,11 +107,13 @@ pub const ResolveCache = struct {
     /// Remap chain cycle 방어 — depth 3 이상이면 원본 경로로 fallback (#1530).
     const MAX_REMAP_DEPTH: u8 = 3;
 
+    /// Cache 의 internal storage. ResolvedModule 직접 보유 (#1885 PR 4b).
+    /// 외부 API (resolve) 는 toLegacy 변환 후 ResolveResult 반환 — caller 영향 0.
+    /// `.external` variant 는 dead code (cache 저장 경로 없음, isExternal 즉시 null 반환)
+    /// 제거 — PR 4b cleanup.
     const CachedResult = union(enum) {
-        resolved: ResolveResult,
-        external,
+        resolved: ResolvedModule,
         not_found,
-        disabled: ResolveResult,
     };
 
     /// 플랫폼 + import kind에 따른 기본 조건 세트.
@@ -238,9 +242,8 @@ pub const ResolveCache = struct {
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             switch (entry.value_ptr.*) {
-                .resolved => |r| self.allocator.free(r.path),
-                .disabled => |r| self.allocator.free(r.path),
-                else => {},
+                .resolved => |m| self.allocator.free(cachedPath(m)),
+                .not_found => {},
             }
         }
         self.cache.deinit();
@@ -318,16 +321,21 @@ pub const ResolveCache = struct {
             defer if (thread_safe) self.cache_mutex.unlock();
             if (self.cache.get(cache_key)) |cached| {
                 return switch (cached) {
-                    .resolved => |r| ResolveResult{
-                        .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
-                        .module_type = r.module_type,
+                    // Phase 1 의 cache 는 file/disabled 만 저장 (putCache 호출처 검증).
+                    // 명시적 unreachable — 새 variant 추가 시 컴파일러가 dispatch 강제.
+                    .resolved => |m| switch (m) {
+                        .file => |f| ResolveResult{
+                            .path = self.allocator.dupe(u8, f.path) catch return error.OutOfMemory,
+                            .module_type = f.module_type,
+                            .is_module_field = f.is_module_field,
+                        },
+                        .disabled => |d| ResolveResult{
+                            .path = self.allocator.dupe(u8, d.path) catch return error.OutOfMemory,
+                            .module_type = d.module_type,
+                            .disabled = true,
+                        },
+                        .virtual, .dataurl, .external, .custom => unreachable,
                     },
-                    .disabled => |r| ResolveResult{
-                        .path = self.allocator.dupe(u8, r.path) catch return error.OutOfMemory,
-                        .module_type = r.module_type,
-                        .disabled = true,
-                    },
-                    .external => null,
                     .not_found => error.ModuleNotFound,
                 };
             }
@@ -348,10 +356,10 @@ pub const ResolveCache = struct {
                         const disabled_path = std.fmt.allocPrint(self.allocator, "(disabled):{s}", .{effective_spec}) catch return error.OutOfMemory;
                         if (thread_safe) self.cache_mutex.lock();
                         defer if (thread_safe) self.cache_mutex.unlock();
-                        self.putCache(cache_key, .{ .disabled = .{
+                        self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
                             .path = self.allocator.dupe(u8, disabled_path) catch return error.OutOfMemory,
                             .module_type = .javascript,
-                        } }) catch {};
+                        } } }) catch {};
                         return ResolveResult{
                             .path = disabled_path,
                             .module_type = .javascript,
@@ -398,10 +406,10 @@ pub const ResolveCache = struct {
                 switch (override) {
                     .disabled => {
                         const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-                        self.putCache(cache_key, .{ .disabled = .{
+                        self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
                             .path = cache_path,
                             .module_type = result.module_type,
-                        } }) catch {};
+                        } } }) catch {};
                         return ResolveResult{
                             .path = result.path,
                             .module_type = result.module_type,
@@ -415,10 +423,10 @@ pub const ResolveCache = struct {
                             const spec_buf = std.fmt.allocPrint(self.allocator, "./{s}", .{rep}) catch {
                                 // fallthrough
                                 const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-                                self.putCache(cache_key, .{ .resolved = .{
+                                self.putCache(cache_key, .{ .resolved = .{ .file = .{
                                     .path = cache_path,
                                     .module_type = result.module_type,
-                                } }) catch {};
+                                } } }) catch {};
                                 return result;
                             };
                             defer self.allocator.free(spec_buf);
@@ -427,10 +435,10 @@ pub const ResolveCache = struct {
                             if (thread_safe) self.cache_mutex.lock();
                             if (maybe_replaced) |replaced| {
                                 const cache_path = self.allocator.dupe(u8, replaced.path) catch return error.OutOfMemory;
-                                self.putCache(cache_key, .{ .resolved = .{
+                                self.putCache(cache_key, .{ .resolved = .{ .file = .{
                                     .path = cache_path,
                                     .module_type = replaced.module_type,
-                                } }) catch {};
+                                } } }) catch {};
                                 return replaced;
                             } else |_| {
                                 // fallthrough — replacement 해결 실패 시 원본 사용.
@@ -442,13 +450,23 @@ pub const ResolveCache = struct {
             }
 
             const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-            self.putCache(cache_key, .{ .resolved = .{
+            self.putCache(cache_key, .{ .resolved = .{ .file = .{
                 .path = cache_path,
                 .module_type = result.module_type,
-            } }) catch {};
+            } } }) catch {};
         }
 
         return result;
+    }
+
+    /// CachedResult.resolved (ResolvedModule) 의 path 추출 — file/disabled variant 만 사용
+    /// (Phase 1 의 cache 가 그 두 variant 만 저장). dead variant 진입 시 빈 slice → free no-op.
+    fn cachedPath(m: ResolvedModule) []const u8 {
+        return switch (m) {
+            .file => |f| f.path,
+            .disabled => |d| d.path,
+            else => "",
+        };
     }
 
     /// 캐시에 엔트리 저장. 기존 키가 있으면 이전 키/값 해제 (Critical #1 수정).
@@ -457,9 +475,8 @@ pub const ResolveCache = struct {
         if (self.cache.fetchRemove(cache_key)) |old| {
             self.allocator.free(old.key);
             switch (old.value) {
-                .resolved => |r| self.allocator.free(r.path),
-                .disabled => |r| self.allocator.free(r.path),
-                else => {},
+                .resolved => |m| self.allocator.free(cachedPath(m)),
+                .not_found => {},
             }
         }
         const key_owned = self.allocator.dupe(u8, cache_key) catch return error.OutOfMemory;
