@@ -321,9 +321,15 @@ interface BundlerExports {
   alloc(len: number): number;
   dealloc(ptr: number, len: number): void;
   bundler_version(): number;
-  /// PR 6-2c-2c — entry path 로 실제 bundler.Bundler.init + bundle() 호출 후
+  /// entry path + 옵션 JSON 으로 bundler.Bundler.init + bundle() 호출 후
   /// result.output (단일 파일 모드 번들 코드) 반환. 0 = error 또는 빈 출력.
-  build(entryPathPtr: number, entryPathLen: number): bigint;
+  /// options_json_ptr=0 이면 기본 옵션 (esm/browser).
+  build(
+    entryPathPtr: number,
+    entryPathLen: number,
+    optionsJsonPtr: number,
+    optionsJsonLen: number,
+  ): bigint;
 }
 
 let bundler: BundlerExports | null = null;
@@ -331,7 +337,11 @@ let bundlerMemory: WebAssembly.Memory | null = null;
 let bundlerVfs: VirtualFileSystem | null = null;
 
 function readBundlerString(ptr: number, len: number): string {
-  return decoder.decode(new Uint8Array(bundlerMemory!.buffer, ptr, len));
+  // bundlerMemory 는 SharedArrayBuffer (threads features 로 shared:true). 해당 view 를
+  // 그대로 TextDecoder.decode 에 전달하면 브라우저가 거부 ("must not be shared") —
+  // .slice() 로 새 ArrayBuffer 복사 후 decode.
+  const view = new Uint8Array(bundlerMemory!.buffer, ptr, len);
+  return decoder.decode(view.slice());
 }
 
 /// host 가 wasm 메모리에 buffer 확보 + 데이터 복사 → packed (ptr<<32 | len) 반환.
@@ -441,11 +451,26 @@ export interface BundleResult {
   code: string;
 }
 
-/// PR 6-2c-2c minimal build — VFS entry path 로 bundler.Bundler.init + bundle() 호출 후
-/// 단일 파일 번들 코드 (`result.output`) 반환. esm/browser 고정. multi-entry / chunk /
-/// manualChunks / sourcemap 옵션은 후속 PR.
-/// 빈 출력 또는 실패 시 null.
-export function build(entryPath: string): BundleResult | null {
+/// build() 가 받는 옵션. ZTS bundler 의 BundleOptions 의 minimal subset —
+/// 후속 PR 에서 sourcemap / target / jsx 등 추가.
+export interface BundleOptionsInput {
+  /// 출력 모듈 형식. 기본 "esm".
+  format?: "esm" | "cjs" | "iife";
+  /// 타겟 플랫폼. 기본 "browser". import.meta polyfill / Node 빌트인 처리 등 영향.
+  platform?: "browser" | "node" | "neutral" | "react-native";
+  /// 외부 처리할 모듈 specifier 목록 (와일드카드 `*` 지원).
+  external?: string[];
+  /// minify shorthand — true 면 whitespace/identifiers/syntax 모두 활성화.
+  /// 개별 옵션이 명시되면 그게 우선.
+  minify?: boolean;
+  minifyWhitespace?: boolean;
+  minifyIdentifiers?: boolean;
+  minifySyntax?: boolean;
+}
+
+/// VFS entry path + 옵션으로 bundler 호출 후 단일 파일 번들 코드 반환.
+/// 옵션 미전달 시 esm/browser 기본. 빈 출력 또는 실패 시 null.
+export function build(entryPath: string, options?: BundleOptionsInput): BundleResult | null {
   if (!bundler || !bundlerMemory) {
     throw new Error("zts-wasm: bundler not initialized. Call initBundler() first.");
   }
@@ -455,16 +480,41 @@ export function build(entryPath: string): BundleResult | null {
   if (entryPtr === 0) throw new Error("zts-wasm: bundler alloc failed");
   new Uint8Array(bundlerMemory.buffer, entryPtr, entryBytes.length).set(entryBytes);
 
+  let optsPtr = 0;
+  let optsLen = 0;
+  if (options) {
+    // minify shorthand 펼치기 — 개별 옵션이 명시되어 있으면 그게 우선.
+    const expanded = { ...options };
+    if (expanded.minify) {
+      expanded.minifyWhitespace = expanded.minifyWhitespace ?? true;
+      expanded.minifyIdentifiers = expanded.minifyIdentifiers ?? true;
+      expanded.minifySyntax = expanded.minifySyntax ?? true;
+    }
+    delete expanded.minify;
+    const json = JSON.stringify(expanded);
+    const optsBytes = encoder.encode(json);
+    optsPtr = bundler.alloc(optsBytes.length);
+    if (optsPtr === 0) {
+      bundler.dealloc(entryPtr, entryBytes.length);
+      throw new Error("zts-wasm: bundler alloc failed");
+    }
+    new Uint8Array(bundlerMemory.buffer, optsPtr, optsBytes.length).set(optsBytes);
+    optsLen = optsBytes.length;
+  }
+
   try {
-    const packed = bundler.build(entryPtr, entryBytes.length);
+    const packed = bundler.build(entryPtr, entryBytes.length, optsPtr, optsLen);
     if (packed === 0n) return null;
 
     const outPtr = Number(packed >> 32n);
     const outLen = Number(packed & 0xffffffffn);
-    const code = decoder.decode(new Uint8Array(bundlerMemory.buffer, outPtr, outLen));
+    // SharedArrayBuffer view 는 TextDecoder.decode 가 거부 — .slice() 로 복사.
+    const view = new Uint8Array(bundlerMemory.buffer, outPtr, outLen);
+    const code = decoder.decode(view.slice());
     bundler.dealloc(outPtr, outLen);
     return { code };
   } finally {
     bundler.dealloc(entryPtr, entryBytes.length);
+    if (optsPtr) bundler.dealloc(optsPtr, optsLen);
   }
 }
