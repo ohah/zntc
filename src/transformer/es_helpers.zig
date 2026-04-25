@@ -394,6 +394,22 @@ pub fn makeExprStmt(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
     });
 }
 
+/// `left <op>= right` assignment expression 노드 생성. `flags` 는 op kind
+/// (`Kind.eq` = `=`, `Kind.plus_eq` = `+=`, ...). 0 = transformer-synthesized plain `=`.
+pub fn makeAssignExpr(self: anytype, left: NodeIndex, right: NodeIndex, span: Span, flags: u16) !NodeIndex {
+    return self.ast.addNode(.{
+        .tag = .assignment_expression,
+        .span = span,
+        .data = .{ .binary = .{ .left = left, .right = right, .flags = flags } },
+    });
+}
+
+/// `left <op>= right;` assignment statement 노드 생성 (assignment_expression + expression_statement).
+pub fn makeAssignStmt(self: anytype, left: NodeIndex, right: NodeIndex, span: Span, flags: u16) !NodeIndex {
+    const expr = try makeAssignExpr(self, left, right, span, flags);
+    return makeExprStmt(self, expr, span);
+}
+
 /// `!operand` unary expression 노드 생성.
 pub fn makeUnaryNot(self: anytype, operand: NodeIndex, span: Span) !NodeIndex {
     const extra = try self.ast.addExtras(&.{

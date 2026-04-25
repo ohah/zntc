@@ -1798,6 +1798,12 @@ pub const Parser = struct {
         return statement.parse(self);
     }
 
+    /// 파싱 누적 diagnostic 이 하나라도 있는지. 문법 위반 source 가 codegen 에 silent 통과
+    /// 하는 회귀를 잡을 때 유용 (#1906 — `e2eFull` test helper).
+    pub fn hasErrors(self: *const Parser) bool {
+        return self.errors.items.len > 0;
+    }
+
     pub fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseError2!NodeIndex {
         return statement.parseStatementChecked(self, is_loop_body);
     }
