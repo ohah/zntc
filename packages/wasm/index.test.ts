@@ -1,7 +1,14 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { initSync, transpile, VirtualFileSystem } from "./index";
+import {
+  initSync,
+  transpile,
+  VirtualFileSystem,
+  initBundler,
+  bundlerVersion,
+  build,
+} from "./index";
 
 beforeAll(() => {
   const wasmPath = join(import.meta.dir, "../../zig-out/bin/zts.wasm");
@@ -258,5 +265,38 @@ describe("VirtualFileSystem", () => {
     vfs.set("/x", "second");
     expect(new TextDecoder().decode(vfs.get("/x")!)).toBe("second");
     expect(vfs.size()).toBe(1);
+  });
+});
+
+// PR 6-2c-1 minimal build() — VFS readFile echo 검증 (zts_fs callback round-trip).
+// 실 bundler 호출은 PR 6-2c-2.
+describe("Bundler (minimal)", () => {
+  beforeAll(async () => {
+    const wasmPath = join(import.meta.dir, "../../zig-out/bin/zts-bundler.wasm");
+    const wasmBytes = readFileSync(wasmPath);
+    const vfs = new VirtualFileSystem();
+    vfs.set("/index.ts", "export const x = 42;");
+    vfs.set("/utils.ts", "export const greet = (n: string) => `hi ${n}`;");
+    await initBundler(vfs, wasmBytes);
+  });
+
+  test("bundlerVersion = ABI v1", () => {
+    expect(bundlerVersion()).toBe(1);
+  });
+
+  test("build: VFS entry → readFile echo (PR 6-2c-1)", () => {
+    const result = build("/index.ts");
+    expect(result).not.toBeNull();
+    expect(result?.code).toBe("export const x = 42;");
+  });
+
+  test("build: 다른 entry 도 동일 동작", () => {
+    const result = build("/utils.ts");
+    expect(result?.code).toBe("export const greet = (n: string) => `hi ${n}`;");
+  });
+
+  test("build: 존재하지 않는 entry → null", () => {
+    const result = build("/nonexistent.ts");
+    expect(result).toBeNull();
   });
 });
