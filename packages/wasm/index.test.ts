@@ -268,8 +268,8 @@ describe("VirtualFileSystem", () => {
   });
 });
 
-// PR 6-2c-1 minimal build() — VFS readFile echo 검증 (zts_fs callback round-trip).
-// 실 bundler 호출은 PR 6-2c-2.
+// PR 6-2c-2c — bundler.Bundler.init + bundle() 실 호출 + VFS round-trip.
+// esm/browser 단일 entry. 출력은 단일 파일 모드 (result.output) — 모듈 wrap + TS strip.
 describe("Bundler (minimal)", () => {
   beforeAll(async () => {
     const wasmPath = join(import.meta.dir, "../../zig-out/bin/zts-bundler.wasm");
@@ -284,15 +284,21 @@ describe("Bundler (minimal)", () => {
     expect(bundlerVersion()).toBe(1);
   });
 
-  test("build: VFS entry → readFile echo (PR 6-2c-1)", () => {
+  test("build: 단일 entry → bundle 코드 (TS 어노테이션 strip + 모듈 wrap)", () => {
     const result = build("/index.ts");
     expect(result).not.toBeNull();
-    expect(result?.code).toBe("export const x = 42;");
+    // 번들러는 entry 모듈을 wrap 해서 single bundle 로 emit.
+    // 정확한 wrap 형식은 bundler 구현에 종속 — 핵심 시맨틱만 검증.
+    expect(result?.code).toContain("const x = 42;");
+    expect(result?.code).toContain("export { x }");
   });
 
-  test("build: 다른 entry 도 동일 동작", () => {
+  test("build: TS 어노테이션 (`: string`) 이 strip 됨", () => {
     const result = build("/utils.ts");
-    expect(result?.code).toBe("export const greet = (n: string) => `hi ${n}`;");
+    expect(result).not.toBeNull();
+    expect(result?.code).not.toContain(": string");
+    expect(result?.code).toContain("greet");
+    expect(result?.code).toContain("`hi ${n}`");
   });
 
   test("build: 존재하지 않는 entry → null", () => {

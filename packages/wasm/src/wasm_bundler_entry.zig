@@ -3,12 +3,13 @@
 //! wasm32-wasip1-threads 타겟용 — bundler 전용. transpile-only 빌드 (wasm_entry.zig)
 //! 와 분리해서 brower 호환성/번들 사이즈 트레이드오프 분리.
 //!
-//! PR 6-2c-1: minimal build() — JS bridge (zts_fs callback round-trip) 검증.
-//! 실제 bundler.bundle() 호출은 PR 6-2c-2.
+//! PR 6-2c-2c: build() 가 bundler.Bundler.init + bundle() 진짜 호출.
 
 const std = @import("std");
 const zts_lib = @import("zts_lib");
-const fs = zts_lib.bundler.fs;
+const bundler_mod = zts_lib.bundler;
+const Bundler = bundler_mod.Bundler;
+const BundleOptions = bundler_mod.BundleOptions;
 
 pub const panic = zts_lib.crash_handler.panic;
 
@@ -39,16 +40,41 @@ export fn dealloc(ptr: u32, len: u32) void {
     wasm_alloc.free(slice[0..len]);
 }
 
-/// PR 6-2c-1 minimal build() — VFS entry path 받아 fs.readFile 통과 (zts_fs callback)
-/// → contents 직접 반환 (echo). bundler.bundle() 호출은 PR 6-2c-2.
+/// PR 6-2c-2c build() — VFS entry path 로 bundler.Bundler.init + bundle() 실 호출.
+/// Phase 2 minimal: 단일 entry, 기본 옵션 (esm/browser). 옵션 JSON / multi-entry /
+/// chunk 출력은 후속 PR.
 ///
-/// ABI: 반환 packed u64 (ptr<<32 | len), 0 = error. caller (JS) 가 dealloc 책임.
+/// ABI: 반환 packed u64 (ptr<<32 | len), 0 = error 또는 빈 출력. caller (JS) 가 dealloc 책임.
+/// 결과 = single bundle code string (result.output — 단일 파일 모드).
 export fn build(entry_path_ptr: u32, entry_path_len: u32) u64 {
     if (entry_path_ptr == 0 or entry_path_len == 0) return 0;
     const entry_path: []const u8 = @as([*]const u8, @ptrFromInt(entry_path_ptr))[0..entry_path_len];
 
-    const loaded = fs.readFile(wasm_alloc, entry_path, 100 * 1024 * 1024) catch return 0;
-    const out_ptr: u32 = @intCast(@intFromPtr(loaded.contents.ptr));
-    const out_len: u32 = @intCast(loaded.contents.len);
+    // arena 일괄 해제 — Bundler/BundleResult 내부 자료구조 모두 arena_alloc 소유.
+    // CLAUDE.md "Arena 안 리소스 개별 deinit 금지" 패턴.
+    var arena = std.heap.ArenaAllocator.init(wasm_alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const entry_dupe = arena_alloc.dupe(u8, entry_path) catch return 0;
+    const entry_points: []const []const u8 = &.{entry_dupe};
+
+    const options: BundleOptions = .{
+        .entry_points = entry_points,
+        .format = .esm,
+        .platform = .browser,
+    };
+
+    var bundler = Bundler.init(arena_alloc, options);
+    const result = bundler.bundle() catch return 0;
+
+    // 단일 entry / 비-splitting 경로: result.output 사용 (outputs 는 code-splitting 시).
+    const code = result.output;
+    if (code.len == 0) return 0;
+
+    // arena.deinit() 후에도 caller (JS) 가 읽도록 wasm_alloc 으로 별도 dupe.
+    const out = wasm_alloc.dupe(u8, code) catch return 0;
+    const out_ptr: u32 = @intCast(@intFromPtr(out.ptr));
+    const out_len: u32 = @intCast(out.len);
     return (@as(u64, out_ptr) << 32) | @as(u64, out_len);
 }

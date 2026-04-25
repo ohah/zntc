@@ -132,6 +132,12 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
       path_symlink: ok,
       path_readlink: () => 8,
     },
+    // wasi-libc 의 pthread_create 가 dispatch — single-thread 환경 (Node/Bun) 에선
+    // -1 (ENOSYS) 반환 → bundler 의 std.Thread.spawn 이 single-thread fallback.
+    // Worker 활용은 Phase 3 (#1885).
+    wasi: {
+      "thread-spawn": () => -1,
+    },
   };
 }
 
@@ -315,8 +321,8 @@ interface BundlerExports {
   alloc(len: number): number;
   dealloc(ptr: number, len: number): void;
   bundler_version(): number;
-  /// minimal build (PR 6-2c-1) — entry path → VFS readFile echo. 실제 bundler.bundle()
-  /// 호출은 PR 6-2c-2.
+  /// PR 6-2c-2c — entry path 로 실제 bundler.Bundler.init + bundle() 호출 후
+  /// result.output (단일 파일 모드 번들 코드) 반환. 0 = error 또는 빈 출력.
   build(entryPathPtr: number, entryPathLen: number): bigint;
 }
 
@@ -435,8 +441,10 @@ export interface BundleResult {
   code: string;
 }
 
-/// PR 6-2c-1 minimal build — VFS 의 entry path 읽어 contents 그대로 반환 (echo).
-/// 실제 bundler.bundle() 호출은 PR 6-2c-2 — 그때 multi-file + chunk + manualChunks 지원.
+/// PR 6-2c-2c minimal build — VFS entry path 로 bundler.Bundler.init + bundle() 호출 후
+/// 단일 파일 번들 코드 (`result.output`) 반환. esm/browser 고정. multi-entry / chunk /
+/// manualChunks / sourcemap 옵션은 후속 PR.
+/// 빈 출력 또는 실패 시 null.
 export function build(entryPath: string): BundleResult | null {
   if (!bundler || !bundlerMemory) {
     throw new Error("zts-wasm: bundler not initialized. Call initBundler() first.");
