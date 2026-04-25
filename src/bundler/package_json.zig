@@ -24,6 +24,7 @@
 //!   - references/rolldown/crates/rolldown_resolver/src/resolver_config.rs
 
 const std = @import("std");
+const fs = @import("fs.zig");
 
 /// package.json 필드명 / exports conditions 문자열 상수.
 /// main_fields 순서 지정과 conditional exports 해석 양쪽에서 재사용된다.
@@ -103,13 +104,23 @@ pub const ParsedPackageJson = struct {
     }
 };
 
-/// package.json 파일을 읽고 파싱한다.
-pub fn parsePackageJson(allocator: std.mem.Allocator, dir: std.fs.Dir) !ParsedPackageJson {
-    const source = dir.readFileAlloc(allocator, "package.json", 1024 * 1024) catch
-        return error.FileNotFound;
-    defer allocator.free(source);
+/// `pkg_dir_path` 디렉토리의 package.json 을 읽고 파싱한다. path 기반 시그니처로
+/// fs.zig 추상화 통과 — std.fs.Dir 핸들 의존 제거 (#1921, #1885 Phase 1 완성).
+pub fn parsePackageJson(allocator: std.mem.Allocator, pkg_dir_path: []const u8) !ParsedPackageJson {
+    const json_path = try std.fs.path.join(allocator, &.{ pkg_dir_path, "package.json" });
+    defer allocator.free(json_path);
 
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, source, .{}) catch
+    const loaded = fs.readFile(allocator, json_path, 1024 * 1024) catch |err| switch (err) {
+        fs.FsError.NotFound => return error.FileNotFound,
+        fs.FsError.OutOfMemory => return error.OutOfMemory,
+        // PermissionDenied / IoError / NotDirectory / IsDirectory 모두 IoError 로 통합 —
+        // caller (resolver/graph) 는 이미 catch 후 null 반환 패턴이라 silent fallback. 단
+        // OutOfMemory 만은 분리해 silent swallow 방지.
+        else => return error.IoError,
+    };
+    defer allocator.free(loaded.contents);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, loaded.contents, .{}) catch
         return error.JsonParseError;
 
     const root = parsed.value;

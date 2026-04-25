@@ -9,6 +9,12 @@ const isSubpathMap = pkg_json.isSubpathMap;
 // Tests
 // ============================================================
 
+// path-based parsePackageJson 호출용 helper — tmp dir 의 절대경로 반환.
+// caller 는 buf 를 자체 stack 에 보유.
+fn tmpDirPath(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
+    return try tmp.dir.realpath(".", buf);
+}
+
 test "parsePackageJson: basic fields" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -20,7 +26,9 @@ test "parsePackageJson: basic fields" {
         ,
     });
 
-    var result = try parsePackageJson(std.testing.allocator, tmp.dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmpDirPath(&tmp, &buf);
+    var result = try parsePackageJson(std.testing.allocator, dir_path);
     defer result.deinit();
 
     try std.testing.expectEqualStrings("test-pkg", result.pkg.name.?);
@@ -40,7 +48,9 @@ test "parsePackageJson: sideEffects false" {
         ,
     });
 
-    var result = try parsePackageJson(std.testing.allocator, tmp.dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmpDirPath(&tmp, &buf);
+    var result = try parsePackageJson(std.testing.allocator, dir_path);
     defer result.deinit();
 
     switch (result.pkg.side_effects) {
@@ -60,7 +70,9 @@ test "parsePackageJson: sideEffects array" {
         ,
     });
 
-    var result = try parsePackageJson(std.testing.allocator, tmp.dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmpDirPath(&tmp, &buf);
+    var result = try parsePackageJson(std.testing.allocator, dir_path);
     defer result.deinit();
 
     switch (result.pkg.side_effects) {
@@ -84,7 +96,9 @@ test "parsePackageJson: sideEffects empty array" {
         ,
     });
 
-    var result = try parsePackageJson(std.testing.allocator, tmp.dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmpDirPath(&tmp, &buf);
+    var result = try parsePackageJson(std.testing.allocator, dir_path);
     defer result.deinit();
 
     // 빈 배열은 sideEffects: false와 동일
@@ -98,7 +112,9 @@ test "parsePackageJson: missing file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const result = parsePackageJson(std.testing.allocator, tmp.dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmpDirPath(&tmp, &buf);
+    const result = parsePackageJson(std.testing.allocator, dir_path);
     try std.testing.expectError(error.FileNotFound, result);
 }
 
@@ -280,7 +296,9 @@ test "parsePackageJson: imports field" {
         ,
     });
 
-    var result = try parsePackageJson(std.testing.allocator, tmp.dir);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmpDirPath(&tmp, &buf);
+    var result = try parsePackageJson(std.testing.allocator, dir_path);
     defer result.deinit();
 
     try std.testing.expect(result.pkg.imports != null);

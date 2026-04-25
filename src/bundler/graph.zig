@@ -1408,19 +1408,13 @@ pub const ModuleGraph = struct {
         if (cached) |c| return c;
 
         var info: PkgInfo = .{ .is_module = false, .side_effects = .unknown };
-        // pkg_json.parsePackageJson 이 std.fs.Dir 핸들 직접 요구 — fs.zig 추상화 보류
-        // (#1885 Phase 1 후속). path 기반 리팩터링 또는 fs.zig 에 openDir 추가 필요.
-        if (std.fs.cwd().openDir(pkg_dir_path, .{})) |dir_val| {
-            var pkg_dir = dir_val;
-            defer pkg_dir.close();
-            if (pkg_json.parsePackageJson(self.allocator, pkg_dir)) |parsed_val| {
-                var parsed = parsed_val;
-                info.is_module = parsed.pkg.isModule();
-                info.side_effects = parsed.pkg.side_effects;
-                // 소유권을 info 로 이전 — parsed.deinit() 에서 이중 free 방지.
-                parsed.pkg.side_effects = .unknown;
-                parsed.deinit();
-            } else |_| {}
+        if (pkg_json.parsePackageJson(self.allocator, pkg_dir_path)) |parsed_val| {
+            var parsed = parsed_val;
+            info.is_module = parsed.pkg.isModule();
+            info.side_effects = parsed.pkg.side_effects;
+            // 소유권을 info 로 이전 — parsed.deinit() 에서 이중 free 방지.
+            parsed.pkg.side_effects = .unknown;
+            parsed.deinit();
         } else |_| {}
 
         self.pkg_info_cache_mutex.lock();
