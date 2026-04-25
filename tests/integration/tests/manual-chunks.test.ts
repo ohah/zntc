@@ -688,4 +688,20 @@ describe("manualChunks NAPI bridge", () => {
 
     expect(probed).toBeNull();
   });
+
+  test("meta.getModuleInfo: hasModuleSideEffects — package.json sideEffects=false 반영", async () => {
+    // 패키지가 sideEffects: false 선언하면 그 패키지 모듈들은 hasModuleSideEffects=false.
+    // tree-shaker 가 자동 순수 분석으로 일부 모듈을 false 로 만들 수도 있어 (라이브러리 모듈)
+    // 여기선 명시적 sideEffects=false 선언이 lib.ts 에 반영되는지 lock.
+    const fixture = await createFixture({
+      "package.json": '{"name":"app","sideEffects":false}',
+      "entry.ts": `import { a } from "./lib"; console.log(a);`,
+      "lib.ts": 'export const a = "LIB";',
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.hasModuleSideEffects);
+    const libFlag = [...seen.entries()].find(([k]) => k.endsWith("lib.ts"))![1];
+    expect(libFlag).toBe(false);
+  });
 });

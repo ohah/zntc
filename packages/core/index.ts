@@ -206,6 +206,10 @@ export interface ManualChunksModuleInfo {
   /** `external` 패턴 매칭으로 번들에 포함되지 않는 모듈. AST/source 없음 — graph
    * traversal 1급 노드로만 노출됨. */
   isExternal: boolean;
+  /** 모듈이 side effect 를 가질 수 있는지 (Rollup `hasModuleSideEffects` 호환).
+   * `package.json` `sideEffects` 필드 또는 `treeShaking.moduleSideEffects` 옵션으로 결정.
+   * `false` 면 unused 시 tree-shaker 가 제거 가능. */
+  hasModuleSideEffects: boolean;
   /** 이 모듈을 static import 하는 모듈들. external 도 importer 목록에 포함됨
    * (자기 자신은 external 일 때 in-graph 모듈이 importer). */
   importers: string[];
