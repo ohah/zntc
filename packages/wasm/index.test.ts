@@ -8,6 +8,7 @@ import {
   initBundler,
   bundlerVersion,
   build,
+  buildChunks,
 } from "./index";
 
 beforeAll(() => {
@@ -280,8 +281,8 @@ describe("Bundler (minimal)", () => {
     await initBundler(vfs, wasmBytes);
   });
 
-  test("bundlerVersion = ABI v2 (옵션 JSON 인자 추가)", () => {
-    expect(bundlerVersion()).toBe(2);
+  test("bundlerVersion = ABI v3 (build_chunks 추가)", () => {
+    expect(bundlerVersion()).toBe(3);
   });
 
   test("build: 단일 entry → bundle 코드 (TS 어노테이션 strip + 모듈 wrap)", () => {
@@ -342,5 +343,35 @@ describe("Bundler (minimal)", () => {
     // ignore_unknown_fields=true 이라 신규 필드는 silent skip.
     const result = build("/index.ts", { someFutureOption: 42 } as any);
     expect(result).not.toBeNull();
+  });
+
+  test("buildChunks: 단일 entry → 한 개 chunk wrap", () => {
+    const chunks = buildChunks("/index.ts");
+    expect(chunks).not.toBeNull();
+    expect(chunks!.length).toBe(1);
+    expect(chunks![0].path).toBe("bundle.js");
+    expect(chunks![0].code).toContain("const x = 42;");
+  });
+
+  test("buildChunks: 옵션 (format=cjs) 적용", () => {
+    const chunks = buildChunks("/index.ts", { format: "cjs" });
+    expect(chunks).not.toBeNull();
+    expect(chunks!.length).toBe(1);
+    expect(chunks![0].code).toContain('"use strict"');
+  });
+
+  test("buildChunks: 존재하지 않는 entry → null", () => {
+    const chunks = buildChunks("/nonexistent.ts");
+    expect(chunks).toBeNull();
+  });
+
+  test("buildChunks: JSON escape — code 안의 특수 문자 round-trip", () => {
+    // 출력에 quote / newline / backslash 가 들어가니 JSON escape 검증.
+    const chunks = buildChunks("/utils.ts");
+    expect(chunks).not.toBeNull();
+    // utils.ts 의 template literal `hi ${n}` 가 그대로 출력에 — backtick / dollar / brace
+    expect(chunks![0].code).toContain("`hi ${n}`");
+    // newline 도 escape 안 깨지고 round-trip
+    expect(chunks![0].code.split("\n").length).toBeGreaterThan(1);
   });
 });
