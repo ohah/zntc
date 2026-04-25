@@ -68,7 +68,9 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
       fd_fdstat_get: ok,
       fd_fdstat_set_flags: ok,
       fd_filestat_get: ok,
-      fd_prestat_get: () => 8, // BADF — 더 이상 prestat 없음
+      // EBADF (8) 반환 — wasi-musl libc 가 "valid fd 없음" 으로 처리 후 fallback. 0 반환
+      // 시 musl 이 gibberish 메모리 read 시도 → panic. EBADF 가 안전.
+      fd_prestat_get: () => 8,
       fd_prestat_dir_name: ok,
       fd_sync: ok,
       random_get(buf_ptr: number, buf_len: number): number {
@@ -117,8 +119,9 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
       },
       sched_yield: ok,
       poll_oneoff: ok,
-      // path_* — bundler 는 fs.zig 의 zts_fs callback 통과, wasi path_* 미호출.
-      // 단 wasi-musl 의 일부 함수 (e.g. realpath) 가 path_filestat_get 호출 시도 가능.
+      // path_* — bundler 는 fs.zig 의 zts_fs callback 통과, 정상 경로에선 wasi path_*
+      // 미호출. 단 wasi-musl 의 일부 함수 (e.g. realpath) 가 path_filestat_get 호출
+      // 시도 가능 → EBADF 로 fallback. ok 반환 (0) 하면 gibberish 메모리 read panic.
       path_open: () => 8,
       path_filestat_get: () => 8,
       path_unlink_file: ok,
