@@ -795,7 +795,7 @@ const NapiPlugin = struct {
         return null;
     }
 
-    fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator) PluginError!?bundler_mod.plugin.ResolvedModule {
+    fn pluginResolveId(ctx: ?*anyopaque, specifier: []const u8, importer: ?[]const u8, alloc: std.mem.Allocator) PluginError!?plugin_mod.ResolvedModule {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
         const resp = self.callHook(.resolveId, specifier, importer) orelse return null;
         defer {
