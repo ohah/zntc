@@ -10,8 +10,6 @@
 //!   - generateBundle: 모두 실행
 
 const std = @import("std");
-const resolver_mod = @import("resolver.zig");
-const ResolveResult = resolver_mod.ResolveResult;
 const OutputFile = @import("emitter.zig").OutputFile;
 const fs = @import("fs.zig");
 const types = @import("types.zig");
@@ -54,7 +52,6 @@ pub const ResolvedModule = union(fs.Namespace) {
         path: []const u8,
     },
     /// browser 필드 false 매핑 — 빈 CJS 로 대체 (esbuild "(disabled)" 방식).
-    /// `resolver.ResolveResult.disabled = true` 와 동등 semantic.
     /// module_type 보존 — resolve_cache 의 cache lookup 정보 손실 방지.
     disabled: struct {
         path: []const u8,
