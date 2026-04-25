@@ -236,6 +236,32 @@ pub fn build(b: *std.Build) void {
         napi_step.dependOn(&napi_install.step);
     }
 
+    // ─── NAPI callback bench (#1891 PoC) ───
+    // `zig build bench-callback` — 격리 마이크로 벤치 .node 빌드.
+    // ZTS 본체와 무관, throw-away. 결과 측정 종료 후 step/디렉토리 제거 가능.
+    {
+        const bench_mod_napi = b.createModule(.{
+            .root_source_file = b.path("tools/napi-callback-bench/src/bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        bench_mod_napi.addIncludePath(b.path("vendor/node-api-headers"));
+
+        const bench_lib = b.addLibrary(.{
+            .linkage = .dynamic,
+            .name = "bench-callback",
+            .root_module = bench_mod_napi,
+        });
+        bench_lib.linkLibC();
+        bench_lib.linker_allow_shlib_undefined = true;
+
+        const bench_install = b.addInstallArtifact(bench_lib, .{
+            .dest_sub_path = "bench-callback.node",
+        });
+        const bench_step = b.step("bench-callback", "Build NAPI callback hot-path bench (#1891)");
+        bench_step.dependOn(&bench_install.step);
+    }
+
     // Test262 러너 테스트 (유닛 테스트)
     // lib_mod에 이미 test262가 포함되어 있으므로 같은 모듈로 테스트.
     const test262_step = b.step("test262", "Run Test262 runner unit tests");
