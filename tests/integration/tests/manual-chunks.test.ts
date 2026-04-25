@@ -939,4 +939,76 @@ describe("manualChunks NAPI bridge", () => {
     // 사용자 코드 `pure-lib.ts` — package.json sideEffects=true 무시되고 auto-purity 가 false 로.
     expect(libFlag).toBe(false);
   });
+
+  // ============================================================
+  // info.code — Rollup 호환 source 노출
+  // ============================================================
+
+  test("meta.getModuleInfo: code — 모듈 source 그대로 노출", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `import { a } from "./lib"; console.log(a);`,
+      "lib.ts": 'export const a = "UNIQUE_LIB_MARKER_42";',
+    });
+    cleanup = fixture.cleanup;
+
+    const seen = await collectMeta(fixture.dir, ["entry.ts"], (info) => info.code);
+    const libCode = [...seen.entries()].find(([k]) => k.endsWith("lib.ts"))![1];
+    const entryCode = [...seen.entries()].find(([k]) => k.endsWith("entry.ts"))![1];
+
+    expect(typeof libCode).toBe("string");
+    expect(libCode).toContain("UNIQUE_LIB_MARKER_42");
+    expect(typeof entryCode).toBe("string");
+    expect(entryCode).toContain('from "./lib"');
+  });
+
+  test("meta.getModuleInfo: code — external 모듈은 null", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `import { x } from "ext-pkg"; console.log(x);`,
+    });
+    cleanup = fixture.cleanup;
+
+    let extCode: unknown = "untouched";
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["ext-pkg"],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          extCode = meta.getModuleInfo("ext-pkg")?.code;
+        }
+        return null;
+      },
+    });
+
+    expect(extCode).toBeNull();
+  });
+
+  test("meta.getModuleInfo: code 기반 manualChunks 분류 — content 패턴 매칭", async () => {
+    // 실전 패턴: source 안에 특정 marker 가 있는 모듈만 별도 청크로.
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { a } from "./annotated";
+        import { b } from "./plain";
+        console.log(a, b);
+      `,
+      "annotated.ts": `// @vendor\nexport const a = 1;`,
+      "plain.ts": "export const b = 2;",
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        const info = meta.getModuleInfo(id);
+        if (info?.code?.includes("@vendor")) return "vendor";
+        return null;
+      },
+    });
+
+    const vendorChunk = result.outputFiles!.find((o) => o.path.includes("vendor"));
+    expect(vendorChunk).toBeDefined();
+    expect(vendorChunk!.moduleIds!.some((m) => m.endsWith("annotated.ts"))).toBe(true);
+    expect(vendorChunk!.moduleIds!.some((m) => m.endsWith("plain.ts"))).toBe(false);
+  });
 });

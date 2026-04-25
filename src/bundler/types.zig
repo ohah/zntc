@@ -134,6 +134,9 @@ pub const ModuleInfo = struct {
     /// `package.json` `sideEffects` 필드 또는 `treeShaking.moduleSideEffects` 옵션으로 결정.
     /// false 면 unused 시 tree-shaker 가 제거 가능.
     has_module_side_effects: bool,
+    /// 모듈 source 코드 (Rollup `code` 호환). external / asset / 미파싱 모듈은 null.
+    /// graph 수명 동안 borrowed (parse_arena 소유). NAPI 가 JS string 으로 복사.
+    code: ?[]const u8,
 };
 
 /// `id` 로 모듈 메타를 조회. 없으면 null. Zero allocation — graph 내부 slice borrow.
@@ -150,6 +153,8 @@ pub fn getModuleInfo(graph_opaque: ?*const anyopaque, id: []const u8) ?ModuleInf
         .is_entry = m.is_entry_point,
         .is_external = m.is_external,
         .has_module_side_effects = m.side_effects,
+        // External phantom 은 source 없음, asset/binary 모듈은 source 비어있을 수 있음.
+        .code = if (m.is_external or m.source.len == 0) null else m.source,
     };
 }
 
