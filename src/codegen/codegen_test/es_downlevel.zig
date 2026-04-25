@@ -2361,7 +2361,7 @@ test "unicode_escape: es2015 no-op" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\\u{1F600}") != null);
 }
 
-// === ES5 async transform regression suite (zts/issues 1896, 1901, 1903) ===
+// === ES5 async transform regression suite (zts/issues 1896, 1901) ===
 
 test "ES5: compound assignment with await RHS preserves operator (#1896)" {
     // `sum += await x()` 가 `sum = _state.sent()` 으로 변환되어 += 누락 → 누적 안 됨.
@@ -2398,14 +2398,4 @@ test "ES5: for-await-of hoists loop var to function top (#1901)" {
         std.mem.indexOf(u8, r.output, ",v=") != null or
         std.mem.indexOf(u8, r.output, ",v,") != null;
     try std.testing.expect(has_v_decl);
-}
-
-test "ES5: await in default param of nested async function (#1903)" {
-    // `async function inner(x = await ...)` 가 ES spec 상 허용 (default param 은 async
-    // function body 의 일부, await 가능). 현재 ZTS parser 가 `await not allowed` 로 reject.
-    // 단순 transform 후 parser 가 통과해야 (정확한 emit 검증은 fix 후 별도).
-    var r = try e2eTarget(std.testing.allocator, "async function f() { async function inner(x = await Promise.resolve(7)) { return x; } return await inner(); }", .es5);
-    defer r.deinit();
-    // 통과만 확인 (parser reject 면 위 line 에서 errdefer/error 로 fail).
-    try std.testing.expect(r.output.len > 0);
 }

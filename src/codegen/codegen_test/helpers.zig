@@ -130,6 +130,15 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(ext);
     _ = try parser.parse();
+    // Parser diagnostics 가 누적되어 있는데 silent ignore 하면 spec-violation source 가
+    // codegen 까지 흘러들어 test 가 false-pass — silent regression 위험 (#1906). errors
+    // 가 있으면 첫 메시지를 stderr 에 dump 하고 test fail 처리. 의도된 negative test 는
+    // `e2eFullExpectingErrors` 사용.
+    if (parser.errors.items.len > 0) {
+        const first = parser.errors.items[0];
+        std.debug.print("\nparser error in e2eFull: {s}\n  source: {s}\n", .{ first.message, source });
+        return error.ParserDiagnosticsPresent;
+    }
 
     var t = try Transformer.init(allocator, &parser.ast, t_options);
     t.line_offsets = scanner.line_offsets.items;
