@@ -461,7 +461,7 @@ export interface BundleResult {
   code: string;
 }
 
-/// build() / buildChunks() 가 받는 옵션. ZTS bundler 의 BundleOptions minimal subset.
+/// build() / buildChunks() 가 받는 옵션. ZTS bundler 의 BundleOptions subset.
 export interface BundleOptionsInput {
   /// 출력 모듈 형식. 기본 "esm". umd/amd 는 IIFE 계열 (함수 래퍼).
   format?: "esm" | "cjs" | "iife" | "umd" | "amd";
@@ -479,10 +479,28 @@ export interface BundleOptionsInput {
   codeSplitting?: boolean;
   /// `buildChunks` 에서만 의미. true 면 모듈 1개 = 출력 1개 (rollup preserveModules).
   preserveModules?: boolean;
+  // ─── transpile 계열 옵션 (각 모듈 transform 단계) ───
+  /// ES 다운레벨링 타겟. JS 측에서 targetToUnsupported 로 unsupported bitmask 변환.
+  target?: Target;
+  /// 또는 직접 unsupported bitmask 지정 (target 보다 우선).
+  unsupported?: number;
+  jsx?: "classic" | "automatic" | "automatic-dev";
+  jsxFactory?: string;
+  jsxFragment?: string;
+  jsxImportSource?: string;
+  flow?: boolean;
+  jsxInJs?: boolean;
+  experimentalDecorators?: boolean;
+  emitDecoratorMetadata?: boolean;
+  useDefineForClassFields?: boolean;
+  charsetUtf8?: boolean;
+  keepNames?: boolean;
+  sourcemap?: boolean;
 }
 
 /// 옵션을 wasm 메모리에 JSON 으로 인코딩 + 복사. ptr=0/len=0 이면 옵션 미전달 의미.
 /// caller 가 dealloc 책임. minify shorthand 는 여기서 펼쳐 wasm 측은 항상 개별 키만 봄.
+/// target 은 unsupported bitmask 로 변환 (JS 측에서 처리해 wasm 의 매핑 부담 제거).
 function encodeBundleOptions(options?: BundleOptionsInput): { ptr: number; len: number } {
   if (!options) return { ptr: 0, len: 0 };
   const expanded: BundleOptionsInput = { ...options };
@@ -492,6 +510,12 @@ function encodeBundleOptions(options?: BundleOptionsInput): { ptr: number; len: 
     expanded.minifySyntax = expanded.minifySyntax ?? true;
   }
   delete expanded.minify;
+  // target → unsupported bitmask. 명시적 unsupported 가 우선.
+  if (expanded.target && expanded.unsupported == null) {
+    const bits = targetToUnsupported(expanded.target);
+    if (bits !== 0) expanded.unsupported = bits;
+  }
+  delete expanded.target;
   const optsBytes = encoder.encode(JSON.stringify(expanded));
   const ptr = bundler!.alloc(optsBytes.length);
   if (ptr === 0) throw new Error("zts-wasm: bundler alloc failed");

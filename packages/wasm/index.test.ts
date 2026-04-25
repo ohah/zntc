@@ -282,8 +282,8 @@ describe("Bundler (minimal)", () => {
     await initBundler(vfs, wasmBytes);
   });
 
-  test("bundlerVersion = ABI v4 (last_error_message_get 추가)", () => {
-    expect(bundlerVersion()).toBe(4);
+  test("bundlerVersion = ABI v5 (transpile 옵션 노출)", () => {
+    expect(bundlerVersion()).toBe(5);
   });
 
   test("build: 단일 entry → bundle 코드 (TS 어노테이션 strip + 모듈 wrap)", () => {
@@ -383,5 +383,29 @@ describe("Bundler (minimal)", () => {
     expect(chunks![0].code).toContain("`hi ${n}`");
     // newline 도 escape 안 깨지고 round-trip
     expect(chunks![0].code.split("\n").length).toBeGreaterThan(1);
+  });
+
+  test("build: target=es5 옵션 → 화살표 함수가 function 으로 다운레벨링", () => {
+    // utils.ts 의 `(n) => ...` arrow 가 baseline (esnext) 에는 그대로,
+    // es5 에선 function expression 으로 변환되어야 함.
+    const baseline = build("/utils.ts");
+    const downleveled = build("/utils.ts", { target: "es5" });
+    expect(baseline).not.toBeNull();
+    expect(downleveled).not.toBeNull();
+    expect(baseline?.code).toContain("=>");
+    expect(downleveled?.code).not.toContain("=>");
+    expect(downleveled?.code).toContain("function");
+  });
+
+  test("build: jsxFactory 커스텀 옵션 적용", () => {
+    // 임시로 JSX 파일 추가 — 그러나 globalVfs 가 모듈-수준이라 직접 set 안 됨.
+    // utils.ts 에 JSX 가 없으니 jsx 옵션 효과 없음. 그래서 ABI smoke test 만 — 옵션
+    // 전달이 에러 없이 처리되는지 확인.
+    const result = build("/index.ts", {
+      jsx: "classic",
+      jsxFactory: "h",
+      jsxFragment: "Frag",
+    });
+    expect(result).not.toBeNull();
   });
 });

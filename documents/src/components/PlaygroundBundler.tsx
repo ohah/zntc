@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
-import type { BundleOptionsInput, OutputChunk } from "../../../packages/wasm/index.ts";
+import type { BundleOptionsInput, OutputChunk, Target } from "../../../packages/wasm/index.ts";
 import {
   BTN_CLASS,
   Badge,
@@ -15,6 +15,7 @@ import {
   SELECT_BTN_CLASS,
   Section,
   Sel,
+  Txt,
   editorOpts,
   inferLanguage,
 } from "./playground-shared";
@@ -245,6 +246,20 @@ interface BundleOpts {
   preserveModules: boolean;
   /// 한 줄에 specifier 하나 (`react`, `react-dom/*` 등 와일드카드 지원).
   externalText: string;
+  // ─── transpile 계열 (각 모듈 transform 단계) ───
+  target: Target | "esnext";
+  jsx: "classic" | "automatic" | "automatic-dev";
+  jsxFactory: string;
+  jsxFragment: string;
+  jsxImportSource: string;
+  flow: boolean;
+  jsxInJs: boolean;
+  experimentalDecorators: boolean;
+  emitDecoratorMetadata: boolean;
+  useDefineForClassFields: boolean;
+  charsetUtf8: boolean;
+  keepNames: boolean;
+  sourcemap: boolean;
 }
 
 const DEFAULT_OPTS: BundleOpts = {
@@ -257,6 +272,19 @@ const DEFAULT_OPTS: BundleOpts = {
   codeSplitting: false,
   preserveModules: false,
   externalText: "",
+  target: "esnext",
+  jsx: "classic",
+  jsxFactory: "",
+  jsxFragment: "",
+  jsxImportSource: "",
+  flow: false,
+  jsxInJs: false,
+  experimentalDecorators: false,
+  emitDecoratorMetadata: false,
+  useDefineForClassFields: true,
+  charsetUtf8: false,
+  keepNames: false,
+  sourcemap: false,
 };
 
 function parseExternal(text: string): string[] {
@@ -278,6 +306,20 @@ function toApiOptions(opts: BundleOpts): BundleOptionsInput {
     codeSplitting: opts.codeSplitting,
     preserveModules: opts.preserveModules,
     ...(external.length > 0 ? { external } : {}),
+    // transpile 계열 — 빈 문자열 / esnext / 기본값은 전송 생략 (URL/payload 짧게).
+    ...(opts.target !== "esnext" ? { target: opts.target as Target } : {}),
+    jsx: opts.jsx,
+    ...(opts.jsxFactory ? { jsxFactory: opts.jsxFactory } : {}),
+    ...(opts.jsxFragment ? { jsxFragment: opts.jsxFragment } : {}),
+    ...(opts.jsxImportSource ? { jsxImportSource: opts.jsxImportSource } : {}),
+    flow: opts.flow,
+    jsxInJs: opts.jsxInJs,
+    experimentalDecorators: opts.experimentalDecorators,
+    emitDecoratorMetadata: opts.emitDecoratorMetadata,
+    useDefineForClassFields: opts.useDefineForClassFields,
+    charsetUtf8: opts.charsetUtf8,
+    keepNames: opts.keepNames,
+    sourcemap: opts.sourcemap,
   };
 }
 
@@ -688,6 +730,99 @@ export default function PlaygroundBundler() {
                   rows={3}
                   spellCheck={false}
                   className="w-full resize-y rounded border border-surface-800 bg-surface-950 px-1.5 py-1 text-[12px] text-neutral-200 placeholder:text-neutral-600"
+                />
+              </Section>
+              <Section title="Parser">
+                <Chk label="Flow" checked={opts.flow} onChange={(v) => updateOpt("flow", v)} />
+                <Chk
+                  label="JSX in .js"
+                  checked={opts.jsxInJs}
+                  onChange={(v) => updateOpt("jsxInJs", v)}
+                />
+                <Chk
+                  label="Experimental Decorators"
+                  checked={opts.experimentalDecorators}
+                  onChange={(v) => updateOpt("experimentalDecorators", v)}
+                />
+                <Chk
+                  label="Emit Decorator Metadata"
+                  checked={opts.emitDecoratorMetadata}
+                  onChange={(v) => updateOpt("emitDecoratorMetadata", v)}
+                />
+              </Section>
+              <Section title="Target">
+                <Sel
+                  label="Target"
+                  value={opts.target}
+                  onChange={(v) => updateOpt("target", v as BundleOpts["target"])}
+                  options={[
+                    ["esnext", "ESNext"],
+                    ["es2025", "ES2025"],
+                    ["es2024", "ES2024"],
+                    ["es2022", "ES2022"],
+                    ["es2021", "ES2021"],
+                    ["es2020", "ES2020"],
+                    ["es2019", "ES2019"],
+                    ["es2018", "ES2018"],
+                    ["es2017", "ES2017"],
+                    ["es2016", "ES2016"],
+                    ["es2015", "ES2015"],
+                    ["es5", "ES5"],
+                  ]}
+                />
+              </Section>
+              <Section title="JSX">
+                <Sel
+                  label="JSX"
+                  value={opts.jsx}
+                  onChange={(v) => updateOpt("jsx", v as BundleOpts["jsx"])}
+                  options={[
+                    ["classic", "Classic"],
+                    ["automatic", "Automatic"],
+                    ["automatic-dev", "Automatic (Dev)"],
+                  ]}
+                />
+                <Txt
+                  label="JSX Factory"
+                  value={opts.jsxFactory}
+                  placeholder="React.createElement"
+                  onChange={(v) => updateOpt("jsxFactory", v)}
+                />
+                <Txt
+                  label="JSX Fragment"
+                  value={opts.jsxFragment}
+                  placeholder="React.Fragment"
+                  onChange={(v) => updateOpt("jsxFragment", v)}
+                />
+                <Txt
+                  label="JSX Import Source"
+                  value={opts.jsxImportSource}
+                  placeholder="react"
+                  onChange={(v) => updateOpt("jsxImportSource", v)}
+                />
+              </Section>
+              <Section title="Transform">
+                <Chk
+                  label="useDefineForClassFields"
+                  checked={opts.useDefineForClassFields}
+                  onChange={(v) => updateOpt("useDefineForClassFields", v)}
+                />
+                <Chk
+                  label="Charset UTF-8"
+                  checked={opts.charsetUtf8}
+                  onChange={(v) => updateOpt("charsetUtf8", v)}
+                />
+                <Chk
+                  label="Keep Names (.name 보존)"
+                  checked={opts.keepNames}
+                  onChange={(v) => updateOpt("keepNames", v)}
+                />
+              </Section>
+              <Section title="Sourcemap">
+                <Chk
+                  label="Generate"
+                  checked={opts.sourcemap}
+                  onChange={(v) => updateOpt("sourcemap", v)}
                 />
               </Section>
             </div>
