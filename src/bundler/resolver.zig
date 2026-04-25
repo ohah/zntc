@@ -21,6 +21,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const ModuleType = types.ModuleType;
 const pkg_json = @import("package_json.zig");
+const fs = @import("fs.zig");
 const PackageJson = pkg_json.PackageJson;
 
 pub const ResolveResult = struct {
@@ -144,7 +145,7 @@ pub const DirEntryCache = struct {
         }
 
         // 캐시 미스 → readdir
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
+        const entries = fs.listDir(self.allocator, dir_path) catch {
             // 디렉토리 없음 → negative 캐시
             const key = self.allocator.dupe(u8, dir_path) catch return null;
             self.cache.put(key, null) catch {
@@ -153,31 +154,30 @@ pub const DirEntryCache = struct {
             };
             return null;
         };
-        defer dir.close();
+        // entries 의 name 은 cache 에 소유권 이전되거나 free 됨 — slice 자체만 free.
+        defer self.allocator.free(entries);
 
         var files = std.StringHashMap(void).init(self.allocator);
         var dirs = std.StringHashMap(void).init(self.allocator);
 
-        var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
-            const name = self.allocator.dupe(u8, entry.name) catch continue;
+        for (entries) |entry| {
             switch (entry.kind) {
-                .file => files.put(name, {}) catch {
-                    self.allocator.free(name);
+                .file => files.put(entry.name, {}) catch {
+                    self.allocator.free(entry.name);
                 },
-                .directory => dirs.put(name, {}) catch {
-                    self.allocator.free(name);
+                .directory => dirs.put(entry.name, {}) catch {
+                    self.allocator.free(entry.name);
                 },
-                .sym_link => {
+                .symlink => {
                     // symlink는 대상이 파일인지 디렉토리인지 readdir만으로 알 수 없으므로 양쪽에 등록.
                     // Linux의 bun install이 node_modules에 symlink 디렉토리를 만들기 때문에 필수.
-                    files.put(name, {}) catch {};
+                    files.put(entry.name, {}) catch {};
                     const name2 = self.allocator.dupe(u8, entry.name) catch continue;
                     dirs.put(name2, {}) catch {
                         self.allocator.free(name2);
                     };
                 },
-                else => self.allocator.free(name),
+                else => self.allocator.free(entry.name),
             }
         }
 
@@ -449,6 +449,8 @@ pub const Resolver = struct {
     /// 디렉토리 내 package.json에서 module/main 필드를 읽어 resolve 시도.
     /// fp-ts 등에서 사용하는 서브패스 package.json 패턴 지원.
     fn tryDirectoryPackageJson(self: *Resolver, dir_path: []const u8) ResolveError!?ResolveResult {
+        // pkg_json.parsePackageJson 이 std.fs.Dir 핸들 직접 요구 — fs.zig 추상화 보류
+        // (#1885 Phase 1 후속). path 기반 시그니처 또는 fs.openDir 추가 필요.
         var dir = std.fs.cwd().openDir(dir_path, .{}) catch return null;
         defer dir.close();
 
@@ -547,6 +549,7 @@ pub const Resolver = struct {
     /// 패키지 디렉토리에서 엔트리포인트를 해석한다.
     /// 우선순위: exports → module → main → index 파일
     fn resolvePackage(self: *Resolver, pkg_dir_path: []const u8, subpath: []const u8) ResolveError!?ResolveResult {
+        // pkg_json.parsePackageJson 이 std.fs.Dir 핸들 직접 요구 — fs.zig 추상화 보류 (#1885).
         var pkg_dir = std.fs.cwd().openDir(pkg_dir_path, .{}) catch return null;
         defer pkg_dir.close();
 
@@ -616,7 +619,7 @@ pub const Resolver = struct {
     fn resolveSubpathImports(self: *Resolver, source_dir: []const u8, specifier: []const u8) ResolveError!ResolveResult {
         var current_dir = source_dir;
         while (true) {
-            // package.json 찾기
+            // pkg_json.parsePackageJson 이 std.fs.Dir 핸들 직접 요구 — fs.zig 추상화 보류 (#1885).
             var dir = std.fs.cwd().openDir(current_dir, .{}) catch break;
             defer dir.close();
 
@@ -660,7 +663,7 @@ pub const Resolver = struct {
         const resolved = if (self.preserve_symlinks)
             self.allocator.dupe(u8, path) catch return error.OutOfMemory
         else
-            std.fs.cwd().realpathAlloc(self.allocator, path) catch
+            fs.realpath(self.allocator, path) catch
                 self.allocator.dupe(u8, path) catch return error.OutOfMemory;
         const ext = std.fs.path.extension(resolved);
         return .{
@@ -677,7 +680,7 @@ pub const Resolver = struct {
             // constCast: getOrLoad 내부에서 캐시 write를 위해 mutex 사용
             return @constCast(cache).hasFile(dir_path, file_name);
         }
-        const stat = std.fs.cwd().statFile(path) catch return false;
+        const stat = fs.statFile(path) catch return false;
         return stat.kind == .file;
     }
 
@@ -685,9 +688,8 @@ pub const Resolver = struct {
         if (self.dir_cache) |cache| {
             return @constCast(cache).dirExists(path);
         }
-        var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-        dir.close();
-        return true;
+        const stat = fs.statFile(path) catch return false;
+        return stat.is_dir;
     }
 };
 
