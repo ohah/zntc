@@ -505,9 +505,10 @@ export default function PlaygroundBundler() {
   function handlePreset(label: string) {
     const preset = PRESETS.find((p) => p.label === label);
     if (!preset) return;
-    // preset 의 권장 옵션은 default 위에 merge — 이전 preset 의 옵션이 새 preset 에
-    // 새어들어가지 않도록 default reset 후 적용.
-    const nextOpts: BundleOpts = { ...DEFAULT_OPTS, ...preset.opts };
+    // preset 의 권장 옵션을 현재 opts 위에 merge — 사용자가 토글한 옵션 (target=es5
+    // 등) 은 보존, preset 이 명시한 키만 덮어씀. (이전 preset 의 자동-적용된 권장
+    // 옵션은 그대로 남는데, 사용자가 직접 토글로 끄면 됨.)
+    const nextOpts: BundleOpts = { ...opts, ...preset.opts };
     setFiles(preset.files);
     setActivePath(preset.entry);
     setEntryPath(preset.entry);
