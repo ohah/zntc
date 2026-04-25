@@ -108,10 +108,8 @@ pub const ResolveCache = struct {
     /// Remap chain cycle 방어 — depth 3 이상이면 원본 경로로 fallback (#1530).
     const MAX_REMAP_DEPTH: u8 = 3;
 
-    /// Cache 의 internal storage. ResolvedModule 직접 보유 (#1885 PR 4b).
-    /// 외부 API (resolve) 는 toLegacy 변환 후 ResolveResult 반환 — caller 영향 0.
-    /// `.external` variant 는 dead code (cache 저장 경로 없음, isExternal 즉시 null 반환)
-    /// 제거 — PR 4b cleanup.
+    /// Cache 의 internal storage. external 모듈은 isExternal 이 즉시 null 반환하므로
+    /// 별도 variant 불필요.
     const CachedResult = union(enum) {
         resolved: ResolvedModule,
         not_found,
@@ -453,7 +451,6 @@ pub const ResolveCache = struct {
         return fileResult(result.path, result.module_type, result.is_module_field);
     }
 
-    /// 7곳에서 반복하던 ResolvedModule.file/disabled 생성 통일 (#1885 PR 4d /simplify).
     /// path 는 caller 가 이미 dupe 한 것을 전달 — caller 가 메모리 owner.
     fn fileResult(path: []const u8, module_type: ModuleType, is_module_field: bool) ResolvedModule {
         return .{ .file = .{ .path = path, .module_type = module_type, .is_module_field = is_module_field } };
