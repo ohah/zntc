@@ -738,7 +738,7 @@ pub fn emitEsmWrappedModule(
     defer rbm_code.deinit(allocator);
     if (module.is_entry_point and options.run_before_main.len > 0) {
         if (linker) |l| {
-            try appendRunBeforeMainCalls(&rbm_code, allocator, l.graph, options.run_before_main, options);
+            try appendRunBeforeMainCalls(&rbm_code, allocator, l.graph, options.run_before_main, &options);
         }
     }
 
