@@ -1450,6 +1450,139 @@ test "Async helper: no emit when code has no async/await (edge)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var __async") == null);
 }
 
+// === Bundler integration: runtime helper merge across modules ===
+// (#1909/#1910 fix 가 다중 모듈 번들에서도 정확히 작동하는지 — helpers.values /
+// helpers.async_helper / helpers.generator flag 가 모듈 간 OR-merge 되어 runtime 이
+// 정확히 한 번씩만 emit, 모든 caller 가 새 signature 사용.)
+
+test "Async helper: __generator(this, ...) signature in multi-module bundle (#1909)" {
+    // 두 모듈에서 각자 async function — 둘 다 새 signature `__generator(this, ...)` 로 emit.
+    // RuntimeHelpers.generator 플래그가 모듈 간 합쳐져 helper 한 번만 emit.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts",
+        \\export async function inner() { return await Promise.resolve(1); }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { inner } from './dep.ts';
+        \\export async function outer() { return (await inner()) + 1; }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // Runtime 한 번만 emit (모듈 간 OR-merge).
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __generator"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __async"));
+    // 두 함수 모두 새 signature `__generator(this, function...` 사용 — 옛 `__generator(function...` 면 fail.
+    const new_sig_count = std.mem.count(u8, result.output, "__generator(this,");
+    try std.testing.expect(new_sig_count >= 2);
+    // 옛 signature (this 없이 function 직접) 가 callsite 에 있으면 fail. runtime 정의 자체는 매칭 회피용으로 카운트 0 검증 어려움 — substring + 갯수 비교만.
+    const old_sig_count = std.mem.count(u8, result.output, "return __generator(function");
+    try std.testing.expectEqual(@as(usize, 0), old_sig_count);
+}
+
+test "yield* helper: __values single emit across multi-module bundle (#1910)" {
+    // 두 모듈에서 각자 yield* 사용 — __values runtime 정확히 한 번만 emit.
+    // RuntimeHelpers.values 플래그가 모듈 간 OR-merge 되어 emit gate 통과.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts",
+        \\export function* a() { yield* 'xy'; }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from './dep.ts';
+        \\export function* b() { yield* a(); yield* [10, 20]; }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b_inst = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b_inst.deinit();
+    const result = try b_inst.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __values 한 번만 emit (모듈 간 OR-merge).
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __values"));
+    // yield* 가 raw value 로 안 넘어가고 __values() 로 wrap. 양쪽 모듈 모두 호출.
+    const wrap_count = std.mem.count(u8, result.output, "__values(");
+    try std.testing.expect(wrap_count >= 3); // a(), 'xy', [10,20] (각 wrap)
+}
+
+test "Runtime helpers: __values + __generator + __async coexist in single bundle" {
+    // async function (helpers.async + generator) + generator yield* (helpers.values + generator)
+    // 서로 다른 모듈에 있어도 runtime 들 모두 정확히 한 번씩 emit + 의존성 정확.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "gen.ts",
+        \\export function* g() { yield* 'ab'; }
+    );
+    try writeFile(tmp.dir, "asy.ts",
+        \\export async function a() { return await Promise.resolve(1); }
+    );
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { g } from './gen.ts';
+        \\import { a } from './asy.ts';
+        \\export function run() { return [g, a]; }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __generator"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __async"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var __values"));
+}
+
+test "Async helper: __generator(this) preserves outer this through bundler emit" {
+    // async method 가 module export 후 import 되어 호출되는 패턴 — bundler 의 emit/linker
+    // 가 __generator 호출 시 thisArg 누락하지 않는지 검증 (transform 단계 외 bundle integration).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export var obj = { x: 7, async f() { return this.x; } };
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // .call(this) 의 outer this binding 유지 + 안 __generator(this, ...) 로 forward.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__generator(this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".call(this)") != null);
+}
+
 test "Async helper: multi-module with async in one — single emit (edge)" {
     // 여러 모듈 중 한 곳만 async 사용 → helper 1회만 emit
     var tmp = std.testing.tmpDir(.{});
