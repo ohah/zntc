@@ -156,6 +156,43 @@ test "parsePackageJson: symlink-to-directory 안의 package.json (bun/.bun 패�
     try std.testing.expectEqualStrings("linked-pkg", result.pkg.name.?);
 }
 
+test "parsePackageJson: pnpm/bun farm symlink — node_modules/foo → .pnpm/foo@x/node_modules/foo" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // pnpm/bun 의 farm 구조 모방 — content-addressable store + flat symlink farm
+    try tmp.dir.makePath(".pnpm/foo@1.0.0/node_modules/foo");
+    var farm_dir = try tmp.dir.openDir(".pnpm/foo@1.0.0/node_modules/foo", .{});
+    defer farm_dir.close();
+    try farm_dir.writeFile(.{
+        .sub_path = "package.json",
+        .data =
+        \\{"name":"foo","version":"1.0.0","main":"./index.js","module":"./esm/index.js"}
+        ,
+    });
+
+    // node_modules/foo 가 farm 으로 symlink — bun install 과 pnpm install 양쪽 동일 패턴
+    try tmp.dir.makeDir("node_modules");
+    tmp.dir.symLink("../.pnpm/foo@1.0.0/node_modules/foo", "node_modules/foo", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp.dir.realpath(".", &buf);
+
+    var join_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const farm_path = try std.fmt.bufPrint(&join_buf, "{s}/node_modules/foo", .{tmp_path});
+
+    // path-based 호출이 farm symlink 를 따라가 farm 의 package.json 읽음
+    var result = try parsePackageJson(std.testing.allocator, farm_path);
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("foo", result.pkg.name.?);
+    try std.testing.expectEqualStrings("./index.js", result.pkg.main.?);
+    try std.testing.expectEqualStrings("./esm/index.js", result.pkg.module.?);
+}
+
 test "parsePackageJson: OutOfMemory 는 별도로 throw (silent swallow 방지)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
