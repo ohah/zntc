@@ -113,42 +113,52 @@ function writeOptionalString(s?: string): [number, number] {
 
 // ─── Public API ───
 
-export async function init(
-  input?: URL | string | Request | Response | BufferSource | WebAssembly.Module,
-): Promise<void> {
-  if (wasm) return;
-
-  let source: BufferSource | WebAssembly.Module | Response;
-
+/// 입력을 WebAssembly instantiate 가능한 source 로 정규화. undefined 면 default
+/// .wasm 파일 (Node.js 환경) 을 동적으로 읽음.
+async function resolveWasmSource(
+  input: URL | string | Request | Response | BufferSource | WebAssembly.Module | undefined,
+  defaultFile: string,
+): Promise<BufferSource | WebAssembly.Module | Response> {
   if (input === undefined) {
     const fs = await import("fs");
     const path = await import("path");
     const url = await import("url");
     const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
-    source = fs.readFileSync(path.join(__dirname, "zts.wasm"));
-  } else if (input instanceof WebAssembly.Module) {
-    source = input;
-  } else if (input instanceof Response) {
-    source = input;
-  } else if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) {
-    source = input as BufferSource;
-  } else {
-    source = await fetch(input as string | URL | Request);
+    return fs.readFileSync(path.join(__dirname, defaultFile));
   }
+  if (input instanceof WebAssembly.Module) return input;
+  if (input instanceof Response) return input;
+  if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) {
+    return input as BufferSource;
+  }
+  return await fetch(input as string | URL | Request);
+}
 
-  let instance: WebAssembly.Instance;
+/// source + imports 로 WebAssembly instance 생성. Module/Response/BufferSource 분기 처리.
+async function instantiateWasm(
+  source: BufferSource | WebAssembly.Module | Response,
+  imports: WebAssembly.Imports,
+): Promise<WebAssembly.Instance> {
+  if (source instanceof WebAssembly.Module) {
+    return new WebAssembly.Instance(source, imports);
+  }
+  if (source instanceof Response) {
+    const result = await WebAssembly.instantiateStreaming(source, imports);
+    return result.instance;
+  }
+  const result = await WebAssembly.instantiate(source, imports);
+  return result.instance;
+}
+
+export async function init(
+  input?: URL | string | Request | Response | BufferSource | WebAssembly.Module,
+): Promise<void> {
+  if (wasm) return;
+  const source = await resolveWasmSource(input, "zts.wasm");
+
   let memory: WebAssembly.Memory;
   const imports = createWasiImports(() => memory);
-
-  if (source instanceof WebAssembly.Module) {
-    instance = new WebAssembly.Instance(source, imports);
-  } else if (source instanceof Response) {
-    const result = await WebAssembly.instantiateStreaming(source, imports);
-    instance = result.instance;
-  } else {
-    const result = await WebAssembly.instantiate(source, imports);
-    instance = result.instance;
-  }
+  const instance = await instantiateWasm(source, imports);
 
   memory = instance.exports.memory as WebAssembly.Memory;
   wasm = instance.exports as unknown as WasmExports;
@@ -216,4 +226,150 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     if (filePtr) wasm.dealloc(filePtr, fileLen);
     wasm.dealloc(optsPtr, optsLen);
   }
+}
+
+// ─── Bundler (#1885 Phase 2) ───
+//
+// 별도 wasm instance (zts-bundler.wasm, wasm32-wasi + threads). transpile-only
+// (zts.wasm) 와 격리 — bundler 는 SharedArrayBuffer 필요 (COOP/COEP 헤더).
+
+/// Host 가 제공하는 in-memory file system. bundler 가 fs syscall 시 host JS callback
+/// 으로 위임 (zts_fs imports). path → bytes 매핑.
+export class VirtualFileSystem {
+  private files = new Map<string, Uint8Array>();
+
+  set(path: string, content: string | Uint8Array): void {
+    const bytes = typeof content === "string" ? encoder.encode(content) : content;
+    this.files.set(path, bytes);
+  }
+
+  get(path: string): Uint8Array | undefined {
+    return this.files.get(path);
+  }
+
+  has(path: string): boolean {
+    return this.files.has(path);
+  }
+
+  delete(path: string): boolean {
+    return this.files.delete(path);
+  }
+
+  paths(): IterableIterator<string> {
+    return this.files.keys();
+  }
+
+  size(): number {
+    return this.files.size;
+  }
+
+  clear(): void {
+    this.files.clear();
+  }
+}
+
+interface BundlerExports {
+  memory: WebAssembly.Memory;
+  alloc(len: number): number;
+  dealloc(ptr: number, len: number): void;
+  bundler_version(): number;
+  // build() export 는 PR 6-2c
+}
+
+let bundler: BundlerExports | null = null;
+let bundlerVfs: VirtualFileSystem | null = null;
+
+function readBundlerString(ptr: number, len: number): string {
+  return decoder.decode(new Uint8Array(bundler!.memory.buffer, ptr, len));
+}
+
+/// host 가 wasm 메모리에 buffer 확보 + 데이터 복사 → packed (ptr<<32 | len) 반환.
+/// 0 = error sentinel (alloc 실패 또는 미존재).
+function packBytes(data: Uint8Array): bigint {
+  if (!bundler) return 0n;
+  const ptr = bundler.alloc(data.length);
+  if (ptr === 0) return 0n;
+  new Uint8Array(bundler.memory.buffer, ptr, data.length).set(data);
+  return (BigInt(ptr) << 32n) | BigInt(data.length);
+}
+
+function createBundlerImports(memory: () => WebAssembly.Memory) {
+  const wasi = createWasiImports(memory);
+  return {
+    ...wasi,
+    zts_fs: {
+      readFile(pathPtr: number, pathLen: number, _maxBytes: number): bigint {
+        const path = readBundlerString(pathPtr, pathLen);
+        const data = bundlerVfs?.get(path);
+        if (!data) return 0n;
+        return packBytes(data);
+      },
+
+      statFile(
+        pathPtr: number,
+        pathLen: number,
+        outSize: number,
+        outKind: number,
+        outMtimeLo: number,
+        outMtimeHi: number,
+      ): number {
+        const path = readBundlerString(pathPtr, pathLen);
+        const data = bundlerVfs?.get(path);
+        if (!data) return 1; // NotFound
+        const view = new DataView(bundler!.memory.buffer);
+        view.setBigUint64(outSize, BigInt(data.length), true);
+        new Uint8Array(bundler!.memory.buffer, outKind, 1)[0] = 0; // file
+        view.setBigUint64(outMtimeLo, 0n, true);
+        view.setBigUint64(outMtimeHi, 0n, true);
+        return 0; // ok
+      },
+
+      access(pathPtr: number, pathLen: number): number {
+        const path = readBundlerString(pathPtr, pathLen);
+        return bundlerVfs?.has(path) ? 0 : 1;
+      },
+
+      realpath(pathPtr: number, pathLen: number): bigint {
+        const path = readBundlerString(pathPtr, pathLen);
+        if (!bundlerVfs?.has(path)) return 0n;
+        // VFS 는 symlink 없음 — identity.
+        return packBytes(encoder.encode(path));
+      },
+
+      listDir(_pathPtr: number, _pathLen: number): bigint {
+        // PR 6-2c 후속 — Phase 2 minimal use case 에선 미사용.
+        return 0n;
+      },
+
+      hostFreeBytes(ptr: number, len: number): void {
+        bundler?.dealloc(ptr, len);
+      },
+    },
+  };
+}
+
+/// Bundler WASM (zts-bundler.wasm) 초기화. transpile init 와 별도 instance.
+/// vfs = host 가 제공하는 in-memory file system. bundler 가 fs syscall 시 위임.
+export async function initBundler(
+  vfs: VirtualFileSystem,
+  input?: URL | string | Request | Response | BufferSource | WebAssembly.Module,
+): Promise<void> {
+  if (bundler) return;
+  const source = await resolveWasmSource(input, "zts-bundler.wasm");
+
+  let memory: WebAssembly.Memory;
+  const imports = createBundlerImports(() => memory);
+  const instance = await instantiateWasm(source, imports);
+
+  memory = instance.exports.memory as WebAssembly.Memory;
+  bundler = instance.exports as unknown as BundlerExports;
+  bundlerVfs = vfs;
+}
+
+/// Bundler ABI version. host 가 호환성 체크용.
+export function bundlerVersion(): number {
+  if (!bundler) {
+    throw new Error("zts-wasm: bundler not initialized. Call initBundler() first.");
+  }
+  return bundler.bundler_version();
 }

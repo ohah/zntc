@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { initSync, transpile } from "./index";
+import { initSync, transpile, VirtualFileSystem } from "./index";
 
 beforeAll(() => {
   const wasmPath = join(import.meta.dir, "../../zig-out/bin/zts.wasm");
@@ -206,5 +206,57 @@ describe("@zts/wasm", () => {
       const result = transpile(`const x${i}: number = ${i};`);
       expect(result.code).toContain(`const x${i} = ${i};`);
     }
+  });
+});
+
+// VirtualFileSystem (#1885 Phase 2 PR 6-2b) — bundler 의 host fs 추상화.
+// 단위 테스트는 pure JS (wasm 무관). bundler instance + zts_fs callback 통합은 PR 6-2c.
+describe("VirtualFileSystem", () => {
+  test("set / get string content (utf-8 encoded)", () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set("/index.ts", "export const x = 1;");
+    const data = vfs.get("/index.ts");
+    expect(data).toBeDefined();
+    expect(new TextDecoder().decode(data!)).toBe("export const x = 1;");
+  });
+
+  test("set / get Uint8Array content (binary 보존)", () => {
+    const vfs = new VirtualFileSystem();
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // PNG header
+    vfs.set("/image.png", bytes);
+    expect(vfs.get("/image.png")).toEqual(bytes);
+  });
+
+  test("has / delete / clear", () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set("/a", "1");
+    vfs.set("/b", "2");
+    expect(vfs.has("/a")).toBe(true);
+    expect(vfs.has("/c")).toBe(false);
+    expect(vfs.size()).toBe(2);
+
+    expect(vfs.delete("/a")).toBe(true);
+    expect(vfs.delete("/a")).toBe(false);
+    expect(vfs.size()).toBe(1);
+
+    vfs.clear();
+    expect(vfs.size()).toBe(0);
+  });
+
+  test("paths iterator", () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set("/a.ts", "");
+    vfs.set("/b.ts", "");
+    vfs.set("/c.ts", "");
+    const collected = [...vfs.paths()].sort();
+    expect(collected).toEqual(["/a.ts", "/b.ts", "/c.ts"]);
+  });
+
+  test("재set 시 덮어쓰기", () => {
+    const vfs = new VirtualFileSystem();
+    vfs.set("/x", "first");
+    vfs.set("/x", "second");
+    expect(new TextDecoder().decode(vfs.get("/x")!)).toBe("second");
+    expect(vfs.size()).toBe(1);
   });
 });
