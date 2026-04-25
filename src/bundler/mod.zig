@@ -40,6 +40,7 @@ pub const css_emitter = @import("css_emitter.zig");
 pub const symbol = @import("symbol.zig");
 pub const asset_meta = @import("asset_meta.zig");
 pub const block_list = @import("block_list.zig");
+pub const fs = @import("fs.zig");
 
 // 공개 타입 re-export
 pub const ModuleIndex = types.ModuleIndex;
@@ -123,5 +124,7 @@ test {
     _ = asset_meta;
     _ = block_list;
     _ = incremental;
+    _ = fs;
     _ = @import("incremental_test.zig");
+    _ = @import("fs_test.zig");
 }
