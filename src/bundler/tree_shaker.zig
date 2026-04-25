@@ -58,6 +58,9 @@ pub const TreeShaker = struct {
     /// prebuilt StmtInfo를 사용하는 모듈 마스크.
     /// prebuilt는 parse_arena가 소유하므로 deinit에서 해제하지 않는다.
     prebuilt_mask: ?std.DynamicBitSet = null,
+    /// 모듈 인덱스가 다른 모듈의 `export * from` source 인지 표시. tryMarkReExportNsSubset
+    /// 에서 chain 추적 시 O(M·E) scan 대신 O(1) 조회 (#1928).
+    re_export_star_targets: ?std.DynamicBitSet = null,
 
     const max_fixpoint_iterations: u32 = 100;
 
@@ -97,6 +100,7 @@ pub const TreeShaker = struct {
             self.allocator.free(self.module_stmt_infos);
         }
         if (self.prebuilt_mask) |*mask| mask.deinit();
+        if (self.re_export_star_targets) |*mask| mask.deinit();
         if (self.reachable_stmts.len > 0) {
             for (self.reachable_stmts) |*rs| {
                 if (rs.*) |*bs| bs.deinit();
@@ -131,6 +135,23 @@ pub const TreeShaker = struct {
     /// 변경이 없을 때 수렴하며, 실제로는 2-3회 이내.
     pub fn analyze(self: *TreeShaker, entry_points: []const []const u8) !void {
         const mod_count = self.graph.moduleCount();
+
+        // re_export_star_targets bitset 한 번 build — tryMarkReExportNsSubset 가 fixpoint
+        // 안에서 매번 O(M·E) scan 하지 않도록.
+        var re_star_targets = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
+        errdefer re_star_targets.deinit();
+        for (0..mod_count) |i| {
+            const m = self.getModule(@intCast(i)) orelse continue;
+            for (m.export_bindings) |eb| {
+                if (eb.kind != .re_export_star) continue;
+                const rec_idx = eb.import_record_index orelse continue;
+                if (rec_idx >= m.import_records.len) continue;
+                const src = m.import_records[rec_idx].resolved;
+                if (src == .none) continue;
+                re_star_targets.set(@intFromEnum(src));
+            }
+        }
+        self.re_export_star_targets = re_star_targets;
 
         // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용)
         for (0..mod_count) |i| {
@@ -910,18 +931,44 @@ pub const TreeShaker = struct {
         reexport_name: []const u8,
         src_mod: u32,
     ) !bool {
+        // Chain check: reexport_mod 가 다른 모듈의 `export * from` source 면 transitive
+        // consumer 가 reexport_name 을 사용할 수 있다. chain 너머의 namespace_used_properties
+        // 는 추적 안 하므로 보수적으로 fallback — markAllExportsUsed (#1928).
+        if (self.re_export_star_targets) |mask| {
+            if (mask.isSet(reexport_mod)) return false;
+        }
+
         var union_set: std.StringHashMapUnmanaged(void) = .{};
         defer union_set.deinit(self.allocator);
 
-        // 소비자 검색: 모든 모듈의 .named import_bindings에서 이 re-export 소비자 찾기
+        // 소비자 검색: 모든 모듈의 import_bindings 에서 이 re-export 소비자 찾기.
         var cit = self.graph.modulesIterator();
         while (cit.next()) |consumer_ptr| {
             const consumer = consumer_ptr.*;
             for (consumer.import_bindings) |ib| {
-                if (!Linker.isReExportNsConsumer(consumer, ib, reexport_mod, reexport_name)) continue;
-
-                const props = ib.namespace_used_properties orelse return false; // opaque → fallback
-                for (props) |p| try union_set.put(self.allocator, p, {});
+                // Case 1: named — `import { NsA } from './barrel'`. consumer 의 used props
+                // 가 곧 NsA 의 사용된 멤버.
+                if (Linker.isReExportNsConsumer(consumer, ib, reexport_mod, reexport_name)) {
+                    const props = ib.namespace_used_properties orelse return false;
+                    for (props) |p| try union_set.put(self.allocator, p, {});
+                    continue;
+                }
+                // Case 2: namespace — `import * as Lib from './barrel'; Lib.NsA.a01(...)`.
+                // 현재 namespace_used_properties 는 1-depth (`["NsA"]`) 만 추적하므로
+                // NsA 가 사용됐다면 그 안의 어느 멤버가 쓰였는지는 opaque → fallback (#1928).
+                if (ib.kind != .namespace) continue;
+                if (ib.import_record_index >= consumer.import_records.len) continue;
+                const resolved = consumer.import_records[ib.import_record_index].resolved;
+                if (resolved == .none or @intFromEnum(resolved) != reexport_mod) continue;
+                const props = ib.namespace_used_properties orelse return false;
+                var uses_reexport_name = false;
+                for (props) |p| {
+                    if (std.mem.eql(u8, p, reexport_name)) {
+                        uses_reexport_name = true;
+                        break;
+                    }
+                }
+                if (uses_reexport_name) return false; // markAllExportsUsed fallback
             }
         }
 

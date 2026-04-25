@@ -110,11 +110,12 @@ console.log(run(99));`,
     expect(r.runOutput).toBe("p:99");
   });
 
-  // Tracked by https://github.com/ohah/zts/issues/1928 — `export * as NsA from './data.js'`
-  // currently emits the entire data.js exports as an inline getter object literal at every
-  // member access site, and the source module statements get tree-shaken away, leaving the
-  // getters dangling (`ReferenceError: a01 is not defined`). Fix lives in a follow-up PR.
-  test.skip("re-export namespace barrel: Lib.NsA.x must reach the original", async () => {
+  // #1928: `export * as NsA from './data.js'` used to emit the full inline getter object
+  // at every access site AND tree-shake away the source statements (ReferenceError).
+  // Fix: collectExportsRecursive records ns_target_mod; registerNamespaceRewrites hoists
+  // a single `var NsA_ns = {...};` to the preamble; tryMarkReExportNsSubset recognizes
+  // namespace consumers and falls back to markAllExportsUsed.
+  test("re-export namespace barrel: Lib.NsA.x must reach the original", async () => {
     const r = await bundleAndRun(
       {
         "data.js": `export const a01 = () => "a01";
@@ -129,5 +130,149 @@ console.log(Lib.NsA.a01() + "/" + Lib.NsA.setSelectedLog(7));`,
     expect(r.runStderr).not.toContain("ReferenceError");
     expect(r.exitCode).toBe(0);
     expect(r.runOutput).toBe("a01/log:7");
+  });
+
+  test("re-export barrel: hoist correctness across many accesses", async () => {
+    const r = await bundleAndRun(
+      {
+        "data.js": `export const a = () => "A"; export const b = () => "B"; export const c = () => "C";`,
+        "barrel.js": `export * as Ns from './data.js';`,
+        "entry.js": `import * as Lib from './barrel.js';
+console.log([Lib.Ns.a(), Lib.Ns.b(), Lib.Ns.c(), Lib.Ns.a(), Lib.Ns.b()].join("/"));`,
+      },
+      "entry.js",
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("A/B/C/A/B");
+  });
+
+  test("multiple importers of the same barrel: each gets its own hoist (no cross-importer leak)", async () => {
+    const r = await bundleAndRun(
+      {
+        "data.js": `export const greet = (n) => "hi " + n;`,
+        "barrel.js": `export * as Ns from './data.js';`,
+        "userA.js": `import * as Lib from './barrel.js';
+export function callA() { return Lib.Ns.greet("A"); }`,
+        "userB.js": `import * as Lib from './barrel.js';
+export function callB() { return Lib.Ns.greet("B"); }`,
+        "entry.js": `import { callA } from './userA.js';
+import { callB } from './userB.js';
+console.log(callA() + "/" + callB());`,
+      },
+      "entry.js",
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("hi A/hi B");
+  });
+
+  test("nested re-export chain: outer barrel re-exports inner barrel re-exports data", async () => {
+    const r = await bundleAndRun(
+      {
+        "data.js": `export const v = () => 42;`,
+        "inner.js": `export * as Inner from './data.js';`,
+        "outer.js": `export * from './inner.js';`,
+        "entry.js": `import * as Lib from './outer.js';
+console.log(Lib.Inner.v());`,
+      },
+      "entry.js",
+    );
+    cleanup = r.cleanup;
+    expect(r.runStderr).not.toContain("ReferenceError");
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("42");
+  });
+
+  test("ns_var name does not collide with an exported identifier of the same prefix", async () => {
+    const r = await bundleAndRun(
+      {
+        "data.js": `export const v = () => "data.v";`,
+        // export name `Ns` exists alongside re-exported namespace also named `Ns_ns` —
+        // makeUniqueNsVarName must pick a non-colliding name.
+        "barrel.js": `export const Ns_ns = "exported_string";
+export * as Ns from './data.js';`,
+        "entry.js": `import * as Lib from './barrel.js';
+console.log(Lib.Ns_ns + "|" + Lib.Ns.v());`,
+      },
+      "entry.js",
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("exported_string|data.v");
+  });
+
+  test("local export of namespace import: import * as X; export {X}", async () => {
+    const r = await bundleAndRun(
+      {
+        "data.js": `export const k = () => "k";`,
+        "wrap.js": `import * as Inner from './data.js';
+export { Inner };`,
+        "entry.js": `import * as W from './wrap.js';
+console.log(W.Inner.k());`,
+      },
+      "entry.js",
+    );
+    cleanup = r.cleanup;
+    expect(r.runStderr).not.toContain("ReferenceError");
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("k");
+  });
+
+  test("re-export ns + nested binding shadow on same barrel access", async () => {
+    const r = await bundleAndRun(
+      {
+        "data.js": `export const fn = () => "data.fn"; export const other = () => "data.other";`,
+        "barrel.js": `export * as Ns from './data.js';`,
+        "user.js": `import * as Lib from './barrel.js';
+export function compute() {
+  // local 'fn' shadows nothing relevant — but Ns is still hoisted, and Lib.Ns.fn must work.
+  const fn = (i) => "shadow:" + Lib.Ns.fn() + ":" + i;
+  return fn(7) + "|" + Lib.Ns.other();
+}`,
+        "entry.js": `import { compute } from './user.js';
+console.log(compute());`,
+      },
+      "entry.js",
+    );
+    cleanup = r.cleanup;
+    expect(r.runStderr).not.toContain("Maximum call stack");
+    expect(r.runStderr).not.toContain("ReferenceError");
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("shadow:data.fn:7|data.other");
+  });
+
+  test("namespace member chain depth 3: Lib.Outer.Inner.x", async () => {
+    const r = await bundleAndRun(
+      {
+        "data.js": `export const x = () => "deep";`,
+        "inner.js": `export * as Inner from './data.js';`,
+        "outer.js": `export * as Outer from './inner.js';`,
+        "entry.js": `import * as Lib from './outer.js';
+console.log(Lib.Outer.Inner.x());`,
+      },
+      "entry.js",
+    );
+    cleanup = r.cleanup;
+    expect(r.runStderr).not.toContain("ReferenceError");
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("deep");
+  });
+
+  test("only one member of barrel used → unused exports may still be tree-shaken if precision allows", async () => {
+    const r = await bundleAndRun(
+      {
+        "data.js": `export const used = () => "used";
+export const unused = () => "unused";`,
+        "barrel.js": `export * as Ns from './data.js';`,
+        // Direct named import path (precision should work).
+        "entry.js": `import { Ns } from './barrel.js';
+console.log(Ns.used());`,
+      },
+      "entry.js",
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("used");
   });
 });

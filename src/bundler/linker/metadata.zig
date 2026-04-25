@@ -214,6 +214,12 @@ pub fn buildMetadataForAst(
         ns_inline_list.deinit(self.allocator);
     }
 
+    // 같은 importer 안에서 여러 namespace import 가 같은 source 의 hoisted ns_var 를
+    // 공유하도록 caller-owned cache. registerNamespaceRewrites 가 source mod_idx 별로
+    // ns_var_name 을 dedup. 값 (var_name) 의 owner 는 ns_inline_list — 중복 free 안 함.
+    var ns_target_to_var = std.AutoHashMap(u32, []const u8).init(self.allocator);
+    defer ns_target_to_var.deinit();
+
     // CJS 모듈별 require_xxx 변수명 캐시 (같은 모듈에서 여러 named import 시 중복 생성 방지)
     var cjs_var_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
     defer {
@@ -436,6 +442,7 @@ pub fn buildMetadataForAst(
                 try self.registerNamespaceRewrites(
                     &ns_rewrite_list,
                     &ns_inline_list,
+                    &ns_target_to_var,
                     force_inline,
                     module_index,
                     ns_sym_id,
@@ -496,6 +503,7 @@ pub fn buildMetadataForAst(
                                             try self.registerNamespaceRewrites(
                                                 &ns_rewrite_list,
                                                 &ns_inline_list,
+                                                &ns_target_to_var,
                                                 true,
                                                 module_index,
                                                 @intCast(import_sym_id),
@@ -524,6 +532,7 @@ pub fn buildMetadataForAst(
                                 try self.registerNamespaceRewrites(
                                     &ns_rewrite_list,
                                     &ns_inline_list,
+                                    &ns_target_to_var,
                                     true,
                                     module_index,
                                     @intCast(imp_sym),
