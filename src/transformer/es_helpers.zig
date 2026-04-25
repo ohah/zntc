@@ -394,6 +394,15 @@ pub fn makeExprStmt(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
     });
 }
 
+/// `this` keyword expression 노드 생성.
+pub fn makeThisExpr(self: anytype, span: Span) !NodeIndex {
+    return self.ast.addNode(.{
+        .tag = .this_expression,
+        .span = span,
+        .data = .{ .none = 0 },
+    });
+}
+
 /// `left <op>= right` assignment expression 노드 생성. `flags` 는 op kind
 /// (`Kind.eq` = `=`, `Kind.plus_eq` = `+=`, ...). 0 = transformer-synthesized plain `=`.
 pub fn makeAssignExpr(self: anytype, left: NodeIndex, right: NodeIndex, span: Span, flags: u16) !NodeIndex {

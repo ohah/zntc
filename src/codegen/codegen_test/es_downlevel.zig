@@ -354,6 +354,38 @@ test "ES5: async state-machine edge cases (#1887 + control-flow self-loop)" {
     }
 }
 
+// === #1909: async function this binding via __generator(thisArg, ...) ===
+
+test "ES5: async function emits __generator(this, ...) for body this access (#1909)" {
+    // async method 안 `this.x` 가 generator state machine callback 의 null this 가 아닌
+    // enclosing function 의 this 로 binding 되도록 __generator 첫 인자에 `this` 전달.
+    var r = try e2eTarget(std.testing.allocator, "var obj = { x: 10, async f() { return this.x * 2; } }; obj.f();", .es5);
+    defer r.deinit();
+    try expectAsyncStateMachine(r.output);
+    // signature: __generator(this, function(...) {...}) — old signature `__generator(function...)` 면 fail.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator(this,function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator(this, function") != null or
+        std.mem.indexOf(u8, r.output, "__generator(this,function") != null);
+}
+
+// === #1910: yield* iterable — __values() wrap ===
+
+test "ES5: yield* string wraps with __values (#1910)" {
+    var r = try e2eTarget(std.testing.allocator, "function* g() { yield* 'abc'; }", .es5);
+    defer r.deinit();
+    // raw value 직접 op[5] 로 가는 게 아니라 __values() 거쳐야 string/Map/Set 도 처리.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [5,\"abc\"]") == null);
+}
+
+test "ES5: yield* nested generator still works (#1910 regression)" {
+    var r = try e2eTarget(std.testing.allocator, "function* a() { yield 1; } function* b() { yield* a(); yield 2; }", .es5);
+    defer r.deinit();
+    // 일반 generator (async X) 라 __async 없음 — __generator 만 확인.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__values(") != null);
+}
+
 test "ES5: if-await edge — empty then block (no statements)" {
     // 빈 then — await 없으니 e2eES5Async 의 self-loop assertion N/A. emit 깨지지 않는지만.
     var r = try e2eTarget(std.testing.allocator, "async function f(x) { if (x) {} await a(); }", .es5);
@@ -1475,7 +1507,8 @@ test "ES2015: generator var hoisting without yield" {
 test "ES2015: generator yield*" {
     var r = try e2eTarget(std.testing.allocator, "function* gen(){yield* [1,2];}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [5,[1,2]]") != null);
+    // (#1910) yield* 가 raw iterable 을 __values() 로 wrap — `return [5, __values([1,2])]`
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return [5,__values([1,2])]") != null);
 }
 
 test "ES2015: generator do-while with yield" {

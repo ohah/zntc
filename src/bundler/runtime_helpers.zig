@@ -388,17 +388,17 @@ pub const EXTENDS_RUNTIME = "var __extends = function(d, b) {\n  for (var p in b
 pub const EXTENDS_RUNTIME_MIN = "var " ++ NAMES.EXTENDS_MIN ++ "=function(d,b){for(var p in b)if(Object.prototype.hasOwnProperty.call(b,p))d[p]=b[p];function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
 
 /// __generator: generator 상태 머신 (ES2015). TypeScript __generator 호환.
-/// yield/return/throw를 label 기반 switch로 처리.
-/// 두 번째 인자 genFn을 받아 프로토타입 체인을 설정:
+/// signature: `__generator(thisArg, body, genFn)` — body 안 `this` 가 enclosing function 의
+/// this 가 되도록 thisArg 첫 인자로 받음 (#1909). `body.call(thisArg, _)`.
+/// genFn 은 프로토타입 체인 설정용 (compat-table generator prototype 호환):
 ///   g -> genFn.prototype -> __GeneratorPrototype -> IteratorPrototype (Symbol.iterator)
-/// compat-table "%GeneratorPrototype% prototype chain" 테스트 통과를 위해 필요.
 pub const GENERATOR_RUNTIME =
     \\var __generator = function() {
     \\  var __iterProto = {};
     \\  __iterProto[Symbol.iterator] = function() { return this; };
     \\  var __genProto = Object.create(__iterProto);
     \\  var __protoSet = typeof Symbol !== "undefined" ? Symbol("__protoSet") : "__gen_proto_set__";
-    \\  return function(body, genFn) {
+    \\  return function(thisArg, body, genFn) {
     \\    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
     \\    if (genFn) {
     \\      if (!genFn[__protoSet]) {
@@ -431,7 +431,7 @@ pub const GENERATOR_RUNTIME =
     \\            if (t[2]) _.ops.pop();
     \\            _.trys.pop(); continue;
     \\        }
-    \\        op = body.call(null, _);
+    \\        op = body.call(thisArg, _);
     \\      } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
     \\      if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     \\    }
@@ -439,7 +439,27 @@ pub const GENERATOR_RUNTIME =
     \\}();
     \\
 ;
-pub const GENERATOR_RUNTIME_MIN = "var " ++ NAMES.GENERATOR_MIN ++ "=function(){var __iterProto={};__iterProto[Symbol.iterator]=function(){return this};var __genProto=Object.create(__iterProto);return function(body,genFn){var _={label:0,sent:function(){if(t[0]&1)throw t[1];return t[1]},trys:[],ops:[]},f,y,t,g;if(genFn){if(!genFn.__proto_set){Object.setPrototypeOf(genFn.prototype,__genProto);genFn.__proto_set=true}g=Object.create(genFn.prototype)}else{g={};g[Symbol.iterator]=function(){return this}}g.next=verb(0);g[\"throw\"]=verb(1);g[\"return\"]=verb(2);return g;function verb(n){return function(v){return step([n,v])}}function step(op){if(f)throw new TypeError(\"Generator is already executing.\");while(g&&(g=0,op[0]&&(_=0)),_)try{if(f=1,y&&(t=op[0]&2?y[\"return\"]:op[0]?y[\"throw\"]||((t=y[\"return\"])&&t.call(y),0):y.next)&&!(t=t.call(y,op[1])).done)return t;if(y=0,t)op=[op[0]&2,t.value];switch(op[0]){case 0:case 1:t=op;break;case 4:_.label++;return{value:op[1],done:false};case 5:_.label++;y=op[1];op=[0];continue;case 7:op=_.ops.pop();_.trys.pop();continue;default:if(!(t=_.trys,t=t.length>0&&t[t.length-1])&&(op[0]===6||op[0]===2)){_=0;continue}if(op[0]===3&&(!t||(op[1]>t[0]&&op[1]<t[3]))){_.label=op[1];break}if(op[0]===6&&_.label<t[1]){_.label=t[1];t=op;break}if(t&&_.label<t[2]){_.label=t[2];_.ops.push(op);break}if(t[2])_.ops.pop();_.trys.pop();continue}op=body.call(null,_)}catch(e){op=[6,e];y=0}finally{f=t=0}if(op[0]&5)throw op[1];return{value:op[0]?op[1]:void 0,done:true}}}}();";
+pub const GENERATOR_RUNTIME_MIN = "var " ++ NAMES.GENERATOR_MIN ++ "=function(){var __iterProto={};__iterProto[Symbol.iterator]=function(){return this};var __genProto=Object.create(__iterProto);return function(thisArg,body,genFn){var _={label:0,sent:function(){if(t[0]&1)throw t[1];return t[1]},trys:[],ops:[]},f,y,t,g;if(genFn){if(!genFn.__proto_set){Object.setPrototypeOf(genFn.prototype,__genProto);genFn.__proto_set=true}g=Object.create(genFn.prototype)}else{g={};g[Symbol.iterator]=function(){return this}}g.next=verb(0);g[\"throw\"]=verb(1);g[\"return\"]=verb(2);return g;function verb(n){return function(v){return step([n,v])}}function step(op){if(f)throw new TypeError(\"Generator is already executing.\");while(g&&(g=0,op[0]&&(_=0)),_)try{if(f=1,y&&(t=op[0]&2?y[\"return\"]:op[0]?y[\"throw\"]||((t=y[\"return\"])&&t.call(y),0):y.next)&&!(t=t.call(y,op[1])).done)return t;if(y=0,t)op=[op[0]&2,t.value];switch(op[0]){case 0:case 1:t=op;break;case 4:_.label++;return{value:op[1],done:false};case 5:_.label++;y=op[1];op=[0];continue;case 7:op=_.ops.pop();_.trys.pop();continue;default:if(!(t=_.trys,t=t.length>0&&t[t.length-1])&&(op[0]===6||op[0]===2)){_=0;continue}if(op[0]===3&&(!t||(op[1]>t[0]&&op[1]<t[3]))){_.label=op[1];break}if(op[0]===6&&_.label<t[1]){_.label=t[1];t=op;break}if(t&&_.label<t[2]){_.label=t[2];_.ops.push(op);break}if(t[2])_.ops.pop();_.trys.pop();continue}op=body.call(thisArg,_)}catch(e){op=[6,e];y=0}finally{f=t=0}if(op[0]&5)throw op[1];return{value:op[0]?op[1]:void 0,done:true}}}}();";
+
+/// __values: iterable → iterator 변환 (ES2015 yield* / for-of helper). tslib 호환.
+/// `Symbol.iterator` 호출 가능하면 그 결과 반환. 없으면 `length` 기반 array-like fallback.
+/// (#1910) `yield* 'abc'` 같이 raw iterable 을 generator state machine 의 op[5] 가 받을 때
+/// `.next` 호출 가능한 iterator 로 wrap 필요.
+pub const VALUES_RUNTIME =
+    \\var __values = function(o) {
+    \\  var s = typeof Symbol === "function" && Symbol.iterator, m = s && o[s], i = 0;
+    \\  if (m) return m.call(o);
+    \\  if (o && typeof o.length === "number") return {
+    \\    next: function() {
+    \\      if (o && i >= o.length) o = void 0;
+    \\      return { value: o && o[i++], done: !o };
+    \\    }
+    \\  };
+    \\  throw new TypeError(s ? "Object is not iterable." : "Symbol.iterator is not defined.");
+    \\};
+    \\
+;
+pub const VALUES_RUNTIME_MIN = "var __values=function(o){var s=typeof Symbol===\"function\"&&Symbol.iterator,m=s&&o[s],i=0;if(m)return m.call(o);if(o&&typeof o.length===\"number\")return{next:function(){if(o&&i>=o.length)o=void 0;return{value:o&&o[i++],done:!o}}};throw new TypeError(s?\"Object is not iterable.\":\"Symbol.iterator is not defined.\")};";
 
 /// __taggedTemplateLiteral: tagged template literal의 template 객체 생성 (ES2015).
 /// cooked 배열에 raw 프로퍼티를 추가하여 Object.freeze로 불변 처리.
@@ -999,6 +1019,11 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.async_values) {
         try buf.appendSlice(allocator, if (minify) ASYNC_VALUES_RUNTIME_MIN else ASYNC_VALUES_RUNTIME);
+    }
+    // __values 는 yield* / for-of / __asyncValues fallback 모두 사용 — async_values 가 켜져 있으면
+    // 그 안에서 typeof __values 체크하므로 함께 emit 필요.
+    if (helpers.values or helpers.async_values) {
+        try buf.appendSlice(allocator, if (minify) VALUES_RUNTIME_MIN else VALUES_RUNTIME);
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);

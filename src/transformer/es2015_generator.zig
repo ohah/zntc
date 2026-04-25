@@ -1902,8 +1902,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         }
                     },
                     .yield_star => {
-                        // return [5, iter]
-                        const ret = try buildInstructionReturn(self, 5, if (op.arg == .node) op.arg.node else .none, span);
+                        // return [5, __values(iter)] — (#1910) raw iterable 을 iterator 로 wrap.
+                        // __generator 의 op[5] 가 .next 직접 호출해서 string/Map/Set 같이
+                        // [Symbol.iterator] 만 가진 iterable 은 그대로 못 씀.
+                        const inner_iter = if (op.arg == .node) op.arg.node else .none;
+                        const wrapped_iter = if (!inner_iter.isNone()) blk: {
+                            self.runtime_helpers.values = true;
+                            const values_ref = try es_helpers.makeRuntimeHelperRef(self, "__values");
+                            break :blk try es_helpers.makeCallExpr(self, values_ref, &.{inner_iter}, span);
+                        } else inner_iter;
+                        const ret = try buildInstructionReturn(self, 5, wrapped_iter, span);
                         try current_case_stmts.append(self.allocator, ret);
                     },
                 }
@@ -2082,12 +2090,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
-            // __generator(func) 또는 __generator(func, genFn)
+            // __generator(this, func) 또는 __generator(this, func, genFn) — (#1909)
+            // body 안 `this` 가 enclosing function 의 this 가 되도록 thisArg 첫 인자 전달.
             const gen_ref = try es_helpers.makeRuntimeHelperRef(self, "__generator");
+            const this_arg = try es_helpers.makeThisExpr(self, span);
             if (!genFn_idx.isNone()) {
-                return es_helpers.makeCallExpr(self, gen_ref, &.{ func_expr, genFn_idx }, span);
+                return es_helpers.makeCallExpr(self, gen_ref, &.{ this_arg, func_expr, genFn_idx }, span);
             }
-            return es_helpers.makeCallExpr(self, gen_ref, &.{func_expr}, span);
+            return es_helpers.makeCallExpr(self, gen_ref, &.{ this_arg, func_expr }, span);
         }
     };
 }
