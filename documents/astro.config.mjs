@@ -146,5 +146,14 @@ export default defineConfig({
     ssr: {
       noExternal: ["@monaco-editor/react", "echarts-for-react"],
     },
+    // SharedArrayBuffer 사용 (#1885 Phase 2 — bundler WASM 의 wasm32-wasi+threads).
+    // dev 서버에서 COOP/COEP 헤더 set 으로 cross-origin isolation 활성. prod 환경
+    // (GitHub Pages) 은 헤더 set 불가 — coi-serviceworker 로 우회 (별도 PR).
+    server: {
+      headers: {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+      },
+    },
   },
 });
