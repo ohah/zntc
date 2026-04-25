@@ -2017,7 +2017,6 @@ pub const Linker = struct {
         }
     }
 
-
     /// namespace preamble 변수명을 export 이름과 충돌하지 않도록 생성.
     /// "z" → "z_ns", 충돌 시 "z_ns2", "z_ns3", ...
     fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const std.StringHashMap(void)) std.mem.Allocator.Error![]const u8 {
