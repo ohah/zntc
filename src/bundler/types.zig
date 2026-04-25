@@ -140,10 +140,10 @@ pub const ModuleInfo = struct {
     /// external 모듈은 빈 슬라이스. `m.export_bindings` 의 borrow.
     export_bindings: []const @import("binding_scanner.zig").ExportBinding,
     /// Plugin 이 정의한 synthetic named exports (Rollup `syntheticNamedExports` 호환).
-    /// ZTS 는 plugin 시스템 확장 (Phase B) 까지 항상 false. 노출 시그니처만 맞춤.
+    /// ZTS 는 plugin 시스템 확장 (#1880) 까지 항상 false. 노출 시그니처만 맞춤.
     synthetic_named_exports: bool,
     /// `this.emitFile` 의 `implicitlyLoadedAfterOneOf` 옵션 결과 (Rollup 호환).
-    /// ZTS 는 plugin context API (Phase B) 까지 항상 빈 배열.
+    /// ZTS 는 plugin context API (#1880) 까지 항상 빈 배열.
     implicitly_loaded_after_one_of: []const ModuleIndex,
     /// 위와 반대 방향 — 이 모듈을 implicitly 로드 후에 로드돼야 하는 모듈들.
     implicitly_loaded_before: []const ModuleIndex,

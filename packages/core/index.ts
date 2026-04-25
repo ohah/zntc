@@ -221,10 +221,10 @@ export interface ManualChunksModuleInfo {
    * external 은 빈 배열 (graph 가 export 정보 없음). */
   exports: string[];
   /** Plugin 이 정의한 synthetic named exports (Rollup `syntheticNamedExports` 호환).
-   * ZTS 는 plugin context API 확장 (Phase B) 까지 항상 false. */
+   * ZTS 는 plugin context API 확장 (#1880) 까지 항상 false. */
   syntheticNamedExports: boolean;
   /** `this.emitFile` 의 `implicitlyLoadedAfterOneOf` 옵션 결과 (Rollup 호환).
-   * ZTS plugin context API (Phase B) 까지 항상 빈 배열. */
+   * ZTS plugin context API (#1880) 까지 항상 빈 배열. */
   implicitlyLoadedAfterOneOf: string[];
   /** 위와 반대 방향 — 이 모듈을 implicitly 로드 후에 로드돼야 하는 모듈들. */
   implicitlyLoadedBefore: string[];
