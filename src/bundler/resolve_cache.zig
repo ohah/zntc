@@ -281,6 +281,30 @@ pub const ResolveCache = struct {
         return self.resolveInner(true, source_dir, specifier, kind);
     }
 
+    /// `resolve` 와 동일하지만 결과를 `ResolvedModule` (union(enum)) 으로 반환 (#1885 PR 4c).
+    /// caller 가 union variant 분기 처리 — virtual/dataurl/external/custom variant 도 향후
+    /// plugin layer 도입 시 표현 가능. Phase 1 단계에선 file/disabled 만 반환.
+    pub fn resolveAsModule(
+        self: *ResolveCache,
+        source_dir: []const u8,
+        specifier: []const u8,
+        kind: ImportKind,
+    ) ResolveError!?ResolvedModule {
+        const legacy = (try self.resolveInner(false, source_dir, specifier, kind)) orelse return null;
+        return plugin_mod.fromLegacy(legacy);
+    }
+
+    /// 스레드 안전 resolveAsModule. 병렬 resolve 의 union 직접 사용.
+    pub fn resolveAsModuleThreadSafe(
+        self: *ResolveCache,
+        source_dir: []const u8,
+        specifier: []const u8,
+        kind: ImportKind,
+    ) ResolveError!?ResolvedModule {
+        const legacy = (try self.resolveInner(true, source_dir, specifier, kind)) orelse return null;
+        return plugin_mod.fromLegacy(legacy);
+    }
+
     /// resolve 공통 구현. thread_safe=true이면 mutex로 캐시 접근 보호 + resolver 스택 복사.
     fn resolveInner(
         self: *ResolveCache,
