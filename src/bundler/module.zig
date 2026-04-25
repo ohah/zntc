@@ -232,7 +232,7 @@ pub const Module = struct {
     /// `wrap_kind == .none` (래핑 없음) 도 호출할 init 함수 자체가 없어 wrap 무의미.
     pub fn shouldGuard(self: *const Module, error_guard: bool) bool {
         if (!error_guard) return false;
-        if (self.wrap_kind == .none) return false;
+        if (!self.wrap_kind.isWrapped()) return false;
         if (self.wrap_kind == .esm and self.uses_top_level_await) return false;
         return true;
     }
