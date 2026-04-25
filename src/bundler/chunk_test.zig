@@ -445,7 +445,7 @@ test "generateChunks: single entry, no dynamic imports" {
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, .{});
     defer cg.deinit();
 
     // 엔트리 청크 1개
@@ -482,7 +482,7 @@ test "generateChunks: dynamic import creates separate chunk" {
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"index.ts"}, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"index.ts"}, .{});
     defer cg.deinit();
 
     // 엔트리 청크 1개 + dynamic 청크 1개 = 2개
@@ -523,7 +523,7 @@ test "generateChunks: shared module creates common chunk" {
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts" }, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts" }, .{});
     defer cg.deinit();
 
     // 엔트리 2개 + 공통 1개 = 3개
@@ -564,7 +564,7 @@ test "generateChunks: diamond dependency" {
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "c.ts" }, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "c.ts" }, .{});
     defer cg.deinit();
 
     // D가 양쪽 엔트리에서 도달 가능 → 공통 청크 생성
@@ -592,7 +592,7 @@ test "generateChunks: no modules" {
     var tg = try TestGraph.init(alloc, &empty_modules);
     defer tg.deinit(alloc);
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{});
     defer cg.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), cg.chunkCount());
@@ -617,7 +617,7 @@ test "generateChunks: circular dependency stays in same chunk" {
     try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(2));
     try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(1));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, .{});
     defer cg.deinit();
 
     // 1 엔트리 청크, 모든 모듈 포함
@@ -643,7 +643,7 @@ test "generateChunks: static + dynamic import same module" {
     try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
     try tg.graph.modules.at(0).addDynamicImport(alloc, @enumFromInt(1));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, .{});
     defer cg.deinit();
 
     // b.ts는 엔트리 청크에 포함 (static이 우선)
@@ -672,7 +672,7 @@ test "generateChunks: three entries sharing a module" {
     try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(3));
     try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(3));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts", "c.ts" }, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts", "c.ts" }, .{});
     defer cg.deinit();
 
     // 3 엔트리 + 1 공통 = 4 청크
@@ -702,7 +702,7 @@ test "generateChunks: entry imports another entry statically" {
 
     try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts" }, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts" }, .{});
     defer cg.deinit();
 
     // 2개 엔트리 청크 생성
@@ -731,7 +731,7 @@ test "generateChunks: deep chain with dynamic import at middle" {
     try tg.graph.modules.at(1).addDynamicImport(alloc, @enumFromInt(2));
     try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(3));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, .{});
     defer cg.deinit();
 
     // 2개 청크: a엔트리(a,b), c엔트리(c,d)
@@ -982,7 +982,7 @@ test "generateChunks: entry module reassignment removes from old chunk" {
     try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2));
     try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(1));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "c.ts" }, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "c.ts" }, .{});
     defer cg.deinit();
 
     // c.ts는 엔트리 청크에 있어야 함 (공통 청크 아님)
@@ -1010,7 +1010,7 @@ test "generateChunks: inline_dynamic_imports=false — dynamic target 은 별도
 
     try tg.graph.linkDynamicImport(@enumFromInt(0), @enumFromInt(1));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, null, &.{}, null, null, false);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{});
     defer cg.deinit();
 
     // 기본 정책 — lazy 는 entry 와 다른 chunk 에 배정
@@ -1032,7 +1032,7 @@ test "generateChunks: inline_dynamic_imports=true — dynamic target 이 entry c
 
     try tg.graph.linkDynamicImport(@enumFromInt(0), @enumFromInt(1));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, null, &.{}, null, null, true);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .inline_dynamic_imports = true });
     defer cg.deinit();
 
     // inline 정책 — lazy 가 entry chunk 로 흡수. 전체 청크 1개.
@@ -1058,7 +1058,10 @@ test "generateChunks: inline_dynamic_imports + manual_chunks — manual seed 의
     try tg.graph.linkDynamicImport(@enumFromInt(1), @enumFromInt(2));
 
     const manual_entries = [_]types.ManualChunkEntry{.{ .name = "vendor", .patterns = &.{"vendor-"} }};
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, null, &manual_entries, null, null, true);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{
+        .manual_chunks = &manual_entries,
+        .inline_dynamic_imports = true,
+    });
     defer cg.deinit();
 
     // vendor-root 은 manual 매칭, vendor-lazy 는 vendor-root 의 dynamic dep.
@@ -1082,7 +1085,7 @@ test "generateChunks: inline_dynamic_imports — dynamic target 의 transitive s
     try tg.graph.linkDynamicImport(@enumFromInt(0), @enumFromInt(1));
     try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(2));
 
-    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, null, &.{}, null, null, true);
+    var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .inline_dynamic_imports = true });
     defer cg.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), cg.chunks.items.len);

@@ -353,19 +353,30 @@ fn ensureNameSlot(
     return gop.value_ptr.*;
 }
 
+pub const GenerateOptions = struct {
+    /// Tree-shaker — 제공되면 unreachable export/모듈을 chunk 에서 제외.
+    shaker: ?*const TreeShaker = null,
+    /// Rollup record-form `manualChunks` (#1027). substring pattern → chunk name.
+    manual_chunks: []const types.ManualChunkEntry = &.{},
+    /// Rollup function-form `manualChunks(id, meta)` resolver. resolver 결과가 record 보다 우선.
+    manual_resolver: ?types.ManualChunksResolveFn = null,
+    /// resolver 에 전달할 user context (TSFN 핸들 등).
+    manual_resolver_ctx: ?*anyopaque = null,
+    /// Rollup `output.inlineDynamicImports` — dynamic import target 을 importer 의 chunk 로 흡수.
+    inline_dynamic_imports: bool = false,
+};
+
 pub fn generateChunks(
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     entry_points: []const []const u8,
-    shaker: ?*const TreeShaker,
-    manual_chunks: []const types.ManualChunkEntry,
-    manual_resolver: ?types.ManualChunksResolveFn,
-    manual_resolver_ctx: ?*anyopaque,
-    /// true 이면 dynamic import target 을 별도 chunk 로 분리하지 않고 importer 와 같은
-    /// chunk 에 포함. Rollup `output.inlineDynamicImports` 의 구조 부분만 구현 (A 범위).
-    /// 런타임 `import()` rewriting 은 후속 PR.
-    inline_dynamic_imports: bool,
+    options: GenerateOptions,
 ) !ChunkGraph {
+    const shaker = options.shaker;
+    const manual_chunks = options.manual_chunks;
+    const manual_resolver = options.manual_resolver;
+    const manual_resolver_ctx = options.manual_resolver_ctx;
+    const inline_dynamic_imports = options.inline_dynamic_imports;
     const module_count = graph.moduleCount();
 
     // ── Phase 1: 엔트리 수집 ──

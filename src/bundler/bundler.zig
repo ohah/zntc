@@ -984,16 +984,13 @@ pub const Bundler = struct {
                     if (shaker) |*s| s else null,
                 )
             else
-                try chunk_mod.generateChunks(
-                    self.allocator,
-                    &graph,
-                    self.options.entry_points,
-                    if (shaker) |*s| s else null,
-                    self.options.manual_chunks,
-                    self.options.manual_chunks_resolver,
-                    self.options.manual_chunks_ctx,
-                    self.options.inline_dynamic_imports,
-                );
+                try chunk_mod.generateChunks(self.allocator, &graph, self.options.entry_points, .{
+                    .shaker = if (shaker) |*s| s else null,
+                    .manual_chunks = self.options.manual_chunks,
+                    .manual_resolver = self.options.manual_chunks_resolver,
+                    .manual_resolver_ctx = self.options.manual_chunks_ctx,
+                    .inline_dynamic_imports = self.options.inline_dynamic_imports,
+                });
             defer chunk_graph.deinit();
 
             try chunk_mod.computeCrossChunkLinks(&chunk_graph, &graph, self.allocator, if (linker) |*l| l else null);
