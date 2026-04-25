@@ -403,7 +403,10 @@ export default function Playground() {
             aria-label="예제"
             onChange={(e) => {
               const ex = EXAMPLES.find((x) => x.label === e.target.value);
-              if (ex) setInput(ex.code);
+              if (ex) {
+                setInput(ex.code);
+                runTranspile(ex.code, options);
+              }
               e.target.value = "";
             }}
             defaultValue=""
