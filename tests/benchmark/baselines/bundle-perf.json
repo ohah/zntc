@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "generated_at": "2026-04-25T04:14:37.119Z",
+  "zts_commit": "a43d6d4f",
+  "fixtures": [
+    {
+      "name": "small (10 modules, 0 ext)",
+      "module_count": 10,
+      "externals": 0,
+      "total_ms_stats": {
+        "median": 3.995,
+        "mean": 4.005000000000001,
+        "min": 3.78,
+        "max": 4.37,
+        "p95": 4.37,
+        "trimmed_mean": 3.9972222222222222
+      },
+      "phase_median_ms": {
+        "scan": 0.01,
+        "parse": 0.03,
+        "semantic": 0.02,
+        "resolve": 0.22,
+        "graph": 0.695,
+        "link": 0.01,
+        "shake": 0.02,
+        "metadata": 0.01,
+        "transform": 0.01,
+        "codegen": 0,
+        "emit": 0.07500000000000001
+      }
+    },
+    {
+      "name": "medium (100 modules, 3 ext)",
+      "module_count": 100,
+      "externals": 3,
+      "total_ms_stats": {
+        "median": 36.92,
+        "mean": 37.52,
+        "min": 33.92,
+        "max": 41.26,
+        "p95": 41.26,
+        "trimmed_mean": 37.51222222222222
+      },
+      "phase_median_ms": {
+        "scan": 0.06,
+        "parse": 0.17,
+        "semantic": 0.10500000000000001,
+        "resolve": 1.87,
+        "graph": 3.34,
+        "link": 0.03,
+        "shake": 0.06,
+        "metadata": 0.035,
+        "transform": 0.05,
+        "codegen": 0.01,
+        "emit": 0.22
+      }
+    },
+    {
+      "name": "large (200 modules, 5 ext)",
+      "module_count": 200,
+      "externals": 5,
+      "total_ms_stats": {
+        "median": 76.855,
+        "mean": 76.99249999999999,
+        "min": 68.6,
+        "max": 87.58,
+        "p95": 87.58,
+        "trimmed_mean": 76.87055555555555
+      },
+      "phase_median_ms": {
+        "scan": 0.11499999999999999,
+        "parse": 0.295,
+        "semantic": 0.175,
+        "resolve": 3.8449999999999998,
+        "graph": 6.33,
+        "link": 0.05,
+        "shake": 0.12,
+        "metadata": 0.08,
+        "transform": 0.1,
+        "codegen": 0.02,
+        "emit": 0.43
+      }
+    }
+  ]
+}

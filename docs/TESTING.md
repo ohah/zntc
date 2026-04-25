@@ -46,3 +46,16 @@ cd tests/e2e && bun test             # Playwright E2E (dev server)
 ```bash
 cd tests/benchmark && bun run smoke.ts  # 143개 패키지 빌드+실행 검증
 ```
+
+## 번들 perf 회귀 가드
+```bash
+# 비교 모드 — baseline 대비 ±15% 초과 시 fail
+bun run tests/benchmark/bundle-perf.ts
+
+# baseline 갱신 (의도적 perf 변경 시)
+bun run tests/benchmark/bundle-perf.ts --write
+```
+- fixture 3종 (small 10 / medium 100 / large 200 모듈, externals 포함)
+- 워밍업 5회 + 측정 20회 → median 비교
+- baseline 은 `tests/benchmark/baselines/bundle-perf.json` 에 commit
+- 머신 의존 — CI 통합 시 동일 머신에서 baseline 갱신 + 거기서만 회귀 체크
