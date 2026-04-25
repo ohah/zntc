@@ -134,6 +134,14 @@ jobs:
       - name: Run CLI tests (Bun)
         run: cd packages/core && bun test bin/zts.test.ts
 
+      # ZTS 코어의 ES5 다운레벨링 / chunk split runtime helper / external 처리
+      # 회귀 검증 (wasm 발견 버그가 NAPI 에서도 동일 발생 확인됨). known bugs
+      # 는 #1960~#1962 추적 — fix 전까지 continue-on-error 로 정보용. fix 후
+      # strict 전환.
+      - name: Bundler 코어 회귀 검증 (#1960~#1962)
+        continue-on-error: true
+        run: bun scripts/napi-bundler-bug-check.ts
+
   wasm:
     name: WASM Build & Test
     runs-on: ubuntu-latest
@@ -165,3 +173,11 @@ jobs:
 
       - name: Run WASM tests
         run: cd packages/wasm && bun test
+
+      # bundler 옵션 매트릭스 회귀 검증 — 의도된 제약 (CodeSplittingRequiresESM
+      # 등) vs 새 회귀 구분. known bugs (#1960 ES5 destructuring / #1961 chunk
+      # split __generator / #1962 external require) 가 fix 되기 전까지 fail
+      # 가능 — continue-on-error 로 정보용. fix 후 strict 로 전환.
+      - name: Bundler 매트릭스 회귀 검증 (#1885 follow-up)
+        continue-on-error: true
+        run: bun scripts/wasm-bundler-full-matrix.ts
