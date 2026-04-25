@@ -24,11 +24,10 @@ const wasm_alloc = std.heap.c_allocator;
 pub fn main() void {}
 
 /// Bundler ABI version. host 가 호환성 체크용.
-/// v5 — BuildOptionsJson 에 transpile 계열 옵션 추가 (target unsupported bitmask,
-/// jsx runtime / factory / fragment / importSource, flow, jsxInJs, decorators,
-/// useDefineForClassFields, charsetUtf8, keepNames, sourcemap).
+/// v6 — last_error_message_get 출력이 ZTS 표준 진단 형식 (`× <message> [ZTS####]
+/// + hint`). 새 ZTS 에러 코드: splitting_requires_esm_format, invalid_entry_path.
 export fn bundler_version() u32 {
-    return 5;
+    return 6;
 }
 
 /// JS 측이 entry path 등 입력 메모리 확보용.
@@ -48,6 +47,8 @@ export fn dealloc(ptr: u32, len: u32) void {
 
 /// 마지막 에러 메시지 — wasm_alloc 소유. 새 메시지 setLastError 시 이전 free.
 /// single-threaded JS bridge 가정 (wasm instance per page).
+/// 형식: ZTS 표준 진단 (`× <message> [<tag>]\n  hint: <suggestion>`).
+/// 사용자 친화 (영문 error name 직접 노출 X). #1965.
 var last_error_msg: ?[]u8 = null;
 
 fn clearLastError() void {
@@ -57,14 +58,62 @@ fn clearLastError() void {
     }
 }
 
-fn setLastError(msg: []const u8) void {
+/// 형식화된 에러 메시지 작성. `× <message> [<tag>]` (+ optional `\n  hint: <hint>`).
+/// tag 는 ZTS error code (`ZTS####`) 또는 internal Zig error name (fallback).
+fn setLastErrorDiag(message: []const u8, tag: []const u8, hint: ?[]const u8) void {
     clearLastError();
-    last_error_msg = wasm_alloc.dupe(u8, msg) catch null;
+    if (hint) |h| {
+        last_error_msg = std.fmt.allocPrint(
+            wasm_alloc,
+            "× {s} [{s}]\n  hint: {s}",
+            .{ message, tag, h },
+        ) catch null;
+    } else {
+        last_error_msg = std.fmt.allocPrint(
+            wasm_alloc,
+            "× {s} [{s}]",
+            .{ message, tag },
+        ) catch null;
+    }
 }
 
-fn setLastErrorFmt(comptime fmt: []const u8, args: anytype) void {
+/// 단순 메시지 — tag 없는 경우 (alloc 실패 등 internal).
+fn setLastError(msg: []const u8) void {
     clearLastError();
-    last_error_msg = std.fmt.allocPrint(wasm_alloc, fmt, args) catch null;
+    last_error_msg = std.fmt.allocPrint(wasm_alloc, "× {s}", .{msg}) catch null;
+}
+
+const error_codes = zts_lib.error_codes;
+const ErrorCode = error_codes.Code;
+
+/// Zig error → ZTS error code 매핑. 알려진 케이스는 ZTS#### 코드 + message + help
+/// 노출. unknown 은 Zig error name fallback.
+fn setLastErrorFromZigError(err: anyerror) void {
+    const name = @errorName(err);
+    const mapped: ?ErrorCode = if (std.mem.eql(u8, name, "CodeSplittingRequiresESM"))
+        .splitting_requires_esm_format
+    else if (std.mem.eql(u8, name, "InvalidEntryModule") or std.mem.eql(u8, name, "InvalidPath"))
+        .invalid_entry_path
+    else if (std.mem.eql(u8, name, "ModuleNotFound"))
+        .unresolved_import
+    else if (std.mem.eql(u8, name, "JsonParseError"))
+        .json_parse_error
+    else
+        null;
+
+    if (mapped) |code| {
+        setLastErrorDiag(code.message(), code.format(), code.help());
+        return;
+    }
+
+    // ZTS 코드 미매핑 — Zig error name 직접 노출 (디버깅 fallback).
+    if (std.mem.eql(u8, name, "OutOfMemory")) {
+        setLastErrorDiag("메모리 부족", name, null);
+    } else if (std.mem.eql(u8, name, "NameTooLong")) {
+        setLastErrorDiag("경로가 너무 깁니다", name, null);
+    } else {
+        setLastErrorDiag("번들링 실패", name, null);
+    }
 }
 
 /// 최근 build/build_chunks 실패 시 에러 메시지 조회. 반환 packed u64 (ptr<<32 | len).
@@ -206,16 +255,22 @@ fn applyOptionsJson(
 }
 
 /// bundle() 결과의 fatal diagnostic 첫 번째를 last_error_msg 로 캡처 (있으면).
-/// caller 가 직후 dealloc(arena) 해도 메시지는 wasm_alloc 으로 dupe 되어 안전.
+/// ZTS 표준 형식: `× [path: ]<message> [<code>][\n  hint: <suggestion>]`.
+/// caller 가 직후 arena.deinit 해도 메시지는 wasm_alloc 으로 dupe 되어 안전.
 fn captureDiagnostic(result: *const BundleResult) void {
     const diags = result.diagnostics orelse return;
     for (diags) |d| {
         if (d.severity != .@"error") continue;
-        if (d.file_path.len > 0) {
-            setLastErrorFmt("{s}: {s}", .{ d.file_path, d.message });
-        } else {
-            setLastError(d.message);
-        }
+        clearLastError();
+        const tag_name = @tagName(d.code);
+        last_error_msg = if (d.file_path.len > 0 and d.suggestion != null)
+            std.fmt.allocPrint(wasm_alloc, "× {s}: {s} [{s}]\n  hint: {s}", .{ d.file_path, d.message, tag_name, d.suggestion.? }) catch null
+        else if (d.file_path.len > 0)
+            std.fmt.allocPrint(wasm_alloc, "× {s}: {s} [{s}]", .{ d.file_path, d.message, tag_name }) catch null
+        else if (d.suggestion) |s|
+            std.fmt.allocPrint(wasm_alloc, "× {s} [{s}]\n  hint: {s}", .{ d.message, tag_name, s }) catch null
+        else
+            std.fmt.allocPrint(wasm_alloc, "× {s} [{s}]", .{ d.message, tag_name }) catch null;
         return;
     }
 }
@@ -236,7 +291,8 @@ export fn build(
 ) u64 {
     clearLastError();
     if (entry_path_ptr == 0 or entry_path_len == 0) {
-        setLastError("entry path 가 비어있습니다");
+        const code = ErrorCode.invalid_entry_path;
+        setLastErrorDiag(code.message(), code.format(), code.help());
         return 0;
     }
     const entry_path: []const u8 = @as([*]const u8, @ptrFromInt(entry_path_ptr))[0..entry_path_len];
@@ -262,7 +318,7 @@ export fn build(
 
     var bundler = Bundler.init(arena_alloc, options);
     const result = bundler.bundle() catch |err| {
-        setLastErrorFmt("bundle() 실패: {s}", .{@errorName(err)});
+        setLastErrorFromZigError(err);
         return 0;
     };
 
@@ -272,7 +328,14 @@ export fn build(
     // 단일 entry / 비-splitting 경로: result.output 사용 (outputs 는 code-splitting 시).
     const code = result.output;
     if (code.len == 0) {
-        if (last_error_msg == null) setLastErrorFmt("entry \"{s}\" 가 빈 출력을 반환했습니다", .{entry_path});
+        if (last_error_msg == null) {
+            clearLastError();
+            last_error_msg = std.fmt.allocPrint(
+                wasm_alloc,
+                "× entry \"{s}\" 가 빈 출력을 반환했습니다",
+                .{entry_path},
+            ) catch null;
+        }
         return 0;
     }
 
@@ -302,7 +365,8 @@ export fn build_chunks(
 ) u64 {
     clearLastError();
     if (entry_path_ptr == 0 or entry_path_len == 0) {
-        setLastError("entry path 가 비어있습니다");
+        const code = ErrorCode.invalid_entry_path;
+        setLastErrorDiag(code.message(), code.format(), code.help());
         return 0;
     }
     const entry_path: []const u8 = @as([*]const u8, @ptrFromInt(entry_path_ptr))[0..entry_path_len];
@@ -326,7 +390,7 @@ export fn build_chunks(
 
     var bundler = Bundler.init(arena_alloc, options);
     const result = bundler.bundle() catch |err| {
-        setLastErrorFmt("bundle() 실패: {s}", .{@errorName(err)});
+        setLastErrorFromZigError(err);
         return 0;
     };
 
@@ -344,7 +408,14 @@ export fn build_chunks(
         for (outs, 0..) |o, i| chunks[i] = .{ .path = o.path, .code = o.contents };
     } else {
         if (result.output.len == 0) {
-            if (last_error_msg == null) setLastErrorFmt("entry \"{s}\" 가 빈 출력을 반환했습니다", .{entry_path});
+            if (last_error_msg == null) {
+            clearLastError();
+            last_error_msg = std.fmt.allocPrint(
+                wasm_alloc,
+                "× entry \"{s}\" 가 빈 출력을 반환했습니다",
+                .{entry_path},
+            ) catch null;
+        }
             return 0;
         }
         chunks = arena_alloc.alloc(Pair, 1) catch {

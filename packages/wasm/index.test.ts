@@ -282,8 +282,8 @@ describe("Bundler (minimal)", () => {
     await initBundler(vfs, wasmBytes);
   });
 
-  test("bundlerVersion = ABI v5 (transpile 옵션 노출)", () => {
-    expect(bundlerVersion()).toBe(5);
+  test("bundlerVersion = ABI v6 (ZTS 표준 진단 형식)", () => {
+    expect(bundlerVersion()).toBe(6);
   });
 
   test("build: 단일 entry → bundle 코드 (TS 어노테이션 strip + 모듈 wrap)", () => {
@@ -361,13 +361,15 @@ describe("Bundler (minimal)", () => {
     expect(chunks![0].code).toContain('"use strict"');
   });
 
-  test("buildChunks: 존재하지 않는 entry → null + 에러 메시지", () => {
+  test("buildChunks: 존재하지 않는 entry → null + ZTS 표준 진단 형식 에러", () => {
     const chunks = buildChunks("/nonexistent.ts");
     expect(chunks).toBeNull();
     const msg = bundlerLastErrorMessage();
     expect(msg.length).toBeGreaterThan(0);
-    // bundle 단계 실패 또는 빈 출력 — 둘 중 하나로 분류되며 메시지에 표시.
-    expect(msg).toMatch(/bundle|nonexistent|빈 출력/);
+    // 표준 형식: `× <message> [<tag>]` (+ optional `\n  hint: ...`)
+    expect(msg.startsWith("×")).toBe(true);
+    // 에러 종류: bundle 단계 실패 / 빈 출력 / unresolved import 중 하나.
+    expect(msg).toMatch(/번들링 실패|nonexistent|빈 출력|ZTS\d{4}/);
   });
 
   test("bundlerLastErrorMessage: 성공 호출 후엔 비어있음", () => {
