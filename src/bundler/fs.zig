@@ -258,6 +258,7 @@ pub const VirtualFS = struct {
     }
 };
 
+// host ABI status code: 0=ok, 1=NotFound, 2=PermissionDenied, 3+=IoError
 fn mapStatusError(status: u32) FsError {
     return switch (status) {
         1 => FsError.NotFound,
@@ -266,6 +267,7 @@ fn mapStatusError(status: u32) FsError {
     };
 }
 
+// host ABI kind code: 0=file, 1=directory, 2=symlink, 3+=other
 fn mapStatusKind(kind: u8) EntryKind {
     return switch (kind) {
         0 => .file,
