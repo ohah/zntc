@@ -51,6 +51,9 @@
 | 38. CSS 번들링 | @import 인라이닝, 별도 .css 파일 emit, Lightning CSS minify 연동 | ✅ |
 | 39. Minify 확장 | 미참조 class expression name 익명화 — fast/non-fast path 통합 (#1587 + #1596) | ✅ |
 | 40. Import attributes | ES2024 `with {...}` 라운드트립: static / dynamic / export named / export * 네 경로 전부 AST 보존. `assert` → `with` 자동 마이그레이션 | ✅ |
+| 41. manualChunks | Rollup `manualChunks(id, meta)` 호환. record + function 형, NAPI TSFN, 동적 그룹화, dynamic import 정책, manualChunks meta API (id/isEntry/isExternal/code/isIncluded/exports/importers/dynamicImporters/importedIds/dynamicallyImportedIds/hasModuleSideEffects/syntheticNamedExports/implicitlyLoaded\*) | ✅ |
+| 42. external phantom | external 모듈을 phantom Module 로 graph 등록 — Rollup parity (`getModuleInfo("react").isExternal === true`, `info.importedIds` 에 external 포함) | ✅ |
+| 43. inlineDynamicImports | Rollup `output.inlineDynamicImports` — chunk 구조 (A) + 런타임 registry (B). `import("./x")` → `__esm` / `__commonJS` 래퍼로 재작성. namespace identity / single-execution / live binding 보장 | ✅ |
 
 ## 번들러 성능 현황 (2026-04-10 실측)
 
@@ -185,8 +188,8 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 
 - ~~**jsx-dev**~~ — ✅ 완료. `--jsx=automatic-dev` / `--jsx-dev` React 개발 모드 `jsxDEV` + `__source`/`__self`
 - ~~**UMD/AMD 포맷**~~ — ✅ 완료. `--format=umd` / `--format=amd` + external dependency array + factory params
-- **manualChunks** — `L` | 사용자 정의 청크 분할 규칙 (rolldown advancedChunks, rspack splitChunks)
-  프로덕션 청크 최적화 시 벤더/공통 코드 분리 필수. rolldown은 `advancedChunks`, rspack은 webpack의 `splitChunks` 호환.
+- ~~**manualChunks**~~ — ✅ 완료. Rollup `manualChunks(id, meta)` 호환. record + function 형, manualChunks meta API (`getModuleInfo`) 13/14 필드 노출, external phantom Module 처리, `inlineDynamicImports` (chunk 구조 + 런타임 registry).
+  남은 1필드 (`info.ast`) 는 ESTree adapter epic (#1881) — Phase C 로 분리.
 - ~~**preserveModules**~~ — ✅ 완료. `--preserve-modules` + `--preserve-modules-root` (Rollup/Rolldown 호환)
 - ~~**using 다운레벨링**~~ — ✅ 완료. `using`/`await using` → try-finally + `__using`/`__callDispose` (esbuild 호환)
 - ~~**설정 파일 (zts.config.js)**~~ — ✅ 완료. `packages/core`에서 `defineConfig()` 내보냄.
@@ -211,7 +214,9 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 | 항목 | 난이도 | esbuild | rolldown | rspack | ZTS | 설명 |
 |------|--------|---------|----------|--------|-----|------|
 | ~~**CSS 번들링**~~ | ✅ | ✅ | ✅ | ✅ | ✅ | @import 인라이닝 + Lightning CSS minify (CSS Modules 후순위) |
-| **manualChunks** | L | ❌ | ✅ advancedChunks | ✅ splitChunks | ❌ | 사용자 정의 청크 분할 규칙 |
+| ~~**manualChunks**~~ | ✅ | ❌ | ✅ advancedChunks | ✅ splitChunks | ✅ | Rollup `manualChunks(id, meta)` 호환 + meta API 13/14 필드 |
+| ~~**inlineDynamicImports**~~ | ✅ | ❌ | ✅ | ❌ | ✅ | Rollup `output.inlineDynamicImports` — `__esm`/`__commonJS` 래핑으로 런타임 처리 |
+| ~~**external phantom**~~ | ✅ | ❌ | ✅ | ❌ | ✅ | external 도 graph 1급 노드 — Rollup `getModuleInfo("react").isExternal` 동작 |
 | **innerGraph** | L | ❌ | ✅ | ✅ | ❌ | 변수 할당 추적으로 정밀 DCE |
 | **Persistent caching** | XL | ❌ | ❌ | ✅ | ❌ | 디스크 캐시, 콜드 리빌드 250%↑ |
 | **Module Federation** | XL | ❌ | ❌ | ✅ | ❌ | 마이크로프론트엔드 코드/리소스 공유 |
@@ -253,8 +258,10 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   mangleProps (1주+) — cross-module 프로퍼티 추적
   Stage 3 decorators ✅ 완료 — TC39 Stage 3 데코레이터 (legacy + Stage 3, MobX 6 호환)
   Module Concatenation 고도화 — rspack/rolldown 수준 scope hoisting
-  manualChunks (3~5일) — 사용자 정의 청크 분할
+  manualChunks ✅ 완료 — Rollup 호환 (record + function + meta API 13/14 필드)
   innerGraph (3~5일) — 변수 할당 추적 정밀 DCE
+  Rollup ModuleInfo Phase B (#1880) — plugin context API + meta 필드 (1.5~2주)
+  Rollup ModuleInfo Phase C (#1881) — ESTree adapter (info.ast, 2~4주)
 ```
 
 ### 기술부채 & 구조적 제약

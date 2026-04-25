@@ -82,6 +82,7 @@ export default defineConfig({
           translations: { en: "Bundler" },
           items: [
             { label: "개요", slug: "guides/bundling", translations: { en: "Overview" } },
+            { label: "manualChunks", slug: "guides/manual-chunks", translations: { en: "manualChunks" } },
           ],
         },
         {
