@@ -157,8 +157,11 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Build WASM
+      - name: Build WASM (transpile)
         run: zig build wasm
+
+      - name: Build WASM (bundler — #1885 Phase 2)
+        run: zig build wasm-bundler
 
       - name: Run WASM tests
         run: cd packages/wasm && bun test
