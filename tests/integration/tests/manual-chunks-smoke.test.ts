@@ -1140,4 +1140,159 @@ describe("manualChunks smoke (실제 번들 실행)", () => {
       expect(routeAChunk.moduleIds!.some((m) => m.endsWith("common.ts"))).toBe(false);
     }
   });
+
+  // ============================================================
+  // 회귀 가드 — external + 실전 시나리오
+  // ============================================================
+
+  test("external 실전: react/react-dom 모두 external — 둘 다 phantom 으로 graph 에 + 분리 보존", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { createElement } from "react";
+        import { render } from "react-dom";
+        const el = createElement("div", null, "hi");
+        render(el, document.body);
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    let metaSeen: { react?: boolean; reactDom?: boolean; importedIds?: string[] } = {};
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["react", "react-dom"],
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          metaSeen.react = meta.getModuleInfo("react")?.isExternal === true;
+          metaSeen.reactDom = meta.getModuleInfo("react-dom")?.isExternal === true;
+          metaSeen.importedIds = meta.getModuleInfo(id)?.importedIds;
+        }
+        return null;
+      },
+    });
+
+    expect(metaSeen.react).toBe(true);
+    expect(metaSeen.reactDom).toBe(true);
+    expect(metaSeen.importedIds).toContain("react");
+    expect(metaSeen.importedIds).toContain("react-dom");
+
+    // 출력 chunk 1개 (entry). 두 external 은 chunk 에 안 들어감.
+    expect(result.outputFiles!.length).toBe(1);
+    const text = result.outputFiles![0].text;
+    // 외부 의존성 호출 흔적 — require 또는 import 형태 보존
+    const reactRef = /react/.test(text);
+    const reactDomRef = /react-dom/.test(text);
+    expect(reactRef).toBe(true);
+    expect(reactDomRef).toBe(true);
+  });
+
+  test("external + manualChunks: in-graph 만 vendor 로, external 은 영향 없음", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `
+        import { x } from "ext-pkg";
+        import { y } from "./local-vendor";
+        console.log(x, y);
+      `,
+      "local-vendor.ts": 'export const y = "LV";',
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["ext-pkg"],
+      splitting: true,
+      manualChunks: (id) => {
+        if (id.includes("local-vendor")) return "vendor";
+        return null;
+      },
+    });
+
+    // vendor chunk 는 local-vendor 만, external 은 entry chunk 에서 직접 require/import
+    const vendorChunk = result.outputFiles.find((o) => o.path.includes("vendor"));
+    expect(vendorChunk).toBeDefined();
+    expect(vendorChunk!.moduleIds!.every((m) => !m.includes("ext-pkg"))).toBe(true);
+    expect(vendorChunk!.moduleIds!.some((m) => m.endsWith("local-vendor.ts"))).toBe(true);
+  });
+
+  test("external dynamic import: native import() 로 emit, 다른 dynamic 은 lazy chunk", async () => {
+    // mixed: external dynamic + internal dynamic 동시 사용. external 은 native, internal 은
+    // lazy chunk (또는 inlineDynamicImports off 면 별도 chunk).
+    const fixture = await createFixture({
+      "entry.ts": `
+        async function boot() {
+          const r = await import("react-pkg");
+          const local = await import("./internal");
+          console.log(r, local);
+        }
+        boot();
+      `,
+      "internal.ts": 'export const v = "INT_MARK";',
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: ["react-pkg"],
+      splitting: true,
+    });
+
+    // external dynamic — entry chunk 텍스트에 import("react-pkg") 그대로
+    const entryChunk = result.outputFiles.find((o) =>
+      o.moduleIds!.some((m) => m.endsWith("entry.ts")),
+    );
+    expect(entryChunk).toBeDefined();
+    expect(entryChunk!.text).toMatch(/import\s*\(\s*["']react-pkg["']\s*\)/);
+
+    // internal dynamic — 별도 async chunk 생성 + INT_MARK 그쪽에
+    const lazyChunk = result.outputFiles.find((o) => o.text.includes("INT_MARK"));
+    expect(lazyChunk).toBeDefined();
+    expect(lazyChunk!.moduleIds!.some((m) => m.endsWith("internal.ts"))).toBe(true);
+  });
+
+  test("external 다수: 10개 external 동시 import — 모두 phantom + importedIds 등장", async () => {
+    const externals = [
+      "mod-a",
+      "mod-b",
+      "mod-c",
+      "mod-d",
+      "mod-e",
+      "mod-f",
+      "mod-g",
+      "mod-h",
+      "mod-i",
+      "mod-j",
+    ];
+    const importLines = externals.map((e, i) => `import { v${i} } from "${e}";`).join("\n");
+    const useLines = externals.map((_, i) => `v${i}`).join(", ");
+    const fixture = await createFixture({
+      "entry.ts": `${importLines}\nconsole.log(${useLines});`,
+    });
+    cleanup = fixture.cleanup;
+
+    let entryImported: string[] = [];
+    const flagsPerExternal: Record<string, boolean> = {};
+    await build({
+      entryPoints: [join(fixture.dir, "entry.ts")],
+      external: externals,
+      splitting: true,
+      manualChunks: (id, meta) => {
+        if (id.endsWith("entry.ts")) {
+          entryImported = meta.getModuleInfo(id)?.importedIds ?? [];
+          for (const e of externals) {
+            flagsPerExternal[e] = meta.getModuleInfo(e)?.isExternal === true;
+          }
+        }
+        return null;
+      },
+    });
+
+    // 모든 external 이 phantom 으로 등록되어 isExternal=true
+    for (const e of externals) {
+      expect(flagsPerExternal[e]).toBe(true);
+    }
+    // 모두 entry.importedIds 에 포함
+    for (const e of externals) {
+      expect(entryImported).toContain(e);
+    }
+  });
 });

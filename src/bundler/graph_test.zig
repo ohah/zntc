@@ -189,6 +189,42 @@ test "graph: external module — phantom 으로 graph 에 등록 (Rollup parity)
     // record 의 is_external 도 그대로 set (emit/linker 호환)
     const a_mod = graph.getModule(@enumFromInt(0)) orelse return error.TestUnexpectedResult;
     try std.testing.expect(a_mod.import_records[0].is_external);
+
+    // 양방향 link 도 등록되어야 — a 의 dependencies 에 react, react 의 importers 에 a
+    try std.testing.expect(a_mod.dependencies.items.len == 1);
+    try std.testing.expect(a_mod.dependencies.items[0] == react_idx);
+    try std.testing.expect(react_mod.importers.items.len == 1);
+    try std.testing.expect(@intFromEnum(react_mod.importers.items[0]) == 0);
+}
+
+test "graph: 같은 external 을 여러 모듈이 import → phantom 1개 공유" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import 'shared-ext';");
+    try writeFile(tmp.dir, "b.ts", "import 'shared-ext';");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import './a';
+        \\import './b';
+    );
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"shared-ext"} });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    // entry + a + b + 1 phantom shared-ext = 4
+    try std.testing.expectEqual(@as(usize, 4), graph.moduleCount());
+    const ext_idx = graph.path_to_module.get("shared-ext") orelse return error.TestUnexpectedResult;
+    const ext_mod = graph.getModule(ext_idx) orelse return error.TestUnexpectedResult;
+    // a, b 둘 다 importer 로 등록
+    try std.testing.expectEqual(@as(usize, 2), ext_mod.importers.items.len);
 }
 
 test "graph: unresolved import — error diagnostic" {
