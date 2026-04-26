@@ -197,19 +197,18 @@ fn evalToBooleanDepth(ast: *const Ast, idx: NodeIndex, defines: []const DefineEn
             if (op == .pipe2) break :blk left or right;
             break :blk null;
         },
-        .binary_expression => evalBinaryBoolean(ast, node, defines, depth),
+        .binary_expression => evalBinaryBoolean(ast, node, defines),
         else => null,
     };
 }
 
-fn evalBinaryBoolean(ast: *const Ast, node: Node, defines: []const DefineEntry, depth: u8) ?bool {
+fn evalBinaryBoolean(ast: *const Ast, node: Node, defines: []const DefineEntry) ?bool {
     const op: TokenKind = @enumFromInt(node.data.binary.flags);
     if (op != .eq2 and op != .eq3 and op != .neq and op != .neq2) return null;
 
     const left = evalToString(ast, node.data.binary.left, defines) orelse return null;
     const right = evalToString(ast, node.data.binary.right, defines) orelse return null;
     const is_equal = std.mem.eql(u8, left, right);
-    _ = depth;
     return switch (op) {
         .eq2, .eq3 => is_equal,
         .neq, .neq2 => !is_equal,

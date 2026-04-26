@@ -198,7 +198,8 @@ pub fn buildRawStringLiteral(self: anytype, text: []const u8) !NodeIndex {
 /// - `\\1` ~ `\\9` legacy octal escape (template literal 컨텍스트에선 항상 invalid)
 /// - `\\0` 뒤가 decimal digit (즉 `\\01`, `\\09` 등) 도 legacy octal 로 해석 → invalid
 pub fn templateCookedHasInvalidEscape(text: []const u8) bool {
-    var i: usize = 0;
+    // backslash 가 없으면 escape 도 없다 — 가장 흔한 경우 short-circuit (SIMD-accelerated).
+    var i: usize = std.mem.indexOfScalar(u8, text, '\\') orelse return false;
     while (i < text.len) {
         if (text[i] != '\\') {
             i += 1;
@@ -249,6 +250,16 @@ pub fn templateCookedHasInvalidEscape(text: []const u8) bool {
         }
     }
     return false;
+}
+
+/// Tagged template 의 cooked element 노드 생성: invalid escape 면 `void 0`, 아니면 string literal.
+/// ES2018 "Lifting Template Literal Restriction" 적용 — visitTaggedTemplate 의 두 분기 공통.
+pub fn buildCookedElement(self: anytype, text: []const u8, span: Span) !NodeIndex {
+    const es_helpers = @import("es_helpers.zig");
+    if (templateCookedHasInvalidEscape(text)) {
+        return es_helpers.makeVoidZero(self, span);
+    }
+    return buildStringLiteral(self, text);
 }
 
 /// template 텍스트를 string_literal 노드로 변환한다.
