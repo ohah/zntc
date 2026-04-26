@@ -251,10 +251,10 @@ pub const AssignmentTargetRef = struct {
     write: NodeIndex,
 };
 
-/// static/computed member assignment target의 Reference를 1회 평가 형태로 준비.
-/// 지원 대상: `obj.x`, `obj[key]`.
-/// 비-member target이면 null을 반환해 caller가 기존 단순 경로를 사용할 수 있게 한다.
-pub fn prepareMemberAssignmentTargetRef(
+/// assignment target의 Reference를 1회 평가 형태로 준비.
+/// 지원 대상: `x` (identifier), `obj.x`, `obj[key]`.
+/// 그 외 target (private field 등) 이면 null을 반환한다.
+pub fn prepareAssignmentTargetRef(
     self: anytype,
     left_idx: NodeIndex,
     span: Span,
@@ -262,6 +262,14 @@ pub fn prepareMemberAssignmentTargetRef(
     if (left_idx.isNone()) return null;
     const left = self.ast.getNode(left_idx);
     switch (left.tag) {
+        .identifier_reference, .assignment_target_identifier => {
+            const visited = try self.visitNode(left_idx);
+            return .{
+                .read = visited,
+                .value = try cloneNode(self, visited),
+                .write = try cloneNode(self, visited),
+            };
+        },
         .static_member_expression, .computed_member_expression => {},
         else => return null,
     }
@@ -343,10 +351,56 @@ fn makeStaticPropRef(self: anytype, old_prop: NodeIndex) !SingleEvalExpr {
     };
 }
 
-fn cloneNode(self: anytype, idx: NodeIndex) !NodeIndex {
+/// AST 노드를 복제하고 symbol_id 도 전파한다.
+/// rename 대상이 되는 identifier reference 등을 안전하게 두 번 사용해야 할 때 쓴다.
+pub fn cloneNode(self: anytype, idx: NodeIndex) !NodeIndex {
     const cloned = try self.ast.addNode(self.ast.getNode(idx));
     self.copySymbolId(idx, cloned);
     return cloned;
+}
+
+/// 임시 변수에 값을 묶어두고, 그 후 같은 값을 참조 가능한 ref 를 만들 수 있게 한다.
+/// `span` 은 `makeTempVarRef(self, span, ...)` 로 추가 ref 생성 시 그대로 넘긴다.
+/// `paren_assign` 은 첫 사용 자리에 그대로 두면 된다 — `(temp = value)` 형태.
+pub const TempCapture = struct {
+    span: Span,
+    paren_assign: NodeIndex,
+};
+
+pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
+    const temp_span = try makeTempVarSpan(self);
+    const temp_lhs = try makeTempVarRef(self, temp_span, span);
+    const assign = try makeAssignExpr(self, temp_lhs, value, span, @intFromEnum(token_mod.Kind.eq));
+    return .{
+        .span = temp_span,
+        .paren_assign = try makeParenExpr(self, assign, span),
+    };
+}
+
+/// `callee(receiver, ...args)` 호출 노드를 만든다 — 기존 args extra-list 를 ArrayList 로
+/// 복사하지 않고 receiver 1 개만 prepend 해서 새 NodeList 를 만든다.
+/// `args` 는 같은 `extra_data` 를 가리키므로 미리 capacity 를 확보한 뒤 append 한다.
+pub fn makeCallExprPrepend(
+    self: anytype,
+    callee: NodeIndex,
+    receiver: NodeIndex,
+    args: NodeList,
+    span: Span,
+) !NodeIndex {
+    const new_len: u32 = args.len + 1;
+    const start: u32 = @intCast(self.ast.extra_data.items.len);
+    try self.ast.extra_data.ensureUnusedCapacity(self.allocator, new_len);
+    self.ast.extra_data.appendAssumeCapacity(@intFromEnum(receiver));
+    var i: u32 = 0;
+    while (i < args.len) : (i += 1) {
+        self.ast.extra_data.appendAssumeCapacity(self.ast.extra_data.items[args.start + i]);
+    }
+    const call_extra = try self.ast.addExtras(&.{ @intFromEnum(callee), start, new_len, 0 });
+    return self.ast.addNode(.{
+        .tag = .call_expression,
+        .span = span,
+        .data = .{ .extra = call_extra },
+    });
 }
 
 fn makeMemberWithFlags(
