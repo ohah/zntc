@@ -1835,7 +1835,7 @@ const emitEsmWrappedModule = esm_wrap.emitEsmWrappedModule;
 /// `\x00zts:runtime/...` 같은 virtual module ID 는 NULL byte 가 sourcemap JSON 으로
 /// 새지 않도록 `runtime-...` 형태로 sanitize (#1961).
 fn addIdentitySource(sm: *SourceMap.SourceMapBuilder, path: []const u8, content: []const u8, include_content: bool) !u32 {
-    const helper_modules = @import("runtime_helper_modules.zig");
+    const helper_modules = @import("../runtime_helper_modules.zig");
     const idx = if (helper_modules.isVirtualId(path)) blk: {
         const sanitized = try helper_modules.sanitizeId(sm.allocator, path);
         defer sm.allocator.free(sanitized);

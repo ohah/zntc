@@ -40,9 +40,9 @@
 //! fallback. transformer 통합 PR 에서 이 helper 들의 매핑이 추가되며 fallback 도 제거된다.
 
 const std = @import("std");
-const rt = @import("runtime_helpers.zig");
-const plugin_mod = @import("plugin.zig");
-const names = @import("../runtime_helper_names.zig");
+const rt = @import("bundler/runtime_helpers.zig");
+const plugin_mod = @import("bundler/plugin.zig");
+const names = @import("runtime_helper_names.zig");
 
 /// Internal virtual module ID prefix. NULL byte sentinel.
 pub const ID_PREFIX = "\x00zts:runtime/";

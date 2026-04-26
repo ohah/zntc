@@ -7,9 +7,9 @@
 //!
 //! ## 비트맵 → 모듈 매핑
 //!
-//! `bundler/runtime_helper_modules.zig::moduleShortFor` 가 helper base name → module
-//! short name 매핑의 단일 소스. 이 모듈은 RuntimeHelpers 의 packed 비트가 어떤 base
-//! 들을 import 해야 하는지만 정의 — 모듈 short name 자체는 lookup.
+//! `runtime_helper_modules.zig::moduleShortFor` 가 helper base name → module short name
+//! 매핑의 단일 소스. 이 모듈은 RuntimeHelpers 의 packed 비트가 어떤 base 들을 import
+//! 해야 하는지만 정의 — 모듈 short name 자체는 lookup.
 //!
 //! 비트 하나가 여러 base 를 export 하는 모듈을 가리키는 경우 (decorator/es-decorator/
 //! using/class-static-private-field) 한 import statement 에 named specifier 를 모두 묶는다.
@@ -25,7 +25,7 @@ const ast_mod = @import("../parser/ast.zig");
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const ImportPhase = @import("../parser/module.zig").ImportPhase;
-const helper_modules = @import("../bundler/runtime_helper_modules.zig");
+const helper_modules = @import("../runtime_helper_modules.zig");
 const helper_names = @import("../runtime_helper_names.zig");
 const RuntimeHelpers = @import("transformer.zig").RuntimeHelpers;
 
