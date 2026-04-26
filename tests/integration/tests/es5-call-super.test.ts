@@ -179,4 +179,112 @@ console.log(c.values.join(",") + ":" + (c instanceof Child));`,
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("2,1,2,3:true");
   });
+
+  test("TS parameter property 가 multi-level super 체인에서도 정확히 할당", async () => {
+    // constructor(public x) 의 this.x=x 삽입 경로(#1471)와 _newTarget 캡쳐 경로가
+    // 같은 derived constructor 안에서 충돌 없이 동작해야 한다.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class A { constructor(public x: number) {} }
+class B extends A { constructor(public y: number) { super(1); } }
+class C extends B { constructor(public z: number) { super(2); } }
+const c = new C(3);
+console.log([c.x, c.y, c.z, c instanceof C, c instanceof A].join(","));`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("1,2,3,true,true");
+  });
+
+  test("derived constructor 가 super() 결과를 명시적으로 return", async () => {
+    // ES2015 spec: derived constructor 에서 `return super(...)` 는 super() 의
+    // 반환 객체를 derived 인스턴스로 사용. transformDerivedConstructorReturns 가
+    // _this 별칭으로 변환하므로 instance 유지되어야 함.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class Base { constructor(public tag: string) {} }
+class Child extends Base {
+  constructor() {
+    return super("from-super");
+  }
+}
+const c = new Child();
+console.log(c.tag + ":" + (c instanceof Child) + ":" + (c instanceof Base));`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("from-super:true:true");
+  });
+
+  test("extends class expression 의 multi-level super", async () => {
+    // 익명 중간 클래스를 extends — class C extends (class extends Base { ... }) { ... }
+    // _Class 같은 internal 이름으로 lower 되어도 _newTarget 캡쳐는 동일.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class Base { name() { return "Base"; } }
+const Mid = class extends Base { name() { return "Mid>" + super.name(); } };
+class C extends Mid { name() { return "C>" + super.name(); } }
+const c = new C();
+console.log(c.name() + ":" + (c instanceof C) + ":" + (c instanceof Base));`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("C>Mid>Base:true:true");
+  });
+
+  test("try/catch 안의 super() 도 동일 _newTarget 사용", async () => {
+    // try 의 super() 가 throw 할 때 catch 의 super(fallback) 으로 복구.
+    // _newTarget 은 ctor body 시작에 1번 캡쳐되어 try/catch 양쪽이 공유.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class Base { constructor(public msg: string) { if (msg === "fail") throw new Error("nope"); } }
+class Child extends Base {
+  constructor(arg: string) {
+    try { super(arg); }
+    catch (e) { super("fallback"); }
+  }
+}
+const a = new Child("ok"), b = new Child("fail");
+console.log(a.msg + "/" + b.msg + ":" + (a instanceof Child) + ":" + (b instanceof Child));`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok/fallback:true:true");
+  });
+
+  test("super.x getter 도 multi-level chain 에서 정확히 동작", async () => {
+    // __superGet helper 가 prototype chain 을 따라가는 native 동작 — _newTarget 변경의
+    // 부수 효과로 super property 접근까지 깨지지 않는지 회귀 가드.
+    const result = await bundleAndRun(
+      {
+        "index.ts": `class A { get value() { return "A"; } }
+class B extends A { get value() { return "B>" + super.value; } }
+class C extends B { get value() { return "C>" + super.value; } }
+const c = new C();
+console.log(c.value + ":" + (c instanceof C) + ":" + (c instanceof A));`,
+      },
+      "index.ts",
+      ["--target=es5"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("C>B>A:true:true");
+  });
 });

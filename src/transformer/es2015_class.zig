@@ -2236,14 +2236,27 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             var new_body = try visitMethodBody(self, body_idx, span);
 
-            // parameter property 가 있으면 visit된 body 앞에 `this.x = x` 삽입
-            if (pp.prop_count > 0 and !new_body.isNone()) {
-                new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
-            }
-
             if (is_derived) {
-                try transformDerivedConstructorReturns(self, new_body);
-                new_body = try postProcessDerivedConstructorBody(self, new_body, instance_fields, span);
+                // derived class 의 parameter property `this.x = x` 는 super() 이후에 와야 한다.
+                // super() 가 Reflect.construct 로 생성한 새 객체가 인스턴스이고, `this` 는 호출
+                // receiver 라 super() 전 할당은 새 인스턴스에 반영되지 않는다.
+                // instance_fields 와 합쳐 postProcessDerivedConstructorBody 에서 _this 별칭으로 emit.
+                if (pp.prop_count > 0 and !new_body.isNone()) {
+                    const pp_stmts_list = try self.buildParameterPropertyStatements(pp.prop_names[0..pp.prop_count]);
+                    const pp_stmts = self.ast.extra_data.items[pp_stmts_list.start .. pp_stmts_list.start + pp_stmts_list.len];
+                    const scratch_top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                    for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+                    for (instance_fields) |f| try self.scratch.append(self.allocator, f);
+                    try transformDerivedConstructorReturns(self, new_body);
+                    new_body = try postProcessDerivedConstructorBody(self, new_body, self.scratch.items[scratch_top..], span);
+                } else {
+                    try transformDerivedConstructorReturns(self, new_body);
+                    new_body = try postProcessDerivedConstructorBody(self, new_body, instance_fields, span);
+                }
+            } else if (pp.prop_count > 0 and !new_body.isNone()) {
+                // base class: super() 가 없으므로 body 앞에 `this.x = x` prepend.
+                new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
             }
 
             const none = @intFromEnum(NodeIndex.none);
