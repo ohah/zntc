@@ -676,7 +676,7 @@ test "Edge: multiple external packages" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"yes\"") != null);
 }
 
-test "ESM external: require preamble (esbuild compatible, no import)" {
+test "ESM external: import 구문 보존 (#1962 esbuild/rolldown 호환)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
@@ -699,10 +699,14 @@ test "ESM external: require preamble (esbuild compatible, no import)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // esbuild 호환: require() preamble 사용 (import 구문 없음 → Node CJS 파싱)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") != null);
-    // import 구문이 없어야 함 (있으면 Node가 ESM으로 파싱하여 var 재선언 에러)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "import ") == null);
+    // ESM external: chunk top 에 ESM `import` 구문 prepend (esbuild/rolldown 동등).
+    // require() 는 emit 되지 않아야 — Node ESM 파서에서 ReferenceError 발생.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+    // default + named 는 같은 specifier 라 한 줄로 묶임.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"react\"") != null);
+    // namespace 는 별도 라인 (ESM spec: `import * as ns, { x }` 불가).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import * as ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"lodash\"") != null);
 }
 
 test "CJS external: require preamble generated" {

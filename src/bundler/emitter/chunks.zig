@@ -29,6 +29,7 @@ const statement_shaker = @import("../statement_shaker.zig");
 const ExportBinding = @import("../binding_scanner.zig").ExportBinding;
 const parent = @import("../emitter.zig");
 const plugin_mod = @import("../plugin.zig");
+const external_imports = @import("external_imports.zig");
 const EmitOptions = parent.EmitOptions;
 const OutputFile = parent.OutputFile;
 const emitChunkRuntimeHelpers = parent.emitChunkRuntimeHelpers;
@@ -96,6 +97,24 @@ pub fn emitChunks(
 
         // 청크별 런타임 헬퍼 주입
         try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, options, null);
+
+        // ESM external imports (#1962): chunk 모듈들이 보유한 external import 를
+        // dedup 후 chunk top 에 단일 `import` 구문으로 prepend. emitChunks 는 ESM 전용 (line 46).
+        {
+            var chunk_mods: std.ArrayListUnmanaged(*const Module) = .empty;
+            defer chunk_mods.deinit(allocator);
+            try chunk_mods.ensureTotalCapacity(allocator, chunk.modules.items.len);
+            for (chunk.modules.items) |mod_idx| {
+                if (graph.getModule(mod_idx)) |m| chunk_mods.appendAssumeCapacity(m);
+            }
+            try external_imports.emitChunkExternalImports(
+                &chunk_output,
+                allocator,
+                chunk_mods.items,
+                linker,
+                options.minify_whitespace,
+            );
+        }
 
         // 크로스 청크 import deconfliction:
         // 여러 청크에서 같은 이름의 심볼을 import할 때 충돌 방지.

@@ -660,6 +660,16 @@ pub const ResolveCache = struct {
         // 사용자 지정 external 패턴
         for (self.external_patterns) |pattern| {
             if (matchGlob(pattern, specifier)) return true;
+            // #1962 esbuild/rolldown 동등: external 패키지의 sub-path 도 자동 external.
+            // 예) `external: ["react"]` → "react/jsx-runtime", "react/jsx-dev-runtime" 도 external.
+            // `*` 보유 패턴은 사용자가 sub-path 매칭을 직접 작성한 것이므로 자동 확장 안 함
+            // — `react/*` 처럼 명시한 의도와 충돌하지 않게.
+            const has_wildcard = std.mem.indexOf(u8, pattern, "*") != null;
+            const is_sub_path = !has_wildcard and
+                specifier.len > pattern.len and
+                std.mem.startsWith(u8, specifier, pattern) and
+                specifier[pattern.len] == '/';
+            if (is_sub_path) return true;
         }
 
         return false;
