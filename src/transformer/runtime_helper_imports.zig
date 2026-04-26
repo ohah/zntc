@@ -61,6 +61,7 @@ const HelperBit = enum {
     async_generator,
     await_helper,
     tdz,
+    read,
 };
 
 const BitDef = struct {
@@ -107,6 +108,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .async_generator, .bases = &.{"__asyncGenerator"} },
     .{ .bit = .await_helper, .bases = &.{"__await"} },
     .{ .bit = .tdz, .bases = &.{"__tdz"} },
+    .{ .bit = .read, .bases = &.{"__read"} },
 };
 
 comptime {

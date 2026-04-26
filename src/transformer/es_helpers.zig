@@ -198,6 +198,38 @@ fn rewriteTDZReferencesInner(self: anytype, idx: NodeIndex, tdz_names: []const S
         else => {},
     }
 
+    switch (node.tag) {
+        .object_property => {
+            const left = node.data.binary.left;
+            const right = node.data.binary.right;
+            if (!left.isNone()) {
+                const left_node = self.ast.getNode(left);
+                if (left_node.tag == .computed_property_key) {
+                    try rewriteTDZReferencesInner(self, left, tdz_names);
+                }
+            }
+            if (!right.isNone()) {
+                if (@intFromEnum(right) == @intFromEnum(left)) {
+                    const right_node = self.ast.getNode(right);
+                    if (right_node.tag == .identifier_reference) {
+                        if (tdzNameMatch(self, right_node.data.string_ref, tdz_names)) |name_span| {
+                            const call = try makeTDZCall(self, name_span, right_node.span);
+                            self.ast.nodes.items[raw_i].data.binary.right = call;
+                        }
+                    }
+                } else {
+                    try rewriteTDZReferencesInner(self, right, tdz_names);
+                }
+            }
+            return;
+        },
+        .static_member_expression, .private_field_expression => {
+            try rewriteTDZReferencesInner(self, @enumFromInt(self.ast.extra_data.items[node.data.extra]), tdz_names);
+            return;
+        },
+        else => {},
+    }
+
     switch (Node.Tag.dataKind(node.tag)) {
         .leaf => {},
         .unary => try rewriteTDZReferencesInner(self, node.data.unary.operand, tdz_names),
@@ -730,13 +762,17 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
             // Destructuring pattern — 임시 변수 _t 도입 후 패턴을 declarator 로 전개
             const temp_span = try makeTempVarSpan(self);
             const temp_binding = try makeBindingIdentifier(self, temp_span);
-            const temp_decl = try makeDeclarator(self, temp_binding, elem, span);
+            const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(@TypeOf(self.*));
+            const temp_init = if (binding_node.tag == .array_pattern)
+                try es2015_destruct.buildArrayRead(self, elem, binding_node, span)
+            else
+                elem;
+            const temp_decl = try makeDeclarator(self, temp_binding, temp_init, span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             try self.scratch.append(self.allocator, temp_decl);
 
-            const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(@TypeOf(self.*));
             try es2015_destruct.emitPatternDeclarators(self, binding_node, temp_span, span);
 
             return makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);

@@ -224,13 +224,30 @@ pub fn ES2015Params(comptime Transformer: type) type {
             try body_stmts.append(self.allocator, default_stmt);
 
             const temp_ref2 = try es_helpers.makeTempVarRef(self, temp_span, span);
-            const destruct_decl = try es_helpers.makeVarDeclaration(
-                self,
-                &.{try es_helpers.makeDeclarator(self, visited_pattern, temp_ref2, span)},
-                .@"var",
-                span,
-            );
-            try body_stmts.append(self.allocator, destruct_decl);
+            const pattern_node = self.ast.getNode(visited_pattern);
+            const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+            const read_span = if (pattern_node.tag == .array_pattern) blk: {
+                const read_span = try es_helpers.makeTempVarSpan(self);
+                const read_binding = try es_helpers.makeBindingIdentifier(self, read_span);
+                const read_init = try es2015_destruct.buildArrayRead(self, temp_ref2, pattern_node, span);
+                const read_decl = try es_helpers.makeVarDeclaration(
+                    self,
+                    &.{try es_helpers.makeDeclarator(self, read_binding, read_init, span)},
+                    .@"var",
+                    span,
+                );
+                try body_stmts.append(self.allocator, read_decl);
+                break :blk read_span;
+            } else temp_span;
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            try es2015_destruct.emitPatternDeclarators(self, pattern_node, read_span, span);
+            const declarators = self.scratch.items[scratch_top..];
+            if (declarators.len > 0) {
+                const destruct_decl = try es_helpers.makeVarDeclaration(self, declarators, .@"var", span);
+                try body_stmts.append(self.allocator, destruct_decl);
+            }
 
             return temp_binding;
         }
@@ -251,7 +268,16 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             const pattern = self.ast.getNode(pattern_idx);
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
-            try es2015_destruct.emitPatternDeclarators(self, pattern, temp_span, span);
+            const read_span = if (pattern.tag == .array_pattern) blk: {
+                const read_span = try es_helpers.makeTempVarSpan(self);
+                const read_binding = try es_helpers.makeBindingIdentifier(self, read_span);
+                const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, span);
+                const read_init = try es2015_destruct.buildArrayRead(self, temp_ref, pattern, span);
+                const read_decl = try es_helpers.makeDeclarator(self, read_binding, read_init, span);
+                try self.scratch.append(self.allocator, read_decl);
+                break :blk read_span;
+            } else temp_span;
+            try es2015_destruct.emitPatternDeclarators(self, pattern, read_span, span);
 
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {

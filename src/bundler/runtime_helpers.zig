@@ -383,6 +383,30 @@ pub const TDZ_RUNTIME =
 ;
 pub const TDZ_RUNTIME_MIN = "var " ++ NAMES.TDZ_MIN ++ "=function(name){throw new ReferenceError(name+\" is not defined - temporal dead zone\")};";
 
+/// array destructuring의 iterable protocol read helper. TypeScript __read와 같은
+/// 구조로 limit 개수만 읽고 iterator.return()으로 close한다.
+pub const READ_RUNTIME =
+    \\var __read = function(o, n) {
+    \\  var m = typeof Symbol === "function" && o[Symbol.iterator];
+    \\  if (!m) return o;
+    \\  var i = m.call(o), r, ar = [], e;
+    \\  try {
+    \\    while ((n === void 0 || n-- > 0) && !(r = i.next()).done) ar.push(r.value);
+    \\  } catch (error) {
+    \\    e = { error: error };
+    \\  } finally {
+    \\    try {
+    \\      if (r && !r.done && (m = i.return)) m.call(i);
+    \\    } finally {
+    \\      if (e) throw e.error;
+    \\    }
+    \\  }
+    \\  return ar;
+    \\};
+    \\
+;
+pub const READ_RUNTIME_MIN = "var " ++ NAMES.READ_MIN ++ "=function(o,n){var m=typeof Symbol===\"function\"&&o[Symbol.iterator];if(!m)return o;var i=m.call(o),r,ar=[],e;try{while((n===void 0||n-- >0)&&!(r=i.next()).done)ar.push(r.value)}catch(error){e={error:error}}finally{try{if(r&&!r.done&&(m=i.return))m.call(i)}finally{if(e)throw e.error}}return ar};";
+
 /// __async: async/await → generator 변환 시 주입 (esbuild 호환).
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
 ///
@@ -1182,6 +1206,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.tdz) {
         try buf.appendSlice(allocator, if (minify) TDZ_RUNTIME_MIN else TDZ_RUNTIME);
+    }
+    if (helpers.read) {
+        try buf.appendSlice(allocator, if (minify) READ_RUNTIME_MIN else READ_RUNTIME);
     }
     if (helpers.tagged_template_literal) {
         try buf.appendSlice(allocator, if (minify) TAGGED_TEMPLATE_RUNTIME_MIN else TAGGED_TEMPLATE_RUNTIME);
