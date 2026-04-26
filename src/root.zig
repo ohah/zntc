@@ -20,6 +20,7 @@ pub const tsconfig_merge = @import("tsconfig_merge.zig");
 pub const regexp = @import("regexp/mod.zig");
 pub const test262 = @import("test262/mod.zig");
 pub const bundler = @import("bundler/mod.zig");
+pub const runtime_helper_modules = @import("runtime_helper_modules.zig");
 pub const server = @import("server/mod.zig");
 pub const transpile = @import("transpile.zig");
 pub const string_escape = @import("string_escape.zig");
@@ -38,6 +39,7 @@ test {
     _ = config;
     _ = test262;
     _ = bundler;
+    _ = runtime_helper_modules;
     _ = server;
     _ = @import("test_arena.zig");
     _ = util.wyhash;
