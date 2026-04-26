@@ -746,8 +746,9 @@ pub fn emitWithTreeShaking(
     // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입.
     // #1961 부터 code splitting 모드에선 transformer 가 helper module 의 named import
     // 으로 emit 하여 graph 가 분배 → chunk-level appendAsyncRuntime 등은 제거.
-    // single-bundle 모드는 helper module 의 declaration 이 statement-level shake 로
-    // elide 되는 회귀가 있어 후속 fix 까지 기존 preamble 모델 유지 (중복 시 dead code).
+    // single-bundle 모드는 minify_identifiers 가 helper module 안 식별자를 rename 하면서
+    // cross-module binding 이 깨지는 회귀가 있어 후속 fix 까지 기존 preamble 모델 유지
+    // (중복 시 dead code).
     try rt.appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace, options.unsupported.arrow);
 
     // prologue(banner/polyfill/runtime helper) 줄 수 → 소스맵 오프셋에 반영
