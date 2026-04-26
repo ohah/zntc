@@ -1077,8 +1077,17 @@ pub fn computeAllUsedNames(
         }
     }
 
+    const helper_modules = @import("../../runtime_helper_modules.zig");
     for (sorted, 0..) |m, idx| {
         const mod_idx: u32 = m.index.toU32();
+        // #1961: ZTS runtime helper virtual module 은 모든 export 가 항상 used.
+        // tree_shaker 의 export-use 추적이 transformer 가 추가한 import_binding 을
+        // 인식 못 하면 helper 정의가 statement_shaker 에 의해 dead 로 elide → 런타임
+        // ReferenceError. helper module 은 작아서 over-include 안전.
+        if (helper_modules.isVirtualId(m.path)) {
+            list[idx] = .{ .names = &.{}, .all_used = true };
+            continue;
+        }
         // ALL_EXPORTS_SENTINEL 마킹이 있고 BFS reachable_stmts가 없으면 모든 export 사용
         if (s.isExportUsed(mod_idx, ALL_EXPORTS_SENTINEL) and s.getModuleStmtInfos(mod_idx) == null) {
             list[idx] = .{ .names = &.{}, .all_used = true };
