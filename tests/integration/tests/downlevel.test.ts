@@ -2987,6 +2987,114 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("10 0");
     });
+
+    test("logical assignment member receiver 1회 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let receiverCalls = 0;
+            let rhsCalls = 0;
+            const target: any = { x: 0 };
+            function getObj(): any {
+              receiverCalls++;
+              return target;
+            }
+            function rhs() {
+              rhsCalls++;
+              return 5;
+            }
+            getObj().x ||= rhs();
+            console.log(receiverCalls, rhsCalls, target.x);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 1 5");
+    });
+
+    test("logical assignment member 단락 시 RHS 미평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let receiverCalls = 0;
+            let rhsCalls = 0;
+            const target: any = { x: 7 };
+            function getObj(): any {
+              receiverCalls++;
+              return target;
+            }
+            function rhs() {
+              rhsCalls++;
+              return 5;
+            }
+            getObj().x ||= rhs();
+            console.log(receiverCalls, rhsCalls, target.x);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 0 7");
+    });
+
+    test("logical assignment &&= member 단락 시 RHS 미평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let receiverCalls = 0;
+            let rhsCalls = 0;
+            const target: any = { x: 0 };
+            function getObj(): any {
+              receiverCalls++;
+              return target;
+            }
+            function rhs() {
+              rhsCalls++;
+              return 5;
+            }
+            getObj().x &&= rhs();
+            console.log(receiverCalls, rhsCalls, target.x);
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 0 0");
+    });
+
+    test("nullish assignment computed member key 1회 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let keyCalls = 0;
+            let rhsCalls = 0;
+            const obj: any = {};
+            function getKey() {
+              keyCalls++;
+              return "x";
+            }
+            function rhs() {
+              rhsCalls++;
+              return 9;
+            }
+            obj[getKey()] ??= rhs();
+            console.log(keyCalls, rhsCalls, obj.x);
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 1 9");
+    });
   });
 
   // ===== ES2022 (target=es2021) =====
