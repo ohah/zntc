@@ -295,17 +295,18 @@ pub const CLASS_CALL_CHECK_RUNTIME_MIN = "var " ++ NAMES.CLASS_CALL_CHECK_MIN ++
 /// Reflect.construct를 사용하여 올바른 내부 슬롯을 가진 인스턴스를 생성.
 /// 트랜스파일된 클래스에는 fallback으로 .apply()를 사용.
 pub const CALL_SUPER_RUNTIME =
-    \\var __callSuper = function(_this, Parent, args) {
+    \\var __callSuper = function(Parent, args, NewTarget) {
     \\  if (typeof Reflect !== "undefined" && typeof Reflect.construct === "function") {
-    \\    return Reflect.construct(Parent, args || [], _this.constructor);
+    \\    return Reflect.construct(Parent, args || [], NewTarget);
     \\  }
+    \\  var _this = Object.create(NewTarget.prototype);
     \\  var result = Parent.apply(_this, args);
     \\  if (result && (typeof result === "object" || typeof result === "function")) return result;
     \\  return _this;
     \\};
     \\
 ;
-pub const CALL_SUPER_RUNTIME_MIN = "var " ++ NAMES.CALL_SUPER_MIN ++ "=function(_this,Parent,args){if(typeof Reflect!==\"undefined\"&&typeof Reflect.construct===\"function\")return Reflect.construct(Parent,args||[],_this.constructor);var result=Parent.apply(_this,args);if(result&&(typeof result===\"object\"||typeof result===\"function\"))return result;return _this};";
+pub const CALL_SUPER_RUNTIME_MIN = "var " ++ NAMES.CALL_SUPER_MIN ++ "=function(Parent,args,NewTarget){if(typeof Reflect!==\"undefined\"&&typeof Reflect.construct===\"function\")return Reflect.construct(Parent,args||[],NewTarget);var _this=Object.create(NewTarget.prototype);var result=Parent.apply(_this,args);if(result&&(typeof result===\"object\"||typeof result===\"function\"))return result;return _this};";
 
 /// __superGet/__superSet: super property 접근 시 receiver(this)를 보존한다.
 /// `Parent.prototype.x` 직접 접근은 getter/setter의 this를 Parent.prototype으로 바꾸므로
