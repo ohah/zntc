@@ -4,7 +4,7 @@
 //! HMR/watch rebuild 시 변경되지 않은 모듈의 emit 을 스킵한다.
 //!
 //! ### input_hash 구성 (in-memory cache 한정)
-//! `mtime_ns + options_hash(수동) + used_names_hash + import_records_hash`.
+//! `mtime_ns + source_hash + options_hash(수동) + used_names_hash + import_records_hash`.
 //! `options_hash` 는 emit 영향 필드만 수동 집계 — slice 필드 (`plugins` /
 //! `define` / `drop_labels` / `polyfills` / `run_before_main`) 때문에 comptime
 //! reflection (`autoHash`) 은 부적합.
@@ -26,6 +26,7 @@
 const std = @import("std");
 const Module = @import("module.zig").Module;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const ResolveCache = @import("resolve_cache.zig").ResolveCache;
 const emitter = @import("emitter.zig");
 const EmitOptions = emitter.EmitOptions;
 const CompiledModule = @import("compiled_module.zig").CompiledModule;
@@ -223,6 +224,9 @@ pub fn computeInputHash(
 ) u64 {
     var h = InputHasher.init(0);
     h.addI128(module.mtime);
+    // 플러그인 load/transform 이후 실제 파싱·분석·emit 입력. 같은 파일 mtime 과
+    // 같은 플러그인 identity 에서 transform 결과만 바뀌어도 stale emit 재사용 금지.
+    h.addStr(module.source);
     h.addU64(options_hash);
 
     if (used_export_names) |names| {
@@ -395,6 +399,26 @@ test "InputHasher: 동일 입력은 동일 해시" {
     b.addStrList(&.{ "x", "yy" });
 
     try std.testing.expectEqual(a.final(), b.final());
+}
+
+test "computeInputHash: transformed source participates in cache key (#2038)" {
+    const alloc = std.testing.allocator;
+
+    var resolve_cache = ResolveCache.init(alloc, .{});
+    defer resolve_cache.deinit();
+    var graph = ModuleGraph.init(alloc, &resolve_cache);
+    defer graph.deinit();
+
+    var a = Module.init(@enumFromInt(0), "/entry.ts");
+    var b = Module.init(@enumFromInt(0), "/entry.ts");
+    a.mtime = 123;
+    b.mtime = 123;
+    a.source = "console.log('plugin output A');";
+    b.source = "console.log('plugin output B');";
+
+    const hash_a = computeInputHash(&a, 0xCAFE, null, &graph);
+    const hash_b = computeInputHash(&b, 0xCAFE, null, &graph);
+    try std.testing.expect(hash_a != hash_b);
 }
 
 test "CompiledOutputCache: put → tryHit 성공" {
