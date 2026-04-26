@@ -1508,7 +1508,7 @@ pub const ModuleGraph = struct {
         opts.jsx_filename = module.path;
         // #1961 단계 4 의 single-bundle 회귀 (helper module declaration 이 statement
         // shake 로 elide) 가 fix 되기 전까지 code splitting 모드에서만 활성.
-        opts.emit_runtime_helper_imports = self.code_splitting;
+        opts.emit_runtime_helper_imports = true;
 
         var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
 
