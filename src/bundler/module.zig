@@ -240,14 +240,18 @@ pub const Module = struct {
         ready,
     };
 
-    /// 등록된 합성 심볼의 이름(synthetic_name)을 반환. 미등록이면 null.
+    /// 등록된 합성 심볼의 출력 이름을 반환. 링커/망글러가 canonical_name 을
+    /// 주입한 경우 릴리즈/압축 출력에서는 그 이름을 우선 사용한다.
+    /// 미등록이면 null.
     /// 반환 slice는 parse_arena가 소유 — 모듈 수명 내 유효.
     fn syntheticName(self: *const Module, maybe_id: ?SemanticSymbolId) ?[]const u8 {
         const id = maybe_id orelse return null;
         const sem = self.semantic orelse return null;
         const idx: u32 = @intFromEnum(id);
         if (idx >= sem.symbols.items.len) return null;
-        const name = sem.symbols.items[idx].synthetic_name;
+        const sym = sem.symbols.items[idx];
+        if (sym.canonical_name.len > 0) return sym.canonical_name;
+        const name = sym.synthetic_name;
         return if (name.len > 0) name else null;
     }
 
