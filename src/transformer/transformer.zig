@@ -182,14 +182,6 @@ pub const TransformOptions = struct {
     /// 사고 방지). 자세한 매핑은 `runtime_helper_imports.zig`.
     emit_runtime_helper_imports: bool = false,
 
-    /// #1961 PR 1d: source_ast 가 이미 transform 된 상태 (graph pre-pass 결과) 면
-    /// `cloneForTransformer` 를 skip 하고 `@constCast` 로 borrow. transform() 은
-    /// `ast.transformed_root` cache hit 분기로 즉시 cached root 반환. emit 단계
-    /// transformer 가 두 번째 clone 비용 (수백 KB AST 의 전량 memcpy) 을 회피.
-    /// caller 는 transformer.deinit 시 ast 가 free 되지 않음을 알아야 한다 — 외부
-    /// owner (보통 module.parse_arena) 가 처리.
-    borrow_source_ast: bool = false,
-
     pub const compat = @import("compat.zig");
 };
 
@@ -257,6 +249,10 @@ pub const Transformer = struct {
 
     /// 파서 노드 수. transform() 시작 시 루트 인덱스(parser_node_count - 1) 계산에 사용.
     parser_node_count: u32,
+
+    /// ast ownership — `init` 은 owned (clone 후 transformer 가 free), `initBorrow` 는
+    /// borrowed (외부 owner 가 free). deinit 분기에 사용 (#1961 후속).
+    ast_ownership: AstOwnership = .owned,
 
     /// 설정
     options: TransformOptions,
@@ -476,31 +472,46 @@ pub const Transformer = struct {
     pub const RefreshRegistration = plugin_state.RefreshRegistration;
     pub const RefreshSignature = plugin_state.RefreshSignature;
 
+    /// 파서 AST 를 transformer 가 별도 cell 에 복제 후 transform — 원본 보존 모드.
+    /// 일반적인 single-shot transpile / emit 단계의 first-time transform 진입점.
     pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: TransformOptions) Error!Transformer {
-        // experimentalDecorators → useDefineForClassFields=false 강제
-        // TypeScript/esbuild 동일: decorator가 class field의 setter를 인터셉트하려면
-        // assign semantics (this.x = v)가 필요. define semantics는 setter를 무시.
         var opts = options;
         if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
 
-        // borrow_source_ast: 이미 transform 된 ast 를 borrow — clone 회피 (#1961 PR 1d).
-        // 그렇지 않으면 파서 AST 를 트랜스포머 allocator 의 heap cell 로 복제 (원본 보존).
-        const ast_ptr = if (opts.borrow_source_ast)
-            @constCast(source_ast)
-        else blk: {
-            const new_ast = try allocator.create(Ast);
-            errdefer allocator.destroy(new_ast);
-            new_ast.* = try Ast.cloneForTransformer(source_ast, allocator);
-            // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
-            new_ast.transform_boundary = @intCast(new_ast.nodes.items.len);
-            break :blk new_ast;
-        };
-        // borrow 모드에서는 source_ast 의 transform_boundary 가 parser 영역 끝.
-        const parser_count: u32 = if (opts.borrow_source_ast)
-            (ast_ptr.transform_boundary orelse @intCast(ast_ptr.nodes.items.len))
-        else
-            @intCast(source_ast.nodes.items.len);
+        const ast_ptr = try allocator.create(Ast);
+        errdefer allocator.destroy(ast_ptr);
+        ast_ptr.* = try Ast.cloneForTransformer(source_ast, allocator);
+        // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
+        ast_ptr.transform_boundary = @intCast(ast_ptr.nodes.items.len);
 
+        return finishInit(allocator, ast_ptr, opts, .owned);
+    }
+
+    /// 이미 transform 된 ast 를 borrow — `cloneForTransformer` skip (#1961 PR 1d).
+    /// graph parse 단계의 transformer pre-pass 가 in-place 로 transform 한 ast 를
+    /// emit 단계 transformer 가 그대로 사용. transform() 은 `ast.transformed_root`
+    /// cache hit 분기로 즉시 cached root 반환 → 수백 KB AST 의 전량 memcpy 회피.
+    /// `ast` 는 caller 가 owner — transformer.deinit 은 ast 를 건드리지 않는다.
+    /// `*const Ast` 받음 — transform() cache hit 분기는 ast mutation 없음. 단, ast 필드는
+    /// `*Ast` 라 내부적으로 `@constCast` (caller 가 mut 의도면 별도 borrow 함수 미래에).
+    pub fn initBorrow(allocator: std.mem.Allocator, ast: *const Ast, options: TransformOptions) Error!Transformer {
+        var opts = options;
+        if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
+        return finishInit(allocator, @constCast(ast), opts, .borrowed);
+    }
+
+    const AstOwnership = enum { owned, borrowed };
+
+    fn finishInit(
+        allocator: std.mem.Allocator,
+        ast_ptr: *Ast,
+        opts: TransformOptions,
+        ownership: AstOwnership,
+    ) Error!Transformer {
+        const parser_count: u32 = switch (ownership) {
+            .owned => @intCast(ast_ptr.nodes.items.len),
+            .borrowed => ast_ptr.transform_boundary orelse @intCast(ast_ptr.nodes.items.len),
+        };
         var self: Transformer = .{
             .ast = ast_ptr,
             .parser_node_count = parser_count,
@@ -508,14 +519,15 @@ pub const Transformer = struct {
             .allocator = allocator,
             .scratch = .empty,
             .pending_nodes = .empty,
+            .ast_ownership = ownership,
         };
         if (opts.unsupported.arrow) self.runtime_es5_compat = true;
         return self;
     }
 
     pub fn deinit(self: *Transformer) void {
-        // borrow 모드는 외부 owner 가 ast 를 free — transformer 는 자기 ast 안 건드림.
-        if (!self.options.borrow_source_ast) {
+        // borrow 모드는 외부 owner (보통 module.parse_arena) 가 ast 를 free.
+        if (self.ast_ownership == .owned) {
             self.ast.deinit();
             self.allocator.destroy(self.ast);
         }
