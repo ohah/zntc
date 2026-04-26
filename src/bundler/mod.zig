@@ -30,6 +30,7 @@ pub const purity = @import("purity.zig");
 pub const stmt_info = @import("stmt_info.zig");
 pub const chunk = @import("chunk.zig");
 pub const runtime_helpers = @import("runtime_helpers.zig");
+pub const runtime_helper_modules = @import("runtime_helper_modules.zig");
 pub const bundler_core = @import("bundler.zig");
 pub const mpsc_channel = @import("mpsc_channel.zig");
 pub const json_to_esm = @import("json_to_esm.zig");
@@ -97,6 +98,7 @@ test {
     _ = stmt_info;
     _ = chunk;
     _ = runtime_helpers;
+    _ = runtime_helper_modules;
     _ = bundler_core;
     _ = plugin;
     _ = module_store;
