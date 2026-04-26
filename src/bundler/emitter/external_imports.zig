@@ -29,9 +29,16 @@ const SpecifierGroup = struct {
     namespace_local: ?[]const u8 = null,
     named: std.ArrayListUnmanaged(NamedBinding) = .empty,
     side_effect_only: bool = false,
+    /// 첫 default/namespace 가 차지한 후 다른 모듈에서 mangled 로 다른 이름이 들어온 경우
+    /// alias 변수로 emit. 예: `import stream from "stream"; var stream$1 = stream;`
+    /// axios 의 ZlibHeaderTransformStream.js 가 `import stream from 'stream'` 사용 시
+    /// linker 가 다른 default 와의 collision 회피로 `stream$1` 로 mangle 했지만 declaration
+    /// 누락되던 dangling reference 회복.
+    aliases: std.ArrayListUnmanaged(NamedBinding) = .empty,
 
     fn deinit(self: *SpecifierGroup, allocator: std.mem.Allocator) void {
         self.named.deinit(allocator);
+        self.aliases.deinit(allocator);
     }
 };
 
@@ -112,17 +119,31 @@ fn addBinding(
 ) !void {
     switch (kind) {
         .default => {
-            if (group.default_local == null) group.default_local = local;
+            if (group.default_local == null) {
+                group.default_local = local;
+            } else if (!std.mem.eql(u8, group.default_local.?, local)) {
+                // 다른 모듈이 같은 specifier 를 mangled local 이름으로 default import 한 경우.
+                // ESM import 한 줄은 default 슬롯 한 개만 가지므로 alias `var L = D;` 로 보강.
+                try appendAliasOnce(&group.aliases, allocator, group.default_local.?, local);
+            }
         },
         .namespace => {
-            if (group.namespace_local == null) group.namespace_local = local;
+            if (group.namespace_local == null) {
+                group.namespace_local = local;
+            } else if (!std.mem.eql(u8, group.namespace_local.?, local)) {
+                try appendAliasOnce(&group.aliases, allocator, group.namespace_local.?, local);
+            }
         },
         .named => {
             // `import { default as X }` 는 의미상 default import 와 동일 → default slot 으로 정규화.
             // 같은 specifier 의 `import D from ...` 와 `import { default as D } from ...` 가
             // 한 라인에서 중복 specifier 로 emit 되는 것을 막음 (esbuild/rolldown 동등).
             if (std.mem.eql(u8, imported, "default")) {
-                if (group.default_local == null) group.default_local = local;
+                if (group.default_local == null) {
+                    group.default_local = local;
+                } else if (!std.mem.eql(u8, group.default_local.?, local)) {
+                    try appendAliasOnce(&group.aliases, allocator, group.default_local.?, local);
+                }
                 return;
             }
             // dedup: 여러 모듈이 같은 specifier 의 같은 binding 을 import 하면 SyntaxError
@@ -132,10 +153,27 @@ fn addBinding(
                 if (std.mem.eql(u8, nb.imported, imported) and std.mem.eql(u8, nb.local, local)) {
                     return;
                 }
+                // 같은 imported 다른 local — 첫 binding 을 named slot 에 두고 alias 추가.
+                if (std.mem.eql(u8, nb.imported, imported) and !std.mem.eql(u8, nb.local, local)) {
+                    try appendAliasOnce(&group.aliases, allocator, nb.local, local);
+                    return;
+                }
             }
             try group.named.append(allocator, .{ .imported = imported, .local = local });
         },
     }
+}
+
+fn appendAliasOnce(
+    aliases: *std.ArrayListUnmanaged(NamedBinding),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    target: []const u8,
+) !void {
+    for (aliases.items) |a| {
+        if (std.mem.eql(u8, a.imported, source) and std.mem.eql(u8, a.local, target)) return;
+    }
+    try aliases.append(allocator, .{ .imported = source, .local = target });
 }
 
 fn emitOneImport(
@@ -202,6 +240,19 @@ fn emitOneImport(
         try output.appendSlice(allocator, from_open);
         try output.appendSlice(allocator, spec);
         try output.appendSlice(allocator, "\";");
+        try output.appendSlice(allocator, eol);
+    }
+
+    // (3) alias var declarations — 같은 specifier 에 default/namespace/named 가 mangled
+    //     local 로 또 들어온 케이스 보강. `var stream$1 = stream;` 같은 형태.
+    //     ESM import 한 줄에 default 슬롯이 하나뿐이라 추가 binding 들은 별도 var 로 alias.
+    const eq_op: []const u8 = if (minify_whitespace) "=" else " = ";
+    for (group.aliases.items) |a| {
+        try output.appendSlice(allocator, "var ");
+        try output.appendSlice(allocator, a.local);
+        try output.appendSlice(allocator, eq_op);
+        try output.appendSlice(allocator, a.imported);
+        try output.appendSlice(allocator, ";");
         try output.appendSlice(allocator, eol);
     }
 }
