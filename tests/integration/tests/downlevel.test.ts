@@ -4687,15 +4687,15 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("if/else body 의 function declaration 이 outer let 과 충돌 안 한다", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": `
+          "index.js": `
             (function () {
-              let f: any = 123;
+              let f = 123;
               if (false) ; else function f() {}
               console.log(f);
             })();
           `,
         },
-        "index.ts",
+        "index.js",
         [],
       );
       cleanup = result.cleanup;
@@ -4706,15 +4706,15 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     test("block 안 function declaration 이 outer let 과 충돌 안 한다", async () => {
       const result = await bundleAndRun(
         {
-          "index.ts": `
+          "index.js": `
             (function () {
-              let f: any = 7;
+              let f = 7;
               { function f() {} }
               console.log(f);
             })();
           `,
         },
-        "index.ts",
+        "index.js",
         [],
       );
       cleanup = result.cleanup;

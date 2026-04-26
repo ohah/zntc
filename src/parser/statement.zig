@@ -111,7 +111,7 @@ pub fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseEr
                 try self.addErrorCode(self.currentSpan(), "Function declaration is not allowed in statement position", .function_in_statement);
             } else if (self.is_strict_mode) {
                 // if/else/labeled body에서는 strict mode에서만 금지
-                try self.addErrorCode(self.currentSpan(), "Function declaration is not allowed in statement position in strict mode", .function_in_statement_strict);
+                try self.addStrictModuleErrorCode(self.currentSpan(), "Function declaration is not allowed in statement position in strict mode", .function_in_statement_strict);
             }
         },
         .kw_async => {

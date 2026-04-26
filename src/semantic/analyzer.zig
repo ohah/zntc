@@ -560,6 +560,13 @@ pub const SemanticAnalyzer = struct {
         // ECMAScript B.3.2/B.3.3: "If replacing the FunctionDeclaration with a VariableStatement
         // would produce an Early Error, the extension is not applied" — 에러가 아니라 무시.
         const is_annex_b_fn = self.in_annex_b_context and kind.isFunctionLike();
+        if (is_annex_b_fn) {
+            if (self.findSymbolInScope(target_scope, name_text)) |existing| {
+                if (existing.kind.isBlockScoped() or existing.kind.isFunctionLike()) {
+                    return;
+                }
+            }
+        }
 
         // 재선언 검증: 같은 스코프에서 같은 이름의 심볼이 있는지 확인
         if (!is_annex_b_fn) {

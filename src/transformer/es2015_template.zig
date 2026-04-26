@@ -223,7 +223,7 @@ pub fn templateCookedHasInvalidEscape(text: []const u8) bool {
                     while (j < text.len and text[j] != '}') : (j += 1) {
                         const d = text[j];
                         if (!std.ascii.isHex(d)) return true;
-                        code = (code << 4) | std.fmt.charToDigit(d, 16) catch return true;
+                        code = (code << 4) | @as(u32, std.fmt.charToDigit(d, 16) catch return true);
                         n += 1;
                         if (n > 6) return true;
                     }
