@@ -654,7 +654,7 @@ fn rewriteDynamicImports(
                     break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
                 },
                 .cjs => blk: {
-                    const require_name = try types.makeRequireVarName(allocator, target_mod.path);
+                    const require_name = try target_mod.allocRequireName(allocator);
                     defer allocator.free(require_name);
                     break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
                 },

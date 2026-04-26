@@ -1983,37 +1983,57 @@ pub const ModuleGraph = struct {
             if (m.wrap_kind == .none) continue;
             if (m.getInitName()) |n| _ = used_names.put(n, 1) catch {};
             if (m.getExportsName()) |n| _ = used_names.put(n, 1) catch {};
+            if (m.getRequireName()) |n| _ = used_names.put(n, 1) catch {};
         }
 
         var it = self.modules.iterator(0);
         while (it.next()) |m| {
             if (m.wrap_kind == .none) continue;
-            if (m.init_symbol != null or m.exports_symbol != null) continue;
+            const needs_init = m.init_symbol == null;
+            const needs_exports = m.exports_symbol == null;
+            const needs_require = m.wrap_kind == .cjs and m.require_symbol == null;
+            if (!needs_init and !needs_exports and !needs_require) continue;
             const sem_ptr = if (m.semantic) |*s| s else continue;
             const arena = if (m.parse_arena) |*a| a.allocator() else continue;
 
-            const init_base = types.makeInitVarName(arena, m.path) catch continue;
-            const exports_base = types.makeExportsVarName(arena, m.path) catch continue;
-            const init_name = uniqueName(arena, init_base, &used_names) catch continue;
-            const exports_name = uniqueName(arena, exports_base, &used_names) catch continue;
+            if (needs_init) {
+                const init_base = types.makeInitVarName(arena, m.path) catch continue;
+                const init_name = uniqueName(arena, init_base, &used_names) catch continue;
+                m.init_symbol = semantic_symbol.extendSymbol(
+                    arena,
+                    &sem_ptr.symbols,
+                    .function_decl,
+                    .esm_init,
+                    init_name,
+                    Span.EMPTY,
+                ) catch null;
+            }
 
-            m.init_symbol = semantic_symbol.extendSymbol(
-                arena,
-                &sem_ptr.symbols,
-                .function_decl,
-                .esm_init,
-                init_name,
-                Span.EMPTY,
-            ) catch null;
+            if (needs_exports) {
+                const exports_base = types.makeExportsVarName(arena, m.path) catch continue;
+                const exports_name = uniqueName(arena, exports_base, &used_names) catch continue;
+                m.exports_symbol = semantic_symbol.extendSymbol(
+                    arena,
+                    &sem_ptr.symbols,
+                    .variable_var,
+                    .cjs_exports,
+                    exports_name,
+                    Span.EMPTY,
+                ) catch null;
+            }
 
-            m.exports_symbol = semantic_symbol.extendSymbol(
-                arena,
-                &sem_ptr.symbols,
-                .variable_var,
-                .cjs_exports,
-                exports_name,
-                Span.EMPTY,
-            ) catch null;
+            if (needs_require) {
+                const require_base = types.makeRequireVarName(arena, m.path) catch continue;
+                const require_name = uniqueName(arena, require_base, &used_names) catch continue;
+                m.require_symbol = semantic_symbol.extendSymbol(
+                    arena,
+                    &sem_ptr.symbols,
+                    .function_decl,
+                    .cjs_require,
+                    require_name,
+                    Span.EMPTY,
+                ) catch null;
+            }
         }
     }
 

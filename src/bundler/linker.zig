@@ -907,6 +907,26 @@ pub const Linker = struct {
             // helper module 은 후보 / Phase B 양쪽 skip — modules[mi] 는 빈 entry 로 init.
             const is_helper_module = helper_modules.isVirtualId(m.path);
             if (is_helper_module) {
+                if (sem_opt) |sem| {
+                    if (sem.scopes.len == 0 or !sem.scopes[0].blocksMangling()) {
+                        for (sem.symbols.items, 0..) |*sym, si| {
+                            const sk = sym.synthetic_kind orelse continue;
+                            switch (sk) {
+                                .cjs_exports, .cjs_require, .esm_init => {},
+                                else => continue,
+                            }
+                            const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
+                            if (key.len <= 1) continue;
+                            if (exported.contains(key)) continue;
+                            try candidates.append(self.allocator, .{
+                                .module_index = @intCast(mi),
+                                .symbol_id = @intCast(si),
+                                .name = key,
+                                .ref_count = if (sym.reference_count == 0) 1 else sym.reference_count,
+                            });
+                        }
+                    }
+                }
                 modules[mi] = .{
                     .scopes = &.{},
                     .symbols = &.{},
@@ -961,7 +981,7 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .esm_init => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init => {},
                         }
                         const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
                         if (key.len <= 1) continue;
@@ -971,7 +991,7 @@ pub const Linker = struct {
                         // 번들러가 직접 emit하므로 semantic reference_count가 보통 0이다.
                         // 그래도 선언과 cross-module 호출에 실제로 등장하고 RN 번들에서는
                         // 매우 길어지므로, 작은 0이 아닌 가중치로 최상위 망글 후보에 남긴다.
-                        const ref_count: u32 = if ((sk == .cjs_exports or sk == .esm_init) and sym.reference_count == 0)
+                        const ref_count: u32 = if ((sk == .cjs_exports or sk == .cjs_require or sk == .esm_init) and sym.reference_count == 0)
                             1
                         else
                             sym.reference_count;
@@ -2808,8 +2828,8 @@ pub fn getOrCreateRequireVar(
     mod_idx: u32,
 ) ![]const u8 {
     if (cache.get(mod_idx)) |cached| return cached;
-    const target_path = self.getModule(mod_idx).?.path;
-    const name = try types.makeRequireVarName(self.allocator, target_path);
+    const target_mod = self.getModule(mod_idx).?;
+    const name = try target_mod.allocRequireName(self.allocator);
     try cache.put(mod_idx, name);
     return name;
 }

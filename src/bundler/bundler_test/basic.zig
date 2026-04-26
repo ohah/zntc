@@ -132,6 +132,7 @@ test "Bundler: minify가 래퍼 합성 심볼을 짧은 이름으로 바꿈" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "init_") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
 }
 
@@ -169,6 +170,7 @@ test "Bundler: minify가 require 래퍼 합성 심볼도 짧은 이름으로 바
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "init_") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
 }
 
