@@ -1,5 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { bundleAndRun } from "./helpers";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { bundleAndRun, createFixture, runNode, runZts } from "./helpers";
 
 /**
  * Runtime regression for `import * as M; const x = (i) => M.x(i)` self-shadow.
@@ -165,6 +167,60 @@ console.log(callA() + "/" + callB());`,
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
     expect(r.runOutput).toBe("hi A/hi B");
+  });
+
+  test("multiple namespace value importers share one namespace object (#1938)", async () => {
+    const fixture = await createFixture({
+      "core.js": `export const a = "a";
+export const b = "b";`,
+      "userA.js": `import * as Core from './core.js';
+export const fa = () => Object.keys(Core).join(",");`,
+      "userB.js": `import * as Core from './core.js';
+export const fb = () => Object.keys(Core).join(",");`,
+      "entry.js": `import { fa } from './userA.js';
+import { fb } from './userB.js';
+console.log(fa() + "/" + fb());`,
+    });
+    cleanup = fixture.cleanup;
+    const outFile = join(fixture.dir, "out.js");
+
+    const bundle = await runZts(["--bundle", join(fixture.dir, "entry.js"), "--format=esm", "-o", outFile]);
+    expect(bundle.exitCode).toBe(0);
+
+    const run = await runNode(outFile);
+    expect(run.stdout).toBe("a,b/a,b");
+
+    const code = readFileSync(outFile, "utf8");
+    expect(code.match(/var [A-Za-z_$][\w$]*_ns\s*=\s*\{get a\(\)/g)?.length ?? 0).toBe(1);
+  });
+
+  test("shared namespace vars are deconflicted for same basename sources", async () => {
+    const fixture = await createFixture({
+      "alpha/core.js": `export const value = "alpha";`,
+      "beta/core.js": `export const value = "beta";`,
+      "userA.js": `import * as Core from './alpha/core.js';
+export const fa = () => Object.values(Core).join(",");`,
+      "userB.js": `import * as Core from './beta/core.js';
+export const fb = () => Object.values(Core).join(",");`,
+      "entry.js": `import { fa } from './userA.js';
+import { fb } from './userB.js';
+console.log(fa() + "/" + fb());`,
+    });
+    cleanup = fixture.cleanup;
+    const outFile = join(fixture.dir, "out.js");
+
+    const bundle = await runZts(["--bundle", join(fixture.dir, "entry.js"), "--format=esm", "-o", outFile]);
+    expect(bundle.exitCode).toBe(0);
+
+    const run = await runNode(outFile);
+    expect(run.stdout).toBe("alpha/beta");
+
+    const code = readFileSync(outFile, "utf8");
+    const names = [...code.matchAll(/var ([A-Za-z_$][\w$]*_ns(?:_\d+)?)\s*=\s*\{get value\(\)/g)].map(
+      (m) => m[1],
+    );
+    expect(names.length).toBe(2);
+    expect(new Set(names).size).toBe(2);
   });
 
   test("nested re-export chain: outer barrel re-exports inner barrel re-exports data", async () => {

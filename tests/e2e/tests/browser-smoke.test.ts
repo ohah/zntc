@@ -675,6 +675,15 @@ for (const c of cases) {
     );
     expect(build.status, `ZTS build failed: ${build.stderr?.toString().slice(0, 300)}`).toBe(0);
 
+    if (c.name === "effect") {
+      const bundle = await readFile(outFile, "utf8");
+      const nsNames = [...bundle.matchAll(/var ([A-Za-z_$][\w$]*_ns(?:_\d+)?)\s*=\s*\{/g)].map(
+        (m) => m[1],
+      );
+      const duplicateNsNames = nsNames.filter((name, index) => nsNames.indexOf(name) !== index);
+      expect(duplicateNsNames, "effect bundle must not redeclare shared namespace vars").toEqual([]);
+    }
+
     await writeFile(
       join(caseDir, "index.html"),
       `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><script src="./bundle.js"></script></body></html>`,

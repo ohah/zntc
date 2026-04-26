@@ -24,6 +24,15 @@ pub const CompiledModule = struct {
     /// 별 top-level statement 로 unroll. 각 chain 이 독립 `__zts_guarded(...)` 가 되어
     /// 한 layer throw 가 다른 layer 부팅을 막지 않음 (Metro `__r(N)` per-path 와 동등).
     entry_chain: ?[]const u8 = null,
+    /// 이 module code 가 참조하는 shared namespace object 선언 목록.
+    /// compiled output cache hit 시 linker 의 bundle preamble registry 를 복원하는 데 사용.
+    shared_ns_decls: []const SharedNsDecl = &.{},
+
+    pub const SharedNsDecl = struct {
+        target_path: []const u8,
+        var_name: []const u8,
+        object_literal: []const u8,
+    };
 
     /// 모듈 소유 자원 해제 (code/mappings/fn_map_json/entry_chain).
     pub fn deinit(self: CompiledModule, allocator: std.mem.Allocator) void {
@@ -31,6 +40,12 @@ pub const CompiledModule = struct {
         if (self.mappings) |m| allocator.free(m);
         if (self.fn_map_json) |j| allocator.free(j);
         if (self.entry_chain) |c| allocator.free(c);
+        for (self.shared_ns_decls) |d| {
+            allocator.free(d.target_path);
+            allocator.free(d.var_name);
+            allocator.free(d.object_literal);
+        }
+        if (self.shared_ns_decls.len > 0) allocator.free(self.shared_ns_decls);
     }
 
     /// 모든 slice 자원을 `allocator` 로 복사한 새 CompiledModule 반환.
@@ -43,6 +58,22 @@ pub const CompiledModule = struct {
         const fn_map = if (self.fn_map_json) |j| try allocator.dupe(u8, j) else null;
         errdefer if (fn_map) |j| allocator.free(j);
         const ec = if (self.entry_chain) |c| try allocator.dupe(u8, c) else null;
+        errdefer if (ec) |c| allocator.free(c);
+        const shared = try allocator.alloc(SharedNsDecl, self.shared_ns_decls.len);
+        errdefer allocator.free(shared);
+        for (self.shared_ns_decls, 0..) |decl, i| {
+            const target_path = try allocator.dupe(u8, decl.target_path);
+            errdefer allocator.free(target_path);
+            const var_name = try allocator.dupe(u8, decl.var_name);
+            errdefer allocator.free(var_name);
+            const object_literal = try allocator.dupe(u8, decl.object_literal);
+            errdefer allocator.free(object_literal);
+            shared[i] = .{
+                .target_path = target_path,
+                .var_name = var_name,
+                .object_literal = object_literal,
+            };
+        }
         return .{
             .code = code,
             .helpers = self.helpers,
@@ -50,6 +81,7 @@ pub const CompiledModule = struct {
             .preamble_lines = self.preamble_lines,
             .fn_map_json = fn_map,
             .entry_chain = ec,
+            .shared_ns_decls = shared,
         };
     }
 };
