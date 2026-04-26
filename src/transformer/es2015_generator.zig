@@ -40,6 +40,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const es2015_destructuring = @import("es2015_destructuring.zig");
 
 /// 상태 머신의 개별 연산.
 const OpCode = enum {
@@ -1326,13 +1327,27 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// assignment_expression을 expression_statement로 만들되,
         /// object_pattern이 좌변이면 괄호로 감싸서 block statement와 구분.
         /// ({a, b} = expr); vs {a, b} = expr; (후자는 syntax error)
+        ///
+        /// ES2015 destructuring 이 unsupported 면 binding pattern 좌변을
+        /// `(_ref = rhs, x = _ref.x, ..., _ref)` sequence expression 으로 분해해
+        /// ES5 호환 statement 로 변환 (#1960). state machine 이 만든 binding pattern
+        /// LHS 는 visitNode 트래버설을 거치지 않아 일반 destructuring lowering 이
+        /// 도달하지 못하므로 emit 시점에 명시적으로 호출.
         fn makeDestructuringAssignStmt(self: *Transformer, lhs: NodeIndex, rhs: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const lhs_node = self.ast.getNode(lhs);
+            if (self.options.unsupported.destructuring and
+                (lhs_node.tag == .object_pattern or lhs_node.tag == .array_pattern))
+            {
+                const Es2015D = es2015_destructuring.ES2015Destructuring(Transformer);
+                const seq = try Es2015D.lowerBindingPatternAssignment(self, lhs_node, rhs, span);
+                return es_helpers.makeExprStmt(self, seq, span);
+            }
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = lhs, .right = rhs, .flags = 0 } },
             });
-            const expr = if (self.ast.getNode(lhs).tag == .object_pattern)
+            const expr = if (lhs_node.tag == .object_pattern)
                 try es_helpers.makeParenExpr(self, assign, span)
             else
                 assign;

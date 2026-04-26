@@ -2891,6 +2891,9 @@ pub const Transformer = struct {
         if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
             new_body = try self.hoistTempVars(new_body, saved_temp_counter, node.span);
         }
+        // 함수 스코프 종료 — outer scope 의 hoistTempVars 가 같은 _a 를 다시 hoist 하지 않도록
+        // 카운터 복원 (#1960). 다음 함수 / outer 에서 동일 이름을 안전하게 재사용 가능.
+        self.temp_var_counter = saved_temp_counter;
 
         // arrow 캡처 상태 복원
         self.arrow_this_depth = saved_arrow_depth;
@@ -3534,9 +3537,17 @@ pub const Transformer = struct {
     }
 
     /// 임시 변수 호이스팅: saved_counter..current counter 범위의 var _a, _b, ... 선언을 body 앞에 삽입.
-    fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
+    /// body 의 top-level var 선언에 이미 같은 이름이 있으면 skip — `lowerDestructuringDeclaration`
+    /// 처럼 declaration 형태로 직접 emit 하는 패스가 있어 mergeAdjacentDecls 가 `var _a, _a = init, ...`
+    /// 같은 어색한 출력을 만드는 회귀 방지 (#1960).
+    pub fn hoistTempVars(self: *Transformer, body_idx: NodeIndex, saved_counter: u32, span: Span) Error!NodeIndex {
         const count = self.temp_var_counter - saved_counter;
         if (count == 0) return body_idx;
+
+        const body_node = self.ast.getNode(body_idx);
+        const has_block = body_node.tag == .block_statement or
+            body_node.tag == .program or
+            body_node.tag == .function_body;
 
         // var _a, _b, ... (초기값 없이 선언만)
         const scratch_top = self.scratch.items.len;
@@ -3546,6 +3557,7 @@ pub const Transformer = struct {
         while (i < self.temp_var_counter) : (i += 1) {
             var buf: [16]u8 = undefined;
             const name = es_helpers.tempVarName(i, &buf);
+            if (has_block and self.bodyHasTopLevelVarBinding(body_node, name)) continue;
             const name_span = try self.ast.addString(name);
             const binding = try self.ast.addNode(.{
                 .tag = .binding_identifier,
@@ -3559,6 +3571,8 @@ pub const Transformer = struct {
             try self.scratch.append(self.allocator, declarator);
         }
 
+        if (self.scratch.items.len == scratch_top) return body_idx;
+
         const decl_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
             @intFromEnum(VariableDeclarationKind.@"var"),
@@ -3567,6 +3581,34 @@ pub const Transformer = struct {
         });
 
         return self.prependStatementsToBody(body_idx, &.{var_decl});
+    }
+
+    /// body (block_statement / program / function_body) 의 top-level var declaration 에서
+    /// `name` 과 같은 binding identifier 가 있는지 검사. nested block 은 보지 않음 — var 는
+    /// function-scoped 라 top-level 만 봐도 충분.
+    fn bodyHasTopLevelVarBinding(self: *const Transformer, body: Node, name: []const u8) bool {
+        const list = body.data.list;
+        const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
+        for (stmts) |raw_idx| {
+            const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+            if (stmt.tag != .variable_declaration) continue;
+            const e = stmt.data.extra;
+            if (e + 2 >= self.ast.extra_data.items.len) continue;
+            const dl_start = self.ast.extra_data.items[e + 1];
+            const dl_len = self.ast.extra_data.items[e + 2];
+            var di: u32 = 0;
+            while (di < dl_len) : (di += 1) {
+                const draw_idx = self.ast.extra_data.items[dl_start + di];
+                const decl = self.ast.getNode(@enumFromInt(draw_idx));
+                if (decl.tag != .variable_declarator) continue;
+                const binding_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl.data.extra]);
+                if (binding_idx.isNone()) continue;
+                const binding = self.ast.getNode(binding_idx);
+                if (binding.tag != .binding_identifier) continue;
+                if (std.mem.eql(u8, self.ast.getText(binding.span), name)) return true;
+            }
+        }
+        return false;
     }
 
     /// arrow_function_expression: extra = [params_list, body, flags]

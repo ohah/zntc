@@ -1338,27 +1338,28 @@ test "ES2018: for-await destructuring body lowered at es2015 target (#1382)" {
 // --- ES2015: destructuring ---
 
 test "ES2015: object destructuring" {
+    // declarator 가 _a 를 직접 init 하므로 hoistTempVars 가 redundant 한 `var _a;` 를 추가하지 않는다 (#1960).
     var r = try e2eTarget(std.testing.allocator, "var {a,b}=obj;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var _a=obj,a=_a.a,b=_a.b;", r.output);
+    try std.testing.expectEqualStrings("var _a=obj,a=_a.a,b=_a.b;", r.output);
 }
 
 test "ES2015: array destructuring" {
     var r = try e2eTarget(std.testing.allocator, "var [x,y]=arr;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var _a=arr,x=_a[0],y=_a[1];", r.output);
+    try std.testing.expectEqualStrings("var _a=arr,x=_a[0],y=_a[1];", r.output);
 }
 
 test "ES2015: destructuring rename" {
     var r = try e2eTarget(std.testing.allocator, "var {a:c}=obj;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var _a=obj,c=_a.a;", r.output);
+    try std.testing.expectEqualStrings("var _a=obj,c=_a.a;", r.output);
 }
 
 test "ES2015: destructuring default" {
     var r = try e2eTarget(std.testing.allocator, "var {a=1}=obj;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var _a=obj,a=_a.a===void 0?1:_a.a;", r.output);
+    try std.testing.expectEqualStrings("var _a=obj,a=_a.a===void 0?1:_a.a;", r.output);
 }
 
 test "ES2015: destructuring no transform on esnext" {
@@ -1394,6 +1395,65 @@ test "ES2015: assignment array destructuring with default" {
     var r = try e2eTarget(std.testing.allocator, "([x=1,y]=arr);", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "void 0?1:") != null);
+}
+
+// --- #1960: ES5 destructuring 회귀 ---
+
+test "#1960-A (single fn): ES5 destructuring 출력에 var _a 가 한 번만 등장" {
+    // function 안 destructuring → declarator 가 _a 를 init. hoistTempVars 가 redundant
+    // `var _a;` 를 추가하면 mergeAdjacentDecls 가 `var _a, _a = init, ...` 로 합쳐 어색.
+    var r = try e2eTarget(std.testing.allocator, "function f(o){const {x,y}=o;return x+y;}", .es5);
+    defer r.deinit();
+    // `var _a` 등장 횟수: declarator 안의 한 번만 — 함수 외부, 함수 안 redundant decl 모두 없어야 함
+    var count: usize = 0;
+    var iter = std.mem.window(u8, r.output, 6, 1);
+    while (iter.next()) |w| {
+        if (std.mem.eql(u8, w, "var _a")) count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=o") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "x=_a.x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "y=_a.y") != null);
+}
+
+test "#1960-A (multi fn): ES5 destructuring scope 격리 (외부 var _a; 없음)" {
+    // 다른 함수 / root scope 의 hoistTempVars 가 함수 안 _a 를 다시 hoist 하면 안 됨.
+    var r = try e2eTarget(std.testing.allocator, "function f(o){const {x}=o;return x;} function g(p){const {y}=p;return y;}", .es5);
+    defer r.deinit();
+    // root scope 에 lone `var _a;` (init 없는) 이 등장하면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _a;") == null);
+    // 두 함수 각각 _a 를 재사용 (function-scoped — counter restore 의 부수 효과)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=o") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=p") != null);
+}
+
+test "#1960-B: ES5 async + binding pattern destructuring lowering" {
+    // const { x } = await fetch("") → state machine 안에서 ({ x:x } = _state.sent()) 로
+    // 떨어지는데 ES5 에서 binding pattern LHS 는 invalid syntax. sequence expression 으로 분해.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function f(){const {x}=await fetch('');return x;}",
+        .es5,
+    );
+    defer r.deinit();
+    // destructuring assignment 잔존 금지 (binding pattern LHS = ...)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{x:x}=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "{ x:x }=") == null);
+    // sequence expression 으로 분해되어 있어야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=_state.sent()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "x=_a.x") != null);
+}
+
+test "#1960-B: ES5 async + array binding pattern destructuring lowering" {
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "async function f(){const [a,b]=await fetch('');return a+b;}",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=_state.sent()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "a=_a[0]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "b=_a[1]") != null);
 }
 
 // --- ES2015: let/const → var ---
