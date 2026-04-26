@@ -738,7 +738,11 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입
+    // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입.
+    // #1961 부터 code splitting 모드에선 transformer 가 helper module 의 named import
+    // 으로 emit 하여 graph 가 분배 → chunk-level appendAsyncRuntime 등은 제거.
+    // single-bundle 모드는 helper module 의 declaration 이 statement-level shake 로
+    // elide 되는 회귀가 있어 후속 fix 까지 기존 preamble 모델 유지 (중복 시 dead code).
     try rt.appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace, options.unsupported.arrow);
 
     // prologue(banner/polyfill/runtime helper) 줄 수 → 소스맵 오프셋에 반영
@@ -1719,17 +1723,10 @@ pub fn emitChunkRuntimeHelpers(
     if (options.experimental_decorators) {
         try rt.appendDecoratorRuntime(output, allocator, options.minify_whitespace);
     }
-    if (collected_helpers) |h| {
-        if (h.es_decorator) {
-            try output.appendSlice(allocator, if (options.minify_whitespace) rt.ES_DECORATOR_RUNTIME_MIN else rt.ES_DECORATOR_RUNTIME);
-        }
-    }
-    // splitting 모드에서는 collected_helpers가 null로 전달되므로 per-chunk 사용 여부를
-    // 알 수 없다 → target 기반으로 주입 (단일-번들 모드와 달리 이 경로에선 appendRuntimeHelpers
-    // 가 다시 호출되지 않으므로 중복 아님).
-    if (options.unsupported.async_await) {
-        try rt.appendAsyncRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow);
-    }
+    // #1961: RuntimeHelpers 비트맵 기반 helper (es_decorator / async_helper / generator
+    // 등) 는 transformer 가 graph parse 단계에서 named import 으로 emit → graph 가 chunk
+    // 분배. chunk-level prepend 는 중복 정의를 만들기 때문에 제거.
+    _ = collected_helpers;
     if (needs_to_binary) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
     }
