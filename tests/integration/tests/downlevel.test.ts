@@ -223,6 +223,69 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("30");
     });
 
+    test("array destructuring은 iterable protocol과 close를 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let closed = 0;
+            const it = {
+              [Symbol.iterator]() {
+                let i = 0;
+                return {
+                  next() {
+                    i++;
+                    return i === 1 ? { value: 1, done: false } : { value: 2, done: false };
+                  },
+                  return() {
+                    closed++;
+                    return { done: true };
+                  },
+                };
+              },
+            };
+            const [a] = it;
+            console.log(a + ":" + closed);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1:1");
+    });
+
+    test("array destructuring assignment도 iterable protocol을 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const it = {
+              [Symbol.iterator]() {
+                let i = 0;
+                return {
+                  next() {
+                    i++;
+                    return { value: i, done: false };
+                  },
+                  return() {
+                    return { done: true };
+                  },
+                };
+              },
+            };
+            let a = 0;
+            [a] = it;
+            console.log(a);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1");
+    });
+
     test("destructuring rest (object)", async () => {
       const result = await bundleAndRun(
         {

@@ -1378,7 +1378,13 @@ test "ES2015: object destructuring" {
 test "ES2015: array destructuring" {
     var r = try e2eTarget(std.testing.allocator, "var [x,y]=arr;", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a=arr,x=_a[0],y=_a[1];", r.output);
+    try std.testing.expectEqualStrings("var _a=__read(arr,2),x=_a[0],y=_a[1];", r.output);
+}
+
+test "ES2015: array destructuring iterable read helper" {
+    var r = try e2eTarget(std.testing.allocator, "var [x]=iter;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__read(iter,1)") != null);
 }
 
 test "ES2015: destructuring rename" {
@@ -1423,7 +1429,7 @@ test "ES2015: assignment object destructuring" {
 test "ES2015: assignment array destructuring" {
     var r = try e2eTarget(std.testing.allocator, "([x,y]=arr);", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=arr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=__read(arr,2)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "x=_a[0]") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "y=_a[1]") != null);
 }

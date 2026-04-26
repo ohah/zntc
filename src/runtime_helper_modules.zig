@@ -152,6 +152,11 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.TDZ_RUNTIME, .min = rt.TDZ_RUNTIME_MIN },
     },
     .{
+        .short = "read",
+        .helpers = &.{"__read"},
+        .body = .{ .plain = rt.READ_RUNTIME, .min = rt.READ_RUNTIME_MIN },
+    },
+    .{
         .short = "rest",
         .helpers = &.{"__rest"},
         .body = .{ .plain = rt.REST_RUNTIME, .min = rt.REST_RUNTIME_MIN },

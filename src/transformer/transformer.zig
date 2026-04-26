@@ -237,7 +237,9 @@ pub const RuntimeHelpers = packed struct(u32) {
     await_helper: bool = false,
     /// __tdz: default initializer / block scope TDZ read
     tdz: bool = false,
-    _padding: u8 = 0,
+    /// __read: array destructuring iterable protocol read
+    read: bool = false,
+    _padding: u7 = 0,
 };
 
 /// 단일 AST append-only 변환기.

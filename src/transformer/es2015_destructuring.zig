@@ -106,11 +106,15 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // destructuring → 분해
                     // 먼저 init을 임시 변수에 저장
                     const new_init = try self.visitNode(init_idx);
+                    const pattern_init = if (name_node.tag == .array_pattern)
+                        try buildArrayRead(self, new_init, name_node, span)
+                    else
+                        new_init;
                     const temp_span = try es_helpers.makeTempVarSpan(self);
                     const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
 
                     // var _ref = init
-                    const ref_decl = try es_helpers.makeDeclarator(self, temp_binding, new_init, span);
+                    const ref_decl = try es_helpers.makeDeclarator(self, temp_binding, pattern_init, span);
                     try self.scratch.append(self.allocator, ref_decl);
 
                     // 패턴을 개별 declarator로 분해
@@ -310,6 +314,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             const left_node = self.ast.getNode(left_idx);
             const new_right = try self.visitNode(right_idx);
+            const assignment_right = if (left_node.tag == .array_assignment_target or left_node.tag == .array_pattern)
+                try buildArrayRead(self, new_right, left_node, span)
+            else
+                new_right;
             const temp_span = try es_helpers.makeTempVarSpan(self);
 
             const scratch_top = self.scratch.items.len;
@@ -320,7 +328,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const init_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = temp_ref, .right = new_right, .flags = 0 } },
+                .data = .{ .binary = .{ .left = temp_ref, .right = assignment_right, .flags = 0 } },
             });
             try self.scratch.append(self.allocator, init_assign);
 
@@ -454,17 +462,21 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 return;
             }
             const target_node = self.ast.getNode(target_old_idx);
-            if (target_node.tag == .object_assignment_target or target_node.tag == .array_assignment_target) {
+            if (target_node.tag == .object_assignment_target or target_node.tag == .array_assignment_target or target_node.tag == .object_pattern or target_node.tag == .array_pattern) {
                 // nested: _inner = value; 각 element 재귀 emit.
                 const inner_span = try es_helpers.makeTempVarSpan(self);
                 const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
+                const inner_value = if (target_node.tag == .array_assignment_target or target_node.tag == .array_pattern)
+                    try buildArrayRead(self, value, target_node, span)
+                else
+                    value;
                 const init = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = span,
-                    .data = .{ .binary = .{ .left = inner_lhs, .right = value, .flags = 0 } },
+                    .data = .{ .binary = .{ .left = inner_lhs, .right = inner_value, .flags = 0 } },
                 });
                 try self.scratch.append(self.allocator, init);
-                if (target_node.tag == .object_assignment_target) {
+                if (target_node.tag == .object_assignment_target or target_node.tag == .object_pattern) {
                     try emitObjectAssignments(self, target_node, inner_span, span);
                 } else {
                     try emitArrayAssignments(self, target_node, inner_span, span);
@@ -583,7 +595,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         // nested: { a: { b } } → var _ref2 = _ref.a; var b = _ref2.b
                         const nested_span = try es_helpers.makeTempVarSpan(self);
                         const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
-                        const nested_decl = try es_helpers.makeDeclarator(self, nested_binding, member_access, span);
+                        const nested_init = if (value_node.tag == .array_pattern)
+                            try buildArrayRead(self, member_access, value_node, span)
+                        else
+                            member_access;
+                        const nested_decl = try es_helpers.makeDeclarator(self, nested_binding, nested_init, span);
                         try self.scratch.append(self.allocator, nested_decl);
                         try emitPatternDeclarators(self, value_node, nested_span, span);
                     } else {
@@ -644,7 +660,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // nested: [[a, b]] → var _ref2 = _ref[0]; var a = _ref2[0]; ...
                     const nested_span = try es_helpers.makeTempVarSpan(self);
                     const nested_binding = try es_helpers.makeBindingIdentifier(self, nested_span);
-                    const nested_decl = try es_helpers.makeDeclarator(self, nested_binding, elem_access, span);
+                    const nested_init = if (elem.tag == .array_pattern)
+                        try buildArrayRead(self, elem_access, elem, span)
+                    else
+                        elem_access;
+                    const nested_decl = try es_helpers.makeDeclarator(self, nested_binding, nested_init, span);
                     try self.scratch.append(self.allocator, nested_decl);
                     try emitPatternDeclarators(self, elem, nested_span, span);
                 } else {
@@ -700,6 +720,23 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // slice(N)
             const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(start_idx));
             return es_helpers.makeCallExpr(self, callee, &.{idx_node}, span);
+        }
+
+        pub fn buildArrayRead(self: *Transformer, value: NodeIndex, pattern: Node, span: Span) Transformer.Error!NodeIndex {
+            self.runtime_helpers.read = true;
+            const callee = try es_helpers.makeRuntimeHelperRef(self, "__read");
+            const read_len = arrayPatternReadLimit(self, pattern);
+            if (read_len) |len| {
+                const len_node = try es_helpers.makeNumericLiteral(self, len);
+                return es_helpers.makeCallExpr(self, callee, &.{ value, len_node }, span);
+            }
+            return es_helpers.makeCallExpr(self, callee, &.{value}, span);
+        }
+
+        fn arrayPatternReadLimit(self: *Transformer, pattern: Node) ?u32 {
+            const split = self.ast.nodeListSplitRest(pattern.data.list);
+            if (split.rest_operand != null) return null;
+            return @intCast(split.elements.len);
         }
 
         fn rewritePatternDefaultTDZ(self: *Transformer, default_val: NodeIndex, pattern: Node, start_idx: u32) Transformer.Error!void {

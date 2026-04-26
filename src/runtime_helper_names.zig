@@ -40,6 +40,7 @@ pub const NAMES = struct {
     pub const ASSERT_THIS_UNINITIALIZED_MIN = "$aU"; // __assertThisUninitialized
     pub const POSSIBLE_CONSTRUCTOR_RETURN_MIN = "$pR"; // __possibleConstructorReturn
     pub const TDZ_MIN = "$td"; // __tdz
+    pub const READ_MIN = "$rd"; // __read
     pub const ASYNC_MIN = "$aS"; // __async (async/await → generator)
     pub const ASYNC_VALUES_MIN = "$aV"; // __asyncValues (for-await-of)
     pub const GENERATOR_MIN = "$gn"; // __generator
@@ -99,6 +100,7 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__assertThisUninitialized", .short = NAMES.ASSERT_THIS_UNINITIALIZED_MIN },
     .{ .base = "__possibleConstructorReturn", .short = NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN },
     .{ .base = "__tdz", .short = NAMES.TDZ_MIN },
+    .{ .base = "__read", .short = NAMES.READ_MIN },
     .{ .base = "__async", .short = NAMES.ASYNC_MIN },
     .{ .base = "__asyncValues", .short = NAMES.ASYNC_VALUES_MIN },
     .{ .base = "__generator", .short = NAMES.GENERATOR_MIN },
