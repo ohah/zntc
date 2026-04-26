@@ -552,11 +552,14 @@ pub const Transformer = struct {
         var scope = @import("../profile.zig").begin(.transform);
         defer scope.end();
 
-        // D1 (RFC #1672): 재진입 가드 (D1b in-place 전환 시 shared module 이중 transform 을 조기 탐지).
-        self.ast.assertInvariants();
-        if (@import("builtin").mode == .Debug) {
-            std.debug.assert(self.ast.transformed_root == null);
+        // #1961: graph parse 단계의 pre-pass 가 이미 transform 한 ast 면 cached root 반환.
+        // emitter 가 같은 ast 로 transformer 를 새로 만들 때 transform 을 다시 돌지 않도록.
+        // caller 는 미리 transformer.runtime_helpers / .symbol_ids 를 module.transform_cache
+        // 에서 hydrate 해 두어야 emit 시점에 동일한 결과 사용.
+        if (self.ast.transformed_root) |cached| {
+            return cached;
         }
+        self.ast.assertInvariants();
 
         // define value를 미리 string_table에 저장하여 tryDefineReplace에서 중복 addString 방지
         if (self.options.define.len > 0) {

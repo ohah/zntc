@@ -26,6 +26,8 @@ pub const ExportBinding = binding_scanner.ExportBinding;
 const stmt_info_mod = @import("stmt_info.zig");
 const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
+const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
 /// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
 /// linker가 import→export 연결 + 이름 충돌 해결에 사용.
@@ -53,6 +55,21 @@ pub const ModuleSemanticData = struct {
         if (id >= self.symbols.items.len) return "";
         return self.symbols.items[id].nameText(source);
     }
+};
+
+/// graph parseModule 의 transformer pre-pass 결과 캐시 (#1961).
+///
+/// emitter 가 transformer 를 같은 ast 에 다시 호출하지 않고 (transformer 의 invariants
+/// 위반) 이 캐시 값을 그대로 사용. parse_arena 가 backing — symbol_ids slice 도 그 안.
+pub const TransformCache = struct {
+    /// transformer.transform() 의 새 root NodeIndex (transformer 영역).
+    root: NodeIndex,
+    /// transformer 가 set 한 RuntimeHelpers 비트맵.
+    /// emitter 의 chunk-level helper preamble 결정에 사용.
+    runtime_helpers: RuntimeHelpers,
+    /// transformer 가 만든 symbol_ids slice. parser 영역 + transformer 영역 매핑 포함.
+    /// emitter 의 minify/linker buildMetadataForAst override_syms 에 사용.
+    symbol_ids: []const ?u32,
 };
 
 pub const Module = struct {
@@ -107,6 +124,11 @@ pub const Module = struct {
     /// Bundler-local 합성 심볼 테이블 (cross-module linking용). #1328 Phase 1.
     /// graph allocator 소유. null = 미초기화 (asset/disabled 모듈 등).
     alias_table: ?AliasTable = null,
+
+    /// graph parseModule 단계의 transformer pre-pass 결과 캐시 (#1961).
+    /// null = pre-pass 미실행 (legacy 경로 또는 비-JS 모듈). emitter 는 set 이면
+    /// transformer 재실행 안 하고 캐시된 root/helpers/symbol_ids 사용.
+    transform_cache: ?TransformCache = null,
 
     /// wrap_kind != .none 모듈의 `init_<path>` 함수 심볼 id (semantic 공간).
     /// null = 미래핑 또는 semantic 없음 (fallback: makeInitVarName 재할당).

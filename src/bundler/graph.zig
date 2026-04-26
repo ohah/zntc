@@ -45,6 +45,13 @@ const pkg_json = @import("package_json.zig");
 const mime = @import("../server/mime.zig");
 const plugin_mod = @import("plugin.zig");
 const MpscChannel = @import("mpsc_channel.zig").MpscChannel;
+const transformer_mod = @import("../transformer/transformer.zig");
+const Transformer = transformer_mod.Transformer;
+const TransformOptions = transformer_mod.TransformOptions;
+const TransformCache = @import("module.zig").TransformCache;
+const builtin_plugins = @import("../transformer/plugins/builtin.zig");
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const runtime_helper_modules = @import("runtime_helper_modules.zig");
 pub const module_store = @import("module_store.zig");
 const phase_mod = @import("phase.zig");
 pub const ModulePhase = phase_mod.ModulePhase;
@@ -123,6 +130,39 @@ pub const ModuleGraph = struct {
     /// 메인 그래프에는 모듈로 추가하지 않고, bundler에서 별도 빌드한다.
     worker_entries: std.ArrayList(WorkerEntry) = .empty,
 
+    /// `worklet "directive"` plugin 활성 여부 — bundler 가 BundleOptions.worklet_transform 으로 set.
+    worklet_transform: bool = false,
+    /// `experimentalDecorators` — TS legacy decorator 변환.
+    experimental_decorators: bool = false,
+    /// `emitDecoratorMetadata` — `__metadata` 호출 주입.
+    emit_decorator_metadata: bool = false,
+    /// `useDefineForClassFields` 기본값. false=TS 4.x 이전 [[Set]] semantics.
+    use_define_for_class_fields: bool = true,
+    /// `verbatimModuleSyntax` — TS 5.0+ value import elision 비활성.
+    verbatim_module_syntax: bool = false,
+    /// 다운레벨 대상 비-지원 feature 비트맵.
+    unsupported: transformer_mod.TransformOptions.compat.UnsupportedFeatures = .{},
+    /// 드롭할 labeled statement 라벨 (`--drop-labels=DEV,TEST`).
+    drop_labels: []const []const u8 = &.{},
+    /// `--minify-syntax` — AST 레벨 의미 보존 축약.
+    minify_syntax: bool = false,
+    /// `--keep-names` — 함수/클래스 .name 보존.
+    keep_names: bool = false,
+    /// JSX classic mode factory (e.g. "React.createElement").
+    jsx_factory: []const u8 = "React.createElement",
+    /// JSX classic mode fragment (e.g. "React.Fragment").
+    jsx_fragment: []const u8 = "React.Fragment",
+    /// Reanimated worklet plugin 의 `__pluginVersion` 값.
+    worklet_plugin_version: ?[]const u8 = null,
+
+    /// Runtime helper virtual module plugin (#1961) 의 `SourceOptions`.
+    /// graph 가 build() 동안 owner — `Plugin.context` 에서 `*const SourceOptions` 로 참조.
+    helper_plugin_opts: runtime_helper_modules.SourceOptions = .{},
+    /// `self.plugins` 앞에 ZTS builtin runtime helper plugin 을 prepend 한 slice.
+    /// `graph.allocator` 소유. `ensureBuiltinPlugins` 에서 lazy 초기화 후 PluginRunner.init
+    /// 호출 site 들이 이걸 참조.
+    plugins_with_helpers: ?[]plugin_mod.Plugin = null,
+
     pub const PkgInfo = struct {
         is_module: bool,
         side_effects: pkg_json.PackageJson.SideEffects,
@@ -169,6 +209,37 @@ pub const ModuleGraph = struct {
         }
         self.worker_entries.deinit(self.allocator);
         if (self.jsx_specifier_cache) |s| self.allocator.free(s);
+        if (self.plugins_with_helpers) |p| self.allocator.free(p);
+    }
+
+    /// `plugins_with_helpers` lazy 초기화 — `self.plugins` 앞에 ZTS builtin runtime
+    /// helper plugin 을 prepend 한 slice 를 graph allocator 로 만든다 (#1961).
+    /// 빌드 옵션 (minify_whitespace 등) 은 이미 graph 에 set 됐다는 전제. `helper_plugin_opts`
+    /// 도 같이 hydrate. 단일 thread 진입점 (`build` 등) 에서만 호출.
+    fn ensureBuiltinPlugins(self: *ModuleGraph) void {
+        if (self.plugins_with_helpers != null) return;
+        // SourceOptions 는 빌드 옵션 기반으로 1회 결정.
+        self.helper_plugin_opts = .{
+            .minify = self.minify_whitespace,
+            .es5 = self.unsupported.async_await or self.unsupported.arrow,
+            // configurable_exports 는 RN 같은 환경 — 현재 graph 에 직접 필드 없으므로 false.
+            // 후속 PR 에서 BundleOptions.configurable_exports 또는 platform=react-native 기반 결정.
+            .configurable_exports = false,
+        };
+        const builtin = runtime_helper_modules.makePlugin(&self.helper_plugin_opts);
+        const merged = self.allocator.alloc(plugin_mod.Plugin, self.plugins.len + 1) catch return;
+        merged[0] = builtin;
+        @memcpy(merged[1..], self.plugins);
+        self.plugins_with_helpers = merged;
+    }
+
+    /// 모든 PluginRunner 호출 site 가 사용하는 통합 진입점. `ensureBuiltinPlugins` 가
+    /// `plugins_with_helpers` 를 하이드레이트한 후 그걸로 runner 만든다. fallback 으로
+    /// `self.plugins` 사용 (alloc 실패 시).
+    fn pluginRunnerWithBuiltins(self: *ModuleGraph) ?plugin_mod.PluginRunner {
+        const list = self.plugins_with_helpers orelse self.plugins;
+        if (list.len == 0) return null;
+        return plugin_mod.PluginRunner.init(list);
     }
 
     // ============================================================
@@ -252,6 +323,10 @@ pub const ModuleGraph = struct {
     /// Phase 1: 모든 모듈 등록 + 파싱 + import resolve (BFS)
     /// Phase 2: DFS로 exec_index + 순환 감지
     pub fn build(self: *ModuleGraph, entry_points: []const []const u8) !void {
+        // #1961: ZTS builtin runtime helper plugin 을 plugin slice 앞에 prepend.
+        // 워커 스레드에서 호출하기 전 단일 thread 진입점에서 1회만.
+        self.ensureBuiltinPlugins();
+
         // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
         if (self.entry_dir.len == 0 and entry_points.len > 0) {
             self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
@@ -465,6 +540,9 @@ pub const ModuleGraph = struct {
         /// 새로 그래프에 추가된 모듈 (`store.modules.contains(path) == false`) 은 강제로 stat (Issue #1727 §3).
         changed_files: ?*const std.StringHashMap(void),
     ) !IncrementalBuildResult {
+        // #1961: builtin runtime helper plugin prepend (build() 와 동일).
+        self.ensureBuiltinPlugins();
+
         // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용)
         if (self.entry_dir.len == 0 and entry_points.len > 0) {
             self.entry_dir = std.fs.path.dirname(entry_points[0]) orelse "";
@@ -876,10 +954,7 @@ pub const ModuleGraph = struct {
         const module_path = mod_ptr.path;
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
 
-        const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
-            plugin_mod.PluginRunner.init(self.plugins)
-        else
-            null;
+        const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();
 
         // import.meta.glob: 워커에서 glob 확장 수행
         expandGlobRecords(self.allocator, mod_ptr.import_records, source_dir);
@@ -947,10 +1022,7 @@ pub const ModuleGraph = struct {
         if (module.mtime == 0) module.mtime = getMtime(module.path) catch 0;
 
         // Plugin runner: parseModule 내에서 load + transform 훅에 공용
-        const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
-            plugin_mod.PluginRunner.init(self.plugins)
-        else
-            null;
+        const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();
 
         // Plugin: load 훅 — 모든 module_type 분기 전에 플러그인에게 기회를 줌.
         // 플러그인이 내용을 반환하면 JS 모듈로 전환 (예: .css → JS export).
@@ -1398,7 +1470,130 @@ pub const ModuleGraph = struct {
             }
         }
 
+        // #1961: transformer pre-pass. helper module 을 graph 의 1급 모듈로 분배하려면
+        // helper import 가 link 단계 전에 import_records 에 등록되어야 한다. transformer 를
+        // 여기서 1회 실행해 transformed AST 를 module.ast 에 in-place 저장 + helper import
+        // 노드를 records 에 append. emitter 는 module.transform_cache hit 시 transform skip.
+        self.runTransformerPrePass(module, arena_alloc);
+
         module.state = .parsed;
+    }
+
+    /// transformer pre-pass — graph 단계에서 1회 실행.
+    /// 결과: `module.ast` 에 transformer 노드 in-place append, `module.transform_cache` set,
+    /// helper module import 들이 `module.import_records` 에 append.
+    /// 실패는 silent — 기존 import_records 와 `transform_cache=null` 로 emitter 가 legacy
+    /// 경로로 fallback (out-of-memory 등에 대한 부분 진행 회피).
+    fn runTransformerPrePass(self: *ModuleGraph, module: *Module, arena_alloc: std.mem.Allocator) void {
+        if (module.ast == null) return;
+        const ast_ptr = &(module.ast.?);
+
+        // emitter 와 동일한 옵션 결정 휴리스틱 — 결과 분기 시 cache mismatch.
+        const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
+        // worklet 변환은 react-native/@react-native 코어 제외, 나머지 node_modules 포함.
+        const exclude_worklet = self.worklet_transform and
+            (std.mem.indexOf(u8, module.path, "/node_modules/react-native/") != null or
+                std.mem.indexOf(u8, module.path, "/node_modules/@react-native/") != null);
+        const merged_plugins = builtin_plugins.collect(.{
+            .worklet = self.worklet_transform and !exclude_worklet,
+        }, self.plugins, arena_alloc) catch return;
+
+        const parser_node_count: u32 = @intCast(ast_ptr.nodes.items.len);
+
+        var transformer = Transformer.init(arena_alloc, ast_ptr, .{
+            .react_refresh = false, // graph 단계는 user code 도 react_refresh 비활성 — registration code 는 dev_mode 에서만 의미. emitter 가 별도 처리할 경우 cache 무효화 필요 (#1961 후속).
+            .plugins = merged_plugins,
+            .define = self.defines, // transformer.DefineEntry 는 scan_results.DefineEntry 의 alias
+            .experimental_decorators = self.experimental_decorators,
+            .emit_decorator_metadata = self.emit_decorator_metadata,
+            .use_define_for_class_fields = self.use_define_for_class_fields,
+            .verbatim_module_syntax = self.verbatim_module_syntax,
+            .unsupported = self.unsupported,
+            .drop_labels = self.drop_labels,
+            .jsx_transform = ast_ptr.has_jsx,
+            .jsx_runtime = self.jsx_runtime,
+            .jsx_factory = self.jsx_factory,
+            .jsx_fragment = self.jsx_fragment,
+            .jsx_import_source = self.jsx_import_source,
+            .jsx_filename = module.path,
+            .worklet_plugin_version = self.worklet_plugin_version,
+            .minify_syntax = self.minify_syntax,
+            .minify_whitespace = self.minify_whitespace,
+            .keep_names = self.keep_names,
+            .emit_runtime_helper_imports = true, // 핵심: helper module import 를 finalize 에 emit
+        }) catch return;
+
+        if (module.semantic) |sem| {
+            transformer.initSymbolIds(sem.symbol_ids) catch return;
+            transformer.symbols = sem.symbols.items;
+            transformer.references = sem.references;
+        }
+        transformer.line_offsets = module.line_offsets;
+        _ = is_user_code; // 향후 react_refresh dev_mode 분기에 사용
+
+        const new_root = transformer.transform() catch return;
+
+        const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
+        module.transform_cache = .{
+            .root = new_root,
+            .runtime_helpers = transformer.runtime_helpers,
+            .symbol_ids = owned_symbol_ids,
+        };
+
+        // transformer 가 추가한 helper module import 들을 records 에 append.
+        // [parser_node_count..) 영역만 walk — parser 영역은 이미 records 에 등록됨.
+        appendTransformerHelperImports(self, module, ast_ptr, parser_node_count, arena_alloc);
+    }
+
+    /// transformer 영역 ([parser_node_count..)) 에서 import_declaration 노드만 골라
+    /// `\x00zts:runtime/...` specifier 를 가지면 module.import_records 에 append.
+    fn appendTransformerHelperImports(
+        _: *ModuleGraph,
+        module: *Module,
+        ast_ptr: *const @import("../parser/ast.zig").Ast,
+        parser_node_count: u32,
+        arena_alloc: std.mem.Allocator,
+    ) void {
+        const helper_modules = @import("runtime_helper_modules.zig");
+        const nodes = ast_ptr.nodes.items;
+
+        var added: std.ArrayList(ImportRecord) = .empty;
+        defer added.deinit(arena_alloc);
+
+        for (nodes[parser_node_count..]) |node| {
+            if (node.tag != .import_declaration) continue;
+            const e = node.data.extra;
+            if (e + 2 >= ast_ptr.extra_data.items.len) continue;
+            const source_idx: NodeIndex = @enumFromInt(ast_ptr.extra_data.items[e + 2]);
+            if (source_idx.isNone()) continue;
+            const source_node = ast_ptr.getNode(source_idx);
+            if (source_node.tag != .string_literal) continue;
+            const raw = ast_ptr.getText(source_node.span);
+            const spec = stripImportQuotes(raw);
+            if (!helper_modules.isVirtualId(spec)) continue;
+
+            added.append(arena_alloc, .{
+                .specifier = spec,
+                .kind = .static_import,
+                .span = source_node.span,
+            }) catch return;
+        }
+
+        if (added.items.len == 0) return;
+
+        const old = module.import_records;
+        const merged = arena_alloc.alloc(ImportRecord, old.len + added.items.len) catch return;
+        @memcpy(merged[0..old.len], old);
+        @memcpy(merged[old.len..], added.items);
+        module.import_records = merged;
+    }
+
+    /// `import_scanner.stripQuotes` 와 동일 — 그러나 import_scanner 의 private fn 이라 inline.
+    fn stripImportQuotes(raw: []const u8) []const u8 {
+        if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\'') and raw[raw.len - 1] == raw[0]) {
+            return raw[1 .. raw.len - 1];
+        }
+        return raw;
     }
 
     const findPackageDirPath = resolve_cache_mod.findPackageDirPath;
@@ -1531,10 +1726,7 @@ pub const ModuleGraph = struct {
         const source_dir = std.fs.path.dirname(module_path) orelse ".";
 
         // Plugin: resolveId 훅용 runner를 루프 밖에서 한 번만 생성
-        const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
-            plugin_mod.PluginRunner.init(self.plugins)
-        else
-            null;
+        const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();
 
         // import.meta.glob: glob 레코드를 파일 시스템에서 확장
         expandGlobRecords(self.allocator, mod_ptr.import_records, source_dir);
@@ -2654,10 +2846,7 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
     if (!has_any) return;
 
     const module_path = module.path;
-    const plugin_runner: ?plugin_mod.PluginRunner = if (self.plugins.len > 0)
-        plugin_mod.PluginRunner.init(self.plugins)
-    else
-        null;
+    const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();
 
     // require.context 는 parse 산출물이라 arena 가 항상 존재. 없으면 (disabled/asset 등)
     // expand 자체가 의미 없고, graph allocator fallback 은 module.deinit 에서 free 누락 →
