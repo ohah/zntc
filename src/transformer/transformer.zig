@@ -364,6 +364,12 @@ pub const Transformer = struct {
     /// super() 이후의 this 참조를 _this로 교체해야 한다.
     super_call_this_alias: bool = false,
 
+    /// ES2015 class extends: 현재 derived constructor의 NewTarget.
+    /// super() lowering은 호출 위치의 `this.constructor`에 의존하지 않고 이 이름을
+    /// __callSuper에 명시 전달한다. arrow로 낮아진 함수 안의 super()도 동일 NewTarget을
+    /// 써야 하므로 constructor body 방문 중 유지한다.
+    current_derived_constructor_name: ?Span = null,
+
     /// for-in/for-of/for-await-of 헤더의 left(variable_declaration)를 방문 중인지.
     /// true면 let/const → var 다운레벨 시 `= void 0` init 주입을 생략.
     /// 헤더에선 루프가 매 반복 바인딩에 쓰므로 TDZ 흉내가 불필요하고,
