@@ -1691,8 +1691,17 @@ fn emitBundleRuntimeHelpers(
     // silent_console_error_patterns: 패턴 비어있으면 emit X — vanilla RN 등 trigger 없는
     // 환경에서 dead code 0. consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.
     try rt.emitConsoleErrorInterceptInto(output, allocator, options.silent_console_error_patterns, options.minify_whitespace);
-    // #1961 PR 1h: to_binary / keep_names 는 transformer 가 set 안 하는 helper (asset
-    // loader / `--keep-names` 옵션 기반). single-bundle 에서도 옵션 검사로 prepend.
+    try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
+}
+
+/// transformer 비트맵 외 경로의 helper (asset binary loader / `--keep-names` 옵션)
+/// preamble. emitBundleRuntimeHelpers / emitChunkRuntimeHelpers 양쪽 공용 (#1961 PR 1h).
+fn emitOptionPathHelpers(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    needs_to_binary: bool,
+    options: *const EmitOptions,
+) !void {
     if (needs_to_binary) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
     }
@@ -1737,12 +1746,7 @@ pub fn emitChunkRuntimeHelpers(
     // 등) 는 transformer 가 graph parse 단계에서 named import 으로 emit → graph 가 chunk
     // 분배. chunk-level prepend 는 중복 정의를 만들기 때문에 제거.
     _ = collected_helpers;
-    if (needs_to_binary) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
-    }
-    if (options.keep_names) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.KEEP_NAMES_RUNTIME_MIN else rt.KEEP_NAMES_RUNTIME);
-    }
+    try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
 }
 
 /// default → 실제 모드로 해석. default는 minify 시 eof, 아니면 inline.

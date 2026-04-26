@@ -1506,8 +1506,10 @@ pub const ModuleGraph = struct {
         opts.plugins = merged_plugins;
         opts.jsx_transform = ast_ptr.has_jsx;
         opts.jsx_filename = module.path;
-        // #1961 단계 4 의 single-bundle 회귀 (helper module declaration 이 statement
-        // shake 로 elide) 가 fix 되기 전까지 code splitting 모드에서만 활성.
+        // #1961 PR 1h 후 splitting / single-bundle 양쪽에서 helper module virtual import
+        // 모델 활성. mangler 가 helper module top-level 식별자를 reserved 처리
+        // (linker.zig 의 candidates collect 에서 isVirtualId 분기) — cross-module binding
+        // 안전. dev mode 모듈도 동일.
         opts.emit_runtime_helper_imports = true;
 
         var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
