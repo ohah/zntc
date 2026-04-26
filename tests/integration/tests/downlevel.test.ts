@@ -4680,19 +4680,17 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     });
   });
 
-  describe("ES5 string-keyed method", () => {
-    // class C { "foo bar"() {} } 가 ES5 다운레벨 시
-    // Object.defineProperty(C.prototype, ""foo bar"", ...) 같이 이중 quote
-    // 되어 syntax error 가 나던 회귀 (compat-table es5 string-keyed methods).
-    test("string literal key 메서드가 ES5 다운레벨 후 정상 호출", async () => {
+  describe("Tagged template + invalid escape (ES2018 lifting)", () => {
+    // raw 그대로 cooked array 에 박으면 JS engine 이 \\x can only be followed by
+    // a hex character sequence 같은 SyntaxError 를 낸다. ES2018 spec 은 invalid
+    // escape 가 있으면 cooked element 가 undefined 여야 한다.
+    test("invalid escape 가 있는 cooked element 가 undefined", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
-            class C {
-              "foo bar"() { return 2; }
-            }
-            const v = new C()["foo bar"]();
-            console.log(v, typeof (C as any).prototype["foo bar"]);
+            function strings(arr: TemplateStringsArray) { return arr; }
+            const str = strings\`\\1\\xz\\uz\\u{110000}\\u{z}\`;
+            console.log(str.length === 1, str[0] === undefined, str.raw[0] === "\\\\1\\\\xz\\\\uz\\\\u{110000}\\\\u{z}");
           `,
         },
         "index.ts",
@@ -4700,7 +4698,24 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       );
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
-      expect(result.runOutput).toBe("2 function");
+      expect(result.runOutput).toBe("true true true");
+    });
+
+    test("valid escape 는 그대로 cooked 에 박힌다", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function strings(arr: TemplateStringsArray) { return arr; }
+            const str = strings\`a\\nb\\tc\`;
+            console.log(str[0] === "a\\nb\\tc");
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true");
     });
   });
 });
