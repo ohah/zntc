@@ -965,3 +965,340 @@ test "Complex: destructuring imports used in complex expressions" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "width * height") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "width + height") != null);
 }
+
+// ============================================================
+// #1962 ESM external import 보존 — 엣지케이스
+// rolldown / esbuild 동등성 검증. chunk top dedup + namespace 별도 라인.
+// ============================================================
+
+test "#1962 ESM external: side-effect import (specifier 만)" {
+    // `import "polyfill"` — binding 없음. side-effect 만.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import "side-fx-only";
+        \\console.log("entry");
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"side-fx-only"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import\"side-fx-only\"") != null or
+        std.mem.indexOf(u8, result.output, "import \"side-fx-only\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+}
+
+test "#1962 ESM external: import { default as X } 가 default slot 으로 정규화" {
+    // `import { default as Foo }` 와 `import Foo` 는 의미적으로 동일 → 단일 default 로 emit.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { default as React, useState } from "react";
+        \\console.log(React, useState);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // default + named 는 한 라인. `default as React` 가 아닌 default specifier 로 정규화 emit.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"react\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "React") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useState") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+}
+
+test "#1962 ESM external: namespace 와 named 는 별도 라인 (ESM syntax)" {
+    // `import * as ns, { x } from "spec"` 는 ESM syntax error — namespace 전용 라인 분리.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import * as React from "react";
+        \\import { useState } from "react";
+        \\console.log(React, useState);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import * as React from \"react\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "{ useState }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+}
+
+test "#1962 ESM external: 여러 모듈 같은 specifier dedup" {
+    // 두 모듈이 같은 binding 을 import → chunk top 에 import 한 번만 등장.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./mod-a";
+        \\import { b } from "./mod-b";
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "mod-a.ts",
+        \\import { useState } from "react";
+        \\export const a = useState(1);
+    );
+    try writeFile(tmp.dir, "mod-b.ts",
+        \\import { useState } from "react";
+        \\export const b = useState(2);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 핵심: `import ... from "react"` 라인이 chunk 당 한 번만 등장 — dedup 검증.
+    const first = std.mem.indexOf(u8, result.output, "from \"react\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOfPos(u8, result.output, first + 1, "from \"react\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+}
+
+test "#1962 ESM external: 같은 binding 여러 모듈에서 import 시 한 라인으로 통합" {
+    // 두 모듈이 `useState` 동일 binding 사용 → import { useState } 하나만 emit.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { a } from "./mod-a";
+        \\import { b } from "./mod-b";
+        \\console.log(a, b);
+    );
+    try writeFile(tmp.dir, "mod-a.ts",
+        \\import { useState, useEffect } from "react";
+        \\export const a = useState(1);
+        \\useEffect(() => {});
+    );
+    try writeFile(tmp.dir, "mod-b.ts",
+        \\import { useEffect, useMemo } from "react";
+        \\export const b = useMemo(() => 1, []);
+        \\useEffect(() => {});
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // 세 binding 이 한 import 라인에 합쳐짐.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useState") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useEffect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useMemo") != null);
+    // react import 는 하나의 라인만.
+    const first = std.mem.indexOf(u8, result.output, "from \"react\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOfPos(u8, result.output, first + 1, "from \"react\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+}
+
+test "#1962 ESM external: 패키지 sub-path 자동 external" {
+    // `external: ["react"]` → "react/jsx-runtime" 도 자동 external (esbuild/rolldown 동등).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.tsx",
+        \\export function App() { return <div>hi</div>; }
+    );
+    const entry = try absPath(&tmp, "entry.tsx");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+        .jsx_runtime = .automatic,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // react/jsx-runtime 도 ESM import 로 보존 (require() 변환 없음).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"react/jsx-runtime\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"react/jsx-runtime\")") == null);
+}
+
+test "#1962 ESM external: wildcard 패턴은 sub-path 자동 확장 안 함" {
+    // `external: ["react/*"]` 는 사용자가 sub-path 매칭 직접 작성한 것 — 자동 확장 안 함.
+    // "react" 자체는 매칭 안 되어야 (`react/*` 은 "react/foo" 만 매칭).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { jsx } from "react/jsx-runtime";
+        \\console.log(jsx);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react/*"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"react/jsx-runtime\"") != null);
+}
+
+test "#1962 ESM external: import alias rename 보존" {
+    // `import { useState as US }` 는 alias 그대로 보존되어야 — `useState as US` emit.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { useState as US } from "react";
+        \\console.log(US(0));
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useState as US") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"react\"") != null);
+}
+
+test "#1962 ESM external: CJS 출력 시 require() preamble 그대로 (regression 가드)" {
+    // ESM external 처리는 format=esm 한정. CJS 출력은 기존 require() 경로 유지.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { useState } from "react";
+        \\console.log(useState);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+        .format = .cjs,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // CJS 출력: require() preamble 유지.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"react\")") != null);
+    // import 구문은 emit 안 됨.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import {") == null);
+}
+
+test "#1962 ESM external: minify_whitespace 출력 형식" {
+    // minify=true 시 import 구문도 압축 형식으로 emit.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { useState } from "react";
+        \\console.log(useState);
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // minify: `import{useState}from"react";` (공백 없음).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import{useState}from\"react\";") != null);
+}
+
+test "#1962 ESM external: type-only mixed — value 만 import 라인에 남음" {
+    // type-only binding 은 elide, value-used 만 ESM external import 에 남음.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { ReactNode, useState } from "react";
+        \\export function Wrap(_node: ReactNode) { return useState(0); }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // useState 는 보존, ReactNode 는 elide.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useState") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ReactNode") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"react\"") != null);
+}
+
+test "#1962 ESM external: re-export 가 import 보존 + canonical 식별자로 동작" {
+    // `import { X } from "ext"; export { X };` — X 가 import 라인에 살아있고
+    // export 가 같은 식별자로 re-export.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { useState } from "react";
+        \\export { useState };
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .external = &.{"react"},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"react\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "export") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useState") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(") == null);
+}

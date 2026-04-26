@@ -2,6 +2,7 @@ const std = @import("std");
 const resolve_cache = @import("resolve_cache.zig");
 const ResolveCache = resolve_cache.ResolveCache;
 const matchGlob = resolve_cache.matchGlob;
+const matchPackageSubPath = resolve_cache.matchPackageSubPath;
 const isNodeBuiltin = resolve_cache.isNodeBuiltin;
 const profile = @import("../profile.zig");
 const ResolvedModule = @import("plugin.zig").ResolvedModule;
@@ -75,6 +76,64 @@ test "isExternal: user patterns" {
     try std.testing.expect(cache.isExternal("react"));
     try std.testing.expect(cache.isExternal("@mui/material"));
     try std.testing.expect(!cache.isExternal("vue"));
+}
+
+// ============================================================
+// #1962 — external 패키지 sub-path 자동 매칭 (esbuild/rolldown 동등)
+// ============================================================
+
+test "matchPackageSubPath: exact 매칭은 false (matchGlob 책임)" {
+    try std.testing.expect(!matchPackageSubPath("react", "react"));
+}
+
+test "matchPackageSubPath: sub-path 자동 external" {
+    try std.testing.expect(matchPackageSubPath("react", "react/jsx-runtime"));
+    try std.testing.expect(matchPackageSubPath("react", "react/jsx-dev-runtime"));
+    try std.testing.expect(matchPackageSubPath("@mui/material", "@mui/material/Button"));
+    // 깊은 sub-path 도 매칭 (esbuild/rolldown 동등)
+    try std.testing.expect(matchPackageSubPath("react", "react/some/deep/path"));
+}
+
+test "matchPackageSubPath: prefix-only 비매칭 (false-positive 차단)" {
+    // pattern="react" specifier="react-dom" — prefix 지만 sub-path 아님
+    try std.testing.expect(!matchPackageSubPath("react", "react-dom"));
+    try std.testing.expect(!matchPackageSubPath("react", "react-native"));
+    // pattern="react" specifier="reactstrap" — 우연한 prefix
+    try std.testing.expect(!matchPackageSubPath("react", "reactstrap"));
+}
+
+test "matchPackageSubPath: wildcard 보유 패턴은 자동 확장 안 함" {
+    // 사용자가 명시적으로 sub-path 매칭을 작성한 경우 (`react/*`) 매칭은 matchGlob 가 담당
+    try std.testing.expect(!matchPackageSubPath("react/*", "react/jsx-runtime"));
+    try std.testing.expect(!matchPackageSubPath("@mui/*", "@mui/material/Button"));
+}
+
+test "matchPackageSubPath: 빈 specifier / pattern 안전성" {
+    try std.testing.expect(!matchPackageSubPath("", ""));
+    try std.testing.expect(!matchPackageSubPath("", "react"));
+    try std.testing.expect(!matchPackageSubPath("react", ""));
+}
+
+test "isExternal: sub-path 가 자동 external (#1962)" {
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"react"} });
+    defer cache.deinit();
+
+    try std.testing.expect(cache.isExternal("react"));
+    try std.testing.expect(cache.isExternal("react/jsx-runtime"));
+    try std.testing.expect(cache.isExternal("react/jsx-dev-runtime"));
+    // 우연한 prefix 는 external 아님
+    try std.testing.expect(!cache.isExternal("react-dom"));
+    try std.testing.expect(!cache.isExternal("reactstrap"));
+}
+
+test "isExternal: scoped 패키지 sub-path 도 자동 external (#1962)" {
+    var cache = ResolveCache.init(std.testing.allocator, .{ .external_patterns = &.{"@babel/runtime"} });
+    defer cache.deinit();
+
+    try std.testing.expect(cache.isExternal("@babel/runtime"));
+    try std.testing.expect(cache.isExternal("@babel/runtime/helpers/extends"));
+    // 다른 scope 는 external 아님
+    try std.testing.expect(!cache.isExternal("@babel/core"));
 }
 
 test "resolve: external returns null" {

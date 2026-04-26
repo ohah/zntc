@@ -660,16 +660,7 @@ pub const ResolveCache = struct {
         // 사용자 지정 external 패턴
         for (self.external_patterns) |pattern| {
             if (matchGlob(pattern, specifier)) return true;
-            // #1962 esbuild/rolldown 동등: external 패키지의 sub-path 도 자동 external.
-            // 예) `external: ["react"]` → "react/jsx-runtime", "react/jsx-dev-runtime" 도 external.
-            // `*` 보유 패턴은 사용자가 sub-path 매칭을 직접 작성한 것이므로 자동 확장 안 함
-            // — `react/*` 처럼 명시한 의도와 충돌하지 않게.
-            const has_wildcard = std.mem.indexOf(u8, pattern, "*") != null;
-            const is_sub_path = !has_wildcard and
-                specifier.len > pattern.len and
-                std.mem.startsWith(u8, specifier, pattern) and
-                specifier[pattern.len] == '/';
-            if (is_sub_path) return true;
+            if (matchPackageSubPath(pattern, specifier)) return true;
         }
 
         return false;
@@ -723,6 +714,17 @@ pub fn isNodeBuiltin(specifier: []const u8) bool {
 /// "react" matches "react"
 /// "@mui/*" matches "@mui/material" but not "@mui/icons/filled"
 /// "node:*" matches "node:fs", "node:path"
+/// #1962 esbuild/rolldown 동등 — external 패키지의 sub-path 자동 매칭.
+/// 예) `external: ["react"]` → "react/jsx-runtime", "react/jsx-dev-runtime" 도 external.
+/// `*` 보유 패턴 (e.g. `react/*`) 은 사용자가 sub-path 매칭을 직접 작성한 것이므로
+/// 자동 확장 안 함 — 명시 의도와 충돌하지 않게.
+pub fn matchPackageSubPath(pattern: []const u8, specifier: []const u8) bool {
+    if (std.mem.indexOf(u8, pattern, "*") != null) return false;
+    if (specifier.len <= pattern.len) return false;
+    if (!std.mem.startsWith(u8, specifier, pattern)) return false;
+    return specifier[pattern.len] == '/';
+}
+
 pub fn matchGlob(pattern: []const u8, text: []const u8) bool {
     if (std.mem.indexOf(u8, pattern, "*")) |star_pos| {
         const prefix = pattern[0..star_pos];
