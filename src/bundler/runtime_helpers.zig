@@ -931,7 +931,7 @@ pub const GUARDED_RUNTIME =
 ;
 
 pub const GUARDED_RUNTIME_MIN =
-    "function __zts_guarded(fn){try{return fn()}catch(e){if(typeof globalThis!==\"undefined\"&&globalThis.__ZTS_DEBUG_GUARD&&typeof console!==\"undefined\"&&console.warn)console.warn(\"[zts:guard] caught:\",e)}}\n";
+    "function $zg(fn){try{return fn()}catch(e){if(typeof globalThis!==\"undefined\"&&globalThis.__ZTS_DEBUG_GUARD&&typeof console!==\"undefined\"&&console.warn)console.warn(\"[zts:guard] caught:\",e)}}\n";
 
 /// `silent_console_error_patterns` 가 비어있지 않을 때 prologue 에 주입.
 /// `Object.defineProperty(console, "error", { set })` setter intercept — RN
@@ -1007,7 +1007,10 @@ pub fn emitConsoleErrorInterceptInto(
 /// `__zts_guarded(function(){return <expr>;})` wrap 매크로 — esm_wrap / linker preamble /
 /// emitter 의 entry chain unroll 모두 같은 형식이라 한 곳에서 정의. 패턴 변경 시 여기만.
 pub const GUARD_LAMBDA_OPEN = "__zts_guarded(function(){return ";
+pub const GUARD_LAMBDA_OPEN_MIN = "$zg(function(){return ";
 pub const GUARD_LAMBDA_CLOSE = ";});\n";
+pub const GUARD_FN_NAME = "__zts_guarded";
+pub const GUARD_FN_NAME_MIN = "$zg";
 pub const INIT_CALL_END = ";\n";
 
 // ============================================================
