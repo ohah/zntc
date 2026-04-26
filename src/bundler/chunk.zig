@@ -830,8 +830,15 @@ pub fn generatePreserveModulesChunks(
         chunk.name = name;
 
         chunk.exec_order = m.exec_index;
-        // preserve-modules에서 chunk.rel_dir을 설정하여 디렉토리 구조 유지
-        chunk.rel_dir = m.path;
+        // preserve-modules에서 chunk.rel_dir을 설정하여 디렉토리 구조 유지.
+        // helper virtual module (`\x00zts:runtime/...`) 의 NULL byte 가 fs path / cross-chunk
+        // import specifier 로 새지 않도록 sanitize. caller 가 owner 인 m.path 와 다른 메모리 —
+        // graph allocator 로 alloc (chunk_graph 와 동일 lifetime).
+        const helper_modules = @import("../runtime_helper_modules.zig");
+        chunk.rel_dir = if (helper_modules.isVirtualId(m.path))
+            helper_modules.sanitizeId(allocator, m.path) catch m.path
+        else
+            m.path;
 
         const ci = try chunk_graph.addChunk(chunk);
         chunk_graph.assignModuleToChunk(mod_idx, ci);
