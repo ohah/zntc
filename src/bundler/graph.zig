@@ -31,6 +31,7 @@ const ResolveCache = resolve_cache_mod.ResolveCache;
 const resolver_mod = @import("resolver.zig");
 const import_scanner = @import("import_scanner.zig");
 const binding_scanner_mod = @import("binding_scanner.zig");
+const bundler_symbol = @import("symbol.zig");
 const json_to_esm = @import("json_to_esm.zig");
 const fs = @import("fs.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
@@ -139,6 +140,9 @@ pub const ModuleGraph = struct {
     /// 활성 — single-bundle 모드는 helper module 의 declaration 이 statement-level shake
     /// 로 elide 되는 회귀가 있어 기존 preamble 모델 유지.
     code_splitting: bool = false,
+    /// identifier mangling 활성화. transformer pre-pass 이후 생성된 임시 binding도
+    /// mangler 입력에 포함하려고 transformed AST semantic을 재구축할 때 사용.
+    minify_identifiers: bool = false,
 
     /// transformer pre-pass 의 옵션 base (#1961). bundler 가 init 시 BundleOptions →
     /// TransformOptions 매핑을 1회 채움. parseModule 이 base 를 복사 후 per-module
@@ -1558,6 +1562,69 @@ pub const ModuleGraph = struct {
         // transformer 가 추가한 helper module import 들을 records 에 append.
         // [parser_node_count..) 영역만 walk — parser 영역은 이미 records 에 등록됨.
         appendTransformerHelperImports(self, module, &(module.ast.?), parser_node_count, arena_alloc);
+
+        if (self.minify_identifiers) {
+            self.refreshSemanticAfterTransform(module, arena_alloc);
+        }
+    }
+
+    fn refreshSemanticAfterTransform(_: *ModuleGraph, module: *Module, arena_alloc: std.mem.Allocator) void {
+        if (module.ast == null) return;
+        var analyzer = SemanticAnalyzer.init(arena_alloc, &(module.ast.?));
+        analyzer.is_strict_mode = true;
+        analyzer.is_module = true;
+        analyzer.enable_stmt_info = true;
+
+        if (analyzer.analyze()) |_| {
+            module.semantic = .{
+                .symbols = analyzer.symbols,
+                .scopes = analyzer.scopes.items,
+                .scope_maps = analyzer.scope_maps.items,
+                .exported_names = analyzer.exported_names,
+                .symbol_ids = analyzer.symbol_ids.items,
+                .unresolved_references = analyzer.unresolved_references,
+                .references = analyzer.references.items,
+            };
+            refreshLocalExportSymbols(module);
+            if (module.transform_cache) |*cache| {
+                cache.symbol_ids = analyzer.symbol_ids.items;
+            }
+
+            if (analyzer.stmt_info_count > 0) {
+                module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
+                    arena_alloc,
+                    &(module.ast.?),
+                    analyzer.symbols.items,
+                    analyzer.references.items,
+                    if (module.semantic) |*s| &s.unresolved_references else null,
+                ) catch module.prebuilt_stmt_info;
+            }
+        } else |_| {}
+    }
+
+    fn refreshLocalExportSymbols(module: *Module) void {
+        const sem = if (module.semantic) |*s| s else return;
+        if (sem.scope_maps.len == 0) return;
+        const scope0 = sem.scope_maps[0];
+        const mod_idx = module.index;
+
+        for (module.export_bindings) |*eb| {
+            if (eb.kind != .local) continue;
+
+            const lookup_name = if (std.mem.eql(u8, eb.exported_name, "default") and
+                (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default")))
+                "_default"
+            else
+                eb.local_name;
+
+            const sym_idx = scope0.get(lookup_name) orelse continue;
+            if (sym_idx >= sem.symbols.items.len) continue;
+            if (std.mem.eql(u8, eb.exported_name, "default") and std.mem.eql(u8, lookup_name, "_default")) {
+                sem.symbols.items[sym_idx].synthetic_kind = .default_export;
+                sem.symbols.items[sym_idx].synthetic_name = "_default";
+            }
+            eb.symbol = bundler_symbol.SymbolRef.makeSemantic(mod_idx, sym_idx);
+        }
     }
 
     /// transformer 영역 ([parser_node_count..)) 에서 import_declaration 노드만 골라

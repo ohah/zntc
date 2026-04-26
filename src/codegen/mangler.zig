@@ -23,7 +23,9 @@ const std = @import("std");
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const Reference = @import("../semantic/symbol.zig").Reference;
+const Span = @import("../lexer/token.zig").Span;
 
 pub const ManglerResult = struct {
     /// symbol_id -> 새 이름. codegen의 linking_metadata.renames에 주입.
@@ -350,15 +352,7 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         // Bundler 합성 심볼(#1338)은 source AST에 식별자 참조가 없고 span이 (0,0).
         // rename은 parser AST의 identifier 노드를 바꾸는 것이라 무의미 — skip.
         if (sym.isSynthetic()) continue;
-        // string_table-backed span (Ast.STRING_TABLE_BIT). parser/transformer 가
-        // `addString` 으로 합성한 identifier 가 semantic 에서 const/let declaration
-        // 으로 재분석될 때 발생 (#1751). 이런 심볼의 이름은 source 에 존재하지 않고
-        // string_table 에만 있으므로 원본 텍스트 비교가 의미 없고 slice 는 OOB.
-        // 현재 mangler 는 `source: []const u8` 만 받아서 string_table 접근 불가 —
-        // 합성 이름은 rename 대상에서 제외한다 (mangle 해도 renames 맵이 span-offset
-        // 기반 codegen 과 맞물리지 않아 효과도 없음).
-        if (sym.name.start & 0x80000000 != 0) continue;
-        const orig_name = source[sym.name.start..sym.name.end];
+        const orig_name = sym.nameText(source);
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
 
@@ -593,4 +587,54 @@ pub fn nextBase54Name(counter: *u32, buf: *[8]u8) []const u8 {
         counter.* += 1;
     }
     return name;
+}
+
+test "mangle: string_table 기반 생성 심볼도 rename 결과에 포함" {
+    const allocator = std.testing.allocator;
+
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 0 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
+    };
+
+    const string_table_bit: u32 = 0x80000000;
+    const symbols = [_]Symbol{
+        .{
+            .name = .{ .start = string_table_bit, .end = string_table_bit + 5 },
+            .scope_id = @enumFromInt(1),
+            .origin_scope = @enumFromInt(1),
+            .kind = .variable_var,
+            .decl_flags = SymbolKind.variable_var.declFlags(),
+            .declaration_span = Span{ .start = string_table_bit, .end = string_table_bit + 5 },
+            .reference_count = 2,
+            .synthetic_name = "_this",
+        },
+    };
+
+    var empty_scope = std.StringHashMap(usize).init(allocator);
+    defer empty_scope.deinit();
+    var function_scope = std.StringHashMap(usize).init(allocator);
+    defer function_scope.deinit();
+    try function_scope.put("_this", 0);
+
+    const scope_maps = [_]std.StringHashMap(usize){ empty_scope, function_scope };
+    const refs = [_]Reference{
+        .{
+            .node_index = @enumFromInt(0),
+            .scope_id = @enumFromInt(1),
+            .symbol_id = @enumFromInt(0),
+            .flags = .{ .read = true },
+        },
+    };
+
+    var result = try mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &scope_maps,
+        .references = &refs,
+        .source = "",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("e", result.renames.get(0).?);
 }

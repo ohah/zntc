@@ -603,6 +603,7 @@ pub const SemanticAnalyzer = struct {
             .decl_flags = decl_flags,
             .declaration_span = decl_span,
             .origin_scope = self.current_scope,
+            .synthetic_name = if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0) name_text else "",
         });
 
         // symbol_ids에 선언 노드 기록
