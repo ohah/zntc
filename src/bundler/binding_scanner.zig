@@ -15,6 +15,7 @@ const std = @import("std");
 const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const ast_walk = @import("../parser/ast_walk.zig");
 const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
 const module_parser = @import("../parser/module.zig");
@@ -148,7 +149,11 @@ pub fn extractImportBindings(
         try source_to_record.put(key, @intCast(i));
     }
 
-    for (ast.nodes.items) |node| {
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
+    defer allocator.free(reachable);
+
+    for (reachable) |ni| {
+        const node = ast.nodes.items[ni];
         if (node.tag != .import_declaration) continue;
 
         const e = node.data.extra;
@@ -254,7 +259,11 @@ pub fn extractExportBindings(
         try import_by_name.put(allocator, ib.local_name, ib);
     }
 
-    for (ast.nodes.items) |node| {
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
+    defer allocator.free(reachable);
+
+    for (reachable) |ni| {
+        const node = ast.nodes.items[ni];
         switch (node.tag) {
             .export_named_declaration => {
                 const e = node.data.extra;
@@ -571,7 +580,11 @@ pub fn collectNamespaceAccesses(
     defer escaped_refs.deinit(allocator);
 
     // 단일 패스: member access 수집 + 탈출 후보 기록
-    for (ast.nodes.items, 0..) |node, ni| {
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
+    defer allocator.free(reachable);
+
+    for (reachable) |ni| {
+        const node = ast.nodes.items[ni];
         switch (node.tag) {
             .static_member_expression => {
                 const me = node.data.extra;
@@ -600,7 +613,7 @@ pub fn collectNamespaceAccesses(
             .identifier_reference => {
                 const name = ast.getText(node.span);
                 if (ns_map.get(name)) |binding_idx| {
-                    try escaped_refs.append(allocator, .{ .ni = @intCast(ni), .binding_idx = binding_idx });
+                    try escaped_refs.append(allocator, .{ .ni = ni, .binding_idx = binding_idx });
                 }
             },
             .computed_member_expression => {

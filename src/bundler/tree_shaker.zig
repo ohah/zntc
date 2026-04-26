@@ -360,7 +360,7 @@ pub const TreeShaker = struct {
         const m = self.getModule(module_index) orelse return true;
         const sem = m.semantic orelse return true;
         if (sem.scope_maps.len == 0) return true;
-        const sym_idx = sem.scope_maps[0].get(local_name) orelse return true;
+        const sym_idx = sem.scope_maps[0].get(local_name) orelse return false;
 
         // 역인덱스로 이 심볼을 참조하는 statement 중 reachable한 것이 있는지 확인
         if (sym_idx < infos.sym_to_referencing_stmts.len) {

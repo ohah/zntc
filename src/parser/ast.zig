@@ -664,9 +664,9 @@ pub const Node = struct {
                 // export_default: unary = { operand: decl, flags: 0 }
                 .export_default_declaration => .{ .kind = .unary },
                 // jsx_element: extra = [tag(0), attrs_start, attrs_len, children_start, children_len]
-                .jsx_element => .{ .kind = .extra, .child_offsets = &.{0} },
+                .jsx_element => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{ .{ 1, 2 }, .{ 3, 4 } } },
                 // jsx_opening_element: extra = [tag(0), attrs_start, attrs_len]
-                .jsx_opening_element => .{ .kind = .extra, .child_offsets = &.{0} },
+                .jsx_opening_element => .{ .kind = .extra, .child_offsets = &.{0}, .list_offsets = &.{.{ 1, 2 }} },
                 // jsx_fragment: list = children (파서에서 .list로 저장)
                 .jsx_fragment => .{ .kind = .list },
                 // flow_component_wrapper: extra = [func_decl(0), const_decl(1)]

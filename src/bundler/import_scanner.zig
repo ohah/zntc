@@ -28,6 +28,7 @@ const std = @import("std");
 const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const ast_walk = @import("../parser/ast_walk.zig");
 const CallFlags = @import("../parser/ast.zig").CallFlags;
 const MemberFlags = @import("../parser/ast.zig").MemberFlags;
 const TokenKind = @import("../lexer/token.zig").Kind;
@@ -76,7 +77,11 @@ pub fn extractImportsWithCjsDetectionAndDefines(
     defer dead_ranges.deinit(allocator);
     if (defines.len > 0) try collectDeadIfRanges(allocator, ast, defines, &dead_ranges);
 
-    for (ast.nodes.items) |node| {
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
+    defer allocator.free(reachable);
+
+    for (reachable) |ni| {
+        const node = ast.nodes.items[ni];
         if (isInsideAnySpan(node.span, dead_ranges.items)) continue;
         switch (node.tag) {
             .import_declaration => {
@@ -150,7 +155,11 @@ fn collectDeadIfRanges(
     defines: []const DefineEntry,
     dead_ranges: *std.ArrayList(Span),
 ) !void {
-    for (ast.nodes.items) |node| {
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
+    defer allocator.free(reachable);
+
+    for (reachable) |ni| {
+        const node = ast.nodes.items[ni];
         if (node.tag != .if_statement) continue;
         const parts = node.data.ternary;
         const known = evalToBoolean(ast, parts.a, defines) orelse continue;
@@ -771,7 +780,11 @@ fn isImportMetaUrl(ast: *const Ast, idx: NodeIndex) bool {
 /// new Worker(new URL('./worker.ts', import.meta.url)) 패턴만 감지.
 pub fn extractWorkerRecords(allocator: std.mem.Allocator, ast: *const Ast) ![]ImportRecord {
     var records = std.ArrayListUnmanaged(ImportRecord).empty;
-    for (ast.nodes.items) |node| {
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
+    defer allocator.free(reachable);
+
+    for (reachable) |ni| {
+        const node = ast.nodes.items[ni];
         if (node.tag == .new_expression) {
             if (tryExtractWorkerNew(ast, node)) |record| {
                 try records.append(allocator, record);

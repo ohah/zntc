@@ -76,6 +76,7 @@ pub fn emitChunkExternalImports(
             const rec = m.import_records[ib.import_record_index];
             if (!rec.is_external) continue;
             if (rec.kind != .static_import and rec.kind != .re_export) continue;
+            if (!ib.isSynthetic() and !ib.local_symbol.isValid()) continue;
 
             // verbatim_module_syntax=true 면 모두 보존, 아니면 type-only 는 drop.
             if (!verbatim) {

@@ -144,3 +144,52 @@ pub fn children(ast: *const Ast, node: Node) ChildIterator {
         .data = node.data,
     };
 }
+
+/// AST 루트(마지막 program 노드)에서 도달 가능한 노드 인덱스를 pre-order로 수집한다.
+/// transformer는 새 노드를 append하면서 이전 노드를 orphan으로 남길 수 있으므로,
+/// post-transform 분석은 `ast.nodes.items` 전체 순회 대신 이 결과를 사용해야 한다.
+pub fn collectReachableNodeIndices(allocator: std.mem.Allocator, ast: *const Ast) ![]u32 {
+    if (ast.nodes.items.len == 0) return &.{};
+
+    var visited = try allocator.alloc(bool, ast.nodes.items.len);
+    defer allocator.free(visited);
+    @memset(visited, false);
+
+    var result: std.ArrayList(u32) = .empty;
+    errdefer result.deinit(allocator);
+
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(allocator);
+    const root_idx = ast.transformed_root orelse
+        @as(NodeIndex, @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    try stack.append(allocator, root_idx);
+
+    var child_buf: std.ArrayList(NodeIndex) = .empty;
+    defer child_buf.deinit(allocator);
+
+    while (stack.pop()) |idx| {
+        if (idx.isNone()) continue;
+        const ni: u32 = @intFromEnum(idx);
+        if (ni >= ast.nodes.items.len) continue;
+        if (visited[ni]) continue;
+        visited[ni] = true;
+
+        try result.append(allocator, ni);
+
+        child_buf.clearRetainingCapacity();
+        var it = children(ast, ast.nodes.items[ni]);
+        while (it.next()) |child_idx| {
+            if (child_idx.isNone()) continue;
+            if (@intFromEnum(child_idx) >= ast.nodes.items.len) continue;
+            try child_buf.append(allocator, child_idx);
+        }
+
+        var i = child_buf.items.len;
+        while (i > 0) {
+            i -= 1;
+            try stack.append(allocator, child_buf.items[i]);
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}

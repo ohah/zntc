@@ -324,6 +324,22 @@ pub fn moduleShortFor(base_name: []const u8) ?[]const u8 {
     return null;
 }
 
+/// 이 런타임 helper 시스템이 export 하는 helper base name 인지 검사.
+/// helper virtual module 내부의 helper-to-helper 참조는 같은 helper namespace 안에서
+/// 해석되므로 브라우저/global 예약명으로 취급하면 안 된다.
+pub fn isRegisteredHelperBaseName(base_name: []const u8) bool {
+    return moduleShortFor(base_name) != null;
+}
+
+/// map 에 들어있는 등록 helper base name 을 제거한다.
+pub fn removeRegisteredHelperBaseNames(map: *std.StringHashMap(void)) void {
+    for (MODULES) |m| {
+        for (m.helpers) |h| {
+            _ = map.remove(h);
+        }
+    }
+}
+
 /// helper base name → virtual module 의 internal ID 생성.
 /// 예: `__generator` → `\x00zts:runtime/generator`. caller 가 소유.
 /// 미등록 helper 는 null.
