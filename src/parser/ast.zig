@@ -888,6 +888,11 @@ pub const Ast = struct {
             .has_jsx = source_ast.has_jsx,
             .has_jsx_key_after_spread = source_ast.has_jsx_key_after_spread,
             .allocator = allocator,
+            // #1961: source_ast 가 이미 transform 된 상태면 transformed_root + boundary 도
+            // 복사. 그렇지 않으면 emit 단계 transformer 가 graph pre-pass 결과를 무시하고
+            // 두 번째 transform 을 시작 → ast.transformed_root 의 cache hit 분기를 놓침.
+            .transformed_root = source_ast.transformed_root,
+            .transform_boundary = source_ast.transform_boundary,
         };
         // 세 appendSlice 중 하나라도 실패하면 이미 할당된 ArrayList 버퍼를 정리해야 한다.
         errdefer cloned.deinit();

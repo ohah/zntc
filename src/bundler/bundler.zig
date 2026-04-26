@@ -739,6 +739,8 @@ pub const Bundler = struct {
         // #1961: transformer pre-pass 옵션 — graph 가 module 마다 transformer 실행 시 사용.
         // emitter 의 동일 옵션 set 과 1:1 매칭되어야 cache 일관성 보장.
         graph.worklet_transform = self.options.worklet_transform;
+        graph.react_refresh = self.options.react_refresh;
+        graph.code_splitting = self.options.code_splitting;
         graph.experimental_decorators = self.options.experimental_decorators;
         graph.emit_decorator_metadata = self.options.emit_decorator_metadata;
         graph.use_define_for_class_fields = self.options.use_define_for_class_fields;

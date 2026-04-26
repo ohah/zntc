@@ -132,6 +132,12 @@ pub const ModuleGraph = struct {
 
     /// `worklet "directive"` plugin 활성 여부 — bundler 가 BundleOptions.worklet_transform 으로 set.
     worklet_transform: bool = false,
+    /// React Fast Refresh — dev_mode + user_code 에 transformer 가 등록 코드 주입.
+    react_refresh: bool = false,
+    /// code splitting 활성화. helper module virtual import (#1961) 는 splitting 모드에서만
+    /// 활성 — single-bundle 모드는 helper module 의 declaration 이 statement-level shake
+    /// 로 elide 되는 회귀가 있어 기존 preamble 모델 유지.
+    code_splitting: bool = false,
     /// `experimentalDecorators` — TS legacy decorator 변환.
     experimental_decorators: bool = false,
     /// `emitDecoratorMetadata` — `__metadata` 호출 주입.
@@ -901,7 +907,15 @@ pub const ModuleGraph = struct {
                     const dep_idx = try self.addDisabledModule(record.specifier);
                     try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 },
-                .virtual, .dataurl, .external, .custom => unreachable,
+                .virtual => |v| {
+                    // #1961: virtual module 은 plugin 의 load 훅이 source 채움. addModule 이
+                    // path 를 dupe 하므로 graph 가 owner. v.path 는 plugin 이 borrow 한
+                    // specifier (runtime_helper_modules) 일 수 있어 free 안 함 — plugin 이
+                    // alloc 했으면 plugin context lifetime 동안 살아있어야 한다는 규약.
+                    const dep_idx = try self.addModule(v.path);
+                    try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
+                },
+                .dataurl, .external, .custom => unreachable,
             }
         } else {
             // external — phantom Module 로 graph 에 등록 + 양방향 link.
@@ -1501,7 +1515,7 @@ pub const ModuleGraph = struct {
         const parser_node_count: u32 = @intCast(ast_ptr.nodes.items.len);
 
         var transformer = Transformer.init(arena_alloc, ast_ptr, .{
-            .react_refresh = false, // graph 단계는 user code 도 react_refresh 비활성 — registration code 는 dev_mode 에서만 의미. emitter 가 별도 처리할 경우 cache 무효화 필요 (#1961 후속).
+            .react_refresh = self.react_refresh and is_user_code,
             .plugins = merged_plugins,
             .define = self.defines, // transformer.DefineEntry 는 scan_results.DefineEntry 의 alias
             .experimental_decorators = self.experimental_decorators,
@@ -1520,7 +1534,9 @@ pub const ModuleGraph = struct {
             .minify_syntax = self.minify_syntax,
             .minify_whitespace = self.minify_whitespace,
             .keep_names = self.keep_names,
-            .emit_runtime_helper_imports = true, // 핵심: helper module import 를 finalize 에 emit
+            // #1961 단계 4 의 single-bundle 회귀 (helper module declaration 이 statement
+            // shake 로 elide) 가 fix 되기 전까지 code splitting 모드에서만 활성.
+            .emit_runtime_helper_imports = self.code_splitting,
         }) catch return;
 
         if (module.semantic) |sem| {
@@ -1529,9 +1545,13 @@ pub const ModuleGraph = struct {
             transformer.references = sem.references;
         }
         transformer.line_offsets = module.line_offsets;
-        _ = is_user_code; // 향후 react_refresh dev_mode 분기에 사용
 
         const new_root = transformer.transform() catch return;
+
+        // transformer 가 새 ast (clone) 에 transform 결과를 보유. module.ast 를 그 새 ast 로
+        // swap. arena_alloc 가 owner 라 backing 은 안전. emit 단계 transformer 가 module.ast
+        // 를 clone 시 transformed_root 까지 복사되어 cache hit 분기 즉시 return.
+        module.ast = transformer.ast.*;
 
         const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
         module.transform_cache = .{
@@ -1542,11 +1562,12 @@ pub const ModuleGraph = struct {
 
         // transformer 가 추가한 helper module import 들을 records 에 append.
         // [parser_node_count..) 영역만 walk — parser 영역은 이미 records 에 등록됨.
-        appendTransformerHelperImports(self, module, ast_ptr, parser_node_count, arena_alloc);
+        appendTransformerHelperImports(self, module, &(module.ast.?), parser_node_count, arena_alloc);
     }
 
     /// transformer 영역 ([parser_node_count..)) 에서 import_declaration 노드만 골라
-    /// `\x00zts:runtime/...` specifier 를 가지면 module.import_records 에 append.
+    /// `\x00zts:runtime/...` specifier 를 가지면 module.import_records 와 module.import_bindings
+    /// 에 binding 정보까지 등록 — link 단계의 cross-chunk symbol resolution 에 필요.
     fn appendTransformerHelperImports(
         _: *ModuleGraph,
         module: *Module,
@@ -1557,13 +1578,19 @@ pub const ModuleGraph = struct {
         const helper_modules = @import("runtime_helper_modules.zig");
         const nodes = ast_ptr.nodes.items;
 
-        var added: std.ArrayList(ImportRecord) = .empty;
-        defer added.deinit(arena_alloc);
+        var added_records: std.ArrayList(ImportRecord) = .empty;
+        defer added_records.deinit(arena_alloc);
+        var added_bindings: std.ArrayList(binding_scanner_mod.ImportBinding) = .empty;
+        defer added_bindings.deinit(arena_alloc);
+
+        const initial_record_count: u32 = @intCast(module.import_records.len);
 
         for (nodes[parser_node_count..]) |node| {
             if (node.tag != .import_declaration) continue;
             const e = node.data.extra;
-            if (e + 2 >= ast_ptr.extra_data.items.len) continue;
+            if (e + 5 >= ast_ptr.extra_data.items.len) continue;
+            const specs_start = ast_ptr.extra_data.items[e + 0];
+            const specs_len = ast_ptr.extra_data.items[e + 1];
             const source_idx: NodeIndex = @enumFromInt(ast_ptr.extra_data.items[e + 2]);
             if (source_idx.isNone()) continue;
             const source_node = ast_ptr.getNode(source_idx);
@@ -1572,20 +1599,51 @@ pub const ModuleGraph = struct {
             const spec = stripImportQuotes(raw);
             if (!helper_modules.isVirtualId(spec)) continue;
 
-            added.append(arena_alloc, .{
+            const record_idx_for_bindings: u32 = initial_record_count + @as(u32, @intCast(added_records.items.len));
+            added_records.append(arena_alloc, .{
                 .specifier = spec,
                 .kind = .static_import,
                 .span = source_node.span,
             }) catch return;
+
+            // import_specifier 마다 binding 등록. spec layout: binary { left=imported, right=local, flags }.
+            if (specs_len == 0) continue;
+            for (0..specs_len) |i| {
+                const spec_idx: NodeIndex = @enumFromInt(ast_ptr.extra_data.items[specs_start + i]);
+                if (spec_idx.isNone()) continue;
+                const spec_node = ast_ptr.getNode(spec_idx);
+                if (spec_node.tag != .import_specifier) continue;
+                const imported_idx = spec_node.data.binary.left;
+                const local_idx = spec_node.data.binary.right;
+                if (imported_idx.isNone() or local_idx.isNone()) continue;
+                const imported_node = ast_ptr.getNode(imported_idx);
+                const local_node = ast_ptr.getNode(local_idx);
+                const imported_name = ast_ptr.getText(imported_node.span);
+                const local_name = ast_ptr.getText(local_node.span);
+                added_bindings.append(arena_alloc, .{
+                    .kind = .named,
+                    .local_name = local_name,
+                    .imported_name = imported_name,
+                    .local_span = local_node.span,
+                    .import_record_index = record_idx_for_bindings,
+                }) catch return;
+            }
         }
 
-        if (added.items.len == 0) return;
-
-        const old = module.import_records;
-        const merged = arena_alloc.alloc(ImportRecord, old.len + added.items.len) catch return;
-        @memcpy(merged[0..old.len], old);
-        @memcpy(merged[old.len..], added.items);
-        module.import_records = merged;
+        if (added_records.items.len > 0) {
+            const old = module.import_records;
+            const merged = arena_alloc.alloc(ImportRecord, old.len + added_records.items.len) catch return;
+            @memcpy(merged[0..old.len], old);
+            @memcpy(merged[old.len..], added_records.items);
+            module.import_records = merged;
+        }
+        if (added_bindings.items.len > 0) {
+            const old = module.import_bindings;
+            const merged = arena_alloc.alloc(binding_scanner_mod.ImportBinding, old.len + added_bindings.items.len) catch return;
+            @memcpy(merged[0..old.len], old);
+            @memcpy(merged[old.len..], added_bindings.items);
+            module.import_bindings = merged;
+        }
     }
 
     /// `import_scanner.stripQuotes` 와 동일 — 그러나 import_scanner 의 private fn 이라 inline.
