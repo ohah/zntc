@@ -888,11 +888,6 @@ pub const SemanticAnalyzer = struct {
         if (node_idx < self.symbol_ids.items.len) {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
         }
-        // StmtInfo 사전 수집: predeclared 심볼도 declared 로 기록.
-        // declareSymbolWithNode 가 skip 되므로 여기서 보충한다. #1669: 모든 scope.
-        if (sym_idx < self.symbols.items.len) {
-            self.recordDeclareRef(@intCast(sym_idx), self.symbols.items[sym_idx].scope_id);
-        }
     }
 
     /// variable_declaration의 predeclared 바인딩에 대해 symbol_ids를 설정한다.
@@ -1761,7 +1756,17 @@ pub const SemanticAnalyzer = struct {
         if (list.start + list.len > self.ast.extra_data.items.len) return;
 
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-        for (indices) |raw_idx| {
+        const saved_scope_idx = self.current_stmt_idx;
+        const saved_top_idx = self.current_top_stmt_idx;
+        defer {
+            self.current_stmt_idx = saved_scope_idx;
+            self.current_top_stmt_idx = saved_top_idx;
+        }
+        for (indices, 0..) |raw_idx, i| {
+            if (self.enable_stmt_info) {
+                self.current_top_stmt_idx = @intCast(i);
+                self.current_stmt_idx = @intCast(i);
+            }
             const idx: NodeIndex = @enumFromInt(raw_idx);
             if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
 
@@ -1962,13 +1967,7 @@ pub const SemanticAnalyzer = struct {
         // ECMAScript 스펙상 lexical binding 은 block 진입 시 스코프에 존재한다 (TDZ 는
         // 런타임 개념). 정적 분석에서 선언 위치보다 앞선 중첩 함수가 해당 심볼을 참조할
         // 수 있으므로, statement 순회 전에 선언을 scope map 에만 등록해 둔다.
-        // predeclare 동안에는 current_stmt_idx 를 NO_STMT 로 강제 — top-level
-        // predeclareTopLevelBindings 와 동일한 규약. declare ref 기록은 2nd pass 의
-        // setSymbolIdForPredeclared 단일 책임으로 두어 중복을 차단 (#2023 이 단일화 epic).
-        const saved_stmt = self.current_stmt_idx;
-        self.current_stmt_idx = symbol_mod.Reference.NO_STMT;
         try self.predeclareLexicalDecls(node.data.list);
-        self.current_stmt_idx = saved_stmt;
         try self.visitStmtList(node.data.list);
         self.exitScope(saved);
     }
@@ -1980,7 +1979,10 @@ pub const SemanticAnalyzer = struct {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-        for (indices) |raw_idx| {
+        const saved = self.current_stmt_idx;
+        defer self.current_stmt_idx = saved;
+        for (indices, 0..) |raw_idx, i| {
+            if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
             const idx: NodeIndex = @enumFromInt(raw_idx);
             if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
             const stmt = self.ast.getNode(idx);
@@ -3291,12 +3293,8 @@ pub const SemanticAnalyzer = struct {
             // lexical 을 var pre-pass 보다 먼저 등록 — `predeclareVarDeclsRecursive` 의
             // function_declaration 분기가 outer lexical 충돌을 감지해 Annex B B.3.3.1
             // 의 hoist-skip 을 수행하기 위해 필요.
-            // predeclare 동안 current_stmt_idx 는 NO_STMT (declare ref 는 2nd pass 만 기록 — #2023).
-            const saved_stmt = self.current_stmt_idx;
-            self.current_stmt_idx = symbol_mod.Reference.NO_STMT;
             try self.predeclareLexicalDecls(body_node.data.list);
             try self.predeclareVarDecls(body_node.data.list);
-            self.current_stmt_idx = saved_stmt;
             try self.visitStmtList(body_node.data.list);
         } else {
             try self.visitNode(body_idx);
@@ -3307,6 +3305,18 @@ pub const SemanticAnalyzer = struct {
     /// var는 함수 스코프까지 hoisting되므로, 코드에서 사용 위치가 선언보다 앞이어도 resolve 가능해야 한다.
     /// if/for/while/block 안의 var도 포함하기 위해 재귀 탐색.
     fn predeclareVarDecls(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        if (list.len == 0) return;
+        if (list.start + list.len > self.ast.extra_data.items.len) return;
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        const saved = self.current_stmt_idx;
+        defer self.current_stmt_idx = saved;
+        for (indices, 0..) |raw_idx, i| {
+            if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
+            try self.predeclareVarDeclsRecursive(@enumFromInt(raw_idx));
+        }
+    }
+
+    fn predeclareVarDeclsPreservingStmtIdx(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -3345,7 +3355,7 @@ pub const SemanticAnalyzer = struct {
             },
             // 재귀 대상: block/if/for/while/switch/try/labeled 등
             .block_statement, .static_block => {
-                try self.predeclareVarDecls(node.data.list);
+                try self.predeclareVarDeclsPreservingStmtIdx(node.data.list);
             },
             .if_statement => {
                 try self.predeclareVarDeclsRecursive(node.data.ternary.a);
@@ -3375,7 +3385,7 @@ pub const SemanticAnalyzer = struct {
                 try self.predeclareVarDeclsRecursive(node.data.ternary.c);
             },
             .switch_case => {
-                try self.predeclareVarDecls(node.data.list);
+                try self.predeclareVarDeclsPreservingStmtIdx(node.data.list);
             },
             .expression_statement => {
                 // expression_statement 안에 var는 없으므로 스킵
