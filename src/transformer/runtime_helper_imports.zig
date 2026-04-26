@@ -51,6 +51,7 @@ const HelperBit = enum {
     call_super,
     super_get,
     super_set,
+    derived_constructor,
     tagged_template_literal,
     using_ctx,
     class_static_private_field,
@@ -81,6 +82,11 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .call_super, .bases = &.{"__callSuper"} },
     .{ .bit = .super_get, .bases = &.{"__superGet"} },
     .{ .bit = .super_set, .bases = &.{"__superSet"} },
+    .{ .bit = .derived_constructor, .bases = &.{
+        "__assertThisInitialized",
+        "__assertThisUninitialized",
+        "__possibleConstructorReturn",
+    } },
     .{ .bit = .tagged_template_literal, .bases = &.{"__taggedTemplateLiteral"} },
     .{ .bit = .using_ctx, .bases = &.{ "__using", "__callDispose" } },
     .{ .bit = .class_static_private_field, .bases = &.{

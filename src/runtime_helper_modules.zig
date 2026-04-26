@@ -142,6 +142,11 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.SUPER_SET_RUNTIME, .min = rt.SUPER_SET_RUNTIME_MIN },
     },
     .{
+        .short = "derived-constructor",
+        .helpers = &.{ "__assertThisInitialized", "__assertThisUninitialized", "__possibleConstructorReturn" },
+        .body = .{ .plain = rt.DERIVED_CONSTRUCTOR_RUNTIME, .min = rt.DERIVED_CONSTRUCTOR_RUNTIME_MIN },
+    },
+    .{
         .short = "rest",
         .helpers = &.{"__rest"},
         .body = .{ .plain = rt.REST_RUNTIME, .min = rt.REST_RUNTIME_MIN },

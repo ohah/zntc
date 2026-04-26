@@ -1649,10 +1649,10 @@ test "ES2015: generator try/catch/finally with yield" {
 test "ES2015: class extends with super()" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(x){super(x);this.x=x;}}", .es5);
     defer r.deinit();
-    // super(x) → var _this=__callSuper(this,_super,[x]) + _this.x=x + return _this
+    // super(x) → _this=__callSuper(this,_super,[x]) 뒤 this 접근/반환은 초기화 검사
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(this,_super,[x])") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.x=x") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "return _this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisInitialized(_this).x=x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return __assertThisInitialized(_this)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
 }
 
@@ -1718,6 +1718,26 @@ test "ES2015: static super access는 parent constructor 참조" {
     defer r2.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r2.output, "__superGet(_super,\"y\",C)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r2.output, "_super.prototype") == null);
+}
+
+test "ES2015: derived constructor this 초기화 검사" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){this.x=1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisInitialized") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn") == null);
+}
+
+test "ES2015: derived constructor return 검사" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){return 1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn") != null);
+}
+
+test "ES2015: derived constructor super 중복 호출은 할당 전 검사" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){super();super();}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this),_this=__callSuper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisUninitialized(_this,_this=") == null);
 }
 
 // --- class getter/setter ---
@@ -2072,7 +2092,7 @@ test "ES2015: class constructor with super and field" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends") != null);
     // super()가 있으므로 instance field는 _this에 할당
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.y=1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.z=2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisInitialized(_this).z=2") != null);
 }
 
 // --- generator edge cases ---

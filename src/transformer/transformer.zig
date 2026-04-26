@@ -227,13 +227,15 @@ pub const RuntimeHelpers = packed struct(u32) {
     super_get: bool = false,
     /// __superSet: super property set receiver 보존 (ES2015 class)
     super_set: bool = false,
+    /// __assertThisInitialized/__assertThisUninitialized/__possibleConstructorReturn: derived constructor this 상태 검사
+    derived_constructor: bool = false,
     /// __classPrivateFieldSet: instance private field set with return value (#1488).
     class_private_field_set: bool = false,
     /// __asyncGenerator: `async function*` → Symbol.asyncIterator 객체 (ES2018, #1911)
     async_generator: bool = false,
     /// __await: async generator body 안 await 표현 wrapper (ES2018, #1911)
     await_helper: bool = false,
-    _padding: u10 = 0,
+    _padding: u9 = 0,
 };
 
 /// 단일 AST append-only 변환기.
@@ -1305,7 +1307,10 @@ pub const Transformer = struct {
                 }
                 // ES2015 class super() 후 this → _this
                 if (self.super_call_this_alias) {
-                    return es_helpers.makeIdentifierRef(self, "_this");
+                    const helper = try es_helpers.makeRuntimeHelperRef(self, "__assertThisInitialized");
+                    const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
+                    self.runtime_helpers.derived_constructor = true;
+                    return es_helpers.makeCallExpr(self, helper, &.{this_ref}, node.span);
                 }
                 return self.copyNodeDirect(idx);
             },
