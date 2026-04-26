@@ -1020,8 +1020,9 @@ pub fn appendGuardedModuleCall(
     else
         try mod.allocInitName(allocator);
     defer allocator.free(call_name);
-    // `__zts_guarded(callName)` — fn 인자로 함수 식별자만 전달. helper 가 fn() 호출.
-    try output.appendSlice(allocator, "__zts_guarded(");
+    // guard helper 에 함수 식별자만 전달. helper 가 fn() 호출.
+    try output.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_FN_NAME_MIN else rt.GUARD_FN_NAME);
+    try output.append(allocator, '(');
     try output.appendSlice(allocator, call_name);
     try output.appendSlice(allocator, ");\n");
 }

@@ -2597,7 +2597,9 @@ test "entry_error_guard #13: minify_whitespace — minified helper 형태 정상
 
     try std.testing.expect(!result.hasErrors());
     // minified 형태도 helper 정의 + console.warn swallow 보존
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function $zg") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$zg(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_guarded") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.warn") != null);
 }
 

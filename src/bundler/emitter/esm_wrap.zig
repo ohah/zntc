@@ -962,7 +962,7 @@ fn appendWrappedInitCall(
     switch (src_mod.wrap_kind) {
         .esm => {
             if (is_tla) try buf.appendSlice(allocator, "await ");
-            if (guard) try buf.appendSlice(allocator, rt.GUARD_LAMBDA_OPEN);
+            if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
             if (options.dev_mode) {
                 try buf.appendSlice(allocator, "__zts_modules[\"");
                 try buf.appendSlice(allocator, src_mod.dev_id);
@@ -978,7 +978,7 @@ fn appendWrappedInitCall(
         .cjs => {
             const rv = try types.makeRequireVarName(allocator, src_mod.path);
             defer allocator.free(rv);
-            if (guard) try buf.appendSlice(allocator, rt.GUARD_LAMBDA_OPEN);
+            if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
             try buf.appendSlice(allocator, rv);
             try buf.appendSlice(allocator, "()");
             try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);

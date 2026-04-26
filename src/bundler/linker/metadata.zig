@@ -416,7 +416,7 @@ pub fn buildMetadataForAst(
                     const is_tla = target_mod.uses_top_level_await;
                     const guard = target_mod.shouldGuard(self.entry_error_guard);
                     if (is_tla) try preamble.write("await ");
-                    if (guard) try preamble.write(rt.GUARD_LAMBDA_OPEN);
+                    if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
                     if (self.dev_mode) {
                         try preamble.write("__zts_modules[\"");
                         try preamble.write(target_mod.dev_id);
