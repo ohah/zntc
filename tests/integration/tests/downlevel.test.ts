@@ -1765,6 +1765,31 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("TypeError");
     });
 
+    test("derived constructor return 표현식의 super 평가 순서 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function value(x: unknown) {
+              return undefined;
+            }
+            class Base {}
+            class Child extends Base {
+              constructor() {
+                return value(super());
+              }
+            }
+            const child = new Child();
+            console.log(child instanceof Child, child instanceof Base);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true true");
+    });
+
     test("derived constructor super 두 번 호출 검사", async () => {
       const result = await bundleAndRun(
         {

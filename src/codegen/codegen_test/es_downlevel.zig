@@ -1765,6 +1765,15 @@ test "ES2015: derived constructor return 검사" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn") != null);
 }
 
+test "ES2015: derived constructor return 값이 super를 먼저 평가" {
+    var r = try e2eTarget(std.testing.allocator, "function value(x){return undefined;}class C extends P{constructor(){return value(super());}}", .es5);
+    defer r.deinit();
+    const helper_pos = std.mem.indexOf(u8, r.output, "__possibleConstructorReturn(value(") orelse return error.TestExpectedEqual;
+    const this_pos = std.mem.indexOfPos(u8, r.output, helper_pos, "),_this)") orelse return error.TestExpectedEqual;
+    try std.testing.expect(helper_pos < this_pos);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__possibleConstructorReturn(_this,value(") == null);
+}
+
 test "ES2015: derived constructor super 중복 호출은 할당 전 검사" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){super();super();}}", .es5);
     defer r.deinit();

@@ -2275,10 +2275,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__possibleConstructorReturn");
             const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
             self.runtime_helpers.derived_constructor = true;
-            return es_helpers.makeCallExpr(self, helper, &.{ this_ref, value }, span);
+            return es_helpers.makeCallExpr(self, helper, &.{ value, this_ref }, span);
         }
 
-        /// derived constructor의 직접 return을 `__possibleConstructorReturn(_this, value)`로 감싼다.
+        /// derived constructor의 직접 return을 `__possibleConstructorReturn(value, _this)`로 감싼다.
         /// 중첩 함수/클래스의 return은 별도 this 바인딩이므로 건드리지 않는다.
         fn transformDerivedConstructorReturns(self: *Transformer, idx: NodeIndex) Transformer.Error!void {
             if (idx.isNone()) return;

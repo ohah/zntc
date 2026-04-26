@@ -362,7 +362,7 @@ pub const DERIVED_CONSTRUCTOR_RUNTIME =
     \\var __assertThisUninitialized = function(self) {
     \\  if (self !== void 0) throw new ReferenceError("Super constructor may only be called once");
     \\};
-    \\var __possibleConstructorReturn = function(self, call) {
+    \\var __possibleConstructorReturn = function(call, self) {
     \\  if (call && (typeof call === "object" || typeof call === "function")) return call;
     \\  if (call !== void 0) throw new TypeError("Derived constructors may only return object or undefined");
     \\  return __assertThisInitialized(self);
@@ -372,7 +372,7 @@ pub const DERIVED_CONSTRUCTOR_RUNTIME =
 pub const DERIVED_CONSTRUCTOR_RUNTIME_MIN =
     "var " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "=function(self){if(self===void 0)throw new ReferenceError(\"this hasn't been initialised - super() hasn't been called\");return self};" ++
     "var " ++ NAMES.ASSERT_THIS_UNINITIALIZED_MIN ++ "=function(self){if(self!==void 0)throw new ReferenceError(\"Super constructor may only be called once\")};" ++
-    "var " ++ NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN ++ "=function(self,call){if(call&&(typeof call===\"object\"||typeof call===\"function\"))return call;if(call!==void 0)throw new TypeError(\"Derived constructors may only return object or undefined\");return " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "(self)};";
+    "var " ++ NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN ++ "=function(call,self){if(call&&(typeof call===\"object\"||typeof call===\"function\"))return call;if(call!==void 0)throw new TypeError(\"Derived constructors may only return object or undefined\");return " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "(self)};";
 
 /// ES2015 TDZ read helper. Babel/OXC runtime의 tdz helper와 같은 역할이다.
 pub const TDZ_RUNTIME =
