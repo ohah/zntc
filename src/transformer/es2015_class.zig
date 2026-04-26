@@ -782,6 +782,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (self.current_super_static_receiver) |receiver_span| {
                 return es_helpers.makeIdentifierRefFromSpan(self, receiver_span);
             }
+            // derived constructor body 안에서는 super() lowering 이 인스턴스를 _this 에 저장하므로
+            // super.x / super.x = v 의 receiver 도 외부 `this` 가 아닌 _this 여야 한다 (#2022).
+            if (self.super_call_this_alias) {
+                return buildAssertThisInitialized(self, span);
+            }
             return makeThisOrAlias(self, span);
         }
 
