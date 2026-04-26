@@ -4388,4 +4388,28 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("false");
     });
   });
+
+  describe("ES5 string-keyed method", () => {
+    // class C { "foo bar"() {} } 가 ES5 다운레벨 시
+    // Object.defineProperty(C.prototype, ""foo bar"", ...) 같이 이중 quote
+    // 되어 syntax error 가 나던 회귀 (compat-table es5 string-keyed methods).
+    test("string literal key 메서드가 ES5 다운레벨 후 정상 호출", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              "foo bar"() { return 2; }
+            }
+            const v = new C()["foo bar"]();
+            console.log(v, typeof (C as any).prototype["foo bar"]);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2 function");
+    });
+  });
 });
