@@ -474,9 +474,34 @@ pub const Bundler = struct {
         }
     }
 
+    /// BundleOptions → TransformOptions base 변환 (#1961 PR 1f). graph 와 emitter
+    /// 양쪽이 동일 base 를 시작점으로 transformer.init 호출 — drift hot spot 단일화.
+    /// per-module override (react_refresh / plugins / jsx_transform / jsx_filename /
+    /// emit_runtime_helper_imports / borrow_source_ast) 만 caller 가 추가.
+    fn buildTransformOptionsBase(self: *const Bundler) @import("../transformer/transformer.zig").TransformOptions {
+        return .{
+            .define = self.options.define,
+            .experimental_decorators = self.options.experimental_decorators,
+            .emit_decorator_metadata = self.options.emit_decorator_metadata,
+            .use_define_for_class_fields = self.options.use_define_for_class_fields,
+            .verbatim_module_syntax = self.options.verbatim_module_syntax,
+            .unsupported = self.options.unsupported,
+            .drop_labels = self.options.drop_labels,
+            .jsx_runtime = self.options.jsx_runtime,
+            .jsx_factory = self.options.jsx_factory,
+            .jsx_fragment = self.options.jsx_fragment,
+            .jsx_import_source = self.options.jsx_import_source,
+            .worklet_plugin_version = self.options.worklet_plugin_version,
+            .minify_syntax = self.options.minify_syntax,
+            .minify_whitespace = self.options.minify_whitespace,
+            .keep_names = self.options.keep_names,
+        };
+    }
+
     /// BundleOptions → EmitOptions 변환. 3개 경로(단일/splitting/dev)에서 공용.
     fn makeEmitOptions(self: *const Bundler) EmitOptions {
         return .{
+            .transform_options_base = self.buildTransformOptionsBase(),
             .format = self.options.format,
             .minify_whitespace = self.options.minify_whitespace,
             .minify_syntax = self.options.minify_syntax,
@@ -597,6 +622,11 @@ pub const Bundler = struct {
         worker_graph.jsx_in_js = self.options.jsx_in_js;
         worker_graph.jsx_runtime = self.options.jsx_runtime;
         worker_graph.jsx_import_source = self.options.jsx_import_source;
+        // #1961: worker 모듈도 transformer pre-pass 가 동일 옵션 사용 — drift 방지.
+        worker_graph.worklet_transform = self.options.worklet_transform;
+        worker_graph.react_refresh = self.options.react_refresh;
+        worker_graph.code_splitting = self.options.code_splitting;
+        worker_graph.transform_options_base = self.buildTransformOptionsBase();
         defer worker_graph.deinit();
 
         const entry_path = try arena_alloc.dupe(u8, worker_path);
@@ -715,8 +745,8 @@ pub const Bundler = struct {
         graph.inline_dynamic_imports = self.options.inline_dynamic_imports;
         // require.context 등 parser inline scan 의 build-time 정적 평가에 사용 (#1579 Phase 2.6)
         graph.defines = self.options.define;
-        // #1621: binary loader 의 `$tb(...)` 축약 활성화.
-        graph.minify_whitespace = self.options.minify_whitespace;
+        // #1961 PR 1f: minify_whitespace 는 graph.transform_options_base 에서 단일 source.
+        // (#1621: binary loader 의 `$tb(...)` 축약 등 graph 자체 사용처도 base 에서 read)
         graph.loader_overrides = self.options.loader_overrides;
         graph.public_path = self.options.public_path;
         graph.project_root = self.options.project_root;
@@ -736,31 +766,13 @@ pub const Bundler = struct {
         graph.jsx_runtime = self.options.jsx_runtime;
         graph.jsx_import_source = self.options.jsx_import_source;
 
-        // #1961: transformer pre-pass 옵션 — graph 가 module 마다 transformer 실행 시 사용.
-        // emitter 의 동일 옵션 set 과 1:1 매칭되어야 cache 일관성 보장.
+        // #1961: transformer pre-pass 옵션 — graph 와 emitter 가 동일한 base 사용
+        // (drift hot spot 단일화). graph 가 직접 사용하는 일부 (worklet_transform /
+        // react_refresh / code_splitting) 만 별도 mirror.
         graph.worklet_transform = self.options.worklet_transform;
         graph.react_refresh = self.options.react_refresh;
         graph.code_splitting = self.options.code_splitting;
-        // 14 mirror 필드 → transform_options_base 1 필드로 통합 (drift hot spot 제거).
-        // graph 가 직접 사용하는 옵션 (worklet_transform / react_refresh / code_splitting /
-        // jsx_runtime / jsx_in_js / jsx_import_source 등) 만 별도 mirror.
-        graph.transform_options_base = .{
-            .define = self.options.define,
-            .experimental_decorators = self.options.experimental_decorators,
-            .emit_decorator_metadata = self.options.emit_decorator_metadata,
-            .use_define_for_class_fields = self.options.use_define_for_class_fields,
-            .verbatim_module_syntax = self.options.verbatim_module_syntax,
-            .unsupported = self.options.unsupported,
-            .drop_labels = self.options.drop_labels,
-            .jsx_runtime = self.options.jsx_runtime,
-            .jsx_factory = self.options.jsx_factory,
-            .jsx_fragment = self.options.jsx_fragment,
-            .jsx_import_source = self.options.jsx_import_source,
-            .worklet_plugin_version = self.options.worklet_plugin_version,
-            .minify_syntax = self.options.minify_syntax,
-            .minify_whitespace = self.options.minify_whitespace,
-            .keep_names = self.options.keep_names,
-        };
+        graph.transform_options_base = self.buildTransformOptionsBase();
         defer graph.deinit();
 
         // graph.build() 또는 buildIncremental() 호출.

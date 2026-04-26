@@ -94,9 +94,6 @@ pub const ModuleGraph = struct {
     /// build-time 정적 평가 entries. parser inline scan (require.context 등 #1579 Phase 2.6) 활용.
     /// bundler 가 BundleOptions.define 으로 설정. transformer 의 define 치환과 동일 entries.
     defines: []const @import("../parser/scan_results.zig").DefineEntry = &.{},
-    /// #1621: binary loader 가 생성하는 `__toBinary(...)` 소스에서 축약 이름 사용.
-    /// bundler 에서 self.options.minify_whitespace 를 주입.
-    minify_whitespace: bool = false,
     /// 확장자별 로더 오버라이드 (--loader:.png=file). bundler에서 전달.
     loader_overrides: []const types.LoaderOverride = &.{},
     /// 에셋/청크 URL prefix (--public-path). asset 로더에서 사용.
@@ -216,7 +213,7 @@ pub const ModuleGraph = struct {
         // SourceOptions 는 빌드 옵션 기반으로 1회 결정.
         const u = self.transform_options_base.unsupported;
         self.helper_plugin_opts = .{
-            .minify = self.minify_whitespace,
+            .minify = self.transform_options_base.minify_whitespace,
             .es5 = u.async_await or u.arrow,
             // configurable_exports 는 RN 같은 환경 — 현재 graph 에 직접 필드 없으므로 false.
             // 후속 PR 에서 BundleOptions.configurable_exports 또는 platform=react-native 기반 결정.
@@ -2251,7 +2248,7 @@ pub const ModuleGraph = struct {
                     return;
                 };
                 // #1621: minify 시 $tb 축약.
-                const to_bin_name = runtime_helpers.helperName("__toBinary", self.minify_whitespace);
+                const to_bin_name = runtime_helpers.helperName("__toBinary", self.transform_options_base.minify_whitespace);
                 module.source = std.fmt.allocPrint(arena_alloc, "{s}(\"{s}\")", .{ to_bin_name, encoded }) catch {
                     module.state = .ready;
                     return;
