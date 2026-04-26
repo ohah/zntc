@@ -27,7 +27,6 @@ const stmt_info_mod = @import("stmt_info.zig");
 const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
-const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
 /// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
 /// linker가 import→export 연결 + 이름 충돌 해결에 사용.
@@ -61,9 +60,9 @@ pub const ModuleSemanticData = struct {
 ///
 /// emitter 가 transformer 를 같은 ast 에 다시 호출하지 않고 (transformer 의 invariants
 /// 위반) 이 캐시 값을 그대로 사용. parse_arena 가 backing — symbol_ids slice 도 그 안.
+/// transformed root 는 `ast.transformed_root` 가 보유 — emitter 의 transformer.transform()
+/// 이 cache hit 분기로 그 root 를 그대로 반환하므로 별도 캐시 불필요.
 pub const TransformCache = struct {
-    /// transformer.transform() 의 새 root NodeIndex (transformer 영역).
-    root: NodeIndex,
     /// transformer 가 set 한 RuntimeHelpers 비트맵.
     /// emitter 의 chunk-level helper preamble 결정에 사용.
     runtime_helpers: RuntimeHelpers,

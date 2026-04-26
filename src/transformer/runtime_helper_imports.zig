@@ -70,6 +70,16 @@ const BIT_DEFS = [_]BitDef{
     .{ .field = "await_helper", .bases = &.{"__await"} },
 };
 
+comptime {
+    // BIT_DEFS 의 field 이름이 RuntimeHelpers 의 실 필드와 매핑되는지 빌드 타임 검증.
+    // 이름 typo 를 하면 즉시 컴파일 에러로 노출.
+    for (BIT_DEFS) |def| {
+        if (!@hasField(RuntimeHelpers, def.field)) {
+            @compileError("BIT_DEFS field '" ++ def.field ++ "' not present on RuntimeHelpers");
+        }
+    }
+}
+
 /// 비트맵에 set 된 비트마다 import_declaration 노드 1개씩 생성하여 `out` 에 append.
 /// `span` 은 새 노드의 위치 정보 (prepend 대상의 span 권장).
 /// `self` 는 transformer (allocator/ast/scratch/options 가짐).
