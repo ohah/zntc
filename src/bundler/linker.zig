@@ -869,12 +869,31 @@ pub const Linker = struct {
             }
         }
 
+        const helper_modules = @import("../runtime_helper_modules.zig");
         for (0..mod_count) |mi| {
             const m = self.getModule(@intCast(mi)).?;
             const sem_opt = m.semantic;
             const sym_count = if (sem_opt) |s| s.symbols.items.len else 0;
             bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
             created += 1;
+
+            // #1961 PR 1h: ZTS runtime helper virtual module 의 top-level 식별자
+            // (`$aS` / `$gn` 등) 는 transformer 가 이미 축약 이름으로 emit 한 결과.
+            // mangler 가 추가 rename 하면 cross-module binding 이 깨진다 (main 의
+            // `$aS` import 호출 site 와 helper 의 var declaration 이 다른 이름).
+            // helper module 은 후보 / Phase B 양쪽 skip — modules[mi] 는 빈 entry 로 init.
+            const is_helper_module = helper_modules.isVirtualId(m.path);
+            if (is_helper_module) {
+                modules[mi] = .{
+                    .scopes = &.{},
+                    .symbols = &.{},
+                    .scope_maps = &.{},
+                    .references = &.{},
+                    .source = m.source,
+                    .module_scope_symbols = bitsets[mi],
+                };
+                continue;
+            }
 
             if (sem_opt) |sem| {
                 const blocks = sem.scopes.len > 0 and sem.scopes[0].blocksMangling();

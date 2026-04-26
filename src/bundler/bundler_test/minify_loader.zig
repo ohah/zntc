@@ -2686,17 +2686,17 @@ test "#1621 minify+es5: class → $eX/$cC/$cS 축약" {
 
     try std.testing.expect(!result.hasErrors());
     // preamble 축약: __extends → $eX, __classCallCheck → $cC, __callSuper → $cS
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $eX=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cC=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cS=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$eX=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$cC=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$cS=function") != null);
     // 호출부 모두 축약 이름
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$eX(") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$cC(") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$cS(") != null);
     // 원본 이름 부재
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__extends") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__callSuper") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__extends(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__callSuper(") == null);
 }
 
 test "#1621 non-minify+es5: class helper 원본 이름 유지" {
@@ -2752,10 +2752,10 @@ test "#1621 minify+es5: async → $aS/$gn 축약" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $aS=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $gn=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__async") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__generator") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$aS=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$gn=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__async(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__generator(") == null);
 }
 
 test "#1621 minify+es5: spread/rest → $tA/$aL/$rs 축약" {
@@ -2786,12 +2786,12 @@ test "#1621 minify+es5: spread/rest → $tA/$aL/$rs 축약" {
 
     try std.testing.expect(!result.hasErrors());
     // __rest (object rest) + __toConsumableArray/__arrayLikeToArray (array spread)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $rs=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tA=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $aL=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__rest") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toConsumableArray") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__arrayLikeToArray") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$rs=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$tA=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$aL=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__rest(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toConsumableArray(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__arrayLikeToArray(") == null);
 }
 
 test "#1621 minify+es5: tagged template → $tt 축약" {
@@ -2818,8 +2818,8 @@ test "#1621 minify+es5: tagged template → $tt 축약" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tt=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__taggedTemplateLiteral") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$tt=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__taggedTemplateLiteral(") == null);
 }
 
 test "#1621 minify+es5: private method/field → $pI/$pG/$pF 축약" {
@@ -2851,10 +2851,10 @@ test "#1621 minify+es5: private method/field → $pI/$pG/$pF 축약" {
 
     try std.testing.expect(!result.hasErrors());
     // private method / field helpers 축약.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $pI=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $pG=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classPrivateMethodInit") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classPrivateMethodGet") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$pI=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$pG=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classPrivateMethodInit(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classPrivateMethodGet(") == null);
 }
 
 test "#1621 minify+keep-names: __name → $nm 축약" {
@@ -2884,7 +2884,7 @@ test "#1621 minify+keep-names: __name → $nm 축약" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "var $nm=") != null);
     // 호출부도 $nm(
     try std.testing.expect(std.mem.indexOf(u8, result.output, "$nm(") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__name") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__name(") == null);
 }
 
 test "#1621 minify + decorator: __decorateClass/__decorateParam → $dC/$dK" {
@@ -2958,12 +2958,12 @@ test "#1621 runtime correctness: es5 minified bundle 실행 결과 일치" {
 
     try std.testing.expect(!result.hasErrors());
     // preamble + 호출부 모두 축약 이름 일관.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $eX=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cC=function") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $tA=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$eX=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$cC=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$tA=function") != null);
     // preamble 의 `var $X=...` 선언 이후 그 이름으로만 호출 — 원본 이름 절대 부재.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__extends") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toConsumableArray") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__arrayLikeToArray") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__extends(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__classCallCheck(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toConsumableArray(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__arrayLikeToArray(") == null);
 }

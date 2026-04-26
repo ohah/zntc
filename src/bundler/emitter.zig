@@ -743,13 +743,13 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    // ES2015 런타임 헬퍼 주입: transformer가 실제 사용한 헬퍼만 주입.
-    // #1961 부터 code splitting 모드에선 transformer 가 helper module 의 named import
-    // 으로 emit 하여 graph 가 분배 → chunk-level appendAsyncRuntime 등은 제거.
-    // single-bundle 모드는 minify_identifiers 가 helper module 안 식별자를 rename 하면서
-    // cross-module binding 이 깨지는 회귀가 있어 후속 fix 까지 기존 preamble 모델 유지
-    // (중복 시 dead code).
-    try rt.appendRuntimeHelpers(&output, allocator, collected_helpers, options.minify_whitespace, options.unsupported.arrow);
+    // #1961 PR 1h: RuntimeHelpers 비트맵 기반 ES2015 런타임 헬퍼는 transformer 가 graph
+    // parse 단계에서 helper module 의 named import 으로 emit → graph 가 1급 모듈로 분배.
+    // single-bundle / splitting 양쪽 모두 helper preamble 불필요. mangler 는 helper
+    // module 의 internal name (`$aS` / `$gn` 등) 을 reserved 로 처리 (linker.zig 의
+    // candidates collect 에서 virtual ID 모듈 skip). CJS/ESM wrap, decorator
+    // (experimental), HMR, entry_error_guard, console_error 는 RuntimeHelpers 비트맵 외
+    // 경로라 위 `emitBundleRuntimeHelpers` 가 처리 (별개).
 
     // prologue(banner/polyfill/runtime helper) 줄 수 → 소스맵 오프셋에 반영
     // module_output 합류 전에 계산해야 함 — 합류 후에 세면 전체 줄 수가 됨
@@ -1652,9 +1652,11 @@ fn emitBundleRuntimeHelpers(
     // 런타임 헬퍼 주입: 래핑 모듈 유형에 따라 필요한 헬퍼 결정.
     var needs_cjs_runtime = false;
     var needs_esm_wrap_runtime = false;
+    var needs_to_binary = false;
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
+        if (m.loader == .binary) needs_to_binary = true;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // Node ESM 출력에 CJS wrapper가 섞이면 wrapper 내부 `require()`가 런타임에 미정의.
@@ -1689,6 +1691,14 @@ fn emitBundleRuntimeHelpers(
     // silent_console_error_patterns: 패턴 비어있으면 emit X — vanilla RN 등 trigger 없는
     // 환경에서 dead code 0. consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.
     try rt.emitConsoleErrorInterceptInto(output, allocator, options.silent_console_error_patterns, options.minify_whitespace);
+    // #1961 PR 1h: to_binary / keep_names 는 transformer 가 set 안 하는 helper (asset
+    // loader / `--keep-names` 옵션 기반). single-bundle 에서도 옵션 검사로 prepend.
+    if (needs_to_binary) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
+    }
+    if (options.keep_names) {
+        try output.appendSlice(allocator, if (options.minify_whitespace) rt.KEEP_NAMES_RUNTIME_MIN else rt.KEEP_NAMES_RUNTIME);
+    }
 }
 
 /// 청크별 런타임 헬퍼 주입.
