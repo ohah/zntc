@@ -2904,6 +2904,52 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("6 1");
     });
+
+    test("optional receiver + optional method call receiver 단락 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const obj: any = null;
+            let calls = 0;
+            function arg() {
+              calls++;
+              return 1;
+            }
+            console.log(obj?.method?.(arg()), calls);
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("undefined 0");
+    });
+
+    test("optional receiver + optional method call 복잡 receiver 1회 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let receiverCalls = 0;
+            let argCalls = 0;
+            function getObj(): any {
+              receiverCalls++;
+              return null;
+            }
+            function arg() {
+              argCalls++;
+              return 1;
+            }
+            console.log(getObj()?.method?.(arg()), receiverCalls, argCalls);
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("undefined 1 0");
+    });
   });
 
   // ===== ES2021 (target=es2020) =====

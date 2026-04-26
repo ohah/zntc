@@ -2244,6 +2244,20 @@ test "ES2020: optional method call 복잡 receiver 1회 평가" {
     try std.testing.expectEqualStrings("var _a,_b;((_b=(_a=getObj()).method)==null?void 0:_b.call(_a));", r.output);
 }
 
+test "ES2020: optional receiver + optional method call receiver 단락 평가" {
+    var r = try e2eTarget(std.testing.allocator, "obj?.method?.(arg());", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj==null?void 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".call(obj,arg())") != null);
+}
+
+test "ES2020: optional receiver + optional method call 복잡 receiver 1회 평가" {
+    var r = try e2eTarget(std.testing.allocator, "getObj()?.method?.(arg());", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=getObj())==null?void 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".call(_a,arg())") != null);
+}
+
 test "ES2020: ?? with ?. combined" {
     var r = try e2eTarget(std.testing.allocator, "const x = a?.b ?? 'default';", .es2019);
     defer r.deinit();
