@@ -286,6 +286,19 @@ test "esbuild: sideEffects=false removes module when import unused" {
     try std.testing.expect(!r.shaker.isIncluded(r.findModule("pkg.ts").?));
 }
 
+test "#1913: unused import elision still keeps side-effectful module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { foo } from './pkg'; console.log('entry');");
+    try writeFile(tmp.dir, "pkg.ts", "console.log('pkg side effect'); export const foo = 123;");
+
+    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
+    defer r.deinit();
+
+    try std.testing.expect(r.shaker.isIncluded(r.findModule("pkg.ts").?));
+    try std.testing.expect(!r.shaker.isExportUsed(r.findModule("pkg.ts").?, "foo"));
+}
+
 test "esbuild: sideEffects=false removes side-effect-only import" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

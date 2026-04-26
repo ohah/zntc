@@ -264,7 +264,7 @@ export async function bundleAndRun(
     const run = await runCmd(["bun", "run", outFile]);
 
     return {
-      bundleOutput: bundle.stdout,
+      bundleOutput: readFileSync(outFile, "utf-8"),
       runOutput: run.stdout.trim(),
       runStderr: run.stderr,
       exitCode: run.exitCode,

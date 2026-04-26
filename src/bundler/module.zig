@@ -319,7 +319,7 @@ pub const Module = struct {
         const sem = self.semantic orelse return null;
         const idx: u32 = @intFromEnum(id);
         if (idx >= sem.symbols.items.len) return null;
-        return sem.symbols.items[idx].nameText(self.source);
+        return self.symbolText(&sem.symbols.items[idx]);
     }
 
     /// SymbolRef가 semantic을 가리키면 Symbol.nameText, 아니면 null.
@@ -327,7 +327,15 @@ pub const Module = struct {
         const idx = ref.semanticIndex() orelse return null;
         const sem = self.semantic orelse return null;
         if (idx >= sem.symbols.items.len) return null;
-        return sem.symbols.items[idx].nameText(self.source);
+        return self.symbolText(&sem.symbols.items[idx]);
+    }
+
+    /// Semantic symbol 이름을 모듈 AST 기준으로 읽는다.
+    /// transformer/generated symbol 이름은 source span이 아니라 AST string_table span일 수 있다.
+    fn symbolText(self: *const Module, sym: *const Symbol) ?[]const u8 {
+        if (sym.synthetic_name.len > 0) return sym.synthetic_name;
+        if (self.ast) |*ast| return ast.getText(sym.name);
+        @panic("Module semantic symbol name requires AST text storage");
     }
 
     /// ImportBinding의 현재 모듈 로컬 이름. local_symbol에서 derive 가능하면

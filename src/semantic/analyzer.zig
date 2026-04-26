@@ -268,7 +268,8 @@ pub const SemanticAnalyzer = struct {
         // 하한을 미리 확보해 growth realloc 횟수를 줄인다 (measured ~11회 → ~2회).
         try self.references.ensureTotalCapacity(self.allocator, self.ast.nodes.items.len / 4);
 
-        const root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(self.ast.nodes.items.len - 1)));
+        const root_idx: NodeIndex = self.ast.transformed_root orelse
+            @as(NodeIndex, @enumFromInt(@as(u32, @intCast(self.ast.nodes.items.len - 1))));
         try self.visitNode(root_idx);
     }
 

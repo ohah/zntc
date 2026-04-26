@@ -11,6 +11,7 @@ const ImportKind = types.ImportKind;
 const RequireContextMode = types.RequireContextMode;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 
 // ============================================================
 // Tests
@@ -166,6 +167,40 @@ test "multiple imports" {
     try std.testing.expectEqualStrings("./c", records[2].specifier);
     try std.testing.expectEqualStrings("./d", records[3].specifier);
     try std.testing.expectEqualStrings("./e", records[4].specifier);
+}
+
+test "transformed_root: orphan import declaration is ignored" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc,
+        \\import { unused } from './dead';
+        \\console.log('entry');
+    );
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+
+    const old_root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(parser.ast.nodes.items.len - 1)));
+    const old_root = parser.ast.getNode(old_root_idx);
+    const old_body = old_root.data.list;
+    try std.testing.expectEqual(@as(u32, 2), old_body.len);
+
+    const expr_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[old_body.start + 1]);
+    const new_body = try parser.ast.addNodeList(&.{expr_idx});
+    const new_root = try parser.ast.addNode(.{
+        .tag = .program,
+        .span = old_root.span,
+        .data = .{ .list = new_body },
+    });
+    parser.ast.transformed_root = new_root;
+
+    const records = try extractImports(alloc, &parser.ast);
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 0), records.len);
 }
 
 test "no imports" {

@@ -40,6 +40,7 @@ const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const profile = @import("../profile.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
+const AliasTable = @import("module.zig").AliasTable;
 const stmt_info_mod = @import("stmt_info.zig");
 const Span = @import("../lexer/token.zig").Span;
 const pkg_json = @import("package_json.zig");
@@ -52,8 +53,6 @@ const TransformOptions = transformer_mod.TransformOptions;
 const TransformCache = @import("module.zig").TransformCache;
 const builtin_plugins = @import("../transformer/plugins/builtin.zig");
 const Ast = @import("../parser/ast.zig").Ast;
-const NodeIndex = @import("../parser/ast.zig").NodeIndex;
-const module_parser = @import("../parser/module.zig");
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 pub const module_store = @import("module_store.zig");
 const phase_mod = @import("phase.zig");
@@ -1496,20 +1495,21 @@ pub const ModuleGraph = struct {
             }
         }
 
-        // #1961: transformer pre-pass. helper module 을 graph 의 1급 모듈로 분배하려면
-        // helper import 가 link 단계 전에 import_records 에 등록되어야 한다. transformer 를
-        // 여기서 1회 실행해 transformed AST 를 module.ast 에 in-place 저장 + helper import
-        // 노드를 records 에 append. emitter 는 module.transform_cache hit 시 transform skip.
+        // #1961/#1913: transformer pre-pass. helper module 을 graph 의 1급 모듈로
+        // 분배하려면 helper import 가 link 단계 전에 import_records 에 등록되어야 한다.
+        // transformer 를 여기서 1회 실행해 final AST 를 module.ast 에 저장하고, 그 AST
+        // 기준으로 semantic/import/export/StmtInfo 를 다시 만든다. emitter 는
+        // module.transform_cache hit 시 transform skip.
         self.runTransformerPrePass(module, arena_alloc);
 
         module.state = .parsed;
     }
 
     /// transformer pre-pass — graph 단계에서 1회 실행.
-    /// 결과: `module.ast` 에 transformer 노드 in-place append, `module.transform_cache` set,
-    /// helper module import 들이 `module.import_records` 에 append.
-    /// 실패는 silent — 기존 import_records 와 `transform_cache=null` 로 emitter 가 legacy
-    /// 경로로 fallback (out-of-memory 등에 대한 부분 진행 회피).
+    /// 결과: `module.ast` 를 transformer 결과 AST 로 교체, `module.transform_cache` set,
+    /// final AST 기준 분석 데이터 refresh.
+    /// 실패 시 error diagnostic 을 남기고 모듈 파싱을 중단한다. stale semantic/binding
+    /// 데이터로 tree-shaker/linker 가 진행하는 silent bug 를 막기 위한 정책 (#1913).
     fn runTransformerPrePass(self: *ModuleGraph, module: *Module, arena_alloc: std.mem.Allocator) void {
         if (module.ast == null) return;
         const ast_ptr = &(module.ast.?);
@@ -1559,140 +1559,228 @@ pub const ModuleGraph = struct {
             .symbol_ids = owned_symbol_ids,
         };
 
-        // transformer 가 추가한 helper module import 들을 records 에 append.
-        // [parser_node_count..) 영역만 walk — parser 영역은 이미 records 에 등록됨.
-        appendTransformerHelperImports(self, module, &(module.ast.?), parser_node_count, arena_alloc);
+        _ = parser_node_count;
 
-        if (self.minify_identifiers) {
-            self.refreshSemanticAfterTransform(module, arena_alloc);
-        }
+        self.refreshAnalysisAfterAstMutation(module, arena_alloc) catch {
+            self.addDiag(
+                .parse_error,
+                .@"error",
+                module.path,
+                Span.EMPTY,
+                .parse,
+                "Post-transform analysis refresh failed",
+                "The transformed AST could not be re-analyzed safely.",
+            );
+            module.state = .ready;
+            return;
+        };
     }
 
-    fn refreshSemanticAfterTransform(_: *ModuleGraph, module: *Module, arena_alloc: std.mem.Allocator) void {
-        if (module.ast == null) return;
-        var analyzer = SemanticAnalyzer.init(arena_alloc, &(module.ast.?));
+    /// AST mutation 이후 module 의 분석 산출물을 final AST 기준으로 재생성한다.
+    /// 이 함수가 성공한 뒤에는 `module.ast`, semantic, import/export bindings,
+    /// prebuilt_stmt_info, alias_table 이 같은 AST 기준이어야 한다 (#1913).
+    fn refreshAnalysisAfterAstMutation(
+        self: *ModuleGraph,
+        module: *Module,
+        arena_alloc: std.mem.Allocator,
+    ) !void {
+        const ast = &(module.ast orelse return);
+        const previous_import_records = module.import_records;
+        const previous_import_bindings = module.import_bindings;
+
+        var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
         analyzer.is_strict_mode = true;
         analyzer.is_module = true;
+        analyzer.is_ts = isTypeScriptPath(module.path);
+        analyzer.is_flow = self.flow or isFlowPath(module.path);
         analyzer.enable_stmt_info = true;
+        try analyzer.analyze();
 
-        if (analyzer.analyze()) |_| {
-            module.semantic = .{
-                .symbols = analyzer.symbols,
-                .scopes = analyzer.scopes.items,
-                .scope_maps = analyzer.scope_maps.items,
-                .exported_names = analyzer.exported_names,
-                .symbol_ids = analyzer.symbol_ids.items,
-                .unresolved_references = analyzer.unresolved_references,
-                .references = analyzer.references.items,
-            };
-            refreshLocalExportSymbols(module);
-            if (module.transform_cache) |*cache| {
-                cache.symbol_ids = analyzer.symbol_ids.items;
-            }
+        module.semantic = .{
+            .symbols = analyzer.symbols,
+            .scopes = analyzer.scopes.items,
+            .scope_maps = analyzer.scope_maps.items,
+            .exported_names = analyzer.exported_names,
+            .symbol_ids = analyzer.symbol_ids.items,
+            .unresolved_references = analyzer.unresolved_references,
+            .references = analyzer.references.items,
+        };
+        suppressRuntimeHelperInternalUnresolved(module);
+        module.uses_top_level_await = analyzer.has_top_level_await;
+        if (module.transform_cache) |*cache| {
+            cache.symbol_ids = analyzer.symbol_ids.items;
+        }
 
-            if (analyzer.stmt_info_count > 0) {
-                module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
-                    arena_alloc,
-                    &(module.ast.?),
-                    analyzer.symbols.items,
-                    analyzer.references.items,
-                    if (module.semantic) |*s| &s.unresolved_references else null,
-                ) catch module.prebuilt_stmt_info;
-            }
-        } else |_| {}
-    }
+        module.prebuilt_stmt_info = null;
+        if (analyzer.stmt_info_count > 0) {
+            module.prebuilt_stmt_info = try stmt_info_mod.buildFromSemantic(
+                arena_alloc,
+                ast,
+                analyzer.symbols.items,
+                analyzer.references.items,
+                if (module.semantic) |*s| &s.unresolved_references else null,
+            );
+        }
 
-    fn refreshLocalExportSymbols(module: *Module) void {
-        const sem = if (module.semantic) |*s| s else return;
-        if (sem.scope_maps.len == 0) return;
-        const scope0 = sem.scope_maps[0];
-        const mod_idx = module.index;
+        const scan_result = try import_scanner.extractImportsWithCjsDetectionAndDefines(arena_alloc, ast, self.defines);
+        module.import_records = try mergeImportRecords(arena_alloc, previous_import_records, scan_result.records);
+        try import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, ast, module.import_records);
 
-        for (module.export_bindings) |*eb| {
-            if (eb.kind != .local) continue;
+        const transformed_import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records);
+        module.import_bindings = try mergeImportBindings(arena_alloc, previous_import_bindings, transformed_import_bindings);
 
-            const lookup_name = if (std.mem.eql(u8, eb.exported_name, "default") and
-                (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default")))
-                "_default"
-            else
-                eb.local_name;
+        try binding_scanner_mod.collectNamespaceAccesses(arena_alloc, ast, module.import_bindings);
+        module.export_bindings = try binding_scanner_mod.extractExportBindings(
+            arena_alloc,
+            ast,
+            module.import_records,
+            module.import_bindings,
+        );
+        module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
 
-            const sym_idx = scope0.get(lookup_name) orelse continue;
-            if (sym_idx >= sem.symbols.items.len) continue;
-            if (std.mem.eql(u8, eb.exported_name, "default") and std.mem.eql(u8, lookup_name, "_default")) {
-                sem.symbols.items[sym_idx].synthetic_kind = .default_export;
-                sem.symbols.items[sym_idx].synthetic_name = "_default";
-            }
-            eb.symbol = bundler_symbol.SymbolRef.makeSemantic(mod_idx, sym_idx);
+        const refreshed_scan_result = import_scanner.ScanResult{
+            .records = module.import_records,
+            .has_esm_syntax = scan_result.has_esm_syntax,
+            .has_cjs_require = scan_result.has_cjs_require,
+            .has_module_exports = scan_result.has_module_exports,
+            .has_exports_dot = scan_result.has_exports_dot,
+        };
+
+        try self.injectJsxSyntheticImportsForModule(module, arena_alloc, ast);
+
+        module.exports_kind = determineExportsKind(refreshed_scan_result, module.path);
+        module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
+
+        if (module.alias_table) |*table| table.deinit();
+        module.alias_table = AliasTable.init(self.allocator);
+        if (module.semantic) |*sem| {
+            const scope0: ?std.StringHashMap(usize) =
+                if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
+            try binding_scanner_mod.populateSyntheticSymbols(
+                &module.alias_table.?,
+                module.index,
+                module.export_bindings,
+                &sem.symbols,
+                arena_alloc,
+                scope0,
+            );
         }
     }
 
-    /// transformer 영역 ([parser_node_count..)) 에서 import_declaration 노드만 골라
-    /// `\x00zts:runtime/...` specifier 를 가지면 module.import_records 와 module.import_bindings
-    /// 에 binding 정보까지 등록 — link 단계의 cross-chunk symbol resolution 에 필요.
-    fn appendTransformerHelperImports(
-        _: *ModuleGraph,
+    fn suppressRuntimeHelperInternalUnresolved(module: *Module) void {
+        if (!runtime_helper_modules.isVirtualId(module.path)) return;
+        var semantic = &(module.semantic orelse return);
+        runtime_helper_modules.removeRegisteredHelperBaseNames(&semantic.unresolved_references);
+    }
+
+    fn injectJsxSyntheticImportsForModule(
+        self: *ModuleGraph,
         module: *Module,
-        ast_ptr: *const Ast,
-        parser_node_count: u32,
         arena_alloc: std.mem.Allocator,
-    ) void {
-        var added_records: std.ArrayList(ImportRecord) = .empty;
-        defer added_records.deinit(arena_alloc);
-        var added_bindings: std.ArrayList(binding_scanner_mod.ImportBinding) = .empty;
-        defer added_bindings.deinit(arena_alloc);
+        ast: *const Ast,
+    ) !void {
+        if (self.jsx_runtime == .classic or !ast.has_jsx) return;
+        if (self.jsx_specifier_cache == null) {
+            const is_dev = self.jsx_runtime == .automatic_dev;
+            self.jsx_specifier_cache = try std.fmt.allocPrint(
+                self.allocator,
+                "{s}/{s}",
+                .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
+            );
+        }
+        const specifier = self.jsx_specifier_cache orelse return;
+        for (module.import_records) |rec| {
+            if (rec.kind == .static_import and std.mem.eql(u8, rec.specifier, specifier)) return;
+        }
+        const base_record_count: u32 = @intCast(module.import_records.len);
+        var specs_buf: [2][]const u8 = undefined;
+        specs_buf[0] = specifier;
+        var n: usize = 1;
+        const react_injected = ast.has_jsx_key_after_spread;
+        if (react_injected) {
+            specs_buf[n] = self.jsx_import_source;
+            n += 1;
+        }
+        module.import_records = try injectJsxRuntimeImports(
+            specs_buf[0..n],
+            arena_alloc,
+            module.import_records,
+        );
+        module.import_bindings = try createJsxImportBindings(
+            self.jsx_runtime,
+            arena_alloc,
+            module.import_bindings,
+            base_record_count,
+            if (react_injected) base_record_count + 1 else null,
+        );
+    }
 
-        const initial_record_count: u32 = @intCast(module.import_records.len);
+    fn isTypeScriptPath(path: []const u8) bool {
+        const ext = std.fs.path.extension(path);
+        return std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
+            std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts");
+    }
 
-        for (ast_ptr.nodes.items[parser_node_count..]) |node| {
-            if (node.tag != .import_declaration) continue;
-            if (!ast_ptr.hasExtra(node.data.extra, 5)) continue;
-            const xs = module_parser.readImportDeclExtras(ast_ptr, node.data.extra);
-            if (xs.source.isNone()) continue;
-            const source_node = ast_ptr.getNode(xs.source);
-            if (source_node.tag != .string_literal) continue;
-            const spec = Ast.stripStringQuotes(ast_ptr.getText(source_node.span));
-            if (!runtime_helper_modules.isVirtualId(spec)) continue;
+    fn isFlowPath(path: []const u8) bool {
+        return std.mem.endsWith(u8, path, ".js.flow") or std.mem.endsWith(u8, path, ".jsx.flow");
+    }
 
-            const record_idx_for_bindings: u32 = initial_record_count + @as(u32, @intCast(added_records.items.len));
-            added_records.append(arena_alloc, .{
-                .specifier = spec,
-                .kind = .static_import,
-                .span = source_node.span,
-            }) catch return;
+    fn mergeImportRecords(
+        arena_alloc: std.mem.Allocator,
+        previous: []const ImportRecord,
+        transformed: []const ImportRecord,
+    ) ![]ImportRecord {
+        var records: std.ArrayList(ImportRecord) = .empty;
+        errdefer records.deinit(arena_alloc);
+        try records.appendSlice(arena_alloc, previous);
+        for (transformed) |rec| {
+            if (hasImportRecord(records.items, rec)) continue;
+            try records.append(arena_alloc, rec);
+        }
+        return records.toOwnedSlice(arena_alloc);
+    }
 
-            for (0..xs.specs_len) |i| {
-                const spec_idx: NodeIndex = @enumFromInt(ast_ptr.extra_data.items[xs.specs_start + i]);
-                if (spec_idx.isNone()) continue;
-                const spec_node = ast_ptr.getNode(spec_idx);
-                if (spec_node.tag != .import_specifier) continue;
-                const imported_idx = spec_node.data.binary.left;
-                const local_idx = spec_node.data.binary.right;
-                if (imported_idx.isNone() or local_idx.isNone()) continue;
-                added_bindings.append(arena_alloc, .{
-                    .kind = .named,
-                    .local_name = ast_ptr.getText(ast_ptr.getNode(local_idx).span),
-                    .imported_name = ast_ptr.getText(ast_ptr.getNode(imported_idx).span),
-                    .local_span = ast_ptr.getNode(local_idx).span,
-                    .import_record_index = record_idx_for_bindings,
-                }) catch return;
+    fn hasImportRecord(records: []const ImportRecord, needle: ImportRecord) bool {
+        for (records) |rec| {
+            if (rec.kind == needle.kind and
+                rec.span.start == needle.span.start and
+                rec.span.end == needle.span.end and
+                std.mem.eql(u8, rec.specifier, needle.specifier))
+            {
+                return true;
             }
         }
+        return false;
+    }
 
-        if (added_records.items.len > 0) {
-            const old = module.import_records;
-            const merged = arena_alloc.alloc(ImportRecord, old.len + added_records.items.len) catch return;
-            @memcpy(merged[0..old.len], old);
-            @memcpy(merged[old.len..], added_records.items);
-            module.import_records = merged;
+    fn mergeImportBindings(
+        arena_alloc: std.mem.Allocator,
+        previous: []const binding_scanner_mod.ImportBinding,
+        transformed: []const binding_scanner_mod.ImportBinding,
+    ) ![]binding_scanner_mod.ImportBinding {
+        var bindings: std.ArrayList(binding_scanner_mod.ImportBinding) = .empty;
+        errdefer bindings.deinit(arena_alloc);
+        try bindings.appendSlice(arena_alloc, previous);
+        for (transformed) |binding| {
+            if (hasImportBinding(bindings.items, binding)) continue;
+            try bindings.append(arena_alloc, binding);
         }
-        if (added_bindings.items.len > 0) {
-            const old = module.import_bindings;
-            const merged = arena_alloc.alloc(binding_scanner_mod.ImportBinding, old.len + added_bindings.items.len) catch return;
-            @memcpy(merged[0..old.len], old);
-            @memcpy(merged[old.len..], added_bindings.items);
-            module.import_bindings = merged;
+        return bindings.toOwnedSlice(arena_alloc);
+    }
+
+    fn hasImportBinding(bindings: []const binding_scanner_mod.ImportBinding, needle: binding_scanner_mod.ImportBinding) bool {
+        for (bindings) |binding| {
+            if (binding.kind == needle.kind and
+                binding.import_record_index == needle.import_record_index and
+                binding.local_span.start == needle.local_span.start and
+                binding.local_span.end == needle.local_span.end and
+                std.mem.eql(u8, binding.local_name, needle.local_name) and
+                std.mem.eql(u8, binding.imported_name, needle.imported_name))
+            {
+                return true;
+            }
         }
+        return false;
     }
 
     const findPackageDirPath = resolve_cache_mod.findPackageDirPath;
