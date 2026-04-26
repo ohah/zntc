@@ -681,7 +681,9 @@ for (const c of cases) {
         (m) => m[1],
       );
       const duplicateNsNames = nsNames.filter((name, index) => nsNames.indexOf(name) !== index);
-      expect(duplicateNsNames, "effect bundle must not redeclare shared namespace vars").toEqual([]);
+      expect(duplicateNsNames, "effect bundle must not redeclare shared namespace vars").toEqual(
+        [],
+      );
     }
 
     await writeFile(

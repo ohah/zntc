@@ -184,7 +184,13 @@ console.log(fa() + "/" + fb());`,
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, "out.js");
 
-    const bundle = await runZts(["--bundle", join(fixture.dir, "entry.js"), "--format=esm", "-o", outFile]);
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "entry.js"),
+      "--format=esm",
+      "-o",
+      outFile,
+    ]);
     expect(bundle.exitCode).toBe(0);
 
     const run = await runNode(outFile);
@@ -209,16 +215,22 @@ console.log(fa() + "/" + fb());`,
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, "out.js");
 
-    const bundle = await runZts(["--bundle", join(fixture.dir, "entry.js"), "--format=esm", "-o", outFile]);
+    const bundle = await runZts([
+      "--bundle",
+      join(fixture.dir, "entry.js"),
+      "--format=esm",
+      "-o",
+      outFile,
+    ]);
     expect(bundle.exitCode).toBe(0);
 
     const run = await runNode(outFile);
     expect(run.stdout).toBe("alpha/beta");
 
     const code = readFileSync(outFile, "utf8");
-    const names = [...code.matchAll(/var ([A-Za-z_$][\w$]*_ns(?:_\d+)?)\s*=\s*\{get value\(\)/g)].map(
-      (m) => m[1],
-    );
+    const names = [
+      ...code.matchAll(/var ([A-Za-z_$][\w$]*_ns(?:_\d+)?)\s*=\s*\{get value\(\)/g),
+    ].map((m) => m[1]);
     expect(names.length).toBe(2);
     expect(new Set(names).size).toBe(2);
   });
