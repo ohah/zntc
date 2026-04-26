@@ -741,17 +741,26 @@ pub const Bundler = struct {
         graph.worklet_transform = self.options.worklet_transform;
         graph.react_refresh = self.options.react_refresh;
         graph.code_splitting = self.options.code_splitting;
-        graph.experimental_decorators = self.options.experimental_decorators;
-        graph.emit_decorator_metadata = self.options.emit_decorator_metadata;
-        graph.use_define_for_class_fields = self.options.use_define_for_class_fields;
-        graph.verbatim_module_syntax = self.options.verbatim_module_syntax;
-        graph.unsupported = self.options.unsupported;
-        graph.drop_labels = self.options.drop_labels;
-        graph.minify_syntax = self.options.minify_syntax;
-        graph.keep_names = self.options.keep_names;
-        graph.jsx_factory = self.options.jsx_factory;
-        graph.jsx_fragment = self.options.jsx_fragment;
-        graph.worklet_plugin_version = self.options.worklet_plugin_version;
+        // 14 mirror 필드 → transform_options_base 1 필드로 통합 (drift hot spot 제거).
+        // graph 가 직접 사용하는 옵션 (worklet_transform / react_refresh / code_splitting /
+        // jsx_runtime / jsx_in_js / jsx_import_source 등) 만 별도 mirror.
+        graph.transform_options_base = .{
+            .define = self.options.define,
+            .experimental_decorators = self.options.experimental_decorators,
+            .emit_decorator_metadata = self.options.emit_decorator_metadata,
+            .use_define_for_class_fields = self.options.use_define_for_class_fields,
+            .verbatim_module_syntax = self.options.verbatim_module_syntax,
+            .unsupported = self.options.unsupported,
+            .drop_labels = self.options.drop_labels,
+            .jsx_runtime = self.options.jsx_runtime,
+            .jsx_factory = self.options.jsx_factory,
+            .jsx_fragment = self.options.jsx_fragment,
+            .jsx_import_source = self.options.jsx_import_source,
+            .worklet_plugin_version = self.options.worklet_plugin_version,
+            .minify_syntax = self.options.minify_syntax,
+            .minify_whitespace = self.options.minify_whitespace,
+            .keep_names = self.options.keep_names,
+        };
         defer graph.deinit();
 
         // graph.build() 또는 buildIncremental() 호출.
