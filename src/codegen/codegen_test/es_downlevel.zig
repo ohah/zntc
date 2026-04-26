@@ -1743,6 +1743,38 @@ test "ES2015: super property update expression receiver 보존" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"x\",this)++") == null);
 }
 
+// #2022: derived constructor 안의 super.x receiver 는 외부 `this` 가 아니라 _this 여야 한다.
+// super() lowering 이 인스턴스를 `_this = __callSuper(...)` 에 저장하므로 base accessor 의 `this`
+// 가 인스턴스를 보려면 receiver 도 같은 _this 로 전달돼야 함.
+test "ES2015: derived constructor 안 super property set receiver = _this (#2022)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){super();super.x=1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,\"x\",1,__assertThisInitialized(_this))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,\"x\",1,this)") == null);
+}
+
+test "ES2015: derived constructor 안 super property get receiver = _this (#2022)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){super();return super.x;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"x\",__assertThisInitialized(_this))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"x\",this)") == null);
+}
+
+test "ES2015: derived constructor 안 super property compound assign receiver = _this (#2022)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){super();super.x+=3;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisInitialized(_this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,\"x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,\"x\",__superGet(_super.prototype,\"x\",this)") == null);
+}
+
+test "ES2015: derived constructor 안 computed super[k]= receiver = _this (#2022)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(){super();const k=\"x\";super[k]=1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,k,1,__assertThisInitialized(_this))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,k,1,this)") == null);
+}
+
 test "ES2015: static super access는 parent constructor 참조" {
     var r1 = try e2eTarget(std.testing.allocator, "class C extends P{static m(){return super.x+super.m();}}", .es5);
     defer r1.deinit();

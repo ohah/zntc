@@ -1685,6 +1685,116 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("4:4");
     });
 
+    // #2022: derived constructor body 안의 super.x = / super.x / super.x += / super[k] = 의 receiver 가
+    // 외부 `this` 가 아니라 `_this` (= __callSuper 결과) 여야 base accessor 의 this 가 새 인스턴스로 들어감.
+    test("derived constructor 안 super property set receiver = _this (#2022)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              tag: string = "";
+              set x(v: number) { console.log(this.tag + ":" + v); }
+            }
+            class C extends B {
+              constructor() {
+                super();
+                this.tag = "c";
+                super.x = 1;
+              }
+            }
+            new C();
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("c:1");
+    });
+
+    test("derived constructor 안 super property get receiver = _this (#2022)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              tag: string = "";
+              get x() { return this.tag; }
+            }
+            class C extends B {
+              constructor() {
+                super();
+                this.tag = "c";
+                console.log(super.x);
+              }
+            }
+            new C();
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("c");
+    });
+
+    test("derived constructor 안 super.x += 의 receiver = _this (#2022)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              v: number = 0;
+              get x() { return this.v; }
+              set x(n: number) { this.v = n; }
+            }
+            class C extends B {
+              constructor() {
+                super();
+                this.v = 2;
+                super.x += 3;
+                console.log(this.v);
+              }
+            }
+            new C();
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+
+    test("derived constructor 안 computed super[k] = receiver = _this (#2022)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              tag: string = "";
+              set x(v: number) { console.log(this.tag + ":" + v); }
+              [key: string]: any;
+            }
+            class C extends B {
+              constructor() {
+                super();
+                this.tag = "c";
+                const k = "x";
+                super[k] = 1;
+              }
+            }
+            new C();
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("c:1");
+    });
+
     test("derived constructor super 전 this 접근 검사", async () => {
       const result = await bundleAndRun(
         {
