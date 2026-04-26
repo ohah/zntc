@@ -56,14 +56,16 @@ describe("bundle es5: extends + super + rest param class ctor", () => {
       expect(proc.exitCode).toBe(0);
       const output = proc.stdout.toString();
 
-      // 버그 시 `var ;` (identifier 누락) 출력. 수정 후 `var _this;`.
+      // 버그 시 `var ;` (identifier 누락) 출력 — declarator 가 비면 안 됨.
       expect(output).not.toMatch(/var\s*;/);
-      expect(output).toContain("var _this;");
+      // `_this` 가 어떤 형태로든 var 선언되어야 함.
+      // 단독 `var _this;` 또는 `_newTarget` 캡쳐와 병합된 `var _newTarget=...,_this;` 둘 다 허용.
+      expect(output).toMatch(/var\s+(?:[^;]*,\s*)?_this\b/);
 
       // 생성자 body 안에서 _this가 선언된 뒤 대입되어야 함 (undeclared assignment 금지).
       const ctorBody = output.match(/function\s+ComposedGesture\s*\(\s*\)\s*\{([\s\S]*?)\n\s*\}/);
       expect(ctorBody).not.toBeNull();
-      expect(ctorBody![1]).toContain("var _this;");
+      expect(ctorBody![1]).toMatch(/var\s+(?:[^;]*,\s*)?_this\b/);
       expect(ctorBody![1]).toContain("_this = __callSuper");
     } finally {
       await fixture.cleanup();
