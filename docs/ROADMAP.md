@@ -13,7 +13,7 @@
 | 6a-si | StmtInfo 기반 statement DCE (rolldown 방식, pathe ESM 77% 감소) | ✅ |
 | 6a-ex | exports 조건 해석 Node.js 스펙 준수 (tslib CJS→ESM 해결) | ✅ |
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
-| Test262 | 50,504건 / 50,498 통과 / **6 known fail** (annexB B.3.3.1 sloppy hoisting) | 🟡 |
+| Test262 | 50,504건 / 50,504 통과 / **0 fail** (100%) | ✅ |
 | Smoke | **136 케이스** (엔진 타겟 변형 포함), avg **0.82x**, ❌ 0개 | ✅ |
 | 7-2. emit 병렬화 | 모듈별 transform+codegen 스레드 풀 실행 | ✅ |
 | 7-3. resolve 병렬화 | 배치 내 resolve 스레드 풀 + ResolveCache Mutex | ✅ |
@@ -348,15 +348,15 @@ SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
 
 | 카테고리 | Total | Pass | Fail |
 |---|---|---|---|
-| annexB | 1,079 | 1,073 | **6** (B.3.3.1 sloppy hoisting) |
+| annexB | 1,079 | 1,079 | 0 |
 | built-ins | 22,729 | 22,729 | 0 |
 | harness | 116 | 116 | 0 |
 | intl402 | 1,566 | 1,566 | 0 |
 | language | 23,384 | 23,384 | 0 |
 | staging | 1,630 | 1,630 | 0 |
-| **TOTAL** | **50,504** | **50,498** | **6** (99.99%) |
+| **TOTAL** | **50,504** | **50,504** | **0** (100%) |
 
-annexB 6 fail 은 모두 `language/function-code/*-func-skip-early-err.js` — outer scope `let f` 가 있을 때 `if/else`/block 안의 `function f(){}` 가 var-bound 호이스팅을 건너뛰어야 하는 sloppy-mode 예외 (B.3.3.1) 미구현. ZTS 가 redeclaration error 로 막아 fail.
+이전 annexB 6 fail (`language/function-code/*-func-skip-early-err.js`, B.3.3.1 sloppy function hoisting — outer `let f` 충돌 시 var-bound 호이스팅 skip) 은 d2a393ee 에서 semantic analyzer 가 outer lexical 충돌 감지 시 hoist 를 건너뛰도록 수정해 해소.
 
 ## 성능 최적화 현황
 | 최적화 | 상태 | 효과 |
