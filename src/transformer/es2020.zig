@@ -412,29 +412,12 @@ pub fn ES2020(comptime Transformer: type) type {
             }
         }
 
-        /// transparent wrapper(괄호, TS as/satisfies/type-assertion/!/instantiation, Flow as/cast)
-        /// 통과 후 super_expression 인지 검사. wrapped super 도 super 전용 lowering 분기 (#2034) 를
-        /// 타야 raw `super` 가 temp 대입 RHS 로 흘러나오지 않는다 (es2015_class.zig 의 isSuperUnwrapped
-        /// 와 동일 의도).
+        /// transparent wrapper(괄호, TS as 등) 안쪽이 super_expression 인지 검사 (#2034).
+        /// wrapper-unwrap 자체는 `helpers.unwrapTransparentWrappers` 가 담당.
         fn isSuperExpression(self: *const Transformer, idx: NodeIndex) bool {
-            var cur = idx;
-            while (true) {
-                if (cur.isNone()) return false;
-                const node = self.ast.getNode(cur);
-                switch (node.tag) {
-                    .super_expression => return true,
-                    .parenthesized_expression,
-                    .ts_as_expression,
-                    .ts_satisfies_expression,
-                    .ts_type_assertion,
-                    .ts_instantiation_expression,
-                    .ts_non_null_expression,
-                    .flow_as_expression,
-                    .flow_type_cast_expression,
-                    => cur = node.data.unary.operand,
-                    else => return false,
-                }
-            }
+            const inner = helpers.unwrapTransparentWrappers(self, idx);
+            if (inner.isNone()) return false;
+            return self.ast.getNode(inner).tag == .super_expression;
         }
 
         fn makeSuperMethodMember(
