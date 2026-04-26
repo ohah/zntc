@@ -1795,6 +1795,137 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("c:1");
     });
 
+    // #2030: transparent wrapper(괄호, TS as/satisfies/non-null/legacy <T>) 로 감싸진 super 도
+    // super lowering 의 obj 검사가 통과해야 한다. 그렇지 않으면 raw `super[k]` / `super.x` 가 emit 돼
+    // 런타임 syntax error.
+    test("괄호 super 도 lowering — (super)[k] (#2030)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              v: number = 0;
+              set x(n: number) { this.v = n; }
+            }
+            class C extends B {
+              run() {
+                const k = "x";
+                (super)[k] = 7;
+                return this.v;
+              }
+            }
+            console.log(new C().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("7");
+    });
+
+    test("TS as-cast super 도 lowering — (super as any).x (#2030)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              v: number = 0;
+              set x(n: number) { this.v = n; }
+            }
+            class C extends B {
+              run() {
+                (super as any).x = 9;
+                return this.v;
+              }
+            }
+            console.log(new C().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("9");
+    });
+
+    test("TS as-cast computed super 도 lowering — (super as any)[k] (#2030)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              v: number = 0;
+              set x(n: number) { this.v = n; }
+            }
+            class C extends B {
+              run() {
+                const k = "x";
+                (super as any)[k] = 11;
+                return this.v;
+              }
+            }
+            console.log(new C().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("11");
+    });
+
+    test("TS legacy <T>cast super 도 lowering — (<any>super)[k] (#2030)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              v: number = 0;
+              set x(n: number) { this.v = n; }
+            }
+            class C extends B {
+              run() {
+                const k = "x";
+                (<any>super)[k] = 13;
+                return this.v;
+              }
+            }
+            console.log(new C().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("13");
+    });
+
+    test("wrapped super method call 도 lowering — (super as any).m() (#2030)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B {
+              greet(): string { return "hi:" + this.tag; }
+              tag: string = "B";
+            }
+            class C extends B {
+              tag: string = "C";
+              run() {
+                return (super as any).greet();
+              }
+            }
+            console.log(new C().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hi:C");
+    });
+
     test("derived constructor super 전 this 접근 검사", async () => {
       const result = await bundleAndRun(
         {
