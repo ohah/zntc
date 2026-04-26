@@ -78,6 +78,33 @@ test "pure builtin: new Set() with unresolved globals is pure" {
     try std.testing.expect(purity.isExprPure(&ctx.ast, init, &ctx.analyzer.unresolved_references));
 }
 
+test "class expression: pure body is removable (#1665)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setup(alloc,
+        \\const C = class {
+        \\  value() { return 1; }
+        \\  static tag = "pure";
+        \\};
+    );
+    defer ctx.deinit();
+
+    const init = initOfDecl(&ctx, 0);
+    try std.testing.expect(purity.isExprPure(&ctx.ast, init, &ctx.analyzer.unresolved_references));
+}
+
+test "class expression: impure static members are preserved (#1665)" {
+    const alloc = std.testing.allocator;
+    var ctx = try setup(alloc,
+        \\const C = class {
+        \\  static tag = init();
+        \\};
+    );
+    defer ctx.deinit();
+
+    const init = initOfDecl(&ctx, 0);
+    try std.testing.expect(!purity.isExprPure(&ctx.ast, init, &ctx.analyzer.unresolved_references));
+}
+
 test "pure builtin: whitelist covers Map/WeakMap/WeakSet/Array/Object/Date/Error" {
     // `new Symbol()` 은 ECMAScript 명세상 TypeError throw → pure 아님 (아래 별도 테스트).
     const alloc = std.testing.allocator;
