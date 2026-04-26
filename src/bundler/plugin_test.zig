@@ -226,6 +226,51 @@ test "Plugin integration: transform-added imports are scanned from final source 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "entry-2038") != null);
 }
 
+fn transformAddsPurePackageImportHook(_: ?*anyopaque, _: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    if (!std.mem.endsWith(u8, id, "index.ts")) return null;
+    return allocator.dupe(u8,
+        \\import { used } from "pure-lib-2038";
+        \\console.log(used);
+        \\
+    ) catch return error.OutOfMemory;
+}
+
+test "Plugin integration: transform-added package import feeds tree-shaking (#2038)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('original source replaced by plugin');");
+    try writeFile(tmp.dir, "node_modules/pure-lib-2038/package.json",
+        \\{"name":"pure-lib-2038","main":"index.js","sideEffects":false}
+    );
+    try writeFile(tmp.dir, "node_modules/pure-lib-2038/index.js",
+        \\export const used = "plugin-pure-used-2038";
+        \\export const unused = "plugin-pure-unused-2038";
+        \\
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{ .name = "add-pure-package-import-transform", .transform = transformAddsPurePackageImportHook },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-pure-used-2038") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-pure-unused-2038") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "original source replaced") == null);
+}
+
 var compiled_cache_transform_marker: []const u8 = "A";
 
 fn cacheSensitiveTransformHook(_: ?*anyopaque, _: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
@@ -284,6 +329,85 @@ test "Plugin integration: transform output invalidates compiled cache (#2038)" {
         try std.testing.expect(!result.hasErrors());
         try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-cache-B-2038") != null);
         try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-cache-A-2038") == null);
+    }
+
+    _ = cache.takeStats();
+    {
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .plugins = &plugins,
+            .compiled_cache = &cache,
+        });
+        defer b.deinit();
+
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+        const stats = cache.takeStats();
+
+        try std.testing.expect(!result.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-cache-B-2038") != null);
+        try std.testing.expect(stats.hits > 0);
+    }
+}
+
+var compiled_cache_load_marker: []const u8 = "A";
+
+fn cacheSensitiveLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    if (!std.mem.endsWith(u8, path, "index.ts")) return null;
+    return std.fmt.allocPrint(
+        allocator,
+        "const marker = \"plugin-load-cache-{s}-2038\";\nconsole.log(marker);\n",
+        .{compiled_cache_load_marker},
+    ) catch return error.OutOfMemory;
+}
+
+test "Plugin integration: load output invalidates compiled cache (#2038)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('filesystem source is stable');");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var cache = CompiledOutputCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const plugins = [_]Plugin{
+        .{ .name = "cache-sensitive-load", .load = cacheSensitiveLoadHook },
+    };
+
+    compiled_cache_load_marker = "A";
+    {
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .plugins = &plugins,
+            .compiled_cache = &cache,
+        });
+        defer b.deinit();
+
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expect(!result.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-load-cache-A-2038") != null);
+    }
+
+    _ = cache.takeStats();
+    compiled_cache_load_marker = "B";
+    {
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .plugins = &plugins,
+            .compiled_cache = &cache,
+        });
+        defer b.deinit();
+
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expect(!result.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-load-cache-B-2038") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-load-cache-A-2038") == null);
     }
 }
 
