@@ -557,13 +557,9 @@ pub fn buildDefinePropertyKeyArg(self: anytype, key_idx: NodeIndex) !NodeIndex {
         return self.visitNode(key_node.data.unary.operand);
     }
     if (key_node.tag == .string_literal) {
-        // string literal key (예: `class C { "foo bar"() {} }`) 는 이미 quote 포함된 raw 라
-        // buildQuotedKeyLiteral 로 감싸면 ``""foo bar""`` 같은 이중 quote 발생. 새 노드로 복제만.
-        return self.ast.addNode(.{
-            .tag = .string_literal,
-            .span = key_node.span,
-            .data = key_node.data,
-        });
+        // string literal key 는 이미 quote 포함이라 buildQuotedKeyLiteral 로 감싸면 이중 quote.
+        // visitNode 경로가 quote 보존 + unicode_brace_escape 같은 ES5 lower 까지 동시 처리.
+        return self.visitNode(key_idx);
     }
     return buildQuotedKeyLiteral(self, key_node.span);
 }

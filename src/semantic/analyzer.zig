@@ -3275,15 +3275,10 @@ pub const SemanticAnalyzer = struct {
         if (body_idx.isNone()) return;
         const body_node = self.ast.getNode(body_idx);
         if (body_node.tag == .block_statement) {
-            // ECMAScript Annex B B.3.3.1 을 위해 함수 body 의 직속 lexical (let/const/class)
-            // 도 var pre-pass 보다 먼저 등록한다. 그래야 nested block 안의 function
-            // declaration 이 var-scope hoist 를 시도할 때 outer lexical 과의 충돌을 감지하고
-            // hoist 를 skip 할 수 있다 (annexB function-code/*-func-skip-early-err 케이스).
+            // lexical 을 var pre-pass 보다 먼저 등록 — `predeclareVarDeclsRecursive` 의
+            // function_declaration 분기가 outer lexical 충돌을 감지해 Annex B B.3.3.1
+            // 의 hoist-skip 을 수행하기 위해 필요.
             try self.predeclareLexicalDecls(body_node.data.list);
-
-            // var hoisting: 함수 body 내부의 모든 var 선언을 함수 스코프에 미리 등록.
-            // ECMAScript var는 함수 진입 시 hoisting되므로 사용 위치가 선언보다 앞이어도 유효.
-            // predeclared_scope는 설정하지 않음 — isVarPredeclared가 var 전용으로 처리.
             try self.predeclareVarDecls(body_node.data.list);
             try self.visitStmtList(body_node.data.list);
         } else {
@@ -3314,9 +3309,8 @@ pub const SemanticAnalyzer = struct {
                 try self.predeclareVarDecl(node);
             },
             // 함수 선언도 hoisting 대상 (var scope에 등록).
-            // ECMAScript Annex B B.3.3.1: outer var scope 에 같은 이름의 lexical
-            // (let/const/class) 가 이미 있으면 hoist 를 skip 한다 — 그 경우 var 바인딩이
-            // early error 를 만들 상황이라 extension 이 적용되지 않는다.
+            // Annex B B.3.3.1: outer var scope 에 같은 이름의 lexical 이 있으면
+            // hoist skip (var binding 이 early error 를 만들 상황엔 extension 미적용).
             .function_declaration => {
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
@@ -3327,10 +3321,7 @@ pub const SemanticAnalyzer = struct {
                     const var_scope = self.findVarScope();
                     const name_text = self.ast.getText(name_node.span);
                     if (self.findSymbolInScope(var_scope, name_text)) |existing| {
-                        if (existing.kind.isBlockScoped()) {
-                            // outer lexical 충돌 — hoist skip (Annex B B.3.3.1).
-                            return;
-                        }
+                        if (existing.kind.isBlockScoped()) return;
                     }
                     try self.declareSymbolWithNode(name_node.span, .function_decl, name_node.span, null);
                 }
