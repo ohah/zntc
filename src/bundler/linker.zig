@@ -960,15 +960,27 @@ pub const Linker = struct {
                 if (!blocks) {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
-                        if (sk != .default_export) continue;
+                        switch (sk) {
+                            .default_export, .cjs_exports, .esm_init => {},
+                        }
                         const key = if (sym.canonical_name.len > 0) sym.canonical_name else sym.synthetic_name;
                         if (key.len <= 1) continue;
                         if (exported.contains(key)) continue;
+
+                        // 래퍼 심볼(`init_<path>`, `exports_<path>`)은 소스 AST가 아니라
+                        // 번들러가 직접 emit하므로 semantic reference_count가 보통 0이다.
+                        // 그래도 선언과 cross-module 호출에 실제로 등장하고 RN 번들에서는
+                        // 매우 길어지므로, 작은 0이 아닌 가중치로 최상위 망글 후보에 남긴다.
+                        const ref_count: u32 = if ((sk == .cjs_exports or sk == .esm_init) and sym.reference_count == 0)
+                            1
+                        else
+                            sym.reference_count;
+
                         try candidates.append(self.allocator, .{
                             .module_index = @intCast(mi),
                             .symbol_id = @intCast(si),
                             .name = key,
-                            .ref_count = sym.reference_count,
+                            .ref_count = ref_count,
                         });
                     }
                 }

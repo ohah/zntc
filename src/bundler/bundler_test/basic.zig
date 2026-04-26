@@ -102,6 +102,76 @@ test "Bundler: minified output" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "// ---") == null);
 }
 
+test "Bundler: minify가 래퍼 합성 심볼을 짧은 이름으로 바꿈" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import { value } from './feature.js';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "feature.js",
+        \\export const value = 42;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
+}
+
+test "Bundler: minify가 require 래퍼 합성 심볼도 짧은 이름으로 바꿈" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\const esm = require('./esm.js');
+        \\const cjs = require('./cjs.cjs');
+        \\console.log(esm.value + cjs.value);
+    );
+    try writeFile(tmp.dir, "esm.js",
+        \\export const value = 40;
+    );
+    try writeFile(tmp.dir, "cjs.cjs",
+        \\exports.value = 2;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
+}
+
 test "Bundler: unresolved import produces error diagnostic" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
