@@ -13,8 +13,8 @@
 | 6a-si | StmtInfo 기반 statement DCE (rolldown 방식, pathe ESM 77% 감소) | ✅ |
 | 6a-ex | exports 조건 해석 Node.js 스펙 준수 (tslib CJS→ESM 해결) | ✅ |
 | 6b. Dev server | HTTP+WS, Live Reload, HMR, React Fast Refresh, CSS 핫 리로드 | ✅ |
-| Test262 | 50,504건 100% 통과 | ✅ |
-| Smoke | 131개 패키지 (mitt, zustand, 엔진 타겟 4개 추가), avg 0.96x, ❌ 0개 | ✅ |
+| Test262 | 50,504건 / 50,498 통과 / **6 known fail** (annexB B.3.3.1 sloppy hoisting) | 🟡 |
+| Smoke | **136 케이스** (엔진 타겟 변형 포함), avg **0.82x**, ❌ 0개 | ✅ |
 | 7-2. emit 병렬화 | 모듈별 transform+codegen 스레드 풀 실행 | ✅ |
 | 7-3. resolve 병렬화 | 배치 내 resolve 스레드 풀 + ResolveCache Mutex | ✅ |
 | 7-fix. fixpoint oscillation | 미사용 모듈 제거를 fixpoint 후로 이동 (100회→2회) | ✅ |
@@ -57,6 +57,8 @@
 
 ## 번들러 성능 현황 (2026-04-10 실측)
 
+> 성능 시간 표는 ReleaseFast 빌드 + CI macos-latest 환경 기준. Debug 빌드 (`zig build` 기본값) 측정시 cold-start 가 5~10x 느려지므로 비교 시 빌드 모드 확인 필수.
+
 ### 합성 벤치마크 (200모듈, CLI 직접 호출)
 | Tool | Avg (ms) | vs fastest |
 |------|----------|------------|
@@ -65,10 +67,10 @@
 | esbuild | 13 | 1.9x |
 | rolldown | 62 | 8.9x |
 
-### 실제 npm 패키지 (131개 스모크 테스트)
-평균 번들 사이즈 비율: **0.96x** (esbuild 대비 4% 작음). 122/131 케이스에서 ZTS가 더 작음.
+### 실제 npm 패키지 (136개 스모크 테스트)
+평균 번들 사이즈 비율: **0.82x** (esbuild 대비 18% 작음). 132/136 케이스에서 ZTS가 더 작음 (2026-04-26 실측).
 
-주요 실측:
+주요 실측 (시간 — 2026-04-10):
 | 라이브러리 | ZTS | esbuild | rolldown |
 |---|---|---|---|
 | vue (1.6MB) | 29ms | 56ms | 152ms |
@@ -131,6 +133,18 @@
   - `resolver.blockList` (7918387a), `resolve.fallback` (e6559104), `watchFolders` (b104b828)
 - **Plugin API 확장** — `onResolve` 훅이 `{ disabled: true }` 반환 허용 (49955634)
 - **BuildOptions 보완** — `strictExecutionOrder`, `scopeHoist`, `workletTransform` 추가 (eb909fcc)
+
+## ✅ 최근 추가 (2026-04 transformer / bundler)
+
+- **Runtime helper virtual module** (#1961, PR 1a~1h, 2026-04-26) — splitting + single-bundle 양쪽에서 helper 를 가상 모듈로 모델링 (`__esm`, `__commonJS` 등). HelperBit enum 화 (#1982) 등 후속 정리 5건.
+- **ESM external import preserve** (#1962, #1983) — bare external 을 `require()` 로 변환하지 않고 `import` 그대로 보존.
+- **Lazy sourcemap** (#1727 Phase B, 5 PR) — `serialize` 비용 29ms→0.22ms, NAPI HMR 183→162ms. ZTS 는 `sourceURL` / bungae 는 `sourceMappingURL` 분리.
+- **Type-only import elision** (#1791, #1797 + 7 PR) — named 한정 + oxc-style Reference flags. for-of `let` closure capture fix + sentinel AST layout 수정 동반.
+- **Worker race safety** (#1779 에픽 7 PR) — `StableSegmentedList` 도입, std.SegmentedList.dynamic_segments race 근본 해결.
+- **Tree shaker statement-level symbol graph** (#1558, #1560-1562) — rolldown 방식 단일 소스. reference_count 는 mangler 전용으로 분리.
+- **Symbol table Phase 4e** (#1328, 6 PR) — semantic 통합.
+- **Transformer epic D2** (#1672) — Profile 에픽 12 PR 완료, 실삽입 9개. NAPI `phaseDurations.parse_ms` 는 `graph_ns` 의 legacy 이름 (트랩 주의).
+- **Transformer 미세 fix 17건** (2026-04-26) — super property/static/logical-assign, optional method/eval call, exponentiation assign 등 edge case 정리.
 
 ## 의존성 관계
 ```
@@ -312,20 +326,37 @@ bottleneck 제보 있을 때 재검토.
 
 ## ES 다운레벨링 커버리지 (kangax/compat-table)
 
-`bun run test:compat`으로 실행. CI에서 자동 검증.
+`bun run test:compat`으로 실행. CI에서 자동 검증. 2026-04-26 실측.
 
 | Target | Pass | Total | Rate |
 |--------|------|-------|------|
-| ES5 | 237 | 237 | 100% |
-| ES2015 | 17 | 17 | 100% |
-| ES2016 | 14 | 14 | 100% |
-| ES2017 | 14 | 14 | 100% |
-| ES2018 | 12 | 12 | 100% |
-| ES2019 | 10 | 10 | 100% |
-| ES2020 | 9 | 9 | 100% |
+| ES5 | 241 | 242 | 99.6% (1 known fail) |
+| ES2015 | 18 | 18 | 100% |
+| ES2016 | 15 | 15 | 100% |
+| ES2017 | 15 | 15 | 100% |
+| ES2018 | 13 | 13 | 100% |
+| ES2019 | 11 | 11 | 100% |
+| ES2020 | 10 | 10 | 100% |
+| ES2021 | 1 | 1 | 100% |
 
-네이티브 엔진 전용 테스트 스킵 (GeneratorFunction 생성자, iterable 프로토콜).
+ES5 known fail: tagged template `\x` arbitrary escape sequence (`template literals`). 네이티브 엔진 전용 테스트 스킵 (GeneratorFunction 생성자, iterable 프로토콜).
 SWC 비교 테스트: 29 cases × 9 targets 전부 통과.
+
+## Test262 (2026-04-26 실측)
+
+`zts --test262 tests/test262` (test262 repo root 자동 감지 → `test/` 만 walk).
+
+| 카테고리 | Total | Pass | Fail |
+|---|---|---|---|
+| annexB | 1,079 | 1,073 | **6** (B.3.3.1 sloppy hoisting) |
+| built-ins | 22,729 | 22,729 | 0 |
+| harness | 116 | 116 | 0 |
+| intl402 | 1,566 | 1,566 | 0 |
+| language | 23,384 | 23,384 | 0 |
+| staging | 1,630 | 1,630 | 0 |
+| **TOTAL** | **50,504** | **50,498** | **6** (99.99%) |
+
+annexB 6 fail 은 모두 `language/function-code/*-func-skip-early-err.js` — outer scope `let f` 가 있을 때 `if/else`/block 안의 `function f(){}` 가 var-bound 호이스팅을 건너뛰어야 하는 sloppy-mode 예외 (B.3.3.1) 미구현. ZTS 가 redeclaration error 로 막아 fail.
 
 ## 성능 최적화 현황
 | 최적화 | 상태 | 효과 |
