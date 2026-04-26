@@ -31,6 +31,21 @@ pub fn ES2016(comptime Transformer: type) type {
 
         /// `a **= b` → `a = Math.pow(a, b)`
         pub fn lowerExponentiationAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            if (try es_helpers.prepareMemberAssignmentTargetRef(self, node.data.binary.left, node.span)) |target| {
+                const new_right = try self.visitNode(node.data.binary.right);
+                const pow_call = try es_helpers.makeMathPowCall(self, target.value, new_right, node.span);
+
+                return self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = target.read,
+                        .right = pow_call,
+                        .flags = @intFromEnum(token_mod.Kind.eq),
+                    } },
+                });
+            }
+
             const new_left = try self.visitNode(node.data.binary.left);
             const new_right = try self.visitNode(node.data.binary.right);
 

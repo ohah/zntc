@@ -2419,6 +2419,50 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("9");
     });
+
+    test("exponentiation assignment member receiver 1회 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let calls = 0;
+            const target: any = { x: 2 };
+            function getObj(): any {
+              calls++;
+              return target;
+            }
+            getObj().x **= 3;
+            console.log(calls, target.x);
+          `,
+        },
+        "index.ts",
+        ["--target=es2015"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 8");
+    });
+
+    test("exponentiation assignment computed member key 1회 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let keyCalls = 0;
+            const obj: any = { x: 2 };
+            function getKey() {
+              keyCalls++;
+              return "x";
+            }
+            obj[getKey()] **= 3;
+            console.log(keyCalls, obj.x);
+          `,
+        },
+        "index.ts",
+        ["--target=es2015"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 8");
+    });
   });
 
   // ===== ES2017 (target=es2016) =====
