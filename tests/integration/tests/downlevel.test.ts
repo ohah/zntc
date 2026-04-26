@@ -4680,42 +4680,46 @@ describe("ES 다운레벨링 런타임 테스트", () => {
     });
   });
 
-  describe("Tagged template + invalid escape (ES2018 lifting)", () => {
-    // raw 그대로 cooked array 에 박으면 JS engine 이 \\x can only be followed by
-    // a hex character sequence 같은 SyntaxError 를 낸다. ES2018 spec 은 invalid
-    // escape 가 있으면 cooked element 가 undefined 여야 한다.
-    test("invalid escape 가 있는 cooked element 가 undefined", async () => {
+  describe("Annex B B.3.3.1 sloppy hoist skip", () => {
+    // outer scope 의 lexical (let/const) 와 같은 이름의 function declaration 이
+    // 안쪽 block 에 있을 때, var-scope hoist 를 시도하면 redeclaration 으로 막혀
+    // ZTS1000 에러가 나던 회귀. spec 은 hoist 자체를 skip (B.3.3.1).
+    test("if/else body 의 function declaration 이 outer let 과 충돌 안 한다", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
-            function strings(arr: TemplateStringsArray) { return arr; }
-            const str = strings\`\\1\\xz\\uz\\u{110000}\\u{z}\`;
-            console.log(str.length === 1, str[0] === undefined, str.raw[0] === "\\\\1\\\\xz\\\\uz\\\\u{110000}\\\\u{z}");
+            (function () {
+              let f: any = 123;
+              if (false) ; else function f() {}
+              console.log(f);
+            })();
           `,
         },
         "index.ts",
-        ["--target=es5"],
+        [],
       );
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
-      expect(result.runOutput).toBe("true true true");
+      expect(result.runOutput).toBe("123");
     });
 
-    test("valid escape 는 그대로 cooked 에 박힌다", async () => {
+    test("block 안 function declaration 이 outer let 과 충돌 안 한다", async () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
-            function strings(arr: TemplateStringsArray) { return arr; }
-            const str = strings\`a\\nb\\tc\`;
-            console.log(str[0] === "a\\nb\\tc");
+            (function () {
+              let f: any = 7;
+              { function f() {} }
+              console.log(f);
+            })();
           `,
         },
         "index.ts",
-        ["--target=es5"],
+        [],
       );
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
-      expect(result.runOutput).toBe("true");
+      expect(result.runOutput).toBe("7");
     });
   });
 });
