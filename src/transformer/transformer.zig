@@ -182,6 +182,14 @@ pub const TransformOptions = struct {
     /// 사고 방지). 자세한 매핑은 `runtime_helper_imports.zig`.
     emit_runtime_helper_imports: bool = false,
 
+    /// #1961 PR 1d: source_ast 가 이미 transform 된 상태 (graph pre-pass 결과) 면
+    /// `cloneForTransformer` 를 skip 하고 `@constCast` 로 borrow. transform() 은
+    /// `ast.transformed_root` cache hit 분기로 즉시 cached root 반환. emit 단계
+    /// transformer 가 두 번째 clone 비용 (수백 KB AST 의 전량 memcpy) 을 회피.
+    /// caller 는 transformer.deinit 시 ast 가 free 되지 않음을 알아야 한다 — 외부
+    /// owner (보통 module.parse_arena) 가 처리.
+    borrow_source_ast: bool = false,
+
     pub const compat = @import("compat.zig");
 };
 
@@ -475,16 +483,27 @@ pub const Transformer = struct {
         var opts = options;
         if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
 
-        // 파서 AST를 트랜스포머 allocator 의 heap cell 로 복제 (원본 보존).
-        const ast_ptr = try allocator.create(Ast);
-        errdefer allocator.destroy(ast_ptr);
-        ast_ptr.* = try Ast.cloneForTransformer(source_ast, allocator);
-        // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
-        ast_ptr.transform_boundary = @intCast(ast_ptr.nodes.items.len);
+        // borrow_source_ast: 이미 transform 된 ast 를 borrow — clone 회피 (#1961 PR 1d).
+        // 그렇지 않으면 파서 AST 를 트랜스포머 allocator 의 heap cell 로 복제 (원본 보존).
+        const ast_ptr = if (opts.borrow_source_ast)
+            @constCast(source_ast)
+        else blk: {
+            const new_ast = try allocator.create(Ast);
+            errdefer allocator.destroy(new_ast);
+            new_ast.* = try Ast.cloneForTransformer(source_ast, allocator);
+            // D1 (RFC #1672): parser/transformer 영역 경계 스냅샷.
+            new_ast.transform_boundary = @intCast(new_ast.nodes.items.len);
+            break :blk new_ast;
+        };
+        // borrow 모드에서는 source_ast 의 transform_boundary 가 parser 영역 끝.
+        const parser_count: u32 = if (opts.borrow_source_ast)
+            (ast_ptr.transform_boundary orelse @intCast(ast_ptr.nodes.items.len))
+        else
+            @intCast(source_ast.nodes.items.len);
 
         var self: Transformer = .{
             .ast = ast_ptr,
-            .parser_node_count = @intCast(source_ast.nodes.items.len),
+            .parser_node_count = parser_count,
             .options = opts,
             .allocator = allocator,
             .scratch = .empty,
@@ -495,8 +514,11 @@ pub const Transformer = struct {
     }
 
     pub fn deinit(self: *Transformer) void {
-        self.ast.deinit();
-        self.allocator.destroy(self.ast);
+        // borrow 모드는 외부 owner 가 ast 를 free — transformer 는 자기 ast 안 건드림.
+        if (!self.options.borrow_source_ast) {
+            self.ast.deinit();
+            self.allocator.destroy(self.ast);
+        }
         self.deinitExceptAst();
     }
 
