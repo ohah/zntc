@@ -421,6 +421,26 @@ test "computeInputHash: transformed source participates in cache key (#2038)" {
     try std.testing.expect(hash_a != hash_b);
 }
 
+test "computeInputHash: unchanged transformed source keeps cache key stable (#2038)" {
+    const alloc = std.testing.allocator;
+
+    var resolve_cache = ResolveCache.init(alloc, .{});
+    defer resolve_cache.deinit();
+    var graph = ModuleGraph.init(alloc, &resolve_cache);
+    defer graph.deinit();
+
+    var a = Module.init(@enumFromInt(0), "/entry.ts");
+    var b = Module.init(@enumFromInt(0), "/entry.ts");
+    a.mtime = 123;
+    b.mtime = 123;
+    a.source = "console.log('same plugin output');";
+    b.source = "console.log('same plugin output');";
+
+    const hash_a = computeInputHash(&a, 0xCAFE, null, &graph);
+    const hash_b = computeInputHash(&b, 0xCAFE, null, &graph);
+    try std.testing.expectEqual(hash_a, hash_b);
+}
+
 test "CompiledOutputCache: put → tryHit 성공" {
     const alloc = std.testing.allocator;
     var cache = CompiledOutputCache.init(alloc);
