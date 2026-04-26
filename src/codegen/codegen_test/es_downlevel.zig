@@ -681,7 +681,7 @@ test "ES5: class with async method + non-async method" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__generator") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "yield") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "prototype.sync") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(Foo.prototype,\"sync\"") != null);
 }
 
 test "ES5: async with while(true) + await + break" {
@@ -1506,14 +1506,14 @@ test "ES2015: class with constructor and methods" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{constructor(x){this.x=x;}method(){return this.x;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo(x)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.prototype.method=function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(Foo.prototype,\"method\"") != null);
 }
 
 test "ES2015: class with static method" {
     var r = try e2eTarget(std.testing.allocator, "class Foo{static create(){return 1;}}", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.create=function()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(Foo,\"create\"") != null);
 }
 
 test "ES2015: empty class" {
@@ -1752,6 +1752,16 @@ test "ES2015: class getter/setter paired" {
     // "get:" 와 "set:" 가 같은 호출 안에 있어야 함
     try std.testing.expect(std.mem.indexOf(u8, r.output, "get:function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "set:function(x)") != null);
+}
+
+test "ES2015: class method descriptor는 enumerable false" {
+    var r = try e2eTarget(std.testing.allocator, "class F{m(){return 1;}static s(){return 2;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F.prototype,\"m\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F,\"s\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "configurable:true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "writable:true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "F.prototype.m=function") == null);
 }
 
 test "ES2015: class static getter" {
@@ -2056,10 +2066,10 @@ test "ES2015: class with computed method" {
 }
 
 test "ES2015: class with computed method uses bracket notation" {
-    // [Symbol.iterator]() → prototype[Symbol.iterator] = function() (dot 없이)
+    // [Symbol.iterator]() → Object.defineProperty(prototype, Symbol.iterator, ...) (dot 없이)
     var r = try e2eTarget(std.testing.allocator, "class F{[Symbol.iterator](){return this;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "prototype[Symbol.iterator]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F.prototype,Symbol.iterator") != null);
     // prototype.[Symbol.iterator] (잘못된 dot notation) 금지
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "prototype.["), null);
 }

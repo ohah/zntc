@@ -1718,6 +1718,65 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("1\nReferenceError");
     });
 
+    test("class prototype method는 enumerable이 아님", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              m() {}
+              n() {}
+            }
+            console.log(JSON.stringify(Object.keys(C.prototype)));
+            console.log(Object.prototype.propertyIsEnumerable.call(C.prototype, "m"));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("[]\nfalse");
+    });
+
+    test("class static method는 enumerable이 아님", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              static m() {}
+              static n() {}
+            }
+            console.log(JSON.stringify(Object.keys(C)));
+            console.log(Object.prototype.propertyIsEnumerable.call(C, "m"));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("[]\nfalse");
+    });
+
+    test("class method descriptor 속성 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class C {
+              m() {}
+            }
+            const d = Object.getOwnPropertyDescriptor(C.prototype, "m")!;
+            console.log([d.enumerable, d.configurable, d.writable].join(":"));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("false:true:true");
+    });
+
     // --- SWC 대비 추가 테스트: Destructuring ---
 
     test("sparse array destructuring", async () => {
