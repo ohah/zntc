@@ -1368,6 +1368,16 @@ fn appendJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []
             '\n' => try buf.appendSlice(allocator, "\\n"),
             '\r' => try buf.appendSlice(allocator, "\\r"),
             '\t' => try buf.appendSlice(allocator, "\\t"),
+            // JSON spec: 0x00–0x1F 모든 control char 는 반드시 escape.
+            // ZTS virtual specifier (NUL+"zts:runtime/...") 등이 raw NUL 그대로
+            // 들어가면 JSON.parse 가 "Bad control character" 로 reject.
+            0x00...0x07, 0x0B, 0x0E...0x1F => {
+                var tmp: [6]u8 = .{ '\\', 'u', '0', '0', 0, 0 };
+                const hex = "0123456789abcdef";
+                tmp[4] = hex[(c >> 4) & 0xF];
+                tmp[5] = hex[c & 0xF];
+                try buf.appendSlice(allocator, &tmp);
+            },
             else => try buf.append(allocator, c),
         }
     }

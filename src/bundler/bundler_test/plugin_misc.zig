@@ -47,6 +47,38 @@ test "Batch D: metafile — JSON with inputs and outputs" {
     try std.testing.expect(std.mem.indexOf(u8, mf, "\"bytes\"") != null);
 }
 
+test "Batch D: metafile — virtual specifier (NUL byte) JSON-escape" {
+    // Regression: ZTS runtime helper virtual specifier (NUL + "zts:runtime/...") 가
+    // raw NUL 그대로 metafile JSON 에 들어가 JSON.parse 가 "Bad control character" 로 reject.
+    // RN 통합 테스트 (`Metro 모듈 수 기준선`) 가 meta.json 파싱 실패로 깨짐.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export function f({ a, ...rest }: any) { return rest; }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        // ES5 → object rest spread 가 `__rest` runtime helper 로 다운레벨링되어
+        // ZTS virtual specifier "zts:runtime/rest" 가 graph 에 등록됨.
+        .unsupported = @import("../../transformer/compat.zig").fromESTarget(.es5),
+        .metafile = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const mf = result.metafile_json orelse return error.TestUnexpectedResult;
+    // raw NUL 절대 포함되면 안 됨 — JSON.parse 에서 reject.
+    try std.testing.expect(std.mem.indexOfScalar(u8, mf, 0x00) == null);
+    // 어떤 형태로든 NUL escape 되어야 — `zts:runtime/rest` 형태로 emit.
+    try std.testing.expect(std.mem.indexOf(u8, mf, "\\u0000zts:runtime") != null);
+}
+
 test "Batch D: metafile — disabled when not requested" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
