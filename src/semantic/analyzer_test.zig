@@ -1589,6 +1589,38 @@ test "#2023: predeclared lexical bindings record declare ref once" {
     try std.testing.expectEqual(@as(u32, 1), y_scope_stmt_idx);
 }
 
+test "#2037 regression: top-level nested var is predeclared for forward nested function refs" {
+    const source =
+        \\{
+        \\  var api = function() { return helper(); };
+        \\  var helper = function() { return 42; };
+        \\}
+    ;
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.is_module = true;
+    ana.enable_stmt_info = true;
+    try ana.analyze();
+
+    try std.testing.expect(!ana.unresolved_references.contains("helper"));
+
+    var helper_ref_count: ?u32 = null;
+    for (ana.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "helper")) {
+            helper_ref_count = sym.reference_count;
+            break;
+        }
+    }
+    try std.testing.expect(helper_ref_count != null);
+    try std.testing.expect(helper_ref_count.? > 0);
+}
+
 // ============================================================
 // #1660: block / switch / module / nested-block 에서 var 와 lexical 이름 충돌
 // (ECMA §sec-block-static-semantics-early-errors / §sec-switch-statement-static-semantics-early-errors

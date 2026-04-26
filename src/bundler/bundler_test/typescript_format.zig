@@ -385,6 +385,9 @@ test "Real-world: re-export from node_modules (external)" {
     try std.testing.expect(!result.hasErrors());
     // 로컬 모듈은 번들에 포함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "function render") != null);
+    // unused external named import는 semantic local symbol이 없으므로 preamble/output에
+    // 다시 살아나면 안 된다 (#2039).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useState") == null);
 }
 
 // ============================================================

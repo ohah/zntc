@@ -338,14 +338,25 @@ pub const Module = struct {
         @panic("Module semantic symbol name requires AST text storage");
     }
 
-    /// ImportBinding의 현재 모듈 로컬 이름. local_symbol에서 derive 가능하면
-    /// Symbol.nameText, 아니면 ib.local_name 필드 fallback.
+    /// ImportBinding의 현재 모듈 로컬 이름.
+    /// 일반 import 는 semantic ref 에서 이름을 가져와야 한다. synthetic import
+    /// binding(JSX runtime 등)은 semantic scope 에 실제 로컬 선언이 없으므로 scanner 가
+    /// 저장한 `local_name` 이 canonical source of truth 다.
     pub fn importBindingLocalName(self: *const Module, ib: ImportBinding) []const u8 {
-        return self.refName(ib.local_symbol) orelse ib.local_name;
+        if (self.refName(ib.local_symbol)) |name| return name;
+        if (ib.isSynthetic()) return ib.local_name;
+        std.debug.panic(
+            "non-synthetic import binding '{s}' in module '{s}' has no semantic local symbol",
+            .{ ib.local_name, self.path },
+        );
     }
 
-    /// ExportBinding의 로컬 이름. `.local` + semantic ref면 Symbol.nameText에서
-    /// derive, 그 외엔 eb.local_name 필드 그대로 반환.
+    /// ExportBinding의 로컬 이름.
+    /// `.local` export 는 semantic ref 가 있으면 canonical name 을 사용한다. semantic
+    /// ref 가 없는 `.local` export 도 합법이다. 예: TypeScript namespace 내부 export 는
+    /// scanner 가 저장한 `local_name` 이 emit 대상 이름이고 top-level semantic symbol 이
+    /// 없을 수 있다. re-export 계열은 `local_name` 이 source module 의 exported name 을
+    /// 의미하므로 semantic local ref 가 없는 것이 정상이다.
     pub fn exportBindingLocalName(self: *const Module, eb: ExportBinding) []const u8 {
         if (eb.kind != .local) return eb.local_name;
         return self.refName(eb.symbol) orelse eb.local_name;
@@ -440,3 +451,35 @@ pub const Module = struct {
         }
     }
 };
+
+test "Module.importBindingLocalName allows synthetic binding local_name" {
+    var module = Module.init(@enumFromInt(0), "synthetic.tsx");
+    defer module.deinit(std.testing.allocator);
+
+    const ib = ImportBinding{
+        .kind = .named,
+        .local_name = "_jsx",
+        .imported_name = "jsx",
+        .local_span = .{
+            .start = ImportBinding.SYNTHETIC_SPAN_BASE,
+            .end = ImportBinding.SYNTHETIC_SPAN_BASE + 1,
+        },
+        .import_record_index = 0,
+    };
+
+    try std.testing.expectEqualStrings("_jsx", module.importBindingLocalName(ib));
+}
+
+test "Module.exportBindingLocalName keeps scanner local_name without semantic ref" {
+    var module = Module.init(@enumFromInt(0), "namespace.ts");
+    defer module.deinit(std.testing.allocator);
+
+    const eb = ExportBinding{
+        .exported_name = "Red",
+        .local_name = "Red",
+        .local_span = Span.EMPTY,
+        .kind = .local,
+    };
+
+    try std.testing.expectEqualStrings("Red", module.exportBindingLocalName(eb));
+}

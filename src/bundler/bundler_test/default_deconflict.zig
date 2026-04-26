@@ -461,6 +461,10 @@ test "TypeScript: namespace with export" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Colors") != null);
+    // namespace 내부 export는 top-level semantic symbol이 없어도 scanner local_name으로
+    // export getter를 구성해야 한다 (#2039).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Red") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "#ff0000") != null);
 }
 
 test "TypeScript: abstract class bundling" {
