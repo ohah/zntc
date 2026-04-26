@@ -51,6 +51,11 @@ const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const plugin_mod = @import("plugin.zig");
 
 pub const EmitOptions = struct {
+    /// transformer pre-pass / emit 단계 transformer.init 양쪽에서 사용하는 옵션 base.
+    /// bundler 가 init 시 1회 채움 — graph 와 emitter 가 동일한 매핑 사용 (drift 방지).
+    /// per-module override (`react_refresh` / `plugins` / `jsx_transform` /
+    /// `jsx_filename` / `emit_runtime_helper_imports` / `borrow_source_ast`) 만 추가.
+    transform_options_base: @import("../transformer/transformer.zig").TransformOptions = .{},
     format: Format = .esm,
     minify_whitespace: bool = false,
     /// AST 레벨 최적화 (constant folding, DCE 등)
@@ -1082,32 +1087,23 @@ pub fn emitModule(
         .worklet = options.worklet_transform and !exclude_worklet,
     }, options.plugins, arena_alloc) catch return error.OutOfMemory;
 
-    var transformer = try Transformer.init(arena_alloc, ast, .{
-        .react_refresh = apply_refresh,
-        .plugins = merged_plugins,
-        .define = options.define,
-        .experimental_decorators = options.experimental_decorators,
-        .emit_decorator_metadata = options.emit_decorator_metadata,
-        .use_define_for_class_fields = options.use_define_for_class_fields,
-        .verbatim_module_syntax = options.verbatim_module_syntax,
-        .unsupported = options.unsupported,
-        .drop_labels = options.drop_labels,
-        .jsx_transform = jsx_active,
-        .jsx_runtime = options.jsx_runtime,
-        .jsx_factory = options.jsx_factory,
-        .jsx_fragment = options.jsx_fragment,
-        .jsx_import_source = options.jsx_import_source,
-        .jsx_filename = module.path,
-        .worklet_plugin_version = options.worklet_plugin_version,
-        .minify_syntax = options.minify_syntax,
-        .minify_whitespace = options.minify_whitespace,
-        .keep_names = options.keep_names,
-        // emit 단계 transformer 는 helper import emit 안 함 — graph pre-pass 가 이미 처리.
-        .emit_runtime_helper_imports = false,
-        // graph pre-pass 가 이미 transform 한 ast 면 clone 회피 (#1961 PR 1d).
-        // transform_cache 가 set 일 때만 borrow — legacy 경로는 기존처럼 clone.
-        .borrow_source_ast = (module.transform_cache != null),
-    });
+    // #1961 PR 1f: bundler 가 채운 transform_options_base 를 시작점으로 per-module
+    // override 만 추가. graph.runTransformerPrePass 와 동일 매핑 — drift 자동 방지.
+    var transform_opts = options.transform_options_base;
+    transform_opts.react_refresh = apply_refresh;
+    transform_opts.plugins = merged_plugins;
+    transform_opts.jsx_transform = jsx_active;
+    transform_opts.jsx_filename = module.path;
+    // emit 단계 transformer 는 helper import emit 안 함 — graph pre-pass 가 이미 처리.
+    transform_opts.emit_runtime_helper_imports = false;
+    // graph pre-pass 가 이미 transform 한 ast 면 clone 회피 (#1961 PR 1d).
+    // transform_cache 가 set 이면 ast.transformed_root 도 set 인 invariant 가정.
+    transform_opts.borrow_source_ast = (module.transform_cache != null);
+    if (transform_opts.borrow_source_ast) {
+        std.debug.assert(ast.transformed_root != null);
+    }
+
+    var transformer = try Transformer.init(arena_alloc, ast, transform_opts);
     // #1961: graph parse 단계의 transformer pre-pass 결과가 있으면 hydrate.
     // transformer.transform() 은 ast.transformed_root 가 set 이면 즉시 cached root 반환 →
     // emit 단계에서 동일 transform 재실행 없이 graph 단계의 결과를 그대로 사용.

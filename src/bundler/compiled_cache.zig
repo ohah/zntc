@@ -89,7 +89,7 @@ pub const InputHasher = struct {
 /// `EmitOptions` 필드 개수. 구조체가 바뀌면 이 값을 갱신하고 hashEmitOptions
 /// 에 새 필드를 반영해야 한다 — comptime 에 필드 누락을 감지하는 fail-stop.
 /// 누락이 invisible bug (stale cache) 로 번지므로 이 barrier 는 load-bearing.
-const expected_emit_options_field_count: usize = 46;
+const expected_emit_options_field_count: usize = 47;
 
 comptime {
     const actual = @typeInfo(EmitOptions).@"struct".fields.len;
@@ -186,6 +186,17 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addStrList(options.silent_console_error_patterns);
     h.addBool(options.preserve_modules);
     h.addOptStr(options.preserve_modules_root);
+    // #1961 PR 1f: transform_options_base — emit 시점에는 EmitOptions 의 다른 필드 (정의된
+    // experimental_decorators 등) 와 동일 값이라 redundant 지만, fingerprint 의 단일 source
+    // 로 base 가 변할 때 cache invalidation 보장.
+    h.addBool(options.transform_options_base.minify_whitespace);
+    h.addBool(options.transform_options_base.minify_syntax);
+    h.addBool(options.transform_options_base.experimental_decorators);
+    h.addBool(options.transform_options_base.emit_decorator_metadata);
+    h.addBool(options.transform_options_base.use_define_for_class_fields);
+    h.addBool(options.transform_options_base.verbatim_module_syntax);
+    h.addBool(options.transform_options_base.keep_names);
+    h.addU32(@bitCast(options.transform_options_base.unsupported));
 }
 
 /// 전체 emit 에 1회만 계산하면 되는 options_hash 를 캐싱용으로 반환.
