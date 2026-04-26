@@ -297,6 +297,15 @@ fn makeSingleEvalExpr(
     simple_identifier_is_reusable: bool,
 ) !SingleEvalExpr {
     const old = self.ast.getNode(old_idx);
+    if (old.tag == .super_expression) {
+        const visited = try self.visitNode(old_idx);
+        return .{
+            .read = visited,
+            .value = try cloneNode(self, visited),
+            .write = try cloneNode(self, visited),
+        };
+    }
+
     if (simple_identifier_is_reusable and old.tag == .identifier_reference) {
         const visited = try self.visitNode(old_idx);
         return .{

@@ -3130,6 +3130,71 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("10 0");
     });
 
+    test("logical assignment super member this 바인딩 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              v: any = 0;
+              get x() {
+                return this.v;
+              }
+              set x(value: any) {
+                this.v = value;
+              }
+            }
+            class Child extends Base {
+              run() {
+                super.x ||= 2;
+                return this.v;
+              }
+            }
+            console.log(new Child().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2");
+    });
+
+    test("logical assignment computed super member key 1회 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let keyCalls = 0;
+            function key() {
+              keyCalls++;
+              return "x";
+            }
+            class Base {
+              v: any = 0;
+              get x() {
+                return this.v;
+              }
+              set x(value: any) {
+                this.v = value;
+              }
+            }
+            class Child extends Base {
+              run() {
+                super[key()] ||= 3;
+                return [this.v, keyCalls].join(" ");
+              }
+            }
+            console.log(new Child().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es2020"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("3 1");
+    });
+
     test("logical assignment member receiver 1회 평가", async () => {
       const result = await bundleAndRun(
         {
