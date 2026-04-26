@@ -2073,8 +2073,9 @@ test "Bundler: AMD external dependencies in wrapper" {
 // Parser (flow.zig) 가 `const Name = React.forwardRef(Name_withRef)` 의 binding
 // identifier span 을 `addString(name_text)` 로 재래핑하면서 bit-31 tagged (string_table)
 // span 을 만들었고, 이게 semantic 에서 const 선언의 Symbol.name 으로 전파되어
-// mangler 가 `source[span.start..]` 슬라이싱 시 OOB. root cause 는 원본 name 노드
-// span 을 재사용하도록 fix. 이 테스트는 crash-free + 정상 실행 검증.
+// mangler 가 `source[span.start..]` 슬라이싱 시 OOB. string_table 이름은 semantic 이
+// synthetic_name 에 보존하고 일반 심볼처럼 mangle 한다. 이 테스트는 crash-free +
+// forwardRef 호출 보존을 검증.
 test "Bundler: #1751 Flow component with ref + minify regression" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2107,7 +2108,7 @@ test "Bundler: #1751 Flow component with ref + minify regression" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "React.forwardRef") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "_withRef") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_withRef") == null);
 }
 
 // #1751: ESM wrap 의 function_declaration → `foo = function(){...}` 변환형에

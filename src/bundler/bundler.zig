@@ -631,6 +631,7 @@ pub const Bundler = struct {
         worker_graph.worklet_transform = self.options.worklet_transform;
         worker_graph.react_refresh = self.options.react_refresh;
         worker_graph.code_splitting = self.options.code_splitting;
+        worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
         defer worker_graph.deinit();
 
@@ -777,6 +778,7 @@ pub const Bundler = struct {
         graph.worklet_transform = self.options.worklet_transform;
         graph.react_refresh = self.options.react_refresh;
         graph.code_splitting = self.options.code_splitting;
+        graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();
         defer graph.deinit();
 

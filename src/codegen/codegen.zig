@@ -188,7 +188,6 @@ pub const Codegen = struct {
     /// 모든 call expression 에 대해 호출되므로, 해당 종류의 record 가 없으면 O(1) 로 빠짐.
     has_glob_records: bool = false,
     has_require_context_records: bool = false,
-
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) Codegen {
         return initWithOptions(allocator, ast, .{});
     }
@@ -264,7 +263,6 @@ pub const Codegen = struct {
 
         // namespace var 중복 제거: top-level 선언 이름 사전 수집
         self.collectTopLevelDeclNames(root);
-
         // function map: program 진입 시 <global> frame
         if (self.fn_map_builder != null) try self.fnMapEnter("<global>");
         try self.emitNode(root);

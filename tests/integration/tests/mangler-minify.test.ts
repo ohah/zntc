@@ -144,4 +144,80 @@ describe("mangler --minify 회귀", () => {
     // RUNTIME_FLAG는 dep.js 평가 시점에 undefined → falsy → 양쪽 null
     expect(result.runOutput).toBe("null null");
   });
+
+  // post-transform semantic refresh가 module.semantic을 교체하면 기존 ExportBinding.symbol이
+  // 이전 symbol table을 가리킬 수 있다. named local export alias가 새 semantic symbol로
+  // 다시 연결되지 않으면 importer의 참조와 declaration 이름이 어긋난다.
+  test("post-transform semantic refresh 후 named export alias가 새 심볼을 가리킨다", async () => {
+    const result = await bundleAndRun(
+      {
+        "dep.js": `
+          const localValue = globalThis.RUNTIME_FLAG ? "bad" : "ok";
+          export { localValue as value };
+        `,
+        "index.js": `
+          import { value } from './dep.js';
+          globalThis.RUNTIME_FLAG = true;
+          console.log(value);
+        `,
+      },
+      "index.js",
+      ["--minify", "--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    // dep.js 평가 시점에는 RUNTIME_FLAG가 undefined라 falsy.
+    expect(result.runOutput).toBe("ok");
+  });
+
+  // source 모듈의 default export 심볼이 post-transform semantic 기준으로 갱신되지 않으면
+  // barrel re-export가 stale SymbolRef를 따라가며 default 값 연결을 잃는다.
+  test("post-transform semantic refresh 후 default re-export chain이 stale 심볼을 쓰지 않는다", async () => {
+    const result = await bundleAndRun(
+      {
+        "dep.js": `export default globalThis.RUNTIME_FLAG ? "bad" : "ok";`,
+        "barrel.js": `export { default as value } from './dep.js';`,
+        "index.js": `
+          import { value } from './barrel.js';
+          globalThis.RUNTIME_FLAG = true;
+          console.log(value);
+        `,
+      },
+      "index.js",
+      ["--minify", "--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("ok");
+  });
+
+  // namespace import는 current-side local_symbol과 local export symbol 양쪽을 모두 사용한다.
+  // semantic refresh 후 ExportBinding.symbol만 낡으면 `export { ns }` 경로에서 namespace 객체가
+  // 잘못된 mangled 이름으로 노출될 수 있다.
+  test("post-transform semantic refresh 후 namespace import local export가 유지된다", async () => {
+    const result = await bundleAndRun(
+      {
+        "dep.js": `
+          export const left = "L";
+          export const right = "R";
+        `,
+        "barrel.js": `
+          import * as ns from './dep.js';
+          export { ns };
+        `,
+        "index.js": `
+          import { ns } from './barrel.js';
+          console.log(ns.left + ns.right);
+        `,
+      },
+      "index.js",
+      ["--minify", "--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("LR");
+  });
 });
