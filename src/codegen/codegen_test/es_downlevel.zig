@@ -1775,6 +1775,52 @@ test "ES2015: derived constructor 안 computed super[k]= receiver = _this (#2022
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,k,1,this)") == null);
 }
 
+// #2030: transparent wrapper(괄호, TS as/satisfies/type-assertion/!, Flow cast) 로 감싸진 super 도
+// super lowering 의 obj 검사가 통과해야 한다 — 그렇지 않으면 raw `(super)[k]` / `super.x` 가 emit 돼
+// 런타임 syntax error.
+test "ES2015: 괄호 super 도 lowering — (super)[k] (#2030)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){const k=\"x\";(super)[k]=1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(super)") == null);
+}
+
+test "ES2015: TS as-cast super 도 lowering — (super as any).x (#2030)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){(super as any).x=1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,\"x\"") != null);
+    // type assertion 이 strip 된 후 raw `super.x = 1` 로 떨어지면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.x=1") == null);
+}
+
+test "ES2015: TS as-cast computed super 도 lowering — (super as any)[k] (#2030)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){const k=\"x\";(super as any)[k]=1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,k") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super[k]=1") == null);
+}
+
+test "ES2015: TS legacy <T>cast super 도 lowering — (<any>super)[k] (#2030)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){const k=\"x\";(<any>super)[k]=1;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,k") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super[k]=1") == null);
+}
+
+test "ES2015: TS non-null assertion super 도 lowering — super!.x (#2030)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){return (super!).x;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.x") == null);
+}
+
+test "ES2015: wrapped super method call 도 lowering — (super as any).m() (#2030)" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){return (super as any).m();}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.m.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super.m") == null);
+}
+
 test "ES2015: static super access는 parent constructor 참조" {
     var r1 = try e2eTarget(std.testing.allocator, "class C extends P{static m(){return super.x+super.m();}}", .es5);
     defer r1.deinit();
