@@ -2262,6 +2262,30 @@ test "ES2020: optional method call 복잡 receiver 1회 평가" {
     try std.testing.expectEqualStrings("var _a,_b;((_b=(_a=getObj()).method)==null?void 0:_b.call(_a));", r.output);
 }
 
+test "ES2020: optional super method call this 바인딩 보존" {
+    var r = try e2eTarget(std.testing.allocator, "class B{m(){return this.x}}class C extends B{x=5;test(){return super.m?.()}}", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=super)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super.m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".call(this)") != null);
+}
+
+test "ES2020: optional computed super method call this 바인딩 보존" {
+    var r = try e2eTarget(std.testing.allocator, "class B{m(){return this.x}}class C extends B{x=5;test(){return super['m']?.()}}", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=super)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super[\"m\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".call(this)") != null);
+}
+
+test "ES2020: optional super method call ES5 클래스 다운레벨 보존" {
+    var r = try e2eTarget(std.testing.allocator, "class B{m(){return this.x}}class C extends B{x=5;test(){return super.m?.()}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".call(this)") != null);
+}
+
 test "ES2020: optional receiver + optional method call receiver 단락 평가" {
     var r = try e2eTarget(std.testing.allocator, "obj?.method?.(arg());", .es2019);
     defer r.deinit();

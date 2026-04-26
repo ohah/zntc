@@ -195,6 +195,18 @@ pub fn ES2020(comptime Transformer: type) type {
         fn prepareOptionalMemberCall(self: *Transformer, root: Node, base_idx: NodeIndex) Transformer.Error!?OptionalMemberCall {
             if (!isOptionalCallBase(self, root, base_idx)) return null;
 
+            if (isSuperExpression(self, base_idx)) {
+                if (try lowerOptionalCallWithSuperReceiver(self, root)) |result| {
+                    return .{
+                        .null_check_base = result,
+                        .chain_base = result,
+                        .receiver = result,
+                        .full_result = result,
+                    };
+                }
+                return null;
+            }
+
             const base = self.ast.getNode(base_idx);
             switch (base.tag) {
                 .static_member_expression, .computed_member_expression => {},
@@ -216,6 +228,27 @@ pub fn ES2020(comptime Transformer: type) type {
                     };
                 }
                 return null;
+            }
+
+            if (isSuperExpression(self, old_obj)) {
+                const member = try makeSuperMethodMember(self, base.tag, old_prop, flags, root.span);
+                const fn_temp_span = try helpers.makeTempVarSpan(self);
+                const fn_temp_lhs = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
+                const fn_assign = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = root.span,
+                    .data = .{ .binary = .{
+                        .left = fn_temp_lhs,
+                        .right = member,
+                        .flags = @intFromEnum(token_mod.Kind.eq),
+                    } },
+                });
+
+                return .{
+                    .null_check_base = try helpers.makeParenExpr(self, fn_assign, root.span),
+                    .chain_base = try helpers.makeTempVarRef(self, fn_temp_span, root.span),
+                    .receiver = try makeThisOrAlias(self, root.span),
+                };
             }
 
             const obj_simple = helpers.isSimpleIdentifier(self, old_obj);
@@ -281,6 +314,10 @@ pub fn ES2020(comptime Transformer: type) type {
             const call_flags = self.readU32(call_e, 3);
             if (!sameNodeIndex(old_callee, base_idx) or (call_flags & ast_mod.CallFlags.optional_chain) == 0) {
                 return null;
+            }
+
+            if (isSuperExpression(self, old_obj)) {
+                return try lowerOptionalSuperMethodCall(self, root, base_idx, old_prop, member_flags);
             }
 
             const obj_simple = helpers.isSimpleIdentifier(self, old_obj);
@@ -365,6 +402,78 @@ pub fn ES2020(comptime Transformer: type) type {
             return try helpers.makeParenExpr(self, outer, root.span);
         }
 
+        fn lowerOptionalSuperMethodCall(
+            self: *Transformer,
+            root: Node,
+            base_idx: NodeIndex,
+            old_prop: NodeIndex,
+            member_flags: u32,
+        ) Transformer.Error!NodeIndex {
+            const call_e = root.data.extra;
+            const member = try makeSuperMethodMember(self, self.ast.getNode(base_idx).tag, old_prop, member_flags, root.span);
+
+            const fn_temp_span = try helpers.makeTempVarSpan(self);
+            const fn_temp_lhs = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
+            const fn_assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = root.span,
+                .data = .{ .binary = .{
+                    .left = fn_temp_lhs,
+                    .right = member,
+                    .flags = @intFromEnum(token_mod.Kind.eq),
+                } },
+            });
+            const fn_check = try helpers.makeParenExpr(self, fn_assign, root.span);
+            const eq_null = try helpers.makeEqNull(self, fn_check, root.span);
+
+            const call_prop = try helpers.makeIdentifierRef(self, "call");
+            const fn_ref = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
+            const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, root.span);
+
+            const args_start = self.readU32(call_e, 1);
+            const args_len = self.readU32(call_e, 2);
+            const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
+            const receiver = try makeThisOrAlias(self, root.span);
+
+            var call_args = std.ArrayList(NodeIndex).empty;
+            try call_args.ensureTotalCapacity(self.allocator, new_args.len + 1);
+            call_args.appendAssumeCapacity(receiver);
+            var i: u32 = 0;
+            while (i < new_args.len) : (i += 1) {
+                call_args.appendAssumeCapacity(@enumFromInt(self.ast.extra_data.items[new_args.start + i]));
+            }
+            const call = try helpers.makeCallExpr(self, call_member, call_args.items, root.span);
+
+            const cond = try self.ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = root.span,
+                .data = .{ .ternary = .{ .a = eq_null, .b = try helpers.makeVoidZero(self, root.span), .c = call } },
+            });
+            return helpers.makeParenExpr(self, cond, root.span);
+        }
+
+        fn lowerOptionalCallWithSuperReceiver(self: *Transformer, root: Node) Transformer.Error!?NodeIndex {
+            if (root.tag != .call_expression) return null;
+            const call_e = root.data.extra;
+            const old_callee = self.readNodeIdx(call_e, 0);
+            const call_flags = self.readU32(call_e, 3);
+            if ((call_flags & ast_mod.CallFlags.optional_chain) == 0 or old_callee.isNone()) return null;
+
+            const callee = self.ast.getNode(old_callee);
+            switch (callee.tag) {
+                .static_member_expression, .computed_member_expression => {},
+                else => return null,
+            }
+
+            const member_e = callee.data.extra;
+            const old_obj = self.readNodeIdx(member_e, 0);
+            if (!isSuperExpression(self, old_obj)) return null;
+
+            const old_prop = self.readNodeIdx(member_e, 1);
+            const member_flags = self.readU32(member_e, 2);
+            return try lowerOptionalSuperMethodCall(self, root, old_callee, old_prop, member_flags);
+        }
+
         fn isOptionalCallBase(self: *const Transformer, node: Node, base_idx: NodeIndex) bool {
             switch (node.tag) {
                 .call_expression => {
@@ -388,6 +497,67 @@ pub fn ES2020(comptime Transformer: type) type {
 
         fn sameNodeIndex(a: NodeIndex, b: NodeIndex) bool {
             return @intFromEnum(a) == @intFromEnum(b);
+        }
+
+        fn isSuperExpression(self: *const Transformer, idx: NodeIndex) bool {
+            return !idx.isNone() and self.ast.getNode(idx).tag == .super_expression;
+        }
+
+        fn makeSuperMethodMember(
+            self: *Transformer,
+            member_tag: ast_mod.Node.Tag,
+            old_prop: NodeIndex,
+            member_flags: u32,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const new_prop = try self.visitNode(old_prop);
+            const new_flags = member_flags & ~ast_mod.MemberFlags.optional_chain;
+
+            if (self.options.unsupported.class) {
+                const super_class_span = self.current_super_class orelse return makeRawSuperMember(self, member_tag, new_prop, new_flags, span);
+                const proto = try makePrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+                return switch (member_tag) {
+                    .static_member_expression => helpers.makeStaticMember(self, proto, new_prop, span),
+                    .computed_member_expression => helpers.makeComputedMember(self, proto, new_prop, span),
+                    else => unreachable,
+                };
+            }
+
+            return makeRawSuperMember(self, member_tag, new_prop, new_flags, span);
+        }
+
+        fn makeRawSuperMember(
+            self: *Transformer,
+            member_tag: ast_mod.Node.Tag,
+            prop: NodeIndex,
+            flags: u32,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const super_node = try self.ast.addNode(.{
+                .tag = .super_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            });
+            const extra = try self.ast.addExtras(&.{ @intFromEnum(super_node), @intFromEnum(prop), flags });
+            return self.ast.addNode(.{ .tag = member_tag, .span = span, .data = .{ .extra = extra } });
+        }
+
+        fn makeThisOrAlias(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
+                self.needs_this_var = true;
+                return helpers.makeIdentifierRef(self, "_this");
+            }
+            return self.ast.addNode(.{
+                .tag = .this_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            });
+        }
+
+        fn makePrototypeRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
+            const proto_prop = try helpers.makeIdentifierRef(self, "prototype");
+            return helpers.makeStaticMember(self, class_ref, proto_prop, span);
         }
 
         fn makeTrueLiteral(self: *Transformer, _: Span) Transformer.Error!NodeIndex {
