@@ -1450,6 +1450,94 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("2:3");
     });
 
+    test("static super property/method receiver 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              static v = 1;
+              static get x() {
+                return this.v;
+              }
+              static m() {
+                return this.v;
+              }
+            }
+            class Child extends Base {
+              static v = 2;
+              static run() {
+                return super.x + ":" + super.m();
+              }
+            }
+            console.log(Child.run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2:2");
+    });
+
+    test("static super compound assignment receiver 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              static v = 1;
+              static get x() {
+                return this.v;
+              }
+              static set x(value: number) {
+                this.v = value;
+              }
+            }
+            class Child extends Base {
+              static v = 2;
+              static run() {
+                super.x += 3;
+                return this.v;
+              }
+            }
+            console.log(Child.run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+
+    test("static field와 static block super receiver 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              static v = 3;
+              static get x() {
+                return this.v;
+              }
+            }
+            class Child extends Base {
+              static v = 4;
+              static y = super.x;
+              static {
+                console.log(super.x + ":" + this.y);
+              }
+            }
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("4:4");
+    });
+
     // --- SWC 대비 추가 테스트: Destructuring ---
 
     test("sparse array destructuring", async () => {

@@ -98,10 +98,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // super class context 설정 (constructor/method body 방문 시 사용)
             const saved_super = self.current_super_class;
             const saved_super_old_idx = self.current_super_class_old_idx;
+            const saved_super_static = self.current_super_is_static;
+            const saved_super_static_receiver = self.current_super_static_receiver;
             self.current_super_class = super_span;
             self.current_super_class_old_idx = super_idx;
+            self.current_super_is_static = false;
+            self.current_super_static_receiver = null;
             defer self.current_super_class = saved_super;
             defer self.current_super_class_old_idx = saved_super_old_idx;
+            defer self.current_super_is_static = saved_super_static;
+            defer self.current_super_static_receiver = saved_super_static_receiver;
 
             // 클래스 바디 멤버 분류
             var cm = try classifyMembers(self, body_idx, span, name_span);
@@ -214,6 +220,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
+            // static fields/blocks 는 class evaluation 중 실행된다. extends class 의 경우 IIFE
+            // 밖으로 내보내면 super lowering 이 참조하는 _super scope가 사라지므로 IIFE 내부에서
+            // __extends 이후, return 이전에 실행한다.
+            for (cm.static_fields.items) |field| {
+                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, fresh_name_span);
+                const static_assign = try buildStaticFieldAssignWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
+                try self.scratch.append(self.allocator, static_assign);
+            }
+            for (cm.static_block_stmts.items) |sb_stmt| {
+                try self.scratch.append(self.allocator, sb_stmt);
+            }
+
             // return ClassName;
             try self.scratch.append(self.allocator, try self.ast.addNode(.{
                 .tag = .return_statement,
@@ -254,16 +272,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const declarator = try es_helpers.makeDeclarator(self, new_name, iife_call, span);
             const var_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", span);
             try self.pending_nodes.append(self.allocator, var_decl);
-
-            // static fields → IIFE 밖 (init에서 ClassName 자기참조 시 이미 할당된 상태)
-            for (cm.static_fields.items) |field| {
-                const class_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
-                const static_assign = try buildFieldAssign(self, class_ref, field.key, field.init, span);
-                try self.pending_nodes.append(self.allocator, static_assign);
-            }
-            for (cm.static_block_stmts.items) |sb_stmt| {
-                try self.pending_nodes.append(self.allocator, sb_stmt);
-            }
 
             // experimentalDecorators
             if (self.options.experimental_decorators) {
@@ -323,10 +331,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const saved_super = self.current_super_class;
             const saved_super_old_idx = self.current_super_class_old_idx;
+            const saved_super_static = self.current_super_is_static;
+            const saved_super_static_receiver = self.current_super_static_receiver;
             self.current_super_class = super_span;
             self.current_super_class_old_idx = super_idx;
+            self.current_super_is_static = false;
+            self.current_super_static_receiver = null;
             defer self.current_super_class = saved_super;
             defer self.current_super_class_old_idx = saved_super_old_idx;
+            defer self.current_super_is_static = saved_super_static;
+            defer self.current_super_static_receiver = saved_super_static_receiver;
 
             // 바디 멤버 분류
             var cm = try classifyMembers(self, body_idx, span, name_span);
@@ -467,7 +481,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
 
             for (cm.static_fields.items) |field| {
-                try self.scratch.append(self.allocator, try buildFieldAssign(self, try es_helpers.makeIdentifierRefFromSpan(self, name_span), field.key, field.init, span));
+                try self.scratch.append(self.allocator, try buildStaticFieldAssignWithCtx(self, try es_helpers.makeIdentifierRefFromSpan(self, name_span), field.key, field.init, name_span, span));
             }
             for (cm.static_block_stmts.items) |sb_stmt| {
                 try self.scratch.append(self.allocator, sb_stmt);
@@ -591,8 +605,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// super.method(args) → Parent.prototype.method.call(this, args)
+        /// static method 안에서는 Parent.method.call(this, args)
         pub fn lowerSuperMethodCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
+            _ = self.current_super_class orelse return self.visitCallExpression(node);
             const e = node.data.extra;
             const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
             const args_start = self.readU32(e, 1);
@@ -604,18 +619,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const ce = callee_node.data.extra;
             const method_prop_idx: NodeIndex = self.readNodeIdx(ce, 1);
 
-            // Parent.prototype.method
-            const proto_member = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
-
+            // Parent.prototype.method 또는 static Parent.method
+            const super_base = try buildSuperBaseRef(self, span);
             const new_method_prop = try self.visitNode(method_prop_idx);
-            const method_member = try es_helpers.makeStaticMember(self, proto_member, new_method_prop, span);
+            const method_member = try es_helpers.makeStaticMember(self, super_base, new_method_prop, span);
 
             // Parent.prototype.method.call
             const call_prop = try es_helpers.makeIdentifierRef(self, "call");
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
 
             // args: [this, ...original_args]
-            const this_node = try makeThisOrAlias(self, span);
+            const this_node = try buildSuperReceiver(self, span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -743,22 +757,37 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return es_helpers.makeParenExpr(self, seq, span);
         }
 
+        fn buildSuperBaseRef(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            const super_class_span = self.current_super_class orelse return NodeIndex.none;
+            if (self.current_super_is_static) {
+                return self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
+            }
+            return buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+        }
+
+        fn buildSuperReceiver(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            if (self.current_super_static_receiver) |receiver_span| {
+                return es_helpers.makeIdentifierRefFromSpan(self, receiver_span);
+            }
+            return makeThisOrAlias(self, span);
+        }
+
         fn buildSuperPropGet(self: *Transformer, prop_arg: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const super_class_span = self.current_super_class orelse return prop_arg;
+            _ = self.current_super_class orelse return prop_arg;
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__superGet");
-            const proto = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
-            const receiver = try makeThisOrAlias(self, span);
+            const base = try buildSuperBaseRef(self, span);
+            const receiver = try buildSuperReceiver(self, span);
             self.runtime_helpers.super_get = true;
-            return es_helpers.makeCallExpr(self, helper, &.{ proto, prop_arg, receiver }, span);
+            return es_helpers.makeCallExpr(self, helper, &.{ base, prop_arg, receiver }, span);
         }
 
         fn buildSuperPropSet(self: *Transformer, prop_arg: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const super_class_span = self.current_super_class orelse return value;
+            _ = self.current_super_class orelse return value;
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__superSet");
-            const proto = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
-            const receiver = try makeThisOrAlias(self, span);
+            const base = try buildSuperBaseRef(self, span);
+            const receiver = try buildSuperReceiver(self, span);
             self.runtime_helpers.super_set = true;
-            return es_helpers.makeCallExpr(self, helper, &.{ proto, prop_arg, value, receiver }, span);
+            return es_helpers.makeCallExpr(self, helper, &.{ base, prop_arg, value, receiver }, span);
         }
 
         /// super.method → __superGet(Parent.prototype, "method", this)
@@ -951,8 +980,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// super["method"](args) → Parent.prototype["method"].call(this, args)
+        /// static method 안에서는 Parent["method"].call(this, args)
         pub fn lowerSuperComputedMethodCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
+            _ = self.current_super_class orelse return self.visitCallExpression(node);
             const e = node.data.extra;
             const callee_idx: NodeIndex = self.readNodeIdx(e, 0);
             const args_start = self.readU32(e, 1);
@@ -963,14 +993,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const ce = callee_node.data.extra;
             const method_prop_idx: NodeIndex = self.readNodeIdx(ce, 1);
 
-            const proto_member = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+            const super_base = try buildSuperBaseRef(self, span);
             const new_method_prop = try self.visitNode(method_prop_idx);
-            const method_member = try es_helpers.makeComputedMember(self, proto_member, new_method_prop, span);
+            const method_member = try es_helpers.makeComputedMember(self, super_base, new_method_prop, span);
 
             const call_prop = try es_helpers.makeIdentifierRef(self, "call");
             const call_callee = try es_helpers.makeStaticMember(self, method_member, call_prop, span);
 
-            const this_node = try makeThisOrAlias(self, span);
+            const this_node = try buildSuperReceiver(self, span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1786,11 +1816,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             // this_depth > 0이므로 영향받지 않음.
                             const saved_sb_name = self.static_block_class_name;
                             const saved_sb_depth = self.this_depth;
+                            const saved_super_static = self.current_super_is_static;
+                            const saved_super_static_receiver = self.current_super_static_receiver;
                             self.static_block_class_name = class_name_span;
                             self.this_depth = 0;
+                            self.current_super_is_static = true;
+                            self.current_super_static_receiver = class_name_span;
                             defer {
                                 self.static_block_class_name = saved_sb_name;
                                 self.this_depth = saved_sb_depth;
+                                self.current_super_is_static = saved_super_static;
+                                self.current_super_static_receiver = saved_super_static_receiver;
                             }
                             const sb_stmts_start = sb_body.data.list.start;
                             const sb_stmts_len = sb_body.data.list.len;
@@ -2125,6 +2161,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
             });
+        }
+
+        fn buildStaticFieldAssignWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const saved_static = self.current_super_is_static;
+            const saved_receiver = self.current_super_static_receiver;
+            self.current_super_is_static = true;
+            self.current_super_static_receiver = class_name_span;
+            defer {
+                self.current_super_is_static = saved_static;
+                self.current_super_static_receiver = saved_receiver;
+            }
+            return buildFieldAssign(self, obj, key_idx, init_idx, span);
         }
 
         /// function_declaration의 body 앞에 문들을 삽입 (in-place).
@@ -2596,6 +2644,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// method → ClassName.prototype.method = function() {} (expression_statement)
         /// static method → ClassName.method = function() {}
         fn buildPrototypeAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const saved_static = self.current_super_is_static;
+            const saved_receiver = self.current_super_static_receiver;
+            self.current_super_is_static = info.is_static;
+            self.current_super_static_receiver = null;
+            defer {
+                self.current_super_is_static = saved_static;
+                self.current_super_static_receiver = saved_receiver;
+            }
+
             const member = self.ast.getNode(info.member_idx);
             const me = member.data.extra;
             // 모든 읽기가 mutation(visitExtraList) 이전이므로 캐시 안전.

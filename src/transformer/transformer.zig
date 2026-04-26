@@ -321,6 +321,11 @@ pub const Transformer = struct {
     /// super.method() → Parent.prototype.method.call(this) 변환에 사용.
     current_super_class: ?Span = null,
     current_super_class_old_idx: NodeIndex = .none,
+    /// 현재 super member 접근이 static class element 안에서 발생하는지 여부.
+    /// static method/field/block 에서는 super base가 Parent.prototype이 아니라 Parent constructor다.
+    current_super_is_static: bool = false,
+    /// static field/block 처럼 `this` 표현식이 사라지는 위치에서 super receiver로 사용할 class 이름.
+    current_super_static_receiver: ?Span = null,
 
     /// ES2015 generator: labeled break/continue를 위한 label 스택.
     /// labeled_statement 진입 시 push, 퇴장 시 pop.
