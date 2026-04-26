@@ -518,6 +518,11 @@ pub const ImportRecord = struct {
     resolved: ModuleIndex = .none,
     /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)
     is_external: bool = false,
+    /// try-block 안의 `require("xxx")` 또는 동적 `import("xxx")` —
+    /// resolve 실패 시 hard error 가 아니라 warning 으로 격하하고 stub 으로 대체.
+    /// follow-redirects/debug.js 같은 Metro 식 optional dep 패턴 지원
+    /// (try { require("debug") } catch {}).
+    is_optional: bool = false,
     /// glob: eager import 여부 (import.meta.glob의 { eager: true } 옵션)
     glob_eager: bool = false,
     /// glob: import할 export 이름 (import.meta.glob의 { import: "default" } 옵션)

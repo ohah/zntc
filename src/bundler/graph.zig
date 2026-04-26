@@ -858,10 +858,19 @@ pub const ModuleGraph = struct {
             if (self.resolve_cache.platform.isBrowserLike() and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
                 const dep_idx = try self.addDisabledModule(record.specifier);
                 try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
-            } else {
-                const sev: types.BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
-                self.addDiag(.unresolved_import, sev, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve module", record.specifier);
+                return;
             }
+            // try-block 안의 optional require/import — warning + stub.
+            // follow-redirects/debug.js 의 silent-catch 패턴 같이 unresolved 가
+            // runtime 에 catch 되는 의도된 케이스를 build hard-fail 시키지 않는다.
+            if (record.is_optional) {
+                self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Optional dependency not resolved (will throw at runtime if reached)", record.specifier);
+                const dep_idx = try self.addDisabledModule(record.specifier);
+                try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
+                return;
+            }
+            const sev: types.BundlerDiagnostic.Severity = if (record.kind == .dynamic_import) .warning else .@"error";
+            self.addDiag(.unresolved_import, sev, self.modules.at(mod_idx).path, record.span, .resolve, "Cannot resolve module", record.specifier);
             return;
         }
 
@@ -1101,6 +1110,12 @@ pub const ModuleGraph = struct {
                 return;
             };
             module.import_records = scan_result.records;
+            // OOM 시 silent skip 하면 axios/follow-redirects 같은 optional require 가 hard
+            // error 로 회귀해 build 자체가 깨진다. 1108줄 extractImports 와 동일하게 fallback.
+            import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, &(module.ast.?), module.import_records) catch {
+                module.state = .ready;
+                return;
+            };
             module.import_bindings = binding_scanner_mod.extractImportBindings(arena_alloc, &(module.ast.?), scan_result.records) catch &.{};
             binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &(module.ast.?), module.import_bindings) catch {};
             module.export_bindings = binding_scanner_mod.extractExportBindings(arena_alloc, &(module.ast.?), scan_result.records, module.import_bindings) catch &.{};
@@ -1349,6 +1364,12 @@ pub const ModuleGraph = struct {
                 };
             }
             module.import_records = records;
+            // OOM 시 silent skip 하면 optional require 가 hard error 로 회귀하므로 module 을
+            // ready 로 끝내고 graph 진행 중단 (1108줄 extractImports 와 동일 패턴).
+            import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, &(module.ast.?), module.import_records) catch {
+                module.state = .ready;
+                return;
+            };
 
             // Parser scan import bindings → bundler ImportBinding
             const scan_ibindings = parser.scan_import_bindings.items;

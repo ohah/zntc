@@ -77,7 +77,7 @@ pub fn extractImportsWithCjsDetectionAndDefines(
     if (defines.len > 0) try collectDeadIfRanges(allocator, ast, defines, &dead_ranges);
 
     for (ast.nodes.items) |node| {
-        if (isInsideDeadRange(node.span, dead_ranges.items)) continue;
+        if (isInsideAnySpan(node.span, dead_ranges.items)) continue;
         switch (node.tag) {
             .import_declaration => {
                 has_esm_syntax = true;
@@ -161,11 +161,40 @@ fn collectDeadIfRanges(
     }
 }
 
-fn isInsideDeadRange(span: Span, ranges: []const Span) bool {
+fn isInsideAnySpan(span: Span, ranges: []const Span) bool {
     for (ranges) |range| {
-        if (span.start >= range.start and span.end <= range.end) return true;
+        if (range.contains(span)) return true;
     }
     return false;
+}
+
+/// `try { ... } catch {}` 의 try-block 안에 있는 require/import call records 에
+/// `is_optional = true` 마킹. parser 가 만든 records 와 import_scanner 가 만든
+/// records 양쪽에서 공용. AST 평탄 순회로 try_statement.a (block) span 수집 후
+/// record.span 이 그 안에 들어가면 마킹 — Metro 의 3-level parent 스캔과 동일 효과.
+///
+/// follow-redirects/debug.js 의 silent-catch 패턴 같이 unresolved 가 runtime 에
+/// catch 되는 의도된 케이스를 build hard-fail 시키지 않기 위해 사용.
+pub fn markOptionalRequiresInTryBlocks(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    records: []ImportRecord,
+) !void {
+    var try_ranges: std.ArrayList(Span) = .empty;
+    defer try_ranges.deinit(allocator);
+    for (ast.nodes.items) |node| {
+        if (node.tag != .try_statement) continue;
+        const block_idx = node.data.ternary.a;
+        if (block_idx.isNone()) continue;
+        if (@intFromEnum(block_idx) >= ast.nodes.items.len) continue;
+        try try_ranges.append(allocator, ast.getNode(block_idx).span);
+    }
+    if (try_ranges.items.len == 0) return;
+    for (records) |*rec| {
+        // require / dynamic import 만 — static `import` 선언은 try-block 안에 못 들어감.
+        if (rec.kind != .require and rec.kind != .dynamic_import) continue;
+        if (isInsideAnySpan(rec.span, try_ranges.items)) rec.is_optional = true;
+    }
 }
 
 pub fn evalToBoolean(ast: *const Ast, idx: NodeIndex, defines: []const DefineEntry) ?bool {

@@ -244,6 +244,107 @@ test "CJS: define으로 죽은 if 분기의 require는 스캔하지 않음" {
     try std.testing.expect(result.has_module_exports);
 }
 
+/// try-block 안의 require/import 가 `is_optional` 로 마킹되는지 검증하는 헬퍼.
+/// `markOptionalRequiresInTryBlocks` 는 ast 를 borrow 하므로 arena 가 살아있을 때
+/// 호출해야 한다.
+fn parseExtractAndMarkOptional(allocator: std.mem.Allocator, source: []const u8) ![]ImportRecord {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, source);
+    var parser = Parser.init(arena_alloc, &scanner);
+    _ = try parser.parse();
+
+    const result = try extractImportsWithCjsDetection(allocator, &parser.ast);
+    try import_scanner.markOptionalRequiresInTryBlocks(allocator, &parser.ast, result.records);
+    return result.records;
+}
+
+test "optional: try-block 안의 require 는 is_optional=true 로 마킹" {
+    const alloc = std.testing.allocator;
+    const records = try parseExtractAndMarkOptional(
+        alloc,
+        \\let dbg;
+        \\try { dbg = require("debug"); } catch (e) {}
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("debug", records[0].specifier);
+    try std.testing.expectEqual(ImportKind.require, records[0].kind);
+    try std.testing.expect(records[0].is_optional);
+}
+
+test "optional: try-block 바깥의 require 는 is_optional=false 유지 (회귀 가드)" {
+    const alloc = std.testing.allocator;
+    const records = try parseExtractAndMarkOptional(
+        alloc,
+        \\const x = require("./hard");
+        \\try { const y = require("./soft"); } catch (e) {}
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 2), records.len);
+    // 첫 require — try 바깥
+    try std.testing.expectEqualStrings("./hard", records[0].specifier);
+    try std.testing.expect(!records[0].is_optional);
+    // 두 번째 require — try 안
+    try std.testing.expectEqualStrings("./soft", records[1].specifier);
+    try std.testing.expect(records[1].is_optional);
+}
+
+test "optional: try-block 안의 dynamic import 도 is_optional=true" {
+    const alloc = std.testing.allocator;
+    const records = try parseExtractAndMarkOptional(
+        alloc,
+        \\async function f() {
+        \\  try { await import("optdep"); } catch (e) {}
+        \\}
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("optdep", records[0].specifier);
+    try std.testing.expectEqual(ImportKind.dynamic_import, records[0].kind);
+    try std.testing.expect(records[0].is_optional);
+}
+
+test "optional: follow-redirects/debug.js 패턴 (require(...)(...))" {
+    const alloc = std.testing.allocator;
+    const records = try parseExtractAndMarkOptional(
+        alloc,
+        \\var debug;
+        \\try {
+        \\  debug = require("debug")("follow-redirects");
+        \\} catch (e) {}
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("debug", records[0].specifier);
+    try std.testing.expect(records[0].is_optional);
+}
+
+test "optional: try-block 이 없으면 모든 require 가 is_optional=false" {
+    const alloc = std.testing.allocator;
+    const records = try parseExtractAndMarkOptional(
+        alloc,
+        \\const a = require("./a");
+        \\const b = require("./b");
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 2), records.len);
+    try std.testing.expect(!records[0].is_optional);
+    try std.testing.expect(!records[1].is_optional);
+}
+
 test "CJS: define boolean으로 죽은 if 분기의 require는 스캔하지 않음" {
     const alloc = std.testing.allocator;
     const result = try parseAndExtractFullWithDefines(

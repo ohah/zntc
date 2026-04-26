@@ -37,6 +37,12 @@ pub const Span = extern struct {
             .end = other.end,
         };
     }
+
+    /// `inner` 가 self 의 byte 범위 안에 완전히 포함되는지.
+    /// scanner/transformer 의 dead-range, try-block range 검사 등에서 공용.
+    pub fn contains(self: Span, inner: Span) bool {
+        return inner.start >= self.start and inner.end <= self.end;
+    }
 };
 
 /// 렉서가 생성하는 토큰 하나.
