@@ -522,14 +522,38 @@ pub fn ES2015Class(comptime Transformer: type) type {
         // super() / super.method() 변환
         // ================================================================
 
+        /// `super` 검사 시 transparent wrapper(괄호, TS type assertion, Flow cast 등)을 통과한다.
+        /// `(super)`, `(super as any)`, `<any>super`, `super!` 등은 의미상 noop 이므로 안쪽 super 도
+        /// super lowering 대상으로 봐야 한다 — 그렇지 않으면 raw `(super)[k]` / `super[k]` 가 그대로
+        /// emit 돼 syntax error (#2030). 모든 wrapper 는 `data.unary.operand` 로 안쪽 노드를 갖는다.
+        fn isSuperUnwrapped(self: *Transformer, idx: NodeIndex) bool {
+            var cur = idx;
+            while (true) {
+                if (cur.isNone()) return false;
+                const node = self.ast.getNode(cur);
+                switch (node.tag) {
+                    .super_expression => return true,
+                    .parenthesized_expression,
+                    .ts_as_expression,
+                    .ts_satisfies_expression,
+                    .ts_type_assertion,
+                    .ts_instantiation_expression,
+                    .ts_non_null_expression,
+                    .flow_as_expression,
+                    .flow_type_cast_expression,
+                    => cur = node.data.unary.operand,
+                    else => return false,
+                }
+            }
+        }
+
         /// call_expression의 callee가 super_expression인지 확인.
         pub fn isSuperCall(self: *Transformer, node: Node) bool {
             const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e >= extras.len) return false;
             const callee: NodeIndex = @enumFromInt(extras[e]);
-            if (callee.isNone()) return false;
-            return self.ast.getNode(callee).tag == .super_expression;
+            return isSuperUnwrapped(self, callee);
         }
 
         /// super(args) → __callSuper(_super, [args], _newTarget)
@@ -613,8 +637,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const me = callee_node.data.extra;
             if (me >= extras.len) return false;
             const obj: NodeIndex = @enumFromInt(extras[me]);
-            if (obj.isNone()) return false;
-            return self.ast.getNode(obj).tag == .super_expression;
+            return isSuperUnwrapped(self, obj);
         }
 
         /// super.method(args) → Parent.prototype.method.call(this, args)
@@ -676,8 +699,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             if (e >= extras.len) return false;
             const obj: NodeIndex = @enumFromInt(extras[e]);
-            if (obj.isNone()) return false;
-            return self.ast.getNode(obj).tag == .super_expression;
+            return isSuperUnwrapped(self, obj);
         }
 
         const SuperPropRef = struct {
@@ -824,8 +846,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             if (e >= extras.len) return false;
             const obj: NodeIndex = @enumFromInt(extras[e]);
-            if (obj.isNone()) return false;
-            return self.ast.getNode(obj).tag == .super_expression;
+            return isSuperUnwrapped(self, obj);
         }
 
         /// super["prop"] → __superGet(Parent.prototype, "prop", this)
@@ -849,7 +870,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const le = left.data.extra;
             if (le >= self.ast.extra_data.items.len) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(le, 0);
-            if (obj_idx.isNone() or self.ast.getNode(obj_idx).tag != .super_expression) return null;
+            if (!isSuperUnwrapped(self, obj_idx)) return null;
 
             const prop_idx: NodeIndex = self.readNodeIdx(le, 1);
             const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
@@ -927,7 +948,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const e = node.data.extra;
             if (e >= self.ast.extra_data.items.len) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(e, 0);
-            if (obj_idx.isNone() or self.ast.getNode(obj_idx).tag != .super_expression) return null;
+            if (!isSuperUnwrapped(self, obj_idx)) return null;
 
             const op_kind = op_flags & 0xff;
             const is_increment = (op_kind == @intFromEnum(token_mod.Kind.plus2));
@@ -993,8 +1014,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const me = callee_node.data.extra;
             if (me >= extras.len) return false;
             const obj: NodeIndex = @enumFromInt(extras[me]);
-            if (obj.isNone()) return false;
-            return self.ast.getNode(obj).tag == .super_expression;
+            return isSuperUnwrapped(self, obj);
         }
 
         /// super["method"](args) → Parent.prototype["method"].call(this, args)
