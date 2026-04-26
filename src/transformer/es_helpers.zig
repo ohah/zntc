@@ -110,6 +110,31 @@ pub fn isSimpleIdentifier(self: anytype, left_idx: NodeIndex) bool {
     return left_node.tag == .identifier_reference;
 }
 
+/// transparent wrapper(괄호, TS as/satisfies/type_assertion/non_null/instantiation, Flow as/cast)
+/// 를 재귀적으로 통과해서 안쪽 실제 노드 인덱스를 반환. 이 wrapper 들은 모두 의미상 noop 이라
+/// `(super as any)` 처럼 super tag check 가 wrapper 에 막혀 raw super 가 emit 되는 패턴을 막기
+/// 위함 (#2030, #2034). 모든 wrapper 는 `data.unary.operand` 로 안쪽 노드를 가짐.
+/// idx 가 wrapper 가 아니면 그대로 반환. NodeIndex.none 도 그대로 반환.
+pub fn unwrapTransparentWrappers(self: anytype, idx: NodeIndex) NodeIndex {
+    var cur = idx;
+    while (true) {
+        if (cur.isNone()) return cur;
+        const node = self.ast.getNode(cur);
+        switch (node.tag) {
+            .parenthesized_expression,
+            .ts_as_expression,
+            .ts_satisfies_expression,
+            .ts_type_assertion,
+            .ts_instantiation_expression,
+            .ts_non_null_expression,
+            .flow_as_expression,
+            .flow_type_cast_expression,
+            => cur = node.data.unary.operand,
+            else => return cur,
+        }
+    }
+}
+
 /// `void 0` 노드를 새 AST에 생성.
 pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
     const zero_span = try self.ast.addString("0");

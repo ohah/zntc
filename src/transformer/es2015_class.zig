@@ -522,29 +522,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
         // super() / super.method() 변환
         // ================================================================
 
-        /// `super` 검사 시 transparent wrapper(괄호, TS type assertion, Flow cast 등)을 통과한다.
-        /// `(super)`, `(super as any)`, `<any>super`, `super!` 등은 의미상 noop 이므로 안쪽 super 도
-        /// super lowering 대상으로 봐야 한다 — 그렇지 않으면 raw `(super)[k]` / `super[k]` 가 그대로
-        /// emit 돼 syntax error (#2030). 모든 wrapper 는 `data.unary.operand` 로 안쪽 노드를 갖는다.
+        /// transparent wrapper(괄호, TS as 등) 안쪽이 super_expression 인지 검사 (#2030).
+        /// wrapper-unwrap 자체는 `es_helpers.unwrapTransparentWrappers` 가 담당.
         fn isSuperUnwrapped(self: *Transformer, idx: NodeIndex) bool {
-            var cur = idx;
-            while (true) {
-                if (cur.isNone()) return false;
-                const node = self.ast.getNode(cur);
-                switch (node.tag) {
-                    .super_expression => return true,
-                    .parenthesized_expression,
-                    .ts_as_expression,
-                    .ts_satisfies_expression,
-                    .ts_type_assertion,
-                    .ts_instantiation_expression,
-                    .ts_non_null_expression,
-                    .flow_as_expression,
-                    .flow_type_cast_expression,
-                    => cur = node.data.unary.operand,
-                    else => return false,
-                }
-            }
+            const inner = es_helpers.unwrapTransparentWrappers(self, idx);
+            if (inner.isNone()) return false;
+            return self.ast.getNode(inner).tag == .super_expression;
         }
 
         /// call_expression의 callee가 super_expression인지 확인.
