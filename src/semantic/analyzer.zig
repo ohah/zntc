@@ -1687,6 +1687,7 @@ pub const SemanticAnalyzer = struct {
         //       const bar = () => "hello"; // 여기서 선언된 bar를 1st pass에서 미리 등록
         // 2nd pass — 기존 visitNodeList로 전체 순회 (initializer 포함).
         try self.predeclareTopLevelBindings(node.data.list);
+        try self.predeclareNestedTopLevelVarDecls(node.data.list);
         self.predeclared_scope = self.current_scope;
 
         // StmtInfo 사전 수집: statement 개수만 기록. declared/referenced 둘 다 references 배열에서
@@ -1806,6 +1807,59 @@ pub const SemanticAnalyzer = struct {
                     }
                 },
                 else => {},
+            }
+        }
+    }
+
+    /// Program/module scope 에서 nested statement 안의 `var` 선언을 미리 등록한다.
+    /// transformer 이후 block-scoped `let`/`const` 가 `var` 로 낮아질 수 있으므로
+    /// top-level `{ var x; }` / `if (...) var x` 도 module/global var scope 에 hoist 되어야
+    /// 한다. Direct top-level declarations 는 `predeclareTopLevelBindings` 가 이미 처리하므로
+    /// 여기서는 중복 등록하지 않는다.
+    fn predeclareNestedTopLevelVarDecls(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
+        if (list.len == 0) return;
+        if (list.start + list.len > self.ast.extra_data.items.len) return;
+
+        const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+        const saved_scope_idx = self.current_stmt_idx;
+        const saved_top_idx = self.current_top_stmt_idx;
+        defer {
+            self.current_stmt_idx = saved_scope_idx;
+            self.current_top_stmt_idx = saved_top_idx;
+        }
+
+        for (indices, 0..) |raw_idx, i| {
+            if (self.enable_stmt_info) {
+                self.current_top_stmt_idx = @intCast(i);
+                self.current_stmt_idx = @intCast(i);
+            }
+            const idx: NodeIndex = @enumFromInt(raw_idx);
+            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            const node = self.ast.getNode(idx);
+            switch (node.tag) {
+                .variable_declaration,
+                .function_declaration,
+                .class_declaration,
+                .ts_enum_declaration,
+                => continue,
+                .export_named_declaration => {
+                    const extra_start = node.data.extra;
+                    const extras = self.ast.extra_data.items;
+                    if (extra_start >= extras.len) continue;
+                    const decl_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+                    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                    const decl_node = self.ast.getNode(decl_idx);
+                    switch (decl_node.tag) {
+                        .variable_declaration,
+                        .function_declaration,
+                        .class_declaration,
+                        .ts_enum_declaration,
+                        => continue,
+                        else => try self.predeclareVarDeclsRecursive(decl_idx),
+                    }
+                },
+                .export_default_declaration => continue,
+                else => try self.predeclareVarDeclsRecursive(idx),
             }
         }
     }

@@ -277,6 +277,7 @@ pub fn buildMetadataForAst(
             // resolve 미완료: external 또는 resolve 실패.
             if (rec.resolved.isNone()) {
                 if (rec.kind == .static_import or rec.kind == .side_effect or rec.kind == .re_export) {
+                    if (!ib.isSynthetic() and !ib.local_symbol.isValid()) continue;
                     const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                     // synthetic binding(JSX runtime 등) + ESM-wrapped 모듈 조합에서는
                     // top-level에 이미 `var _jsxDEV, _Fragment;` 선언이 호이스팅됨.

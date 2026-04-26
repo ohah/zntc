@@ -260,6 +260,7 @@ const TestResult = struct {
 fn buildLinkAndRename(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !TestResult {
     var r = try buildAndLink(allocator, tmp, entry_name);
     try r.linker.computeRenames();
+    r.linker.populateImportSymbols();
     return .{ .linker = r.linker, .graph = r.graph, .cache = r.cache };
 }
 
