@@ -4,6 +4,7 @@ const SemanticAnalyzer = analyzer_mod.SemanticAnalyzer;
 const Diagnostic = analyzer_mod.Diagnostic;
 const symbol_mod = @import("symbol.zig");
 const SymbolKind = symbol_mod.SymbolKind;
+const ScopeId = @import("scope.zig").ScopeId;
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
@@ -1520,6 +1521,72 @@ test "#1669: per-scope stmt_idx 는 함수 body 내부에서 0 부터 재시작"
     }
     try std.testing.expectEqual(@as(u32, 0), b_scope_idx);
     try std.testing.expectEqual(@as(u32, 1), c_scope_idx);
+}
+
+test "#2023: nested var predeclare records declare ref at function body stmt index" {
+    const source = "function f() {\n  const a = 1;\n  if (true) { var hoisted = 2; }\n}\n";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.enable_stmt_info = true;
+    try ana.analyze();
+
+    var declare_count: usize = 0;
+    var scope_stmt_idx: u32 = std.math.maxInt(u32);
+    var declared_scope: ScopeId = .none;
+    for (ana.references.items) |r| {
+        if (!r.flags.declare) continue;
+        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "hoisted")) {
+            declare_count += 1;
+            scope_stmt_idx = r.scope_stmt_idx;
+            declared_scope = r.scope_id;
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), declare_count);
+    try std.testing.expectEqual(@as(u32, 1), scope_stmt_idx);
+    try std.testing.expect(!declared_scope.isNone());
+}
+
+test "#2023: predeclared lexical bindings record declare ref once" {
+    const source = "function f() {\n  {\n    let x = 1;\n    const { y = x } = obj;\n  }\n}\n";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.enable_stmt_info = true;
+    try ana.analyze();
+
+    var x_declare_count: usize = 0;
+    var y_declare_count: usize = 0;
+    var x_scope_stmt_idx: u32 = std.math.maxInt(u32);
+    var y_scope_stmt_idx: u32 = std.math.maxInt(u32);
+    for (ana.references.items) |r| {
+        if (!r.flags.declare) continue;
+        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        const name = sym.nameText(parser.ast.source);
+        if (std.mem.eql(u8, name, "x")) {
+            x_declare_count += 1;
+            x_scope_stmt_idx = r.scope_stmt_idx;
+        }
+        if (std.mem.eql(u8, name, "y")) {
+            y_declare_count += 1;
+            y_scope_stmt_idx = r.scope_stmt_idx;
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), x_declare_count);
+    try std.testing.expectEqual(@as(usize, 1), y_declare_count);
+    try std.testing.expectEqual(@as(u32, 0), x_scope_stmt_idx);
+    try std.testing.expectEqual(@as(u32, 1), y_scope_stmt_idx);
 }
 
 // ============================================================
