@@ -880,6 +880,7 @@ pub fn finalizeNamespaceData(
     var ns_preamble = PreambleWriter.init(allocator);
     defer ns_preamble.deinit();
     for (ns_inlines.entries) |entry| {
+        if (entry.object_literal.len == 0) continue;
         try ns_preamble.writeNamespaceObject(entry.var_name, entry.object_literal);
     }
     const combined_preamble = try ns_preamble.concatWith(cjs_import_preamble);

@@ -28,6 +28,7 @@ const stmt_info_mod = @import("stmt_info.zig");
 const profile = @import("../profile.zig");
 const rt = @import("runtime_helpers.zig");
 const ManglerStats = @import("../codegen/mangler.zig").ManglerStats;
+const CompiledModule = @import("compiled_module.zig").CompiledModule;
 
 /// namespace 접근 패턴에서 생성되는 변수 prefix.
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
@@ -238,6 +239,9 @@ pub const LinkingMetadata = struct {
             symbol_id: ?u32,
             object_literal: []const u8,
             var_name: []const u8,
+            /// shared bundle preamble 경로에서 이 entry 가 참조하는 source module.
+            /// null이면 기존 per-module preamble/declaration-only entry.
+            shared_target_mod_idx: ?u32 = null,
         };
 
         pub fn get(self: *const NsInlineObjects, sym_id: u32) ?*const Entry {
@@ -423,6 +427,12 @@ pub const Linker = struct {
     ns_export_cache: std.AutoHashMapUnmanaged(u32, []NsExportPair) = .{},
     /// buildInlineObjectStr 결과 캐시. 키: target_mod_idx. 값 문자열 linker 소유.
     ns_inline_cache: std.AutoHashMapUnmanaged(u32, []const u8) = .{},
+    /// target module 별 공유 namespace object var. namespace 를 값으로 쓰는 여러 importer 가
+    /// 같은 객체 선언을 중복 emit 하지 않도록 bundle/chunk preamble 에서 한 번만 쓴다.
+    ns_shared_inline_cache: std.AutoHashMapUnmanaged(u32, SharedNsInline) = .{},
+    ns_shared_inline_order: std.ArrayListUnmanaged(u32) = .empty,
+    ns_shared_var_names: std.StringHashMapUnmanaged(void) = .{},
+    use_shared_ns_preamble: bool = false,
     /// ns_export_cache / ns_inline_cache 동시 접근 보호.
     /// emitter 가 `emitModuleThread` 로 buildMetadataForAst 를 병렬 호출하므로 필수.
     /// Fast path (get) → unlock → compute → lock → double-check → put 패턴으로
@@ -431,6 +441,11 @@ pub const Linker = struct {
 
     const ChainCacheEntry = struct {
         result: ?SymbolRef,
+    };
+
+    const SharedNsInline = struct {
+        var_name: []const u8,
+        object_literal: []const u8,
     };
 
     const ExportEntry = struct {
@@ -517,6 +532,14 @@ pub const Linker = struct {
         var nic_it = self.ns_inline_cache.valueIterator();
         while (nic_it.next()) |v| self.allocator.free(v.*);
         self.ns_inline_cache.deinit(self.allocator);
+        var ns_shared_it = self.ns_shared_inline_cache.valueIterator();
+        while (ns_shared_it.next()) |v| {
+            self.allocator.free(v.var_name);
+            self.allocator.free(v.object_literal);
+        }
+        self.ns_shared_inline_cache.deinit(self.allocator);
+        self.ns_shared_inline_order.deinit(self.allocator);
+        self.ns_shared_var_names.deinit(self.allocator);
         // #1791 fatal diag message 해제 (allocPrint owned)
         for (self.fatal_diagnostics.items) |d| self.allocator.free(d.message);
         self.fatal_diagnostics.deinit(self.allocator);
@@ -2026,13 +2049,212 @@ pub const Linker = struct {
         // ns_inline_list 활성화 조건: caller 가 명시 (force_inline) 또는 shadow 충돌 발생.
         // 후자의 경우 codegen fallback 이 namespace 객체 access 로 emit 할 수 있도록 객체가 필요.
         if (force_inline or has_shadow) {
-            const obj_str = try self.buildInlineObjectStr(target_mod_idx, 0);
-            const ns_var_name = try self.makeUniqueNsVarName(var_name, &seen_exports);
-            try ns_inline_list.append(self.allocator, .{
-                .symbol_id = symbol_id,
-                .object_literal = obj_str,
-                .var_name = ns_var_name,
+            if (self.use_shared_ns_preamble) {
+                const ns_var_name = try self.getOrCreateSharedNamespaceVar(target_mod_idx, &seen_exports);
+                try ns_inline_list.append(self.allocator, .{
+                    .symbol_id = symbol_id,
+                    .object_literal = try self.allocator.dupe(u8, ""),
+                    .var_name = try self.allocator.dupe(u8, ns_var_name),
+                    .shared_target_mod_idx = target_mod_idx,
+                });
+            } else {
+                const obj_str = try self.buildInlineObjectStr(target_mod_idx, 0);
+                const ns_var_name = try self.makeUniqueNsVarName(var_name, &seen_exports);
+                try ns_inline_list.append(self.allocator, .{
+                    .symbol_id = symbol_id,
+                    .object_literal = obj_str,
+                    .var_name = ns_var_name,
+                });
+            }
+        }
+    }
+
+    fn getOrCreateSharedNamespaceVar(
+        self: *const Linker,
+        target_mod_idx: u32,
+        seen_exports: *std.StringHashMap(void),
+    ) std.mem.Allocator.Error![]const u8 {
+        const mutable_self = @constCast(self);
+
+        mutable_self.ns_cache_mutex.lock();
+        if (self.ns_shared_inline_cache.get(target_mod_idx)) |cached| {
+            mutable_self.ns_cache_mutex.unlock();
+            return cached.var_name;
+        }
+        mutable_self.ns_cache_mutex.unlock();
+
+        const object_literal = try self.buildInlineObjectStr(target_mod_idx, 0);
+        errdefer self.allocator.free(object_literal);
+        const base_name = try self.makeSharedNamespaceBaseName(target_mod_idx);
+        defer self.allocator.free(base_name);
+
+        mutable_self.ns_cache_mutex.lock();
+        defer mutable_self.ns_cache_mutex.unlock();
+
+        if (self.ns_shared_inline_cache.get(target_mod_idx)) |raced| {
+            self.allocator.free(object_literal);
+            return raced.var_name;
+        }
+
+        const fresh = try mutable_self.makeUniqueSharedNsVarNameLocked(base_name, seen_exports);
+        errdefer self.allocator.free(fresh);
+        try mutable_self.ns_shared_inline_order.append(self.allocator, target_mod_idx);
+        errdefer _ = mutable_self.ns_shared_inline_order.pop();
+        try mutable_self.ns_shared_inline_cache.put(self.allocator, target_mod_idx, .{
+            .var_name = fresh,
+            .object_literal = object_literal,
+        });
+        try mutable_self.ns_shared_var_names.put(self.allocator, fresh, {});
+        return fresh;
+    }
+
+    pub fn appendSharedNamespacePreamble(self: *const Linker, out: *std.ArrayList(u8)) std.mem.Allocator.Error!void {
+        const sorted_targets = try self.allocator.dupe(u32, self.ns_shared_inline_order.items);
+        defer self.allocator.free(sorted_targets);
+        const SortCtx = struct {
+            linker: *const Linker,
+            fn lessThan(ctx: @This(), a: u32, b: u32) bool {
+                const ap = if (ctx.linker.getModule(a)) |m| m.path else "";
+                const bp = if (ctx.linker.getModule(b)) |m| m.path else "";
+                const order = std.mem.order(u8, ap, bp);
+                if (order != .eq) return order == .lt;
+                return a < b;
+            }
+        };
+        std.mem.sort(u32, sorted_targets, SortCtx{ .linker = self }, SortCtx.lessThan);
+
+        for (sorted_targets) |target_mod_idx| {
+            const entry = self.ns_shared_inline_cache.get(target_mod_idx) orelse continue;
+            try out.appendSlice(self.allocator, "var ");
+            try out.appendSlice(self.allocator, entry.var_name);
+            try out.appendSlice(self.allocator, " = ");
+            try out.appendSlice(self.allocator, entry.object_literal);
+            try out.appendSlice(self.allocator, ";\n");
+        }
+    }
+
+    pub fn restoreSharedNamespaceDecls(self: *const Linker, decls: []const CompiledModule.SharedNsDecl) std.mem.Allocator.Error!void {
+        const mutable_self = @constCast(self);
+        for (decls) |decl| {
+            const target_idx = self.graph.path_to_module.get(decl.target_path) orelse continue;
+            const target_mod_idx = @intFromEnum(target_idx);
+
+            mutable_self.ns_cache_mutex.lock();
+            if (self.ns_shared_inline_cache.get(target_mod_idx) != null) {
+                mutable_self.ns_cache_mutex.unlock();
+                continue;
+            }
+            mutable_self.ns_cache_mutex.unlock();
+
+            const owned_var = try self.allocator.dupe(u8, decl.var_name);
+            errdefer self.allocator.free(owned_var);
+            const owned_obj = try self.allocator.dupe(u8, decl.object_literal);
+            errdefer self.allocator.free(owned_obj);
+
+            mutable_self.ns_cache_mutex.lock();
+            defer mutable_self.ns_cache_mutex.unlock();
+            if (self.ns_shared_inline_cache.get(target_mod_idx) != null) {
+                self.allocator.free(owned_var);
+                self.allocator.free(owned_obj);
+                continue;
+            }
+            if (self.ns_shared_var_names.contains(owned_var)) {
+                self.allocator.free(owned_var);
+                self.allocator.free(owned_obj);
+                continue;
+            }
+            try mutable_self.ns_shared_inline_order.append(self.allocator, target_mod_idx);
+            errdefer _ = mutable_self.ns_shared_inline_order.pop();
+            try mutable_self.ns_shared_inline_cache.put(self.allocator, target_mod_idx, .{
+                .var_name = owned_var,
+                .object_literal = owned_obj,
             });
+            try mutable_self.ns_shared_var_names.put(self.allocator, owned_var, {});
+        }
+    }
+
+    pub fn collectSharedNamespaceDecls(
+        self: *const Linker,
+        allocator: std.mem.Allocator,
+        md: *const LinkingMetadata,
+    ) std.mem.Allocator.Error![]const CompiledModule.SharedNsDecl {
+        var decls: std.ArrayList(CompiledModule.SharedNsDecl) = .empty;
+        errdefer {
+            for (decls.items) |d| {
+                allocator.free(d.target_path);
+                allocator.free(d.var_name);
+                allocator.free(d.object_literal);
+            }
+            decls.deinit(allocator);
+        }
+
+        var seen = std.AutoHashMap(u32, void).init(allocator);
+        defer seen.deinit();
+
+        for (md.ns_inline_objects.entries) |entry| {
+            const target_mod_idx = entry.shared_target_mod_idx orelse continue;
+            if (seen.contains(target_mod_idx)) continue;
+            try seen.put(target_mod_idx, {});
+
+            const target = self.getModule(target_mod_idx) orelse continue;
+            @constCast(self).ns_cache_mutex.lock();
+            const shared_copy = if (self.ns_shared_inline_cache.get(target_mod_idx)) |shared| SharedNsInline{
+                .var_name = shared.var_name,
+                .object_literal = shared.object_literal,
+            } else null;
+            @constCast(self).ns_cache_mutex.unlock();
+            const shared = shared_copy orelse continue;
+
+            const target_path = try allocator.dupe(u8, target.path);
+            errdefer allocator.free(target_path);
+            const var_name = try allocator.dupe(u8, shared.var_name);
+            errdefer allocator.free(var_name);
+            const object_literal = try allocator.dupe(u8, shared.object_literal);
+            errdefer allocator.free(object_literal);
+
+            try decls.append(allocator, .{
+                .target_path = target_path,
+                .var_name = var_name,
+                .object_literal = object_literal,
+            });
+        }
+
+        return decls.toOwnedSlice(allocator);
+    }
+
+    fn makeSharedNamespaceBaseName(self: *const Linker, target_mod_idx: u32) std.mem.Allocator.Error![]const u8 {
+        const target = self.getModule(target_mod_idx) orelse return self.allocator.dupe(u8, "ns");
+        const basename = std.fs.path.basename(target.path);
+        const without_ext = if (std.mem.lastIndexOf(u8, basename, ".")) |dot| basename[0..dot] else basename;
+
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(self.allocator);
+        if (without_ext.len == 0 or !(std.ascii.isAlphabetic(without_ext[0]) or without_ext[0] == '_' or without_ext[0] == '$')) {
+            try buf.append(self.allocator, '_');
+        }
+        for (without_ext) |c| {
+            if (std.ascii.isAlphanumeric(c) or c == '_' or c == '$') {
+                try buf.append(self.allocator, c);
+            } else {
+                try buf.append(self.allocator, '_');
+            }
+        }
+        return buf.toOwnedSlice(self.allocator);
+    }
+
+    fn makeUniqueSharedNsVarNameLocked(
+        self: *Linker,
+        base: []const u8,
+        seen_exports: *std.StringHashMap(void),
+    ) std.mem.Allocator.Error![]const u8 {
+        var candidate = try std.fmt.allocPrint(self.allocator, "{s}_ns", .{base});
+        if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate)) return candidate;
+
+        var i: usize = 2;
+        while (true) : (i += 1) {
+            self.allocator.free(candidate);
+            candidate = try std.fmt.allocPrint(self.allocator, "{s}_ns_{d}", .{ base, i });
+            if (!seen_exports.contains(candidate) and !self.ns_shared_var_names.contains(candidate)) return candidate;
         }
     }
 

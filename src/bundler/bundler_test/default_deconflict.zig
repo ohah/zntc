@@ -4,6 +4,7 @@ const types = @import("../types.zig");
 const emitter = @import("../emitter.zig");
 const ResolveCache = @import("../resolve_cache.zig").ResolveCache;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
+const CompiledOutputCache = @import("../compiled_cache.zig").CompiledOutputCache;
 const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
@@ -716,17 +717,19 @@ test "Default: export default from namespace import assigns ns var" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // ns var 할당이 반드시 존재해야 한다 (X = X_ns; 형태).
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "X_ns") != null);
+    // ns var 할당이 반드시 존재해야 한다. 공유 namespace preamble 경로에서는
+    // 병렬 metadata 순서에 따라 var 이름이 X_ns 외의 `<import>_ns`가 될 수 있다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, " = {get foo()") != null);
     // default getter가 X를 반환 (minified 또는 non-minified 둘 다 허용)
     // default getter는 arrow 또는 function expression (platform/minify에 따라 다름)
     const has_default_getter = std.mem.indexOf(u8, result.output, "\"default\": () => X") != null or
         std.mem.indexOf(u8, result.output, "\"default\":()=>X") != null or
         std.mem.indexOf(u8, result.output, "\"default\": function() { return X; }") != null;
     try std.testing.expect(has_default_getter);
-    // 할당 라인 확인: `X = X_ns;`
-    const has_assign = std.mem.indexOf(u8, result.output, "X = X_ns;") != null or
-        std.mem.indexOf(u8, result.output, "X=X_ns;") != null;
+    // 할당 라인 확인: `X = <shared namespace var>;`
+    const has_assign = (std.mem.indexOf(u8, result.output, "X = ") != null or
+        std.mem.indexOf(u8, result.output, "X=") != null) and
+        std.mem.indexOf(u8, result.output, "_ns;") != null;
     try std.testing.expect(has_assign);
 }
 
@@ -759,6 +762,59 @@ test "Default: export default namespace — IIFE bundle resolves member access" 
     // answer가 번들에 포함되어야 (trees-haker가 default 경유 namespace 접근도 보존)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "answer") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
+}
+
+test "Default: shared namespace preamble restored from compiled cache hit" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "core.js",
+        \\export const a = "a";
+        \\export const b = "b";
+    );
+    try writeFile(tmp.dir, "userA.js",
+        \\import * as Core from './core.js';
+        \\export const fa = () => Object.keys(Core).join(",");
+    );
+    try writeFile(tmp.dir, "userB.js",
+        \\import * as Core from './core.js';
+        \\export const fb = () => Object.keys(Core).join(",");
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { fa } from './userA.js';
+        \\import { fb } from './userB.js';
+        \\console.log(fa() + "/" + fb());
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var cache = CompiledOutputCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    {
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .compiled_cache = &cache,
+        });
+        defer b.deinit();
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.hasErrors());
+    }
+    _ = cache.takeStats();
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .compiled_cache = &cache,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(cache.hits >= 1);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var core_ns = {get a()") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "var core_ns = {get a()"));
 }
 
 test "Default: regular export default identifier still self-ref (no regression)" {

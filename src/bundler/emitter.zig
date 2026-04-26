@@ -511,8 +511,15 @@ pub fn emitWithTreeShaking(
             input_hashes[i] = input_hash;
             const hit = cache.tryHit(m.path, input_hash) orelse continue;
             results[i] = hit.dupe(allocator) catch continue;
+            if (linker) |l| {
+                l.restoreSharedNamespaceDecls(results[i].shared_ns_decls) catch {};
+            }
             hit_mask[i] = true;
         }
+    }
+
+    if (linker) |l| {
+        @constCast(l).use_shared_ns_preamble = true;
     }
 
     var use_pool = sorted.items.len >= 2;
@@ -536,7 +543,7 @@ pub fn emitWithTreeShaking(
             if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain) catch null;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch null;
         }
     }
 
@@ -621,6 +628,12 @@ pub fn emitWithTreeShaking(
         }
     }
     try module_output.ensureTotalCapacity(allocator, module_output_estimate);
+
+    if (linker) |l| if (l.use_shared_ns_preamble) {
+        const before_len = module_output.items.len;
+        try l.appendSharedNamespacePreamble(&module_output);
+        module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
+    };
 
     for (sorted.items, 0..) |m, i| {
         // helpers 합산 (bitwise OR)
@@ -1039,7 +1052,7 @@ fn emitModuleThread(
     shaker: ?*const TreeShaker,
     result: *CompiledModule,
 ) void {
-    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json, &result.entry_chain) catch null;
+    result.code = emitModule(allocator, module, options, linker, is_entry, used_names, shaker, &result.helpers, &result.mappings, &result.preamble_lines, &result.fn_map_json, &result.entry_chain, &result.shared_ns_decls) catch null;
 }
 
 /// 단일 모듈을 Transformer → Codegen 파이프라인으로 처리.
@@ -1058,6 +1071,7 @@ pub fn emitModule(
     preamble_lines_out: ?*u32,
     fn_map_json_out: ?*?[]const u8,
     entry_chain_out: ?*?[]const u8,
+    shared_ns_decls_out: ?*[]const CompiledModule.SharedNsDecl,
 ) !?[]const u8 {
     // Disabled 모듈 (platform=browser에서 Node 빌트인): 빈 __commonJS wrapper 출력.
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
@@ -1200,6 +1214,9 @@ pub fn emitModule(
             }
             l.allocator.free(md.pending_diagnostics);
             md.pending_diagnostics = &.{};
+        }
+        if (shared_ns_decls_out) |out| {
+            out.* = try l.collectSharedNamespaceDecls(allocator, &md);
         }
         // statement-level tree-shaking: StmtInfo 기반 도달성 분석으로 미사용 statement 제거.
         // rolldown 방식: 심볼 인덱스로 추적하여 linker rename 후에도 정확한 판정.
