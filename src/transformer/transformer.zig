@@ -175,6 +175,13 @@ pub const TransformOptions = struct {
     /// minify_syntax 기반 이름 제거 최적화를 비활성화.
     keep_names: bool = false,
 
+    /// #1961: transform() 끝에서 set 된 RuntimeHelpers 비트마다
+    /// `import { __helper } from "\x00zts:runtime/<short>"` 노드를 program 앞에 prepend.
+    /// graph parse 단계의 transformer pre-pass 만 true 로 set — emitter 의 in-place
+    /// transformer 호출은 false 유지 (grafh 통합 없이 helper specifier 가 출력에 새는
+    /// 사고 방지). 자세한 매핑은 `runtime_helper_imports.zig`.
+    emit_runtime_helper_imports: bool = false,
+
     pub const compat = @import("compat.zig");
 };
 
@@ -586,6 +593,20 @@ pub const Transformer = struct {
         // ES2015 tagged template: _templateObject 캐싱 함수를 program 맨 앞에 호이스팅
         if (self.tagged_template_fns.items.len > 0 and !root.isNone()) {
             root = try self.prependStatementsToBody(root, self.tagged_template_fns.items);
+        }
+
+        // #1961: 사용된 runtime helper 별 named import statement 를 program 앞에 prepend.
+        // graph parse 단계의 transformer pre-pass 가 set 하는 옵션으로만 활성 — emitter 의
+        // in-place transformer 호출은 false 유지하여 helper specifier 가 출력에 새는 사고 방지.
+        if (self.options.emit_runtime_helper_imports and !root.isNone()) {
+            const helper_imports = @import("runtime_helper_imports.zig");
+            const root_span = self.ast.getNode(root).span;
+            var imports: std.ArrayList(NodeIndex) = .empty;
+            defer imports.deinit(self.allocator);
+            try helper_imports.appendHelperImports(self, self.runtime_helpers, root_span, &imports);
+            if (imports.items.len > 0) {
+                root = try self.prependStatementsToBody(root, imports.items);
+            }
         }
 
         // React Fast Refresh: 컴포넌트 등록 코드를 프로그램 끝에 추가 ($RefreshReg$만, $RefreshSig$ 제거)
