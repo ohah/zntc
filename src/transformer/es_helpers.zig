@@ -165,6 +165,95 @@ pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     return makeIdentifierRef(self, resolved);
 }
 
+/// default initializer가 함수 body로 내려간 뒤에도 parameter/destructuring
+/// binding의 TDZ read를 보존한다. `tdz_names`에 들어 있는 이름의
+/// identifier_reference를 `__tdz("name")` 호출로 치환한다.
+pub fn rewriteTDZReferences(self: anytype, root: NodeIndex, tdz_names: []const Span) !void {
+    if (root.isNone() or tdz_names.len == 0) return;
+    try rewriteTDZReferencesInner(self, root, tdz_names);
+}
+
+fn rewriteTDZReferencesInner(self: anytype, idx: NodeIndex, tdz_names: []const Span) !void {
+    if (idx.isNone()) return;
+    const raw_i = @intFromEnum(idx);
+    if (raw_i >= self.ast.nodes.items.len) return;
+
+    const node = self.ast.nodes.items[raw_i];
+    switch (node.tag) {
+        .identifier_reference => {
+            if (tdzNameMatch(self, node.data.string_ref, tdz_names)) |name_span| {
+                const call = try makeTDZCall(self, name_span, node.span);
+                self.ast.nodes.items[raw_i] = self.ast.getNode(call);
+            }
+            return;
+        },
+        // default initializer 평가 중에는 nested function/class body가 실행되지 않는다.
+        .function_expression,
+        .function_declaration,
+        .function,
+        .arrow_function_expression,
+        .class_expression,
+        .class_declaration,
+        => return,
+        else => {},
+    }
+
+    switch (Node.Tag.dataKind(node.tag)) {
+        .leaf => {},
+        .unary => try rewriteTDZReferencesInner(self, node.data.unary.operand, tdz_names),
+        .binary => {
+            try rewriteTDZReferencesInner(self, node.data.binary.left, tdz_names);
+            try rewriteTDZReferencesInner(self, node.data.binary.right, tdz_names);
+        },
+        .ternary => {
+            try rewriteTDZReferencesInner(self, node.data.ternary.a, tdz_names);
+            try rewriteTDZReferencesInner(self, node.data.ternary.b, tdz_names);
+            try rewriteTDZReferencesInner(self, node.data.ternary.c, tdz_names);
+        },
+        .list => {
+            const items = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+            for (items) |child_raw| try rewriteTDZReferencesInner(self, @enumFromInt(child_raw), tdz_names);
+        },
+        .extra => {
+            const e = node.data.extra;
+            for (Node.Tag.extraChildOffsets(node.tag)) |offset| {
+                try rewriteTDZReferencesInner(self, @enumFromInt(self.ast.extra_data.items[e + offset]), tdz_names);
+            }
+            for (Node.Tag.extraListOffsets(node.tag)) |pair| {
+                const start = self.ast.extra_data.items[e + pair[0]];
+                const len = self.ast.extra_data.items[e + pair[1]];
+                const items = self.ast.extra_data.items[start .. start + len];
+                for (items) |child_raw| try rewriteTDZReferencesInner(self, @enumFromInt(child_raw), tdz_names);
+            }
+        },
+    }
+}
+
+fn tdzNameMatch(self: anytype, ref_span: Span, tdz_names: []const Span) ?Span {
+    const ref_text = self.ast.getText(ref_span);
+    for (tdz_names) |name_span| {
+        if (std.mem.eql(u8, ref_text, self.ast.getText(name_span))) return name_span;
+    }
+    return null;
+}
+
+fn makeTDZCall(self: anytype, name_span: Span, span: Span) !NodeIndex {
+    self.runtime_helpers.tdz = true;
+
+    const name = self.ast.getText(name_span);
+    const quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{name});
+    defer self.allocator.free(quoted);
+    const str_span = try self.ast.addString(quoted);
+    const str = try self.ast.addNode(.{
+        .tag = .string_literal,
+        .span = str_span,
+        .data = .{ .string_ref = str_span },
+    });
+
+    const callee = try makeRuntimeHelperRef(self, "__tdz");
+    return makeCallExpr(self, callee, &.{str}, span);
+}
+
 /// Span으로 identifier_reference 노드 생성 (이미 addString된 span 사용).
 pub fn makeIdentifierRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
     return self.ast.addNode(.{

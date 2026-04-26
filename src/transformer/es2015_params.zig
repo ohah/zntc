@@ -88,6 +88,17 @@ pub fn ES2015Params(comptime Transformer: type) type {
             var body_stmts: std.ArrayList(NodeIndex) = .empty;
 
             var param_index: usize = 0; // arguments index tracking
+            var param_tdz_names: std.ArrayList(Span) = .empty;
+            defer param_tdz_names.deinit(self.allocator);
+            const name_starts = try self.allocator.alloc(usize, params.len);
+            defer self.allocator.free(name_starts);
+
+            var name_i: u32 = 0;
+            while (name_i < params.len) : (name_i += 1) {
+                name_starts[name_i] = param_tdz_names.items.len;
+                const raw_idx = self.ast.extra_data.items[params.start + name_i];
+                try collectBindingNames(self, @enumFromInt(raw_idx), &param_tdz_names);
+            }
 
             // pass2에서는 노드가 이미 visited 상태이므로 인덱스를 그대로 사용
             const maybeVisit = struct {
@@ -121,12 +132,14 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         if (pat_node.tag == .object_pattern or pat_node.tag == .array_pattern) {
                             const vp = try maybeVisit(self, pattern_idx);
                             const vd = try maybeVisit(self, default_idx);
+                            try es_helpers.rewriteTDZReferences(self, vd, param_tdz_names.items[name_starts[i_loop]..]);
                             const result = try buildDestructuringDefault(self, vp, vd, &body_stmts, span);
                             try self.scratch.append(self.allocator, result);
                         } else {
                             const new_pattern = try maybeVisit(self, pattern_idx);
                             try self.scratch.append(self.allocator, new_pattern);
                             const new_default = try maybeVisit(self, default_idx);
+                            try es_helpers.rewriteTDZReferences(self, new_default, param_tdz_names.items[name_starts[i_loop]..]);
                             const default_stmt = try buildDefaultCheck(self, new_pattern, new_default, span);
                             try body_stmts.append(self.allocator, default_stmt);
                         }
@@ -141,12 +154,14 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) {
                         const vp = try maybeVisit(self, param.data.binary.left);
                         const vd = try maybeVisit(self, param.data.binary.right);
+                        try es_helpers.rewriteTDZReferences(self, vd, param_tdz_names.items[name_starts[i_loop]..]);
                         const result = try buildDestructuringDefault(self, vp, vd, &body_stmts, span);
                         try self.scratch.append(self.allocator, result);
                     } else {
                         const new_pattern = try maybeVisit(self, param.data.binary.left);
                         try self.scratch.append(self.allocator, new_pattern);
                         const new_default = try maybeVisit(self, param.data.binary.right);
+                        try es_helpers.rewriteTDZReferences(self, new_default, param_tdz_names.items[name_starts[i_loop]..]);
                         const default_stmt = try buildDefaultCheck(self, new_pattern, new_default, span);
                         try body_stmts.append(self.allocator, default_stmt);
                     }
@@ -333,6 +348,34 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 .span = node.span,
                 .data = .{ .string_ref = node.data.string_ref },
             });
+        }
+
+        fn collectBindingNames(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(Span)) Transformer.Error!void {
+            if (idx.isNone()) return;
+            const node = self.ast.getNode(idx);
+            switch (node.tag) {
+                .binding_identifier, .identifier_reference, .assignment_target_identifier => {
+                    try out.append(self.allocator, node.data.string_ref);
+                },
+                .formal_parameter => {
+                    try collectBindingNames(self, self.readNodeIdx(node.data.extra, ast_mod.FormalParameterExtra.pattern), out);
+                },
+                .assignment_pattern, .assignment_target_with_default => {
+                    try collectBindingNames(self, node.data.binary.left, out);
+                },
+                .rest_element, .binding_rest_element, .assignment_target_rest => {
+                    try collectBindingNames(self, node.data.unary.operand, out);
+                },
+                .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+                    const value = node.data.binary.right;
+                    try collectBindingNames(self, if (value.isNone()) node.data.binary.left else value, out);
+                },
+                .object_pattern, .array_pattern, .object_assignment_target, .array_assignment_target => {
+                    const items = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                    for (items) |raw| try collectBindingNames(self, @enumFromInt(raw), out);
+                },
+                else => {},
+            }
         }
     };
 }

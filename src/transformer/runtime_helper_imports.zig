@@ -60,6 +60,7 @@ const HelperBit = enum {
     class_private_field_set,
     async_generator,
     await_helper,
+    tdz,
 };
 
 const BitDef = struct {
@@ -105,6 +106,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .class_private_field_set, .bases = &.{"__classPrivateFieldSet"} },
     .{ .bit = .async_generator, .bases = &.{"__asyncGenerator"} },
     .{ .bit = .await_helper, .bases = &.{"__await"} },
+    .{ .bit = .tdz, .bases = &.{"__tdz"} },
 };
 
 comptime {

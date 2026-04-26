@@ -1031,6 +1031,19 @@ test "ES2015: default + rest combined" {
     try std.testing.expectEqualStrings("function f(x){x=x===void 0?1:x;var rest=[].slice.call(arguments,1);}", r.output);
 }
 
+test "ES2015: default parameter self TDZ 보존" {
+    var r = try e2eTarget(std.testing.allocator, "function f(a=a){return a;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__tdz(\"a\")") != null);
+}
+
+test "ES2015: default parameter later binding TDZ 보존" {
+    var r = try e2eTarget(std.testing.allocator, "function f(a=b,b=2){return a+b;}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__tdz(\"b\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "b=b===void 0?2:b") != null);
+}
+
 test "ES2015: params no transform on esnext" {
     var r = try e2eTarget(std.testing.allocator, "function f(x=1,...rest){}", .esnext);
     defer r.deinit();
@@ -1378,6 +1391,19 @@ test "ES2015: destructuring default" {
     var r = try e2eTarget(std.testing.allocator, "var {a=1}=obj;", .es5);
     defer r.deinit();
     try std.testing.expectEqualStrings("var _a=obj,a=_a.a===void 0?1:_a.a;", r.output);
+}
+
+test "ES2015: destructuring default self TDZ 보존" {
+    var r = try e2eTarget(std.testing.allocator, "var {a=a}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__tdz(\"a\")") != null);
+}
+
+test "ES2015: destructuring default later binding TDZ 보존" {
+    var r = try e2eTarget(std.testing.allocator, "var {a=b,b=1}=obj;", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__tdz(\"b\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "b=_a.b===void 0?1:_a.b") != null);
 }
 
 test "ES2015: destructuring no transform on esnext" {
