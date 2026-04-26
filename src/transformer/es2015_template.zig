@@ -183,6 +183,74 @@ pub fn buildRawStringLiteral(self: anytype, text: []const u8) !NodeIndex {
     });
 }
 
+/// Tagged template literal 의 cooked 영역 텍스트가 ES2018 "Lifting Template Literal
+/// Restriction" 스펙 기준 invalid escape sequence 를 포함하는지 검사한다.
+///
+/// invalid 면 cooked array 의 해당 element 는 `undefined` 여야 하고
+/// (https://tc39.es/ecma262/#sec-template-literal-lexical-components),
+/// 그렇지 않으면 raw text 그대로 cooked string 으로 emit 했을 때 JS 엔진의
+/// parse 단계에서 "\\x can only be followed by a hex character sequence" 류
+/// SyntaxError 가 발생한다.
+///
+/// invalid 패턴:
+/// - `\\x` 뒤 hex 두 글자 아님
+/// - `\\u` 뒤 hex 네 글자 아님 / `\\u{...}` 형태가 아예 없거나 코드포인트 > 0x10FFFF
+/// - `\\1` ~ `\\9` legacy octal escape (template literal 컨텍스트에선 항상 invalid)
+/// - `\\0` 뒤가 decimal digit (즉 `\\01`, `\\09` 등) 도 legacy octal 로 해석 → invalid
+pub fn templateCookedHasInvalidEscape(text: []const u8) bool {
+    var i: usize = 0;
+    while (i < text.len) {
+        if (text[i] != '\\') {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if (i >= text.len) return false; // trailing backslash 는 lexer 가 syntax error 처리
+        const c = text[i];
+        switch (c) {
+            'x' => {
+                if (i + 2 >= text.len) return true;
+                if (!std.ascii.isHex(text[i + 1]) or !std.ascii.isHex(text[i + 2])) return true;
+                i += 3;
+            },
+            'u' => {
+                i += 1;
+                if (i >= text.len) return true;
+                if (text[i] == '{') {
+                    var j = i + 1;
+                    var code: u32 = 0;
+                    var n: u32 = 0;
+                    while (j < text.len and text[j] != '}') : (j += 1) {
+                        const d = text[j];
+                        if (!std.ascii.isHex(d)) return true;
+                        code = (code << 4) | std.fmt.charToDigit(d, 16) catch return true;
+                        n += 1;
+                        if (n > 6) return true;
+                    }
+                    if (j >= text.len) return true; // missing '}'
+                    if (n == 0) return true;
+                    if (code > 0x10FFFF) return true;
+                    i = j + 1;
+                } else {
+                    if (i + 4 > text.len) return true;
+                    var k: usize = 0;
+                    while (k < 4) : (k += 1) {
+                        if (!std.ascii.isHex(text[i + k])) return true;
+                    }
+                    i += 4;
+                }
+            },
+            '0' => {
+                if (i + 1 < text.len and text[i + 1] >= '0' and text[i + 1] <= '9') return true;
+                i += 1;
+            },
+            '1', '2', '3', '4', '5', '6', '7', '8', '9' => return true,
+            else => i += 1, // \\n, \\r, \\t, \\', \\", \\\\, \\`, \\$, etc. valid
+        }
+    }
+    return false;
+}
+
 /// template 텍스트를 string_literal 노드로 변환한다.
 /// \` → ` (backtick escape 제거), " → \" (quote escape 추가),
 /// 실제 줄바꿈(\n, \r) 및 U+2028/U+2029 → 이스케이프 시퀀스로 변환.
@@ -293,4 +361,45 @@ fn buildBinaryPlus(self: anytype, left: NodeIndex, right: NodeIndex, span: Span)
 
 test "ES2015 template module compiles" {
     _ = ES2015Template;
+}
+
+test "templateCookedHasInvalidEscape — \\x with non-hex" {
+    try std.testing.expect(templateCookedHasInvalidEscape("\\xz0"));
+    try std.testing.expect(templateCookedHasInvalidEscape("\\x")); // truncated
+    try std.testing.expect(!templateCookedHasInvalidEscape("\\xff"));
+}
+
+test "templateCookedHasInvalidEscape — \\u short" {
+    try std.testing.expect(templateCookedHasInvalidEscape("\\uz"));
+    try std.testing.expect(templateCookedHasInvalidEscape("\\u00")); // truncated
+    try std.testing.expect(!templateCookedHasInvalidEscape("\\u00ff"));
+}
+
+test "templateCookedHasInvalidEscape — \\u{...}" {
+    try std.testing.expect(!templateCookedHasInvalidEscape("\\u{1f4af}"));
+    try std.testing.expect(templateCookedHasInvalidEscape("\\u{z}"));
+    try std.testing.expect(templateCookedHasInvalidEscape("\\u{}")); // empty
+    try std.testing.expect(templateCookedHasInvalidEscape("\\u{110000}")); // > U+10FFFF
+    try std.testing.expect(templateCookedHasInvalidEscape("\\u{1f4af")); // missing }
+}
+
+test "templateCookedHasInvalidEscape — legacy octal escape" {
+    try std.testing.expect(templateCookedHasInvalidEscape("\\1"));
+    try std.testing.expect(templateCookedHasInvalidEscape("\\9"));
+    try std.testing.expect(templateCookedHasInvalidEscape("\\01"));
+    // \0 단독은 valid (NUL)
+    try std.testing.expect(!templateCookedHasInvalidEscape("\\0"));
+    try std.testing.expect(!templateCookedHasInvalidEscape("hello \\0 world"));
+}
+
+test "templateCookedHasInvalidEscape — common valid escapes" {
+    try std.testing.expect(!templateCookedHasInvalidEscape("hello\\nworld"));
+    try std.testing.expect(!templateCookedHasInvalidEscape("\\t\\r\\b\\f\\v"));
+    try std.testing.expect(!templateCookedHasInvalidEscape("\\\\\\'\\\""));
+    try std.testing.expect(!templateCookedHasInvalidEscape("\\`\\$"));
+}
+
+test "templateCookedHasInvalidEscape — compat-table es5 case" {
+    // strings`\1\xz\uz\u{110000}\u{z}` — 모든 escape 가 invalid
+    try std.testing.expect(templateCookedHasInvalidEscape("\\1\\xz\\uz\\u{110000}\\u{z}"));
 }

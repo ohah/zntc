@@ -3314,9 +3314,18 @@ pub const Transformer = struct {
         var raw_count: u32 = 0;
         var has_escape = false;
 
+        // ES2018 "Lifting Template Literal Restriction": tagged template 의 cooked
+        // element 가 invalid escape sequence 를 포함하면 `undefined` 로 emit 해야 한다.
+        // raw 그대로 string literal 로 박으면 JS engine 의 parse 단계에서 "\\x can only
+        // be followed by a hex character sequence" 류 SyntaxError.
+        const cooked_span = tmpl.span;
         if (!is_substitution) {
             const text = es2015_template.getTemplateElementText(source, tmpl.span);
-            try self.scratch.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
+            const cooked_node = if (es2015_template.templateCookedHasInvalidEscape(text))
+                try es_helpers.makeVoidZero(self, cooked_span)
+            else
+                try es2015_template.buildStringLiteral(self, text);
+            try self.scratch.append(self.allocator, cooked_node);
             cooked_count = 1;
         } else {
             const tl_start = tmpl.data.list.start;
@@ -3327,7 +3336,11 @@ pub const Transformer = struct {
                 const member = self.ast.getNode(@enumFromInt(raw_idx));
                 if (member.tag == .template_element) {
                     const text = es2015_template.getTemplateElementText(source, member.span);
-                    try self.scratch.append(self.allocator, try es2015_template.buildStringLiteral(self, text));
+                    const cooked_node = if (es2015_template.templateCookedHasInvalidEscape(text))
+                        try es_helpers.makeVoidZero(self, member.span)
+                    else
+                        try es2015_template.buildStringLiteral(self, text);
+                    try self.scratch.append(self.allocator, cooked_node);
                     cooked_count += 1;
                 }
             }
