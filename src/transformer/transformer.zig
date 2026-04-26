@@ -223,13 +223,17 @@ pub const RuntimeHelpers = packed struct(u32) {
     es_decorator: bool = false,
     /// __asyncValues: for-await-of → while 루프 변환 (ES2018)
     async_values: bool = false,
+    /// __superGet: super property get receiver 보존 (ES2015 class)
+    super_get: bool = false,
+    /// __superSet: super property set receiver 보존 (ES2015 class)
+    super_set: bool = false,
     /// __classPrivateFieldSet: instance private field set with return value (#1488).
     class_private_field_set: bool = false,
     /// __asyncGenerator: `async function*` → Symbol.asyncIterator 객체 (ES2018, #1911)
     async_generator: bool = false,
     /// __await: async generator body 안 await 표현 wrapper (ES2018, #1911)
     await_helper: bool = false,
-    _padding: u12 = 0,
+    _padding: u10 = 0,
 };
 
 /// 단일 AST append-only 변환기.
@@ -946,6 +950,15 @@ pub const Transformer = struct {
                 return self.visitBinaryNode(idx);
             },
             .assignment_expression => {
+                // ES2015: super.x = v / super.x += v / super.x ||= v 는
+                // Parent.prototype.x 직접 접근이 아니라 receiver(this)를 보존하는 get/set
+                // 헬퍼로 먼저 lowering한다. 이후 generic logical/compound lowering으로 넘기면
+                // helper call에 대입하는 잘못된 target이 생성된다.
+                if (self.options.unsupported.class and self.current_super_class != null) {
+                    if (es2015_class.ES2015Class(Transformer).lowerSuperPropertyAssignment(self, node)) |result| {
+                        return result;
+                    }
+                }
                 // Private field 좌변은 모든 assignment 연산자(=, +=, ??=, ||=, &&= ...)를
                 // lowerPrivateFieldSet 단일 경로에서 처리 — es2021/es2016 등은 좌변에
                 // `(a = b)` 패턴을 만들어 get()/helper call에 대입하게 되므로 먼저 가로챈다.
@@ -1641,6 +1654,11 @@ pub const Transformer = struct {
         // private field update: this.#x++ → _x.set(this, _x.get(this) + 1)
         if (node.tag == .update_expression and (self.options.unsupported.class or self.options.unsupported.class_private_field)) {
             const operand = self.ast.getNode(operand_idx);
+            if (self.options.unsupported.class and self.current_super_class != null) {
+                if (es2015_class.ES2015Class(Transformer).lowerSuperPropertyUpdate(self, operand, op_flags, node.span)) |result| {
+                    return try result;
+                }
+            }
             if (operand.tag == .private_field_expression) {
                 if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldUpdate(self, operand, op_flags, node.span)) |result| {
                     return try result;

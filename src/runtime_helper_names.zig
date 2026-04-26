@@ -34,6 +34,8 @@ pub const NAMES = struct {
     pub const EXTENDS_MIN = "$eX"; // __extends (ES2015 class)
     pub const CLASS_CALL_CHECK_MIN = "$cC"; // __classCallCheck
     pub const CALL_SUPER_MIN = "$cS"; // __callSuper
+    pub const SUPER_GET_MIN = "$sPg"; // __superGet
+    pub const SUPER_SET_MIN = "$sPs"; // __superSet
     pub const ASYNC_MIN = "$aS"; // __async (async/await → generator)
     pub const ASYNC_VALUES_MIN = "$aV"; // __asyncValues (for-await-of)
     pub const GENERATOR_MIN = "$gn"; // __generator
@@ -87,6 +89,8 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__extends", .short = NAMES.EXTENDS_MIN },
     .{ .base = "__classCallCheck", .short = NAMES.CLASS_CALL_CHECK_MIN },
     .{ .base = "__callSuper", .short = NAMES.CALL_SUPER_MIN },
+    .{ .base = "__superGet", .short = NAMES.SUPER_GET_MIN },
+    .{ .base = "__superSet", .short = NAMES.SUPER_SET_MIN },
     .{ .base = "__async", .short = NAMES.ASYNC_MIN },
     .{ .base = "__asyncValues", .short = NAMES.ASYNC_VALUES_MIN },
     .{ .base = "__generator", .short = NAMES.GENERATOR_MIN },

@@ -653,20 +653,121 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return self.ast.getNode(obj).tag == .super_expression;
         }
 
-        /// super.method → Parent.prototype.method
+        const SuperPropRef = struct {
+            init: NodeIndex,
+            read: NodeIndex,
+            value: NodeIndex,
+            write: NodeIndex,
+        };
+
+        fn cloneNewNode(self: *Transformer, idx: NodeIndex) Transformer.Error!NodeIndex {
+            const cloned = try self.ast.addNode(self.ast.getNode(idx));
+            self.copySymbolId(idx, cloned);
+            return cloned;
+        }
+
+        fn makeStringLiteralFromText(self: *Transformer, text: []const u8) Transformer.Error!NodeIndex {
+            var escaped = std.ArrayList(u8).empty;
+            defer escaped.deinit(self.allocator);
+            try escaped.append(self.allocator, '"');
+            for (text) |c| {
+                switch (c) {
+                    '\\', '"' => {
+                        try escaped.append(self.allocator, '\\');
+                        try escaped.append(self.allocator, c);
+                    },
+                    else => try escaped.append(self.allocator, c),
+                }
+            }
+            try escaped.append(self.allocator, '"');
+            const lit_span = try self.ast.addString(escaped.items);
+            return self.ast.addNode(.{
+                .tag = .string_literal,
+                .span = lit_span,
+                .data = .{ .string_ref = lit_span },
+            });
+        }
+
+        fn makeStaticSuperPropArg(self: *Transformer, prop_idx: NodeIndex) Transformer.Error!NodeIndex {
+            const prop = self.ast.getNode(prop_idx);
+            const text = if (prop.tag == .identifier_reference or prop.tag == .binding_identifier)
+                self.ast.getText(prop.data.string_ref)
+            else
+                self.ast.getText(prop.span);
+            return makeStringLiteralFromText(self, text);
+        }
+
+        fn makeSuperPropRefForAssignment(self: *Transformer, prop_idx: NodeIndex, is_computed: bool, span: Span) Transformer.Error!SuperPropRef {
+            if (!is_computed) {
+                const read = try makeStaticSuperPropArg(self, prop_idx);
+                return .{
+                    .init = .none,
+                    .read = read,
+                    .value = try cloneNewNode(self, read),
+                    .write = try cloneNewNode(self, read),
+                };
+            }
+
+            const visited = try self.visitNode(prop_idx);
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const temp_lhs = try es_helpers.makeTempVarRef(self, temp_span, span);
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{
+                    .left = temp_lhs,
+                    .right = visited,
+                    .flags = @intFromEnum(token_mod.Kind.eq),
+                } },
+            });
+            return .{
+                .init = assign,
+                .read = try es_helpers.makeTempVarRef(self, temp_span, span),
+                .value = try es_helpers.makeTempVarRef(self, temp_span, span),
+                .write = try es_helpers.makeTempVarRef(self, temp_span, span),
+            };
+        }
+
+        fn wrapSuperPropInit(self: *Transformer, prop_ref: SuperPropRef, expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            if (prop_ref.init.isNone()) return expr;
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            try self.scratch.append(self.allocator, prop_ref.init);
+            try self.scratch.append(self.allocator, expr);
+            const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const seq = try self.ast.addNode(.{
+                .tag = .sequence_expression,
+                .span = span,
+                .data = .{ .list = seq_list },
+            });
+            return es_helpers.makeParenExpr(self, seq, span);
+        }
+
+        fn buildSuperPropGet(self: *Transformer, prop_arg: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const super_class_span = self.current_super_class orelse return prop_arg;
+            const helper = try es_helpers.makeRuntimeHelperRef(self, "__superGet");
+            const proto = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+            const receiver = try makeThisOrAlias(self, span);
+            self.runtime_helpers.super_get = true;
+            return es_helpers.makeCallExpr(self, helper, &.{ proto, prop_arg, receiver }, span);
+        }
+
+        fn buildSuperPropSet(self: *Transformer, prop_arg: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const super_class_span = self.current_super_class orelse return value;
+            const helper = try es_helpers.makeRuntimeHelperRef(self, "__superSet");
+            const proto = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+            const receiver = try makeThisOrAlias(self, span);
+            self.runtime_helpers.super_set = true;
+            return es_helpers.makeCallExpr(self, helper, &.{ proto, prop_arg, value, receiver }, span);
+        }
+
+        /// super.method → __superGet(Parent.prototype, "method", this)
         /// static_member_expression: extra = [object, property, flags]
         pub fn lowerSuperMember(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const super_class_span = self.current_super_class orelse return self.visitMemberExpression(node);
             const e = node.data.extra;
             const prop_idx: NodeIndex = self.readNodeIdx(e, 1);
             const span = node.span;
-
-            // Parent.prototype
-            const proto_member = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
-
-            // Parent.prototype.method
-            const new_prop = try self.visitNode(prop_idx);
-            return es_helpers.makeStaticMember(self, proto_member, new_prop, span);
+            return buildSuperPropGet(self, try makeStaticSuperPropArg(self, prop_idx), span);
         }
 
         /// computed_member_expression의 object가 super_expression인지 확인.
@@ -680,15 +781,157 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return self.ast.getNode(obj).tag == .super_expression;
         }
 
-        /// super["prop"] → Parent.prototype["prop"]
+        /// super["prop"] → __superGet(Parent.prototype, "prop", this)
         pub fn lowerSuperComputedMember(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const super_class_span = self.current_super_class orelse return self.visitMemberExpression(node);
             const e = node.data.extra;
             const prop_idx: NodeIndex = self.readNodeIdx(e, 1);
             const span = node.span;
-            const proto_member = try buildPrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
-            const new_prop = try self.visitNode(prop_idx);
-            return es_helpers.makeComputedMember(self, proto_member, new_prop, span);
+            return buildSuperPropGet(self, try self.visitNode(prop_idx), span);
+        }
+
+        /// super.x = v / super.x += v / super.x ||= v 를 receiver 보존 helper로 낮춘다.
+        pub fn lowerSuperPropertyAssignment(self: *Transformer, node: Node) ?Transformer.Error!NodeIndex {
+            const left_idx = node.data.binary.left;
+            if (left_idx.isNone()) return null;
+            const left = self.ast.getNode(left_idx);
+            const is_computed = switch (left.tag) {
+                .static_member_expression => false,
+                .computed_member_expression => true,
+                else => return null,
+            };
+            const le = left.data.extra;
+            if (le >= self.ast.extra_data.items.len) return null;
+            const obj_idx: NodeIndex = self.readNodeIdx(le, 0);
+            if (obj_idx.isNone() or self.ast.getNode(obj_idx).tag != .super_expression) return null;
+
+            const prop_idx: NodeIndex = self.readNodeIdx(le, 1);
+            const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+            const span = node.span;
+
+            if (op_kind == .eq) {
+                const prop_arg = if (is_computed)
+                    try self.visitNode(prop_idx)
+                else
+                    try makeStaticSuperPropArg(self, prop_idx);
+                const new_rhs = try self.visitNode(node.data.binary.right);
+                return buildSuperPropSet(self, prop_arg, new_rhs, span);
+            }
+
+            const prop_ref = try makeSuperPropRefForAssignment(self, prop_idx, is_computed, span);
+
+            if (op_kind == .question2_eq or op_kind == .pipe2_eq or op_kind == .amp2_eq) {
+                const get_read = try buildSuperPropGet(self, prop_ref.read, span);
+                const new_rhs = try self.visitNode(node.data.binary.right);
+                const set_call = try buildSuperPropSet(self, prop_ref.write, new_rhs, span);
+
+                if (op_kind == .pipe2_eq or op_kind == .amp2_eq) {
+                    const logical_op: token_mod.Kind = if (op_kind == .pipe2_eq) .pipe2 else .amp2;
+                    const logical = try self.ast.addNode(.{
+                        .tag = .logical_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @intFromEnum(logical_op) } },
+                    });
+                    return wrapSuperPropInit(self, prop_ref, logical, span);
+                }
+
+                if (self.options.unsupported.nullish_coalescing) {
+                    const neq_null = try es_helpers.makeNeqNull(self, get_read, span);
+                    const get_value = try buildSuperPropGet(self, prop_ref.value, span);
+                    const cond = try self.ast.addNode(.{
+                        .tag = .conditional_expression,
+                        .span = span,
+                        .data = .{ .ternary = .{ .a = neq_null, .b = get_value, .c = set_call } },
+                    });
+                    return wrapSuperPropInit(self, prop_ref, cond, span);
+                }
+                const logical = try self.ast.addNode(.{
+                    .tag = .logical_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @intFromEnum(token_mod.Kind.question2) } },
+                });
+                return wrapSuperPropInit(self, prop_ref, logical, span);
+            }
+
+            if (compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
+                const get_call = try buildSuperPropGet(self, prop_ref.read, span);
+                const new_rhs = try self.visitNode(node.data.binary.right);
+                const computed = if (bin_op == @intFromEnum(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
+                    try es_helpers.makeMathPowCall(self, get_call, new_rhs, span)
+                else
+                    try self.ast.addNode(.{
+                        .tag = .binary_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = get_call, .right = new_rhs, .flags = bin_op } },
+                    });
+                const set_call = try buildSuperPropSet(self, prop_ref.write, computed, span);
+                return wrapSuperPropInit(self, prop_ref, set_call, span);
+            }
+
+            return null;
+        }
+
+        /// super.x++ / --super[x] 도 get/set helper로 낮춘다.
+        pub fn lowerSuperPropertyUpdate(self: *Transformer, node: Node, op_flags: u32, span: Span) ?Transformer.Error!NodeIndex {
+            const is_computed = switch (node.tag) {
+                .static_member_expression => false,
+                .computed_member_expression => true,
+                else => return null,
+            };
+            const e = node.data.extra;
+            if (e >= self.ast.extra_data.items.len) return null;
+            const obj_idx: NodeIndex = self.readNodeIdx(e, 0);
+            if (obj_idx.isNone() or self.ast.getNode(obj_idx).tag != .super_expression) return null;
+
+            const op_kind = op_flags & 0xff;
+            const is_increment = (op_kind == @intFromEnum(token_mod.Kind.plus2));
+            const is_postfix = (op_flags & ast_mod.UnaryFlags.postfix) != 0;
+            const bin_op: u16 = if (is_increment) @intFromEnum(token_mod.Kind.plus) else @intFromEnum(token_mod.Kind.minus);
+            const prop_ref = try makeSuperPropRefForAssignment(self, self.readNodeIdx(e, 1), is_computed, span);
+
+            if (is_postfix) {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+                const temp_span = try es_helpers.makeTempVarSpan(self);
+                const get_call = try buildSuperPropGet(self, prop_ref.read, span);
+                const tmp_lhs = try es_helpers.makeTempVarRef(self, temp_span, span);
+                const init_old = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = span,
+                    .data = .{ .binary = .{ .left = tmp_lhs, .right = get_call, .flags = @intFromEnum(token_mod.Kind.eq) } },
+                });
+                try self.scratch.append(self.allocator, init_old);
+
+                const computed = try self.ast.addNode(.{
+                    .tag = .binary_expression,
+                    .span = span,
+                    .data = .{ .binary = .{
+                        .left = try es_helpers.makeTempVarRef(self, temp_span, span),
+                        .right = try es_helpers.makeNumericLiteral(self, 1),
+                        .flags = bin_op,
+                    } },
+                });
+                try self.scratch.append(self.allocator, try buildSuperPropSet(self, prop_ref.write, computed, span));
+                try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, span));
+
+                const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                const seq = try self.ast.addNode(.{
+                    .tag = .sequence_expression,
+                    .span = span,
+                    .data = .{ .list = seq_list },
+                });
+                const paren = try es_helpers.makeParenExpr(self, seq, span);
+                return wrapSuperPropInit(self, prop_ref, paren, span);
+            }
+
+            const get_call = try buildSuperPropGet(self, prop_ref.read, span);
+            const computed = try self.ast.addNode(.{
+                .tag = .binary_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = get_call, .right = try es_helpers.makeNumericLiteral(self, 1), .flags = bin_op } },
+            });
+            const set_call = try buildSuperPropSet(self, prop_ref.write, computed, span);
+            return wrapSuperPropInit(self, prop_ref, set_call, span);
         }
 
         /// call_expression의 callee가 super["method"] 인지 확인.
