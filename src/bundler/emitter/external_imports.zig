@@ -118,8 +118,9 @@ fn addBinding(
             if (group.namespace_local == null) group.namespace_local = local;
         },
         .named => {
-            // `import { default as X }` 도 default slot 으로 흡수 — esbuild 와 동일하게
-            // 단일 default specifier 로 emit.
+            // `import { default as X }` 는 의미상 default import 와 동일 → default slot 으로 정규화.
+            // 같은 specifier 의 `import D from ...` 와 `import { default as D } from ...` 가
+            // 한 라인에서 중복 specifier 로 emit 되는 것을 막음 (esbuild/rolldown 동등).
             if (std.mem.eql(u8, imported, "default")) {
                 if (group.default_local == null) group.default_local = local;
                 return;
