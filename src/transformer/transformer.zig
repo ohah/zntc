@@ -364,12 +364,6 @@ pub const Transformer = struct {
     /// super() 이후의 this 참조를 _this로 교체해야 한다.
     super_call_this_alias: bool = false,
 
-    /// ES2015 class extends: 현재 derived constructor의 NewTarget.
-    /// super() lowering은 호출 위치의 `this.constructor`에 의존하지 않고 이 이름을
-    /// __callSuper에 명시 전달한다. arrow로 낮아진 함수 안의 super()도 동일 NewTarget을
-    /// 써야 하므로 constructor body 방문 중 유지한다.
-    current_derived_constructor_name: ?Span = null,
-
     /// for-in/for-of/for-await-of 헤더의 left(variable_declaration)를 방문 중인지.
     /// true면 let/const → var 다운레벨 시 `= void 0` init 주입을 생략.
     /// 헤더에선 루프가 매 반복 바인딩에 쓰므로 TDZ 흉내가 불필요하고,
@@ -3225,24 +3219,11 @@ pub const Transformer = struct {
     /// function_named(Fn): this instanceof Fn ? this.constructor : void 0
     fn lowerNewTarget(self: *Transformer, span: Span) Error!NodeIndex {
         return switch (self.new_target_ctx) {
-            .constructor => {
-                // this.constructor
-                const this_node = try self.ast.addNode(.{
-                    .tag = .this_expression,
-                    .span = span,
-                    .data = .{ .none = 0 },
-                });
-                const ctor_ref = try es_helpers.makeIdentifierRef(self, "constructor");
-                return es_helpers.makeStaticMember(self, this_node, ctor_ref, span);
-            },
+            .constructor => es_helpers.makeThisDotConstructor(self, span),
             .method, .none => es_helpers.makeVoidZero(self, span),
             .function_named => |fn_span| {
                 // (this instanceof Fn ? this.constructor : void 0)
-                const this1 = try self.ast.addNode(.{
-                    .tag = .this_expression,
-                    .span = span,
-                    .data = .{ .none = 0 },
-                });
+                const this1 = try es_helpers.makeThisExpr(self, span);
                 const fn_ref = try es_helpers.makeIdentifierRefFromSpan(self, fn_span);
                 const instanceof = try self.ast.addNode(.{
                     .tag = .binary_expression,
@@ -3254,16 +3235,8 @@ pub const Transformer = struct {
                     } },
                 });
 
-                // this.constructor
-                const this2 = try self.ast.addNode(.{
-                    .tag = .this_expression,
-                    .span = span,
-                    .data = .{ .none = 0 },
-                });
-                const ctor_ref = try es_helpers.makeIdentifierRef(self, "constructor");
-                const this_ctor = try es_helpers.makeStaticMember(self, this2, ctor_ref, span);
+                const this_ctor = try es_helpers.makeThisDotConstructor(self, span);
 
-                // void 0
                 const void_zero = try es_helpers.makeVoidZero(self, span);
 
                 // conditional → parenthesized (우선순위 보호)
