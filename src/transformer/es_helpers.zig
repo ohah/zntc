@@ -705,6 +705,16 @@ pub fn makeThisExpr(self: anytype, span: Span) !NodeIndex {
     });
 }
 
+/// `this.constructor` static member expression 노드 생성. ES2015 class lowering
+/// 의 `new.target` 평가식 (`lowerNewTarget`) 과 ES5 derived constructor 의
+/// `_newTarget` 캡쳐(`buildDefaultSuperConstructor`/`postProcessDerivedConstructorBody`)
+/// 양쪽 공용.
+pub fn makeThisDotConstructor(self: anytype, span: Span) !NodeIndex {
+    const this_node = try makeThisExpr(self, span);
+    const ctor_ref = try makeIdentifierRef(self, "constructor");
+    return makeStaticMember(self, this_node, ctor_ref, span);
+}
+
 /// `left <op>= right` assignment expression 노드 생성. `flags` 는 op kind
 /// (`Kind.eq` = `=`, `Kind.plus_eq` = `+=`, ...). 0 = transformer-synthesized plain `=`.
 pub fn makeAssignExpr(self: anytype, left: NodeIndex, right: NodeIndex, span: Span, flags: u16) !NodeIndex {

@@ -532,14 +532,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return self.ast.getNode(callee).tag == .super_expression;
         }
 
-        /// super(args) → __callSuper(_super, [args], Derived)
+        /// super(args) → __callSuper(_super, [args], _newTarget)
         /// Reflect.construct를 사용하여 네이티브 클래스 extends도 지원.
+        /// _newTarget 은 derived constructor body 시작에 캡쳐된 `this.constructor` —
+        /// arrow 안의 super() 도 closure 로 동일 값을 보존하고, multi-level chain
+        /// 에서도 항상 top-level NewTarget 을 가리켜 prototype propagation 이 정확하다.
         /// super() 호출 후 this → _this 별칭을 활성화하여
         /// __callSuper가 반환하는 새 객체를 올바르게 참조.
         /// call_expression: extra = [callee, args_start, args_len, flags]
         pub fn lowerSuperCall(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const super_class_span = self.current_super_class orelse return self.visitCallExpression(node);
-            const new_target_span = self.current_derived_constructor_name orelse return self.visitCallExpression(node);
             const e = node.data.extra;
             const args_start = self.readU32(e, 1);
             const args_len = self.readU32(e, 2);
@@ -548,7 +550,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const callee = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
 
             const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
-            const new_target_ref = try es_helpers.makeIdentifierRefFromSpan(self, new_target_span);
+            const new_target_ref = try es_helpers.makeIdentifierRef(self, "_newTarget");
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -572,9 +574,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const call = try es_helpers.makeCallExpr(self, callee, &.{ parent_ref, args_array, new_target_ref }, span);
 
-            // _this = __callSuper(_super, [args], Derived)
+            // _this = __callSuper(_super, [args], _newTarget)
             // 대입식으로 반환하여 super()가 if/else 등 어디에 있든 동작.
-            // var _this 선언과 return 검사는 postProcessDerivedConstructorBody에서 추가.
+            // var _this / var _newTarget 선언과 return 검사는 postProcessDerivedConstructorBody에서 추가.
             const this_ref = try es_helpers.makeIdentifierRef(self, "_this");
             const raw_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
@@ -2218,13 +2220,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // derived constructor 안의 this는 super() 전 접근을 런타임에서 검사해야 한다.
             const saved_super_alias = self.super_call_this_alias;
-            const saved_derived_name = self.current_derived_constructor_name;
             self.super_call_this_alias = is_derived;
-            self.current_derived_constructor_name = if (is_derived) self.ast.getNode(name).data.string_ref else null;
-            defer {
-                self.super_call_this_alias = saved_super_alias;
-                self.current_derived_constructor_name = saved_derived_name;
-            }
+            defer self.super_call_this_alias = saved_super_alias;
 
             // TS parameter property(`constructor(public x)`)는 modifier 만 strip 되어 일반 형태로 visit 되지만,
             // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
@@ -2364,6 +2361,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            // var _newTarget = this.constructor; — derived constructor body 시작에서 NewTarget 캡쳐.
+            // arrow 안의 super() 도 closure 로 동일 값을 보존하고, multi-level chain 에서
+            // this.constructor 가 항상 top-level NewTarget 으로 평가돼 prototype propagation 이 정확.
+            try self.scratch.append(
+                self.allocator,
+                try self.buildVarDecl("_newTarget", try es_helpers.makeThisDotConstructor(self, span), span),
+            );
 
             // var _this; (초기화 없는 선언) — extra_data grow 가능
             try self.scratch.append(self.allocator, try self.buildVarDecl("_this", .none, span));
@@ -2562,14 +2567,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         /// extends가 있고 constructor가 없을 때 기본 constructor 생성:
-        /// instance_fields가 없으면: function Child() { return __callSuper(_super, arguments, Child); }
-        /// instance_fields가 있으면: function Child() { var _this = __callSuper(_super, arguments, Child); <fields on _this>; return _this; }
+        /// instance_fields가 없으면: function Child() { var _newTarget = this.constructor; return __callSuper(_super, arguments, _newTarget); }
+        /// instance_fields가 있으면: function Child() { var _newTarget = this.constructor; var _this = __callSuper(_super, arguments, _newTarget); <fields on _this>; return _this; }
         fn buildDefaultSuperConstructor(self: *Transformer, name: NodeIndex, super_class_span: Span, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
             const parent_ref = try es_helpers.makeIdentifierRefFromSpan(self, super_class_span);
             const args_ref = try es_helpers.makeIdentifierRef(self, "arguments");
-            const name_span = self.ast.getNode(name).data.string_ref;
-            const new_target_ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+            const new_target_ref = try es_helpers.makeIdentifierRef(self, "_newTarget");
             const call_super = try es_helpers.makeCallExpr(self, call_super_ref, &.{ parent_ref, args_ref, new_target_ref }, span);
 
             self.runtime_helpers.call_super = true;
@@ -2577,8 +2581,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+            // var _newTarget = this.constructor;
+            // multi-level chain 에서도 항상 top NewTarget 으로 평가 → prototype propagation 정확.
+            try self.scratch.append(
+                self.allocator,
+                try self.buildVarDecl("_newTarget", try es_helpers.makeThisDotConstructor(self, span), span),
+            );
+
             if (instance_fields.len > 0) {
-                // var _this = __callSuper(_super, arguments, Child);
+                // var _this = __callSuper(_super, arguments, _newTarget);
                 try self.scratch.append(self.allocator, try self.buildVarDecl("_this", call_super, span));
 
                 // instance fields: this → _this 치환된 버전 사용
@@ -2598,7 +2609,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     .data = .{ .unary = .{ .operand = this_ref, .flags = 0 } },
                 }));
             } else {
-                // return __callSuper(_super, arguments, Child);
+                // return __callSuper(_super, arguments, _newTarget);
                 try self.scratch.append(self.allocator, try self.ast.addNode(.{
                     .tag = .return_statement,
                     .span = span,

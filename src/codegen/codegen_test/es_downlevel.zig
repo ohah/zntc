@@ -1681,8 +1681,11 @@ test "ES2015: generator try/catch/finally with yield" {
 test "ES2015: class extends with super()" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{constructor(x){super(x);this.x=x;}}", .es5);
     defer r.deinit();
-    // super(x) → _this=__callSuper(_super,[x],C) 뒤 this 접근/반환은 초기화 검사
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[x],C)") != null);
+    // super(x) → _this=__callSuper(_super,[x],_newTarget) 뒤 this 접근/반환은 초기화 검사
+    // _newTarget 은 derived ctor 시작에 캡쳐된 this.constructor — multi-level chain 에서도
+    // 항상 top NewTarget 으로 평가돼 prototype propagation 이 정확.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[x],_newTarget)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _newTarget=this.constructor") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__assertThisInitialized(_this).x=x") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "return __assertThisInitialized(_this)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
@@ -1691,8 +1694,9 @@ test "ES2015: class extends with super()" {
 test "ES2015: class extends default constructor" {
     var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){}}", .es5);
     defer r.deinit();
-    // 기본 생성자 → return __callSuper(_super,arguments,C) — implicit forwarding
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,arguments,C)") != null);
+    // 기본 생성자 → var _newTarget=this.constructor; return __callSuper(_super,arguments,_newTarget);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,arguments,_newTarget)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _newTarget=this.constructor") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(C,_super)") != null);
 }
 
@@ -1798,10 +1802,52 @@ test "ES2015: derived constructor super 중복 호출은 할당 전 검사" {
 }
 
 test "ES2015: derived constructor arrow super uses lexical NewTarget" {
+    // arrow 안의 super() 도 outer 의 _newTarget 변수를 closure 로 캡쳐 → lexical NewTarget 보존.
     var r = try e2eTarget(std.testing.allocator, "class B{constructor(arg){this.x=arg;}}class C extends B{constructor(){var callSuper=()=>super('foo');callSuper();}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[\"foo\"],C)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[\"foo\"],_newTarget)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _newTarget=this.constructor") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(this,_super") == null);
+}
+
+test "ES2015: nested arrow super 도 outer _newTarget 캡쳐" {
+    // arrow 안의 arrow 안의 super() — 이중 closure 너머에서도 _newTarget 동일.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "class B{constructor(arg){this.x=arg;}}class C extends B{constructor(){var f=()=>{var g=()=>super('y');g();};f();}}",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[\"y\"],_newTarget)") != null);
+    // _newTarget 선언은 outer ctor 에 1번만 있어야 — 중복 선언 금지
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, r.output, "var _newTarget="));
+}
+
+test "ES2015: 분기별 super() 도 동일 _newTarget 사용" {
+    // if/else 분기 양쪽에서 super() — 각 호출이 동일한 _newTarget 캡쳐 사용.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "class B{constructor(v){this.v=v;}}class C extends B{constructor(flag){if(flag)super(1);else super(2);}}",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[1],_newTarget)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[2],_newTarget)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _newTarget=this.constructor") != null);
+}
+
+test "ES2015: super(...spread) 도 _newTarget 캡쳐 유지" {
+    // spread 인자도 visit 후 array literal 로 그대로 전달, NewTarget 만 _newTarget.
+    var r = try e2eTarget(
+        std.testing.allocator,
+        "class B{constructor(){this.args=arguments;}}class C extends B{constructor(...xs){super(...xs);}}",
+        .es5,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",_newTarget)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _newTarget=this.constructor") != null);
+    // 원본 super 키워드 미잔존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super(") == null);
 }
 
 // --- class getter/setter ---
@@ -1857,8 +1903,8 @@ test "ES2015: class extends member expression (e.g. React.Component)" {
     // _super 매개변수 + __extends 호출
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(_super)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__extends(Foo,_super)") != null);
-    // super() → __callSuper(_super,[],Foo) 변환
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[],Foo)") != null);
+    // super() → __callSuper(_super,[],_newTarget) 변환
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[],_newTarget)") != null);
     // 원본 super 키워드가 남아있으면 안 됨
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super(") == null);
 }
@@ -1890,7 +1936,7 @@ test "ES2015: class expression extends member expression" {
     var r = try e2eTarget(std.testing.allocator, "const F=class extends a.B{constructor(){super();}};", .es5);
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, ")(a.B)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[],_Class)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__callSuper(_super,[],_newTarget)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "super(") == null);
 }
 
