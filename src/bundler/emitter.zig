@@ -1832,8 +1832,15 @@ const esm_wrap = @import("emitter/esm_wrap.zig");
 const emitEsmWrappedModule = esm_wrap.emitEsmWrappedModule;
 
 /// source 등록 + (선택) sourcesContent 등록을 한 번에. source_index 반환.
+/// `\x00zts:runtime/...` 같은 virtual module ID 는 NULL byte 가 sourcemap JSON 으로
+/// 새지 않도록 `runtime-...` 형태로 sanitize (#1961).
 fn addIdentitySource(sm: *SourceMap.SourceMapBuilder, path: []const u8, content: []const u8, include_content: bool) !u32 {
-    const idx = try sm.addSource(path);
+    const helper_modules = @import("runtime_helper_modules.zig");
+    const idx = if (helper_modules.isVirtualId(path)) blk: {
+        const sanitized = try helper_modules.sanitizeId(sm.allocator, path);
+        defer sm.allocator.free(sanitized);
+        break :blk try sm.addSource(sanitized);
+    } else try sm.addSource(path);
     if (include_content) try sm.addSourceContent(content);
     return idx;
 }
