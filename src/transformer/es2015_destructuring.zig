@@ -134,6 +134,173 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             });
         }
 
+        /// binding pattern (object_pattern / array_pattern) 을 destructuring assignment sequence
+        /// 로 분해. async/generator state machine 변환 (es2015_generator.collectVarDeclWithYield)
+        /// 처럼 `var { x } = await ...` 가 `({ x: x } = _state.sent())` 같은 binding-pattern-as-LHS
+        /// 형태로 떨어지는 경우에 사용 — ES5 환경에서는 invalid 라 lowering 필수 (#1960).
+        ///
+        /// 입력 `pattern` 은 binding pattern (이미 visit 끝났거나 raw), `rhs` 는 visit 끝난 노드.
+        /// 결과는 `(_ref = rhs, x = _ref.x, ..., _ref)` sequence_expression. 호출자는 보통
+        /// `makeExprStmt` 로 wrap 해서 statement 로 넣는다.
+        pub fn lowerBindingPatternAssignment(
+            self: *Transformer,
+            pattern: Node,
+            rhs: NodeIndex,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            // _ref = rhs
+            const init_lhs = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+            const init_assign = try es_helpers.makeAssignExpr(self, init_lhs, rhs, span, 0);
+            try self.scratch.append(self.allocator, init_assign);
+
+            if (pattern.tag == .object_pattern) {
+                try emitObjectPatternAssignments(self, pattern, temp_span, span);
+            } else if (pattern.tag == .array_pattern) {
+                try emitArrayPatternAssignments(self, pattern, temp_span, span);
+            }
+
+            // 마지막에 _ref 노출 — destructuring assignment 의 평가 결과 (rhs) 와 일관
+            try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
+
+            const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            return self.ast.addNode(.{
+                .tag = .sequence_expression,
+                .span = span,
+                .data = .{ .list = seq_list },
+            });
+        }
+
+        /// object_pattern 의 각 binding_property 를 `target = _ref.key` assignment 로 emit.
+        /// emitObjectPatternDeclarators 와 같은 traversal — declarator 대신 assignment 를 만든다.
+        fn emitObjectPatternAssignments(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
+            const opd_start = pattern.data.list.start;
+            const split = self.ast.nodeListSplitRest(pattern.data.list);
+            const non_rest_len: u32 = @intCast(split.elements.len);
+            var i_loop: u32 = 0;
+            while (i_loop < non_rest_len) : (i_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[opd_start + i_loop];
+                const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                if (prop.tag != .binding_property) continue;
+
+                const key_idx = prop.data.binary.left;
+                const value_idx = prop.data.binary.right;
+                if (key_idx.isNone()) continue;
+
+                const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+                const key_node = self.ast.getNode(key_idx);
+                const member_access = try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
+
+                if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
+                    // shorthand: { x } → x = _ref.x
+                    const target_ref = try es_helpers.makeIdentifierRefFromSpan(self, key_node.data.string_ref);
+                    self.propagateSymbolId(key_idx, target_ref);
+                    const assign = try es_helpers.makeAssignExpr(self, target_ref, member_access, span, 0);
+                    try self.scratch.append(self.allocator, assign);
+                } else {
+                    const value_node = self.ast.getNode(value_idx);
+                    if (value_node.tag == .object_pattern or value_node.tag == .array_pattern) {
+                        // nested: { a: { b } } → _inner = _ref.a, b = _inner.b
+                        const inner_span = try es_helpers.makeTempVarSpan(self);
+                        const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
+                        const inner_init = try es_helpers.makeAssignExpr(self, inner_lhs, member_access, span, 0);
+                        try self.scratch.append(self.allocator, inner_init);
+                        if (value_node.tag == .object_pattern) {
+                            try emitObjectPatternAssignments(self, value_node, inner_span, span);
+                        } else {
+                            try emitArrayPatternAssignments(self, value_node, inner_span, span);
+                        }
+                    } else if (value_node.tag == .assignment_pattern) {
+                        // default: { a = 1 } 또는 { a: b = 1 } — _ref.key === void 0 ? default : _ref.key
+                        const inner_target = value_node.data.binary.left;
+                        const inner_target_node = self.ast.getNode(inner_target);
+                        const default_val = try self.visitNode(value_node.data.binary.right);
+                        const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
+                        const target_ref = if (inner_target_node.tag == .binding_identifier)
+                            try es_helpers.makeIdentifierRefFromSpan(self, inner_target_node.data.string_ref)
+                        else
+                            try self.visitNode(inner_target);
+                        self.propagateSymbolId(inner_target, target_ref);
+                        const assign = try es_helpers.makeAssignExpr(self, target_ref, defaulted, span, 0);
+                        try self.scratch.append(self.allocator, assign);
+                    } else {
+                        // long-form: { a: b } → b = _ref.a
+                        const target_ref = if (value_node.tag == .binding_identifier)
+                            try es_helpers.makeIdentifierRefFromSpan(self, value_node.data.string_ref)
+                        else
+                            try self.visitNode(value_idx);
+                        self.propagateSymbolId(value_idx, target_ref);
+                        const assign = try es_helpers.makeAssignExpr(self, target_ref, member_access, span, 0);
+                        try self.scratch.append(self.allocator, assign);
+                    }
+                }
+            }
+            // rest property — assignment 컨텍스트에서는 __rest 헬퍼 미지원, lowerDestructuringAssignment
+            // 와 동일한 정책으로 일단 무시.
+        }
+
+        /// array_pattern 의 각 element 를 `target = _ref[idx]` assignment 로 emit.
+        fn emitArrayPatternAssignments(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
+            const apd_start = pattern.data.list.start;
+            const split = self.ast.nodeListSplitRest(pattern.data.list);
+            const non_rest_len: u32 = @intCast(split.elements.len);
+            var idx: u32 = 0;
+            while (idx < non_rest_len) : (idx += 1) {
+                const raw_idx = self.ast.extra_data.items[apd_start + idx];
+                const elem = self.ast.getNode(@enumFromInt(raw_idx));
+                if (elem.tag == .elision) continue;
+
+                const elem_access = try makeArrayAccess(self, ref_span, idx, span);
+
+                if (elem.tag == .assignment_pattern) {
+                    const inner_target = elem.data.binary.left;
+                    const inner_target_node = self.ast.getNode(inner_target);
+                    const default_val = try self.visitNode(elem.data.binary.right);
+                    const void_zero = try es_helpers.makeVoidZero(self, span);
+                    const elem_access2 = try makeArrayAccess(self, ref_span, idx, span);
+                    const eq_check = try self.ast.addNode(.{
+                        .tag = .binary_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                    });
+                    const conditional = try self.ast.addNode(.{
+                        .tag = .conditional_expression,
+                        .span = span,
+                        .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = elem_access2 } },
+                    });
+                    const target_ref = if (inner_target_node.tag == .binding_identifier)
+                        try es_helpers.makeIdentifierRefFromSpan(self, inner_target_node.data.string_ref)
+                    else
+                        try self.visitNode(inner_target);
+                    self.propagateSymbolId(inner_target, target_ref);
+                    const assign = try es_helpers.makeAssignExpr(self, target_ref, conditional, span, 0);
+                    try self.scratch.append(self.allocator, assign);
+                } else if (elem.tag == .object_pattern or elem.tag == .array_pattern) {
+                    const inner_span = try es_helpers.makeTempVarSpan(self);
+                    const inner_lhs = try es_helpers.makeTempVarRef(self, inner_span, inner_span);
+                    const inner_init = try es_helpers.makeAssignExpr(self, inner_lhs, elem_access, span, 0);
+                    try self.scratch.append(self.allocator, inner_init);
+                    if (elem.tag == .object_pattern) {
+                        try emitObjectPatternAssignments(self, elem, inner_span, span);
+                    } else {
+                        try emitArrayPatternAssignments(self, elem, inner_span, span);
+                    }
+                } else {
+                    const target_ref = if (elem.tag == .binding_identifier)
+                        try es_helpers.makeIdentifierRefFromSpan(self, elem.data.string_ref)
+                    else
+                        try self.visitNode(@enumFromInt(raw_idx));
+                    self.propagateSymbolId(@enumFromInt(raw_idx), target_ref);
+                    const assign = try es_helpers.makeAssignExpr(self, target_ref, elem_access, span, 0);
+                    try self.scratch.append(self.allocator, assign);
+                }
+            }
+            // rest element — declaration 컨텍스트의 _ref.slice(N) 와 달리 assignment 에서는 미지원.
+        }
+
         /// assignment destructuring을 sequence expression으로 변환.
         /// ({a, b} = obj) → (_ref = obj, a = _ref.a, b = _ref.b, _ref)
         pub fn lowerDestructuringAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
