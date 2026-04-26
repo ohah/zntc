@@ -2859,6 +2859,26 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("ok undefined");
     });
 
+    test("optional eval call indirect eval 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function run() {
+              let x = 1;
+              eval?.("x = 2");
+              console.log(x, globalThis.x);
+            }
+            run();
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 2");
+    });
+
     test("optional method call this 바인딩 보존", async () => {
       const result = await bundleAndRun(
         {

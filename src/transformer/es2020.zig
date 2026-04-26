@@ -464,7 +464,10 @@ pub fn ES2020(comptime Transformer: type) type {
                     const args_len = self.readU32(e, 2);
                     const flags = self.readU32(e, 3);
                     const is_optional = (flags & ast_mod.CallFlags.optional_chain) != 0;
-                    const new_callee = if (is_optional) chain_base else try rebuildChainNode(self, self.ast.getNode(old_callee), chain_base);
+                    const new_callee = if (is_optional)
+                        try makeOptionalCallCallee(self, old_callee, chain_base, old_node.span)
+                    else
+                        try rebuildChainNode(self, self.ast.getNode(old_callee), chain_base);
                     const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
                     const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
                     const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), new_args.start, new_args.len, new_flags });
@@ -520,7 +523,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     }
 
                     const new_callee = if (is_optional)
-                        chain_base
+                        try makeOptionalCallCallee(self, old_callee, chain_base, old_node.span)
                     else
                         try rebuildChainNodeWithOptionalMemberCallThis(self, self.ast.getNode(old_callee), chain_base, optional_call_callee_idx, receiver);
                     const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
@@ -529,6 +532,33 @@ pub fn ES2020(comptime Transformer: type) type {
                 },
                 else => unreachable,
             }
+        }
+
+        fn makeOptionalCallCallee(
+            self: *Transformer,
+            old_callee: NodeIndex,
+            chain_base: NodeIndex,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            if (!isEvalIdentifier(self, old_callee)) return chain_base;
+
+            // `eval?.()`은 spec상 indirect eval이다. `eval()`로 재구성하면 direct eval이 되어
+            // local scope를 건드리므로 Babel/OXC처럼 `(0, eval)()` 형태로 callee Reference를 끊는다.
+            const zero = try helpers.makeNumericLiteral(self, 0);
+            const seq_list = try self.ast.addNodeList(&.{ zero, chain_base });
+            const seq = try self.ast.addNode(.{
+                .tag = .sequence_expression,
+                .span = span,
+                .data = .{ .list = seq_list },
+            });
+            return helpers.makeParenExpr(self, seq, span);
+        }
+
+        fn isEvalIdentifier(self: *Transformer, idx: NodeIndex) bool {
+            if (idx.isNone()) return false;
+            const node = self.ast.getNode(idx);
+            if (node.tag != .identifier_reference) return false;
+            return std.mem.eql(u8, self.ast.getText(node.data.string_ref), "eval");
         }
     };
 }
