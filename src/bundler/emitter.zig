@@ -1097,14 +1097,13 @@ pub fn emitModule(
     transform_opts.jsx_filename = module.path;
     // emit 단계 transformer 는 helper import emit 안 함 — graph pre-pass 가 이미 처리.
     transform_opts.emit_runtime_helper_imports = false;
-    // graph pre-pass 가 이미 transform 한 ast 면 clone 회피 (#1961 PR 1d).
-    // transform_cache 가 set 이면 ast.transformed_root 도 set 인 invariant 가정.
-    transform_opts.borrow_source_ast = (module.transform_cache != null);
-    if (transform_opts.borrow_source_ast) {
-        std.debug.assert(ast.transformed_root != null);
-    }
 
-    var transformer = try Transformer.init(arena_alloc, ast, transform_opts);
+    // graph pre-pass 가 이미 transform 한 ast 면 borrow — clone 회피 (#1961 PR 1d).
+    // transform_cache 가 set 이면 ast.transformed_root 도 set 인 invariant.
+    var transformer = if (module.transform_cache != null) blk: {
+        std.debug.assert(ast.transformed_root != null);
+        break :blk try Transformer.initBorrow(arena_alloc, ast, transform_opts);
+    } else try Transformer.init(arena_alloc, ast, transform_opts);
     // #1961: graph parse 단계의 transformer pre-pass 결과가 있으면 hydrate.
     // transformer.transform() 은 ast.transformed_root 가 set 이면 즉시 cached root 반환 →
     // emit 단계에서 동일 transform 재실행 없이 graph 단계의 결과를 그대로 사용.
