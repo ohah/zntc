@@ -2553,6 +2553,54 @@ test "ES2020: optional super method call ES5 클래스 다운레벨 보존" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".call(this)") != null);
 }
 
+// #2034: transparent wrapper(괄호, TS as/!/<T>) 로 감싸진 super 가 optional chain base 일 때
+// raw `super` 가 temp 대입 RHS 로 emit 되던 버그 — super 는 항상 정의되어 있으므로 optional 무의미.
+// optional flag 만 벗기고 정상 super lowering 으로 routing.
+test "ES2020: 괄호 super 의 optional chain — (super)?.x (#2034)" {
+    var r = try e2eTarget(std.testing.allocator, "class B{x=1}class C extends B{m(){return (super)?.x}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=(super)") == null);
+}
+
+test "ES2020: TS as-cast super 의 optional chain — (super as any)?.x (#2034)" {
+    var r = try e2eTarget(std.testing.allocator, "class B{x=1}class C extends B{m(){return (super as any)?.x}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super)") == null);
+}
+
+test "ES2020: TS as-cast super 의 optional computed chain — (super as any)?.[k] (#2034)" {
+    var r = try e2eTarget(std.testing.allocator, "class B{x=1;[k:string]:any}class C extends B{m(){const k=\"x\";return (super as any)?.[k]}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,k") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super)") == null);
+}
+
+test "ES2020: TS as-cast super 의 optional method call — (super as any)?.m() (#2034)" {
+    var r = try e2eTarget(std.testing.allocator, "class B{m(){return 1}}class C extends B{run(){return (super as any)?.m()}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.m.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super)") == null);
+}
+
+test "ES2020: TS non-null assertion super 의 optional chain — (super!)?.m() (#2034)" {
+    var r = try e2eTarget(std.testing.allocator, "class B{m(){return 1}}class C extends B{run(){return (super!)?.m()}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.m.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super)") == null);
+}
+
+test "ES2020: wrapped super + 후속 optional chain — (super as any)?.x?.y (#2034)" {
+    // ?.x 는 super-base 라 strip 되고 __superGet 으로 lowering, ?.y 는 일반 ternary 로 보존.
+    var r = try e2eTarget(std.testing.allocator, "class B{get nested(){return {y:1}}}class C extends B{m(){return (super as any)?.nested?.y}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"nested\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "==null?void 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super)") == null);
+}
+
 test "ES2020: optional receiver + optional method call receiver 단락 평가" {
     var r = try e2eTarget(std.testing.allocator, "obj?.method?.(arg());", .es2019);
     defer r.deinit();

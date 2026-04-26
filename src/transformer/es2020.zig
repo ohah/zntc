@@ -126,6 +126,14 @@ pub fn ES2020(comptime Transformer: type) type {
             base_idx: NodeIndex,
             ctx: LowerCtx,
         ) Transformer.Error!NodeIndex {
+            // chain base 가 (wrapped) super 면 optional 검사 무의미 — super 는 항상 정의되어 있다.
+            // 일반 capture 경로는 base_idx 를 visit 해서 raw `super` 를 temp 에 대입 → syntax error.
+            // optional flag 만 벗겨내고 정상 super lowering 으로 우회 (#2034).
+            if (ctx == .normal and isSuperExpression(self, base_idx)) {
+                const stripped = try stripOptionalAtSuperBase(self, node, base_idx);
+                return self.visitNode(stripped);
+            }
+
             const optional_member_call = if (ctx == .normal)
                 try prepareOptionalMemberCall(self, node, base_idx)
             else
@@ -365,8 +373,68 @@ pub fn ES2020(comptime Transformer: type) type {
             }
         }
 
+        /// node 부터 base_idx 까지 chain 을 따라 내려가서, 그 segment 의 obj/callee 가 base_idx 인
+        /// 지점의 optional_chain flag 만 제거한 새 노드 트리를 반환. 다른 chain segment 의 optional 은
+        /// 그대로 유지 — `(super as any)?.x?.y` 라면 `?.x` (super-base) 만 strip, `?.y` 는 보존되어
+        /// recursive visit 에서 일반 ternary 로 lowering.
+        fn stripOptionalAtSuperBase(self: *Transformer, node: Node, base_idx: NodeIndex) Transformer.Error!NodeIndex {
+            switch (node.tag) {
+                .static_member_expression, .computed_member_expression, .private_field_expression => {
+                    const e = node.data.extra;
+                    const obj_idx = self.readNodeIdx(e, 0);
+                    const prop = self.readNodeIdx(e, 1);
+                    const flags = self.readU32(e, 2);
+                    if (obj_idx == base_idx and (flags & ast_mod.MemberFlags.optional_chain) != 0) {
+                        const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
+                        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(obj_idx), @intFromEnum(prop), new_flags });
+                        return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+                    }
+                    const new_obj = try stripOptionalAtSuperBase(self, self.ast.getNode(obj_idx), base_idx);
+                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(prop), flags });
+                    return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+                },
+                .call_expression => {
+                    const e = node.data.extra;
+                    const callee_idx = self.readNodeIdx(e, 0);
+                    const args_start = self.readU32(e, 1);
+                    const args_len = self.readU32(e, 2);
+                    const flags = self.readU32(e, 3);
+                    if (callee_idx == base_idx and (flags & ast_mod.CallFlags.optional_chain) != 0) {
+                        const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
+                        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(callee_idx), args_start, args_len, new_flags });
+                        return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
+                    }
+                    const new_callee = try stripOptionalAtSuperBase(self, self.ast.getNode(callee_idx), base_idx);
+                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), args_start, args_len, flags });
+                    return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
+                },
+                else => unreachable,
+            }
+        }
+
+        /// transparent wrapper(괄호, TS as/satisfies/type-assertion/!/instantiation, Flow as/cast)
+        /// 통과 후 super_expression 인지 검사. wrapped super 도 super 전용 lowering 분기 (#2034) 를
+        /// 타야 raw `super` 가 temp 대입 RHS 로 흘러나오지 않는다 (es2015_class.zig 의 isSuperUnwrapped
+        /// 와 동일 의도).
         fn isSuperExpression(self: *const Transformer, idx: NodeIndex) bool {
-            return !idx.isNone() and self.ast.getNode(idx).tag == .super_expression;
+            var cur = idx;
+            while (true) {
+                if (cur.isNone()) return false;
+                const node = self.ast.getNode(cur);
+                switch (node.tag) {
+                    .super_expression => return true,
+                    .parenthesized_expression,
+                    .ts_as_expression,
+                    .ts_satisfies_expression,
+                    .ts_type_assertion,
+                    .ts_instantiation_expression,
+                    .ts_non_null_expression,
+                    .flow_as_expression,
+                    .flow_type_cast_expression,
+                    => cur = node.data.unary.operand,
+                    else => return false,
+                }
+            }
         }
 
         fn makeSuperMethodMember(
