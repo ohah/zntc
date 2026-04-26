@@ -1962,7 +1962,13 @@ pub const SemanticAnalyzer = struct {
         // ECMAScript 스펙상 lexical binding 은 block 진입 시 스코프에 존재한다 (TDZ 는
         // 런타임 개념). 정적 분석에서 선언 위치보다 앞선 중첩 함수가 해당 심볼을 참조할
         // 수 있으므로, statement 순회 전에 선언을 scope map 에만 등록해 둔다.
+        // predeclare 동안에는 current_stmt_idx 를 NO_STMT 로 강제 — top-level
+        // predeclareTopLevelBindings 와 동일한 규약. declare ref 기록은 2nd pass 의
+        // setSymbolIdForPredeclared 단일 책임으로 두어 중복을 차단 (#2023 이 단일화 epic).
+        const saved_stmt = self.current_stmt_idx;
+        self.current_stmt_idx = symbol_mod.Reference.NO_STMT;
         try self.predeclareLexicalDecls(node.data.list);
+        self.current_stmt_idx = saved_stmt;
         try self.visitStmtList(node.data.list);
         self.exitScope(saved);
     }
@@ -3285,8 +3291,12 @@ pub const SemanticAnalyzer = struct {
             // lexical 을 var pre-pass 보다 먼저 등록 — `predeclareVarDeclsRecursive` 의
             // function_declaration 분기가 outer lexical 충돌을 감지해 Annex B B.3.3.1
             // 의 hoist-skip 을 수행하기 위해 필요.
+            // predeclare 동안 current_stmt_idx 는 NO_STMT (declare ref 는 2nd pass 만 기록 — #2023).
+            const saved_stmt = self.current_stmt_idx;
+            self.current_stmt_idx = symbol_mod.Reference.NO_STMT;
             try self.predeclareLexicalDecls(body_node.data.list);
             try self.predeclareVarDecls(body_node.data.list);
+            self.current_stmt_idx = saved_stmt;
             try self.visitStmtList(body_node.data.list);
         } else {
             try self.visitNode(body_idx);
