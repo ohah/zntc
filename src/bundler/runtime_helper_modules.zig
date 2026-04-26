@@ -222,6 +222,65 @@ const MODULES = [_]HelperModule{
             .es5_min = rt.CJS_RUNTIME_ES5_MIN,
         },
     },
+
+    // ES2015 spread 연산 — `__toConsumableArray` 만 외부 호출, `__arrayLikeToArray` 는
+    // 모듈 내 closure-internal (export 불필요, tree-shake 단순화 위해 미노출).
+    .{
+        .short = "spread-array",
+        .helpers = &.{"__toConsumableArray"},
+        .body = .{ .plain = rt.SPREAD_ARRAY_RUNTIME, .min = rt.SPREAD_ARRAY_RUNTIME_MIN },
+    },
+
+    // --keep-names + binary loader
+    .{
+        .short = "keep-names",
+        .helpers = &.{"__name"},
+        .body = .{ .plain = rt.KEEP_NAMES_RUNTIME, .min = rt.KEEP_NAMES_RUNTIME_MIN },
+    },
+    .{
+        .short = "to-binary",
+        .helpers = &.{"__toBinary"},
+        .body = .{ .plain = rt.TO_BINARY_RUNTIME, .min = rt.TO_BINARY_RUNTIME_MIN },
+    },
+
+    // ES2022 private field/method downlevel
+    .{
+        .short = "class-private-method-init",
+        .helpers = &.{"__classPrivateMethodInit"},
+        .body = .{ .plain = rt.PRIVATE_METHOD_INIT_RUNTIME, .min = rt.PRIVATE_METHOD_INIT_RUNTIME_MIN },
+    },
+    .{
+        .short = "class-private-method-get",
+        .helpers = &.{"__classPrivateMethodGet"},
+        .body = .{ .plain = rt.PRIVATE_METHOD_GET_RUNTIME, .min = rt.PRIVATE_METHOD_GET_RUNTIME_MIN },
+    },
+    .{
+        .short = "class-private-field-set",
+        .helpers = &.{"__classPrivateFieldSet"},
+        .body = .{ .plain = rt.PRIVATE_FIELD_SET_RUNTIME, .min = rt.PRIVATE_FIELD_SET_RUNTIME_MIN },
+    },
+    .{
+        .short = "class-static-private-field",
+        .helpers = &.{
+            "__classCheckPrivateStaticAccess",
+            "__classCheckPrivateStaticFieldDescriptor",
+            "__classStaticPrivateFieldSpecGet",
+            "__classStaticPrivateFieldSpecSet",
+        },
+        .body = .{ .plain = rt.STATIC_PRIVATE_FIELD_RUNTIME, .min = rt.STATIC_PRIVATE_FIELD_RUNTIME_MIN },
+    },
+
+    // ES2025 explicit resource management (`using` / `await using`)
+    .{
+        .short = "using",
+        .helpers = &.{ "__using", "__callDispose" },
+        .body = .{
+            .plain = rt.USING_RUNTIME,
+            .min = rt.USING_RUNTIME_MIN,
+            .es5 = rt.USING_RUNTIME_ES5,
+            .es5_min = rt.USING_RUNTIME_ES5_MIN,
+        },
+    },
 };
 
 // ============================================================
@@ -390,12 +449,22 @@ test "moduleShortFor: 등록된 helper 매핑" {
 }
 
 test "moduleShortFor: 미등록 helper 는 null" {
+    // `__spreadArray` 는 transformer 가 emit 하지 않음 (`__toConsumableArray` 가 대체).
+    // `__arrayLikeToArray` 는 spread-array 모듈 내 closure-internal — 외부 export 안 함.
     try std.testing.expect(moduleShortFor("__spreadArray") == null);
-    try std.testing.expect(moduleShortFor("__toBinary") == null);
-    try std.testing.expect(moduleShortFor("__name") == null);
-    try std.testing.expect(moduleShortFor("__using") == null);
-    try std.testing.expect(moduleShortFor("__classPrivateMethodInit") == null);
+    try std.testing.expect(moduleShortFor("__arrayLikeToArray") == null);
     try std.testing.expect(moduleShortFor("not_a_helper") == null);
+}
+
+test "moduleShortFor: PR 1b 신규 등록 helper" {
+    try std.testing.expectEqualStrings("spread-array", moduleShortFor("__toConsumableArray").?);
+    try std.testing.expectEqualStrings("keep-names", moduleShortFor("__name").?);
+    try std.testing.expectEqualStrings("to-binary", moduleShortFor("__toBinary").?);
+    try std.testing.expectEqualStrings("class-private-method-init", moduleShortFor("__classPrivateMethodInit").?);
+    try std.testing.expectEqualStrings("class-static-private-field", moduleShortFor("__classCheckPrivateStaticAccess").?);
+    try std.testing.expectEqualStrings("class-static-private-field", moduleShortFor("__classStaticPrivateFieldSpecSet").?);
+    try std.testing.expectEqualStrings("using", moduleShortFor("__using").?);
+    try std.testing.expectEqualStrings("using", moduleShortFor("__callDispose").?);
 }
 
 test "idForBase: helper base → virtual ID" {
@@ -511,7 +580,7 @@ test "loadHook: 비 virtual ID 는 null" {
 test "loadHook: 미등록 short 는 null" {
     const allocator = std.testing.allocator;
     const opts = SourceOptions{};
-    const result = try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/spread-array", allocator);
+    const result = try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/no-such-helper", allocator);
     try std.testing.expect(result == null);
 }
 
@@ -533,7 +602,7 @@ test "resolveIdHook: virtual specifier 만 가로챔" {
     const r2 = try resolveIdHook(null, "./local.ts", null, allocator);
     try std.testing.expect(r2 == null);
 
-    const r3 = try resolveIdHook(null, "\x00zts:runtime/spread-array", null, allocator);
+    const r3 = try resolveIdHook(null, "\x00zts:runtime/no-such-helper", null, allocator);
     try std.testing.expect(r3 == null);
 }
 
