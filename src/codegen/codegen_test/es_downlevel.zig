@@ -2232,6 +2232,18 @@ test "ES2020: ?. with method call" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "==null?void 0") != null);
 }
 
+test "ES2020: optional method call this 바인딩 보존" {
+    var r = try e2eTarget(std.testing.allocator, "obj.method?.(1,2);", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a;((_a=obj.method)==null?void 0:_a.call(obj,1,2));", r.output);
+}
+
+test "ES2020: optional method call 복잡 receiver 1회 평가" {
+    var r = try e2eTarget(std.testing.allocator, "getObj().method?.();", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a,_b;((_b=(_a=getObj()).method)==null?void 0:_b.call(_a));", r.output);
+}
+
 test "ES2020: ?? with ?. combined" {
     var r = try e2eTarget(std.testing.allocator, "const x = a?.b ?? 'default';", .es2019);
     defer r.deinit();

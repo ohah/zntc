@@ -2858,6 +2858,52 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("ok undefined");
     });
+
+    test("optional method call this 바인딩 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const obj: any = {
+              value: 41,
+              inc(n: number) {
+                return this.value + n;
+              },
+            };
+            console.log(obj.inc?.(1));
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("optional method call 복잡 receiver 1회 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let calls = 0;
+            function getObj(): any {
+              calls++;
+              return {
+                value: 5,
+                inc() {
+                  return this.value + calls;
+                },
+              };
+            }
+            console.log(getObj().inc?.(), calls);
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("6 1");
+    });
   });
 
   // ===== ES2021 (target=es2020) =====
