@@ -10,6 +10,7 @@ const Plugin = plugin_mod.Plugin;
 const PluginRunner = plugin_mod.PluginRunner;
 const ResolveResult = @import("resolver.zig").ResolveResult;
 const OutputFile = @import("emitter.zig").OutputFile;
+const CompiledOutputCache = @import("compiled_cache.zig").CompiledOutputCache;
 const test_helpers = @import("test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
@@ -191,6 +192,99 @@ test "Plugin integration: transform hook modifies output" {
     // transform 훅이 삽입한 변수 선언이 출력에 포함되어야 함
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__PLUGIN_TRANSFORM__") != null);
     try std.testing.expect(!result.hasErrors());
+}
+
+fn transformAddsImportHook(_: ?*anyopaque, code: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    if (!std.mem.endsWith(u8, id, "index.ts")) return null;
+    return std.mem.concat(allocator, u8, &.{ "import './side';\n", code }) catch return error.OutOfMemory;
+}
+
+test "Plugin integration: transform-added imports are scanned from final source (#2038)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('entry-2038');");
+    try writeFile(tmp.dir, "side.ts", "console.log('plugin-added-side-effect-2038');");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{ .name = "add-import-transform", .transform = transformAddsImportHook },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-added-side-effect-2038") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "entry-2038") != null);
+}
+
+var compiled_cache_transform_marker: []const u8 = "A";
+
+fn cacheSensitiveTransformHook(_: ?*anyopaque, _: []const u8, id: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+    if (!std.mem.endsWith(u8, id, "index.ts")) return null;
+    return std.fmt.allocPrint(
+        allocator,
+        "const marker = \"plugin-cache-{s}-2038\";\nconsole.log(marker);\n",
+        .{compiled_cache_transform_marker},
+    ) catch return error.OutOfMemory;
+}
+
+test "Plugin integration: transform output invalidates compiled cache (#2038)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "console.log('original source is stable');");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var cache = CompiledOutputCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const plugins = [_]Plugin{
+        .{ .name = "cache-sensitive-transform", .transform = cacheSensitiveTransformHook },
+    };
+
+    compiled_cache_transform_marker = "A";
+    {
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .plugins = &plugins,
+            .compiled_cache = &cache,
+        });
+        defer b.deinit();
+
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expect(!result.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-cache-A-2038") != null);
+    }
+
+    _ = cache.takeStats();
+    compiled_cache_transform_marker = "B";
+    {
+        var b = Bundler.init(std.testing.allocator, .{
+            .entry_points = &.{entry},
+            .plugins = &plugins,
+            .compiled_cache = &cache,
+        });
+        defer b.deinit();
+
+        const result = try b.bundle();
+        defer result.deinit(std.testing.allocator);
+
+        try std.testing.expect(!result.hasErrors());
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-cache-B-2038") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "plugin-cache-A-2038") == null);
+    }
 }
 
 // --- generateBundle 훅 통합 테스트 ---
