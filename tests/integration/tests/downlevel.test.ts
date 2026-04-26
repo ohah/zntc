@@ -2969,6 +2969,84 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("6 1");
     });
 
+    test("optional super method call this 바인딩 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              m() {
+                return (this as any).x;
+              }
+            }
+            class Child extends Base {
+              x = 5;
+              test() {
+                return super.m?.();
+              }
+            }
+            console.log(new Child().test());
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+
+    test("optional computed super method call this 바인딩 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              m() {
+                return (this as any).x;
+              }
+            }
+            class Child extends Base {
+              x = 5;
+              test() {
+                return super["m"]?.();
+              }
+            }
+            console.log(new Child().test());
+          `,
+        },
+        "index.ts",
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+
+    test("optional super method call ES5 클래스 다운레벨 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              m() {
+                return (this as any).x;
+              }
+            }
+            class Child extends Base {
+              x = 5;
+              test() {
+                return super.m?.();
+              }
+            }
+            console.log(new Child().test());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+
     test("optional receiver + optional method call receiver 단락 평가", async () => {
       const result = await bundleAndRun(
         {
