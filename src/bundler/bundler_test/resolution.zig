@@ -805,8 +805,9 @@ test "TypeScript: external + type-only usage → preamble require skip" {
     // 회귀 시 `var HeaderBarButtonItem = require("external-types").HeaderBarButtonItem;`
     // 가 factory 스코프에서 ReferenceError 를 냄 — bungae RN 0.83 crash.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "HeaderBarButtonItem") == null);
-    // 값으로 쓰인 Used 의 preamble 은 남아있어야 함.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var Used = require(\"external-types\").Used") != null);
+    // 값으로 쓰인 Used 는 ESM external import 로 보존 (#1962). type-only elision 후 남은 binding.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Used") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"external-types\"") != null);
 }
 
 test "TypeScript: verbatimModuleSyntax=true preserves external type-only preamble" {
@@ -829,9 +830,10 @@ test "TypeScript: verbatimModuleSyntax=true preserves external type-only preambl
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // 사용자가 명시적으로 보존을 요청 → 두 binding 모두 preamble require 로 남아야 함.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var TypeAlpha = require(\"external-lib\").TypeAlpha") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var useValue = require(\"external-lib\").useValue") != null);
+    // 사용자가 명시적으로 보존을 요청 → 두 binding 모두 ESM import 로 남아야 함 (#1962).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TypeAlpha") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "useValue") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"external-lib\"") != null);
 }
 
 test "TypeScript: external + export re-export → preamble require 유지 (#1793 revert 원인)" {
@@ -855,7 +857,9 @@ test "TypeScript: external + export re-export → preamble require 유지 (#1793
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var ExportMe = require(\"external-pkg\").ExportMe") != null);
+    // ESM external (#1962): import 구문 보존 + re-export 가 ExportMe 식별자를 통해 동작.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ExportMe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"external-pkg\"") != null);
 }
 
 test "TypeScript: external + namespace member access → preamble 유지 (namespace 는 elision 제외)" {
@@ -905,7 +909,9 @@ test "TypeScript: external + default import → Phase D 는 default 를 elide �
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"external-mod\")") != null);
+    // ESM external (#1962): default import 도 보존 — `import DefaultX from "external-mod"`.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DefaultX") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"external-mod\"") != null);
 }
 
 test "TypeScript: external + named mixed → type-only 만 elide, value-used 유지" {
@@ -929,9 +935,10 @@ test "TypeScript: external + named mixed → type-only 만 elide, value-used 유
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // value-used 만 preamble 에 남음.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var UtilY = require(\"external-kit\").UtilY") != null);
-    // type-only 는 preamble 에 없음.
+    // value-used 만 ESM external import 에 남음 (#1962). Phase D type-only elision 결과.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UtilY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"external-kit\"") != null);
+    // type-only 는 elide 되어 출력에 없음.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "TypeX") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "TypeZ") == null);
 }

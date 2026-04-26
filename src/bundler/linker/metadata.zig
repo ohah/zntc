@@ -51,7 +51,7 @@ inline fn isIifeMappedExternal(
         types.GlobalEntry.lookup(globals, rec.specifier) != null;
 }
 
-inline fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
+pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
     if (ib.isSynthetic()) return false;
     // named 한정 — default / namespace 는 JSX pragma 등 implicit value use 위험이
     // 큼 (#1793 revert 원인). transformer 와 동일 제한.
@@ -333,10 +333,16 @@ pub fn buildMetadataForAst(
                                 .suggestion = null,
                             });
                         }
+                    } else if (self.format == .esm and rec.is_external and !is_synthetic_esm) {
+                        // #1962 ESM external: chunk top 의 ESM `import` 구문이 binding 을
+                        // 제공하므로 모듈 preamble 에 require() 를 두지 않는다.
+                        // - emitter 의 `external_imports.emitChunkExternalImports` 가 dedup 후 emit.
+                        // - codegen 은 import_declaration 노드를 skip (skip_imports=true).
+                        // - canonical rename 은 emitter 측에서 동일 ImportBinding 을 보고 적용.
+                        // synthetic_esm (JSX runtime 합성 binding + ESM-wrapped 모듈) 은 init
+                        // 함수 본문에서 var 할당이 필요해 require() 경로를 유지한다.
                     } else {
-                        // ESM/CJS: require() preamble 생성. ESM 출력에서도 esbuild 호환으로
-                        // require() 를 유지 — Node.js 가 `import` 없는 출력을 CJS 로 파싱하여
-                        // `var X; var X;` 재선언을 허용하게 한다 (`emitter.zig` 상단 주석 참조).
+                        // CJS / ESM-wrapped + synthetic / 그 외: require() preamble 생성.
                         if (is_synthetic_esm) {
                             try preamble.writeUnresolvedRequireAssignOnly(preamble_name, rec.specifier, ib.imported_name, ib.kind == .namespace);
                         } else {
