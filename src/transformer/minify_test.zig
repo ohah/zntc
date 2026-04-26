@@ -1607,6 +1607,13 @@ test "unused: (foo.bar)(); — call callee 자리 paren 은 minify 범위 밖" {
     );
 }
 
+test "unused: (0, eval)(); — indirect eval sequence callee 보존" {
+    try expectMinifyDead(
+        "(0, eval)(\"x=1\");",
+        "function run() {\n\t(0,eval)(\"x=1\");\n}\nrun();",
+    );
+}
+
 test "unused: ({v} = o); — object destructuring assignment 은 paren 유지 ({ block 모호)" {
     // LHS 가 object_assignment_target 이면 unwrap 시 `{v} = o;` — `{` 가 block 시작으로 파싱.
     try expectMinifyDead(

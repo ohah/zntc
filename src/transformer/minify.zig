@@ -289,6 +289,10 @@ fn clearBitSet(b: *std.DynamicBitSet) void {
 /// 새로 append 된 노드는 `items.len` 증가로 자동 순회됨.
 fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, scratch: std.mem.Allocator) bool {
     var changed = false;
+    var protected_sequences = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch null;
+    defer if (protected_sequences) |*set| set.deinit();
+    if (protected_sequences) |*set| markCallCalleeSequences(ast, set);
+
     var i: u32 = 0;
     while (i < ast.nodes.items.len) : (i += 1) {
         const node = ast.nodes.items[i];
@@ -299,7 +303,10 @@ fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSe
             .conditional_expression => foldConditional(ast, i, node, &changed),
             .if_statement => foldIf(ast, i, node, &changed),
             .while_statement => foldWhile(ast, i, node, &changed),
-            .sequence_expression => simplifySequence(ast, ctx, i, node, &changed),
+            .sequence_expression => {
+                const is_protected = if (protected_sequences) |set| i < set.capacity() and set.isSet(i) else true;
+                if (!is_protected) simplifySequence(ast, ctx, i, node, &changed);
+            },
             // PR1.5 (a): unused expression statement 축약 — semantic 정보 있을 때만
             // (symbol_ids 가 없으면 identifier local binding 판정 불가)
             .expression_statement => if (ctx.hasSemantic()) simplifyUnusedExprStmt(ast, ctx, i, node, &changed),
@@ -315,6 +322,27 @@ fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSe
         removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed);
     }
     return changed;
+}
+
+fn markCallCalleeSequences(ast: *const Ast, protected_sequences: *std.DynamicBitSet) void {
+    for (ast.nodes.items) |node| {
+        if (node.tag != .call_expression and node.tag != .new_expression) continue;
+        const e = node.data.extra;
+        if (!ast.hasExtra(e, 0)) continue;
+        markSequenceInCallee(ast, @enumFromInt(ast.readExtra(e, 0)), protected_sequences);
+    }
+}
+
+fn markSequenceInCallee(ast: *const Ast, idx: NodeIndex, protected_sequences: *std.DynamicBitSet) void {
+    if (idx.isNone()) return;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len or ni >= protected_sequences.capacity()) return;
+    const node = ast.nodes.items[ni];
+    switch (node.tag) {
+        .sequence_expression => protected_sequences.set(ni),
+        .parenthesized_expression => markSequenceInCallee(ast, node.data.unary.operand, protected_sequences),
+        else => {},
+    }
 }
 
 /// root 에서 BFS 로 도달 가능한 노드 인덱스를 `live` 에 표시. `queue` 는 호출자가 재사용.

@@ -63,6 +63,12 @@ test "ES2020: ?. call" {
     try std.testing.expectEqualStrings("(a==null?void 0:a());", r.output);
 }
 
+test "ES2020: optional eval call indirect eval 보존" {
+    var r = try e2eTarget(std.testing.allocator, "eval?.('x=1');", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(0,eval)(") != null);
+}
+
 test "ES2020: ?. side effect (temp var)" {
     var r = try e2eTarget(std.testing.allocator, "foo()?.bar;", .es2019);
     defer r.deinit();
