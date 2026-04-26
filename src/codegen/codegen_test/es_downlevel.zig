@@ -2315,6 +2315,34 @@ test "ES2021: ??= with member expression" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "obj.x") != null);
 }
 
+test "ES2021: logical assignment super member receiver 보존" {
+    var r1 = try e2eTarget(std.testing.allocator, "class C extends B{m(){super.x ||= 1;}}", .es2020);
+    defer r1.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "=super") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "super.x||") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "super.x=1") != null);
+
+    var r2 = try e2eTarget(std.testing.allocator, "class C extends B{m(){super.x &&= 2;}}", .es2020);
+    defer r2.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "=super") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "super.x&&") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "super.x=2") != null);
+
+    var r3 = try e2eTarget(std.testing.allocator, "class C extends B{m(){super.x ??= 3;}}", .es2020);
+    defer r3.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r3.output, "=super") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r3.output, "super.x??") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r3.output, "super.x=3") != null);
+}
+
+test "ES2021: logical assignment computed super member key 1회 평가" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends B{m(){super[getKey()] ||= 1;}}", .es2020);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=super") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super[(_a=getKey())]||") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "super[_a]=1") != null);
+}
+
 test "ES2021: ||= with member expression" {
     var r = try e2eTarget(std.testing.allocator, "obj.x ||= 5;", .es2020);
     defer r.deinit();
