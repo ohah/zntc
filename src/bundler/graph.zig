@@ -50,7 +50,9 @@ const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
 const TransformCache = @import("module.zig").TransformCache;
 const builtin_plugins = @import("../transformer/plugins/builtin.zig");
+const Ast = @import("../parser/ast.zig").Ast;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const module_parser = @import("../parser/module.zig");
 const runtime_helper_modules = @import("runtime_helper_modules.zig");
 pub const module_store = @import("module_store.zig");
 const phase_mod = @import("phase.zig");
@@ -1546,7 +1548,7 @@ pub const ModuleGraph = struct {
         }
         transformer.line_offsets = module.line_offsets;
 
-        const new_root = transformer.transform() catch return;
+        _ = transformer.transform() catch return;
 
         // transformer 가 새 ast (clone) 에 transform 결과를 보유. module.ast 를 그 새 ast 로
         // swap. arena_alloc 가 owner 라 backing 은 안전. emit 단계 transformer 가 module.ast
@@ -1555,7 +1557,6 @@ pub const ModuleGraph = struct {
 
         const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
         module.transform_cache = .{
-            .root = new_root,
             .runtime_helpers = transformer.runtime_helpers,
             .symbol_ids = owned_symbol_ids,
         };
@@ -1571,13 +1572,10 @@ pub const ModuleGraph = struct {
     fn appendTransformerHelperImports(
         _: *ModuleGraph,
         module: *Module,
-        ast_ptr: *const @import("../parser/ast.zig").Ast,
+        ast_ptr: *const Ast,
         parser_node_count: u32,
         arena_alloc: std.mem.Allocator,
     ) void {
-        const helper_modules = @import("runtime_helper_modules.zig");
-        const nodes = ast_ptr.nodes.items;
-
         var added_records: std.ArrayList(ImportRecord) = .empty;
         defer added_records.deinit(arena_alloc);
         var added_bindings: std.ArrayList(binding_scanner_mod.ImportBinding) = .empty;
@@ -1585,19 +1583,15 @@ pub const ModuleGraph = struct {
 
         const initial_record_count: u32 = @intCast(module.import_records.len);
 
-        for (nodes[parser_node_count..]) |node| {
+        for (ast_ptr.nodes.items[parser_node_count..]) |node| {
             if (node.tag != .import_declaration) continue;
-            const e = node.data.extra;
-            if (e + 5 >= ast_ptr.extra_data.items.len) continue;
-            const specs_start = ast_ptr.extra_data.items[e + 0];
-            const specs_len = ast_ptr.extra_data.items[e + 1];
-            const source_idx: NodeIndex = @enumFromInt(ast_ptr.extra_data.items[e + 2]);
-            if (source_idx.isNone()) continue;
-            const source_node = ast_ptr.getNode(source_idx);
+            if (!ast_ptr.hasExtra(node.data.extra, 5)) continue;
+            const xs = module_parser.readImportDeclExtras(ast_ptr, node.data.extra);
+            if (xs.source.isNone()) continue;
+            const source_node = ast_ptr.getNode(xs.source);
             if (source_node.tag != .string_literal) continue;
-            const raw = ast_ptr.getText(source_node.span);
-            const spec = stripImportQuotes(raw);
-            if (!helper_modules.isVirtualId(spec)) continue;
+            const spec = Ast.stripStringQuotes(ast_ptr.getText(source_node.span));
+            if (!runtime_helper_modules.isVirtualId(spec)) continue;
 
             const record_idx_for_bindings: u32 = initial_record_count + @as(u32, @intCast(added_records.items.len));
             added_records.append(arena_alloc, .{
@@ -1606,25 +1600,19 @@ pub const ModuleGraph = struct {
                 .span = source_node.span,
             }) catch return;
 
-            // import_specifier 마다 binding 등록. spec layout: binary { left=imported, right=local, flags }.
-            if (specs_len == 0) continue;
-            for (0..specs_len) |i| {
-                const spec_idx: NodeIndex = @enumFromInt(ast_ptr.extra_data.items[specs_start + i]);
+            for (0..xs.specs_len) |i| {
+                const spec_idx: NodeIndex = @enumFromInt(ast_ptr.extra_data.items[xs.specs_start + i]);
                 if (spec_idx.isNone()) continue;
                 const spec_node = ast_ptr.getNode(spec_idx);
                 if (spec_node.tag != .import_specifier) continue;
                 const imported_idx = spec_node.data.binary.left;
                 const local_idx = spec_node.data.binary.right;
                 if (imported_idx.isNone() or local_idx.isNone()) continue;
-                const imported_node = ast_ptr.getNode(imported_idx);
-                const local_node = ast_ptr.getNode(local_idx);
-                const imported_name = ast_ptr.getText(imported_node.span);
-                const local_name = ast_ptr.getText(local_node.span);
                 added_bindings.append(arena_alloc, .{
                     .kind = .named,
-                    .local_name = local_name,
-                    .imported_name = imported_name,
-                    .local_span = local_node.span,
+                    .local_name = ast_ptr.getText(ast_ptr.getNode(local_idx).span),
+                    .imported_name = ast_ptr.getText(ast_ptr.getNode(imported_idx).span),
+                    .local_span = ast_ptr.getNode(local_idx).span,
                     .import_record_index = record_idx_for_bindings,
                 }) catch return;
             }
@@ -1644,14 +1632,6 @@ pub const ModuleGraph = struct {
             @memcpy(merged[old.len..], added_bindings.items);
             module.import_bindings = merged;
         }
-    }
-
-    /// `import_scanner.stripQuotes` 와 동일 — 그러나 import_scanner 의 private fn 이라 inline.
-    fn stripImportQuotes(raw: []const u8) []const u8 {
-        if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\'') and raw[raw.len - 1] == raw[0]) {
-            return raw[1 .. raw.len - 1];
-        }
-        return raw;
     }
 
     const findPackageDirPath = resolve_cache_mod.findPackageDirPath;
