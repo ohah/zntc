@@ -421,7 +421,7 @@ pub fn emitEsmWrappedModule(
                     const getter_val = switch (src_mod.wrap_kind) {
                         .esm, .none => try src_mod.allocExportsName(allocator),
                         .cjs => blk: {
-                            const rv = try types.makeRequireVarName(allocator, src_mod.path);
+                            const rv = try src_mod.allocRequireName(allocator);
                             defer allocator.free(rv);
                             break :blk try std.fmt.allocPrint(allocator, "{s}()", .{rv});
                         },
@@ -662,7 +662,7 @@ pub fn emitEsmWrappedModule(
                         if (found_preamble_var) |pv| {
                             try reexport_buf.appendSlice(allocator, pv);
                         } else {
-                            const rv = try types.makeRequireVarName(allocator, source_mod.path);
+                            const rv = try source_mod.allocRequireName(allocator);
                             defer allocator.free(rv);
                             const interop_mode: types.Interop = if (module.def_format.isEsm()) .node else .babel;
                             // #1621: minify 시 __toESM → $tE 축약.
@@ -976,7 +976,7 @@ fn appendWrappedInitCall(
             try buf.appendSlice(allocator, if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
         },
         .cjs => {
-            const rv = try types.makeRequireVarName(allocator, src_mod.path);
+            const rv = try src_mod.allocRequireName(allocator);
             defer allocator.free(rv);
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
             try buf.appendSlice(allocator, rv);
@@ -1080,7 +1080,7 @@ fn makeStarGetterValue(
                     return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
                 }
                 if (canonical_mod.wrap_kind == .cjs) {
-                    const rv = try types.makeRequireVarName(allocator, canonical_mod.path);
+                    const rv = try canonical_mod.allocRequireName(allocator);
                     defer allocator.free(rv);
                     return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, name });
                 }
@@ -1101,7 +1101,7 @@ fn makeStarGetterValue(
             return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
         },
         .cjs => {
-            const rv = try types.makeRequireVarName(allocator, src_mod.path);
+            const rv = try src_mod.allocRequireName(allocator);
             defer allocator.free(rv);
             return try std.fmt.allocPrint(allocator, "{s}().{s}", .{ rv, name });
         },

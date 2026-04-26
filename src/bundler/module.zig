@@ -134,6 +134,8 @@ pub const Module = struct {
     init_symbol: ?SemanticSymbolId = null,
     /// wrap_kind != .none 모듈의 `exports_<path>` 객체 심볼 id.
     exports_symbol: ?SemanticSymbolId = null,
+    /// wrap_kind == .cjs 모듈의 `require_<path>` 함수 심볼 id.
+    require_symbol: ?SemanticSymbolId = null,
 
     /// 내가 import하는 모듈들 (순방향)
     dependencies: std.ArrayList(ModuleIndex),
@@ -273,6 +275,10 @@ pub const Module = struct {
         return self.syntheticName(self.exports_symbol);
     }
 
+    pub fn getRequireName(self: *const Module) ?[]const u8 {
+        return self.syntheticName(self.require_symbol);
+    }
+
     /// `getInitName()`의 할당 버전 — 등록된 경우 dupe, 아니면 fresh 생성.
     /// 기존 `types.makeInitVarName(alloc, path)` 호출지의 drop-in 대체.
     pub fn allocInitName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
@@ -283,6 +289,11 @@ pub const Module = struct {
     pub fn allocExportsName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
         if (self.getExportsName()) |n| return allocator.dupe(u8, n);
         return types.makeExportsVarName(allocator, self.path);
+    }
+
+    pub fn allocRequireName(self: *const Module, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.getRequireName()) |n| return allocator.dupe(u8, n);
+        return types.makeRequireVarName(allocator, self.path);
     }
 
     /// Semantic 심볼 배열 slice. semantic이 없으면 빈 slice.

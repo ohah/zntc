@@ -752,7 +752,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
             if (require_rewrites.get(rec.specifier)) |old| {
                 self.allocator.free(old);
             }
-            const var_name = try types.makeRequireVarName(self.allocator, target_mod.path);
+            const var_name = try target_mod.allocRequireName(self.allocator);
             try require_rewrites.put(self.allocator, rec.specifier, var_name);
         } else if (target_mod.wrap_kind == .esm) {
             // ESM 타겟: require("spec") → (init_xxx(), __toCommonJS(exports_xxx))

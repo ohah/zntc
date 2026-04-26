@@ -204,6 +204,8 @@ pub const SyntheticKind = enum(u8) {
     default_export,
     /// CJS 래퍼의 `exports_<module>` 객체
     cjs_exports,
+    /// CJS 래퍼의 `require_<module>` 함수
+    cjs_require,
     /// ESM 래퍼의 `init_<module>` 함수
     esm_init,
 };

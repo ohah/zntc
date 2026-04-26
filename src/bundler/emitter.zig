@@ -990,7 +990,7 @@ pub fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator,
 /// run-before-main, 엔트리 자동 호출, star export init 등에서 공용.
 pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator, mod: anytype) !void {
     const call_name = if (mod.wrap_kind == .cjs)
-        try types.makeRequireVarName(allocator, mod.path)
+        try mod.allocRequireName(allocator)
     else
         try mod.allocInitName(allocator);
     defer allocator.free(call_name);
@@ -1016,7 +1016,7 @@ pub fn appendGuardedModuleCall(
         return;
     }
     const call_name = if (mod.wrap_kind == .cjs)
-        try types.makeRequireVarName(allocator, mod.path)
+        try mod.allocRequireName(allocator)
     else
         try mod.allocInitName(allocator);
     defer allocator.free(call_name);
@@ -1475,7 +1475,7 @@ pub fn emitModule(
         const basename = module.wrapperId();
         const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
 
-        const var_name = try types.makeRequireVarName(allocator, module.path);
+        const var_name = try module.allocRequireName(allocator);
         defer allocator.free(var_name);
 
         var wrapped: std.ArrayList(u8) = .empty;
