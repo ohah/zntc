@@ -1098,11 +1098,23 @@ pub fn emitModule(
         .minify_syntax = options.minify_syntax,
         .minify_whitespace = options.minify_whitespace,
         .keep_names = options.keep_names,
+        // emit 단계 transformer 는 helper import emit 안 함 — graph pre-pass 가 이미 처리.
+        .emit_runtime_helper_imports = false,
     });
-    // symbol_ids 전파: semantic analyzer가 생성한 원본 AST의 symbol_ids를
-    // transformer가 ast 기준으로 재매핑. symbols slice도 함께 전달하여
-    // reference_count 기반 optimization(#1587 등)이 번들 경로에서도 동작하도록 함.
-    if (module.semantic) |sem| {
+    // #1961: graph parse 단계의 transformer pre-pass 결과가 있으면 hydrate.
+    // transformer.transform() 은 ast.transformed_root 가 set 이면 즉시 cached root 반환 →
+    // emit 단계에서 동일 transform 재실행 없이 graph 단계의 결과를 그대로 사용.
+    if (module.transform_cache) |cache| {
+        transformer.runtime_helpers = cache.runtime_helpers;
+        if (cache.symbol_ids.len > 0) {
+            transformer.symbol_ids.appendSlice(arena_alloc, cache.symbol_ids) catch return error.OutOfMemory;
+        }
+        if (module.semantic) |sem| {
+            transformer.symbols = sem.symbols.items;
+            transformer.references = sem.references;
+        }
+    } else if (module.semantic) |sem| {
+        // legacy 경로: graph pre-pass 미실행 (asset/disabled/JSON 등). semantic 만 hydrate.
         transformer.initSymbolIds(sem.symbol_ids) catch return error.OutOfMemory;
         transformer.symbols = sem.symbols.items;
         transformer.references = sem.references;

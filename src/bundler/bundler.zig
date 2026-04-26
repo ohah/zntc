@@ -735,6 +735,21 @@ pub const Bundler = struct {
         graph.jsx_in_js = self.options.jsx_in_js;
         graph.jsx_runtime = self.options.jsx_runtime;
         graph.jsx_import_source = self.options.jsx_import_source;
+
+        // #1961: transformer pre-pass 옵션 — graph 가 module 마다 transformer 실행 시 사용.
+        // emitter 의 동일 옵션 set 과 1:1 매칭되어야 cache 일관성 보장.
+        graph.worklet_transform = self.options.worklet_transform;
+        graph.experimental_decorators = self.options.experimental_decorators;
+        graph.emit_decorator_metadata = self.options.emit_decorator_metadata;
+        graph.use_define_for_class_fields = self.options.use_define_for_class_fields;
+        graph.verbatim_module_syntax = self.options.verbatim_module_syntax;
+        graph.unsupported = self.options.unsupported;
+        graph.drop_labels = self.options.drop_labels;
+        graph.minify_syntax = self.options.minify_syntax;
+        graph.keep_names = self.options.keep_names;
+        graph.jsx_factory = self.options.jsx_factory;
+        graph.jsx_fragment = self.options.jsx_fragment;
+        graph.worklet_plugin_version = self.options.worklet_plugin_version;
         defer graph.deinit();
 
         // graph.build() 또는 buildIncremental() 호출.
