@@ -1104,6 +1104,9 @@ pub fn emitModule(
         .keep_names = options.keep_names,
         // emit 단계 transformer 는 helper import emit 안 함 — graph pre-pass 가 이미 처리.
         .emit_runtime_helper_imports = false,
+        // graph pre-pass 가 이미 transform 한 ast 면 clone 회피 (#1961 PR 1d).
+        // transform_cache 가 set 일 때만 borrow — legacy 경로는 기존처럼 clone.
+        .borrow_source_ast = (module.transform_cache != null),
     });
     // #1961: graph parse 단계의 transformer pre-pass 결과가 있으면 hydrate.
     // transformer.transform() 은 ast.transformed_root 가 set 이면 즉시 cached root 반환 →
