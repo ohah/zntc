@@ -1431,8 +1431,26 @@ pub fn main() !void {
         };
         const abs_path = try std.fs.cwd().realpathAlloc(allocator, dir_path);
         defer allocator.free(abs_path);
-        try stdout.print("Running Test262: {s}\n", .{abs_path});
-        const summary = try runner.runDirectory(allocator, abs_path, false);
+
+        // test262 repo root 자동 감지: `test/` 와 `tools/` 가 둘 다 있으면 conformance `test/` 만 측정.
+        // tools/lint·generation 의 self-fixture (의도적으로 invalid 한 frontmatter 를 갖는 .js)
+        // 가 함께 walk 되어 fake fail 로 카운트되는 것을 막는다.
+        const test_sub = try std.fs.path.join(allocator, &.{ abs_path, "test" });
+        defer allocator.free(test_sub);
+        const tools_sub = try std.fs.path.join(allocator, &.{ abs_path, "tools" });
+        defer allocator.free(tools_sub);
+        const is_repo_root = blk: {
+            std.fs.accessAbsolute(test_sub, .{}) catch break :blk false;
+            std.fs.accessAbsolute(tools_sub, .{}) catch break :blk false;
+            break :blk true;
+        };
+
+        const walk_path = if (is_repo_root) test_sub else abs_path;
+        if (is_repo_root) {
+            try stdout.print("Detected test262 repo root — restricting walk to '{s}'\n", .{walk_path});
+        }
+        try stdout.print("Running Test262: {s}\n", .{walk_path});
+        const summary = try runner.runDirectory(allocator, walk_path, false);
         try summary.print(stdout);
         return;
     }
