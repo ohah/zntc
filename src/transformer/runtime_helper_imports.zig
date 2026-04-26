@@ -32,50 +32,77 @@ const RuntimeHelpers = @import("transformer.zig").RuntimeHelpers;
 /// RuntimeHelpers 비트 ↔ helper base list 매핑.
 /// 비트 하나 = helper module 하나. `bases` 의 첫 항목은 module short 결정용 lookup key
 /// (같은 모듈 안의 helper 라 어느 것을 골라도 동일 short 반환). 나머지는 named export.
+///
+/// `bit` 은 `RuntimeHelpers` 의 packed struct field 이름과 1:1 매칭되는 enum tag —
+/// `@field(helpers, @tagName(bit))` 로 read. typo / 비트 rename 시 즉시 컴파일 에러
+/// (string field 패턴 + comptime `@hasField` assertion 보다 강한 보장).
+const HelperBit = enum {
+    async_helper,
+    extends,
+    spread_array,
+    generator,
+    rest,
+    values,
+    to_binary,
+    keep_names,
+    class_private_method_init,
+    class_private_method_get,
+    class_call_check,
+    call_super,
+    tagged_template_literal,
+    using_ctx,
+    class_static_private_field,
+    es_decorator,
+    async_values,
+    class_private_field_set,
+    async_generator,
+    await_helper,
+};
+
 const BitDef = struct {
-    field: []const u8,
+    bit: HelperBit,
     bases: []const []const u8,
 };
 
 const BIT_DEFS = [_]BitDef{
-    .{ .field = "async_helper", .bases = &.{"__async"} },
-    .{ .field = "extends", .bases = &.{"__extends"} },
-    .{ .field = "spread_array", .bases = &.{"__toConsumableArray"} },
-    .{ .field = "generator", .bases = &.{"__generator"} },
-    .{ .field = "rest", .bases = &.{"__rest"} },
-    .{ .field = "values", .bases = &.{"__values"} },
-    .{ .field = "to_binary", .bases = &.{"__toBinary"} },
-    .{ .field = "keep_names", .bases = &.{"__name"} },
-    .{ .field = "class_private_method_init", .bases = &.{"__classPrivateMethodInit"} },
-    .{ .field = "class_private_method_get", .bases = &.{"__classPrivateMethodGet"} },
-    .{ .field = "class_call_check", .bases = &.{"__classCallCheck"} },
-    .{ .field = "call_super", .bases = &.{"__callSuper"} },
-    .{ .field = "tagged_template_literal", .bases = &.{"__taggedTemplateLiteral"} },
-    .{ .field = "using_ctx", .bases = &.{ "__using", "__callDispose" } },
-    .{ .field = "class_static_private_field", .bases = &.{
+    .{ .bit = .async_helper, .bases = &.{"__async"} },
+    .{ .bit = .extends, .bases = &.{"__extends"} },
+    .{ .bit = .spread_array, .bases = &.{"__toConsumableArray"} },
+    .{ .bit = .generator, .bases = &.{"__generator"} },
+    .{ .bit = .rest, .bases = &.{"__rest"} },
+    .{ .bit = .values, .bases = &.{"__values"} },
+    .{ .bit = .to_binary, .bases = &.{"__toBinary"} },
+    .{ .bit = .keep_names, .bases = &.{"__name"} },
+    .{ .bit = .class_private_method_init, .bases = &.{"__classPrivateMethodInit"} },
+    .{ .bit = .class_private_method_get, .bases = &.{"__classPrivateMethodGet"} },
+    .{ .bit = .class_call_check, .bases = &.{"__classCallCheck"} },
+    .{ .bit = .call_super, .bases = &.{"__callSuper"} },
+    .{ .bit = .tagged_template_literal, .bases = &.{"__taggedTemplateLiteral"} },
+    .{ .bit = .using_ctx, .bases = &.{ "__using", "__callDispose" } },
+    .{ .bit = .class_static_private_field, .bases = &.{
         "__classCheckPrivateStaticAccess",
         "__classCheckPrivateStaticFieldDescriptor",
         "__classStaticPrivateFieldSpecGet",
         "__classStaticPrivateFieldSpecSet",
     } },
-    .{ .field = "es_decorator", .bases = &.{
+    .{ .bit = .es_decorator, .bases = &.{
         "__esDecorate",
         "__runInitializers",
         "__setFunctionName",
         "__propKey",
     } },
-    .{ .field = "async_values", .bases = &.{"__asyncValues"} },
-    .{ .field = "class_private_field_set", .bases = &.{"__classPrivateFieldSet"} },
-    .{ .field = "async_generator", .bases = &.{"__asyncGenerator"} },
-    .{ .field = "await_helper", .bases = &.{"__await"} },
+    .{ .bit = .async_values, .bases = &.{"__asyncValues"} },
+    .{ .bit = .class_private_field_set, .bases = &.{"__classPrivateFieldSet"} },
+    .{ .bit = .async_generator, .bases = &.{"__asyncGenerator"} },
+    .{ .bit = .await_helper, .bases = &.{"__await"} },
 };
 
 comptime {
-    // BIT_DEFS 의 field 이름이 RuntimeHelpers 의 실 필드와 매핑되는지 빌드 타임 검증.
-    // 이름 typo 를 하면 즉시 컴파일 에러로 노출.
-    for (BIT_DEFS) |def| {
-        if (!@hasField(RuntimeHelpers, def.field)) {
-            @compileError("BIT_DEFS field '" ++ def.field ++ "' not present on RuntimeHelpers");
+    // HelperBit 의 모든 tag 가 RuntimeHelpers 의 실 필드와 매핑되는지 빌드 타임 검증.
+    // enum rename 시 즉시 컴파일 에러로 노출.
+    for (@typeInfo(HelperBit).@"enum".fields) |field| {
+        if (!@hasField(RuntimeHelpers, field.name)) {
+            @compileError("HelperBit tag '" ++ field.name ++ "' not present on RuntimeHelpers");
         }
     }
 }
@@ -90,7 +117,7 @@ pub fn appendHelperImports(
     out: *std.ArrayList(NodeIndex),
 ) !void {
     inline for (BIT_DEFS) |def| {
-        if (@field(helpers, def.field)) {
+        if (@field(helpers, @tagName(def.bit))) {
             try emitOne(self, def.bases, span, out);
         }
     }
