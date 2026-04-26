@@ -50,8 +50,8 @@ test "private method: es5 → WeakSet + function + prototype" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "function Foo()") != null);
     // WeakSet
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var _bar=new WeakSet") != null);
-    // prototype method
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Foo.prototype.method=function()") != null);
+    // prototype method descriptor
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(Foo.prototype,\"method\"") != null);
     // brand check
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodInit(this,_bar)") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodGet(this,_bar,_bar_fn).call(this)") != null);

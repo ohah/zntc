@@ -2927,22 +2927,56 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
-        /// target.methodName = func_expr (expression_statement)
+        fn buildBooleanProp(self: *Transformer, name: []const u8, value: bool, span: Span) Transformer.Error!NodeIndex {
+            const key = try es_helpers.makeIdentifierRef(self, name);
+            const value_span = try self.ast.addString(if (value) "true" else "false");
+            const val = try self.ast.addNode(.{
+                .tag = .boolean_literal,
+                .span = value_span,
+                .data = .{ .none = if (value) 0 else 1 },
+            });
+            return self.ast.addNode(.{
+                .tag = .object_property,
+                .span = span,
+                .data = .{ .binary = .{ .left = key, .right = val, .flags = 0 } },
+            });
+        }
+
+        fn buildValueProp(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const key = try es_helpers.makeIdentifierRef(self, "value");
+            return self.ast.addNode(.{
+                .tag = .object_property,
+                .span = span,
+                .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+            });
+        }
+
+        /// method → Object.defineProperty(ClassName.prototype, "method", { configurable: true, writable: true, value: function() {} })
+        /// static method → Object.defineProperty(ClassName, "method", { configurable: true, writable: true, value: function() {} })
         fn buildMethodAssignment(self: *Transformer, info: MethodInfo, class_name_span: Span, key_idx: NodeIndex, func_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const target = if (info.is_static)
                 try es_helpers.makeIdentifierRefFromSpan(self, class_name_span)
             else
                 try buildFreshPrototypeRef(self, class_name_span, span);
-            const member_access = try es_helpers.makeMemberFromKeyIdx(self, target, key_idx, span);
-            const assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
+
+            const config_prop = try buildBooleanProp(self, "configurable", true, span);
+            const writable_prop = try buildBooleanProp(self, "writable", true, span);
+            const value_prop = try buildValueProp(self, func_expr, span);
+            const desc_list = try self.ast.addNodeList(&.{ config_prop, writable_prop, value_prop });
+            const desc_obj = try self.ast.addNode(.{
+                .tag = .object_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = member_access, .right = func_expr, .flags = 0 } },
+                .data = .{ .list = desc_list },
             });
+
+            const obj_str_span = try self.ast.addString("Object");
+            const dp_str_span = try self.ast.addString("defineProperty");
+            const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+            const call = try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, target, key_arg, desc_obj, span);
             return self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = info.member_span,
-                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+                .data = .{ .unary = .{ .operand = call, .flags = 0 } },
             });
         }
 
