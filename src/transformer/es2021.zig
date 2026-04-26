@@ -13,12 +13,10 @@
 //! - esbuild: internal/js_parser/js_parser_lower.go (lowerAssign)
 //! - oxc: crates/oxc_transformer/src/es2021/
 
-const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../lexer/token.zig");
-const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 
 pub fn ES2021(comptime Transformer: type) type {
@@ -28,6 +26,39 @@ pub fn ES2021(comptime Transformer: type) type {
         /// 주의: private field 좌변은 caller(transformer.zig)에서 es2015_class로 먼저 라우팅됨 —
         /// private get/set이 함수 호출이라 여기서 만드는 `(a = b)` 패턴의 assignment target이 될 수 없음.
         pub fn lowerNullishAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            if (try es_helpers.prepareMemberAssignmentTargetRef(self, node.data.binary.left, node.span)) |target| {
+                const new_right = try self.visitNode(node.data.binary.right);
+                const assign = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = target.write,
+                        .right = new_right,
+                        .flags = @intFromEnum(token_mod.Kind.eq),
+                    } },
+                });
+                const paren_assign = try es_helpers.makeParenExpr(self, assign, node.span);
+
+                if (self.options.unsupported.nullish_coalescing) {
+                    const neq_null = try es_helpers.makeNeqNull(self, target.read, node.span);
+                    return self.ast.addNode(.{
+                        .tag = .conditional_expression,
+                        .span = node.span,
+                        .data = .{ .ternary = .{ .a = neq_null, .b = target.value, .c = paren_assign } },
+                    });
+                }
+
+                return self.ast.addNode(.{
+                    .tag = .logical_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = target.read,
+                        .right = paren_assign,
+                        .flags = @intFromEnum(token_mod.Kind.question2),
+                    } },
+                });
+            }
+
             const new_left = try self.visitNode(node.data.binary.left);
             const new_right = try self.visitNode(node.data.binary.right);
             const left_copy1 = try self.ast.addNode(self.ast.getNode(new_left));
@@ -69,6 +100,29 @@ pub fn ES2021(comptime Transformer: type) type {
         /// `a ||= b` → `a || (a = b)`, `a &&= b` → `a && (a = b)`
         /// 주의: private field 좌변은 caller(transformer.zig)에서 es2015_class로 먼저 라우팅됨.
         pub fn lowerLogicalAssignment(self: *Transformer, node: Node, logical_op: token_mod.Kind) Transformer.Error!NodeIndex {
+            if (try es_helpers.prepareMemberAssignmentTargetRef(self, node.data.binary.left, node.span)) |target| {
+                const new_right = try self.visitNode(node.data.binary.right);
+                const assign = try self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = target.write,
+                        .right = new_right,
+                        .flags = @intFromEnum(token_mod.Kind.eq),
+                    } },
+                });
+                const paren_assign = try es_helpers.makeParenExpr(self, assign, node.span);
+                return self.ast.addNode(.{
+                    .tag = .logical_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = target.read,
+                        .right = paren_assign,
+                        .flags = @intFromEnum(logical_op),
+                    } },
+                });
+            }
+
             const new_left = try self.visitNode(node.data.binary.left);
             const new_right = try self.visitNode(node.data.binary.right);
             const left_copy = try self.ast.addNode(self.ast.getNode(new_left));

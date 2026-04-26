@@ -2279,6 +2279,27 @@ test "ES2021: ||= with member expression" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "obj.x") != null);
 }
 
+test "ES2021: ||= member receiver 1회 평가" {
+    var r = try e2eTarget(std.testing.allocator, "getObj().x ||= 5;", .es2020);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=getObj()).x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a.x=5") != null);
+}
+
+test "ES2021: &&= member receiver 1회 평가" {
+    var r = try e2eTarget(std.testing.allocator, "getObj().x &&= 5;", .es2020);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=getObj()).x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a.x=5") != null);
+}
+
+test "ES2021: ??= computed member key 1회 평가" {
+    var r = try e2eTarget(std.testing.allocator, "obj[getKey()] ??= 5;", .es2019);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=getKey())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj[_a]=5") != null);
+}
+
 // --- ES2022 edge cases ---
 
 test "ES2022: static block with side effects" {

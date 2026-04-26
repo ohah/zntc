@@ -239,6 +239,119 @@ pub fn makeCallExpr(self: anytype, callee: NodeIndex, args: []const NodeIndex, s
     });
 }
 
+/// assignment target reference 보존용 구성 요소.
+///
+/// `obj[key] ||= rhs` 같은 compound/logical assignment는 좌변이 단순 값이 아니라
+/// JS Reference(receiver + key)다. receiver/key를 read/write 양쪽에서 새로 평가하면
+/// `getObj().x ||= y`가 `getObj()`를 두 번 호출한다. 이 구조체는 read/value/write가
+/// 같은 receiver/key 평가 결과를 공유하도록 미리 준비한 member expression 묶음이다.
+pub const AssignmentTargetRef = struct {
+    read: NodeIndex,
+    value: NodeIndex,
+    write: NodeIndex,
+};
+
+/// static/computed member assignment target의 Reference를 1회 평가 형태로 준비.
+/// 지원 대상: `obj.x`, `obj[key]`.
+/// 비-member target이면 null을 반환해 caller가 기존 단순 경로를 사용할 수 있게 한다.
+pub fn prepareMemberAssignmentTargetRef(
+    self: anytype,
+    left_idx: NodeIndex,
+    span: Span,
+) !?AssignmentTargetRef {
+    if (left_idx.isNone()) return null;
+    const left = self.ast.getNode(left_idx);
+    switch (left.tag) {
+        .static_member_expression, .computed_member_expression => {},
+        else => return null,
+    }
+
+    const e = left.data.extra;
+    const old_obj = self.readNodeIdx(e, 0);
+    const old_prop = self.readNodeIdx(e, 1);
+    const flags = self.readU32(e, 2);
+
+    const obj = try makeSingleEvalExpr(self, old_obj, span, true);
+    const prop = if (left.tag == .computed_member_expression)
+        try makeSingleEvalExpr(self, old_prop, span, false)
+    else
+        try makeStaticPropRef(self, old_prop);
+
+    return .{
+        .read = try makeMemberWithFlags(self, left.tag, obj.read, prop.read, flags, left.span),
+        .value = try makeMemberWithFlags(self, left.tag, obj.value, prop.value, flags, left.span),
+        .write = try makeMemberWithFlags(self, left.tag, obj.write, prop.write, flags, left.span),
+    };
+}
+
+const SingleEvalExpr = struct {
+    read: NodeIndex,
+    value: NodeIndex,
+    write: NodeIndex,
+};
+
+fn makeSingleEvalExpr(
+    self: anytype,
+    old_idx: NodeIndex,
+    span: Span,
+    simple_identifier_is_reusable: bool,
+) !SingleEvalExpr {
+    const old = self.ast.getNode(old_idx);
+    if (simple_identifier_is_reusable and old.tag == .identifier_reference) {
+        const visited = try self.visitNode(old_idx);
+        return .{
+            .read = visited,
+            .value = try cloneNode(self, visited),
+            .write = try cloneNode(self, visited),
+        };
+    }
+
+    const visited = try self.visitNode(old_idx);
+    const temp_span = try makeTempVarSpan(self);
+    const temp_lhs = try makeTempVarRef(self, temp_span, span);
+    const assign = try self.ast.addNode(.{
+        .tag = .assignment_expression,
+        .span = span,
+        .data = .{ .binary = .{
+            .left = temp_lhs,
+            .right = visited,
+            .flags = @intFromEnum(token_mod.Kind.eq),
+        } },
+    });
+    return .{
+        .read = try makeParenExpr(self, assign, span),
+        .value = try makeTempVarRef(self, temp_span, span),
+        .write = try makeTempVarRef(self, temp_span, span),
+    };
+}
+
+fn makeStaticPropRef(self: anytype, old_prop: NodeIndex) !SingleEvalExpr {
+    const prop = try self.visitNode(old_prop);
+    return .{
+        .read = prop,
+        .value = try cloneNode(self, prop),
+        .write = try cloneNode(self, prop),
+    };
+}
+
+fn cloneNode(self: anytype, idx: NodeIndex) !NodeIndex {
+    const cloned = try self.ast.addNode(self.ast.getNode(idx));
+    self.copySymbolId(idx, cloned);
+    return cloned;
+}
+
+fn makeMemberWithFlags(
+    self: anytype,
+    tag: ast_mod.Node.Tag,
+    obj: NodeIndex,
+    prop: NodeIndex,
+    flags: u32,
+    span: Span,
+) !NodeIndex {
+    const extra = try self.ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), flags });
+    return self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = extra } });
+}
+
 /// u32 값으로 numeric_literal 노드 생성.
 pub fn makeNumericLiteral(self: anytype, value: u32) !NodeIndex {
     var buf: [16]u8 = undefined;
