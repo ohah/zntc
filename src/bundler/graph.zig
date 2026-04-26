@@ -133,35 +133,22 @@ pub const ModuleGraph = struct {
     worker_entries: std.ArrayList(WorkerEntry) = .empty,
 
     /// `worklet "directive"` plugin 활성 여부 — bundler 가 BundleOptions.worklet_transform 으로 set.
+    /// graph 가 직접 사용 (parseModule 의 worklet exclude 휴리스틱).
     worklet_transform: bool = false,
     /// React Fast Refresh — dev_mode + user_code 에 transformer 가 등록 코드 주입.
+    /// graph 가 직접 사용 (parseModule 의 is_user_code 분기).
     react_refresh: bool = false,
     /// code splitting 활성화. helper module virtual import (#1961) 는 splitting 모드에서만
     /// 활성 — single-bundle 모드는 helper module 의 declaration 이 statement-level shake
     /// 로 elide 되는 회귀가 있어 기존 preamble 모델 유지.
     code_splitting: bool = false,
-    /// `experimentalDecorators` — TS legacy decorator 변환.
-    experimental_decorators: bool = false,
-    /// `emitDecoratorMetadata` — `__metadata` 호출 주입.
-    emit_decorator_metadata: bool = false,
-    /// `useDefineForClassFields` 기본값. false=TS 4.x 이전 [[Set]] semantics.
-    use_define_for_class_fields: bool = true,
-    /// `verbatimModuleSyntax` — TS 5.0+ value import elision 비활성.
-    verbatim_module_syntax: bool = false,
-    /// 다운레벨 대상 비-지원 feature 비트맵.
-    unsupported: transformer_mod.TransformOptions.compat.UnsupportedFeatures = .{},
-    /// 드롭할 labeled statement 라벨 (`--drop-labels=DEV,TEST`).
-    drop_labels: []const []const u8 = &.{},
-    /// `--minify-syntax` — AST 레벨 의미 보존 축약.
-    minify_syntax: bool = false,
-    /// `--keep-names` — 함수/클래스 .name 보존.
-    keep_names: bool = false,
-    /// JSX classic mode factory (e.g. "React.createElement").
-    jsx_factory: []const u8 = "React.createElement",
-    /// JSX classic mode fragment (e.g. "React.Fragment").
-    jsx_fragment: []const u8 = "React.Fragment",
-    /// Reanimated worklet plugin 의 `__pluginVersion` 값.
-    worklet_plugin_version: ?[]const u8 = null,
+
+    /// transformer pre-pass 의 옵션 base (#1961). bundler 가 init 시 BundleOptions →
+    /// TransformOptions 매핑을 1회 채움. parseModule 이 base 를 복사 후 per-module
+    /// override (`react_refresh`, `plugins`, `jsx_transform`, `jsx_filename`,
+    /// `emit_runtime_helper_imports`) 만 추가하여 transformer.init 호출.
+    /// 옵션 추가 시 갱신 site 가 1 곳 (bundler.zig) 으로 좁혀 drift 방지.
+    transform_options_base: transformer_mod.TransformOptions = .{},
 
     /// Runtime helper virtual module plugin (#1961) 의 `SourceOptions`.
     /// graph 가 build() 동안 owner — `Plugin.context` 에서 `*const SourceOptions` 로 참조.
@@ -227,9 +214,10 @@ pub const ModuleGraph = struct {
     fn ensureBuiltinPlugins(self: *ModuleGraph) void {
         if (self.plugins_with_helpers != null) return;
         // SourceOptions 는 빌드 옵션 기반으로 1회 결정.
+        const u = self.transform_options_base.unsupported;
         self.helper_plugin_opts = .{
             .minify = self.minify_whitespace,
-            .es5 = self.unsupported.async_await or self.unsupported.arrow,
+            .es5 = u.async_await or u.arrow,
             // configurable_exports 는 RN 같은 환경 — 현재 graph 에 직접 필드 없으므로 false.
             // 후속 PR 에서 BundleOptions.configurable_exports 또는 platform=react-native 기반 결정.
             .configurable_exports = false,
@@ -1516,30 +1504,16 @@ pub const ModuleGraph = struct {
 
         const parser_node_count: u32 = @intCast(ast_ptr.nodes.items.len);
 
-        var transformer = Transformer.init(arena_alloc, ast_ptr, .{
-            .react_refresh = self.react_refresh and is_user_code,
-            .plugins = merged_plugins,
-            .define = self.defines, // transformer.DefineEntry 는 scan_results.DefineEntry 의 alias
-            .experimental_decorators = self.experimental_decorators,
-            .emit_decorator_metadata = self.emit_decorator_metadata,
-            .use_define_for_class_fields = self.use_define_for_class_fields,
-            .verbatim_module_syntax = self.verbatim_module_syntax,
-            .unsupported = self.unsupported,
-            .drop_labels = self.drop_labels,
-            .jsx_transform = ast_ptr.has_jsx,
-            .jsx_runtime = self.jsx_runtime,
-            .jsx_factory = self.jsx_factory,
-            .jsx_fragment = self.jsx_fragment,
-            .jsx_import_source = self.jsx_import_source,
-            .jsx_filename = module.path,
-            .worklet_plugin_version = self.worklet_plugin_version,
-            .minify_syntax = self.minify_syntax,
-            .minify_whitespace = self.minify_whitespace,
-            .keep_names = self.keep_names,
-            // #1961 단계 4 의 single-bundle 회귀 (helper module declaration 이 statement
-            // shake 로 elide) 가 fix 되기 전까지 code splitting 모드에서만 활성.
-            .emit_runtime_helper_imports = self.code_splitting,
-        }) catch return;
+        var opts = self.transform_options_base;
+        opts.react_refresh = self.react_refresh and is_user_code;
+        opts.plugins = merged_plugins;
+        opts.jsx_transform = ast_ptr.has_jsx;
+        opts.jsx_filename = module.path;
+        // #1961 단계 4 의 single-bundle 회귀 (helper module declaration 이 statement
+        // shake 로 elide) 가 fix 되기 전까지 code splitting 모드에서만 활성.
+        opts.emit_runtime_helper_imports = self.code_splitting;
+
+        var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
 
         if (module.semantic) |sem| {
             transformer.initSymbolIds(sem.symbol_ids) catch return;
