@@ -1707,6 +1707,19 @@ test "ES2015: super property update expression receiver 보존" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"x\",this)++") == null);
 }
 
+test "ES2015: static super access는 parent constructor 참조" {
+    var r1 = try e2eTarget(std.testing.allocator, "class C extends P{static m(){return super.x+super.m();}}", .es5);
+    defer r1.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "__superGet(_super,\"x\",this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "_super.m.call(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "_super.prototype") == null);
+
+    var r2 = try e2eTarget(std.testing.allocator, "class C extends P{static x=super.y;}", .es5);
+    defer r2.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "__superGet(_super,\"y\",C)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "_super.prototype") == null);
+}
+
 // --- class getter/setter ---
 
 test "ES2015: class getter/setter paired" {
