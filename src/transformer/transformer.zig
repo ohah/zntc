@@ -3071,7 +3071,44 @@ pub const Transformer = struct {
         return result;
     }
 
-    /// block_statement 바디 앞에 this.x = x; 문들을 삽입한다.
+    /// `this.x = x;` 형태의 expression_statement 노드들을 만들어 반환한다.
+    /// ES5 다운레벨링에서 derived class 는 super() 뒤에 _this 별칭으로 emit,
+    /// base class 는 body 앞에 prepend — caller 가 결정한다.
+    /// 결과 slice 는 transformer 의 NodeList 풀에 등록되므로 즉시 소비할 것.
+    pub fn buildParameterPropertyStatements(self: *Transformer, prop_names: []const NodeIndex) Error!NodeList {
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+        for (prop_names) |name_idx| {
+            const name_node = self.ast.getNode(name_idx);
+            const this_node = try self.ast.addNode(.{
+                .tag = .this_expression,
+                .span = name_node.span,
+                .data = .{ .none = 0 },
+            });
+            const member_extra = try self.ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(name_idx), 0 });
+            const member = try self.ast.addNode(.{
+                .tag = .static_member_expression,
+                .span = name_node.span,
+                .data = .{ .extra = member_extra },
+            });
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = name_node.span,
+                .data = .{ .binary = .{ .left = member, .right = name_idx, .flags = 0 } },
+            });
+            const stmt = try self.ast.addNode(.{
+                .tag = .expression_statement,
+                .span = name_node.span,
+                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+            });
+            try self.scratch.append(self.allocator, stmt);
+        }
+        return try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    }
+
+    /// block_statement 바디 앞에 this.x = x; 문들을 삽입한다 (base class ctor 용).
+    /// derived class 는 super() 호출 이전에 박으면 super() 후 새 인스턴스에 손실되므로 사용 금지 —
+    /// `buildParameterPropertyStatements` + `postProcessDerivedConstructorBody` 경로를 사용하라.
     pub fn insertParameterPropertyAssignments(self: *Transformer, body_idx: NodeIndex, prop_names: []const NodeIndex) Error!NodeIndex {
         const body = self.ast.getNode(body_idx);
         if (body.tag != .block_statement) return body_idx;
@@ -3080,42 +3117,12 @@ pub const Transformer = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        // this.x = x 문들을 먼저 추가
-        for (prop_names) |name_idx| {
-            const name_node = self.ast.getNode(name_idx);
-            // this 노드
-            const this_node = try self.ast.addNode(.{
-                .tag = .this_expression,
-                .span = name_node.span,
-                .data = .{ .none = 0 },
-            });
-            // this.x (static member) — extra = [object, property, flags]
-            const member_extra = try self.ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(name_idx), 0 });
-            const member = try self.ast.addNode(.{
-                .tag = .static_member_expression,
-                .span = name_node.span,
-                .data = .{ .extra = member_extra },
-            });
-            // this.x = x (assignment)
-            const assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = name_node.span,
-                .data = .{ .binary = .{ .left = member, .right = name_idx, .flags = 0 } },
-            });
-            // expression_statement
-            const stmt = try self.ast.addNode(.{
-                .tag = .expression_statement,
-                .span = name_node.span,
-                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
-            });
-            try self.scratch.append(self.allocator, stmt);
-        }
+        const pp_list = try self.buildParameterPropertyStatements(prop_names);
+        const pp_stmts = self.ast.extra_data.items[pp_list.start .. pp_list.start + pp_list.len];
+        for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
 
-        // 기존 바디 문들을 추가
         const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
-        for (old_stmts) |raw_idx| {
-            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
-        }
+        for (old_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
 
         const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
         return self.ast.addNode(.{
