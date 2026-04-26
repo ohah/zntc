@@ -307,6 +307,50 @@ pub const CALL_SUPER_RUNTIME =
 ;
 pub const CALL_SUPER_RUNTIME_MIN = "var " ++ NAMES.CALL_SUPER_MIN ++ "=function(_this,Parent,args){if(typeof Reflect!==\"undefined\"&&typeof Reflect.construct===\"function\")return Reflect.construct(Parent,args||[],_this.constructor);var result=Parent.apply(_this,args);if(result&&(typeof result===\"object\"||typeof result===\"function\"))return result;return _this};";
 
+/// __superGet/__superSet: super property 접근 시 receiver(this)를 보존한다.
+/// `Parent.prototype.x` 직접 접근은 getter/setter의 this를 Parent.prototype으로 바꾸므로
+/// ES2015 [[Get]]/[[Set]]의 receiver 인자를 helper에서 명시적으로 전달한다.
+pub const SUPER_GET_RUNTIME =
+    \\var __superGet = function(parent, prop, receiver) {
+    \\  var desc;
+    \\  while (parent) {
+    \\    desc = Object.getOwnPropertyDescriptor(parent, prop);
+    \\    if (desc) {
+    \\      if (desc.get) return desc.get.call(receiver);
+    \\      return desc.value;
+    \\    }
+    \\    parent = Object.getPrototypeOf(parent);
+    \\  }
+    \\};
+    \\
+;
+pub const SUPER_GET_RUNTIME_MIN = "var " ++ NAMES.SUPER_GET_MIN ++ "=function(parent,prop,receiver){var desc;while(parent){desc=Object.getOwnPropertyDescriptor(parent,prop);if(desc){if(desc.get)return desc.get.call(receiver);return desc.value}parent=Object.getPrototypeOf(parent)}};";
+
+pub const SUPER_SET_RUNTIME =
+    \\var __superSet = function(parent, prop, value, receiver) {
+    \\  var desc;
+    \\  while (parent) {
+    \\    desc = Object.getOwnPropertyDescriptor(parent, prop);
+    \\    if (desc) {
+    \\      if (desc.set) {
+    \\        desc.set.call(receiver, value);
+    \\        return value;
+    \\      }
+    \\      if (desc.writable) {
+    \\        receiver[prop] = value;
+    \\        return value;
+    \\      }
+    \\      throw new TypeError("Cannot set property");
+    \\    }
+    \\    parent = Object.getPrototypeOf(parent);
+    \\  }
+    \\  receiver[prop] = value;
+    \\  return value;
+    \\};
+    \\
+;
+pub const SUPER_SET_RUNTIME_MIN = "var " ++ NAMES.SUPER_SET_MIN ++ "=function(parent,prop,value,receiver){var desc;while(parent){desc=Object.getOwnPropertyDescriptor(parent,prop);if(desc){if(desc.set){desc.set.call(receiver,value);return value}if(desc.writable){receiver[prop]=value;return value}throw new TypeError(\"Cannot set property\")}parent=Object.getPrototypeOf(parent)}receiver[prop]=value;return value};";
+
 /// __async: async/await → generator 변환 시 주입 (esbuild 호환).
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
 ///
@@ -1094,6 +1138,12 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.call_super) {
         try buf.appendSlice(allocator, if (minify) CALL_SUPER_RUNTIME_MIN else CALL_SUPER_RUNTIME);
+    }
+    if (helpers.super_get) {
+        try buf.appendSlice(allocator, if (minify) SUPER_GET_RUNTIME_MIN else SUPER_GET_RUNTIME);
+    }
+    if (helpers.super_set) {
+        try buf.appendSlice(allocator, if (minify) SUPER_SET_RUNTIME_MIN else SUPER_SET_RUNTIME);
     }
     if (helpers.tagged_template_literal) {
         try buf.appendSlice(allocator, if (minify) TAGGED_TEMPLATE_RUNTIME_MIN else TAGGED_TEMPLATE_RUNTIME);

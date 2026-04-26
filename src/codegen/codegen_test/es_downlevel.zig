@@ -1671,6 +1671,42 @@ test "ES2015: super.method() call" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.m.call(this)") != null);
 }
 
+test "ES2015: super property get/set receiver 보존" {
+    var r1 = try e2eTarget(std.testing.allocator, "class C extends P{m(){return super.x;}}", .es5);
+    defer r1.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "__superGet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "_super.prototype.x") == null);
+
+    var r2 = try e2eTarget(std.testing.allocator, "class C extends P{m(){super.x=1;}}", .es5);
+    defer r2.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "__superSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "_super.prototype.x=1") == null);
+}
+
+test "ES2015: super property compound assignment receiver 보존" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){super.x += 2;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_super.prototype.x+2") == null);
+}
+
+test "ES2015: computed super property assignment key 단일 평가" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){super[key()] += 2;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_a=key()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,_a,this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet(_super.prototype,_a") != null);
+}
+
+test "ES2015: super property update expression receiver 보존" {
+    var r = try e2eTarget(std.testing.allocator, "class C extends P{m(){return super.x++;}}", .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superSet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__superGet(_super.prototype,\"x\",this)++") == null);
+}
+
 // --- class getter/setter ---
 
 test "ES2015: class getter/setter paired" {

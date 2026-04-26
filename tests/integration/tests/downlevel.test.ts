@@ -1325,6 +1325,131 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("Hello WORLD!");
     });
 
+    test("super property get/set receiver 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              v = 2;
+              get x() {
+                return this.v;
+              }
+              set x(value: number) {
+                this.v = value;
+              }
+            }
+            class Child extends Base {
+              run() {
+                const before = super.x;
+                super.x = before + 3;
+                return this.v;
+              }
+            }
+            console.log(new Child().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+
+    test("super property compound assignment receiver 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              v = 2;
+              get x() {
+                return this.v;
+              }
+              set x(value: number) {
+                this.v = value;
+              }
+            }
+            class Child extends Base {
+              run() {
+                super.x += 3;
+                return this.v;
+              }
+            }
+            console.log(new Child().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5");
+    });
+
+    test("computed super property compound assignment key 단일 평가", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            let count = 0;
+            class Base {
+              v = 2;
+              get x() {
+                return this.v;
+              }
+              set x(value: number) {
+                this.v = value;
+              }
+            }
+            class Child extends Base {
+              key() {
+                count++;
+                return "x";
+              }
+              run() {
+                super[this.key()] += 3;
+                return this.v + ":" + count;
+              }
+            }
+            console.log(new Child().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("5:1");
+    });
+
+    test("super property update expression receiver 보존", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              v = 2;
+              get x() {
+                return this.v;
+              }
+              set x(value: number) {
+                this.v = value;
+              }
+            }
+            class Child extends Base {
+              run() {
+                return super.x++ + ":" + this.v;
+              }
+            }
+            console.log(new Child().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("2:3");
+    });
+
     // --- SWC 대비 추가 테스트: Destructuring ---
 
     test("sparse array destructuring", async () => {

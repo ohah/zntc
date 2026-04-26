@@ -132,6 +132,16 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.CALL_SUPER_RUNTIME, .min = rt.CALL_SUPER_RUNTIME_MIN },
     },
     .{
+        .short = "super-get",
+        .helpers = &.{"__superGet"},
+        .body = .{ .plain = rt.SUPER_GET_RUNTIME, .min = rt.SUPER_GET_RUNTIME_MIN },
+    },
+    .{
+        .short = "super-set",
+        .helpers = &.{"__superSet"},
+        .body = .{ .plain = rt.SUPER_SET_RUNTIME, .min = rt.SUPER_SET_RUNTIME_MIN },
+    },
+    .{
         .short = "rest",
         .helpers = &.{"__rest"},
         .body = .{ .plain = rt.REST_RUNTIME, .min = rt.REST_RUNTIME_MIN },

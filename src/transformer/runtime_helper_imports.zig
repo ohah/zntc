@@ -49,6 +49,8 @@ const HelperBit = enum {
     class_private_method_get,
     class_call_check,
     call_super,
+    super_get,
+    super_set,
     tagged_template_literal,
     using_ctx,
     class_static_private_field,
@@ -77,6 +79,8 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .class_private_method_get, .bases = &.{"__classPrivateMethodGet"} },
     .{ .bit = .class_call_check, .bases = &.{"__classCallCheck"} },
     .{ .bit = .call_super, .bases = &.{"__callSuper"} },
+    .{ .bit = .super_get, .bases = &.{"__superGet"} },
+    .{ .bit = .super_set, .bases = &.{"__superSet"} },
     .{ .bit = .tagged_template_literal, .bases = &.{"__taggedTemplateLiteral"} },
     .{ .bit = .using_ctx, .bases = &.{ "__using", "__callDispose" } },
     .{ .bit = .class_static_private_field, .bases = &.{
