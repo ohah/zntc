@@ -575,6 +575,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         // default: { a = 1 } → var a = _ref.a === void 0 ? 1 : _ref.a
                         const binding = try self.visitNode(value_node.data.binary.left);
                         const default_val = try self.visitNode(value_node.data.binary.right);
+                        try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
                         const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
                         const decl = try es_helpers.makeDeclarator(self, binding, defaulted, span);
                         try self.scratch.append(self.allocator, decl);
@@ -624,6 +625,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     // default: [x = 1] → var x = _ref[0] === void 0 ? 1 : _ref[0]
                     const binding = try self.visitNode(elem.data.binary.left);
                     const default_val = try self.visitNode(elem.data.binary.right);
+                    try rewritePatternDefaultTDZ(self, default_val, pattern, idx);
                     const void_zero = try es_helpers.makeVoidZero(self, span);
                     const elem_access2 = try makeArrayAccess(self, ref_span, idx, span);
                     const eq_check = try self.ast.addNode(.{
@@ -698,6 +700,49 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // slice(N)
             const idx_node = try es_helpers.makeNumericLiteral(self, @intCast(start_idx));
             return es_helpers.makeCallExpr(self, callee, &.{idx_node}, span);
+        }
+
+        fn rewritePatternDefaultTDZ(self: *Transformer, default_val: NodeIndex, pattern: Node, start_idx: u32) Transformer.Error!void {
+            var names: std.ArrayList(Span) = .empty;
+            defer names.deinit(self.allocator);
+            try collectPatternBindingNamesFrom(self, pattern, start_idx, &names);
+            try es_helpers.rewriteTDZReferences(self, default_val, names.items);
+        }
+
+        fn collectPatternBindingNamesFrom(self: *Transformer, pattern: Node, start_idx: u32, out: *std.ArrayList(Span)) Transformer.Error!void {
+            const split = self.ast.nodeListSplitRest(pattern.data.list);
+            const non_rest_len: u32 = @intCast(split.elements.len);
+            var i: u32 = start_idx;
+            while (i < non_rest_len) : (i += 1) {
+                const raw = self.ast.extra_data.items[pattern.data.list.start + i];
+                try collectBindingNames(self, @enumFromInt(raw), out);
+            }
+            if (split.rest_operand) |rest| try collectBindingNames(self, rest, out);
+        }
+
+        fn collectBindingNames(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(Span)) Transformer.Error!void {
+            if (idx.isNone()) return;
+            const node = self.ast.getNode(idx);
+            switch (node.tag) {
+                .binding_identifier, .identifier_reference, .assignment_target_identifier => {
+                    try out.append(self.allocator, node.data.string_ref);
+                },
+                .assignment_pattern, .assignment_target_with_default => {
+                    try collectBindingNames(self, node.data.binary.left, out);
+                },
+                .rest_element, .binding_rest_element, .assignment_target_rest => {
+                    try collectBindingNames(self, node.data.unary.operand, out);
+                },
+                .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
+                    const value = node.data.binary.right;
+                    try collectBindingNames(self, if (value.isNone()) node.data.binary.left else value, out);
+                },
+                .object_pattern, .array_pattern, .object_assignment_target, .array_assignment_target => {
+                    const items = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
+                    for (items) |raw| try collectBindingNames(self, @enumFromInt(raw), out);
+                },
+                else => {},
+            }
         }
 
         /// rest = __rest(_ref, ["key1", "key2"]) declarator 생성.

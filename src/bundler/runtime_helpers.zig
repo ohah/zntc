@@ -374,6 +374,15 @@ pub const DERIVED_CONSTRUCTOR_RUNTIME_MIN =
     "var " ++ NAMES.ASSERT_THIS_UNINITIALIZED_MIN ++ "=function(self){if(self!==void 0)throw new ReferenceError(\"Super constructor may only be called once\")};" ++
     "var " ++ NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN ++ "=function(self,call){if(call&&(typeof call===\"object\"||typeof call===\"function\"))return call;if(call!==void 0)throw new TypeError(\"Derived constructors may only return object or undefined\");return " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "(self)};";
 
+/// ES2015 TDZ read helper. Babel/OXC runtime의 tdz helper와 같은 역할이다.
+pub const TDZ_RUNTIME =
+    \\var __tdz = function(name) {
+    \\  throw new ReferenceError(name + " is not defined - temporal dead zone");
+    \\};
+    \\
+;
+pub const TDZ_RUNTIME_MIN = "var " ++ NAMES.TDZ_MIN ++ "=function(name){throw new ReferenceError(name+\" is not defined - temporal dead zone\")};";
+
 /// __async: async/await → generator 변환 시 주입 (esbuild 호환).
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
 ///
@@ -1170,6 +1179,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.derived_constructor) {
         try buf.appendSlice(allocator, if (minify) DERIVED_CONSTRUCTOR_RUNTIME_MIN else DERIVED_CONSTRUCTOR_RUNTIME);
+    }
+    if (helpers.tdz) {
+        try buf.appendSlice(allocator, if (minify) TDZ_RUNTIME_MIN else TDZ_RUNTIME);
     }
     if (helpers.tagged_template_literal) {
         try buf.appendSlice(allocator, if (minify) TAGGED_TEMPLATE_RUNTIME_MIN else TAGGED_TEMPLATE_RUNTIME);
