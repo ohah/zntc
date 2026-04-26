@@ -1643,6 +1643,66 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("true true");
     });
 
+    test("derived constructor return super 포함 복합 표현식", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            function asUndefined(x: unknown) {
+              return undefined;
+            }
+            function asPrimitive(x: unknown) {
+              return 1;
+            }
+            function asObject(x: unknown) {
+              return { ok: 1 };
+            }
+            class Base {}
+            class FromComma extends Base {
+              constructor() {
+                return (super(), undefined);
+              }
+            }
+            class FromCallObject extends Base {
+              constructor() {
+                return asObject(super()) as any;
+              }
+            }
+            class FromCallPrimitive extends Base {
+              constructor() {
+                return asPrimitive(super()) as any;
+              }
+            }
+            class FromConditional extends Base {
+              constructor(flag: boolean) {
+                return flag ? asUndefined(super()) : undefined;
+              }
+            }
+
+            const comma = new FromComma();
+            const objectResult = new FromCallObject() as any;
+            console.log(comma instanceof FromComma, objectResult.ok);
+            try {
+              new FromCallPrimitive();
+            } catch (e) {
+              console.log((e as Error).constructor.name);
+            }
+            try {
+              const conditional = new FromConditional(true);
+              console.log(conditional instanceof FromConditional);
+              new FromConditional(false);
+            } catch (e) {
+              console.log((e as Error).constructor.name);
+            }
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("true 1\nTypeError\ntrue\nReferenceError");
+    });
+
     test("derived constructor super 두 번 호출 검사", async () => {
       const result = await bundleAndRun(
         {
