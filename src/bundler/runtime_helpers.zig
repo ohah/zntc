@@ -351,6 +351,29 @@ pub const SUPER_SET_RUNTIME =
 ;
 pub const SUPER_SET_RUNTIME_MIN = "var " ++ NAMES.SUPER_SET_MIN ++ "=function(parent,prop,value,receiver){var desc;while(parent){desc=Object.getOwnPropertyDescriptor(parent,prop);if(desc){if(desc.set){desc.set.call(receiver,value);return value}if(desc.writable){receiver[prop]=value;return value}throw new TypeError(\"Cannot set property\")}parent=Object.getPrototypeOf(parent)}receiver[prop]=value;return value};";
 
+/// derived constructor의 `this` 초기화 상태를 ES5 출력에서 보존한다.
+/// Babel/SWC helper와 같은 역할: super() 전 this 접근, super() 중복 호출,
+/// primitive return을 런타임에서 spec에 맞게 throw한다.
+pub const DERIVED_CONSTRUCTOR_RUNTIME =
+    \\var __assertThisInitialized = function(self) {
+    \\  if (self === void 0) throw new ReferenceError("this hasn't been initialised - super() hasn't been called");
+    \\  return self;
+    \\};
+    \\var __assertThisUninitialized = function(self) {
+    \\  if (self !== void 0) throw new ReferenceError("Super constructor may only be called once");
+    \\};
+    \\var __possibleConstructorReturn = function(self, call) {
+    \\  if (call && (typeof call === "object" || typeof call === "function")) return call;
+    \\  if (call !== void 0) throw new TypeError("Derived constructors may only return object or undefined");
+    \\  return __assertThisInitialized(self);
+    \\};
+    \\
+;
+pub const DERIVED_CONSTRUCTOR_RUNTIME_MIN =
+    "var " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "=function(self){if(self===void 0)throw new ReferenceError(\"this hasn't been initialised - super() hasn't been called\");return self};" ++
+    "var " ++ NAMES.ASSERT_THIS_UNINITIALIZED_MIN ++ "=function(self){if(self!==void 0)throw new ReferenceError(\"Super constructor may only be called once\")};" ++
+    "var " ++ NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN ++ "=function(self,call){if(call&&(typeof call===\"object\"||typeof call===\"function\"))return call;if(call!==void 0)throw new TypeError(\"Derived constructors may only return object or undefined\");return " ++ NAMES.ASSERT_THIS_INITIALIZED_MIN ++ "(self)};";
+
 /// __async: async/await → generator 변환 시 주입 (esbuild 호환).
 /// generator-to-Promise wrapper. this/arguments를 fn.apply로 보존.
 ///
@@ -1144,6 +1167,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
     if (helpers.super_set) {
         try buf.appendSlice(allocator, if (minify) SUPER_SET_RUNTIME_MIN else SUPER_SET_RUNTIME);
+    }
+    if (helpers.derived_constructor) {
+        try buf.appendSlice(allocator, if (minify) DERIVED_CONSTRUCTOR_RUNTIME_MIN else DERIVED_CONSTRUCTOR_RUNTIME);
     }
     if (helpers.tagged_template_literal) {
         try buf.appendSlice(allocator, if (minify) TAGGED_TEMPLATE_RUNTIME_MIN else TAGGED_TEMPLATE_RUNTIME);

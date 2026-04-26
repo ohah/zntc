@@ -36,6 +36,9 @@ pub const NAMES = struct {
     pub const CALL_SUPER_MIN = "$cS"; // __callSuper
     pub const SUPER_GET_MIN = "$sPg"; // __superGet
     pub const SUPER_SET_MIN = "$sPs"; // __superSet
+    pub const ASSERT_THIS_INITIALIZED_MIN = "$aT"; // __assertThisInitialized
+    pub const ASSERT_THIS_UNINITIALIZED_MIN = "$aU"; // __assertThisUninitialized
+    pub const POSSIBLE_CONSTRUCTOR_RETURN_MIN = "$pR"; // __possibleConstructorReturn
     pub const ASYNC_MIN = "$aS"; // __async (async/await → generator)
     pub const ASYNC_VALUES_MIN = "$aV"; // __asyncValues (for-await-of)
     pub const GENERATOR_MIN = "$gn"; // __generator
@@ -91,6 +94,9 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__callSuper", .short = NAMES.CALL_SUPER_MIN },
     .{ .base = "__superGet", .short = NAMES.SUPER_GET_MIN },
     .{ .base = "__superSet", .short = NAMES.SUPER_SET_MIN },
+    .{ .base = "__assertThisInitialized", .short = NAMES.ASSERT_THIS_INITIALIZED_MIN },
+    .{ .base = "__assertThisUninitialized", .short = NAMES.ASSERT_THIS_UNINITIALIZED_MIN },
+    .{ .base = "__possibleConstructorReturn", .short = NAMES.POSSIBLE_CONSTRUCTOR_RETURN_MIN },
     .{ .base = "__async", .short = NAMES.ASYNC_MIN },
     .{ .base = "__asyncValues", .short = NAMES.ASYNC_VALUES_MIN },
     .{ .base = "__generator", .short = NAMES.GENERATOR_MIN },

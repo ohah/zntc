@@ -1538,6 +1538,186 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("4:4");
     });
 
+    test("derived constructor super 전 this 접근 검사", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              base = 1;
+            }
+            class Child extends Base {
+              constructor() {
+                console.log(this);
+                super();
+              }
+            }
+            try {
+              new Child();
+            } catch (e) {
+              console.log((e as Error).constructor.name);
+            }
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ReferenceError");
+    });
+
+    test("derived constructor super 누락 this 사용 검사", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {
+              base = 1;
+            }
+            class Child extends Base {
+              constructor() {
+                this.x = 2;
+              }
+            }
+            try {
+              console.log(new Child().x);
+            } catch (e) {
+              console.log((e as Error).constructor.name);
+            }
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ReferenceError");
+    });
+
+    test("derived constructor primitive return 검사", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {}
+            class Child extends Base {
+              constructor() {
+                return 1;
+              }
+            }
+            try {
+              console.log(new Child());
+            } catch (e) {
+              console.log((e as Error).constructor.name);
+            }
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("TypeError");
+    });
+
+    test("derived constructor super 두 번 호출 검사", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {}
+            class Child extends Base {
+              constructor() {
+                super();
+                super();
+              }
+            }
+            try {
+              new Child();
+              console.log("ok");
+            } catch (e) {
+              console.log((e as Error).constructor.name);
+            }
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("ReferenceError");
+    });
+
+    test("derived constructor 객체 반환은 super 없이 허용", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {}
+            class Child extends Base {
+              constructor() {
+                return { ok: 1 } as any;
+              }
+            }
+            console.log((new Child() as any).ok);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1");
+    });
+
+    test("derived constructor 중첩 함수 return은 건드리지 않음", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {}
+            class Child extends Base {
+              constructor() {
+                super();
+                function inner() {
+                  return 1;
+                }
+                console.log(inner());
+              }
+            }
+            new Child();
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1");
+    });
+
+    test("derived constructor 분기 super의 instance field는 실행 경로 안에서 초기화", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {}
+            class Child extends Base {
+              y = 1;
+              constructor(flag: boolean) {
+                if (flag) super();
+              }
+            }
+            try {
+              console.log(new Child(true).y);
+              new Child(false);
+            } catch (e) {
+              console.log((e as Error).constructor.name);
+            }
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1\nReferenceError");
+    });
+
     // --- SWC 대비 추가 테스트: Destructuring ---
 
     test("sparse array destructuring", async () => {
