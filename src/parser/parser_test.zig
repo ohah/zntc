@@ -1749,6 +1749,16 @@ test "Parser: super outside method is error" {
     try std.testing.expect(parser.errors.items.len > 0);
 }
 
+test "Parser: super?.() is syntax error" {
+    var scanner = try Scanner.init(std.testing.allocator, "class C extends B { test() { return super?.(); } }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    try std.testing.expect(parser.errors.items.len > 0);
+}
+
 test "Parser: new.target outside function is error" {
     var scanner = try Scanner.init(std.testing.allocator, "new.target;");
     defer scanner.deinit();

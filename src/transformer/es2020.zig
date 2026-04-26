@@ -145,23 +145,11 @@ pub fn ES2020(comptime Transformer: type) type {
                 chain_base = mc.chain_base;
             } else if (simple) {
                 null_check_base = visited_base;
-                chain_base = try self.ast.addNode(self.ast.getNode(visited_base));
-                // symbol_id 전파: 복제된 노드에도 rename이 적용되도록
-                self.copySymbolId(visited_base, chain_base);
+                chain_base = try helpers.cloneNode(self, visited_base);
             } else {
-                const temp_span = try helpers.makeTempVarSpan(self);
-                const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
-                const assign_node = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = node.span,
-                    .data = .{ .binary = .{
-                        .left = temp_ref1,
-                        .right = visited_base,
-                        .flags = @intFromEnum(token_mod.Kind.eq),
-                    } },
-                });
-                null_check_base = try helpers.makeParenExpr(self, assign_node, node.span);
-                chain_base = try helpers.makeTempVarRef(self, temp_span, node.span);
+                const cap = try helpers.captureToTemp(self, visited_base, node.span);
+                null_check_base = cap.paren_assign;
+                chain_base = try helpers.makeTempVarRef(self, cap.span, node.span);
             }
 
             const rebuilt_chain = if (optional_member_call) |mc|
@@ -185,6 +173,9 @@ pub fn ES2020(comptime Transformer: type) type {
             return helpers.makeParenExpr(self, cond, node.span);
         }
 
+        /// `prepareOptionalMemberCall` 의 두 가지 반환 모드.
+        /// - `full_result == null`: caller 가 `null_check_base/chain_base/receiver` 를 사용해 outer ternary 를 마저 만든다.
+        /// - `full_result != null`: lowering 이 모두 끝난 단일 expression 으로, caller 는 그대로 반환한다.
         const OptionalMemberCall = struct {
             null_check_base: NodeIndex,
             chain_base: NodeIndex,
@@ -194,18 +185,6 @@ pub fn ES2020(comptime Transformer: type) type {
 
         fn prepareOptionalMemberCall(self: *Transformer, root: Node, base_idx: NodeIndex) Transformer.Error!?OptionalMemberCall {
             if (!isOptionalCallBase(self, root, base_idx)) return null;
-
-            if (isSuperExpression(self, base_idx)) {
-                if (try lowerOptionalCallWithSuperReceiver(self, root)) |result| {
-                    return .{
-                        .null_check_base = result,
-                        .chain_base = result,
-                        .receiver = result,
-                        .full_result = result,
-                    };
-                }
-                return null;
-            }
 
             const base = self.ast.getNode(base_idx);
             switch (base.tag) {
@@ -232,21 +211,10 @@ pub fn ES2020(comptime Transformer: type) type {
 
             if (isSuperExpression(self, old_obj)) {
                 const member = try makeSuperMethodMember(self, base.tag, old_prop, flags, root.span);
-                const fn_temp_span = try helpers.makeTempVarSpan(self);
-                const fn_temp_lhs = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
-                const fn_assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = root.span,
-                    .data = .{ .binary = .{
-                        .left = fn_temp_lhs,
-                        .right = member,
-                        .flags = @intFromEnum(token_mod.Kind.eq),
-                    } },
-                });
-
+                const cap = try helpers.captureToTemp(self, member, root.span);
                 return .{
-                    .null_check_base = try helpers.makeParenExpr(self, fn_assign, root.span),
-                    .chain_base = try helpers.makeTempVarRef(self, fn_temp_span, root.span),
+                    .null_check_base = cap.paren_assign,
+                    .chain_base = try helpers.makeTempVarRef(self, cap.span, root.span),
                     .receiver = try makeThisOrAlias(self, root.span),
                 };
             }
@@ -258,22 +226,11 @@ pub fn ES2020(comptime Transformer: type) type {
             var receiver: NodeIndex = undefined;
             if (obj_simple) {
                 member_obj = visited_obj;
-                receiver = try self.ast.addNode(self.ast.getNode(visited_obj));
-                self.copySymbolId(visited_obj, receiver);
+                receiver = try helpers.cloneNode(self, visited_obj);
             } else {
-                const obj_temp_span = try helpers.makeTempVarSpan(self);
-                const obj_temp_lhs = try helpers.makeTempVarRef(self, obj_temp_span, root.span);
-                const obj_assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = root.span,
-                    .data = .{ .binary = .{
-                        .left = obj_temp_lhs,
-                        .right = visited_obj,
-                        .flags = @intFromEnum(token_mod.Kind.eq),
-                    } },
-                });
-                member_obj = try helpers.makeParenExpr(self, obj_assign, root.span);
-                receiver = try helpers.makeTempVarRef(self, obj_temp_span, root.span);
+                const obj_cap = try helpers.captureToTemp(self, visited_obj, root.span);
+                member_obj = obj_cap.paren_assign;
+                receiver = try helpers.makeTempVarRef(self, obj_cap.span, root.span);
             }
 
             const new_prop = try self.visitNode(old_prop);
@@ -281,21 +238,10 @@ pub fn ES2020(comptime Transformer: type) type {
             const member_extra = try self.ast.addExtras(&.{ @intFromEnum(member_obj), @intFromEnum(new_prop), member_flags });
             const member = try self.ast.addNode(.{ .tag = base.tag, .span = base.span, .data = .{ .extra = member_extra } });
 
-            const fn_temp_span = try helpers.makeTempVarSpan(self);
-            const fn_temp_lhs = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
-            const fn_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = root.span,
-                .data = .{ .binary = .{
-                    .left = fn_temp_lhs,
-                    .right = member,
-                    .flags = @intFromEnum(token_mod.Kind.eq),
-                } },
-            });
-
+            const fn_cap = try helpers.captureToTemp(self, member, root.span);
             return .{
-                .null_check_base = try helpers.makeParenExpr(self, fn_assign, root.span),
-                .chain_base = try helpers.makeTempVarRef(self, fn_temp_span, root.span),
+                .null_check_base = fn_cap.paren_assign,
+                .chain_base = try helpers.makeTempVarRef(self, fn_cap.span, root.span),
                 .receiver = receiver,
             };
         }
@@ -312,7 +258,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const call_e = root.data.extra;
             const old_callee = self.readNodeIdx(call_e, 0);
             const call_flags = self.readU32(call_e, 3);
-            if (!sameNodeIndex(old_callee, base_idx) or (call_flags & ast_mod.CallFlags.optional_chain) == 0) {
+            if (old_callee != base_idx or (call_flags & ast_mod.CallFlags.optional_chain) == 0) {
                 return null;
             }
 
@@ -328,71 +274,26 @@ pub fn ES2020(comptime Transformer: type) type {
             var receiver: NodeIndex = undefined;
             if (obj_simple) {
                 receiver_check = visited_obj;
-                member_obj = try self.ast.addNode(self.ast.getNode(visited_obj));
-                self.copySymbolId(visited_obj, member_obj);
-                receiver = try self.ast.addNode(self.ast.getNode(visited_obj));
-                self.copySymbolId(visited_obj, receiver);
+                member_obj = try helpers.cloneNode(self, visited_obj);
+                receiver = try helpers.cloneNode(self, visited_obj);
             } else {
-                const obj_temp_span = try helpers.makeTempVarSpan(self);
-                const obj_temp_lhs = try helpers.makeTempVarRef(self, obj_temp_span, root.span);
-                const obj_assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = root.span,
-                    .data = .{ .binary = .{
-                        .left = obj_temp_lhs,
-                        .right = visited_obj,
-                        .flags = @intFromEnum(token_mod.Kind.eq),
-                    } },
-                });
-                receiver_check = try helpers.makeParenExpr(self, obj_assign, root.span);
-                member_obj = try helpers.makeTempVarRef(self, obj_temp_span, root.span);
-                receiver = try helpers.makeTempVarRef(self, obj_temp_span, root.span);
+                const cap = try helpers.captureToTemp(self, visited_obj, root.span);
+                receiver_check = cap.paren_assign;
+                member_obj = try helpers.makeTempVarRef(self, cap.span, root.span);
+                receiver = try helpers.makeTempVarRef(self, cap.span, root.span);
             }
 
             const new_prop = try self.visitNode(old_prop);
             const new_member_flags = member_flags & ~ast_mod.MemberFlags.optional_chain;
             const member_extra = try self.ast.addExtras(&.{ @intFromEnum(member_obj), @intFromEnum(new_prop), new_member_flags });
+            const base_node = self.ast.getNode(base_idx);
             const member = try self.ast.addNode(.{
-                .tag = self.ast.getNode(base_idx).tag,
-                .span = self.ast.getNode(base_idx).span,
+                .tag = base_node.tag,
+                .span = base_node.span,
                 .data = .{ .extra = member_extra },
             });
 
-            const fn_temp_span = try helpers.makeTempVarSpan(self);
-            const fn_temp_lhs = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
-            const fn_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = root.span,
-                .data = .{ .binary = .{
-                    .left = fn_temp_lhs,
-                    .right = member,
-                    .flags = @intFromEnum(token_mod.Kind.eq),
-                } },
-            });
-            const fn_check = try helpers.makeParenExpr(self, fn_assign, root.span);
-            const inner_eq_null = try helpers.makeEqNull(self, fn_check, root.span);
-
-            const call_prop = try helpers.makeIdentifierRef(self, "call");
-            const fn_ref = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
-            const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, root.span);
-
-            const args_start = self.readU32(call_e, 1);
-            const args_len = self.readU32(call_e, 2);
-            const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
-            var call_args = std.ArrayList(NodeIndex).empty;
-            try call_args.ensureTotalCapacity(self.allocator, new_args.len + 1);
-            call_args.appendAssumeCapacity(receiver);
-            var i: u32 = 0;
-            while (i < new_args.len) : (i += 1) {
-                call_args.appendAssumeCapacity(@enumFromInt(self.ast.extra_data.items[new_args.start + i]));
-            }
-            const call = try helpers.makeCallExpr(self, call_member, call_args.items, root.span);
-
-            const inner = try self.ast.addNode(.{
-                .tag = .conditional_expression,
-                .span = root.span,
-                .data = .{ .ternary = .{ .a = inner_eq_null, .b = try helpers.makeVoidZero(self, root.span), .c = call } },
-            });
+            const inner = try buildOptionalCallEpilogue(self, member, receiver, call_e, root.span);
             const outer_eq_null = try helpers.makeEqNull(self, receiver_check, root.span);
             const outer = try self.ast.addNode(.{
                 .tag = .conditional_expression,
@@ -409,69 +310,38 @@ pub fn ES2020(comptime Transformer: type) type {
             old_prop: NodeIndex,
             member_flags: u32,
         ) Transformer.Error!NodeIndex {
-            const call_e = root.data.extra;
             const member = try makeSuperMethodMember(self, self.ast.getNode(base_idx).tag, old_prop, member_flags, root.span);
+            const receiver = try makeThisOrAlias(self, root.span);
+            const cond = try buildOptionalCallEpilogue(self, member, receiver, root.data.extra, root.span);
+            return helpers.makeParenExpr(self, cond, root.span);
+        }
 
-            const fn_temp_span = try helpers.makeTempVarSpan(self);
-            const fn_temp_lhs = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
-            const fn_assign = try self.ast.addNode(.{
-                .tag = .assignment_expression,
-                .span = root.span,
-                .data = .{ .binary = .{
-                    .left = fn_temp_lhs,
-                    .right = member,
-                    .flags = @intFromEnum(token_mod.Kind.eq),
-                } },
-            });
-            const fn_check = try helpers.makeParenExpr(self, fn_assign, root.span);
-            const eq_null = try helpers.makeEqNull(self, fn_check, root.span);
+        /// `(fn = member); fn == null ? void 0 : fn.call(receiver, ...args)` 의 inner ternary 를 만든다.
+        /// receiver 측 outer null check 가 필요한 경우 caller 가 한 번 더 감싼다.
+        fn buildOptionalCallEpilogue(
+            self: *Transformer,
+            member: NodeIndex,
+            receiver: NodeIndex,
+            call_e: u32,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            const fn_cap = try helpers.captureToTemp(self, member, span);
+            const eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, span);
 
             const call_prop = try helpers.makeIdentifierRef(self, "call");
-            const fn_ref = try helpers.makeTempVarRef(self, fn_temp_span, root.span);
-            const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, root.span);
+            const fn_ref = try helpers.makeTempVarRef(self, fn_cap.span, span);
+            const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, span);
 
             const args_start = self.readU32(call_e, 1);
             const args_len = self.readU32(call_e, 2);
             const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
-            const receiver = try makeThisOrAlias(self, root.span);
+            const call = try helpers.makeCallExprPrepend(self, call_member, receiver, new_args, span);
 
-            var call_args = std.ArrayList(NodeIndex).empty;
-            try call_args.ensureTotalCapacity(self.allocator, new_args.len + 1);
-            call_args.appendAssumeCapacity(receiver);
-            var i: u32 = 0;
-            while (i < new_args.len) : (i += 1) {
-                call_args.appendAssumeCapacity(@enumFromInt(self.ast.extra_data.items[new_args.start + i]));
-            }
-            const call = try helpers.makeCallExpr(self, call_member, call_args.items, root.span);
-
-            const cond = try self.ast.addNode(.{
+            return self.ast.addNode(.{
                 .tag = .conditional_expression,
-                .span = root.span,
-                .data = .{ .ternary = .{ .a = eq_null, .b = try helpers.makeVoidZero(self, root.span), .c = call } },
+                .span = span,
+                .data = .{ .ternary = .{ .a = eq_null, .b = try helpers.makeVoidZero(self, span), .c = call } },
             });
-            return helpers.makeParenExpr(self, cond, root.span);
-        }
-
-        fn lowerOptionalCallWithSuperReceiver(self: *Transformer, root: Node) Transformer.Error!?NodeIndex {
-            if (root.tag != .call_expression) return null;
-            const call_e = root.data.extra;
-            const old_callee = self.readNodeIdx(call_e, 0);
-            const call_flags = self.readU32(call_e, 3);
-            if ((call_flags & ast_mod.CallFlags.optional_chain) == 0 or old_callee.isNone()) return null;
-
-            const callee = self.ast.getNode(old_callee);
-            switch (callee.tag) {
-                .static_member_expression, .computed_member_expression => {},
-                else => return null,
-            }
-
-            const member_e = callee.data.extra;
-            const old_obj = self.readNodeIdx(member_e, 0);
-            if (!isSuperExpression(self, old_obj)) return null;
-
-            const old_prop = self.readNodeIdx(member_e, 1);
-            const member_flags = self.readU32(member_e, 2);
-            return try lowerOptionalSuperMethodCall(self, root, old_callee, old_prop, member_flags);
         }
 
         fn isOptionalCallBase(self: *const Transformer, node: Node, base_idx: NodeIndex) bool {
@@ -480,7 +350,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     const e = node.data.extra;
                     const old_callee = self.readNodeIdx(e, 0);
                     const flags = self.readU32(e, 3);
-                    if ((flags & ast_mod.CallFlags.optional_chain) != 0 and sameNodeIndex(old_callee, base_idx)) {
+                    if ((flags & ast_mod.CallFlags.optional_chain) != 0 and old_callee == base_idx) {
                         return true;
                     }
                     if (old_callee.isNone()) return false;
@@ -493,10 +363,6 @@ pub fn ES2020(comptime Transformer: type) type {
                 },
                 else => return false,
             }
-        }
-
-        fn sameNodeIndex(a: NodeIndex, b: NodeIndex) bool {
-            return @intFromEnum(a) == @intFromEnum(b);
         }
 
         fn isSuperExpression(self: *const Transformer, idx: NodeIndex) bool {
@@ -679,17 +545,10 @@ pub fn ES2020(comptime Transformer: type) type {
                     const is_optional = (flags & ast_mod.CallFlags.optional_chain) != 0;
                     const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
 
-                    if (is_optional and sameNodeIndex(old_callee, optional_call_callee_idx)) {
+                    if (is_optional and old_callee == optional_call_callee_idx) {
                         const call_prop = try helpers.makeIdentifierRef(self, "call");
                         const call_member = try helpers.makeStaticMember(self, chain_base, call_prop, old_node.span);
-                        var args = std.ArrayList(NodeIndex).empty;
-                        try args.ensureTotalCapacity(self.allocator, new_args.len + 1);
-                        args.appendAssumeCapacity(receiver);
-                        var i: u32 = 0;
-                        while (i < new_args.len) : (i += 1) {
-                            args.appendAssumeCapacity(@enumFromInt(self.ast.extra_data.items[new_args.start + i]));
-                        }
-                        return helpers.makeCallExpr(self, call_member, args.items, old_node.span);
+                        return helpers.makeCallExprPrepend(self, call_member, receiver, new_args, old_node.span);
                     }
 
                     const new_callee = if (is_optional)
@@ -713,7 +572,7 @@ pub fn ES2020(comptime Transformer: type) type {
             if (!isEvalIdentifier(self, old_callee)) return chain_base;
 
             // `eval?.()`은 spec상 indirect eval이다. `eval()`로 재구성하면 direct eval이 되어
-            // local scope를 건드리므로 Babel/OXC처럼 `(0, eval)()` 형태로 callee Reference를 끊는다.
+            // local scope를 건드리므로 `(0, eval)()` 형태로 callee Reference를 끊어 indirect 호출을 보존한다.
             const zero = try helpers.makeNumericLiteral(self, 0);
             const seq_list = try self.ast.addNodeList(&.{ zero, chain_base });
             const seq = try self.ast.addNode(.{

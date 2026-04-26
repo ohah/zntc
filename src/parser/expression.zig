@@ -935,6 +935,9 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
             },
             .question_dot => {
                 // optional chaining: a?.b, a?.[b], a?.()
+                if (self.ast.getNode(expr).tag == .super_expression) {
+                    try self.addErrorCode(self.ast.getNode(expr).span, "'super' cannot be used as the base of an optional chain", .super_in_optional_chain);
+                }
                 try self.advance(); // skip ?.
                 if (self.current() == .l_bracket) {
                     // a?.[expr] — `in` 연산자 허용 (ECMAScript: [+In])

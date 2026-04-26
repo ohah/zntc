@@ -246,6 +246,12 @@ pub fn minify(ast: *Ast, ctx_in: MinifyCtx, scratch: std.mem.Allocator, root: No
         if (skip_for_binding) |*b| markForLoopBindings(ast, b);
     }
 
+    // call-callee 자리에 있는 sequence 는 fold pass 들이 새로 만들지 않으므로 미리 1회만 수집.
+    // 새로 append 된 노드는 capacity 밖이라 isSet 호출 시 false 처리되어 안전하다.
+    var protected_sequences: ?std.DynamicBitSet = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch null;
+    defer if (protected_sequences) |*b| b.deinit();
+    if (protected_sequences) |*b| markCallCalleeSequences(ast, b);
+
     // live reachable set + BFS 큐: iter 간 재사용하여 watch 모드 누적 할당 회피.
     // fold pass 들이 var_declaration 을 새로 만들지 않고 paren/empty_statement 만 추가하므로
     // dead-store 탐지 대상은 기존 노드 인덱스로 충분하지만, ast.nodes.items.len 이 커지면
@@ -261,6 +267,7 @@ pub fn minify(ast: *Ast, ctx_in: MinifyCtx, scratch: std.mem.Allocator, root: No
     var i: u32 = 0;
     while (i < max_fixpoint_iterations) : (i += 1) {
         const skip_ptr: ?*const std.DynamicBitSet = if (skip_for_binding) |*b| b else null;
+        const protected_ptr: ?*const std.DynamicBitSet = if (protected_sequences) |*b| b else null;
         const live_ptr: ?*const std.DynamicBitSet = if (live_nodes) |*b| blk: {
             // 매 iter live set 을 재계산 — fold pass 가 노드 tag 를 바꾸면 도달 가능성이 변한다.
             // capacity 가 부족하면 resize. DynamicBitSet.resize 가 존재해 재할당 없이 확장 가능.
@@ -272,7 +279,7 @@ pub fn minify(ast: *Ast, ctx_in: MinifyCtx, scratch: std.mem.Allocator, root: No
             markReachableNodes(ast, root, b, &bfs_queue, scratch);
             break :blk b;
         } else null;
-        if (!runOnce(ast, ctx, skip_ptr, live_ptr, scratch)) break;
+        if (!runOnce(ast, ctx, skip_ptr, live_ptr, protected_ptr, scratch)) break;
     }
 }
 
@@ -287,12 +294,15 @@ fn clearBitSet(b: *std.DynamicBitSet) void {
 /// **Index-based loop**: rewrite 중 `ast.nodes.append` (e.g. paren 노드 생성) 로
 /// items slice 가 재할당되어도 안전 — 매 iter `ast.nodes.items[i]` 재슬라이스.
 /// 새로 append 된 노드는 `items.len` 증가로 자동 순회됨.
-fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, scratch: std.mem.Allocator) bool {
+fn runOnce(
+    ast: *Ast,
+    ctx: MinifyCtx,
+    skip_for_binding: ?*const std.DynamicBitSet,
+    live_nodes: ?*const std.DynamicBitSet,
+    protected_sequences: ?*const std.DynamicBitSet,
+    scratch: std.mem.Allocator,
+) bool {
     var changed = false;
-    var protected_sequences = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch null;
-    defer if (protected_sequences) |*set| set.deinit();
-    if (protected_sequences) |*set| markCallCalleeSequences(ast, set);
-
     var i: u32 = 0;
     while (i < ast.nodes.items.len) : (i += 1) {
         const node = ast.nodes.items[i];
@@ -304,6 +314,9 @@ fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSe
             .if_statement => foldIf(ast, i, node, &changed),
             .while_statement => foldWhile(ast, i, node, &changed),
             .sequence_expression => {
+                // bitset alloc 실패 시 보수적으로 모든 sequence 를 protected 로 — `(0,eval)()` 같은
+                // callee 자리 sequence 를 잘못 unwrap 해서 indirect→direct eval 로 의미 바꾸느니
+                // simplification 을 통째로 건너뛴다.
                 const is_protected = if (protected_sequences) |set| i < set.capacity() and set.isSet(i) else true;
                 if (!is_protected) simplifySequence(ast, ctx, i, node, &changed);
             },
@@ -327,9 +340,7 @@ fn runOnce(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSe
 fn markCallCalleeSequences(ast: *const Ast, protected_sequences: *std.DynamicBitSet) void {
     for (ast.nodes.items) |node| {
         if (node.tag != .call_expression and node.tag != .new_expression) continue;
-        const e = node.data.extra;
-        if (!ast.hasExtra(e, 0)) continue;
-        markSequenceInCallee(ast, @enumFromInt(ast.readExtra(e, 0)), protected_sequences);
+        markSequenceInCallee(ast, @enumFromInt(ast.readExtra(node.data.extra, 0)), protected_sequences);
     }
 }
 
