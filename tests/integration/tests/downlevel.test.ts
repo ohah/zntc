@@ -3972,6 +3972,97 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("5");
     });
 
+    // #2034: transparent wrapper(괄호, TS as/!/<T>) 로 감싸진 super 가 optional chain base 일 때
+    // raw super 가 emit 되어 syntax error 나던 버그. super 는 항상 정의되어 있으므로 optional 무의미.
+    test("괄호 super 의 optional chain — (super)?.x (#2034)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B { get x() { return 7; } }
+            class C extends B { m() { return (super)?.x; } }
+            console.log(new C().m());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("7");
+    });
+
+    test("TS as-cast super 의 optional chain — (super as any)?.x (#2034)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B { get x() { return 42; } }
+            class C extends B { m() { return (super as any)?.x; } }
+            console.log(new C().m());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
+    test("TS as-cast super 의 optional method call — (super as any)?.m() (#2034)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B { greet() { return "hello:" + this.tag; } tag = "B"; }
+            class C extends B { tag = "C"; run() { return (super as any)?.greet(); } }
+            console.log(new C().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hello:C");
+    });
+
+    test("TS non-null assertion super 의 optional method call — (super!)?.m() (#2034)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B { greet() { return "hi"; } }
+            class C extends B { run() { return (super!)?.greet(); } }
+            console.log(new C().run());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("hi");
+    });
+
+    test("wrapped super + 후속 optional chain — (super as any)?.nested?.y (#2034)", async () => {
+      // ?.nested 는 super-base 라 strip 후 __superGet, ?.y 는 일반 ternary 로 보존돼야 함.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class B { get nested(): { y: number } | null { return { y: 100 }; } }
+            class C extends B { m() { return (super as any)?.nested?.y; } }
+            class D extends B { get nested(): null { return null; } m() { return (super as any)?.nested?.y; } }
+            console.log(new C().m(), new D().m());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      // C: super.nested = {y:100} → 100. D: D.nested = null, super.nested 는 B.prototype.nested getter → {y:100} → 100.
+      // (super 는 prototype 체인의 _바로 위_ 인 B.prototype 을 가리키므로 D 의 own getter 무시.)
+      expect(result.runOutput).toBe("100 100");
+    });
+
     test("optional receiver + optional method call receiver 단락 평가", async () => {
       const result = await bundleAndRun(
         {
