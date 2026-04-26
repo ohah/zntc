@@ -677,6 +677,45 @@ test "statement shaker: class with pure static field is removable" {
     try std.testing.expectEqual(@as(u32, 2), skipped);
 }
 
+test "statement shaker: unused class expression variable is removable (#1665)" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\const Used = class { value() { return 1; } };
+        \\const Unused = class { value() { return 2; } static tag = "pure"; };
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    const names: [1][]const u8 = .{"Used"};
+    try markUnusedStatements(alloc, &r.ast, r.root, &names, &skip, no_globals);
+
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
+test "statement shaker: class expression with impure static field is preserved (#1665)" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndGetRoot(alloc,
+        \\const X = class { static value = init(); };
+        \\function unused() { return 1; }
+    );
+    defer r.arena.deinit();
+
+    var skip = try std.DynamicBitSet.initEmpty(alloc, r.ast.nodes.items.len);
+    defer skip.deinit();
+
+    try markUnusedStatements(alloc, &r.ast, r.root, &.{}, &skip, no_globals);
+
+    var skipped: u32 = 0;
+    var it = skip.iterator(.{});
+    while (it.next()) |_| skipped += 1;
+    try std.testing.expectEqual(@as(u32, 1), skipped);
+}
+
 test "statement shaker module compiles" {
     _ = @import("statement_shaker.zig");
 }

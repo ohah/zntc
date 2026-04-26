@@ -1,6 +1,6 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -34,6 +34,26 @@ function bundleIn(benchmarkDir: string, entryContent: string, name: string): str
     try {
       unlinkSync(entryFile);
     } catch {}
+  }
+}
+
+function bundleFiles(files: Record<string, string>, entry: string, name: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `zts-tsprec-${name}-`));
+  const outFile = join(dir, "out.js");
+  for (const [file, content] of Object.entries(files)) {
+    writeFileSync(join(dir, file), content);
+  }
+  try {
+    const r = spawnSync(ZTS_BIN, ["--bundle", join(dir, entry), "-o", outFile, "--platform=node"], {
+      stdio: "pipe",
+      timeout: 30000,
+    });
+    if (r.status !== 0) {
+      throw new Error(`ZTS bundle failed (${name}): ${r.stderr?.toString().slice(0, 400)}`);
+    }
+    return readFileSync(outFile, "utf-8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -127,5 +147,39 @@ describe("#1558 Phase 5 tree-shake 정밀도", () => {
       const re = new RegExp(`(^|\\n)(function|const|var|let)\\s+${name}\\b`, "m");
       expect(re.test(bundle), `dead identifier "${name}" leaked to bundle`).toBe(false);
     }
+  });
+});
+
+describe("#1665 class-level tree-shake 정밀도", () => {
+  test("unused class expression with pure static field is dropped", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { Used } from "./lib";\nconsole.log(new Used().value());\n`,
+        "lib.ts":
+          `export const Used = class { value() { return "used"; } };\n` +
+          `const Unused = class { value() { return "unused-class-marker-1665"; } static tag = "pure"; };\n` +
+          `export { Unused };\n`,
+      },
+      "index.ts",
+      "class-expression",
+    );
+
+    expect(bundle).toContain("used");
+    expect(bundle).not.toContain("unused-class-marker-1665");
+  });
+
+  test("class expression with impure static field is preserved", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import "./lib";\nconsole.log("entry");\n`,
+        "lib.ts":
+          `function init() { console.log("class-static-effect-1665"); return 1; }\n` +
+          `const X = class { static value = init(); };\n`,
+      },
+      "index.ts",
+      "class-expression-impure",
+    );
+
+    expect(bundle).toContain("class-static-effect-1665");
   });
 });

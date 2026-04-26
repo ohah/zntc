@@ -65,8 +65,8 @@ fn isNodePureDepth(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
         .arrow_function_expression,
         => true,
 
-        // class expression — extends/static 초기화에 side effect 가능
-        .class_expression => false,
+        // class expression — class declaration 과 같은 side-effect 규칙을 적용.
+        .class_expression => !classHasSideEffects(ast, node, unresolved_globals),
 
         .object_expression => isObjectPure(ast, node, unresolved_globals, d),
         .array_expression => isArrayPure(ast, node, unresolved_globals, d),
