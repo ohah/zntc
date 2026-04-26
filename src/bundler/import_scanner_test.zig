@@ -2,6 +2,7 @@ const std = @import("std");
 const import_scanner = @import("import_scanner.zig");
 const extractImports = import_scanner.extractImports;
 const extractImportsWithCjsDetection = import_scanner.extractImportsWithCjsDetection;
+const extractImportsWithCjsDetectionAndDefines = import_scanner.extractImportsWithCjsDetectionAndDefines;
 const ScanResult = import_scanner.ScanResult;
 const stripQuotes = import_scanner.stripQuotes;
 const types = @import("types.zig");
@@ -47,6 +48,22 @@ fn parseAndExtractFull(allocator: std.mem.Allocator, source: []const u8) !ScanRe
     _ = try parser.parse();
 
     return extractImportsWithCjsDetection(allocator, &parser.ast);
+}
+
+fn parseAndExtractFullWithDefines(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    defines: []const DefineEntry,
+) !ScanResult {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, source);
+    var parser = Parser.init(arena_alloc, &scanner);
+    _ = try parser.parse();
+
+    return extractImportsWithCjsDetectionAndDefines(allocator, &parser.ast, defines);
 }
 
 test "side-effect import" {
@@ -205,6 +222,44 @@ test "CJS: require() call detected" {
     try std.testing.expectEqual(ImportKind.require, result.records[0].kind);
     try std.testing.expect(result.has_cjs_require);
     try std.testing.expect(!result.has_esm_syntax);
+}
+
+test "CJS: define으로 죽은 if 분기의 require는 스캔하지 않음" {
+    const alloc = std.testing.allocator;
+    const result = try parseAndExtractFullWithDefines(
+        alloc,
+        \\if (process.env.NODE_ENV === 'production') {
+        \\  module.exports = require('./prod');
+        \\} else {
+        \\  module.exports = require('./dev');
+        \\}
+    ,
+        &.{.{ .key = "process.env.NODE_ENV", .value = "\"production\"" }},
+    );
+    defer alloc.free(result.records);
+
+    try std.testing.expectEqual(@as(usize, 1), result.records.len);
+    try std.testing.expectEqualStrings("./prod", result.records[0].specifier);
+    try std.testing.expect(result.has_cjs_require);
+    try std.testing.expect(result.has_module_exports);
+}
+
+test "CJS: define boolean으로 죽은 if 분기의 require는 스캔하지 않음" {
+    const alloc = std.testing.allocator;
+    const result = try parseAndExtractFullWithDefines(
+        alloc,
+        \\if (__DEV__) {
+        \\  require('./dev-only');
+        \\} else {
+        \\  require('./prod-only');
+        \\}
+    ,
+        &.{.{ .key = "__DEV__", .value = "false" }},
+    );
+    defer alloc.free(result.records);
+
+    try std.testing.expectEqual(@as(usize, 1), result.records.len);
+    try std.testing.expectEqualStrings("./prod-only", result.records[0].specifier);
 }
 
 test "CJS: require with non-string argument ignored" {

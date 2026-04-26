@@ -1096,7 +1096,7 @@ pub const ModuleGraph = struct {
             } else |_| {}
 
             // import/export 스캔 — JSON에는 import가 없지만 export default가 있음
-            const scan_result = import_scanner.extractImportsWithCjsDetection(arena_alloc, &(module.ast.?)) catch {
+            const scan_result = import_scanner.extractImportsWithCjsDetectionAndDefines(arena_alloc, &(module.ast.?), self.defines) catch {
                 module.state = .ready;
                 return;
             };

@@ -18,6 +18,7 @@ const Kind = token_mod.Kind;
 const Span = token_mod.Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
+const import_scanner = @import("../bundler/import_scanner.zig");
 
 /// 소스 전체를 파싱하여 AST를 반환한다.
 pub fn parse(self: *Parser) !NodeIndex {
@@ -631,14 +632,22 @@ fn parseIfStatement(self: *Parser) ParseError2!NodeIndex {
     try self.expect(.l_paren);
     const test_expr = try self.parseExpression();
     try self.expect(.r_paren);
+    const known_scan_condition = if (self.enable_scan and self.scan_defines.len > 0)
+        import_scanner.evalToBoolean(&self.ast, test_expr, self.scan_defines)
+    else
+        null;
     // ECMAScript 13.6.1: IsLabelledFunction(Statement) → SyntaxError
     const saved_labelled = self.in_labelled_fn_check;
     self.in_labelled_fn_check = true;
+    if (known_scan_condition == false) self.scan_dead_depth += 1;
     const consequent = try parseStatementChecked(self, false);
+    if (known_scan_condition == false) self.scan_dead_depth -= 1;
 
     var alternate = NodeIndex.none;
     if (try self.eat(.kw_else)) {
+        if (known_scan_condition == true) self.scan_dead_depth += 1;
         alternate = try parseStatementChecked(self, false);
+        if (known_scan_condition == true) self.scan_dead_depth -= 1;
     }
     self.in_labelled_fn_check = saved_labelled;
 

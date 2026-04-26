@@ -78,6 +78,8 @@ pub const Parser = struct {
     /// require.context 인자 평가 (Phase 2.6) 와 미래 build-time 정적 평가에 활용.
     /// bundler 가 parse 전 설정. 비어있으면 evaluator 가 define lookup 안 함. (#1579)
     scan_defines: []const scan_results_mod.DefineEntry = &.{},
+    /// define으로 죽은 분기를 파싱 중일 때 inline require 스캔을 막는 깊이.
+    scan_dead_depth: u32 = 0,
 
     /// arrow 파라미터 중복 검사용 임시 이름 수집 버퍼.
     param_name_spans: std.ArrayList(Span),
