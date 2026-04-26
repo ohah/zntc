@@ -282,6 +282,55 @@ test "Bundler: try-block 바깥의 unresolved require 는 여전히 hard error (
     try std.testing.expectEqual(types.BundlerDiagnostic.Severity.@"error", diags[0].severity);
 }
 
+test "Bundler: ESM external default import 가 모듈마다 mangled local 일 때 alias var emit" {
+    // axios 의 ZlibHeaderTransformStream.js (`import stream from 'stream'`) 가 다른 모듈의
+    // `import stream` 과 collision 회피로 module-local 이름이 `stream$1` 로 mangle 되었지만
+    // 외부 import 한 줄에 default 슬롯이 하나뿐이라 declaration 이 누락되어 `stream$1 is
+    // not defined` ReferenceError 발생하던 #2027 회귀 가드.
+    //
+    // 현재 동작: 첫 모듈의 default 는 `import stream from "stream"` 으로 emit, 두 번째
+    // 모듈의 mangled `stream$1` 는 `var stream$1 = stream;` alias 로 보강.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.js",
+        \\import stream from 'stream';
+        \\export const A = stream.Readable;
+    );
+    try writeFile(tmp.dir, "b.js",
+        \\import stream from 'stream';
+        \\export class B extends stream.Transform {}
+    );
+    try writeFile(tmp.dir, "entry.js",
+        \\import { A } from './a';
+        \\import { B } from './b';
+        \\console.log(typeof A, typeof B);
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+        .format = .esm,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // ESM import 한 줄 (default 는 한 슬롯)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import stream") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"stream\"") != null);
+    // mangled local 이 사용된 곳마다 dangling 없도록 alias 가 있어야 함
+    // (linker 가 collision 으로 `stream$1` 를 만들면 `var stream$1 = stream;` declaration 필수)
+    if (std.mem.indexOf(u8, result.output, "stream$1") != null) {
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "var stream$1=stream") != null or
+            std.mem.indexOf(u8, result.output, "var stream$1 = stream") != null);
+    }
+}
+
 test "Bundler: unresolved import produces error diagnostic" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
