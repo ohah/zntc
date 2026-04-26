@@ -556,6 +556,15 @@ pub fn buildDefinePropertyKeyArg(self: anytype, key_idx: NodeIndex) !NodeIndex {
     if (key_node.tag == .computed_property_key) {
         return self.visitNode(key_node.data.unary.operand);
     }
+    if (key_node.tag == .string_literal) {
+        // string literal key (예: `class C { "foo bar"() {} }`) 는 이미 quote 포함된 raw 라
+        // buildQuotedKeyLiteral 로 감싸면 ``""foo bar""`` 같은 이중 quote 발생. 새 노드로 복제만.
+        return self.ast.addNode(.{
+            .tag = .string_literal,
+            .span = key_node.span,
+            .data = key_node.data,
+        });
+    }
     return buildQuotedKeyLiteral(self, key_node.span);
 }
 
