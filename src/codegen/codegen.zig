@@ -1147,21 +1147,25 @@ pub const Codegen = struct {
     fn emitIf(self: *Codegen, node: Node) !void {
         const t = node.data.ternary;
         // 상수 조건 DCE: if (false) → else만 출력, if (true) → then만 출력
-        if (self.options.linking_metadata != null) {
-            if (self.evalBooleanCondition(t.a)) |known| {
-                if (!known) {
-                    // if (false) { ... } else { alt } → alt만 출력
-                    if (!t.c.isNone()) {
-                        try self.emitNode(t.c);
-                    }
-                    return;
-                } else {
-                    // if (true) { ... } → then만 출력
-                    try self.emitNode(t.b);
-                    return;
+        if (self.evalBooleanCondition(t.a)) |known| {
+            if (!known) {
+                // if (false) { ... } else { alt } → alt만 출력
+                if (!t.c.isNone()) {
+                    if (self.isFunctionDeclarationNode(t.c)) return self.emitIfVerbatim(t);
+                    try self.emitNode(t.c);
                 }
+                return;
+            } else {
+                // if (true) { ... } → then만 출력
+                if (self.isFunctionDeclarationNode(t.b)) return self.emitIfVerbatim(t);
+                try self.emitNode(t.b);
+                return;
             }
         }
+        try self.emitIfVerbatim(t);
+    }
+
+    fn emitIfVerbatim(self: *Codegen, t: anytype) !void {
         if (self.options.minify_whitespace) try self.write("if(") else try self.write("if (");
         try self.emitNode(t.a);
         try self.writeByte(')');
@@ -1183,6 +1187,11 @@ pub const Codegen = struct {
         }
     }
 
+    fn isFunctionDeclarationNode(self: *Codegen, node_idx: NodeIndex) bool {
+        if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+        return self.ast.getNode(node_idx).tag == .function_declaration;
+    }
+
     /// else 분기의 if_statement가 상수 조건 DCE로 아무것도 출력하지 않는지 재귀 확인.
     /// `else if (false) { ... }` → dead, `else if (false) { ... } else if (false) { ... }` → dead
     fn isDeadIfNode(self: *Codegen, node_idx: NodeIndex) bool {
@@ -1191,7 +1200,6 @@ pub const Codegen = struct {
 
     fn isDeadIfNodeDepth(self: *Codegen, node_idx: NodeIndex, depth: u32) bool {
         if (depth >= 128) return false;
-        if (self.options.linking_metadata == null) return false;
         if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
         const n = self.ast.getNode(node_idx);
         if (n.tag != .if_statement) return false;
@@ -1217,6 +1225,9 @@ pub const Codegen = struct {
                 return std.mem.eql(u8, text, "true");
             },
             .identifier_reference => {
+                const text = self.ast.getText(cond.span);
+                if (std.mem.eql(u8, text, "true")) return true;
+                if (std.mem.eql(u8, text, "false")) return false;
                 const meta = self.options.linking_metadata orelse return null;
                 const sym_id = self.resolveSymbolId(cond_idx, meta) orelse return null;
                 const cv = meta.const_values.get(sym_id) orelse return null;
@@ -1238,6 +1249,9 @@ pub const Codegen = struct {
                 if (log_op == .amp2 and !left) return false;
                 if (log_op == .pipe2 and left) return true;
                 return null;
+            },
+            .parenthesized_expression => {
+                return self.evalBooleanConditionDepth(cond.data.unary.operand, depth + 1);
             },
             .unary_expression => {
                 // unary_expression은 extra 저장: extra_data[e] = operand, extra_data[e+1] = operator

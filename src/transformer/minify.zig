@@ -1144,9 +1144,16 @@ fn evalTruthiness(ast: *const Ast, node: Node) ?bool {
         },
         .identifier_reference => blk: {
             const text = ast.getText(node.span);
+            if (std.mem.eql(u8, text, "true")) break :blk true;
+            if (std.mem.eql(u8, text, "false")) break :blk false;
             if (std.mem.eql(u8, text, "undefined")) break :blk false;
             if (std.mem.eql(u8, text, "NaN")) break :blk false;
             break :blk null;
+        },
+        .parenthesized_expression => blk: {
+            const inner_ni = @intFromEnum(node.data.unary.operand);
+            if (inner_ni >= ast.nodes.items.len) break :blk null;
+            break :blk evalTruthiness(ast, ast.nodes.items[inner_ni]);
         },
         else => null,
     };
@@ -1205,12 +1212,14 @@ fn foldIf(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
         // if (true) { A } → A (then 분기)
         const then_ni = @intFromEnum(node.data.ternary.b);
         if (then_ni >= ast.nodes.items.len) return;
+        if (ast.nodes.items[then_ni].tag == .function_declaration) return;
         replaceNode(ast, node_idx, ast.nodes.items[then_ni], changed);
     } else {
         // if (false) { A } else { B } → B (else 분기가 있으면)
         if (!node.data.ternary.c.isNone()) {
             const else_ni = @intFromEnum(node.data.ternary.c);
             if (else_ni >= ast.nodes.items.len) return;
+            if (ast.nodes.items[else_ni].tag == .function_declaration) return;
             replaceNode(ast, node_idx, ast.nodes.items[else_ni], changed);
         } else {
             // if (false) { A } → empty_statement
