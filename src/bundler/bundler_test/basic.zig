@@ -172,6 +172,45 @@ test "Bundler: minify가 require 래퍼 합성 심볼도 짧은 이름으로 바
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log") != null);
 }
 
+test "Bundler: define으로 죽은 require 분기는 그래프에 포함하지 않음" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\if (process.env.NODE_ENV === 'production') {
+        \\  module.exports = require('./prod.js');
+        \\} else {
+        \\  module.exports = require('./dev.js');
+        \\}
+    );
+    try writeFile(tmp.dir, "prod.js", "module.exports = 'prod-only';");
+    try writeFile(tmp.dir, "dev.js", "module.exports = 'dev-only';");
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    const defines = [_]@import("../../parser/scan_results.zig").DefineEntry{
+        .{ .key = "process.env.NODE_ENV", .value = "\"production\"" },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+        .define = &defines,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "prod-only") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "dev-only") == null);
+}
+
 test "Bundler: unresolved import produces error diagnostic" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -30,6 +30,7 @@ const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const CallFlags = @import("../parser/ast.zig").CallFlags;
 const MemberFlags = @import("../parser/ast.zig").MemberFlags;
+const TokenKind = @import("../lexer/token.zig").Kind;
 const scan_results = @import("../parser/scan_results.zig");
 const module_parser = @import("../parser/module.zig");
 const DefineEntry = scan_results.DefineEntry;
@@ -71,7 +72,12 @@ pub fn extractImportsWithCjsDetectionAndDefines(
     var has_module_exports = false;
     var has_exports_dot = false;
 
+    var dead_ranges: std.ArrayList(Span) = .empty;
+    defer dead_ranges.deinit(allocator);
+    if (defines.len > 0) try collectDeadIfRanges(allocator, ast, defines, &dead_ranges);
+
     for (ast.nodes.items) |node| {
+        if (isInsideDeadRange(node.span, dead_ranges.items)) continue;
         switch (node.tag) {
             .import_declaration => {
                 has_esm_syntax = true;
@@ -136,6 +142,89 @@ pub fn extractImportsWithCjsDetectionAndDefines(
         .has_module_exports = has_module_exports,
         .has_exports_dot = has_exports_dot,
     };
+}
+
+fn collectDeadIfRanges(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    defines: []const DefineEntry,
+    dead_ranges: *std.ArrayList(Span),
+) !void {
+    for (ast.nodes.items) |node| {
+        if (node.tag != .if_statement) continue;
+        const parts = node.data.ternary;
+        const known = evalToBoolean(ast, parts.a, defines) orelse continue;
+        const dead_idx = if (known) parts.c else parts.b;
+        if (dead_idx.isNone()) continue;
+        if (@intFromEnum(dead_idx) >= ast.nodes.items.len) continue;
+        try dead_ranges.append(allocator, ast.getNode(dead_idx).span);
+    }
+}
+
+fn isInsideDeadRange(span: Span, ranges: []const Span) bool {
+    for (ranges) |range| {
+        if (span.start >= range.start and span.end <= range.end) return true;
+    }
+    return false;
+}
+
+pub fn evalToBoolean(ast: *const Ast, idx: NodeIndex, defines: []const DefineEntry) ?bool {
+    return evalToBooleanDepth(ast, idx, defines, 0);
+}
+
+fn evalToBooleanDepth(ast: *const Ast, idx: NodeIndex, defines: []const DefineEntry, depth: u8) ?bool {
+    if (depth >= 8 or idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    const node = ast.getNode(idx);
+    return switch (node.tag) {
+        .boolean_literal => std.mem.eql(u8, ast.getText(node.span), "true"),
+        .identifier_reference, .static_member_expression => evalDefinedBoolean(ast.getText(node.span), defines),
+        .unary_expression => blk: {
+            const e = node.data.extra;
+            if (e + 1 >= ast.extra_data.items.len) break :blk null;
+            const operand_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+            const op: TokenKind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[e + 1])));
+            if (op != .bang) break :blk null;
+            const value = evalToBooleanDepth(ast, operand_idx, defines, depth + 1) orelse break :blk null;
+            break :blk !value;
+        },
+        .logical_expression => blk: {
+            const left = evalToBooleanDepth(ast, node.data.binary.left, defines, depth + 1) orelse break :blk null;
+            const op: TokenKind = @enumFromInt(node.data.binary.flags);
+            if (op == .amp2 and !left) break :blk false;
+            if (op == .pipe2 and left) break :blk true;
+            const right = evalToBooleanDepth(ast, node.data.binary.right, defines, depth + 1) orelse break :blk null;
+            if (op == .amp2) break :blk left and right;
+            if (op == .pipe2) break :blk left or right;
+            break :blk null;
+        },
+        .binary_expression => evalBinaryBoolean(ast, node, defines, depth),
+        else => null,
+    };
+}
+
+fn evalBinaryBoolean(ast: *const Ast, node: Node, defines: []const DefineEntry, depth: u8) ?bool {
+    const op: TokenKind = @enumFromInt(node.data.binary.flags);
+    if (op != .eq2 and op != .eq3 and op != .neq and op != .neq2) return null;
+
+    const left = evalToString(ast, node.data.binary.left, defines) orelse return null;
+    const right = evalToString(ast, node.data.binary.right, defines) orelse return null;
+    const is_equal = std.mem.eql(u8, left, right);
+    _ = depth;
+    return switch (op) {
+        .eq2, .eq3 => is_equal,
+        .neq, .neq2 => !is_equal,
+        else => null,
+    };
+}
+
+fn evalDefinedBoolean(text: []const u8, defines: []const DefineEntry) ?bool {
+    for (defines) |def| {
+        if (!std.mem.eql(u8, def.key, text)) continue;
+        if (std.mem.eql(u8, def.value, "true")) return true;
+        if (std.mem.eql(u8, def.value, "false")) return false;
+        return null;
+    }
+    return null;
 }
 
 /// AST를 순회하여 모든 import/export 소스 경로를 추출한다.

@@ -464,7 +464,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         const right = try parseAssignmentExpression(self);
 
         // Inline scan: CJS pattern detection (module.exports = ..., exports.x = ...)
-        if (self.enable_scan) {
+        if (self.enable_scan and self.scan_dead_depth == 0) {
             scanAssignmentCjs(self, left);
         }
 
@@ -878,7 +878,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
 
                 // Inline scan: require("specifier") → CJS import record
                 const call_span = Span{ .start = expr_start, .end = self.currentSpan().start };
-                if (self.enable_scan) {
+                if (self.enable_scan and self.scan_dead_depth == 0) {
                     scanRequireCall(self, expr, arg_list);
                     scanGlobCall(self, expr, arg_list);
                     scanRequireContextCall(self, expr, arg_list, call_span);
