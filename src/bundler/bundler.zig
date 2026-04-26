@@ -499,20 +499,32 @@ pub const Bundler = struct {
     }
 
     /// BundleOptions → EmitOptions 변환. 3개 경로(단일/splitting/dev)에서 공용.
+    /// transformer 옵션 mirror 필드는 모두 `transform_options_base` 에서 derived —
+    /// `self.options` 와 `base` 양쪽이 single source 두 곳이 되는 drift 위험 제거 (#1961 후속).
     fn makeEmitOptions(self: *const Bundler) EmitOptions {
+        const base = self.buildTransformOptionsBase();
         return .{
-            .transform_options_base = self.buildTransformOptionsBase(),
+            .transform_options_base = base,
             .format = self.options.format,
-            .minify_whitespace = self.options.minify_whitespace,
-            .minify_syntax = self.options.minify_syntax,
+            // transformer-mirror 필드는 base 에서 derived (single source).
+            .minify_whitespace = base.minify_whitespace,
+            .minify_syntax = base.minify_syntax,
+            .define = base.define,
+            .experimental_decorators = base.experimental_decorators,
+            .emit_decorator_metadata = base.emit_decorator_metadata,
+            .use_define_for_class_fields = base.use_define_for_class_fields,
+            .verbatim_module_syntax = base.verbatim_module_syntax,
+            .unsupported = base.unsupported,
+            .keep_names = base.keep_names,
+            .drop_labels = base.drop_labels,
+            .jsx_runtime = base.jsx_runtime,
+            .jsx_factory = base.jsx_factory,
+            .jsx_fragment = base.jsx_fragment,
+            .jsx_import_source = base.jsx_import_source,
+            .worklet_plugin_version = base.worklet_plugin_version,
+            // emit-only 필드 (transformer 와 무관) — BundleOptions 직접 read.
             .minify_identifiers = self.options.minify_identifiers,
-            .define = self.options.define,
             .platform = self.options.platform,
-            .experimental_decorators = self.options.experimental_decorators,
-            .emit_decorator_metadata = self.options.emit_decorator_metadata,
-            .use_define_for_class_fields = self.options.use_define_for_class_fields,
-            .verbatim_module_syntax = self.options.verbatim_module_syntax,
-            .unsupported = self.options.unsupported,
             .public_path = self.options.public_path,
             .banner_js = self.options.banner_js,
             .footer_js = self.options.footer_js,
@@ -526,12 +538,6 @@ pub const Bundler = struct {
             .chunk_names = self.options.chunk_names,
             .asset_names = self.options.asset_names,
             .legal_comments = self.options.legal_comments,
-            .keep_names = self.options.keep_names,
-            .drop_labels = self.options.drop_labels,
-            .jsx_runtime = self.options.jsx_runtime,
-            .jsx_factory = self.options.jsx_factory,
-            .jsx_fragment = self.options.jsx_fragment,
-            .jsx_import_source = self.options.jsx_import_source,
             .root_dir = self.options.root_dir,
             .plugins = self.options.plugins,
             .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정
@@ -541,7 +547,6 @@ pub const Bundler = struct {
             .entry_error_guard = self.options.entry_error_guard,
             .silent_console_error_patterns = self.options.silent_console_error_patterns,
             .worklet_transform = self.options.worklet_transform,
-            .worklet_plugin_version = self.options.worklet_plugin_version,
             .compiled_cache = self.options.compiled_cache,
         };
     }
