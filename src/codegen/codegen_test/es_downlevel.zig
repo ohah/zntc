@@ -141,6 +141,18 @@ test "ES2016: **= to Math.pow assignment" {
     try std.testing.expectEqualStrings("a=Math.pow(a,b);", r.output);
 }
 
+test "ES2016: **= member receiver 1회 평가" {
+    var r = try e2eTarget(std.testing.allocator, "getObj().x **= 3;", .es2015);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=getObj()).x=Math.pow(_a.x,3)") != null);
+}
+
+test "ES2016: **= computed member key 1회 평가" {
+    var r = try e2eTarget(std.testing.allocator, "obj[getKey()] **= 3;", .es2015);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "obj[(_a=getKey())]=Math.pow(obj[_a],3)") != null);
+}
+
 test "ES2016: ** no transform on es2016" {
     var r = try e2eTarget(std.testing.allocator, "const x = a ** b;", .es2016);
     defer r.deinit();
