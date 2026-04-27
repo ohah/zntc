@@ -1588,6 +1588,94 @@ test "TreeShaking: unused direct re-export source with local init is pruned" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_LEGACY_MARKER") == null);
 }
 
+test "TreeShaking: unused direct re-export source preserves eval side effect only" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './barrel';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\export { used } from './live';
+        \\export { unused } from './side';
+    );
+    try writeFile(tmp.dir, "live.ts", "export const used = 'DIRECT_REEXPORT_LIVE_VALUE';");
+    try writeFile(tmp.dir, "dep.ts",
+        \\console.log('DIRECT_REEXPORT_DEAD_DEP_EVAL');
+        \\export function dep() { return 'DIRECT_REEXPORT_DEAD_DEP_BODY'; }
+    );
+    try writeFile(tmp.dir, "side.ts",
+        \\import { dep } from './dep';
+        \\console.log('DIRECT_REEXPORT_SIDE_EVAL');
+        \\export function unused() {
+        \\  console.log('DIRECT_REEXPORT_UNUSED_BODY', dep());
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_LIVE_VALUE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_SIDE_EVAL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_UNUSED_BODY") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_DEAD_DEP_EVAL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_DEAD_DEP_BODY") == null);
+}
+
+test "TreeShaking: side-effect statement import reference keeps direct re-export dependency" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './barrel';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\export { used } from './live';
+        \\export { unused } from './side';
+    );
+    try writeFile(tmp.dir, "live.ts", "export const used = 'DIRECT_REEXPORT_KEEP_LIVE';");
+    try writeFile(tmp.dir, "dep.ts",
+        \\console.log('DIRECT_REEXPORT_LIVE_DEP_EVAL');
+        \\export const dep = 'DIRECT_REEXPORT_LIVE_DEP_VALUE';
+        \\export const dead = 'DIRECT_REEXPORT_LIVE_DEP_DEAD';
+    );
+    try writeFile(tmp.dir, "side.ts",
+        \\import { dep } from './dep';
+        \\console.log('DIRECT_REEXPORT_SIDE_USES_IMPORT', dep);
+        \\export function unused() {
+        \\  return 'DIRECT_REEXPORT_SIDE_UNUSED_EXPORT';
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_KEEP_LIVE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_SIDE_USES_IMPORT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_LIVE_DEP_EVAL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_LIVE_DEP_VALUE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_SIDE_UNUSED_EXPORT") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_LIVE_DEP_DEAD") == null);
+}
+
 test "TreeShaking: class extends call expression preserved (#1261 edge)" {
     // class Foo extends getBase() — extends call은 side-effect이므로 보존.
     var tmp = std.testing.tmpDir(.{});

@@ -186,8 +186,14 @@ pub const TreeShaker = struct {
 
         for (0..mod_count) |i| {
             const m = self.getModule(@intCast(i)) orelse continue;
-            if (self.entry_set.isSet(i) or m.side_effects or m.is_context_dep) {
-                self.included.set(i);
+            const is_entry = self.entry_set.isSet(i);
+            if (is_entry or m.is_context_dep) self.included.set(i);
+            if (!is_entry) continue;
+            for (m.dependencies.items) |dep_idx| {
+                const dep = self.graph.getModule(dep_idx) orelse continue;
+                if (dep.side_effects or dep.wrap_kind.isWrapped()) {
+                    self.included.set(@intFromEnum(dep_idx));
+                }
             }
         }
 
@@ -287,17 +293,20 @@ pub const TreeShaker = struct {
             for (0..mod_count) |i| {
                 if (!self.included.isSet(i)) continue;
                 const m = self.getModule(@intCast(i)) orelse continue;
-                for (m.import_records) |rec| {
+                const live_idx: ?u32 = if (m.wrap_kind.isWrapped()) null else @intCast(i);
+                for (m.import_records, 0..) |rec, rec_i| {
                     if (rec.resolved.isNone()) continue;
                     const target = @intFromEnum(rec.resolved);
                     const tmod = self.graph.getModule(rec.resolved) orelse continue;
                     if (self.included.isSet(target)) continue;
-                    if (rec.kind == .require or tmod.side_effects or
-                        tmod.wrap_kind.isWrapped())
-                    {
-                        self.included.set(target);
-                        changed = true;
-                    }
+
+                    const preserve = self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
+                    const must_include = rec.kind == .require or
+                        ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
+                        ((tmod.side_effects or tmod.wrap_kind.isWrapped()) and preserve);
+                    if (!must_include) continue;
+                    self.included.set(target);
+                    changed = true;
                 }
             }
 
@@ -703,11 +712,7 @@ pub const TreeShaker = struct {
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
         const mod_count = self.graph.moduleCount();
-        const canonical = self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse {
-            // 해석 실패: 전체 포함
-            if (target_mod < mod_count) self.included.set(target_mod);
-            return;
-        };
+        const canonical = self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse return;
         const canon_mod = canonical.module_index.toU32();
         const canon_m = self.graph.getModule(canonical.module_index) orelse return;
 
@@ -1002,6 +1007,42 @@ pub const TreeShaker = struct {
         return changed;
     }
 
+    /// included 모듈의 import_record 가 source 모듈을 evaluation 의존으로 끌어와야 하는지.
+    /// re-export / side_effect / require / worker / glob / require_context 는 항상 evaluation
+    /// 의존이라 보존. static_import 만 entry 또는 live binding 이 있을 때만 보존 — dead body
+    /// 안에서만 참조되는 named import 가 source 모듈을 fan out 시키지 않도록. dynamic_import 는
+    /// 별도 dyn_import_targets 경로로 처리되므로 여기선 false.
+    fn shouldPreserveImportRecordForEvaluation(
+        self: *const TreeShaker,
+        m: *const Module,
+        mod_idx: u32,
+        rec_idx: u32,
+        live_mod_idx: ?u32,
+    ) bool {
+        if (live_mod_idx == null) return true;
+        if (rec_idx >= m.import_records.len) return false;
+        return switch (m.import_records[rec_idx].kind) {
+            .dynamic_import => false,
+            .static_import => self.entry_set.isSet(mod_idx) or self.importRecordHasLiveBinding(m, mod_idx, rec_idx),
+            else => true,
+        };
+    }
+
+    /// `isImportLiveInModule` 은 reachable_stmts 미초기화 시 보수적으로 true 를 반환하지만,
+    /// 이 함수는 "stmt_info 는 빌드됐는데 reachable_stmts 가 비었다 = BFS 가 한 번도 방문 안
+    /// 한 모듈" 이라 판단해 false 로 정밀화한다. shouldPreserveImportRecordForEvaluation 의
+    /// static_import 케이스에서만 호출되며, fan-out 보수성을 의도적으로 줄인다.
+    fn importRecordHasLiveBinding(self: *const TreeShaker, m: *const Module, mod_idx: u32, rec_idx: u32) bool {
+        if (mod_idx < self.module_stmt_infos.len and self.module_stmt_infos[mod_idx] != null) {
+            if (mod_idx >= self.reachable_stmts.len or self.reachable_stmts[mod_idx] == null) return false;
+        }
+        for (m.import_bindings) |ib| {
+            if (ib.import_record_index != rec_idx) continue;
+            if (self.isImportLiveInModule(mod_idx, ib.local_name)) return true;
+        }
+        return false;
+    }
+
     /// #1603 Phase 1b: `export * as X from './src'` 재export에 대해 모든 소비자의 member 접근
     /// 집합을 집계. 반환값 `true`: precision 성공(또는 소비자 0명 — markAll 불필요).
     /// `false`: 적어도 한 소비자가 opaque → 호출자가 전체 fallback 적용.
@@ -1064,6 +1105,11 @@ pub const TreeShaker = struct {
     /// import binding → export 마킹 + canonical 모듈 포함.
     /// live_mod_idx가 non-null이면 StmtInfo 도달성 기반 추가 필터링 적용.
     fn processModuleImportsInner(self: *TreeShaker, m: Module, live_mod_idx: ?u32) !bool {
+        // moduleHasAnyReachableStmt 는 binding 루프 내내 결과 불변 — 한 번만 검사 후
+        // 도달 stmt 0 이면 어떤 binding 도 live 일 수 없으므로 즉시 종료.
+        if (live_mod_idx) |idx| {
+            if (!self.moduleHasAnyReachableStmt(idx)) return false;
+        }
         var newly_included = false;
         for (m.import_bindings) |ib| {
             if (ib.import_record_index >= m.import_records.len) continue;
@@ -1129,6 +1175,12 @@ pub const TreeShaker = struct {
         if (module_index < self.has_direct_used_export.len) {
             self.has_direct_used_export[module_index] = true;
         }
+    }
+
+    fn moduleHasAnyReachableStmt(self: *const TreeShaker, module_index: u32) bool {
+        if (module_index >= self.reachable_stmts.len) return true;
+        const reachable = self.reachable_stmts[module_index] orelse return false;
+        return reachable.count() > 0;
     }
 
     fn markAllExportsUsed(self: *TreeShaker, module_index: u32) !void {
