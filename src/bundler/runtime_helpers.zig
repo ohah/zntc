@@ -1262,8 +1262,8 @@ pub fn appendCjsRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, m
     try appendToEsmRuntime(buf, allocator, minify, configurable);
 }
 
-/// CJS factory only. Named-only CJS imports can use require_xxx().name directly
-/// and do not need the ESM namespace interop helper cluster.
+/// __commonJS factory 만 주입. named-only CJS import (`require_xxx().name`) 는
+/// __toESM 클러스터가 필요 없으므로, namespace/default import 가 없을 때 호출.
 pub fn appendCommonJsFactoryRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
     if (minify) {
         try buf.appendSlice(allocator, if (configurable) CJS_RUNTIME_ES5_MIN else CJS_RUNTIME_MIN);
@@ -1272,7 +1272,7 @@ pub fn appendCommonJsFactoryRuntime(buf: *std.ArrayList(u8), allocator: std.mem.
     }
 }
 
-/// ESM namespace interop helpers (__toESM and its Object.* aliases).
+/// ESM namespace interop 헬퍼 (__toESM 와 __copyProps/__defProp 등 Object.* 별칭).
 pub fn appendToEsmRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
     if (minify) {
         try buf.appendSlice(allocator, if (configurable) TOESM_RUNTIME_CONFIGURABLE_MIN else TOESM_RUNTIME_MIN);

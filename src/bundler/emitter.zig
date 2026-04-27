@@ -422,7 +422,7 @@ pub fn emitWithTreeShaking(
     }
 
     // 런타임 헬퍼 주입
-    try emitBundleRuntimeHelpers(&output, allocator, sorted.items, options);
+    try emitBundleRuntimeHelpers(&output, allocator, sorted.items, graph, options);
 
     // TLA 검증: 비-ESM 출력에서 TLA 사용 시 경고 주석 삽입.
     // Top-Level Await는 ESM 전용 기능이므로 CJS/IIFE/UMD/AMD 포맷에서는 동작하지 않는다.
@@ -1671,6 +1671,7 @@ fn emitBundleRuntimeHelpers(
     output: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     sorted_modules: []const *const Module,
+    graph: *const ModuleGraph,
     options: *const EmitOptions,
 ) !void {
     // 런타임 헬퍼 주입: 래핑 모듈 유형에 따라 필요한 헬퍼 결정.
@@ -1681,7 +1682,7 @@ fn emitBundleRuntimeHelpers(
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
-        if (moduleNeedsToEsmInterop(m, sorted_modules)) needs_to_esm_runtime = true;
+        if (moduleNeedsToEsmInterop(m, graph)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
@@ -1693,8 +1694,8 @@ fn emitBundleRuntimeHelpers(
         if (needs_cjs_runtime) {
             try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
         }
-        // __toCommonJS depends on __copyProps/__defProp, so ESM wrappers still need
-        // the __toESM helper cluster even if no CJS import site calls __toESM.
+        // __toCommonJS는 __copyProps/__defProp 에 의존 → ESM wrap 런타임을 emit 하면
+        // 어떤 import site 도 __toESM 을 부르지 않더라도 __toESM 클러스터가 필요.
         if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
             try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
         }
@@ -1726,23 +1727,19 @@ fn emitBundleRuntimeHelpers(
     try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
 }
 
-fn moduleNeedsToEsmInterop(module: *const Module, modules: []const *const Module) bool {
+/// 한 모듈이 CJS 타겟에 대해 namespace/default import 를 가지면 __toESM 래핑이 필요.
+/// linker.zig:writeCjsImportInner 의 emit predicate 와 1:1 일치해야 한다 — 어긋나면
+/// preamble 이 __toESM 을 부르는데 정의가 없는 ReferenceError 가 발생.
+fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph) bool {
     for (module.import_bindings) |ib| {
         if (ib.import_record_index >= module.import_records.len) continue;
         const record = module.import_records[ib.import_record_index];
         if (record.resolved.isNone()) continue;
-        const target = findSortedModule(modules, record.resolved) orelse continue;
+        const target = graph.getModule(record.resolved) orelse continue;
         if (target.wrap_kind != .cjs) continue;
         if (ib.kind == .namespace or ib.importsDefault()) return true;
     }
     return false;
-}
-
-fn findSortedModule(modules: []const *const Module, index: types.ModuleIndex) ?*const Module {
-    for (modules) |m| {
-        if (m.index == index) return m;
-    }
-    return null;
 }
 
 /// transformer 비트맵 외 경로의 helper (asset binary loader / `--keep-names` 옵션)
