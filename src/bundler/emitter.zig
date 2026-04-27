@@ -422,7 +422,7 @@ pub fn emitWithTreeShaking(
     }
 
     // 런타임 헬퍼 주입
-    try emitBundleRuntimeHelpers(&output, allocator, sorted.items, graph, options);
+    try emitBundleRuntimeHelpers(&output, allocator, sorted.items, graph, linker, options);
 
     // TLA 검증: 비-ESM 출력에서 TLA 사용 시 경고 주석 삽입.
     // Top-Level Await는 ESM 전용 기능이므로 CJS/IIFE/UMD/AMD 포맷에서는 동작하지 않는다.
@@ -1672,6 +1672,7 @@ fn emitBundleRuntimeHelpers(
     allocator: std.mem.Allocator,
     sorted_modules: []const *const Module,
     graph: *const ModuleGraph,
+    linker: ?*const Linker,
     options: *const EmitOptions,
 ) !void {
     // 런타임 헬퍼 주입: 래핑 모듈 유형에 따라 필요한 헬퍼 결정.
@@ -1682,7 +1683,7 @@ fn emitBundleRuntimeHelpers(
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
-        if (moduleNeedsToEsmInterop(m, graph)) needs_to_esm_runtime = true;
+        if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
@@ -1727,17 +1728,47 @@ fn emitBundleRuntimeHelpers(
     try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
 }
 
-/// 한 모듈이 CJS 타겟에 대해 namespace/default import 를 가지면 __toESM 래핑이 필요.
-/// linker.zig:writeCjsImportInner 의 emit predicate 와 1:1 일치해야 한다 — 어긋나면
-/// preamble 이 __toESM 을 부르는데 정의가 없는 ReferenceError 가 발생.
-fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph) bool {
+/// 한 모듈이 어떤 식으로든 CJS 모듈의 default/namespace 를 가져오면 __toESM 래핑이 필요.
+/// linker.zig:writeCjsImportInner / linker/metadata.zig:488 (re-export → CJS) 의 emit
+/// predicate 와 일치해야 한다 — 어긋나면 preamble 이 __toESM 을 부르는데 정의가 없는
+/// ReferenceError 가 발생 (#812 회귀).
+///
+/// linker 가 있으면 `getResolvedBinding` 의 chain 끝까지 따라가 ESM re-export
+/// (`export { default } from "./cjs"`) 와 다단계 re-export 도 캐치. linker 가 없으면
+/// (linker_test 단독 등) importer 의 직접 target 만 검사하는 보수적 fallback.
+fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, linker: ?*const Linker) bool {
     for (module.import_bindings) |ib| {
         if (ib.import_record_index >= module.import_records.len) continue;
+
+        // namespace import: chain follow 가 아니라 importer 의 직접 target 만 확인.
+        // (`import * as ns from "./cjs"` 면 항상 __toESM(req()) 로 emit.)
+        if (ib.kind == .namespace) {
+            const record = module.import_records[ib.import_record_index];
+            if (record.resolved.isNone()) continue;
+            const target = graph.getModule(record.resolved) orelse continue;
+            if (target.wrap_kind == .cjs) return true;
+            continue;
+        }
+
+        // default / named import: linker 가 있으면 re-export chain 끝까지 따라가
+        // canonical 이 CJS 의 "default" 면 emit 시 `__toESM(req()).default` 가 나온다.
+        // named (non-default) 는 chain 끝도 named 라 `req().name` 직접 접근 → __toESM 불필요.
+        if (linker) |l| {
+            if (l.getResolvedBinding(module.index.toU32(), ib.local_span)) |rb| {
+                const canonical_mod = graph.getModule(rb.canonical.module_index) orelse continue;
+                if (canonical_mod.wrap_kind == .cjs and std.mem.eql(u8, rb.canonical.export_name, "default")) {
+                    return true;
+                }
+                continue;
+            }
+        }
+
+        // Fallback: linker 없거나 binding 미해결. importer 의 직접 target 검사.
+        if (!ib.importsDefault()) continue;
         const record = module.import_records[ib.import_record_index];
         if (record.resolved.isNone()) continue;
         const target = graph.getModule(record.resolved) orelse continue;
-        if (target.wrap_kind != .cjs) continue;
-        if (ib.kind == .namespace or ib.importsDefault()) return true;
+        if (target.wrap_kind == .cjs) return true;
     }
     return false;
 }
