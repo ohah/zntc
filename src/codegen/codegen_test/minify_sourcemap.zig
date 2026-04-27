@@ -76,6 +76,39 @@ test "Minify: for-of body var has semicolon" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "var y=x;") != null);
 }
 
+test "Minify: omits trailing semicolon before block boundary" {
+    var r = try e2eWithOptions(std.testing.allocator, "function f() { let x = 1; x++; } f();", .{ .minify_whitespace = true, .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("function f(){let x=1;x++}f();", r.output);
+}
+
+test "Minify: keeps semicolon between adjacent block statements" {
+    var r = try e2eWithOptions(std.testing.allocator, "for (var i = 0; i < 3; i++) { var x = i; console.log(x); }", .{ .minify_whitespace = true, .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var x=i;console.log") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(x)}") != null);
+}
+
+test "Minify: preserves ASI-sensitive boundaries inside block" {
+    var r = try e2eWithOptions(std.testing.allocator,
+        \\function f(a) {
+        \\  "use strict";
+        \\  if (a) return /x/.test(a);
+        \\  throw { value: [a] };
+        \\}
+    , .{ .minify_whitespace = true, .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"use strict\";if") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "return /x/.test(a);throw") != null);
+    try std.testing.expect(std.mem.endsWith(u8, r.output, "throw {value:[a]}}"));
+}
+
+test "Minify: omits trailing class field semicolon before class body boundary" {
+    var r = try e2eWithOptions(std.testing.allocator, "class Foo { x = 1; static { foo(); } static y = 2; }", .{ .minify_whitespace = true, .minify_syntax = true });
+    defer r.deinit();
+    try std.testing.expectEqualStrings("class Foo{x=1;static{foo()}static y=2}", r.output);
+}
+
 // ============================================================
 // #493: template literal 내 식별자 rename
 // ============================================================
