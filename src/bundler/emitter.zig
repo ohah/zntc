@@ -1261,8 +1261,7 @@ pub fn emitModule(
                                                 if (ni >= transformer.ast.nodes.items.len) continue;
                                                 const new_node = transformer.ast.nodes.items[ni];
                                                 if (new_node.span.start == ts_stmt.span.start and
-                                                    new_node.span.end == ts_stmt.span.end and
-                                                    ni < md.skip_nodes.capacity())
+                                                    new_node.span.end == ts_stmt.span.end)
                                                 {
                                                     md.skip_nodes.set(ni);
                                                     break;
@@ -1307,9 +1306,7 @@ pub fn emitModule(
                                     }
                                     if (infos.computeReachable(arena_alloc, used_sym_buf.items)) |reachable| {
                                         for (infos.stmts, 0..) |stmt, si| {
-                                            if (!reachable.isSet(si) and stmt.node_idx < md.skip_nodes.capacity()) {
-                                                md.skip_nodes.set(stmt.node_idx);
-                                            }
+                                            if (!reachable.isSet(si)) md.skip_nodes.set(stmt.node_idx);
                                         }
                                     } else |_| {}
                                 }
