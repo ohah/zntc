@@ -96,7 +96,7 @@ pub fn emitChunks(
         }
 
         // 청크별 런타임 헬퍼 주입
-        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, options, null);
+        try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, linker, options, null);
 
         // ESM external imports (#1962): chunk 모듈들이 보유한 external import 를
         // dedup 후 chunk top 에 단일 `import` 구문으로 prepend. emitChunks 는 ESM 전용 (line 46).

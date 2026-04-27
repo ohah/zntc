@@ -1685,6 +1685,7 @@ fn emitBundleRuntimeHelpers(
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
         if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
+        if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // Node ESM 출력에 CJS wrapper가 섞이면 wrapper 내부 `require()`가 런타임에 미정의.
@@ -1796,24 +1797,33 @@ pub fn emitChunkRuntimeHelpers(
     allocator: std.mem.Allocator,
     chunk: *const Chunk,
     graph: *const ModuleGraph,
+    linker: ?*const Linker,
     options: *const EmitOptions,
     collected_helpers: ?RuntimeHelpers,
 ) !void {
     var needs_cjs_runtime = false;
     var needs_esm_wrap_runtime = false;
+    var needs_to_esm_runtime = false;
     var needs_to_binary = false;
     for (chunk.modules.items) |mod_idx| {
         const m = graph.getModule(mod_idx) orelse continue;
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
+        if (moduleNeedsToEsmInterop(m, graph, linker)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
+        if (needs_cjs_runtime and needs_esm_wrap_runtime and needs_to_esm_runtime and needs_to_binary) break;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
         // 단일 번들 경로와 동일: Node ESM + CJS wrap이면 createRequire shim 필요 (#1456)
         if (needs_cjs_runtime and options.platform == .node and options.format == .esm) {
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
         }
-        try rt.appendCjsRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        if (needs_cjs_runtime) {
+            try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        }
+        if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
+            try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        }
     }
     if (needs_esm_wrap_runtime) {
         try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
