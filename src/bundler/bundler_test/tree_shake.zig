@@ -313,6 +313,143 @@ test "TreeShaking CJS: live export keeps CJS require target evaluation" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_REQUIRE_EXPORT_MARKER") == null);
 }
 
+test "TreeShaking CJS: named import prunes module.exports object shorthand property" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\function used() { return "USED_OBJECT_SHORTHAND_MARKER"; }
+        \\function unused() { return "UNUSED_OBJECT_SHORTHAND_MARKER"; }
+        \\module.exports = { used, unused };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_OBJECT_SHORTHAND_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_OBJECT_SHORTHAND_MARKER") == null);
+}
+
+test "TreeShaking CJS: named import prunes module.exports object explicit and string properties" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used, alias } from './lib.js'; console.log(used(), alias());");
+    try writeFile(tmp.dir, "lib.js",
+        \\function usedImpl() { return "USED_OBJECT_EXPLICIT_MARKER"; }
+        \\function aliasImpl() { return "USED_OBJECT_STRING_KEY_MARKER"; }
+        \\function unusedImpl() { return "UNUSED_OBJECT_EXPLICIT_MARKER"; }
+        \\module.exports = { used: usedImpl, "alias": aliasImpl, unused: unusedImpl };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_OBJECT_EXPLICIT_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_OBJECT_STRING_KEY_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_OBJECT_EXPLICIT_MARKER") == null);
+}
+
+test "TreeShaking CJS: module.exports object keeps used helper and removes unused private declaration" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\function helper() { return "OBJECT_HELPER_MARKER"; }
+        \\function used() { return helper(); }
+        \\function unusedPrivate() { return "OBJECT_UNUSED_PRIVATE_MARKER"; }
+        \\module.exports = { used, unused: unusedPrivate };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_HELPER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_UNUSED_PRIVATE_MARKER") == null);
+}
+
+test "TreeShaking CJS: unsafe module.exports object shapes are preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used);");
+    try writeFile(tmp.dir, "lib.js",
+        \\function unused() { return "UNSAFE_OBJECT_UNUSED_FN_MARKER"; }
+        \\function sideEffect() { console.log("UNSAFE_OBJECT_EFFECT_MARKER"); return unused; }
+        \\const key = "computed";
+        \\const extra = { spread: unused };
+        \\const used = "UNSAFE_OBJECT_USED_MARKER";
+        \\module.exports = {
+        \\  used,
+        \\  [key]: unused,
+        \\  ...extra,
+        \\  get getter() { return "UNSAFE_OBJECT_GETTER_MARKER"; },
+        \\  method() { return "UNSAFE_OBJECT_METHOD_MARKER"; },
+        \\  effect: sideEffect(),
+        \\};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNSAFE_OBJECT_USED_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNSAFE_OBJECT_UNUSED_FN_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNSAFE_OBJECT_EFFECT_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNSAFE_OBJECT_GETTER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNSAFE_OBJECT_METHOD_MARKER") != null);
+}
+
+test "TreeShaking CJS: module.exports object live export keeps require target evaluation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\const helper = require("./helper.js");
+        \\function used() { return helper("USED_OBJECT_REQUIRE_TARGET_MARKER"); }
+        \\function unused() { return "UNUSED_OBJECT_REQUIRE_EXPORT_MARKER"; }
+        \\module.exports = { used, unused };
+    );
+    try writeFile(tmp.dir, "helper.js",
+        \\function helper(value) { return value; }
+        \\module.exports = helper;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_OBJECT_REQUIRE_TARGET_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports = helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_OBJECT_REQUIRE_EXPORT_MARKER") == null);
+}
+
 // ============================================================
 // @__PURE__ annotation tests
 // ============================================================

@@ -1269,6 +1269,24 @@ pub fn emitModule(
                                                 }
                                             }
                                         }
+                                        if (!s.isExportUsed(mod_idx, "*")) {
+                                            for (ts_infos.cjs_export_facts) |fact| {
+                                                if (fact.kind != .object_property) continue;
+                                                const prop_node_idx = fact.property_node orelse continue;
+                                                if (s.isExportUsed(mod_idx, fact.export_name)) continue;
+                                                const source_ast = module.ast orelse continue;
+                                                if (prop_node_idx >= source_ast.nodes.items.len) continue;
+                                                const prop_span = source_ast.nodes.items[prop_node_idx].span;
+                                                for (transformer.ast.nodes.items, 0..) |new_node, new_ni| {
+                                                    if (new_node.tag != .object_property) continue;
+                                                    if (new_node.span.start != prop_span.start or new_node.span.end != prop_span.end) continue;
+                                                    if (new_ni < md.skip_nodes.capacity()) {
+                                                        md.skip_nodes.set(new_ni);
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
