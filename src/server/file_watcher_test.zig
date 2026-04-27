@@ -45,6 +45,26 @@ test "FileWatcher: remove path" {
     try std.testing.expectEqual(@as(usize, 0), watcher.watchCount());
 }
 
+test "FileWatcher: owns added path memory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "owned.txt", .data = "owned" });
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "owned.txt");
+
+    var watcher = try FileWatcher.init(std.testing.allocator);
+    defer watcher.deinit();
+
+    try watcher.addPath(path);
+    std.testing.allocator.free(path);
+
+    const same_path = try tmp.dir.realpathAlloc(std.testing.allocator, "owned.txt");
+    defer std.testing.allocator.free(same_path);
+
+    watcher.removePath(same_path);
+    try std.testing.expectEqual(@as(usize, 0), watcher.watchCount());
+}
+
 test "FileWatcher: clear paths" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

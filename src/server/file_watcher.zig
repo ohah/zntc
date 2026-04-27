@@ -99,7 +99,6 @@ const KqueueBackend = struct {
 
     const WatchEntry = struct {
         fd: i32,
-        path: []const u8, // allocator 소유
     };
 
     fn init(allocator: std.mem.Allocator) !KqueueBackend {
@@ -116,7 +115,7 @@ const KqueueBackend = struct {
         var it = self.watch_fds.iterator();
         while (it.next()) |entry| {
             posix.close(entry.value_ptr.fd);
-            allocator.free(entry.value_ptr.path);
+            allocator.free(entry.key_ptr.*);
         }
         self.watch_fds.deinit();
         self.fd_to_path.deinit();
@@ -148,12 +147,17 @@ const KqueueBackend = struct {
 
         _ = try posix.kevent(self.kq, &changelist, &.{}, null);
 
-        self.watch_fds.put(path, .{ .fd = fd, .path = path_owned }) catch {
+        self.watch_fds.put(path_owned, .{ .fd = fd }) catch {
             posix.close(fd);
             allocator.free(path_owned);
             return;
         };
-        self.fd_to_path.put(fd, path_owned) catch {};
+        self.fd_to_path.put(fd, path_owned) catch {
+            _ = self.watch_fds.remove(path_owned);
+            posix.close(fd);
+            allocator.free(path_owned);
+            return;
+        };
     }
 
     fn removePath(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8) void {
@@ -169,7 +173,7 @@ const KqueueBackend = struct {
             _ = posix.kevent(self.kq, &changelist, &.{}, null) catch {};
             _ = self.fd_to_path.remove(kv.value.fd);
             posix.close(kv.value.fd);
-            allocator.free(kv.value.path);
+            allocator.free(kv.key);
         }
     }
 
@@ -177,7 +181,7 @@ const KqueueBackend = struct {
         var it = self.watch_fds.iterator();
         while (it.next()) |entry| {
             posix.close(entry.value_ptr.fd);
-            allocator.free(entry.value_ptr.path);
+            allocator.free(entry.key_ptr.*);
         }
         self.watch_fds.clearRetainingCapacity();
         self.fd_to_path.clearRetainingCapacity();
