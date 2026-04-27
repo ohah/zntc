@@ -1444,6 +1444,150 @@ test "TreeShaking: size regression — deep re-export chain only used exports (#
     }
 }
 
+test "TreeShaking: export star named import prunes unused source exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './barrel';
+        \\console.log(used());
+    );
+    try writeFile(tmp.dir, "barrel.ts", "export * from './source';");
+    try writeFile(tmp.dir, "source.ts",
+        \\export function used() { return "USED_STAR_MARKER"; }
+        \\export function unused() { return "UNUSED_STAR_MARKER"; }
+        \\export function alsoUnused() { return "ALSO_UNUSED_STAR_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_STAR_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_STAR_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "ALSO_UNUSED_STAR_MARKER") == null);
+}
+
+test "TreeShaking: chained export star named import prunes unrelated sources" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { leaf } from './top';
+        \\console.log(leaf());
+    );
+    try writeFile(tmp.dir, "top.ts", "export * from './mid'; export * from './other';");
+    try writeFile(tmp.dir, "mid.ts", "export * from './leaf';");
+    try writeFile(tmp.dir, "leaf.ts",
+        \\export function leaf() { return "LIVE_LEAF_MARKER"; }
+        \\export function deadLeaf() { return "DEAD_LEAF_MARKER"; }
+    );
+    try writeFile(tmp.dir, "other.ts",
+        \\export function unrelated() { return "UNRELATED_SOURCE_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LIVE_LEAF_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DEAD_LEAF_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNRELATED_SOURCE_MARKER") == null);
+}
+
+test "TreeShaking: export star from CJS keeps wrapped source for named import" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './barrel';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "barrel.ts", "export * from './source.cjs';");
+    try writeFile(tmp.dir, "source.cjs",
+        \\exports.used = "CJS_STAR_USED_MARKER";
+        \\exports.unused = "CJS_STAR_UNUSED_MARKER";
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_STAR_USED_MARKER") != null);
+    // CJS wrappers do not have statement-level export precision yet, so this is the remaining
+    // conservative fallback that prevents dropping the wrapped source.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_STAR_UNUSED_MARKER") != null);
+}
+
+test "TreeShaking: unused direct re-export source with local init is pruned" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './barrel';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\export { used } from './live';
+        \\export { createCustomElement } from './custom-element';
+    );
+    try writeFile(tmp.dir, "live.ts", "export const used = 'DIRECT_REEXPORT_USED_MARKER';");
+    try writeFile(tmp.dir, "legacy.ts",
+        \\export function createClassComponent() {
+        \\  console.log('DIRECT_REEXPORT_LEGACY_MARKER');
+        \\}
+    );
+    try writeFile(tmp.dir, "custom-element.ts",
+        \\import { createClassComponent } from './legacy';
+        \\let CustomElement;
+        \\if (typeof HTMLElement === 'function') {
+        \\  CustomElement = class extends HTMLElement {};
+        \\}
+        \\export function createCustomElement() {
+        \\  console.log('DIRECT_REEXPORT_CUSTOM_MARKER', CustomElement, createClassComponent);
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_USED_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_CUSTOM_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_LEGACY_MARKER") == null);
+}
+
 test "TreeShaking: class extends call expression preserved (#1261 edge)" {
     // class Foo extends getBase() — extends call은 side-effect이므로 보존.
     var tmp = std.testing.tmpDir(.{});

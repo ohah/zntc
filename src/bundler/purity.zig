@@ -371,6 +371,8 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*con
         .function_declaration => false,
         .class_declaration => classHasSideEffects(ast, node, unresolved_globals),
         .variable_declaration => !isVarDeclPure(ast, node, unresolved_globals),
+        .expression_statement => exprStmtHasSideEffects(ast, node.data.unary.operand, unresolved_globals),
+        .if_statement => ifStmtHasSideEffects(ast, node, unresolved_globals),
         .export_named_declaration => {
             const e = node.data.extra;
             if (e + 3 < ast.extra_data.items.len) {
@@ -396,6 +398,53 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*con
         .export_all_declaration => true,
         else => true,
     };
+}
+
+fn exprStmtHasSideEffects(ast: *const Ast, expr_idx: NodeIndex, unresolved_globals: ?*const GlobalRefSet) bool {
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return false;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag == .assignment_expression) {
+        return assignmentHasSideEffects(ast, expr, unresolved_globals);
+    }
+    return !isExprPureDepth(ast, expr_idx, unresolved_globals, 0);
+}
+
+fn assignmentHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
+    const left_idx = node.data.binary.left;
+    const right_idx = node.data.binary.right;
+    if (left_idx.isNone() or @intFromEnum(left_idx) >= ast.nodes.items.len) return true;
+    const left = ast.nodes.items[@intFromEnum(left_idx)];
+
+    // A top-level assignment to an unresolved global can mutate global state. A bare
+    // identifier that is not unresolved is a module-local binding, so the statement
+    // can be dropped when no live export observes that binding.
+    if (left.tag != .identifier_reference) return true;
+    if (unresolved_globals) |globals| {
+        if (globals.contains(ast.getText(left.span))) return true;
+    }
+    return !isExprPureDepth(ast, right_idx, unresolved_globals, 0);
+}
+
+fn ifStmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
+    const data = node.data.ternary;
+    if (!isExprPureDepth(ast, data.a, unresolved_globals, 0)) return true;
+    return childStmtHasSideEffects(ast, data.b, unresolved_globals) or
+        childStmtHasSideEffects(ast, data.c, unresolved_globals);
+}
+
+fn childStmtHasSideEffects(ast: *const Ast, idx: NodeIndex, unresolved_globals: ?*const GlobalRefSet) bool {
+    if (idx.isNone()) return false;
+    if (@intFromEnum(idx) >= ast.nodes.items.len) return true;
+    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (node.tag == .block_statement) {
+        const list = node.data.list;
+        if (list.start + list.len > ast.extra_data.items.len) return true;
+        for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+            if (childStmtHasSideEffects(ast, @enumFromInt(raw), unresolved_globals)) return true;
+        }
+        return false;
+    }
+    return stmtHasSideEffects(ast, node, unresolved_globals);
 }
 
 /// class declaration/expression의 side effect 판정.

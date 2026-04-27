@@ -431,7 +431,9 @@ pub const TreeShaker = struct {
             => false,
 
             .variable_declaration => purity.isVarDeclPure(ast, stmt, unresolved_globals),
-            .expression_statement => purity.isExprPure(ast, stmt.data.unary.operand, unresolved_globals),
+            .expression_statement,
+            .if_statement,
+            => !purity.stmtHasSideEffects(ast, stmt, unresolved_globals),
 
             .empty_statement => true,
 
@@ -821,10 +823,16 @@ pub const TreeShaker = struct {
                     const src_idx = m.import_records[rec_idx].resolved;
                     if (self.graph.getModule(src_idx) == null) continue;
                     const src = @intFromEnum(src_idx);
-                    if (eb.kind.isReExportAll()) {
-                        try self.markAllExportsUsed(@intCast(src));
-                        self.included.set(src);
-                        try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
+                    if (eb.kind == .re_export_star) {
+                        if (self.isExportUsed(mod_idx, ALL_EXPORTS_SENTINEL)) {
+                            try self.markAndSeedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
+                        } else {
+                            try self.seedUsedReExportStarNames(mod_idx, @intCast(src), queue, module_stmt_infos, reachable_stmts);
+                        }
+                    } else if (eb.kind.isReExportAll()) {
+                        // `export * as ns from` (re_export_namespace): namespace 객체 자체가 named export
+                        // 라 소비자가 `ns.foo` 로 escape 가능 → 정밀화 불가, 보수적으로 markAll.
+                        try self.markAndSeedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
                     } else {
                         try self.seedExport(src, m.exportBindingLocalName(eb), queue, module_stmt_infos, reachable_stmts);
                     }
@@ -868,7 +876,16 @@ pub const TreeShaker = struct {
             const src_idx = m.import_records[rec_idx].resolved;
             if (self.graph.getModule(src_idx) == null) continue;
             const src = @intFromEnum(src_idx);
-            if (eb.kind.isReExportAll()) {
+            if (eb.kind == .re_export_star) {
+                if (self.isExportUsed(mod_idx, ALL_EXPORTS_SENTINEL)) {
+                    self.included.set(src);
+                    try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
+                } else {
+                    try self.seedUsedReExportStarNames(mod_idx, @intCast(src), queue, module_stmt_infos, reachable_stmts);
+                }
+            } else if (eb.kind.isReExportAll()) {
+                // re_export_namespace: namespace 객체 escape 가능 — 정밀화 불가.
+                // 호출자(seedAllStmts 진입자)가 markAll 처리했다고 가정하므로 여기선 included+seed 만.
                 self.included.set(src);
                 try self.seedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
             } else {
@@ -885,6 +902,69 @@ pub const TreeShaker = struct {
             if (self.graph.getModule(rec.resolved) == null) continue;
             self.included.set(target);
             try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+        }
+    }
+
+    fn markAndSeedAllStmts(
+        self: *TreeShaker,
+        mod_idx: u32,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        try self.markAllExportsUsed(mod_idx);
+        self.included.set(mod_idx);
+        try self.seedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
+    }
+
+    fn collectDirectUsedExportNames(self: *TreeShaker, module_index: u32) !std.ArrayListUnmanaged([]const u8) {
+        var names: std.ArrayListUnmanaged([]const u8) = .{};
+        errdefer names.deinit(self.allocator);
+
+        // used_exports 키 형식 (types.makeModuleKey, types.zig:716): [u32 module_idx][0x00][name]
+        var it = self.used_exports.keyIterator();
+        while (it.next()) |key_ptr| {
+            const key = key_ptr.*;
+            if (key.len < 5 or key[4] != 0) continue;
+            var key_module: u32 = undefined;
+            @memcpy(std.mem.asBytes(&key_module), key[0..4]);
+            if (key_module != module_index) continue;
+
+            const name = key[5..];
+            if (std.mem.eql(u8, name, ALL_EXPORTS_SENTINEL)) continue;
+            try names.append(self.allocator, name);
+        }
+        return names;
+    }
+
+    fn seedUsedReExportStarNames(
+        self: *TreeShaker,
+        reexport_mod: u32,
+        src_mod: u32,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        var names = try self.collectDirectUsedExportNames(reexport_mod);
+        defer names.deinit(self.allocator);
+        if (names.items.len == 0) return;
+
+        const reexport_idx: ModuleIndex = @enumFromInt(reexport_mod);
+        const src_idx: ModuleIndex = @enumFromInt(src_mod);
+        for (names.items) |name| {
+            const from_reexport = self.linker.resolveExportChain(reexport_idx, name, 0) orelse continue;
+            const from_src = self.linker.resolveExportChain(src_idx, name, 0) orelse {
+                const src_module = self.getModule(src_mod) orelse continue;
+                if (from_reexport.module_index.toU32() == src_mod and
+                    (src_module.wrap_kind.isWrapped() or src_module.exports_kind == .esm_with_dynamic_fallback))
+                {
+                    try self.markAndSeedAllStmts(src_mod, queue, module_stmt_infos, reachable_stmts);
+                }
+                continue;
+            };
+            if (from_reexport.module_index != from_src.module_index) continue;
+            if (!std.mem.eql(u8, from_reexport.export_name, from_src.export_name)) continue;
+            try self.seedExport(src_mod, name, queue, module_stmt_infos, reachable_stmts);
         }
     }
 
