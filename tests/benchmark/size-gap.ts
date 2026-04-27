@@ -86,14 +86,18 @@ function readOutput(result?: SmokeBundlerResult): string {
   return readFileSync(result.outputPath, "utf-8");
 }
 
-function smallestBaseline(result: SmokeProjectResult): { name: BundlerName; result: SmokeBundlerResult } | null {
+function smallestBaseline(
+  result: SmokeProjectResult,
+): { name: BundlerName; result: SmokeBundlerResult } | null {
   const candidates: { name: BundlerName; result: SmokeBundlerResult }[] = [
     { name: "esbuild", result: result.esbuild },
     { name: "rolldown", result: result.rolldown },
     { name: "rspack", result: result.rspack },
   ].filter((c) => c.result.build && c.result.size > 0);
   if (candidates.length === 0) return null;
-  return candidates.reduce((best, current) => (current.result.size < best.result.size ? current : best));
+  return candidates.reduce((best, current) =>
+    current.result.size < best.result.size ? current : best,
+  );
 }
 
 function countOccurrences(text: string, needle: string): number {

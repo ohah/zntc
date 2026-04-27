@@ -64,11 +64,7 @@ describe("benchmark smoke diagnostics", () => {
   });
 
   test("size-gap.ts reports ZTS-only candidates for the target project", () => {
-    const r = runBun([
-      "run",
-      "tests/benchmark/size-gap.ts",
-      "--projects=safe-buffer",
-    ]);
+    const r = runBun(["run", "tests/benchmark/size-gap.ts", "--projects=safe-buffer"]);
 
     expect(r.status, r.stderr?.toString()).toBe(0);
     const stdout = r.stdout.toString();

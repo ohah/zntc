@@ -1106,7 +1106,9 @@ console.log("ZTS Smoke Test — Real Project Bundling\n");
 const filterArg = process.argv.find((a) => a.startsWith("--filter="));
 const filterPattern = filterArg ? filterArg.split("=")[1] : null;
 const keepOutputArg = process.argv.find((a) => a.startsWith("--keep-output="));
-const keepOutputDir = keepOutputArg ? resolve(keepOutputArg.slice("--keep-output=".length)) : undefined;
+const keepOutputDir = keepOutputArg
+  ? resolve(keepOutputArg.slice("--keep-output=".length))
+  : undefined;
 const jsonArg = process.argv.find((a) => a.startsWith("--json="));
 const jsonPath = jsonArg ? resolve(jsonArg.slice("--json=".length)) : undefined;
 const filteredProjects = filterPattern
