@@ -40,13 +40,22 @@ pub const PersistentModuleStore = struct {
     }
 
     fn freeCachedModule(self: *PersistentModuleStore, cached: *CachedModule) void {
+        for (cached.module.import_records) |record| {
+            if (record.kind == .require_context) {
+                if (record.context_matches) |matches| {
+                    for (matches) |s| self.allocator.free(s);
+                    self.allocator.free(matches);
+                }
+            }
+        }
         // parse_arena / alias_table 가 아직 store 에 있으면 해제.
         if (cached.module.parse_arena) |*arena| arena.deinit();
         if (cached.module.alias_table) |*t| t.deinit();
-        // dependencies/importers/dynamic_imports ArrayList 해제
+        // dependencies/importers/dynamic_imports/dynamic_importers ArrayList 해제
         cached.module.dependencies.deinit(self.allocator);
         cached.module.importers.deinit(self.allocator);
         cached.module.dynamic_imports.deinit(self.allocator);
+        cached.module.dynamic_importers.deinit(self.allocator);
         // import_specifiers 해제
         for (cached.import_specifiers) |s| self.allocator.free(s);
         self.allocator.free(cached.import_specifiers);
@@ -75,10 +84,12 @@ pub const PersistentModuleStore = struct {
 
         // Module 복사 — parse_arena 소유권 이전
         var cached_module = module.*;
-        // dependencies/importers/dynamic_imports를 빈 상태로 — graph deinit에서 원본이 해제되므로
+        // dependencies/importers/dynamic_imports/dynamic_importers를 빈 상태로 —
+        // graph deinit에서 원본이 해제되므로 store에 shallow copy를 남기면 안 된다.
         cached_module.dependencies = .empty;
         cached_module.importers = .empty;
         cached_module.dynamic_imports = .empty;
+        cached_module.dynamic_importers = .empty;
 
         // parse_arena / alias_table 소유권 이전: module → store.
         // alias_table 은 AliasTable struct (ArrayList backing) 로 graph module 과
@@ -88,6 +99,7 @@ pub const PersistentModuleStore = struct {
         // (특히 nested_name_sets HashMap backing 의 Header.capacity) 을 덮어쓴다.
         module.parse_arena = null;
         module.alias_table = null;
+        module.import_records = &.{};
 
         if (had_existing) {
             // 기존 키 재사용 — put은 값만 업데이트
@@ -172,10 +184,12 @@ test "PersistentModuleStore: alias_table ownership 왕복 (rebuild 2회)" {
     module.alias_table = symbol_mod.AliasTable.init(allocator);
     _ = try module.alias_table.?.declare("foo");
     _ = try module.alias_table.?.declare("bar");
+    try module.dynamic_importers.append(allocator, @enumFromInt(1));
 
     // build 1 end: store 로 소유권 이전.
     store.putModule("/virtual/mod.ts", &module, 1);
     try testing.expect(module.alias_table == null); // graph 는 더이상 소유하지 않음
+    try testing.expectEqual(@as(usize, 0), store.modules.getPtr("/virtual/mod.ts").?.module.dynamic_importers.items.len);
 
     // graph.deinit 시뮬레이션 — alias_table 이 null 이므로 deinit 이 no-op 이어야 함.
     module.deinit(allocator);
@@ -186,10 +200,12 @@ test "PersistentModuleStore: alias_table ownership 왕복 (rebuild 2회)" {
     const saved_deps = mod2.dependencies;
     const saved_importers = mod2.importers;
     const saved_dynamic = mod2.dynamic_imports;
+    const saved_dynamic_importers = mod2.dynamic_importers;
     mod2 = cached.module;
     mod2.dependencies = saved_deps;
     mod2.importers = saved_importers;
     mod2.dynamic_imports = saved_dynamic;
+    mod2.dynamic_importers = saved_dynamic_importers;
     cached.module.parse_arena = null;
     cached.module.alias_table = null;
     try testing.expect(mod2.alias_table != null);

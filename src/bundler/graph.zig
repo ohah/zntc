@@ -595,12 +595,14 @@ pub const ModuleGraph = struct {
                     const saved_deps = mod.dependencies;
                     const saved_importers = mod.importers;
                     const saved_dynamic = mod.dynamic_imports;
+                    const saved_dynamic_importers = mod.dynamic_importers;
                     mod.* = cached.module;
                     mod.index = saved_index;
                     mod.path = saved_path;
                     mod.dependencies = saved_deps;
                     mod.importers = saved_importers;
                     mod.dynamic_imports = saved_dynamic;
+                    mod.dynamic_importers = saved_dynamic_importers;
                     mod.mtime = mtime;
                     // parse_arena 소유권 이전: store → graph.
                     cached.module.parse_arena = null;
