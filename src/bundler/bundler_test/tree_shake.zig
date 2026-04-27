@@ -1635,8 +1635,6 @@ test "TreeShaking: unused direct re-export Svelte custom-element fanout is prune
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .tree_shaking = true,
-        .minify_whitespace = true,
-        .minify_syntax = true,
     });
     defer b.deinit();
     const result = try b.bundle();
