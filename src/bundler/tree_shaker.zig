@@ -412,12 +412,10 @@ pub const TreeShaker = struct {
         const sym_idx = sem.scope_maps[0].get(local_name) orelse return false;
 
         // 역인덱스로 이 심볼을 참조하는 statement 중 reachable한 것이 있는지 확인
-        if (sym_idx < infos.sym_to_referencing_stmts.len) {
-            for (infos.sym_to_referencing_stmts[sym_idx]) |si| {
-                if (!reachable.isSet(si)) continue;
-                if (isImportDeclarationStmt(m, infos, @intCast(si))) continue;
-                return true;
-            }
+        for (infos.referencingStmts(@intCast(sym_idx))) |si| {
+            if (!reachable.isSet(si)) continue;
+            if (isImportDeclarationStmt(m, infos, @intCast(si))) continue;
+            return true;
         }
         return false;
     }
@@ -619,10 +617,8 @@ pub const TreeShaker = struct {
                 // (1b) 같은 심볼에 대한 비선언 writer (예: TS 가 emit 하는 `var _a; ... _a = AST;`).
                 // declare 경로로는 var-only 선언만 살아남고 실제 값을 채우는 후속 할당이 누락되어
                 // `_a is not a constructor` 류 회귀가 발생한다.
-                if (ref_sym < infos.sym_to_writer_stmts.len) {
-                    for (infos.sym_to_writer_stmts[ref_sym]) |writer_stmt| {
-                        try self.enqueue(item.mod, writer_stmt, reachable_stmts, &queue);
-                    }
+                for (infos.writerStmts(ref_sym)) |writer_stmt| {
+                    try self.enqueue(item.mod, writer_stmt, reachable_stmts, &queue);
                 }
 
                 // (2) import binding: 타겟 모듈로 점프
@@ -691,12 +687,10 @@ pub const TreeShaker = struct {
             if (self.module_stmt_infos[mod]) |infos| {
                 if (stmt < infos.stmts.len) {
                     for (infos.stmts[stmt].declared_symbols) |declared_sym| {
-                        if (declared_sym < infos.sym_to_side_effect_stmts.len) {
-                            for (infos.sym_to_side_effect_stmts[declared_sym]) |si| {
-                                if (!reachable[mod].?.isSet(si)) {
-                                    reachable[mod].?.set(si);
-                                    try queue.append(self.allocator, .{ .mod = @intCast(mod), .stmt = @intCast(si) });
-                                }
+                        for (infos.sideEffectStmts(declared_sym)) |si| {
+                            if (!reachable[mod].?.isSet(si)) {
+                                reachable[mod].?.set(si);
+                                try queue.append(self.allocator, .{ .mod = @intCast(mod), .stmt = @intCast(si) });
                             }
                         }
                     }
@@ -932,10 +926,8 @@ pub const TreeShaker = struct {
         if (infos.declaredStmtBySymbol(rhs_sym)) |dep_stmt| {
             try self.enqueue(mod_idx, dep_stmt, reachable_stmts, queue);
         }
-        if (rhs_sym < infos.sym_to_writer_stmts.len) {
-            for (infos.sym_to_writer_stmts[rhs_sym]) |writer_stmt| {
-                try self.enqueue(mod_idx, writer_stmt, reachable_stmts, queue);
-            }
+        for (infos.writerStmts(rhs_sym)) |writer_stmt| {
+            try self.enqueue(mod_idx, writer_stmt, reachable_stmts, queue);
         }
     }
 

@@ -99,6 +99,24 @@ pub const ModuleStmtInfos = struct {
         return self.symbol_to_stmt[sym_idx];
     }
 
+    /// symbol 을 read 하는 statement 인덱스들. 미등록 symbol 이면 빈 슬라이스.
+    pub fn referencingStmts(self: *const ModuleStmtInfos, sym_idx: u32) []const u32 {
+        if (sym_idx >= self.sym_to_referencing_stmts.len) return &.{};
+        return self.sym_to_referencing_stmts[sym_idx];
+    }
+
+    /// symbol 을 비선언 write 하는 statement 인덱스들. 미등록 symbol 이면 빈 슬라이스.
+    pub fn writerStmts(self: *const ModuleStmtInfos, sym_idx: u32) []const u32 {
+        if (sym_idx >= self.sym_to_writer_stmts.len) return &.{};
+        return self.sym_to_writer_stmts[sym_idx];
+    }
+
+    /// symbol 을 reference 하는 side-effectful statement 인덱스들. 미등록이면 빈 슬라이스.
+    pub fn sideEffectStmts(self: *const ModuleStmtInfos, sym_idx: u32) []const u32 {
+        if (sym_idx >= self.sym_to_side_effect_stmts.len) return &.{};
+        return self.sym_to_side_effect_stmts[sym_idx];
+    }
+
     /// used exports에서 도달 가능한 심볼 set을 BFS로 계산.
     /// 반환: symbol_index → reachable 여부를 나타내는 bitset.
     pub fn computeReachable(
@@ -142,12 +160,10 @@ pub const ModuleStmtInfos = struct {
                         try queue.append(allocator, dep_stmt);
                     }
                 }
-                if (ref_sym < self.sym_to_writer_stmts.len) {
-                    for (self.sym_to_writer_stmts[ref_sym]) |writer_stmt| {
-                        if (!reachable_stmts.isSet(writer_stmt)) {
-                            reachable_stmts.set(writer_stmt);
-                            try queue.append(allocator, writer_stmt);
-                        }
+                for (self.writerStmts(ref_sym)) |writer_stmt| {
+                    if (!reachable_stmts.isSet(writer_stmt)) {
+                        reachable_stmts.set(writer_stmt);
+                        try queue.append(allocator, writer_stmt);
                     }
                 }
             }
