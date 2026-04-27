@@ -1694,7 +1694,19 @@ pub const ModuleGraph = struct {
         }
         transformer.line_offsets = module.line_offsets;
 
-        _ = transformer.transform() catch return;
+        const root = transformer.transform() catch return;
+        if (self.transform_options_base.minify_syntax) {
+            const minify_mod = @import("../transformer/minify.zig");
+            const ctx: minify_mod.MinifyCtx = if (module.semantic) |sem| .{
+                .symbols = sem.symbols.items,
+                .symbol_ids = transformer.symbol_ids.items,
+                .scopes = sem.scopes,
+                .unresolved_globals = &sem.unresolved_references,
+                .references = sem.references,
+                .allow_top_level_inline = true,
+            } else .empty;
+            minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
+        }
 
         // transformer 가 새 ast (clone) 에 transform 결과를 보유. module.ast 를 그 새 ast 로
         // swap. arena_alloc 가 owner 라 backing 은 안전. emit 단계 transformer 가 module.ast
@@ -1727,7 +1739,7 @@ pub const ModuleGraph = struct {
     /// AST mutation 이후 module 의 분석 산출물을 final AST 기준으로 재생성한다.
     /// 이 함수가 성공한 뒤에는 `module.ast`, semantic, import/export bindings,
     /// prebuilt_stmt_info, alias_table 이 같은 AST 기준이어야 한다 (#1913).
-    fn refreshAnalysisAfterAstMutation(
+    pub fn refreshAnalysisAfterAstMutation(
         self: *ModuleGraph,
         module: *Module,
         arena_alloc: std.mem.Allocator,

@@ -1173,6 +1173,7 @@ pub const Linker = struct {
     /// 모듈별 중첩 스코프 바인딩 이름을 하나의 HashSet으로 병합.
     /// computeRenames에서 한 번 호출하면, 이후 hasNestedBinding이 O(1)로 동작.
     fn buildNestedNameSets(self: *Linker) !void {
+        self.clearNestedNameSets();
         const count = self.graph.moduleCount();
         const sets = try self.allocator.alloc(std.StringHashMapUnmanaged(void), count);
         for (sets) |*s| s.* = .{};
@@ -1189,6 +1190,16 @@ pub const Linker = struct {
             }
         }
         self.nested_name_sets = sets;
+    }
+
+    fn clearNestedNameSets(self: *Linker) void {
+        for (self.nested_name_sets) |*set| {
+            set.deinit(self.allocator);
+        }
+        if (self.nested_name_sets.len > 0) {
+            self.allocator.free(self.nested_name_sets);
+        }
+        self.nested_name_sets = &.{};
     }
 
     /// ECMAScript 예약어 + CJS 런타임 + 브라우저/Node 주요 글로벌인지 확인.
@@ -2583,6 +2594,18 @@ pub const Linker = struct {
         // O(touched): putCanonicalName이 기록한 dirty 심볼만 reset.
         for (self.canonical_symbols.items) |sym| sym.canonical_name = "";
         self.canonical_symbols.clearRetainingCapacity();
+    }
+
+    /// unified mangling 산출물을 초기화한다. AST mutation 후 semantic을 재생성한 경우
+    /// old symbol id 기준 mangling 결과를 emit에 재사용하면 잘못된 rename이 적용된다.
+    pub fn clearMangling(self: *Linker) void {
+        if (self.unified_result) |*ur| {
+            ur.deinit();
+            self.unified_result = null;
+        }
+        for (self.unified_module_scopes) |*b| b.deinit();
+        if (self.unified_module_scopes.len > 0) self.allocator.free(self.unified_module_scopes);
+        self.unified_module_scopes = &.{};
     }
 
     /// 특정 모듈들만 대상으로 이름 충돌을 감지하고 리네임을 계산한다.

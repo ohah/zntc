@@ -22,17 +22,26 @@ const ModuleGraph = @import("graph.zig").ModuleGraph;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const Linker = @import("linker.zig").Linker;
-const Ast = @import("../parser/ast.zig").Ast;
-const Node = @import("../parser/ast.zig").Node;
-const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const ast_mod = @import("../parser/ast.zig");
+const Ast = ast_mod.Ast;
+const Node = ast_mod.Node;
+const NodeIndex = ast_mod.NodeIndex;
 const purity = @import("purity.zig");
 const stmt_info_mod = @import("stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
+const constant_facts = @import("constant_facts.zig");
 
 /// `used_exports`의 all-exports-used sentinel. 모듈의 전체 export가 사용됨을 표시.
 /// 일반 export 이름과 겹치지 않도록 의도적으로 JS 식별자 아닌 `"*"` 선택.
 /// (export_bindings의 `exported_name == "*"`는 wildcard re-export로 의미가 다름 — 같은 문자열, 다른 공간)
 pub const ALL_EXPORTS_SENTINEL: []const u8 = "*";
+
+fn isImportDeclarationStmt(m: *const Module, infos: StmtInfos, stmt_idx: u32) bool {
+    if (stmt_idx >= infos.stmts.len) return false;
+    const ast = &(m.ast orelse return false);
+    const ni: usize = infos.stmts[stmt_idx].node_idx;
+    return ni < ast.nodes.items.len and ast.nodes.items[ni].tag == .import_declaration;
+}
 
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
@@ -161,6 +170,36 @@ pub const TreeShaker = struct {
                     self.entry_set.set(i);
                     break;
                 }
+            }
+        }
+
+        if (self.graph.transform_options_base.minify_syntax) {
+            // Linker가 증명한 cross-module constant를 tree-shaking 전 AST에 먼저 반영한다.
+            // 그래야 `if (DEV) heavy()` 같은 dead branch 안 import가 BFS seed로 번지지 않는다.
+            for (0..mod_count) |i| {
+                const m = self.moduleAtMut(@intCast(i)) orelse continue;
+                const sem = m.semantic orelse continue;
+                const ast = &(m.ast orelse continue);
+                var const_values = try self.linker.buildCrossModuleConstValues(m, sem);
+                const changed = constant_facts.materialize(self.allocator, ast, sem.symbol_ids, &const_values);
+                const_values.deinit(self.allocator);
+                if (!changed) continue;
+
+                const minify_mod = @import("../transformer/minify.zig");
+                const root = ast.transformed_root orelse NodeIndex.none;
+                const ctx: minify_mod.MinifyCtx = .{
+                    .symbols = sem.symbols.items,
+                    .symbol_ids = sem.symbol_ids,
+                    .scopes = sem.scopes,
+                    .unresolved_globals = &sem.unresolved_references,
+                    .references = sem.references,
+                    .allow_top_level_inline = true,
+                };
+                minify_mod.minify(ast, ctx, self.allocator, root);
+                const refresh_alloc = if (m.parse_arena) |*arena| arena.allocator() else self.allocator;
+                self.graph.refreshAnalysisAfterAstMutation(m, refresh_alloc) catch {
+                    m.prebuilt_stmt_info = null;
+                };
             }
         }
 
@@ -374,7 +413,9 @@ pub const TreeShaker = struct {
         // 역인덱스로 이 심볼을 참조하는 statement 중 reachable한 것이 있는지 확인
         if (sym_idx < infos.sym_to_referencing_stmts.len) {
             for (infos.sym_to_referencing_stmts[sym_idx]) |si| {
-                if (reachable.isSet(si)) return true;
+                if (!reachable.isSet(si)) continue;
+                if (isImportDeclarationStmt(m, infos, @intCast(si))) continue;
+                return true;
             }
         }
         return false;
@@ -580,6 +621,8 @@ pub const TreeShaker = struct {
                     if (self.sym_to_ib[item.mod]) |sym_map| {
                         if (ref_sym < sym_map.len) {
                             if (sym_map[ref_sym]) |ib_idx| {
+                                const owner = self.getModule(item.mod) orelse continue;
+                                if (isImportDeclarationStmt(owner, infos, item.stmt)) continue;
                                 try self.followImport(item.mod, ib_idx, item.stmt, &queue, module_stmt_infos, reachable_stmts);
                             }
                         }

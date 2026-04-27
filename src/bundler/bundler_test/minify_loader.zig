@@ -8,6 +8,26 @@ const test_helpers = @import("../test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 
+fn expectNoDuplicatePrivateMethodParams(output: []const u8) !void {
+    var search_from: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, output, search_from, '#')) |hash_pos| {
+        const open_rel = std.mem.indexOfScalar(u8, output[hash_pos..], '(') orelse return;
+        const open = hash_pos + open_rel;
+        const close_rel = std.mem.indexOfScalar(u8, output[open + 1 ..], ')') orelse return;
+        const params = output[open + 1 .. open + 1 + close_rel];
+        var seen = std.StringHashMap(void).init(std.testing.allocator);
+        defer seen.deinit();
+        var it = std.mem.splitScalar(u8, params, ',');
+        while (it.next()) |raw| {
+            const name = std.mem.trim(u8, raw, " \t\r\n");
+            if (name.len == 0 or std.mem.indexOfAny(u8, name, "{}[]=.") != null) continue;
+            if (seen.contains(name)) return error.DuplicatePrivateMethodParameter;
+            try seen.put(name, {});
+        }
+        search_from = open + 1 + close_rel + 1;
+    }
+}
+
 test "Scope hoisting: arrow param shadow should not be renamed when namespace import conflicts" {
     // zod 패턴: import * as checks + (...checks) => { checks.map(...) }
     // 두 모듈의 namespace import 이름이 충돌해도, arrow 파라미터의 body 참조는 rename 안 됨
@@ -727,6 +747,244 @@ test "Minify: production env derived DEV flag folds through string methods" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "toLowerCase") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "startsWith") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(\"prod\")") != null);
+}
+
+test "Minify: cross-module default DEV flag removes dead import fanout" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import DEV from './dev';
+        \\import { heavy } from './heavy';
+        \\if (DEV) {
+        \\  heavy();
+        \\}
+        \\console.log("prod");
+    );
+    try writeFile(tmp.dir, "dev.ts",
+        \\export default false;
+    );
+    try writeFile(tmp.dir, "heavy.ts",
+        \\export function heavy() {
+        \\  console.log("HEAVY_DEV_ONLY");
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "HEAVY_DEV_ONLY") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "heavy") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(\"prod\")") != null);
+}
+
+test "Minify: cross-module derived default DEV flag removes long diagnostic branch" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { lifecycle_outside_component } from './errors';
+        \\lifecycle_outside_component("onMount");
+    );
+    try writeFile(tmp.dir, "dev-fallback.ts",
+        \\const node_env = "production";
+        \\export default node_env && !node_env.toLowerCase().startsWith("prod");
+    );
+    try writeFile(tmp.dir, "errors.ts",
+        \\import DEV from './dev-fallback';
+        \\export function lifecycle_outside_component(name: string) {
+        \\  if (DEV) {
+        \\    throw new Error(`lifecycle_outside_component ${name} LONG_DEV_DIAGNOSTIC`);
+        \\  } else {
+        \\    throw new Error("https://svelte.dev/e/lifecycle_outside_component");
+        \\  }
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LONG_DEV_DIAGNOSTIC") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "toLowerCase") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "startsWith") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "https://svelte.dev/e/lifecycle_outside_component") != null);
+}
+
+test "Minify: cross-module true DEV flag keeps live import fanout" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import DEV from './dev';
+        \\import { heavy } from './heavy';
+        \\if (DEV) {
+        \\  heavy();
+        \\}
+        \\console.log("after");
+    );
+    try writeFile(tmp.dir, "dev.ts",
+        \\export default true;
+    );
+    try writeFile(tmp.dir, "heavy.ts",
+        \\export function heavy() {
+        \\  console.log("HEAVY_LIVE_BRANCH");
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "HEAVY_LIVE_BRANCH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(\"after\")") != null);
+}
+
+test "Minify: re-exported default DEV flag removes dead import fanout" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { DEV } from './barrel';
+        \\import { heavy } from './heavy';
+        \\if (DEV) heavy();
+        \\console.log("prod");
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\export { default as DEV } from './dev';
+    );
+    try writeFile(tmp.dir, "dev.ts",
+        \\export default false;
+    );
+    try writeFile(tmp.dir, "heavy.ts",
+        \\export function heavy() {
+        \\  console.log("REEXPORTED_DEV_DEAD_BRANCH");
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "REEXPORTED_DEV_DEAD_BRANCH") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(\"prod\")") != null);
+}
+
+test "Minify: constant fact materialization preserves object shorthand keys" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import DEV from './dev';
+        \\const obj = { DEV };
+        \\console.log(obj.DEV);
+    );
+    try writeFile(tmp.dir, "dev.ts",
+        \\export default false;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "{false") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DEV") != null);
+}
+
+test "Minify: refreshed semantic recomputes mangling after constant fact DCE" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import DEV from './dev';
+        \\import { dead } from './dead';
+        \\class Batch {
+        \\  #process(root, effects, deferred) {
+        \\    for (const effect of effects) {
+        \\      deferred.push(root + effect);
+        \\    }
+        \\    return deferred.length;
+        \\  }
+        \\  run(items) {
+        \\    const pending = [];
+        \\    return this.#process(1, items, pending);
+        \\  }
+        \\}
+        \\if (DEV) dead();
+        \\console.log(new Batch().run([1, 2, 3]));
+    );
+    try writeFile(tmp.dir, "dev.ts",
+        \\const node_env = "production";
+        \\export default node_env && !node_env.toLowerCase().startsWith("prod");
+    );
+    try writeFile(tmp.dir, "dead.ts",
+        \\export function dead() {
+        \\  console.log("PRIVATE_MANGLE_DEAD_BRANCH");
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PRIVATE_MANGLE_DEAD_BRANCH") == null);
+    try expectNoDuplicatePrivateMethodParams(result.output);
 }
 
 test "TreeShaking: seedAllStmts propagates export * chain — cheerio pattern" {
