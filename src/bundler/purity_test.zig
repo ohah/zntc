@@ -50,29 +50,24 @@ fn setup(allocator: std.mem.Allocator, source: []const u8) !TestCtx {
     };
 }
 
-/// program의 `stmt_idx`번째 top-level statement가 불러지는 variable_declaration일 때
-/// 그 첫 declarator의 initializer NodeIndex를 반환한다.
-fn initOfDecl(ctx: *const TestCtx, stmt_idx: usize) NodeIndex {
-    const root_ni = @intFromEnum(ctx.root);
-    const root_node = ctx.ast.nodes.items[root_ni];
-    const stmts = root_node.data.list;
-    const raw_stmt: u32 = ctx.ast.extra_data.items[stmts.start + stmt_idx];
-    const stmt = ctx.ast.nodes.items[raw_stmt];
-    // variable_declaration: [kind(0), list_start(1), list_len(2)]
-    const de = stmt.data.extra;
-    const list_start = ctx.ast.extra_data.items[de + 1];
-    const raw_decl: u32 = ctx.ast.extra_data.items[list_start];
-    const decl = ctx.ast.nodes.items[raw_decl];
-    // variable_declarator extra: [pattern(0), type_ann(1), init(2)]
-    return @enumFromInt(ctx.ast.extra_data.items[decl.data.extra + 2]);
-}
-
 fn topLevelStmt(ctx: *const TestCtx, stmt_idx: usize) Node {
     const root_ni = @intFromEnum(ctx.root);
     const root_node = ctx.ast.nodes.items[root_ni];
     const stmts = root_node.data.list;
     const raw_stmt: u32 = ctx.ast.extra_data.items[stmts.start + stmt_idx];
     return ctx.ast.nodes.items[raw_stmt];
+}
+
+/// program의 `stmt_idx`번째 top-level statement가 variable_declaration일 때
+/// 그 첫 declarator의 initializer NodeIndex를 반환한다.
+fn initOfDecl(ctx: *const TestCtx, stmt_idx: usize) NodeIndex {
+    const stmt = topLevelStmt(ctx, stmt_idx);
+    // variable_declaration: [kind(0), list_start(1), list_len(2)]
+    const list_start = ctx.ast.extra_data.items[stmt.data.extra + 1];
+    const raw_decl: u32 = ctx.ast.extra_data.items[list_start];
+    const decl = ctx.ast.nodes.items[raw_decl];
+    // variable_declarator extra: [pattern(0), type_ann(1), init(2)]
+    return @enumFromInt(ctx.ast.extra_data.items[decl.data.extra + 2]);
 }
 
 test "pure builtin: new Set() with unresolved globals is pure" {
