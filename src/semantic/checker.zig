@@ -104,23 +104,10 @@ pub fn checkDuplicateConstructors(
 // ====================================================================
 
 /// key 노드의 이름이 target과 일치하는지 확인한다.
-/// identifier_reference와 string_literal(따옴표 자동 제거) 모두 처리.
+/// identifier 계열 / string_literal(따옴표 자동 제거) / numeric / computed-literal 모두 처리.
 fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
-    const key_node = ast.getNode(key_idx);
-
-    if (key_node.tag == .identifier_reference) {
-        return std.mem.eql(u8, ast.getText(key_node.span), target);
-    }
-    if (key_node.tag == .string_literal) {
-        // 따옴표 제거: "name" → name
-        const raw = ast.getText(key_node.span);
-        if (raw.len >= 2) {
-            const inner = raw[1 .. raw.len - 1];
-            return std.mem.eql(u8, inner, target);
-        }
-    }
-    return false;
+    const name = ast.staticKeyName(key_idx) orelse return false;
+    return std.mem.eql(u8, name, target);
 }
 
 /// 에러를 errors 목록에 추가한다.

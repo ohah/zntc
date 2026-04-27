@@ -16,7 +16,6 @@ const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const purity = @import("purity.zig");
-const ast_mod = @import("../parser/ast.zig");
 
 pub const StmtInfo = struct {
     node_idx: u32,
@@ -218,16 +217,6 @@ fn cjsExportNameFromLhs(ast: *const Ast, lhs: NodeIndex) ?[]const u8 {
     return null;
 }
 
-fn staticObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return null;
-    const key = ast.nodes.items[@intFromEnum(key_idx)];
-    return switch (key.tag) {
-        .identifier_reference => ast.getText(key.data.string_ref),
-        .string_literal => ast_mod.Ast.stripStringQuotes(ast.getText(key.span)),
-        else => null,
-    };
-}
-
 /// shorthand `{ x }` 는 right 가 none → left 가 곧 value. 그 외 explicit `{ k: v }` 는 right 가 value.
 fn objectPropertyValueNode(prop: Node) NodeIndex {
     return if (prop.data.binary.right.isNone()) prop.data.binary.left else prop.data.binary.right;
@@ -292,7 +281,7 @@ fn collectCjsObjectExportCandidates(
         const prop = ast.nodes.items[@intFromEnum(prop_idx)];
         if (prop.tag != .object_property) return null;
 
-        const name = staticObjectKeyName(ast, prop.data.binary.left) orelse return null;
+        const name = ast.staticKeyName(prop.data.binary.left) orelse return null;
         // `{__proto__: X}` 는 prototype 을 설정 — named export 가 아니라 reject.
         if (std.mem.eql(u8, name, "__proto__")) return null;
         const entry = try seen.getOrPut(allocator, name);
