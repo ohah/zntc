@@ -1658,8 +1658,7 @@ pub const ModuleGraph = struct {
         // (kysely/cheerio 회귀 #2052/#2051).
         const refreshed_kind = determineExportsKind(refreshed_scan_result, module.path);
         const previous_kind = module.exports_kind;
-        const preserve_esm = refreshed_kind == .none and
-            (previous_kind == .esm or previous_kind == .esm_with_dynamic_fallback);
+        const preserve_esm = refreshed_kind == .none and previous_kind.isEsm();
         module.exports_kind = if (preserve_esm) previous_kind else refreshed_kind;
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
 
@@ -2064,7 +2063,7 @@ pub const ModuleGraph = struct {
                     if (target.module_type == .json) {
                         target.exports_kind = .commonjs;
                         target.wrap_kind = .cjs;
-                    } else if (target.exports_kind == .esm or target.exports_kind == .esm_with_dynamic_fallback) {
+                    } else if (target.exports_kind.isEsm()) {
                         target.wrap_kind = .esm;
                     } else {
                         target.exports_kind = .commonjs;
@@ -2130,7 +2129,7 @@ pub const ModuleGraph = struct {
         if (self.resolve_cache.platform == .react_native or self.dev_mode) {
             var it = self.modules.iterator(0);
             while (it.next()) |m| {
-                if (m.wrap_kind == .none and (m.exports_kind == .esm or m.exports_kind == .esm_with_dynamic_fallback)) {
+                if (m.wrap_kind == .none and m.exports_kind.isEsm()) {
                     m.wrap_kind = .esm;
                 }
             }
@@ -2144,7 +2143,7 @@ pub const ModuleGraph = struct {
             while (it.next()) |m| {
                 if (m.dynamic_importers.items.len == 0) continue;
                 if (m.wrap_kind != .none) continue;
-                if (m.exports_kind != .esm and m.exports_kind != .esm_with_dynamic_fallback) continue;
+                if (!m.exports_kind.isEsm()) continue;
                 m.wrap_kind = .esm;
             }
         }
@@ -2268,7 +2267,7 @@ pub const ModuleGraph = struct {
     /// no-op. 변경 발생 시 true (Pass 2.5 fixpoint loop의 changed 플래그용).
     fn promoteToEsmWrap(target: *Module) bool {
         if (target.wrap_kind != .none) return false;
-        if (target.exports_kind != .esm and target.exports_kind != .esm_with_dynamic_fallback) return false;
+        if (!target.exports_kind.isEsm()) return false;
         target.wrap_kind = .esm;
         return true;
     }

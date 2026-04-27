@@ -255,6 +255,10 @@ pub const ExportsKind = enum {
     esm,
     /// ESM + CJS 혼용 (export * from cjs 등)
     esm_with_dynamic_fallback,
+
+    pub fn isEsm(self: ExportsKind) bool {
+        return self == .esm or self == .esm_with_dynamic_fallback;
+    }
 };
 
 /// 모듈 래핑 방식 (esbuild WrapKind).
