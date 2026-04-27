@@ -2,16 +2,9 @@ const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
+const ast_walk = @import("../parser/ast_walk.zig");
 const ConstValue = @import("../semantic/symbol.zig").ConstValue;
-
-fn markForbiddenSites(ast: *const Ast, forbidden: *std.DynamicBitSet) void {
-    for (ast.nodes.items) |node| {
-        if (node.tag != .object_property) continue;
-        if (!node.data.binary.right.isNone()) continue;
-        const key_ni = @intFromEnum(node.data.binary.left);
-        if (key_ni < forbidden.capacity()) forbidden.set(key_ni);
-    }
-}
+const minify_mod = @import("../transformer/minify.zig");
 
 fn constValueNode(ast: *Ast, cv: ConstValue) ?Node {
     return switch (cv.kind) {
@@ -49,10 +42,16 @@ pub fn materialize(
 
     var forbidden = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
     defer forbidden.deinit();
-    markForbiddenSites(ast, &forbidden);
+    minify_mod.markForbiddenInlineSites(ast, &forbidden);
+
+    // transformer 가 만든 orphan 노드까지 스캔하지 않도록 reachable 만 순회 (#1797 패턴).
+    const reachable = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
+    defer allocator.free(reachable);
 
     var changed = false;
-    for (ast.nodes.items, 0..) |node, i| {
+    for (reachable) |ni| {
+        const i: usize = @intCast(ni);
+        const node = ast.nodes.items[i];
         if (node.tag != .identifier_reference) continue;
         if (i >= symbol_ids.len) continue;
         if (forbidden.isSet(i)) continue;

@@ -656,7 +656,9 @@ fn isObjectDefinePropertyExports(ast: *const Ast, node: Node) bool {
         std.mem.eql(u8, target_parts.property, "exports");
 }
 
-fn getStaticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: []const u8, property: []const u8 } {
+const MemberParts = struct { object: []const u8, property: []const u8 };
+
+fn getStaticMemberParts(ast: *const Ast, idx: NodeIndex) ?MemberParts {
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
     const node = ast.getNode(idx);
     if (node.tag != .static_member_expression) return null;
@@ -681,34 +683,8 @@ fn getStaticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: []con
 
 /// assignment_expression의 left가 `obj.prop` 형태의 static_member_expression인지 확인하고,
 /// object의 identifier 텍스트를 반환한다. property 텍스트도 함께 반환.
-fn getAssignMemberParts(ast: *const Ast, node: Node) ?struct { object: []const u8, property: []const u8 } {
-    const left_idx = node.data.binary.left;
-    if (left_idx.isNone()) return null;
-    const left_ni = @intFromEnum(left_idx);
-    if (left_ni >= ast.nodes.items.len) return null;
-    const left = ast.nodes.items[left_ni];
-    if (left.tag != .static_member_expression) return null;
-
-    const me = left.data.extra;
-    if (!ast.hasExtra(me, 1)) return null;
-
-    const obj_idx = ast.readExtraNode(me, 0);
-    if (obj_idx.isNone()) return null;
-    const obj_ni = @intFromEnum(obj_idx);
-    if (obj_ni >= ast.nodes.items.len) return null;
-    const obj = ast.nodes.items[obj_ni];
-    if (obj.tag != .identifier_reference) return null;
-
-    const prop_idx = ast.readExtraNode(me, 1);
-    if (prop_idx.isNone()) return null;
-    const prop_ni = @intFromEnum(prop_idx);
-    if (prop_ni >= ast.nodes.items.len) return null;
-    const prop = ast.nodes.items[prop_ni];
-
-    return .{
-        .object = ast.getText(obj.span),
-        .property = ast.getText(prop.span),
-    };
+fn getAssignMemberParts(ast: *const Ast, node: Node) ?MemberParts {
+    return getStaticMemberParts(ast, node.data.binary.left);
 }
 
 /// assignment_expression의 left가 module.exports인지 확인.

@@ -60,6 +60,23 @@ pub const MinifyCtx = struct {
         .unresolved_globals = null,
     };
 
+    /// `module.semantic` + 호출 사이트의 `symbol_ids` 로 ctx 를 생성. transformer 진행 중에는
+    /// transformer.symbol_ids 를, 정착된 분석 산출물을 다룰 때는 sem.symbol_ids 를 넘긴다.
+    pub fn fromSemantic(
+        sem: anytype,
+        symbol_ids: []const ?u32,
+        allow_top_level_inline: bool,
+    ) MinifyCtx {
+        return .{
+            .symbols = sem.symbols.items,
+            .symbol_ids = symbol_ids,
+            .scopes = sem.scopes,
+            .unresolved_globals = &sem.unresolved_references,
+            .references = sem.references,
+            .allow_top_level_inline = allow_top_level_inline,
+        };
+    }
+
     /// semantic 정보 3축 (symbols / symbol_ids / scopes) 이 모두 채워졌는지 확인.
     /// scopes 누락 시 eval / with 가드가 silent 통과되어 직접 eval 스코프 안의 변수가
     /// 잘못 제거될 수 있으므로, 세 필드 모두 요구하는 all-or-nothing 계약.
@@ -582,7 +599,7 @@ fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
 // 일반 expression inline (식별자 포함 init) 은 이 PR 범위 밖 — 개입 write 의
 // evaluate-order 안전성을 별도로 증명해야 함 (esbuild 의 sequence-rewrite).
 
-fn markForbiddenInlineSites(ast: *const Ast, forbidden: *std.DynamicBitSet) void {
+pub fn markForbiddenInlineSites(ast: *const Ast, forbidden: *std.DynamicBitSet) void {
     for (ast.nodes.items) |node| {
         if (node.tag != .object_property) continue;
         if (!node.data.binary.right.isNone()) continue;

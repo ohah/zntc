@@ -1165,14 +1165,10 @@ pub fn emitModule(
     // dev 에서 아무 minify 안 하는 것과 동일한 trade-off.
     if (!options.dev_mode) {
         const minify_mod = @import("../transformer/minify.zig");
-        const ctx: minify_mod.MinifyCtx = if (module.semantic) |sem| .{
-            .symbols = sem.symbols.items,
-            .symbol_ids = transformer.symbol_ids.items,
-            .scopes = sem.scopes,
-            .unresolved_globals = &sem.unresolved_references,
-            .references = sem.references,
-            .allow_top_level_inline = options.minify_syntax,
-        } else .empty;
+        const ctx: minify_mod.MinifyCtx = if (module.semantic != null)
+            minify_mod.MinifyCtx.fromSemantic(&module.semantic.?, transformer.symbol_ids.items, options.minify_syntax)
+        else
+            .empty;
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
     }
 
