@@ -1224,7 +1224,7 @@ pub fn emitModule(
         // dev 번들은 크기 허용, speed 우선 (Metro/esbuild 관습).
         if (!options.dev_mode) {
             if (used_export_names) |names| {
-                if (!is_entry and !module.wrap_kind.isWrapped()) {
+                if (!is_entry and module.wrap_kind != .esm) {
                     stmt_shake: {
                         const sem = module.semantic orelse {
                             statement_shaker.markUnusedStatements(
@@ -1273,7 +1273,7 @@ pub fn emitModule(
                             }
                         } else {
                             // tree-shaker 없으면 기존 방식 (모듈 내부 computeReachable)
-                            if (stmt_info_mod.build(arena_alloc, transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references)) |maybe_infos| {
+                            if (stmt_info_mod.build(arena_alloc, transformer.ast, sem.symbols.items, sym_ids, &sem.unresolved_references, module.wrap_kind == .cjs)) |maybe_infos| {
                                 if (maybe_infos) |infos| {
                                     var used_sym_buf: std.ArrayListUnmanaged(u32) = .empty;
                                     defer used_sym_buf.deinit(arena_alloc);

@@ -695,8 +695,29 @@ fn isModuleExportsAssign(ast: *const Ast, node: Node) bool {
 
 /// assignment_expression의 left가 exports.xxx인지 확인.
 fn isExportsDotAssign(ast: *const Ast, node: Node) bool {
-    const parts = getAssignMemberParts(ast, node) orelse return false;
-    return std.mem.eql(u8, parts.object, "exports");
+    const lhs_idx = node.data.binary.left;
+    if (getAssignMemberParts(ast, node)) |parts| {
+        if (std.mem.eql(u8, parts.object, "exports")) return true;
+    }
+
+    if (lhs_idx.isNone() or @intFromEnum(lhs_idx) >= ast.nodes.items.len) return false;
+    const lhs_node = ast.getNode(lhs_idx);
+    if (lhs_node.tag != .static_member_expression) return false;
+    const outer_e = lhs_node.data.extra;
+    const outer_obj_idx = ast.readExtraNode(outer_e, 0);
+    if (outer_obj_idx.isNone() or @intFromEnum(outer_obj_idx) >= ast.nodes.items.len) return false;
+    const outer_obj = ast.getNode(outer_obj_idx);
+    if (outer_obj.tag != .static_member_expression) return false;
+    const inner_e = outer_obj.data.extra;
+    const obj_idx = ast.readExtraNode(inner_e, 0);
+    const prop_idx = ast.readExtraNode(inner_e, 1);
+    if (obj_idx.isNone() or prop_idx.isNone()) return false;
+    if (@intFromEnum(obj_idx) >= ast.nodes.items.len or @intFromEnum(prop_idx) >= ast.nodes.items.len) return false;
+    const obj = ast.getNode(obj_idx);
+    const prop = ast.getNode(prop_idx);
+    return obj.tag == .identifier_reference and
+        std.mem.eql(u8, ast.getText(obj.span), "module") and
+        std.mem.eql(u8, ast.getText(prop.span), "exports");
 }
 
 /// string_literal 노드의 텍스트를 따옴표 없이 반환한다.

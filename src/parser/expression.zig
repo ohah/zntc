@@ -2303,9 +2303,8 @@ fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
     if (obj_idx.isNone()) return;
     if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len) return;
     const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
-    if (obj.tag != .identifier_reference) return;
 
-    const obj_text = self.ast.source[obj.span.start..obj.span.end];
+    const obj_text = if (obj.tag == .identifier_reference) self.ast.source[obj.span.start..obj.span.end] else "";
 
     if (std.mem.eql(u8, obj_text, "module")) {
         // module.exports = ...
@@ -2320,6 +2319,23 @@ fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
     } else if (std.mem.eql(u8, obj_text, "exports")) {
         // exports.x = ...
         self.scan_result.has_exports_dot = true;
+    } else if (obj.tag == .static_member_expression) {
+        const inner_me = obj.data.extra;
+        if (inner_me + 1 >= self.ast.extra_data.items.len) return;
+        const inner_obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[inner_me]);
+        const inner_prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[inner_me + 1]);
+        if (inner_obj_idx.isNone() or inner_prop_idx.isNone()) return;
+        if (@intFromEnum(inner_obj_idx) >= self.ast.nodes.items.len or
+            @intFromEnum(inner_prop_idx) >= self.ast.nodes.items.len) return;
+        const inner_obj = self.ast.nodes.items[@intFromEnum(inner_obj_idx)];
+        const inner_prop = self.ast.nodes.items[@intFromEnum(inner_prop_idx)];
+        if (inner_obj.tag != .identifier_reference) return;
+        const inner_obj_text = self.ast.source[inner_obj.span.start..inner_obj.span.end];
+        const inner_prop_text = self.ast.source[inner_prop.span.start..inner_prop.span.end];
+        if (std.mem.eql(u8, inner_obj_text, "module") and std.mem.eql(u8, inner_prop_text, "exports")) {
+            // module.exports.x = ...
+            self.scan_result.has_exports_dot = true;
+        }
     }
 }
 

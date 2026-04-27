@@ -277,14 +277,16 @@ pub const TreeShaker = struct {
         self.prebuilt_mask = prebuilt_mask;
         for (0..mod_count) |i| {
             const m = self.getModule(@intCast(i)) orelse continue;
-            // wrapped(CJS/ESM wrap)는 body 전체가 한 function으로 래핑되어 statement 경계가
-            // 무의미 — 모듈 단위 포함/제외만. entry 포함 non-wrapped 모두 stmt-level 도달성 분석.
-            if (m.wrap_kind.isWrapped()) continue;
+            // CJS wrapper도 원본 top-level statement 경계를 유지하므로 named export fact로
+            // 정밀 DCE가 가능하다. __esm wrapper는 init 함수 단위 의미가 강해 기존 opaque 처리 유지.
+            if (m.wrap_kind == .esm) continue;
 
-            if (m.prebuilt_stmt_info) |prebuilt| {
-                module_stmt_infos[i] = prebuilt;
-                prebuilt_mask.set(i);
-                continue;
+            if (m.wrap_kind != .cjs) {
+                if (m.prebuilt_stmt_info) |prebuilt| {
+                    module_stmt_infos[i] = prebuilt;
+                    prebuilt_mask.set(i);
+                    continue;
+                }
             }
 
             const sem = m.semantic orelse continue;
@@ -295,6 +297,7 @@ pub const TreeShaker = struct {
                 sem.symbols.items,
                 sem.symbol_ids,
                 &sem.unresolved_references,
+                m.wrap_kind == .cjs,
             ) catch null;
         }
 
@@ -317,8 +320,7 @@ pub const TreeShaker = struct {
             for (0..mod_count) |i| {
                 if (!self.included.isSet(i)) continue;
                 const m = self.getModule(@intCast(i)) orelse continue;
-                // wrapped만 StmtInfo 없음 → live 필터 불가. 나머지(entry 포함)는 live_mod_idx 경로.
-                const live_idx: ?u32 = if (m.wrap_kind.isWrapped()) null else @intCast(i);
+                const live_idx: ?u32 = if (m.wrap_kind == .esm) null else @intCast(i);
                 if (try self.processModuleImportsInner(m.*, live_idx)) changed = true;
             }
 
@@ -327,20 +329,24 @@ pub const TreeShaker = struct {
             for (0..mod_count) |i| {
                 if (!self.included.isSet(i)) continue;
                 const m = self.getModule(@intCast(i)) orelse continue;
-                const live_idx: ?u32 = if (m.wrap_kind.isWrapped()) null else @intCast(i);
+                const live_idx: ?u32 = if (m.wrap_kind == .esm) null else @intCast(i);
                 for (m.import_records, 0..) |rec, rec_i| {
                     if (rec.resolved.isNone()) continue;
                     const target = @intFromEnum(rec.resolved);
                     const tmod = self.graph.getModule(rec.resolved) orelse continue;
-                    if (self.included.isSet(target)) continue;
 
                     const preserve = self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
                     const must_include = rec.kind == .require or
                         ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
                         ((tmod.side_effects or tmod.wrap_kind.isWrapped()) and preserve);
                     if (!must_include) continue;
-                    self.included.set(target);
-                    changed = true;
+                    if (!self.included.isSet(target)) {
+                        self.included.set(target);
+                        changed = true;
+                    }
+                    if (rec.kind == .require and tmod.wrap_kind == .cjs and preserve) {
+                        try self.markAllExportsUsed(@intCast(target));
+                    }
                 }
             }
 
@@ -560,6 +566,10 @@ pub const TreeShaker = struct {
                 for (infos.stmts, 0..) |_, si| {
                     try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
                 }
+            } else if (m.side_effects and m.side_effects_user_defined) {
+                for (infos.stmts, 0..) |_, si| {
+                    try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                }
             } else if (m.side_effects) {
                 for (infos.stmts, 0..) |stmt, si| {
                     if (stmt.has_side_effects) {
@@ -625,6 +635,18 @@ pub const TreeShaker = struct {
                             }
                         }
                     }
+                }
+            }
+
+            if (owner) |o| {
+                for (o.import_records, 0..) |rec, rec_i| {
+                    if (rec.kind != .require) continue;
+                    if (rec.resolved.isNone()) continue;
+                    if (!self.importRecordBelongsToStmt(infos, @intCast(item.stmt), @intCast(rec_i), o)) continue;
+                    const target_mod_idx = @intFromEnum(rec.resolved);
+                    const target_module = self.graph.getModule(rec.resolved) orelse continue;
+                    if (target_module.wrap_kind != .cjs) continue;
+                    try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
                 }
             }
         }
@@ -702,9 +724,13 @@ pub const TreeShaker = struct {
         const rec = m.import_records[ib.import_record_index];
         if (rec.resolved.isNone()) return;
         const target = @intFromEnum(rec.resolved);
-        if (self.graph.getModule(rec.resolved) == null) return;
+        const target_module_for_import = self.graph.getModule(rec.resolved) orelse return;
 
         if (ib.kind == .namespace) {
+            if (target_module_for_import.wrap_kind == .cjs) {
+                try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+                return;
+            }
             if (ib.namespace_used_properties) |props| {
                 for (props, 0..) |prop_name, pi| {
                     // per-prop stmt 정보와 dispatch_stmt가 모두 있을 때만 gating 적용.
@@ -721,6 +747,16 @@ pub const TreeShaker = struct {
                 self.included.set(target);
                 try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
             }
+            return;
+        }
+
+        if (target_module_for_import.wrap_kind == .cjs and ib.kind == .default) {
+            try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
+            return;
+        }
+
+        if (target_module_for_import.wrap_kind == .cjs and ib.kind == .named) {
+            try self.seedCjsExportOrAll(@intCast(target), ib.imported_name, queue, module_stmt_infos, reachable_stmts);
             return;
         }
 
@@ -768,6 +804,26 @@ pub const TreeShaker = struct {
 
         try self.markExportUsed(canon_mod, canonical.export_name);
         self.included.set(canon_mod);
+
+        if (canon_m.wrap_kind == .cjs) {
+            if (canon_mod != target_mod) {
+                try self.markAndSeedAllStmts(canon_mod, queue, module_stmt_infos, reachable_stmts);
+                return;
+            }
+            const target_infos = module_stmt_infos[canon_mod] orelse {
+                try self.markAndSeedAllStmts(canon_mod, queue, module_stmt_infos, reachable_stmts);
+                return;
+            };
+            const target_stmt = target_infos.cjsExportStmtByName(canonical.export_name) orelse {
+                try self.markAndSeedAllStmts(canon_mod, queue, module_stmt_infos, reachable_stmts);
+                return;
+            };
+            if (reachable_stmts[canon_mod] == null) {
+                reachable_stmts[canon_mod] = try std.DynamicBitSet.initEmpty(self.allocator, target_infos.stmts.len);
+            }
+            try self.enqueue(canon_mod, target_stmt, reachable_stmts, queue);
+            return;
+        }
 
         // namespace barrel re-export: canonical이 namespace import를 가리키면
         // 소스 모듈의 모든 export를 시드해야 함 (import * as z; export { z } 패턴)
@@ -830,6 +886,31 @@ pub const TreeShaker = struct {
         try self.enqueue(@intCast(canon_mod), target_stmt, reachable_stmts, queue);
 
         // side-effect statement는 enqueueStmt에서 lazy 시드됨
+    }
+
+    fn seedCjsExportOrAll(
+        self: *TreeShaker,
+        mod_idx: u32,
+        export_name: []const u8,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        try self.markExportUsed(mod_idx, export_name);
+        self.included.set(mod_idx);
+        const infos = if (mod_idx < module_stmt_infos.len) module_stmt_infos[mod_idx] else null;
+        const target_infos = infos orelse {
+            try self.markAndSeedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
+            return;
+        };
+        const target_stmt = target_infos.cjsExportStmtByName(export_name) orelse {
+            try self.markAndSeedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
+            return;
+        };
+        if (reachable_stmts[mod_idx] == null) {
+            reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, target_infos.stmts.len);
+        }
+        try self.enqueue(mod_idx, target_stmt, reachable_stmts, queue);
     }
 
     /// StmtInfo 없는 모듈 (entry, CJS 등)의 import를 BFS로 전파.
@@ -1006,6 +1087,12 @@ pub const TreeShaker = struct {
 
         const reexport_idx: ModuleIndex = @enumFromInt(reexport_mod);
         const src_idx: ModuleIndex = @enumFromInt(src_mod);
+        if (self.getModule(src_mod)) |src_module| {
+            if (src_module.wrap_kind == .cjs) {
+                try self.markAndSeedAllStmts(src_mod, queue, module_stmt_infos, reachable_stmts);
+                return;
+            }
+        }
         for (names.items) |name| {
             const from_reexport = self.linker.resolveExportChain(reexport_idx, name, 0) orelse continue;
             const from_src = self.linker.resolveExportChain(src_idx, name, 0) orelse {
@@ -1036,11 +1123,14 @@ pub const TreeShaker = struct {
                         const src_idx = m.import_records[rec_idx].resolved;
                         if (self.graph.getModule(src_idx) != null) {
                             const src = @intFromEnum(src_idx);
+                            const src_module = self.graph.getModule(src_idx).?;
                             if (!self.included.isSet(src)) {
                                 self.included.set(src);
                                 changed = true;
                             }
-                            if (eb.kind == .re_export_namespace) {
+                            if (src_module.wrap_kind == .cjs and eb.kind == .re_export_star) {
+                                try self.markAllExportsUsed(@intCast(src));
+                            } else if (eb.kind == .re_export_namespace) {
                                 // #1603 Phase 1b: 모든 소비자의 `namespace_used_properties`를
                                 // 집계해 subset이 결정 가능하면 해당 member만 used로 마킹.
                                 // 하나라도 opaque(null)이면 전체 사용 fallback.
@@ -1073,9 +1163,34 @@ pub const TreeShaker = struct {
         if (rec_idx >= m.import_records.len) return false;
         return switch (m.import_records[rec_idx].kind) {
             .dynamic_import => false,
+            .require => self.importRecordHasReachableStmt(m, live_mod_idx.?, rec_idx),
             .static_import => self.entry_set.isSet(mod_idx) or self.importRecordHasLiveBinding(m, mod_idx, rec_idx),
             else => true,
         };
+    }
+
+    fn importRecordHasReachableStmt(self: *const TreeShaker, m: *const Module, mod_idx: u32, rec_idx: u32) bool {
+        if (mod_idx >= self.module_stmt_infos.len or mod_idx >= self.reachable_stmts.len) return true;
+        const infos = self.module_stmt_infos[mod_idx] orelse return true;
+        const reachable = self.reachable_stmts[mod_idx] orelse return false;
+        if (rec_idx >= m.import_records.len) return false;
+        for (infos.stmts, 0..) |stmt, stmt_i| {
+            if (!reachable.isSet(stmt_i)) continue;
+            if (m.import_records[rec_idx].span.start >= stmt.span.start and
+                m.import_records[rec_idx].span.start < stmt.span.end)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn importRecordBelongsToStmt(self: *const TreeShaker, infos: StmtInfos, stmt_idx: u32, rec_idx: u32, m: *const Module) bool {
+        _ = self;
+        if (stmt_idx >= infos.stmts.len or rec_idx >= m.import_records.len) return false;
+        const stmt = infos.stmts[stmt_idx];
+        const rec = m.import_records[rec_idx];
+        return rec.span.start >= stmt.span.start and rec.span.start < stmt.span.end;
     }
 
     /// `isImportLiveInModule` 은 reachable_stmts 미초기화 시 보수적으로 true 를 반환하지만,
@@ -1166,10 +1281,23 @@ pub const TreeShaker = struct {
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
             const target_mod = @intFromEnum(rec.resolved);
-            if (self.graph.getModule(rec.resolved) == null) continue;
+            const target_module = self.graph.getModule(rec.resolved) orelse continue;
 
             if (live_mod_idx) |idx| {
                 if (!self.isImportLiveInModule(idx, ib.local_name)) continue;
+            }
+
+            if (target_module.wrap_kind == .cjs) {
+                if (ib.kind == .default or ib.kind == .namespace) {
+                    try self.markAllExportsUsed(@intCast(target_mod));
+                } else {
+                    try self.markExportUsed(@intCast(target_mod), ib.imported_name);
+                }
+                if (!self.included.isSet(target_mod)) {
+                    self.included.set(target_mod);
+                    newly_included = true;
+                }
+                continue;
             }
 
             const canonical = self.linker.resolveExportChain(rec.resolved, ib.imported_name, 0);
