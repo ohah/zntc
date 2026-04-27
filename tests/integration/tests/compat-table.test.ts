@@ -6,7 +6,7 @@
  * ES5~ES2022 각 타겟별로 구문 변환 대상 feature의 exec 코드를
  * ZTS로 트랜스파일 후 실행하여 검증.
  */
-import { describe, test, expect } from "bun:test";
+import { describe, test } from "bun:test";
 import { resolve, join } from "node:path";
 import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

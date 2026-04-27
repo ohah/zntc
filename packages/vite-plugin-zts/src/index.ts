@@ -46,7 +46,7 @@ export function zts(options: ZtsPluginOptions = {}): Plugin {
     name: "vite-plugin-zts",
 
     // Vite 5: esbuild transform 비활성화, Vite 6+: 이미 Rolldown 기반이므로 불필요
-    config(_, env) {
+    config(_, _env) {
       // Vite 5 이하에서만 esbuild 비활성화 (Vite 6+는 Rolldown 사용)
       try {
         const viteVersion = parseInt(require("vite/package.json").version);
