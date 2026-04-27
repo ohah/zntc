@@ -228,9 +228,6 @@ pub fn buildMetadataForAst(
         cjs_var_cache.deinit();
     }
 
-    // CJS 모듈별 namespace 변수명 캐시 (ESM-wrapped → CJS named import의 namespace 접근 패턴)
-    var cjs_ns_cache = std.AutoHashMap(u32, []const u8).init(self.allocator);
-    defer cjs_ns_cache.deinit(); // 값은 ns_var_list가 소유
     var ns_var_list: std.ArrayListUnmanaged([]const u8) = .empty;
     // ns_var_list 소유권은 metadata.dev_ns_vars로 이전됨 (정상 경로)
     // 에러 시에만 여기서 해제
@@ -361,32 +358,35 @@ pub fn buildMetadataForAst(
             // __esm → __esm은 live binding (preamble init + canonical rename) 사용.
             // 단, synthetic binding(JSX runtime 등)은 AST body에 require()가 없으므로 skip하지 않음.
             //
-            // named import from CJS in ESM-wrapped → namespace 접근 패턴:
-            // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
-            // 개별 구조분해 대신 namespace 객체 프로퍼티 접근을 사용한다 (rolldown 방식).
-            // preamble에서 ns_var = __toESM(require_xxx()) 생성 + rename 등록.
+            // ESM-wrapped 모듈에서 CJS target을 import하는 경우:
+            // named import는 `require_xxx().name` 직접 참조로 치환해 top-level
+            // binding을 만들지 않는다. default/namespace는 interop 값 자체가 필요하므로
+            // outer var를 선언하고 init preamble에서 할당한다.
             const is_synthetic = ib.isSynthetic();
             const canonical_m_opt = self.getModule(canonical_mod);
             if (!is_synthetic and m.wrap_kind == .esm and canonical_m_opt != null and
                 (canonical_m_opt.?.wrap_kind == .cjs or canonical_mod == module_index))
             {
-                if (ib.kind == .named and canonical_m_opt.?.wrap_kind == .cjs) {
+                if (canonical_m_opt.?.wrap_kind == .cjs) {
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
-                    const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
+                    if (ib.kind == .named and !std.mem.eql(u8, ib.imported_name, "default")) {
+                        if (ib.local_symbol.semanticIndex()) |sym_idx| {
+                            const direct_access = try std.fmt.allocPrint(self.allocator, "{s}().{s}", .{ req_var, ib.imported_name });
+                            errdefer self.allocator.free(direct_access);
+                            try owned_nested_renames.append(self.allocator, direct_access);
+                            try renames.put(sym_idx, direct_access);
+                        }
+                    } else {
+                        const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
+                        const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
+                        const hoisted_name = try self.allocator.dupe(u8, preamble_name);
+                        errdefer self.allocator.free(hoisted_name);
+                        try ns_var_list.append(self.allocator, hoisted_name);
+                        try preamble.writeCjsImportAssignOnly(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
 
-                    // CJS 모듈별 namespace var 생성 (한 번만)
-                    const ns_var = if (cjs_ns_cache.get(@intCast(canonical_mod))) |cached| cached else blk: {
-                        const ns_name = try std.fmt.allocPrint(self.allocator, NS_VAR_PREFIX ++ "{d}_{d}", .{ module_index, cjs_ns_cache.count() });
-                        try cjs_ns_cache.put(@intCast(canonical_mod), ns_name);
-                        try ns_var_list.append(self.allocator, ns_name);
-                        try preamble.writeCjsImportInner(ns_name, "", req_var, true, interop_mode, true);
-                        break :blk ns_name;
-                    };
-
-                    if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                        const rename = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_var, ib.imported_name });
-                        try owned_nested_renames.append(self.allocator, rename);
-                        try renames.put(sym_idx, rename);
+                        if (ib.local_symbol.semanticIndex()) |sym_idx| {
+                            try renames.put(sym_idx, preamble_name);
+                        }
                     }
                 }
                 continue;
@@ -592,6 +592,17 @@ pub fn buildMetadataForAst(
                 const tmod = self.graph.getModule(rec.resolved) orelse continue;
                 if (tmod.wrap_kind == .none) {
                     try hoisted_specifiers.put(rec.specifier, {});
+                } else if (tmod.wrap_kind == .cjs) {
+                    // CJS target의 value import는 metadata rename 또는 preamble에서
+                    // 처리한다. 원본 import_declaration을 남기면 body에서 raw
+                    // require/destructuring이 다시 emit된다. side-effect-only import는
+                    // binding 처리가 없으므로 유지한다.
+                    const has_binding = for (m.import_bindings) |ib| {
+                        if (ib.import_record_index == rec_i) break true;
+                    } else false;
+                    if (has_binding) {
+                        try hoisted_specifiers.put(rec.specifier, {});
+                    }
                 } else if (tmod.wrap_kind == .esm and tidx != module_index) {
                     // __esm → __esm live binding: named import만 skip.
                     // namespace import는 body codegen이 exports_xxx 할당을 생성해야 함.

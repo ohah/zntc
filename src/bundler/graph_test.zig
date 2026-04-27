@@ -8,6 +8,8 @@ const ModuleIndex = types.ModuleIndex;
 const import_scanner = @import("import_scanner.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const module_store_mod = @import("module_store.zig");
+const plugin_mod = @import("plugin.zig");
+const Plugin = plugin_mod.Plugin;
 const pkg_json = @import("package_json.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 
@@ -582,6 +584,57 @@ test "determineExportsKind: .mts extension" {
     try std.testing.expectEqual(types.ExportsKind.esm, determineExportsKind(scan, "lib.mts"));
 }
 
+test "graph: RN keeps abort-controller style Object.defineProperty exports as CJS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import AbortController from "abort-controller";
+        \\console.log(ac.AbortController);
+    );
+    try writeFile(tmp.dir, "node_modules/abort-controller/package.json",
+        \\{"main":"dist/abort-controller.js"}
+    );
+    try writeFile(tmp.dir, "node_modules/abort-controller/dist/abort-controller.js",
+        \\"use strict";
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\var eventTargetShim = require("event-target-shim");
+        \\function AbortController() {}
+        \\exports.AbortController = AbortController;
+        \\exports.default = AbortController;
+        \\module.exports = AbortController;
+        \\module.exports.AbortController = module.exports["default"] = AbortController;
+        \\module.exports.AbortSignal = eventTargetShim.EventTarget;
+    );
+    try writeFile(tmp.dir, "node_modules/event-target-shim/package.json",
+        \\{"main":"index.js"}
+    );
+    try writeFile(tmp.dir, "node_modules/event-target-shim/index.js",
+        \\exports.EventTarget = function EventTarget() {};
+    );
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.js" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{ .platform = .react_native });
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    var found = false;
+    for (0..graph.moduleCount()) |i| {
+        const m = graph.getModule(ModuleIndex.fromUsize(i)).?;
+        if (std.mem.indexOf(u8, m.path, "abort-controller/dist/abort-controller.js") == null) continue;
+        found = true;
+        try std.testing.expectEqual(types.ExportsKind.commonjs, m.exports_kind);
+        try std.testing.expectEqual(types.WrapKind.cjs, m.wrap_kind);
+    }
+    try std.testing.expect(found);
+}
+
 // ============================================================
 // sideEffects glob 패턴 매칭 테스트
 // ============================================================
@@ -717,6 +770,85 @@ test "buildIncremental: changed_files contains entry → stat → cache miss aft
 
     // entry 가 changed set 에 있으므로 stat 정상 수행 → 새 mtime 으로 cache miss → reparse 1건.
     try std.testing.expectEqual(@as(usize, 1), r.reparsed_indices.len);
+}
+
+const ResolveCounter = struct {
+    count: usize = 0,
+    target: []const u8,
+};
+
+fn countedResolveHook(
+    ctx: ?*anyopaque,
+    specifier: []const u8,
+    _: ?[]const u8,
+    allocator: std.mem.Allocator,
+) plugin_mod.PluginError!?plugin_mod.ResolvedModule {
+    const counter: *ResolveCounter = @ptrCast(@alignCast(ctx.?));
+    counter.count += 1;
+    if (std.mem.eql(u8, specifier, "alias:dep")) {
+        return .{ .file = .{ .path = try allocator.dupe(u8, counter.target) } };
+    }
+    return null;
+}
+
+test "buildIncremental: cache-hit modules replay resolved deps without resolver" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { value } from 'alias:dep'; export const result = value;");
+    try writeFile(tmp.dir, "dep.ts", "export const value = 1;");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+    const dep = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "dep.ts" });
+    defer std.testing.allocator.free(dep);
+
+    var counter = ResolveCounter{ .target = dep };
+    const plugins = [_]Plugin{.{
+        .name = "counted-resolve",
+        .context = &counter,
+        .resolveId = countedResolveHook,
+    }};
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    {
+        var graph = ModuleGraph.init(std.testing.allocator, &cache);
+        graph.plugins = &plugins;
+        defer graph.deinit();
+        try graph.build(&.{entry});
+        try std.testing.expect(counter.count > 0);
+
+        for (0..graph.moduleCount()) |i| {
+            const m = graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
+            if (m.parse_arena == null) continue;
+            store.putModule(m.path, m, m.mtime);
+        }
+    }
+
+    counter.count = 0;
+    var empty: std.StringHashMap(void) = .init(std.testing.allocator);
+    defer empty.deinit();
+
+    var graph2 = ModuleGraph.init(std.testing.allocator, &cache);
+    graph2.plugins = &plugins;
+    defer graph2.deinit();
+    const r = try graph2.buildIncremental(&.{entry}, &store, &empty);
+    defer std.testing.allocator.free(r.reparsed_indices);
+
+    try std.testing.expectEqual(@as(usize, 0), r.reparsed_indices.len);
+    try std.testing.expectEqual(@as(usize, 0), counter.count);
+    try std.testing.expectEqual(@as(usize, 2), graph2.moduleCount());
+
+    const entry_idx = graph2.path_to_module.get(entry) orelse return error.MissingEntry;
+    const entry_mod = graph2.getModule(entry_idx) orelse return error.MissingEntry;
+    try std.testing.expectEqual(@as(usize, 1), entry_mod.dependencies.items.len);
+    const dep_mod = graph2.getModule(entry_mod.dependencies.items[0]) orelse return error.MissingDep;
+    try std.testing.expectEqualStrings(dep, dep_mod.path);
 }
 
 test "buildIncremental: changed_files=null → 기존 동작 (전체 stat) — 변경된 파일 reparse" {

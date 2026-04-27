@@ -1594,10 +1594,11 @@ test "Bundler: dev mode named imports from multiple modules are not mixed" {
     try std.testing.expect(std.mem.indexOf(u8, output, "console.log") != null);
 }
 
-test "Bundler: dev mode ESM→CJS named import uses namespace access pattern" {
-    // dev 모드에서 CJS 모듈의 named import → namespace 접근 패턴.
-    // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
-    // 개별 구조분해 대신 __ns_N.prop 형태로 접근한다 (rolldown 방식).
+test "Bundler: dev mode ESM→CJS named import uses direct property access" {
+    // dev 모드에서 CJS 모듈의 named import는 별도 top-level var를 만들지 않고
+    // require 결과의 property access로 직접 치환한다. Metro는 module factory로 격리하고,
+    // webpack scope-hoisting도 CJS named import를 property access로 남겨 불필요한
+    // 번들 스코프 binding 생성을 피한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "react.js", "module.exports = { useState: function(v) { return [v, function(){}]; }, useEffect: function(f) { f(); } };");
@@ -1625,13 +1626,61 @@ test "Bundler: dev mode ESM→CJS named import uses namespace access pattern" {
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
 
-    // namespace 변수가 호이스팅됨 (__ns_{moduleIndex}_{localIdx} 형식)
-    try std.testing.expect(std.mem.indexOf(u8, output, "__ns_") != null);
-    // namespace 접근 패턴: __ns_N_M.useState, __ns_N_M.useEffect
-    try std.testing.expect(std.mem.indexOf(u8, output, ".useState") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, ".useEffect") != null);
+    // CJS named import용 hoisted binding이 없어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, output, "var useState, useEffect") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "useState = require_react().useState;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "useEffect = require_react().useEffect;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "require_react().useState(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "require_react().useEffect(") != null);
     // 구조분해 패턴 없음 (({useState:...} = ...) 형태가 아님)
     try std.testing.expect(std.mem.indexOf(u8, output, "{useState") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "({useState") == null);
+}
+
+test "Bundler: dev mode CJS named import does not allocate colliding hoisted binding" {
+    // React Native 재현 형태:
+    // - wrapped host 모듈은 로컬 `NativeText` 위에 export getter를 만든다.
+    // - 다른 wrapped ESM 모듈도 CJS에서 `{ Text as NativeText }`를 import한다.
+    // CJS named import가 top-level var로 호이스팅되면 두 모듈의 `NativeText`가 같은
+    // 번들 스코프에서 충돌한다. require property access로 직접 치환하면 충돌 binding
+    // 자체가 생기지 않는다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "rn.cjs", "module.exports = { Text: 'rn-text' };\n");
+    try writeFile(tmp.dir, "host.ts",
+        \\export let NativeText = 'host-text';
+        \\export function readHostText() {
+        \\  return NativeText;
+        \\}
+    );
+    try writeFile(tmp.dir, "nav.ts",
+        \\import { Text as NativeText } from './rn.cjs';
+        \\export function readNavText() {
+        \\  return NativeText;
+        \\}
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { readHostText } from './host';
+        \\import { readNavText } from './nav';
+        \\console.log(readHostText(), readNavText());
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    try std.testing.expect(std.mem.indexOf(u8, output, "return require_rn().Text;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "NativeText = require_rn().Text;") == null);
 }
 
 test "Profile: pipeline stage timing (dev only, not for CI)" {

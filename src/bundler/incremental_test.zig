@@ -115,6 +115,74 @@ test "IncrementalBundler: detects code change in modified file" {
     }
 }
 
+test "IncrementalBundler: changed module code keeps bundle require rewrites" {
+    // Expo/RN dev server 회귀 재현:
+    // clean bundle에서는 import/asset require가 require_xxx()로 치환되지만,
+    // 증분 HMR payload에서 원본 specifier require가 다시 emit되면 런타임 resolver가
+    // `@/...` 또는 asset specifier를 처리하지 못하고 무한 reload/fallback으로 이어진다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts", "export const label = 'dep';");
+    try tmp.dir.writeFile(.{ .sub_path = "icon.png", .data = &.{ 0x89, 0x50, 0x4E, 0x47 } });
+    try writeFile(tmp.dir, "index.ts",
+        \\import { label } from './dep';
+        \\const icon = require('./icon.png');
+        \\console.log(label, icon, 1);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var ib = IncrementalBundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .loader_overrides = &.{.{ .ext = ".png", .loader = .dataurl }},
+    });
+    defer ib.deinit();
+
+    {
+        const r = try ib.rebuild();
+        switch (r) {
+            .success => |s| freeChanged(s.changed_modules),
+            .build_error => |e| {
+                std.testing.allocator.free(e);
+                return error.TestUnexpectedResult;
+            },
+            .fatal => return error.TestUnexpectedResult,
+        }
+    }
+
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try writeFile(tmp.dir, "index.ts",
+        \\import { label } from './dep';
+        \\const icon = require('./icon.png');
+        \\console.log(label, icon, 2);
+    );
+
+    const result = try ib.rebuild();
+    switch (result) {
+        .success => |r| {
+            defer freeChanged(r.changed_modules);
+            try std.testing.expect(r.changed_modules.len > 0);
+
+            var saw_index = false;
+            for (r.changed_modules) |m| {
+                if (std.mem.indexOf(u8, m.id, "index.ts") == null) continue;
+                saw_index = true;
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "require('./icon.png')") == null);
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "require(\"./icon.png\")") == null);
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "require('./dep')") == null);
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "require(\"./dep\")") == null);
+                try std.testing.expect(std.mem.indexOf(u8, m.code, "require_icon()") != null);
+            }
+            try std.testing.expect(saw_index);
+        },
+        .build_error => return error.TestUnexpectedResult,
+        .fatal => return error.TestUnexpectedResult,
+    }
+}
+
 test "IncrementalBundler: detects graph change (new import)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

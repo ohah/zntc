@@ -14,6 +14,7 @@
 //!   - require("./foo")                   → require (CJS)
 //!   - module.exports = ...              → CJS 신호 (has_module_exports)
 //!   - exports.x = ...                   → CJS 신호 (has_exports_dot)
+//!   - Object.defineProperty(exports, ...) → CJS 신호 (has_exports_dot)
 //!
 //! AST extra_data 레이아웃:
 //!   - import_declaration:         [specs_start, specs_len, source_node]
@@ -121,6 +122,8 @@ pub fn extractImportsWithCjsDetectionAndDefines(
                     try records.append(allocator, record);
                 } else if (tryExtractGlob(ast, node)) |record| {
                     try records.append(allocator, record);
+                } else if (!has_exports_dot and isObjectDefinePropertyExports(ast, node)) {
+                    has_exports_dot = true;
                 }
             },
             .new_expression => {
@@ -620,6 +623,59 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
         .specifier = specifier,
         .kind = .require,
         .span = arg_node.span,
+    };
+}
+
+/// `Object.defineProperty(exports, ...)` / `Object.defineProperty(module.exports, ...)`.
+/// Babel/TS CJS output often declares `__esModule` this way; after transformer pre-pass
+/// rewrites `require()` calls, this may be the remaining CJS signal.
+fn isObjectDefinePropertyExports(ast: *const Ast, node: Node) bool {
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 2)) return false;
+
+    const callee_idx = ast.readExtraNode(e, 0);
+    const callee_parts = getStaticMemberParts(ast, callee_idx) orelse return false;
+    if (!std.mem.eql(u8, callee_parts.object, "Object")) return false;
+    if (!std.mem.eql(u8, callee_parts.property, "defineProperty")) return false;
+
+    const args_len = ast.readExtra(e, 2);
+    if (args_len == 0) return false;
+
+    const args_start = ast.readExtra(e, 1);
+    if (args_start >= ast.extra_data.items.len) return false;
+    const target_idx = ast.readExtraNode(args_start, 0);
+
+    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len) return false;
+    const target = ast.getNode(target_idx);
+    if (target.tag == .identifier_reference and std.mem.eql(u8, ast.getText(target.span), "exports")) {
+        return true;
+    }
+
+    const target_parts = getStaticMemberParts(ast, target_idx) orelse return false;
+    return std.mem.eql(u8, target_parts.object, "module") and
+        std.mem.eql(u8, target_parts.property, "exports");
+}
+
+fn getStaticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: []const u8, property: []const u8 } {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    const node = ast.getNode(idx);
+    if (node.tag != .static_member_expression) return null;
+
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 1)) return null;
+
+    const obj_idx = ast.readExtraNode(e, 0);
+    if (obj_idx.isNone() or @intFromEnum(obj_idx) >= ast.nodes.items.len) return null;
+    const obj = ast.getNode(obj_idx);
+    if (obj.tag != .identifier_reference) return null;
+
+    const prop_idx = ast.readExtraNode(e, 1);
+    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+    const prop = ast.getNode(prop_idx);
+
+    return .{
+        .object = ast.getText(obj.span),
+        .property = ast.getText(prop.span),
     };
 }
 
