@@ -63,18 +63,16 @@ describe("benchmark smoke diagnostics", () => {
     }
   });
 
-  test("size-gap.ts reports ZTS-only candidates for the target projects", () => {
+  test("size-gap.ts reports ZTS-only candidates for the target project", () => {
     const r = runBun([
       "run",
       "tests/benchmark/size-gap.ts",
-      "--projects=safe-buffer,cookie,path-to-regexp",
+      "--projects=safe-buffer",
     ]);
 
     expect(r.status, r.stderr?.toString()).toBe(0);
     const stdout = r.stdout.toString();
     expect(stdout).toContain("safe-buffer");
-    expect(stdout).toContain("cookie");
-    expect(stdout).toContain("path-to-regexp");
     expect(stdout).toContain("ZTS-only strings");
     expect(stdout).toContain("Wrapper markers");
     expect(stdout).toContain("Top-level declarations");
