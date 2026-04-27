@@ -615,7 +615,7 @@ pub const ModuleGraph = struct {
                     // parse_arena 소유권 이전: store → graph.
                     cached.module.parse_arena = null;
                     cached.module.import_records = &.{};
-                    cached.module.resolved_deps = &.{};
+                    cached.module.resolved_deps = .empty;
                     // alias_table 도 동일 패턴: 얕은 복사로 인해 backing 이
                     // graph 와 store 에 동시에 잡혀있어 graph.deinit 에서 free 되면
                     // store 쪽 포인터가 dangling — 다음 rebuild 가 그 메모리를
@@ -802,15 +802,9 @@ pub const ModuleGraph = struct {
         const path_owned = try self.allocator.dupe(u8, dep.path);
         errdefer self.allocator.free(path_owned);
 
-        const old = mod_ptr.resolved_deps;
-        const next = try self.allocator.alloc(CachedResolvedDep, old.len + 1);
-        if (old.len > 0) {
-            @memcpy(next[0..old.len], old);
-            self.allocator.free(old);
-        }
-        next[old.len] = dep;
-        next[old.len].path = path_owned;
-        mod_ptr.resolved_deps = next;
+        var owned_dep = dep;
+        owned_dep.path = path_owned;
+        try mod_ptr.resolved_deps.append(self.allocator, owned_dep);
     }
 
     fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
@@ -818,7 +812,7 @@ pub const ModuleGraph = struct {
         const mod_index = ModuleIndex.fromUsize(mod_idx);
         const mod_ptr = self.modules.at(mod_idx);
 
-        for (mod_ptr.resolved_deps) |dep| {
+        for (mod_ptr.resolved_deps.items) |dep| {
             switch (dep.target) {
                 .file, .virtual => {
                     const dep_idx = try self.addModule(dep.path);
@@ -828,27 +822,11 @@ pub const ModuleGraph = struct {
                     if (dep.is_context_dep) {
                         self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
                     }
-                    if (dep.record_index) |rec_idx| {
-                        if (rec_idx < mod_ptr.import_records.len) {
-                            try self.recordResolvedDep(mod_index, mod_idx, rec_idx, dep_idx, dep.kind);
-                        }
-                    } else if (dep.kind == .dynamic_import) {
-                        try self.linkDynamicImport(mod_index, dep_idx);
-                    } else {
-                        try self.linkDependency(mod_index, dep_idx);
-                    }
+                    try self.replayLinkResolvedDep(mod_index, mod_idx, dep, dep_idx);
                 },
                 .disabled => {
                     const dep_idx = try self.addDisabledModule(dep.path);
-                    if (dep.record_index) |rec_idx| {
-                        if (rec_idx < mod_ptr.import_records.len) {
-                            try self.recordResolvedDep(mod_index, mod_idx, rec_idx, dep_idx, dep.kind);
-                        }
-                    } else if (dep.kind == .dynamic_import) {
-                        try self.linkDynamicImport(mod_index, dep_idx);
-                    } else {
-                        try self.linkDependency(mod_index, dep_idx);
-                    }
+                    try self.replayLinkResolvedDep(mod_index, mod_idx, dep, dep_idx);
                 },
                 .external => {
                     const ext_idx = try self.addExternalModule(dep.path);
@@ -873,6 +851,28 @@ pub const ModuleGraph = struct {
                     });
                 },
             }
+        }
+    }
+
+    /// `record_index` 가 있으면 record 갱신 + link, 없으면 link 만 수행. file/virtual/disabled
+    /// 케이스가 공통으로 사용. external 은 `is_external` flag 기록 후 무조건 link 라 별도.
+    fn replayLinkResolvedDep(
+        self: *ModuleGraph,
+        mod_index: ModuleIndex,
+        mod_idx: usize,
+        dep: CachedResolvedDep,
+        dep_idx: ModuleIndex,
+    ) !void {
+        if (dep.record_index) |rec_idx| {
+            const mod_ptr = self.modules.at(mod_idx);
+            if (rec_idx >= mod_ptr.import_records.len) return;
+            try self.recordResolvedDep(mod_index, mod_idx, rec_idx, dep_idx, dep.kind);
+            return;
+        }
+        if (dep.kind == .dynamic_import) {
+            try self.linkDynamicImport(mod_index, dep_idx);
+        } else {
+            try self.linkDependency(mod_index, dep_idx);
         }
     }
 
