@@ -1683,6 +1683,42 @@ test "Bundler: dev mode CJS named import does not allocate colliding hoisted bin
     try std.testing.expect(std.mem.indexOf(u8, output, "NativeText = require_rn().Text;") == null);
 }
 
+test "Bundler: dev mode new expression wraps renamed CJS member callee" {
+    // `new Animated.Value()`의 `Animated`가 CJS named import direct access로
+    // `require_xxx().Animated`가 되면 callee 내부에 call expression이 생긴다.
+    // 괄호가 없으면 JS가 생성자 callee를 다르게 묶어 AnimatedValue를 일반 함수처럼
+    // 호출할 수 있다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "rn.cjs",
+        \\class Value {
+        \\  constructor(v) { this.v = v; }
+        \\}
+        \\module.exports = { Animated: { Value } };
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { Animated } from './rn.cjs';
+        \\export const value = new Animated.Value(0);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (require_rn().Animated.Value)(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated.Value(0)") == null);
+}
+
 test "Profile: pipeline stage timing (dev only, not for CI)" {
     // 프로세스 시작 비용 없이 순수 파이프라인 단계별 시간 측정
     const alloc = std.testing.allocator;
