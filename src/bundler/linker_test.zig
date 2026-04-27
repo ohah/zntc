@@ -58,7 +58,8 @@ test "linker: direct import resolves to export" {
 test "linker: re-export chain resolved" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import { x } from './b';");
+    // console.log(x): Phase D 가 미사용 named import 를 elide 하므로 value-use 추가
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
     try writeFile(tmp.dir, "b.ts", "export { x } from './c';");
     try writeFile(tmp.dir, "c.ts", "export const x = 1;");
 
@@ -77,7 +78,7 @@ test "linker: re-export chain resolved" {
 test "linker: missing export produces diagnostic" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import { missing } from './b';");
+    try writeFile(tmp.dir, "a.ts", "import { missing } from './b'; console.log(missing);");
     try writeFile(tmp.dir, "b.ts", "export const x = 1;");
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
@@ -96,7 +97,7 @@ test "linker: missing export produces diagnostic" {
 test "linker: export * resolves through re-export all" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import { x } from './b';");
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
     try writeFile(tmp.dir, "b.ts", "export * from './c';");
     try writeFile(tmp.dir, "c.ts", "export const x = 99;");
 
@@ -119,7 +120,7 @@ test "linker: export * from CJS resolves to CJS module" {
     // wrap_kind == .cjs인 모듈 자체를 반환해야 한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import { x } from './b';");
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
     try writeFile(tmp.dir, "b.ts", "export * from './c';");
     try writeFile(tmp.dir, "c.js", "module.exports = { x: 42 };");
 
@@ -145,7 +146,7 @@ test "linker: namespace re-export resolves to local binding" {
     // 로컬 바인딩을 그대로 반환해야 한다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import { ns } from './b';");
+    try writeFile(tmp.dir, "a.ts", "import { ns } from './b'; console.log(ns);");
     try writeFile(tmp.dir, "b.ts", "import * as ns from './c';\nexport { ns };");
     try writeFile(tmp.dir, "c.ts", "export const x = 1;");
 
@@ -169,7 +170,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
     //  직접 호출 시에는 null)
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import { x } from './b';");
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
     try writeFile(tmp.dir, "b.js", "module.exports = { x: 42 };");
 
     const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -433,7 +434,7 @@ test "linker: deep re-export chain (near depth limit)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // 5단계 re-export 체인: a → b → c → d → e
-    try writeFile(tmp.dir, "a.ts", "import { x } from './b';");
+    try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
     try writeFile(tmp.dir, "b.ts", "export { x } from './c';");
     try writeFile(tmp.dir, "c.ts", "export { x } from './d';");
     try writeFile(tmp.dir, "d.ts", "export { x } from './e';");
@@ -654,7 +655,7 @@ test "re-export alias: export { J as render } resolves to J" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // preact 패턴: 함수를 다른 이름으로 re-export
-    try writeFile(tmp.dir, "entry.ts", "import { render } from './reexport';");
+    try writeFile(tmp.dir, "entry.ts", "import { render } from './reexport'; console.log(render);");
     try writeFile(tmp.dir, "reexport.ts", "export { J as render } from './impl';");
     try writeFile(tmp.dir, "impl.ts", "export function J() { return 42; }");
 
@@ -679,7 +680,7 @@ test "re-export alias: export { default as groupBy } — function declaration" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // export default <function_declaration> → binding_scanner가 함수 이름 추출
-    try writeFile(tmp.dir, "entry.ts", "import { greet } from './barrel';");
+    try writeFile(tmp.dir, "entry.ts", "import { greet } from './barrel'; console.log(greet);");
     try writeFile(tmp.dir, "barrel.ts", "export { default as greet } from './impl';");
     try writeFile(tmp.dir, "impl.ts", "export default function hello() { return 'hi'; }");
 
@@ -700,7 +701,7 @@ test "re-export alias: export { default as X } — identifier reuses original na
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // export default <identifier> → rolldown 방식: identifier 이름 재사용
-    try writeFile(tmp.dir, "entry.ts", "import { groupBy } from './barrel';");
+    try writeFile(tmp.dir, "entry.ts", "import { groupBy } from './barrel'; console.log(groupBy);");
     try writeFile(tmp.dir, "barrel.ts", "export { default as groupBy } from './groupBy';");
     try writeFile(tmp.dir, "groupBy.ts", "function groupBy(arr: any) { return arr; }\nexport default groupBy;");
 
@@ -831,7 +832,7 @@ test "re-export alias: double-hop chain (z -> y -> x)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // 3-level alias chain: z → y → x → 최종 original
-    try writeFile(tmp.dir, "entry.ts", "import { z } from './hop1';");
+    try writeFile(tmp.dir, "entry.ts", "import { z } from './hop1'; console.log(z);");
     try writeFile(tmp.dir, "hop1.ts", "export { y as z } from './hop2';");
     try writeFile(tmp.dir, "hop2.ts", "export { x as y } from './origin';");
     try writeFile(tmp.dir, "origin.ts", "export function x() { return 1; }");
@@ -855,7 +856,7 @@ test "re-export alias: default class declaration resolves to class name" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // export default class MyClass {} → local_name = "MyWidget"
-    try writeFile(tmp.dir, "entry.ts", "import { Widget } from './barrel';");
+    try writeFile(tmp.dir, "entry.ts", "import { Widget } from './barrel'; console.log(Widget);");
     try writeFile(tmp.dir, "barrel.ts", "export { default as Widget } from './impl';");
     try writeFile(tmp.dir, "impl.ts", "export default class MyWidget { render() {} }");
 
