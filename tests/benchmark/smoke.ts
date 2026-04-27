@@ -1108,26 +1108,49 @@ const total = results.length;
 console.log(`\n${passed}/${total} projects built successfully.`);
 console.log(`${matched}/${comparable} outputs match baseline.`);
 
-// Size comparison dashboard
-const sizeComparisons = results
-  .filter((r) => r.zts.build && r.esbuild.build && r.zts.size > 0 && r.esbuild.size > 0)
-  .map((r) => ({
-    name: r.project,
-    zts: r.zts.size,
-    esbuild: r.esbuild.size,
-    ratio: r.zts.size / r.esbuild.size,
-  }))
+// Size comparison dashboard — ZTS는 esbuild/rolldown/rspack 중 가장 작은 결과를 baseline 으로
+// 비교한다. 가장 빡센 기준이라 셋 중 어느 하나라도 더 작아지면 격차가 즉시 드러난다.
+type SizeComparison = {
+  name: string;
+  zts: number;
+  baselineName: "esbuild" | "rolldown" | "rspack";
+  baselineSize: number;
+  ratio: number;
+};
+
+const sizeComparisons: SizeComparison[] = results
+  .filter((r) => r.zts.build && r.zts.size > 0)
+  .flatMap((r) => {
+    const candidates: { name: SizeComparison["baselineName"]; size: number }[] = [];
+    if (r.esbuild.build && r.esbuild.size > 0)
+      candidates.push({ name: "esbuild", size: r.esbuild.size });
+    if (r.rolldown.build && r.rolldown.size > 0)
+      candidates.push({ name: "rolldown", size: r.rolldown.size });
+    if (r.rspack.build && r.rspack.size > 0)
+      candidates.push({ name: "rspack", size: r.rspack.size });
+    if (candidates.length === 0) return [];
+    const best = candidates.reduce((a, b) => (b.size < a.size ? b : a));
+    return [
+      {
+        name: r.project,
+        zts: r.zts.size,
+        baselineName: best.name,
+        baselineSize: best.size,
+        ratio: r.zts.size / best.size,
+      },
+    ];
+  })
   .sort((a, b) => b.ratio - a.ratio);
 
 if (sizeComparisons.length > 0) {
-  console.log("\n### Size Comparison (ZTS vs esbuild)\n");
-  console.log("| Project | ZTS | esbuild | rolldown | rspack | Ratio | Status |");
-  console.log("|---------|-----|---------|----------|--------|-------|--------|");
+  console.log("\n### Size Comparison (ZTS vs smallest of esbuild/rolldown/rspack)\n");
+  console.log("| Project | ZTS | esbuild | rolldown | rspack | Baseline | Ratio | Status |");
+  console.log("|---------|-----|---------|----------|--------|----------|-------|--------|");
   for (const c of sizeComparisons) {
     const r = results.find((r) => r.project === c.name)!;
     const status = c.ratio <= 1.1 ? "✅" : c.ratio <= 1.5 ? "⚠️" : "❌";
     console.log(
-      `| ${c.name} | ${fmtSize(c.zts)} | ${fmtSize(c.esbuild)} | ${fmtSize(r.rolldown.size)} | ${fmtSize(r.rspack.size)} | ${c.ratio.toFixed(2)}x | ${status} |`,
+      `| ${c.name} | ${fmtSize(c.zts)} | ${fmtSize(r.esbuild.size)} | ${fmtSize(r.rolldown.size)} | ${fmtSize(r.rspack.size)} | ${c.baselineName} | ${c.ratio.toFixed(2)}x | ${status} |`,
     );
   }
   const avgRatio = sizeComparisons.reduce((s, c) => s + c.ratio, 0) / sizeComparisons.length;
@@ -1135,7 +1158,7 @@ if (sizeComparisons.length > 0) {
   const similar = sizeComparisons.filter((c) => c.ratio >= 1 && c.ratio <= 1.1).length;
   const larger = sizeComparisons.filter((c) => c.ratio > 1.1).length;
   console.log(
-    `\nAverage ratio: ${avgRatio.toFixed(2)}x | Smaller: ${smaller} | Similar(±10%): ${similar} | Larger: ${larger}`,
+    `\nAverage ratio (vs smallest): ${avgRatio.toFixed(2)}x | Smaller: ${smaller} | Similar(±10%): ${similar} | Larger: ${larger}`,
   );
 }
 
