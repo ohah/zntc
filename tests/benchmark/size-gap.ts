@@ -12,24 +12,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
+import type { BundlerResult, SmokeResult } from "./smoke.ts";
+
 const ROOT = resolve(__dirname, "../..");
 
 type BundlerName = "esbuild" | "rolldown" | "rspack";
-
-interface SmokeBundlerResult {
-  build: boolean;
-  size: number;
-  outputPath?: string;
-}
-
-interface SmokeProjectResult {
-  project: string;
-  zts: SmokeBundlerResult;
-  esbuild: SmokeBundlerResult;
-  rolldown: SmokeBundlerResult;
-  rspack: SmokeBundlerResult;
-  outputMatch: boolean;
-}
 
 interface Candidate {
   value: string;
@@ -48,8 +35,8 @@ function parseProjects(): string[] {
     .filter(Boolean);
 }
 
-function runSmoke(projects: string[], keepDir: string, jsonPath: string): SmokeProjectResult[] {
-  const results: SmokeProjectResult[] = [];
+function runSmoke(projects: string[], keepDir: string, jsonPath: string): SmokeResult[] {
+  const results: SmokeResult[] = [];
   for (const project of projects) {
     const r = spawnSync(
       "bun",
@@ -72,7 +59,7 @@ function runSmoke(projects: string[], keepDir: string, jsonPath: string): SmokeP
       );
     }
     const report = JSON.parse(readFileSync(jsonPath, "utf-8"));
-    const exact = report.results.find((entry: SmokeProjectResult) => entry.project === project);
+    const exact = report.results.find((entry: SmokeResult) => entry.project === project);
     if (!exact) {
       throw new Error(`smoke.ts did not produce an exact result for ${project}`);
     }
@@ -81,15 +68,15 @@ function runSmoke(projects: string[], keepDir: string, jsonPath: string): SmokeP
   return results;
 }
 
-function readOutput(result?: SmokeBundlerResult): string {
+function readOutput(result?: BundlerResult): string {
   if (!result?.outputPath || !existsSync(result.outputPath)) return "";
   return readFileSync(result.outputPath, "utf-8");
 }
 
 function smallestBaseline(
-  result: SmokeProjectResult,
-): { name: BundlerName; result: SmokeBundlerResult } | null {
-  const candidates: { name: BundlerName; result: SmokeBundlerResult }[] = [
+  result: SmokeResult,
+): { name: BundlerName; result: BundlerResult } | null {
+  const candidates: { name: BundlerName; result: BundlerResult }[] = [
     { name: "esbuild", result: result.esbuild },
     { name: "rolldown", result: result.rolldown },
     { name: "rspack", result: result.rspack },
@@ -120,9 +107,14 @@ function ztsOnlyStrings(zts: string, baseline: string): Candidate[] {
     strings.add(value);
   }
   return [...strings]
-    .map((value) => ({ value, ztsCount: countOccurrences(zts, value) }))
-    .sort((a, b) => b.value.length * b.ztsCount - a.value.length * a.ztsCount)
-    .slice(0, 8);
+    .map((raw) => ({
+      value: JSON.stringify(raw).slice(0, 80),
+      ztsCount: countOccurrences(zts, raw),
+      weight: raw.length * countOccurrences(zts, raw),
+    }))
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 8)
+    .map(({ value, ztsCount }) => ({ value, ztsCount }));
 }
 
 function wrapperMarkers(zts: string, baseline: string): Candidate[] {
@@ -144,14 +136,14 @@ function wrapperMarkers(zts: string, baseline: string): Candidate[] {
 }
 
 function topLevelDeclarations(zts: string, baseline: string): Candidate[] {
-  const names = new Set<string>();
   const re = /^(?:function|class|const|let|var)\s+([A-Za-z_$][\w$]*)\b/gm;
+  const baselineNames = new Set<string>();
+  for (const match of baseline.matchAll(re)) {
+    baselineNames.add(match[1]);
+  }
+  const names = new Set<string>();
   for (const match of zts.matchAll(re)) {
-    const name = match[1];
-    const baselineDecl = new RegExp(`^(?:function|class|const|let|var)\\s+${name}\\b`, "m");
-    if (!baselineDecl.test(baseline)) {
-      names.add(name);
-    }
+    if (!baselineNames.has(match[1])) names.add(match[1]);
   }
   return [...names]
     .map((value) => ({ value, ztsCount: countOccurrences(zts, value) }))
@@ -172,14 +164,14 @@ const jsonPath = join(tempDir, "smoke.json");
 try {
   const results = runSmoke(projects, keepDir, jsonPath);
 
-  console.log("# ZTS Size Gap Diagnostics\n");
-  console.log(`Projects: ${projects.join(", ")}\n`);
+  console.log("# ZTS Size Gap Diagnostics");
+  console.log(`Projects: ${projects.join(", ")}`);
 
   for (const result of results) {
     const baseline = smallestBaseline(result);
+    console.log(`\n## ${result.project}`);
     if (!baseline) {
-      console.log(`## ${result.project}\n`);
-      console.log("No successful baseline output.\n");
+      console.log("No successful baseline output.");
       continue;
     }
 
@@ -187,21 +179,19 @@ try {
     const base = readOutput(baseline.result);
     const ratio = result.zts.size > 0 ? result.zts.size / baseline.result.size : 0;
 
-    console.log(`## ${result.project}\n`);
     console.log(
       `ZTS: ${result.zts.size} bytes | Baseline: ${baseline.name} ${baseline.result.size} bytes | Ratio: ${ratio.toFixed(2)}x | Output: ${result.outputMatch ? "MATCH" : "DIFF"}`,
     );
     console.log(
-      `Files: ${basename(result.zts.outputPath ?? "")} vs ${basename(baseline.result.outputPath ?? "")}\n`,
+      `Files: ${basename(result.zts.outputPath ?? "")} vs ${basename(baseline.result.outputPath ?? "")}`,
     );
 
-    console.log("ZTS-only strings");
+    console.log("\nZTS-only strings");
     console.log(formatCandidates(ztsOnlyStrings(zts, base)));
     console.log("\nWrapper markers");
     console.log(formatCandidates(wrapperMarkers(zts, base)));
     console.log("\nTop-level declarations");
     console.log(formatCandidates(topLevelDeclarations(zts, base)));
-    console.log("");
   }
 } finally {
   if (!process.argv.includes("--keep-temp")) {

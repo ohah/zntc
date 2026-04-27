@@ -1255,15 +1255,9 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
     }
 }
 
-/// CJS interop 런타임을 주입한다 (__commonJS + __toESM).
-/// configurable=true(RN)이면 ES5 호환 버전 사용.
-pub fn appendCjsRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
-    try appendCommonJsFactoryRuntime(buf, allocator, minify, configurable);
-    try appendToEsmRuntime(buf, allocator, minify, configurable);
-}
-
 /// __commonJS factory 만 주입. named-only CJS import (`require_xxx().name`) 는
 /// __toESM 클러스터가 필요 없으므로, namespace/default import 가 없을 때 호출.
+/// configurable=true(RN)이면 ES5 호환 버전 사용.
 pub fn appendCommonJsFactoryRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, configurable: bool) !void {
     if (minify) {
         try buf.appendSlice(allocator, if (configurable) CJS_RUNTIME_ES5_MIN else CJS_RUNTIME_MIN);

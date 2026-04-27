@@ -26,7 +26,7 @@ const RSPACK_BIN = existsSync(join(__dirname, "node_modules/.bin/rspack"))
   ? join(__dirname, "node_modules/.bin/rspack")
   : join(ROOT, "node_modules/.bin/rspack");
 
-interface BundlerResult {
+export interface BundlerResult {
   build: boolean;
   size: number;
   time: number;
@@ -36,7 +36,7 @@ interface BundlerResult {
   stderrSummary?: string;
 }
 
-interface SmokeResult {
+export interface SmokeResult {
   project: string;
   zts: BundlerResult;
   esbuild: BundlerResult;
