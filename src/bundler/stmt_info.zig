@@ -27,8 +27,20 @@ pub const StmtInfo = struct {
     referenced_symbols: []const u32,
 };
 
+pub const CjsExportFact = struct {
+    export_name: []const u8,
+    statement_index: u32,
+    export_assignment_node: u32,
+    rhs_symbol: ?u32 = null,
+    is_static: bool = true,
+    is_safe_to_prune: bool = true,
+};
+
 pub const ModuleStmtInfos = struct {
     stmts: []StmtInfo,
+    /// 정적으로 증명된 CJS named export assignment.
+    /// 대상은 `exports.foo = ...`, `module.exports.foo = ...` 뿐이다.
+    cjs_export_facts: []const CjsExportFact = &.{},
     /// symbol_index → stmt_index (선언 역매핑). 없으면 null.
     symbol_to_stmt: []const ?u32,
     /// symbol_index → [side-effect stmt indices that reference this symbol].
@@ -50,6 +62,7 @@ pub const ModuleStmtInfos = struct {
             self.allocator.free(stmt.referenced_symbols);
         }
         self.allocator.free(self.stmts);
+        if (self.cjs_export_facts.len > 0) self.allocator.free(self.cjs_export_facts);
         self.allocator.free(self.symbol_to_stmt);
         // 역인덱스 해제
         for (self.sym_to_side_effect_stmts) |s| {
@@ -64,6 +77,15 @@ pub const ModuleStmtInfos = struct {
             if (s.len > 0) self.allocator.free(s);
         }
         self.allocator.free(self.sym_to_writer_stmts);
+    }
+
+    pub fn cjsExportStmtByName(self: *const ModuleStmtInfos, export_name: []const u8) ?u32 {
+        for (self.cjs_export_facts) |fact| {
+            if (fact.is_static and std.mem.eql(u8, fact.export_name, export_name)) {
+                return fact.statement_index;
+            }
+        }
+        return null;
     }
 
     /// symbol_index가 선언된 statement 인덱스 반환.
@@ -129,6 +151,63 @@ pub const ModuleStmtInfos = struct {
         return reachable_stmts;
     }
 };
+
+const CjsExportCandidate = struct {
+    export_name: []const u8,
+    export_assignment_node: u32,
+    rhs_node: NodeIndex,
+};
+
+fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeIndex, property: NodeIndex } {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (node.tag != .static_member_expression) return null;
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 1)) return null;
+    const obj_idx = ast.readExtraNode(e, 0);
+    const prop_idx = ast.readExtraNode(e, 1);
+    if (obj_idx.isNone() or prop_idx.isNone()) return null;
+    if (@intFromEnum(obj_idx) >= ast.nodes.items.len or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+    return .{ .object = obj_idx, .property = prop_idx };
+}
+
+fn cjsExportNameFromLhs(ast: *const Ast, lhs: NodeIndex) ?[]const u8 {
+    const outer = staticMemberParts(ast, lhs) orelse return null;
+    const prop = ast.nodes.items[@intFromEnum(outer.property)];
+    if (prop.tag != .identifier_reference and prop.tag != .private_identifier) return null;
+
+    const obj = ast.nodes.items[@intFromEnum(outer.object)];
+    if (obj.tag == .identifier_reference and std.mem.eql(u8, ast.getText(obj.span), "exports")) {
+        return ast.getText(prop.span);
+    }
+
+    if (obj.tag != .static_member_expression) return null;
+    const inner = staticMemberParts(ast, outer.object) orelse return null;
+    const inner_obj = ast.nodes.items[@intFromEnum(inner.object)];
+    const inner_prop = ast.nodes.items[@intFromEnum(inner.property)];
+    if (inner_obj.tag != .identifier_reference) return null;
+    if (!std.mem.eql(u8, ast.getText(inner_obj.span), "module")) return null;
+    if (!std.mem.eql(u8, ast.getText(inner_prop.span), "exports")) return null;
+    return ast.getText(prop.span);
+}
+
+fn cjsExportCandidateForStmt(ast: *const Ast, stmt_node: Node) ?CjsExportCandidate {
+    if (stmt_node.tag != .expression_statement) return null;
+    const expr_idx = stmt_node.data.unary.operand;
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag != .assignment_expression) return null;
+    const export_name = cjsExportNameFromLhs(ast, expr.data.binary.left) orelse return null;
+    return .{
+        .export_name = export_name,
+        .export_assignment_node = @intFromEnum(expr_idx),
+        .rhs_node = expr.data.binary.right,
+    };
+}
+
+fn cjsExportAssignmentHasSideEffects(ast: *const Ast, candidate: CjsExportCandidate, unresolved_globals: ?*const purity.GlobalRefSet) bool {
+    return !purity.isExprPure(ast, candidate.rhs_node, unresolved_globals);
+}
 
 /// statement span 배열에서 pos를 포함하는 statement를 binary search.
 /// statement span은 소스 순서로 비중첩.
@@ -256,6 +335,7 @@ pub fn buildFromSemantic(
     symbols: []const Symbol,
     references: []const Reference,
     unresolved_globals: ?*const purity.GlobalRefSet,
+    collect_cjs_exports: bool,
 ) !?ModuleStmtInfos {
     // program 노드 (마지막 노드)에서 top-level statement 인덱스 추출
     if (ast.nodes.items.len == 0) return null;
@@ -282,6 +362,9 @@ pub fn buildFromSemantic(
     errdefer allocator.free(sym_to_stmt);
     for (sym_to_stmt) |*s| s.* = null;
 
+    var cjs_export_facts_buf: std.ArrayListUnmanaged(CjsExportFact) = .empty;
+    errdefer cjs_export_facts_buf.deinit(allocator);
+
     // Pass 1: span + side-effect 결정. declared/referenced 는 빈 상태로 초기화.
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
         const idx: NodeIndex = @enumFromInt(raw_idx);
@@ -297,7 +380,21 @@ pub fn buildFromSemantic(
             };
         } else {
             const node = ast.nodes.items[ni];
-            const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node, unresolved_globals);
+            const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
+            if (cjs_export_candidate) |candidate| {
+                try cjs_export_facts_buf.append(allocator, .{
+                    .export_name = candidate.export_name,
+                    .statement_index = @intCast(stmt_i),
+                    .export_assignment_node = candidate.export_assignment_node,
+                    .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
+                });
+            }
+            const side_effects = if (node.tag == .import_declaration)
+                false
+            else if (cjs_export_candidate) |candidate|
+                cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
+            else
+                purity.stmtHasSideEffects(ast, node, unresolved_globals);
             stmts[stmt_i] = .{
                 .node_idx = @intCast(ni),
                 .span = node.span,
@@ -376,8 +473,11 @@ pub fn buildFromSemantic(
     // 역인덱스 구축 (buildReverseIndex 재사용)
     const reverse = try buildReverseIndex(allocator, stmts, symbols.len);
 
+    const cjs_export_facts = try cjs_export_facts_buf.toOwnedSlice(allocator);
+
     return .{
         .stmts = stmts,
+        .cjs_export_facts = cjs_export_facts,
         .symbol_to_stmt = sym_to_stmt,
         .sym_to_side_effect_stmts = reverse.sym_to_side_effect_stmts,
         .sym_to_referencing_stmts = reverse.sym_to_referencing_stmts,
@@ -425,6 +525,7 @@ pub fn build(
     symbols: []const Symbol,
     symbol_ids: []const ?u32,
     unresolved_globals: ?*const purity.GlobalRefSet,
+    collect_cjs_exports: bool,
 ) !?ModuleStmtInfos {
     // program 노드 (마지막 노드)
     if (ast.nodes.items.len == 0) return null;
@@ -451,6 +552,9 @@ pub fn build(
     errdefer allocator.free(sym_to_stmt);
     for (sym_to_stmt) |*s| s.* = null;
 
+    var cjs_export_facts_buf: std.ArrayListUnmanaged(CjsExportFact) = .empty;
+    errdefer cjs_export_facts_buf.deinit(allocator);
+
     // Phase 1: statement span 배열 + side-effects 판정 + 초기화
     var stmt_spans = try allocator.alloc(Span, stmt_count);
     defer allocator.free(stmt_spans);
@@ -471,7 +575,26 @@ pub fn build(
         }
         const node = ast.nodes.items[ni];
         stmt_spans[stmt_i] = node.span;
-        const side_effects = if (node.tag == .import_declaration) false else purity.stmtHasSideEffects(ast, node, unresolved_globals);
+        const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
+        if (cjs_export_candidate) |candidate| {
+            const rhs_symbol: ?u32 = if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < symbol_ids.len)
+                symbol_ids[@intFromEnum(candidate.rhs_node)]
+            else
+                null;
+            try cjs_export_facts_buf.append(allocator, .{
+                .export_name = candidate.export_name,
+                .statement_index = @intCast(stmt_i),
+                .export_assignment_node = candidate.export_assignment_node,
+                .rhs_symbol = rhs_symbol,
+                .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
+            });
+        }
+        const side_effects = if (node.tag == .import_declaration)
+            false
+        else if (cjs_export_candidate) |candidate|
+            cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
+        else
+            purity.stmtHasSideEffects(ast, node, unresolved_globals);
         stmts[stmt_i] = .{
             .node_idx = @intCast(ni),
             .span = node.span,
@@ -560,8 +683,11 @@ pub fn build(
     // Phase 3: 역인덱스 구축
     const reverse = try buildReverseIndex(allocator, stmts, symbols.len);
 
+    const cjs_export_facts = try cjs_export_facts_buf.toOwnedSlice(allocator);
+
     return .{
         .stmts = stmts,
+        .cjs_export_facts = cjs_export_facts,
         .symbol_to_stmt = sym_to_stmt,
         .sym_to_side_effect_stmts = reverse.sym_to_side_effect_stmts,
         .sym_to_referencing_stmts = reverse.sym_to_referencing_stmts,

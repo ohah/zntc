@@ -1250,6 +1250,7 @@ pub const ModuleGraph = struct {
                         analyzer.symbols.items,
                         analyzer.references.items,
                         if (module.semantic) |*s| &s.unresolved_references else null,
+                        false,
                     ) catch null;
                 }
             } else |_| {}
@@ -1478,6 +1479,7 @@ pub const ModuleGraph = struct {
                     analyzer.symbols.items,
                     analyzer.references.items,
                     if (module.semantic) |*s| &s.unresolved_references else null,
+                    false,
                 ) catch null;
             }
         }
@@ -1775,6 +1777,7 @@ pub const ModuleGraph = struct {
                 analyzer.symbols.items,
                 analyzer.references.items,
                 if (module.semantic) |*s| &s.unresolved_references else null,
+                false,
             );
         }
 

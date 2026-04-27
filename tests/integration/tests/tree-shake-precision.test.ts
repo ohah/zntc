@@ -64,6 +64,17 @@ function hasTopLevelFunction(bundle: string, name: string): boolean {
   return re.test(bundle);
 }
 
+function runBundleSource(bundle: string): string {
+  const r = spawnSync(process.execPath, ["-e", bundle], {
+    stdio: "pipe",
+    timeout: 30000,
+  });
+  if (r.status !== 0) {
+    throw new Error(`node run failed: ${r.stderr?.toString().slice(0, 400)}`);
+  }
+  return r.stdout.toString();
+}
+
 describe("#1558 Phase 5 tree-shake 정밀도", () => {
   const checkOrSkip = (pkg: string) => {
     const benchmarkNM = join(BENCHMARK_DIR, "node_modules", pkg);
@@ -147,6 +158,44 @@ describe("#1558 Phase 5 tree-shake 정밀도", () => {
       const re = new RegExp(`(^|\\n)(function|const|var|let)\\s+${name}\\b`, "m");
       expect(re.test(bundle), `dead identifier "${name}" leaked to bundle`).toBe(false);
     }
+  });
+});
+
+describe("CJS static export fact 기반 DCE", () => {
+  const checkOrSkip = (pkg: string) => {
+    const benchmarkNM = join(BENCHMARK_DIR, "node_modules", pkg);
+    const rootNM = join(ROOT, "node_modules", pkg);
+    return existsSync(benchmarkNM) || existsSync(rootNM);
+  };
+
+  test("cookie — serialize named import는 parse 계열 body를 끌고 오지 않음", () => {
+    if (!checkOrSkip("cookie")) return;
+    const bundle = bundleIn(
+      BENCHMARK_DIR,
+      `import { serialize } from "cookie";\n` +
+        `const out = serialize("session", "abc");\n` +
+        `console.log(out.includes("session=abc") ? "MATCH" : "MISS");\n`,
+      "cookie-cjs-static-export",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).not.toContain("argument str must be a string");
+    expect(bundle).not.toMatch(/function\s+parse\s*\(/);
+  });
+
+  test("path-to-regexp — match named import는 compile/stringify 계열 body를 끌고 오지 않음", () => {
+    if (!checkOrSkip("path-to-regexp")) return;
+    const bundle = bundleIn(
+      BENCHMARK_DIR,
+      `import { match } from "path-to-regexp";\n` +
+        `const fn = match("/user/:id");\n` +
+        `console.log(fn("/user/42")?.params.id === "42" ? "MATCH" : "MISS");\n`,
+      "path-to-regexp-cjs-static-export",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).not.toMatch(/function\s+compile\s*\(/);
+    expect(bundle).not.toMatch(/function\s+stringify\s*\(/);
   });
 });
 

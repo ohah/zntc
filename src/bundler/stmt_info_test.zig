@@ -34,6 +34,7 @@ fn buildTestInfos(allocator: std.mem.Allocator, source: []const u8) !struct {
         analyzer.symbols.items,
         analyzer.symbol_ids.items,
         &analyzer.unresolved_references,
+        false,
     )) orelse return error.NullResult;
 
     return .{ .infos = infos, .arena = arena };
