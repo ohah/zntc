@@ -96,6 +96,11 @@ interface ProjectConfig {
   tsconfig?: Record<string, boolean>;
   target?: string; // --target=es5, --target=es2015, etc.
   minify?: boolean; // --minify 전파 (ZTS/esbuild/rolldown/rspack 공통)
+  production?: boolean; // rspack mode=production과 동일한 NODE_ENV define 적용 여부
+}
+
+function isProductionBuild(p: ProjectConfig): boolean {
+  return p.production ?? true;
 }
 
 function testProject(p: ProjectConfig): SmokeResult {
@@ -127,6 +132,8 @@ function testProject(p: ProjectConfig): SmokeResult {
     const ext = p.external ?? [];
     const format = p.format ?? "esm";
     const platform = p.platform ?? "node";
+    const production = isProductionBuild(p);
+    const nodeEnvDefine = production ? `"production"` : `"development"`;
 
     // ZTS
     const ztsExternalArgs = ext.flatMap((e) => ["--external", e]);
@@ -134,6 +141,7 @@ function testProject(p: ProjectConfig): SmokeResult {
     const ztsTsconfigArgs = p.tsconfig ? ["-p", tsconfigFile] : [];
     const ztsTargetArgs = p.target ? [`--target=${p.target}`] : [];
     const ztsMinifyArgs = p.minify ? ["--minify"] : [];
+    const ztsDefineArgs = [`--define:process.env.NODE_ENV=${nodeEnvDefine}`];
     result.zts = bundleAndRun(
       ZTS_BIN,
       [
@@ -147,6 +155,7 @@ function testProject(p: ProjectConfig): SmokeResult {
         ...ztsTsconfigArgs,
         ...ztsTargetArgs,
         ...ztsMinifyArgs,
+        ...ztsDefineArgs,
       ],
       ztsOut,
     );
@@ -160,6 +169,7 @@ function testProject(p: ProjectConfig): SmokeResult {
       const esFormatArgs = format === "esm" ? [`--format=esm`] : [];
       const esTargetArgs = p.target ? [`--target=${p.target}`] : [];
       const esMinifyArgs = p.minify ? ["--minify"] : [];
+      const esDefineArgs = [`--define:process.env.NODE_ENV=${nodeEnvDefine}`];
       result.esbuild = bundleAndRun(
         ESBUILD_BIN,
         [
@@ -172,6 +182,7 @@ function testProject(p: ProjectConfig): SmokeResult {
           ...esFormatArgs,
           ...esTargetArgs,
           ...esMinifyArgs,
+          ...esDefineArgs,
         ],
         esOut,
         __dirname,
@@ -185,6 +196,7 @@ function testProject(p: ProjectConfig): SmokeResult {
     if (existsSync(ROLLDOWN_BIN)) {
       const rdExternalArgs = ext.flatMap((e) => ["--external", e]);
       const rdMinifyArgs = p.minify ? ["--minify"] : [];
+      const rdDefineArgs = ["--transform.define", `process.env.NODE_ENV:${nodeEnvDefine}`];
       result.rolldown = bundleAndRun(
         ROLLDOWN_BIN,
         [
@@ -197,6 +209,7 @@ function testProject(p: ProjectConfig): SmokeResult {
           platform,
           ...rdExternalArgs,
           ...rdMinifyArgs,
+          ...rdDefineArgs,
         ],
         rdOut,
         __dirname,
@@ -214,7 +227,7 @@ function testProject(p: ProjectConfig): SmokeResult {
         entry: ${JSON.stringify(entryFile)},
         output: { path: ${JSON.stringify(rsOut)}, filename: "main.js" },
         target: ${JSON.stringify(platform === "node" ? "node" : "web")},
-        mode: "production",
+        mode: ${JSON.stringify(production ? "production" : "development")},
         optimization: { minimize: ${p.minify ? "true" : "false"} },
         module: { rules: [{ test: /\\.ts$/, use: { loader: "builtin:swc-loader", options: { jsc: { parser: { syntax: "typescript" } } } } }] },
         ${ext.length > 0 ? `externals: ${JSON.stringify(ext)},` : ""}
