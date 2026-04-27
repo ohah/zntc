@@ -5,6 +5,7 @@ const Diagnostic = analyzer_mod.Diagnostic;
 const symbol_mod = @import("symbol.zig");
 const SymbolKind = symbol_mod.SymbolKind;
 const ScopeId = @import("scope.zig").ScopeId;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
@@ -1551,6 +1552,53 @@ test "#2023: nested var predeclare records declare ref at function body stmt ind
     try std.testing.expectEqual(@as(usize, 1), declare_count);
     try std.testing.expectEqual(@as(u32, 1), scope_stmt_idx);
     try std.testing.expect(!declared_scope.isNone());
+}
+
+test "block function predeclare maps declaration node to var-scope symbol" {
+    const source =
+        \\function f() {
+        \\  if (true) {
+        \\    Box = {
+        \\      install: function(error) { addException(error); },
+        \\      addException: addException,
+        \\    };
+        \\    function addException(error) {}
+        \\  }
+        \\}
+    ;
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    var decl_sym: ?u32 = null;
+    var seen_ref_count: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, i| {
+        if (node.tag == .function_declaration) {
+            const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
+            if (name_idx.isNone()) continue;
+            const name_node = parser.ast.getNode(name_idx);
+            if (name_node.tag != .binding_identifier) continue;
+            const text = parser.ast.getText(name_node.data.string_ref);
+            if (!std.mem.eql(u8, text, "addException")) continue;
+            decl_sym = ana.symbol_ids.items[@intFromEnum(name_idx)] orelse return error.MissingAddExceptionDeclSymbol;
+            continue;
+        }
+
+        if (node.tag != .identifier_reference) continue;
+        const text = parser.ast.getText(node.data.string_ref);
+        if (!std.mem.eql(u8, text, "addException")) continue;
+        const ref_sym = ana.symbol_ids.items[i] orelse continue;
+        if (decl_sym) |expected| try std.testing.expectEqual(expected, ref_sym);
+        seen_ref_count += 1;
+    }
+
+    try std.testing.expect(decl_sym != null);
+    try std.testing.expect(seen_ref_count >= 1);
 }
 
 test "#2023: predeclared lexical bindings record declare ref once" {

@@ -35,9 +35,16 @@ const CompiledModule = @import("compiled_module.zig").CompiledModule;
 pub const NS_VAR_PREFIX = "__ns_";
 
 /// `__ns_N.prop` 형태의 namespace-access rename 인지 판정.
-/// CJS-in-ESM-wrapped named import가 이 rename을 가진다 (metadata.zig 참조).
 pub inline fn isNamespaceRename(rename: []const u8) bool {
     return std.mem.startsWith(u8, rename, NS_VAR_PREFIX);
+}
+
+/// import 선언을 body에서 다시 emit하지 않아도 되는 expression rename인지 판정.
+/// CJS named import는 `require_xxx().prop` 직접 참조로 치환되며, 별도 local
+/// binding을 만들지 않는다. dev/HMR payload에서 원본 import가 CJS require로
+/// 재출력되면 같은 binding을 중복 생성하므로 여기서 skip 대상으로 본다.
+pub inline fn isImportExpressionRename(rename: []const u8) bool {
+    return isNamespaceRename(rename) or std.mem.indexOf(u8, rename, "().") != null;
 }
 
 /// `Linker.collectUnifiedInput` 반환 컨테이너. unified_mangler.mangleAll 에
@@ -625,6 +632,15 @@ pub const Linker = struct {
             if (sym_idx_for_kind < sem.symbols.items.len) {
                 const sk = sem.symbols.items[sym_idx_for_kind].synthetic_kind;
                 if (sk == .default_export) continue;
+                if (m.wrap_kind == .cjs) {
+                    // CJS 래퍼 내부의 사용자 로컬은 `__commonJS(function (...) { ... })`
+                    // 안에 남으므로 번들 최상위 이름을 점유하지 않는다. 번들러가 직접
+                    // 래퍼 밖에 emit하는 합성 심볼만 충돌 후보로 본다.
+                    switch (sk orelse continue) {
+                        .cjs_exports, .cjs_require, .esm_init => {},
+                        else => continue,
+                    }
+                }
             }
 
             // import binding은 일반적으로 인라인되어 변수가 생성되지 않으므로 충돌 대상 아님.
@@ -645,9 +661,8 @@ pub const Linker = struct {
                         if (target_idx >= self.graph.moduleCount()) break :blk m.wrap_kind == .esm;
                         const target_wrap = self.getModule(target_idx).?.wrap_kind;
                         if (m.wrap_kind == .esm) {
-                            // CJS-in-ESM-wrapped named import는 __ns_N.prop rename으로 처리되어
-                            // top-level var가 emit되지 않음 (metadata.zig:262-281 + emitter.zig:1565).
-                            // → 이름 충돌 owner에서 제외해야 canonical rename이 __ns_ rename을 덮지 않는다.
+                            // CJS named import는 `require_xxx().prop` 직접 참조로
+                            // 치환하므로 별도 top-level var를 만들지 않는다.
                             if (target_wrap == .cjs and ib.kind == .named and !ib.isSynthetic()) break :blk false;
                             // __esm: scope-hoisted 타겟의 import는 skip되어 var 미생성
                             break :blk target_wrap != .none;
@@ -1466,6 +1481,8 @@ pub const Linker = struct {
                 if (rec_idx < m.import_records.len) {
                     const source_mod = m.import_records[rec_idx].resolved;
                     if (!source_mod.isNone()) {
+                        // CJS fallback은 실제 `module.exports`/`exports.*` 소스에만 유효하다.
+                        // 런타임 값이 비어 있는 type barrel이 임의의 이름을 소유하면 안 된다.
                         if (self.resolveOrCjsFallback(source_mod, name, depth + 1)) |result| {
                             return result;
                         }
@@ -1482,7 +1499,7 @@ pub const Linker = struct {
     fn resolveOrCjsFallback(self: *const Linker, source_mod: ModuleIndex, name: []const u8, depth: u32) ?SymbolRef {
         if (self.resolveExportChainInner(source_mod, name, depth)) |result| return result;
         if (self.graph.getModule(source_mod)) |sm| {
-            if (sm.wrap_kind == .cjs) return .{ .module_index = source_mod, .export_name = name };
+            if (sm.wrap_kind == .cjs and sm.has_cjs_export_signal) return .{ .module_index = source_mod, .export_name = name };
         }
         return null;
     }

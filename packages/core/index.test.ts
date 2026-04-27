@@ -2608,6 +2608,19 @@ describe("BundleOptions: 전체 옵션 노출", () => {
     expect(result.outputFiles[0].text).toContain("__zts_modules");
   });
 
+  test("devMode: RN HMR reload fallback은 DevSettings wrapper를 우선 사용", () => {
+    const result = buildSync({
+      entryPoints: [join(dir, "entry.ts")],
+      devMode: true,
+    });
+    expect(result.errors.length).toBe(0);
+    const code = result.outputFiles[0].text;
+    expect(code).toContain('require("react-native")');
+    expect(code).toContain("rn.DevSettings.reload(why)");
+    expect(code).toContain("setTimeout(fn, 0)");
+    expect(code).not.toContain("__zts_g.nativeModuleProxy.DevSettings.reload()");
+  });
+
   test("reactRefresh: Fast Refresh 활성화", () => {
     const result = buildSync({
       entryPoints: [join(dir, "entry.ts")],

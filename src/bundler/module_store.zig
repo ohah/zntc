@@ -56,6 +56,8 @@ pub const PersistentModuleStore = struct {
         cached.module.importers.deinit(self.allocator);
         cached.module.dynamic_imports.deinit(self.allocator);
         cached.module.dynamic_importers.deinit(self.allocator);
+        for (cached.module.resolved_deps) |dep| self.allocator.free(dep.path);
+        if (cached.module.resolved_deps.len > 0) self.allocator.free(cached.module.resolved_deps);
         // import_specifiers 해제
         for (cached.import_specifiers) |s| self.allocator.free(s);
         self.allocator.free(cached.import_specifiers);
@@ -100,6 +102,7 @@ pub const PersistentModuleStore = struct {
         module.parse_arena = null;
         module.alias_table = null;
         module.import_records = &.{};
+        module.resolved_deps = &.{};
 
         if (had_existing) {
             // 기존 키 재사용 — put은 값만 업데이트

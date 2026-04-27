@@ -886,7 +886,14 @@ pub const SemanticAnalyzer = struct {
     /// predeclare 1st pass에서 declareSymbol(node_idx=null)로 등록된 심볼은
     /// symbol_ids에 매핑이 없으므로, 2nd pass에서 skip 시 여기서 보충한다.
     fn setSymbolIdForPredeclared(self: *SemanticAnalyzer, name_span: Span, node_idx: u32) void {
-        const sym_idx = self.findSymbolInCurrentScope(name_span) orelse return;
+        const sym_idx = self.findSymbolInCurrentScope(name_span) orelse blk: {
+            const name = self.ast.getText(name_span);
+            const var_scope = self.findVarScope();
+            if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
+                if (self.scope_maps.items[var_scope.toIndex()].get(name)) |idx| break :blk idx;
+            }
+            return;
+        };
         if (node_idx < self.symbol_ids.items.len) {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
         }

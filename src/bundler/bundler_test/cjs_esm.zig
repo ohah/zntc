@@ -1753,7 +1753,6 @@ test "CJS: ESM-wrapped named import from CJS — namespace rename must survive c
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-
     // BUG MARKER: body must not contain destructuring assignment that writes to
     //   GLOBAL `Registry`/`Handle` while the module-local vars are `Registry$N`/`Handle$N`.
     //   `({Registry,Handle}=require_lib())` leaves `Registry$1` undefined and
@@ -1762,13 +1761,116 @@ test "CJS: ESM-wrapped named import from CJS — namespace rename must survive c
     try std.testing.expect(std.mem.indexOf(u8, result.output, "({Registry, Handle}=") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "({Registry}=") == null);
 
-    // CORRECT SHAPE: namespace var preamble + ns-access reference (rolldown style).
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, ".Registry.getEnforcing(") != null);
+    // 올바른 형태: CJS named import는 별도 top-level var를 만들지 않고
+    // require 결과의 property access를 직접 참조한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_lib().Registry.getEnforcing(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Registry.getEnforcing(") != null);
+}
 
-    // spec.ts's references must go through the __ns_ var, NOT the ghost `Registry$N`
-    // binding that the broken destructuring creates.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "Registry$1.getEnforcing(") == null);
+test "CJS: ESM-wrapped named import from CJS barrel with getter re-exports stays direct" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Stack } from './index.js';
+        \\export default Stack.Screen;
+    );
+    try writeFile(tmp.dir, "index.js",
+        \\var __createBinding = function(o, m, k, k2) {
+        \\  if (k2 === undefined) k2 = k;
+        \\  Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+        \\};
+        \\var __exportStar = function(m, exports) {
+        \\  for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
+        \\};
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\__exportStar(require("./exports.js"), exports);
+    );
+    try writeFile(tmp.dir, "exports.js",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\exports.Stack = void 0;
+        \\function Stack() {}
+        \\Stack.Screen = function Screen() {};
+        \\exports.Stack = Stack;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_index().Stack.Screen") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Stack = require_index().Stack;") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_index()).Stack") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "({Stack}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__ns_") == null);
+}
+
+test "CJS: ESM-wrapped default import from CJS gets preamble assignment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import value from './lib.cjs';
+        \\export default value;
+    );
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = function value() { return 1; };");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value = __toESM(require_lib()).default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "({value}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value;") != null);
+}
+
+test "ESM export star: empty CJS-like type barrel does not shadow later star export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { createNavigatorFactory } from './native.js';
+        \\console.log(createNavigatorFactory());
+    );
+    try writeFile(tmp.dir, "native.js",
+        \\export * from './types.js';
+        \\export * from './core.js';
+    );
+    try writeFile(tmp.dir, "types.js", "export {};");
+    try writeFile(tmp.dir, "core.js",
+        \\export function createNavigatorFactory() {
+        \\  return 'ok';
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "createNavigatorFactory()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_types().createNavigatorFactory") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "createNavigatorFactory = require_types().createNavigatorFactory") == null);
 }
 
 // #1754: namespace import 가 member access (ns.prop) 로 먼저 수집된 후

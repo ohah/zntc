@@ -1081,6 +1081,23 @@ test "GENERATOR_RUNTIME_MIN: brace balance" {
     try std.testing.expectEqual(opens, closes);
 }
 
+test "HMR runtime: RN reload goes through DevSettings wrapper before native proxy" {
+    const rt = @import("runtime_helpers.zig");
+
+    // RN/Expo 환경에서 nativeModuleProxy.DevSettings.reload() 를 직접 호출하면
+    // New Architecture surface teardown 중 AppRegistryBinding global 미설치 예외가
+    // 날 수 있다. Metro 와 같은 JS DevSettings wrapper 를 우선 사용해야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "require(\"react-native\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "rn.DevSettings.reload(why)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "setTimeout(fn, 0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME, "__zts_g.nativeModuleProxy.DevSettings.reload()") == null);
+
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "require(\"react-native\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "rn.DevSettings.reload(why)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "setTimeout(f,0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "__zts_g.nativeModuleProxy.DevSettings.reload()") == null);
+}
+
 // ============================================================
 // banner/footer Tests
 // ============================================================

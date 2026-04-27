@@ -24,7 +24,9 @@ const ModuleType = types.ModuleType;
 const ImportKind = types.ImportKind;
 const ImportRecord = types.ImportRecord;
 const BundlerDiagnostic = types.BundlerDiagnostic;
-const Module = @import("module.zig").Module;
+const module_mod = @import("module.zig");
+const Module = module_mod.Module;
+const CachedResolvedDep = module_mod.CachedResolvedDep;
 const runtime_helpers = @import("runtime_helpers.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const ResolveCache = resolve_cache_mod.ResolveCache;
@@ -561,6 +563,8 @@ pub const ModuleGraph = struct {
 
         var reparsed: std.ArrayListUnmanaged(types.ModuleIndex) = .empty;
         var graph_changed = false;
+        var cache_hit_modules = std.AutoHashMap(u32, void).init(self.allocator);
+        defer cache_hit_modules.deinit();
 
         var discover_scope = profile.begin(.graph_discover);
 
@@ -607,8 +611,11 @@ pub const ModuleGraph = struct {
                     mod.dynamic_imports = saved_dynamic;
                     mod.dynamic_importers = saved_dynamic_importers;
                     mod.mtime = mtime;
+                    try cache_hit_modules.put(@intCast(i), {});
                     // parse_arena 소유권 이전: store → graph.
                     cached.module.parse_arena = null;
+                    cached.module.import_records = &.{};
+                    cached.module.resolved_deps = &.{};
                     // alias_table 도 동일 패턴: 얕은 복사로 인해 backing 이
                     // graph 와 store 에 동시에 잡혀있어 graph.deinit 에서 free 되면
                     // store 쪽 포인터가 dangling — 다음 rebuild 가 그 메모리를
@@ -638,7 +645,11 @@ pub const ModuleGraph = struct {
 
             // resolve + addModule (새 의존성 등록)
             for (parse_start..parse_end) |i| {
-                try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
+                if (cache_hit_modules.contains(@intCast(i))) {
+                    try self.replayCachedResolvedDeps(i);
+                } else {
+                    try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
+                }
             }
 
             // 새 모듈이 추가되었으면 그래프 변경
@@ -782,6 +793,89 @@ pub const ModuleGraph = struct {
         try to_mod.dynamic_importers.append(self.allocator, from);
     }
 
+    fn appendResolvedDep(
+        self: *ModuleGraph,
+        mod_idx: usize,
+        dep: CachedResolvedDep,
+    ) !void {
+        const mod_ptr = self.modules.at(mod_idx);
+        const path_owned = try self.allocator.dupe(u8, dep.path);
+        errdefer self.allocator.free(path_owned);
+
+        const old = mod_ptr.resolved_deps;
+        const next = try self.allocator.alloc(CachedResolvedDep, old.len + 1);
+        if (old.len > 0) {
+            @memcpy(next[0..old.len], old);
+            self.allocator.free(old);
+        }
+        next[old.len] = dep;
+        next[old.len].path = path_owned;
+        mod_ptr.resolved_deps = next;
+    }
+
+    fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
+        if (mod_idx >= self.modules.count()) return;
+        const mod_index = ModuleIndex.fromUsize(mod_idx);
+        const mod_ptr = self.modules.at(mod_idx);
+
+        for (mod_ptr.resolved_deps) |dep| {
+            switch (dep.target) {
+                .file, .virtual => {
+                    const dep_idx = try self.addModule(dep.path);
+                    if (dep.target_is_module_field or mod_ptr.is_module_field) {
+                        self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
+                    }
+                    if (dep.is_context_dep) {
+                        self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
+                    }
+                    if (dep.record_index) |rec_idx| {
+                        if (rec_idx < mod_ptr.import_records.len) {
+                            try self.recordResolvedDep(mod_index, mod_idx, rec_idx, dep_idx, dep.kind);
+                        }
+                    } else if (dep.kind == .dynamic_import) {
+                        try self.linkDynamicImport(mod_index, dep_idx);
+                    } else {
+                        try self.linkDependency(mod_index, dep_idx);
+                    }
+                },
+                .disabled => {
+                    const dep_idx = try self.addDisabledModule(dep.path);
+                    if (dep.record_index) |rec_idx| {
+                        if (rec_idx < mod_ptr.import_records.len) {
+                            try self.recordResolvedDep(mod_index, mod_idx, rec_idx, dep_idx, dep.kind);
+                        }
+                    } else if (dep.kind == .dynamic_import) {
+                        try self.linkDynamicImport(mod_index, dep_idx);
+                    } else {
+                        try self.linkDependency(mod_index, dep_idx);
+                    }
+                },
+                .external => {
+                    const ext_idx = try self.addExternalModule(dep.path);
+                    if (dep.record_index) |rec_idx| {
+                        if (rec_idx < mod_ptr.import_records.len) {
+                            mod_ptr.import_records[rec_idx].is_external = true;
+                        }
+                    }
+                    if (dep.kind == .dynamic_import) {
+                        try self.linkDynamicImport(mod_index, ext_idx);
+                    } else {
+                        try self.linkDependency(mod_index, ext_idx);
+                    }
+                },
+                .worker => {
+                    const rec_idx = dep.record_index orelse continue;
+                    const path_dupe = try self.allocator.dupe(u8, dep.path);
+                    try self.worker_entries.append(self.allocator, .{
+                        .resolved_path = path_dupe,
+                        .source_module = mod_index,
+                        .record_index = @intCast(rec_idx),
+                    });
+                },
+            }
+        }
+    }
+
     /// context_expansion_deps 를 resolve 하고 graph 에 module + dependency 로 등록 (#1579 Phase 4).
     /// scanModules receiver / resolveModuleImports 양쪽 경로에서 호출. SegmentedList 로
     /// append 해도 기존 *Module 포인터는 유효 (#1779 INVARIANTS.md).
@@ -815,6 +909,13 @@ pub const ModuleGraph = struct {
                     const dep_idx = try self.addModule(f.path);
                     // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
                     self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
+                    try self.appendResolvedDep(mod_idx, .{
+                        .kind = dep.kind,
+                        .target = .file,
+                        .path = f.path,
+                        .target_is_module_field = f.is_module_field,
+                        .is_context_dep = true,
+                    });
                     try self.linkDependency(mod_index, dep_idx);
                 },
                 // require.context 의 disabled / virtual 등 variant 는 Phase 1 cache 에서 반환되지 않음.
@@ -862,6 +963,12 @@ pub const ModuleGraph = struct {
             // ModuleNotFound — browser에서 Node 빌트인은 빈 CJS로 대체
             if (self.resolve_cache.platform.isBrowserLike() and resolve_cache_mod.isNodeBuiltin(record.specifier)) {
                 const dep_idx = try self.addDisabledModule(record.specifier);
+                try self.appendResolvedDep(mod_idx, .{
+                    .record_index = @intCast(rec_i),
+                    .kind = record.kind,
+                    .target = .disabled,
+                    .path = record.specifier,
+                });
                 try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 return;
             }
@@ -871,6 +978,12 @@ pub const ModuleGraph = struct {
             if (record.is_optional) {
                 self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Optional dependency not resolved (will throw at runtime if reached)", record.specifier);
                 const dep_idx = try self.addDisabledModule(record.specifier);
+                try self.appendResolvedDep(mod_idx, .{
+                    .record_index = @intCast(rec_i),
+                    .kind = record.kind,
+                    .target = .disabled,
+                    .path = record.specifier,
+                });
                 try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 return;
             }
@@ -894,6 +1007,13 @@ pub const ModuleGraph = struct {
                             .source_module = @enumFromInt(mod_idx),
                             .record_index = @intCast(rec_i),
                         });
+                        try self.appendResolvedDep(mod_idx, .{
+                            .record_index = @intCast(rec_i),
+                            .kind = record.kind,
+                            .target = .worker,
+                            .path = f.path,
+                            .target_is_module_field = f.is_module_field,
+                        });
                         return;
                     }
 
@@ -901,11 +1021,24 @@ pub const ModuleGraph = struct {
                     if (f.is_module_field or self.modules.at(mod_idx).is_module_field) {
                         self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
                     }
+                    try self.appendResolvedDep(mod_idx, .{
+                        .record_index = @intCast(rec_i),
+                        .kind = record.kind,
+                        .target = .file,
+                        .path = f.path,
+                        .target_is_module_field = f.is_module_field,
+                    });
                     try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 },
                 .disabled => |d| {
-                    self.allocator.free(d.path);
+                    defer self.allocator.free(d.path);
                     const dep_idx = try self.addDisabledModule(record.specifier);
+                    try self.appendResolvedDep(mod_idx, .{
+                        .record_index = @intCast(rec_i),
+                        .kind = record.kind,
+                        .target = .disabled,
+                        .path = record.specifier,
+                    });
                     try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 },
                 .virtual => |v| {
@@ -914,6 +1047,12 @@ pub const ModuleGraph = struct {
                     // specifier (runtime_helper_modules) 일 수 있어 free 안 함 — plugin 이
                     // alloc 했으면 plugin context lifetime 동안 살아있어야 한다는 규약.
                     const dep_idx = try self.addModule(v.path);
+                    try self.appendResolvedDep(mod_idx, .{
+                        .record_index = @intCast(rec_i),
+                        .kind = record.kind,
+                        .target = .virtual,
+                        .path = v.path,
+                    });
                     try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
                 },
                 .dataurl, .external, .custom => unreachable,
@@ -926,6 +1065,12 @@ pub const ModuleGraph = struct {
             const ext_idx = try self.addExternalModule(record.specifier);
             const src_mod = self.modules.at(mod_idx);
             src_mod.import_records[rec_i].is_external = true;
+            try self.appendResolvedDep(mod_idx, .{
+                .record_index = @intCast(rec_i),
+                .kind = record.kind,
+                .target = .external,
+                .path = record.specifier,
+            });
             if (record.kind == .dynamic_import) {
                 try self.linkDynamicImport(mod_index, ext_idx);
             } else {
@@ -1482,6 +1627,7 @@ pub const ModuleGraph = struct {
 
             module.exports_kind = determineExportsKind(scan_result, module.path);
             module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
+            module.has_cjs_export_signal = scan_result.has_module_exports or scan_result.has_exports_dot;
 
             // JSX synthetic import bindings 추가
             if (jsx_injected) {
@@ -1640,9 +1786,17 @@ pub const ModuleGraph = struct {
         );
         module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
 
+        const has_refreshed_cjs = scan_result.has_cjs_require or
+            scan_result.has_module_exports or
+            scan_result.has_exports_dot;
+        const has_refreshed_esm = if (module.exports_kind == .commonjs and has_refreshed_cjs)
+            false
+        else
+            scan_result.has_esm_syntax;
+
         const refreshed_scan_result = import_scanner.ScanResult{
             .records = module.import_records,
-            .has_esm_syntax = scan_result.has_esm_syntax,
+            .has_esm_syntax = has_refreshed_esm,
             .has_cjs_require = scan_result.has_cjs_require,
             .has_module_exports = scan_result.has_module_exports,
             .has_exports_dot = scan_result.has_exports_dot,
@@ -1652,6 +1806,7 @@ pub const ModuleGraph = struct {
 
         module.exports_kind = determineExportsKind(refreshed_scan_result, module.path);
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
+        module.has_cjs_export_signal = refreshed_scan_result.has_module_exports or refreshed_scan_result.has_exports_dot;
 
         if (module.alias_table) |*table| table.deinit();
         module.alias_table = AliasTable.init(self.allocator);

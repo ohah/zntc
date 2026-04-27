@@ -2864,13 +2864,12 @@ pub const Codegen = struct {
             }
         }
 
-        // namespace 접근 패턴: named import만 있고, 모든 named binding이
-        // __ns_N.prop 형태의 rename을 가지면 이 import 선언을 skip한다.
-        // preamble에서 이미 ns_var = __toESM(require_xxx())가 생성되었으므로
-        // body의 destructuring assignment는 불필요.
+        // named import만 있고 모든 named binding이 expression rename이면
+        // import 선언을 skip한다. CJS named import는 `require_xxx().prop`
+        // 직접 참조로 치환되므로 body의 destructuring assignment가 불필요하다.
         if (named_count > 0 and !has_default and !has_namespace and self.options.linking_metadata != null) {
             const meta = self.options.linking_metadata.?;
-            var all_ns_renamed = true;
+            var all_expr_renamed = true;
             for (spec_indices) |raw_idx| {
                 const spec = self.ast.getNode(@enumFromInt(raw_idx));
                 if (spec.tag != .import_specifier) continue;
@@ -2878,21 +2877,21 @@ pub const Codegen = struct {
                 if (!local_idx.isNone()) {
                     if (self.resolveSymbolId(local_idx, meta)) |sid| {
                         if (meta.renames.get(sid)) |rename| {
-                            if (!linker_mod.isNamespaceRename(rename)) {
-                                all_ns_renamed = false;
+                            if (!linker_mod.isImportExpressionRename(rename)) {
+                                all_expr_renamed = false;
                                 break;
                             }
                         } else {
-                            all_ns_renamed = false;
+                            all_expr_renamed = false;
                             break;
                         }
                     } else {
-                        all_ns_renamed = false;
+                        all_expr_renamed = false;
                         break;
                     }
                 }
             }
-            if (all_ns_renamed) return;
+            if (all_expr_renamed) return;
         }
 
         // __esm 호이스팅: var 선언이 래퍼 밖에 있으므로 body에서는 할당만.

@@ -28,6 +28,28 @@ const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 
+/// 증분 빌드용 path 기반 resolve cache.
+///
+/// `ImportRecord.resolved` 는 빌드마다 새로 배정되는 ModuleIndex라 다음 rebuild에서
+/// 직접 재사용할 수 없다. 대신 resolve 결과를 path/specifier 기반으로 보존했다가
+/// cache-hit 모듈에서 graph edge를 다시 구성한다.
+pub const CachedResolvedDep = struct {
+    record_index: ?u32 = null,
+    kind: types.ImportKind,
+    target: Target,
+    path: []const u8,
+    target_is_module_field: bool = false,
+    is_context_dep: bool = false,
+
+    pub const Target = enum {
+        file,
+        disabled,
+        external,
+        worker,
+        virtual,
+    };
+};
+
 /// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
 /// linker가 import→export 연결 + 이름 충돌 해결에 사용.
 pub const ModuleSemanticData = struct {
@@ -97,6 +119,9 @@ pub const Module = struct {
     /// `import_bindings.import_record_index` / `scan_result.records` 같은 index-based
     /// 참조가 영향 받지 않음. parse_arena 소유.
     context_expansion_deps: []ImportRecord = &.{},
+    /// 증분 cache-hit 모듈에서 resolver 재실행 없이 graph edge를 replay하기 위한
+    /// path 기반 resolve 결과. graph allocator 소유이며 store로 ownership 이전된다.
+    resolved_deps: []const CachedResolvedDep = &.{},
     /// 이 모듈이 다른 모듈의 require.context match 로 등록된 경우 true. tree-shaker 가
     /// static import 없어도 root 취급해 번들에서 제거 안 함 — runtime require 대상이므로
     /// 모든 export 가 사용 가능해야.
@@ -154,6 +179,9 @@ pub const Module = struct {
     exports_kind: types.ExportsKind = .none,
     /// 모듈 래핑 방식 (CJS → __commonJS 팩토리 함수)
     wrap_kind: types.WrapKind = .none,
+    /// scanner가 `module.exports`/`exports.*` 런타임 export 신호를 본 경우.
+    /// export-star fallback은 빈 type barrel이 임의 이름을 claim하지 않도록 이 값으로 제한한다.
+    has_cjs_export_signal: bool = false,
     /// 모듈 정의 형식 (확장자/package.json 기반, Rolldown ModuleDefFormat)
     def_format: types.ModuleDefFormat = .unknown,
     /// Top-Level Await 사용 여부. TLA 모듈을 static import하는 모듈도 전이적으로 true.
@@ -427,6 +455,8 @@ pub const Module = struct {
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
         self.dynamic_importers.deinit(allocator);
+        for (self.resolved_deps) |dep| allocator.free(dep.path);
+        if (self.resolved_deps.len > 0) allocator.free(self.resolved_deps);
         if (self.alias_table) |*t| t.deinit();
         // require.context: plugin 이 채운 outer slice + 각 inner string free (#1579 Phase 2).
         // contract: plugin 이 allocator 로 dupe 한 상태로 반환 → graph 가 일괄 해제.
