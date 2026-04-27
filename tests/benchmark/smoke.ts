@@ -9,9 +9,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const ROOT = resolve(__dirname, "../..");
 const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
@@ -31,6 +31,9 @@ interface BundlerResult {
   size: number;
   time: number;
   stdout: string;
+  outputPath?: string;
+  buildArgs?: string[];
+  stderrSummary?: string;
 }
 
 interface SmokeResult {
@@ -64,7 +67,30 @@ function fileSize(path: string): number {
   }
 }
 
-const emptyResult: BundlerResult = { build: false, size: 0, time: 0, stdout: "" };
+const emptyResult: BundlerResult = {
+  build: false,
+  size: 0,
+  time: 0,
+  stdout: "",
+  outputPath: "",
+  buildArgs: [],
+  stderrSummary: "",
+};
+
+interface SmokeOptions {
+  keepOutputDir?: string;
+}
+
+function stderrSummary(stderr: string): string {
+  return stderr
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+    .join("\n")
+    .slice(0, 1000);
+}
 
 /** 단일 번들러로 빌드 + 실행하고 결과 반환 */
 function bundleAndRun(
@@ -75,7 +101,15 @@ function bundleAndRun(
 ): BundlerResult {
   const build = exec(bin, buildArgs, cwd);
   if (!build.ok) {
-    return { build: false, size: 0, time: build.time, stdout: "" };
+    return {
+      build: false,
+      size: 0,
+      time: build.time,
+      stdout: "",
+      outputPath: outFile,
+      buildArgs,
+      stderrSummary: stderrSummary(build.stderr),
+    };
   }
   const run = exec("node", [outFile]);
   return {
@@ -83,6 +117,9 @@ function bundleAndRun(
     size: fileSize(outFile),
     time: build.time,
     stdout: run.ok ? run.stdout : "",
+    outputPath: outFile,
+    buildArgs,
+    stderrSummary: stderrSummary(build.stderr || run.stderr),
   };
 }
 
@@ -103,8 +140,14 @@ function isProductionBuild(p: ProjectConfig): boolean {
   return p.production ?? true;
 }
 
-function testProject(p: ProjectConfig): SmokeResult {
-  const dir = mkdtempSync(join(tmpdir(), `zts-smoke-${p.name}-`));
+function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult {
+  const dir = options.keepOutputDir
+    ? join(options.keepOutputDir, p.name)
+    : mkdtempSync(join(tmpdir(), `zts-smoke-${p.name}-`));
+  if (options.keepOutputDir) {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+  }
   const result: SmokeResult = {
     project: p.name,
     zts: { ...emptyResult },
@@ -265,7 +308,9 @@ function testProject(p: ProjectConfig): SmokeResult {
       }
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (!options.keepOutputDir) {
+      rmSync(dir, { recursive: true, force: true });
+    }
     try {
       rmSync(entryFile);
     } catch {}
@@ -1060,15 +1105,23 @@ console.log("ZTS Smoke Test — Real Project Bundling\n");
 // CLI: --filter=<패턴> 으로 이름 필터링 (예: --filter=@es5, --filter=lodash)
 const filterArg = process.argv.find((a) => a.startsWith("--filter="));
 const filterPattern = filterArg ? filterArg.split("=")[1] : null;
+const keepOutputArg = process.argv.find((a) => a.startsWith("--keep-output="));
+const keepOutputDir = keepOutputArg ? resolve(keepOutputArg.slice("--keep-output=".length)) : undefined;
+const jsonArg = process.argv.find((a) => a.startsWith("--json="));
+const jsonPath = jsonArg ? resolve(jsonArg.slice("--json=".length)) : undefined;
 const filteredProjects = filterPattern
   ? projects.filter((p) => p.name.includes(filterPattern))
   : projects;
+
+if (keepOutputDir) {
+  mkdirSync(keepOutputDir, { recursive: true });
+}
 
 const results: SmokeResult[] = [];
 
 for (const p of filteredProjects) {
   process.stdout.write(`Testing ${p.name}... `);
-  const r = testProject(p);
+  const r = testProject(p, { keepOutputDir });
   results.push(r);
 
   const status = r.zts.build ? "OK" : "FAIL";
@@ -1172,6 +1225,24 @@ if (sizeComparisons.length > 0) {
   const larger = sizeComparisons.filter((c) => c.ratio > 1.1).length;
   console.log(
     `\nAverage ratio (vs smallest): ${avgRatio.toFixed(2)}x | Smaller: ${smaller} | Similar(±10%): ${similar} | Larger: ${larger}`,
+  );
+}
+
+if (jsonPath) {
+  mkdirSync(dirname(jsonPath), { recursive: true });
+  writeFileSync(
+    jsonPath,
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        filter: filterPattern,
+        keepOutputDir,
+        results,
+        sizeComparisons,
+      },
+      null,
+      2,
+    ),
   );
 }
 
