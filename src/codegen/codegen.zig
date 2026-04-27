@@ -2181,12 +2181,24 @@ pub const Codegen = struct {
             const n = self.ast.getNode(cur);
             switch (n.tag) {
                 .call_expression => return true,
+                .identifier_reference => return self.identifierRenameContainsCall(cur),
                 .static_member_expression, .computed_member_expression, .private_field_expression => {
                     cur = self.ast.readExtraNode(n.data.extra, 0);
                 },
                 else => return false,
             }
         }
+    }
+
+    /// `new Animated.Value()` 처럼 AST callee 자체에는 call 이 없더라도, linker rename 후
+    /// `Animated`가 `require_xxx().Animated` 같은 call 포함 표현식으로 바뀔 수 있다.
+    /// 이때 `new require_xxx().Animated.Value()`는 생성자 결합이 달라지므로 callee 전체를
+    /// 괄호로 감싸야 한다.
+    fn identifierRenameContainsCall(self: *Codegen, idx: NodeIndex) bool {
+        const meta = self.options.linking_metadata orelse return false;
+        const sid = self.resolveSymbolId(idx, meta) orelse return false;
+        const rename = meta.renames.get(sid) orelse return false;
+        return std.mem.indexOf(u8, rename, "()") != null;
     }
 
     fn emitNew(self: *Codegen, node: Node) !void {
