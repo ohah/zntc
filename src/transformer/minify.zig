@@ -48,6 +48,9 @@ pub const MinifyCtx = struct {
     /// 비어있으면 `symbols[*].reference_count` 를 그대로 사용 (최초 호출 경로).
     /// `minify()` 진입부에서 scratch 로 할당 → `decrementRefsInExpr` 가 증가.
     ref_deltas: []u32 = &.{},
+    /// Top-level constant inline is a size optimization that can make debug/non-minified
+    /// output less readable. Keep it behind minify_syntax.
+    allow_top_level_inline: bool = false,
 
     /// semantic 없이 호출할 때 사용. dead store pass 는 skip 된다.
     pub const empty: MinifyCtx = .{
@@ -177,12 +180,16 @@ fn isGuaranteedBoolean(ast: *const Ast, node: Node) bool {
 
 /// fixed-point loop 반복 상한. oxc `PeepholeOptimizations::run_in_loop` 와 동일 값.
 /// pathological AST 에서 무한 교환 (e.g. A↔B) 을 방지.
-const max_fixpoint_iterations: u32 = 3;
+const max_fixpoint_iterations: u32 = 5;
 
 /// 전체 노드 치환 + fixed-point 신호. fold / simplify 사이트가 반복적으로 쓰는 패턴.
 inline fn replaceNode(ast: *Ast, idx: u32, new_node: Node, changed: *bool) void {
     ast.nodes.items[idx] = new_node;
     changed.* = true;
+}
+
+inline fn sourceSpanStart(node: Node) u32 {
+    return node.span.start & ~ast_mod.Ast.STRING_TABLE_BIT;
 }
 
 /// `inner_idx` 를 감싸는 새 `parenthesized_expression` 노드를 append 하고 그 NodeIndex 반환.
@@ -310,6 +317,7 @@ fn runOnce(
             .binary_expression => foldBinary(ast, i, node, &changed),
             .logical_expression => foldLogical(ast, i, node, &changed),
             .unary_expression => foldUnary(ast, i, node, &changed),
+            .call_expression => foldCall(ast, i, node, &changed),
             .conditional_expression => foldConditional(ast, i, node, &changed),
             .if_statement => foldIf(ast, i, node, &changed),
             .while_statement => foldWhile(ast, i, node, &changed),
@@ -327,6 +335,7 @@ fn runOnce(
         }
     }
     if (ctx.hasSemantic()) {
+        inlineTopLevelPrimitiveConstants(ast, ctx, live_nodes, &changed, scratch);
         // single-use inline 을 dead-store 보다 먼저 실행 — inline 이 삭제하는 선언은
         // ref_count==1 (dead-store 는 0 대상) 이므로 간섭 없음. inline 이 먼저 돌면
         // 연쇄된 새 dead expression 을 같은 iter 의 fold pass 들이 다음 runOnce 에서
@@ -573,6 +582,93 @@ fn decrementRefsInExpr(ast: *const Ast, ctx: MinifyCtx, idx: NodeIndex) void {
 // 일반 expression inline (식별자 포함 init) 은 이 PR 범위 밖 — 개입 write 의
 // evaluate-order 안전성을 별도로 증명해야 함 (esbuild 의 sequence-rewrite).
 
+fn markForbiddenInlineSites(ast: *const Ast, forbidden: *std.DynamicBitSet) void {
+    for (ast.nodes.items) |node| {
+        if (node.tag != .object_property) continue;
+        if (!node.data.binary.right.isNone()) continue;
+        const key_ni = @intFromEnum(node.data.binary.left);
+        if (key_ni < forbidden.capacity()) forbidden.set(key_ni);
+    }
+}
+
+fn isPrimitiveConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
+    if (idx.isNone()) return false;
+    const ni = @intFromEnum(idx);
+    if (ni >= ast.nodes.items.len) return false;
+    return switch (ast.nodes.items[ni].tag) {
+        .numeric_literal, .string_literal, .boolean_literal, .null_literal => true,
+        else => false,
+    };
+}
+
+fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*const std.DynamicBitSet, changed: *bool, scratch: std.mem.Allocator) void {
+    if (!ctx.allow_top_level_inline) return;
+    if (!ctx.hasSemantic()) return;
+
+    var forbidden = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch return;
+    defer forbidden.deinit();
+    markForbiddenInlineSites(ast, &forbidden);
+
+    for (ast.nodes.items) |node| {
+        if (node.tag != .variable_declaration) continue;
+        const kind = ast.variableDeclarationKind(node);
+        if (kind == .@"var" or kind.isUsing()) continue;
+
+        const extra = node.data.extra;
+        if (extra + 2 >= ast.extra_data.items.len) continue;
+        const list_start = ast.extra_data.items[extra + 1];
+        const list_len = ast.extra_data.items[extra + 2];
+        if (list_start + list_len > ast.extra_data.items.len) continue;
+
+        for (ast.extra_data.items[list_start .. list_start + list_len]) |decl_raw| {
+            if (decl_raw >= ast.nodes.items.len) continue;
+            const decl = ast.nodes.items[decl_raw];
+            if (decl.tag != .variable_declarator) continue;
+            const de = decl.data.extra;
+            if (de + 2 >= ast.extra_data.items.len) continue;
+            const name_raw = ast.extra_data.items[de];
+            const init_raw = ast.extra_data.items[de + 2];
+            if (name_raw >= ast.nodes.items.len) continue;
+            if (ast.nodes.items[name_raw].tag != .binding_identifier) continue;
+            if (name_raw >= ctx.symbol_ids.len) continue;
+            const sym_id = ctx.symbol_ids[name_raw] orelse continue;
+            if (sym_id >= ctx.symbols.len) continue;
+            const sym = ctx.symbols[sym_id];
+            if (@intFromEnum(sym.scope_id) != 0) continue;
+            if (ctx.scopes.len > 0 and ctx.scopes[0].blocksMangling()) continue;
+            if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) continue;
+            if (sym.write_count != 0) continue;
+
+            const init_idx: NodeIndex = @enumFromInt(init_raw);
+            if (!isPrimitiveConstantExpr(ast, init_idx)) continue;
+            const init_ni = @intFromEnum(init_idx);
+            if (init_ni >= ast.nodes.items.len) continue;
+            const init_node = ast.nodes.items[init_ni];
+            const decl_start = sourceSpanStart(node);
+
+            for (ast.nodes.items, 0..) |read_node, read_i| {
+                if (read_node.tag != .identifier_reference) continue;
+                if (read_i >= ctx.symbol_ids.len) continue;
+                if ((ctx.symbol_ids[read_i] orelse continue) != sym_id) continue;
+                if (forbidden.isSet(read_i)) continue;
+                if (live_nodes) |lives| {
+                    if (read_i >= lives.capacity() or !lives.isSet(read_i)) continue;
+                }
+                if (sourceSpanStart(read_node) <= decl_start) continue;
+                ast.nodes.items[read_i] = .{
+                    .tag = init_node.tag,
+                    .span = init_node.span,
+                    .data = init_node.data,
+                };
+                if (sym_id < ctx.ref_deltas.len and ctx.effectiveRefCount(sym_id) > 0) {
+                    ctx.ref_deltas[sym_id] += 1;
+                }
+                changed.* = true;
+            }
+        }
+    }
+}
+
 /// Phase 2+3 inline: constant-expr init 을 유일 read 에 inline.
 fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, changed: *bool, scratch: std.mem.Allocator) void {
     if (!ctx.hasSemantic()) return;
@@ -585,12 +681,7 @@ fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.Dyna
     // left(key) NodeIndex 를 금지 목록에 추가.
     var forbidden = std.DynamicBitSet.initEmpty(scratch, ast.nodes.items.len) catch return;
     defer forbidden.deinit();
-    for (ast.nodes.items) |node| {
-        if (node.tag != .object_property) continue;
-        if (!node.data.binary.right.isNone()) continue;
-        const key_ni = @intFromEnum(node.data.binary.left);
-        if (key_ni < forbidden.capacity()) forbidden.set(key_ni);
-    }
+    markForbiddenInlineSites(ast, &forbidden);
 
     // symbol 별 identifier_reference 등장 횟수 + 첫 등장 NodeIndex 를 스캔.
     // 오직 live 영역의 identifier_reference 만 집계한다 — transformer 가 남긴 orphan
@@ -659,8 +750,8 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     const sym = ctx.symbols[sym_id];
 
     const scope_idx = @intFromEnum(sym.scope_id);
-    if (scope_idx == 0) return;
     if (scope_idx < ctx.scopes.len and ctx.scopes[scope_idx].blocksMangling()) return;
+    if (scope_idx == 0 and !ctx.allow_top_level_inline) return;
     if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) return;
 
     if (ctx.effectiveRefCount(sym_id) != 1 or sym.write_count != 0) return;
@@ -675,6 +766,10 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     if (counts[sym_id] != 1) return;
     const read_ni = first_loc[sym_id];
     if (read_ni == std.math.maxInt(u32) or read_ni >= ast.nodes.items.len) return;
+    // Top-level declarations may be observed through TDZ/hoisting if a read appears before
+    // the declaration. Keep the simple, common production-env case where the only read is
+    // syntactically after the declaration.
+    if (scope_idx == 0 and sourceSpanStart(ast.nodes.items[read_ni]) <= sourceSpanStart(node)) return;
 
     const init_ni = @intFromEnum(init_idx);
     if (init_ni >= ast.nodes.items.len) return;
@@ -959,6 +1054,107 @@ fn stripQuotes(text: []const u8) []const u8 {
         }
     }
     return text;
+}
+
+fn simpleStringLiteralValue(ast: *const Ast, node: Node) ?[]const u8 {
+    if (node.tag != .string_literal) return null;
+    const value = stripQuotes(ast.getText(node.span));
+    for (value) |c| {
+        // Avoid changing semantics for escape sequences or unicode case mapping.
+        if (c == '\\' or c >= 0x80) return null;
+    }
+    return value;
+}
+
+fn staticMemberName(ast: *const Ast, node: Node) ?[]const u8 {
+    if (node.tag != .static_member_expression) return null;
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 2)) return null;
+    const flags = ast.readExtra(e, 2);
+    if ((flags & ast_mod.MemberFlags.optional_chain) != 0) return null;
+    const prop_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 1));
+    const prop_ni = @intFromEnum(prop_idx);
+    if (prop_ni >= ast.nodes.items.len) return null;
+    const prop = ast.nodes.items[prop_ni];
+    return switch (prop.tag) {
+        .identifier_reference, .binding_identifier => ast.getText(prop.data.string_ref),
+        else => null,
+    };
+}
+
+fn staticMemberObject(ast: *const Ast, node: Node) ?Node {
+    if (node.tag != .static_member_expression) return null;
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 2)) return null;
+    const obj_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 0));
+    const obj_ni = @intFromEnum(obj_idx);
+    if (obj_ni >= ast.nodes.items.len) return null;
+    return ast.nodes.items[obj_ni];
+}
+
+fn callHasNoArgs(ast: *const Ast, node: Node) bool {
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 3)) return false;
+    return ast.readExtra(e, 2) == 0;
+}
+
+fn singleStringArg(ast: *const Ast, node: Node) ?[]const u8 {
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 3)) return null;
+    const args_start = ast.readExtra(e, 1);
+    const args_len = ast.readExtra(e, 2);
+    if (args_len != 1 or args_start >= ast.extra_data.items.len) return null;
+    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    const arg_ni = @intFromEnum(arg_idx);
+    if (arg_ni >= ast.nodes.items.len) return null;
+    return simpleStringLiteralValue(ast, ast.nodes.items[arg_ni]);
+}
+
+fn makeBoolNode(ast: *Ast, value: bool) ?Node {
+    const text = if (value) "true" else "false";
+    const span = ast.addString(text) catch return null;
+    return .{
+        .tag = .boolean_literal,
+        .span = span,
+        .data = .{ .none = 0 },
+    };
+}
+
+fn foldCall(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 3)) return;
+    const flags = ast.readExtra(e, 3);
+    if ((flags & ast_mod.CallFlags.optional_chain) != 0) return;
+
+    const callee_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 0));
+    const callee_ni = @intFromEnum(callee_idx);
+    if (callee_ni >= ast.nodes.items.len) return;
+    const callee = ast.nodes.items[callee_ni];
+    const method = staticMemberName(ast, callee) orelse return;
+    const object = staticMemberObject(ast, callee) orelse return;
+
+    if (std.mem.eql(u8, method, "toLowerCase") and callHasNoArgs(ast, node)) {
+        const value = simpleStringLiteralValue(ast, object) orelse return;
+        var buf: [4096]u8 = undefined;
+        if (value.len > buf.len) return;
+        for (value, 0..) |c, i| buf[i] = std.ascii.toLower(c);
+        if (makeQuotedString(ast, buf[0..value.len])) |span| {
+            replaceNode(ast, node_idx, .{
+                .tag = .string_literal,
+                .span = span,
+                .data = .{ .none = 0 },
+            }, changed);
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, method, "startsWith")) {
+        const value = simpleStringLiteralValue(ast, object) orelse return;
+        const prefix = singleStringArg(ast, node) orelse return;
+        if (makeBoolNode(ast, std.mem.startsWith(u8, value, prefix))) |bool_node| {
+            replaceNode(ast, node_idx, bool_node, changed);
+        }
+    }
 }
 
 /// x === true → x, x === false → !x, x !== true → !x, x !== false → x

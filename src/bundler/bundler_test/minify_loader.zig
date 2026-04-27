@@ -696,6 +696,39 @@ test "Codegen: unary ! boolean eval — correct negation" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "prod") != null);
 }
 
+test "Minify: production env derived DEV flag folds through string methods" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const node_env = "production";
+        \\const DEV = node_env && !node_env.toLowerCase().startsWith("prod");
+        \\if (DEV) {
+        \\  console.log("DEV_ONLY_LONG_DIAGNOSTIC");
+        \\} else {
+        \\  console.log("prod");
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+        .minify_syntax = true,
+        .minify_whitespace = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DEV_ONLY_LONG_DIAGNOSTIC") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "toLowerCase") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "startsWith") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(\"prod\")") != null);
+}
+
 test "TreeShaking: seedAllStmts propagates export * chain — cheerio pattern" {
     // export * from './sub' 체인에서 sub 모듈의 함수 정의가 포함되어야 함
     var tmp = std.testing.tmpDir(.{});

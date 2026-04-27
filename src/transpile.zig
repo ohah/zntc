@@ -405,6 +405,7 @@ pub fn transpileWithCallback(
             .scopes = analyzer.scopes.items,
             .unresolved_globals = null,
             .references = analyzer.references.items,
+            .allow_top_level_inline = options.minify_syntax,
         };
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
         minify_mod.mergeDecls(transformer.ast, null);

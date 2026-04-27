@@ -1171,6 +1171,7 @@ pub fn emitModule(
             .scopes = sem.scopes,
             .unresolved_globals = &sem.unresolved_references,
             .references = sem.references,
+            .allow_top_level_inline = options.minify_syntax,
         } else .empty;
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
     }
