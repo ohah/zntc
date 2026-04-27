@@ -893,6 +893,20 @@ pub const Bundler = struct {
         var shaker: ?TreeShaker = if (!self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking) blk: {
             var s = try TreeShaker.init(self.allocator, &graph, &(linker.?));
             try s.analyze(self.options.entry_points);
+            if (self.options.minify_syntax and !self.options.code_splitting) {
+                if (linker) |*l| {
+                    l.clearCanonicalNames();
+                    l.clearMangling();
+                    try l.computeRenames();
+                    if (self.options.minify_identifiers) {
+                        try l.computeMangling();
+                    }
+                    l.populateReExportAliases();
+                    l.populateImportSymbols();
+                    l.populateNamespaceAccesses();
+                    l.populateSymbolRefCounts();
+                }
+            }
             // metadata builder 가 `Module.is_included` 비트를 신뢰해 tree-shake 된 target 의
             // CJS preamble emit 을 건너뛸 수 있도록 plug. analyze() 가 끝난 뒤 mirror 가
             // 모든 모듈의 `is_included` 비트를 확정해 둔다.
