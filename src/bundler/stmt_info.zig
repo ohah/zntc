@@ -37,6 +37,11 @@ pub const ModuleStmtInfos = struct {
     /// symbol_index → [all stmt indices that reference this symbol].
     /// tree_shaker.isImportLiveInModule()에서 O(1) 조회용.
     sym_to_referencing_stmts: []const []const u32,
+    /// symbol_index → [stmt indices that WRITE to this symbol but do not declare it].
+    /// `var _a; ... _a = AST;` 같은 TS-emit 패턴에서 비선언 할당이 read 와 함께 살아남도록
+    /// computeReachable BFS 가 추가 엣지로 사용. 선언 stmt 자체는 별도 경로(`symbol_to_stmt`)
+    /// 로 처리되므로 여기서는 제외.
+    sym_to_writer_stmts: []const []const u32,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ModuleStmtInfos) void {
@@ -55,6 +60,10 @@ pub const ModuleStmtInfos = struct {
             if (s.len > 0) self.allocator.free(s);
         }
         self.allocator.free(self.sym_to_referencing_stmts);
+        for (self.sym_to_writer_stmts) |s| {
+            if (s.len > 0) self.allocator.free(s);
+        }
+        self.allocator.free(self.sym_to_writer_stmts);
     }
 
     /// symbol_index가 선언된 statement 인덱스 반환.
@@ -94,7 +103,8 @@ pub const ModuleStmtInfos = struct {
             }
         }
 
-        // BFS: referenced_symbols → symbol_to_stmt → dependent statements
+        // BFS: referenced_symbols → (declarer, writers) → dependent statements.
+        // writer 엣지가 없으면 `_a = AST` 같은 비선언 할당이 read 만 도달해도 누락된다.
         var head: u32 = 0;
         while (head < queue.items.len) : (head += 1) {
             const stmt_idx = queue.items[head];
@@ -103,6 +113,14 @@ pub const ModuleStmtInfos = struct {
                     if (!reachable_stmts.isSet(dep_stmt)) {
                         reachable_stmts.set(dep_stmt);
                         try queue.append(allocator, dep_stmt);
+                    }
+                }
+                if (ref_sym < self.sym_to_writer_stmts.len) {
+                    for (self.sym_to_writer_stmts[ref_sym]) |writer_stmt| {
+                        if (!reachable_stmts.isSet(writer_stmt)) {
+                            reachable_stmts.set(writer_stmt);
+                            try queue.append(allocator, writer_stmt);
+                        }
                     }
                 }
             }
@@ -305,6 +323,16 @@ pub fn buildFromSemantic(
     }
     for (referenced_buckets) |*b| b.* = .empty;
 
+    // symbol → [stmts that write to it without declaring it]. computeReachable 가 read 가
+    // 살아 있을 때 writer stmt 도 enqueue 하기 위한 역인덱스. 같은 stmt 가 declare+write 인
+    // 경우는 Pass 3a 이후 finalize 단계에서 declared 를 exclude 해 제거한다.
+    var writer_buckets = try allocator.alloc(std.ArrayListUnmanaged(u32), symbols.len);
+    defer {
+        for (writer_buckets) |*b| b.deinit(allocator);
+        allocator.free(writer_buckets);
+    }
+    for (writer_buckets) |*b| b.* = .empty;
+
     for (references) |r| {
         if (r.stmt_idx == Reference.NO_STMT) continue;
         if (r.stmt_idx >= stmt_count) continue;
@@ -318,6 +346,9 @@ pub fn buildFromSemantic(
             try declared_buckets[r.stmt_idx].append(allocator, sym_u32);
         } else {
             try referenced_buckets[r.stmt_idx].append(allocator, sym_u32);
+            if (r.flags.write) {
+                try writer_buckets[sym_u32].append(allocator, r.stmt_idx);
+            }
         }
     }
 
@@ -340,6 +371,8 @@ pub fn buildFromSemantic(
         stmts[stmt_i].referenced_symbols = slice;
     }
 
+    const sym_to_writer_stmts = try finalizeWriterBuckets(allocator, writer_buckets, sym_to_stmt);
+
     // 역인덱스 구축 (buildReverseIndex 재사용)
     const reverse = try buildReverseIndex(allocator, stmts, symbols.len);
 
@@ -348,8 +381,41 @@ pub fn buildFromSemantic(
         .symbol_to_stmt = sym_to_stmt,
         .sym_to_side_effect_stmts = reverse.sym_to_side_effect_stmts,
         .sym_to_referencing_stmts = reverse.sym_to_referencing_stmts,
+        .sym_to_writer_stmts = sym_to_writer_stmts,
         .allocator = allocator,
     };
+}
+
+/// writer_buckets 를 stmts[].declared_symbols 의 declarer 와 중복 제거하여 final slice 로
+/// 변환한다. 같은 stmt 가 declare 한 심볼은 별도 경로(`symbol_to_stmt`)로 처리되므로 writer
+/// 엣지에서 제외해야 BFS 가 중복 enqueue 하지 않는다.
+fn finalizeWriterBuckets(
+    allocator: std.mem.Allocator,
+    writer_buckets: []std.ArrayListUnmanaged(u32),
+    sym_to_stmt: []const ?u32,
+) ![]const []const u32 {
+    const result = try allocator.alloc([]const u32, writer_buckets.len);
+    errdefer allocator.free(result);
+    for (result) |*r| r.* = &.{};
+
+    for (writer_buckets, 0..) |*bucket, sym| {
+        if (bucket.items.len == 0) continue;
+        std.mem.sort(u32, bucket.items, {}, std.sort.asc(u32));
+        const declarer: ?u32 = if (sym < sym_to_stmt.len) sym_to_stmt[sym] else null;
+        var out_len: usize = 0;
+        var last: ?u32 = null;
+        for (bucket.items) |stmt_idx| {
+            if (declarer) |d| if (d == stmt_idx) continue;
+            if (last != null and last.? == stmt_idx) continue;
+            last = stmt_idx;
+            bucket.items[out_len] = stmt_idx;
+            out_len += 1;
+        }
+        if (out_len > 0) {
+            result[sym] = try allocator.dupe(u32, bucket.items[0..out_len]);
+        }
+    }
+    return result;
 }
 
 /// AST + semantic data로부터 ModuleStmtInfos를 구축한다.
@@ -430,6 +496,15 @@ pub fn build(
     }
     for (referenced_bufs) |*b| b.* = .empty;
 
+    // symbol → [stmt indices that contain `assignment_target_identifier` for that symbol].
+    // 선언과 같은 stmt 인 경우는 finalize 단계에서 제거.
+    var writer_bufs = try allocator.alloc(std.ArrayListUnmanaged(u32), symbols.len);
+    defer {
+        for (writer_bufs) |*b| b.deinit(allocator);
+        allocator.free(writer_bufs);
+    }
+    for (writer_bufs) |*b| b.* = .empty;
+
     for (ast.nodes.items, 0..) |n, node_i| {
         const stmt_i = findStmtForPos(stmt_spans, n.span.start) orelse continue;
         if (node_i >= symbol_ids.len) continue;
@@ -462,6 +537,13 @@ pub fn build(
                 try referenced_bufs[stmt_i].append(allocator, sym_idx_u32);
             }
         }
+
+        if (n.tag == .assignment_target_identifier) {
+            const stmt_i_u32: u32 = @intCast(stmt_i);
+            if (std.mem.indexOfScalar(u32, writer_bufs[sym_idx].items, stmt_i_u32) == null) {
+                try writer_bufs[sym_idx].append(allocator, stmt_i_u32);
+            }
+        }
     }
 
     for (stmts, 0..) |*stmt, stmt_i| {
@@ -473,6 +555,8 @@ pub fn build(
         }
     }
 
+    const sym_to_writer_stmts = try finalizeWriterBuckets(allocator, writer_bufs, sym_to_stmt);
+
     // Phase 3: 역인덱스 구축
     const reverse = try buildReverseIndex(allocator, stmts, symbols.len);
 
@@ -481,6 +565,7 @@ pub fn build(
         .symbol_to_stmt = sym_to_stmt,
         .sym_to_side_effect_stmts = reverse.sym_to_side_effect_stmts,
         .sym_to_referencing_stmts = reverse.sym_to_referencing_stmts,
+        .sym_to_writer_stmts = sym_to_writer_stmts,
         .allocator = allocator,
     };
 }

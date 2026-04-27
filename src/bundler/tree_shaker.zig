@@ -566,6 +566,15 @@ pub const TreeShaker = struct {
                     try self.enqueue(item.mod, dep_stmt, reachable_stmts, &queue);
                 }
 
+                // (1b) 같은 심볼에 대한 비선언 writer (예: TS 가 emit 하는 `var _a; ... _a = AST;`).
+                // declare 경로로는 var-only 선언만 살아남고 실제 값을 채우는 후속 할당이 누락되어
+                // `_a is not a constructor` 류 회귀가 발생한다.
+                if (ref_sym < infos.sym_to_writer_stmts.len) {
+                    for (infos.sym_to_writer_stmts[ref_sym]) |writer_stmt| {
+                        try self.enqueue(item.mod, writer_stmt, reachable_stmts, &queue);
+                    }
+                }
+
                 // (2) import binding: 타겟 모듈로 점프
                 if (item.mod < self.sym_to_ib.len) {
                     if (self.sym_to_ib[item.mod]) |sym_map| {

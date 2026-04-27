@@ -1738,6 +1738,41 @@ test "TreeShaking: object literal method with impure computed key is preserved" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_METHOD_COMPUTED_KEY_EFFECT") != null);
 }
 
+// minimatch 회귀: TS 가 self-referential 클래스용으로 emit 하는 `var _a; class AST {...}; _a = AST;`
+// 패턴에서 후속 비선언 할당이 살아남아야 한다. 도달성 BFS 가 read 만 따르고 writer 엣지를 무시하면
+// `_a` 가 undefined 인 채로 클래스 메서드가 `new _a()` 호출 → "_a is not a constructor".
+test "TreeShaking: post-declaration assignment to top-level var is preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { make } from './lib';
+        \\console.log(make());
+    );
+    try writeFile(tmp.dir, "lib.ts",
+        \\var _self;
+        \\class Box {
+        \\  static spawn() { return new _self(); }
+        \\  tag() { return 'POST_DECL_ASSIGN_TAG'; }
+        \\}
+        \\_self = Box;
+        \\export function make() { return Box.spawn().tag(); }
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_self = Box") != null);
+}
+
 test "TreeShaking: unused direct re-export source preserves eval side effect only" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
