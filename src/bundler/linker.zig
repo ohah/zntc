@@ -44,6 +44,18 @@ pub inline fn isNamespaceRename(rename: []const u8) bool {
     return std.mem.startsWith(u8, rename, NS_VAR_PREFIX);
 }
 
+/// CJS 모듈을 가져오는 ESM-side import 가 `__toESM` 래핑을 필요로 하는지.
+/// namespace 또는 default import 면 `__toESM(req())` 형태로 emit, 그 외 named
+/// 는 `req().prop` 직접 접근으로 충분.
+///
+/// `PreambleWriter.writeCjsImportInner` 의 emit 분기와
+/// `emitter.moduleNeedsToEsmInterop` 의 detection 분기가 모두 이 함수를 통해
+/// 동일 invariant 를 유지한다 — 어긋나면 preamble 이 `__toESM` 을 부르는데
+/// 정의가 없는 ReferenceError 가 발생 (#812 회귀).
+pub inline fn cjsImportNeedsToEsmInterop(is_namespace: bool, imported_name: []const u8) bool {
+    return is_namespace or std.mem.eql(u8, imported_name, "default");
+}
+
 /// import 선언을 body에서 다시 emit하지 않아도 되는 expression rename인지 판정.
 /// CJS named import는 `require_xxx().prop` 직접 참조로 치환되며, 별도 local
 /// binding을 만들지 않는다. dev/HMR payload에서 원본 import가 CJS require로
@@ -2819,26 +2831,19 @@ pub const PreambleWriter = struct {
     ) !void {
         if (!assign_only) try self.write("var ");
         try self.write(local_name);
-        // Rolldown Interop: node → __toESM(req(), 1), babel → __toESM(req())
-        // #1621: minify 시 __toESM → $tE 축약.
-        const toesm_name: []const u8 = if (self.minify) rt.NAMES.TOESM_MIN else "__toESM";
-        const toesm_suffix: []const u8 = if (interop == .node) "(), 1)" else "())";
-        if (is_namespace) {
-            try self.write(" = ");
+        try self.write(" = ");
+        if (cjsImportNeedsToEsmInterop(is_namespace, imported_name)) {
+            // Rolldown Interop: node → __toESM(req(), 1), babel → __toESM(req())
+            // #1621: minify 시 __toESM → $tE 축약.
+            const toesm_name: []const u8 = if (self.minify) rt.NAMES.TOESM_MIN else "__toESM";
+            const toesm_suffix: []const u8 = if (interop == .node) "(), 1)" else "())";
             try self.write(toesm_name);
             try self.write("(");
             try self.write(req_var);
             try self.write(toesm_suffix);
+            if (!is_namespace) try self.write(".default");
             try self.write(";\n");
-        } else if (std.mem.eql(u8, imported_name, "default")) {
-            try self.write(" = ");
-            try self.write(toesm_name);
-            try self.write("(");
-            try self.write(req_var);
-            try self.write(toesm_suffix);
-            try self.write(".default;\n");
         } else {
-            try self.write(" = ");
             try self.write(req_var);
             try self.write("().");
             try self.write(imported_name);
