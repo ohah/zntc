@@ -2037,3 +2037,86 @@ test "TreeShaking: live statement preserves upstream module (#1551 anti-regressi
     try std.testing.expect(std.mem.indexOf(u8, result.output, "RUNTIME_STILL_NEEDED") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "hello") != null);
 }
+
+// kysely 회귀 #2052: TS interface-only 가 strip 후 빈 `export {}` 만 남고, post-transform
+// AST 에서 transformer 가 그 marker 까지 drop 하면 refresh 가 exports_kind 를 `.none` 으로
+// 강등 → markEsmCjsHybrid Pass 2 가 implicit CJS 로 승격 → resolveOrCjsFallback 이 첫 번째
+// `export *` source 의 빈 CJS wrapper 를 모든 named import 의 source 로 stick 시킴 →
+// 실제 정의가 있는 다음 `export *` 는 walk 안 되어 dummy-driver.js 가 tree-shake 된다.
+test "TreeShaking: export * chain through TS-stripped empty source still resolves named import" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Bar } from './barrel';
+        \\console.log(new Bar().tag());
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\export * from './empty';
+        \\export * from './real';
+    );
+    try writeFile(tmp.dir, "empty.ts",
+        \\export {};
+    );
+    try writeFile(tmp.dir, "real.ts",
+        \\export class Bar {
+        \\  tag() { return 'EXPORT_STAR_CHAIN_KEPT'; }
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "EXPORT_STAR_CHAIN_KEPT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "class Bar") != null);
+}
+
+// cheerio 회귀 #2051: namespace import (`import * as ns from 'cjslib'`) 의 모든 소비자가
+// tree-shake 로 사라졌는데 ImportBinding 자체는 살아 있어 linker 가 `var ns =
+// __toESM(require_X(), 1)` 를 emit. 그러나 해당 CJS wrapper 는 모듈 미포함이라 정의되지
+// 않아 `require_X is not defined` ReferenceError. preamble emit 도 같이 drop 해야 한다.
+test "TreeShaking: namespace import preamble dropped when target excluded from bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './lib';
+        \\console.log(used());
+    );
+    // lib.js 가 namespace 로 cjslib 을 import 하지만, 소비자 (`heavy`) 는 entry 에서 안 쓴다.
+    try writeFile(tmp.dir, "lib.js",
+        \\import * as cjslib from './cjslib.cjs';
+        \\export function used() { return 'NS_TARGET_DROP_USED'; }
+        \\export function heavy() { return cjslib.bar(); }
+    );
+    try writeFile(tmp.dir, "cjslib.cjs",
+        \\'use strict';
+        \\exports.bar = function() { return 'NS_TARGET_DROP_HEAVY'; };
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_TARGET_DROP_USED") != null);
+    // heavy() 는 사용 안 하므로 cjslib + 본문 모두 prune 되어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_TARGET_DROP_HEAVY") == null);
+    // `var X = __toESM(require_cjslib_cjs(), 1)` 같은 orphan preamble 이 남으면 안 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_cjslib") == null);
+}

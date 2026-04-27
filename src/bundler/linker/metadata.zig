@@ -394,6 +394,13 @@ pub fn buildMetadataForAst(
 
             // CJS 모듈에서 import하는 경우: preamble에서 require_xxx() 호출 생성
             if (canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .cjs) {
+                // Tree-shake 가 target 을 번들에서 제외했으면 `__commonJS` wrapper 자체가
+                // emit 되지 않아 `require_xxx is not defined` ReferenceError 가 난다.
+                // namespace import (`import * as undici`) 의 모든 소비자가 다른 export 의
+                // tree-shake 로 사라진 케이스 (cheerio 회귀 #2051) 에서 발생하므로 preamble
+                // 도 같이 drop 한다. `tree_shaker_active` 가 false (linker 단독 unit test)
+                // 면 `is_included` 비트가 신뢰할 수 없으므로 가드를 적용하지 않는다.
+                if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
                 const preamble_name = self.getCanonicalByRef(ib.local_symbol) orelse m.importBindingLocalName(ib);
                 const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                 const interop_mode: types.Interop = if (m.def_format.isEsm()) .node else .babel;
