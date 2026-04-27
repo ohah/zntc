@@ -450,6 +450,43 @@ test "TreeShaking CJS: module.exports object live export keeps require target ev
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_OBJECT_REQUIRE_EXPORT_MARKER") == null);
 }
 
+test "TreeShaking CJS: ES5 target preserves transformer-injected runtime helper module" {
+    // Regression: transformer 가 graph parse 단계에서 inject 한 runtime helper import
+    // (예: `import { __read } from "\x00zts:runtime/read"`) 는 semantic scope_maps 에
+    // 등록되지 않아 cjs-wrap 모듈에서 isImportLiveInModule 가 항상 false 를 반환했다.
+    // 결과: helper module 이 included 안 되어 dist 의 `__read` 호출이 정의를 못 찾아
+    // ReferenceError (semver@es5 smoke 회귀).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import lib from './lib.cjs'; console.log(lib.foo([1,2]));");
+    try writeFile(tmp.dir, "lib.cjs",
+        \\module.exports = {
+        \\  foo: function(arr) {
+        \\    var [a, b] = arr;
+        \\    return a + b;
+        \\  },
+        \\};
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = .{ .destructuring = true },
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // __read 호출이 emit 됐다면 정의도 함께 dist 에 있어야 한다.
+    if (std.mem.indexOf(u8, result.output, "__read(") != null) {
+        try std.testing.expect(std.mem.indexOf(u8, result.output, "var __read") != null or
+            std.mem.indexOf(u8, result.output, "function __read") != null);
+    }
+}
+
 // ============================================================
 // @__PURE__ annotation tests
 // ============================================================
