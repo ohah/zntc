@@ -1250,6 +1250,32 @@ pub const Ast = struct {
         }
         return self.source[span.start..span.end];
     }
+
+    /// object/method/class key 노드에서 정적 이름을 raw 형태로 추출한다.
+    /// identifier 계열, string_literal (따옴표 제거), numeric_literal,
+    /// computed_property_key (literal inner) 까지 처리. 그 외 (computed expr)
+    /// 는 null. 따옴표만 제거하므로 escape sequence 는 보존 — escape 해석이
+    /// 필요한 codegen 경로는 별도 helper 사용.
+    pub fn staticKeyName(self: *const Ast, key_idx: NodeIndex) ?[]const u8 {
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.nodes.items.len) return null;
+        const n = self.getNode(key_idx);
+        return switch (n.tag) {
+            .identifier_reference, .binding_identifier, .private_identifier => self.getText(n.data.string_ref),
+            .string_literal => stripStringQuotes(self.getText(n.span)),
+            .numeric_literal => self.getText(n.span),
+            .computed_property_key => blk: {
+                const inner = n.data.unary.operand;
+                if (inner.isNone()) break :blk null;
+                const inner_n = self.getNode(inner);
+                break :blk switch (inner_n.tag) {
+                    .string_literal => stripStringQuotes(self.getText(inner_n.span)),
+                    .numeric_literal => self.getText(inner_n.span),
+                    else => null,
+                };
+            },
+            else => null,
+        };
+    }
 };
 
 // ============================================================
