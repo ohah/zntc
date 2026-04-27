@@ -1733,6 +1733,75 @@ test "Bundler: dev mode alias named import does not emit raw require" {
     try std.testing.expect(saw_layout);
 }
 
+test "Bundler: dev mode ts paths re-exported CJS named import does not emit raw require" {
+    // Expo Router _layout + tsconfig paths 재현:
+    // app/_layout.tsx -> @/hooks/use-color-scheme -> react-native(CJS) re-export.
+    // init 함수 안에 raw require("@/...")가 남으면 RN/Hermes eval 스코프에서 실패한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "node_modules/react-native/index.js",
+        \\module.exports = {
+        \\  useColorScheme: function useColorScheme() {
+        \\    return 'dark';
+        \\  },
+        \\};
+    );
+    try writeFile(tmp.dir, "hooks/use-color-scheme.ts",
+        \\export { useColorScheme } from 'react-native';
+    );
+    try writeFile(tmp.dir, "app/_layout.tsx",
+        \\import { useColorScheme } from '@/hooks/use-color-scheme';
+        \\export default function RootLayout() {
+        \\  return useColorScheme();
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "app/_layout.tsx");
+    defer std.testing.allocator.free(entry);
+    const root = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(root);
+    const root_prefix = try std.fmt.allocPrint(std.testing.allocator, "{s}/", .{root});
+    defer std.testing.allocator.free(root_prefix);
+
+    const ts_path_targets = [_]@import("../../config.zig").TsConfig.PathEntry.Target{
+        .{ .prefix = root_prefix, .suffix = "" },
+    };
+    const ts_paths = [_]@import("../../config.zig").TsConfig.PathEntry{
+        .{
+            .key_prefix = "@/",
+            .key_suffix = "",
+            .has_wildcard = true,
+            .targets = &ts_path_targets,
+        },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .ts_paths = &ts_paths,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"@/hooks/use-color-scheme\")") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require('@/hooks/use-color-scheme')") == null);
+
+    const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
+    var saw_layout = false;
+    for (codes) |c| {
+        if (std.mem.indexOf(u8, c.id, "app/_layout.tsx") == null) continue;
+        saw_layout = true;
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "require(\"@/hooks/use-color-scheme\")") == null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "require('@/hooks/use-color-scheme')") == null);
+        try std.testing.expect(std.mem.indexOf(u8, c.code, "useColorScheme") != null);
+    }
+    try std.testing.expect(saw_layout);
+}
+
 test "Bundler: dev mode new expression wraps renamed CJS member callee" {
     // `new Animated.Value()`의 `Animated`가 CJS named import direct access로
     // `require_xxx().Animated`가 되면 callee 내부에 call expression이 생긴다.
