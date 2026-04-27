@@ -1753,6 +1753,11 @@ pub const ModuleGraph = struct {
         return false;
     }
 
+    /// post-transform AST 의 binding 을 source of truth 로 삼고, `previous` 에서 transformer
+    /// 가 직접 추가한 synthetic binding (JSX runtime 등 — span sentinel 로 식별) 만 보존한다.
+    /// 단순 append 로 합치면 Phase D 가 elide 한 import specifier 에 대응하는 stale binding
+    /// 이 살아남아 linker preamble 이 `var err = require_xxx().err` 같은 죽은 코드를 emit
+    /// 하거나 `non-synthetic import binding 'err' has no semantic local symbol` panic 을 낸다.
     fn mergeImportBindings(
         arena_alloc: std.mem.Allocator,
         previous: []const binding_scanner_mod.ImportBinding,
@@ -1760,8 +1765,9 @@ pub const ModuleGraph = struct {
     ) ![]binding_scanner_mod.ImportBinding {
         var bindings: std.ArrayList(binding_scanner_mod.ImportBinding) = .empty;
         errdefer bindings.deinit(arena_alloc);
-        try bindings.appendSlice(arena_alloc, previous);
-        for (transformed) |binding| {
+        try bindings.appendSlice(arena_alloc, transformed);
+        for (previous) |binding| {
+            if (!binding.isSynthetic()) continue;
             if (hasImportBinding(bindings.items, binding)) continue;
             try bindings.append(arena_alloc, binding);
         }
