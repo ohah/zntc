@@ -42,8 +42,9 @@ const error_codes = @import("../error_codes.zig");
 
 /// ZTS0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.
 const tla_warning_comment = "/* [" ++ error_codes.Code.tla_requires_esm_format.format() ++ "] " ++ error_codes.Code.tla_requires_esm_format.message() ++ ". */\n";
-const Linker = @import("linker.zig").Linker;
-const LinkingMetadata = @import("linker.zig").LinkingMetadata;
+const linker_mod = @import("linker.zig");
+const Linker = linker_mod.Linker;
+const LinkingMetadata = linker_mod.LinkingMetadata;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const statement_shaker = @import("statement_shaker.zig");
 const stmt_info_mod = @import("stmt_info.zig");
@@ -1730,9 +1731,7 @@ fn emitBundleRuntimeHelpers(
 }
 
 /// 한 모듈이 어떤 식으로든 CJS 모듈의 default/namespace 를 가져오면 __toESM 래핑이 필요.
-/// linker.zig:writeCjsImportInner / linker/metadata.zig:488 (re-export → CJS) 의 emit
-/// predicate 와 일치해야 한다 — 어긋나면 preamble 이 __toESM 을 부르는데 정의가 없는
-/// ReferenceError 가 발생 (#812 회귀).
+/// `linker.cjsImportNeedsToEsmInterop` 가 leaf predicate (linker 의 emit 분기와 공유).
 ///
 /// linker 가 있으면 `getResolvedBinding` 의 chain 끝까지 따라가 ESM re-export
 /// (`export { default } from "./cjs"`) 와 다단계 re-export 도 캐치. linker 가 없으면
@@ -1757,7 +1756,9 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
         if (linker) |l| {
             if (l.getResolvedBinding(module.index.toU32(), ib.local_span)) |rb| {
                 const canonical_mod = graph.getModule(rb.canonical.module_index) orelse continue;
-                if (canonical_mod.wrap_kind == .cjs and std.mem.eql(u8, rb.canonical.export_name, "default")) {
+                if (canonical_mod.wrap_kind == .cjs and
+                    linker_mod.cjsImportNeedsToEsmInterop(false, rb.canonical.export_name))
+                {
                     return true;
                 }
                 continue;
