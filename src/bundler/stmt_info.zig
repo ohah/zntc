@@ -40,7 +40,6 @@ pub const CjsExportFact = struct {
     property_node: ?u32 = null,
     rhs_symbol: ?u32 = null,
     kind: Kind = .assignment,
-    is_static: bool = true,
     is_safe_to_prune: bool = true,
 };
 
@@ -87,16 +86,9 @@ pub const ModuleStmtInfos = struct {
         self.allocator.free(self.sym_to_writer_stmts);
     }
 
-    pub fn cjsExportStmtByName(self: *const ModuleStmtInfos, export_name: []const u8) ?u32 {
-        const fact = self.cjsExportFactByName(export_name) orelse return null;
-        return fact.statement_index;
-    }
-
     pub fn cjsExportFactByName(self: *const ModuleStmtInfos, export_name: []const u8) ?CjsExportFact {
         for (self.cjs_export_facts) |fact| {
-            if (fact.is_static and std.mem.eql(u8, fact.export_name, export_name)) {
-                return fact;
-            }
+            if (std.mem.eql(u8, fact.export_name, export_name)) return fact;
         }
         return null;
     }
@@ -186,6 +178,15 @@ fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeInde
     return .{ .object = obj_idx, .property = prop_idx };
 }
 
+fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
+    const parts = staticMemberParts(ast, lhs) orelse return false;
+    const obj = ast.nodes.items[@intFromEnum(parts.object)];
+    const prop = ast.nodes.items[@intFromEnum(parts.property)];
+    if (obj.tag != .identifier_reference) return false;
+    return std.mem.eql(u8, ast.getText(obj.span), "module") and
+        std.mem.eql(u8, ast.getText(prop.span), "exports");
+}
+
 fn cjsExportNameFromLhs(ast: *const Ast, lhs: NodeIndex) ?[]const u8 {
     const outer = staticMemberParts(ast, lhs) orelse return null;
     const prop = ast.nodes.items[@intFromEnum(outer.property)];
@@ -195,24 +196,10 @@ fn cjsExportNameFromLhs(ast: *const Ast, lhs: NodeIndex) ?[]const u8 {
     if (obj.tag == .identifier_reference and std.mem.eql(u8, ast.getText(obj.span), "exports")) {
         return ast.getText(prop.span);
     }
-
-    if (obj.tag != .static_member_expression) return null;
-    const inner = staticMemberParts(ast, outer.object) orelse return null;
-    const inner_obj = ast.nodes.items[@intFromEnum(inner.object)];
-    const inner_prop = ast.nodes.items[@intFromEnum(inner.property)];
-    if (inner_obj.tag != .identifier_reference) return null;
-    if (!std.mem.eql(u8, ast.getText(inner_obj.span), "module")) return null;
-    if (!std.mem.eql(u8, ast.getText(inner_prop.span), "exports")) return null;
-    return ast.getText(prop.span);
-}
-
-fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
-    const parts = staticMemberParts(ast, lhs) orelse return false;
-    const obj = ast.nodes.items[@intFromEnum(parts.object)];
-    const prop = ast.nodes.items[@intFromEnum(parts.property)];
-    if (obj.tag != .identifier_reference) return false;
-    return std.mem.eql(u8, ast.getText(obj.span), "module") and
-        std.mem.eql(u8, ast.getText(prop.span), "exports");
+    if (obj.tag == .static_member_expression and isModuleExportsLhs(ast, outer.object)) {
+        return ast.getText(prop.span);
+    }
+    return null;
 }
 
 fn staticObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
@@ -225,11 +212,15 @@ fn staticObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
     };
 }
 
+/// shorthand `{ x }` 는 right 가 none → left 가 곧 value. 그 외 explicit `{ k: v }` 는 right 가 value.
 fn objectPropertyValueNode(prop: Node) NodeIndex {
     return if (prop.data.binary.right.isNone()) prop.data.binary.left else prop.data.binary.right;
 }
 
-fn isCjsObjectPropertyValueFactSafe(ast: *const Ast, value: NodeIndex, unresolved_globals: ?*const purity.GlobalRefSet) bool {
+/// CJS object-shape export 의 value 위치가 named export 로 치환 안전한지 판정.
+/// identifier_reference 만 허용해 tree_shaker 가 `rhs_symbol → declaring stmt` 로
+/// dependency 를 시드할 수 있게 한다 (리터럴 등은 의존 시드가 의미 없어 거부).
+fn isCjsObjectPropertyValueSafe(ast: *const Ast, value: NodeIndex, unresolved_globals: ?*const purity.GlobalRefSet) bool {
     if (value.isNone() or @intFromEnum(value) >= ast.nodes.items.len) return false;
     const value_node = ast.nodes.items[@intFromEnum(value)];
     if (value_node.tag != .identifier_reference) return false;
@@ -276,7 +267,6 @@ fn collectCjsObjectExportCandidates(
     var seen: std.StringHashMapUnmanaged(void) = .{};
     defer seen.deinit(allocator);
     var out: std.ArrayListUnmanaged(CjsExportCandidate) = .empty;
-    errdefer out.deinit(allocator);
     var success = false;
     defer if (!success) out.deinit(allocator);
 
@@ -287,12 +277,13 @@ fn collectCjsObjectExportCandidates(
         if (prop.tag != .object_property) return null;
 
         const name = staticObjectKeyName(ast, prop.data.binary.left) orelse return null;
+        // `{__proto__: X}` 는 prototype 을 설정 — named export 가 아니라 reject.
         if (std.mem.eql(u8, name, "__proto__")) return null;
         const entry = try seen.getOrPut(allocator, name);
         if (entry.found_existing) return null;
 
         const value = objectPropertyValueNode(prop);
-        if (!isCjsObjectPropertyValueFactSafe(ast, value, unresolved_globals)) return null;
+        if (!isCjsObjectPropertyValueSafe(ast, value, unresolved_globals)) return null;
 
         try out.append(allocator, .{
             .export_name = name,
@@ -310,6 +301,41 @@ fn collectCjsObjectExportCandidates(
 
 fn cjsExportAssignmentHasSideEffects(ast: *const Ast, candidate: CjsExportCandidate, unresolved_globals: ?*const purity.GlobalRefSet) bool {
     return !purity.isExprPure(ast, candidate.rhs_node, unresolved_globals);
+}
+
+/// `module.exports = { used, unused }` 형태에서 fact 들을 수집해 buf 에 append.
+/// 두 builder (`buildFromSemantic`, `build`) 가 공유. symbol_ids 가 있으면 rhs_symbol 도 채움.
+/// fact 가 1개 이상 추가됐으면 true (호출자가 stmt 의 has_side_effects=false 표시).
+fn collectAndAppendCjsObjectFacts(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    node: Node,
+    stmt_i: u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    facts: *std.ArrayListUnmanaged(CjsExportFact),
+    symbol_ids: ?[]const ?u32,
+) !bool {
+    const candidates = (try collectCjsObjectExportCandidates(allocator, ast, node, unresolved_globals)) orelse return false;
+    defer allocator.free(candidates);
+    for (candidates) |candidate| {
+        const rhs_symbol: ?u32 = if (symbol_ids) |sids|
+            if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < sids.len)
+                sids[@intFromEnum(candidate.rhs_node)]
+            else
+                null
+        else
+            null;
+        try facts.append(allocator, .{
+            .export_name = candidate.export_name,
+            .statement_index = stmt_i,
+            .export_assignment_node = candidate.export_assignment_node,
+            .property_node = candidate.property_node,
+            .rhs_symbol = rhs_symbol,
+            .kind = candidate.kind,
+            .is_safe_to_prune = true,
+        });
+    }
+    return true;
 }
 
 /// statement span 배열에서 pos를 포함하는 statement를 binary search.
@@ -495,20 +521,15 @@ pub fn buildFromSemantic(
                     .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
                 });
             } else if (collect_cjs_exports) {
-                if (try collectCjsObjectExportCandidates(allocator, ast, node, unresolved_globals)) |candidates| {
-                    defer allocator.free(candidates);
-                    safe_cjs_object_export = true;
-                    for (candidates) |candidate| {
-                        try cjs_export_facts_buf.append(allocator, .{
-                            .export_name = candidate.export_name,
-                            .statement_index = @intCast(stmt_i),
-                            .export_assignment_node = candidate.export_assignment_node,
-                            .property_node = candidate.property_node,
-                            .kind = candidate.kind,
-                            .is_safe_to_prune = true,
-                        });
-                    }
-                }
+                safe_cjs_object_export = try collectAndAppendCjsObjectFacts(
+                    allocator,
+                    ast,
+                    node,
+                    @intCast(stmt_i),
+                    unresolved_globals,
+                    &cjs_export_facts_buf,
+                    null,
+                );
             }
             const side_effects = if (node.tag == .import_declaration)
                 false
@@ -715,25 +736,15 @@ pub fn build(
                 .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
             });
         } else if (collect_cjs_exports) {
-            if (try collectCjsObjectExportCandidates(allocator, ast, node, unresolved_globals)) |candidates| {
-                defer allocator.free(candidates);
-                safe_cjs_object_export = true;
-                for (candidates) |candidate| {
-                    const rhs_symbol: ?u32 = if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < symbol_ids.len)
-                        symbol_ids[@intFromEnum(candidate.rhs_node)]
-                    else
-                        null;
-                    try cjs_export_facts_buf.append(allocator, .{
-                        .export_name = candidate.export_name,
-                        .statement_index = @intCast(stmt_i),
-                        .export_assignment_node = candidate.export_assignment_node,
-                        .property_node = candidate.property_node,
-                        .rhs_symbol = rhs_symbol,
-                        .kind = candidate.kind,
-                        .is_safe_to_prune = true,
-                    });
-                }
-            }
+            safe_cjs_object_export = try collectAndAppendCjsObjectFacts(
+                allocator,
+                ast,
+                node,
+                @intCast(stmt_i),
+                unresolved_globals,
+                &cjs_export_facts_buf,
+                symbol_ids,
+            );
         }
         const side_effects = if (node.tag == .import_declaration)
             false
