@@ -456,6 +456,77 @@ fn finalizeBucket(
     return try allocator.dupe(u32, bucket.items[0..out_len]);
 }
 
+/// 두 builder (buildFromSemantic / build) 의 per-stmt Phase 1 본체.
+/// stmt 노드에서 cjs_export_facts 를 추가하고 side_effects 를 결정해 StmtInfo
+/// 슬롯을 만든다. `symbol_ids` 가 있으면 rhs_symbol 도 채움 (build), null 이면
+/// 비워둠 (buildFromSemantic). symbol bucket 채우기는 caller 가 처리.
+fn buildStmtInfoSlot(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    ni: u32,
+    stmt_i: u32,
+    collect_cjs_exports: bool,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    cjs_export_facts_buf: *std.ArrayListUnmanaged(CjsExportFact),
+    symbol_ids: ?[]const ?u32,
+) !StmtInfo {
+    if (ni >= ast.nodes.items.len) {
+        return .{
+            .node_idx = ni,
+            .span = .{ .start = 0, .end = 0 },
+            .has_side_effects = true,
+            .declared_symbols = &.{},
+            .referenced_symbols = &.{},
+        };
+    }
+    const node = ast.nodes.items[ni];
+    const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
+    var safe_cjs_object_export = false;
+    if (cjs_export_candidate) |candidate| {
+        const rhs_symbol: ?u32 = if (symbol_ids) |sids|
+            if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < sids.len)
+                sids[@intFromEnum(candidate.rhs_node)]
+            else
+                null
+        else
+            null;
+        try cjs_export_facts_buf.append(allocator, .{
+            .export_name = candidate.export_name,
+            .statement_index = stmt_i,
+            .export_assignment_node = candidate.export_assignment_node,
+            .property_node = candidate.property_node,
+            .rhs_symbol = rhs_symbol,
+            .kind = candidate.kind,
+            .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
+        });
+    } else if (collect_cjs_exports) {
+        safe_cjs_object_export = try collectAndAppendCjsObjectFacts(
+            allocator,
+            ast,
+            node,
+            stmt_i,
+            unresolved_globals,
+            cjs_export_facts_buf,
+            symbol_ids,
+        );
+    }
+    const side_effects = if (node.tag == .import_declaration)
+        false
+    else if (cjs_export_candidate) |candidate|
+        cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
+    else if (safe_cjs_object_export)
+        false
+    else
+        purity.stmtHasSideEffects(ast, node, unresolved_globals);
+    return .{
+        .node_idx = ni,
+        .span = node.span,
+        .has_side_effects = side_effects,
+        .declared_symbols = &.{},
+        .referenced_symbols = &.{},
+    };
+}
+
 /// Semantic Analyzer 의 `references` 배열로부터 ModuleStmtInfos 를 구축한다.
 /// declare/read/write 플래그로 stmt 단위 선언·참조 bucket 을 분배 (analyzer 는 중간 캐시를 유지하지 않음).
 pub fn buildFromSemantic(
@@ -498,55 +569,16 @@ pub fn buildFromSemantic(
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
         const idx: NodeIndex = @enumFromInt(raw_idx);
         const ni = @intFromEnum(idx);
-
-        if (ni >= ast.nodes.items.len) {
-            stmts[stmt_i] = .{
-                .node_idx = @intCast(ni),
-                .span = .{ .start = 0, .end = 0 },
-                .has_side_effects = true,
-                .declared_symbols = &[_]u32{},
-                .referenced_symbols = &[_]u32{},
-            };
-        } else {
-            const node = ast.nodes.items[ni];
-            const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
-            var safe_cjs_object_export = false;
-            if (cjs_export_candidate) |candidate| {
-                try cjs_export_facts_buf.append(allocator, .{
-                    .export_name = candidate.export_name,
-                    .statement_index = @intCast(stmt_i),
-                    .export_assignment_node = candidate.export_assignment_node,
-                    .property_node = candidate.property_node,
-                    .kind = candidate.kind,
-                    .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
-                });
-            } else if (collect_cjs_exports) {
-                safe_cjs_object_export = try collectAndAppendCjsObjectFacts(
-                    allocator,
-                    ast,
-                    node,
-                    @intCast(stmt_i),
-                    unresolved_globals,
-                    &cjs_export_facts_buf,
-                    null,
-                );
-            }
-            const side_effects = if (node.tag == .import_declaration)
-                false
-            else if (cjs_export_candidate) |candidate|
-                cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
-            else if (safe_cjs_object_export)
-                false
-            else
-                purity.stmtHasSideEffects(ast, node, unresolved_globals);
-            stmts[stmt_i] = .{
-                .node_idx = @intCast(ni),
-                .span = node.span,
-                .has_side_effects = side_effects,
-                .declared_symbols = &[_]u32{},
-                .referenced_symbols = &[_]u32{},
-            };
-        }
+        stmts[stmt_i] = try buildStmtInfoSlot(
+            allocator,
+            ast,
+            @intCast(ni),
+            @intCast(stmt_i),
+            collect_cjs_exports,
+            unresolved_globals,
+            &cjs_export_facts_buf,
+            null,
+        );
     }
 
     // Pass 2: references → declared/referenced per-stmt bucket 분배.
@@ -706,61 +738,17 @@ pub fn build(
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
         const idx: NodeIndex = @enumFromInt(raw_idx);
         const ni = @intFromEnum(idx);
-        if (ni >= ast.nodes.items.len) {
-            stmt_spans[stmt_i] = .{ .start = 0, .end = 0 };
-            stmts[stmt_i] = .{
-                .node_idx = @intCast(ni),
-                .span = .{ .start = 0, .end = 0 },
-                .has_side_effects = true,
-                .declared_symbols = &.{},
-                .referenced_symbols = &.{},
-            };
-            continue;
-        }
-        const node = ast.nodes.items[ni];
-        stmt_spans[stmt_i] = node.span;
-        const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
-        var safe_cjs_object_export = false;
-        if (cjs_export_candidate) |candidate| {
-            const rhs_symbol: ?u32 = if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < symbol_ids.len)
-                symbol_ids[@intFromEnum(candidate.rhs_node)]
-            else
-                null;
-            try cjs_export_facts_buf.append(allocator, .{
-                .export_name = candidate.export_name,
-                .statement_index = @intCast(stmt_i),
-                .export_assignment_node = candidate.export_assignment_node,
-                .property_node = candidate.property_node,
-                .rhs_symbol = rhs_symbol,
-                .kind = candidate.kind,
-                .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
-            });
-        } else if (collect_cjs_exports) {
-            safe_cjs_object_export = try collectAndAppendCjsObjectFacts(
-                allocator,
-                ast,
-                node,
-                @intCast(stmt_i),
-                unresolved_globals,
-                &cjs_export_facts_buf,
-                symbol_ids,
-            );
-        }
-        const side_effects = if (node.tag == .import_declaration)
-            false
-        else if (cjs_export_candidate) |candidate|
-            cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
-        else if (safe_cjs_object_export)
-            false
-        else
-            purity.stmtHasSideEffects(ast, node, unresolved_globals);
-        stmts[stmt_i] = .{
-            .node_idx = @intCast(ni),
-            .span = node.span,
-            .has_side_effects = side_effects,
-            .declared_symbols = &.{},
-            .referenced_symbols = &.{},
-        };
+        stmts[stmt_i] = try buildStmtInfoSlot(
+            allocator,
+            ast,
+            @intCast(ni),
+            @intCast(stmt_i),
+            collect_cjs_exports,
+            unresolved_globals,
+            &cjs_export_facts_buf,
+            symbol_ids,
+        );
+        stmt_spans[stmt_i] = stmts[stmt_i].span;
     }
 
     // Phase 2: 모든 AST 노드를 단일 패스로 순회하며 심볼 수집 — O(N log S)
