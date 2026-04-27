@@ -5,6 +5,7 @@ const emitter = @import("../emitter.zig");
 const ResolveCache = @import("../resolve_cache.zig").ResolveCache;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
 const test_helpers = @import("../test_helpers.zig");
+const compat = @import("../../transformer/compat.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
 
@@ -2119,4 +2120,60 @@ test "TreeShaking: namespace import preamble dropped when target excluded from b
     try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_TARGET_DROP_HEAVY") == null);
     // `var X = __toESM(require_cjslib_cjs(), 1)` 같은 orphan preamble 이 남으면 안 된다.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_cjslib") == null);
+}
+
+// semver@es5 회귀: `--target=es5` 가 `__toConsumableArray` 등 runtime helper 를 ESM
+// `import` 로 CJS 모듈 본문에 주입하면 import_scanner 의 `has_esm_syntax` 가 true 로
+// set 되고, post-transform refresh 가 그 모듈을 `.esm_with_dynamic_fallback` 로 잘못
+// 승격한다. 결과적으로 `__commonJS` wrapper 대신 `__esm` wrapper 로 감싸져
+// `module is not defined in ES module scope` ReferenceError 가 난다 (semver/internal/
+// debug.js 가 정확히 이 패턴: spread arg + `module.exports = X`). scanner 가
+// `\x00zts:runtime/...` 가상 prefix 의 helper import 를 user ESM 에서 제외해야 한다.
+test "TreeShaking: pure CJS module survives es5 helper import injection" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const cjs = require('./cjs.cjs');
+        \\console.log(cjs(1, 2, 3));
+    );
+    // semver/internal/debug.js 와 동일한 회귀 트리거: `'use strict'` + `module.exports = X`
+    // + **call-site spread** (`f(...args)`) 가 es5 transform 시 `__toConsumableArray`
+    // helper import 를 이 CJS 모듈 본문에 주입한다. rest parameter 만으론 inline
+    // `[].slice.call(arguments)` 로 다운레벨돼 helper import 가 안 생긴다 — call-site
+    // spread 가 있어야 has_esm_syntax 가 잘못 트리거되는 경로를 재현.
+    try writeFile(tmp.dir, "cjs.cjs",
+        \\'use strict';
+        \\const tag = (...args) => 'CJS_MODULE_EXPORTS_KEPT:' + args.join(',');
+        \\const fn = function() {
+        \\  var rest = [].slice.call(arguments, 1);
+        \\  return tag(arguments[0], ...rest);
+        \\};
+        \\module.exports = fn;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const out = result.output;
+
+    // cjs.cjs 의 본문이 살아 있어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, out, "CJS_MODULE_EXPORTS_KEPT") != null);
+    // wrap_kind 회귀 직접 가드: `module.exports = ...` 는 반드시 `__commonJS` body 안에
+    // 있어야 한다. 같은 텍스트가 `__esm` body 에 들어가면 그게 회귀 시그니처.
+    var search_pos: usize = 0;
+    while (std.mem.indexOfPos(u8, out, search_pos, "__esm({")) |idx| {
+        const block_end = std.mem.indexOfPos(u8, out, idx, "});") orelse out.len;
+        try std.testing.expect(std.mem.indexOf(u8, out[idx..block_end], "module.exports") == null);
+        search_pos = block_end + 1;
+    }
 }

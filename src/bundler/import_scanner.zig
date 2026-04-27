@@ -39,6 +39,7 @@ const Span = @import("../lexer/token.zig").Span;
 const types = @import("types.zig");
 const ImportRecord = types.ImportRecord;
 const ImportKind = types.ImportKind;
+const helper_modules = @import("../runtime_helper_modules.zig");
 
 /// CJS 감지를 포함한 스캔 결과.
 pub const ScanResult = struct {
@@ -85,9 +86,17 @@ pub fn extractImportsWithCjsDetectionAndDefines(
         if (isInsideAnySpan(node.span, dead_ranges.items)) continue;
         switch (node.tag) {
             .import_declaration => {
-                has_esm_syntax = true;
                 if (tryExtractImportDecl(ast, node)) |record| {
+                    // transformer 가 주입한 runtime helper virtual import (`\x00zts:runtime/...`) 는
+                    // 사용자 ESM 시그니처로 카운트하지 않는다. 카운트하면 `--target=es5` 등에서
+                    // CJS 모듈 (`module.exports = X`) 에 helper import 가 추가됐을 때 post-transform
+                    // refresh 가 그 모듈을 `.esm_with_dynamic_fallback` 로 잘못 승격해 `__esm`
+                    // wrapper 로 감싸지고 `module is not defined in ES module scope` 가 난다
+                    // (semver@es5 회귀).
+                    if (!helper_modules.isVirtualId(record.specifier)) has_esm_syntax = true;
                     try records.append(allocator, record);
+                } else {
+                    has_esm_syntax = true;
                 }
             },
             .export_all_declaration => {
