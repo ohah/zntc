@@ -10,6 +10,7 @@
 const std = @import("std");
 const purity = @import("purity.zig");
 const Ast = @import("../parser/ast.zig").Ast;
+const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
@@ -64,6 +65,14 @@ fn initOfDecl(ctx: *const TestCtx, stmt_idx: usize) NodeIndex {
     const decl = ctx.ast.nodes.items[raw_decl];
     // variable_declarator extra: [pattern(0), type_ann(1), init(2)]
     return @enumFromInt(ctx.ast.extra_data.items[decl.data.extra + 2]);
+}
+
+fn topLevelStmt(ctx: *const TestCtx, stmt_idx: usize) Node {
+    const root_ni = @intFromEnum(ctx.root);
+    const root_node = ctx.ast.nodes.items[root_ni];
+    const stmts = root_node.data.list;
+    const raw_stmt: u32 = ctx.ast.extra_data.items[stmts.start + stmt_idx];
+    return ctx.ast.nodes.items[raw_stmt];
 }
 
 test "pure builtin: new Set() with unresolved globals is pure" {
@@ -186,6 +195,40 @@ test "pure builtin: stmt-level classification for `const s = new Set();`" {
     try std.testing.expect(purity.stmtHasSideEffects(&ctx.ast, stmt_node, null));
     // 컨텍스트 전달 시 순수 statement로 판정
     try std.testing.expect(!purity.stmtHasSideEffects(&ctx.ast, stmt_node, &ctx.analyzer.unresolved_references));
+}
+
+test "assignment statement: module-local assignment target identifier is removable when RHS is pure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\let Local;
+        \\Local = 1;
+        \\if (typeof HTMLElement === 'function') {
+        \\  Local = class extends HTMLElement {};
+        \\}
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    const globals = &ctx.analyzer.unresolved_references;
+    try std.testing.expect(!purity.stmtHasSideEffects(&ctx.ast, topLevelStmt(&ctx, 1), globals));
+    try std.testing.expect(!purity.stmtHasSideEffects(&ctx.ast, topLevelStmt(&ctx, 2), globals));
+}
+
+test "assignment statement: global, member, computed, and destructuring LHS stay side-effectful" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\x = 1;
+        \\obj.x = 1;
+        \\obj[key] = 1;
+        \\[x] = [1];
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    const globals = &ctx.analyzer.unresolved_references;
+    for (0..4) |i| {
+        try std.testing.expect(purity.stmtHasSideEffects(&ctx.ast, topLevelStmt(&ctx, i), globals));
+    }
 }
 
 test "pure builtin: call without `new` also pure (Symbol(), Array(3))" {
