@@ -768,6 +768,43 @@ test "Default: export default namespace — IIFE bundle resolves member access" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "42") != null);
 }
 
+test "Default: shared namespace preamble has no runtime helper overhead (#1940)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js",
+        \\import Pkg from './mod.js';
+        \\console.log(Pkg.foo);
+    );
+    try writeFile(tmp.dir, "mod.js",
+        \\import * as X from './lib.js';
+        \\export default X;
+    );
+    try writeFile(tmp.dir, "lib.js",
+        \\export const foo = 1;
+        \\export const bar = 2;
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .platform = .node,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "var lib_ns = {get foo()"));
+    try std.testing.expect(std.mem.count(u8, result.output, "var lib_ns = {get foo()") == 1);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(foo)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__export") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__defProp") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm") == null);
+}
+
 test "Default: shared namespace preamble restored from compiled cache hit" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
