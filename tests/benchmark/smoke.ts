@@ -1102,17 +1102,24 @@ const projects: ProjectConfig[] = [
 
 console.log("ZTS Smoke Test — Real Project Bundling\n");
 
-// CLI: --filter=<패턴> 으로 이름 필터링 (예: --filter=@es5, --filter=lodash)
+// CLI: --filter=<패턴> 으로 이름 필터링 (예: --filter=@es5, --filter=lodash).
+// 콤마 분리로 여러 패턴 OR 매치: --filter=safe-buffer,cookie,path-to-regexp.
 const filterArg = process.argv.find((a) => a.startsWith("--filter="));
-const filterPattern = filterArg ? filterArg.split("=")[1] : null;
+const filterPatterns = filterArg
+  ? filterArg
+      .slice("--filter=".length)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  : null;
 const keepOutputArg = process.argv.find((a) => a.startsWith("--keep-output="));
 const keepOutputDir = keepOutputArg
   ? resolve(keepOutputArg.slice("--keep-output=".length))
   : undefined;
 const jsonArg = process.argv.find((a) => a.startsWith("--json="));
 const jsonPath = jsonArg ? resolve(jsonArg.slice("--json=".length)) : undefined;
-const filteredProjects = filterPattern
-  ? projects.filter((p) => p.name.includes(filterPattern))
+const filteredProjects = filterPatterns
+  ? projects.filter((p) => filterPatterns.some((pattern) => p.name.includes(pattern)))
   : projects;
 
 if (keepOutputDir) {
@@ -1237,7 +1244,7 @@ if (jsonPath) {
     JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
-        filter: filterPattern,
+        filter: filterPatterns,
         keepOutputDir,
         results,
         sizeComparisons,
