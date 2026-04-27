@@ -138,6 +138,41 @@ test "PackageJson: main field fallback" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-main\"") != null);
 }
 
+test "PackageJson: react-native platform follows Metro main field order" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { value } from 'rnpkg';\nconsole.log(value);");
+    try writeFile(tmp.dir, "node_modules/rnpkg/package.json",
+        \\{
+        \\  "name": "rnpkg",
+        \\  "react-native": "./rn.js",
+        \\  "browser": "./browser.js",
+        \\  "module": "./module.js",
+        \\  "main": "./main.js"
+        \\}
+    );
+    try writeFile(tmp.dir, "node_modules/rnpkg/rn.js", "export const value = 'from-react-native';");
+    try writeFile(tmp.dir, "node_modules/rnpkg/browser.js", "export const value = 'from-browser';");
+    try writeFile(tmp.dir, "node_modules/rnpkg/module.js", "export const value = 'from-module';");
+    try writeFile(tmp.dir, "node_modules/rnpkg/main.js", "export const value = 'from-main';");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .react_native,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-react-native\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-browser\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-module\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"from-main\"") == null);
+}
+
 test "PackageJson: no package.json index.js fallback" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

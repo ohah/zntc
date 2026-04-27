@@ -224,7 +224,7 @@ pub const Resolver = struct {
     /// RN 예: .ios.ts, .ios.tsx, .native.ts, .native.tsx, .ts, .tsx, .js, .jsx, .json
     custom_extensions: []const []const u8 = &.{},
     /// package.json 필드 해석 순서 (--main-fields). 비어있으면 기본 순서 (module → main).
-    /// RN 예: react-native, browser, main, module
+    /// RN 예: react-native, browser, main
     main_fields: []const []const u8 = &.{},
     /// 디렉토리 엔트리 캐시. null이면 캐시 없이 매번 stat() 호출 (테스트용).
     dir_cache: ?*DirEntryCache = null,

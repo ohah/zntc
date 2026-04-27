@@ -135,15 +135,16 @@ pub const ResolveCache = struct {
     }
 
     /// 플랫폼별 기본 main_fields 순서. 사용자가 --main-fields를 지정하지 않으면 적용.
-    /// esbuild/rolldown 호환: browser는 "browser" 필드(string)로 main을 교체해야 debug 같은
-    /// 패키지가 올바르게 브라우저 빌드로 해석된다.
+    /// Rspack/Webpack-style ESM-friendly 기본값: `module` 필드를 `main`보다 우선한다.
+    /// browser는 "browser" 필드(string)로 main을 교체해야 debug 같은 패키지가 올바르게
+    /// 브라우저 빌드로 해석된다.
     fn defaultMainFieldsFor(platform: Platform) []const []const u8 {
         const f = pkg_json.field;
         return switch (platform) {
             .browser => &.{ f.browser, f.module, f.main },
-            .node => &.{ f.main, f.module },
-            .neutral => &.{ f.main, f.module },
-            .react_native => &.{ f.react_native, f.browser, f.module, f.main },
+            .node => &.{ f.module, f.main },
+            .neutral => &.{ f.module, f.main },
+            .react_native => &.{ f.react_native, f.browser, f.main },
         };
     }
 
