@@ -419,6 +419,15 @@ pub const Codegen = struct {
         }
     }
 
+    fn trimTrailingSemicolonBeforeMinifyBoundary(self: *Codegen) void {
+        if (!self.options.minify_whitespace) return;
+        if (!self.options.minify_syntax) return;
+        if (self.buf.items.len == 0) return;
+        if (self.buf.items[self.buf.items.len - 1] != ';') return;
+        _ = self.buf.pop();
+        if (self.gen_col > 0) self.gen_col -= 1;
+    }
+
     // ================================================================
     // Function Map 도우미
     // ================================================================
@@ -1117,6 +1126,7 @@ pub const Codegen = struct {
             }
             self.indent_level -= 1;
         }
+        self.trimTrailingSemicolonBeforeMinifyBoundary();
         try self.writeNewline();
         try self.writeIndent();
         try self.writeByte('}');
@@ -2458,12 +2468,12 @@ pub const Codegen = struct {
     // 파서 노드는 writeNodeSpan으로 처리하지만,
     // transformer가 생성한 합성 노드(span={0,0})는 AST 기반으로 출력한다.
     fn emitStaticBlock(self: *Codegen, node: Node) !void {
-        if (node.span.start != 0 or node.span.end != 0) {
+        if (!(self.options.minify_whitespace and self.options.minify_syntax) and (node.span.start != 0 or node.span.end != 0)) {
             // 파서 원본 노드 → 소스 텍스트 그대로 출력
             try self.writeNodeSpan(node);
             return;
         }
-        // 합성 노드 → AST 기반 출력
+        // 합성 노드와 minify 출력은 AST 기반으로 공백/마지막 세미콜론을 정규화한다.
         try self.write("static");
         try self.writeSpace();
         try self.emitNode(node.data.unary.operand);
