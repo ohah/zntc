@@ -120,8 +120,15 @@ pub const Module = struct {
     /// 참조가 영향 받지 않음. parse_arena 소유.
     context_expansion_deps: []ImportRecord = &.{},
     /// 증분 cache-hit 모듈에서 resolver 재실행 없이 graph edge를 replay하기 위한
-    /// path 기반 resolve 결과. graph allocator 소유이며 store로 ownership 이전된다.
-    resolved_deps: []const CachedResolvedDep = &.{},
+    /// path 기반 resolve 결과.
+    ///
+    /// ### Ownership 규약
+    /// - 빌드 중: graph allocator 가 list backing + 각 `dep.path` 문자열을 소유.
+    /// - putModule 시점에 store 로 shallow-copy 이전 (graph 쪽 view 는 `.empty` 로 비움).
+    /// - cache-hit 시점에 store → graph 로 다시 이전 (store 쪽 view 는 `.empty` 로 비움).
+    /// - graph.deinit / store.freeCachedModule 어느 쪽이든 한 번만 free 되도록 한 쪽 view
+    ///   를 항상 `.empty` 로 유지해야 double-free 가 발생하지 않는다.
+    resolved_deps: std.ArrayListUnmanaged(CachedResolvedDep) = .empty,
     /// 이 모듈이 다른 모듈의 require.context match 로 등록된 경우 true. tree-shaker 가
     /// static import 없어도 root 취급해 번들에서 제거 안 함 — runtime require 대상이므로
     /// 모든 export 가 사용 가능해야.
@@ -455,8 +462,8 @@ pub const Module = struct {
         self.importers.deinit(allocator);
         self.dynamic_imports.deinit(allocator);
         self.dynamic_importers.deinit(allocator);
-        for (self.resolved_deps) |dep| allocator.free(dep.path);
-        if (self.resolved_deps.len > 0) allocator.free(self.resolved_deps);
+        for (self.resolved_deps.items) |dep| allocator.free(dep.path);
+        self.resolved_deps.deinit(allocator);
         if (self.alias_table) |*t| t.deinit();
         // require.context: plugin 이 채운 outer slice + 각 inner string free (#1579 Phase 2).
         // contract: plugin 이 allocator 로 dupe 한 상태로 반환 → graph 가 일괄 해제.
