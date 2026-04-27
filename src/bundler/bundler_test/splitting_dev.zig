@@ -1719,6 +1719,141 @@ test "Bundler: dev mode new expression wraps renamed CJS member callee" {
     try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated.Value(0)") == null);
 }
 
+test "Bundler: dev mode new expression wraps renamed CJS deep member callee" {
+    // member chain이 더 깊어도 root identifier rename에 call이 섞이면 callee 전체를
+    // 감싸야 한다. 일부 navigation/animation 패키지는 namespace 아래에 constructor를 둔다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "rn.cjs",
+        \\class Value {
+        \\  constructor(v) { this.v = v; }
+        \\}
+        \\module.exports = { Animated: { nodes: { Value } } };
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { Animated } from './rn.cjs';
+        \\export const value = new Animated.nodes.Value(0);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (require_rn().Animated.nodes.Value)(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated.nodes.Value(0)") == null);
+}
+
+test "Bundler: dev mode new expression wraps renamed CJS computed member callee" {
+    // computed member도 `new MemberExpression(args)`로 파싱되므로 동일하게 보호해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "rn.cjs",
+        \\class Value {
+        \\  constructor(v) { this.v = v; }
+        \\}
+        \\module.exports = { Animated: { Value } };
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { Animated } from './rn.cjs';
+        \\export const value = new Animated["Value"](0);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (require_rn().Animated[\"Value\"])(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated[\"Value\"](0)") == null);
+}
+
+test "Bundler: dev mode new expression keeps plain ESM import callee unwrapped" {
+    // call 포함 rename에만 괄호를 추가해야 한다. 일반 ESM import constructor까지
+    // 불필요하게 감싸지 않는지 확인한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.ts",
+        \\export class Value {
+        \\  constructor(public v: number) {}
+        \\}
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { Value } from './dep';
+        \\export const value = new Value(0);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    try std.testing.expect(std.mem.indexOf(u8, output, "new Value(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (Value)(0)") == null);
+}
+
+test "Bundler: dev mode new expression keeps parens after minify syntax strips original parens" {
+    // minify_syntax가 원본 `(Animated.Value)` 괄호를 벗기더라도, rename 후 call이 생기는
+    // 경우에는 안전 괄호를 다시 넣어야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "rn.cjs",
+        \\class Value {
+        \\  constructor(v) { this.v = v; }
+        \\}
+        \\module.exports = { Animated: { Value } };
+    );
+    try writeFile(tmp.dir, "index.ts",
+        \\import { Animated } from './rn.cjs';
+        \\export const value = new (Animated.Value)(0);
+    );
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .dev_mode = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const output = result.output;
+    try std.testing.expect(std.mem.indexOf(u8, output, "new (require_rn().Animated.Value)(0)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "new require_rn().Animated.Value(0)") == null);
+}
+
 test "Profile: pipeline stage timing (dev only, not for CI)" {
     // 프로세스 시작 비용 없이 순수 파이프라인 단계별 시간 측정
     const alloc = std.testing.allocator;
