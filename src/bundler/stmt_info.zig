@@ -217,11 +217,6 @@ fn cjsExportNameFromLhs(ast: *const Ast, lhs: NodeIndex) ?[]const u8 {
     return null;
 }
 
-/// shorthand `{ x }` 는 right 가 none → left 가 곧 value. 그 외 explicit `{ k: v }` 는 right 가 value.
-fn objectPropertyValueNode(prop: Node) NodeIndex {
-    return if (prop.data.binary.right.isNone()) prop.data.binary.left else prop.data.binary.right;
-}
-
 /// CJS object-shape export 의 value 위치가 named export 로 치환 안전한지 판정.
 /// identifier_reference 만 허용해 tree_shaker 가 `rhs_symbol → declaring stmt` 로
 /// dependency 를 시드할 수 있게 한다 (리터럴 등은 의존 시드가 의미 없어 거부).
@@ -287,7 +282,7 @@ fn collectCjsObjectExportCandidates(
         const entry = try seen.getOrPut(allocator, name);
         if (entry.found_existing) return null;
 
-        const value = objectPropertyValueNode(prop);
+        const value = Ast.objectPropertyValue(prop);
         if (!isCjsObjectPropertyValueSafe(ast, value, unresolved_globals)) return null;
 
         try out.append(allocator, .{

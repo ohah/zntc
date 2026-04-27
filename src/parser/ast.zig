@@ -1251,6 +1251,13 @@ pub const Ast = struct {
         return self.source[span.start..span.end];
     }
 
+    /// object_property 노드에서 value 위치 노드를 반환한다.
+    /// shorthand `{ x }` 는 right 가 none → key (left) 가 곧 value.
+    /// 그 외 explicit `{ k: v }` 는 right 가 value.
+    pub fn objectPropertyValue(prop: Node) NodeIndex {
+        return if (prop.data.binary.right.isNone()) prop.data.binary.left else prop.data.binary.right;
+    }
+
     /// object/method/class key 노드에서 정적 이름을 raw 형태로 추출한다.
     /// identifier 계열, string_literal (따옴표 제거), numeric_literal,
     /// computed_property_key (literal inner) 까지 처리. 그 외 (computed expr)
