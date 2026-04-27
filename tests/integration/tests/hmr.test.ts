@@ -43,7 +43,7 @@ describe("HMR 통합 테스트", () => {
 
     // 4. 번들을 bun으로 실행하여 에러가 없는지 확인
     const run = spawn({ cmd: ["bun", "run", outFile], stdout: "pipe", stderr: "pipe" });
-    const [stdout, stderr, exitCode] = await Promise.all([
+    const [stdout, _stderr, exitCode] = await Promise.all([
       new Response(run.stdout).text(),
       new Response(run.stderr).text(),
       run.exited,

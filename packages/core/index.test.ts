@@ -2814,14 +2814,14 @@ describe("옵션 조합 통합 테스트", () => {
           load(id) {
             if (id.endsWith("lib.ts")) hooks.push("load");
           },
-          transform(code) {
+          transform(_code) {
             hooks.push("transform");
           },
           renderChunk(code) {
             hooks.push("renderChunk");
             return `/* built */\n${code}`;
           },
-          generateBundle(outputs) {
+          generateBundle(_outputs) {
             hooks.push("generateBundle");
           },
         }),
@@ -2982,7 +2982,6 @@ describe("옵션 조합 통합 테스트", () => {
       globalName: "ILib",
     });
     expect(result.errors.length).toBe(0);
-    const ctx: any = {};
     new Function("var ILib; " + result.outputFiles[0].text + " return ILib;").call(null);
     // IIFE는 var ILib = (function() { ... })(); 형태
     const fn = new Function(result.outputFiles[0].text + "\nreturn ILib;");

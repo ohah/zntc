@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { runZts, runZtsInDir, createFixture, createReactStubFixture, ZTS_BIN } from "./helpers";
+import { runZts, runZtsInDir, createFixture, createReactStubFixture } from "./helpers";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";

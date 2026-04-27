@@ -155,11 +155,6 @@ function readString(ptr: number, len: number): string {
   return decoder.decode(new Uint8Array(wasm!.memory.buffer, ptr, len));
 }
 
-function writeOptionalString(s?: string): [number, number] {
-  if (!s) return [0, 0];
-  return writeString(s);
-}
-
 // ─── Public API ───
 
 /// 입력을 WebAssembly instantiate 가능한 source 로 정규화. undefined 면 default

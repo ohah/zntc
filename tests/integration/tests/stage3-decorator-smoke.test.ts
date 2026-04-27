@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { createFixture, runZts } from "./helpers";
 import { join, resolve } from "node:path";
-import { symlink, mkdir, readFile } from "node:fs/promises";
+import { symlink, mkdir } from "node:fs/promises";
 import { spawnSync } from "bun";
 
 // Stage 3 Decorator 스모크 테스트

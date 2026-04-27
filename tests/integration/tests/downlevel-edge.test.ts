@@ -2638,7 +2638,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       const result = await bundleAndRun(
         {
           "index.ts": `
-            const r = 'hello'.replace(/(?<word>\\w+)/, \`<\$<word>>\`);
+            const r = 'hello'.replace(/(?<word>\\w+)/, \`<$<word>>\`);
             console.log(r);
           `,
         },
@@ -2655,7 +2655,7 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
         {
           "index.ts": `
             const re = /(?<a>\\w+)-(?<b>\\d+)/;
-            console.log('foo-42'.replace(re, \`[\$<b>:\$<a>]\`));
+            console.log('foo-42'.replace(re, \`[$<b>:$<a>]\`));
           `,
         },
         "index.ts",
