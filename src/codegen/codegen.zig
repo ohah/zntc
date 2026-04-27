@@ -2465,15 +2465,15 @@ pub const Codegen = struct {
     }
 
     // static_block: unary = { operand = body(block_statement) }
-    // 파서 노드는 writeNodeSpan으로 처리하지만,
-    // transformer가 생성한 합성 노드(span={0,0})는 AST 기반으로 출력한다.
+    // 파서 원본 노드는 writeNodeSpan, 합성 노드(span={0,0})와 minify 모드는
+    // 마지막 세미콜론 트리밍을 위해 AST 기반으로 출력한다.
     fn emitStaticBlock(self: *Codegen, node: Node) !void {
-        if (!(self.options.minify_whitespace and self.options.minify_syntax) and (node.span.start != 0 or node.span.end != 0)) {
-            // 파서 원본 노드 → 소스 텍스트 그대로 출력
+        const has_parser_span = node.span.start != 0 or node.span.end != 0;
+        const minify = self.options.minify_whitespace and self.options.minify_syntax;
+        if (has_parser_span and !minify) {
             try self.writeNodeSpan(node);
             return;
         }
-        // 합성 노드와 minify 출력은 AST 기반으로 공백/마지막 세미콜론을 정규화한다.
         try self.write("static");
         try self.writeSpace();
         try self.emitNode(node.data.unary.operand);
