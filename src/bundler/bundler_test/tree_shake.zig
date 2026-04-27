@@ -1588,6 +1588,67 @@ test "TreeShaking: unused direct re-export source with local init is pruned" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_REEXPORT_LEGACY_MARKER") == null);
 }
 
+test "TreeShaking: unused direct re-export Svelte custom-element fanout is pruned" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { mount } from './runtime';
+        \\console.log(mount());
+    );
+    try writeFile(tmp.dir, "runtime.ts",
+        \\export { mount } from './client';
+        \\export { create_custom_element } from './custom-element';
+    );
+    try writeFile(tmp.dir, "client.ts",
+        \\export function mount() { return 'SVELTE_FANOUT_USED_MOUNT'; }
+    );
+    try writeFile(tmp.dir, "props.ts",
+        \\export function heavyProps() {
+        \\  return 'SVELTE_FANOUT_PROPS_HEAVY';
+        \\}
+    );
+    try writeFile(tmp.dir, "legacy-client.ts",
+        \\import { heavyProps } from './props';
+        \\export function createClassComponent() {
+        \\  return 'SVELTE_FANOUT_LEGACY_CLIENT' + heavyProps();
+        \\}
+    );
+    try writeFile(tmp.dir, "custom-element.ts",
+        \\import { createClassComponent } from './legacy-client';
+        \\let SvelteElement;
+        \\if (typeof HTMLElement === 'function') {
+        \\  SvelteElement = class extends HTMLElement {
+        \\    connectedCallback() {
+        \\      createClassComponent();
+        \\    }
+        \\  };
+        \\}
+        \\export function create_custom_element() {
+        \\  return 'SVELTE_FANOUT_CUSTOM_ELEMENT' + SvelteElement;
+        \\}
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "SVELTE_FANOUT_USED_MOUNT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "SVELTE_FANOUT_CUSTOM_ELEMENT") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "SVELTE_FANOUT_LEGACY_CLIENT") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "SVELTE_FANOUT_PROPS_HEAVY") == null);
+}
+
 test "TreeShaking: unused direct re-export source preserves eval side effect only" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

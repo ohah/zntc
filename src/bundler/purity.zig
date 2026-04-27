@@ -418,7 +418,7 @@ fn assignmentHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*c
     // A top-level assignment to an unresolved global can mutate global state. A bare
     // identifier that is not unresolved is a module-local binding, so the statement
     // can be dropped when no live export observes that binding.
-    if (left.tag != .identifier_reference) return true;
+    if (left.tag != .identifier_reference and left.tag != .assignment_target_identifier) return true;
     if (unresolved_globals) |globals| {
         if (globals.contains(ast.getText(left.span))) return true;
     }
