@@ -655,13 +655,20 @@ pub const SemanticAnalyzer = struct {
         return self.current_scope; // fallback (shouldn't happen)
     }
 
-    /// 특정 스코프에서 이름으로 심볼을 찾는다.
-    /// per-scope HashMap으로 O(1) 조회 (이전: O(N) 선형 스캔).
-    fn findSymbolInScope(self: *const SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?Symbol {
+    /// 특정 스코프에서 이름으로 심볼 인덱스를 찾는다. 경계/.none/empty 매핑은 null.
+    fn findSymbolIndexInScope(self: *const SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?usize {
         if (scope_id.isNone()) return null;
         const idx = scope_id.toIndex();
         if (idx >= self.scope_maps.items.len) return null;
         const sym_idx = self.scope_maps.items[idx].get(name) orelse return null;
+        if (sym_idx >= self.symbols.items.len) return null;
+        return sym_idx;
+    }
+
+    /// 특정 스코프에서 이름으로 심볼을 찾는다.
+    /// per-scope HashMap으로 O(1) 조회 (이전: O(N) 선형 스캔).
+    fn findSymbolInScope(self: *const SemanticAnalyzer, scope_id: ScopeId, name: []const u8) ?Symbol {
+        const sym_idx = self.findSymbolIndexInScope(scope_id, name) orelse return null;
         return self.symbols.items[sym_idx];
     }
 
@@ -857,12 +864,7 @@ pub const SemanticAnalyzer = struct {
     /// 현재 스코프에서 이름으로 symbol을 찾아 no_side_effects 플래그를 설정.
     /// 현재 스코프에서 이름으로 심볼 인덱스를 찾는다.
     fn findSymbolInCurrentScope(self: *const SemanticAnalyzer, name_span: Span) ?usize {
-        const name = self.ast.getText(name_span);
-        const scope_idx = self.current_scope.toIndex();
-        if (scope_idx >= self.scope_maps.items.len) return null;
-        const sym_idx = self.scope_maps.items[scope_idx].get(name) orelse return null;
-        if (sym_idx >= self.symbols.items.len) return null;
-        return sym_idx;
+        return self.findSymbolIndexInScope(self.current_scope, self.ast.getText(name_span));
     }
 
     fn markSymbolNoSideEffects(self: *SemanticAnalyzer, name_span: Span) void {
@@ -886,14 +888,9 @@ pub const SemanticAnalyzer = struct {
     /// predeclare 1st pass에서 declareSymbol(node_idx=null)로 등록된 심볼은
     /// symbol_ids에 매핑이 없으므로, 2nd pass에서 skip 시 여기서 보충한다.
     fn setSymbolIdForPredeclared(self: *SemanticAnalyzer, name_span: Span, node_idx: u32) void {
-        const sym_idx = self.findSymbolInCurrentScope(name_span) orelse blk: {
-            const name = self.ast.getText(name_span);
-            const var_scope = self.findVarScope();
-            if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
-                if (self.scope_maps.items[var_scope.toIndex()].get(name)) |idx| break :blk idx;
-            }
-            return;
-        };
+        const name = self.ast.getText(name_span);
+        const sym_idx = self.findSymbolIndexInScope(self.current_scope, name) orelse
+            self.findSymbolIndexInScope(self.findVarScope(), name) orelse return;
         if (node_idx < self.symbol_ids.items.len) {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
         }

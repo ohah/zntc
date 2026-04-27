@@ -644,14 +644,10 @@ pub const Bundler = struct {
         // #1621: worker 청크도 minify 시 preamble 축약 이름 사용.
         worker_linker.minify_whitespace = self.options.minify_whitespace;
         try worker_linker.link();
-        try worker_linker.computeRenames();
-        if (self.options.minify_identifiers) {
-            try worker_linker.computeMangling();
-        }
-        worker_linker.populateReExportAliases();
-        worker_linker.populateImportSymbols();
-        worker_linker.populateNamespaceAccesses();
-        worker_linker.populateSymbolRefCounts();
+        try worker_linker.finalize(.{
+            .compute_renames = true,
+            .compute_mangling = self.options.minify_identifiers,
+        });
         defer worker_linker.deinit();
 
         // emit (IIFE 포맷)
@@ -860,23 +856,13 @@ pub const Bundler = struct {
             l.iife_globals = self.options.globals;
             if (mangle_report_enabled) l.mangle_report = &mangle_collector;
             try l.link();
-            if (!self.options.code_splitting) {
-                try l.computeRenames();
-                if (self.options.minify_identifiers) {
-                    try l.computeMangling();
-                }
-            }
-            // Phase 3b (#1328): re_export_alias 심볼의 canonical_name 채우기.
-            // computeRenames 이후에 호출해야 getCanonicalName이 최종 리네임을 반영.
-            l.populateReExportAliases();
-            // ImportBinding.symbol(source-side) + local_symbol(current-side) 채움.
-            l.populateImportSymbols();
-            // #1603 Phase 1b: `import { M }` → `export * as M from ...` (virtual namespace)
-            // 패턴에서 소비자 측 AST 멤버 접근을 수집해 namespace_used_properties 채움.
-            // tree-shaker가 source 모듈의 미사용 export를 정밀 prune 가능.
-            l.populateNamespaceAccesses();
-            // symbol-level ref_count 수집. tree-shaking companion metric.
-            l.populateSymbolRefCounts();
+            // Phase 3b (#1328): populateReExportAliases 가 canonical_name 을 채우려면
+            // computeRenames 이후여야 한다. populateImportSymbols / NamespaceAccesses /
+            // SymbolRefCounts (tree-shaking companion metric) 까지 한 번에 묶어 emit.
+            try l.finalize(.{
+                .compute_renames = !self.options.code_splitting,
+                .compute_mangling = self.options.minify_identifiers,
+            });
             break :blk l;
         } else null;
         defer if (linker) |*l| l.deinit();
@@ -894,18 +880,13 @@ pub const Bundler = struct {
             var s = try TreeShaker.init(self.allocator, &graph, &(linker.?));
             try s.analyze(self.options.entry_points);
             if (self.options.minify_syntax and !self.options.code_splitting) {
-                if (linker) |*l| {
-                    l.clearCanonicalNames();
-                    l.clearMangling();
-                    try l.computeRenames();
-                    if (self.options.minify_identifiers) {
-                        try l.computeMangling();
-                    }
-                    l.populateReExportAliases();
-                    l.populateImportSymbols();
-                    l.populateNamespaceAccesses();
-                    l.populateSymbolRefCounts();
-                }
+                // tree-shaker 가 module.semantic 을 재생성한 뒤이므로 stale rename/mangling
+                // 을 비우고 다시 계산해야 emit 단계에서 새 symbol id 를 따라가는 산출물이 된다.
+                try (&(linker.?)).finalize(.{
+                    .compute_renames = true,
+                    .compute_mangling = self.options.minify_identifiers,
+                    .clear_first = true,
+                });
             }
             // metadata builder 가 `Module.is_included` 비트를 신뢰해 tree-shake 된 target 의
             // CJS preamble emit 을 건너뛸 수 있도록 plug. analyze() 가 끝난 뒤 mirror 가

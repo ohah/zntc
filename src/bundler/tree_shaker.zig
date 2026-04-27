@@ -187,17 +187,12 @@ pub const TreeShaker = struct {
 
                 const minify_mod = @import("../transformer/minify.zig");
                 const root = ast.transformed_root orelse NodeIndex.none;
-                const ctx: minify_mod.MinifyCtx = .{
-                    .symbols = sem.symbols.items,
-                    .symbol_ids = sem.symbol_ids,
-                    .scopes = sem.scopes,
-                    .unresolved_globals = &sem.unresolved_references,
-                    .references = sem.references,
-                    .allow_top_level_inline = true,
-                };
+                const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, true);
                 minify_mod.minify(ast, ctx, self.allocator, root);
-                const refresh_alloc = if (m.parse_arena) |*arena| arena.allocator() else self.allocator;
-                self.graph.refreshAnalysisAfterAstMutation(m, refresh_alloc) catch {
+                // parse_arena 는 parse 단계에서 모든 모듈에 부착된다 (#1323). null 이면
+                // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
+                std.debug.assert(m.parse_arena != null);
+                self.graph.refreshAnalysisAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
                     m.prebuilt_stmt_info = null;
                 };
             }
@@ -601,6 +596,10 @@ pub const TreeShaker = struct {
             const infos = module_stmt_infos[item.mod] orelse continue;
             if (item.stmt >= infos.stmts.len) continue;
 
+            // item 단위 invariant — referenced_symbols 루프 밖으로 한 번만 계산.
+            const owner = self.getModule(item.mod);
+            const skip_import_followup = if (owner) |o| isImportDeclarationStmt(o, infos, item.stmt) else true;
+
             for (infos.stmts[item.stmt].referenced_symbols) |ref_sym| {
                 // (1) 로컬 심볼: 같은 모듈의 종속 statement
                 if (infos.declaredStmtBySymbol(ref_sym)) |dep_stmt| {
@@ -617,12 +616,11 @@ pub const TreeShaker = struct {
                 }
 
                 // (2) import binding: 타겟 모듈로 점프
+                if (skip_import_followup) continue;
                 if (item.mod < self.sym_to_ib.len) {
                     if (self.sym_to_ib[item.mod]) |sym_map| {
                         if (ref_sym < sym_map.len) {
                             if (sym_map[ref_sym]) |ib_idx| {
-                                const owner = self.getModule(item.mod) orelse continue;
-                                if (isImportDeclarationStmt(owner, infos, item.stmt)) continue;
                                 try self.followImport(item.mod, ib_idx, item.stmt, &queue, module_stmt_infos, reachable_stmts);
                             }
                         }

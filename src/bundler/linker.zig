@@ -34,6 +34,11 @@ const CompiledModule = @import("compiled_module.zig").CompiledModule;
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
 pub const NS_VAR_PREFIX = "__ns_";
 
+/// CJS named import의 expression rename 형태: `require_xxx().prop`.
+/// metadata.zig가 이 sentinel 형식으로 rename을 만들고 codegen이 substring 으로
+/// 식별하므로 양쪽이 동일한 marker를 참조해야 한다.
+pub const EXPR_RENAME_MARKER = "().";
+
 /// `__ns_N.prop` 형태의 namespace-access rename 인지 판정.
 pub inline fn isNamespaceRename(rename: []const u8) bool {
     return std.mem.startsWith(u8, rename, NS_VAR_PREFIX);
@@ -44,7 +49,7 @@ pub inline fn isNamespaceRename(rename: []const u8) bool {
 /// binding을 만들지 않는다. dev/HMR payload에서 원본 import가 CJS require로
 /// 재출력되면 같은 binding을 중복 생성하므로 여기서 skip 대상으로 본다.
 pub inline fn isImportExpressionRename(rename: []const u8) bool {
-    return isNamespaceRename(rename) or std.mem.indexOf(u8, rename, "().") != null;
+    return isNamespaceRename(rename) or std.mem.indexOf(u8, rename, EXPR_RENAME_MARKER) != null;
 }
 
 /// `Linker.collectUnifiedInput` 반환 컨테이너. unified_mangler.mangleAll 에
@@ -2606,6 +2611,28 @@ pub const Linker = struct {
         for (self.unified_module_scopes) |*b| b.deinit();
         if (self.unified_module_scopes.len > 0) self.allocator.free(self.unified_module_scopes);
         self.unified_module_scopes = &.{};
+    }
+
+    /// link() 이후 호출 — rename / mangling / populate* 시퀀스를 한 번에 실행.
+    /// bundler 본 path / worker 청크 / tree-shake post-recompute 가 같은 시퀀스를
+    /// 호출하므로 단일 엔트리로 묶어 drift 방지.
+    pub fn finalize(self: *Linker, opts: struct {
+        compute_renames: bool,
+        compute_mangling: bool,
+        clear_first: bool = false,
+    }) !void {
+        if (opts.clear_first) {
+            self.clearCanonicalNames();
+            self.clearMangling();
+        }
+        if (opts.compute_renames) {
+            try self.computeRenames();
+            if (opts.compute_mangling) try self.computeMangling();
+        }
+        self.populateReExportAliases();
+        self.populateImportSymbols();
+        self.populateNamespaceAccesses();
+        self.populateSymbolRefCounts();
     }
 
     /// 특정 모듈들만 대상으로 이름 충돌을 감지하고 리네임을 계산한다.

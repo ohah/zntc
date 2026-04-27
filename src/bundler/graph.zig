@@ -808,7 +808,7 @@ pub const ModuleGraph = struct {
     }
 
     fn replayCachedResolvedDeps(self: *ModuleGraph, mod_idx: usize) !void {
-        if (mod_idx >= self.modules.count()) return;
+        std.debug.assert(mod_idx < self.modules.count());
         const mod_index = ModuleIndex.fromUsize(mod_idx);
         const mod_ptr = self.modules.at(mod_idx);
 
@@ -1697,14 +1697,10 @@ pub const ModuleGraph = struct {
         const root = transformer.transform() catch return;
         if (self.transform_options_base.minify_syntax) {
             const minify_mod = @import("../transformer/minify.zig");
-            const ctx: minify_mod.MinifyCtx = if (module.semantic) |sem| .{
-                .symbols = sem.symbols.items,
-                .symbol_ids = transformer.symbol_ids.items,
-                .scopes = sem.scopes,
-                .unresolved_globals = &sem.unresolved_references,
-                .references = sem.references,
-                .allow_top_level_inline = true,
-            } else .empty;
+            const ctx: minify_mod.MinifyCtx = if (module.semantic != null)
+                minify_mod.MinifyCtx.fromSemantic(&module.semantic.?, transformer.symbol_ids.items, true)
+            else
+                .empty;
             minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
         }
 

@@ -26,6 +26,7 @@ const isNamespaceUsedAsValue = Linker.isNamespaceUsedAsValue;
 const isReservedName = Linker.isReservedName;
 const NamePair = PreambleWriter.NamePair;
 const NS_VAR_PREFIX = linker_mod.NS_VAR_PREFIX;
+const EXPR_RENAME_MARKER = linker_mod.EXPR_RENAME_MARKER;
 
 /// #1791 Phase D: import binding 의 local 이 value 로 참조된 적이 있는지 조회.
 /// analyzer 가 각 Reference 에 `type_context` / `value_as_type` flag 를 기록하므로,
@@ -371,7 +372,7 @@ pub fn buildMetadataForAst(
                     const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(canonical_mod));
                     if (ib.kind == .named and !std.mem.eql(u8, ib.imported_name, "default")) {
                         if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                            const direct_access = try std.fmt.allocPrint(self.allocator, "{s}().{s}", .{ req_var, ib.imported_name });
+                            const direct_access = try std.fmt.allocPrint(self.allocator, "{s}" ++ EXPR_RENAME_MARKER ++ "{s}", .{ req_var, ib.imported_name });
                             errdefer self.allocator.free(direct_access);
                             try owned_nested_renames.append(self.allocator, direct_access);
                             try renames.put(sym_idx, direct_access);
@@ -838,6 +839,7 @@ pub fn buildCrossModuleConstValues(
     _: @import("../module.zig").ModuleSemanticData,
 ) !std.AutoHashMapUnmanaged(u32, @import("../../semantic/symbol.zig").ConstValue) {
     var const_values: std.AutoHashMapUnmanaged(u32, @import("../../semantic/symbol.zig").ConstValue) = .{};
+    if (m.import_bindings.len == 0) return const_values;
     for (m.import_bindings) |ib| {
         if (ib.import_record_index >= m.import_records.len) continue;
         const rec = m.import_records[ib.import_record_index];
