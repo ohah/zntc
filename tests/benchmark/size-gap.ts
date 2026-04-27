@@ -36,36 +36,34 @@ function parseProjects(): string[] {
 }
 
 function runSmoke(projects: string[], keepDir: string, jsonPath: string): SmokeResult[] {
-  const results: SmokeResult[] = [];
-  for (const project of projects) {
-    const r = spawnSync(
-      "bun",
-      [
-        "run",
-        "tests/benchmark/smoke.ts",
-        `--filter=${project}`,
-        `--keep-output=${keepDir}`,
-        `--json=${jsonPath}`,
-      ],
-      {
-        cwd: ROOT,
-        stdio: "pipe",
-        timeout: 180000,
-      },
+  const r = spawnSync(
+    "bun",
+    [
+      "run",
+      "tests/benchmark/smoke.ts",
+      `--filter=${projects.join(",")}`,
+      `--keep-output=${keepDir}`,
+      `--json=${jsonPath}`,
+    ],
+    {
+      cwd: ROOT,
+      stdio: "pipe",
+      timeout: 600000,
+    },
+  );
+  if (r.status !== 0) {
+    throw new Error(
+      `smoke.ts failed for ${projects.join(",")}\n${r.stdout?.toString()}\n${r.stderr?.toString()}`,
     );
-    if (r.status !== 0) {
-      throw new Error(
-        `smoke.ts failed for ${project}\n${r.stdout?.toString()}\n${r.stderr?.toString()}`,
-      );
-    }
-    const report = JSON.parse(readFileSync(jsonPath, "utf-8"));
+  }
+  const report = JSON.parse(readFileSync(jsonPath, "utf-8"));
+  return projects.map((project) => {
     const exact = report.results.find((entry: SmokeResult) => entry.project === project);
     if (!exact) {
-      throw new Error(`smoke.ts did not produce an exact result for ${project}`);
+      throw new Error(`smoke.ts did not produce a result for ${project}`);
     }
-    results.push(exact);
-  }
-  return results;
+    return exact;
+  });
 }
 
 function readOutput(result?: BundlerResult): string {

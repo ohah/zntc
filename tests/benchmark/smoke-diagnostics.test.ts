@@ -73,4 +73,25 @@ describe("benchmark smoke diagnostics", () => {
     expect(stdout).toContain("Wrapper markers");
     expect(stdout).toContain("Top-level declarations");
   });
+
+  test("--filter accepts comma-separated patterns and produces multiple results", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-smoke-multi-"));
+    const jsonPath = join(dir, "report.json");
+    try {
+      const r = runBun([
+        "run",
+        "tests/benchmark/smoke.ts",
+        "--filter=safe-buffer,cookie",
+        `--json=${jsonPath}`,
+      ]);
+
+      expect(r.status, r.stderr?.toString()).toBe(0);
+      const report = JSON.parse(readFileSync(jsonPath, "utf-8"));
+      const names = report.results.map((entry: { project: string }) => entry.project);
+      expect(names).toContain("safe-buffer");
+      expect(names).toContain("cookie");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
