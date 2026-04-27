@@ -1647,6 +1647,97 @@ test "TreeShaking: unused direct re-export Svelte custom-element fanout is prune
     try std.testing.expect(std.mem.indexOf(u8, result.output, "SVELTE_FANOUT_PROPS_HEAVY") == null);
 }
 
+test "TreeShaking: unused direct re-export source with object literal methods is pruned" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './runtime';
+        \\console.log(used());
+    );
+    try writeFile(tmp.dir, "runtime.ts",
+        \\export { used } from './live';
+        \\export { prop } from './props';
+    );
+    try writeFile(tmp.dir, "live.ts", "export function used() { return 'OBJECT_METHOD_REEXPORT_USED'; }");
+    try writeFile(tmp.dir, "heavy.ts",
+        \\export function heavy() {
+        \\  return 'OBJECT_METHOD_REEXPORT_HEAVY';
+        \\}
+    );
+    try writeFile(tmp.dir, "props.ts",
+        \\import { heavy } from './heavy';
+        \\const rest_props_handler = {
+        \\  get(target, key) {
+        \\    return target[key];
+        \\  },
+        \\  set(target, key, value) {
+        \\    heavy();
+        \\    target[key] = value;
+        \\    return true;
+        \\  },
+        \\  ownKeys(target) {
+        \\    return Reflect.ownKeys(target);
+        \\  }
+        \\};
+        \\export function prop(obj, key) {
+        \\  return new Proxy(obj, rest_props_handler)[key];
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_METHOD_REEXPORT_USED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_METHOD_REEXPORT_HEAVY") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "rest_props_handler") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Reflect.ownKeys") == null);
+}
+
+test "TreeShaking: object literal method with impure computed key is preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './side';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "side.ts",
+        \\function key() {
+        \\  console.log('OBJECT_METHOD_COMPUTED_KEY_EFFECT');
+        \\  return 'run';
+        \\}
+        \\const handler = {
+        \\  [key()]() {
+        \\    return 1;
+        \\  }
+        \\};
+        \\export const used = 'OBJECT_METHOD_COMPUTED_KEY_USED';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_METHOD_COMPUTED_KEY_USED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_METHOD_COMPUTED_KEY_EFFECT") != null);
+}
+
 test "TreeShaking: unused direct re-export source preserves eval side effect only" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

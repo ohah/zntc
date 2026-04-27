@@ -15,6 +15,7 @@
 //!   - 나머지 → 보수적으로 불순
 
 const std = @import("std");
+const ast_mod = @import("../parser/ast.zig");
 const Ast = @import("../parser/ast.zig").Ast;
 const Node = @import("../parser/ast.zig").Node;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
@@ -315,14 +316,31 @@ fn isObjectPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalR
         const prop_idx: NodeIndex = @enumFromInt(raw_idx);
         if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) continue;
         const prop = ast.nodes.items[@intFromEnum(prop_idx)];
-        if (prop.tag != .object_property) return false;
-        const key_idx = prop.data.binary.left;
-        if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
-            if (ast.nodes.items[@intFromEnum(key_idx)].tag == .computed_property_key) return false;
+        switch (prop.tag) {
+            .object_property => {
+                const key_idx = prop.data.binary.left;
+                if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
+                    if (ast.nodes.items[@intFromEnum(key_idx)].tag == .computed_property_key) return false;
+                }
+                if (!isExprPureDepth(ast, prop.data.binary.right, unresolved_globals, depth)) return false;
+            },
+            .method_definition => {
+                if (objectMethodHasSideEffects(ast, prop, unresolved_globals)) return false;
+            },
+            else => return false,
         }
-        if (!isExprPureDepth(ast, prop.data.binary.right, unresolved_globals, depth)) return false;
     }
     return true;
+}
+
+fn objectMethodHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
+    const e = node.data.extra;
+    if (e + ast_mod.MethodExtra.deco_len >= ast.extra_data.items.len) return true;
+    if (computedKeyHasSideEffects(ast, e + ast_mod.MethodExtra.key, unresolved_globals)) return true;
+
+    // Object literal methods/getters/setters create function values. Their params/body
+    // are not evaluated while the object itself is constructed.
+    return ast.extra_data.items[e + ast_mod.MethodExtra.deco_len] > 0;
 }
 
 fn isArrayPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
