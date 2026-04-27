@@ -1543,6 +1543,36 @@ test "TreeShaking: export star from CJS keeps wrapped source for named import" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_STAR_UNUSED_MARKER") != null);
 }
 
+test "TreeShaking: named-only CJS import does not inject __toESM helper cluster" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './source.cjs';
+        \\console.log(used());
+    );
+    try writeFile(tmp.dir, "source.cjs",
+        \\exports.used = function() { return "CJS_NAMED_ONLY_USED"; };
+        \\exports.unused = function() { return "CJS_NAMED_ONLY_UNUSED"; };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_NAMED_ONLY_USED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_source().used") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__copyProps") == null);
+}
+
 test "TreeShaking: unused direct re-export source with local init is pruned" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

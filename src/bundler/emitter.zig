@@ -1676,10 +1676,12 @@ fn emitBundleRuntimeHelpers(
     // 런타임 헬퍼 주입: 래핑 모듈 유형에 따라 필요한 헬퍼 결정.
     var needs_cjs_runtime = false;
     var needs_esm_wrap_runtime = false;
+    var needs_to_esm_runtime = false;
     var needs_to_binary = false;
     for (sorted_modules) |m| {
         if (m.wrap_kind == .cjs) needs_cjs_runtime = true;
         if (m.wrap_kind == .esm) needs_esm_wrap_runtime = true;
+        if (moduleNeedsToEsmInterop(m, sorted_modules)) needs_to_esm_runtime = true;
         if (m.loader == .binary) needs_to_binary = true;
     }
     if (needs_cjs_runtime or needs_esm_wrap_runtime) {
@@ -1688,8 +1690,14 @@ fn emitBundleRuntimeHelpers(
         if (needs_cjs_runtime and options.platform == .node and options.format == .esm) {
             try rt.appendRequireShim(output, allocator, options.minify_whitespace);
         }
-        // __toESM, __copyProps, __defProp은 CJS/ESM 양쪽에서 공유
-        try rt.appendCjsRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        if (needs_cjs_runtime) {
+            try rt.appendCommonJsFactoryRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        }
+        // __toCommonJS depends on __copyProps/__defProp, so ESM wrappers still need
+        // the __toESM helper cluster even if no CJS import site calls __toESM.
+        if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
+            try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
+        }
     }
     if (needs_esm_wrap_runtime) {
         try rt.appendEsmWrapRuntime(output, allocator, options.minify_whitespace, options.configurable_exports);
@@ -1716,6 +1724,25 @@ fn emitBundleRuntimeHelpers(
     // 환경에서 dead code 0. consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.
     try rt.emitConsoleErrorInterceptInto(output, allocator, options.silent_console_error_patterns, options.minify_whitespace);
     try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
+}
+
+fn moduleNeedsToEsmInterop(module: *const Module, modules: []const *const Module) bool {
+    for (module.import_bindings) |ib| {
+        if (ib.import_record_index >= module.import_records.len) continue;
+        const record = module.import_records[ib.import_record_index];
+        if (record.resolved.isNone()) continue;
+        const target = findSortedModule(modules, record.resolved) orelse continue;
+        if (target.wrap_kind != .cjs) continue;
+        if (ib.kind == .namespace or ib.importsDefault()) return true;
+    }
+    return false;
+}
+
+fn findSortedModule(modules: []const *const Module, index: types.ModuleIndex) ?*const Module {
+    for (modules) |m| {
+        if (m.index == index) return m;
+    }
+    return null;
 }
 
 /// transformer 비트맵 외 경로의 helper (asset binary loader / `--keep-names` 옵션)
