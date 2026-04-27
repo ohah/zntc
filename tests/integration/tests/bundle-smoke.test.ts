@@ -1198,10 +1198,13 @@ describe("_default 합성 변수 충돌 방지", () => {
     // comp.js body의 use 참조는 안전한 경로로 가야 함:
     //   - canonical rename `use$N("ctx")`, 또는
     //   - namespace-access `__ns_N_N.use("ctx")` (CJS-in-ESM-wrapped named import 패턴)
+    //   - direct CJS access `require_xxx().use("ctx")` (dev/RN CJS direct access 패턴)
     // bare `use("ctx")` (앞에 `.` 이나 word 문자가 없는)는 CJS wrapper 내부 `use` 함수 선언을
     // shadow 참조하여 ReferenceError를 일으킬 수 있으므로 금지.
     expect(bundle.stdout).not.toMatch(/(?<![.\w$])use\("ctx"\)/);
-    expect(bundle.stdout).toMatch(/(use\$\d+\("ctx"\)|__ns_\d+_\d+\.use\("ctx"\))/);
+    expect(bundle.stdout).toMatch(
+      /(use\$\d+\("ctx"\)|__ns_\d+_\d+\.use\("ctx"\)|require_[\w$]+\(\)\.use\("ctx"\))/,
+    );
   });
 
   test("import Default, { named } from 동시 사용 시 default와 named 모두 정상 바인딩", async () => {
