@@ -1270,22 +1270,15 @@ pub fn emitModule(
                                             }
                                         }
                                         if (!s.isExportUsed(mod_idx, "*")) {
-                                            for (ts_infos.cjs_export_facts) |fact| {
-                                                if (fact.kind != .object_property) continue;
-                                                const prop_node_idx = fact.property_node orelse continue;
-                                                if (s.isExportUsed(mod_idx, fact.export_name)) continue;
-                                                const source_ast = module.ast orelse continue;
-                                                if (prop_node_idx >= source_ast.nodes.items.len) continue;
-                                                const prop_span = source_ast.nodes.items[prop_node_idx].span;
-                                                for (transformer.ast.nodes.items, 0..) |new_node, new_ni| {
-                                                    if (new_node.tag != .object_property) continue;
-                                                    if (new_node.span.start != prop_span.start or new_node.span.end != prop_span.end) continue;
-                                                    if (new_ni < md.skip_nodes.capacity()) {
-                                                        md.skip_nodes.set(new_ni);
-                                                    }
-                                                    break;
-                                                }
-                                            }
+                                            markUnusedCjsObjectProperties(
+                                                arena_alloc,
+                                                module,
+                                                transformer.ast,
+                                                ts_infos,
+                                                s,
+                                                mod_idx,
+                                                &md.skip_nodes,
+                                            ) catch {};
                                         }
                                     }
                                 }
@@ -1791,6 +1784,49 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
         if (target.wrap_kind == .cjs) return true;
     }
     return false;
+}
+
+/// `module.exports = { used, unused }` object-shape 의 unused property 노드를
+/// transformer AST 쪽 인덱스로 변환해 `skip_nodes` 에 마킹.
+/// span -> new_ni map 을 1회 구축해 fact 마다 nodes 전체를 재스캔하던 O(F×N) 회피.
+fn markUnusedCjsObjectProperties(
+    arena: std.mem.Allocator,
+    module: *const Module,
+    new_ast: *const Ast,
+    ts_infos: stmt_info_mod.ModuleStmtInfos,
+    shaker: *const TreeShaker,
+    mod_idx: u32,
+    skip_nodes: *std.DynamicBitSet,
+) !void {
+    var has_unused = false;
+    for (ts_infos.cjs_export_facts) |fact| {
+        if (fact.kind == .object_property and !shaker.isExportUsed(mod_idx, fact.export_name)) {
+            has_unused = true;
+            break;
+        }
+    }
+    if (!has_unused) return;
+
+    const source_ast = module.ast orelse return;
+
+    const SpanKey = struct { start: u32, end: u32 };
+    var span_to_ni: std.AutoHashMapUnmanaged(SpanKey, u32) = .empty;
+    defer span_to_ni.deinit(arena);
+    for (new_ast.nodes.items, 0..) |new_node, ni| {
+        if (new_node.tag != .object_property) continue;
+        try span_to_ni.put(arena, .{ .start = new_node.span.start, .end = new_node.span.end }, @intCast(ni));
+    }
+
+    for (ts_infos.cjs_export_facts) |fact| {
+        if (fact.kind != .object_property) continue;
+        if (shaker.isExportUsed(mod_idx, fact.export_name)) continue;
+        const prop_node_idx = fact.property_node orelse continue;
+        if (prop_node_idx >= source_ast.nodes.items.len) continue;
+        const prop_span = source_ast.nodes.items[prop_node_idx].span;
+        if (span_to_ni.get(.{ .start = prop_span.start, .end = prop_span.end })) |new_ni| {
+            skip_nodes.set(new_ni);
+        }
+    }
 }
 
 /// transformer 비트맵 외 경로의 helper (asset binary loader / `--keep-names` 옵션)
