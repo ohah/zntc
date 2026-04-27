@@ -388,6 +388,11 @@ pub const Linker = struct {
     /// 사용자 의도 (원본 import 보존) 를 존중한다. bundler 가 init 후 설정.
     verbatim_module_syntax: bool = false,
 
+    /// emitter 가 TreeShaker 와 함께 호출됐는지. true 면 metadata builder 가 모듈의
+    /// `is_included` 비트를 신뢰해 tree-shake 된 target 의 preamble emit 을 건너뛴다.
+    /// false (linker 단독 빌드 / unit test) 면 기존 동작 유지.
+    tree_shaker_active: bool = false,
+
     /// #1824 IIFE `--globals SPEC=GLOBAL` 매핑 (rollup `output.globals` 호환).
     /// `format == .iife` 일 때만 의미 있음. 매핑된 external specifier 는 UMD/AMD 와
     /// 동일한 factory-param preamble 경로로 처리되고, 매핑 안 된 external 은

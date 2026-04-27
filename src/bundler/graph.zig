@@ -1650,7 +1650,17 @@ pub const ModuleGraph = struct {
 
         try self.injectJsxSyntheticImportsForModule(module, arena_alloc, ast);
 
-        module.exports_kind = determineExportsKind(refreshed_scan_result, module.path);
+        // 기존 exports_kind 가 ESM 인데 post-transform scan 이 `.none` 으로 떨어지는 경우
+        // (예: TS interface-only 파일의 `export {};` 를 transformer 가 drop) ESM 분류를 유지한다.
+        // `.none` 으로 강등하면 Pass 2 markEsmCjsHybrid 가 node_modules + def_format unknown
+        // 모듈을 implicit CJS 로 승격시켜, `export *` chain 의 빈 source 가 CJS wrapper 로
+        // wrap 되고 `resolveOrCjsFallback` 이 잘못된 모듈을 named import 의 source 로 반환한다
+        // (kysely/cheerio 회귀 #2052/#2051).
+        const refreshed_kind = determineExportsKind(refreshed_scan_result, module.path);
+        const previous_kind = module.exports_kind;
+        const preserve_esm = refreshed_kind == .none and
+            (previous_kind == .esm or previous_kind == .esm_with_dynamic_fallback);
+        module.exports_kind = if (preserve_esm) previous_kind else refreshed_kind;
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
 
         if (module.alias_table) |*table| table.deinit();
