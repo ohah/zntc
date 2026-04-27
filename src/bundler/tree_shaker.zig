@@ -30,6 +30,7 @@ const purity = @import("purity.zig");
 const stmt_info_mod = @import("stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 const constant_facts = @import("constant_facts.zig");
+const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 
 /// `used_exports`의 all-exports-used sentinel. 모듈의 전체 export가 사용됨을 표시.
 /// 일반 export 이름과 겹치지 않도록 의도적으로 JS 식별자 아닌 `"*"` 선택.
@@ -1302,7 +1303,13 @@ pub const TreeShaker = struct {
             const target_module = self.graph.getModule(rec.resolved) orelse continue;
 
             if (live_mod_idx) |idx| {
-                if (!self.isImportLiveInModule(idx, ib.local_name)) continue;
+                // Transformer 가 graph parse 단계에서 inject 한 runtime helper import 는
+                // semantic 의 scope_maps 에 등록되지 않아 isImportLiveInModule 가 항상
+                // false 를 반환 — cjs-wrap 모듈에서 이 분기에 걸리면 helper module 이
+                // included 되지 못하고 dist preamble 에서 사라진다 (`__read is not defined`).
+                // helper 는 transformer 가 명시 inject 한 것이므로 무조건 live 로 처리.
+                const is_runtime_helper = runtime_helper_modules.isVirtualId(target_module.path);
+                if (!is_runtime_helper and !self.isImportLiveInModule(idx, ib.local_name)) continue;
             }
 
             if (target_module.wrap_kind == .cjs) {
