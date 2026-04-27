@@ -814,14 +814,11 @@ pub const TreeShaker = struct {
                 try self.markAndSeedAllStmts(canon_mod, queue, module_stmt_infos, reachable_stmts);
                 return;
             };
-            const target_stmt = target_infos.cjsExportStmtByName(canonical.export_name) orelse {
+            const fact = target_infos.cjsExportFactByName(canonical.export_name) orelse {
                 try self.markAndSeedAllStmts(canon_mod, queue, module_stmt_infos, reachable_stmts);
                 return;
             };
-            if (reachable_stmts[canon_mod] == null) {
-                reachable_stmts[canon_mod] = try std.DynamicBitSet.initEmpty(self.allocator, target_infos.stmts.len);
-            }
-            try self.enqueue(canon_mod, target_stmt, reachable_stmts, queue);
+            try self.seedCjsExportFact(canon_mod, target_infos, fact, queue, reachable_stmts);
             return;
         }
 
@@ -903,14 +900,43 @@ pub const TreeShaker = struct {
             try self.markAndSeedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
             return;
         };
-        const target_stmt = target_infos.cjsExportStmtByName(export_name) orelse {
+        const fact = target_infos.cjsExportFactByName(export_name) orelse {
             try self.markAndSeedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
             return;
         };
+        try self.seedCjsExportFact(mod_idx, target_infos, fact, queue, reachable_stmts);
+    }
+
+    fn seedCjsExportFact(
+        self: *TreeShaker,
+        mod_idx: u32,
+        infos: StmtInfos,
+        fact: stmt_info_mod.CjsExportFact,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
         if (reachable_stmts[mod_idx] == null) {
-            reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, target_infos.stmts.len);
+            reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
         }
-        try self.enqueue(mod_idx, target_stmt, reachable_stmts, queue);
+
+        if (fact.kind != .object_property) {
+            try self.enqueue(mod_idx, fact.statement_index, reachable_stmts, queue);
+            return;
+        }
+
+        if (fact.statement_index < infos.stmts.len) {
+            reachable_stmts[mod_idx].?.set(fact.statement_index);
+        }
+
+        const rhs_sym = fact.rhs_symbol orelse return;
+        if (infos.declaredStmtBySymbol(rhs_sym)) |dep_stmt| {
+            try self.enqueue(mod_idx, dep_stmt, reachable_stmts, queue);
+        }
+        if (rhs_sym < infos.sym_to_writer_stmts.len) {
+            for (infos.sym_to_writer_stmts[rhs_sym]) |writer_stmt| {
+                try self.enqueue(mod_idx, writer_stmt, reachable_stmts, queue);
+            }
+        }
     }
 
     /// StmtInfo 없는 모듈 (entry, CJS 등)의 import를 BFS로 전파.

@@ -3923,6 +3923,7 @@ pub const Codegen = struct {
         for (indices) |raw_idx| {
             const node_idx: NodeIndex = @enumFromInt(raw_idx);
             if (node_idx.isNone()) continue;
+            if (self.isSkipped(node_idx)) continue;
             if (!first) try self.write(sep);
             first = false;
             try self.emitNode(node_idx);

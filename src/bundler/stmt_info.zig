@@ -16,6 +16,7 @@ const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const purity = @import("purity.zig");
+const ast_mod = @import("../parser/ast.zig");
 
 pub const StmtInfo = struct {
     node_idx: u32,
@@ -28,10 +29,17 @@ pub const StmtInfo = struct {
 };
 
 pub const CjsExportFact = struct {
+    pub const Kind = enum {
+        assignment,
+        object_property,
+    };
+
     export_name: []const u8,
     statement_index: u32,
     export_assignment_node: u32,
+    property_node: ?u32 = null,
     rhs_symbol: ?u32 = null,
+    kind: Kind = .assignment,
     is_static: bool = true,
     is_safe_to_prune: bool = true,
 };
@@ -80,9 +88,14 @@ pub const ModuleStmtInfos = struct {
     }
 
     pub fn cjsExportStmtByName(self: *const ModuleStmtInfos, export_name: []const u8) ?u32 {
+        const fact = self.cjsExportFactByName(export_name) orelse return null;
+        return fact.statement_index;
+    }
+
+    pub fn cjsExportFactByName(self: *const ModuleStmtInfos, export_name: []const u8) ?CjsExportFact {
         for (self.cjs_export_facts) |fact| {
             if (fact.is_static and std.mem.eql(u8, fact.export_name, export_name)) {
-                return fact.statement_index;
+                return fact;
             }
         }
         return null;
@@ -156,6 +169,8 @@ const CjsExportCandidate = struct {
     export_name: []const u8,
     export_assignment_node: u32,
     rhs_node: NodeIndex,
+    property_node: ?u32 = null,
+    kind: CjsExportFact.Kind = .assignment,
 };
 
 fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeIndex, property: NodeIndex } {
@@ -191,6 +206,36 @@ fn cjsExportNameFromLhs(ast: *const Ast, lhs: NodeIndex) ?[]const u8 {
     return ast.getText(prop.span);
 }
 
+fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
+    const parts = staticMemberParts(ast, lhs) orelse return false;
+    const obj = ast.nodes.items[@intFromEnum(parts.object)];
+    const prop = ast.nodes.items[@intFromEnum(parts.property)];
+    if (obj.tag != .identifier_reference) return false;
+    return std.mem.eql(u8, ast.getText(obj.span), "module") and
+        std.mem.eql(u8, ast.getText(prop.span), "exports");
+}
+
+fn staticObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return null;
+    const key = ast.nodes.items[@intFromEnum(key_idx)];
+    return switch (key.tag) {
+        .identifier_reference => ast.getText(key.data.string_ref),
+        .string_literal => ast_mod.Ast.stripStringQuotes(ast.getText(key.span)),
+        else => null,
+    };
+}
+
+fn objectPropertyValueNode(prop: Node) NodeIndex {
+    return if (prop.data.binary.right.isNone()) prop.data.binary.left else prop.data.binary.right;
+}
+
+fn isCjsObjectPropertyValueFactSafe(ast: *const Ast, value: NodeIndex, unresolved_globals: ?*const purity.GlobalRefSet) bool {
+    if (value.isNone() or @intFromEnum(value) >= ast.nodes.items.len) return false;
+    const value_node = ast.nodes.items[@intFromEnum(value)];
+    if (value_node.tag != .identifier_reference) return false;
+    return purity.isExprPure(ast, value, unresolved_globals);
+}
+
 fn cjsExportCandidateForStmt(ast: *const Ast, stmt_node: Node) ?CjsExportCandidate {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
@@ -203,6 +248,64 @@ fn cjsExportCandidateForStmt(ast: *const Ast, stmt_node: Node) ?CjsExportCandida
         .export_assignment_node = @intFromEnum(expr_idx),
         .rhs_node = expr.data.binary.right,
     };
+}
+
+fn collectCjsObjectExportCandidates(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    stmt_node: Node,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) !?[]CjsExportCandidate {
+    if (stmt_node.tag != .expression_statement) return null;
+    const expr_idx = stmt_node.data.unary.operand;
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag != .assignment_expression) return null;
+    if (!isModuleExportsLhs(ast, expr.data.binary.left)) return null;
+
+    const rhs_idx = expr.data.binary.right;
+    if (rhs_idx.isNone() or @intFromEnum(rhs_idx) >= ast.nodes.items.len) return null;
+    const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
+    if (rhs.tag != .object_expression) return null;
+
+    const list = rhs.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return null;
+    const indices = ast.extra_data.items[list.start .. list.start + list.len];
+    if (indices.len == 0) return null;
+
+    var seen: std.StringHashMapUnmanaged(void) = .{};
+    defer seen.deinit(allocator);
+    var out: std.ArrayListUnmanaged(CjsExportCandidate) = .empty;
+    errdefer out.deinit(allocator);
+    var success = false;
+    defer if (!success) out.deinit(allocator);
+
+    for (indices) |raw_prop| {
+        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
+        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        if (prop.tag != .object_property) return null;
+
+        const name = staticObjectKeyName(ast, prop.data.binary.left) orelse return null;
+        if (std.mem.eql(u8, name, "__proto__")) return null;
+        const entry = try seen.getOrPut(allocator, name);
+        if (entry.found_existing) return null;
+
+        const value = objectPropertyValueNode(prop);
+        if (!isCjsObjectPropertyValueFactSafe(ast, value, unresolved_globals)) return null;
+
+        try out.append(allocator, .{
+            .export_name = name,
+            .export_assignment_node = @intFromEnum(expr_idx),
+            .property_node = @intFromEnum(prop_idx),
+            .rhs_node = value,
+            .kind = .object_property,
+        });
+    }
+
+    const slice = try out.toOwnedSlice(allocator);
+    success = true;
+    return slice;
 }
 
 fn cjsExportAssignmentHasSideEffects(ast: *const Ast, candidate: CjsExportCandidate, unresolved_globals: ?*const purity.GlobalRefSet) bool {
@@ -381,18 +484,38 @@ pub fn buildFromSemantic(
         } else {
             const node = ast.nodes.items[ni];
             const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
+            var safe_cjs_object_export = false;
             if (cjs_export_candidate) |candidate| {
                 try cjs_export_facts_buf.append(allocator, .{
                     .export_name = candidate.export_name,
                     .statement_index = @intCast(stmt_i),
                     .export_assignment_node = candidate.export_assignment_node,
+                    .property_node = candidate.property_node,
+                    .kind = candidate.kind,
                     .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
                 });
+            } else if (collect_cjs_exports) {
+                if (try collectCjsObjectExportCandidates(allocator, ast, node, unresolved_globals)) |candidates| {
+                    defer allocator.free(candidates);
+                    safe_cjs_object_export = true;
+                    for (candidates) |candidate| {
+                        try cjs_export_facts_buf.append(allocator, .{
+                            .export_name = candidate.export_name,
+                            .statement_index = @intCast(stmt_i),
+                            .export_assignment_node = candidate.export_assignment_node,
+                            .property_node = candidate.property_node,
+                            .kind = candidate.kind,
+                            .is_safe_to_prune = true,
+                        });
+                    }
+                }
             }
             const side_effects = if (node.tag == .import_declaration)
                 false
             else if (cjs_export_candidate) |candidate|
                 cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
+            else if (safe_cjs_object_export)
+                false
             else
                 purity.stmtHasSideEffects(ast, node, unresolved_globals);
             stmts[stmt_i] = .{
@@ -576,6 +699,7 @@ pub fn build(
         const node = ast.nodes.items[ni];
         stmt_spans[stmt_i] = node.span;
         const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
+        var safe_cjs_object_export = false;
         if (cjs_export_candidate) |candidate| {
             const rhs_symbol: ?u32 = if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < symbol_ids.len)
                 symbol_ids[@intFromEnum(candidate.rhs_node)]
@@ -585,14 +709,38 @@ pub fn build(
                 .export_name = candidate.export_name,
                 .statement_index = @intCast(stmt_i),
                 .export_assignment_node = candidate.export_assignment_node,
+                .property_node = candidate.property_node,
                 .rhs_symbol = rhs_symbol,
+                .kind = candidate.kind,
                 .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
             });
+        } else if (collect_cjs_exports) {
+            if (try collectCjsObjectExportCandidates(allocator, ast, node, unresolved_globals)) |candidates| {
+                defer allocator.free(candidates);
+                safe_cjs_object_export = true;
+                for (candidates) |candidate| {
+                    const rhs_symbol: ?u32 = if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < symbol_ids.len)
+                        symbol_ids[@intFromEnum(candidate.rhs_node)]
+                    else
+                        null;
+                    try cjs_export_facts_buf.append(allocator, .{
+                        .export_name = candidate.export_name,
+                        .statement_index = @intCast(stmt_i),
+                        .export_assignment_node = candidate.export_assignment_node,
+                        .property_node = candidate.property_node,
+                        .rhs_symbol = rhs_symbol,
+                        .kind = candidate.kind,
+                        .is_safe_to_prune = true,
+                    });
+                }
+            }
         }
         const side_effects = if (node.tag == .import_declaration)
             false
         else if (cjs_export_candidate) |candidate|
             cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
+        else if (safe_cjs_object_export)
+            false
         else
             purity.stmtHasSideEffects(ast, node, unresolved_globals);
         stmts[stmt_i] = .{
