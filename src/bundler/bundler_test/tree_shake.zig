@@ -602,6 +602,54 @@ test "TreeShaking CJS: named import prunes unused Object.defineProperty member v
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_DEFINE_MEMBER_MARKER") == null);
 }
 
+test "TreeShaking CJS: named import prunes safe __esModule defineProperty marker" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\function used() { return "USED_ESMODULE_MARKER"; }
+        \\function unused() { return "UNUSED_ESMODULE_MARKER"; }
+        \\Object.defineProperty(exports, "used", { value: used });
+        \\Object.defineProperty(exports, "unused", { value: unused });
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_ESMODULE_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esModule") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_ESMODULE_MARKER") == null);
+}
+
+test "TreeShaking CJS: default import keeps __esModule defineProperty marker" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import value from './lib.js'; console.log(value());");
+    try writeFile(tmp.dir, "lib.js",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\exports.default = function usedDefault() { return "USED_DEFAULT_ESMODULE_MARKER"; };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_DEFAULT_ESMODULE_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esModule") != null);
+}
+
 test "TreeShaking CJS: unsafe Object.defineProperty export forms are preserved" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -615,7 +663,8 @@ test "TreeShaking CJS: unsafe Object.defineProperty export forms are preserved" 
         \\const key = "computed";
         \\const extra = { enumerable: true };
         \\const ns = { unused };
-        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\const marker = true;
+        \\Object.defineProperty(exports, "__esModule", { value: marker });
         \\Object.defineProperty(exports, "used", { value: used });
         \\Object.defineProperty(exports, "getter", { get() { return "UNSAFE_DEFINE_GETTER_MARKER"; } });
         \\Object.defineProperty(exports, "effect", { value: sideEffect() });
