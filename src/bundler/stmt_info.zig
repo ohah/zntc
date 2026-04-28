@@ -203,6 +203,15 @@ fn freeFactNames(allocator: std.mem.Allocator, facts: []const CjsExportFact) voi
     for (facts) |f| allocator.free(f.export_name);
 }
 
+/// 빌더 errdefer 용 — append 된 fact 들의 owned name 해제 + buffer deinit.
+fn deinitCjsExportFactsBuf(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(CjsExportFact),
+) void {
+    freeFactNames(allocator, buf.items);
+    buf.deinit(allocator);
+}
+
 fn rhsSymbolFor(symbol_ids: ?[]const ?u32, rhs_node: NodeIndex) ?u32 {
     const sids = symbol_ids orelse return null;
     if (rhs_node.isNone()) return null;
@@ -812,10 +821,7 @@ pub fn buildFromSemantic(
     for (sym_to_stmt) |*s| s.* = null;
 
     var cjs_export_facts_buf: std.ArrayListUnmanaged(CjsExportFact) = .empty;
-    errdefer {
-        freeFactNames(allocator, cjs_export_facts_buf.items);
-        cjs_export_facts_buf.deinit(allocator);
-    }
+    errdefer deinitCjsExportFactsBuf(allocator, &cjs_export_facts_buf);
 
     // Pass 1: span + side-effect 결정. declared/referenced 는 빈 상태로 초기화.
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
@@ -983,10 +989,7 @@ pub fn build(
     for (sym_to_stmt) |*s| s.* = null;
 
     var cjs_export_facts_buf: std.ArrayListUnmanaged(CjsExportFact) = .empty;
-    errdefer {
-        freeFactNames(allocator, cjs_export_facts_buf.items);
-        cjs_export_facts_buf.deinit(allocator);
-    }
+    errdefer deinitCjsExportFactsBuf(allocator, &cjs_export_facts_buf);
 
     // Phase 1: statement span 배열 + side-effects 판정 + 초기화
     var stmt_spans = try allocator.alloc(Span, stmt_count);
