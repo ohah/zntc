@@ -471,8 +471,7 @@ describe("known pure call 기반 DCE", () => {
         "impure.ts":
           `function sideEffect() { console.log("impure-assign-source-marker"); return {}; }\n` +
           `Object.assign({}, sideEffect());\n`,
-        "getter.ts":
-          `Object.assign({}, { get value() { console.log("assign-getter-source-marker"); return 1; } });\n`,
+        "getter.ts": `Object.assign({}, { get value() { console.log("assign-getter-source-marker"); return 1; } });\n`,
         "shadow.ts":
           `const Object = { assign(target, source) { console.log("shadow-assign-marker"); return target; } };\n` +
           `Object.assign({}, { marker: "shadow-assign-value" });\n`,
