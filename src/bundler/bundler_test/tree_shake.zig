@@ -218,6 +218,167 @@ test "TreeShaking: innerGraph prunes overwritten pure assignment before read" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_OVERWRITTEN_WRITE") == null);
 }
 
+test "TreeShaking: innerGraph prunes overwritten pure declaration initializer" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value = "INNER_GRAPH_DEAD_INIT";
+        \\value = "INNER_GRAPH_INIT_FINAL";
+        \\console.log(value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_INIT_FINAL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_DEAD_INIT") == null);
+}
+
+test "TreeShaking: innerGraph preserves declaration initializer read before overwrite" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value = "INNER_GRAPH_LIVE_INIT";
+        \\console.log(value);
+        \\value = "INNER_GRAPH_AFTER_INIT_READ";
+        \\console.log(value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_LIVE_INIT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_AFTER_INIT_READ") != null);
+}
+
+test "TreeShaking: innerGraph preserves side-effect declaration initializer" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value = sideEffect();
+        \\value = "INNER_GRAPH_SIDE_INIT_FINAL";
+        \\console.log(value);
+        \\function sideEffect() {
+        \\  console.log("INNER_GRAPH_SIDE_INIT");
+        \\  return 1;
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_SIDE_INIT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_SIDE_INIT_FINAL") != null);
+}
+
+test "TreeShaking: innerGraph preserves exported declaration initializer" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export let value = "INNER_GRAPH_EXPORTED_INIT";
+        \\value = "INNER_GRAPH_EXPORTED_FINAL";
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_EXPORTED_INIT") != null);
+}
+
+test "TreeShaking: innerGraph preserves destructuring declaration initializer" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let { value } = { value: "INNER_GRAPH_DESTRUCT_INIT" };
+        \\value = "INNER_GRAPH_DESTRUCT_FINAL";
+        \\console.log(value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_DESTRUCT_INIT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_DESTRUCT_FINAL") != null);
+}
+
+test "TreeShaking: innerGraph preserves multi-declarator declaration initializer" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let first = "INNER_GRAPH_MULTI_INIT", second = "INNER_GRAPH_MULTI_SECOND";
+        \\first = "INNER_GRAPH_MULTI_FINAL";
+        \\console.log(first, second);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_MULTI_INIT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_MULTI_SECOND") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_MULTI_FINAL") != null);
+}
+
 test "TreeShaking: innerGraph preserves assignment read before overwrite" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -1334,6 +1334,7 @@ pub fn emitModule(
                                                 md.symbol_ids,
                                                 &sem.unresolved_references,
                                                 &md.skip_nodes,
+                                                module,
                                             );
                                         }
                                     }
@@ -1851,10 +1852,11 @@ const AssignmentInfo = struct {
 };
 
 fn markDeadOverwrittenAssignments(
-    ast: *const Ast,
+    ast: *Ast,
     symbol_ids: []const ?u32,
     unresolved_globals: ?*const purity.GlobalRefSet,
     skip_nodes: *std.DynamicBitSet,
+    module: *const Module,
 ) void {
     if (ast.nodes.items.len == 0) return;
     const root = ast.nodes.items[ast.nodes.items.len - 1];
@@ -1866,6 +1868,7 @@ fn markDeadOverwrittenAssignments(
     for (stmts, 0..) |raw_stmt, i| {
         if (raw_stmt >= ast.nodes.items.len) continue;
         if (raw_stmt < skip_nodes.capacity() and skip_nodes.isSet(raw_stmt)) continue;
+        markDeadOverwrittenDeclarationInitializers(ast, raw_stmt, i, stmts, symbol_ids, unresolved_globals, module);
         const current = assignmentInfoForStmt(ast, raw_stmt, symbol_ids, unresolved_globals, true) orelse continue;
 
         var j = i + 1;
@@ -1883,6 +1886,69 @@ fn markDeadOverwrittenAssignments(
             }
         }
     }
+}
+
+fn markDeadOverwrittenDeclarationInitializers(
+    ast: *Ast,
+    stmt_idx: u32,
+    stmt_pos: usize,
+    stmts: []const u32,
+    symbol_ids: []const ?u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    module: *const Module,
+) void {
+    if (stmt_idx >= ast.nodes.items.len) return;
+    const stmt = ast.nodes.items[stmt_idx];
+    if (stmt.tag != .variable_declaration) return;
+
+    const kind = ast.variableDeclarationKind(stmt);
+    if (kind == .@"const" or kind.isUsing()) return;
+
+    const e = stmt.data.extra;
+    if (e + 2 >= ast.extra_data.items.len) return;
+    const list_start = ast.extra_data.items[e + 1];
+    const list_len = ast.extra_data.items[e + 2];
+    if (list_len != 1 or list_start >= ast.extra_data.items.len) return;
+
+    const decl_idx = ast.extra_data.items[list_start];
+    if (decl_idx >= ast.nodes.items.len) return;
+    const decl = ast.nodes.items[decl_idx];
+    if (decl.tag != .variable_declarator) return;
+
+    const de = decl.data.extra;
+    if (de + 2 >= ast.extra_data.items.len) return;
+    const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de]);
+    const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
+    if (name_idx.isNone() or init_idx.isNone()) return;
+    const name_ni = @intFromEnum(name_idx);
+    if (name_ni >= ast.nodes.items.len or name_ni >= symbol_ids.len) return;
+    const name = ast.nodes.items[name_ni];
+    if (name.tag != .binding_identifier) return;
+    const sym_idx: u32 = @intCast(symbol_ids[name_ni] orelse return);
+    if (isExportedSymbol(module, sym_idx)) return;
+    if (!purity.isExprPure(ast, init_idx, unresolved_globals)) return;
+
+    var j = stmt_pos + 1;
+    while (j < stmts.len) : (j += 1) {
+        const next_raw = stmts[j];
+        if (next_raw >= ast.nodes.items.len) continue;
+        if (stmtReadsSymbolBeforeOverwrite(ast, next_raw, symbol_ids, sym_idx)) break;
+        if (assignmentInfoForStmt(ast, next_raw, symbol_ids, unresolved_globals, false)) |next_assign| {
+            if (next_assign.sym_idx == sym_idx) {
+                ast.extra_data.items[de + 2] = @intFromEnum(NodeIndex.none);
+                break;
+            }
+        }
+    }
+}
+
+fn isExportedSymbol(module: *const Module, sym_idx: u32) bool {
+    for (module.export_bindings) |binding| {
+        if (binding.symbol.semanticIndex()) |export_sym| {
+            if (export_sym == sym_idx) return true;
+        }
+    }
+    return false;
 }
 
 fn assignmentInfoForStmt(
