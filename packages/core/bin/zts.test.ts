@@ -318,16 +318,18 @@ describe("CLI: bundle", () => {
     rmSync(arrowDir, { recursive: true, force: true });
   });
 
-  test("번들 + --browserslist (target 보다 우선)", () => {
-    // browserslist `last 2 chrome versions` 면 modern → arrow 보존.
+  test("번들 + --browserslist (target 보다 우선, modern 쿼리는 arrow 보존)", () => {
     const blDir = mkdtempSync(join(tmpdir(), "zts-cli-browserslist-"));
     writeFileSync(join(blDir, "entry.ts"), "const fn = () => 42; console.log(fn());");
-    const { exitCode } = runCli([
+    // `--target=es5` 와 함께 줘도 browserslist 가 우선이라 arrow 가 살아 있어야 — 우선순위 검증.
+    const { stdout, exitCode } = runCli([
       "--bundle",
       join(blDir, "entry.ts"),
-      "--browserslist=last 2 chrome versions",
+      "--target=es5",
+      "--browserslist=last 1 chrome version",
     ]);
     expect(exitCode).toBe(0);
+    expect(stdout).toContain("=>");
     rmSync(blDir, { recursive: true, force: true });
   });
 
@@ -366,11 +368,18 @@ describe("CLI: bundle", () => {
     rmSync(jsxDir, { recursive: true, force: true });
   });
 
-  test("--verbatim-module-syntax — type-only import 보존 동작", () => {
+  test("--verbatim-module-syntax — flag 가 NAPI 까지 reach (실 동작 미구현은 별도)", () => {
+    // 이 PR 은 CLI flag 노출만 — 실제 type-only import 보존은 NAPI 측 미구현 (별도 이슈).
+    // 회귀 방지: flag 로 인해 transpile 이 깨지지 않고, 일반 import 는 정상 처리.
     const vmsDir = mkdtempSync(join(tmpdir(), "zts-cli-vms-"));
-    writeFileSync(join(vmsDir, "entry.ts"), "console.log('vms');");
-    const { exitCode } = runCli(["--bundle", join(vmsDir, "entry.ts"), "--verbatim-module-syntax"]);
+    writeFileSync(
+      join(vmsDir, "entry.ts"),
+      "import type { X } from './t.ts';\nimport { y } from './t.ts';\nconsole.log(y);",
+    );
+    writeFileSync(join(vmsDir, "t.ts"), "export type X = number;\nexport const y = 1;");
+    const { stdout, exitCode } = runCli([join(vmsDir, "entry.ts"), "--verbatim-module-syntax"]);
     expect(exitCode).toBe(0);
+    expect(stdout).toContain("import"); // 일반 import 는 살아있음 — flag 가 출력 깨뜨리지 않음
     rmSync(vmsDir, { recursive: true, force: true });
   });
 
