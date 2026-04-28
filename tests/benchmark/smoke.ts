@@ -257,7 +257,7 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
           "-o",
           rdOut,
           "--format",
-          "cjs",
+          format,
           "--platform",
           platform,
           ...rdExternalArgs,
