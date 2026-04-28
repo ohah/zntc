@@ -2177,6 +2177,8 @@ describe("ESM default re-export CJS interop (#812)", () => {
   });
 
   test("번들 출력에 __toESM 포함, bare require().default 없음", async () => {
+    // `__esModule` marker 있는 CJS → fast path 비활성화 → 기존 __toESM/.default invariant 검증.
+    // marker 없는 직접 `module.exports = ...` 케이스의 fast path 는 cjs_esm 유닛 테스트가 커버.
     const fixture = await createFixture({
       "index.js": `
         import val from './re.js';
@@ -2186,7 +2188,10 @@ describe("ESM default re-export CJS interop (#812)", () => {
         import val from './cjs.js';
         export default val;
       `,
-      "cjs.js": `module.exports = "ok";`,
+      "cjs.js": `
+        Object.defineProperty(exports, "__esModule", { value: true });
+        exports.default = "ok";
+      `,
     });
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, "out.js");
