@@ -20,6 +20,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { FLAG_REGISTRY, flagsOf } from "./cli-flags.mjs";
 import { NAPI_INTERNAL_ONLY_KEYS } from "../src/schema-allowlists.ts";
 
 const CLI_PATH = join(__dirname, "zts.mjs");
@@ -30,15 +31,10 @@ const WASM_INDEX_PATH = join(__dirname, "..", "..", "wasm", "index.ts");
 // ─── 정적 파싱 헬퍼 ──────────────────────────────────────────
 
 /**
- * zts.mjs 의 `parseArgs` 함수 안 `opts = { ... }` 객체 리터럴에서 키 추출.
- * `mergeConfigIntoOpts` 의 `opts[key] === undefined` 머지 조건이 정상 작동하려면
- * SCALAR/BOOL/ARRAY_KEYS 의 모든 키가 default 객체에 등록되어 있어야 한다.
+ * `bodyStart` (여는 `{` 다음 위치) 에서 시작해 brace-balanced 본문을 잘라낸다.
+ * 닫는 `}` 직전까지의 슬라이스를 반환. balance 안 맞으면 throw.
  */
-function extractOptsDefaultKeys(source: string): string[] {
-  const startMarker = "const opts = {";
-  const start = source.indexOf(startMarker, source.indexOf("function parseArgs(argv)"));
-  if (start < 0) throw new Error("opts default object not found in parseArgs");
-  const bodyStart = start + startMarker.length;
+function extractBracedBody(source: string, bodyStart: number, errorContext: string): string {
   let depth = 1;
   let i = bodyStart;
   while (i < source.length && depth > 0) {
@@ -47,15 +43,33 @@ function extractOptsDefaultKeys(source: string): string[] {
     else if (c === "}") depth -= 1;
     i += 1;
   }
-  const body = source.slice(bodyStart, i - 1);
+  if (depth !== 0) throw new Error(`${errorContext} not balanced`);
+  return source.slice(bodyStart, i - 1);
+}
+
+/** body 의 한 줄 단위 키 패턴 추출. 주석/빈 줄 skip. matcher 가 [name] 캡처 그룹 1을 반환. */
+function extractKeysByLine(body: string, matcher: RegExp): string[] {
   const keys: string[] = [];
   for (const rawLine of body.split("\n")) {
     const line = rawLine.trim();
     if (!line || line.startsWith("//") || line.startsWith("*") || line.startsWith("/*")) continue;
-    const m = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:/);
+    const m = line.match(matcher);
     if (m) keys.push(m[1]);
   }
   return keys;
+}
+
+/**
+ * zts.mjs 의 `parseArgs` 함수 안 `opts = { ... }` 객체 리터럴에서 키 추출.
+ * `mergeConfigIntoOpts` 의 `opts[key] === undefined` 머지 조건이 정상 작동하려면
+ * SCALAR/BOOL/ARRAY_KEYS 의 모든 키가 default 객체에 등록되어 있어야 한다.
+ */
+function extractOptsDefaultKeys(source: string): string[] {
+  const startMarker = "const opts = {";
+  const start = source.indexOf(startMarker, source.indexOf("function parseArgs(argv)"));
+  if (start < 0) throw new Error("opts default object not found in parseArgs");
+  const body = extractBracedBody(source, start + startMarker.length, "opts default");
+  return extractKeysByLine(body, /^([a-zA-Z_][a-zA-Z0-9_]*)\s*:/);
 }
 
 /** zts.mjs 의 `mergeConfigIntoOpts` 안 SCALAR_KEYS / BOOL_KEYS / ARRAY_KEYS 리스트의 키 집합 추출. */
@@ -78,29 +92,58 @@ function extractMergeKeyLists(source: string): {
   };
 }
 
-/** zts.mjs 의 `parseArgs` 함수 본문에서 모든 flag 토큰 추출. namespace prefix (`--banner:js=`) 도 포함. */
+/**
+ * 모든 CLI flag 토큰 추출.
+ *
+ * registry-driven flag 는 import 한 `FLAG_REGISTRY` 의 spec 들을 직접 순회 (formatter 의
+ * multi-line reformat 으로 인한 정적 파서 회귀 회피). legacy if-chain (특수 형식 — `--serve`,
+ * `--host`, `--proxy`) 은 zts.mjs source 에서 정규식 추출.
+ */
 function extractCliFlags(source: string): string[] {
-  const startMarker = "function parseArgs(argv) {";
-  const start = source.indexOf(startMarker);
-  if (start < 0) throw new Error("parseArgs not found in zts.mjs");
-  let depth = 0;
-  let i = start + startMarker.length - 1;
-  let bodyEnd = -1;
-  for (; i < source.length; i += 1) {
-    const c = source[i];
-    if (c === "{") depth += 1;
-    else if (c === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        bodyEnd = i;
-        break;
+  const flags = new Set<string>();
+
+  // ─── (1) FLAG_REGISTRY (직접 import) ───────────────────────────────────────
+  for (const spec of FLAG_REGISTRY as readonly any[]) {
+    const formsDefault = ["equal", "pair"];
+    const forms: string[] =
+      spec.forms ??
+      (spec.kind === "string" || spec.kind === "int" || spec.kind === "array" || spec.kind === "csv"
+        ? formsDefault
+        : []);
+    const allFlags = flagsOf(spec) as string[];
+
+    for (const f of allFlags) {
+      switch (spec.kind) {
+        case "bool":
+          flags.add(f);
+          break;
+        case "string-default":
+          flags.add(f);
+          if (f.length > 2) flags.add(f + "=");
+          break;
+        case "ns-array":
+        case "key-value":
+          flags.add(f + ":*");
+          break;
+        case "ns-string":
+        case "enum-bool":
+        case "string-bool":
+          flags.add(f + "=");
+          break;
+        default:
+          // string / int / csv / array — single-letter short alias 는 equal-form 미지원.
+          if (forms.includes("equal") && f.length > 2) flags.add(f + "=");
+          if (forms.includes("pair")) flags.add(f);
       }
     }
   }
-  if (bodyEnd < 0) throw new Error("parseArgs body not balanced");
-  const body = source.slice(start, bodyEnd + 1);
 
-  const flags = new Set<string>();
+  // ─── (2) parseArgs 본문 안의 legacy if-chain (특수 형식 — serve/host/proxy) ──
+  const startMarker = "function parseArgs(argv) {";
+  const start = source.indexOf(startMarker);
+  if (start < 0) throw new Error("parseArgs not found in zts.mjs");
+  const body = extractBracedBody(source, start + startMarker.length, "parseArgs body");
+
   for (const m of body.matchAll(/arg === "(--[a-zA-Z][a-zA-Z0-9-]*)"/g)) flags.add(m[1]);
   for (const m of body.matchAll(/arg\.startsWith\("(--[a-zA-Z][a-zA-Z0-9-]*)="\)/g)) {
     flags.add(m[1] + "=");
@@ -121,24 +164,8 @@ function extractInterfaceKeys(source: string, interfaceName: string): string[] {
   const re = new RegExp(`(?:export\\s+)?interface\\s+${interfaceName}\\s*\\{`);
   const match = re.exec(source);
   if (!match) throw new Error(`${interfaceName} not found`);
-  const bodyStart = match.index + match[0].length;
-  let depth = 1;
-  let i = bodyStart;
-  while (i < source.length && depth > 0) {
-    const c = source[i];
-    if (c === "{") depth += 1;
-    else if (c === "}") depth -= 1;
-    i += 1;
-  }
-  const body = source.slice(bodyStart, i - 1);
-  const fields: string[] = [];
-  for (const rawLine of body.split("\n")) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("//") || line.startsWith("*") || line.startsWith("/*")) continue;
-    const m = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*\??\s*:/);
-    if (m) fields.push(m[1]);
-  }
-  return fields;
+  const body = extractBracedBody(source, match.index + match[0].length, interfaceName);
+  return extractKeysByLine(body, /^([a-zA-Z_][a-zA-Z0-9_]*)\s*\??\s*:/);
 }
 
 /**
@@ -154,16 +181,7 @@ function extractTypeMap(source: string, interfaceName: string): Map<string, stri
   const re = new RegExp(`(?:export\\s+)?interface\\s+${interfaceName}\\s*\\{`);
   const match = re.exec(source);
   if (!match) throw new Error(`${interfaceName} not found`);
-  const bodyStart = match.index + match[0].length;
-  let depth = 1;
-  let i = bodyStart;
-  while (i < source.length && depth > 0) {
-    const c = source[i];
-    if (c === "{") depth += 1;
-    else if (c === "}") depth -= 1;
-    i += 1;
-  }
-  const body = source.slice(bodyStart, i - 1);
+  const body = extractBracedBody(source, match.index + match[0].length, interfaceName);
   const out = new Map<string, string>();
   // 한 줄 단위 파싱 — 다중 줄 type 은 첫 줄만 보고 coarse 분류 (대부분 충분).
   for (const rawLine of body.split("\n")) {
@@ -282,6 +300,7 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "--proxy",
     // tsconfig — CLI 용 alias (`--project`, `--tsconfig-path` 둘 다 BuildOptions 의 `tsconfigPath` 와 매핑)
     "--project",
+    "--project=",
     // RN — CLI 만 노출
     "--rn-platform",
     "--rn-platform=",
@@ -337,6 +356,9 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
   test("CLI flag 가 BuildOptions / TranspileOptions 키와 매칭되거나 cliOnlyFlags 에 등록", () => {
     const unmapped: { flag: string; candidate: string }[] = [];
     for (const flag of cliFlags) {
+      // single-letter short alias (`-o`, `-p`, `-w`) — canonical `--` flag 의 alias 라
+      // 별도 키 매핑 불필요. matchFlagFromRegistry 가 canonical 과 같은 target 으로 매핑.
+      if (/^-[a-z]$/.test(flag)) continue;
       if (cliOnlyFlags.has(flag)) continue;
       const candidate = flagToCandidateKey(flag);
       if (knownKeys.has(candidate)) continue;
@@ -354,6 +376,7 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
   test("BuildOptions / TranspileOptions 키가 CLI flag 로 노출되거나 buildOptionsOnlyKeys 에 등록", () => {
     const cliExposedKeys = new Set<string>();
     for (const flag of cliFlags) {
+      if (/^-[a-z]$/.test(flag)) continue;
       if (cliOnlyFlags.has(flag)) continue;
       const candidate = flagToCandidateKey(flag);
       if (knownKeys.has(candidate)) cliExposedKeys.add(candidate);
@@ -376,6 +399,8 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
   test("flag 명명 규칙 — 모든 CLI flag 는 lowercase + kebab + `:` namespace 만", () => {
     const bad: string[] = [];
     for (const flag of cliFlags) {
+      // single-letter short flag (`-o`, `-p`, `-w`) 는 별도 형식.
+      if (/^-[a-z]$/.test(flag)) continue;
       const stripped = flag.replace(/^--/, "").replace(/[:=*]/g, "").replace(/\./g, "");
       if (!/^[a-z][a-z0-9-]*$/.test(stripped)) bad.push(flag);
     }
