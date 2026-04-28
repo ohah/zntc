@@ -1272,7 +1272,7 @@ pub fn emitModule(
         // dev 번들은 크기 허용, speed 우선 (Metro/esbuild 관습).
         if (!options.dev_mode) {
             if (used_export_names) |names| {
-                if (!is_entry and module.wrap_kind != .esm) {
+                if (module.wrap_kind != .esm and (!is_entry or (shaker != null and options.minify_syntax))) {
                     stmt_shake: {
                         const sem = module.semantic orelse {
                             statement_shaker.markUnusedStatements(
