@@ -500,6 +500,12 @@ pub fn emitWithTreeShaking(
     defer allocator.free(input_hashes);
     @memset(input_hashes, 0);
 
+    for (sorted.items, 0..) |m, i| {
+        const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
+        if (!shouldSkipLazyBarrelEmit(m, options, shaker, is_entry)) continue;
+        hit_mask[i] = true;
+    }
+
     const options_hash: u64 = if (options.compiled_cache != null)
         cache_mod.computeOptionsHash(options)
     else
@@ -507,6 +513,7 @@ pub fn emitWithTreeShaking(
 
     if (options.compiled_cache) |cache| {
         for (sorted.items, 0..) |m, i| {
+            if (hit_mask[i]) continue;
             if (m.mtime == 0) {
                 cache.skipped_no_mtime += 1;
                 continue; // mtime unknown → cache 비활성
@@ -953,6 +960,37 @@ pub const makeModuleId = dev.makeModuleId;
 pub fn sourcemapSourcePath(path: []const u8, options: *const EmitOptions) []const u8 {
     if (options.platform == .react_native) return path;
     return makeModuleId(path, options.root_dir);
+}
+
+fn shouldSkipLazyBarrelEmit(
+    module: *const Module,
+    options: *const EmitOptions,
+    shaker: ?*const TreeShaker,
+    is_entry: bool,
+) bool {
+    if (shaker == null) return false;
+    if (is_entry or module.is_entry_point) return false;
+    if (options.dev_mode or options.preserve_modules) return false;
+    if (module.wrap_kind != .none) return false;
+    if (module.uses_top_level_await or module.is_context_dep) return false;
+    if (module.cycle_group != 0) return false;
+    if (module.side_effects) return false;
+    if (module.legal_comments.len != 0) return false;
+    if (module.ast == null) return false;
+    if (module.import_records.len == 0 or module.export_bindings.len == 0) return false;
+
+    for (module.import_records) |rec| {
+        if (rec.kind != .re_export) return false;
+        if (rec.is_external or rec.resolved == .none) return false;
+    }
+
+    for (module.export_bindings) |binding| {
+        if (binding.kind != .re_export and binding.kind != .re_export_star) return false;
+        const rec_idx = binding.import_record_index orelse return false;
+        if (rec_idx >= module.import_records.len) return false;
+    }
+
+    return true;
 }
 
 // --- Chunks functions (emitter/chunks.zig) ---
