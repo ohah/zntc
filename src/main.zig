@@ -374,7 +374,14 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
         });
     };
     if (dto.loader) |list| for (list) |l| {
-        const loader_enum = std.meta.stringToEnum(lib.bundler.types.Loader, l.loader) orelse continue;
+        // 알 수 없는 loader 이름은 silent skip 하지 않고 error 반환 — CLI flag
+        // (`--loader:.png=fiel`) 의 동작과 일치 + 사용자 typo 가 빌드에 silent
+        // 영향을 주지 않도록.
+        const loader_enum = std.meta.stringToEnum(lib.bundler.types.Loader, l.loader) orelse {
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            stderr.print("zts: zts.config.json 의 loader 항목에 알 수 없는 값 '{s}' (확장자 '{s}')\n", .{ l.loader, l.ext }) catch {};
+            return error.InvalidConfig;
+        };
         try opts.loader_list.append(allocator, .{
             .ext = try allocator.dupe(u8, l.ext),
             .loader = loader_enum,
