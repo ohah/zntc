@@ -253,6 +253,10 @@ pub const BundleOptions = struct {
     jsx_side_effects: bool = false,
     /// --drop-labels: 제거할 labeled statement의 라벨 이름 목록
     drop_labels: []const []const u8 = &.{},
+    /// `--drop=console` (#2155). console 호출 expression statement 를 transformer 에서 제거.
+    drop_console: bool = false,
+    /// `--drop=debugger` (#2155). `debugger;` statement 를 transformer 에서 제거.
+    drop_debugger: bool = false,
     /// --pure:NAME: 순수 함수로 마킹할 글로벌 함수명 목록
     pure: []const []const u8 = &.{},
     /// --tsconfig-raw: tsconfig.json 인라인 오버라이드 JSON
@@ -487,6 +491,8 @@ pub const Bundler = struct {
             .verbatim_module_syntax = self.options.verbatim_module_syntax,
             .unsupported = self.options.unsupported,
             .drop_labels = self.options.drop_labels,
+            .drop_console = self.options.drop_console,
+            .drop_debugger = self.options.drop_debugger,
             .jsx_runtime = self.options.jsx_runtime,
             .jsx_factory = self.options.jsx_factory,
             .jsx_fragment = self.options.jsx_fragment,

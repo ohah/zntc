@@ -148,14 +148,17 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "treeShaking",
   "shimMissingExports",
   "keepNames",
+  // ─── Drop ───
+  "drop",
+  "dropConsole",
+  "dropDebugger",
+  "dropLabels",
   // ─── 코드 주입 ───
   "banner",
   "footer",
   "intro",
   "outro",
   "inject",
-  "drop",
-  "dropLabels",
   "pure",
   "legalComments",
   // ─── Naming ───

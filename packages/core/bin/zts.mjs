@@ -608,6 +608,9 @@ async function runBundle(opts, config) {
     asciiOnly: opts.asciiOnly,
     quotes: opts.quotes,
     drop: opts.drop.length > 0 ? opts.drop : undefined,
+    // bundle 모드도 transpile 과 동일하게 drop console/debugger 적용 (#2155).
+    dropConsole: opts.drop.includes("console"),
+    dropDebugger: opts.drop.includes("debugger"),
     useDefineForClassFields: opts.useDefineForClassFields,
     experimentalDecorators: opts.experimentalDecorators,
     emitDecoratorMetadata: opts.emitDecoratorMetadata,

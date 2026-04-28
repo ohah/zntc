@@ -1900,6 +1900,8 @@ pub fn main() !void {
             .ignore_annotations = opts.ignore_annotations,
             .jsx_side_effects = opts.jsx_side_effects,
             .drop_labels = opts.drop_labels_list.items,
+            .drop_console = opts.drop_console,
+            .drop_debugger = opts.drop_debugger,
             .pure = opts.pure_list.items,
             .tsconfig_raw = opts.tsconfig_raw,
             .node_paths = opts.node_paths_list.items,

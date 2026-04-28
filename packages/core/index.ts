@@ -429,6 +429,10 @@ interface BuildOptionsCommon {
   analyze?: boolean;
   /** 제거할 labeled statement의 라벨 이름 목록 */
   dropLabels?: string[];
+  /** `console.*` 호출 expression statement 를 transformer 에서 제거 (#2155). bundle/transpile 동일 적용. */
+  dropConsole?: boolean;
+  /** `debugger;` statement 를 transformer 에서 제거 (#2155). bundle/transpile 동일 적용. */
+  dropDebugger?: boolean;
   /** 순수 함수로 마킹할 글로벌 함수명 목록 */
   pure?: string[];
   /** tsconfig.json 인라인 JSON 오버라이드 */
