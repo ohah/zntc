@@ -48,7 +48,9 @@ pub const CJS_RUNTIME_ES5_MIN = "var " ++ NAMES.CJS_FACTORY_MIN ++ "=function(cb
 /// __esModule=true이면 원본 프로퍼티를 사용하되 default는 추가하지 않음.
 ///
 /// __copyProps: getOwnPropertyNames로 non-enumerable 포함 전체 프로퍼티를 복사하고,
-/// 원본 descriptor의 enumerable 플래그를 보존한다. bind로 key를 고정하여 var 루프에서도 안전.
+/// 원본 descriptor의 enumerable 플래그를 보존한다. key는 per-iteration으로 capture
+/// (비-min: bind, min: IIFE) 하여 var 루프에서도 안전.
+/// 호출자는 모두 2-arg (`__toESM`, `__toCommonJS`) 이므로 except 매개변수는 사용되지 않는다.
 /// 참고: references/rolldown/crates/rolldown/src/runtime/index.js:86
 pub const TOESM_RUNTIME =
     \\var __create = Object.create;
@@ -57,11 +59,11 @@ pub const TOESM_RUNTIME =
     \\var __getOwnPropNames = Object.getOwnPropertyNames;
     \\var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
     \\var __hasOwn = Object.prototype.hasOwnProperty;
-    \\var __copyProps = (to, from, except, desc) => {
+    \\var __copyProps = (to, from, desc) => {
     \\  if (from && typeof from === "object" || typeof from === "function") {
-    \\    for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+    \\    for (var keys = __getOwnPropNames(from), i = 0, key; i < keys.length; i++) {
     \\      key = keys[i];
-    \\      if (!__hasOwn.call(to, key) && key !== except)
+    \\      if (!__hasOwn.call(to, key))
     \\        __defProp(to, key, { get: ((k) => from[k]).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
     \\    }
     \\  }
@@ -97,11 +99,11 @@ pub const TOESM_RUNTIME_CONFIGURABLE =
     \\var __getOwnPropNames = Object.getOwnPropertyNames;
     \\var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
     \\var __hasOwn = Object.prototype.hasOwnProperty;
-    \\var __copyProps = function(to, from, except, desc) {
+    \\var __copyProps = function(to, from, desc) {
     \\  if (from && typeof from === "object" || typeof from === "function") {
-    \\    for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+    \\    for (var keys = __getOwnPropNames(from), i = 0, key; i < keys.length; i++) {
     \\      key = keys[i];
-    \\      if (!__hasOwn.call(to, key) && key !== except)
+    \\      if (!__hasOwn.call(to, key))
     \\        __defProp(to, key, { get: (function(k) { return from[k]; }).bind(null, key), enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable, configurable: true });
     \\    }
     \\  }
@@ -184,15 +186,15 @@ pub const DECORATOR_RUNTIME =
     \\
 ;
 pub const DECORATOR_RUNTIME_MIN =
-    "var " ++ NAMES.DEF_PROP_2_MIN ++ "=Object.defineProperty;" ++
-    "var " ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor;" ++
-    "var " ++ NAMES.DECORATE_CLASS_MIN ++ "=(decorators,target,key,kind)=>{" ++
+    "var " ++ NAMES.DEF_PROP_2_MIN ++ "=Object.defineProperty," ++
+    NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor," ++
+    NAMES.DECORATE_CLASS_MIN ++ "=(decorators,target,key,kind)=>{" ++
     "var result=kind>1?void 0:kind?" ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "(target,key):target;" ++
     "for(var i=decorators.length-1,decorator;i>=0;i--)" ++
     "if(decorator=decorators[i])result=(kind?decorator(target,key,result):decorator(result))||result;" ++
     "if(kind&&result)" ++ NAMES.DEF_PROP_2_MIN ++ "(target,key,result);" ++
-    "return result};" ++
-    "var " ++ NAMES.DECORATE_PARAM_MIN ++ "=(index,decorator)=>(target,key)=>decorator(target,key,index);";
+    "return result}," ++
+    NAMES.DECORATE_PARAM_MIN ++ "=(index,decorator)=>(target,key)=>decorator(target,key,index);";
 
 /// __metadata: emitDecoratorMetadata 시 Reflect.metadata 호출 (TypeScript 호환).
 /// design:type, design:paramtypes, design:returntype 메타데이터를 클래스/멤버에 부착.
