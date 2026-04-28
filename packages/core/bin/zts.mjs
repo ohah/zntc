@@ -14,7 +14,7 @@ try {
 } catch {
   coreModule = await import("../index.ts");
 }
-const { init, transpile, build, buildSync } = coreModule;
+const { init, transpile, build, buildSync, findConfigPath, loadConfig } = coreModule;
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { resolve, dirname, basename, extname, join } from "node:path";
 import { createServer } from "node:http";
@@ -609,17 +609,139 @@ async function runTranspile(opts) {
 
 // ─── Bundle 모드 ───
 
+/**
+ * cwd 에서 zts.config.* 자동 탐색 + 로드. 없으면 null.
+ * `--config <path>` 명시 옵션은 #2103 (Phase 2-1) 에서 추가 예정.
+ */
+async function loadAutoConfig() {
+  const configPath = findConfigPath(process.cwd());
+  if (!configPath) return null;
+  try {
+    return await loadConfig(configPath);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`error: failed to load config — ${reason}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * CLI > config 우선순위로 BuildOptions 머지.
+ *
+ * - scalar/string: CLI 가 undefined 면 config 사용
+ * - boolean: CLI 가 default(false) 일 때 config 가 true 면 config 사용
+ *   (false 를 명시적으로 끄려면 CLI 가 처리 — Phase 2-1 함수형 config 에서 강화)
+ * - 배열: CLI 가 비어있으면 config 사용
+ * - 객체: shallow merge (config defaults + CLI override)
+ */
+function mergeConfigIntoOpts(opts, config) {
+  if (!config) return opts;
+
+  const SCALAR_KEYS = [
+    "format",
+    "platform",
+    "target",
+    "banner",
+    "footer",
+    "globalName",
+    "publicPath",
+    "entryNames",
+    "chunkNames",
+    "assetNames",
+    "jsx",
+    "jsxFactory",
+    "jsxFragment",
+    "jsxImportSource",
+    "quotes",
+    "preserveModulesRoot",
+    "legalComments",
+    "sourceRoot",
+    "jobs",
+    "outExtensionJs",
+    "metafile",
+    "outfile",
+    "outdir",
+    "outbase",
+  ];
+  for (const key of SCALAR_KEYS) {
+    if (opts[key] === undefined && config[key] !== undefined) {
+      opts[key] = config[key];
+    }
+  }
+
+  // boolean default=false → config 가 true 면 적용. CLI 명시 false 를 구분 못 하므로
+  // 함수형 config (#2103) 에서 정밀한 우선순위 적용 예정.
+  const BOOL_KEYS = [
+    "minify",
+    "minifyWhitespace",
+    "minifyIdentifiers",
+    "minifySyntax",
+    "sourcemap",
+    "sourcemapDebugIds",
+    "splitting",
+    "flow",
+    "experimentalDecorators",
+    "emitDecoratorMetadata",
+    "keepNames",
+    "shimMissingExports",
+    "charsetUtf8",
+    "asciiOnly",
+    "jsxInJs",
+    "jsxDev",
+    "preserveModules",
+    "verbatimModuleSyntax",
+  ];
+  for (const key of BOOL_KEYS) {
+    if (opts[key] === false && config[key] === true) {
+      opts[key] = true;
+    }
+  }
+  // sourcesContent / treeShaking / useDefineForClassFields 는 default=true.
+  // CLI 가 default 면 config 가 false 일 때 false 로.
+  for (const key of ["sourcesContent", "treeShaking", "useDefineForClassFields"]) {
+    if (opts[key] === true && config[key] === false) {
+      opts[key] = false;
+    }
+  }
+
+  const ARRAY_KEYS = [
+    "entryPoints",
+    "external",
+    "inject",
+    "drop",
+    "resolveExtensions",
+    "mainFields",
+  ];
+  for (const key of ARRAY_KEYS) {
+    if (opts[key].length === 0 && Array.isArray(config[key]) && config[key].length > 0) {
+      opts[key] = [...config[key]];
+    }
+  }
+
+  for (const key of ["define", "alias", "loader"]) {
+    if (config[key] && typeof config[key] === "object") {
+      opts[key] = { ...config[key], ...opts[key] };
+    }
+  }
+
+  return opts;
+}
+
 async function runBundle(opts) {
-  // 플러그인 로드
+  // config 자동 탐색 + 머지는 main() 에서 모든 모드에 대해 사전 적용된다.
+  // 여기서는 머지 결과 plugins 만 추가로 활용.
   const plugins = [];
+  if (opts._config && Array.isArray(opts._config.plugins)) {
+    plugins.push(...opts._config.plugins);
+  }
   for (const pluginPath of opts.pluginPaths) {
     const absPath = resolve(pluginPath);
     const mod = await import(absPath);
-    const config = mod.default || mod;
-    if (config.plugins) {
-      plugins.push(...config.plugins);
-    } else if (typeof config.setup === "function") {
-      plugins.push(config);
+    const cfg = mod.default || mod;
+    if (cfg.plugins) {
+      plugins.push(...cfg.plugins);
+    } else if (typeof cfg.setup === "function") {
+      plugins.push(cfg);
     }
   }
 
@@ -947,6 +1069,16 @@ async function runServe(opts) {
 async function main() {
   const opts = parseArgs(process.argv);
 
+  // config 자동 탐색 + 머지 (CLI > config > tsconfig). entry 검사 전에 적용해야
+  // config 의 entryPoints 가 검사 통과에 기여한다.
+  // 명시적 --config <path> flag 는 #2103 (Phase 2-1) 에서 추가.
+  init();
+  const config = await loadAutoConfig();
+  if (config) {
+    mergeConfigIntoOpts(opts, config);
+    opts._config = config; // runBundle 이 plugins 머지에 사용
+  }
+
   if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve) {
     console.error("Usage: zts [options] <file.ts>");
     console.error("       zts --bundle <entry.ts> -o out.js");
@@ -954,10 +1086,8 @@ async function main() {
     process.exit(1);
   }
 
-  // tsconfig.json 자동 로드 (CLI 옵션보다 낮은 우선순위)
+  // tsconfig.json 자동 로드 (CLI/config 보다 낮은 우선순위)
   loadTsConfig(opts);
-
-  init();
 
   try {
     if (opts.serve) {
