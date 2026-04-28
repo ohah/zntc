@@ -980,8 +980,13 @@ fn shouldSkipLazyBarrelEmit(
     if (module.import_records.len == 0 or module.export_bindings.len == 0) return false;
 
     for (module.import_records) |rec| {
-        if (rec.kind != .re_export) return false;
+        if (rec.kind != .re_export and rec.kind != .static_import and rec.kind != .side_effect) return false;
         if (rec.is_external or rec.resolved == .none) return false;
+    }
+
+    for (module.import_bindings) |binding| {
+        if (binding.kind == .namespace) return false;
+        if (binding.isSynthetic()) return false;
     }
 
     for (module.export_bindings) |binding| {

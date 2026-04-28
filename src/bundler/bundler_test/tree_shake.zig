@@ -1708,6 +1708,141 @@ test "Integration: lazy barrel skips export-star module with unused ambiguous na
     try std.testing.expect(std.mem.indexOf(u8, result.output, "barrel.ts") == null);
 }
 
+test "Integration: lazy barrel skips local named import re-export module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { value } from './barrel';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import { value } from './real';
+        \\export { value };
+    );
+    try writeFile(tmp.dir, "real.ts", "export const value = 'LAZY_BARREL_LOCAL_IMPORT';");
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .scope_hoist = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_LOCAL_IMPORT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "barrel.ts") == null);
+}
+
+test "Integration: lazy barrel skips local default import re-export module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { value } from './barrel';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import value from './real';
+        \\export { value };
+    );
+    try writeFile(tmp.dir, "real.ts", "export default 'LAZY_BARREL_LOCAL_DEFAULT';");
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .scope_hoist = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_LOCAL_DEFAULT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "barrel.ts") == null);
+}
+
+test "Integration: lazy barrel skips local re-export with explicit extensions" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { tsValue } from './barrel.ts';
+        \\import { jsValue } from './js-barrel.js';
+        \\console.log(tsValue, jsValue);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import { tsValue } from './real.ts';
+        \\export { tsValue };
+    );
+    try writeFile(tmp.dir, "real.ts", "export const tsValue = 'LAZY_BARREL_EXPLICIT_TS';");
+    try writeFile(tmp.dir, "js-barrel.js",
+        \\import { jsValue } from './real.js';
+        \\export { jsValue };
+    );
+    try writeFile(tmp.dir, "real.js", "export const jsValue = 'LAZY_BARREL_EXPLICIT_JS';");
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .scope_hoist = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_EXPLICIT_TS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_EXPLICIT_JS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "barrel.ts") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "js-barrel.js") == null);
+}
+
+test "Integration: lazy barrel skips local re-export with side-effect import preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { value } from './barrel';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import './side';
+        \\import { value } from './real';
+        \\export { value };
+    );
+    try writeFile(tmp.dir, "side.ts", "console.log('LAZY_BARREL_LOCAL_SIDE_EFFECT');");
+    try writeFile(tmp.dir, "real.ts", "export const value = 'LAZY_BARREL_LOCAL_SIDE_VALUE';");
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .scope_hoist = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_LOCAL_SIDE_EFFECT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_LOCAL_SIDE_VALUE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "barrel.ts") == null);
+}
+
 test "Integration: lazy barrel does not skip side-effectful re-export module" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1764,6 +1899,37 @@ test "Integration: lazy barrel does not skip namespace re-export module" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_NAMESPACE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "barrel.ts") != null);
+}
+
+test "Integration: lazy barrel does not skip local namespace re-export module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { ns } from './barrel';
+        \\console.log(ns.value);
+    );
+    try writeFile(tmp.dir, "barrel.ts",
+        \\import * as ns from './real';
+        \\export { ns };
+    );
+    try writeFile(tmp.dir, "real.ts", "export const value = 'LAZY_BARREL_LOCAL_NAMESPACE';");
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .scope_hoist = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_LOCAL_NAMESPACE") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "barrel.ts") != null);
 }
 
