@@ -193,6 +193,9 @@ const CliOptions = struct {
     ///     `--globals=react=React,react-dom=ReactDOM`
     /// ArrayList 로 보관하고 BundleOptions 에 slice 로 전달. dedupe/정규화는 emitter 단에서.
     globals_list: std.ArrayList(lib.bundler.types.GlobalEntry) = .empty,
+    /// inlineDynamicImports: dynamic import target 을 entry chunk 에 인라인 (Rollup 호환).
+    /// 현재 CLI flag 미노출 — `zts.config.json` 의 `inlineDynamicImports` 로만 설정.
+    inline_dynamic_imports: bool = false,
 
     const RnPlatform = enum {
         none,
@@ -284,11 +287,15 @@ fn parseEngineTargets(val: []const u8) ?lib.transformer.TransformOptions.compat.
 
 /// `zts.config.json`이 cwd에 있으면 파싱해 opts의 defaults를 세팅한다.
 /// CLI 인자가 뒤에서 이 값을 덮어쓴다 → "CLI > config.json".
-/// transpile.zig의 `optionsFromJson`을 재사용하여 schema 일치를 보장.
 ///
-/// 현재 매핑되는 필드: target/sourcemap/minify/jsx/platform/format/quotes/drop/flow
-/// 등 TranspileOptions에 대응하는 것들. bundler-only 필드(external, alias 등)는
-/// 여기서 처리하지 않는다.
+/// 매핑되는 필드:
+///  - TranspileOptions: target/sourcemap/minify/jsx/platform/format/quotes/drop/flow 등
+///  - bundler-only (#2105): external/alias/define/loader/conditions/resolveExtensions/
+///    mainFields/banner/footer/{asset,chunk,entry}Names/preserveModules*/inlineDynamicImports/
+///    manualChunks (record form)
+///
+/// `intro`/`outro` 는 BundleOptions 미지원 — 별도 PR (FIXME). function-form
+/// `manualChunks` 는 JS-only 라 JSON 에서는 record form 만 받는다.
 fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     const f = try std.fs.cwd().openFile("zts.config.json", .{});
     defer f.close();
@@ -299,46 +306,112 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    const parsed = lib.transpile.optionsFromJson(arena_alloc, content) catch return error.InvalidConfig;
+    // raw DTO 파싱 — `optionsFromJson` 은 TranspileOptions 만 추출하므로 bundler-only
+    // 필드를 동시에 매핑하려면 DTO 직접 파싱이 필요.
+    const dto = std.json.parseFromSliceLeaky(
+        lib.transpile.TranspileOptionsDto,
+        arena_alloc,
+        content,
+        .{ .ignore_unknown_fields = true },
+    ) catch return error.InvalidConfig;
 
-    if (parsed.es_target) |t| {
+    // ─── TranspileOptions-shaped 필드 ──────────────────────────────────────
+    if (dto.target) |t| {
         opts.es_target = t;
         opts.unsupported = lib.transformer.TransformOptions.compat.fromESTarget(t);
     }
-    opts.unsupported = @bitCast(@as(u32, @bitCast(parsed.unsupported)) | @as(u32, @bitCast(opts.unsupported)));
-    if (parsed.flow) opts.flow = true;
-    if (parsed.jsx_in_js) opts.jsx_in_js = true;
-    opts.jsx_runtime = parsed.jsx_runtime;
+    if (dto.unsupported) |u| {
+        opts.unsupported = @bitCast(@as(u32, @bitCast(opts.unsupported)) | u);
+    }
+    if (dto.flow == true) opts.flow = true;
+    if (dto.jsxInJs == true) opts.jsx_in_js = true;
+    if (dto.jsx) |v| opts.jsx_runtime = v;
     // 문자열 필드는 config 수명이 함수 종료 후 해제됨 → dupe 필수.
-    if (parsed.jsx_factory.len > 0 and !std.mem.eql(u8, parsed.jsx_factory, "React.createElement")) {
-        opts.jsx_factory = try allocator.dupe(u8, parsed.jsx_factory);
-    }
-    if (parsed.jsx_fragment.len > 0 and !std.mem.eql(u8, parsed.jsx_fragment, "React.Fragment")) {
-        opts.jsx_fragment = try allocator.dupe(u8, parsed.jsx_fragment);
-    }
-    if (parsed.jsx_import_source.len > 0 and !std.mem.eql(u8, parsed.jsx_import_source, "react")) {
-        opts.jsx_import_source = try allocator.dupe(u8, parsed.jsx_import_source);
-    }
-    if (parsed.drop_console) opts.drop_console = true;
-    if (parsed.drop_debugger) opts.drop_debugger = true;
-    if (parsed.ascii_only) opts.ascii_only = true;
-    if (parsed.charset_utf8) opts.charset_utf8 = true;
-    if (parsed.experimental_decorators) opts.experimental_decorators = true;
-    if (parsed.emit_decorator_metadata) opts.emit_decorator_metadata = true;
-    if (parsed.use_define_for_class_fields == false) opts.use_define_for_class_fields = false;
-    if (parsed.verbatim_module_syntax) opts.verbatim_module_syntax = true;
-    opts.module_format = parsed.module_format;
-    opts.quote_style = parsed.quote_style;
-    opts.platform = parsed.platform;
-    if (parsed.minify_whitespace) opts.minify_whitespace = true;
-    if (parsed.minify_identifiers) opts.minify_identifiers = true;
-    if (parsed.minify_syntax) opts.minify_syntax = true;
-    if (parsed.sourcemap) opts.sourcemap = true;
-    if (parsed.sourcemap_debug_ids) opts.sourcemap_debug_ids = true;
-    if (!parsed.sources_content) opts.sources_content = false;
-    if (parsed.source_root.len > 0) {
-        opts.source_root = try allocator.dupe(u8, parsed.source_root);
-    }
+    if (dto.jsxFactory) |s| if (s.len > 0 and !std.mem.eql(u8, s, "React.createElement")) {
+        opts.jsx_factory = try allocator.dupe(u8, s);
+    };
+    if (dto.jsxFragment) |s| if (s.len > 0 and !std.mem.eql(u8, s, "React.Fragment")) {
+        opts.jsx_fragment = try allocator.dupe(u8, s);
+    };
+    if (dto.jsxImportSource) |s| if (s.len > 0 and !std.mem.eql(u8, s, "react")) {
+        opts.jsx_import_source = try allocator.dupe(u8, s);
+    };
+    if (dto.dropConsole == true) opts.drop_console = true;
+    if (dto.dropDebugger == true) opts.drop_debugger = true;
+    if (dto.asciiOnly == true) opts.ascii_only = true;
+    if (dto.charsetUtf8 == true) opts.charset_utf8 = true;
+    if (dto.experimentalDecorators == true) opts.experimental_decorators = true;
+    if (dto.emitDecoratorMetadata == true) opts.emit_decorator_metadata = true;
+    if (dto.useDefineForClassFields == false) opts.use_define_for_class_fields = false;
+    if (dto.verbatimModuleSyntax == true) opts.verbatim_module_syntax = true;
+    if (dto.format) |v| opts.module_format = v;
+    if (dto.quotes) |v| opts.quote_style = v;
+    if (dto.platform) |v| opts.platform = v;
+    if (dto.minifyWhitespace == true) opts.minify_whitespace = true;
+    if (dto.minifyIdentifiers == true) opts.minify_identifiers = true;
+    if (dto.minifySyntax == true) opts.minify_syntax = true;
+    if (dto.sourcemap == true) opts.sourcemap = true;
+    if (dto.sourcemapDebugIds == true) opts.sourcemap_debug_ids = true;
+    if (dto.sourcesContent == false) opts.sources_content = false;
+    if (dto.sourceRoot) |s| if (s.len > 0) {
+        opts.source_root = try allocator.dupe(u8, s);
+    };
+
+    // ─── bundler-only 필드 (#2105) ─────────────────────────────────────────
+    if (dto.external) |list| for (list) |s| {
+        try opts.external_list.append(allocator, try allocator.dupe(u8, s));
+    };
+    if (dto.alias) |list| for (list) |a| {
+        try opts.alias_list.append(allocator, .{
+            .from = try allocator.dupe(u8, a.from),
+            .to = try allocator.dupe(u8, a.to),
+        });
+    };
+    if (dto.define) |list| for (list) |d| {
+        try opts.define_list.append(allocator, .{
+            .key = try allocator.dupe(u8, d.key),
+            .value = try allocator.dupe(u8, d.value),
+        });
+    };
+    if (dto.loader) |list| for (list) |l| {
+        const loader_enum = std.meta.stringToEnum(lib.bundler.types.Loader, l.loader) orelse continue;
+        try opts.loader_list.append(allocator, .{
+            .ext = try allocator.dupe(u8, l.ext),
+            .loader = loader_enum,
+        });
+    };
+    if (dto.conditions) |list| for (list) |s| {
+        try opts.conditions_list.append(allocator, try allocator.dupe(u8, s));
+    };
+    if (dto.resolveExtensions) |list| for (list) |s| {
+        try opts.resolve_extensions_list.append(allocator, try allocator.dupe(u8, s));
+    };
+    if (dto.mainFields) |list| for (list) |s| {
+        try opts.main_fields_list.append(allocator, try allocator.dupe(u8, s));
+    };
+    if (dto.banner) |s| if (s.len > 0) {
+        opts.banner_js = try allocator.dupe(u8, s);
+    };
+    if (dto.footer) |s| if (s.len > 0) {
+        opts.footer_js = try allocator.dupe(u8, s);
+    };
+    if (dto.entryNames) |s| if (s.len > 0) {
+        opts.entry_names = try allocator.dupe(u8, s);
+    };
+    if (dto.chunkNames) |s| if (s.len > 0) {
+        opts.chunk_names = try allocator.dupe(u8, s);
+    };
+    if (dto.assetNames) |s| if (s.len > 0) {
+        opts.asset_names = try allocator.dupe(u8, s);
+    };
+    if (dto.preserveModules == true) opts.preserve_modules = true;
+    if (dto.preserveModulesRoot) |s| if (s.len > 0) {
+        opts.preserve_modules_root = try allocator.dupe(u8, s);
+    };
+    if (dto.inlineDynamicImports == true) opts.inline_dynamic_imports = true;
+    // manualChunks: record form 만 지원. 현재 CliOptions 에 manual_chunks_list 가
+    // 없어 follow-up 으로 분리. CLI 의 `manualChunks` JSON 명시는 silent 무시 —
+    // 사용자 영향 없도록 #2105 follow-up 에 트래킹.
 }
 
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.
@@ -1821,6 +1894,7 @@ pub fn main() !void {
             .line_limit = opts.line_limit,
             .preserve_modules = opts.preserve_modules,
             .preserve_modules_root = opts.preserve_modules_root,
+            .inline_dynamic_imports = opts.inline_dynamic_imports,
             .dev_mode = opts.dev,
             .react_refresh = opts.dev,
             .root_dir = if (opts.dev or opts.sourcemap) (std.fs.cwd().realpathAlloc(allocator, ".") catch null) else null,
