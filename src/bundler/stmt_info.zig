@@ -32,6 +32,13 @@ pub const CjsExportFact = struct {
         assignment,
         object_property,
         define_property_value,
+
+        /// stmt 자체가 단일 export 라 BFS seed 시 stmt 전체를 enqueue 하면 충분한지.
+        /// `assignment` (`exports.foo = rhs`) 만 그렇고, 나머지는 같은 stmt 안에 여러 export
+        /// 가 공존할 수 있어 호출자가 rhs symbol 만 시드한다.
+        pub fn seedsWholeStatement(self: Kind) bool {
+            return self == .assignment;
+        }
     };
 
     export_name: []const u8,
@@ -45,8 +52,7 @@ pub const CjsExportFact = struct {
 
 pub const ModuleStmtInfos = struct {
     stmts: []StmtInfo,
-    /// 정적으로 증명된 CJS named export assignment.
-    /// 대상은 `exports.foo = ...`, `module.exports.foo = ...` 뿐이다.
+    /// 정적으로 증명된 CJS named export. 형태별 분기는 `CjsExportFact.Kind` 참고.
     cjs_export_facts: []const CjsExportFact = &.{},
     /// symbol_index → stmt_index (선언 역매핑). 없으면 null.
     symbol_to_stmt: []const ?u32,
@@ -181,6 +187,14 @@ const CjsExportCandidate = struct {
     kind: CjsExportFact.Kind = .assignment,
 };
 
+fn rhsSymbolFor(symbol_ids: ?[]const ?u32, rhs_node: NodeIndex) ?u32 {
+    const sids = symbol_ids orelse return null;
+    if (rhs_node.isNone()) return null;
+    const idx = @intFromEnum(rhs_node);
+    if (idx >= sids.len) return null;
+    return sids[idx];
+}
+
 fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeIndex, property: NodeIndex } {
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
     const node = ast.nodes.items[@intFromEnum(idx)];
@@ -260,8 +274,15 @@ fn isCjsExportObjectExpr(ast: *const Ast, idx: NodeIndex) bool {
     return isModuleExportsLhs(ast, idx);
 }
 
-fn hasStringEscape(raw: []const u8) bool {
-    return std.mem.indexOfScalar(u8, raw, '\\') != null;
+/// string_literal 의 escape 가 풀린 형태로 비교 안 하므로 raw 와 source-after-decode
+/// 가 다른 경우는 reject — 잘못된 export 매칭을 막는 보수적 가드.
+fn plainStringLiteralValue(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    const n = ast.nodes.items[@intFromEnum(idx)];
+    if (n.tag != .string_literal) return null;
+    const raw = ast.getText(n.span);
+    if (std.mem.indexOfScalar(u8, raw, '\\') != null) return null;
+    return Ast.stripStringQuotes(raw);
 }
 
 fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
@@ -269,21 +290,16 @@ fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
     const key = ast.nodes.items[@intFromEnum(key_idx)];
     return switch (key.tag) {
         .identifier_reference => ast.getText(key.data.string_ref),
-        .string_literal => blk: {
-            const raw = ast.getText(key.span);
-            if (hasStringEscape(raw)) break :blk null;
-            break :blk Ast.stripStringQuotes(raw);
-        },
+        .string_literal => plainStringLiteralValue(ast, key_idx),
         else => null,
     };
 }
 
 fn definePropertyDescriptorValueNode(
-    allocator: std.mem.Allocator,
     ast: *const Ast,
     descriptor_idx: NodeIndex,
     unresolved_globals: ?*const purity.GlobalRefSet,
-) !?NodeIndex {
+) ?NodeIndex {
     if (descriptor_idx.isNone() or @intFromEnum(descriptor_idx) >= ast.nodes.items.len) return null;
     const descriptor = ast.nodes.items[@intFromEnum(descriptor_idx)];
     if (descriptor.tag != .object_expression) return null;
@@ -293,8 +309,10 @@ fn definePropertyDescriptorValueNode(
     const indices = ast.extra_data.items[list.start .. list.start + list.len];
     if (indices.len == 0) return null;
 
-    var seen: std.StringHashMapUnmanaged(void) = .{};
-    defer seen.deinit(allocator);
+    // descriptor 의 정적 키는 최대 4 개 (value/writable/enumerable/configurable).
+    // get/set 은 진입 시 reject — accessor 는 prune 안전하지 않음.
+    var seen: [4][]const u8 = undefined;
+    var seen_len: usize = 0;
     var value_node: ?NodeIndex = null;
 
     for (indices) |raw_prop| {
@@ -304,9 +322,13 @@ fn definePropertyDescriptorValueNode(
         if (prop.tag != .object_property) return null;
 
         const name = plainObjectKeyName(ast, prop.data.binary.left) orelse return null;
-        const entry = try seen.getOrPut(allocator, name);
-        if (entry.found_existing) return null;
         if (std.mem.eql(u8, name, "get") or std.mem.eql(u8, name, "set")) return null;
+        if (seen_len >= seen.len) return null;
+        for (seen[0..seen_len]) |prev| {
+            if (std.mem.eql(u8, prev, name)) return null;
+        }
+        seen[seen_len] = name;
+        seen_len += 1;
 
         const prop_value = Ast.objectPropertyValue(prop);
         if (prop_value.isNone() or @intFromEnum(prop_value) >= ast.nodes.items.len) return null;
@@ -323,11 +345,10 @@ fn definePropertyDescriptorValueNode(
 }
 
 fn cjsDefinePropertyExportCandidateForStmt(
-    allocator: std.mem.Allocator,
     ast: *const Ast,
     stmt_node: Node,
     unresolved_globals: ?*const purity.GlobalRefSet,
-) !?CjsExportCandidate {
+) ?CjsExportCandidate {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
     if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
@@ -335,10 +356,10 @@ fn cjsDefinePropertyExportCandidateForStmt(
     if (expr.tag != .call_expression) return null;
 
     const e = expr.data.extra;
-    if (e + 2 >= ast.extra_data.items.len) return null;
-    const callee_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-    const args_start = ast.extra_data.items[e + 1];
-    const args_len = ast.extra_data.items[e + 2];
+    if (!ast.hasExtra(e, 2)) return null;
+    const callee_idx = ast.readExtraNode(e, 0);
+    const args_start = ast.readExtra(e, 1);
+    const args_len = ast.readExtra(e, 2);
     if (args_len != 3) return null;
     if (args_start + args_len > ast.extra_data.items.len) return null;
     if (!isObjectDefinePropertyCallee(ast, callee_idx)) return null;
@@ -348,15 +369,10 @@ fn cjsDefinePropertyExportCandidateForStmt(
     const descriptor_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 2]);
     if (!isCjsExportObjectExpr(ast, target_idx)) return null;
 
-    if (export_name_idx.isNone() or @intFromEnum(export_name_idx) >= ast.nodes.items.len) return null;
-    const export_name_node = ast.nodes.items[@intFromEnum(export_name_idx)];
-    if (export_name_node.tag != .string_literal) return null;
-    const export_name_raw = ast.getText(export_name_node.span);
-    if (hasStringEscape(export_name_raw)) return null;
-    const export_name = Ast.stripStringQuotes(export_name_raw);
+    const export_name = plainStringLiteralValue(ast, export_name_idx) orelse return null;
     if (std.mem.eql(u8, export_name, "__esModule")) return null;
 
-    const value_node = (try definePropertyDescriptorValueNode(allocator, ast, descriptor_idx, unresolved_globals)) orelse return null;
+    const value_node = definePropertyDescriptorValueNode(ast, descriptor_idx, unresolved_globals) orelse return null;
     return .{
         .export_name = export_name,
         .export_assignment_node = @intFromEnum(expr_idx),
@@ -442,19 +458,12 @@ fn collectAndAppendCjsObjectFacts(
     const candidates = (try collectCjsObjectExportCandidates(allocator, ast, node, unresolved_globals)) orelse return false;
     defer allocator.free(candidates);
     for (candidates) |candidate| {
-        const rhs_symbol: ?u32 = if (symbol_ids) |sids|
-            if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < sids.len)
-                sids[@intFromEnum(candidate.rhs_node)]
-            else
-                null
-        else
-            null;
         try facts.append(allocator, .{
             .export_name = candidate.export_name,
             .statement_index = stmt_i,
             .export_assignment_node = candidate.export_assignment_node,
             .property_node = candidate.property_node,
-            .rhs_symbol = rhs_symbol,
+            .rhs_symbol = rhsSymbolFor(symbol_ids, candidate.rhs_node),
             .kind = candidate.kind,
             .is_safe_to_prune = true,
         });
@@ -471,20 +480,13 @@ fn appendCjsDefinePropertyFact(
     facts: *std.ArrayListUnmanaged(CjsExportFact),
     symbol_ids: ?[]const ?u32,
 ) !bool {
-    const candidate = (try cjsDefinePropertyExportCandidateForStmt(allocator, ast, node, unresolved_globals)) orelse return false;
-    const rhs_symbol: ?u32 = if (symbol_ids) |sids|
-        if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < sids.len)
-            sids[@intFromEnum(candidate.rhs_node)]
-        else
-            null
-    else
-        null;
+    const candidate = cjsDefinePropertyExportCandidateForStmt(ast, node, unresolved_globals) orelse return false;
     try facts.append(allocator, .{
         .export_name = candidate.export_name,
         .statement_index = stmt_i,
         .export_assignment_node = candidate.export_assignment_node,
         .property_node = candidate.property_node,
-        .rhs_symbol = rhs_symbol,
+        .rhs_symbol = rhsSymbolFor(symbol_ids, candidate.rhs_node),
         .kind = candidate.kind,
         .is_safe_to_prune = true,
     });
@@ -634,52 +636,27 @@ fn buildStmtInfoSlot(
     }
     const node = ast.nodes.items[ni];
     const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
-    var safe_cjs_object_export = false;
-    var safe_cjs_define_property_export = false;
+    var cjs_shape_extracted = false;
     if (cjs_export_candidate) |candidate| {
-        const rhs_symbol: ?u32 = if (symbol_ids) |sids|
-            if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < sids.len)
-                sids[@intFromEnum(candidate.rhs_node)]
-            else
-                null
-        else
-            null;
         try cjs_export_facts_buf.append(allocator, .{
             .export_name = candidate.export_name,
             .statement_index = stmt_i,
             .export_assignment_node = candidate.export_assignment_node,
             .property_node = candidate.property_node,
-            .rhs_symbol = rhs_symbol,
+            .rhs_symbol = rhsSymbolFor(symbol_ids, candidate.rhs_node),
             .kind = candidate.kind,
             .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
         });
     } else if (collect_cjs_exports) {
-        safe_cjs_define_property_export = try appendCjsDefinePropertyFact(
-            allocator,
-            ast,
-            node,
-            stmt_i,
-            unresolved_globals,
-            cjs_export_facts_buf,
-            symbol_ids,
-        );
-        if (!safe_cjs_define_property_export) safe_cjs_object_export = try collectAndAppendCjsObjectFacts(
-            allocator,
-            ast,
-            node,
-            stmt_i,
-            unresolved_globals,
-            cjs_export_facts_buf,
-            symbol_ids,
-        );
+        cjs_shape_extracted =
+            try appendCjsDefinePropertyFact(allocator, ast, node, stmt_i, unresolved_globals, cjs_export_facts_buf, symbol_ids) or
+            try collectAndAppendCjsObjectFacts(allocator, ast, node, stmt_i, unresolved_globals, cjs_export_facts_buf, symbol_ids);
     }
     const side_effects = if (node.tag == .import_declaration)
         false
     else if (cjs_export_candidate) |candidate|
         cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
-    else if (safe_cjs_define_property_export)
-        false
-    else if (safe_cjs_object_export)
+    else if (cjs_shape_extracted)
         false
     else
         purity.stmtHasSideEffects(ast, node, unresolved_globals);
