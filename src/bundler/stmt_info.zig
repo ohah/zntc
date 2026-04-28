@@ -16,6 +16,7 @@ const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const purity = @import("purity.zig");
+const string_escape = @import("../string_escape.zig");
 
 pub const StmtInfo = struct {
     node_idx: u32,
@@ -41,7 +42,10 @@ pub const CjsExportFact = struct {
         }
     };
 
-    export_name: []const u8,
+    /// 디코드된 owned UTF-8. `ModuleStmtInfos.deinit` 가 해제. ESM importer 의 binding
+    /// name (디코드된 identifier) 과 직접 비교 가능 — `\xHH`/`\uHHHH` 등 escape 가
+    /// 들어간 raw key 도 정확히 매칭된다.
+    export_name: []u8,
     statement_index: u32,
     export_assignment_node: u32,
     property_node: ?u32 = null,
@@ -75,6 +79,7 @@ pub const ModuleStmtInfos = struct {
             self.allocator.free(stmt.referenced_symbols);
         }
         self.allocator.free(self.stmts);
+        freeFactNames(self.allocator, self.cjs_export_facts);
         if (self.cjs_export_facts.len > 0) self.allocator.free(self.cjs_export_facts);
         self.allocator.free(self.symbol_to_stmt);
         // 역인덱스 해제
@@ -180,12 +185,19 @@ pub const ModuleStmtInfos = struct {
 };
 
 const CjsExportCandidate = struct {
-    export_name: []const u8,
+    /// owned UTF-8. fact 로 transferred 되거나 candidate 가 reject 시 caller 가 free.
+    export_name: []u8,
     export_assignment_node: u32,
     rhs_node: NodeIndex,
     property_node: ?u32 = null,
     kind: CjsExportFact.Kind = .assignment,
 };
+
+/// fact 들의 owned `export_name` 을 일괄 해제. `ModuleStmtInfos.deinit` 와 빌더의
+/// errdefer 가 공유.
+fn freeFactNames(allocator: std.mem.Allocator, facts: []const CjsExportFact) void {
+    for (facts) |f| allocator.free(f.export_name);
+}
 
 fn rhsSymbolFor(symbol_ids: ?[]const ?u32, rhs_node: NodeIndex) ?u32 {
     const sids = symbol_ids orelse return null;
@@ -217,19 +229,53 @@ fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
         std.mem.eql(u8, ast.getText(prop.span), "exports");
 }
 
-fn cjsExportNameFromLhs(ast: *const Ast, lhs: NodeIndex) ?[]const u8 {
+/// `exports.foo` / `module.exports.foo` 의 prop NodeIndex 반환. 호출자가
+/// `decodedObjectKey` 등으로 owned 이름을 만들도록 한다.
+fn cjsExportNamePropFromLhs(ast: *const Ast, lhs: NodeIndex) ?NodeIndex {
     const outer = staticMemberParts(ast, lhs) orelse return null;
     const prop = ast.nodes.items[@intFromEnum(outer.property)];
     if (prop.tag != .identifier_reference and prop.tag != .private_identifier) return null;
 
     const obj = ast.nodes.items[@intFromEnum(outer.object)];
     if (obj.tag == .identifier_reference and std.mem.eql(u8, ast.getText(obj.span), "exports")) {
-        return ast.getText(prop.span);
+        return outer.property;
     }
     if (obj.tag == .static_member_expression and isModuleExportsLhs(ast, outer.object)) {
-        return ast.getText(prop.span);
+        return outer.property;
     }
     return null;
+}
+
+/// string_literal 의 escape 를 디코드해 owned UTF-8 반환. 잘못된 escape 는 null
+/// (caller 가 opaque 처리). 빈 입력/비-string_literal 도 null.
+fn decodedStringLiteralName(alloc: std.mem.Allocator, ast: *const Ast, idx: NodeIndex) !?[]u8 {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    const n = ast.nodes.items[@intFromEnum(idx)];
+    if (n.tag != .string_literal) return null;
+    return string_escape.decodeJsStringLiteral(alloc, ast.getText(n.span)) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidStringLiteral, error.InvalidEscape => return null,
+    };
+}
+
+/// object key 노드에서 owned UTF-8 export name 을 만든다. identifier 계열은 dupe,
+/// string_literal 은 escape 디코드, numeric_literal 은 raw text dupe (ESM import 으로
+/// 직접 매칭 안 되지만 fact 등록을 거부할 이유는 없음 — 다른 키가 같은 stmt 에 있을 때
+/// 그쪽 prune 까지 막지 않게). computed_property_key 는 string_literal inner 만 허용.
+fn decodedObjectKey(alloc: std.mem.Allocator, ast: *const Ast, key_idx: NodeIndex) !?[]u8 {
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return null;
+    const key = ast.nodes.items[@intFromEnum(key_idx)];
+    return switch (key.tag) {
+        .identifier_reference, .binding_identifier, .private_identifier => try alloc.dupe(u8, ast.getText(key.data.string_ref)),
+        .numeric_literal => try alloc.dupe(u8, ast.getText(key.span)),
+        .string_literal => try decodedStringLiteralName(alloc, ast, key_idx),
+        .computed_property_key => blk: {
+            const inner = key.data.unary.operand;
+            if (inner.isNone()) break :blk null;
+            break :blk try decodedStringLiteralName(alloc, ast, inner);
+        },
+        else => null,
+    };
 }
 
 /// CJS object-shape export 의 value 위치가 named export 로 치환 안전한지 판정.
@@ -242,13 +288,14 @@ fn isCjsObjectPropertyValueSafe(ast: *const Ast, value: NodeIndex, unresolved_gl
     return purity.isExprPure(ast, value, unresolved_globals);
 }
 
-fn cjsExportCandidateForStmt(ast: *const Ast, stmt_node: Node) ?CjsExportCandidate {
+fn cjsExportCandidateForStmt(alloc: std.mem.Allocator, ast: *const Ast, stmt_node: Node) !?CjsExportCandidate {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
     if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
     const expr = ast.nodes.items[@intFromEnum(expr_idx)];
     if (expr.tag != .assignment_expression) return null;
-    const export_name = cjsExportNameFromLhs(ast, expr.data.binary.left) orelse return null;
+    const prop_idx = cjsExportNamePropFromLhs(ast, expr.data.binary.left) orelse return null;
+    const export_name = (try decodedObjectKey(alloc, ast, prop_idx)) orelse return null;
     return .{
         .export_name = export_name,
         .export_assignment_node = @intFromEnum(expr_idx),
@@ -345,10 +392,11 @@ fn definePropertyDescriptorValueNode(
 }
 
 fn cjsDefinePropertyExportCandidateForStmt(
+    alloc: std.mem.Allocator,
     ast: *const Ast,
     stmt_node: Node,
     unresolved_globals: ?*const purity.GlobalRefSet,
-) ?CjsExportCandidate {
+) !?CjsExportCandidate {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
     if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
@@ -369,10 +417,15 @@ fn cjsDefinePropertyExportCandidateForStmt(
     const descriptor_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 2]);
     if (!isCjsExportObjectExpr(ast, target_idx)) return null;
 
-    const export_name = plainStringLiteralValue(ast, export_name_idx) orelse return null;
+    const export_name = (try decodedStringLiteralName(alloc, ast, export_name_idx)) orelse return null;
+    var name_transferred = false;
+    defer if (!name_transferred) alloc.free(export_name);
+
     if (std.mem.eql(u8, export_name, "__esModule")) return null;
 
     const value_node = definePropertyDescriptorValueNode(ast, descriptor_idx, unresolved_globals) orelse return null;
+
+    name_transferred = true;
     return .{
         .export_name = export_name,
         .export_assignment_node = @intFromEnum(expr_idx),
@@ -408,7 +461,10 @@ fn collectCjsObjectExportCandidates(
     defer seen.deinit(allocator);
     var out: std.ArrayListUnmanaged(CjsExportCandidate) = .empty;
     var success = false;
-    defer if (!success) out.deinit(allocator);
+    defer if (!success) {
+        for (out.items) |c| allocator.free(c.export_name);
+        out.deinit(allocator);
+    };
 
     for (indices) |raw_prop| {
         const prop_idx: NodeIndex = @enumFromInt(raw_prop);
@@ -416,7 +472,10 @@ fn collectCjsObjectExportCandidates(
         const prop = ast.nodes.items[@intFromEnum(prop_idx)];
         if (prop.tag != .object_property) return null;
 
-        const name = ast.staticKeyName(prop.data.binary.left) orelse return null;
+        const name = (try decodedObjectKey(allocator, ast, prop.data.binary.left)) orelse return null;
+        var name_transferred = false;
+        defer if (!name_transferred) allocator.free(name);
+
         // `{__proto__: X}` 는 prototype 을 설정 — named export 가 아니라 reject.
         if (std.mem.eql(u8, name, "__proto__")) return null;
         const entry = try seen.getOrPut(allocator, name);
@@ -432,6 +491,7 @@ fn collectCjsObjectExportCandidates(
             .rhs_node = value,
             .kind = .object_property,
         });
+        name_transferred = true;
     }
 
     const slice = try out.toOwnedSlice(allocator);
@@ -457,8 +517,14 @@ fn collectAndAppendCjsObjectFacts(
 ) !bool {
     const candidates = (try collectCjsObjectExportCandidates(allocator, ast, node, unresolved_globals)) orelse return false;
     defer allocator.free(candidates);
+
+    // append 실패 시 미전이 분량의 owned name 을 cleanup. 성공 시 전체 transferred=len.
+    var transferred: usize = 0;
+    errdefer for (candidates[transferred..]) |c| allocator.free(c.export_name);
+
+    try facts.ensureUnusedCapacity(allocator, candidates.len);
     for (candidates) |candidate| {
-        try facts.append(allocator, .{
+        facts.appendAssumeCapacity(.{
             .export_name = candidate.export_name,
             .statement_index = stmt_i,
             .export_assignment_node = candidate.export_assignment_node,
@@ -467,6 +533,7 @@ fn collectAndAppendCjsObjectFacts(
             .kind = candidate.kind,
             .is_safe_to_prune = true,
         });
+        transferred += 1;
     }
     return true;
 }
@@ -480,7 +547,10 @@ fn appendCjsDefinePropertyFact(
     facts: *std.ArrayListUnmanaged(CjsExportFact),
     symbol_ids: ?[]const ?u32,
 ) !bool {
-    const candidate = cjsDefinePropertyExportCandidateForStmt(ast, node, unresolved_globals) orelse return false;
+    const candidate = (try cjsDefinePropertyExportCandidateForStmt(allocator, ast, node, unresolved_globals)) orelse return false;
+    var transferred = false;
+    errdefer if (!transferred) allocator.free(candidate.export_name);
+
     try facts.append(allocator, .{
         .export_name = candidate.export_name,
         .statement_index = stmt_i,
@@ -490,6 +560,7 @@ fn appendCjsDefinePropertyFact(
         .kind = candidate.kind,
         .is_safe_to_prune = true,
     });
+    transferred = true;
     return true;
 }
 
@@ -635,7 +706,14 @@ fn buildStmtInfoSlot(
         };
     }
     const node = ast.nodes.items[ni];
-    const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
+    const cjs_export_candidate = if (collect_cjs_exports)
+        try cjsExportCandidateForStmt(allocator, ast, node)
+    else
+        null;
+    var candidate_transferred = false;
+    errdefer if (cjs_export_candidate) |c| if (!candidate_transferred)
+        allocator.free(c.export_name);
+
     var cjs_shape_extracted = false;
     if (cjs_export_candidate) |candidate| {
         try cjs_export_facts_buf.append(allocator, .{
@@ -647,6 +725,7 @@ fn buildStmtInfoSlot(
             .kind = candidate.kind,
             .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
         });
+        candidate_transferred = true;
     } else if (collect_cjs_exports) {
         cjs_shape_extracted =
             try appendCjsDefinePropertyFact(allocator, ast, node, stmt_i, unresolved_globals, cjs_export_facts_buf, symbol_ids) or
@@ -705,7 +784,10 @@ pub fn buildFromSemantic(
     for (sym_to_stmt) |*s| s.* = null;
 
     var cjs_export_facts_buf: std.ArrayListUnmanaged(CjsExportFact) = .empty;
-    errdefer cjs_export_facts_buf.deinit(allocator);
+    errdefer {
+        freeFactNames(allocator, cjs_export_facts_buf.items);
+        cjs_export_facts_buf.deinit(allocator);
+    }
 
     // Pass 1: span + side-effect 결정. declared/referenced 는 빈 상태로 초기화.
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
@@ -871,7 +953,10 @@ pub fn build(
     for (sym_to_stmt) |*s| s.* = null;
 
     var cjs_export_facts_buf: std.ArrayListUnmanaged(CjsExportFact) = .empty;
-    errdefer cjs_export_facts_buf.deinit(allocator);
+    errdefer {
+        freeFactNames(allocator, cjs_export_facts_buf.items);
+        cjs_export_facts_buf.deinit(allocator);
+    }
 
     // Phase 1: statement span 배열 + side-effects 판정 + 초기화
     var stmt_spans = try allocator.alloc(Span, stmt_count);
