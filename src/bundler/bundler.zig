@@ -551,94 +551,12 @@ pub const Bundler = struct {
         };
     }
 
-    /// 출력 코드에서 Worker의 new URL("specifier", ...) 패턴을 worker 파일명 문자열로 교체.
-    /// 코드를 한 번만 스캔하면서 모든 new URL( 패턴을 매칭 (다중 worker 순서 독립).
-    fn rewriteWorkerURLs(self: *Bundler, code: []u8, graph: *ModuleGraph, worker_map: *std.StringHashMap([]const u8)) ![]const u8 {
-        // specifier → worker filename 매핑 구축
-        var spec_to_filename = std.StringHashMap([]const u8).init(self.allocator);
-        defer spec_to_filename.deinit();
-        for (graph.worker_entries.items) |we| {
-            const filename = worker_map.get(we.resolved_path) orelse continue;
-            const mod = graph.getModule(we.source_module) orelse continue;
-            if (we.record_index >= mod.import_records.len) continue;
-            try spec_to_filename.put(mod.import_records[we.record_index].specifier, filename);
-        }
-
-        var result: std.ArrayListUnmanaged(u8) = .empty;
-        defer result.deinit(self.allocator);
-        try result.ensureTotalCapacity(self.allocator, code.len);
-
-        const needle = "new URL(";
-        var pos: usize = 0;
-        while (std.mem.indexOf(u8, code[pos..], needle)) |rel| {
-            const abs_start = pos + rel;
-            const after = abs_start + needle.len;
-            // new URL("specifier", ...) — 따옴표 시작 확인
-            if (after < code.len and code[after] == '"') {
-                // specifier 끝 따옴표 찾기
-                if (std.mem.indexOf(u8, code[after + 1 ..], "\"")) |quote_end| {
-                    const spec = code[after + 1 .. after + 1 + quote_end];
-                    // 닫는 괄호 찾기. 두 번째 인수가 CJS import.meta 변환으로
-                    // pathToFileURL(__filename)처럼 중첩 호출이 될 수 있다.
-                    if (findMatchingParen(code, abs_start + needle.len - 1)) |close_paren| {
-                        const replace_end = close_paren + 1;
-                        if (spec_to_filename.get(spec)) |filename| {
-                            try result.appendSlice(self.allocator, code[pos..abs_start]);
-                            try self.appendWorkerURLReplacement(&result, filename);
-                            pos = replace_end;
-                            continue;
-                        }
-                    }
-                }
-            }
-            // 매칭 안 되면 needle 지나서 계속
-            try result.appendSlice(self.allocator, code[pos .. abs_start + needle.len]);
-            pos = abs_start + needle.len;
-        }
-        try result.appendSlice(self.allocator, code[pos..]);
-
-        self.allocator.free(code);
-        return try result.toOwnedSlice(self.allocator);
-    }
-
     const WorkerBuildResult = struct {
         filename: []const u8,
         contents: []const u8,
     };
 
-    fn findMatchingParen(code: []const u8, open_paren: usize) ?usize {
-        var depth: usize = 0;
-        var i = open_paren;
-        var quote: ?u8 = null;
-        var escaped = false;
-
-        while (i < code.len) : (i += 1) {
-            const c = code[i];
-            if (quote) |q| {
-                if (escaped) {
-                    escaped = false;
-                } else if (c == '\\') {
-                    escaped = true;
-                } else if (c == q) {
-                    quote = null;
-                }
-                continue;
-            }
-
-            switch (c) {
-                '"', '\'', '`' => quote = c,
-                '(' => depth += 1,
-                ')' => {
-                    if (depth == 0) return null;
-                    depth -= 1;
-                    if (depth == 0) return i;
-                },
-                else => {},
-            }
-        }
-        return null;
-    }
-
+    /// Worker chunk 의 출력 포맷. Node CJS 빌드일 때만 CJS, 그 외엔 IIFE (브라우저 호환).
     fn workerFormat(self: *const Bundler) EmitOptions.Format {
         return if (self.options.platform == .node and self.options.format == .cjs) .cjs else .iife;
     }
@@ -648,25 +566,6 @@ pub const Bundler = struct {
             .cjs => ".cjs",
             else => ".js",
         };
-    }
-
-    fn appendWorkerURLReplacement(self: *Bundler, result: *std.ArrayListUnmanaged(u8), filename: []const u8) !void {
-        if (self.options.platform == .node) {
-            try result.appendSlice(self.allocator, "new URL(\"./");
-            try result.appendSlice(self.allocator, filename);
-            try result.appendSlice(self.allocator, "\", ");
-            if (self.options.format == .cjs) {
-                try result.appendSlice(self.allocator, "require(\"node:url\").pathToFileURL(__filename).href)");
-            } else {
-                try result.appendSlice(self.allocator, "import.meta.url)");
-            }
-            return;
-        }
-
-        try result.append(self.allocator, '"');
-        try result.appendSlice(self.allocator, "./");
-        try result.appendSlice(self.allocator, filename);
-        try result.append(self.allocator, '"');
     }
 
     /// Worker 파일을 별도 번들로 빌드한다.
@@ -878,21 +777,40 @@ pub const Bundler = struct {
         var worker_output_files: std.ArrayList(OutputFile) = .empty;
         defer worker_output_files.deinit(self.allocator);
 
+        // codegen.emitNew lookup 용 per-module map. outer key = module 절대 경로 (graph 소유),
+        // inner key = import_record specifier (graph 소유), value = worker chunk filename
+        // (worker_output_map 소유). 본 map 은 reference 만 보관 — deinit 시 inner 만 정리.
+        var worker_map_per_module = std.StringHashMap(std.StringHashMap([]const u8)).init(self.allocator);
+        defer {
+            var oit = worker_map_per_module.valueIterator();
+            while (oit.next()) |inner| inner.deinit();
+            worker_map_per_module.deinit();
+        }
+
         {
             var gw_scope = profile.begin(.graph_worker);
             defer gw_scope.end();
             for (graph.worker_entries.items) |we| {
                 // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
-                if (worker_output_map.contains(we.resolved_path)) continue;
+                if (!worker_output_map.contains(we.resolved_path)) {
+                    const worker_result = self.buildWorker(we.resolved_path) catch {
+                        continue;
+                    };
+                    try worker_output_map.put(we.resolved_path, worker_result.filename);
+                    try worker_output_files.append(self.allocator, .{
+                        .path = try self.allocator.dupe(u8, worker_result.filename),
+                        .contents = worker_result.contents,
+                    });
+                }
 
-                const worker_result = self.buildWorker(we.resolved_path) catch {
-                    continue;
-                };
-                try worker_output_map.put(we.resolved_path, worker_result.filename);
-                try worker_output_files.append(self.allocator, .{
-                    .path = try self.allocator.dupe(u8, worker_result.filename),
-                    .contents = worker_result.contents,
-                });
+                const filename = worker_output_map.get(we.resolved_path) orelse continue;
+                const mod = graph.getModule(we.source_module) orelse continue;
+                if (we.record_index >= mod.import_records.len) continue;
+                const spec = mod.import_records[we.record_index].specifier;
+
+                const entry = try worker_map_per_module.getOrPut(mod.path);
+                if (!entry.found_existing) entry.value_ptr.* = std.StringHashMap([]const u8).init(self.allocator);
+                try entry.value_ptr.put(spec, filename);
             }
         }
 
@@ -1076,6 +994,7 @@ pub const Bundler = struct {
             dev_emit_opts.collect_module_codes = self.options.collect_module_codes;
             dev_emit_opts.polyfills = polyfill_entries.items;
             dev_emit_opts.run_before_main = self.options.run_before_main;
+            dev_emit_opts.worker_map_per_module = &worker_map_per_module;
 
             const la = graph.linkAccessor();
             for (0..graph.moduleCount()) |i| {
@@ -1119,6 +1038,7 @@ pub const Bundler = struct {
             var emit_opts = self.makeEmitOptions();
             emit_opts.preserve_modules = self.options.preserve_modules;
             emit_opts.preserve_modules_root = self.options.preserve_modules_root;
+            emit_opts.worker_map_per_module = &worker_map_per_module;
             outputs = try emitter.emitChunks(
                 self.allocator,
                 &graph,
@@ -1140,6 +1060,7 @@ pub const Bundler = struct {
             // 단일 파일 경로 (tree shaking + 소스맵 지원)
             var emit_opts = self.makeEmitOptions();
             emit_opts.polyfills = polyfill_entries.items;
+            emit_opts.worker_map_per_module = &worker_map_per_module;
             if (self.options.sourcemap.enable) emit_opts.sourcemap.enable = true;
             const emit_result = try emitter.emitWithTreeShaking(
                 self.allocator,
@@ -1153,11 +1074,6 @@ pub const Bundler = struct {
             dev_sourcemap_builder = emit_result.sourcemap_builder;
         }
         errdefer self.allocator.free(output);
-
-        // Worker URL 교체: 출력 코드에서 new URL("./worker.ts", "") → "./worker-[hash].js"
-        if (graph.worker_entries.items.len > 0 and output.len > 0) {
-            output = try self.rewriteWorkerURLs(@constCast(output), &graph, &worker_output_map);
-        }
 
         if (timer) |*t| {
             t_emit = t.read();
