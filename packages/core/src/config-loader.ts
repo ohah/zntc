@@ -19,8 +19,16 @@ import { init, transpile } from "../index";
 /** Phase 1: 객체만 지원. 함수형 (Vite 식 `({ command, mode, env }) => ...`) 은 #2103 (Phase 2-1) 에서 추가. */
 export type UserConfig = Partial<BuildOptions>;
 
-const TS_EXTS = new Set([".ts", ".mts", ".cts"]);
-const JS_EXTS = new Set([".mjs", ".js", ".cjs"]);
+/**
+ * 자동 탐색 우선순위. 동일 디렉토리에 다중 확장자 존재 시 첫 매치 반환.
+ * 사용자가 의도적으로 여러 형식을 두는 경우는 거의 없으므로 silent precedence 로 충분.
+ *
+ * 같은 배열에서 `TS_EXTS`/`JS_EXTS` 를 derive — 새 확장자 추가 시 한 곳만 고침.
+ */
+export const CONFIG_EXT_PRIORITY = [".ts", ".mts", ".cts", ".mjs", ".js", ".cjs", ".json"] as const;
+
+const TS_EXTS = new Set<string>(CONFIG_EXT_PRIORITY.slice(0, 3));
+const JS_EXTS = new Set<string>(CONFIG_EXT_PRIORITY.slice(3, 6));
 
 /**
  * config 파일을 로드한다. 확장자에 따라 self-compile 또는 직접 import.
@@ -128,15 +136,14 @@ function readFileOrThrowNotFound(absPath: string): string {
 }
 
 /**
- * 자동 탐색 우선순위. 동일 디렉토리에 다중 확장자 존재 시 첫 매치 반환.
- * 사용자가 의도적으로 여러 형식을 두는 경우는 거의 없으므로 silent precedence 로 충분.
- */
-export const CONFIG_EXT_PRIORITY = [".ts", ".mts", ".cts", ".mjs", ".js", ".cjs", ".json"] as const;
-
-/**
  * cwd 에서 `zts.config.*` 자동 탐색. 우선순위는 `CONFIG_EXT_PRIORITY` 참조.
  *
+ * 동기 stat (`existsSync`) 사용 — CLI 시작 시 한 번만 호출되므로 비용 무시 가능.
  * parent 디렉토리 traversal 은 모노레포 워크스페이스 (#2111 / Phase 3-4) 에서 처리.
+ *
+ * Note: Zig CLI (`src/main.zig:293` `applyZtsConfigJson`) 은 현재 `.json` 만
+ * 직접 처리한다. 다른 확장자는 JS CLI (`zts.mjs`) 만 자동 탐색하므로 두 경로의
+ * 동작이 의도적으로 갈린다. 통합은 #2105 (Phase 2-3 bundler 옵션 매핑) 에서.
  */
 export function findConfigPath(cwd: string): string | null {
   for (const ext of CONFIG_EXT_PRIORITY) {

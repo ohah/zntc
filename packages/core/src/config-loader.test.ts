@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -147,7 +147,7 @@ describe("findConfigPath", () => {
 
   function reset() {
     rmSync(dir, { recursive: true, force: true });
-    require("node:fs").mkdirSync(dir);
+    mkdirSync(dir);
   }
 
   test("config 부재 시 null", () => {
