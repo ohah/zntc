@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -22,6 +22,26 @@ interface Candidate {
   value: string;
   ztsCount: number;
 }
+
+interface CjsExportAudit {
+  sourceFileCount: number;
+  patternCounts: Record<CjsExportPattern, number>;
+  remainingMarkers: Candidate[];
+  removedMarkerCandidates: Candidate[];
+}
+
+type CjsExportPattern =
+  | "exports.x ="
+  | "module.exports.x ="
+  | "module.exports = { ... }"
+  | "Object.defineProperty(..., { value })";
+
+const cjsExportPatterns: CjsExportPattern[] = [
+  "exports.x =",
+  "module.exports.x =",
+  "module.exports = { ... }",
+  "Object.defineProperty(..., { value })",
+];
 
 function parseProjects(): string[] {
   const arg = process.argv.find((a) => a.startsWith("--projects="));
@@ -96,6 +116,104 @@ function countOccurrences(text: string, needle: string): number {
   return count;
 }
 
+function increment(map: Map<string, number>, value: string): void {
+  map.set(value, (map.get(value) ?? 0) + 1);
+}
+
+function countCjsExportPatterns(text: string): Record<CjsExportPattern, number> {
+  return {
+    "exports.x =": [...text.matchAll(/(^|[^\w$.])exports\.[A-Za-z_$][\w$]*\s*=/gm)].length,
+    "module.exports.x =": [...text.matchAll(/\bmodule\.exports\.[A-Za-z_$][\w$]*\s*=/g)]
+      .length,
+    "module.exports = { ... }": [...text.matchAll(/\bmodule\.exports\s*=\s*\{/g)].length,
+    "Object.defineProperty(..., { value })": [
+      ...text.matchAll(
+        /\bObject\.defineProperty\s*\(\s*(?:exports|module\.exports)\s*,\s*(["'`])(?:\\.|(?!\1).)+\1\s*,\s*\{[^}]*\bvalue\b/g,
+      ),
+    ].length,
+  };
+}
+
+function collectCjsExportMarkers(text: string): Map<string, number> {
+  const markers = new Map<string, number>();
+
+  for (const match of text.matchAll(/(^|[^\w$.])exports\.([A-Za-z_$][\w$]*)\s*=/gm)) {
+    increment(markers, `exports.${match[2]} =`);
+  }
+  for (const match of text.matchAll(/\bmodule\.exports\.([A-Za-z_$][\w$]*)\s*=/g)) {
+    increment(markers, `module.exports.${match[1]} =`);
+  }
+  for (const _match of text.matchAll(/\bmodule\.exports\s*=\s*\{/g)) {
+    increment(markers, "module.exports = {");
+  }
+  for (const match of text.matchAll(
+    /\bObject\.defineProperty\s*\(\s*(exports|module\.exports)\s*,\s*(["'`])((?:\\.|(?!\2).)+)\2\s*,\s*\{[^}]*\bvalue\b/g,
+  )) {
+    increment(
+      markers,
+      `Object.defineProperty(${match[1]}, ${JSON.stringify(match[3])}, { value })`,
+    );
+  }
+
+  return markers;
+}
+
+function readJavaScriptFiles(dir: string): { path: string; content: string }[] {
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
+
+  const files: { path: string; content: string }[] = [];
+  const visit = (current: string) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === ".bin") continue;
+      const fullPath = join(current, entry.name);
+      if (entry.isDirectory()) {
+        visit(fullPath);
+      } else if (entry.isFile() && /\.(?:cjs|js|mjs)$/.test(entry.name)) {
+        files.push({ path: fullPath, content: readFileSync(fullPath, "utf-8") });
+      }
+    }
+  };
+  visit(dir);
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function packageSourceFiles(project: string): { path: string; content: string }[] {
+  const candidates = [
+    join(ROOT, "tests/benchmark/node_modules", project),
+    join(ROOT, "node_modules", project),
+  ];
+  for (const candidate of candidates) {
+    const files = readJavaScriptFiles(candidate);
+    if (files.length > 0) return files;
+  }
+  return [];
+}
+
+function cjsExportAudit(project: string, zts: string): CjsExportAudit {
+  const sourceFiles = packageSourceFiles(project);
+  const source = sourceFiles.map((file) => file.content).join("\n");
+  const sourceMarkers = collectCjsExportMarkers(source);
+  const ztsMarkers = collectCjsExportMarkers(zts);
+
+  const patternCounts = countCjsExportPatterns(source);
+  const remainingMarkers = [...ztsMarkers]
+    .map(([value, ztsCount]) => ({ value, ztsCount }))
+    .sort((a, b) => b.ztsCount - a.ztsCount || a.value.localeCompare(b.value))
+    .slice(0, 12);
+  const removedMarkerCandidates = [...sourceMarkers]
+    .filter(([value]) => !ztsMarkers.has(value))
+    .map(([value, ztsCount]) => ({ value, ztsCount }))
+    .sort((a, b) => b.ztsCount - a.ztsCount || a.value.localeCompare(b.value))
+    .slice(0, 12);
+
+  return {
+    sourceFileCount: sourceFiles.length,
+    patternCounts,
+    remainingMarkers,
+    removedMarkerCandidates,
+  };
+}
+
 function ztsOnlyStrings(zts: string, baseline: string): Candidate[] {
   const strings = new Set<string>();
   const re = /(["'`])((?:\\.|(?!\1).){16,})\1/g;
@@ -154,6 +272,12 @@ function formatCandidates(candidates: Candidate[]): string {
   return candidates.map((c) => `  - ${c.value} (${c.ztsCount}x)`).join("\n");
 }
 
+function formatPatternCounts(patternCounts: Record<CjsExportPattern, number>): string {
+  return cjsExportPatterns
+    .map((pattern) => `  - ${pattern}: ${patternCounts[pattern]}`)
+    .join("\n");
+}
+
 const projects = parseProjects();
 const tempDir = mkdtempSync(join(tmpdir(), "zts-size-gap-"));
 const keepDir = join(tempDir, "outputs");
@@ -190,6 +314,15 @@ try {
     console.log(formatCandidates(wrapperMarkers(zts, base)));
     console.log("\nTop-level declarations");
     console.log(formatCandidates(topLevelDeclarations(zts, base)));
+    const audit = cjsExportAudit(result.project, zts);
+    console.log("\nCJS export pattern audit");
+    console.log(`  Source JS files: ${audit.sourceFileCount}`);
+    console.log("  Pattern counts:");
+    console.log(formatPatternCounts(audit.patternCounts));
+    console.log("  Remaining ZTS export markers:");
+    console.log(formatCandidates(audit.remainingMarkers));
+    console.log("  Removed dead marker candidates:");
+    console.log(formatCandidates(audit.removedMarkerCandidates));
   }
 } finally {
   if (!process.argv.includes("--keep-temp")) {
