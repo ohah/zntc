@@ -30,7 +30,6 @@ export const NAPI_INTERNAL_ONLY_KEYS = [
   "onReady",
   "onRebuild",
   "polyfills",
-  "preserveSymlinks",
   "profile",
   "profileFormat",
   "profileLevel",

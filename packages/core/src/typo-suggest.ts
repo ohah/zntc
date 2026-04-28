@@ -136,6 +136,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "resolveExtensions",
   "mainFields",
   "packagesExternal",
+  "preserveSymlinks",
   // ─── Bundle 출력 ───
   "splitting",
   "preserveModules",

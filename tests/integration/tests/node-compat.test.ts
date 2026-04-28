@@ -90,6 +90,72 @@ describe("Node.js 호환 edge case", () => {
       const run = await runNode(outFile);
       expect(run.stdout).toBe("hello string");
     });
+
+    // ─── #2154 preserveSymlinks 동작 검증 ───────────────────────────────────
+    // pnpm 식 fixture: node_modules/.store/foo@1/node_modules/foo/index.js (real)
+    //                  node_modules/foo → 위로 symlink.
+    // - preserveSymlinks=false (default): symlink 를 realpath 로 따라가 .store 경로로 resolve.
+    // - preserveSymlinks=true: symlink path 그대로 유지 → node_modules/foo/index.js 경로.
+    // 검증은 metafile 의 input 경로로 확인.
+
+    test("preserveSymlinks 미지정 (default false): pnpm-style symlink 가 realpath 로 resolve", async () => {
+      const f = await createFixture({
+        "entry.ts": `import {x} from 'foo';\nconsole.log(x);`,
+        "node_modules/.store/foo@1/node_modules/foo/package.json": `{"name":"foo","main":"index.js"}`,
+        "node_modules/.store/foo@1/node_modules/foo/index.js": `export const x = "PNPM_REALPATH_VALUE";`,
+      });
+      cleanup = f.cleanup;
+      symlinkSync(
+        join(f.dir, "node_modules/.store/foo@1/node_modules/foo"),
+        join(f.dir, "node_modules/foo"),
+      );
+
+      const outFile = join(f.dir, "out.js");
+      const bundle = await runZtsInDir(f.dir, [
+        "--bundle",
+        join(f.dir, "entry.ts"),
+        "--format=esm",
+        "-o",
+        outFile,
+        "--metafile=meta.json",
+      ]);
+      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+
+      const meta = JSON.parse(readFileSync(join(f.dir, "meta.json"), "utf8"));
+      const inputs = Object.keys(meta.inputs);
+      // realpath → .store 경로가 input 으로 등장.
+      expect(inputs.some((p) => p.includes("/.store/foo@1/"))).toBe(true);
+    });
+
+    test("preserveSymlinks=true: pnpm-style symlink 가 link path 그대로 유지", async () => {
+      const f = await createFixture({
+        "entry.ts": `import {x} from 'foo';\nconsole.log(x);`,
+        "node_modules/.store/foo@1/node_modules/foo/package.json": `{"name":"foo","main":"index.js"}`,
+        "node_modules/.store/foo@1/node_modules/foo/index.js": `export const x = "PNPM_LINK_VALUE";`,
+      });
+      cleanup = f.cleanup;
+      symlinkSync(
+        join(f.dir, "node_modules/.store/foo@1/node_modules/foo"),
+        join(f.dir, "node_modules/foo"),
+      );
+
+      const outFile = join(f.dir, "out.js");
+      const bundle = await runZtsInDir(f.dir, [
+        "--bundle",
+        join(f.dir, "entry.ts"),
+        "--format=esm",
+        "-o",
+        outFile,
+        "--metafile=meta.json",
+        "--preserve-symlinks",
+      ]);
+      if (bundle.exitCode !== 0) throw new Error(`zts bundle failed: ${bundle.stderr}`);
+
+      const meta = JSON.parse(readFileSync(join(f.dir, "meta.json"), "utf8"));
+      const inputs = Object.keys(meta.inputs);
+      // realpath 로 안 따라감 → .store 경로 미등장, link path 만 등장.
+      expect(inputs.some((p) => p.includes("/.store/foo@1/"))).toBe(false);
+    });
   });
 
   describe("상대 경로 entry", () => {
