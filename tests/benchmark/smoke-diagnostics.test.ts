@@ -64,10 +64,20 @@ describe("benchmark smoke diagnostics", () => {
   });
 
   test("size-gap.ts reports CJS export pattern audit for target projects", () => {
-    const r = runBun(["run", "tests/benchmark/size-gap.ts"]);
+    // 프로젝트 루트에서 `bun test` 가 부모일 때 자식 `bun` 의 stdout pipe 캡처가
+    // 비는 Bun 런타임 quirk 가 있다 (cwd 가 워크스페이스 하위면 정상). exec 전
+    // 셸 리다이렉트만 안전하게 stdout 을 받는다.
+    const dir = mkdtempSync(join(tmpdir(), "zts-size-gap-out-"));
+    const outPath = join(dir, "out.txt");
+    const r = spawnSync("sh", ["-c", `bun run tests/benchmark/size-gap.ts > "${outPath}"`], {
+      cwd: ROOT,
+      stdio: "pipe",
+      timeout: 180000,
+    });
 
     expect(r.status, r.stderr?.toString()).toBe(0);
-    const stdout = r.stdout.toString();
+    const stdout = readFileSync(outPath, "utf-8");
+    rmSync(dir, { recursive: true, force: true });
     expect(stdout).toContain("safe-buffer");
     expect(stdout).toContain("cookie");
     expect(stdout).toContain("path-to-regexp");
