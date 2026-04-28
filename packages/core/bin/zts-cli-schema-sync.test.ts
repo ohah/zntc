@@ -381,6 +381,19 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
       const candidate = flagToCandidateKey(flag);
       if (knownKeys.has(candidate)) cliExposedKeys.add(candidate);
     }
+    // spec.target 이 flag 이름과 다른 경우도 노출 키로 인정 (예: `--sourcemap=mode` 의
+    // target=sourcemapMode + extra={sourcemap:true} — spec 한 개가 두 BuildOptions 키를 set).
+    for (const spec of FLAG_REGISTRY as readonly {
+      target?: string;
+      extra?: Record<string, unknown>;
+    }[]) {
+      if (spec.target && knownKeys.has(spec.target)) cliExposedKeys.add(spec.target);
+      if (spec.extra) {
+        for (const k of Object.keys(spec.extra)) {
+          if (knownKeys.has(k)) cliExposedKeys.add(k);
+        }
+      }
+    }
 
     const missing: string[] = [];
     for (const key of knownKeys) {

@@ -124,6 +124,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "minifySyntax",
   // ─── Sourcemap ───
   "sourcemap",
+  "sourcemapMode",
   "sourcemapDebugIds",
   "sourcesContent",
   "sourceRoot",

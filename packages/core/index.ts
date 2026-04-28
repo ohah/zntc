@@ -317,6 +317,15 @@ interface BuildOptionsCommon {
    */
   inlineDynamicImports?: boolean;
   sourcemap?: boolean;
+  /**
+   * sourcemap 출력 형식 (`sourcemap: true` 일 때만 의미). esbuild / rolldown 호환 (#2152).
+   *  - `"linked"` (default): `.map` 파일 emit + `//# sourceMappingURL=<file>.map` 주석.
+   *  - `"external"`: `.map` 파일 emit, URL 주석 없음 (Sentry/CI 표준 — 위치 비공개).
+   *  - `"inline"`: `.map` 파일 미생성, JSON 을 base64 data URL 로 주석에 embed.
+   *
+   * watch / dev server 환경에서는 강제로 `linked` 적용 (HMR + DevTools 통합 보장).
+   */
+  sourcemapMode?: "linked" | "external" | "inline";
   sourcemapDebugIds?: boolean;
   sourcesContent?: boolean;
   treeShaking?: boolean;

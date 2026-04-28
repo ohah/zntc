@@ -478,4 +478,87 @@ describe("소스맵", () => {
     const hasRuntime = map.sources.some((s: string) => s === "node_modules/.zts/runtime.js");
     expect(hasRuntime).toBe(false);
   });
+
+  // ─── #2152 sourcemap mode (linked / external / inline) ─────────────────────
+
+  test("--sourcemap=linked (default): .map 파일 + sourceMappingURL 주석", async () => {
+    const fixture = await createFixture({
+      "index.ts": `console.log("hello");`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const result = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--sourcemap=linked",
+    ]);
+    if (result.exitCode !== 0) throw new Error(`zts failed: ${result.stderr}`);
+
+    expect(existsSync(outFile + ".map")).toBe(true);
+    const output = readFileSync(outFile, "utf-8");
+    expect(output).toContain("//# sourceMappingURL=out.js.map");
+    expect(output).not.toContain("data:application/json;base64,");
+  });
+
+  test("--sourcemap=external: .map 파일 emit 하되 URL 주석 없음 (Sentry 표준)", async () => {
+    const fixture = await createFixture({
+      "index.ts": `console.log("hello");`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+      "--sourcemap=external",
+    ]);
+
+    // .map 파일은 여전히 emit
+    expect(existsSync(outFile + ".map")).toBe(true);
+    const output = readFileSync(outFile, "utf-8");
+    // URL 주석은 없음 — 위치 비공개.
+    expect(output).not.toContain("//# sourceMappingURL=");
+    expect(output).not.toContain("data:application/json;base64,");
+  });
+
+  test("--sourcemap=inline: .map 파일 미생성 + base64 data URL 주석", async () => {
+    const fixture = await createFixture({
+      "index.ts": `console.log("hello");`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap=inline"]);
+
+    // 별도 .map 파일 미생성.
+    expect(existsSync(outFile + ".map")).toBe(false);
+    const output = readFileSync(outFile, "utf-8");
+    expect(output).toContain("//# sourceMappingURL=data:application/json;base64,");
+    // base64 payload 가 sourcemap V3 JSON — base64 decode 후 version: 3 검증.
+    const match = output.match(/sourceMappingURL=data:application\/json;base64,([^\n]+)/);
+    expect(match).toBeTruthy();
+    const decoded = JSON.parse(Buffer.from(match![1], "base64").toString("utf-8"));
+    expect(decoded.version).toBe(3);
+    expect(decoded.sources).toBeArray();
+  });
+
+  test("--sourcemap (단독, mode 미지정): linked 와 동일", async () => {
+    const fixture = await createFixture({
+      "index.ts": `console.log("hello");`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+
+    // mode 미지정 → linked 동작 (기존 동작).
+    expect(existsSync(outFile + ".map")).toBe(true);
+    const output = readFileSync(outFile, "utf-8");
+    expect(output).toContain("//# sourceMappingURL=out.js.map");
+  });
 });
