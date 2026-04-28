@@ -146,6 +146,7 @@ export {
 } from "./src/config-loader";
 export type { ConfigEnv, UserConfig, UserConfigFn, UserConfigInput } from "./src/config-loader";
 export { envToDefine, loadEnv } from "./src/load-env";
+export { KNOWN_CONFIG_KEYS, suggestKey, warnUnknownKeys } from "./src/typo-suggest";
 
 import type { UserConfigInput } from "./src/config-loader";
 

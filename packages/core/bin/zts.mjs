@@ -23,9 +23,11 @@ const {
   findConfigPath,
   findModeConfigPath,
   importAndResolveDefault,
+  KNOWN_CONFIG_KEYS,
   loadConfig,
   loadEnv,
   mergeUserConfigs,
+  warnUnknownKeys,
 } = coreModule;
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { resolve, dirname, basename, extname, join } from "node:path";
@@ -1248,6 +1250,11 @@ async function main() {
   // (config 가 .ts 면 loadConfig 내부에서 init() 이 idempotent 하게 호출됨)
   const { config, env: configEnv, dotenvVars } = await loadAutoConfig(opts);
   if (config) {
+    // unknown 키 검출 + Levenshtein "did you mean?" 제안 (#2109).
+    // 머지 전에 검사 — 사용자 typo 가 silent 무시되지 않도록.
+    if (opts.logLevel !== "silent") {
+      warnUnknownKeys(config, KNOWN_CONFIG_KEYS, { sourceLabel: "zts.config" });
+    }
     mergeConfigIntoOpts(opts, config);
   }
 
