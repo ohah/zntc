@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { NAPI_INTERNAL_ONLY_KEYS } from "./schema-allowlists.ts";
 import { KNOWN_CONFIG_KEYS, suggestKey, warnUnknownKeys } from "./typo-suggest.ts";
 
 describe("suggestKey", () => {
@@ -168,44 +169,13 @@ describe("KNOWN_CONFIG_KEYS", () => {
 
     const knownSet = new Set(KNOWN_CONFIG_KEYS);
     // typo-suggest 가 BuildOptions 와 drift 한 키만 보고. 의도적으로 KNOWN 에서 빠진 키는
-    // BUILD_OPTIONS_NOT_IN_KNOWN allowlist 에 등록.
+    // 공통 `NAPI_INTERNAL_ONLY_KEYS` (schema-allowlists.ts) + 이 테스트 전용 추가 키.
     const intentionallyMissing: ReadonlySet<string> = new Set([
-      // BuildOptions / NAPI 만 노출 — 사용자가 zts.config.* 에 직접 명시할 일 없음.
-      "allowOverwrite",
-      "analyze",
-      "blockList",
-      "collectModuleCodes",
-      "configurableExports",
-      "devMode",
-      "emitDiskSourcemap",
-      "entryErrorGuard",
-      "fallback",
-      "globalIdentifiers",
-      "nodePaths",
-      "onReady",
-      "onRebuild",
-      "outExtension",
-      "polyfills",
-      "preserveSymlinks",
-      "profile",
-      "profileFormat",
-      "profileLevel",
-      "reactRefresh",
-      "rootDir",
-      "runBeforeMain",
-      "silentConsoleErrorPatterns",
-      "scopeHoist",
-      "strictExecutionOrder",
-      "watchExclude",
-      "watchFolders",
-      "watchInclude",
-      "workletPluginVersion",
-      "workletTransform",
-      "experimentalCodeCache",
-      "assetRegistry",
-      "tsconfigRaw",
-      "watch",
-      "write",
+      ...NAPI_INTERNAL_ONLY_KEYS,
+      // typo-suggest 만의 추가 — KNOWN_CONFIG_KEYS 에서 의도적으로 빠진 외부 노출 키.
+      "analyze", // CLI flag 만 (`--analyze`), config 에 적을 일 없음
+      "outExtension", // CLI 의 `--out-extension:.js=` 가 outExtensionJs 로 분해됨
+      "watch", // BuildOptions 의 watch 는 NAPI 내부 (CLI --watch 와 다름)
     ]);
 
     const missing: string[] = [];
