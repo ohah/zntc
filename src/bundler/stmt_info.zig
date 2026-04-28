@@ -98,10 +98,14 @@ pub const ModuleStmtInfos = struct {
     }
 
     pub fn cjsExportFactByName(self: *const ModuleStmtInfos, export_name: []const u8) ?CjsExportFact {
+        var found: ?CjsExportFact = null;
         for (self.cjs_export_facts) |fact| {
-            if (std.mem.eql(u8, fact.export_name, export_name)) return fact;
+            if (!fact.is_safe_to_prune) continue;
+            if (!std.mem.eql(u8, fact.export_name, export_name)) continue;
+            if (found != null) return null;
+            found = fact;
         }
-        return null;
+        return found;
     }
 
     /// symbol_index가 선언된 statement 인덱스 반환.
@@ -564,6 +568,28 @@ fn appendCjsDefinePropertyFact(
     return true;
 }
 
+fn invalidateConflictingCjsExportFacts(facts: []CjsExportFact, stmts: []StmtInfo) void {
+    for (facts, 0..) |fact, i| {
+        if (!fact.is_safe_to_prune) continue;
+        var has_conflict = false;
+        for (facts[i + 1 ..]) |*other| {
+            if (!other.is_safe_to_prune) continue;
+            if (!std.mem.eql(u8, fact.export_name, other.export_name)) continue;
+            other.is_safe_to_prune = false;
+            if (other.statement_index < stmts.len) {
+                stmts[other.statement_index].has_side_effects = true;
+            }
+            has_conflict = true;
+        }
+        if (has_conflict) {
+            facts[i].is_safe_to_prune = false;
+            if (fact.statement_index < stmts.len) {
+                stmts[fact.statement_index].has_side_effects = true;
+            }
+        }
+    }
+}
+
 /// statement span 배열에서 pos를 포함하는 statement를 binary search.
 /// statement span은 소스 순서로 비중첩.
 pub fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
@@ -868,6 +894,8 @@ pub fn buildFromSemantic(
         stmts[stmt_i].referenced_symbols = slice;
     }
 
+    invalidateConflictingCjsExportFacts(cjs_export_facts_buf.items, stmts);
+
     const sym_to_writer_stmts = try finalizeWriterBuckets(allocator, writer_buckets, sym_to_stmt);
 
     // 역인덱스 구축 (buildReverseIndex 재사용)
@@ -1051,6 +1079,8 @@ pub fn build(
             stmt.referenced_symbols = try referenced_bufs[stmt_i].toOwnedSlice(allocator);
         }
     }
+
+    invalidateConflictingCjsExportFacts(cjs_export_facts_buf.items, stmts);
 
     const sym_to_writer_stmts = try finalizeWriterBuckets(allocator, writer_bufs, sym_to_stmt);
 

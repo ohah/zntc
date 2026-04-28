@@ -1797,6 +1797,7 @@ fn markUnusedCjsObjectProperties(
 ) !void {
     var has_unused = false;
     for (ts_infos.cjs_export_facts) |fact| {
+        if (!fact.is_safe_to_prune) continue;
         if (fact.kind == .object_property and !shaker.isExportUsed(mod_idx, fact.export_name)) {
             has_unused = true;
             break;
@@ -1815,6 +1816,7 @@ fn markUnusedCjsObjectProperties(
     }
 
     for (ts_infos.cjs_export_facts) |fact| {
+        if (!fact.is_safe_to_prune) continue;
         if (fact.kind != .object_property) continue;
         if (shaker.isExportUsed(mod_idx, fact.export_name)) continue;
         const prop_node_idx = fact.property_node orelse continue;
