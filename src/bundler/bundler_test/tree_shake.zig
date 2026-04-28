@@ -413,6 +413,79 @@ test "TreeShaking CJS: unsafe Object.defineProperty export forms are preserved" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNSAFE_DEFINE_GETTER_MARKER") != null);
 }
 
+test "TreeShaking CJS: module.exports object escape-key matches decoded named import" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\function liveImpl() { return "USED_OBJECT_ESCAPE_MARKER"; }
+        \\function deadImpl() { return "UNUSED_OBJECT_ESCAPE_MARKER"; }
+        \\module.exports = { "u\x73ed": liveImpl, dead: deadImpl };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_OBJECT_ESCAPE_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_OBJECT_ESCAPE_MARKER") == null);
+}
+
+test "TreeShaking CJS: module.exports duplicate escape-key preserves last-wins runtime value" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\function earlyImpl() { return "EARLY_DUP_KEY_MARKER"; }
+        \\function lateImpl() { return "LATE_DUP_KEY_MARKER"; }
+        \\module.exports = { used: earlyImpl, "u\x73ed": lateImpl };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    // 런타임 시맨틱: object literal duplicate key 는 last-wins → module.exports.used === lateImpl.
+    // 정적 prune 이 디코드된 이름 충돌을 인식하지 못하면 earlyImpl 만 살리고 lateImpl 을 dead 로
+    // 잘못 prune 한다 (correctness 버그). 안전한 동작은 충돌을 보수적으로 opaque 처리해
+    // lateImpl 의 body 가 보존되는 것.
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LATE_DUP_KEY_MARKER") != null);
+}
+
+test "TreeShaking CJS: Object.defineProperty escape export name matches decoded named import" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\function liveImpl() { return "USED_DEFINE_ESCAPE_MARKER"; }
+        \\function deadImpl() { return "UNUSED_DEFINE_ESCAPE_MARKER"; }
+        \\Object.defineProperty(exports, "u\x73ed", { value: liveImpl });
+        \\Object.defineProperty(exports, "dead", { value: deadImpl });
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_DEFINE_ESCAPE_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_DEFINE_ESCAPE_MARKER") == null);
+}
+
 test "TreeShaking CJS: named import prunes module.exports object shorthand property" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
