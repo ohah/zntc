@@ -461,14 +461,16 @@ fn collectCjsObjectExportCandidates(
     const indices = ast.extra_data.items[list.start .. list.start + list.len];
     if (indices.len == 0) return null;
 
-    var seen: std.StringHashMapUnmanaged(void) = .{};
-    defer seen.deinit(allocator);
     var out: std.ArrayListUnmanaged(CjsExportCandidate) = .empty;
     var success = false;
     defer if (!success) {
         for (out.items) |c| allocator.free(c.export_name);
         out.deinit(allocator);
     };
+    // `seen` 키는 `out.items[*].export_name` 을 빌려쓴다. 에러 경로에서
+    // `out` 의 name 들이 해제되기 전에 `seen` 이 먼저 비워지도록 LIFO 순서를 맞춘다.
+    var seen: std.StringHashMapUnmanaged(void) = .{};
+    defer seen.deinit(allocator);
 
     for (indices) |raw_prop| {
         const prop_idx: NodeIndex = @enumFromInt(raw_prop);
