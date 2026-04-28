@@ -168,6 +168,25 @@ describe("CJS static export fact 기반 DCE", () => {
     return existsSync(benchmarkNM) || existsSync(rootNM);
   };
 
+  test("safe-buffer — Buffer named import는 구형 Node fallback body를 끌고 오지 않음", () => {
+    if (!checkOrSkip("safe-buffer")) return;
+    const bundle = bundleIn(
+      BENCHMARK_DIR,
+      `import { Buffer } from "safe-buffer";\n` +
+        `console.log(Buffer.alloc(4).length === 4 ? "MATCH" : "MISS");\n`,
+      "safe-buffer-cjs-static-export",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).toMatch(/\bmodule\.exports\s*=\s*buffer\b/);
+    expect(bundle).not.toMatch(/\bexports\.Buffer\s*=/);
+    expect(bundle).not.toMatch(/\bmodule\.exports\.Buffer\s*=/);
+    expect(bundle).not.toMatch(/\bexports\.(?:alloc|allocUnsafe|allocUnsafeSlow|from)\s*=/);
+    expect(bundle).not.toMatch(/function\s+SafeBuffer\s*\(/);
+    expect(bundle).not.toContain("Argument must not be a number");
+    expect(bundle).not.toContain("allocUnsafeSlow");
+  });
+
   test("cookie — serialize named import는 parse 계열 body를 끌고 오지 않음", () => {
     if (!checkOrSkip("cookie")) return;
     const bundle = bundleIn(
@@ -181,6 +200,8 @@ describe("CJS static export fact 기반 DCE", () => {
     expect(runBundleSource(bundle)).toContain("MATCH");
     expect(bundle).not.toContain("argument str must be a string");
     expect(bundle).not.toMatch(/function\s+parse\s*\(/);
+    expect(bundle).not.toMatch(/\bexports\.(?:parse|parseCookie|parseSetCookie)\s*=/);
+    expect(bundle).not.toMatch(/\bmodule\.exports\.(?:parse|parseCookie|parseSetCookie)\s*=/);
   });
 
   test("path-to-regexp — match named import는 compile/stringify 계열 body를 끌고 오지 않음", () => {
