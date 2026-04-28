@@ -438,3 +438,136 @@ describe("mergeUserConfigs", () => {
     expect(merged.external).toEqual(["react"]); // undefined 는 skip
   });
 });
+
+// ─── extends 상속 (#2108 / Phase 3-1) ──────────────────────────────────────
+
+describe("loadConfig: extends 상속", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-extends-"));
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  function reset() {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir);
+  }
+
+  test("단일 string extends: base 머지 + override", async () => {
+    reset();
+    writeFileSync(
+      join(dir, "base.config.ts"),
+      `export default { format: "esm" as const, banner: "/* base */" };`,
+    );
+    writeFileSync(
+      join(dir, "main.config.ts"),
+      `export default { extends: "./base.config.ts", banner: "/* override */" };`,
+    );
+    const config = await loadConfig(join(dir, "main.config.ts"));
+    expect(config.format).toBe("esm");
+    expect(config.banner).toBe("/* override */");
+    expect((config as { extends?: unknown }).extends).toBeUndefined();
+  });
+
+  test("배열 extends: 왼쪽부터 적용 (오른쪽이 더 우선)", async () => {
+    reset();
+    writeFileSync(join(dir, "a.json"), JSON.stringify({ banner: "/* a */", target: "es2020" }));
+    writeFileSync(join(dir, "b.json"), JSON.stringify({ banner: "/* b */" }));
+    writeFileSync(
+      join(dir, "main.json"),
+      JSON.stringify({ extends: ["./a.json", "./b.json"], minify: true }),
+    );
+    const config = await loadConfig(join(dir, "main.json"));
+    // a → b → main 순서로 머지. b 가 a.banner override.
+    expect(config.banner).toBe("/* b */");
+    expect(config.target).toBe("es2020");
+    expect(config.minify).toBe(true);
+  });
+
+  test("3단계 chain: A extends B extends C", async () => {
+    reset();
+    writeFileSync(join(dir, "c.json"), JSON.stringify({ format: "esm", banner: "/* c */" }));
+    writeFileSync(join(dir, "b.json"), JSON.stringify({ extends: "./c.json", banner: "/* b */" }));
+    writeFileSync(join(dir, "a.json"), JSON.stringify({ extends: "./b.json", minify: true }));
+    const config = await loadConfig(join(dir, "a.json"));
+    expect(config.format).toBe("esm");
+    expect(config.banner).toBe("/* b */"); // c 의 banner 를 b 가 override
+    expect(config.minify).toBe(true);
+  });
+
+  test("define 객체 머지: extends + 현재 키 단위 합쳐짐", async () => {
+    reset();
+    writeFileSync(
+      join(dir, "base.json"),
+      JSON.stringify({ define: { __VER__: '"v1"', __ENV__: '"prod"' } }),
+    );
+    writeFileSync(
+      join(dir, "main.json"),
+      JSON.stringify({
+        extends: "./base.json",
+        define: { __ENV__: '"override"', __NEW__: '"x"' },
+      }),
+    );
+    const config = await loadConfig(join(dir, "main.json"));
+    expect(config.define).toEqual({
+      __VER__: '"v1"',
+      __ENV__: '"override"',
+      __NEW__: '"x"',
+    });
+  });
+
+  test("순환 참조 감지: A extends B extends A → throw", async () => {
+    reset();
+    writeFileSync(join(dir, "a.json"), JSON.stringify({ extends: "./b.json", banner: "/* a */" }));
+    writeFileSync(join(dir, "b.json"), JSON.stringify({ extends: "./a.json", banner: "/* b */" }));
+    await expect(loadConfig(join(dir, "a.json"))).rejects.toThrow(/circular extends detected/);
+  });
+
+  test("self extends: A extends A → throw", async () => {
+    reset();
+    writeFileSync(join(dir, "self.json"), JSON.stringify({ extends: "./self.json" }));
+    await expect(loadConfig(join(dir, "self.json"))).rejects.toThrow(/circular extends/);
+  });
+
+  test("extends 경로 부재 시 명확한 에러", async () => {
+    reset();
+    writeFileSync(join(dir, "main.json"), JSON.stringify({ extends: "./does-not-exist.json" }));
+    await expect(loadConfig(join(dir, "main.json"))).rejects.toThrow(/config file not found/);
+  });
+
+  test("절대 경로 extends 도 동작", async () => {
+    reset();
+    writeFileSync(join(dir, "base.json"), JSON.stringify({ banner: "/* abs-base */" }));
+    writeFileSync(join(dir, "main.json"), JSON.stringify({ extends: join(dir, "base.json") }));
+    const config = await loadConfig(join(dir, "main.json"));
+    expect(config.banner).toBe("/* abs-base */");
+  });
+
+  test("extends 가 mode-merge 와 함께 동작 (별도 단위 검증)", async () => {
+    reset();
+    writeFileSync(join(dir, "base.json"), JSON.stringify({ format: "esm", banner: "/* base */" }));
+    writeFileSync(join(dir, "main.json"), JSON.stringify({ extends: "./base.json", minify: true }));
+    const config = await loadConfig(join(dir, "main.json"));
+    expect(config.format).toBe("esm"); // extends 에서 상속
+    expect(config.banner).toBe("/* base */");
+    expect(config.minify).toBe(true); // 현재 config
+  });
+
+  test("extends 가 .ts 파일도 OK", async () => {
+    reset();
+    writeFileSync(
+      join(dir, "base.config.ts"),
+      `export default { format: "esm" as const, banner: "/* TS base */" };`,
+    );
+    writeFileSync(
+      join(dir, "main.config.json"),
+      JSON.stringify({ extends: "./base.config.ts", minify: true }),
+    );
+    const config = await loadConfig(join(dir, "main.config.json"));
+    expect(config.format).toBe("esm");
+    expect(config.banner).toBe("/* TS base */");
+    expect(config.minify).toBe(true);
+  });
+});
