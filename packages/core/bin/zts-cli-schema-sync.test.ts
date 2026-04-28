@@ -139,6 +139,58 @@ function extractInterfaceKeys(source: string, interfaceName: string): string[] {
   return fields;
 }
 
+/**
+ * 인터페이스 본문에서 `name → coarse-type` 매핑 추출. 정확한 타입이 아니라 silent type drift
+ * 감지용 (`outdir: string` 이 `string[]` 으로 바뀌면 잡힘). 분류:
+ *  - `boolean` → "boolean"
+ *  - `Array<...>` / `Foo[]` / `(...)[]` → "array"
+ *  - `Record<...>` / `{ ... }` → "object"
+ *  - `(...) => ...` → "function"
+ *  - 그 외 (string, "foo" | "bar", number 등) → "string"
+ */
+function extractTypeMap(source: string, interfaceName: string): Map<string, string> {
+  const re = new RegExp(`(?:export\\s+)?interface\\s+${interfaceName}\\s*\\{`);
+  const match = re.exec(source);
+  if (!match) throw new Error(`${interfaceName} not found`);
+  const bodyStart = match.index + match[0].length;
+  let depth = 1;
+  let i = bodyStart;
+  while (i < source.length && depth > 0) {
+    const c = source[i];
+    if (c === "{") depth += 1;
+    else if (c === "}") depth -= 1;
+    i += 1;
+  }
+  const body = source.slice(bodyStart, i - 1);
+  const out = new Map<string, string>();
+  // 한 줄 단위 파싱 — 다중 줄 type 은 첫 줄만 보고 coarse 분류 (대부분 충분).
+  for (const rawLine of body.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("//") || line.startsWith("*") || line.startsWith("/*")) continue;
+    const m = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*\??\s*:\s*(.+?);?\s*$/);
+    if (!m) continue;
+    const name = m[1];
+    const type = m[2].trim();
+    out.set(name, classifyType(type));
+  }
+  return out;
+}
+
+function classifyType(type: string): string {
+  // Function: `(args) => ...`
+  if (/^\(.*\)\s*=>/.test(type)) return "function";
+  // Array: `Foo[]` / `Array<...>` / `(...)[]`
+  if (/\[\]\s*$/.test(type) || /^Array\s*</.test(type) || /^ReadonlyArray\s*</.test(type))
+    return "array";
+  // Object: `Record<...>` / `{ ... }`
+  if (/^Record\s*</.test(type) || type.startsWith("{")) return "object";
+  // Boolean
+  if (type === "boolean") return "boolean";
+  if (type === "number") return "number";
+  // 그 외 (string, "foo" | "bar", string union 등)
+  return "string";
+}
+
 /** kebab-case → camelCase. `--global-name` → `globalName`. */
 function kebabToCamel(s: string): string {
   return s.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
@@ -417,6 +469,86 @@ describe("WASM BundleOptionsInput ↔ BuildOptions / TranspileOptions schema syn
         `[schema drift] WASM BundleOptionsInput 키가 BuildOptions/TranspileOptions 에 없음: ${drift.join(", ")}\n` +
           `WASM 명명을 통일 OR wasmOnlyKeys allowlist 에 등록.`,
       );
+    }
+  });
+});
+
+// 핵심 키 ~12개의 coarse type (string|boolean|object|array|function) 이 BuildOptions /
+// TranspileOptions / WASM 사이에서 일치하는지 검증 — silent type drift 차단.
+// 회귀 시나리오: `outdir: string` 이 누군가 `string[]` 으로 바꾸거나, `define: object` 가 `array`
+// 로 바뀌는 등 — 키 이름은 그대로 매칭되지만 의미 깨짐.
+describe("schema sync — 핵심 키 coarse type drift 검증", () => {
+  const indexSource = readFileSync(INDEX_PATH, "utf8");
+  const sharedSource = readFileSync(SHARED_INDEX_PATH, "utf8");
+  const wasmSource = readFileSync(WASM_INDEX_PATH, "utf8");
+
+  const buildOptionsTypes = extractTypeMap(indexSource, "BuildOptionsCommon");
+  const transpileOptionsTypes = extractTypeMap(sharedSource, "TranspileOptions");
+  const wasmTypes = extractTypeMap(wasmSource, "BundleOptionsInput");
+
+  // 핵심 키 + 기대 coarse type. 의도적 정의 — drift 시 여기까지 같이 갱신해야 함.
+  const CORE_TYPES: ReadonlyArray<readonly [string, string]> = [
+    ["entryPoints", "array"],
+    ["outdir", "string"],
+    ["outfile", "string"],
+    ["format", "string"],
+    ["platform", "string"],
+    ["target", "string"],
+    ["minify", "boolean"],
+    ["sourcemap", "boolean"],
+    ["external", "array"],
+    ["define", "object"],
+    ["alias", "object"],
+    ["loader", "object"],
+    ["jsxFactory", "string"],
+    ["jsx", "string"],
+  ];
+
+  test("BuildOptionsCommon 의 핵심 키 type 이 기대값과 일치", () => {
+    const mismatched: string[] = [];
+    for (const [key, expected] of CORE_TYPES) {
+      const actual = buildOptionsTypes.get(key);
+      if (actual === undefined) continue; // BuildOptionsCommon 에 없는 키 (예: target — union variant) 는 skip
+      if (actual !== expected)
+        mismatched.push(`${key}: BuildOptionsCommon='${actual}' expected='${expected}'`);
+    }
+    expect(mismatched).toEqual([]);
+  });
+
+  // TranspileOptions 는 NAPI 경계 형식이라 일부 키가 BuildOptions 와 다른 표현을 가짐.
+  // 의도적 차이는 allowlist 에 등록 (key → transpile 측 expected type).
+  const TRANSPILE_TYPE_OVERRIDES: ReadonlyMap<string, string> = new Map([
+    // BuildOptions 는 Record<string, string> 객체, TranspileOptions 는 NAPI 가 받는 array
+    // (`{ key, value }` pair 의 배열). 의도적.
+    ["define", "array"],
+  ]);
+
+  test("TranspileOptions 의 핵심 키 type 이 기대값과 일치 (TRANSPILE 식 override 반영)", () => {
+    const mismatched: string[] = [];
+    for (const [key, expected] of CORE_TYPES) {
+      const actual = transpileOptionsTypes.get(key);
+      if (actual === undefined) continue;
+      const target = TRANSPILE_TYPE_OVERRIDES.get(key) ?? expected;
+      if (actual !== target)
+        mismatched.push(`${key}: TranspileOptions='${actual}' expected='${target}'`);
+    }
+    expect(mismatched).toEqual([]);
+  });
+
+  test("WASM BundleOptionsInput 의 공통 키 type 이 BuildOptions/TranspileOptions 와 일치", () => {
+    // WASM 은 부분 집합이라 누락 키는 skip — 존재하는 키의 type 만 비교.
+    const drift: string[] = [];
+    for (const [key, wasmType] of wasmTypes) {
+      const buildType = buildOptionsTypes.get(key);
+      const transpileType = transpileOptionsTypes.get(key);
+      const refType = buildType ?? transpileType;
+      if (!refType) continue; // wasmOnly (e.g. unsupported, codeSplitting)
+      if (wasmType !== refType) {
+        drift.push(`${key}: WASM='${wasmType}' BuildOptions/TranspileOptions='${refType}'`);
+      }
+    }
+    if (drift.length > 0) {
+      throw new Error(`[type drift] WASM 과 NAPI 의 키 type 불일치:\n  ${drift.join("\n  ")}`);
     }
   });
 });
