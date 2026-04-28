@@ -715,6 +715,23 @@ export interface PluginBuild {
     callback: (args: { code: string; chunk: string }) => HookResult<{ code: string }>,
   ): void;
   onGenerateBundle(callback: (outputs: OutputFile[]) => void | Promise<void>): void;
+  /**
+   * Bundle 시작 시 1회 호출. Rollup `buildStart` 와 동일 의미. 인자로 build 옵션 전달
+   * (인스펙션 용도, 수정은 silent ignore).
+   *
+   * 현재 `build()`/`buildSync()` 만 지원. watch 모드의 rebuild 별 호출은 미구현 (별도 follow-up).
+   */
+  onBuildStart(callback: (options: BuildOptions) => void | Promise<void>): void;
+  /**
+   * Bundle 종료 시 1회 호출. Rollup `buildEnd` 와 동일 — 성공/실패 모두 호출, 실패 시 error 전달.
+   * `onCloseBundle` 보다 먼저 호출됨 (write 전).
+   */
+  onBuildEnd(callback: (error?: Error) => void | Promise<void>): void;
+  /**
+   * Output 파일 write 완료 후 1회 호출. Rollup `closeBundle` 와 동일 — temp 파일 cleanup,
+   * 외부 시스템에 빌드 완료 알림 등에 사용.
+   */
+  onCloseBundle(callback: () => void | Promise<void>): void;
   onAstFunction(
     options: { filter: RegExp },
     callback: (info: AstFunctionInfo) => HookResult<AstFunctionResult>,
@@ -766,6 +783,23 @@ export interface BuildResult {
 }
 
 /**
+ * filter 없는 lifecycle/generate hook 의 callback 들을 sequential 로 실행하고 swallow.
+ * Rollup 명세 — 한 plugin 의 실패가 다른 plugin 을 차단하지 않는다.
+ */
+async function runFireAndForget<T>(
+  callbacks: Array<(arg: T) => void | Promise<void>>,
+  arg: T,
+): Promise<void> {
+  for (const cb of callbacks) {
+    try {
+      await cb(arg);
+    } catch {
+      // pass
+    }
+  }
+}
+
+/**
  * plugins 배열을 처리하여 단일 dispatcher 함수를 생성한다.
  * dispatcher(hookName, arg1, arg2) → result | null
  */
@@ -778,7 +812,10 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     renderChunk: [],
     resolveContext: [],
   };
-  const generateBundleCallbacks: Array<(outputs: OutputFile[]) => void> = [];
+  const generateBundleCallbacks: Array<(outputs: OutputFile[]) => void | Promise<void>> = [];
+  const buildStartCallbacks: Array<(options: BuildOptions) => void | Promise<void>> = [];
+  const buildEndCallbacks: Array<(error?: Error) => void | Promise<void>> = [];
+  const closeBundleCallbacks: Array<() => void | Promise<void>> = [];
   const astFunctionHooks: HookEntry[] = [];
 
   for (const plugin of plugins) {
@@ -798,6 +835,15 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
       onGenerateBundle(cb) {
         generateBundleCallbacks.push(cb);
       },
+      onBuildStart(cb) {
+        buildStartCallbacks.push(cb);
+      },
+      onBuildEnd(cb) {
+        buildEndCallbacks.push(cb);
+      },
+      onCloseBundle(cb) {
+        closeBundleCallbacks.push(cb);
+      },
       onAstFunction(opts, cb) {
         astFunctionHooks.push({ filter: opts.filter, callback: cb });
       },
@@ -815,11 +861,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     renderChunk: (arg1, arg2) => [arg2 ?? "", { code: arg1, chunk: arg2 }],
   };
 
-  return async function dispatcher(
-    hookName: string,
-    arg1: string | OutputFile[],
-    arg2: string | null,
-  ) {
+  return async function dispatcher(hookName: string, arg1: unknown, arg2: string | null) {
     // astFunction: arg1이 JSON 직렬화된 FunctionInfo
     if (hookName === "astFunction") {
       if (astFunctionHooks.length === 0) return null;
@@ -870,16 +912,22 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
       return null;
     }
 
-    // generateBundle: arg1이 OutputFile[] 배열
+    // filter 없이 모든 callback 순차 호출 (Rollup sequential 명세). 한 plugin 실패가
+    // 다른 plugin 차단 안 되도록 try/catch swallow.
     if (hookName === "generateBundle") {
-      const outputs = arg1 as OutputFile[];
-      for (const cb of generateBundleCallbacks) {
-        try {
-          await cb(outputs);
-        } catch {
-          // 에러 시 건너뛰기
-        }
-      }
+      await runFireAndForget(generateBundleCallbacks, arg1 as OutputFile[]);
+      return null;
+    }
+    if (hookName === "buildStart") {
+      await runFireAndForget(buildStartCallbacks, arg1 as BuildOptions);
+      return null;
+    }
+    if (hookName === "buildEnd") {
+      await runFireAndForget(buildEndCallbacks, arg1 as Error | undefined);
+      return null;
+    }
+    if (hookName === "closeBundle") {
+      await runFireAndForget(closeBundleCallbacks, undefined);
       return null;
     }
 
@@ -1044,6 +1092,10 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
 /**
  * 번들링을 비동기적으로 실행한다. 이벤트 루프를 블로킹하지 않음.
  * JS 플러그인은 이 함수에서만 지원됨.
+ *
+ * Plugin lifecycle 호출 순서: buildStart → (NAPI build) → buildEnd → write → closeBundle.
+ * `buildEnd` 는 NAPI 실패 시에도 호출되며 error 인자가 전달된다 (Rollup 동일).
+ * `closeBundle` 은 write 성공 시에만 호출.
  */
 export async function build(options: BuildOptions): Promise<BuildResult> {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
@@ -1051,13 +1103,26 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
   const napiOptions = prepareNapiOptions(options);
 
-  if (options.plugins?.length) {
-    napiOptions._pluginDispatcher = createPluginDispatcher(options.plugins);
-  }
+  const dispatcher = options.plugins?.length ? createPluginDispatcher(options.plugins) : null;
+  if (dispatcher) napiOptions._pluginDispatcher = dispatcher;
 
-  const result: BuildResult = await native.build(napiOptions);
+  if (dispatcher) await dispatcher("buildStart", options, null);
+
+  let result: BuildResult;
+  try {
+    result = await native.build(napiOptions);
+  } catch (err) {
+    if (dispatcher) {
+      await dispatcher("buildEnd", err instanceof Error ? err : new Error(String(err)), null);
+    }
+    throw err;
+  }
+  if (dispatcher) await dispatcher("buildEnd", undefined, null);
+
   postProcessCssOutputs(result, options);
   writeOutputFiles(result, options);
+
+  if (dispatcher) await dispatcher("closeBundle", undefined, null);
   return result;
 }
 
@@ -1213,6 +1278,12 @@ export interface RollupPlugin {
     chunk: string,
   ): MaybePromise<string | null | undefined | void | { code: string }>;
   generateBundle?(outputs: OutputFile[]): MaybePromise<void>;
+  /** Bundle 시작 시 1회. Rollup `buildStart` 호환 — `this` 인자 미지원, options 만 forward. */
+  buildStart?(options: BuildOptions): MaybePromise<void>;
+  /** Bundle 종료 시 1회. Rollup `buildEnd` 호환 — error 가 있으면 빌드 실패. */
+  buildEnd?(error?: Error): MaybePromise<void>;
+  /** Output 파일 write 완료 후. Rollup `closeBundle` 호환. */
+  closeBundle?(): MaybePromise<void>;
 }
 
 export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
@@ -1275,6 +1346,27 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
         const hook = rollupPlugin.generateBundle;
         build.onGenerateBundle(async (outputs) => {
           await hook(outputs);
+        });
+      }
+
+      if (rollupPlugin.buildStart) {
+        const hook = rollupPlugin.buildStart;
+        build.onBuildStart(async (opts) => {
+          await hook(opts);
+        });
+      }
+
+      if (rollupPlugin.buildEnd) {
+        const hook = rollupPlugin.buildEnd;
+        build.onBuildEnd(async (err) => {
+          await hook(err);
+        });
+      }
+
+      if (rollupPlugin.closeBundle) {
+        const hook = rollupPlugin.closeBundle;
+        build.onCloseBundle(async () => {
+          await hook();
         });
       }
     },

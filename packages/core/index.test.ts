@@ -368,6 +368,8 @@ describe("@zts/core build + plugins", () => {
       join(dir, "app.ts"),
       'import { greet } from "./virtual:greeting";\nconsole.log(greet());',
     );
+    // lifecycle hook 테스트용 — plugin 의존성 없는 깔끔한 entry.
+    writeFileSync(join(dir, "lifecycle-entry.ts"), 'console.log("hi");');
   });
 
   afterAll(() => {
@@ -680,6 +682,88 @@ describe("@zts/core build + plugins", () => {
     });
     // css import가 resolve 안 되므로 에러, 하지만 빌드 자체는 크래시하지 않음
     expect(result.outputFiles.length).toBeGreaterThan(0);
+  });
+
+  test("lifecycle hooks (#2156): buildStart → buildEnd → closeBundle 순서 + 1회씩", async () => {
+    const events: string[] = [];
+    const lifecyclePlugin: ZtsPlugin = {
+      name: "lifecycle-tracker",
+      setup(build) {
+        build.onBuildStart(() => events.push("buildStart"));
+        build.onBuildEnd((err) => events.push(err ? "buildEnd:error" : "buildEnd:ok"));
+        build.onCloseBundle(() => events.push("closeBundle"));
+        build.onTransform({ filter: /lifecycle-entry\.ts$/ }, () => {
+          events.push("transform");
+          return null;
+        });
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "lifecycle-entry.ts")],
+      plugins: [lifecyclePlugin],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(events[0]).toBe("buildStart");
+    expect(events.indexOf("transform")).toBeGreaterThan(0);
+    expect(events).toContain("buildEnd:ok");
+    expect(events[events.length - 1]).toBe("closeBundle");
+    expect(events.filter((e) => e === "buildStart").length).toBe(1);
+    expect(events.filter((e) => e.startsWith("buildEnd")).length).toBe(1);
+    expect(events.filter((e) => e === "closeBundle").length).toBe(1);
+  });
+
+  test("lifecycle hooks (#2156): plugin error 는 swallow 되고 다른 plugin 차단 안 함", async () => {
+    const events: string[] = [];
+    const throwingPlugin: ZtsPlugin = {
+      name: "thrower",
+      setup(build) {
+        const boom = () => {
+          throw new Error("intentional");
+        };
+        build.onBuildStart(boom);
+        build.onBuildEnd(boom);
+        build.onCloseBundle(boom);
+      },
+    };
+    const trackingPlugin: ZtsPlugin = {
+      name: "tracker",
+      setup(build) {
+        build.onBuildStart(() => events.push("start"));
+        build.onBuildEnd(() => events.push("end"));
+        build.onCloseBundle(() => events.push("close"));
+      },
+    };
+
+    const result = await build({
+      entryPoints: [join(dir, "lifecycle-entry.ts")],
+      plugins: [throwingPlugin, trackingPlugin],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(events).toEqual(["start", "end", "close"]);
+  });
+
+  test("lifecycle hooks (#2156): vitePlugin 어댑터가 buildStart/buildEnd/closeBundle 을 forward", async () => {
+    const events: string[] = [];
+    const rollupAdapter = vitePlugin({
+      name: "rollup-style",
+      buildStart() {
+        events.push("rollup-buildStart");
+      },
+      buildEnd(err) {
+        events.push(err ? "rollup-buildEnd:error" : "rollup-buildEnd:ok");
+      },
+      closeBundle() {
+        events.push("rollup-closeBundle");
+      },
+    });
+
+    const result = await build({
+      entryPoints: [join(dir, "lifecycle-entry.ts")],
+      plugins: [rollupAdapter],
+    });
+    expect(result.errors.length).toBe(0);
+    expect(events).toEqual(["rollup-buildStart", "rollup-buildEnd:ok", "rollup-closeBundle"]);
   });
 });
 
