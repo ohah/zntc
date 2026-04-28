@@ -1572,7 +1572,8 @@ test "runtime helper: __copyProps uses getOwnPropertyNames, not Object.keys" {
     // ESM entry가 CJS를 import → __toESM/__copyProps 필요
     try writeFile(tmp.dir, "entry.ts", "import greet from './cjs-mod.js';\nconsole.log(greet());");
     try writeFile(tmp.dir, "cjs-mod.js",
-        \\module.exports = function greet() { return 'hello'; };
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\exports.default = function greet() { return 'hello'; };
     );
 
     const entry = try absPath(&tmp, "entry.ts");

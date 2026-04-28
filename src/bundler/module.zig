@@ -189,6 +189,9 @@ pub const Module = struct {
     /// scanner가 `module.exports`/`exports.*` 런타임 export 신호를 본 경우.
     /// export-star fallback은 빈 type barrel이 임의 이름을 claim하지 않도록 이 값으로 제한한다.
     has_cjs_export_signal: bool = false,
+    /// CJS default import를 `__toESM(require_x()).default` 대신 `require_x()`로 낮출 수 있는지.
+    /// 직접 `module.exports = ...` shape이고 `__esModule`/exports member 신호가 없을 때만 true.
+    can_skip_cjs_default_interop: bool = false,
     /// 모듈 정의 형식 (확장자/package.json 기반, Rolldown ModuleDefFormat)
     def_format: types.ModuleDefFormat = .unknown,
     /// Top-Level Await 사용 여부. TLA 모듈을 static import하는 모듈도 전이적으로 true.
@@ -409,6 +412,12 @@ pub const Module = struct {
     pub fn interop(self: *const Module, importee: *const Module) ?types.Interop {
         if (importee.exports_kind != .commonjs) return null;
         return if (self.def_format.isEsm()) .node else .babel;
+    }
+
+    pub fn canUseDirectCjsDefaultImport(self: *const Module, importee: *const Module) bool {
+        return importee.wrap_kind == .cjs and
+            importee.can_skip_cjs_default_interop and
+            !self.def_format.isEsm();
     }
 
     /// 번들 출력 순서 comparator.

@@ -53,6 +53,8 @@ pub const ScanResult = struct {
     has_module_exports: bool,
     /// exports.xxx = ... 할당 존재 여부
     has_exports_dot: bool,
+    /// exports.__esModule / module.exports.__esModule marker 존재 여부
+    has_esmodule_marker: bool = false,
 };
 
 /// AST를 순회하여 import/export/require를 추출하고 CJS 신호를 감지한다.
@@ -73,6 +75,7 @@ pub fn extractImportsWithCjsDetectionAndDefines(
     var has_cjs_require = false;
     var has_module_exports = false;
     var has_exports_dot = false;
+    var has_esmodule_marker = false;
 
     var dead_ranges: std.ArrayList(Span) = .empty;
     defer dead_ranges.deinit(allocator);
@@ -122,6 +125,9 @@ pub fn extractImportsWithCjsDetectionAndDefines(
                     try records.append(allocator, record);
                 } else if (tryExtractGlob(ast, node)) |record| {
                     try records.append(allocator, record);
+                } else if (isObjectDefinePropertyEsModuleMarker(ast, node)) {
+                    has_esmodule_marker = true;
+                    has_exports_dot = true;
                 } else if (!has_exports_dot and isObjectDefinePropertyExports(ast, node)) {
                     has_exports_dot = true;
                 }
@@ -135,7 +141,10 @@ pub fn extractImportsWithCjsDetectionAndDefines(
                 if (!has_module_exports and isModuleExportsAssign(ast, node)) {
                     has_module_exports = true;
                 }
-                if (!has_exports_dot and isExportsDotAssign(ast, node)) {
+                if (isEsModuleMarkerAssign(ast, node)) {
+                    has_esmodule_marker = true;
+                    has_exports_dot = true;
+                } else if (!has_exports_dot and isExportsDotAssign(ast, node)) {
                     has_exports_dot = true;
                 }
             },
@@ -149,6 +158,7 @@ pub fn extractImportsWithCjsDetectionAndDefines(
         .has_cjs_require = has_cjs_require,
         .has_module_exports = has_module_exports,
         .has_exports_dot = has_exports_dot,
+        .has_esmodule_marker = has_esmodule_marker,
     };
 }
 
@@ -630,30 +640,46 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
 /// Babel/TS CJS output often declares `__esModule` this way; after transformer pre-pass
 /// rewrites `require()` calls, this may be the remaining CJS signal.
 fn isObjectDefinePropertyExports(ast: *const Ast, node: Node) bool {
+    return getObjectDefinePropertyExportsTarget(ast, node) != null;
+}
+
+fn isObjectDefinePropertyEsModuleMarker(ast: *const Ast, node: Node) bool {
+    const args_start = getObjectDefinePropertyExportsTarget(ast, node) orelse return false;
+    if (!ast.hasExtra(args_start, 2)) return false;
+    const prop_idx = ast.readExtraNode(args_start, 1);
+    const prop = getStringLiteralText(ast, prop_idx) orelse return false;
+    return std.mem.eql(u8, prop, "__esModule");
+}
+
+fn getObjectDefinePropertyExportsTarget(ast: *const Ast, node: Node) ?u32 {
     const e = node.data.extra;
-    if (!ast.hasExtra(e, 2)) return false;
+    if (!ast.hasExtra(e, 2)) return null;
 
     const callee_idx = ast.readExtraNode(e, 0);
-    const callee_parts = getStaticMemberParts(ast, callee_idx) orelse return false;
-    if (!std.mem.eql(u8, callee_parts.object, "Object")) return false;
-    if (!std.mem.eql(u8, callee_parts.property, "defineProperty")) return false;
+    const callee_parts = getStaticMemberParts(ast, callee_idx) orelse return null;
+    if (!std.mem.eql(u8, callee_parts.object, "Object")) return null;
+    if (!std.mem.eql(u8, callee_parts.property, "defineProperty")) return null;
 
     const args_len = ast.readExtra(e, 2);
-    if (args_len == 0) return false;
+    if (args_len < 1) return null;
 
     const args_start = ast.readExtra(e, 1);
-    if (args_start >= ast.extra_data.items.len) return false;
+    if (args_start >= ast.extra_data.items.len) return null;
     const target_idx = ast.readExtraNode(args_start, 0);
 
-    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len) return false;
+    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len) return null;
     const target = ast.getNode(target_idx);
     if (target.tag == .identifier_reference and std.mem.eql(u8, ast.getText(target.span), "exports")) {
-        return true;
+        return args_start;
     }
 
-    const target_parts = getStaticMemberParts(ast, target_idx) orelse return false;
-    return std.mem.eql(u8, target_parts.object, "module") and
-        std.mem.eql(u8, target_parts.property, "exports");
+    const target_parts = getStaticMemberParts(ast, target_idx) orelse return null;
+    if (std.mem.eql(u8, target_parts.object, "module") and
+        std.mem.eql(u8, target_parts.property, "exports"))
+    {
+        return args_start;
+    }
+    return null;
 }
 
 const MemberParts = struct { object: []const u8, property: []const u8 };
@@ -691,6 +717,28 @@ fn getAssignMemberParts(ast: *const Ast, node: Node) ?MemberParts {
 fn isModuleExportsAssign(ast: *const Ast, node: Node) bool {
     const parts = getAssignMemberParts(ast, node) orelse return false;
     return std.mem.eql(u8, parts.object, "module") and std.mem.eql(u8, parts.property, "exports");
+}
+
+/// assignment_expression의 left가 exports.__esModule 또는 module.exports.__esModule인지 확인.
+fn isEsModuleMarkerAssign(ast: *const Ast, node: Node) bool {
+    const parts = getAssignMemberParts(ast, node) orelse return false;
+    if (std.mem.eql(u8, parts.object, "exports") and std.mem.eql(u8, parts.property, "__esModule")) {
+        return true;
+    }
+
+    const lhs_idx = node.data.binary.left;
+    if (lhs_idx.isNone() or @intFromEnum(lhs_idx) >= ast.nodes.items.len) return false;
+    const lhs_node = ast.getNode(lhs_idx);
+    if (lhs_node.tag != .static_member_expression) return false;
+    const outer_e = lhs_node.data.extra;
+    const outer_obj_idx = ast.readExtraNode(outer_e, 0);
+    const outer_prop_idx = ast.readExtraNode(outer_e, 1);
+    if (outer_obj_idx.isNone() or outer_prop_idx.isNone()) return false;
+    if (@intFromEnum(outer_obj_idx) >= ast.nodes.items.len or @intFromEnum(outer_prop_idx) >= ast.nodes.items.len) return false;
+    const outer_prop = ast.getNode(outer_prop_idx);
+    if (!std.mem.eql(u8, ast.getText(outer_prop.span), "__esModule")) return false;
+    const inner_parts = getStaticMemberParts(ast, outer_obj_idx) orelse return false;
+    return std.mem.eql(u8, inner_parts.object, "module") and std.mem.eql(u8, inner_parts.property, "exports");
 }
 
 /// assignment_expression의 left가 exports.xxx인지 확인.

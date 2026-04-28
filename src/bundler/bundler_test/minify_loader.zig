@@ -2844,7 +2844,10 @@ test "#1621 non-minify: __esm/__export/__toCommonJS long names preserved" {
 
 // Helper: CJS 모듈을 default import 하면 preamble 에서 __toESM 래핑이 활성화됨.
 fn writeToEsmFixture(tmp_dir: std.fs.Dir) !void {
-    try writeFile(tmp_dir, "lib.cjs", "module.exports = { v: 42 };");
+    try writeFile(tmp_dir, "lib.cjs",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\exports.default = { v: 42 };
+    );
     try writeFile(tmp_dir, "entry.ts",
         \\import lib from './lib.cjs';
         \\console.log(lib.v);

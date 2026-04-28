@@ -291,11 +291,11 @@ test "CJS: empty CJS module" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_empty") != null);
 }
 
-test "CJS: __toESM wraps default import from CJS" {
+test "CJS: default import from direct module.exports uses require fast path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
-    try writeFile(tmp.dir, "lib.cjs", "module.exports = { value: 42 };");
+    try writeFile(tmp.dir, "lib.cjs", "module.exports = function value() { return 42; };");
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -306,9 +306,9 @@ test "CJS: __toESM wraps default import from CJS" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // default import는 __toESM으로 래핑되어야 함
-    // .ts importer → Babel 모드 (isNodeMode 없음)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "lib = require_lib();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM") == null);
 }
 
 test "CJS: __toESM not applied to named imports" {
@@ -392,7 +392,10 @@ test "CJS: __toESM runtime helper injected with __commonJS" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
-    try writeFile(tmp.dir, "lib.cjs", "module.exports = 42;");
+    try writeFile(tmp.dir, "lib.cjs",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\exports.default = 42;
+    );
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -504,6 +507,69 @@ test "CJS: namespace import from CJS uses __toESM" {
     try std.testing.expect(!result.hasErrors());
     // namespace import도 __toESM으로 래핑 (.ts → Babel 모드)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib())") != null);
+}
+
+test "CJS: default import keeps __toESM when exports __esModule assignment exists" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs",
+        \\exports.__esModule = true;
+        \\module.exports = function value() { return 1; };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib()).default") != null);
+}
+
+test "CJS: default import keeps __toESM when module.exports __esModule assignment exists" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs",
+        \\module.exports = function value() { return 1; };
+        \\module.exports.__esModule = true;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib()).default") != null);
+}
+
+test "CJS: default import keeps __toESM when defineProperty __esModule marker exists" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import lib from './lib.cjs';\nconsole.log(lib);");
+    try writeFile(tmp.dir, "lib.cjs",
+        \\Object.defineProperty(module.exports, "__esModule", { value: true });
+        \\module.exports = function value() { return 1; };
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_lib()).default") != null);
 }
 
 test "CJS: multiple ESM modules importing same CJS module" {
@@ -1833,7 +1899,8 @@ test "CJS: ESM-wrapped default import from CJS gets preamble assignment" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "value = __toESM(require_lib()).default;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value = require_lib();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value = __toESM(require_lib()).default;") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "({value}") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "value;") != null);
 }

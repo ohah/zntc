@@ -1769,7 +1769,8 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
             if (l.getResolvedBinding(module.index.toU32(), ib.local_span)) |rb| {
                 const canonical_mod = graph.getModule(rb.canonical.module_index) orelse continue;
                 if (canonical_mod.wrap_kind == .cjs and
-                    linker_mod.cjsImportNeedsToEsmInterop(false, rb.canonical.export_name))
+                    linker_mod.cjsImportNeedsToEsmInterop(false, rb.canonical.export_name) and
+                    !module.canUseDirectCjsDefaultImport(canonical_mod))
                 {
                     return true;
                 }
@@ -1782,7 +1783,7 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
         const record = module.import_records[ib.import_record_index];
         if (record.resolved.isNone()) continue;
         const target = graph.getModule(record.resolved) orelse continue;
-        if (target.wrap_kind == .cjs) return true;
+        if (target.wrap_kind == .cjs and !module.canUseDirectCjsDefaultImport(target)) return true;
     }
     return false;
 }
