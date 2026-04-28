@@ -653,6 +653,50 @@ test "Worker: SharedWorker is also detected" {
     try std.testing.expect(result.asset_outputs != null);
 }
 
+test "Worker: platform node cjs emits cjs worker and file URL" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { Worker } from 'node:worker_threads';
+        \\const w = new Worker(new URL('./worker.ts', import.meta.url));
+        \\w.postMessage(20);
+    );
+    try writeFile(tmp.dir, "worker.ts",
+        \\import { parentPort } from 'node:worker_threads';
+        \\parentPort.on('message', (value) => parentPort.postMessage(value + 22));
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".cjs\", require(\"node:url\").pathToFileURL(__filename).href)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker.ts") == null);
+
+    const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
+    var found_worker = false;
+    for (assets) |a| {
+        if (std.mem.startsWith(u8, a.path, "worker-") and std.mem.endsWith(u8, a.path, ".cjs")) {
+            found_worker = true;
+            try std.testing.expect(std.mem.indexOf(u8, a.contents, "require(\"node:worker_threads\")") != null);
+            try std.testing.expect(std.mem.indexOf(u8, a.contents, "parentPort.on") != null);
+        }
+    }
+    try std.testing.expect(found_worker);
+}
+
 // ============================================================
 // None-node crash prevention: parse errors must not crash transformer/codegen
 // Previously, modules with parse errors had incomplete ASTs containing
