@@ -22,17 +22,22 @@ const ts_only_allowlist = [_][]const u8{
     "minify", // minifyWhitespace/Identifiers/Syntax all-in-one alias
 };
 
-/// Zig DTO에만 있는 (JS 래퍼가 내부적으로만 쓰는) 필드.
-/// TS 공개 API에 노출할 필요가 없는 internal 전달 경로 — 리스트에 없는 필드가
-/// TS에 누락되면 드리프트로 간주하고 실패.
-const zig_only_allowlist = [_][]const u8{
-    "unsupported", // JS wrapper가 browserslist 해석 후 주입. 사용자가 직접 쓸 일 없음.
+/// `bundler_only_fields` 와 `pure_zig_only_fields` 의 union — `TranspileOptions`
+/// 에 없어도 schema drift 로 간주 안 함.
+const zig_only_allowlist = pure_zig_only_fields ++ bundler_only_fields;
 
-    // ─── #2105 bundler-only 필드 ────────────────────────────────────────
-    // `zts.config.json` 의 BuildOptions-shaped 필드. TS 쪽엔 별도의 `BuildOptions`
-    // 인터페이스 (`packages/core/index.ts:BuildOptions`) 가 있고 TranspileOptions
-    // 와 분리. Zig CLI 의 `applyZtsConfigJson` 만 한 번에 파싱하기 위해 같은
-    // DTO 에 모음.
+/// 순수 Zig 내부 필드 (BuildOptions 와도 무관, JS 래퍼가 자체 처리).
+const pure_zig_only_fields = [_][]const u8{
+    "unsupported", // JS wrapper가 browserslist 해석 후 주입. 사용자가 직접 쓸 일 없음.
+};
+
+/// #2105 bundler-only 필드. `TranspileOptions` 가 아닌 `BuildOptions` 의
+/// 일부 — TS 공개 API 는 `packages/core/index.ts:BuildOptionsCommon` 에 있다.
+/// Zig CLI 의 `applyZtsConfigJson` 이 한 번에 파싱하기 위해 같은 DTO 에 모음.
+///
+/// `BuildOptionsCommon` 검증 테스트가 이 리스트의 모든 필드가 거기에도 있는지
+/// (그리고 그 역도) 확인 — #2112 schema sync.
+const bundler_only_fields = [_][]const u8{
     "external",
     "alias",
     "loader",
@@ -50,12 +55,17 @@ const zig_only_allowlist = [_][]const u8{
     "manualChunks",
 };
 
-/// TS `packages/shared/index.ts`의 `TranspileOptions` interface에서 필드명을
-/// 추출한다. 간단 파서: `interface TranspileOptions {` 블록 본문의 각 줄에서
-/// 첫 식별자(optional `?` 직전의 `:`까지)를 긁는다. 주석(`//`, `/**`)과 빈 줄은
-/// 스킵.
-fn parseTsInterface(source: []const u8, list: *std.ArrayList([]const u8), allocator: std.mem.Allocator) !void {
-    const marker = "interface TranspileOptions {";
+/// TS interface 본문에서 필드명을 추출한다. 간단 파서: `interface <name> {` 블록
+/// 본문의 각 줄에서 첫 식별자(optional `?` 직전의 `:`까지)를 긁는다.
+/// 주석(`//`, `/**`)과 빈 줄은 스킵.
+fn parseTsInterface(
+    source: []const u8,
+    interface_name: []const u8,
+    list: *std.ArrayList([]const u8),
+    allocator: std.mem.Allocator,
+) !void {
+    var marker_buf: [128]u8 = undefined;
+    const marker = try std.fmt.bufPrint(&marker_buf, "interface {s} {{", .{interface_name});
     const body_start = (std.mem.indexOf(u8, source, marker) orelse return error.InterfaceNotFound) + marker.len;
     var depth: usize = 1;
     var i: usize = body_start;
@@ -109,7 +119,7 @@ test "schema diff: Zig DTO fields are covered by TS TranspileOptions" {
 
     var ts_fields: std.ArrayList([]const u8) = .empty;
     defer ts_fields.deinit(allocator);
-    try parseTsInterface(ts_source, &ts_fields, allocator);
+    try parseTsInterface(ts_source, "TranspileOptions", &ts_fields, allocator);
     try std.testing.expect(ts_fields.items.len > 0);
 
     // 1. Zig DTO 필드가 TS에 모두 있는지 (internal 필드는 zig_only_allowlist에서 제외)
@@ -156,10 +166,140 @@ test "parseTsInterface: basic extraction" {
     ;
     var list: std.ArrayList([]const u8) = .empty;
     defer list.deinit(std.testing.allocator);
-    try parseTsInterface(source, &list, std.testing.allocator);
+    try parseTsInterface(source, "TranspileOptions", &list, std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 4), list.items.len);
     try std.testing.expectEqualStrings("filename", list.items[0]);
     try std.testing.expectEqualStrings("sourcemap", list.items[1]);
     try std.testing.expectEqualStrings("target", list.items[2]);
     try std.testing.expectEqualStrings("nested", list.items[3]);
+}
+
+// ─── #2112 BuildOptions schema sync ──────────────────────────────────────────
+
+/// Zig 의 `bundler_only_fields` 가 `BuildOptionsCommon` 에 노출돼야 사용자가
+/// `zts.config.{ts,json}` 에서 IDE 자동완성을 받을 수 있다.
+///
+/// CLI 에만 있고 사용자에게 노출 안 하는 필드 (예: `tsconfigPath` 는 별도 alias).
+const ts_buildoptions_only_allowlist = [_][]const u8{
+    // BuildOptions 가 가진 필드 중 Zig DTO 에 없는 것 — 모두 알려진 의도.
+    "entryPoints", // CLI positional / config
+    "outdir", // CLI -o/--outdir
+    "outfile",
+    "outbase",
+    "globalName", // IIFE/UMD only
+    "publicPath",
+    "splitting", // bundler 옵션, DTO 에 모음
+    "treeShaking",
+    "metafile",
+    "keepNames",
+    "shimMissingExports",
+    "drop",
+    "dropLabels",
+    "pure",
+    "inject",
+    "intro",
+    "outro",
+    "legalComments",
+    "tsconfigRaw", // CLI raw json 별도 처리
+    "logLevel",
+    "logLimit",
+    "lineLimit",
+    "ignoreAnnotations",
+    "watchDelay",
+    "jobs",
+    "globals",
+    "packagesExternal",
+    "platform", // discriminated union 으로 처리됨
+    "target",
+    "browserslist",
+    "plugins",
+    "jsxSideEffects",
+    "assetRegistry", // RN asset_registry 모듈 처리
+    "scopeHoist", // bundler 옵션 (#1389)
+    "workletTransform", // RN reanimated worklet
+    "strictExecutionOrder", // 모듈 실행 순서 보장
+    "experimentalCodeCache", // persistent cache 실험
+    "watch", // CLI flag, BuildOptions 노출 안 함이 정석이지만 일부 wrapper 가 노출
+    "extends", // config-only
+
+    // ─── BuildOptions / NAPI 전용 — Zig DTO 미노출이 의도된 것들 ──────────────
+    // 사용자 코드가 NAPI 또는 build() JS API 로 직접 전달. CLI / config 경로는 미사용.
+    "allowOverwrite", // 출력 디렉토리 덮어쓰기 허용
+    "analyze", // metafile 분석 출력
+    "blockList", // RN resolver block list
+    "collectModuleCodes", // NAPI 만 사용 (HMR module codes)
+    "configurableExports", // RN configurable __toESM
+    "devMode", // dev mode flag
+    "emitDiskSourcemap", // sourcemap 디스크 emit
+    "entryErrorGuard", // RN entry error guard
+    "fallback", // resolve fallback (Metro 호환)
+    "globalIdentifiers", // RN polyfill 식별자
+    "nodePaths", // NODE_PATH 등가
+    "onReady", // NAPI build 콜백
+    "onRebuild", // NAPI watch 콜백
+    "outExtension", // 출력 확장자 매핑
+    "polyfills", // 명시 polyfill 주입
+    "preserveSymlinks", // resolver 옵션
+    "profile", // 프로파일링 enable
+    "profileFormat", // 프로파일 출력 format
+    "profileLevel", // 프로파일 verbosity
+    "reactRefresh", // dev 모드 react-refresh
+    "rootDir", // 프로젝트 root
+    "runBeforeMain", // entry 전 실행 코드
+    "silentConsoleErrorPatterns", // RN log 필터
+    "watchExclude", // watch 제외 glob
+    "watchFolders", // watch 추가 디렉토리 (Metro 호환)
+    "watchInclude", // watch 포함 glob
+    "workletPluginVersion", // worklet plugin 버전
+    "write", // 디스크 emit on/off
+};
+
+test "schema diff: bundler_only_fields are all in TS BuildOptionsCommon" {
+    @setEvalBranchQuota(8000);
+    const allocator = std.testing.allocator;
+
+    const ts_source = std.fs.cwd().readFileAlloc(allocator, "packages/core/index.ts", 4 * 1024 * 1024) catch |err| {
+        if (err == error.FileNotFound) return error.SkipZigTest;
+        return err;
+    };
+    defer allocator.free(ts_source);
+
+    var ts_fields: std.ArrayList([]const u8) = .empty;
+    defer ts_fields.deinit(allocator);
+    try parseTsInterface(ts_source, "BuildOptionsCommon", &ts_fields, allocator);
+    try std.testing.expect(ts_fields.items.len > 0);
+
+    // 1. bundler_only_fields 의 모든 키가 BuildOptionsCommon 에 존재해야 함.
+    for (bundler_only_fields) |zig_name| {
+        if (!contains(ts_fields.items, zig_name)) {
+            std.debug.print(
+                "\n[schema drift] Zig bundler_only_fields.{s} is missing from TS BuildOptionsCommon in packages/core/index.ts — IDE 자동완성 안 됨\n",
+                .{zig_name},
+            );
+            return error.ZigFieldMissingFromBuildOptions;
+        }
+    }
+
+    // 2. BuildOptionsCommon 의 키는 (a) bundler_only_fields 또는 (b) TranspileOptions 또는
+    //    (c) ts_buildoptions_only_allowlist 중 하나에 있어야 함.
+    const transpile_source = std.fs.cwd().readFileAlloc(allocator, "packages/shared/index.ts", 1 * 1024 * 1024) catch |err| {
+        if (err == error.FileNotFound) return error.SkipZigTest;
+        return err;
+    };
+    defer allocator.free(transpile_source);
+
+    var transpile_fields: std.ArrayList([]const u8) = .empty;
+    defer transpile_fields.deinit(allocator);
+    try parseTsInterface(transpile_source, "TranspileOptions", &transpile_fields, allocator);
+
+    for (ts_fields.items) |build_name| {
+        if (contains(&bundler_only_fields, build_name)) continue;
+        if (contains(transpile_fields.items, build_name)) continue;
+        if (contains(&ts_buildoptions_only_allowlist, build_name)) continue;
+        std.debug.print(
+            "\n[schema drift] TS BuildOptionsCommon.{s} is not in Zig bundler_only_fields nor TranspileOptions — add to bundler_only_fields (Zig DTO) or ts_buildoptions_only_allowlist (intentional CLI-only)\n",
+            .{build_name},
+        );
+        return error.TsBuildOptionMissingFromZig;
+    }
 }
