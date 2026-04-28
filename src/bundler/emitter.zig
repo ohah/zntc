@@ -1283,6 +1283,10 @@ pub fn emitModule(
         // 마킹하는 것은 출력 크기 최적화지 correctness 가 아니다 — 포함해도 런타임 의미 동일.
         // dev 번들은 크기 허용, speed 우선 (Metro/esbuild 관습).
         if (!options.dev_mode) {
+            // ESM 모듈(.none scope-hoisted, .esm wrapper) 또는 ESM 출력 번들에서는
+            // 아래 statement-shake 게이트가 wrap_kind != .esm 경로만 타기 때문에
+            // 함수 body 안 dead-store 가 누락된다. ESM 경로는 top-level write 를
+            // 보존해야 하므로 (export let x; x = ...) 함수 body 만 별도 패스로 처리.
             if ((module.wrap_kind == .esm or options.format == .esm) and options.minify_syntax) {
                 if (module.semantic) |sem| {
                     markDeadOverwrittenFunctionBodiesOnly(
