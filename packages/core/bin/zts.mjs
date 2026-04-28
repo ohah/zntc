@@ -45,8 +45,12 @@ function parseArgs(argv) {
   const args = argv.slice(2);
   const opts = {
     entryPoints: [],
-    outfile: null,
-    outdir: null,
+    // SCALAR_KEYS (mergeConfigIntoOpts) 의 다른 키들과 동일하게 `undefined` 기본값 사용.
+    // 과거 `null` 이었으나 머지 조건이 `=== undefined` 라 `zts.config.json` 의 outdir/outfile
+    // 만 silent drop 되는 회귀가 있었음. 모든 사용처가 truthy 검사 (`if (opts.outdir)`) 라
+    // null → undefined 변경은 동작 영향 없음.
+    outfile: undefined,
+    outdir: undefined,
     bundle: false,
     watch: false,
     watchJson: false,
@@ -1268,12 +1272,12 @@ async function runServe(opts, config) {
  * 단일 워크스페이스 entry 를 위한 `subOpts` 생성. `opts` deep clone → entry/root config
  * 머지 → entry.cwd 기준 path 정규화.
  *
- * `mergeConfigIntoOpts` 가 `opts[key] === undefined` 만 머지 대상으로 보지만 `parseArgs` 의
- * `outfile`/`outdir` 기본값은 `null` 이라 그 경로로는 적용 안 됨. workspace 에서는 entry
- * config 의 `outdir`/`outfile` 이 build 의도 자체이므로 직접 보강한다 (`null` → merged).
- *
  * `structuredClone` 사용 — `JSON.parse(JSON.stringify(opts))` 는 미래에 함수/Date/undefined
  * 필드가 추가되면 silent drop 위험.
+ *
+ * `outdir`/`outfile` 보강은 historical 잔재 — parseArgs default 가 과거 `null` 이라
+ * `mergeConfigIntoOpts` 의 `=== undefined` 머지 조건을 우회 못 했었음. default 가 `undefined`
+ * 가 된 후로는 mergeConfigIntoOpts 만으로 충분하지만 `== null` 은 둘 다 매치하므로 안전망으로 유지.
  */
 function buildSubOpts(opts, w, merged) {
   const subOpts = structuredClone(opts);

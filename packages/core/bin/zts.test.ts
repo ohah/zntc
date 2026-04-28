@@ -1687,6 +1687,51 @@ describe("CLI: zts.config 자동 탐색 + BuildOptions 머지", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("zts.config.json 의 outdir 이 자동 적용됨 (단일 build, CLI --outdir 미지정)", () => {
+    // 회귀 테스트: parseArgs 의 outfile/outdir 기본값이 `null` 이라서 mergeConfigIntoOpts
+    // 의 `=== undefined` 머지 조건을 우회 못 해 config.outdir 이 silent drop 되던 버그.
+    // workspace 흐름은 buildSubOpts 에서 보강했지만 단일 build 경로는 깨져 있었음.
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-outdir-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('SINGLE_OUTDIR_OK');");
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({ entryPoints: ["./entry.ts"], outdir: "./dist" }),
+    );
+    const { stdout, exitCode } = runCli(["--bundle"], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("SINGLE_OUTDIR_OK"); // stdout 으로 빠지면 안 됨
+    expect(existsSync(join(dir, "dist"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("zts.config.json 의 outfile 이 자동 적용됨 (단일 build, CLI --outfile 미지정)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-outfile-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('SINGLE_OUTFILE_OK');");
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({ entryPoints: ["./entry.ts"], outfile: "./out.js" }),
+    );
+    const { stdout, exitCode } = runCli(["--bundle"], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("SINGLE_OUTFILE_OK");
+    expect(existsSync(join(dir, "out.js"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("CLI --outdir 이 config.outdir 을 override", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-outdir-override-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('hi');");
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({ entryPoints: ["./entry.ts"], outdir: "./from-config" }),
+    );
+    const { exitCode } = runCli(["--bundle", "--outdir", "./from-cli"], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(existsSync(join(dir, "from-cli"))).toBe(true);
+    expect(existsSync(join(dir, "from-config"))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("zts.config.ts 의 minify 가 적용됨", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-config-minify-"));
     writeFileSync(
