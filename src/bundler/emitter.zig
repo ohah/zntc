@@ -1865,6 +1865,17 @@ fn markDeadOverwrittenAssignments(
     if (list.start + list.len > ast.extra_data.items.len) return;
     const stmts = ast.extra_data.items[list.start .. list.start + list.len];
 
+    markDeadOverwrittenInStatementList(ast, stmts, symbol_ids, unresolved_globals, skip_nodes, module);
+}
+
+fn markDeadOverwrittenInStatementList(
+    ast: *Ast,
+    stmts: []const u32,
+    symbol_ids: []const ?u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    skip_nodes: *std.DynamicBitSet,
+    module: *const Module,
+) void {
     for (stmts, 0..) |raw_stmt, i| {
         if (raw_stmt >= ast.nodes.items.len) continue;
         if (raw_stmt < skip_nodes.capacity() and skip_nodes.isSet(raw_stmt)) continue;
@@ -1886,6 +1897,66 @@ fn markDeadOverwrittenAssignments(
             }
         }
     }
+
+    for (stmts) |raw_stmt| {
+        markDeadOverwrittenNestedStatementLists(ast, raw_stmt, symbol_ids, unresolved_globals, skip_nodes, module);
+    }
+}
+
+fn markDeadOverwrittenNestedStatementLists(
+    ast: *Ast,
+    node_idx: u32,
+    symbol_ids: []const ?u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    skip_nodes: *std.DynamicBitSet,
+    module: *const Module,
+) void {
+    if (node_idx >= ast.nodes.items.len) return;
+    const node = ast.nodes.items[node_idx];
+
+    if (node.tag == .block_statement) {
+        const list = node.data.list;
+        if (list.start + list.len <= ast.extra_data.items.len) {
+            const stmts = ast.extra_data.items[list.start .. list.start + list.len];
+            markDeadOverwrittenInStatementList(ast, stmts, symbol_ids, unresolved_globals, skip_nodes, module);
+        }
+    }
+
+    markDeadOverwrittenFunctionBody(ast, node, symbol_ids, unresolved_globals, skip_nodes, module);
+}
+
+fn markDeadOverwrittenFunctionBody(
+    ast: *Ast,
+    node: ast_mod.Node,
+    symbol_ids: []const ?u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    skip_nodes: *std.DynamicBitSet,
+    module: *const Module,
+) void {
+    if (functionBodyBlock(ast, node)) |body_idx| {
+        if (@intFromEnum(body_idx) < ast.nodes.items.len) {
+            const body = ast.nodes.items[@intFromEnum(body_idx)];
+            if (body.tag == .block_statement) {
+                const list = body.data.list;
+                if (list.start + list.len <= ast.extra_data.items.len) {
+                    const stmts = ast.extra_data.items[list.start .. list.start + list.len];
+                    markDeadOverwrittenInStatementList(ast, stmts, symbol_ids, unresolved_globals, skip_nodes, module);
+                }
+            }
+        }
+    }
+}
+
+fn functionBodyBlock(ast: *const Ast, node: ast_mod.Node) ?NodeIndex {
+    const body_slot: u32 = switch (node.tag) {
+        .arrow_function_expression => 1,
+        .function_declaration, .function_expression, .function, .method_definition => 2,
+        else => return null,
+    };
+    if (node.data.extra + body_slot >= ast.extra_data.items.len) return null;
+    const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + body_slot]);
+    if (body_idx.isNone()) return null;
+    return body_idx;
 }
 
 fn markDeadOverwrittenDeclarationInitializers(

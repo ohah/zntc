@@ -217,8 +217,8 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 - ~~**Virtual modules**~~ — ✅ 완료. `\0` prefix 기반 virtual module 지원 (플러그인 resolveId/load)
 - ~~**Stage 3 decorators**~~ — ✅ 완료. TC39 Stage 3 데코레이터 다운레벨링 (method/getter/setter/field/accessor/class, initializer 체이닝, MobX 6 호환). ES5 타겟 포함 (dispatch 수정 #1389). **알려진 제약**: `accessor #x` (private key) / `accessor [k]` (computed key) 는 ES5 direct path에서 미구현 — Babel/esbuild/oxc는 지원하나 프로덕션 라이브러리 (MobX 6, Lit, Angular signals 등) 모두 공개 키 accessor만 사용하므로 실사용 사례 없음. 필요 시 추가 구현.
 - **Module Concatenation 고도화** — `XL` | rspack/rolldown 수준 scope hoisting
-- **innerGraph** — `L` | 변수 할당 분석으로 더 정밀한 DCE
-- **lazyBarrel** — `L` | barrel 파일 re-export 컴파일 생략 (rolldown)
+- **innerGraph** — `L` | 🟡 부분 완료. 순수 local statement, overwritten assignment, overwritten declaration initializer, direct block/function declaration body의 straight-line dead store 제거 완료. 남은 범위: reference 기반 일반 dead store, branch/loop/try control-flow 분석.
+- **lazyBarrel** — `L` | 🟡 부분 완료. 순수 re-export barrel과 local re-export barrel emit skip 완료. 남은 범위: namespace/side-effect 경계가 있는 barrel 정밀화.
 - ~~**realContentHash**~~ — ✅ 완료. SHA-256 기반 `[hash]` 패턴 (emitter/chunks.zig)
 - ~~**sourcemapDebugIds**~~ — ✅ 완료. `--sourcemap-debug-ids` UUID v4, 번들+소스맵 매칭
 - ~~**shimMissingExports**~~ — ✅ 완료. `--shim-missing-exports` 롤다운 호환
@@ -231,13 +231,13 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 | ~~**manualChunks**~~ | ✅ | ❌ | ✅ advancedChunks | ✅ splitChunks | ✅ | Rollup `manualChunks(id, meta)` 호환 + meta API 13/14 필드 |
 | ~~**inlineDynamicImports**~~ | ✅ | ❌ | ✅ | ❌ | ✅ | Rollup `output.inlineDynamicImports` — `__esm`/`__commonJS` 래핑으로 런타임 처리 |
 | ~~**external phantom**~~ | ✅ | ❌ | ✅ | ❌ | ✅ | external 도 graph 1급 노드 — Rollup `getModuleInfo("react").isExternal` 동작 |
-| **innerGraph** | L | ❌ | ✅ | ✅ | ❌ | 변수 할당 추적으로 정밀 DCE |
+| **innerGraph** | L | ❌ | ✅ | ✅ | 🟡 | 변수 할당 추적으로 정밀 DCE — straight-line dead store 일부 완료 |
 | **Persistent caching** | XL | ❌ | ❌ | ✅ | ❌ | 디스크 캐시, 콜드 리빌드 250%↑ |
 | **Module Federation** | XL | ❌ | ❌ | ✅ | ❌ | 마이크로프론트엔드 코드/리소스 공유 |
 | **Lazy compilation** | XL | ❌ | ❌ | ✅ | ❌ | 온디맨드 모듈 컴파일 (dev 시작 가속) |
 | ~~**Stage 3 decorators**~~ | ✅ | ❌ | ✅ | ✅ | ✅ | TC39 Stage 3 데코레이터 (legacy + Stage 3) |
 | **mangleProps** | XL | ✅ | ❌ | ❌ | ❌ | cross-module 프로퍼티 난독화 |
-| **lazyBarrel** | L | ❌ | ✅ | ❌ | ❌ | barrel re-export 컴파일 생략 |
+| **lazyBarrel** | L | ❌ | ✅ | ❌ | 🟡 | barrel re-export 컴파일 생략 — 순수/local re-export 일부 완료 |
 | ~~**import.meta.glob**~~ | ✅ | ❌ | ✅ | ❌ | ✅ | Vite 호환 glob import |
 | ~~**플러그인 N-API**~~ | ✅ | ✅ (Go) | ✅ (Rust) | ✅ | ✅ | in-process NAPI + async 훅 + Vite 어댑터 |
 | ~~**HMR module-level**~~ | ✅ | ❌ | ✅ | ✅ | ✅ | `import.meta.hot.accept()` |
@@ -273,7 +273,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   Stage 3 decorators ✅ 완료 — TC39 Stage 3 데코레이터 (legacy + Stage 3, MobX 6 호환)
   Module Concatenation 고도화 — rspack/rolldown 수준 scope hoisting
   manualChunks ✅ 완료 — Rollup 호환 (record + function + meta API 13/14 필드)
-  innerGraph (3~5일) — 변수 할당 추적 정밀 DCE
+  innerGraph 🟡 부분 완료 — straight-line local dead store 제거 완료. 다음: reference 기반 일반 dead store/control-flow 확장
   Rollup ModuleInfo Phase B (#1880) — plugin context API + meta 필드 (1.5~2주)
   Rollup ModuleInfo Phase C (#1881) — ESTree adapter (info.ast, 2~4주)
 ```
