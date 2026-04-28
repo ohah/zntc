@@ -123,13 +123,24 @@ function findAddon(): string {
 
 /**
  * `zts.config.{ts,js}` 타입 체크/자동완성용 identity 헬퍼.
+ *
+ * 객체 또는 함수형 config 둘 다 지원:
+ * ```ts
+ * export default defineConfig({ format: "esm" });
+ * export default defineConfig(({ command, mode, env }) => ({
+ *   format: "esm",
+ *   minify: command === "bundle",
+ * }));
+ * ```
  */
-export function defineConfig<T extends Partial<BuildOptions>>(config: T): T {
+export function defineConfig<T extends UserConfigInput>(config: T): T {
   return config;
 }
 
 export { findConfigPath, importAndResolveDefault, loadConfig } from "./src/config-loader";
-export type { UserConfig } from "./src/config-loader";
+export type { ConfigEnv, UserConfig, UserConfigFn, UserConfigInput } from "./src/config-loader";
+
+import type { UserConfigInput } from "./src/config-loader";
 
 /**
  * NAPI 모듈을 로드한다.

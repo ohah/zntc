@@ -16,8 +16,29 @@ import { pathToFileURL } from "node:url";
 import type { BuildOptions } from "../index";
 import { init, transpile } from "../index";
 
-/** Phase 1: 객체만 지원. 함수형 (Vite 식 `({ command, mode, env }) => ...`) 은 #2103 (Phase 2-1) 에서 추가. */
+/** config 객체 형태 — 모든 BuildOptions 의 부분 집합. */
 export type UserConfig = Partial<BuildOptions>;
+
+/**
+ * 함수형 config 호출 시 주입되는 컨텍스트 (Vite 호환 형태).
+ *
+ * - `command`: CLI 모드. `bundle` (default), `serve`, `watch`.
+ * - `mode`: `--mode <name>` 으로 지정. 미지정 시 command 별 기본값
+ *   (`serve`/`watch` → `development`, 그 외 → `production`).
+ * - `env`: `import.meta.env` 후보 변수 — 현재는 `process.env` 그대로 노출.
+ *   `.env` 자동 로드 + `VITE_*` prefix 필터는 #2106 (Phase 2-4) 에서 추가.
+ */
+export interface ConfigEnv {
+  command: "bundle" | "serve" | "watch";
+  mode: string;
+  env: Record<string, string | undefined>;
+}
+
+/** 함수형 config — `defineConfig(({ command, mode, env }) => ...)` 형태. */
+export type UserConfigFn = (env: ConfigEnv) => UserConfig | Promise<UserConfig>;
+
+/** config 파일이 export 가능한 형태 — 객체 또는 함수. */
+export type UserConfigInput = UserConfig | UserConfigFn;
 
 /**
  * 자동 탐색 우선순위. 동일 디렉토리에 다중 확장자 존재 시 첫 매치 반환.
@@ -36,24 +57,56 @@ const JS_EXTS = new Set<string>(CONFIG_EXT_PRIORITY.slice(3, 6));
  * 존재 여부는 사전 stat 으로 확인하지 않고 실제 read/import 의 ENOENT 를 catch
  * 한다 — TOCTOU 회피 + 1 syscall 절감.
  *
+ * 함수형 config 가 export 됐으면 `env` 인자를 전달해 호출하고 반환된 객체를 사용한다.
+ * `env` 미제공 시 적절한 기본값 (`command: "bundle", mode: "production"`) 으로 호출.
+ *
  * @throws 파일이 없거나, 확장자가 지원되지 않거나, 컴파일/평가가 실패하면 throw.
  */
-export async function loadConfig(filePath: string): Promise<UserConfig> {
+export async function loadConfig(filePath: string, env?: ConfigEnv): Promise<UserConfig> {
   const absPath = pathResolve(filePath);
   const ext = extname(absPath).toLowerCase();
 
+  let raw: UserConfigInput;
   if (ext === ".json") {
-    return loadJsonConfig(absPath);
+    raw = loadJsonConfig(absPath);
+  } else if (TS_EXTS.has(ext)) {
+    raw = await loadTsConfig(absPath);
+  } else if (JS_EXTS.has(ext)) {
+    raw = await loadJsConfig(absPath);
+  } else {
+    throw new Error(
+      `@zts/core: unsupported config extension "${ext}" for ${absPath}. Supported: .ts/.mts/.cts/.mjs/.js/.cjs/.json`,
+    );
   }
-  if (TS_EXTS.has(ext)) {
-    return loadTsConfig(absPath);
+
+  return resolveConfigValue(raw, env, absPath);
+}
+
+/**
+ * 함수형 config 처리. raw 가 함수면 env 와 호출하고 결과를 객체로 반환.
+ * env 미제공 시 production bundle 기본값 사용.
+ */
+async function resolveConfigValue(
+  raw: UserConfigInput,
+  env: ConfigEnv | undefined,
+  absPath: string,
+): Promise<UserConfig> {
+  if (typeof raw !== "function") {
+    return raw;
   }
-  if (JS_EXTS.has(ext)) {
-    return loadJsConfig(absPath);
+  const ctx: ConfigEnv = env ?? {
+    command: "bundle",
+    mode: "production",
+    env: process.env,
+  };
+  const result = await raw(ctx);
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    const got = Array.isArray(result) ? "array" : typeof result;
+    throw new Error(
+      `@zts/core: functional config must return an object (got ${got}) from ${absPath}`,
+    );
   }
-  throw new Error(
-    `@zts/core: unsupported config extension "${ext}" for ${absPath}. Supported: .ts/.mts/.cts/.mjs/.js/.cjs/.json`,
-  );
+  return result;
 }
 
 function loadJsonConfig(absPath: string): UserConfig {
@@ -66,7 +119,7 @@ function loadJsonConfig(absPath: string): UserConfig {
   }
 }
 
-async function loadTsConfig(absPath: string): Promise<UserConfig> {
+async function loadTsConfig(absPath: string): Promise<UserConfigInput> {
   init();
   const source = readFileOrThrowNotFound(absPath);
   // ZTS parser 는 filename 의 `.cts` 확장자를 보고 CommonJS Script 모드로 진입해
@@ -87,7 +140,7 @@ async function loadTsConfig(absPath: string): Promise<UserConfig> {
   const tmpPath = join(dirname(absPath), tmpName);
   writeFileSync(tmpPath, result.code, "utf8");
   try {
-    return await importAndResolveDefault(tmpPath);
+    return await importAndResolveDefault<UserConfigInput>(tmpPath);
   } finally {
     try {
       unlinkSync(tmpPath);
@@ -98,15 +151,18 @@ async function loadTsConfig(absPath: string): Promise<UserConfig> {
   }
 }
 
-async function loadJsConfig(absPath: string): Promise<UserConfig> {
+async function loadJsConfig(absPath: string): Promise<UserConfigInput> {
   try {
-    return await importAndResolveDefault<UserConfig>(absPath);
+    return await importAndResolveDefault<UserConfigInput>(absPath);
   } catch (err) {
     if (err instanceof Error) {
       // config 컨텍스트로 에러 메시지 정정 (importAndResolveDefault 는 generic).
       err.message = err.message
         .replace("module not found", "config file not found")
-        .replace("module must export an object", "config must export an object");
+        .replace(
+          /module must be an object or function/,
+          "config must export an object or function",
+        );
     }
     throw err;
   }
@@ -114,16 +170,14 @@ async function loadJsConfig(absPath: string): Promise<UserConfig> {
 
 /**
  * 절대 경로를 `file://` URL 로 dynamic import 한 뒤 default export (없으면
- * namespace 객체) 를 반환한다. 객체가 아니거나 배열이면 throw.
+ * namespace 객체) 를 반환한다. 함수형 config 도 허용하므로 객체 또는 함수만 통과.
  *
  * `pathToFileURL` 으로 Windows 절대경로 (드라이브 문자) 를 안전하게 처리.
  * config 로더와 CLI 의 `--plugin <path>` 로더가 공유.
  *
  * 같은 프로세스에서 다중 reload 가 필요한 watch (#2107) 는 별도 cache-bust 적용 예정.
  */
-export async function importAndResolveDefault<T extends object = UserConfig>(
-  absPath: string,
-): Promise<T> {
+export async function importAndResolveDefault<T = UserConfig>(absPath: string): Promise<T> {
   const url = pathToFileURL(absPath).href;
   let mod: Record<string, unknown>;
   try {
@@ -136,9 +190,13 @@ export async function importAndResolveDefault<T extends object = UserConfig>(
     throw err;
   }
   const value = (mod as { default?: unknown }).default ?? mod;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    const got = Array.isArray(value) ? "array" : typeof value;
-    throw new Error(`@zts/core: module must export an object (got ${got}) from ${absPath}`);
+  const valueType = typeof value;
+  if (
+    valueType !== "function" &&
+    (valueType !== "object" || value === null || Array.isArray(value))
+  ) {
+    const got = value === null ? "null" : Array.isArray(value) ? "array" : valueType;
+    throw new Error(`@zts/core: module must be an object or function (got ${got}) from ${absPath}`);
   }
   return value as T;
 }

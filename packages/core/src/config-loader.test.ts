@@ -213,3 +213,100 @@ describe("findConfigPath", () => {
     expect(findConfigPath(dir)).toBeNull();
   });
 });
+
+// ─── 함수형 config (#2103 / Phase 2-1) ───
+
+describe("loadConfig: 함수형 config", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-fn-config-"));
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("함수형 config: env 인자로 호출되어 객체 반환", async () => {
+    const path = join(dir, "fn.config.ts");
+    writeFileSync(
+      path,
+      `export default ({ command, mode }: { command: string; mode: string }) => ({
+         format: command === "bundle" ? "esm" : "cjs",
+         minify: mode === "production",
+       });`,
+    );
+    const config = await loadConfig(path, {
+      command: "bundle",
+      mode: "production",
+      env: {},
+    });
+    expect(config).toEqual({ format: "esm", minify: true });
+  });
+
+  test("함수형 config: serve mode 분기", async () => {
+    const path = join(dir, "fn-serve.config.ts");
+    writeFileSync(
+      path,
+      `export default ({ command }: { command: string }) => ({
+         minify: command === "bundle",
+       });`,
+    );
+    const buildResult = await loadConfig(path, {
+      command: "bundle",
+      mode: "production",
+      env: {},
+    });
+    expect(buildResult.minify).toBe(true);
+
+    const serveResult = await loadConfig(path, {
+      command: "serve",
+      mode: "development",
+      env: {},
+    });
+    expect(serveResult.minify).toBe(false);
+  });
+
+  test("함수형 config: env 인자 없이 호출 시 production bundle 기본값", async () => {
+    const path = join(dir, "fn-default.config.ts");
+    writeFileSync(
+      path,
+      `export default ({ command, mode }: { command: string; mode: string }) => ({
+         banner: "/* " + command + ":" + mode + " */",
+       });`,
+    );
+    const config = await loadConfig(path);
+    expect(config.banner).toBe("/* bundle:production */");
+  });
+
+  test("함수형 config: async 함수도 지원", async () => {
+    const path = join(dir, "fn-async.config.ts");
+    writeFileSync(
+      path,
+      `export default async ({ command }: { command: string }) => {
+         return { format: command === "bundle" ? "esm" as const : "cjs" as const };
+       };`,
+    );
+    const config = await loadConfig(path, {
+      command: "bundle",
+      mode: "production",
+      env: {},
+    });
+    expect(config.format).toBe("esm");
+  });
+
+  test("함수형 config: object 반환 안 하면 throw", async () => {
+    const path = join(dir, "fn-bad.config.ts");
+    writeFileSync(path, `export default () => "not an object";`);
+    await expect(loadConfig(path)).rejects.toThrow(/functional config must return an object/);
+  });
+
+  test("객체 형태 config 도 변경 없이 동작 (regression)", async () => {
+    const path = join(dir, "obj.config.ts");
+    writeFileSync(path, `export default { format: "esm" as const };`);
+    const config = await loadConfig(path, {
+      command: "bundle",
+      mode: "production",
+      env: {},
+    });
+    expect(config).toEqual({ format: "esm" });
+  });
+});
