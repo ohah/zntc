@@ -1082,6 +1082,23 @@ pub const Ast = struct {
         return params_node.data.list;
     }
 
+    /// 함수형 노드의 body NodeIndex 를 반환한다.
+    /// 지원 태그: function_declaration / function_expression / function /
+    /// arrow_function_expression / method_definition. arrow 는 extra[1], 나머지는 extra[2].
+    /// (params 슬롯 다음 칸 — `functionParamsList` 와 같은 슬롯 규칙.)
+    /// body 가 없거나 잘못된 경우 null.
+    pub fn functionBodyBlock(self: *const Ast, node: Node) ?NodeIndex {
+        const body_slot: u32 = switch (node.tag) {
+            .arrow_function_expression => 1,
+            .function_declaration, .function_expression, .function, .method_definition => 2,
+            else => return null,
+        };
+        if (!self.hasExtra(node.data.extra, body_slot)) return null;
+        const body_idx = self.readExtraNode(node.data.extra, body_slot);
+        if (body_idx.isNone()) return null;
+        return body_idx;
+    }
+
     /// 함수형 노드의 파라미터 슬라이스를 반환한다 (각 element는 NodeIndex의 raw u32).
     /// 지원 태그: function_declaration / function_expression / function /
     /// arrow_function_expression / method_definition.
