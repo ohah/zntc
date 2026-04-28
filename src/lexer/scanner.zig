@@ -16,6 +16,7 @@ const token = @import("token.zig");
 const unicode = @import("unicode.zig");
 const regexp_mod = @import("../regexp/mod.zig");
 const profile = @import("../profile.zig");
+const string_escape = @import("../string_escape.zig");
 
 const Token = token.Token;
 const Kind = token.Kind;
@@ -2019,31 +2020,8 @@ pub const Scanner = struct {
     /// 단일 유니코드 이스케이프 시퀀스 (\uXXXX 또는 \u{XXXX})에서 코드포인트를 추출한다.
     /// 식별자 시작/계속 문자의 유효성 검증에 사용한다.
     fn decodeEscapeCodepoint(_: *Scanner, raw: []const u8) ?u32 {
-        // raw가 \uXXXX 또는 \u{XXXX} 형태인지 확인
-        if (raw.len < 2) return null;
-        var i: usize = 0;
-        // 여러 이스케이프가 연결된 경우 첫 번째만 추출
-        if (raw[i] != '\\' or raw[i + 1] != 'u') return null;
-        i += 2;
-        var codepoint: u32 = 0;
-        if (i < raw.len and raw[i] == '{') {
-            i += 1;
-            while (i < raw.len and raw[i] != '}') {
-                const digit = std.fmt.charToDigit(raw[i], 16) catch return null;
-                codepoint = codepoint * 16 + digit;
-                i += 1;
-            }
-        } else {
-            var j: usize = 0;
-            while (j < 4 and i < raw.len) : (j += 1) {
-                const digit = std.fmt.charToDigit(raw[i], 16) catch return null;
-                codepoint = codepoint * 16 + digit;
-                i += 1;
-            }
-        }
-        // Unicode 유효 범위 검증 (U+10FFFF 초과 거부)
-        if (codepoint > 0x10FFFF) return null;
-        return codepoint;
+        var p: usize = 0;
+        return string_escape.decodeUnicodeHexEscape(raw, &p);
     }
 
     /// 이스케이프가 포함된 식별자 텍스트를 디코딩하여 실제 문자열을 반환한다.
