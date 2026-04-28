@@ -98,6 +98,8 @@ function parseArgs(argv) {
     drop: [],
     certfile: undefined,
     keyfile: undefined,
+    configPath: undefined, // --config <path> 명시 시 자동 탐색 우회
+    mode: undefined, // --mode <name> 함수형 config / mode 별 config 머지 (#2110) 에서 사용
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -362,6 +364,22 @@ function parseArgs(argv) {
       opts.project = arg.slice("--tsconfig-path=".length);
       continue;
     }
+    if (arg === "--config") {
+      opts.configPath = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--config=")) {
+      opts.configPath = arg.slice("--config=".length);
+      continue;
+    }
+    if (arg === "--mode") {
+      opts.mode = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--mode=")) {
+      opts.mode = arg.slice("--mode=".length);
+      continue;
+    }
     if (arg === "--plugin") {
       opts.pluginPaths.push(args[++i]);
       continue;
@@ -611,15 +629,33 @@ async function runTranspile(opts) {
 // ─── Bundle 모드 ───
 
 /**
- * cwd 에서 zts.config.* 자동 탐색 + 로드. 없으면 null.
+ * config 로드 — `--config <path>` 명시 시 그 경로, 아니면 cwd 자동 탐색.
+ *
+ * 함수형 config 는 CLI 모드/`--mode` 인자 기반의 `ConfigEnv` 로 호출된다:
+ *  - command: serve→"serve", watch→"watch", 그 외→"bundle"
+ *  - mode: `--mode <name>` 명시값 또는 command 기본 (serve/watch→"development", 그 외→"production")
+ *  - env: process.env (.env 파일 자동 로드는 #2106 에서 확장)
+ *
  * 실패 시 `Error("failed to load config — ...")` 를 throw — main 의 try/catch 가 처리.
- * `--config <path>` 명시 옵션은 #2103 (Phase 2-1) 에서 추가 예정.
  */
-async function loadAutoConfig() {
-  const configPath = findConfigPath(process.cwd());
+async function loadAutoConfig(opts) {
+  const explicit = opts.configPath ? resolve(opts.configPath) : null;
+  if (explicit && !existsSync(explicit)) {
+    throw new Error(`failed to load config — file not found: ${explicit}`);
+  }
+  const configPath = explicit ?? findConfigPath(process.cwd());
   if (!configPath) return null;
+
+  const command = opts.serve ? "serve" : opts.watch ? "watch" : "bundle";
+  const mode = opts.mode ?? (command === "bundle" ? "production" : "development");
+  const env = {
+    command,
+    mode,
+    env: process.env,
+  };
+
   try {
-    return await loadConfig(configPath);
+    return await loadConfig(configPath, env);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`failed to load config — ${reason}`);
@@ -1095,7 +1131,7 @@ async function main() {
   // 명시적 --config <path> flag 는 #2103 (Phase 2-1) 에서 추가.
   // init() 은 entry 검사 후로 미뤄 no-args 경로의 NAPI dlopen 비용을 절감한다.
   // (config 가 .ts 면 loadConfig 내부에서 init() 이 idempotent 하게 호출됨)
-  const config = await loadAutoConfig();
+  const config = await loadAutoConfig(opts);
   if (config) {
     mergeConfigIntoOpts(opts, config);
   }
