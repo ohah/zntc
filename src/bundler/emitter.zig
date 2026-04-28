@@ -1971,6 +1971,17 @@ const DeadStoreRefIndex = struct {
         return null;
     }
 
+    /// `start_event` 다음에 같은 symbol 을 덮어쓰는 pure write event 를 반환한다.
+    /// 사이에 read 가 있거나 같은 statement 안에서 read 가 같이 있으면 보존을 위해 null.
+    /// closure 등 다른 scope 의 read 도 보존해야 하므로 read 검사는 모든 scope 를 본다.
+    fn findOverwriteAfter(self: *const DeadStoreRefIndex, start_event: RefEvent) ?RefEvent {
+        const next_event = self.firstSameScopeEventAfter(start_event) orelse return null;
+        if (!next_event.isPureWrite()) return null;
+        if (self.hasReadBetween(start_event.symbol_id, start_event.ref_pos, next_event.ref_pos)) return null;
+        if (self.hasReadInStmt(start_event.symbol_id, next_event.stmt_idx, next_event.ref_pos)) return null;
+        return next_event;
+    }
+
     fn hasReadBetween(self: *const DeadStoreRefIndex, symbol_id: u32, start_ref_pos: u32, end_ref_pos: u32) bool {
         for (self.all_events.items) |event| {
             if (event.symbol_id != symbol_id) continue;
@@ -2060,7 +2071,6 @@ fn markDeadOverwrittenAssignments(
     const stmts = ast.extra_data.items[list.start .. list.start + list.len];
 
     var ref_index = try DeadStoreRefIndex.init(allocator, references);
-    defer ref_index.deinit(allocator);
 
     markDeadOverwrittenInStatementList(ast, stmts, symbol_ids, symbols, &ref_index, unresolved_globals, skip_nodes, module);
 }
@@ -2081,11 +2091,7 @@ fn markDeadOverwrittenInStatementList(
         markDeadOverwrittenDeclarationInitializers(ast, raw_stmt, i, stmts, symbol_ids, symbols, ref_index, unresolved_globals, module);
         const current = assignmentInfoForStmt(ast, raw_stmt, symbol_ids, unresolved_globals, true) orelse continue;
         const current_write = ref_index.findWriteForAssignment(current.sym_idx, current.lhs_idx, @intCast(i)) orelse continue;
-        const next_event = ref_index.firstSameScopeEventAfter(current_write) orelse continue;
-        if (!next_event.isPureWrite()) continue;
-        if (ref_index.hasReadBetween(current.sym_idx, current_write.ref_pos, next_event.ref_pos)) continue;
-        if (ref_index.hasReadInStmt(current.sym_idx, next_event.stmt_idx, next_event.ref_pos)) continue;
-
+        const next_event = ref_index.findOverwriteAfter(current_write) orelse continue;
         if (next_event.stmt_idx <= i or next_event.stmt_idx >= stmts.len) continue;
         const next_raw = stmts[next_event.stmt_idx];
         if (next_raw >= ast.nodes.items.len) continue;
@@ -2135,7 +2141,7 @@ fn markDeadOverwrittenFunctionBody(
     skip_nodes: *std.DynamicBitSet,
     module: *const Module,
 ) void {
-    if (functionBodyBlock(ast, node)) |body_idx| {
+    if (ast.functionBodyBlock(node)) |body_idx| {
         if (@intFromEnum(body_idx) < ast.nodes.items.len) {
             const body = ast.nodes.items[@intFromEnum(body_idx)];
             if (body.tag == .block_statement) {
@@ -2147,18 +2153,6 @@ fn markDeadOverwrittenFunctionBody(
             }
         }
     }
-}
-
-fn functionBodyBlock(ast: *const Ast, node: ast_mod.Node) ?NodeIndex {
-    const body_slot: u32 = switch (node.tag) {
-        .arrow_function_expression => 1,
-        .function_declaration, .function_expression, .function, .method_definition => 2,
-        else => return null,
-    };
-    if (node.data.extra + body_slot >= ast.extra_data.items.len) return null;
-    const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + body_slot]);
-    if (body_idx.isNone()) return null;
-    return body_idx;
 }
 
 fn markDeadOverwrittenDeclarationInitializers(
@@ -2206,10 +2200,7 @@ fn markDeadOverwrittenDeclarationInitializers(
 
     const decl_scope = @intFromEnum(symbols[sym_idx].scope_id);
     const declare_event = ref_index.findDeclare(sym_idx, decl_scope, @intCast(stmt_pos)) orelse return;
-    const next_event = ref_index.firstSameScopeEventAfter(declare_event) orelse return;
-    if (!next_event.isPureWrite()) return;
-    if (ref_index.hasReadBetween(sym_idx, declare_event.ref_pos, next_event.ref_pos)) return;
-    if (ref_index.hasReadInStmt(sym_idx, next_event.stmt_idx, next_event.ref_pos)) return;
+    const next_event = ref_index.findOverwriteAfter(declare_event) orelse return;
     if (next_event.stmt_idx <= stmt_pos or next_event.stmt_idx >= stmts.len) return;
 
     const next_raw = stmts[next_event.stmt_idx];

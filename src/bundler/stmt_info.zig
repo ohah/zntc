@@ -384,15 +384,10 @@ fn zeroParamFunctionReturnIdentifier(ast: *const Ast, fn_idx: NodeIndex) ?NodeIn
     if (fn_idx.isNone() or @intFromEnum(fn_idx) >= ast.nodes.items.len) return null;
     const fn_node = ast.nodes.items[@intFromEnum(fn_idx)];
 
-    const body_slot: u32 = switch (fn_node.tag) {
-        .function_expression => 2,
-        .arrow_function_expression => 1,
-        else => return null,
-    };
     const flags_slot: u32 = switch (fn_node.tag) {
         .function_expression => 3,
         .arrow_function_expression => 2,
-        else => unreachable,
+        else => return null,
     };
     if (!ast.hasExtra(fn_node.data.extra, flags_slot)) return null;
 
@@ -404,7 +399,7 @@ fn zeroParamFunctionReturnIdentifier(ast: *const Ast, fn_idx: NodeIndex) ?NodeIn
     }
     if (ast.functionParamsList(fn_node).len != 0) return null;
 
-    const body_idx = ast.readExtraNode(fn_node.data.extra, body_slot);
+    const body_idx = ast.functionBodyBlock(fn_node) orelse return null;
     if (fn_node.tag == .arrow_function_expression and isIdentifierReference(ast, body_idx)) {
         return body_idx;
     }
