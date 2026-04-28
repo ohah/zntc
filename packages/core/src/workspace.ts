@@ -174,25 +174,9 @@ export async function loadWorkspace(filePath: string, env?: ConfigEnv): Promise<
 }
 
 /**
- * 단일 워크스페이스 build target — name + cwd + 로드/머지 완료된 config.
+ * 식별 단계 결과 — cwd/name/source 만 확정하고 config 로드는 보류.
  *
- * `resolveWorkspaceEntries` 의 최종 결과 형태. CLI (`zts.mjs`) 는 이걸로 build flow 를 돈다.
- */
-export interface ResolvedWorkspace {
-  /** 사용자/CLI 가 식별자로 쓰는 이름. inline 은 `entry.name`, path/glob 는 package.json `name` 또는 디렉토리명. */
-  name: string;
-  /** build 가 실행될 절대 디렉토리. inline 은 root, path/glob 은 매칭 디렉토리. */
-  cwd: string;
-  /** entry 자체 config — root 와의 머지는 caller (zts.mjs) 가 책임. */
-  config: UserConfig;
-  /** 디버그/로그용 — 어떤 entry 형식에서 왔는지. */
-  source: "path" | "glob" | "inline";
-}
-
-/**
- * 식별 단계 결과 — `IdentifiedWorkspace` 는 cwd/name/source 만 확정하고 config 로드는 보류.
- *
- * `loadIdentifiedConfig` 로 후처리해야 `ResolvedWorkspace` 와 동등해진다.
+ * `loadIdentifiedConfig` 로 후처리하면 `config: UserConfig` 가 채워진 build target 형태로 완성.
  */
 export interface IdentifiedWorkspace {
   /** 워크스페이스 식별자 — `--workspace=<name>` 필터 키. */
@@ -288,48 +272,6 @@ export async function loadIdentifiedConfig(
 }
 
 /**
- * entries 를 실제 `ResolvedWorkspace` 목록으로 해석 (식별 + 모든 config 병렬 로드).
- *
- * @deprecated 단순 case (필터 없이 모든 entry 빌드) 외에는 비효율. 권장 패턴:
- * ```ts
- * const ids = identifyWorkspaceEntries(entries, rootDir);
- * const filtered = filterWorkspaces(ids, opts.workspace);     // 필터 후
- * const resolved = await Promise.all(                          // 살아남은 entry 만 config 로드
- *   filtered.map(async (w) => ({ ...w, config: await loadIdentifiedConfig(w, env) })),
- * );
- * ```
- * 위 패턴이 `--workspace=<name>` 시 N-1 개 entry 의 비싼 TS config self-compile 회피.
- * 이 wrapper 는 모든 entry 를 무조건 로드 — 단순 사용 시에만 사용.
- *
- *  - string path: 디렉토리 → `findConfigPath` 로 zts.config.* 탐색 후 로드
- *  - string glob (`*` 포함): `expandGlob` 로 매칭 디렉토리 enumerate, 각각 path 처리
- *  - inline object: 그대로 (cwd = `rootDir`)
- *
- * 같은 cwd 가 중복 매칭되면 한 번만 처리 (선언 순서 첫 번째). config 로드는 `Promise.all`
- * 로 병렬화 — I/O bound 라 동시 실행 안전.
- *
- * @param entries `loadWorkspace` 가 반환한 검증된 entries 배열
- * @param rootDir workspace 파일이 있는 디렉토리 (절대 경로 권장)
- * @param env `loadConfig` 에 전달할 함수형 config 컨텍스트 (없으면 `defaultConfigEnv()`)
- * @returns 해석된 워크스페이스 목록 — config 로드 완료
- */
-export async function resolveWorkspaceEntries(
-  entries: Workspace,
-  rootDir: string,
-  env?: ConfigEnv,
-): Promise<ResolvedWorkspace[]> {
-  const ids = identifyWorkspaceEntries(entries, rootDir);
-  return Promise.all(
-    ids.map(async (w) => ({
-      name: w.name,
-      cwd: w.cwd,
-      source: w.source,
-      config: await loadIdentifiedConfig(w, env),
-    })),
-  );
-}
-
-/**
  * 매우 단순한 glob 확장. **trailing `*`** (또는 `*` 가 들어간 디렉토리명 패턴) 만 지원.
  * `./packages/*`, `./apps/web-*`, `./pkg-*` 등.
  *
@@ -416,9 +358,9 @@ function detectPackageName(absDir: string): string {
 /**
  * `--workspace=<name>` 필터. 매칭 0개면 throw — 사용자 typo 보호 (가능한 후보 노출).
  *
- * `IdentifiedWorkspace` / `ResolvedWorkspace` 둘 다 받도록 generic — `name` 필드만 보면 되므로
- * config 로드 전 (`identifyWorkspaceEntries` 결과) 에 적용해도, 후 (`resolveWorkspaceEntries`)
- * 에 적용해도 동일 동작. config 로드는 비싸므로 식별 단계 후 즉시 필터를 권장.
+ * `name` 필드를 가진 객체면 모두 받도록 generic — `IdentifiedWorkspace` 든 caller 가 정의한
+ * 후속 형태든 동일 동작. config 로드는 비싸므로 `identifyWorkspaceEntries` 결과에 즉시 필터
+ * 후 `loadIdentifiedConfig` 호출을 권장.
  *
  * `name` 일치만 사용 — Vitest 의 `--project` 와 동일. glob/regex 매칭은 향후 확장.
  *
