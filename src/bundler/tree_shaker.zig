@@ -662,7 +662,7 @@ pub const TreeShaker = struct {
                     if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
                         !self.isExportUsed(@intCast(target_mod_idx), ALL_EXPORTS_SENTINEL) and
                         self.hasAnyUsedExportDirect(@intCast(target_mod_idx)) and
-                        isModuleExportsRequireStmtForSpan(o, infos, @intCast(item.stmt), rec.span))
+                        moduleExportsRequireProxyMatches(o, infos, @intCast(item.stmt), rec.resolved))
                     {
                         const target_infos = module_stmt_infos[target_mod_idx] orelse {
                             try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
@@ -1009,8 +1009,7 @@ pub const TreeShaker = struct {
         for (infos.stmts, 0..) |stmt, si| {
             const stmt_ni: usize = stmt.node_idx;
             if (stmt_ni >= ast.nodes.items.len) continue;
-            const require_span = moduleExportsRequireSpanAt(ast, @enumFromInt(stmt_ni)) orelse continue;
-            const target = requireTargetForSpan(m, require_span) orelse continue;
+            const target = moduleExportsRequireTargetAt(m, ast, @enumFromInt(stmt_ni)) orelse continue;
             const target_idx: u32 = @intFromEnum(target);
             if (target_idx == mod_idx) continue;
 
@@ -1197,6 +1196,9 @@ pub const TreeShaker = struct {
             self.included.set(target);
             try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
         }
+        // module.exports = require("./impl") proxy 전파: 호출자가 mod_idx 전체를 live 로
+        // 본 이상 proxy target 도 fully include. opaque_visited 로 재진입 방어.
+        try self.seedModuleExportsRequireProxyTargetsAll(mod_idx, queue, module_stmt_infos, reachable_stmts);
     }
 
     fn seedSideEffectStmts(
@@ -1226,7 +1228,6 @@ pub const TreeShaker = struct {
         try self.markAllExportsUsed(mod_idx);
         self.included.set(mod_idx);
         try self.seedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
-        try self.seedModuleExportsRequireProxyTargetsAll(mod_idx, queue, module_stmt_infos, reachable_stmts);
     }
 
     fn seedModuleExportsRequireProxyTargetsAll(
@@ -1243,8 +1244,7 @@ pub const TreeShaker = struct {
         for (target_infos.stmts) |stmt| {
             const stmt_ni = stmt.node_idx;
             if (stmt_ni >= ast.nodes.items.len) continue;
-            const require_span = moduleExportsRequireSpanAt(ast, @enumFromInt(stmt_ni)) orelse continue;
-            const target = requireTargetForSpan(m, require_span) orelse continue;
+            const target = moduleExportsRequireTargetAt(m, ast, @enumFromInt(stmt_ni)) orelse continue;
             const target_idx: u32 = @intFromEnum(target);
             if (target_idx == mod_idx) continue;
             if (self.isExportUsed(target_idx, ALL_EXPORTS_SENTINEL)) continue;
@@ -1493,11 +1493,15 @@ pub const TreeShaker = struct {
             }
 
             if (target_module.wrap_kind == .cjs) {
-                if (ib.kind == .default and ib.namespace_used_properties != null) {
-                    for (ib.namespace_used_properties.?) |prop_name| {
-                        try self.markExportUsed(@intCast(target_mod), prop_name);
+                if (ib.kind == .default) {
+                    if (ib.namespace_used_properties) |props| {
+                        for (props) |prop_name| {
+                            try self.markExportUsed(@intCast(target_mod), prop_name);
+                        }
+                    } else {
+                        try self.markAllExportsUsed(@intCast(target_mod));
                     }
-                } else if (ib.kind == .default or ib.kind == .namespace) {
+                } else if (ib.kind == .namespace) {
                     try self.markAllExportsUsed(@intCast(target_mod));
                 } else {
                     try self.markExportUsed(@intCast(target_mod), ib.imported_name);
@@ -2070,7 +2074,8 @@ fn moduleExportsRequireSpanAt(ast: *const Ast, idx: NodeIndex) ?@import("../lexe
     return arg.span;
 }
 
-fn requireTargetForSpan(m: *const Module, span: @import("../lexer/token.zig").Span) ?ModuleIndex {
+fn moduleExportsRequireTargetAt(m: *const Module, ast: *const Ast, idx: NodeIndex) ?ModuleIndex {
+    const span = moduleExportsRequireSpanAt(ast, idx) orelse return null;
     for (m.import_records) |rec| {
         if (rec.kind != .require) continue;
         if (rec.resolved.isNone()) continue;
@@ -2079,18 +2084,18 @@ fn requireTargetForSpan(m: *const Module, span: @import("../lexer/token.zig").Sp
     return null;
 }
 
-fn isModuleExportsRequireStmtForSpan(
+fn moduleExportsRequireProxyMatches(
     m: *const Module,
     infos: StmtInfos,
     stmt_idx: u32,
-    span: @import("../lexer/token.zig").Span,
+    target: ModuleIndex,
 ) bool {
     if (stmt_idx >= infos.stmts.len) return false;
     const ast = &(m.ast orelse return false);
     const stmt_ni = infos.stmts[stmt_idx].node_idx;
     if (stmt_ni >= ast.nodes.items.len) return false;
-    const require_span = moduleExportsRequireSpanAt(ast, @enumFromInt(stmt_ni)) orelse return false;
-    return require_span.start == span.start and require_span.end == span.end;
+    const proxy_target = moduleExportsRequireTargetAt(m, ast, @enumFromInt(stmt_ni)) orelse return false;
+    return @intFromEnum(proxy_target) == @intFromEnum(target);
 }
 
 fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeIndex, property: NodeIndex } {
