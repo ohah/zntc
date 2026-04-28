@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const Span = @import("../lexer/token.zig").Span;
+const string_escape = @import("../string_escape.zig");
 
 // ============================================================
 // 인덱스 타입 — 포인터 대신 u32 인덱스로 노드를 참조 (D004)
@@ -1258,25 +1259,29 @@ pub const Ast = struct {
         return if (prop.data.binary.right.isNone()) prop.data.binary.left else prop.data.binary.right;
     }
 
-    /// object/method/class key 노드에서 정적 이름을 raw 형태로 추출한다.
-    /// identifier 계열, string_literal (따옴표 제거), numeric_literal,
+    /// object/method/class key 노드에서 정적 이름을 디코드된 owned UTF-8 로 추출한다.
+    /// identifier 계열, string_literal (escape 디코드), numeric_literal,
     /// computed_property_key (literal inner) 까지 처리. 그 외 (computed expr)
-    /// 는 null. 따옴표만 제거하므로 escape sequence 는 보존 — escape 해석이
-    /// 필요한 codegen 경로는 별도 helper 사용.
-    pub fn staticKeyName(self: *const Ast, key_idx: NodeIndex) ?[]const u8 {
+    /// 는 null. caller 가 반환된 slice 를 free 한다. invalid string literal
+    /// (불완전 escape 등) 도 null.
+    pub fn staticKeyName(
+        self: *const Ast,
+        alloc: std.mem.Allocator,
+        key_idx: NodeIndex,
+    ) std.mem.Allocator.Error!?[]u8 {
         if (key_idx.isNone() or @intFromEnum(key_idx) >= self.nodes.items.len) return null;
         const n = self.getNode(key_idx);
         return switch (n.tag) {
-            .identifier_reference, .binding_identifier, .private_identifier => self.getText(n.data.string_ref),
-            .string_literal => stripStringQuotes(self.getText(n.span)),
-            .numeric_literal => self.getText(n.span),
+            .identifier_reference, .binding_identifier, .private_identifier => try alloc.dupe(u8, self.getText(n.data.string_ref)),
+            .numeric_literal => try alloc.dupe(u8, self.getText(n.span)),
+            .string_literal => try decodeStringLiteralKey(self, alloc, key_idx),
             .computed_property_key => blk: {
                 const inner = n.data.unary.operand;
                 if (inner.isNone()) break :blk null;
                 const inner_n = self.getNode(inner);
                 break :blk switch (inner_n.tag) {
-                    .string_literal => stripStringQuotes(self.getText(inner_n.span)),
-                    .numeric_literal => self.getText(inner_n.span),
+                    .string_literal => try decodeStringLiteralKey(self, alloc, inner),
+                    .numeric_literal => try alloc.dupe(u8, self.getText(inner_n.span)),
                     else => null,
                 };
             },
@@ -1284,6 +1289,18 @@ pub const Ast = struct {
         };
     }
 };
+
+fn decodeStringLiteralKey(
+    ast: *const Ast,
+    alloc: std.mem.Allocator,
+    idx: NodeIndex,
+) std.mem.Allocator.Error!?[]u8 {
+    const n = ast.getNode(idx);
+    return string_escape.decodeJsStringLiteral(alloc, ast.getText(n.span)) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidStringLiteral, error.InvalidEscape => null,
+    };
+}
 
 // ============================================================
 // Function Declaration Flags (extra_data에 저장되는 비트 플래그)
