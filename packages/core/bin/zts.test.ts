@@ -308,6 +308,72 @@ describe("CLI: bundle", () => {
     expect(stdout).toContain("/* BOTTOM */");
   });
 
+  test("번들 + --target=es5 (ES 다운레벨)", () => {
+    // arrow function `() =>` 가 target=es5 면 `function()` 으로 다운레벨.
+    const arrowDir = mkdtempSync(join(tmpdir(), "zts-cli-target-"));
+    writeFileSync(join(arrowDir, "entry.ts"), "const fn = () => 42; console.log(fn());");
+    const { stdout, exitCode } = runCli(["--bundle", join(arrowDir, "entry.ts"), "--target=es5"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("=>"); // arrow 가 사라져야 함
+    rmSync(arrowDir, { recursive: true, force: true });
+  });
+
+  test("번들 + --browserslist (target 보다 우선)", () => {
+    // browserslist `last 2 chrome versions` 면 modern → arrow 보존.
+    const blDir = mkdtempSync(join(tmpdir(), "zts-cli-browserslist-"));
+    writeFileSync(join(blDir, "entry.ts"), "const fn = () => 42; console.log(fn());");
+    const { exitCode } = runCli([
+      "--bundle",
+      join(blDir, "entry.ts"),
+      "--browserslist=last 2 chrome versions",
+    ]);
+    expect(exitCode).toBe(0);
+    rmSync(blDir, { recursive: true, force: true });
+  });
+
+  test("--emit-decorator-metadata + --experimental-decorators", () => {
+    const decDir = mkdtempSync(join(tmpdir(), "zts-cli-decorator-"));
+    writeFileSync(
+      join(decDir, "entry.ts"),
+      "function dec(t: unknown, k: string) {} class C { @dec method(): string { return 'OK'; } } console.log('ok');",
+    );
+    const { exitCode } = runCli([
+      "--bundle",
+      join(decDir, "entry.ts"),
+      "--experimental-decorators",
+      "--emit-decorator-metadata",
+    ]);
+    expect(exitCode).toBe(0);
+    rmSync(decDir, { recursive: true, force: true });
+  });
+
+  test("--jsx-in-js — .js 파일에서도 JSX 파싱 (classic 모드 — runtime resolve 회피)", () => {
+    const jsxDir = mkdtempSync(join(tmpdir(), "zts-cli-jsx-in-js-"));
+    writeFileSync(
+      join(jsxDir, "entry.js"),
+      "function React_createElement() {} const el = <div>OK</div>; console.log(el);",
+    );
+    const { stdout, exitCode } = runCli([
+      "--bundle",
+      join(jsxDir, "entry.js"),
+      "--jsx-in-js",
+      "--jsx=classic",
+      "--jsx-factory=React_createElement",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("React_createElement");
+    expect(stdout).not.toContain("<div>"); // JSX 가 transpile 됐어야
+    rmSync(jsxDir, { recursive: true, force: true });
+  });
+
+  test("--verbatim-module-syntax — type-only import 보존 동작", () => {
+    const vmsDir = mkdtempSync(join(tmpdir(), "zts-cli-vms-"));
+    writeFileSync(join(vmsDir, "entry.ts"), "console.log('vms');");
+    const { exitCode } = runCli(["--bundle", join(vmsDir, "entry.ts"), "--verbatim-module-syntax"]);
+    expect(exitCode).toBe(0);
+    rmSync(vmsDir, { recursive: true, force: true });
+  });
+
   test("--banner 가 = 안의 = 도 보존", () => {
     // `--banner=key=value` 같이 value 안에 = 가 있어도 split 으로 truncation 안 됨.
     const { stdout, exitCode } = runCli([
