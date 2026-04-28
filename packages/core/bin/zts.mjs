@@ -14,7 +14,8 @@ try {
 } catch {
   coreModule = await import("../index.ts");
 }
-const { init, transpile, build, buildSync, findConfigPath, loadConfig } = coreModule;
+const { init, transpile, build, buildSync, findConfigPath, importAndResolveDefault, loadConfig } =
+  coreModule;
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { resolve, dirname, basename, extname, join } from "node:path";
 import { createServer } from "node:http";
@@ -611,6 +612,7 @@ async function runTranspile(opts) {
 
 /**
  * cwd 에서 zts.config.* 자동 탐색 + 로드. 없으면 null.
+ * 실패 시 `Error("failed to load config — ...")` 를 throw — main 의 try/catch 가 처리.
  * `--config <path>` 명시 옵션은 #2103 (Phase 2-1) 에서 추가 예정.
  */
 async function loadAutoConfig() {
@@ -620,8 +622,7 @@ async function loadAutoConfig() {
     return await loadConfig(configPath);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.error(`error: failed to load config — ${reason}`);
-    process.exit(1);
+    throw new Error(`failed to load config — ${reason}`);
   }
 }
 
@@ -629,10 +630,15 @@ async function loadAutoConfig() {
  * CLI > config 우선순위로 BuildOptions 머지.
  *
  * - scalar/string: CLI 가 undefined 면 config 사용
- * - boolean: CLI 가 default(false) 일 때 config 가 true 면 config 사용
- *   (false 를 명시적으로 끄려면 CLI 가 처리 — Phase 2-1 함수형 config 에서 강화)
+ * - boolean (default=false): CLI 가 false 면 config=true 만 적용 (`minify`, `sourcemap` 등)
+ * - boolean (default=true): CLI 가 true 면 config=false 만 적용 (`sourcesContent`, `treeShaking` 등)
+ *   ※ CLI 가 명시적으로 default 값을 줬는지 (--no-minify 같은) 구분 못 하는 한계 존재.
+ *      함수형 config (#2103) 에서 정밀한 우선순위 적용 예정.
  * - 배열: CLI 가 비어있으면 config 사용
- * - 객체: shallow merge (config defaults + CLI override)
+ * - 객체 (define/alias/loader): shallow merge (config defaults + CLI override)
+ *
+ * FIXME: 키 리스트 4종이 `BuildOptions` 와 수동 동기화. 새 옵션 추가 시 누락 가능.
+ *        근본 fix 는 #2112 (Phase 3-5 schema sync) 에서 single source of truth 도입.
  */
 function mergeConfigIntoOpts(opts, config) {
   if (!config) return opts;
@@ -727,18 +733,19 @@ function mergeConfigIntoOpts(opts, config) {
   return opts;
 }
 
-async function runBundle(opts) {
+async function runBundle(opts, config) {
   // config 자동 탐색 + 머지는 main() 에서 모든 모드에 대해 사전 적용된다.
-  // 여기서는 머지 결과 plugins 만 추가로 활용.
+  // 여기서는 plugins 만 추가로 합친다 (config 의 plugins → --plugin <path> 의 plugins).
   const plugins = [];
-  if (opts._config && Array.isArray(opts._config.plugins)) {
-    plugins.push(...opts._config.plugins);
+  if (config && Array.isArray(config.plugins)) {
+    plugins.push(...config.plugins);
   }
   for (const pluginPath of opts.pluginPaths) {
     const absPath = resolve(pluginPath);
-    const mod = await import(absPath);
-    const cfg = mod.default || mod;
-    if (cfg.plugins) {
+    // importAndResolveDefault 는 pathToFileURL 으로 Windows 경로를 안전하게 처리하고
+    // ENOENT/객체 검증을 통일한다 (config-loader 와 공유).
+    const cfg = await importAndResolveDefault(absPath);
+    if (Array.isArray(cfg.plugins)) {
       plugins.push(...cfg.plugins);
     } else if (typeof cfg.setup === "function") {
       plugins.push(cfg);
@@ -829,7 +836,7 @@ async function runBundle(opts) {
 
 // ─── Watch 모드 ───
 
-async function runWatch(opts) {
+async function runWatch(opts, config) {
   const { watch } = await import("node:fs");
 
   let building = false;
@@ -845,7 +852,7 @@ async function runWatch(opts) {
 
     try {
       const start = performance.now();
-      const result = await runBundle(opts);
+      const result = await runBundle(opts, config);
       const elapsed = Math.round(performance.now() - start);
       const files = result.outputFiles?.length ?? 0;
 
@@ -905,7 +912,7 @@ async function runWatch(opts) {
 
 // ─── Serve 모드 ───
 
-async function runServe(opts) {
+async function runServe(opts, config) {
   const isBun = typeof globalThis.Bun !== "undefined";
   const mimeTypes = {
     ".html": "text/html",
@@ -926,7 +933,7 @@ async function runServe(opts) {
   // 번들 모드면 먼저 빌드
   if (opts.bundle && opts.entryPoints.length > 0) {
     opts.outdir = opts.outdir || join(opts.serveDir, ".zts-serve");
-    await runBundle(opts);
+    await runBundle(opts, config);
 
     // watch도 같이
     if (!opts.watch) {
@@ -1044,7 +1051,7 @@ async function runServe(opts) {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(async () => {
           try {
-            await runBundle(opts);
+            await runBundle(opts, config);
             if (opts.logLevel !== "silent") console.error("[serve] rebuilt");
           } catch (err) {
             console.error("[serve] rebuild error:", err);
@@ -1072,11 +1079,11 @@ async function main() {
   // config 자동 탐색 + 머지 (CLI > config > tsconfig). entry 검사 전에 적용해야
   // config 의 entryPoints 가 검사 통과에 기여한다.
   // 명시적 --config <path> flag 는 #2103 (Phase 2-1) 에서 추가.
-  init();
+  // init() 은 entry 검사 후로 미뤄 no-args 경로의 NAPI dlopen 비용을 절감한다.
+  // (config 가 .ts 면 loadConfig 내부에서 init() 이 idempotent 하게 호출됨)
   const config = await loadAutoConfig();
   if (config) {
     mergeConfigIntoOpts(opts, config);
-    opts._config = config; // runBundle 이 plugins 머지에 사용
   }
 
   if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve) {
@@ -1088,14 +1095,15 @@ async function main() {
 
   // tsconfig.json 자동 로드 (CLI/config 보다 낮은 우선순위)
   loadTsConfig(opts);
+  init();
 
   try {
     if (opts.serve) {
-      await runServe(opts);
+      await runServe(opts, config);
     } else if (opts.watch) {
-      await runWatch(opts);
+      await runWatch(opts, config);
     } else if (opts.bundle) {
-      const result = await runBundle(opts);
+      const result = await runBundle(opts, config);
       if (result.errors.length > 0) process.exit(1);
     } else {
       await runTranspile(opts);

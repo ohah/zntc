@@ -99,11 +99,31 @@ async function loadTsConfig(absPath: string): Promise<UserConfig> {
 }
 
 async function loadJsConfig(absPath: string): Promise<UserConfig> {
-  return importAndResolveDefault(absPath);
+  try {
+    return await importAndResolveDefault<UserConfig>(absPath);
+  } catch (err) {
+    if (err instanceof Error) {
+      // config 컨텍스트로 에러 메시지 정정 (importAndResolveDefault 는 generic).
+      err.message = err.message
+        .replace("module not found", "config file not found")
+        .replace("module must export an object", "config must export an object");
+    }
+    throw err;
+  }
 }
 
-async function importAndResolveDefault(absPath: string): Promise<UserConfig> {
-  // 같은 프로세스에서 다중 reload 가 필요한 watch (#2107) 는 별도 cache-bust 적용 예정.
+/**
+ * 절대 경로를 `file://` URL 로 dynamic import 한 뒤 default export (없으면
+ * namespace 객체) 를 반환한다. 객체가 아니거나 배열이면 throw.
+ *
+ * `pathToFileURL` 으로 Windows 절대경로 (드라이브 문자) 를 안전하게 처리.
+ * config 로더와 CLI 의 `--plugin <path>` 로더가 공유.
+ *
+ * 같은 프로세스에서 다중 reload 가 필요한 watch (#2107) 는 별도 cache-bust 적용 예정.
+ */
+export async function importAndResolveDefault<T extends object = UserConfig>(
+  absPath: string,
+): Promise<T> {
   const url = pathToFileURL(absPath).href;
   let mod: Record<string, unknown>;
   try {
@@ -111,17 +131,16 @@ async function importAndResolveDefault(absPath: string): Promise<UserConfig> {
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ERR_MODULE_NOT_FOUND" || code === "ENOENT") {
-      throw new Error(`@zts/core: config file not found: ${absPath}`);
+      throw new Error(`@zts/core: module not found: ${absPath}`);
     }
     throw err;
   }
-  const config = (mod as { default?: unknown }).default ?? mod;
-  if (typeof config !== "object" || config === null || Array.isArray(config)) {
-    throw new Error(
-      `@zts/core: config must export an object (got ${Array.isArray(config) ? "array" : typeof config}) from ${absPath}`,
-    );
+  const value = (mod as { default?: unknown }).default ?? mod;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    const got = Array.isArray(value) ? "array" : typeof value;
+    throw new Error(`@zts/core: module must export an object (got ${got}) from ${absPath}`);
   }
-  return config as UserConfig;
+  return value as T;
 }
 
 function readFileOrThrowNotFound(absPath: string): string {

@@ -1498,12 +1498,12 @@ describe("CLI: zts.config 자동 탐색 + BuildOptions 머지", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("--plugin <path> 로 받은 config 도 BuildOptions 머지됨", () => {
-    // backward compat: 기존에 --plugin 으로 전달하던 zts.config.js 도 plugin 만이
-    // 아니라 BuildOptions 도 적용되어야 함... 단 자동 탐색이 우선시되므로 별도
-    // 디렉토리에서 --plugin 만 지정.
-    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-as-config-"));
-    writeFileSync(join(dir, "entry.ts"), "console.log('PLUGIN_PATH_OK');");
+  test("--plugin <path> 의 plugins 필드가 적용된다 (BuildOptions 다른 필드는 무시)", () => {
+    // `--plugin <path>` 는 의미상 plugin-only 진입점 — 자동 탐색의 BuildOptions
+    // 머지와 분리. config 의 BuildOptions 적용은 자동 탐색 경로 (zts.config.*) 가
+    // 담당. `--config <path>` 로 명시적으로 BuildOptions 머지하는 경로는 #2103.
+    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-only-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('original');");
     writeFileSync(
       join(dir, "p.js"),
       `export default {
