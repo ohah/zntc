@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { createFixture, runNode, runZts, runZtsInDir } from "./helpers";
 import { join, basename } from "node:path";
-import { readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 /// CJS/Node 프리셋으로 번들하고 outFile 경로 반환. 번들 실패 시 throw.
@@ -264,14 +264,10 @@ describe("Node.js 호환 edge case", () => {
       cleanup = f.cleanup;
 
       const outFile = await bundleCjsNode(f.dir, "app.ts");
-      let out = readFileSync(outFile, "utf8");
-      const summaryStart = out.indexOf("\nBundled ");
-      if (summaryStart !== -1) {
-        out = out.slice(0, summaryStart);
-        writeFileSync(outFile, out);
-      }
+      const out = readFileSync(outFile, "utf8");
       expect(out).toContain('new Worker(new URL("./worker-');
-      expect(out).toContain('require("node:url").pathToFileURL(__filename).href');
+      // import.meta.url polyfill 은 codegen 의 IMPORT_META_URL_NODE 와 동일 specifier (`url`).
+      expect(out).toContain('require("url").pathToFileURL(__filename).href');
       expect(out).not.toContain("./worker.ts");
 
       const workerFile = readdirSync(f.dir).find((name) => /^worker-[a-f0-9]{8}\.cjs$/.test(name));

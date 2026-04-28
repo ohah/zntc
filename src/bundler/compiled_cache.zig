@@ -90,7 +90,7 @@ pub const InputHasher = struct {
 /// `EmitOptions` 필드 개수. 구조체가 바뀌면 이 값을 갱신하고 hashEmitOptions
 /// 에 새 필드를 반영해야 한다 — comptime 에 필드 누락을 감지하는 fail-stop.
 /// 누락이 invisible bug (stale cache) 로 번지므로 이 barrier 는 load-bearing.
-const expected_emit_options_field_count: usize = 47;
+const expected_emit_options_field_count: usize = 48;
 
 comptime {
     const actual = @typeInfo(EmitOptions).@"struct".fields.len;
@@ -198,6 +198,29 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.transform_options_base.verbatim_module_syntax);
     h.addBool(options.transform_options_base.keep_names);
     h.addU32(@bitCast(options.transform_options_base.unsupported));
+
+    // worker_map_per_module: HashMap iteration 순서 무관하게 결정적 hash. entry 별 sub-hash
+    // 를 XOR aggregate. outer key (module 절대 경로) 가 entry 마다 unique 라 XOR 충돌 가능성
+    // 없음 (서로 다른 sub-hash 가 같은 값일 확률만 존재 → 64-bit 에서 무시).
+    if (options.worker_map_per_module) |outer| {
+        h.addU64(outer.count());
+        var combined: u64 = 0;
+        var oit = outer.iterator();
+        while (oit.next()) |oe| {
+            var sub = InputHasher.init(0);
+            sub.addStr(oe.key_ptr.*);
+            sub.addU64(oe.value_ptr.count());
+            var iit = oe.value_ptr.iterator();
+            while (iit.next()) |ie| {
+                sub.addStr(ie.key_ptr.*);
+                sub.addStr(ie.value_ptr.*);
+            }
+            combined ^= sub.final();
+        }
+        h.addU64(combined);
+    } else {
+        h.addU64(0);
+    }
 }
 
 /// 전체 emit 에 1회만 계산하면 되는 options_hash 를 캐싱용으로 반환.

@@ -123,6 +123,11 @@ pub const CodegenOptions = struct {
     /// Metro x_facebook_sources function map emit 활성화.
     /// --platform=react-native 시 자동 활성화 (PR#3).
     sourcemap_function_map: bool = false,
+    /// `new Worker(new URL("./worker.ts", import.meta.url))` 의 specifier→worker chunk filename
+    /// 매핑 (per-module). emitNew 가 이 맵을 보고 매칭되면 filename + import.meta.url polyfill
+    /// 로 직접 emit. bundler 가 모듈별로 sub-map 을 추출해 주입한다 (graph.worker_entries 에서
+    /// 도출). null/empty 면 fast-exit — worker 가 없는 모듈에서 추가 비용 0.
+    worker_map: ?*const std.StringHashMap([]const u8) = null,
 };
 
 /// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
@@ -1830,12 +1835,12 @@ pub const Codegen = struct {
                 }
                 // import.meta.* polyfill (CJS/non-ESM)
                 if (self.options.module_format == .cjs or self.options.replace_import_meta) {
+                    if (std.mem.eql(u8, prop_text, "url")) {
+                        try self.writeImportMetaUrl();
+                        return;
+                    }
                     if (self.options.platform == .node) {
-                        // Node.js CJS polyfill
-                        if (std.mem.eql(u8, prop_text, "url")) {
-                            try self.write(IMPORT_META_URL_NODE);
-                            return;
-                        } else if (std.mem.eql(u8, prop_text, "dirname")) {
+                        if (std.mem.eql(u8, prop_text, "dirname")) {
                             try self.write("__dirname");
                             return;
                         } else if (std.mem.eql(u8, prop_text, "filename")) {
@@ -1844,10 +1849,7 @@ pub const Codegen = struct {
                         }
                     } else {
                         // browser/neutral: 빈 문자열
-                        if (std.mem.eql(u8, prop_text, "url") or
-                            std.mem.eql(u8, prop_text, "dirname") or
-                            std.mem.eql(u8, prop_text, "filename"))
-                        {
+                        if (std.mem.eql(u8, prop_text, "dirname") or std.mem.eql(u8, prop_text, "filename")) {
                             try self.write("\"\"");
                             return;
                         }
@@ -2168,6 +2170,53 @@ pub const Codegen = struct {
         return std.mem.indexOf(u8, rename, "()") != null;
     }
 
+    /// import.meta.url 의 출력 형태를 한 곳에서 결정 (drift 방지).
+    /// - ESM 출력: `import.meta.url` 그대로
+    /// - CJS/replace_import_meta + node: `require("url").pathToFileURL(__filename).href`
+    /// - CJS/replace_import_meta + browser/neutral: `""`
+    /// emitMember 의 import.meta.url 분기 + emitNew 의 worker URL 두 번째 인자가 공유.
+    fn writeImportMetaUrl(self: *Codegen) !void {
+        if (self.options.module_format == .cjs or self.options.replace_import_meta) {
+            if (self.options.platform == .node) {
+                try self.write(IMPORT_META_URL_NODE);
+                return;
+            }
+            try self.write("\"\"");
+            return;
+        }
+        try self.write("import.meta.url");
+    }
+
+    /// `new URL("specifier", import.meta.url)` 가 worker 등록된 specifier 를 가리키면
+    /// `new URL("./<filename>", <import.meta.url polyfill>)` 로 직접 emit. 매칭 시 true 반환.
+    /// graph.zig 가 worker_threads 패턴을 detect 해 worker_map 에 등록 → codegen 은 lookup 만.
+    /// 매칭 안 되면 평범한 emitNew 흐름으로 fallback.
+    fn tryEmitWorkerURL(self: *Codegen, callee: ast_mod.NodeIndex, args_start: u32, args_len: u32) !bool {
+        const worker_map = self.options.worker_map orelse return false;
+        if (worker_map.count() == 0 or args_len == 0) return false;
+
+        const callee_node = self.ast.getNode(callee);
+        if (callee_node.tag != .identifier_reference) return false;
+        if (!std.mem.eql(u8, self.ast.getText(callee_node.span), "URL")) return false;
+
+        const extras = self.ast.extra_data.items;
+        if (args_start >= extras.len) return false;
+        const arg0_idx: ast_mod.NodeIndex = @enumFromInt(extras[args_start]);
+        if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= self.ast.nodes.items.len) return false;
+        const arg0_node = self.ast.getNode(arg0_idx);
+        if (arg0_node.tag != .string_literal) return false;
+        const spec = Ast.stripStringQuotes(self.ast.getText(arg0_node.span));
+
+        const filename = worker_map.get(spec) orelse return false;
+
+        try self.write("new URL(\"./");
+        try self.write(filename);
+        try self.write("\", ");
+        try self.writeImportMetaUrl();
+        try self.writeByte(')');
+        return true;
+    }
+
     fn emitNew(self: *Codegen, node: Node) !void {
         const e = node.data.extra;
         if (!self.ast.hasExtra(e, 3)) return;
@@ -2179,6 +2228,8 @@ pub const Codegen = struct {
         const is_pure = (flags & CallFlags.is_pure) != 0;
 
         if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
+
+        if (try self.tryEmitWorkerURL(callee, args_start, args_len)) return;
 
         try self.write("new ");
         // 원본의 잉여 parens 제거 (#1586): callee가 `(inner)` 형태이고 inner를

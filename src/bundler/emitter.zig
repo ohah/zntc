@@ -182,6 +182,13 @@ pub const EmitOptions = struct {
     /// null 이거나 모듈의 `mtime == 0` 이면 cache 비활성 — 항상 emit.
     compiled_cache: ?*CompiledOutputCache = null,
 
+    /// `new Worker(new URL("./worker.ts", import.meta.url))` 를 위한 per-module
+    /// specifier→worker chunk filename 매핑. outer key = 모듈 절대 경로,
+    /// inner key = import_record specifier, value = emit 된 worker chunk filename.
+    /// codegen 의 `worker_map` 으로 분배되어 emitNew 가 매칭되면 직접 emit.
+    /// null/empty 면 fast-exit — worker 가 없는 빌드에서 추가 비용 0.
+    worker_map_per_module: ?*const std.StringHashMap(std.StringHashMap([]const u8)) = null,
+
     pub const PolyfillEntry = struct {
         name: []const u8,
         content: []const u8,
@@ -1489,6 +1496,7 @@ pub fn emitModule(
         // dev mode: import.meta.hot → __zts_make_hot("dev_id")
         .dev_module_id = if (options.dev_mode and module.dev_id.len > 0) module.dev_id else null,
         .import_records = module.import_records,
+        .worker_map = if (options.worker_map_per_module) |outer| outer.getPtr(module.path) else null,
     });
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap.enable) {

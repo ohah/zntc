@@ -505,11 +505,12 @@ test "Worker: new Worker(new URL) produces separate IIFE bundle" {
 
     try std.testing.expect(!result.hasErrors());
 
-    // 메인 번들에 worker URL이 교체됨 (new URL 대신 문자열)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(\"./worker-") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, ".js\")") != null);
-    // new URL이 사라짐
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(") == null);
+    // 메인 번들의 worker specifier 가 build 결과 chunk filename 으로 치환되고
+    // 두 번째 인자는 import.meta.url 그대로 (브라우저 ESM 기본).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".js\", import.meta.url)") != null);
+    // 원본 specifier 는 사라짐
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker.ts") == null);
 
     // worker 번들이 asset_outputs에 포함
     try std.testing.expect(result.asset_outputs != null);
@@ -573,10 +574,11 @@ test "Worker: multiple workers produce separate bundles" {
 
     try std.testing.expect(!result.hasErrors());
 
-    // 두 worker URL이 모두 교체됨
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(\"./worker-a-") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(\"./worker-b-") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(") == null);
+    // 두 worker URL 모두 chunk filename 으로 치환 (new URL 구조 보존).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-a-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-b-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker-a.ts") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker-b.ts") == null);
 
     // 2개 worker 번들이 asset_outputs에 포함
     try std.testing.expect(result.asset_outputs != null);
@@ -615,10 +617,10 @@ test "Worker: duplicate references to same worker build only once" {
 
     try std.testing.expect(!result.hasErrors());
 
-    // 두 참조 모두 같은 파일명으로 교체
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(\"./worker-") != null);
-    // new URL은 전부 사라짐
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(") == null);
+    // 두 참조 모두 같은 chunk filename 으로 치환.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-") != null);
+    // 원본 specifier 는 사라짐
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker.ts") == null);
 
     // asset_outputs에 worker 번들 1개만 (중복 빌드 방지)
     try std.testing.expect(result.asset_outputs != null);
@@ -649,7 +651,7 @@ test "Worker: SharedWorker is also detected" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "new SharedWorker(\"./shared-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new SharedWorker(new URL(\"./shared-") != null);
     try std.testing.expect(result.asset_outputs != null);
 }
 
@@ -682,7 +684,8 @@ test "Worker: platform node cjs emits cjs worker and file URL" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, ".cjs\", require(\"node:url\").pathToFileURL(__filename).href)") != null);
+    // import.meta.url polyfill 은 codegen 의 IMPORT_META_URL_NODE 와 일치 (drift 없음).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".cjs\", require(\"url\").pathToFileURL(__filename).href)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker.ts") == null);
 
     const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
@@ -695,6 +698,148 @@ test "Worker: platform node cjs emits cjs worker and file URL" {
         }
     }
     try std.testing.expect(found_worker);
+}
+
+test "Worker: same specifier in different modules resolves to distinct workers" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("a");
+    try tmp.dir.makeDir("b");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { run as runA } from "./a/index.ts";
+        \\import { run as runB } from "./b/index.ts";
+        \\runA(); runB();
+    );
+    try writeFile(tmp.dir, "a/index.ts",
+        \\export function run() {
+        \\  new Worker(new URL("./worker.ts", import.meta.url));
+        \\}
+    );
+    try writeFile(tmp.dir, "a/worker.ts", "self.onmessage = (e) => self.postMessage('a');");
+    try writeFile(tmp.dir, "b/index.ts",
+        \\export function run() {
+        \\  new Worker(new URL("./worker.ts", import.meta.url));
+        \\}
+    );
+    try writeFile(tmp.dir, "b/worker.ts", "self.onmessage = (e) => self.postMessage('b');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+
+    // per-module map 이 같은 specifier 를 모듈마다 다른 chunk 로 매핑.
+    // graph.worker_entries 에 a/worker.ts 와 b/worker.ts 두 절대 경로 등록 →
+    // 두 worker chunk 가 별개로 emit, 각각 자신의 postMessage 본문 보유.
+    const assets = result.asset_outputs orelse return error.TestUnexpectedResult;
+    var saw_a = false;
+    var saw_b = false;
+    var worker_count: usize = 0;
+    for (assets) |a| {
+        if (!std.mem.startsWith(u8, a.path, "worker-")) continue;
+        worker_count += 1;
+        // codegen 의 quote_style 기본값은 double — single-quoted 입력도 double 로 normalize.
+        if (std.mem.indexOf(u8, a.contents, "self.postMessage(\"a\")") != null) saw_a = true;
+        if (std.mem.indexOf(u8, a.contents, "self.postMessage(\"b\")") != null) saw_b = true;
+    }
+    try std.testing.expectEqual(@as(usize, 2), worker_count);
+    try std.testing.expect(saw_a);
+    try std.testing.expect(saw_b);
+}
+
+test "Worker: non-worker new URL is preserved verbatim" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\const api = new URL("/v1/users", "https://api.example.com");
+        \\const file = new URL("./data.json", import.meta.url);
+        \\console.log(api, file);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // worker_map 이 비어있으면 emitNew 의 fast-exit — 일반 new URL 호출은 그대로 emit.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(\"/v1/users\", \"https://api.example.com\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new URL(\"./data.json\", import.meta.url)") != null);
+    try std.testing.expect(result.asset_outputs == null);
+}
+
+test "Worker: minified bundle preserves worker URL replacement" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\const w = new Worker(new URL("./worker.ts", import.meta.url));
+        \\w.postMessage("hi");
+    );
+    try writeFile(tmp.dir, "worker.ts", "self.onmessage = (e) => self.postMessage('pong');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_whitespace = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // AST-based 치환이라 minify 후에도 정확. 이전 string 후처리는 minify 가 패턴을
+    // 변형하면 깨질 위험 있었음 (회귀 방지 보호망).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "import.meta.url)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "./worker.ts") == null);
+}
+
+test "Worker: platform browser cjs uses empty-string url polyfill" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "entry.ts",
+        \\const w = new Worker(new URL("./worker.ts", import.meta.url));
+        \\w.postMessage("x");
+    );
+    try writeFile(tmp.dir, "worker.ts", "self.onmessage = (e) => self.postMessage('ok');");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .browser,
+        .format = .cjs,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // browser+cjs/replace_import_meta: import.meta.url polyfill = "". codegen 의
+    // writeImportMetaUrl 이 platform 분기 단일 source.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "new Worker(new URL(\"./worker-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\", \"\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "pathToFileURL") == null);
 }
 
 // ============================================================
