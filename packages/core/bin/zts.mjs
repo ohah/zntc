@@ -117,6 +117,8 @@ function parseArgs(argv) {
     sourceRoot: undefined,
     target: undefined,
     emitDecoratorMetadata: false,
+    verbatimModuleSyntax: undefined,
+    browserslist: undefined,
     drop: [],
     certfile: undefined,
     keyfile: undefined,
@@ -200,6 +202,18 @@ function parseArgs(argv) {
     }
     if (arg === "--experimental-decorators") {
       opts.experimentalDecorators = true;
+      continue;
+    }
+    if (arg === "--emit-decorator-metadata") {
+      opts.emitDecoratorMetadata = true;
+      continue;
+    }
+    if (arg === "--jsx-in-js") {
+      opts.jsxInJs = true;
+      continue;
+    }
+    if (arg === "--verbatim-module-syntax") {
+      opts.verbatimModuleSyntax = true;
       continue;
     }
     if (arg === "--keep-names") {
@@ -334,6 +348,24 @@ function parseArgs(argv) {
     }
     if (arg.startsWith("--preserve-modules-root=")) {
       opts.preserveModulesRoot = arg.split("=")[1];
+      continue;
+    }
+    // tsconfig.target 보다 우선해 사용자가 monorepo per-build 오버라이드 가능.
+    if (arg === "--target") {
+      opts.target = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--target=")) {
+      opts.target = arg.split("=")[1];
+      continue;
+    }
+    // browserslist 쿼리 — target 보다 우선. 콤마 구분 다중 쿼리는 NAPI 측에서 split.
+    if (arg === "--browserslist") {
+      opts.browserslist = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--browserslist=")) {
+      opts.browserslist = arg.split("=")[1];
       continue;
     }
     if (arg.startsWith("--out-extension:.js=")) {
@@ -668,7 +700,9 @@ async function runTranspile(opts) {
     jsxFragment: opts.jsxFragment,
     jsxImportSource: opts.jsxImportSource,
     flow: opts.flow,
+    jsxInJs: opts.jsxInJs,
     experimentalDecorators: opts.experimentalDecorators,
+    emitDecoratorMetadata: opts.emitDecoratorMetadata,
     useDefineForClassFields: opts.useDefineForClassFields,
     verbatimModuleSyntax: opts.verbatimModuleSyntax,
     tsconfigPath: opts.project,
@@ -680,6 +714,7 @@ async function runTranspile(opts) {
     dropConsole: opts.drop.includes("console"),
     dropDebugger: opts.drop.includes("debugger"),
     target: opts.target,
+    browserslist: opts.browserslist,
   });
 
   if (opts.outfile) {
@@ -796,6 +831,7 @@ function mergeConfigIntoOpts(opts, config) {
     "outfile",
     "outdir",
     "outbase",
+    "browserslist",
   ];
   for (const key of SCALAR_KEYS) {
     if (opts[key] === undefined && config[key] !== undefined) {
@@ -885,6 +921,7 @@ async function runBundle(opts, config) {
     format: opts.format,
     platform: opts.platform,
     target: opts.target,
+    browserslist: opts.browserslist,
     external: opts.external,
     // `--alias:K=V` 플래그 (webpack/rollup 스타일) — JS 옵션이 tsconfig paths 보다 우선 적용됨.
     alias: Object.keys(opts.alias).length > 0 ? opts.alias : undefined,

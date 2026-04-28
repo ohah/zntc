@@ -259,14 +259,6 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     // CLI 에 boolean 형으로 노출되어 있지만 키가 미묘하게 다름 — `--ascii-only` ↔ TranspileOptions `asciiOnly` (OK), `--charset=` ↔ BuildOptions/TranspileOptions 는 charsetUtf8 boolean 만 (1:N 매핑)
     "charsetUtf8",
     "analyze", // CLI 가 boolean flag, BuildOptions 는 boolean — 매칭되지만 alias 처리 누락 가능
-    // ─── follow-up: CLI flag 추가 권장 (별도 PR) ──────────────────────
-    // 이 키들은 BuildOptions/TranspileOptions 에 정의되어 있지만 CLI 가 아직 안 노출.
-    // 사용자가 CLI 에서 직접 지정 못 해 tsconfig/config 경유 필요. CLI flag 추가 가치 있음.
-    "browserslist", // `--browserslist=">0.5%"` — target 보다 우선
-    "emitDecoratorMetadata", // `--emit-decorator-metadata` (현재는 `--experimental-decorators` 만)
-    "jsxInJs", // `--jsx-in-js` — `.js` 파일에서도 JSX 파싱
-    "target", // `--target=es2020` — ES 다운레벨 (현재는 tsconfig.target 만)
-    "verbatimModuleSyntax", // `--verbatim-module-syntax`
   ]);
 
   test("CLI flag 가 BuildOptions / TranspileOptions 키와 매칭되거나 cliOnlyFlags 에 등록", () => {
