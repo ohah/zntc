@@ -7,16 +7,20 @@
  *  3. `.env.${mode}` (mode-specific, committed)
  *  4. `.env.${mode}.local` (mode-specific, gitignored)
  *
- * `prefixes` 로 시작하는 키만 반환 (default `["VITE_", "ZTS_"]`).
+ * `prefixes` 로 시작하는 키만 반환. default 는 `["VITE_", "ZTS_"]` 두 개:
+ *  - `VITE_` — Vite 호환 prefix (사용자가 Vite 에서 마이그레이션 시 동일 동작)
+ *  - `ZTS_` — ZTS 전용 prefix (Vite 와 의도적으로 구분된 키 노출 시)
+ *
  * 빈 문자열 prefix `""` 를 포함하면 전체 노출 — 주의해서 사용.
  */
 
-import { readFileSync } from "node:fs";
 import { resolve as pathResolve } from "node:path";
+
+import { readFileIfExists } from "./config-loader.ts";
 
 /**
  * `.env` 라인 1개를 `KEY=value` 로 파싱. 단순한 dotenv 호환 파서:
- *  - `#` 주석 라인 무시
+ *  - `#` 주석 라인 무시 (라인 처음 또는 unquoted value 뒤의 ` # ...` 도 strip)
  *  - `=` 첫 번째만 split — value 안의 `=` 는 보존
  *  - value 가 `"..."` / `'...'` 로 감싸져 있으면 따옴표 제거 (escape sequence 미해석)
  *  - 빈 라인 / 키 없는 라인 무시
@@ -29,24 +33,21 @@ function parseDotenvLine(line: string): [string, string] | null {
   const key = trimmed.slice(0, eqIdx).trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
   let value = trimmed.slice(eqIdx + 1).trim();
-  if (
+  const quoted =
     (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
+    (value.startsWith("'") && value.endsWith("'"));
+  if (quoted) {
     value = value.slice(1, -1);
+  } else {
+    // unquoted value: ` # comment` 인라인 주석 제거 (dotenv 16+ / Vite 호환).
+    value = value.replace(/\s+#.*$/, "");
   }
   return [key, value];
 }
 
-/** `.env` 파일 1개 파싱. 부재 시 빈 객체. */
 function parseDotenvFile(filePath: string): Record<string, string> {
-  let content: string;
-  try {
-    content = readFileSync(filePath, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw err;
-  }
+  const content = readFileIfExists(filePath);
+  if (content === null) return {};
   const out: Record<string, string> = {};
   for (const line of content.split(/\r?\n/)) {
     const parsed = parseDotenvLine(line);
@@ -79,7 +80,6 @@ export function loadEnv(
     Object.assign(merged, parseDotenvFile(`${dir}/${file}`));
   }
 
-  // prefix 필터.
   const filtered: Record<string, string> = {};
   for (const [key, value] of Object.entries(merged)) {
     if (prefixList.some((p) => key.startsWith(p))) {
@@ -100,6 +100,8 @@ export function envToDefine(env: Record<string, string>, mode: string): Record<s
     "import.meta.env.MODE": JSON.stringify(mode),
     "import.meta.env.PROD": JSON.stringify(mode === "production"),
     "import.meta.env.DEV": JSON.stringify(mode !== "production"),
+    // ZTS 는 현재 SSR 빌드를 별도 mode 로 구분하지 않아 항상 false. 향후 SSR 지원 시
+    // BuildOptions 의 ssr 플래그 (또는 새 옵션) 와 연동해야 함.
     "import.meta.env.SSR": JSON.stringify(false),
   };
   for (const [key, value] of Object.entries(env)) {
