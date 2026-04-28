@@ -129,20 +129,20 @@ pub const FunctionMapBuilder = struct {
     }
 
     fn internName(self: *FunctionMapBuilder, name: []const u8) !u32 {
-        const gop = try self.names_map.getOrPut(self.allocator, name);
-        if (!gop.found_existing) {
-            const owned = self.allocator.dupe(u8, name) catch |err| {
-                _ = self.names_map.remove(name);
-                return err;
-            };
-            errdefer self.allocator.free(owned);
-            const idx: u32 = @intCast(self.names.items.len);
-            try self.names.append(self.allocator, owned);
-            // `getOrPut` 의 key_ptr 은 caller 의 borrowed slice — owned 로 교체해 hashmap 도 자체 소유.
-            gop.key_ptr.* = owned;
-            gop.value_ptr.* = idx;
-        }
-        return gop.value_ptr.*;
+        // 기존 entry 가 있으면 owned key 를 그대로 재사용. miss 일 때만 dupe.
+        if (self.names_map.get(name)) |idx| return idx;
+
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+
+        const idx: u32 = @intCast(self.names.items.len);
+        try self.names.append(self.allocator, owned);
+        errdefer _ = self.names.pop();
+
+        // owned key 로 등록 — caller 의 borrowed slice 가 hashmap 에 들어가지 않으므로
+        // 이후 entry lookup 이 caller lifetime 과 무관하게 안전.
+        try self.names_map.put(self.allocator, owned, idx);
+        return idx;
     }
 };
 
