@@ -213,6 +213,19 @@ function readFileOrThrowNotFound(absPath: string): string {
 }
 
 /**
+ * 파일 부재를 정상 케이스로 처리하는 read. ENOENT 면 null, 그 외는 throw.
+ * `.env` 같은 optional 파일 로딩 (`load-env.ts`) 에서 사용.
+ */
+export function readFileIfExists(absPath: string): string | null {
+  try {
+    return readFileSync(absPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+/**
  * cwd 에서 `zts.config.*` 자동 탐색. 우선순위는 `CONFIG_EXT_PRIORITY` 참조.
  *
  * 동기 stat (`existsSync`) 사용 — CLI 시작 시 한 번만 호출되므로 비용 무시 가능.

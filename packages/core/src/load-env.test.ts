@@ -96,6 +96,24 @@ describe("loadEnv", () => {
     });
   });
 
+  test("unquoted value 뒤의 인라인 주석 제거 (dotenv 16+ 호환)", () => {
+    reset();
+    writeFileSync(
+      join(dir, ".env"),
+      [
+        "VITE_PLAIN=val # 인라인 주석",
+        'VITE_QUOTED="val # not comment"',
+        "VITE_NO_SPACE=foo#noStrip",
+      ].join("\n"),
+    );
+    const env = loadEnv("production", dir);
+    expect(env.VITE_PLAIN).toBe("val");
+    // quoted 값 안의 # 는 보존.
+    expect(env.VITE_QUOTED).toBe("val # not comment");
+    // # 앞에 공백 없으면 strip 안 됨 (보수적 — 사용자 의도 가능).
+    expect(env.VITE_NO_SPACE).toBe("foo#noStrip");
+  });
+
   test("따옴표로 감싼 값은 따옴표 제거", () => {
     reset();
     writeFileSync(

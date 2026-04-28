@@ -661,7 +661,8 @@ async function runTranspile(opts) {
  * 함수형 config 는 CLI 모드/`--mode` 인자 기반의 `ConfigEnv` 로 호출된다:
  *  - command: serve→"serve", watch→"watch", 그 외→"bundle"
  *  - mode: `--mode <name>` 명시값 또는 command 기본 (serve/watch→"development", 그 외→"production")
- *  - env: process.env (.env 파일 자동 로드는 #2106 에서 확장)
+ *  - env: dotenv 파일 + process.env 머지. shell env 가 file 보다 우선 (CI 가 .env
+ *    값을 override 가능 — Vite/dotenv 16+ 와 일치).
  *
  * 실패 시 `Error("failed to load config — ...")` 를 throw — main 의 try/catch 가 처리.
  */
@@ -679,11 +680,18 @@ async function loadAutoConfig(opts) {
   const envDir = opts.envDir ? resolve(opts.envDir) : process.cwd();
   const dotenvVars = loadEnv(mode, envDir, opts.envPrefixes);
 
-  const env = {
-    command,
-    mode,
-    env: { ...process.env, ...dotenvVars },
-  };
+  // dotenv 키 중 shell env 에도 정의된 건 shell 값으로 override (CI/배포 시 .env
+  // 수정 없이 override — Vite/dotenv 16+ 와 일치). dotenvVars 자체를 final source 로
+  // 갱신하면 envToDefine 에 그대로 전달 가능 (별도 머지 불필요).
+  for (const k of Object.keys(dotenvVars)) {
+    const shellValue = process.env[k];
+    if (shellValue !== undefined) dotenvVars[k] = shellValue;
+  }
+
+  // dotenv 파일 부재 시 process.env spread 회피 (보통 100+ 키 복사 방지).
+  const mergedEnv =
+    Object.keys(dotenvVars).length === 0 ? process.env : { ...process.env, ...dotenvVars };
+  const env = { command, mode, env: mergedEnv };
 
   if (!configPath) return { config: null, env, dotenvVars };
 
