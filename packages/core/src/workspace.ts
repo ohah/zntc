@@ -288,7 +288,18 @@ export async function loadIdentifiedConfig(
 }
 
 /**
- * entries 를 실제 `ResolvedWorkspace` 목록으로 해석 (식별 + config 로드 병렬).
+ * entries 를 실제 `ResolvedWorkspace` 목록으로 해석 (식별 + 모든 config 병렬 로드).
+ *
+ * @deprecated 단순 case (필터 없이 모든 entry 빌드) 외에는 비효율. 권장 패턴:
+ * ```ts
+ * const ids = identifyWorkspaceEntries(entries, rootDir);
+ * const filtered = filterWorkspaces(ids, opts.workspace);     // 필터 후
+ * const resolved = await Promise.all(                          // 살아남은 entry 만 config 로드
+ *   filtered.map(async (w) => ({ ...w, config: await loadIdentifiedConfig(w, env) })),
+ * );
+ * ```
+ * 위 패턴이 `--workspace=<name>` 시 N-1 개 entry 의 비싼 TS config self-compile 회피.
+ * 이 wrapper 는 모든 entry 를 무조건 로드 — 단순 사용 시에만 사용.
  *
  *  - string path: 디렉토리 → `findConfigPath` 로 zts.config.* 탐색 후 로드
  *  - string glob (`*` 포함): `expandGlob` 로 매칭 디렉토리 enumerate, 각각 path 처리
@@ -297,21 +308,10 @@ export async function loadIdentifiedConfig(
  * 같은 cwd 가 중복 매칭되면 한 번만 처리 (선언 순서 첫 번째). config 로드는 `Promise.all`
  * 로 병렬화 — I/O bound 라 동시 실행 안전.
  *
- * **CLI 통합 권장 패턴**: `--workspace=<name>` 필터를 적용할 때는 이 함수 대신
- * `identifyWorkspaceEntries` + `filterWorkspaces` + `loadIdentifiedConfig` 를 직접 조합해
- * 필터링되어 빌드되지 않을 entry 의 config 로드를 회피.
- *
  * @param entries `loadWorkspace` 가 반환한 검증된 entries 배열
  * @param rootDir workspace 파일이 있는 디렉토리 (절대 경로 권장)
  * @param env `loadConfig` 에 전달할 함수형 config 컨텍스트 (없으면 `defaultConfigEnv()`)
  * @returns 해석된 워크스페이스 목록 — config 로드 완료
- *
- * @example
- * ```ts
- * const ws = await loadWorkspace("zts.workspace.ts");
- * const resolved = await resolveWorkspaceEntries(ws, "/repo");
- * for (const w of resolved) await build({ ...rootConfig, ...w.config, entryPoints: [...] });
- * ```
  */
 export async function resolveWorkspaceEntries(
   entries: Workspace,
