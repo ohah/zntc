@@ -3858,6 +3858,64 @@ test "TreeShaking: chained export star named import prunes unrelated sources" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNRELATED_SOURCE_MARKER") == null);
 }
 
+test "TreeShaking: export star named import skips side-effectful unrelated source" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { scaleLinearLike } from './d3';
+        \\console.log(scaleLinearLike());
+    );
+    try writeFile(tmp.dir, "d3.ts",
+        \\export * from './scale';
+        \\export * from './time-format';
+    );
+    try writeFile(tmp.dir, "scale.ts",
+        \\export function scaleLinearLike() { return "LIVE_SCALE_LINEAR_MARKER"; }
+    );
+    try writeFile(tmp.dir, "time-format.ts",
+        \\export { default as timeFormatDefaultLocale, timeFormat } from './defaultLocale';
+    );
+    try writeFile(tmp.dir, "defaultLocale.ts",
+        \\import { formatLocale } from './locale';
+        \\export var timeFormat;
+        \\defaultLocale("UNUSED_TIME_FORMAT_DEFAULT_LOCALE_MARKER");
+        \\export default function defaultLocale(definition) {
+        \\  timeFormat = formatLocale(definition);
+        \\  return timeFormat;
+        \\}
+    );
+    try writeFile(tmp.dir, "locale.ts",
+        \\import { timeYear } from './time';
+        \\export function formatLocale(definition) {
+        \\  return definition + timeYear();
+        \\}
+    );
+    try writeFile(tmp.dir, "time.ts",
+        \\export function timeYear() { return "UNUSED_D3_TIME_YEAR_MARKER"; }
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LIVE_SCALE_LINEAR_MARKER") != null);
+    for ([_][]const u8{
+        "UNUSED_TIME_FORMAT_DEFAULT_LOCALE_MARKER",
+        "UNUSED_D3_TIME_YEAR_MARKER",
+    }) |m| {
+        try std.testing.expect(std.mem.indexOf(u8, result.output, m) == null);
+    }
+}
+
 test "TreeShaking: export star from CJS keeps wrapped source for named import" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

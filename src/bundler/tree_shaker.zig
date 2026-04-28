@@ -1219,13 +1219,26 @@ pub const TreeShaker = struct {
             const m = self.getModule(@intCast(i)) orelse continue;
             for (m.export_bindings) |eb| {
                 if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
-                if (check_used and !self.isExportUsed(@intCast(i), eb.exported_name)) continue;
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
                         const src_idx = m.import_records[rec_idx].resolved;
                         if (self.graph.getModule(src_idx) != null) {
                             const src = @intFromEnum(src_idx);
                             const src_module = self.graph.getModule(src_idx).?;
+                            if (check_used and eb.kind != .re_export_star and !self.isExportUsed(@intCast(i), eb.exported_name) and
+                                !src_module.side_effects and !src_module.wrap_kind.isWrapped() and src_module.exports_kind != .esm_with_dynamic_fallback)
+                            {
+                                continue;
+                            }
+                            if (check_used and eb.kind == .re_export_star and !self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL) and
+                                !src_module.side_effects and !src_module.wrap_kind.isWrapped() and src_module.exports_kind != .esm_with_dynamic_fallback)
+                            {
+                                // Named imports through `export *` are already resolved by seedExport().
+                                // Do not include every star source as an evaluation dependency unless the
+                                // whole namespace/all exports are used. Side-effectful or dynamic sources
+                                // still fall through to preserve evaluation semantics.
+                                continue;
+                            }
                             if (!self.included.isSet(src)) {
                                 self.included.set(src);
                                 changed = true;
@@ -1261,8 +1274,17 @@ pub const TreeShaker = struct {
         rec_idx: u32,
         live_mod_idx: ?u32,
     ) bool {
-        if (live_mod_idx == null) return true;
         if (rec_idx >= m.import_records.len) return false;
+        if (m.import_records[rec_idx].kind == .re_export) {
+            const target_idx = m.import_records[rec_idx].resolved;
+            if (self.graph.getModule(target_idx)) |target_module| {
+                if (target_module.side_effects or target_module.wrap_kind.isWrapped() or target_module.exports_kind == .esm_with_dynamic_fallback) {
+                    return true;
+                }
+            }
+            return self.importRecordHasReachableStmt(m, mod_idx, rec_idx);
+        }
+        if (live_mod_idx == null) return true;
         return switch (m.import_records[rec_idx].kind) {
             .dynamic_import => false,
             .require => self.importRecordHasReachableStmt(m, live_mod_idx.?, rec_idx),
