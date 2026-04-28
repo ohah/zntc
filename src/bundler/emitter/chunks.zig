@@ -283,13 +283,13 @@ pub fn emitChunks(
                 code;
 
             if (!options.minify_whitespace) {
-                try chunk_output.appendSlice(allocator, "// --- ");
+                try chunk_output.appendSlice(allocator, "//#region ");
                 try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
-                try chunk_output.appendSlice(allocator, " ---\n");
+                try chunk_output.append(allocator, '\n');
             }
             try chunk_output.appendSlice(allocator, stripped);
             if (!options.minify_whitespace) {
-                try chunk_output.append(allocator, '\n');
+                try chunk_output.appendSlice(allocator, "//#endregion\n");
             }
         }
 

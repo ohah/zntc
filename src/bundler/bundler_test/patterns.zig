@@ -373,7 +373,8 @@ test "Format: minify removes module boundary comments" {
     defer b1.deinit();
     const r1 = try b1.bundle();
     defer r1.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, r1.output, "// ---") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "//#region ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1.output, "//#endregion") != null);
 
     // minify=true → 경계 주석 없음
     var b2 = Bundler.init(std.testing.allocator, .{
@@ -385,7 +386,8 @@ test "Format: minify removes module boundary comments" {
     defer b2.deinit();
     const r2 = try b2.bundle();
     defer r2.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, r2.output, "// ---") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "//#region") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r2.output, "//#endregion") == null);
 }
 
 test "minifyIdentifiers: for-in LHS identifier should be renamed" {

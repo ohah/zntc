@@ -391,9 +391,9 @@ pub fn emitWithTreeShaking(
 
     for (options.polyfills) |*poly| {
         if (!options.minify_whitespace) {
-            try output.appendSlice(allocator, "// --- polyfill: ");
+            try output.appendSlice(allocator, "//#region polyfill: ");
             try output.appendSlice(allocator, poly.name);
-            try output.appendSlice(allocator, " ---\n");
+            try output.append(allocator, '\n');
             output_line += 1;
         }
         try output.appendSlice(allocator, "(function(){");
@@ -420,6 +420,10 @@ pub fn emitWithTreeShaking(
 
         try output.appendSlice(allocator, "})();\n");
         output_line += 1;
+        if (!options.minify_whitespace) {
+            try output.appendSlice(allocator, "//#endregion\n");
+            output_line += 1;
+        }
     }
 
     // 런타임 헬퍼 주입
@@ -624,8 +628,8 @@ pub fn emitWithTreeShaking(
         const code = results[i].code orelse continue;
         module_output_estimate += code.len;
         if (!options.minify_whitespace) {
-            // `"// --- " + basename + " ---\n"` (12 + basename) + 모듈 말미 개행 1
-            module_output_estimate += std.fs.path.basename(m.path).len + 13;
+            // `"//#region " + basename + "\n"` (11 + basename) + `"//#endregion\n"` (13)
+            module_output_estimate += std.fs.path.basename(m.path).len + 24;
         }
     }
     try module_output.ensureTotalCapacity(allocator, module_output_estimate);
@@ -652,9 +656,9 @@ pub fn emitWithTreeShaking(
         }
 
         if (!options.minify_whitespace) {
-            try module_output.appendSlice(allocator, "// --- ");
+            try module_output.appendSlice(allocator, "//#region ");
             try module_output.appendSlice(allocator, std.fs.path.basename(m.path));
-            try module_output.appendSlice(allocator, " ---\n");
+            try module_output.append(allocator, '\n');
             module_line += 1;
         }
 
@@ -687,7 +691,7 @@ pub fn emitWithTreeShaking(
         try module_output.appendSlice(allocator, code_to_append);
         module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
         if (!options.minify_whitespace) {
-            try module_output.append(allocator, '\n');
+            try module_output.appendSlice(allocator, "//#endregion\n");
             module_line += 1;
         }
 

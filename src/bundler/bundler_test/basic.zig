@@ -1101,8 +1101,8 @@ test "Bundler: require.context emits webpackContext IIFE (sync)" {
     // 원본 `require.context(...)` 호출은 남으면 안 됨 — IIFE 로 교체되어야.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require.context(") == null);
     // 매치 파일들이 번들에 실제로 포함되어야 — graph dep 등록 확인.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "// --- a.tsx ---") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "// --- b.tsx ---") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "//#region a.tsx") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "//#region b.tsx") != null);
     // `ctx(req)` 가 module exports 를 반환해야 — Metro/webpack require.context semantic.
     // `fn()` 만 호출하면 init 만 실행되고 exports 가 undefined 로 떨어져서 expo-router 등이
     // 빈 route module 을 보고 "Unmatched Route" 로 fallback.
