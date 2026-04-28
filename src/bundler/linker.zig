@@ -2851,6 +2851,21 @@ pub const PreambleWriter = struct {
         }
     }
 
+    /// `module.exports = ...` shape 의 CJS default import 를 `__toESM` 래핑 없이
+    /// `[var ]local = req_var();` 로 직접 emit. canUseDirectCjsDefaultImport 가 true 일 때만 호출.
+    pub fn writeCjsDirectDefault(
+        self: *PreambleWriter,
+        local_name: []const u8,
+        req_var: []const u8,
+        assign_only: bool,
+    ) !void {
+        if (!assign_only) try self.write("var ");
+        try self.write(local_name);
+        try self.write(" = ");
+        try self.write(req_var);
+        try self.write("();\n");
+    }
+
     pub fn writeDevRequire(self: *PreambleWriter, local_name: []const u8, path: []const u8, suffix: ?[]const u8) !void {
         return self.writeDevRequireInterop(local_name, path, suffix, false, false);
     }

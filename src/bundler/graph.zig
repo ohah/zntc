@@ -1631,10 +1631,12 @@ pub const ModuleGraph = struct {
             module.exports_kind = determineExportsKind(scan_result, module.path);
             module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
             module.has_cjs_export_signal = scan_result.has_module_exports or scan_result.has_exports_dot;
-            module.can_skip_cjs_default_interop = module.wrap_kind == .cjs and
-                scan_result.has_module_exports and
-                !scan_result.has_exports_dot and
-                !scan_result.has_esmodule_marker;
+            module.can_skip_cjs_default_interop = Module.computeCanSkipCjsDefaultInterop(
+                module.wrap_kind == .cjs,
+                scan_result.has_module_exports,
+                scan_result.has_exports_dot,
+                scan_result.has_esmodule_marker,
+            );
 
             // JSX synthetic import bindings 추가
             if (jsx_injected) {
@@ -1833,10 +1835,12 @@ pub const ModuleGraph = struct {
         module.exports_kind = if (preserve_esm) previous_kind else refreshed_kind;
         module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
         module.has_cjs_export_signal = refreshed_scan_result.has_module_exports or refreshed_scan_result.has_exports_dot;
-        module.can_skip_cjs_default_interop = module.wrap_kind == .cjs and
-            refreshed_scan_result.has_module_exports and
-            !refreshed_scan_result.has_exports_dot and
-            !refreshed_scan_result.has_esmodule_marker;
+        module.can_skip_cjs_default_interop = Module.computeCanSkipCjsDefaultInterop(
+            module.wrap_kind == .cjs,
+            refreshed_scan_result.has_module_exports,
+            refreshed_scan_result.has_exports_dot,
+            refreshed_scan_result.has_esmodule_marker,
+        );
 
         if (module.alias_table) |*table| table.deinit();
         module.alias_table = AliasTable.init(self.allocator);

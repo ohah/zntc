@@ -2317,14 +2317,15 @@ fn scanObjectDefinePropertyCjs(self: *Parser, callee: NodeIndex, arg_list: NodeL
         if (key_node.tag != .string_literal) return;
         const raw = self.ast.source[key_node.span.start..key_node.span.end];
         const key = import_scanner.stripQuotes(raw) orelse raw;
-        if (std.mem.eql(u8, key, "__esModule")) {
+        if (std.mem.eql(u8, key, import_scanner.ES_MODULE_MARKER)) {
             self.scan_result.has_esmodule_marker = true;
         }
     }
 }
 
 /// assignment_expression의 left에서 module.exports = ... / exports.x = ... 패턴을 감지한다.
-/// import_scanner.isModuleExportsAssign / isExportsDotAssign와 동일한 로직.
+/// import_scanner.isModuleExportsAssign / isExportsDotAssign / isEsModuleMarkerAssign 과
+/// 같은 신호를 set 한다 (parser/import_scanner 두 경로 모두 ScanResult 채움).
 fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
     if (left.isNone()) return;
     if (@intFromEnum(left) >= self.ast.nodes.items.len) return;
@@ -2354,13 +2355,8 @@ fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
         }
     } else if (std.mem.eql(u8, obj_text, "exports")) {
         // exports.x = ...
-        const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
-        if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
-            const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
-            const prop_text = self.ast.source[prop.span.start..prop.span.end];
-            if (std.mem.eql(u8, prop_text, "__esModule")) {
-                self.scan_result.has_esmodule_marker = true;
-            }
+        if (memberPropertyEqualsEsModule(self, me)) {
+            self.scan_result.has_esmodule_marker = true;
         }
         self.scan_result.has_exports_dot = true;
     } else if (obj.tag == .static_member_expression) {
@@ -2378,17 +2374,22 @@ fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
         const inner_prop_text = self.ast.source[inner_prop.span.start..inner_prop.span.end];
         if (std.mem.eql(u8, inner_obj_text, "module") and std.mem.eql(u8, inner_prop_text, "exports")) {
             // module.exports.x = ...
-            const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
-            if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
-                const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
-                const prop_text = self.ast.source[prop.span.start..prop.span.end];
-                if (std.mem.eql(u8, prop_text, "__esModule")) {
-                    self.scan_result.has_esmodule_marker = true;
-                }
+            if (memberPropertyEqualsEsModule(self, me)) {
+                self.scan_result.has_esmodule_marker = true;
             }
             self.scan_result.has_exports_dot = true;
         }
     }
+}
+
+/// static_member_expression `obj.prop` 의 `me` extra index 에서 prop identifier 텍스트가
+/// `__esModule` 인지. 호출자가 obj 식별을 끝낸 뒤 prop 부분만 확인할 때 사용.
+fn memberPropertyEqualsEsModule(self: *Parser, me: u32) bool {
+    if (me + 1 >= self.ast.extra_data.items.len) return false;
+    const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
+    const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    return std.mem.eql(u8, self.ast.source[prop.span.start..prop.span.end], import_scanner.ES_MODULE_MARKER);
 }
 
 fn isCjsExportTarget(self: *Parser, target_idx: NodeIndex) bool {
