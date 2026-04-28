@@ -21,9 +21,11 @@ const {
   buildSync,
   envToDefine,
   findConfigPath,
+  findModeConfigPath,
   importAndResolveDefault,
   loadConfig,
   loadEnv,
+  mergeUserConfigs,
 } = coreModule;
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { resolve, dirname, basename, extname, join } from "node:path";
@@ -693,10 +695,16 @@ async function loadAutoConfig(opts) {
     Object.keys(dotenvVars).length === 0 ? process.env : { ...process.env, ...dotenvVars };
   const env = { command, mode, env: mergedEnv };
 
-  if (!configPath) return { config: null, env, dotenvVars };
+  // mode-specific config 자동 탐색 + 머지 (#2110). `--config <path>` 명시 시
+  // 그 파일이 단독 source — mode-specific 자동 탐색 안 함 (사용자 의도 존중).
+  const modeConfigPath = explicit ? null : findModeConfigPath(process.cwd(), mode);
+
+  if (!configPath && !modeConfigPath) return { config: null, env, dotenvVars };
 
   try {
-    const config = await loadConfig(configPath, env);
+    const baseConfig = configPath ? await loadConfig(configPath, env) : {};
+    const modeConfig = modeConfigPath ? await loadConfig(modeConfigPath, env) : null;
+    const config = modeConfig ? mergeUserConfigs(baseConfig, modeConfig) : baseConfig;
     return { config, env, dotenvVars };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -1024,14 +1032,20 @@ function computeRestartTriggers(opts) {
   const autoConfig = explicitConfig ?? findConfigPath(process.cwd());
   if (autoConfig) dirs.add(dirname(autoConfig));
 
-  const configBase = autoConfig ? basename(autoConfig) : null;
   const mode = opts.mode ?? (opts.serve || opts.watch ? "development" : "production");
+  // mode-specific config (`zts.config.${mode}.{ext}`) 변경도 restart trigger (#2110).
+  const modeConfig = explicitConfig ? null : findModeConfigPath(process.cwd(), mode);
+  if (modeConfig) dirs.add(dirname(modeConfig));
+
+  const configBase = autoConfig ? basename(autoConfig) : null;
+  const modeConfigBase = modeConfig ? basename(modeConfig) : null;
   const envBases = new Set([".env", ".env.local", `.env.${mode}`, `.env.${mode}.local`]);
 
   return {
     dirs,
     matches(filename) {
       const base = basename(filename);
+      if (modeConfigBase && base === modeConfigBase) return true;
       if (configBase && base === configBase) return true;
       if (envBases.has(base)) return true;
       return false;

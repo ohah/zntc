@@ -137,7 +137,13 @@ export function defineConfig<T extends UserConfigInput>(config: T): T {
   return config;
 }
 
-export { findConfigPath, importAndResolveDefault, loadConfig } from "./src/config-loader";
+export {
+  findConfigPath,
+  findModeConfigPath,
+  importAndResolveDefault,
+  loadConfig,
+  mergeUserConfigs,
+} from "./src/config-loader";
 export type { ConfigEnv, UserConfig, UserConfigFn, UserConfigInput } from "./src/config-loader";
 export { envToDefine, loadEnv } from "./src/load-env";
 
