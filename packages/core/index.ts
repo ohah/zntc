@@ -128,6 +128,9 @@ export function defineConfig<T extends Partial<BuildOptions>>(config: T): T {
   return config;
 }
 
+export { loadConfig } from "./src/config-loader";
+export type { UserConfig } from "./src/config-loader";
+
 /**
  * NAPI 모듈을 로드한다.
  * 이미 로드된 경우 무시한다.
