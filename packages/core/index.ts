@@ -439,6 +439,21 @@ interface BuildOptionsCommon {
   dropLabels?: string[];
   /** 순수 함수로 마킹할 글로벌 함수명 목록 */
   pure?: string[];
+  /**
+   * 진단 출력 레벨 (esbuild 호환, #2158). NAPI 가 build result 의 errors/warnings 배열을
+   * 이 level 기준으로 필터링한다 — `result.errors` / `result.warnings` 에 포함되는 항목 자체가 줄어듦.
+   *
+   *  - `"silent"`: errors / warnings 둘 다 빈 배열 — fail 도 result 객체로 확인 (throw 안 함)
+   *  - `"error"`: warnings 만 빈 배열, errors 는 그대로
+   *  - `"warning"` (default): errors + warnings 둘 다 그대로
+   *  - `"info"` / `"debug"` / `"verbose"`: warning 과 동일 (info-level 진단은 현재 emit 안 함)
+   */
+  logLevel?: "silent" | "error" | "warning" | "info" | "debug" | "verbose";
+  /**
+   * 진단 갯수 제한 (esbuild `logLimit`, #2158). 0 이면 무제한 (default).
+   * errors / warnings 각 배열에 동일 limit 적용 — 초과 항목은 자동 truncate.
+   */
+  logLimit?: number;
   /** tsconfig.json 인라인 JSON 오버라이드 */
   tsconfigRaw?: string;
   /**

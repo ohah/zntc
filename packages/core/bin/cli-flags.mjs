@@ -119,6 +119,7 @@ export const FLAG_REGISTRY = [
   { kind: "int", flag: "--watch-delay", target: "watchDelay", forms: ["equal"] },
   { kind: "int", flag: "--jobs", target: "jobs", forms: ["equal"] },
   { kind: "int", flag: "--port", target: "port" },
+  { kind: "int", flag: "--log-limit", target: "logLimit", forms: ["equal"] },
 
   // ─── kind=string-default — bool 단독 시 default, `--key=val` 시 val ───
   { kind: "string-default", flag: "--metafile", target: "metafile", default: "meta.json" },
