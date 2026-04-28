@@ -914,7 +914,7 @@ pub const TreeShaker = struct {
             reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
         }
 
-        if (fact.kind != .object_property) {
+        if (fact.kind != .object_property and fact.kind != .define_property_value) {
             try self.enqueue(mod_idx, fact.statement_index, reachable_stmts, queue);
             return;
         }

@@ -31,6 +31,7 @@ pub const CjsExportFact = struct {
     pub const Kind = enum {
         assignment,
         object_property,
+        define_property_value,
     };
 
     export_name: []const u8,
@@ -241,6 +242,129 @@ fn cjsExportCandidateForStmt(ast: *const Ast, stmt_node: Node) ?CjsExportCandida
     };
 }
 
+fn isObjectDefinePropertyCallee(ast: *const Ast, callee_idx: NodeIndex) bool {
+    const outer = staticMemberParts(ast, callee_idx) orelse return false;
+    const object = ast.nodes.items[@intFromEnum(outer.object)];
+    const property = ast.nodes.items[@intFromEnum(outer.property)];
+    if (object.tag != .identifier_reference) return false;
+    return std.mem.eql(u8, ast.getText(object.span), "Object") and
+        std.mem.eql(u8, ast.getText(property.span), "defineProperty");
+}
+
+fn isCjsExportObjectExpr(ast: *const Ast, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (node.tag == .identifier_reference) {
+        return std.mem.eql(u8, ast.getText(node.span), "exports");
+    }
+    return isModuleExportsLhs(ast, idx);
+}
+
+fn hasStringEscape(raw: []const u8) bool {
+    return std.mem.indexOfScalar(u8, raw, '\\') != null;
+}
+
+fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return null;
+    const key = ast.nodes.items[@intFromEnum(key_idx)];
+    return switch (key.tag) {
+        .identifier_reference => ast.getText(key.data.string_ref),
+        .string_literal => blk: {
+            const raw = ast.getText(key.span);
+            if (hasStringEscape(raw)) break :blk null;
+            break :blk Ast.stripStringQuotes(raw);
+        },
+        else => null,
+    };
+}
+
+fn definePropertyDescriptorValueNode(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    descriptor_idx: NodeIndex,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) !?NodeIndex {
+    if (descriptor_idx.isNone() or @intFromEnum(descriptor_idx) >= ast.nodes.items.len) return null;
+    const descriptor = ast.nodes.items[@intFromEnum(descriptor_idx)];
+    if (descriptor.tag != .object_expression) return null;
+
+    const list = descriptor.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return null;
+    const indices = ast.extra_data.items[list.start .. list.start + list.len];
+    if (indices.len == 0) return null;
+
+    var seen: std.StringHashMapUnmanaged(void) = .{};
+    defer seen.deinit(allocator);
+    var value_node: ?NodeIndex = null;
+
+    for (indices) |raw_prop| {
+        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
+        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        if (prop.tag != .object_property) return null;
+
+        const name = plainObjectKeyName(ast, prop.data.binary.left) orelse return null;
+        const entry = try seen.getOrPut(allocator, name);
+        if (entry.found_existing) return null;
+        if (std.mem.eql(u8, name, "get") or std.mem.eql(u8, name, "set")) return null;
+
+        const prop_value = Ast.objectPropertyValue(prop);
+        if (prop_value.isNone() or @intFromEnum(prop_value) >= ast.nodes.items.len) return null;
+        if (!purity.isExprPure(ast, prop_value, unresolved_globals)) return null;
+
+        if (std.mem.eql(u8, name, "value")) {
+            const value = ast.nodes.items[@intFromEnum(prop_value)];
+            if (value.tag != .identifier_reference) return null;
+            value_node = prop_value;
+        }
+    }
+
+    return value_node;
+}
+
+fn cjsDefinePropertyExportCandidateForStmt(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    stmt_node: Node,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) !?CjsExportCandidate {
+    if (stmt_node.tag != .expression_statement) return null;
+    const expr_idx = stmt_node.data.unary.operand;
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag != .call_expression) return null;
+
+    const e = expr.data.extra;
+    if (e + 2 >= ast.extra_data.items.len) return null;
+    const callee_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+    const args_start = ast.extra_data.items[e + 1];
+    const args_len = ast.extra_data.items[e + 2];
+    if (args_len != 3) return null;
+    if (args_start + args_len > ast.extra_data.items.len) return null;
+    if (!isObjectDefinePropertyCallee(ast, callee_idx)) return null;
+
+    const target_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    const export_name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 1]);
+    const descriptor_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 2]);
+    if (!isCjsExportObjectExpr(ast, target_idx)) return null;
+
+    if (export_name_idx.isNone() or @intFromEnum(export_name_idx) >= ast.nodes.items.len) return null;
+    const export_name_node = ast.nodes.items[@intFromEnum(export_name_idx)];
+    if (export_name_node.tag != .string_literal) return null;
+    const export_name_raw = ast.getText(export_name_node.span);
+    if (hasStringEscape(export_name_raw)) return null;
+    const export_name = Ast.stripStringQuotes(export_name_raw);
+    if (std.mem.eql(u8, export_name, "__esModule")) return null;
+
+    const value_node = (try definePropertyDescriptorValueNode(allocator, ast, descriptor_idx, unresolved_globals)) orelse return null;
+    return .{
+        .export_name = export_name,
+        .export_assignment_node = @intFromEnum(expr_idx),
+        .rhs_node = value_node,
+        .kind = .define_property_value,
+    };
+}
+
 fn collectCjsObjectExportCandidates(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -335,6 +459,35 @@ fn collectAndAppendCjsObjectFacts(
             .is_safe_to_prune = true,
         });
     }
+    return true;
+}
+
+fn appendCjsDefinePropertyFact(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    node: Node,
+    stmt_i: u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    facts: *std.ArrayListUnmanaged(CjsExportFact),
+    symbol_ids: ?[]const ?u32,
+) !bool {
+    const candidate = (try cjsDefinePropertyExportCandidateForStmt(allocator, ast, node, unresolved_globals)) orelse return false;
+    const rhs_symbol: ?u32 = if (symbol_ids) |sids|
+        if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < sids.len)
+            sids[@intFromEnum(candidate.rhs_node)]
+        else
+            null
+    else
+        null;
+    try facts.append(allocator, .{
+        .export_name = candidate.export_name,
+        .statement_index = stmt_i,
+        .export_assignment_node = candidate.export_assignment_node,
+        .property_node = candidate.property_node,
+        .rhs_symbol = rhs_symbol,
+        .kind = candidate.kind,
+        .is_safe_to_prune = true,
+    });
     return true;
 }
 
@@ -482,6 +635,7 @@ fn buildStmtInfoSlot(
     const node = ast.nodes.items[ni];
     const cjs_export_candidate = if (collect_cjs_exports) cjsExportCandidateForStmt(ast, node) else null;
     var safe_cjs_object_export = false;
+    var safe_cjs_define_property_export = false;
     if (cjs_export_candidate) |candidate| {
         const rhs_symbol: ?u32 = if (symbol_ids) |sids|
             if (!candidate.rhs_node.isNone() and @intFromEnum(candidate.rhs_node) < sids.len)
@@ -500,7 +654,16 @@ fn buildStmtInfoSlot(
             .is_safe_to_prune = !cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals),
         });
     } else if (collect_cjs_exports) {
-        safe_cjs_object_export = try collectAndAppendCjsObjectFacts(
+        safe_cjs_define_property_export = try appendCjsDefinePropertyFact(
+            allocator,
+            ast,
+            node,
+            stmt_i,
+            unresolved_globals,
+            cjs_export_facts_buf,
+            symbol_ids,
+        );
+        if (!safe_cjs_define_property_export) safe_cjs_object_export = try collectAndAppendCjsObjectFacts(
             allocator,
             ast,
             node,
@@ -514,6 +677,8 @@ fn buildStmtInfoSlot(
         false
     else if (cjs_export_candidate) |candidate|
         cjsExportAssignmentHasSideEffects(ast, candidate, unresolved_globals)
+    else if (safe_cjs_define_property_export)
+        false
     else if (safe_cjs_object_export)
         false
     else
