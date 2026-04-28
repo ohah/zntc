@@ -260,6 +260,42 @@ describe("CJS static export fact 기반 DCE", () => {
     expect(bundle).not.toContain("deadNs");
   });
 
+  test("Object.defineProperty __esModule marker — named import prunes safe marker", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib.cjs";\nconsole.log(used());\n`,
+        "lib.cjs":
+          `Object.defineProperty(exports, "__esModule", { value: true });\n` +
+          `function used() { return "USED_ESMODULE_INTEGRATION"; }\n` +
+          `function unused() { return "UNUSED_ESMODULE_INTEGRATION"; }\n` +
+          `Object.defineProperty(exports, "used", { value: used });\n` +
+          `Object.defineProperty(exports, "unused", { value: unused });\n`,
+      },
+      "index.ts",
+      "cjs-esmodule-marker",
+    );
+
+    expect(runBundleSource(bundle)).toContain("USED_ESMODULE_INTEGRATION");
+    expect(bundle).not.toContain("__esModule");
+    expect(bundle).not.toContain("UNUSED_ESMODULE_INTEGRATION");
+  });
+
+  test("Object.defineProperty __esModule marker — default import keeps marker", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import value from "./lib.cjs";\nconsole.log(value());\n`,
+        "lib.cjs":
+          `Object.defineProperty(exports, "__esModule", { value: true });\n` +
+          `exports.default = function usedDefault() { return "USED_DEFAULT_ESMODULE_INTEGRATION"; };\n`,
+      },
+      "index.ts",
+      "cjs-esmodule-default",
+    );
+
+    expect(runBundleSource(bundle)).toContain("USED_DEFAULT_ESMODULE_INTEGRATION");
+    expect(bundle).toContain("__esModule");
+  });
+
   test("Object.defineProperty getter export — module.exports target and arrow getter are supported", () => {
     const bundle = bundleFiles(
       {

@@ -860,6 +860,19 @@ const projects: ProjectConfig[] = [
     },
   },
   {
+    name: "cjs-esmodule-marker-pruning",
+    pkg: "(synthetic)",
+    entry: `import { used } from './_smoke_cjs_esmodule_marker_pruning_lib.cjs';\nconsole.log(used());`,
+    files: {
+      "_smoke_cjs_esmodule_marker_pruning_lib.cjs":
+        `Object.defineProperty(exports, "__esModule", { value: true });\n` +
+        `function used() { return "MATCH"; }\n` +
+        `function dead() { return "UNUSED_SMOKE_CJS_ESMODULE"; }\n` +
+        `Object.defineProperty(exports, "used", { value: used });\n` +
+        `Object.defineProperty(exports, "dead", { value: dead });\n`,
+    },
+  },
+  {
     name: "on-finished",
     pkg: "on-finished",
     entry: `import onf from 'on-finished';\nconsole.log(typeof onf);`,
