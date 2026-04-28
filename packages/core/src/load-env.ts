@@ -16,7 +16,7 @@
 
 import { resolve as pathResolve } from "node:path";
 
-import { readFileIfExists } from "./config-loader";
+import { readFileIfExists } from "./config-loader.ts";
 
 /**
  * `.env` 라인 1개를 `KEY=value` 로 파싱. 단순한 dotenv 호환 파서:

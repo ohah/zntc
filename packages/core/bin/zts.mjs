@@ -20,12 +20,17 @@ const {
   build,
   buildSync,
   envToDefine,
+  filterWorkspaces,
   findConfigPath,
   findModeConfigPath,
+  findWorkspacePath,
+  identifyWorkspaceEntries,
   importAndResolveDefault,
   KNOWN_CONFIG_KEYS,
   loadConfig,
   loadEnv,
+  loadIdentifiedConfig,
+  loadWorkspace,
   mergeUserConfigs,
   warnUnknownKeys,
 } = coreModule;
@@ -115,6 +120,8 @@ function parseArgs(argv) {
     mode: undefined, // --mode <name> 함수형 config / mode 별 config 머지 (#2110) 에서 사용
     envPrefixes: undefined, // --env-prefix=VITE_,ZTS_ — undefined 면 loadEnv default 사용
     envDir: undefined, // --env-dir <path> — undefined 면 cwd
+    workspaceConfig: undefined, // --workspace-config <path> — 명시 시 자동 탐색 우회 (#2111)
+    workspace: undefined, // --workspace <name> — 단일 entry 만 빌드 (#2111)
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -393,6 +400,22 @@ function parseArgs(argv) {
     }
     if (arg.startsWith("--mode=")) {
       opts.mode = arg.slice("--mode=".length);
+      continue;
+    }
+    if (arg === "--workspace-config") {
+      opts.workspaceConfig = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--workspace-config=")) {
+      opts.workspaceConfig = arg.slice("--workspace-config=".length);
+      continue;
+    }
+    if (arg === "--workspace") {
+      opts.workspace = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--workspace=")) {
+      opts.workspace = arg.slice("--workspace=".length);
       continue;
     }
     if (arg === "--env-prefix") {
@@ -1239,10 +1262,149 @@ async function runServe(opts, config) {
   }
 }
 
+// ─── Workspace mode (#2111) ───
+
+/**
+ * 단일 워크스페이스 entry 를 위한 `subOpts` 생성. `opts` deep clone → entry/root config
+ * 머지 → entry.cwd 기준 path 정규화.
+ *
+ * `mergeConfigIntoOpts` 가 `opts[key] === undefined` 만 머지 대상으로 보지만 `parseArgs` 의
+ * `outfile`/`outdir` 기본값은 `null` 이라 그 경로로는 적용 안 됨. workspace 에서는 entry
+ * config 의 `outdir`/`outfile` 이 build 의도 자체이므로 직접 보강한다 (`null` → merged).
+ *
+ * `structuredClone` 사용 — `JSON.parse(JSON.stringify(opts))` 는 미래에 함수/Date/undefined
+ * 필드가 추가되면 silent drop 위험.
+ */
+function buildSubOpts(opts, w, merged) {
+  const subOpts = structuredClone(opts);
+  mergeConfigIntoOpts(subOpts, merged);
+
+  if (subOpts.outdir == null && merged.outdir) subOpts.outdir = merged.outdir;
+  if (subOpts.outfile == null && merged.outfile) subOpts.outfile = merged.outfile;
+
+  subOpts.entryPoints = subOpts.entryPoints.map((p) => resolve(w.cwd, p));
+  if (subOpts.outdir) subOpts.outdir = resolve(w.cwd, subOpts.outdir);
+  if (subOpts.outfile) subOpts.outfile = resolve(w.cwd, subOpts.outfile);
+
+  return subOpts;
+}
+
+/**
+ * `zts.workspace.{ts,...}` 가 발견되면 단일 build 대신 워크스페이스 fan-out 으로 전환.
+ *
+ * 흐름:
+ *  1. workspace 파일 로드 → `identifyWorkspaceEntries` (config 로드 없는 식별 단계)
+ *  2. `--workspace=<name>` 필터 즉시 적용 — 비싼 TS config 로드를 N-1 회 회피
+ *  3. 필터 후 entries 의 config 를 `Promise.all` 로 병렬 로드
+ *  4. root config (`zts.config.*`) 가 같은 디렉토리에 있으면 모든 entry 가 상속
+ *  5. 각 entry 마다: opts clone → entry config + root config 머지 → entry.cwd 기준 path 정규화 → build
+ *
+ * `serve`/`watch` 는 워크스페이스에서 의미가 모호 (어느 entry 를 watch?) — 다중 entry 시 reject.
+ * `--workspace=<name>` 필터로 단일 entry 만 남기면 serve/watch 허용.
+ */
+async function runWorkspace(opts, workspacePath) {
+  const command = opts.serve ? "serve" : opts.watch ? "watch" : "bundle";
+  const mode = opts.mode ?? (command === "bundle" ? "production" : "development");
+  const env = { command, mode, env: process.env };
+
+  const rootDir = dirname(resolve(workspacePath));
+  let entries;
+  try {
+    entries = await loadWorkspace(workspacePath, env);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`failed to load workspace — ${reason}`);
+  }
+
+  // 식별 단계 — config 로드 없이 cwd/name/source 만. 필터 후에만 실제 config 로드.
+  const ids = identifyWorkspaceEntries(entries, rootDir);
+  const filtered = filterWorkspaces(ids, opts.workspace);
+
+  // 필터링된 entry 의 config 만 병렬 로드. root config 도 함께 await.
+  const rootConfigPath = findConfigPath(rootDir);
+  const [rootConfig, ...entryConfigs] = await Promise.all([
+    rootConfigPath ? loadConfig(rootConfigPath, env) : Promise.resolve(null),
+    ...filtered.map((w) => loadIdentifiedConfig(w, env)),
+  ]);
+  const resolved = filtered.map((w, i) => ({
+    name: w.name,
+    cwd: w.cwd,
+    source: w.source,
+    config: entryConfigs[i],
+  }));
+
+  if (resolved.length > 1 && (opts.serve || opts.watch)) {
+    throw new Error(
+      `workspace serve/watch requires --workspace=<name> filter (matched ${resolved.length} entries)`,
+    );
+  }
+
+  if (opts.logLevel !== "silent") {
+    const filterMsg = opts.workspace ? ` (filtered by name='${opts.workspace}')` : "";
+    console.error(
+      `@zts/core: workspace ${workspacePath} → ${resolved.length} entr${
+        resolved.length === 1 ? "y" : "ies"
+      }${filterMsg}`,
+    );
+  }
+
+  let exitCode = 0;
+  for (const w of resolved) {
+    if (opts.logLevel !== "silent") {
+      console.error(`\n--- workspace: ${w.name} (cwd=${w.cwd}, source=${w.source}) ---`);
+    }
+    const merged = rootConfig ? mergeUserConfigs(rootConfig, w.config) : w.config;
+
+    if (opts.logLevel !== "silent" && Object.keys(w.config).length > 0) {
+      warnUnknownKeys(w.config, KNOWN_CONFIG_KEYS, { sourceLabel: `workspace[${w.name}]` });
+    }
+
+    const subOpts = buildSubOpts(opts, w, merged);
+
+    if (subOpts.entryPoints.length === 0 && !subOpts.stdin && !subOpts.serve) {
+      if (opts.logLevel !== "silent") {
+        console.error(`@zts/core: workspace '${w.name}' has no entryPoints — skipping`);
+      }
+      continue;
+    }
+
+    init();
+    try {
+      if (subOpts.serve) {
+        await runServe(subOpts, merged);
+      } else if (subOpts.watch) {
+        await runWatch(subOpts, merged);
+      } else if (subOpts.bundle) {
+        const result = await runBundle(subOpts, merged);
+        if (result.errors.length > 0) exitCode = 1;
+      } else {
+        await runTranspile(subOpts);
+      }
+    } catch (err) {
+      console.error(`error [workspace ${w.name}]: ${err.message}`);
+      exitCode = 1;
+    }
+  }
+  if (exitCode !== 0) process.exit(exitCode);
+}
+
 // ─── Main ───
 
 async function main() {
   const opts = parseArgs(process.argv);
+
+  // workspace 자동 탐색 — `--workspace-config <path>` 명시 또는 cwd 의 zts.workspace.*
+  // 발견 시 워크스페이스 fan-out 모드로 분기. 나머지 단일 build 흐름은 우회.
+  const workspacePath = opts.workspaceConfig
+    ? resolve(opts.workspaceConfig)
+    : findWorkspacePath(process.cwd());
+  if (workspacePath) {
+    if (opts.workspaceConfig && !existsSync(workspacePath)) {
+      throw new Error(`failed to load workspace — file not found: ${workspacePath}`);
+    }
+    await runWorkspace(opts, workspacePath);
+    return;
+  }
 
   // config 자동 탐색 + .env 로드 + 머지 (CLI > config > tsconfig). entry 검사 전에
   // 적용해야 config 의 entryPoints 가 검사 통과에 기여한다.
