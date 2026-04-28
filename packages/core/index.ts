@@ -359,11 +359,19 @@ interface BuildOptionsCommon {
    * 키는 식별자 또는 `obj.prop` 같은 멤버 표현식, 값은 JS 표현식 문자열.
    * 예: `{ "__DEV__": "false", "process.env.NODE_ENV": '"production"' }` */
   define?: Record<string, string>;
-  /** Import 경로 별칭 (esbuild `alias` 호환).
+  /** Import 경로 별칭 — 두 형태 지원 (esbuild / Vite 호환):
+   *
+   * 1. **Object 형태** (esbuild `alias`): exact + prefix 매칭. 정해진 specifier 만 치환.
+   *    예: `{ react: "preact/compat" }` — `react` 또는 `react/hooks` → `preact/compat[/hooks]`
+   *
+   * 2. **Array 형태** (Vite `resolve.alias`, #2153): `RegExp` find 지원. 매칭 순서대로 첫번째 적용.
+   *    `find` 가 string 이면 prefix 매칭, RegExp 이면 host runtime 이 매칭 + `replacement` 로 치환.
+   *    예: `[{ find: /^@\/(.*)$/, replacement: "./src/$1" }]`
+   *
    * 일반 해석 **전에 무조건** 치환됨 — 설치된 실제 패키지가 있어도 무시.
    * Optional shim 용도로는 `fallback`을 쓸 것 (실패 시에만 적용).
-   * 예: `{ react: "preact/compat", "react-dom": "preact/compat" }` */
-  alias?: Record<string, string>;
+   * Array 형태는 build() 만 지원 (host RegExp 위임 — buildSync 미지원). */
+  alias?: Record<string, string> | Array<{ find: string | RegExp; replacement: string }>;
   /** Fallback resolution — 일반 해석이 **실패했을 때만** 적용됨 (webpack `resolve.fallback` / Metro `resolver.extraNodeModules` 호환).
    * 값이 문자열이면 해당 specifier로 재해석, `false`면 빈 모듈로 대체.
    * 예: `{ crypto: "crypto-browserify", fs: false }` */
@@ -993,12 +1001,48 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
  * write/outdir는 JS에서 처리, plugins는 dispatcher로 변환되므로 제거.
  * target/outfile은 Zig가 파싱하므로 그대로 전달.
  */
+/**
+ * Array 형태 alias (Vite `resolve.alias`, #2153) 를 onResolve plugin 으로 변환.
+ * Zig native 는 array/RegExp alias 를 모르므로 host JS 에서 plugin hook 으로 위임 —
+ * #1579 require.context 가 host RegExp 에 위임하는 것과 동일 패턴.
+ *
+ * 매칭 순서: array 순서대로 첫 매치 사용 (Vite/Webpack 동일).
+ * - `find` 가 string 이면 exact + prefix 매칭 (`react` 매치는 `react/hooks` 도)
+ * - `find` 가 RegExp 이면 `String.prototype.replace` 로 치환 ($1 capture group 등)
+ */
+function arrayAliasToPlugin(
+  aliasArray: ReadonlyArray<{ find: string | RegExp; replacement: string }>,
+): ZtsPlugin {
+  return {
+    name: "zts:array-alias",
+    setup(build) {
+      build.onResolve({ filter: /.*/ }, (args) => {
+        for (const { find, replacement } of aliasArray) {
+          if (find instanceof RegExp) {
+            // `String.search` 는 RegExp.test 와 달리 `g`/`y` flag 의 lastIndex 를
+            // mutate 하지 않는다 — 같은 alias entry 가 여러 import 에 반복 적용돼도 안전.
+            if (args.path.search(find) !== -1) {
+              return { path: args.path.replace(find, replacement) };
+            }
+          } else if (args.path === find || args.path.startsWith(find + "/")) {
+            return { path: args.path.replace(find, replacement) };
+          }
+        }
+        return null;
+      });
+    },
+  };
+}
+
 function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   const napiOptions: Record<string, unknown> = { ...options };
   delete napiOptions.write;
   delete napiOptions.outdir;
   delete napiOptions.plugins;
   delete napiOptions.allowOverwrite;
+  // Array 형태 alias 는 plugin 으로 위임 (build() 에서 처리). NAPI 로 전달하면 Zig 가
+  // Record 형태만 받으므로 type mismatch — 명시 삭제.
+  if (Array.isArray(napiOptions.alias)) delete napiOptions.alias;
   // manualChunks 는 `_manualChunks` 전용 슬롯으로 재전달 (plugin dispatcher 패턴).
   // napi_entry.zig 가 TSFN 으로 감싸 Zig resolver 로 변환.
   delete napiOptions.manualChunks;
@@ -1112,7 +1156,12 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
   const napiOptions = prepareNapiOptions(options);
 
-  const dispatcher = options.plugins?.length ? createPluginDispatcher(options.plugins) : null;
+  // Array 형태 alias (#2153) — onResolve plugin 으로 변환해 user plugins 앞에 prepend.
+  // 다른 plugin 의 onResolve 보다 먼저 매칭되어 alias 치환이 우선 적용 (Vite 동작).
+  const arrayAlias = Array.isArray(options.alias) ? options.alias : null;
+  const userPlugins = options.plugins ?? [];
+  const allPlugins = arrayAlias ? [arrayAliasToPlugin(arrayAlias), ...userPlugins] : userPlugins;
+  const dispatcher = allPlugins.length ? createPluginDispatcher(allPlugins) : null;
   if (dispatcher) napiOptions._pluginDispatcher = dispatcher;
 
   if (dispatcher) await dispatcher("buildStart", options, null);
@@ -1145,6 +1194,12 @@ export function buildSync(options: BuildOptions): BuildResult {
   if (options.plugins?.length) {
     throw new Error(
       "@zts/core: plugins are only supported with build() (async). Use build() instead of buildSync().",
+    );
+  }
+  // Array 형태 alias 는 host RegExp 위임이 plugin hook 기반이라 buildSync 미지원.
+  if (Array.isArray(options.alias)) {
+    throw new Error(
+      "@zts/core: array-form alias (with RegExp / Vite-style) requires async build(). Use Record<string, string> form for buildSync, or call build() instead.",
     );
   }
 
