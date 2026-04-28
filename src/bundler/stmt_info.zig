@@ -329,24 +329,21 @@ fn isIdentifierReference(ast: *const Ast, idx: NodeIndex) bool {
     return ast.nodes.items[@intFromEnum(idx)].tag == .identifier_reference;
 }
 
+/// defineProperty descriptor 의 `value` 위치에서 의존성 시드로 쓸 노드를 반환.
+/// `liveNs.value` 같은 정적 멤버는 base object (`liveNs`) 를 시드로 돌려 tree_shaker
+/// 가 `rhs_symbol → declaring stmt` 로 base 의 declaring statement 를 살리게 한다.
+/// optional chain / 비-식별자 base / 동적 property 는 보수적으로 거부.
 fn definePropertyDescriptorValueSeedNode(ast: *const Ast, value_idx: NodeIndex) ?NodeIndex {
-    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return null;
+    if (isIdentifierReference(ast, value_idx)) return value_idx;
+
+    const parts = staticMemberParts(ast, value_idx) orelse return null;
     const value = ast.nodes.items[@intFromEnum(value_idx)];
-    if (value.tag == .identifier_reference) return value_idx;
-
-    if (value.tag != .static_member_expression) return null;
-    const e = value.data.extra;
-    if (!ast.hasExtra(e, 2)) return null;
-    const flags = ast.readExtra(e, 2);
-    if ((flags & ast_mod.MemberFlags.optional_chain) != 0) return null;
-
-    const object_idx = ast.readExtraNode(e, 0);
-    const property_idx = ast.readExtraNode(e, 1);
-    if (!isIdentifierReference(ast, object_idx)) return null;
-    if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return null;
-    const property = ast.nodes.items[@intFromEnum(property_idx)];
+    if (!ast.hasExtra(value.data.extra, 2)) return null;
+    if ((ast.readExtra(value.data.extra, 2) & ast_mod.MemberFlags.optional_chain) != 0) return null;
+    if (!isIdentifierReference(ast, parts.object)) return null;
+    const property = ast.nodes.items[@intFromEnum(parts.property)];
     if (property.tag != .identifier_reference and property.tag != .private_identifier) return null;
-    return object_idx;
+    return parts.object;
 }
 
 fn singleReturnIdentifierFromFunctionBody(ast: *const Ast, body_idx: NodeIndex) ?NodeIndex {
