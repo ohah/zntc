@@ -263,22 +263,49 @@ test "object literal: pure computed key and pure value are pure" {
     try expectPure(&ctx, 2, true);
 }
 
-test "object literal: impure computed key or value stays impure" {
+test "object literal: impure computed key is impure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const obj = { [sideEffect()]: 1 };
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 0, false);
+}
+
+test "object literal: impure value with pure computed key is impure" {
     const alloc = std.testing.allocator;
     const src =
         \\const key = Symbol();
-        \\const a = { [sideEffect()]: 1 };
-        \\const b = { [key]: sideEffect() };
-        \\const c = { ...source };
-        \\const d = { [sideEffect()]() { return 1; } };
+        \\const obj = { [key]: sideEffect() };
     ;
     var ctx = try setup(alloc, src);
     defer ctx.deinit();
 
     try expectPure(&ctx, 1, false);
-    try expectPure(&ctx, 2, false);
-    try expectPure(&ctx, 3, false);
-    try expectPure(&ctx, 4, false);
+}
+
+test "object literal: spread element is impure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const obj = { ...source };
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 0, false);
+}
+
+test "object literal: method with impure computed key is impure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const obj = { [sideEffect()]() { return 1; } };
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 0, false);
 }
 
 // ================================================================
