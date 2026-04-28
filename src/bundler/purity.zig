@@ -128,6 +128,7 @@ fn isCallOrNewPure(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
     const callee_idx: NodeIndex = @enumFromInt(ast.readExtra(node.data.extra, 0));
     if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.nodes.items[@intFromEnum(callee_idx)];
+    if (isKnownPureStaticCall(ast, node, callee, globals, unresolved_globals, depth)) return true;
     if (callee.tag != .identifier_reference) return false;
 
     const name = ast.getText(callee.span);
@@ -155,6 +156,78 @@ fn isCallOrNewPure(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
         .error_ctor => isPureErrorArgs(ast, args_start, args_len, unresolved_globals, depth),
         .unconditional, .either => allArgsPure(ast, args_start, args_len, unresolved_globals, depth),
     };
+}
+
+fn isKnownPureStaticCall(
+    ast: *const Ast,
+    node: Node,
+    callee: Node,
+    globals: *const GlobalRefSet,
+    unresolved_globals: ?*const GlobalRefSet,
+    depth: u32,
+) bool {
+    if (node.tag != .call_expression) return false;
+    if (callee.tag != .static_member_expression) return false;
+    const member_extra = callee.data.extra;
+    if (!ast.hasExtra(member_extra, 2)) return false;
+    const member_flags = ast.readExtra(member_extra, 2);
+    if ((member_flags & ast_mod.MemberFlags.optional_chain) != 0) return false;
+
+    const object_idx = ast.readExtraNode(member_extra, 0);
+    const property_idx = ast.readExtraNode(member_extra, 1);
+    if (object_idx.isNone() or property_idx.isNone()) return false;
+    if (@intFromEnum(object_idx) >= ast.nodes.items.len or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+
+    const object = ast.nodes.items[@intFromEnum(object_idx)];
+    const property = ast.nodes.items[@intFromEnum(property_idx)];
+    if (object.tag != .identifier_reference or property.tag != .identifier_reference) return false;
+    if (!std.mem.eql(u8, ast.getText(object.span), "Object")) return false;
+    if (!globals.contains("Object")) return false;
+    if (!std.mem.eql(u8, ast.getText(property.span), "freeze")) return false;
+
+    const call_extra = node.data.extra;
+    if (!ast.hasExtra(call_extra, 2)) return false;
+    const args_start = ast.readExtra(call_extra, 1);
+    const args_len = ast.readExtra(call_extra, 2);
+    if (args_len != 1 or args_start >= ast.extra_data.items.len) return false;
+
+    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    if (arg.tag == .spread_element) return false;
+
+    const fresh_arg = switch (arg.tag) {
+        .object_expression,
+        .array_expression,
+        .function_expression,
+        .arrow_function_expression,
+        .class_expression,
+        => true,
+        .parenthesized_expression => return isKnownPureFreezeArg(ast, arg.data.unary.operand, unresolved_globals, depth),
+        else => false,
+    };
+    return fresh_arg and isNodePureDepth(ast, arg, unresolved_globals, depth);
+}
+
+fn isKnownPureFreezeArg(
+    ast: *const Ast,
+    arg_idx: NodeIndex,
+    unresolved_globals: ?*const GlobalRefSet,
+    depth: u32,
+) bool {
+    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    const fresh_arg = switch (arg.tag) {
+        .object_expression,
+        .array_expression,
+        .function_expression,
+        .arrow_function_expression,
+        .class_expression,
+        => true,
+        .parenthesized_expression => return isKnownPureFreezeArg(ast, arg.data.unary.operand, unresolved_globals, depth),
+        else => false,
+    };
+    return fresh_arg and isNodePureDepth(ast, arg, unresolved_globals, depth);
 }
 
 /// 빌트인 이름별 분류.
