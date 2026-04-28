@@ -16,8 +16,16 @@ import { pathToFileURL } from "node:url";
 import type { BuildOptions } from "../index";
 import { init, transpile } from "../index";
 
-/** config 객체 형태 — 모든 BuildOptions 의 부분 집합. */
-export type UserConfig = Partial<BuildOptions>;
+/**
+ * config 객체 형태 — 모든 BuildOptions 의 부분 집합.
+ *
+ * `extends` (`#2108`) 는 다른 config 파일을 base 로 상속받는 식별자 — 단일 string
+ * 또는 배열. config-loader 가 로드 시 자동 해석하므로 최종 사용자 config 에는
+ * 노출되지 않는다 (resolveExtends 가 strip).
+ */
+export type UserConfig = Partial<BuildOptions> & {
+  extends?: string | string[];
+};
 
 /**
  * 함수형 config 호출 시 주입되는 컨텍스트 (Vite 호환 형태).
@@ -64,8 +72,35 @@ const JS_EXTS = new Set<string>(CONFIG_EXT_PRIORITY.slice(3, 6));
  */
 export async function loadConfig(filePath: string, env?: ConfigEnv): Promise<UserConfig> {
   const absPath = pathResolve(filePath);
-  const ext = extname(absPath).toLowerCase();
+  return loadConfigWithExtends(absPath, env, new Set());
+}
 
+/**
+ * `extends` 필드 재귀 해석 (#2108).
+ *
+ * 한 config 가 `extends: "./base"` 또는 `extends: [a, b]` 로 다른 config 를
+ * 상속받는다. 머지 규칙:
+ *  - 다중 extends 는 왼쪽부터 순차 적용 (오른쪽이 왼쪽 override)
+ *  - 마지막에 현재 config 가 모든 extends 를 override
+ *  - `mergeUserConfigs` 의 정책 (객체 shallow merge / 배열 mode override / plugins concat) 재사용
+ *
+ * 순환 참조 감지: `visited` Set 으로 추적 — `A extends B`, `B extends A` 시 throw.
+ *
+ * extends 경로는 현재 config 디렉토리 기준 상대 경로. 절대 경로도 허용.
+ */
+async function loadConfigWithExtends(
+  absPath: string,
+  env: ConfigEnv | undefined,
+  visited: Set<string>,
+): Promise<UserConfig> {
+  if (visited.has(absPath)) {
+    throw new Error(
+      `@zts/core: circular extends detected at ${absPath} (chain: ${[...visited, absPath].join(" → ")})`,
+    );
+  }
+  visited.add(absPath);
+
+  const ext = extname(absPath).toLowerCase();
   let raw: UserConfigInput;
   if (ext === ".json") {
     raw = loadJsonConfig(absPath);
@@ -79,7 +114,24 @@ export async function loadConfig(filePath: string, env?: ConfigEnv): Promise<Use
     );
   }
 
-  return resolveConfigValue(raw, env, absPath);
+  const resolved = await resolveConfigValue(raw, env, absPath);
+
+  // extends 필드 처리 — 재귀 해석 후 머지.
+  const extendsField = resolved.extends;
+  if (extendsField === undefined) return resolved;
+
+  const extendsPaths = Array.isArray(extendsField) ? extendsField : [extendsField];
+  const baseDir = dirname(absPath);
+  let merged: UserConfig = {};
+  for (const extPath of extendsPaths) {
+    const resolvedExt = pathResolve(baseDir, extPath);
+    const base = await loadConfigWithExtends(resolvedExt, env, new Set(visited));
+    merged = mergeUserConfigs(merged, base);
+  }
+
+  // base들 (모두 머지된 결과) → 현재 config (override)
+  const { extends: _extends, ...currentWithoutExtends } = resolved;
+  return mergeUserConfigs(merged, currentWithoutExtends as UserConfig);
 }
 
 /**
