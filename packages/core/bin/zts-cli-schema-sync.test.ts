@@ -20,6 +20,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { NAPI_INTERNAL_ONLY_KEYS } from "../src/schema-allowlists.ts";
+
 const CLI_PATH = join(__dirname, "zts.mjs");
 const INDEX_PATH = join(__dirname, "..", "index.ts");
 const SHARED_INDEX_PATH = join(__dirname, "..", "..", "shared", "index.ts");
@@ -301,63 +303,33 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
   ]);
 
   // BuildOptions/TranspileOptions 에 있고 CLI 에 없는 키 (의도적). 함수형/고급 옵션.
+  // 공통 NAPI internal 키는 `NAPI_INTERNAL_ONLY_KEYS` (schema-allowlists.ts) 재사용 — 새 internal
+  // 키 추가 시 그곳 1곳에만 등록하면 typo-suggest 와 cli-schema-sync 모두 자동 통과.
   const buildOptionsOnlyKeys: ReadonlySet<string> = new Set([
+    ...NAPI_INTERNAL_ONLY_KEYS,
     // 함수형 (CLI 표현 불가)
     "manualChunks",
     "plugins",
     // entry — positional argument (flag 아님)
     "entryPoints",
     "filename", // transpile 의 filename — stdin 모드일 때 의미, CLI 가 자동 결정
-    // Zig/NAPI 내부 또는 자동 결정 (사용자가 거의 안 만짐)
-    "allowOverwrite",
-    "assetRegistry",
-    "blockList",
-    "collectModuleCodes",
-    "configurableExports",
+    // 1:N 매핑으로 CLI 가 cover (cliOnlyFlags 의 namespace 형 flag 가 받음)
     "conditions",
-    "devMode",
     "dropConsole", // --drop=console 로 cover
     "dropDebugger", // --drop=debugger 로 cover
     "dropLabels",
-    "emitDiskSourcemap",
-    "entryErrorGuard",
-    "experimentalCodeCache",
-    "fallback",
-    "globalIdentifiers",
     "ignoreAnnotations",
     "inlineDynamicImports",
     "jsxSideEffects",
     "lineLimit",
-    "nodePaths",
-    "onReady",
-    "onRebuild",
     "outExtension", // namespace 객체 — `--out-extension:.js=` 가 일부 cover
     "outbase",
     "packagesExternal",
-    "polyfills",
-    "preserveSymlinks", // CLI 에 있긴 한데 boolean 형이라 별도 — TODO 향후 통합
-    "profile",
-    "profileFormat",
-    "profileLevel",
     "pure",
-    "reactRefresh",
-    "rootDir",
-    "runBeforeMain",
-    "scopeHoist",
-    "silentConsoleErrorPatterns",
     "stopAfter", // transpile 단독 — CLI 미노출 (디버그 옵션)
-    "strictExecutionOrder",
     "treeShaking",
-    "tsconfigRaw",
-    "verbatimModuleSyntax",
     "watch", // BuildOptions 의 watch 와 CLI --watch 는 의미 다름
-    "watchExclude",
-    "watchFolders",
-    "watchInclude",
-    "workletPluginVersion",
-    "workletTransform",
-    "write",
-    // CLI 에 boolean 형으로 노출되어 있지만 키가 미묘하게 다름 — `--ascii-only` ↔ TranspileOptions `asciiOnly` (OK), `--charset=` ↔ BuildOptions/TranspileOptions 는 charsetUtf8 boolean 만 (1:N 매핑)
+    // CLI 가 enum→boolean 변환 (`--charset=utf8` → charsetUtf8: true)
     "charsetUtf8",
     "analyze", // CLI 가 boolean flag, BuildOptions 는 boolean — 매칭되지만 alias 처리 누락 가능
   ]);
