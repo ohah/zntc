@@ -34,13 +34,17 @@ type CjsExportPattern =
   | "exports.x ="
   | "module.exports.x ="
   | "module.exports = { ... }"
-  | "Object.defineProperty(..., { value })";
+  | "Object.defineProperty(..., { value })"
+  | "Object.defineProperty(..., { value: member })"
+  | "Object.defineProperty(..., { get })";
 
 const cjsExportPatterns: CjsExportPattern[] = [
   "exports.x =",
   "module.exports.x =",
   "module.exports = { ... }",
   "Object.defineProperty(..., { value })",
+  "Object.defineProperty(..., { value: member })",
+  "Object.defineProperty(..., { get })",
 ];
 
 function parseProjects(): string[] {
@@ -128,6 +132,16 @@ function countCjsExportPatterns(text: string): Record<CjsExportPattern, number> 
     "Object.defineProperty(..., { value })": [
       ...text.matchAll(
         /\bObject\.defineProperty\s*\(\s*(?:exports|module\.exports)\s*,\s*(["'`])(?:\\.|(?!\1).)+\1\s*,\s*\{[^}]*\bvalue\b/g,
+      ),
+    ].length,
+    "Object.defineProperty(..., { value: member })": [
+      ...text.matchAll(
+        /\bObject\.defineProperty\s*\(\s*(?:exports|module\.exports)\s*,\s*(["'`])(?:\\.|(?!\1).)+\1\s*,\s*\{[^}]*\bvalue\s*:\s*[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*/g,
+      ),
+    ].length,
+    "Object.defineProperty(..., { get })": [
+      ...text.matchAll(
+        /\bObject\.defineProperty\s*\(\s*(?:exports|module\.exports)\s*,\s*(["'`])(?:\\.|(?!\1).)+\1\s*,\s*\{[^}]*\bget\b/g,
       ),
     ].length,
   };
