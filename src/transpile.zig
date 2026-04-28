@@ -129,6 +129,9 @@ pub const TranspileOptionsDto = struct {
     minifyIdentifiers: ?bool = null,
     minifySyntax: ?bool = null,
     sourcemap: ?bool = null,
+    /// 출력 형식 — `"linked"` / `"external"` / `"inline"` (#2152). missing 시 linked.
+    /// transpile 모드에선 미사용 (single-file, mode 의미 없음). bundler 만 사용.
+    sourcemapMode: ?[]const u8 = null,
     sourcemapDebugIds: ?bool = null,
     sourcesContent: ?bool = null,
     sourceRoot: ?[]const u8 = null,

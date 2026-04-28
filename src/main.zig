@@ -32,6 +32,8 @@ const CliOptions = struct {
     drop_console: bool = false,
     drop_debugger: bool = false,
     sourcemap: bool = false,
+    /// 소스맵 출력 형식 (#2152) — esbuild/rolldown 호환.
+    sourcemap_mode: lib.codegen.sourcemap.SourceMapMode = .linked,
     /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
     sourcemap_debug_ids: bool = false,
     /// Metro x_facebook_sources function map (--sourcemap-function-map).
@@ -506,6 +508,15 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             }
         } else if (std.mem.eql(u8, arg, "--sourcemap")) {
             opts.sourcemap = true;
+            opts.sourcemap_mode = .linked;
+        } else if (std.mem.startsWith(u8, arg, "--sourcemap=")) {
+            // #2152 — `--sourcemap=linked|external|inline` 3-mode (esbuild/rolldown 호환).
+            opts.sourcemap = true;
+            const val = arg["--sourcemap=".len..];
+            opts.sourcemap_mode = lib.codegen.sourcemap.SourceMapMode.fromString(val) orelse {
+                try stderr.print("zts: invalid --sourcemap value: {s} (expected: linked, external, inline)\n", .{val});
+                std.process.exit(1);
+            };
         } else if (std.mem.eql(u8, arg, "--sourcemap-debug-ids")) {
             opts.sourcemap_debug_ids = true;
         } else if (std.mem.eql(u8, arg, "--sourcemap-function-map")) {
@@ -1876,6 +1887,7 @@ pub fn main() !void {
             .main_fields = opts.main_fields_list.items,
             .sourcemap = .{
                 .enable = opts.sourcemap,
+                .mode = opts.sourcemap_mode,
                 .debug_ids = opts.sourcemap_debug_ids,
                 .function_map = opts.sourcemap_function_map,
                 .source_root = opts.source_root,

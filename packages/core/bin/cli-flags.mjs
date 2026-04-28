@@ -47,7 +47,16 @@ export const FLAG_REGISTRY = [
   { kind: "bool", flag: "--minify-whitespace", target: "minifyWhitespace" },
   { kind: "bool", flag: "--minify-identifiers", target: "minifyIdentifiers" },
   { kind: "bool", flag: "--minify-syntax", target: "minifySyntax" },
-  { kind: "bool", flag: "--sourcemap", target: "sourcemap" },
+  // `--sourcemap` 단독 → sourcemap=true + mode="linked" (default).
+  // `--sourcemap=inline/external/linked` → mode 명시. extra 가 sourcemap=true 같이 set.
+  // backward compat: 과거 boolean-only 사용자도 `--sourcemap` 그대로 동작.
+  {
+    kind: "string-default",
+    flag: "--sourcemap",
+    target: "sourcemapMode",
+    default: "linked",
+    extra: { sourcemap: true },
+  },
   { kind: "bool", flag: "--sourcemap-debug-ids", target: "sourcemapDebugIds" },
   { kind: "bool", flag: "--splitting", target: "splitting" },
   { kind: "bool", flag: "--analyze", target: "analyze", extra: { metafile: "meta.json" } },

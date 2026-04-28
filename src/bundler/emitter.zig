@@ -926,13 +926,43 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    // 소스맵 참조 추가. Lazy 경로에서도 bungae 의 `/bundle.js.map` 라우트가 serve 하므로
-    // 주석은 항상 붙여 DevTools 가 fetch 하게 한다.
+    // 소스맵 참조 추가 — mode 별 분기 (#2152):
+    //   linked   (default): `//# sourceMappingURL=<file>.map` 주석 + 외부 .map 파일.
+    //   external          : 주석 없음 + 외부 .map 파일 (Sentry/CI 표준, 위치 비공개).
+    //   inline_           : `//# sourceMappingURL=data:application/json;base64,...` 주석에 embed,
+    //                       외부 .map 파일 미생성.
+    //
+    // dev_mode 강제 linked: dev server 의 `/bundle.js.map` 라우트가 lazily serve (#1727).
+    // - inline 이면 매 rebuild 마다 base64 인코딩 — HMR warm 100ms (#1747) 충돌.
+    // - external 이면 DevTools 가 sourcemap fetch 안 함 → 디버깅 불가.
+    // 따라서 dev_mode 에서는 사용자 mode 무시. production 빌드에서만 mode 가 의미.
     if (options.sourcemap.enable) {
-        try output.appendSlice(allocator, "//# sourceMappingURL=");
-        if (options.dev_mode) try output.append(allocator, '/'); // dev 서버용 절대 경로
-        try output.appendSlice(allocator, options.output_filename);
-        try output.appendSlice(allocator, ".map\n");
+        const effective_mode = if (options.dev_mode) SourceMap.SourceMapMode.linked else options.sourcemap.mode;
+        switch (effective_mode) {
+            .linked => {
+                try output.appendSlice(allocator, "//# sourceMappingURL=");
+                if (options.dev_mode) try output.append(allocator, '/'); // dev 서버용 절대 경로
+                try output.appendSlice(allocator, options.output_filename);
+                try output.appendSlice(allocator, ".map\n");
+            },
+            .external => {
+                // 의도적 — 주석 없음.
+            },
+            .inline_ => {
+                if (sourcemap_json) |json| {
+                    try output.appendSlice(allocator, "//# sourceMappingURL=data:application/json;base64,");
+                    const Encoder = std.base64.standard.Encoder;
+                    const encoded_len = Encoder.calcSize(json.len);
+                    const old_len = output.items.len;
+                    try output.resize(allocator, old_len + encoded_len);
+                    _ = Encoder.encode(output.items[old_len .. old_len + encoded_len], json);
+                    try output.append(allocator, '\n');
+                    // 이미 base64 로 embed 했으므로 외부 .map 파일은 만들지 않음.
+                    allocator.free(json);
+                    sourcemap_json = null;
+                }
+            },
+        }
     }
 
     // debugId 주석 추가 (sourceMappingURL 뒤)

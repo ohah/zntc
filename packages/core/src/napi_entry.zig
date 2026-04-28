@@ -228,6 +228,16 @@ fn getObjectStringArray(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, 
     return parseStringArray(env, val, alloc);
 }
 
+/// `sourcemapMode` 옵션 (#2152) — `"linked"` / `"external"` / `"inline"` 한정.
+/// 미지정 또는 invalid 면 `.linked` (default).
+fn parseSourceMapMode(env: c.napi_env, obj: c.napi_value) SourceMap.SourceMapMode {
+    var buf: [16]u8 = undefined;
+    const val = getNamedProperty(env, obj, "sourcemapMode") orelse return .linked;
+    var len: usize = 0;
+    if (c.napi_get_value_string_utf8(env, val, &buf, buf.len, &len) != c.napi_ok) return .linked;
+    return SourceMap.SourceMapMode.fromString(buf[0..len]) orelse .linked;
+}
+
 /// JS 배열 값을 문자열 슬라이스로 변환. (key 없이 직접 배열 값을 받는 버전)
 /// 빈 배열은 명시적으로 빈 slice 반환 (caller 가 "0개" 와 "invalid" 를 구분 가능).
 fn parseStringArray(env: c.napi_env, val: c.napi_value, alloc: std.mem.Allocator) ?[]const []const u8 {
@@ -3171,6 +3181,7 @@ fn parseBuildOptions(
         .inline_dynamic_imports = getObjectBool(env, opts_obj, "inlineDynamicImports", false),
         .sourcemap = .{
             .enable = getObjectBool(env, opts_obj, "sourcemap", false),
+            .mode = parseSourceMapMode(env, opts_obj),
             .debug_ids = getObjectBool(env, opts_obj, "sourcemapDebugIds", false),
             .sources_content = getObjectBool(env, opts_obj, "sourcesContent", true),
             .source_root = source_root,

@@ -85,12 +85,35 @@ pub const Mapping = struct {
 // 소스맵 옵션
 // ============================================================
 
+/// 소스맵 출력 형식 — esbuild / rolldown 호환 3-mode (#2152).
+///
+///  - `linked`   (default): `.map` 파일 emit + `//# sourceMappingURL=<file>.map` 주석.
+///  - `external`           : `.map` 파일 emit, URL 주석 없음 — Sentry/CI 표준 (소스맵
+///                           위치 비공개).
+///  - `inline`             : `.map` 파일 emit 안 함, JSON 을 base64 data URL 로 주석에 embed
+///                           (`//# sourceMappingURL=data:application/json;base64,...`).
+pub const SourceMapMode = enum {
+    linked,
+    external,
+    inline_,
+
+    /// CLI / NAPI string 입력을 enum 으로 변환. invalid 면 null.
+    pub fn fromString(s: []const u8) ?SourceMapMode {
+        if (std.mem.eql(u8, s, "linked")) return .linked;
+        if (std.mem.eql(u8, s, "external")) return .external;
+        if (std.mem.eql(u8, s, "inline")) return .inline_;
+        return null;
+    }
+};
+
 /// Bundler 레벨 sourcemap 옵션 묶음. `EmitOptions.sourcemap` / `BundleOptions.sourcemap`
 /// 양쪽에서 동일 구조체를 공유해 옵션 전파 중복을 제거한다. 단일-파일 경로
 /// (`codegen.zig`, `transpile.zig`) 는 별도 옵션 구조체가 있어 현재 범위 밖.
 pub const SourceMapOptions = struct {
     /// 소스맵 생성 활성화. dev mode 에서는 번들 레벨 소스맵을 생성한다.
     enable: bool = false,
+    /// 출력 형식 — `enable=true` 일 때만 의미 있음.
+    mode: SourceMapMode = .linked,
     /// Sentry Debug ID (`--sourcemap-debug-ids`). 번들 끝에 `//# debugId=<UUID>` 주석 추가 +
     /// 소스맵 JSON 에 `"debugId"` 필드 삽입. 번들과 맵에 동일 UUID 를 공유.
     debug_ids: bool = false,
