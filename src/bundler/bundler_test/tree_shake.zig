@@ -486,6 +486,52 @@ test "TreeShaking CJS: Object.defineProperty escape export name matches decoded 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_DEFINE_ESCAPE_MARKER") == null);
 }
 
+test "TreeShaking CJS: duplicate defineProperty export facts are preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\function earlyImpl() { return "EARLY_DEFINE_DUP_MARKER"; }
+        \\function lateImpl() { return "LATE_DEFINE_DUP_MARKER"; }
+        \\Object.defineProperty(exports, "used", { value: earlyImpl, configurable: true });
+        \\Object.defineProperty(exports, "u\x73ed", { value: lateImpl, configurable: true });
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LATE_DEFINE_DUP_MARKER") != null);
+}
+
+test "TreeShaking CJS: cross-kind duplicate export facts are preserved" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\function earlyImpl() { return "EARLY_CROSS_DUP_MARKER"; }
+        \\function lateImpl() { return "LATE_CROSS_DUP_MARKER"; }
+        \\exports.used = earlyImpl;
+        \\Object.defineProperty(exports, "u\x73ed", { value: lateImpl, configurable: true });
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LATE_CROSS_DUP_MARKER") != null);
+}
+
 test "TreeShaking CJS: named import prunes module.exports object shorthand property" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
