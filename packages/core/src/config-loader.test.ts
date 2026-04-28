@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { init } from "../index";
-import { loadConfig } from "./config-loader";
+import { CONFIG_EXT_PRIORITY, findConfigPath, loadConfig } from "./config-loader";
 
 beforeAll(() => init());
 
@@ -133,5 +133,83 @@ describe("loadConfig", () => {
     writeFileSync(path, `export default { format: "cjs" as const };`);
     const second = await loadConfig(path);
     expect(second.format).toBe("cjs");
+  });
+});
+
+describe("findConfigPath", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-find-config-"));
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  function reset() {
+    rmSync(dir, { recursive: true, force: true });
+    require("node:fs").mkdirSync(dir);
+  }
+
+  test("config 부재 시 null", () => {
+    reset();
+    expect(findConfigPath(dir)).toBeNull();
+  });
+
+  test(".ts 단독", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.ts"), `export default {};`);
+    expect(findConfigPath(dir)).toBe(join(dir, "zts.config.ts"));
+  });
+
+  test(".json 단독", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.json"), `{}`);
+    expect(findConfigPath(dir)).toBe(join(dir, "zts.config.json"));
+  });
+
+  test("우선순위: .ts > .mts > .cts > .mjs > .js > .cjs > .json", () => {
+    // CONFIG_EXT_PRIORITY 가 [".ts", ".mts", ".cts", ".mjs", ".js", ".cjs", ".json"] 임을 검증.
+    reset();
+    // 모든 확장자 동시 존재 → .ts 선택
+    for (const ext of CONFIG_EXT_PRIORITY) {
+      writeFileSync(join(dir, `zts.config${ext}`), ext === ".json" ? "{}" : `export default {};`);
+    }
+    expect(findConfigPath(dir)).toBe(join(dir, "zts.config.ts"));
+  });
+
+  test("점진적 fallback: .ts 만 제거하면 .mts", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.mts"), `export default {};`);
+    writeFileSync(join(dir, "zts.config.json"), `{}`);
+    expect(findConfigPath(dir)).toBe(join(dir, "zts.config.mts"));
+  });
+
+  test("점진적 fallback: .mjs 단독이면 .mjs", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.mjs"), `export default {};`);
+    expect(findConfigPath(dir)).toBe(join(dir, "zts.config.mjs"));
+  });
+
+  test("점진적 fallback: .cjs 단독이면 .cjs", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.cjs"), `module.exports = {};`);
+    expect(findConfigPath(dir)).toBe(join(dir, "zts.config.cjs"));
+  });
+
+  test("findConfigPath + loadConfig 통합", async () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.ts"), `export default { format: "esm" as const };`);
+    const path = findConfigPath(dir);
+    expect(path).toBe(join(dir, "zts.config.ts"));
+    const config = await loadConfig(path!);
+    expect(config.format).toBe("esm");
+  });
+
+  test("zts.config 가 아닌 다른 이름은 무시", () => {
+    reset();
+    writeFileSync(join(dir, "zts.ts"), `export default {};`);
+    writeFileSync(join(dir, "config.ts"), `export default {};`);
+    writeFileSync(join(dir, "zts-config.ts"), `export default {};`);
+    expect(findConfigPath(dir)).toBeNull();
   });
 });
