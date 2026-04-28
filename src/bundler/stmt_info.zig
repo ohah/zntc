@@ -260,14 +260,14 @@ fn cjsExportNamePropFromLhs(ast: *const Ast, lhs: NodeIndex) ?NodeIndex {
     return null;
 }
 
-/// CJS object-shape export 의 value 위치가 named export 로 치환 안전한지 판정.
-/// identifier_reference 만 허용해 tree_shaker 가 `rhs_symbol → declaring stmt` 로
-/// dependency 를 시드할 수 있게 한다 (리터럴 등은 의존 시드가 의미 없어 거부).
-fn isCjsObjectPropertyValueSafe(ast: *const Ast, value: NodeIndex, unresolved_globals: ?*const purity.GlobalRefSet) bool {
-    if (value.isNone() or @intFromEnum(value) >= ast.nodes.items.len) return false;
-    const value_node = ast.nodes.items[@intFromEnum(value)];
-    if (value_node.tag != .identifier_reference) return false;
-    return purity.isExprPure(ast, value, unresolved_globals);
+/// CJS object-shape export 의 value 위치에서 의존성 시드로 쓸 노드를 반환.
+/// identifier 는 그대로, `ns.member` 같은 정적 멤버는 base object (`ns`) 를 시드한다.
+/// tree_shaker 가 `rhs_symbol → declaring stmt` 로 dependency 를 살릴 수 없는
+/// 리터럴/동적 멤버/optional chain 등은 보수적으로 거부한다.
+fn cjsObjectPropertyValueSeedNode(ast: *const Ast, value: NodeIndex, unresolved_globals: ?*const purity.GlobalRefSet) ?NodeIndex {
+    if (value.isNone() or @intFromEnum(value) >= ast.nodes.items.len) return null;
+    if (!purity.isExprPure(ast, value, unresolved_globals)) return null;
+    return definePropertyDescriptorValueSeedNode(ast, value);
 }
 
 fn cjsExportCandidateForStmt(alloc: std.mem.Allocator, ast: *const Ast, stmt_node: Node) !?CjsExportCandidate {
@@ -666,14 +666,13 @@ fn collectCjsObjectExportCandidates(
         const entry = try seen.getOrPut(allocator, name);
         if (entry.found_existing) return null;
 
-        const value = Ast.objectPropertyValue(prop);
-        if (!isCjsObjectPropertyValueSafe(ast, value, unresolved_globals)) return null;
+        const seed_node = cjsObjectPropertyValueSeedNode(ast, Ast.objectPropertyValue(prop), unresolved_globals) orelse return null;
 
         try out.append(allocator, .{
             .export_name = name,
             .export_assignment_node = @intFromEnum(expr_idx),
             .property_node = @intFromEnum(prop_idx),
-            .rhs_node = value,
+            .rhs_node = seed_node,
             .kind = .object_property,
         });
         name_transferred = true;
