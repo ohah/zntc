@@ -384,10 +384,7 @@ pub fn buildMetadataForAst(
                         errdefer self.allocator.free(hoisted_name);
                         try ns_var_list.append(self.allocator, hoisted_name);
                         if (ib.importsDefault() and m.canUseDirectCjsDefaultImport(canonical_m_opt.?)) {
-                            try preamble.write(preamble_name);
-                            try preamble.write(" = ");
-                            try preamble.write(req_var);
-                            try preamble.write("();\n");
+                            try preamble.writeCjsDirectDefault(preamble_name, req_var, true);
                         } else {
                             try preamble.writeCjsImportAssignOnly(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
                         }
@@ -415,20 +412,13 @@ pub fn buildMetadataForAst(
                 // ESM-wrapped + synthetic binding: top-level에 이미 var 선언됨 → 할당만
                 if (is_synthetic and m.wrap_kind == .esm) {
                     if (ib.importsDefault() and m.canUseDirectCjsDefaultImport(canonical_m_opt.?)) {
-                        try preamble.write(preamble_name);
-                        try preamble.write(" = ");
-                        try preamble.write(req_var);
-                        try preamble.write("();\n");
+                        try preamble.writeCjsDirectDefault(preamble_name, req_var, true);
                     } else {
                         try preamble.writeCjsImportAssignOnly(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
                     }
                 } else {
                     if (ib.importsDefault() and m.canUseDirectCjsDefaultImport(canonical_m_opt.?)) {
-                        try preamble.write("var ");
-                        try preamble.write(preamble_name);
-                        try preamble.write(" = ");
-                        try preamble.write(req_var);
-                        try preamble.write("();\n");
+                        try preamble.writeCjsDirectDefault(preamble_name, req_var, false);
                     } else {
                         try preamble.writeCjsImport(preamble_name, ib.imported_name, req_var, ib.kind == .namespace, interop_mode);
                     }
@@ -516,11 +506,7 @@ pub fn buildMetadataForAst(
                     const interop_mode2: types.Interop = if (m.def_format.isEsm()) .node else .babel;
                     const effective_name = rb.canonical.export_name;
                     if (std.mem.eql(u8, effective_name, "default") and m.canUseDirectCjsDefaultImport(cjs_mod_opt.?)) {
-                        try preamble.write("var ");
-                        try preamble.write(preamble_name);
-                        try preamble.write(" = ");
-                        try preamble.write(req_var);
-                        try preamble.write("();\n");
+                        try preamble.writeCjsDirectDefault(preamble_name, req_var, false);
                     } else {
                         try preamble.writeCjsImport(preamble_name, effective_name, req_var, false, interop_mode2);
                     }

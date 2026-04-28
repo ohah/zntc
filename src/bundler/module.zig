@@ -420,6 +420,18 @@ pub const Module = struct {
             !self.def_format.isEsm();
     }
 
+    /// `module.exports = ...` shape 한정 fast path (default import 의 `__toESM` skip).
+    /// `__esModule` marker 또는 `exports.x` 할당이 같이 있으면 named export 가 진짜 있을 수 있어
+    /// fast path 가 부정확해진다. wrap_kind 가 .cjs 인 모듈에만 의미 있음.
+    pub fn computeCanSkipCjsDefaultInterop(
+        is_cjs: bool,
+        has_module_exports: bool,
+        has_exports_dot: bool,
+        has_esmodule_marker: bool,
+    ) bool {
+        return is_cjs and has_module_exports and !has_exports_dot and !has_esmodule_marker;
+    }
+
     /// 번들 출력 순서 comparator.
     /// 래핑된 모듈(__esm/__commonJS)을 scope-hoisted 모듈보다 먼저 배치.
     /// var init_xxx = __esm(...) 선언이 init_xxx() 호출보다 앞에 와야 하므로,

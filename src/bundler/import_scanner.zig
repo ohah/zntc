@@ -41,6 +41,8 @@ const types = @import("types.zig");
 const ImportRecord = types.ImportRecord;
 const ImportKind = types.ImportKind;
 
+pub const ES_MODULE_MARKER = "__esModule";
+
 /// CJS 감지를 포함한 스캔 결과.
 pub const ScanResult = struct {
     /// 추출된 import/export/require 레코드
@@ -125,11 +127,9 @@ pub fn extractImportsWithCjsDetectionAndDefines(
                     try records.append(allocator, record);
                 } else if (tryExtractGlob(ast, node)) |record| {
                     try records.append(allocator, record);
-                } else if (isObjectDefinePropertyEsModuleMarker(ast, node)) {
-                    has_esmodule_marker = true;
+                } else if (classifyObjectDefinePropertyExports(ast, node)) |kind| {
                     has_exports_dot = true;
-                } else if (!has_exports_dot and isObjectDefinePropertyExports(ast, node)) {
-                    has_exports_dot = true;
+                    if (kind == .esmodule_marker) has_esmodule_marker = true;
                 }
             },
             .new_expression => {
@@ -639,16 +639,17 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
 /// `Object.defineProperty(exports, ...)` / `Object.defineProperty(module.exports, ...)`.
 /// Babel/TS CJS output often declares `__esModule` this way; after transformer pre-pass
 /// rewrites `require()` calls, this may be the remaining CJS signal.
-fn isObjectDefinePropertyExports(ast: *const Ast, node: Node) bool {
-    return getObjectDefinePropertyExportsTarget(ast, node) != null;
-}
+const DefinePropertyExportsKind = enum { other, esmodule_marker };
 
-fn isObjectDefinePropertyEsModuleMarker(ast: *const Ast, node: Node) bool {
-    const args_start = getObjectDefinePropertyExportsTarget(ast, node) orelse return false;
-    if (!ast.hasExtra(args_start, 2)) return false;
-    const prop_idx = ast.readExtraNode(args_start, 1);
-    const prop = getStringLiteralText(ast, prop_idx) orelse return false;
-    return std.mem.eql(u8, prop, "__esModule");
+fn classifyObjectDefinePropertyExports(ast: *const Ast, node: Node) ?DefinePropertyExportsKind {
+    const args_start = getObjectDefinePropertyExportsTarget(ast, node) orelse return null;
+    if (ast.hasExtra(args_start, 2)) {
+        const prop_idx = ast.readExtraNode(args_start, 1);
+        if (getStringLiteralText(ast, prop_idx)) |prop| {
+            if (std.mem.eql(u8, prop, ES_MODULE_MARKER)) return .esmodule_marker;
+        }
+    }
+    return .other;
 }
 
 fn getObjectDefinePropertyExportsTarget(ast: *const Ast, node: Node) ?u32 {
@@ -722,7 +723,7 @@ fn isModuleExportsAssign(ast: *const Ast, node: Node) bool {
 /// assignment_expression의 left가 exports.__esModule 또는 module.exports.__esModule인지 확인.
 fn isEsModuleMarkerAssign(ast: *const Ast, node: Node) bool {
     const parts = getAssignMemberParts(ast, node) orelse return false;
-    if (std.mem.eql(u8, parts.object, "exports") and std.mem.eql(u8, parts.property, "__esModule")) {
+    if (std.mem.eql(u8, parts.object, "exports") and std.mem.eql(u8, parts.property, ES_MODULE_MARKER)) {
         return true;
     }
 
@@ -736,7 +737,7 @@ fn isEsModuleMarkerAssign(ast: *const Ast, node: Node) bool {
     if (outer_obj_idx.isNone() or outer_prop_idx.isNone()) return false;
     if (@intFromEnum(outer_obj_idx) >= ast.nodes.items.len or @intFromEnum(outer_prop_idx) >= ast.nodes.items.len) return false;
     const outer_prop = ast.getNode(outer_prop_idx);
-    if (!std.mem.eql(u8, ast.getText(outer_prop.span), "__esModule")) return false;
+    if (!std.mem.eql(u8, ast.getText(outer_prop.span), ES_MODULE_MARKER)) return false;
     const inner_parts = getStaticMemberParts(ast, outer_obj_idx) orelse return false;
     return std.mem.eql(u8, inner_parts.object, "module") and std.mem.eql(u8, inner_parts.property, "exports");
 }
