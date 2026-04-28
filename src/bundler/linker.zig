@@ -585,6 +585,15 @@ pub const Linker = struct {
         return self.graph.moduleAtMut(ModuleIndex.fromUsize(idx));
     }
 
+    fn isCjsDefaultBinding(self: *const Linker, importer: *const Module, ib: ImportBinding) bool {
+        if (ib.kind != .default) return false;
+        if (ib.import_record_index >= importer.import_records.len) return false;
+        const src_idx = importer.import_records[ib.import_record_index].resolved;
+        if (src_idx.isNone()) return false;
+        const src = self.graph.getModule(src_idx) orelse return false;
+        return src.wrap_kind == .cjs;
+    }
+
     /// 링킹 실행: export 맵 구축 → import 바인딩 해결.
     pub fn link(self: *Linker) !void {
         try self.buildExportMap();
@@ -1914,17 +1923,9 @@ pub const Linker = struct {
             // index 구축 전에 outer skip — AST 전체 순회 비용 회피 (#1735).
             const has_candidate = blk: {
                 for (importer.import_bindings) |ib| {
-                    const is_namespace = ib.kind == .namespace;
-                    const is_named_candidate = ib.kind == .named and ib.namespace_used_properties == null;
-                    const is_cjs_default_candidate = cjs_default: {
-                        if (ib.kind != .default) break :cjs_default false;
-                        if (ib.import_record_index >= importer.import_records.len) break :cjs_default false;
-                        const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
-                        if (source_mod_idx.isNone()) break :cjs_default false;
-                        const source = self.graph.getModule(source_mod_idx) orelse break :cjs_default false;
-                        break :cjs_default source.wrap_kind == .cjs;
-                    };
-                    if (is_namespace or is_named_candidate or is_cjs_default_candidate) break :blk true;
+                    if (ib.kind == .namespace) break :blk true;
+                    if (ib.kind == .named and ib.namespace_used_properties == null) break :blk true;
+                    if (self.isCjsDefaultBinding(importer, ib)) break :blk true;
                 }
                 break :blk false;
             };
@@ -1953,10 +1954,8 @@ pub const Linker = struct {
                 if (!is_namespace and !is_named_candidate and !is_cjs_default_candidate) continue;
 
                 // `.named` 경로는 virtual namespace (re_export_namespace 타겟)일 때만 처리.
-                // `.namespace`와 CJS default는 항상 대상 — collectNamespaceAccesses 결과를
-                // scope-aware로 재평가한다. CJS default는 `import React from "react";
-                // React.createElement(...)` 같은 member-only 사용을 CJS export fact pruning과
-                // 연결하기 위한 정밀화다.
+                // `.namespace`/CJS default는 항상 scope-aware 재평가 대상 — member-only
+                // 사용 패턴을 export pruning으로 연결.
                 if (is_named_candidate) {
                     var is_virtual_ns = false;
                     for (source.export_bindings) |eb| {
