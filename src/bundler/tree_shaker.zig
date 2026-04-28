@@ -606,9 +606,7 @@ pub const TreeShaker = struct {
                 for (m.export_bindings) |eb| {
                     if (eb.kind.isReExportAll()) continue;
                     const sym_idx = eb.symbol.semanticIndex() orelse continue;
-                    if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
-                        try self.enqueue(@intCast(i), stmt_idx, reachable_stmts, &queue);
-                    }
+                    try self.enqueueSymbolLiveStatements(@intCast(i), infos, sym_idx, reachable_stmts, &queue);
                 }
                 // dynamic import target도 re-export 체인 따라 transitive 모듈까지
                 // 전파해야 함(#1260). seedOpaqueModule은 opaque_visited로 중복 방지.
@@ -715,6 +713,26 @@ pub const TreeShaker = struct {
                     }
                 }
             }
+        }
+    }
+
+    fn enqueueSymbolLiveStatements(
+        self: *TreeShaker,
+        mod: u32,
+        infos: StmtInfos,
+        sym_idx: u32,
+        reachable: []?std.DynamicBitSet,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+    ) std.mem.Allocator.Error!void {
+        if (mod >= reachable.len) return;
+        if (reachable[mod] == null) {
+            reachable[mod] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
+        }
+        if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
+            try self.enqueue(mod, stmt_idx, reachable, queue);
+        }
+        for (infos.writerStmts(sym_idx)) |writer_stmt| {
+            try self.enqueue(mod, writer_stmt, reachable, queue);
         }
     }
 
@@ -866,12 +884,7 @@ pub const TreeShaker = struct {
                     const mid_local = self.linker.getExportLocalName(@intCast(target_mod), imported_name) orelse imported_name;
                     if (mid_sem.scope_maps[0].get(mid_local)) |mid_sym| {
                         if (module_stmt_infos[target_mod]) |mid_infos| {
-                            if (mid_infos.declaredStmtBySymbol(@intCast(mid_sym))) |mid_stmt| {
-                                if (reachable_stmts[target_mod] == null) {
-                                    reachable_stmts[target_mod] = try std.DynamicBitSet.initEmpty(self.allocator, mid_infos.stmts.len);
-                                }
-                                try self.enqueue(@intCast(target_mod), mid_stmt, reachable_stmts, queue);
-                            }
+                            try self.enqueueSymbolLiveStatements(@intCast(target_mod), mid_infos, @intCast(mid_sym), reachable_stmts, queue);
                         }
                     }
                 }
@@ -891,12 +904,7 @@ pub const TreeShaker = struct {
             try self.seedOpaqueModule(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
             return;
         };
-        const target_stmt = target_infos.declaredStmtBySymbol(@intCast(sym_idx)) orelse return;
-
-        if (reachable_stmts[canon_mod] == null) {
-            reachable_stmts[canon_mod] = try std.DynamicBitSet.initEmpty(self.allocator, target_infos.stmts.len);
-        }
-        try self.enqueue(@intCast(canon_mod), target_stmt, reachable_stmts, queue);
+        try self.enqueueSymbolLiveStatements(@intCast(canon_mod), target_infos, @intCast(sym_idx), reachable_stmts, queue);
 
         // side-effect statement는 enqueueStmt에서 lazy 시드됨
     }

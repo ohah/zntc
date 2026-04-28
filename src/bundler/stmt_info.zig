@@ -162,6 +162,12 @@ pub const ModuleStmtInfos = struct {
                     try queue.append(allocator, stmt_idx);
                 }
             }
+            for (self.writerStmts(sym_idx)) |writer_stmt| {
+                if (!reachable_stmts.isSet(writer_stmt)) {
+                    reachable_stmts.set(writer_stmt);
+                    try queue.append(allocator, writer_stmt);
+                }
+            }
         }
 
         // BFS: referenced_symbols → (declarer, writers) → dependent statements.

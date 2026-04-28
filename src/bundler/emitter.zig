@@ -1283,6 +1283,20 @@ pub fn emitModule(
         // 마킹하는 것은 출력 크기 최적화지 correctness 가 아니다 — 포함해도 런타임 의미 동일.
         // dev 번들은 크기 허용, speed 우선 (Metro/esbuild 관습).
         if (!options.dev_mode) {
+            if ((module.wrap_kind == .esm or options.format == .esm) and options.minify_syntax) {
+                if (module.semantic) |sem| {
+                    markDeadOverwrittenFunctionBodiesOnly(
+                        arena_alloc,
+                        transformer.ast,
+                        md.symbol_ids,
+                        sem.references,
+                        sem.symbols.items,
+                        &sem.unresolved_references,
+                        &md.skip_nodes,
+                        module,
+                    ) catch {};
+                }
+            }
             if (used_export_names) |names| {
                 if (module.wrap_kind != .esm and (!is_entry or (shaker != null and options.minify_syntax))) {
                     stmt_shake: {
@@ -2079,8 +2093,32 @@ fn markDeadOverwrittenAssignments(
     const stmts = ast.extra_data.items[list.start .. list.start + list.len];
 
     var ref_index = try DeadStoreRefIndex.init(allocator, references);
+    defer ref_index.deinit(allocator);
 
     markDeadOverwrittenInStatementList(ast, stmts, symbol_ids, symbols, &ref_index, unresolved_globals, skip_nodes, module);
+}
+
+fn markDeadOverwrittenFunctionBodiesOnly(
+    allocator: std.mem.Allocator,
+    ast: *Ast,
+    symbol_ids: []const ?u32,
+    references: []const Reference,
+    symbols: []const Symbol,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    skip_nodes: *std.DynamicBitSet,
+    module: *const Module,
+) !void {
+    if (ast.nodes.items.len == 0) return;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program) return;
+
+    var ref_index = try DeadStoreRefIndex.init(allocator, references);
+    defer ref_index.deinit(allocator);
+
+    for (ast.nodes.items) |node| {
+        if (ast.functionBodyBlock(node) == null) continue;
+        markDeadOverwrittenFunctionBody(ast, node, symbol_ids, symbols, &ref_index, unresolved_globals, skip_nodes, module);
+    }
 }
 
 fn markDeadOverwrittenInStatementList(
