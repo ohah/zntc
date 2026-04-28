@@ -183,30 +183,29 @@ fn isKnownPureStaticCall(
     if (object.tag != .identifier_reference or property.tag != .identifier_reference) return false;
     if (!std.mem.eql(u8, ast.getText(object.span), "Object")) return false;
     if (!globals.contains("Object")) return false;
-    if (!std.mem.eql(u8, ast.getText(property.span), "freeze")) return false;
+    const property_name = ast.getText(property.span);
 
     const call_extra = node.data.extra;
     if (!ast.hasExtra(call_extra, 2)) return false;
     const args_start = ast.readExtra(call_extra, 1);
     const args_len = ast.readExtra(call_extra, 2);
-    if (args_len != 1 or args_start >= ast.extra_data.items.len) return false;
 
-    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
-    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
-    if (arg.tag == .spread_element) return false;
+    if (std.mem.eql(u8, property_name, "freeze")) {
+        if (args_len != 1 or args_start >= ast.extra_data.items.len) return false;
+        const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+        return isKnownPureFreezeArg(ast, arg_idx, unresolved_globals, depth);
+    }
 
-    const fresh_arg = switch (arg.tag) {
-        .object_expression,
-        .array_expression,
-        .function_expression,
-        .arrow_function_expression,
-        .class_expression,
-        => true,
-        .parenthesized_expression => return isKnownPureFreezeArg(ast, arg.data.unary.operand, unresolved_globals, depth),
-        else => false,
-    };
-    return fresh_arg and isNodePureDepth(ast, arg, unresolved_globals, depth);
+    if (std.mem.eql(u8, property_name, "assign")) {
+        if (args_len < 2 or args_start + args_len > ast.extra_data.items.len) return false;
+        for (ast.extra_data.items[args_start .. args_start + args_len]) |raw_arg| {
+            const arg_idx: NodeIndex = @enumFromInt(raw_arg);
+            if (!isKnownPureAssignObjectArg(ast, arg_idx, unresolved_globals, depth)) return false;
+        }
+        return true;
+    }
+
+    return false;
 }
 
 fn isKnownPureFreezeArg(
@@ -228,6 +227,46 @@ fn isKnownPureFreezeArg(
         else => false,
     };
     return fresh_arg and isNodePureDepth(ast, arg, unresolved_globals, depth);
+}
+
+fn isKnownPureAssignObjectArg(
+    ast: *const Ast,
+    arg_idx: NodeIndex,
+    unresolved_globals: ?*const GlobalRefSet,
+    depth: u32,
+) bool {
+    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    return switch (arg.tag) {
+        .object_expression => isPlainObjectLiteralPure(ast, arg, unresolved_globals, depth),
+        .parenthesized_expression => isKnownPureAssignObjectArg(ast, arg.data.unary.operand, unresolved_globals, depth),
+        else => false,
+    };
+}
+
+fn isPlainObjectLiteralPure(
+    ast: *const Ast,
+    node: Node,
+    unresolved_globals: ?*const GlobalRefSet,
+    depth: u32,
+) bool {
+    const list = node.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return false;
+
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_prop| {
+        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
+        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return false;
+        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        if (prop.tag != .object_property) return false;
+
+        const key_idx = prop.data.binary.left;
+        if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
+            if (ast.nodes.items[@intFromEnum(key_idx)].tag == .computed_property_key) return false;
+        }
+        if (!isExprPureDepth(ast, prop.data.binary.right, unresolved_globals, depth)) return false;
+    }
+
+    return true;
 }
 
 /// 빌트인 이름별 분류.
