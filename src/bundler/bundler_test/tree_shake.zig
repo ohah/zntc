@@ -1431,7 +1431,7 @@ test "TreeShaking CJS: named Buffer import seeds module.exports buffer assignmen
     try std.testing.expect(std.mem.indexOf(u8, result.output, "MODULE_EXPORTS_BUFFER_UNUSED_MARKER") == null);
 }
 
-test "TreeShaking CJS: default namespace and export star keep all static exports" {
+test "TreeShaking CJS: default member access prunes, namespace and export star keep all static exports" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "default.js", "import lib from './lib.js'; console.log(lib.used);");
@@ -1455,7 +1455,7 @@ test "TreeShaking CJS: default namespace and export star keep all static exports
     const default_result = try b_default.bundle();
     defer default_result.deinit(std.testing.allocator);
     try std.testing.expect(!default_result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, default_result.output, "CJS_UNUSED_MUST_STAY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result.output, "CJS_UNUSED_MUST_STAY") == null);
 
     var b_namespace = Bundler.init(std.testing.allocator, .{ .entry_points = &.{namespace_entry} });
     defer b_namespace.deinit();
@@ -4496,4 +4496,100 @@ test "TreeShaking: namespace import preamble dropped when target excluded from b
     try std.testing.expect(std.mem.indexOf(u8, result.output, "NS_TARGET_DROP_HEAVY") == null);
     // `var X = __toESM(require_cjslib_cjs(), 1)` 같은 orphan preamble 이 남으면 안 된다.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_cjslib") == null);
+}
+
+test "TreeShaking: CJS default import member access seeds only used export" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import React from './react-like.cjs';
+        \\console.log(React.createElement());
+    );
+    try writeFile(tmp.dir, "react-like.cjs",
+        \\'use strict';
+        \\exports.createElement = function() { return 'CJS_DEFAULT_MEMBER_USED'; };
+        \\exports.useState = function() { return 'CJS_DEFAULT_MEMBER_UNUSED'; };
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_DEFAULT_MEMBER_USED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_DEFAULT_MEMBER_UNUSED") == null);
+}
+
+test "TreeShaking: CJS default import value escape keeps all exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import React from './react-like.cjs';
+        \\console.log(typeof React);
+    );
+    try writeFile(tmp.dir, "react-like.cjs",
+        \\'use strict';
+        \\exports.createElement = function() { return 'CJS_DEFAULT_ESCAPE_USED'; };
+        \\exports.useState = function() { return 'CJS_DEFAULT_ESCAPE_KEPT'; };
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_DEFAULT_ESCAPE_USED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_DEFAULT_ESCAPE_KEPT") != null);
+}
+
+test "TreeShaking: CJS default member access follows module.exports require proxy" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import React from './index.cjs';
+        \\console.log(React.createElement());
+    );
+    try writeFile(tmp.dir, "index.cjs",
+        \\'use strict';
+        \\{
+        \\  module.exports = require('./react-production.cjs');
+        \\}
+    );
+    try writeFile(tmp.dir, "react-production.cjs",
+        \\'use strict';
+        \\exports.createElement = function() { return 'CJS_DEFAULT_PROXY_USED'; };
+        \\exports.useState = function() { return 'CJS_DEFAULT_PROXY_UNUSED'; };
+    );
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_DEFAULT_PROXY_USED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "CJS_DEFAULT_PROXY_UNUSED") == null);
 }
