@@ -1394,3 +1394,133 @@ describe("CLI: tsconfig", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// ─── zts.config.{ts,json} 자동 탐색 + BuildOptions 머지 (#2099 / #2101) ───
+
+describe("CLI: zts.config 자동 탐색 + BuildOptions 머지", () => {
+  test("zts.config.ts 의 entryPoints 가 자동 적용됨", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-merge-"));
+    writeFileSync(join(dir, "src.ts"), "export const HIT = 'CONFIG_ENTRY_OK';");
+    writeFileSync(
+      join(dir, "zts.config.ts"),
+      `export default { entryPoints: ["${join(dir, "src.ts").replace(/\\/g, "/")}"] };`,
+    );
+    // CLI 에 entry 안 줬는데 config 의 entryPoints 로 빌드되어야 함.
+    const { stdout, exitCode } = runCli(["--bundle"], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("CONFIG_ENTRY_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("zts.config.ts 의 minify 가 적용됨", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-minify-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "const someLongName = 1; const anotherLongName = 2; console.log(someLongName + anotherLongName);",
+    );
+    writeFileSync(join(dir, "zts.config.ts"), `export default { minify: true };`);
+    const { stdout, exitCode } = runCli(["--bundle", join(dir, "entry.ts")], { cwd: dir });
+    expect(exitCode).toBe(0);
+    // minify 시 식별자 축약으로 someLongName 같은 긴 이름이 사라짐.
+    expect(stdout).not.toContain("someLongName");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("CLI 가 config 를 override (CLI > config 우선순위)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-override-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('cli_wins');");
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({ format: "iife", globalName: "CFG_NAME" }),
+    );
+    // CLI 가 globalName 을 다른 값으로 넘기면 그게 우선.
+    const { stdout, exitCode } = runCli(
+      ["--bundle", "--global-name=CLI_NAME", join(dir, "entry.ts")],
+      { cwd: dir },
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("CLI_NAME");
+    expect(stdout).not.toContain("CFG_NAME");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("zts.config.json 의 external 배열이 적용됨", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-external-"));
+    writeFileSync(join(dir, "entry.ts"), 'import * as fs from "node:fs";\nconsole.log(fs);');
+    writeFileSync(join(dir, "zts.config.json"), JSON.stringify({ external: ["node:fs"] }));
+    const { stdout, stderr, exitCode } = runCli(["--bundle", join(dir, "entry.ts")], {
+      cwd: dir,
+    });
+    expect(exitCode).toBe(0);
+    // external 이면 require/import 가 그대로 보존됨.
+    expect(stdout).toMatch(/node:fs|require.*fs/);
+    expect(stderr).not.toContain("error");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("zts.config.ts 의 plugins 가 적용됨", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-plugins-"));
+    writeFileSync(join(dir, "entry.ts"), 'import x from "virtual:hello";\nconsole.log(x);');
+    writeFileSync(
+      join(dir, "zts.config.ts"),
+      `export default {
+         plugins: [{
+           name: "virtual",
+           setup(build) {
+             build.onResolve({ filter: /^virtual:/ }, (args) => ({ path: args.path, namespace: "virtual" }));
+             build.onLoad({ filter: /.*/, namespace: "virtual" }, () => ({ contents: 'export default "PLUGIN_OK";' }));
+           },
+         }],
+       };`,
+    );
+    const { stdout, exitCode } = runCli(["--bundle", join(dir, "entry.ts")], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("PLUGIN_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("config 부재 시 CLI 단독으로 정상 빌드 (회귀 방지)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-no-config-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('NO_CONFIG_OK');");
+    const { stdout, exitCode } = runCli(["--bundle", join(dir, "entry.ts")], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("NO_CONFIG_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("config 컴파일 실패 시 CLI 가 명확한 에러로 exit 1", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-broken-config-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('x');");
+    writeFileSync(join(dir, "zts.config.ts"), "export default { format: 'esm'  // 닫는 brace 없음");
+    const { stderr, exitCode } = runCli(["--bundle", join(dir, "entry.ts")], { cwd: dir });
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("failed to load config");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("--plugin <path> 로 받은 config 도 BuildOptions 머지됨", () => {
+    // backward compat: 기존에 --plugin 으로 전달하던 zts.config.js 도 plugin 만이
+    // 아니라 BuildOptions 도 적용되어야 함... 단 자동 탐색이 우선시되므로 별도
+    // 디렉토리에서 --plugin 만 지정.
+    const dir = mkdtempSync(join(tmpdir(), "zts-plugin-as-config-"));
+    writeFileSync(join(dir, "entry.ts"), "console.log('PLUGIN_PATH_OK');");
+    writeFileSync(
+      join(dir, "p.js"),
+      `export default {
+         plugins: [{
+           name: "marker",
+           setup(build) {
+             build.onLoad({ filter: /entry\\.ts$/ }, () => ({ contents: 'console.log("MARKER_OK");' }));
+           },
+         }],
+       };`,
+    );
+    const { stdout, exitCode } = runCli(
+      ["--bundle", "--plugin", join(dir, "p.js"), join(dir, "entry.ts")],
+      { cwd: dir },
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("MARKER_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
