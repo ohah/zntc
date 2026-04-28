@@ -2295,12 +2295,10 @@ pub const SemanticAnalyzer = struct {
         if (!body_idx.isNone()) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .block_statement) {
-                // block body — 내부를 직접 순회 (block_statement가 스코프를 또 만들지 않도록).
-                // 일반 함수와 동일하게 var/function 을 사전 등록해 hoisting 을 반영한다.
-                // 누락되면 arrow body 안의 `var x = function() {}` 이 선언 위치보다 앞의 다른
-                // 함수에서 참조될 때 resolve 실패 → `reference_count == 0` 으로 dead-store 제거.
-                try self.predeclareVarDecls(body_node.data.list);
-                try self.visitNodeList(body_node.data.list);
+                // block body — 일반 함수와 동일한 function-body 경로를 사용한다.
+                // `visitStmtList` 를 거쳐야 Reference.scope_stmt_idx 가 arrow body 기준
+                // per-statement index 로 기록되어 innerGraph dead-store 판정이 정확해진다.
+                try self.visitFunctionBodyInner(body_idx);
             } else {
                 // expression body
                 try self.visitNode(body_idx);
