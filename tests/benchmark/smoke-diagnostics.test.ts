@@ -84,8 +84,15 @@ describe("benchmark smoke diagnostics", () => {
     expect(stdout).toMatch(/module\.exports\.x =: \d+/);
     expect(stdout).toMatch(/module\.exports = \{ \.\.\. \}: \d+/);
     expect(stdout).toMatch(/Object\.defineProperty\(\.\.\., \{ value \}\): \d+/);
+    expect(stdout).toMatch(/Object\.defineProperty\(\.\.\., \{ value: member \}\): \d+/);
+    expect(stdout).toMatch(/Object\.defineProperty\(\.\.\., \{ get \}\): \d+/);
     expect(stdout).toMatch(/Remaining ZTS export markers:\n(?:  - .+\n?)+/);
     expect(stdout).toMatch(/Removed dead marker candidates:\n(?:  - .+\n?)+/);
+    expect(stdout).toMatch(/## safe-buffer[\s\S]*Removed dead marker candidates:[\s\S]*exports\.Buffer =/);
+    expect(stdout).toMatch(/## cookie[\s\S]*Remaining ZTS export markers:[\s\S]*exports\.serialize =/);
+    expect(stdout).toMatch(/## cookie[\s\S]*Removed dead marker candidates:[\s\S]*exports\.parseCookie =/);
+    expect(stdout).toMatch(/## path-to-regexp[\s\S]*Remaining ZTS export markers:[\s\S]*exports\.match =/);
+    expect(stdout).toMatch(/## path-to-regexp[\s\S]*Removed dead marker candidates:[\s\S]*exports\.compile =/);
   });
 
   test("--filter accepts comma-separated patterns and produces multiple results", () => {
