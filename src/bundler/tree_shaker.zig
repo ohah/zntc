@@ -45,6 +45,13 @@ fn isImportDeclarationStmt(m: *const Module, infos: StmtInfos, stmt_idx: u32) bo
     return ni < ast.nodes.items.len and ast.nodes.items[ni].tag == .import_declaration;
 }
 
+/// 모듈을 evaluation 의존으로 끌어와야 하는 부수효과가 있는지.
+/// side_effects, wrapped (cjs/esm wrapper), dynamic-fallback exports kind 셋 중 하나라도
+/// 해당하면 prune 불가 — 평가 순서/시점 유지가 필요.
+inline fn moduleHasEvaluationEffect(mod: *const Module) bool {
+    return mod.side_effects or mod.wrap_kind.isWrapped() or mod.exports_kind == .esm_with_dynamic_fallback;
+}
+
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
@@ -1316,43 +1323,32 @@ pub const TreeShaker = struct {
             const m = self.getModule(@intCast(i)) orelse continue;
             for (m.export_bindings) |eb| {
                 if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
-                if (eb.import_record_index) |rec_idx| {
-                    if (rec_idx < m.import_records.len) {
-                        const src_idx = m.import_records[rec_idx].resolved;
-                        if (self.graph.getModule(src_idx) != null) {
-                            const src = @intFromEnum(src_idx);
-                            const src_module = self.graph.getModule(src_idx).?;
-                            if (check_used and eb.kind != .re_export_star and !self.isExportUsed(@intCast(i), eb.exported_name) and
-                                !src_module.side_effects and !src_module.wrap_kind.isWrapped() and src_module.exports_kind != .esm_with_dynamic_fallback)
-                            {
-                                continue;
-                            }
-                            if (check_used and eb.kind == .re_export_star and !self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL) and
-                                !src_module.side_effects and !src_module.wrap_kind.isWrapped() and src_module.exports_kind != .esm_with_dynamic_fallback)
-                            {
-                                // Named imports through `export *` are already resolved by seedExport().
-                                // Do not include every star source as an evaluation dependency unless the
-                                // whole namespace/all exports are used. Side-effectful or dynamic sources
-                                // still fall through to preserve evaluation semantics.
-                                continue;
-                            }
-                            if (!self.included.isSet(src)) {
-                                self.included.set(src);
-                                changed = true;
-                            }
-                            if (src_module.wrap_kind == .cjs and eb.kind == .re_export_star) {
-                                try self.markAllExportsUsed(@intCast(src));
-                            } else if (eb.kind == .re_export_namespace) {
-                                // #1603 Phase 1b: 모든 소비자의 `namespace_used_properties`를
-                                // 집계해 subset이 결정 가능하면 해당 member만 used로 마킹.
-                                // 하나라도 opaque(null)이면 전체 사용 fallback.
-                                if (try self.tryMarkReExportNsSubset(@intCast(i), eb.exported_name, @intCast(src))) continue;
-                                try self.markAllExportsUsed(@intCast(src));
-                            } else if (!check_used) {
-                                try self.markAllExportsUsed(@intCast(src));
-                            }
-                        }
-                    }
+                const rec_idx = eb.import_record_index orelse continue;
+                if (rec_idx >= m.import_records.len) continue;
+                const src_idx = m.import_records[rec_idx].resolved;
+                const src_module = self.graph.getModule(src_idx) orelse continue;
+                const src = @intFromEnum(src_idx);
+                // 평가 부수효과가 없는 source 는 사용된 export 가 있을 때만 끌어옴.
+                // `export *` 의 named import 는 seedExport 가 canonical source 로 직접 시드하므로,
+                // 전체 namespace 가 사용되지 않는 한 unrelated star source 까지 fan out 하지 않는다.
+                if (check_used and !moduleHasEvaluationEffect(src_module)) {
+                    const probe_name = if (eb.kind == .re_export_star) ALL_EXPORTS_SENTINEL else eb.exported_name;
+                    if (!self.isExportUsed(@intCast(i), probe_name)) continue;
+                }
+                if (!self.included.isSet(src)) {
+                    self.included.set(src);
+                    changed = true;
+                }
+                if (src_module.wrap_kind == .cjs and eb.kind == .re_export_star) {
+                    try self.markAllExportsUsed(@intCast(src));
+                } else if (eb.kind == .re_export_namespace) {
+                    // #1603 Phase 1b: 모든 소비자의 `namespace_used_properties`를
+                    // 집계해 subset이 결정 가능하면 해당 member만 used로 마킹.
+                    // 하나라도 opaque(null)이면 전체 사용 fallback.
+                    if (try self.tryMarkReExportNsSubset(@intCast(i), eb.exported_name, @intCast(src))) continue;
+                    try self.markAllExportsUsed(@intCast(src));
+                } else if (!check_used) {
+                    try self.markAllExportsUsed(@intCast(src));
                 }
             }
         }
@@ -1360,10 +1356,12 @@ pub const TreeShaker = struct {
     }
 
     /// included 모듈의 import_record 가 source 모듈을 evaluation 의존으로 끌어와야 하는지.
-    /// re-export / side_effect / require / worker / glob / require_context 는 항상 evaluation
-    /// 의존이라 보존. static_import 만 entry 또는 live binding 이 있을 때만 보존 — dead body
-    /// 안에서만 참조되는 named import 가 source 모듈을 fan out 시키지 않도록. dynamic_import 는
-    /// 별도 dyn_import_targets 경로로 처리되므로 여기선 false.
+    /// re-export 는 target 이 evaluation effect 를 갖거나 (side_effects/wrapped/dynamic-fallback),
+    /// 해당 stmt 가 reachable 일 때만 보존 — `export *` 가 unrelated source 까지 fan out 하지 않도록.
+    /// side_effect / require / worker / glob / require_context 는 항상 evaluation 의존이라 보존.
+    /// static_import 만 entry 또는 live binding 이 있을 때만 보존 — dead body 안에서만 참조되는
+    /// named import 가 source 모듈을 fan out 시키지 않도록. dynamic_import 는 별도
+    /// dyn_import_targets 경로로 처리되므로 여기선 false.
     fn shouldPreserveImportRecordForEvaluation(
         self: *const TreeShaker,
         m: *const Module,
@@ -1373,11 +1371,8 @@ pub const TreeShaker = struct {
     ) bool {
         if (rec_idx >= m.import_records.len) return false;
         if (m.import_records[rec_idx].kind == .re_export) {
-            const target_idx = m.import_records[rec_idx].resolved;
-            if (self.graph.getModule(target_idx)) |target_module| {
-                if (target_module.side_effects or target_module.wrap_kind.isWrapped() or target_module.exports_kind == .esm_with_dynamic_fallback) {
-                    return true;
-                }
+            if (self.graph.getModule(m.import_records[rec_idx].resolved)) |target| {
+                if (moduleHasEvaluationEffect(target)) return true;
             }
             return self.importRecordHasReachableStmt(m, mod_idx, rec_idx);
         }
