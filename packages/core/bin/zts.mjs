@@ -32,12 +32,17 @@ const {
   loadIdentifiedConfig,
   loadWorkspace,
   mergeUserConfigs,
+  suggestKey,
   warnUnknownKeys,
 } = coreModule;
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { resolve, dirname, basename, extname, join } from "node:path";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
+
+import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from "./cli-flags.mjs";
+
+export { KNOWN_FLAGS };
 
 // ─── CLI 인자 파싱 ───
 
@@ -146,390 +151,33 @@ function parseArgs(argv) {
       continue;
     }
 
-    // flags
-    if (arg === "--bundle") {
-      opts.bundle = true;
+    // registry-driven 매칭. 새 flag 는 FLAG_REGISTRY 에 entry 한 줄만 추가.
+    const matched = matchFlagFromRegistry(arg, args, i);
+    if (matched) {
+      applyFlagAction(opts, matched.spec, matched.action);
+      i += matched.consumed - 1;
       continue;
     }
-    if (arg === "-w" || arg === "--watch") {
-      opts.watch = true;
-      continue;
-    }
-    if (arg === "--watch-json") {
-      opts.watch = true;
-      opts.watchJson = true;
-      continue;
-    }
+
+    // ─── 특수 형식 (registry 표현이 어색해 if-chain 잔존) ───
+
+    // `--serve [DIR]` — 다음 토큰이 flag 아니면 serveDir 로 사용 (next-arg optional, default 유지)
     if (arg === "--serve") {
       opts.serve = true;
-      // 다음 인자가 디렉토리 경로면 serveDir로 사용
       if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         opts.serveDir = args[++i];
       }
       continue;
     }
-    if (arg === "--open") {
-      opts.open = true;
-      continue;
-    }
-    if (arg === "--minify") {
-      opts.minify = true;
-      continue;
-    }
-    if (arg === "--sourcemap") {
-      opts.sourcemap = true;
-      continue;
-    }
-    if (arg === "--sourcemap-debug-ids") {
-      opts.sourcemapDebugIds = true;
-      continue;
-    }
-    if (arg === "--splitting") {
-      opts.splitting = true;
-      continue;
-    }
-    if (arg === "--metafile") {
-      opts.metafile = "meta.json";
-      continue;
-    }
-    if (arg === "--analyze") {
-      opts.analyze = true;
-      opts.metafile = "meta.json";
-      continue;
-    }
-    if (arg === "--flow") {
-      opts.flow = true;
-      continue;
-    }
-    if (arg === "--experimental-decorators") {
-      opts.experimentalDecorators = true;
-      continue;
-    }
-    if (arg === "--emit-decorator-metadata") {
-      opts.emitDecoratorMetadata = true;
-      continue;
-    }
-    if (arg === "--jsx-in-js") {
-      opts.jsxInJs = true;
-      continue;
-    }
-    if (arg === "--verbatim-module-syntax") {
-      opts.verbatimModuleSyntax = true;
-      continue;
-    }
-    if (arg === "--keep-names") {
-      opts.keepNames = true;
-      continue;
-    }
-    if (arg === "--shim-missing-exports") {
-      opts.shimMissingExports = true;
-      continue;
-    }
-    if (arg === "--ascii-only") {
-      opts.asciiOnly = true;
-      continue;
-    }
-    if (arg === "--preserve-symlinks") {
-      continue;
-    } // TODO
-    if (arg === "--preserve-modules") {
-      opts.preserveModules = true;
-      continue;
-    }
-    if (arg === "--jsx-dev") {
-      opts.jsxDev = true;
-      continue;
-    }
-    if (arg === "--clean") {
-      opts.clean = true;
-      continue;
-    }
-    if (arg === "--minify-whitespace") {
-      opts.minifyWhitespace = true;
-      continue;
-    }
-    if (arg === "--minify-identifiers") {
-      opts.minifyIdentifiers = true;
-      continue;
-    }
-    if (arg === "--minify-syntax") {
-      opts.minifySyntax = true;
-      continue;
-    }
 
-    // --key=value
-    if (arg.startsWith("--format=")) {
-      opts.format = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--platform=")) {
-      opts.platform = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--jsx=")) {
-      opts.jsx = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--jsx-factory=")) {
-      opts.jsxFactory = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--jsx-fragment=")) {
-      opts.jsxFragment = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--jsx-import-source=")) {
-      opts.jsxImportSource = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--global-name=")) {
-      opts.globalName = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--public-path=")) {
-      opts.publicPath = arg.split("=")[1];
-      continue;
-    }
-    // `--banner=<text>` 가 정식 — `BuildOptions.banner: string` 과 1:1 매핑.
-    // `--banner:js=<text>` 는 esbuild 호환 alias (silent — deprecated 경고 없음).
-    // BuildOptions 가 단일 string 인 동안은 namespace key (`:js`) 가 무의미하지만 esbuild 에서
-    // 옮겨 오는 사용자가 자연스럽게 동작하도록 유지. 향후 CSS bundling 도입 시 이 entry 가
-    // namespace 의미 회복.
-    if (arg.startsWith("--banner=")) {
-      opts.banner = arg.slice("--banner=".length);
-      continue;
-    }
-    if (arg.startsWith("--banner:js=")) {
-      opts.banner = arg.slice("--banner:js=".length);
-      continue;
-    }
-    if (arg.startsWith("--footer=")) {
-      opts.footer = arg.slice("--footer=".length);
-      continue;
-    }
-    if (arg.startsWith("--footer:js=")) {
-      opts.footer = arg.slice("--footer:js=".length);
-      continue;
-    }
-    if (arg.startsWith("--entry-names=")) {
-      opts.entryNames = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--chunk-names=")) {
-      opts.chunkNames = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--asset-names=")) {
-      opts.assetNames = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--quotes=")) {
-      opts.quotes = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--log-level=")) {
-      opts.logLevel = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--charset=")) {
-      if (arg.split("=")[1] === "utf8") opts.charsetUtf8 = true;
-      continue;
-    }
-    if (arg.startsWith("--sources-content=")) {
-      opts.sourcesContent = arg.split("=")[1] !== "false";
-      continue;
-    }
-    if (arg.startsWith("--use-define-for-class-fields=")) {
-      opts.useDefineForClassFields = arg.split("=")[1] !== "false";
-      continue;
-    }
-    if (arg.startsWith("--legal-comments=")) {
-      opts.legalComments = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--preserve-modules-root=")) {
-      opts.preserveModulesRoot = arg.split("=")[1];
-      continue;
-    }
-    // tsconfig.target 보다 우선해 사용자가 monorepo per-build 오버라이드 가능.
-    if (arg === "--target") {
-      opts.target = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--target=")) {
-      opts.target = arg.split("=")[1];
-      continue;
-    }
-    // browserslist 쿼리 — target 보다 우선. 콤마 구분 다중 쿼리는 NAPI 측에서 split.
-    if (arg === "--browserslist") {
-      opts.browserslist = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--browserslist=")) {
-      opts.browserslist = arg.slice("--browserslist=".length);
-      continue;
-    }
-    // 다중 entry 의 출력 디렉토리 구조 base — 공통 prefix 제거 기준.
-    if (arg === "--outbase") {
-      opts.outbase = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--outbase=")) {
-      opts.outbase = arg.slice("--outbase=".length);
-      continue;
-    }
-    if (arg.startsWith("--out-extension:.js=")) {
-      opts.outExtensionJs = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--source-root=")) {
-      opts.sourceRoot = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--watch-delay=")) {
-      opts.watchDelay = parseInt(arg.split("=")[1]);
-      continue;
-    }
-    if (arg.startsWith("--rn-platform=")) {
-      opts.rnPlatform = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--port=")) {
-      opts.port = parseInt(arg.split("=")[1]);
-      continue;
-    }
-    if (arg.startsWith("--host=")) {
-      opts.host = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--metafile=")) {
-      opts.metafile = arg.split("=")[1];
-      continue;
-    }
-    if (arg.startsWith("--jobs=")) {
-      opts.jobs = parseInt(arg.split("=")[1]);
-      continue;
-    }
-
-    // --key value
-    if (arg === "-o" || arg === "--outfile") {
-      opts.outfile = args[++i];
-      continue;
-    }
-    if (arg === "--outdir") {
-      opts.outdir = args[++i];
-      continue;
-    }
-    if (arg === "--port") {
-      opts.port = parseInt(args[++i]);
-      continue;
-    }
+    // `--host [VALUE]` — pair-form 이지만 누락 시 default "0.0.0.0".
+    // registry 의 string kind 와 의미 다름 (누락 시 undefined 가 아닌 명시 default).
     if (arg === "--host") {
       opts.host = args[++i] || "0.0.0.0";
       continue;
     }
-    if (arg === "--certfile") {
-      opts.certfile = args[++i];
-      continue;
-    }
-    if (arg === "--keyfile") {
-      opts.keyfile = args[++i];
-      continue;
-    }
-    if (arg === "-p" || arg === "--project" || arg === "--tsconfig-path") {
-      // `-p`, `--project` (tsc 전통), `--tsconfig-path` (NAPI `tsconfigPath` 와 이름 통일)
-      opts.project = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--tsconfig-path=")) {
-      opts.project = arg.slice("--tsconfig-path=".length);
-      continue;
-    }
-    if (arg === "--config") {
-      opts.configPath = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--config=")) {
-      opts.configPath = arg.slice("--config=".length);
-      continue;
-    }
-    if (arg === "--mode") {
-      opts.mode = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--mode=")) {
-      opts.mode = arg.slice("--mode=".length);
-      continue;
-    }
-    if (arg === "--workspace-config") {
-      opts.workspaceConfig = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--workspace-config=")) {
-      opts.workspaceConfig = arg.slice("--workspace-config=".length);
-      continue;
-    }
-    if (arg === "--workspace") {
-      opts.workspace = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--workspace=")) {
-      opts.workspace = arg.slice("--workspace=".length);
-      continue;
-    }
-    if (arg === "--env-prefix") {
-      opts.envPrefixes = args[++i].split(",").filter(Boolean);
-      continue;
-    }
-    if (arg.startsWith("--env-prefix=")) {
-      opts.envPrefixes = arg.slice("--env-prefix=".length).split(",").filter(Boolean);
-      continue;
-    }
-    if (arg === "--env-dir") {
-      opts.envDir = args[++i];
-      continue;
-    }
-    if (arg.startsWith("--env-dir=")) {
-      opts.envDir = arg.slice("--env-dir=".length);
-      continue;
-    }
-    if (arg === "--plugin") {
-      opts.pluginPaths.push(args[++i]);
-      continue;
-    }
 
-    // repeatable
-    if (arg === "--external") {
-      opts.external.push(args[++i]);
-      continue;
-    }
-    if (arg.startsWith("--external=")) {
-      opts.external.push(arg.split("=")[1]);
-      continue;
-    }
-    if (arg.startsWith("--inject:")) {
-      opts.inject.push(arg.split(":")[1]);
-      continue;
-    }
-    if (arg.startsWith("--define:")) {
-      const [k, ...v] = arg.slice("--define:".length).split("=");
-      opts.define[k] = v.join("=");
-      continue;
-    }
-    if (arg.startsWith("--alias:")) {
-      const [k, ...v] = arg.slice("--alias:".length).split("=");
-      opts.alias[k] = v.join("=");
-      continue;
-    }
-    if (arg.startsWith("--loader:")) {
-      const [ext, type] = arg.slice("--loader:".length).split("=");
-      opts.loader[ext] = type;
-      continue;
-    }
-    if (arg.startsWith("--drop=")) {
-      opts.drop.push(arg.split("=")[1]);
-      continue;
-    }
+    // dev-server proxy — `--proxy /api=http://localhost:8080` 형식 (특수 parser)
     if (arg.startsWith("--proxy")) {
       const [path, target] =
         arg.split("=").length > 1
@@ -538,18 +186,15 @@ function parseArgs(argv) {
       if (path && target) opts.proxy[path] = target;
       continue;
     }
-    if (arg.startsWith("--resolve-extensions=")) {
-      opts.resolveExtensions = arg.split("=")[1].split(",");
-      continue;
-    }
-    if (arg.startsWith("--main-fields=")) {
-      opts.mainFields = arg.split("=")[1].split(",");
-      continue;
-    }
 
-    // unknown
+    // unknown — typo 시 가장 가까운 known flag 제안 (Levenshtein, threshold 2).
     if (opts.logLevel !== "silent") {
-      console.error(`warning: unknown option '${arg}'`);
+      const suggestion = suggestKey(arg, KNOWN_FLAGS);
+      console.error(
+        suggestion
+          ? `warning: unknown option '${arg}' — did you mean '${suggestion}'?`
+          : `warning: unknown option '${arg}'`,
+      );
     }
   }
 
