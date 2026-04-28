@@ -578,6 +578,30 @@ test "TreeShaking CJS: module.exports defineProperty keeps helper and require ta
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_DEFINE_PRIVATE_MARKER") == null);
 }
 
+test "TreeShaking CJS: named import prunes unused Object.defineProperty member value" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\const liveNs = { value: function used() { return "USED_DEFINE_MEMBER_MARKER"; } };
+        \\const deadNs = { value: function unused() { return "UNUSED_DEFINE_MEMBER_MARKER"; } };
+        \\Object.defineProperty(exports, "used", { value: liveNs.value, enumerable: true });
+        \\Object.defineProperty(exports, "unused", { value: deadNs.value, enumerable: true });
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_DEFINE_MEMBER_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_DEFINE_MEMBER_MARKER") == null);
+}
+
 test "TreeShaking CJS: unsafe Object.defineProperty export forms are preserved" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
