@@ -8,6 +8,7 @@ Zig 0.15.2 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · 
 
 ## Documentation
 - [docs/USAGE.md](./docs/USAGE.md) — CLI 실행법, `@zts/core` JS API, 플랫폼/watch/ES 타겟/CSS 동작 포인트
+- [docs/CONFIG.md](./docs/CONFIG.md) — `zts.config.{ts,js,json}` / `tsconfig` / `.env` / CLI flag 우선순위·머지·함수형 config·conflict 예시
 - [docs/STRUCTURE.md](./docs/STRUCTURE.md) — 디렉토리 구조
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — 파이프라인 아키텍처
 - [docs/ROADMAP.md](./docs/ROADMAP.md) — Phase 현황, 성능, 미지원, 기술부채
