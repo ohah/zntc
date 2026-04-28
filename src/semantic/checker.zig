@@ -81,7 +81,7 @@ pub fn checkDuplicateConstructors(
         if ((flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER | METHOD_FLAG_ASYNC | METHOD_FLAG_GENERATOR)) != 0) continue;
 
         // key가 "constructor" 문자열인지 확인
-        if (!matchKeyName(ast, key_idx, "constructor")) continue;
+        if (!try matchKeyName(allocator, ast, key_idx, "constructor")) continue;
 
         // TypeScript constructor overloads: body가 없는 시그니처는 허용.
         // body(extra[2])가 .none이면 overload 시그니처이므로 스킵.
@@ -104,9 +104,15 @@ pub fn checkDuplicateConstructors(
 // ====================================================================
 
 /// key 노드의 이름이 target과 일치하는지 확인한다.
-/// identifier 계열 / string_literal(따옴표 자동 제거) / numeric / computed-literal 모두 처리.
-fn matchKeyName(ast: *const Ast, key_idx: NodeIndex, target: []const u8) bool {
-    const name = ast.staticKeyName(key_idx) orelse return false;
+/// identifier 계열 / string_literal (escape 디코드) / numeric / computed-literal 모두 처리.
+fn matchKeyName(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    key_idx: NodeIndex,
+    target: []const u8,
+) std.mem.Allocator.Error!bool {
+    const name = (try ast.staticKeyName(allocator, key_idx)) orelse return false;
+    defer allocator.free(name);
     return std.mem.eql(u8, name, target);
 }
 
@@ -251,7 +257,7 @@ pub fn checkObjectDuplicateProto(
 
         // key가 "__proto__" 인지 확인
         const key_idx = node.data.binary.left;
-        if (!matchKeyName(ast, key_idx, "__proto__")) continue;
+        if (!try matchKeyName(allocator, ast, key_idx, "__proto__")) continue;
 
         if (first_proto_span) |_| {
             try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Property name __proto__ appears more than once in object literal", .{}), .proto_duplicate);

@@ -16,7 +16,6 @@ const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const purity = @import("purity.zig");
-const string_escape = @import("../string_escape.zig");
 
 pub const StmtInfo = struct {
     node_idx: u32,
@@ -243,7 +242,7 @@ fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
 }
 
 /// `exports.foo` / `module.exports.foo` 의 prop NodeIndex 반환. 호출자가
-/// `decodedObjectKey` 등으로 owned 이름을 만들도록 한다.
+/// `ast.staticKeyName` 으로 owned 이름을 만들도록 한다.
 fn cjsExportNamePropFromLhs(ast: *const Ast, lhs: NodeIndex) ?NodeIndex {
     const outer = staticMemberParts(ast, lhs) orelse return null;
     const prop = ast.nodes.items[@intFromEnum(outer.property)];
@@ -257,38 +256,6 @@ fn cjsExportNamePropFromLhs(ast: *const Ast, lhs: NodeIndex) ?NodeIndex {
         return outer.property;
     }
     return null;
-}
-
-/// string_literal 의 escape 를 디코드해 owned UTF-8 반환. 잘못된 escape 는 null
-/// (caller 가 opaque 처리). 빈 입력/비-string_literal 도 null.
-fn decodedStringLiteralName(alloc: std.mem.Allocator, ast: *const Ast, idx: NodeIndex) !?[]u8 {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
-    const n = ast.nodes.items[@intFromEnum(idx)];
-    if (n.tag != .string_literal) return null;
-    return string_escape.decodeJsStringLiteral(alloc, ast.getText(n.span)) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.InvalidStringLiteral, error.InvalidEscape => return null,
-    };
-}
-
-/// object key 노드에서 owned UTF-8 export name 을 만든다. identifier 계열은 dupe,
-/// string_literal 은 escape 디코드, numeric_literal 은 raw text dupe (ESM import 으로
-/// 직접 매칭 안 되지만 fact 등록을 거부할 이유는 없음 — 다른 키가 같은 stmt 에 있을 때
-/// 그쪽 prune 까지 막지 않게). computed_property_key 는 string_literal inner 만 허용.
-fn decodedObjectKey(alloc: std.mem.Allocator, ast: *const Ast, key_idx: NodeIndex) !?[]u8 {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return null;
-    const key = ast.nodes.items[@intFromEnum(key_idx)];
-    return switch (key.tag) {
-        .identifier_reference, .binding_identifier, .private_identifier => try alloc.dupe(u8, ast.getText(key.data.string_ref)),
-        .numeric_literal => try alloc.dupe(u8, ast.getText(key.span)),
-        .string_literal => try decodedStringLiteralName(alloc, ast, key_idx),
-        .computed_property_key => blk: {
-            const inner = key.data.unary.operand;
-            if (inner.isNone()) break :blk null;
-            break :blk try decodedStringLiteralName(alloc, ast, inner);
-        },
-        else => null,
-    };
 }
 
 /// CJS object-shape export 의 value 위치가 named export 로 치환 안전한지 판정.
@@ -308,7 +275,7 @@ fn cjsExportCandidateForStmt(alloc: std.mem.Allocator, ast: *const Ast, stmt_nod
     const expr = ast.nodes.items[@intFromEnum(expr_idx)];
     if (expr.tag != .assignment_expression) return null;
     const prop_idx = cjsExportNamePropFromLhs(ast, expr.data.binary.left) orelse return null;
-    const export_name = (try decodedObjectKey(alloc, ast, prop_idx)) orelse return null;
+    const export_name = (try ast.staticKeyName(alloc, prop_idx)) orelse return null;
     return .{
         .export_name = export_name,
         .export_assignment_node = @intFromEnum(expr_idx),
@@ -430,7 +397,7 @@ fn cjsDefinePropertyExportCandidateForStmt(
     const descriptor_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 2]);
     if (!isCjsExportObjectExpr(ast, target_idx)) return null;
 
-    const export_name = (try decodedStringLiteralName(alloc, ast, export_name_idx)) orelse return null;
+    const export_name = (try ast.staticKeyName(alloc, export_name_idx)) orelse return null;
     var name_transferred = false;
     defer if (!name_transferred) alloc.free(export_name);
 
@@ -487,7 +454,7 @@ fn collectCjsObjectExportCandidates(
         const prop = ast.nodes.items[@intFromEnum(prop_idx)];
         if (prop.tag != .object_property) return null;
 
-        const name = (try decodedObjectKey(allocator, ast, prop.data.binary.left)) orelse return null;
+        const name = (try ast.staticKeyName(allocator, prop.data.binary.left)) orelse return null;
         var name_transferred = false;
         defer if (!name_transferred) allocator.free(name);
 
