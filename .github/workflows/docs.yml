@@ -18,7 +18,10 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: true
+  # GitHub Pages 공식 권장 — 새 push 가 들어와도 진행 중인 deploy 는 끝까지 보장.
+  # cancel-in-progress: true 는 빠른 연속 commit 시 모든 deploy 가 취소되어 어떤 commit
+  # 도 publish 되지 못하는 패턴을 만든다.
+  cancel-in-progress: false
 
 jobs:
   build:
