@@ -218,6 +218,105 @@ describe("CJS static export fact 기반 DCE", () => {
     expect(bundle).not.toMatch(/function\s+compile\s*\(/);
     expect(bundle).not.toMatch(/function\s+stringify\s*\(/);
   });
+
+  test("Object.defineProperty getter export — used getter keeps returned helper and prunes unused getter", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib.cjs";\nconsole.log(used());\n`,
+        "lib.cjs":
+          `function usedHelper() { return "MATCH"; }\n` +
+          `function unusedHelper() { return "unused-getter-marker"; }\n` +
+          `Object.defineProperty(exports, "used", { enumerable: true, get() { return usedHelper; } });\n` +
+          `Object.defineProperty(exports, "unused", { enumerable: true, get: function() { return unusedHelper; } });\n`,
+      },
+      "index.ts",
+      "cjs-getter-export",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).toMatch(/function\s+usedHelper\s*\(/);
+    expect(bundle).not.toMatch(/function\s+unusedHelper\s*\(/);
+    expect(bundle).not.toContain("unused-getter-marker");
+    expect(bundle).not.toContain(`"unused"`);
+  });
+
+  test("Object.defineProperty getter export — module.exports target and arrow getter are supported", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { answer } from "./lib.cjs";\nconsole.log(answer === 42 ? "MATCH" : "MISS");\n`,
+        "lib.cjs":
+          `const answerValue = 42;\n` +
+          `const unusedValue = "module-exports-unused-getter";\n` +
+          `Object.defineProperty(module.exports, "answer", { "get": () => answerValue });\n` +
+          `Object.defineProperty(module.exports, "unused", { get: () => unusedValue });\n`,
+      },
+      "index.ts",
+      "cjs-module-exports-getter-export",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).toContain("answerValue");
+    expect(bundle).not.toContain("module-exports-unused-getter");
+  });
+
+  test("Object.defineProperty getter export — conflicts preserve assignment and getter", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { x } from "./lib.cjs";\nconsole.log(x === "B" ? "MATCH" : "MISS");\n`,
+        "lib.cjs":
+          `const a = "A";\n` +
+          `const b = "B";\n` +
+          `exports.x = a;\n` +
+          `Object.defineProperty(exports, "x", { get() { return b; } });\n`,
+      },
+      "index.ts",
+      "cjs-getter-conflict",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).toMatch(/\bexports\.x\s*=/);
+    expect(bundle).toContain("Object.defineProperty");
+  });
+
+  test("Object.defineProperty getter export — unsafe descriptor shapes stay preserved", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib.cjs";\nconsole.log(used);\n`,
+        "lib.cjs":
+          `const usedValue = "MATCH";\n` +
+          `const extra = { configurable: true };\n` +
+          `const alias = exports;\n` +
+          `const define = Object.defineProperty;\n` +
+          `Object.defineProperty(exports, "used", { value: usedValue });\n` +
+          `Object.defineProperty(exports, "setter", { set(v) { console.log("unsafe-setter-marker", v); } });\n` +
+          `Object.defineProperty(exports, "duplicate", { get() { return usedValue; }, get: function() { return usedValue; } });\n` +
+          `Object.defineProperty(exports, "spread", { ...extra, get() { return usedValue; } });\n` +
+          `Object.defineProperty(exports, "computed", { ["get"]: function() { return usedValue; } });\n` +
+          `Object.defineProperty(exports, "nonident", { get() { return usedValue + "-x"; } });\n` +
+          `Object.defineProperty(exports, "multi", { get() { const x = usedValue; return x; } });\n` +
+          `Object.defineProperty(alias, "aliasedTarget", { get() { return usedValue; } });\n` +
+          `define(exports, "aliasedCallee", { get() { return usedValue; } });\n` +
+          `Object.defineProperty(exports, "extraArg", { get() { return usedValue; } }, true);\n`,
+      },
+      "index.ts",
+      "cjs-getter-unsafe",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    for (const marker of [
+      "unsafe-setter-marker",
+      "duplicate",
+      "spread",
+      "computed",
+      "nonident",
+      "multi",
+      "aliasedTarget",
+      "aliasedCallee",
+      "extraArg",
+    ]) {
+      expect(bundle).toContain(marker);
+    }
+  });
 });
 
 describe("#1665 class-level tree-shake 정밀도", () => {
