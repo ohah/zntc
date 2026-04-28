@@ -113,4 +113,5 @@ pub const ScanResult = struct {
     has_cjs_require: bool = false,
     has_module_exports: bool = false,
     has_exports_dot: bool = false,
+    has_esmodule_marker: bool = false,
 };

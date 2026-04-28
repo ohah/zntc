@@ -1125,7 +1125,7 @@ test "preamble: CJS module import — named import generates require_xxx" {
     try std.testing.expect(std.mem.indexOf(u8, preamble, ".x") != null);
 }
 
-test "preamble: CJS module import — default import generates __toESM" {
+test "preamble: CJS module import — direct module.exports default import skips __toESM" {
     // ESM에서 CJS 모듈의 default import를 가져올 때
     // __toESM 래퍼가 생성되는지 검증
     var tmp = std.testing.tmpDir(.{});
@@ -1143,9 +1143,31 @@ test "preamble: CJS module import — default import generates __toESM" {
 
     try std.testing.expect(md.cjs_import_preamble != null);
     const preamble = md.cjs_import_preamble.?;
-    // __toESM 래퍼 포함
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "__toESM(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") == null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "require_c()") != null);
+}
+
+test "preamble: CJS module import — __esModule marker keeps __toESM default import" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import foo from './c';\nconsole.log(foo);");
+    try writeFile(tmp.dir, "c.js",
+        \\Object.defineProperty(exports, "__esModule", { value: true });
+        \\exports.default = 42;
+    );
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    var md = try buildMetadataForModule(&r, 0, true);
+    defer md.deinit();
+
+    try std.testing.expect(md.cjs_import_preamble != null);
+    const preamble = md.cjs_import_preamble.?;
     try std.testing.expect(std.mem.indexOf(u8, preamble, "__toESM(") != null);
-    // .default 접근
     try std.testing.expect(std.mem.indexOf(u8, preamble, ".default") != null);
 }
 

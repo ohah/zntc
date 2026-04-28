@@ -882,6 +882,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     scanRequireCall(self, expr, arg_list);
                     scanGlobCall(self, expr, arg_list);
                     scanRequireContextCall(self, expr, arg_list, call_span);
+                    scanObjectDefinePropertyCjs(self, expr, arg_list);
                 }
 
                 expr = try self.ast.addNode(.{
@@ -2287,6 +2288,41 @@ fn scanRequireContextCall(self: *Parser, callee: NodeIndex, arg_list: NodeList, 
     self.scan_result.has_cjs_require = true;
 }
 
+fn scanObjectDefinePropertyCjs(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
+    if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return;
+    const callee_node = self.ast.nodes.items[@intFromEnum(callee)];
+    if (callee_node.tag != .static_member_expression) return;
+    const e = callee_node.data.extra;
+    if (e + 1 >= self.ast.extra_data.items.len) return;
+
+    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    if (obj_idx.isNone() or prop_idx.isNone()) return;
+    if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return;
+    const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
+    const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    if (obj.tag != .identifier_reference) return;
+    if (!std.mem.eql(u8, self.ast.source[obj.span.start..obj.span.end], "Object")) return;
+    if (!std.mem.eql(u8, self.ast.source[prop.span.start..prop.span.end], "defineProperty")) return;
+
+    if (arg_list.len < 1 or arg_list.start >= self.ast.extra_data.items.len) return;
+    const target_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arg_list.start]);
+    if (!isCjsExportTarget(self, target_idx)) return;
+
+    self.scan_result.has_exports_dot = true;
+    if (arg_list.len >= 2 and arg_list.start + 1 < self.ast.extra_data.items.len) {
+        const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arg_list.start + 1]);
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
+        const key_node = self.ast.nodes.items[@intFromEnum(key_idx)];
+        if (key_node.tag != .string_literal) return;
+        const raw = self.ast.source[key_node.span.start..key_node.span.end];
+        const key = import_scanner.stripQuotes(raw) orelse raw;
+        if (std.mem.eql(u8, key, "__esModule")) {
+            self.scan_result.has_esmodule_marker = true;
+        }
+    }
+}
+
 /// assignment_expression의 left에서 module.exports = ... / exports.x = ... 패턴을 감지한다.
 /// import_scanner.isModuleExportsAssign / isExportsDotAssign와 동일한 로직.
 fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
@@ -2318,6 +2354,14 @@ fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
         }
     } else if (std.mem.eql(u8, obj_text, "exports")) {
         // exports.x = ...
+        const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+        if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
+            const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+            const prop_text = self.ast.source[prop.span.start..prop.span.end];
+            if (std.mem.eql(u8, prop_text, "__esModule")) {
+                self.scan_result.has_esmodule_marker = true;
+            }
+        }
         self.scan_result.has_exports_dot = true;
     } else if (obj.tag == .static_member_expression) {
         const inner_me = obj.data.extra;
@@ -2334,9 +2378,37 @@ fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
         const inner_prop_text = self.ast.source[inner_prop.span.start..inner_prop.span.end];
         if (std.mem.eql(u8, inner_obj_text, "module") and std.mem.eql(u8, inner_prop_text, "exports")) {
             // module.exports.x = ...
+            const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+            if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
+                const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+                const prop_text = self.ast.source[prop.span.start..prop.span.end];
+                if (std.mem.eql(u8, prop_text, "__esModule")) {
+                    self.scan_result.has_esmodule_marker = true;
+                }
+            }
             self.scan_result.has_exports_dot = true;
         }
     }
+}
+
+fn isCjsExportTarget(self: *Parser, target_idx: NodeIndex) bool {
+    if (target_idx.isNone() or @intFromEnum(target_idx) >= self.ast.nodes.items.len) return false;
+    const target = self.ast.nodes.items[@intFromEnum(target_idx)];
+    if (target.tag == .identifier_reference and std.mem.eql(u8, self.ast.source[target.span.start..target.span.end], "exports")) {
+        return true;
+    }
+    if (target.tag != .static_member_expression) return false;
+    const e = target.data.extra;
+    if (e + 1 >= self.ast.extra_data.items.len) return false;
+    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    if (obj_idx.isNone() or prop_idx.isNone()) return false;
+    if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
+    const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
+    const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    return obj.tag == .identifier_reference and
+        std.mem.eql(u8, self.ast.source[obj.span.start..obj.span.end], "module") and
+        std.mem.eql(u8, self.ast.source[prop.span.start..prop.span.end], "exports");
 }
 
 /// 문자열 리터럴에서 따옴표를 제거한다.
