@@ -178,12 +178,12 @@ pub const Codegen = struct {
 
     /// Metro function map 빌더 (sourcemap_function_map 활성화 시).
     fn_map_builder: ?FunctionMapBuilder = null,
-    /// function map 이름 스택. enter 시 push, exit 시 pop. last()가 현재 scope 이름.
-    fn_name_stack: std.ArrayList([]const u8) = .empty,
-    /// 다음 function/arrow/class에 적용할 contextual name.
-    /// parent emit(VariableDeclarator, Assignment, ObjectProperty 등)에서 설정,
-    /// emitFunction/emitArrow/emitClass 진입 시 소비 후 null 로 초기화.
-    pending_fn_name: ?[]const u8 = null,
+    /// function map 이름 스택. enter 시 push (owned dupe), exit 시 pop + free.
+    /// last()가 현재 scope 이름. items 슬라이스는 borrowed view 로 caller 에 노출.
+    fn_name_stack: std.ArrayList([]u8) = .empty,
+    /// 다음 function/arrow/class에 적용할 contextual name. owned UTF-8 — set 시 dupe,
+    /// 소비/save-restore/codegen.deinit 시 free.
+    pending_fn_name: ?[]u8 = null,
     /// hot-path fast-exit 플래그. tryEmitGlobObject/tryEmitRequireContextObject 가
     /// 모든 call expression 에 대해 호출되므로, 해당 종류의 record 가 없으면 O(1) 로 빠짐.
     has_glob_records: bool = false,
@@ -233,7 +233,9 @@ pub const Codegen = struct {
         self.keep_names_entries.deinit(self.allocator);
         if (self.sm_builder) |*sm| sm.deinit();
         if (self.fn_map_builder) |*fm| fm.deinit();
+        for (self.fn_name_stack.items) |s| self.allocator.free(s);
         self.fn_name_stack.deinit(self.allocator);
+        if (self.pending_fn_name) |s| self.allocator.free(s);
     }
 
     /// 특정 statement 노드 목록만 코드로 생성한다 (__esm var 호이스팅용).
@@ -432,23 +434,27 @@ pub const Codegen = struct {
     // Function Map 도우미
     // ================================================================
 
-    /// 현재 generated position으로 새 이름 frame에 진입. fn_name_stack push.
+    /// 현재 generated position으로 새 이름 frame에 진입. fn_name_stack push (자체 dupe owned).
     /// 이름이 바뀔 때만 FunctionMapBuilder.push 호출 (중복 제거는 FunctionMapBuilder가 담당).
     fn fnMapEnter(self: *Codegen, name: []const u8) !void {
         if (self.fn_map_builder == null) return;
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        try self.fn_name_stack.append(self.allocator, owned);
+        errdefer _ = self.fn_name_stack.pop();
         try self.fn_map_builder.?.push(.{
-            .name = name,
+            .name = owned,
             .line = self.gen_line + 1, // FunctionMapBuilder는 1-based
             .column = self.gen_col,
         });
-        try self.fn_name_stack.append(self.allocator, name);
     }
 
-    /// 현재 generated position으로 frame 종료. fn_name_stack pop 후 부모 이름으로 복귀.
+    /// 현재 generated position으로 frame 종료. fn_name_stack pop + free 후 부모 이름으로 복귀.
     fn fnMapExit(self: *Codegen) !void {
         if (self.fn_map_builder == null) return;
         if (self.fn_name_stack.items.len == 0) return;
-        _ = self.fn_name_stack.pop();
+        const popped = self.fn_name_stack.pop().?;
+        self.allocator.free(popped);
         if (self.fn_name_stack.items.len == 0) return;
         const parent = self.fn_name_stack.items[self.fn_name_stack.items.len - 1];
         try self.fn_map_builder.?.push(.{
@@ -477,67 +483,28 @@ pub const Codegen = struct {
         };
     }
 
-    /// MemberExpression/identifier의 leaf 이름 추출 (assignment left 용).
+    /// MemberExpression/identifier의 leaf 이름 추출 (assignment left 용). 항상 owned UTF-8
+    /// 반환, caller 가 free.
     /// `a.b.c` → "c", `a["str"]` → "str", `a[expr]` → null
-    fn resolveMemberLeafName(self: *const Codegen, idx: NodeIndex) ?[]const u8 {
+    fn resolveMemberLeafName(self: *const Codegen, idx: NodeIndex) !?[]u8 {
         if (idx.isNone()) return null;
         const n = self.ast.getNode(idx);
         return switch (n.tag) {
-            .identifier_reference, .assignment_target_identifier, .binding_identifier => self.ast.getText(n.data.string_ref),
+            .identifier_reference, .assignment_target_identifier, .binding_identifier => try self.allocator.dupe(u8, self.ast.getText(n.data.string_ref)),
             .static_member_expression => blk: {
                 const e = n.data.extra;
                 if (!self.ast.hasExtra(e, 2)) break :blk null;
                 const property = self.ast.readExtraNode(e, 1);
-                break :blk self.resolveIdentifierText(property);
+                break :blk try self.ast.staticKeyName(self.allocator, property);
             },
             .computed_member_expression => blk: {
                 const e = n.data.extra;
                 if (!self.ast.hasExtra(e, 2)) break :blk null;
                 const property = self.ast.readExtraNode(e, 1);
-                break :blk self.resolveKeyName(property);
+                break :blk try self.ast.staticKeyName(self.allocator, property);
             },
             else => null,
         };
-    }
-
-    /// object/method key 노드에서 이름 추출.
-    /// identifier → 이름, string_literal → 값(따옴표 제거), numeric → 텍스트,
-    /// computed(literal) → 값, computed(expr) → null
-    fn resolveKeyName(self: *const Codegen, idx: NodeIndex) ?[]const u8 {
-        if (idx.isNone()) return null;
-        const n = self.ast.getNode(idx);
-        return switch (n.tag) {
-            .identifier_reference, .binding_identifier, .private_identifier => self.ast.getText(n.data.string_ref),
-            .string_literal => self.resolveStringLiteralValue(n),
-            .numeric_literal => self.ast.getText(n.span),
-            .computed_property_key => blk: {
-                const inner = n.data.unary.operand;
-                if (inner.isNone()) break :blk null;
-                const inner_n = self.ast.getNode(inner);
-                // 리터럴만 이름으로 사용 (변수 참조는 런타임 값 → anonymous)
-                break :blk switch (inner_n.tag) {
-                    .string_literal => self.resolveStringLiteralValue(inner_n),
-                    .numeric_literal => self.ast.getText(inner_n.span),
-                    else => null,
-                };
-            },
-            else => null,
-        };
-    }
-
-    fn resolveIdentifierText(self: *const Codegen, idx: NodeIndex) ?[]const u8 {
-        if (idx.isNone()) return null;
-        const n = self.ast.getNode(idx);
-        return switch (n.tag) {
-            .identifier_reference, .binding_identifier, .private_identifier => self.ast.getText(n.data.string_ref),
-            else => null,
-        };
-    }
-
-    /// string_literal 노드에서 따옴표를 제거한 값 반환.
-    fn resolveStringLiteralValue(self: *const Codegen, n: Node) ?[]const u8 {
-        const text = self.ast.getText(n.span);
-        return if (text.len >= 2) text[1 .. text.len - 1] else null;
     }
 
     /// fn_name_stack top (현재 class 이름). <global>/<anonymous> 이면 null.
@@ -549,20 +516,25 @@ pub const Codegen = struct {
         return top;
     }
 
-    /// method_definition 키 + flags → Metro 스타일 이름 생성.
+    /// method_definition 키 + flags → Metro 스타일 이름 생성. 항상 owned UTF-8 반환,
+    /// caller 가 free.
     /// getter → "get__name", setter → "set__name", constructor → class 이름.
     /// 부모 class 이름이 있으면 "ClassName#method" / "ClassName.method" 형태.
-    fn resolveMethodName(self: *Codegen, key: NodeIndex, flags: u32) ![]const u8 {
+    fn resolveMethodName(self: *Codegen, key: NodeIndex, flags: u32) ![]u8 {
         const is_getter = flags & ast_mod.MethodFlags.is_getter != 0;
         const is_setter = flags & ast_mod.MethodFlags.is_setter != 0;
         const is_static = flags & ast_mod.MethodFlags.is_static != 0;
         const sep: []const u8 = if (is_static) "." else "#";
 
-        const raw = self.resolveKeyName(key) orelse "<anonymous>";
+        const raw_owned: []u8 = (try self.ast.staticKeyName(self.allocator, key)) orelse
+            try self.allocator.dupe(u8, "<anonymous>");
+        defer self.allocator.free(raw_owned);
+        const raw: []const u8 = raw_owned;
 
         // constructor → 부모 class 이름
         if (std.mem.eql(u8, raw, "constructor")) {
-            return self.resolveParentClassName() orelse "constructor";
+            const parent = self.resolveParentClassName();
+            return try self.allocator.dupe(u8, parent orelse "constructor");
         }
 
         const class_name = self.resolveParentClassName();
@@ -579,11 +551,10 @@ pub const Codegen = struct {
             else
                 std.fmt.allocPrint(self.allocator, "set__{s}", .{raw});
         }
-        // 일반 메서드: class 컨텍스트 없으면 기존 슬라이스 그대로 반환 (할당 불필요)
         return if (class_name) |cn|
             std.fmt.allocPrint(self.allocator, "{s}{s}{s}", .{ cn, sep, raw })
         else
-            raw;
+            try self.allocator.dupe(u8, raw);
     }
 
     /// 소스맵 매핑 추가. 노드의 소스 span과 현재 출력 위치를 매핑.
@@ -1612,9 +1583,12 @@ pub const Codegen = struct {
             @as(Kind, @enumFromInt(node.data.binary.flags)) == .eq;
         if (self.fn_map_builder != null and is_simple_assign and self.isFunctionLike(right)) {
             const saved = self.pending_fn_name;
-            self.pending_fn_name = self.resolveMemberLeafName(node.data.binary.left);
+            self.pending_fn_name = try self.resolveMemberLeafName(node.data.binary.left);
+            defer {
+                if (self.pending_fn_name) |s| self.allocator.free(s);
+                self.pending_fn_name = saved;
+            }
             try self.emitNode(right);
-            self.pending_fn_name = saved;
         } else {
             try self.emitNode(right);
         }
@@ -1730,9 +1704,12 @@ pub const Codegen = struct {
             // contextual name: 값이 function-like → key 이름 사용
             if (self.fn_map_builder != null and self.isFunctionLike(value)) {
                 const saved = self.pending_fn_name;
-                self.pending_fn_name = self.resolveKeyName(key);
+                self.pending_fn_name = try self.ast.staticKeyName(self.allocator, key);
+                defer {
+                    if (self.pending_fn_name) |s| self.allocator.free(s);
+                    self.pending_fn_name = saved;
+                }
                 try self.emitNode(value);
-                self.pending_fn_name = saved;
             } else {
                 try self.emitNode(value);
             }
@@ -2320,9 +2297,11 @@ pub const Codegen = struct {
         const body: NodeIndex = @enumFromInt(extras[2]);
         const flags = extras[3];
 
-        // function map: contextual name 소비 후 진입
+        // function map: contextual name 소비 후 진입. saved_pending 은 owned 를 보관하다가
+        // 종료 시 ownership 복원만 한다 (free 책임은 set 한 caller scope 에 있다).
         const saved_pending = self.pending_fn_name;
         self.pending_fn_name = null;
+        defer self.pending_fn_name = saved_pending;
         if (self.fn_map_builder != null) {
             const fn_name: []const u8 = if (!name.isNone())
                 self.ast.getText(self.ast.getNode(name).data.string_ref)
@@ -2381,6 +2360,7 @@ pub const Codegen = struct {
         // function map: 화살표 함수는 항상 익명 — contextual name 사용
         const saved_pending = self.pending_fn_name;
         self.pending_fn_name = null;
+        defer self.pending_fn_name = saved_pending;
         if (self.fn_map_builder != null) {
             try self.fnMapEnter(saved_pending orelse "<anonymous>");
         }
@@ -2419,6 +2399,7 @@ pub const Codegen = struct {
         // function map: class도 frame (Metro는 Class를 Function처럼 처리)
         const saved_pending = self.pending_fn_name;
         self.pending_fn_name = null;
+        defer self.pending_fn_name = saved_pending;
         if (self.fn_map_builder != null) {
             const class_name: []const u8 = if (!name.isNone())
                 self.ast.getText(self.ast.getNode(name).data.string_ref)
@@ -2506,6 +2487,7 @@ pub const Codegen = struct {
         // function map: ClassName#method / ClassName.method / get__name / set__name
         if (self.fn_map_builder != null) {
             const method_name = try self.resolveMethodName(key, flags);
+            defer self.allocator.free(method_name);
             try self.fnMapEnter(method_name);
         }
         defer if (self.fn_map_builder != null) {
@@ -2550,9 +2532,12 @@ pub const Codegen = struct {
             // contextual name: class property = function-like → key 이름 사용
             if (self.fn_map_builder != null and self.isFunctionLike(value)) {
                 const saved = self.pending_fn_name;
-                self.pending_fn_name = self.resolveKeyName(key);
+                self.pending_fn_name = try self.ast.staticKeyName(self.allocator, key);
+                defer {
+                    if (self.pending_fn_name) |s| self.allocator.free(s);
+                    self.pending_fn_name = saved;
+                }
                 try self.emitNode(value);
-                self.pending_fn_name = saved;
             } else {
                 try self.emitNode(value);
             }
@@ -2727,9 +2712,13 @@ pub const Codegen = struct {
             // contextual name: binding_identifier = function/arrow/class → 변수명을 이름으로
             if (self.fn_map_builder != null and self.isFunctionLike(init_val)) {
                 const saved = self.pending_fn_name;
-                self.pending_fn_name = self.resolveBindingName(name);
+                const binding = self.resolveBindingName(name);
+                self.pending_fn_name = if (binding) |s| try self.allocator.dupe(u8, s) else null;
+                defer {
+                    if (self.pending_fn_name) |s| self.allocator.free(s);
+                    self.pending_fn_name = saved;
+                }
                 try self.emitNode(init_val);
-                self.pending_fn_name = saved;
             } else {
                 try self.emitNode(init_val);
             }
@@ -3262,9 +3251,12 @@ pub const Codegen = struct {
         // contextual name: 익명 function/arrow/class → "default"
         if (self.fn_map_builder != null and self.isFunctionLike(inner_idx)) {
             const saved = self.pending_fn_name;
-            self.pending_fn_name = "default";
+            self.pending_fn_name = try self.allocator.dupe(u8, "default");
+            defer {
+                if (self.pending_fn_name) |s| self.allocator.free(s);
+                self.pending_fn_name = saved;
+            }
             try self.emitNode(inner_idx);
-            self.pending_fn_name = saved;
         } else {
             try self.emitNode(inner_idx);
         }
