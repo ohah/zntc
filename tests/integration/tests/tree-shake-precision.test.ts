@@ -411,4 +411,44 @@ describe("known pure call 기반 DCE", () => {
     expect(out).toContain("shadow-freeze-marker");
     expect(bundle).toContain("shadow-freeze-value");
   });
+
+  test("unused Object.assign with fresh pure objects is dropped", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib";\nconsole.log(used);\n`,
+        "lib.ts":
+          `export const used = "MATCH";\n` +
+          `const merged = Object.assign({}, { marker: "unused-object-assign-marker" });\n`,
+      },
+      "index.ts",
+      "object-assign-pure",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).not.toContain("unused-object-assign-marker");
+  });
+
+  test("Object.assign with shadowed callee impure source or getter source is preserved", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import "./impure";\nimport "./getter";\nimport "./shadow";\n`,
+        "impure.ts":
+          `function sideEffect() { console.log("impure-assign-source-marker"); return {}; }\n` +
+          `Object.assign({}, sideEffect());\n`,
+        "getter.ts":
+          `Object.assign({}, { get value() { console.log("assign-getter-source-marker"); return 1; } });\n`,
+        "shadow.ts":
+          `const Object = { assign(target, source) { console.log("shadow-assign-marker"); return target; } };\n` +
+          `Object.assign({}, { marker: "shadow-assign-value" });\n`,
+      },
+      "index.ts",
+      "object-assign-unsafe",
+    );
+
+    const out = runBundleSource(bundle);
+    expect(out).toContain("impure-assign-source-marker");
+    expect(out).toContain("assign-getter-source-marker");
+    expect(out).toContain("shadow-assign-marker");
+    expect(bundle).toContain("shadow-assign-value");
+  });
 });

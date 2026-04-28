@@ -850,6 +850,16 @@ const projects: ProjectConfig[] = [
     },
   },
   {
+    name: "object-assign-pure-call",
+    pkg: "(synthetic)",
+    entry: `import { used } from './_smoke_object_assign_pure_call_lib.js';\nconsole.log(used);`,
+    files: {
+      "_smoke_object_assign_pure_call_lib.js":
+        `export const used = "MATCH";\n` +
+        `const dead = Object.assign({}, { marker: "UNUSED_SMOKE_OBJECT_ASSIGN" });\n`,
+    },
+  },
+  {
     name: "on-finished",
     pkg: "on-finished",
     entry: `import onf from 'on-finished';\nconsole.log(typeof onf);`,
