@@ -5,7 +5,7 @@
 //!
 //! 판정 기준 (esbuild/rolldown 동일):
 //!   - 리터럴, 식별자 참조, 함수/arrow 표현식 → 순수
-//!   - 객체/배열 리터럴 → 원소가 모두 순수이면 순수 (computed key, spread 제외)
+//!   - 객체/배열 리터럴 → 원소가 모두 순수이면 순수 (computed key는 key/value 모두 순수할 때 허용, spread 제외)
 //!   - 삼항/이항/논리/단항 → 재귀 검사 (delete 제외)
 //!   - 멤버 접근 → 순수 (getter side effect는 실전에서 극히 드물어 무시, esbuild 동일)
 //!   - @__PURE__ call/new → 순수
@@ -430,10 +430,8 @@ fn isObjectPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalR
         switch (prop.tag) {
             .object_property => {
                 const key_idx = prop.data.binary.left;
-                if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
-                    if (ast.nodes.items[@intFromEnum(key_idx)].tag == .computed_property_key) return false;
-                }
-                if (!isExprPureDepth(ast, prop.data.binary.right, unresolved_globals, depth)) return false;
+                if (computedObjectPropertyKeyHasSideEffects(ast, key_idx, unresolved_globals, depth)) return false;
+                if (!isExprPureDepth(ast, Ast.objectPropertyValue(prop), unresolved_globals, depth)) return false;
             },
             .method_definition => {
                 if (objectMethodHasSideEffects(ast, prop, unresolved_globals)) return false;
@@ -452,6 +450,18 @@ fn objectMethodHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?
     // Object literal methods/getters/setters create function values. Their params/body
     // are not evaluated while the object itself is constructed.
     return ast.extra_data.items[e + ast_mod.MethodExtra.deco_len] > 0;
+}
+
+fn computedObjectPropertyKeyHasSideEffects(
+    ast: *const Ast,
+    key_idx: NodeIndex,
+    unresolved_globals: ?*const GlobalRefSet,
+    depth: u32,
+) bool {
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+    const key_node = ast.nodes.items[@intFromEnum(key_idx)];
+    if (key_node.tag != .computed_property_key) return false;
+    return !isExprPureDepth(ast, key_node.data.unary.operand, unresolved_globals, depth);
 }
 
 fn isArrayPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {

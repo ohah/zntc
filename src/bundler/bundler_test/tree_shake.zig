@@ -4115,6 +4115,43 @@ test "TreeShaking: object literal method with impure computed key is preserved" 
     try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_METHOD_COMPUTED_KEY_EFFECT") != null);
 }
 
+test "TreeShaking: unused pure computed object key initializer is pruned" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { used } from './toolkit-pattern';
+        \\console.log(used);
+    );
+    try writeFile(tmp.dir, "toolkit-pattern.ts",
+        \\function nanoid() {
+        \\  return 'TOOLKIT_NANOID_SHOULD_DROP';
+        \\}
+        \\function createAsyncThunk() {
+        \\  return nanoid();
+        \\}
+        \\var asyncThunkSymbol = /* @__PURE__ */ Symbol.for("rtk-slice-createasyncthunk");
+        \\var asyncThunkCreator = { [asyncThunkSymbol]: createAsyncThunk };
+        \\export const used = 'TOOLKIT_USED_MARKER';
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TOOLKIT_USED_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TOOLKIT_NANOID_SHOULD_DROP") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "createAsyncThunk") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "asyncThunkCreator") == null);
+}
+
 // minimatch 회귀: TS 가 self-referential 클래스용으로 emit 하는 `var _a; class AST {...}; _a = AST;`
 // 패턴에서 후속 비선언 할당이 살아남아야 한다. 도달성 BFS 가 read 만 따르고 writer 엣지를 무시하면
 // `_a` 가 undefined 인 채로 클래스 메서드가 `new _a()` 호출 → "_a is not a constructor".

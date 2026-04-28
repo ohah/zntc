@@ -99,6 +99,9 @@ pub const CodegenOptions = struct {
     /// __esm 래핑 모듈: CJS export 출력 억제 (exports.x, module.exports).
     /// __esm 모듈의 export는 emitter의 __export()가 처리하므로 codegen에서 생성하면 안 됨.
     skip_cjs_exports: bool = false,
+    /// JSON을 CJS require()로 소비할 때 synthetic named export declarations를 생략.
+    /// default object는 `module.exports = {...}`로 유지한다.
+    skip_cjs_named_export_decls: bool = false,
     /// 번들 모드에서 ESM이 아닐 때 import.meta → {} 치환 (esbuild 호환)
     replace_import_meta: bool = false,
     /// 타겟 플랫폼. import.meta polyfill 방식을 결정한다.
@@ -3123,6 +3126,8 @@ pub const Codegen = struct {
     /// CJS: export { foo } → exports.foo=foo;
     /// CJS: export { foo, default as Bar } from './bar' → exports.foo=require("./bar").foo;exports.Bar=require("./bar").default;
     fn emitExportNamedCJS(self: *Codegen, decl: NodeIndex, specs_start: u32, specs_len: u32, source: NodeIndex) !void {
+        if (self.options.skip_cjs_named_export_decls) return;
+
         if (!decl.isNone() and @intFromEnum(decl) < self.ast.nodes.items.len) {
             // export const x = 1 → const x=1; (+ exports.x=x; unless __esm)
             try self.emitNode(decl);

@@ -250,6 +250,37 @@ test "pure builtin: spread arg blocks pure classification" {
     try std.testing.expect(!purity.isExprPure(&ctx.ast, init, &ctx.analyzer.unresolved_references));
 }
 
+test "object literal: pure computed key and pure value are pure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const key = Symbol();
+        \\const value = 1;
+        \\const obj = { [key]: value };
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 2, true);
+}
+
+test "object literal: impure computed key or value stays impure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const key = Symbol();
+        \\const a = { [sideEffect()]: 1 };
+        \\const b = { [key]: sideEffect() };
+        \\const c = { ...source };
+        \\const d = { [sideEffect()]() { return 1; } };
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 1, false);
+    try expectPure(&ctx, 2, false);
+    try expectPure(&ctx, 3, false);
+    try expectPure(&ctx, 4, false);
+}
+
 // ================================================================
 // Collection constructor — oxc-style strict rule (#1567 Phase A refinement)
 // ================================================================
