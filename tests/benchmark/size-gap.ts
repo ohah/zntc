@@ -130,7 +130,7 @@ function countCjsExportPatterns(text: string): Record<CjsExportPattern, number> 
   return {
     "exports.x =": [...text.matchAll(/(^|[^\w$.])exports\.[A-Za-z_$][\w$]*\s*=/gm)].length,
     "module.exports.x =": [...text.matchAll(/\bmodule\.exports\.[A-Za-z_$][\w$]*\s*=/g)].length,
-    "module.exports =": [...text.matchAll(/\bmodule\.exports\s*=/g)].length,
+    "module.exports =": [...text.matchAll(/\bmodule\.exports\s*=\s*(?!\{)/g)].length,
     "module.exports = { ... }": [...text.matchAll(/\bmodule\.exports\s*=\s*\{/g)].length,
     "Object.defineProperty(..., { value })": [
       ...text.matchAll(
