@@ -9,7 +9,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, resolve as pathResolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -125,4 +125,23 @@ function readFileOrThrowNotFound(absPath: string): string {
     }
     throw err;
   }
+}
+
+/**
+ * 자동 탐색 우선순위. 동일 디렉토리에 다중 확장자 존재 시 첫 매치 반환.
+ * 사용자가 의도적으로 여러 형식을 두는 경우는 거의 없으므로 silent precedence 로 충분.
+ */
+export const CONFIG_EXT_PRIORITY = [".ts", ".mts", ".cts", ".mjs", ".js", ".cjs", ".json"] as const;
+
+/**
+ * cwd 에서 `zts.config.*` 자동 탐색. 우선순위는 `CONFIG_EXT_PRIORITY` 참조.
+ *
+ * parent 디렉토리 traversal 은 모노레포 워크스페이스 (#2111 / Phase 3-4) 에서 처리.
+ */
+export function findConfigPath(cwd: string): string | null {
+  for (const ext of CONFIG_EXT_PRIORITY) {
+    const candidate = join(cwd, `zts.config${ext}`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
