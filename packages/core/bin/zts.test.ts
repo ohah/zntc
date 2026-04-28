@@ -709,7 +709,107 @@ describe("CLI: watch", () => {
 
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("--watch-json: zts.config.json 변경 시 restart 이벤트 (#2107)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-config-restart-"));
+    writeFileSync(join(dir, "index.ts"), "export const x = 1;");
+    writeFileSync(join(dir, "zts.config.json"), `{}`);
+    const outDir = join(dir, "dist");
+
+    const logPath = join(dir, "watch.log");
+    const errPath = join(dir, "watch.err");
+    const proc = spawn(
+      "sh",
+      [
+        "-c",
+        `${[RUNTIME, CLI, "--bundle", join(dir, "index.ts"), "--outdir", outDir, "--watch-json"]
+          .map(shellQuote)
+          .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
+      ],
+      { cwd: dir },
+    );
+
+    // 초기 ready 까지 대기
+    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 5000);
+
+    // config 변경 trigger
+    writeFileSync(join(dir, "zts.config.json"), `{"banner": "/* changed */"}`);
+
+    // restart 이벤트 대기
+    try {
+      await waitForEvent(logPath, (e) => e.type === "restart", 5000);
+    } finally {
+      proc.kill();
+    }
+
+    const events = readEvents(logPath);
+    const restart = events.find((e) => e.type === "restart");
+    expect(restart).toBeDefined();
+    expect(restart.reason).toContain("config");
+
+    rmSync(dir, { recursive: true, force: true });
+  }, 15000);
+
+  test("--watch-json: .env 변경 시 restart 이벤트", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-env-restart-"));
+    writeFileSync(join(dir, "index.ts"), "export const x = 1;");
+    writeFileSync(join(dir, ".env"), "VITE_K=initial");
+    const outDir = join(dir, "dist");
+
+    const logPath = join(dir, "watch.log");
+    const errPath = join(dir, "watch.err");
+    const proc = spawn("sh", [
+      "-c",
+      `${[RUNTIME, CLI, "--bundle", join(dir, "index.ts"), "--outdir", outDir, "--watch-json"]
+        .map(shellQuote)
+        .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
+    ]);
+
+    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 5000);
+
+    writeFileSync(join(dir, ".env"), "VITE_K=changed");
+
+    try {
+      await waitForEvent(logPath, (e) => e.type === "restart", 5000);
+    } finally {
+      proc.kill();
+    }
+
+    const events = readEvents(logPath);
+    expect(events.some((e) => e.type === "restart")).toBe(true);
+
+    rmSync(dir, { recursive: true, force: true });
+  }, 15000);
 });
+
+/** Helper: poll log file until matching event appears (or timeout). */
+async function waitForEvent(
+  logPath: string,
+  predicate: (e: { type: string; [k: string]: unknown }) => boolean,
+  timeoutMs: number,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const events = readEvents(logPath);
+    if (events.some(predicate)) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`waitForEvent timeout (${timeoutMs}ms)`);
+}
+
+function readEvents(logPath: string): Array<{ type: string; [k: string]: unknown }> {
+  if (!existsSync(logPath)) return [];
+  const lines = readFileSync(logPath, "utf8").split("\n").filter(Boolean);
+  return lines
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
 
 // ─── Serve 모드 ───
 

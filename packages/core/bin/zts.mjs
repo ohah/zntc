@@ -988,6 +988,9 @@ async function runWatch(opts, config) {
   for (const entry of opts.entryPoints) {
     watchDirs.add(dirname(resolve(entry)));
   }
+  // config/.env 파일 변경 감지를 위해 cwd / envDir / config 디렉토리 추가.
+  const restartTriggers = computeRestartTriggers(opts);
+  for (const dir of restartTriggers.dirs) watchDirs.add(dir);
 
   for (const dir of watchDirs) {
     watch(dir, { recursive: true }, (_event, filename) => {
@@ -996,10 +999,61 @@ async function runWatch(opts, config) {
       if (filename.includes("node_modules") || filename.includes(".git")) return;
       if (opts.outdir && filename.startsWith(basename(resolve(opts.outdir)))) return;
 
+      if (restartTriggers.matches(filename)) {
+        emitRestart(opts, "config 또는 .env 파일 변경 감지");
+        return;
+      }
+
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(rebuild, opts.watchDelay);
     });
   }
+}
+
+/**
+ * watch/serve 모드에서 config 또는 .env 파일이 변경되면 in-process reload 가
+ * 까다롭다 (.ts config 의 dynamic import 캐시, mergeConfigIntoOpts 의 1회성 mutation 등).
+ * Vite 식 spawn-self 패턴으로 깔끔히 재시작 — 동일 argv 로 자식 프로세스 시작 후 종료.
+ */
+function computeRestartTriggers(opts) {
+  const dirs = new Set();
+  const envDir = opts.envDir ? resolve(opts.envDir) : process.cwd();
+  dirs.add(envDir);
+
+  const explicitConfig = opts.configPath ? resolve(opts.configPath) : null;
+  const autoConfig = explicitConfig ?? findConfigPath(process.cwd());
+  if (autoConfig) dirs.add(dirname(autoConfig));
+
+  const configBase = autoConfig ? basename(autoConfig) : null;
+  const mode = opts.mode ?? (opts.serve || opts.watch ? "development" : "production");
+  const envBases = new Set([".env", ".env.local", `.env.${mode}`, `.env.${mode}.local`]);
+
+  return {
+    dirs,
+    matches(filename) {
+      const base = basename(filename);
+      if (configBase && base === configBase) return true;
+      if (envBases.has(base)) return true;
+      return false;
+    },
+  };
+}
+
+function emitRestart(opts, reason) {
+  if (opts.watchJson) {
+    console.log(JSON.stringify({ type: "restart", reason }));
+  } else if (opts.logLevel !== "silent") {
+    console.error(`[watch] ${reason} — restarting CLI...`);
+  }
+  // 자식 프로세스 spawn 후 종료 — 새 프로세스가 fresh config/env 로 시작.
+  // stdio inherit 으로 부모의 출력 스트림을 그대로 이어받는다.
+  import("node:child_process").then(({ spawn }) => {
+    const child = spawn(process.argv[0], process.argv.slice(1), {
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.on("exit", (code) => process.exit(code ?? 0));
+  });
 }
 
 // ─── Serve 모드 ───
@@ -1136,10 +1190,16 @@ async function runServe(opts, config) {
     for (const entry of opts.entryPoints) {
       watchDirs.add(dirname(resolve(entry)));
     }
+    const restartTriggers = computeRestartTriggers(opts);
+    for (const dir of restartTriggers.dirs) watchDirs.add(dir);
 
     for (const dir of watchDirs) {
       fsWatch(dir, { recursive: true }, (_event, filename) => {
         if (!filename || filename.includes("node_modules") || filename.includes(".git")) return;
+        if (restartTriggers.matches(filename)) {
+          emitRestart(opts, "config 또는 .env 파일 변경 감지");
+          return;
+        }
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(async () => {
           try {
