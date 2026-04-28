@@ -51,6 +51,8 @@ const stmt_info_mod = @import("stmt_info.zig");
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const plugin_mod = @import("plugin.zig");
 const external_imports = @import("emitter/external_imports.zig");
+const purity = @import("purity.zig");
+const TokenKind = @import("../lexer/token.zig").Kind;
 
 pub const EmitOptions = struct {
     /// transformer pre-pass / emit 단계 transformer.init 양쪽에서 사용하는 옵션 base.
@@ -1326,6 +1328,14 @@ pub fn emitModule(
                                                 &md.skip_nodes,
                                             ) catch {};
                                         }
+                                        if (options.minify_syntax) {
+                                            markDeadOverwrittenAssignments(
+                                                transformer.ast,
+                                                md.symbol_ids,
+                                                &sem.unresolved_references,
+                                                &md.skip_nodes,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -1834,6 +1844,110 @@ fn moduleNeedsToEsmInterop(module: *const Module, graph: *const ModuleGraph, lin
 /// `module.exports = { used, unused }` object-shape 의 unused property 노드를
 /// transformer AST 쪽 인덱스로 변환해 `skip_nodes` 에 마킹.
 /// span -> new_ni map 을 1회 구축해 fact 마다 nodes 전체를 재스캔하던 O(F×N) 회피.
+const AssignmentInfo = struct {
+    stmt_idx: u32,
+    lhs_idx: u32,
+    sym_idx: u32,
+};
+
+fn markDeadOverwrittenAssignments(
+    ast: *const Ast,
+    symbol_ids: []const ?u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    skip_nodes: *std.DynamicBitSet,
+) void {
+    if (ast.nodes.items.len == 0) return;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program) return;
+    const list = root.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return;
+    const stmts = ast.extra_data.items[list.start .. list.start + list.len];
+
+    for (stmts, 0..) |raw_stmt, i| {
+        if (raw_stmt >= ast.nodes.items.len) continue;
+        if (raw_stmt < skip_nodes.capacity() and skip_nodes.isSet(raw_stmt)) continue;
+        const current = assignmentInfoForStmt(ast, raw_stmt, symbol_ids, unresolved_globals, true) orelse continue;
+
+        var j = i + 1;
+        while (j < stmts.len) : (j += 1) {
+            const next_raw = stmts[j];
+            if (next_raw >= ast.nodes.items.len) continue;
+            if (next_raw < skip_nodes.capacity() and skip_nodes.isSet(next_raw)) continue;
+
+            if (stmtReadsSymbolBeforeOverwrite(ast, next_raw, symbol_ids, current.sym_idx)) break;
+            if (assignmentInfoForStmt(ast, next_raw, symbol_ids, unresolved_globals, false)) |next_assign| {
+                if (next_assign.sym_idx == current.sym_idx) {
+                    if (current.stmt_idx < skip_nodes.capacity()) skip_nodes.set(current.stmt_idx);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn assignmentInfoForStmt(
+    ast: *const Ast,
+    stmt_idx: u32,
+    symbol_ids: []const ?u32,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    require_pure_rhs: bool,
+) ?AssignmentInfo {
+    if (stmt_idx >= ast.nodes.items.len) return null;
+    const stmt = ast.nodes.items[stmt_idx];
+    if (stmt.tag != .expression_statement) return null;
+    const expr_idx = stmt.data.unary.operand;
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag != .assignment_expression) return null;
+
+    const op: TokenKind = @enumFromInt(expr.data.binary.flags);
+    if (op != .eq) return null;
+
+    const lhs_idx = expr.data.binary.left;
+    if (lhs_idx.isNone() or @intFromEnum(lhs_idx) >= ast.nodes.items.len) return null;
+    const lhs = ast.nodes.items[@intFromEnum(lhs_idx)];
+    if (lhs.tag != .assignment_target_identifier and lhs.tag != .identifier_reference) return null;
+    const lhs_ni = @intFromEnum(lhs_idx);
+    if (lhs_ni >= symbol_ids.len) return null;
+    const sym_idx: u32 = @intCast(symbol_ids[lhs_ni] orelse return null);
+
+    const rhs_idx = expr.data.binary.right;
+    if (require_pure_rhs and !purity.isExprPure(ast, rhs_idx, unresolved_globals)) return null;
+
+    return .{
+        .stmt_idx = stmt_idx,
+        .lhs_idx = @intCast(lhs_ni),
+        .sym_idx = sym_idx,
+    };
+}
+
+fn stmtReadsSymbolBeforeOverwrite(
+    ast: *const Ast,
+    stmt_idx: u32,
+    symbol_ids: []const ?u32,
+    sym_idx: u32,
+) bool {
+    if (stmt_idx >= ast.nodes.items.len) return false;
+    const stmt = ast.nodes.items[stmt_idx];
+    const simple_assign = assignmentInfoForStmt(ast, stmt_idx, symbol_ids, null, false);
+
+    for (ast.nodes.items, 0..) |node, node_i| {
+        if (node.span.start < stmt.span.start or node.span.end > stmt.span.end) continue;
+        if (node_i >= symbol_ids.len) continue;
+        const node_sym: u32 = @intCast(symbol_ids[node_i] orelse continue);
+        if (node_sym != sym_idx) continue;
+
+        if (node.tag == .identifier_reference) return true;
+        if (node.tag == .assignment_target_identifier) {
+            if (simple_assign) |assign| {
+                if (assign.sym_idx == sym_idx and assign.lhs_idx == node_i) continue;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 fn markUnusedCjsObjectProperties(
     arena: std.mem.Allocator,
     module: *const Module,

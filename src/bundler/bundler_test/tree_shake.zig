@@ -165,6 +165,278 @@ test "TreeShaking: innerGraph preserves entry exports" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_PRIVATE_UNUSED") == null);
 }
 
+test "TreeShaking: innerGraph prunes pure write-only assignment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value = 1;
+        \\value = "INNER_GRAPH_DEAD_WRITE";
+        \\console.log("INNER_GRAPH_WRITE_ENTRY");
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_WRITE_ENTRY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_DEAD_WRITE") == null);
+}
+
+test "TreeShaking: innerGraph prunes overwritten pure assignment before read" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value;
+        \\value = "INNER_GRAPH_OVERWRITTEN_WRITE";
+        \\value = "INNER_GRAPH_FINAL_WRITE";
+        \\console.log(value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_FINAL_WRITE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_OVERWRITTEN_WRITE") == null);
+}
+
+test "TreeShaking: innerGraph preserves assignment read before overwrite" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value;
+        \\value = "INNER_GRAPH_READ_BEFORE_OVERWRITE";
+        \\console.log(value);
+        \\value = "INNER_GRAPH_READ_AFTER_OVERWRITE";
+        \\console.log(value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_READ_BEFORE_OVERWRITE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_READ_AFTER_OVERWRITE") != null);
+}
+
+test "TreeShaking: innerGraph preserves assignment with side-effect RHS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value = 1;
+        \\value = sideEffect();
+        \\console.log("INNER_GRAPH_SIDE_WRITE_ENTRY");
+        \\function sideEffect() {
+        \\  console.log("INNER_GRAPH_SIDE_WRITE");
+        \\  return 2;
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_SIDE_WRITE_ENTRY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_SIDE_WRITE") != null);
+}
+
+test "TreeShaking: innerGraph preserves overwritten assignment with side-effect RHS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value;
+        \\value = sideEffect();
+        \\value = "INNER_GRAPH_SIDE_OVERWRITE_FINAL";
+        \\console.log(value);
+        \\function sideEffect() {
+        \\  console.log("INNER_GRAPH_SIDE_OVERWRITE");
+        \\  return 1;
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_SIDE_OVERWRITE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_SIDE_OVERWRITE_FINAL") != null);
+}
+
+test "TreeShaking: innerGraph preserves assignment whose value is read" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value = 1;
+        \\value = "INNER_GRAPH_LIVE_WRITE";
+        \\console.log(value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_LIVE_WRITE") != null);
+}
+
+test "TreeShaking: innerGraph preserves compound assignment before overwrite" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value = 1;
+        \\value += 2;
+        \\value = "INNER_GRAPH_COMPOUND_FINAL";
+        \\console.log(value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value += 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_COMPOUND_FINAL") != null);
+}
+
+test "TreeShaking: innerGraph preserves update expression before overwrite" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\let value = 1;
+        \\value++;
+        \\value = "INNER_GRAPH_UPDATE_FINAL";
+        \\console.log(value);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "value++") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_UPDATE_FINAL") != null);
+}
+
+test "TreeShaking: innerGraph preserves member assignment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const obj = {};
+        \\obj.value = "INNER_GRAPH_MEMBER_WRITE";
+        \\console.log("INNER_GRAPH_MEMBER_ENTRY");
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_MEMBER_ENTRY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_MEMBER_WRITE") != null);
+}
+
+test "TreeShaking: innerGraph preserves global assignment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\globalThis.value = "INNER_GRAPH_GLOBAL_WRITE";
+        \\console.log("INNER_GRAPH_GLOBAL_ENTRY");
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_GLOBAL_ENTRY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_GLOBAL_WRITE") != null);
+}
+
 test "TreeShaking: only used exports from dependency" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
