@@ -853,12 +853,14 @@ test "known pure call: Object.assign with fresh pure objects is pure" {
     const src =
         \\const a = Object.assign({}, { tag: "pure" });
         \\const b = Object.assign({ base: 1 }, ({ extra: 2 }));
+        \\const c = Object.assign({}, { a: 1 }, { b: 2 });
     ;
     var ctx = try setup(alloc, src);
     defer ctx.deinit();
 
     try expectPure(&ctx, 0, true);
     try expectPure(&ctx, 1, true);
+    try expectPure(&ctx, 2, true);
     try std.testing.expect(!purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 0), null));
 }
 
@@ -873,6 +875,11 @@ test "known pure call: Object.assign is guarded by target source and shadowing" 
         \\const d = Object.assign({}, sideEffect());
         \\const Object = { assign(target, source) { console.log("shadow-assign"); return target; } };
         \\const e = Object.assign({}, { tag: "shadowed" });
+        \\const f = Object.assign({}, { ...source });
+        \\const g = Object.assign({}, { [sideEffect()]: 1 });
+        \\const h = Object.assign({}, { method() { return 1; } });
+        \\const i = Object["assign"]({}, { tag: "computed-callee" });
+        \\const j = Object.assign?.({}, { tag: "optional-callee" });
     ;
     var ctx = try setup(alloc, src);
     defer ctx.deinit();
@@ -882,6 +889,11 @@ test "known pure call: Object.assign is guarded by target source and shadowing" 
     try expectPure(&ctx, 4, false);
     try expectPure(&ctx, 5, false);
     try expectPure(&ctx, 7, false);
+    try expectPure(&ctx, 8, false);
+    try expectPure(&ctx, 9, false);
+    try expectPure(&ctx, 10, false);
+    try expectPure(&ctx, 11, false);
+    try expectPure(&ctx, 12, false);
 }
 
 // ================================================================

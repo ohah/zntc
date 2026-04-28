@@ -296,6 +296,45 @@ describe("CJS static export fact 기반 DCE", () => {
     expect(bundle).toContain("__esModule");
   });
 
+  test("Object.defineProperty __esModule marker — module.exports target is pruned for named import", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib.cjs";\nconsole.log(used());\n`,
+        "lib.cjs":
+          `Object.defineProperty(module.exports, "__esModule", { value: true });\n` +
+          `function used() { return "USED_MODULE_EXPORTS_ESMODULE_INTEGRATION"; }\n` +
+          `function unused() { return "UNUSED_MODULE_EXPORTS_ESMODULE_INTEGRATION"; }\n` +
+          `Object.defineProperty(module.exports, "used", { value: used });\n` +
+          `Object.defineProperty(module.exports, "unused", { value: unused });\n`,
+      },
+      "index.ts",
+      "cjs-esmodule-module-exports",
+    );
+
+    expect(runBundleSource(bundle)).toContain("USED_MODULE_EXPORTS_ESMODULE_INTEGRATION");
+    expect(bundle).not.toContain("__esModule");
+    expect(bundle).not.toContain("UNUSED_MODULE_EXPORTS_ESMODULE_INTEGRATION");
+  });
+
+  test("Object.defineProperty __esModule marker — named import keeps sibling effects and prunes marker", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib.cjs";\nconsole.log(used);\n`,
+        "lib.cjs":
+          `Object.defineProperty(exports, "__esModule", { value: true });\n` +
+          `console.log("USED_SIDE_EFFECT_ESMODULE_INTEGRATION");\n` +
+          `exports.used = "USED_SIDE_EFFECT_EXPORT_INTEGRATION";\n`,
+      },
+      "index.ts",
+      "cjs-esmodule-sibling-effect",
+    );
+
+    const out = runBundleSource(bundle);
+    expect(out).toContain("USED_SIDE_EFFECT_ESMODULE_INTEGRATION");
+    expect(out).toContain("USED_SIDE_EFFECT_EXPORT_INTEGRATION");
+    expect(bundle).not.toContain("__esModule");
+  });
+
   test("Object.defineProperty getter export — module.exports target and arrow getter are supported", () => {
     const bundle = bundleFiles(
       {
@@ -454,7 +493,7 @@ describe("known pure call 기반 DCE", () => {
         "index.ts": `import { used } from "./lib";\nconsole.log(used);\n`,
         "lib.ts":
           `export const used = "MATCH";\n` +
-          `const merged = Object.assign({}, { marker: "unused-object-assign-marker" });\n`,
+          `const merged = Object.assign({}, { marker: "unused-object-assign-marker" }, { extra: 1 });\n`,
       },
       "index.ts",
       "object-assign-pure",
@@ -467,11 +506,22 @@ describe("known pure call 기반 DCE", () => {
   test("Object.assign with shadowed callee impure source or getter source is preserved", () => {
     const bundle = bundleFiles(
       {
-        "index.ts": `import "./impure";\nimport "./getter";\nimport "./shadow";\n`,
+        "index.ts":
+          `import "./impure";\n` +
+          `import "./getter";\n` +
+          `import "./spread";\n` +
+          `import "./computed";\n` +
+          `import "./computed-callee";\n` +
+          `import "./shadow";\n`,
         "impure.ts":
           `function sideEffect() { console.log("impure-assign-source-marker"); return {}; }\n` +
           `Object.assign({}, sideEffect());\n`,
         "getter.ts": `Object.assign({}, { get value() { console.log("assign-getter-source-marker"); return 1; } });\n`,
+        "spread.ts": `const source = { marker: "assign-spread-source-marker" };\nObject.assign({}, { ...source });\n`,
+        "computed.ts":
+          `function key() { console.log("assign-computed-key-marker"); return "value"; }\n` +
+          `Object.assign({}, { [key()]: 1 });\n`,
+        "computed-callee.ts": `Object["assign"]({}, { marker: "assign-computed-callee-marker" });\n`,
         "shadow.ts":
           `const Object = { assign(target, source) { console.log("shadow-assign-marker"); return target; } };\n` +
           `Object.assign({}, { marker: "shadow-assign-value" });\n`,
@@ -483,7 +533,10 @@ describe("known pure call 기반 DCE", () => {
     const out = runBundleSource(bundle);
     expect(out).toContain("impure-assign-source-marker");
     expect(out).toContain("assign-getter-source-marker");
+    expect(out).toContain("assign-computed-key-marker");
     expect(out).toContain("shadow-assign-marker");
+    expect(bundle).toContain("assign-spread-source-marker");
+    expect(bundle).toContain("assign-computed-callee-marker");
     expect(bundle).toContain("shadow-assign-value");
   });
 });
