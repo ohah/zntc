@@ -815,6 +815,9 @@ pub const TreeShaker = struct {
                 return;
             };
             const fact = target_infos.cjsExportFactByName(canonical.export_name) orelse {
+                if (try self.seedCjsExportFactsByName(canon_mod, target_infos, canonical.export_name, queue, reachable_stmts)) {
+                    return;
+                }
                 try self.markAndSeedAllStmts(canon_mod, queue, module_stmt_infos, reachable_stmts);
                 return;
             };
@@ -904,6 +907,9 @@ pub const TreeShaker = struct {
             if (try self.seedNodeBufferModuleObjectExport(mod_idx, export_name, target_infos, queue, reachable_stmts)) {
                 return;
             }
+            if (try self.seedCjsExportFactsByName(mod_idx, target_infos, export_name, queue, reachable_stmts)) {
+                return;
+            }
             try self.markAndSeedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
             return;
         };
@@ -939,6 +945,23 @@ pub const TreeShaker = struct {
             return true;
         }
         return false;
+    }
+
+    fn seedCjsExportFactsByName(
+        self: *TreeShaker,
+        mod_idx: u32,
+        infos: StmtInfos,
+        export_name: []const u8,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!bool {
+        var found = false;
+        for (infos.cjs_export_facts) |fact| {
+            if (!std.mem.eql(u8, fact.export_name, export_name)) continue;
+            found = true;
+            try self.seedCjsExportFact(mod_idx, infos, fact, queue, reachable_stmts);
+        }
+        return found;
     }
 
     fn seedCjsExportFact(
