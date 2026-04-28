@@ -73,9 +73,12 @@ describe("loadConfig", () => {
 
   test("defineConfig 헬퍼로 정의된 객체 로드", async () => {
     const path = join(dir, "define.config.ts");
+    // packages/core/index.ts 를 file:// URL 로 참조 — 임시 디렉토리에 작성된
+    // .ts config 가 ZTS transpile 후 동적 import 될 때 절대 경로로 해석.
+    const indexUrl = new URL("../index.ts", import.meta.url).href;
     writeFileSync(
       path,
-      `import { defineConfig } from "${resolveImportPath()}";
+      `import { defineConfig } from "${indexUrl}";
        export default defineConfig({ format: "esm", entryPoints: ["./a.ts"] });`,
     );
     const config = await loadConfig(path);
@@ -132,13 +135,3 @@ describe("loadConfig", () => {
     expect(second.format).toBe("cjs");
   });
 });
-
-function resolveImportPath(): string {
-  // 테스트에서 임시 디렉토리에 작성된 .ts config 가 @zts/core 의 defineConfig 를
-  // import 하려면 절대 경로 또는 file:// URL 이 필요하다. 여기서는 packages/core/index.ts
-  // 의 절대 경로를 반환한다.
-  const here = new URL(import.meta.url);
-  // src/config-loader.test.ts → ../index.ts
-  const indexUrl = new URL("../index.ts", here);
-  return indexUrl.href;
-}
