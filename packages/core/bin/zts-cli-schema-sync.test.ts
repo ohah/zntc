@@ -27,6 +27,57 @@ const WASM_INDEX_PATH = join(__dirname, "..", "..", "wasm", "index.ts");
 
 // ─── 정적 파싱 헬퍼 ──────────────────────────────────────────
 
+/**
+ * zts.mjs 의 `parseArgs` 함수 안 `opts = { ... }` 객체 리터럴에서 키 추출.
+ * `opts.foo = ...` 같은 안전망 (의도적으로 default 안 쓰는 키) 도 같이 잡으려면 추가 grep
+ * 필요하지만, schema sync 의 목적은 default 가 "있는" 키 이므로 객체 리터럴만 본다.
+ */
+function extractOptsDefaultKeys(source: string): string[] {
+  const startMarker = "const opts = {";
+  const start = source.indexOf(startMarker, source.indexOf("function parseArgs(argv)"));
+  if (start < 0) throw new Error("opts default object not found in parseArgs");
+  const bodyStart = start + startMarker.length;
+  let depth = 1;
+  let i = bodyStart;
+  while (i < source.length && depth > 0) {
+    const c = source[i];
+    if (c === "{") depth += 1;
+    else if (c === "}") depth -= 1;
+    i += 1;
+  }
+  const body = source.slice(bodyStart, i - 1);
+  const keys: string[] = [];
+  for (const rawLine of body.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("//") || line.startsWith("*") || line.startsWith("/*")) continue;
+    const m = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:/);
+    if (m) keys.push(m[1]);
+  }
+  return keys;
+}
+
+/**
+ * zts.mjs 의 `mergeConfigIntoOpts` 안 SCALAR_KEYS / BOOL_KEYS / ARRAY_KEYS 리스트의 키 집합을 추출.
+ */
+function extractMergeKeyLists(source: string): {
+  scalar: string[];
+  bool: string[];
+  array: string[];
+} {
+  const extractList = (label: string): string[] => {
+    const idx = source.indexOf(`const ${label} = [`);
+    if (idx < 0) throw new Error(`${label} not found`);
+    const closeIdx = source.indexOf("];", idx);
+    const body = source.slice(idx, closeIdx);
+    return [...body.matchAll(/"([a-zA-Z_][a-zA-Z0-9_]*)"/g)].map((m) => m[1]);
+  };
+  return {
+    scalar: extractList("SCALAR_KEYS"),
+    bool: extractList("BOOL_KEYS"),
+    array: extractList("ARRAY_KEYS"),
+  };
+}
+
 /** zts.mjs 의 `parseArgs` 함수 본문에서 모든 flag 토큰 추출. namespace prefix (`--banner:js=`) 도 포함. */
 function extractCliFlags(source: string): string[] {
   const startMarker = "function parseArgs(argv) {";
@@ -307,6 +358,25 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
       if (!/^[a-z][a-z0-9-]*$/.test(stripped)) bad.push(flag);
     }
     expect(bad).toEqual([]);
+  });
+
+  // SCALAR_KEYS / BOOL_KEYS / ARRAY_KEYS 의 모든 키가 parseArgs 의 `opts` default 객체에 등록돼 있어야
+  // `mergeConfigIntoOpts` 의 머지 조건 (`opts[key] === undefined`) 가 정상 작동.
+  // 과거 회귀: outdir/outfile 의 default 가 `null` 이라 머지 조건을 우회 못 한 silent drop (#2135),
+  // outbase 가 SCALAR_KEYS 에만 있고 default 누락이라 zts.config.outbase silent drop.
+  test("mergeConfigIntoOpts 의 SCALAR_KEYS / BOOL_KEYS / ARRAY_KEYS 가 모두 opts default 에 존재", () => {
+    const optsKeys = new Set(extractOptsDefaultKeys(cliSource));
+    const lists = extractMergeKeyLists(cliSource);
+    const missing: string[] = [];
+    for (const k of [...lists.scalar, ...lists.bool, ...lists.array]) {
+      if (!optsKeys.has(k)) missing.push(k);
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `[schema drift] SCALAR/BOOL/ARRAY_KEYS 에는 있지만 parseArgs opts default 에 없음: ${missing.join(", ")}\n` +
+          `parseArgs 의 opts 객체에 default 추가 (보통 \`undefined\` / \`false\` / \`[]\`).`,
+      );
+    }
   });
 });
 
