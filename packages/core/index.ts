@@ -138,17 +138,45 @@ export function defineConfig<T extends UserConfigInput>(config: T): T {
 }
 
 export {
+  defaultConfigEnv,
   findConfigPath,
   findModeConfigPath,
   importAndResolveDefault,
   loadConfig,
+  loadModuleDefault,
   mergeUserConfigs,
-} from "./src/config-loader";
-export type { ConfigEnv, UserConfig, UserConfigFn, UserConfigInput } from "./src/config-loader";
-export { envToDefine, loadEnv } from "./src/load-env";
-export { KNOWN_CONFIG_KEYS, suggestKey, warnUnknownKeys } from "./src/typo-suggest";
+} from "./src/config-loader.ts";
+export type {
+  ConfigEnv,
+  ModuleKind,
+  UserConfig,
+  UserConfigFn,
+  UserConfigInput,
+} from "./src/config-loader.ts";
+export { envToDefine, loadEnv } from "./src/load-env.ts";
+export { KNOWN_CONFIG_KEYS, suggestKey, warnUnknownKeys } from "./src/typo-suggest.ts";
+export {
+  defineWorkspace,
+  filterWorkspaces,
+  findWorkspacePath,
+  identifyWorkspaceEntries,
+  loadIdentifiedConfig,
+  loadWorkspace,
+  resolveWorkspaceEntries,
+  WORKSPACE_EXT_PRIORITY,
+} from "./src/workspace.ts";
+export type {
+  IdentifiedWorkspace,
+  ResolvedWorkspace,
+  Workspace,
+  WorkspaceEntry,
+  WorkspaceEntryInline,
+  WorkspaceEntryPath,
+  WorkspaceFn,
+  WorkspaceInput,
+} from "./src/workspace.ts";
 
-import type { UserConfigInput } from "./src/config-loader";
+import type { UserConfigInput } from "./src/config-loader.ts";
 
 /**
  * NAPI 모듈을 로드한다.

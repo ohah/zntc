@@ -31,6 +31,11 @@ documents/dist/
 packages/core/dist/
 packages/wasm/dist/
 
+# NAPI default bundle output — manual smoke test 가 outfile/outdir 미지정 시 cwd 에
+# `bundle.js`/`bundle.js.map` 을 떨어뜨리는 경우가 있음 (PR 사이클에서 실수로 commit 된 사례).
+/bundle.js
+/bundle.js.map
+
 # Build artifacts
 *.o
 check_inferred

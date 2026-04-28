@@ -3,14 +3,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { init } from "../index";
+import { init } from "../index.ts";
 import {
   CONFIG_EXT_PRIORITY,
   findConfigPath,
   findModeConfigPath,
   loadConfig,
   mergeUserConfigs,
-} from "./config-loader";
+} from "./config-loader.ts";
 
 beforeAll(() => init());
 
