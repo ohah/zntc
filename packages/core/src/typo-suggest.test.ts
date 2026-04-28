@@ -203,7 +203,6 @@ describe("KNOWN_CONFIG_KEYS", () => {
       "workletTransform",
       "experimentalCodeCache",
       "assetRegistry",
-      "globalIdentifiers",
       "tsconfigRaw",
       "watch",
       "write",
