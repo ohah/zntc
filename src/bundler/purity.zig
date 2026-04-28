@@ -430,7 +430,7 @@ fn isObjectPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalR
         switch (prop.tag) {
             .object_property => {
                 const key_idx = prop.data.binary.left;
-                if (computedObjectPropertyKeyHasSideEffects(ast, key_idx, unresolved_globals, depth)) return false;
+                if (computedKeyNodeHasSideEffects(ast, key_idx, unresolved_globals, depth)) return false;
                 if (!isExprPureDepth(ast, Ast.objectPropertyValue(prop), unresolved_globals, depth)) return false;
             },
             .method_definition => {
@@ -452,7 +452,7 @@ fn objectMethodHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?
     return ast.extra_data.items[e + ast_mod.MethodExtra.deco_len] > 0;
 }
 
-fn computedObjectPropertyKeyHasSideEffects(
+fn computedKeyNodeHasSideEffects(
     ast: *const Ast,
     key_idx: NodeIndex,
     unresolved_globals: ?*const GlobalRefSet,
@@ -647,12 +647,7 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*co
 fn computedKeyHasSideEffects(ast: *const Ast, extra_offset: u32, unresolved_globals: ?*const GlobalRefSet) bool {
     if (extra_offset >= ast.extra_data.items.len) return true;
     const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_offset]);
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
-    const key_node = ast.nodes.items[@intFromEnum(key_idx)];
-    if (key_node.tag == .computed_property_key) {
-        return !isExprPureDepth(ast, key_node.data.unary.operand, unresolved_globals, 0);
-    }
-    return false;
+    return computedKeyNodeHasSideEffects(ast, key_idx, unresolved_globals, 0);
 }
 
 /// expression 이 **Symbol 값** 일 가능성이 있는지 정적 판정. 보수적 — 확실히 아니면 false,

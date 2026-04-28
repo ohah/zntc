@@ -4177,19 +4177,19 @@ test "TreeShaking: unused pure computed object key initializer is pruned" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
-        \\import { used } from './toolkit-pattern';
+        \\import { used } from './computed-key';
         \\console.log(used);
     );
-    try writeFile(tmp.dir, "toolkit-pattern.ts",
-        \\function nanoid() {
-        \\  return 'TOOLKIT_NANOID_SHOULD_DROP';
+    try writeFile(tmp.dir, "computed-key.ts",
+        \\function makeId() {
+        \\  return 'COMPUTED_KEY_INIT_SHOULD_DROP';
         \\}
-        \\function createAsyncThunk() {
-        \\  return nanoid();
+        \\function makeFactory() {
+        \\  return makeId();
         \\}
-        \\var asyncThunkSymbol = /* @__PURE__ */ Symbol.for("rtk-slice-createasyncthunk");
-        \\var asyncThunkCreator = { [asyncThunkSymbol]: createAsyncThunk };
-        \\export const used = 'TOOLKIT_USED_MARKER';
+        \\var keySymbol = /* @__PURE__ */ Symbol.for("computed-key-test");
+        \\var unusedHolder = { [keySymbol]: makeFactory };
+        \\export const used = 'COMPUTED_KEY_USED_MARKER';
     );
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -4204,10 +4204,10 @@ test "TreeShaking: unused pure computed object key initializer is pruned" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "TOOLKIT_USED_MARKER") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "TOOLKIT_NANOID_SHOULD_DROP") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "createAsyncThunk") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "asyncThunkCreator") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "COMPUTED_KEY_USED_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "COMPUTED_KEY_INIT_SHOULD_DROP") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "makeFactory") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "unusedHolder") == null);
 }
 
 // minimatch 회귀: TS 가 self-referential 클래스용으로 emit 하는 `var _a; class AST {...}; _a = AST;`
