@@ -123,8 +123,7 @@ function increment(map: Map<string, number>, value: string): void {
 function countCjsExportPatterns(text: string): Record<CjsExportPattern, number> {
   return {
     "exports.x =": [...text.matchAll(/(^|[^\w$.])exports\.[A-Za-z_$][\w$]*\s*=/gm)].length,
-    "module.exports.x =": [...text.matchAll(/\bmodule\.exports\.[A-Za-z_$][\w$]*\s*=/g)]
-      .length,
+    "module.exports.x =": [...text.matchAll(/\bmodule\.exports\.[A-Za-z_$][\w$]*\s*=/g)].length,
     "module.exports = { ... }": [...text.matchAll(/\bmodule\.exports\s*=\s*\{/g)].length,
     "Object.defineProperty(..., { value })": [
       ...text.matchAll(
@@ -273,9 +272,7 @@ function formatCandidates(candidates: Candidate[]): string {
 }
 
 function formatPatternCounts(patternCounts: Record<CjsExportPattern, number>): string {
-  return cjsExportPatterns
-    .map((pattern) => `  - ${pattern}: ${patternCounts[pattern]}`)
-    .join("\n");
+  return cjsExportPatterns.map((pattern) => `  - ${pattern}: ${patternCounts[pattern]}`).join("\n");
 }
 
 const projects = parseProjects();
