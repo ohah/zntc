@@ -238,6 +238,31 @@ fn parseSourceMapMode(env: c.napi_env, obj: c.napi_value) SourceMap.SourceMapMod
     return SourceMap.SourceMapMode.fromString(buf[0..len]) orelse .linked;
 }
 
+/// `logLevel` 옵션 (#2158) — `"silent"` / `"error"` / `"warning"` / `"info"` / `"debug"` / `"verbose"`.
+/// 미지정 또는 invalid 면 `.warning` (default — errors + warnings 모두 emit).
+const LogLevelFilter = struct { allow_errors: bool, allow_warnings: bool };
+const LogFilterOptions = struct { filter: LogLevelFilter, limit: u32 };
+
+fn parseLogLevelFilter(env: c.napi_env, obj: c.napi_value) LogLevelFilter {
+    var buf: [16]u8 = undefined;
+    const val = getNamedProperty(env, obj, "logLevel") orelse return .{ .allow_errors = true, .allow_warnings = true };
+    var len: usize = 0;
+    if (c.napi_get_value_string_utf8(env, val, &buf, buf.len, &len) != c.napi_ok) {
+        return .{ .allow_errors = true, .allow_warnings = true };
+    }
+    const s = buf[0..len];
+    if (std.mem.eql(u8, s, "silent")) return .{ .allow_errors = false, .allow_warnings = false };
+    if (std.mem.eql(u8, s, "error")) return .{ .allow_errors = true, .allow_warnings = false };
+    return .{ .allow_errors = true, .allow_warnings = true };
+}
+
+fn parseLogFilterOptions(env: c.napi_env, obj: c.napi_value) LogFilterOptions {
+    return .{
+        .filter = parseLogLevelFilter(env, obj),
+        .limit = getObjectUint32(env, obj, "logLimit", 0),
+    };
+}
+
 /// JS 배열 값을 문자열 슬라이스로 변환. (key 없이 직접 배열 값을 받는 버전)
 /// 빈 배열은 명시적으로 빈 slice 반환 (caller 가 "0개" 와 "invalid" 를 구분 가능).
 fn parseStringArray(env: c.napi_env, val: c.napi_value, alloc: std.mem.Allocator) ?[]const []const u8 {
@@ -395,10 +420,10 @@ fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     };
     defer result.deinit(native_alloc);
 
-    return buildResultToJS(env, &result);
+    return buildResultToJS(env, &result, parseLogFilterOptions(env, argv[0]));
 }
 
-fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.napi_value {
+fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult, log_opts: LogFilterOptions) c.napi_value {
     var js_result: c.napi_value = undefined;
     if (c.napi_create_object(env, &js_result) != c.napi_ok) return null;
 
@@ -491,9 +516,22 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.n
     var js_warnings: c.napi_value = undefined;
     _ = c.napi_create_array(env, &js_warnings);
 
+    // logLevel / logLimit 필터링 (#2158) — caller (sync/async) 가 opts 파싱 시점에
+    // 미리 추출한 값 사용. 함수 시그니처가 LogFilterOptions 받음.
+    const log_filter = log_opts.filter;
+    const log_limit = log_opts.limit;
+
     var err_idx: u32 = 0;
     var warn_idx: u32 = 0;
     for (result.getDiagnostics()) |d| {
+        const is_err = d.severity == .@"error";
+        if (is_err and !log_filter.allow_errors) continue;
+        if (!is_err and !log_filter.allow_warnings) continue;
+        if (log_limit > 0) {
+            if (is_err and err_idx >= log_limit) continue;
+            if (!is_err and warn_idx >= log_limit) continue;
+        }
+
         var js_diag: c.napi_value = undefined;
         _ = c.napi_create_object(env, &js_diag);
 
@@ -510,7 +548,7 @@ fn buildResultToJS(env: c.napi_env, result: *const bundler_mod.BundleResult) c.n
             _ = c.napi_set_named_property(env, js_diag, "location", js_loc);
         }
 
-        if (d.severity == .@"error") {
+        if (is_err) {
             _ = c.napi_set_element(env, js_errors, err_idx, js_diag);
             err_idx += 1;
         } else {
@@ -1357,6 +1395,8 @@ const BuildAsyncData = struct {
     completion_tsfn: c.napi_threadsafe_function,
     // 소유된 옵션 (워커 스레드에서 유효해야 하므로 복사)
     options: BundleOptions,
+    // logLevel/logLimit 필터 — buildResultToJS 가 진단 출력 시 사용 (#2158).
+    log_opts: LogFilterOptions,
     // 소유된 문자열 목록 (deinit 시 해제)
     owned_strings: std.ArrayList([]const u8),
     owned_string_arrays: std.ArrayList([]const []const u8),
@@ -1411,7 +1451,7 @@ fn buildCompleteTsfn(env: c.napi_env, _: c.napi_value, _: ?*anyopaque, data: ?*a
         _ = c.napi_reject_deferred(env, async_data.deferred, js_error);
     } else if (async_data.result) |*result| {
         defer result.deinit(native_alloc);
-        const js_result = buildResultToJS(env, result);
+        const js_result = buildResultToJS(env, result, async_data.log_opts);
         if (js_result) |val| {
             _ = c.napi_resolve_deferred(env, async_data.deferred, val);
         } else {
@@ -1445,6 +1485,7 @@ fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
         .deferred = undefined,
         .completion_tsfn = undefined,
         .options = undefined,
+        .log_opts = parseLogFilterOptions(env, argv[0]),
         .owned_strings = .empty,
         .owned_string_arrays = .empty,
         .napi_plugins = .empty,
