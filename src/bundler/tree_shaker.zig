@@ -563,12 +563,25 @@ pub const TreeShaker = struct {
                 reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
             }
 
-            // entry는 번들 진입점 — 모든 top-level statement가 실행되어야 하므로 전체 시드.
+            // entry는 번들 진입점이지만 pure local declaration은 실행 의미가 없다.
+            // side-effect statement와 entry export seed만 살리고, local-only pure statement는
+            // BFS dependency로 필요할 때만 도달시킨다.
             // side_effects=true 모듈은 side-effect stmt만 시드.
             // side_effects=false 모듈은 enqueue의 lazy 시드로 처리 (사용 시에만).
             if (self.entry_set.isSet(i)) {
-                for (infos.stmts, 0..) |_, si| {
-                    try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                var has_entry_side_effect_stmt = false;
+                for (infos.stmts) |stmt| {
+                    if (stmt.has_side_effects) {
+                        has_entry_side_effect_stmt = true;
+                        break;
+                    }
+                }
+                const prune_pure_entry_locals = self.graph.transform_options_base.minify_syntax and
+                    (has_entry_side_effect_stmt or m.export_bindings.len > 0);
+                for (infos.stmts, 0..) |stmt, si| {
+                    if (!prune_pure_entry_locals or stmt.has_side_effects) {
+                        try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                    }
                 }
             } else if (m.side_effects and m.side_effects_user_defined) {
                 for (infos.stmts, 0..) |_, si| {
