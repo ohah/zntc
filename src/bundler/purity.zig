@@ -128,7 +128,7 @@ fn isCallOrNewPure(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
     const callee_idx: NodeIndex = @enumFromInt(ast.readExtra(node.data.extra, 0));
     if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.nodes.items[@intFromEnum(callee_idx)];
-    if (isKnownPureStaticCall(ast, node, callee, globals, unresolved_globals, depth)) return true;
+    if (isKnownPureStaticCall(ast, node, callee, unresolved_globals, depth)) return true;
     if (callee.tag != .identifier_reference) return false;
 
     const name = ast.getText(callee.span);
@@ -162,7 +162,6 @@ fn isKnownPureStaticCall(
     ast: *const Ast,
     node: Node,
     callee: Node,
-    globals: *const GlobalRefSet,
     unresolved_globals: ?*const GlobalRefSet,
     depth: u32,
 ) bool {
@@ -182,11 +181,11 @@ fn isKnownPureStaticCall(
     const property = ast.nodes.items[@intFromEnum(property_idx)];
     if (object.tag != .identifier_reference or property.tag != .identifier_reference) return false;
     if (!std.mem.eql(u8, ast.getText(object.span), "Object")) return false;
+    const globals = unresolved_globals orelse return false;
     if (!globals.contains("Object")) return false;
     const property_name = ast.getText(property.span);
 
     const call_extra = node.data.extra;
-    if (!ast.hasExtra(call_extra, 2)) return false;
     const args_start = ast.readExtra(call_extra, 1);
     const args_len = ast.readExtra(call_extra, 2);
 
