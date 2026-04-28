@@ -848,6 +848,42 @@ test "known pure call: Object.freeze is guarded by shadowing and arg purity" {
     try expectPure(&ctx, 4, false);
 }
 
+test "known pure call: Object.assign with fresh pure objects is pure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const a = Object.assign({}, { tag: "pure" });
+        \\const b = Object.assign({ base: 1 }, ({ extra: 2 }));
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 0, true);
+    try expectPure(&ctx, 1, true);
+    try std.testing.expect(!purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 0), null));
+}
+
+test "known pure call: Object.assign is guarded by target source and shadowing" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const target = {};
+        \\const a = Object.assign(target, { tag: "target" });
+        \\const source = { tag: "source" };
+        \\const b = Object.assign({}, source);
+        \\const c = Object.assign({}, { get x() { console.log("getter"); return 1; } });
+        \\const d = Object.assign({}, sideEffect());
+        \\const Object = { assign(target, source) { console.log("shadow-assign"); return target; } };
+        \\const e = Object.assign({}, { tag: "shadowed" });
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 1, false);
+    try expectPure(&ctx, 3, false);
+    try expectPure(&ctx, 4, false);
+    try expectPure(&ctx, 5, false);
+    try expectPure(&ctx, 7, false);
+}
+
 // ================================================================
 // null unresolved_globals — 기존 동작 유지 (#1567 호환)
 // ================================================================
