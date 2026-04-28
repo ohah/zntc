@@ -27,6 +27,27 @@ const ts_only_allowlist = [_][]const u8{
 /// TS에 누락되면 드리프트로 간주하고 실패.
 const zig_only_allowlist = [_][]const u8{
     "unsupported", // JS wrapper가 browserslist 해석 후 주입. 사용자가 직접 쓸 일 없음.
+
+    // ─── #2105 bundler-only 필드 ────────────────────────────────────────
+    // `zts.config.json` 의 BuildOptions-shaped 필드. TS 쪽엔 별도의 `BuildOptions`
+    // 인터페이스 (`packages/core/index.ts:BuildOptions`) 가 있고 TranspileOptions
+    // 와 분리. Zig CLI 의 `applyZtsConfigJson` 만 한 번에 파싱하기 위해 같은
+    // DTO 에 모음.
+    "external",
+    "alias",
+    "loader",
+    "conditions",
+    "resolveExtensions",
+    "mainFields",
+    "banner",
+    "footer",
+    "assetNames",
+    "chunkNames",
+    "entryNames",
+    "preserveModules",
+    "preserveModulesRoot",
+    "inlineDynamicImports",
+    "manualChunks",
 };
 
 /// TS `packages/shared/index.ts`의 `TranspileOptions` interface에서 필드명을
@@ -68,11 +89,14 @@ fn parseTsInterface(source: []const u8, list: *std.ArrayList([]const u8), alloca
 }
 
 fn contains(haystack: []const []const u8, needle: []const u8) bool {
+    @setEvalBranchQuota(5000);
     for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
     return false;
 }
 
 test "schema diff: Zig DTO fields are covered by TS TranspileOptions" {
+    // DTO 필드 × allowlist 엔트리 수가 늘어나며 comptime 분기 한도 초과.
+    @setEvalBranchQuota(8000);
     const allocator = std.testing.allocator;
 
     // 저장소 루트에서 테스트 실행 가정 (zig build test 기본).
