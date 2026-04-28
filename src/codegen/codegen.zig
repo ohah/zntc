@@ -473,16 +473,6 @@ pub const Codegen = struct {
         };
     }
 
-    /// binding_identifier 노드에서 이름 추출.
-    fn resolveBindingName(self: *const Codegen, idx: NodeIndex) ?[]const u8 {
-        if (idx.isNone()) return null;
-        const n = self.ast.getNode(idx);
-        return switch (n.tag) {
-            .binding_identifier => self.ast.getText(n.data.string_ref),
-            else => null,
-        };
-    }
-
     /// MemberExpression/identifier의 leaf 이름 추출 (assignment left 용). 항상 owned UTF-8
     /// 반환, caller 가 free.
     /// `a.b.c` → "c", `a["str"]` → "str", `a[expr]` → null
@@ -2712,8 +2702,7 @@ pub const Codegen = struct {
             // contextual name: binding_identifier = function/arrow/class → 변수명을 이름으로
             if (self.fn_map_builder != null and self.isFunctionLike(init_val)) {
                 const saved = self.pending_fn_name;
-                const binding = self.resolveBindingName(name);
-                self.pending_fn_name = if (binding) |s| try self.allocator.dupe(u8, s) else null;
+                self.pending_fn_name = try self.ast.staticKeyName(self.allocator, name);
                 defer {
                     if (self.pending_fn_name) |s| self.allocator.free(s);
                     self.pending_fn_name = saved;
@@ -3385,7 +3374,7 @@ pub const Codegen = struct {
                 const member = self.ast.getNode(@enumFromInt(raw_idx));
                 const member_name = self.ast.getNode(member.data.binary.left);
                 const raw_text = self.ast.getText(member_name.span);
-                const mt = stripStringQuotes(raw_text);
+                const mt = Ast.stripStringQuotes(raw_text);
                 const member_init_idx = member.data.binary.right;
 
                 if (!needs_rename and std.mem.eql(u8, mt, name_text)) {
@@ -3463,7 +3452,7 @@ pub const Codegen = struct {
             const member_name = self.ast.getNode(member_name_idx);
             const raw_text = self.ast.getText(member_name.span);
             // 문자열 리터럴 키의 따옴표 제거: 'a' → a, "a b" → a b
-            const member_text = stripStringQuotes(raw_text);
+            const member_text = Ast.stripStringQuotes(raw_text);
 
             // Color[Color["Red"] = 0] = "Red";
             try self.write(param_name);
@@ -3521,19 +3510,6 @@ pub const Codegen = struct {
         try self.write(";})(");
         try self.write(name_text);
         try self.write(" || {});");
-    }
-
-    /// 문자열 리터럴의 외부 따옴표를 제거한다.
-    /// 'a' → a, "a b" → a b, Red → Red (따옴표 없으면 그대로)
-    fn stripStringQuotes(text: []const u8) []const u8 {
-        if (text.len >= 2) {
-            const first = text[0];
-            const last = text[text.len - 1];
-            if ((first == '\'' or first == '"') and first == last) {
-                return text[1 .. text.len - 1];
-            }
-        }
-        return text;
     }
 
     const EnumMemberValue = union(enum) {
