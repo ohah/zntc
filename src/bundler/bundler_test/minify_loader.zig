@@ -3285,10 +3285,13 @@ test "#1621 minify + decorator: __decorateClass/__decorateParam → $dC/$dK" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // decorator preamble: $dC (class/member) + $dK (param) + $dp2 (defProp2)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dC=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dK=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dp2=Object.defineProperty") != null);
+    // decorator preamble: $dp2 + $gD + $dC + $dK 가 단일 var 선언 chain 으로 emit 된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dp2=Object.defineProperty,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$dC=(decorators,target,key,kind)=>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$dK=(index,decorator)=>") != null);
+    // single var chain 회복: 중복 `var $dC=` / `var $dK=` 선언이 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dC=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dK=") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__decorateClass") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__decorateParam") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__defProp2") == null);
