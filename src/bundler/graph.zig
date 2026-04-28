@@ -2635,6 +2635,18 @@ pub const ModuleGraph = struct {
                     return;
                 };
             },
+            .base64 => {
+                // 바이너리 읽기 → base64 인코딩 → 순수 base64 문자열 (data URL prefix 없음)
+                const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+                const encoded = base64Encode(arena_alloc, raw) catch {
+                    module.state = .ready;
+                    return;
+                };
+                module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{encoded}) catch {
+                    module.state = .ready;
+                    return;
+                };
+            },
             .binary => {
                 // 바이너리 읽기 → base64 인코딩 → __toBinary("...") 호출 표현식
                 const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
