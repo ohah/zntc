@@ -128,7 +128,7 @@ export function defineConfig<T extends Partial<BuildOptions>>(config: T): T {
   return config;
 }
 
-export { findConfigPath, loadConfig } from "./src/config-loader";
+export { findConfigPath, importAndResolveDefault, loadConfig } from "./src/config-loader";
 export type { UserConfig } from "./src/config-loader";
 
 /**
