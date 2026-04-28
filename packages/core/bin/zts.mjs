@@ -119,6 +119,7 @@ function parseArgs(argv) {
     emitDecoratorMetadata: false,
     verbatimModuleSyntax: undefined,
     browserslist: undefined,
+    outbase: undefined,
     drop: [],
     certfile: undefined,
     keyfile: undefined,
@@ -365,7 +366,16 @@ function parseArgs(argv) {
       continue;
     }
     if (arg.startsWith("--browserslist=")) {
-      opts.browserslist = arg.split("=")[1];
+      opts.browserslist = arg.slice("--browserslist=".length);
+      continue;
+    }
+    // 다중 entry 의 출력 디렉토리 구조 base — 공통 prefix 제거 기준.
+    if (arg === "--outbase") {
+      opts.outbase = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--outbase=")) {
+      opts.outbase = arg.slice("--outbase=".length);
       continue;
     }
     if (arg.startsWith("--out-extension:.js=")) {
@@ -971,6 +981,7 @@ async function runBundle(opts, config) {
     jsxImportSource: opts.jsxImportSource,
     inject: opts.inject.map((p) => resolve(p)),
     jobs: opts.jobs,
+    outbase: opts.outbase,
     plugins: plugins.length > 0 ? plugins : undefined,
   };
 
