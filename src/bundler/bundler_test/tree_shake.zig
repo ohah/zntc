@@ -3858,7 +3858,7 @@ test "TreeShaking: chained export star named import prunes unrelated sources" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "UNRELATED_SOURCE_MARKER") == null);
 }
 
-test "TreeShaking: export star named import skips side-effectful unrelated source" {
+test "TreeShaking: export star named import drops unrelated source declared sideEffects:false" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
