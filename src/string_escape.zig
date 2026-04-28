@@ -116,31 +116,8 @@ pub fn decodeJsStringLiteral(alloc: std.mem.Allocator, raw_with_quotes: []const 
                 i += 4;
             },
             'u' => {
-                if (i + 3 > body.len) return error.InvalidEscape;
-                if (body[i + 2] == '{') {
-                    var j: usize = i + 3;
-                    var cp: u32 = 0;
-                    var any = false;
-                    while (j < body.len and body[j] != '}') : (j += 1) {
-                        const d = std.fmt.charToDigit(body[j], 16) catch return error.InvalidEscape;
-                        cp = cp * 16 + @as(u32, d);
-                        if (cp > 0x10FFFF) return error.InvalidEscape;
-                        any = true;
-                    }
-                    if (j >= body.len or !any) return error.InvalidEscape;
-                    try appendCodepoint(&out, alloc, cp);
-                    i = j + 1;
-                } else {
-                    if (i + 6 > body.len) return error.InvalidEscape;
-                    var cp: u32 = 0;
-                    var k: usize = 0;
-                    while (k < 4) : (k += 1) {
-                        const d = std.fmt.charToDigit(body[i + 2 + k], 16) catch return error.InvalidEscape;
-                        cp = cp * 16 + @as(u32, d);
-                    }
-                    try appendCodepoint(&out, alloc, cp);
-                    i += 6;
-                }
+                const cp = decodeUnicodeHexEscape(body, &i) orelse return error.InvalidEscape;
+                try appendCodepoint(&out, alloc, cp);
             },
             else => {
                 try out.append(alloc, esc);
@@ -152,11 +129,100 @@ pub fn decodeJsStringLiteral(alloc: std.mem.Allocator, raw_with_quotes: []const 
     return out.toOwnedSlice(alloc);
 }
 
+/// `raw[pos.*]` 가 `'\\'`, `raw[pos.*+1]` 이 `'u'` 라고 가정하고 `\uXXXX`
+/// (정확히 4-hex) 또는 `\u{H...}` (가변 hex, 비어있지 않음) 를 디코드한다.
+/// 성공 시 codepoint 반환 + pos 를 다음 위치로 진행. 실패 시 null + pos 변경 안 함.
+/// surrogate (U+D800–U+DFFF) 거부 / BMP 제한 등 추가 정책은 호출자가 결정.
+pub fn decodeUnicodeHexEscape(raw: []const u8, pos: *usize) ?u32 {
+    var p = pos.*;
+    if (p + 1 >= raw.len) return null;
+    if (raw[p] != '\\' or raw[p + 1] != 'u') return null;
+    p += 2;
+    if (p >= raw.len) return null;
+
+    var cp: u32 = 0;
+    if (raw[p] == '{') {
+        p += 1;
+        var any = false;
+        while (p < raw.len and raw[p] != '}') : (p += 1) {
+            const d = std.fmt.charToDigit(raw[p], 16) catch return null;
+            cp = cp * 16 + @as(u32, d);
+            if (cp > 0x10FFFF) return null;
+            any = true;
+        }
+        if (p >= raw.len or !any) return null;
+        p += 1; // skip }
+    } else {
+        if (p + 4 > raw.len) return null;
+        var k: usize = 0;
+        while (k < 4) : (k += 1) {
+            const d = std.fmt.charToDigit(raw[p + k], 16) catch return null;
+            cp = cp * 16 + @as(u32, d);
+        }
+        p += 4;
+    }
+
+    pos.* = p;
+    return cp;
+}
+
 fn appendCodepoint(out: *std.ArrayList(u8), alloc: std.mem.Allocator, cp: u32) DecodeError!void {
     if (cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF)) return error.InvalidEscape;
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(@intCast(cp), &buf) catch return error.InvalidEscape;
     try out.appendSlice(alloc, buf[0..len]);
+}
+
+test "decodeUnicodeHexEscape" {
+    // 4-hex form
+    {
+        var p: usize = 0;
+        try std.testing.expectEqual(@as(?u32, 0x0066), decodeUnicodeHexEscape("\\u0066", &p));
+        try std.testing.expectEqual(@as(usize, 6), p);
+    }
+    // 가변 \u{...}
+    {
+        var p: usize = 0;
+        try std.testing.expectEqual(@as(?u32, 0x1F600), decodeUnicodeHexEscape("\\u{1F600}", &p));
+        try std.testing.expectEqual(@as(usize, 9), p);
+    }
+    // pos 가 0 이 아닌 경우 (mid-string)
+    {
+        var p: usize = 1;
+        try std.testing.expectEqual(@as(?u32, 0x0041), decodeUnicodeHexEscape("X\\u0041Y", &p));
+        try std.testing.expectEqual(@as(usize, 7), p);
+    }
+    // 부족한 hex digit (4-hex 미달)
+    {
+        var p: usize = 0;
+        try std.testing.expectEqual(@as(?u32, null), decodeUnicodeHexEscape("\\u00", &p));
+        try std.testing.expectEqual(@as(usize, 0), p);
+    }
+    // 빈 `\u{}`
+    {
+        var p: usize = 0;
+        try std.testing.expectEqual(@as(?u32, null), decodeUnicodeHexEscape("\\u{}", &p));
+    }
+    // `}` 누락
+    {
+        var p: usize = 0;
+        try std.testing.expectEqual(@as(?u32, null), decodeUnicodeHexEscape("\\u{1F600", &p));
+    }
+    // 0x10FFFF 초과
+    {
+        var p: usize = 0;
+        try std.testing.expectEqual(@as(?u32, null), decodeUnicodeHexEscape("\\u{110000}", &p));
+    }
+    // raw[pos] 가 `\u` 아님
+    {
+        var p: usize = 0;
+        try std.testing.expectEqual(@as(?u32, null), decodeUnicodeHexEscape("foo", &p));
+    }
+    // hex 가 아닌 문자
+    {
+        var p: usize = 0;
+        try std.testing.expectEqual(@as(?u32, null), decodeUnicodeHexEscape("\\uZZZZ", &p));
+    }
 }
 
 test "decodeJsStringLiteral basic" {
