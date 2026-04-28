@@ -128,6 +128,14 @@ pub const FunctionMapBuilder = struct {
         try buf.appendSlice(self.allocator, "\"}");
     }
 
+    /// `name` 을 builder 에 등록하고 builder 가 소유한 owned slice 를 반환.
+    /// 호출자가 이름의 lifetime 을 builder 에 위임할 때 사용 (예: `fn_name_stack`
+    /// 이 borrowed view 만 유지하는 패턴).
+    pub fn internedName(self: *FunctionMapBuilder, name: []const u8) ![]const u8 {
+        const idx = try self.internName(name);
+        return self.names.items[idx];
+    }
+
     fn internName(self: *FunctionMapBuilder, name: []const u8) !u32 {
         // 기존 entry 가 있으면 owned key 를 그대로 재사용. miss 일 때만 dupe.
         if (self.names_map.get(name)) |idx| return idx;

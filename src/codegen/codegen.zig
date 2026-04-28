@@ -178,9 +178,9 @@ pub const Codegen = struct {
 
     /// Metro function map 빌더 (sourcemap_function_map 활성화 시).
     fn_map_builder: ?FunctionMapBuilder = null,
-    /// function map 이름 스택. enter 시 push (owned dupe), exit 시 pop + free.
-    /// last()가 현재 scope 이름. items 슬라이스는 borrowed view 로 caller 에 노출.
-    fn_name_stack: std.ArrayList([]u8) = .empty,
+    /// function map 이름 스택. entries 는 `fn_map_builder.names` 의 owned slice 를
+    /// borrow — builder 가 모든 unique name 의 단일 ownership.
+    fn_name_stack: std.ArrayList([]const u8) = .empty,
     /// 다음 function/arrow/class에 적용할 contextual name. owned UTF-8 — set 시 dupe,
     /// 소비/save-restore/codegen.deinit 시 free.
     pending_fn_name: ?[]u8 = null,
@@ -233,7 +233,8 @@ pub const Codegen = struct {
         self.keep_names_entries.deinit(self.allocator);
         if (self.sm_builder) |*sm| sm.deinit();
         if (self.fn_map_builder) |*fm| fm.deinit();
-        for (self.fn_name_stack.items) |s| self.allocator.free(s);
+        // fn_name_stack 의 entries 는 fn_map_builder.names 의 owned slice 를 borrow —
+        // builder.deinit() 가 이미 해제하므로 stack 자체만 deinit.
         self.fn_name_stack.deinit(self.allocator);
         if (self.pending_fn_name) |s| self.allocator.free(s);
     }
@@ -434,27 +435,26 @@ pub const Codegen = struct {
     // Function Map 도우미
     // ================================================================
 
-    /// 현재 generated position으로 새 이름 frame에 진입. fn_name_stack push (자체 dupe owned).
+    /// 현재 generated position으로 새 이름 frame에 진입. builder 에 intern 된 owned
+    /// slice 를 fn_name_stack 에 borrow push.
     /// 이름이 바뀔 때만 FunctionMapBuilder.push 호출 (중복 제거는 FunctionMapBuilder가 담당).
     fn fnMapEnter(self: *Codegen, name: []const u8) !void {
         if (self.fn_map_builder == null) return;
-        const owned = try self.allocator.dupe(u8, name);
-        errdefer self.allocator.free(owned);
-        try self.fn_name_stack.append(self.allocator, owned);
+        const interned = try self.fn_map_builder.?.internedName(name);
+        try self.fn_name_stack.append(self.allocator, interned);
         errdefer _ = self.fn_name_stack.pop();
         try self.fn_map_builder.?.push(.{
-            .name = owned,
+            .name = interned,
             .line = self.gen_line + 1, // FunctionMapBuilder는 1-based
             .column = self.gen_col,
         });
     }
 
-    /// 현재 generated position으로 frame 종료. fn_name_stack pop + free 후 부모 이름으로 복귀.
+    /// 현재 generated position으로 frame 종료. fn_name_stack pop (entry 는 builder 가 소유 — free 안 함).
     fn fnMapExit(self: *Codegen) !void {
         if (self.fn_map_builder == null) return;
         if (self.fn_name_stack.items.len == 0) return;
-        const popped = self.fn_name_stack.pop().?;
-        self.allocator.free(popped);
+        _ = self.fn_name_stack.pop();
         if (self.fn_name_stack.items.len == 0) return;
         const parent = self.fn_name_stack.items[self.fn_name_stack.items.len - 1];
         try self.fn_map_builder.?.push(.{
