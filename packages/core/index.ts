@@ -162,12 +162,10 @@ export {
   identifyWorkspaceEntries,
   loadIdentifiedConfig,
   loadWorkspace,
-  resolveWorkspaceEntries,
   WORKSPACE_EXT_PRIORITY,
 } from "./src/workspace.ts";
 export type {
   IdentifiedWorkspace,
-  ResolvedWorkspace,
   Workspace,
   WorkspaceEntry,
   WorkspaceEntryInline,
