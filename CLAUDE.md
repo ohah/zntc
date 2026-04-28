@@ -23,7 +23,9 @@ Zig 0.15.2 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · 
 3. main 직접 push 금지 — feature branch → PR → merge
 4. PR 올리기 **전** `/simplify` 필수 (파일 간 상호작용까지 검토 → 이후 PR 생성)
 5. `gh pr create` 시 `--label`, `--assignee` 항상 지정
-6. Zig 초보자에게 설명 포함
+6. PR 제목은 `feat(lexer): add numeric literal tokenization` 형식
+7. PR 본문, GitHub 이슈/PR 댓글, 리뷰 답변은 한국어로 작성
+8. Zig 초보자에게 설명 포함
 
 ## 외부 Consumer 동기화
 - **bungae monorepo** (`/Users/yoonhb/Documents/workspace/bungae/`) 가 ZTS 를 git submodule 로 참조. `.gitmodules` 에 branch 추적 없어서 ZTS 머지 후 수동 sync 필요:
@@ -39,8 +41,6 @@ Zig 0.15.2 · C NAPI v8 (vendor/node-api-headers/) · Node.js 24+ / Bun 1.3+ · 
 - **Arena 안 리소스는 개별 deinit 금지**. `arena_alloc`으로 만든 `DynamicBitSet`/`ArrayList` 등은 `arena.deinit()`이 일괄 해제. 개별 `defer X.deinit()`을 함께 걸면 `arena.deinit()` 이후에 실행되어 해제된 메모리 접근 → segfault (#1287).
 - 성공 경로에서 `arena.deinit()`을 명시 호출하지 말 것. `defer arena.deinit()` 하나로 충분.
 - `errdefer arena.deinit()`만 쓰고 성공 경로는 따로 관리하는 패턴은 위험 — defer 순서 실수 유발.
-
-PR 제목: `feat(lexer): add numeric literal tokenization` 형식.
 
 ## References
 Bun (src/js_parser.zig, js_lexer.zig) · oxc · SWC · esbuild · Hermes (Flow) · Metro (RN) · TypeScript · Test262 · tc39.es/ecma262
