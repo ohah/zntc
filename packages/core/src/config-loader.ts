@@ -242,3 +242,65 @@ export function findConfigPath(cwd: string): string | null {
   }
   return null;
 }
+
+/**
+ * mode-specific config 파일 자동 탐색 — `zts.config.${mode}.{ext}` 형태 (#2110).
+ *
+ * Vite 의 mode 별 config 패턴: base `zts.config.ts` 가 default, `zts.config.production.ts`
+ * 같은 mode-specific 파일이 base 를 부분 override. mode 가 비어있거나 매칭 파일 없으면 null.
+ */
+export function findModeConfigPath(cwd: string, mode: string): string | null {
+  if (!mode) return null;
+  for (const ext of CONFIG_EXT_PRIORITY) {
+    const candidate = join(cwd, `zts.config.${mode}${ext}`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * base config + mode-specific config 머지. mode 가 base 를 override.
+ *
+ * 머지 정책 (Vite 호환):
+ *  - scalar / string: mode 값이 정의됐으면 그것 사용
+ *  - 배열: mode 가 정의됐으면 base 를 완전 대체 (concat 안 함 — 의도 명확화)
+ *  - 객체 (`define`/`alias`/`loader`): shallow merge — base 키 + mode 키 (mode 우선)
+ *
+ * `plugins` 는 concat (Vite 와 일치 — 둘 다 적용).
+ */
+export function mergeUserConfigs(base: UserConfig, mode: UserConfig): UserConfig {
+  const merged: UserConfig = { ...base };
+
+  for (const key of Object.keys(mode) as Array<keyof UserConfig>) {
+    const modeVal = mode[key];
+    if (modeVal === undefined) continue;
+
+    if (key === "plugins" && Array.isArray(modeVal) && Array.isArray(merged.plugins)) {
+      // plugins 는 concat — base 먼저, mode 추가.
+      (merged as Record<string, unknown>).plugins = [...merged.plugins, ...modeVal];
+      continue;
+    }
+
+    const baseVal = base[key];
+    if (
+      typeof baseVal === "object" &&
+      baseVal !== null &&
+      !Array.isArray(baseVal) &&
+      typeof modeVal === "object" &&
+      modeVal !== null &&
+      !Array.isArray(modeVal)
+    ) {
+      // 객체끼리 shallow merge — define/alias/loader 등.
+      (merged as Record<string, unknown>)[key] = {
+        ...(baseVal as Record<string, unknown>),
+        ...(modeVal as Record<string, unknown>),
+      };
+      continue;
+    }
+
+    // scalar / 배열 / 함수 / mode 만 정의됨 — 그대로 override.
+    (merged as Record<string, unknown>)[key] = modeVal as unknown;
+  }
+
+  return merged;
+}

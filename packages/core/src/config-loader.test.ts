@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { init } from "../index";
-import { CONFIG_EXT_PRIORITY, findConfigPath, loadConfig } from "./config-loader";
+import {
+  CONFIG_EXT_PRIORITY,
+  findConfigPath,
+  findModeConfigPath,
+  loadConfig,
+  mergeUserConfigs,
+} from "./config-loader";
 
 beforeAll(() => init());
 
@@ -308,5 +314,127 @@ describe("loadConfig: 함수형 config", () => {
       env: {},
     });
     expect(config).toEqual({ format: "esm" });
+  });
+});
+
+// ─── mode-specific config (#2110 / Phase 3-3) ────────────────────────────────
+
+describe("findModeConfigPath", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "zts-find-mode-cfg-"));
+  });
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  function reset() {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir);
+  }
+
+  test("mode 빈 문자열이면 null", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.ts"), `export default {};`);
+    expect(findModeConfigPath(dir, "")).toBeNull();
+  });
+
+  test("mode-specific 파일 부재 시 null", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.ts"), `export default {};`);
+    expect(findModeConfigPath(dir, "production")).toBeNull();
+  });
+
+  test(".ts > .json 우선순위", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.production.ts"), `export default {};`);
+    writeFileSync(join(dir, "zts.config.production.json"), `{}`);
+    expect(findModeConfigPath(dir, "production")).toBe(join(dir, "zts.config.production.ts"));
+  });
+
+  test("mode 별 분기: production / development", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.production.ts"), `export default {};`);
+    writeFileSync(join(dir, "zts.config.development.ts"), `export default {};`);
+    expect(findModeConfigPath(dir, "production")).toBe(join(dir, "zts.config.production.ts"));
+    expect(findModeConfigPath(dir, "development")).toBe(join(dir, "zts.config.development.ts"));
+    expect(findModeConfigPath(dir, "staging")).toBeNull();
+  });
+
+  test("`.json` 도 자동 탐색 대상", () => {
+    reset();
+    writeFileSync(join(dir, "zts.config.production.json"), `{}`);
+    expect(findModeConfigPath(dir, "production")).toBe(join(dir, "zts.config.production.json"));
+  });
+});
+
+describe("mergeUserConfigs", () => {
+  test("scalar: mode 가 base 를 override", () => {
+    const merged = mergeUserConfigs({ format: "esm", target: "es2020" }, { format: "iife" });
+    expect(merged).toEqual({ format: "iife", target: "es2020" });
+  });
+
+  test("undefined 인 mode 키는 무시 (base 보존)", () => {
+    const merged = mergeUserConfigs({ format: "esm" }, { format: undefined });
+    expect(merged).toEqual({ format: "esm" });
+  });
+
+  test("객체 (define): shallow merge — base 키 + mode 키, mode 우선", () => {
+    const merged = mergeUserConfigs(
+      { define: { __VER__: '"v1"', __BUILD__: '"prod"' } },
+      { define: { __BUILD__: '"override"', __NEW__: '"x"' } },
+    );
+    expect(merged.define).toEqual({
+      __VER__: '"v1"',
+      __BUILD__: '"override"',
+      __NEW__: '"x"',
+    });
+  });
+
+  test("객체 (alias): shallow merge", () => {
+    const merged = mergeUserConfigs(
+      { alias: { "@a": "/path/a", "@b": "/path/b" } },
+      { alias: { "@b": "/override/b" } },
+    );
+    expect(merged.alias).toEqual({
+      "@a": "/path/a",
+      "@b": "/override/b",
+    });
+  });
+
+  test("배열 (entryPoints): mode 가 base 를 완전 대체 (concat 안 함)", () => {
+    const merged = mergeUserConfigs({ entryPoints: ["./base.ts"] }, { entryPoints: ["./mode.ts"] });
+    expect(merged.entryPoints).toEqual(["./mode.ts"]);
+  });
+
+  test("배열 (external): mode 가 base 대체", () => {
+    const merged = mergeUserConfigs({ external: ["react"] }, { external: ["react", "react-dom"] });
+    expect(merged.external).toEqual(["react", "react-dom"]);
+  });
+
+  test("plugins: 예외적으로 concat (Vite 호환)", () => {
+    const basePlugin = { name: "base-p", setup() {} };
+    const modePlugin = { name: "mode-p", setup() {} };
+    const merged = mergeUserConfigs({ plugins: [basePlugin] }, { plugins: [modePlugin] });
+    expect(merged.plugins).toEqual([basePlugin, modePlugin]);
+  });
+
+  test("base 에 없는 mode 전용 키 추가", () => {
+    const merged = mergeUserConfigs({ format: "esm" }, { minify: true });
+    expect(merged).toEqual({ format: "esm", minify: true });
+  });
+
+  test("mode 에 없는 base 전용 키 보존", () => {
+    const merged = mergeUserConfigs({ format: "esm", target: "es2020" }, { minify: true });
+    expect(merged).toEqual({ format: "esm", target: "es2020", minify: true });
+  });
+
+  test("배열 vs 객체 mismatch — mode 가 type 무관 override", () => {
+    // 비정상 입력이지만 panic 안 하고 mode 값으로 override.
+    const merged = mergeUserConfigs(
+      { external: ["react"] } as { external: string[] },
+      { external: undefined } as { external: undefined },
+    );
+    expect(merged.external).toEqual(["react"]); // undefined 는 skip
   });
 });
