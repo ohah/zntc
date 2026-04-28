@@ -3267,6 +3267,9 @@ fn parseBuildOptions(
         .jsx_side_effects = getObjectBool(env, opts_obj, "jsxSideEffects", false),
         .analyze = getObjectBool(env, opts_obj, "analyze", false),
         .drop_labels = drop_labels orelse &.{},
+        // #2155: bundle 모드에도 transpile 동일 drop console/debugger 적용.
+        .drop_console = getObjectBool(env, opts_obj, "dropConsole", false),
+        .drop_debugger = getObjectBool(env, opts_obj, "dropDebugger", false),
         .pure = pure orelse &.{},
         .tsconfig_raw = tsconfig_raw,
         .node_paths = node_paths orelse &.{},
