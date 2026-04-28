@@ -294,6 +294,16 @@ fn isObjectDefinePropertyCallee(ast: *const Ast, callee_idx: NodeIndex) bool {
         std.mem.eql(u8, ast.getText(property.span), "defineProperty");
 }
 
+fn isGlobalObjectDefinePropertyCallee(
+    ast: *const Ast,
+    callee_idx: NodeIndex,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) bool {
+    if (!isObjectDefinePropertyCallee(ast, callee_idx)) return false;
+    const globals = unresolved_globals orelse return false;
+    return globals.contains("Object");
+}
+
 fn isCjsExportObjectExpr(ast: *const Ast, idx: NodeIndex) bool {
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[@intFromEnum(idx)];
@@ -322,6 +332,12 @@ fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
         .string_literal => plainStringLiteralValue(ast, key_idx),
         else => null,
     };
+}
+
+fn isBooleanLiteral(ast: *const Ast, idx: NodeIndex, expected: []const u8) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@intFromEnum(idx)];
+    return node.tag == .boolean_literal and std.mem.eql(u8, ast.getText(node.span), expected);
 }
 
 fn isIdentifierReference(ast: *const Ast, idx: NodeIndex) bool {
@@ -523,6 +539,82 @@ fn cjsDefinePropertyExportCandidateForStmt(
         .rhs_node = descriptor_export.rhs_node,
         .kind = descriptor_export.kind,
     };
+}
+
+fn isSafeEsModuleDefinePropertyDescriptor(ast: *const Ast, descriptor_idx: NodeIndex) bool {
+    if (descriptor_idx.isNone() or @intFromEnum(descriptor_idx) >= ast.nodes.items.len) return false;
+    const descriptor = ast.nodes.items[@intFromEnum(descriptor_idx)];
+    if (descriptor.tag != .object_expression) return false;
+
+    const list = descriptor.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return false;
+
+    var seen: [4][]const u8 = undefined;
+    var seen_len: usize = 0;
+    var has_value_true = false;
+
+    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_prop| {
+        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
+        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return false;
+        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        if (prop.tag != .object_property) return false;
+
+        const name = plainObjectKeyName(ast, prop.data.binary.left) orelse return false;
+        if (seen_len >= seen.len) return false;
+        for (seen[0..seen_len]) |prev| {
+            if (std.mem.eql(u8, prev, name)) return false;
+        }
+        seen[seen_len] = name;
+        seen_len += 1;
+
+        const value = Ast.objectPropertyValue(prop);
+        if (std.mem.eql(u8, name, "value")) {
+            if (!isBooleanLiteral(ast, value, "true")) return false;
+            has_value_true = true;
+        } else if (std.mem.eql(u8, name, "enumerable") or
+            std.mem.eql(u8, name, "configurable") or
+            std.mem.eql(u8, name, "writable"))
+        {
+            if (!isBooleanLiteral(ast, value, "true") and !isBooleanLiteral(ast, value, "false")) return false;
+        } else {
+            return false;
+        }
+    }
+
+    return has_value_true;
+}
+
+fn isSafeCjsEsModuleMarkerStmt(
+    alloc: std.mem.Allocator,
+    ast: *const Ast,
+    stmt_node: Node,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) !bool {
+    if (stmt_node.tag != .expression_statement) return false;
+    const expr_idx = stmt_node.data.unary.operand;
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return false;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag != .call_expression) return false;
+
+    const e = expr.data.extra;
+    if (!ast.hasExtra(e, 2)) return false;
+    const callee_idx = ast.readExtraNode(e, 0);
+    const args_start = ast.readExtra(e, 1);
+    const args_len = ast.readExtra(e, 2);
+    if (args_len != 3) return false;
+    if (args_start + args_len > ast.extra_data.items.len) return false;
+    if (!isGlobalObjectDefinePropertyCallee(ast, callee_idx, unresolved_globals)) return false;
+
+    const target_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    const export_name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 1]);
+    const descriptor_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 2]);
+    if (!isCjsExportObjectExpr(ast, target_idx)) return false;
+
+    const export_name = (try ast.staticKeyName(alloc, export_name_idx)) orelse return false;
+    defer alloc.free(export_name);
+    if (!std.mem.eql(u8, export_name, "__esModule")) return false;
+
+    return isSafeEsModuleDefinePropertyDescriptor(ast, descriptor_idx);
 }
 
 fn collectCjsObjectExportCandidates(
@@ -844,6 +936,7 @@ fn buildStmtInfoSlot(
     } else if (collect_cjs_exports) {
         cjs_shape_extracted =
             try appendCjsDefinePropertyFact(allocator, ast, node, stmt_i, unresolved_globals, cjs_export_facts_buf, symbol_ids) or
+            try isSafeCjsEsModuleMarkerStmt(allocator, ast, node, unresolved_globals) or
             try collectAndAppendCjsObjectFacts(allocator, ast, node, stmt_i, unresolved_globals, cjs_export_facts_buf, symbol_ids);
     }
     const side_effects = if (node.tag == .import_declaration)
