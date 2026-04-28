@@ -149,25 +149,13 @@ pub const ModuleStmtInfos = struct {
         // seed: side-effectful statements
         for (self.stmts, 0..) |stmt, i| {
             if (stmt.has_side_effects) {
-                reachable_stmts.set(i);
-                try queue.append(allocator, @intCast(i));
+                try seedStmt(allocator, &reachable_stmts, &queue, @intCast(i));
             }
         }
 
-        // seed: used exports가 선언된 statements
+        // seed: used exports가 선언된 statements + 같은 심볼의 writer statements
         for (used_export_sym_indices) |sym_idx| {
-            if (self.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
-                if (!reachable_stmts.isSet(stmt_idx)) {
-                    reachable_stmts.set(stmt_idx);
-                    try queue.append(allocator, stmt_idx);
-                }
-            }
-            for (self.writerStmts(sym_idx)) |writer_stmt| {
-                if (!reachable_stmts.isSet(writer_stmt)) {
-                    reachable_stmts.set(writer_stmt);
-                    try queue.append(allocator, writer_stmt);
-                }
-            }
+            try self.seedSymbolLiveStmts(allocator, &reachable_stmts, &queue, sym_idx);
         }
 
         // BFS: referenced_symbols → (declarer, writers) → dependent statements.
@@ -176,24 +164,39 @@ pub const ModuleStmtInfos = struct {
         while (head < queue.items.len) : (head += 1) {
             const stmt_idx = queue.items[head];
             for (self.stmts[stmt_idx].referenced_symbols) |ref_sym| {
-                if (self.declaredStmtBySymbol(ref_sym)) |dep_stmt| {
-                    if (!reachable_stmts.isSet(dep_stmt)) {
-                        reachable_stmts.set(dep_stmt);
-                        try queue.append(allocator, dep_stmt);
-                    }
-                }
-                for (self.writerStmts(ref_sym)) |writer_stmt| {
-                    if (!reachable_stmts.isSet(writer_stmt)) {
-                        reachable_stmts.set(writer_stmt);
-                        try queue.append(allocator, writer_stmt);
-                    }
-                }
+                try self.seedSymbolLiveStmts(allocator, &reachable_stmts, &queue, ref_sym);
             }
         }
 
         return reachable_stmts;
     }
+
+    fn seedSymbolLiveStmts(
+        self: *const ModuleStmtInfos,
+        allocator: std.mem.Allocator,
+        reachable: *std.DynamicBitSet,
+        queue: *std.ArrayListUnmanaged(u32),
+        sym_idx: u32,
+    ) !void {
+        if (self.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
+            try seedStmt(allocator, reachable, queue, stmt_idx);
+        }
+        for (self.writerStmts(sym_idx)) |writer_stmt| {
+            try seedStmt(allocator, reachable, queue, writer_stmt);
+        }
+    }
 };
+
+fn seedStmt(
+    allocator: std.mem.Allocator,
+    reachable: *std.DynamicBitSet,
+    queue: *std.ArrayListUnmanaged(u32),
+    stmt_idx: u32,
+) !void {
+    if (reachable.isSet(stmt_idx)) return;
+    reachable.set(stmt_idx);
+    try queue.append(allocator, stmt_idx);
+}
 
 const CjsExportCandidate = struct {
     /// owned UTF-8. fact 로 transferred 되거나 candidate 가 reject 시 caller 가 free.
