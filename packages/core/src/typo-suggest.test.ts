@@ -129,4 +129,97 @@ describe("KNOWN_CONFIG_KEYS", () => {
     const unique = new Set(KNOWN_CONFIG_KEYS);
     expect(unique.size).toBe(KNOWN_CONFIG_KEYS.length);
   });
+
+  // ─── #2112 schema sync — `BuildOptionsCommon` 필드와 동기화 검증 ─────────────
+  test("BuildOptionsCommon 의 모든 필드가 KNOWN_CONFIG_KEYS 에 포함됨", () => {
+    // packages/core/index.ts 의 `interface BuildOptionsCommon { ... }` 본문 파싱.
+    // typo-suggest 의 KNOWN_CONFIG_KEYS 가 BuildOptions 와 drift 시 false negative
+    // (사용자 typo 가 unknown 으로 분류되어 도움 없는 경고만 출력) 가 발생하므로
+    // CI 에서 자동 감지.
+    const fs = require("node:fs") as typeof import("node:fs");
+    const path = require("node:path") as typeof import("node:path");
+    const indexTsPath = path.join(__dirname, "..", "index.ts");
+    const source = fs.readFileSync(indexTsPath, "utf8");
+
+    // `interface BuildOptionsCommon {` ... `\n}` 본문 추출.
+    const marker = "interface BuildOptionsCommon {";
+    const start = source.indexOf(marker);
+    expect(start).toBeGreaterThan(0);
+    const bodyStart = start + marker.length;
+    let depth = 1;
+    let i = bodyStart;
+    while (i < source.length && depth > 0) {
+      const c = source[i];
+      if (c === "{") depth += 1;
+      else if (c === "}") depth -= 1;
+      i += 1;
+    }
+    const body = source.slice(bodyStart, i - 1);
+
+    // 각 줄에서 필드명 추출 — `name?:` 또는 `name:`.
+    const fields: string[] = [];
+    for (const rawLine of body.split("\n")) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("//") || line.startsWith("*") || line.startsWith("/*")) continue;
+      const m = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*\??\s*:/);
+      if (m) fields.push(m[1]);
+    }
+    expect(fields.length).toBeGreaterThan(20);
+
+    const knownSet = new Set(KNOWN_CONFIG_KEYS);
+    // typo-suggest 가 BuildOptions 와 drift 한 키만 보고. 의도적으로 KNOWN 에서 빠진 키는
+    // BUILD_OPTIONS_NOT_IN_KNOWN allowlist 에 등록.
+    const intentionallyMissing: ReadonlySet<string> = new Set([
+      // BuildOptions / NAPI 만 노출 — 사용자가 zts.config.* 에 직접 명시할 일 없음.
+      "allowOverwrite",
+      "analyze",
+      "blockList",
+      "collectModuleCodes",
+      "configurableExports",
+      "devMode",
+      "emitDiskSourcemap",
+      "entryErrorGuard",
+      "fallback",
+      "globalIdentifiers",
+      "nodePaths",
+      "onReady",
+      "onRebuild",
+      "outExtension",
+      "polyfills",
+      "preserveSymlinks",
+      "profile",
+      "profileFormat",
+      "profileLevel",
+      "reactRefresh",
+      "rootDir",
+      "runBeforeMain",
+      "silentConsoleErrorPatterns",
+      "scopeHoist",
+      "strictExecutionOrder",
+      "watchExclude",
+      "watchFolders",
+      "watchInclude",
+      "workletPluginVersion",
+      "workletTransform",
+      "experimentalCodeCache",
+      "assetRegistry",
+      "globalIdentifiers",
+      "tsconfigRaw",
+      "watch",
+      "write",
+    ]);
+
+    const missing: string[] = [];
+    for (const f of fields) {
+      if (knownSet.has(f)) continue;
+      if (intentionallyMissing.has(f)) continue;
+      missing.push(f);
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `[schema drift] BuildOptionsCommon fields missing from KNOWN_CONFIG_KEYS: ${missing.join(", ")}\n` +
+          `Add to KNOWN_CONFIG_KEYS (typo-suggest.ts) or to intentionallyMissing in this test.`,
+      );
+    }
+  });
 });
