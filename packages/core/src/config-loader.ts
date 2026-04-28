@@ -9,7 +9,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, resolve as pathResolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -25,14 +25,13 @@ const JS_EXTS = new Set([".mjs", ".js", ".cjs"]);
 /**
  * config 파일을 로드한다. 확장자에 따라 self-compile 또는 직접 import.
  *
- * @throws path 가 존재하지 않거나, 확장자가 지원되지 않거나, 컴파일/평가가 실패하면 throw.
+ * 존재 여부는 사전 stat 으로 확인하지 않고 실제 read/import 의 ENOENT 를 catch
+ * 한다 — TOCTOU 회피 + 1 syscall 절감.
+ *
+ * @throws 파일이 없거나, 확장자가 지원되지 않거나, 컴파일/평가가 실패하면 throw.
  */
 export async function loadConfig(filePath: string): Promise<UserConfig> {
   const absPath = pathResolve(filePath);
-  if (!existsSync(absPath)) {
-    throw new Error(`@zts/core: config file not found: ${absPath}`);
-  }
-
   const ext = extname(absPath).toLowerCase();
 
   if (ext === ".json") {
@@ -50,7 +49,7 @@ export async function loadConfig(filePath: string): Promise<UserConfig> {
 }
 
 function loadJsonConfig(absPath: string): UserConfig {
-  const raw = readFileSync(absPath, "utf8");
+  const raw = readFileOrThrowNotFound(absPath);
   try {
     return JSON.parse(raw) as UserConfig;
   } catch (err) {
@@ -61,10 +60,12 @@ function loadJsonConfig(absPath: string): UserConfig {
 
 async function loadTsConfig(absPath: string): Promise<UserConfig> {
   init();
-  const source = readFileSync(absPath, "utf8");
-  // ZTS 는 `.cts` 를 CommonJS-only TS 로 취급해 ESM 구문을 거부한다.
-  // 사용자가 `.cts` 에 `export default {...}` 를 쓴 의도는 TS 식 ESM 이므로
-  // 파싱 단계에서만 `.ts` 로 가장한다 (에러 메시지에는 실제 경로 사용).
+  const source = readFileOrThrowNotFound(absPath);
+  // ZTS parser 는 filename 의 `.cts` 확장자를 보고 CommonJS Script 모드로 진입해
+  // 최상위 `export default` 를 거부한다 (`src/parser/parser.zig:283` 부근). 사용자가
+  // `.cts` 에 `export default {...}` 를 쓴 의도는 TS 식 ESM 이므로 파싱 단계에서만
+  // 가상의 `.ts` 로 호출한다 — 에러 메시지·sourcemap 에는 실제 경로가 그대로 사용된다.
+  // FIXME: `transpile()` 에 `moduleType: "module"` 같은 명시 옵션이 추가되면 이전.
   const parseFilename = absPath.endsWith(".cts") ? absPath.slice(0, -4) + ".ts" : absPath;
   const result = transpile(source, {
     filename: parseFilename,
@@ -82,8 +83,9 @@ async function loadTsConfig(absPath: string): Promise<UserConfig> {
   } finally {
     try {
       unlinkSync(tmpPath);
-    } catch {
-      // 삭제 실패는 무시 — 사용자가 추후 정리 가능
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`@zts/core: failed to remove tmp config ${tmpPath}: ${reason}`);
     }
   }
 }
@@ -93,9 +95,18 @@ async function loadJsConfig(absPath: string): Promise<UserConfig> {
 }
 
 async function importAndResolveDefault(absPath: string): Promise<UserConfig> {
-  // cache-bust 쿼리: watch 모드에서 같은 경로의 config 가 재로드되어야 한다.
-  const url = pathToFileURL(absPath).href + `?t=${Date.now()}`;
-  const mod = await import(url);
+  // 같은 프로세스에서 다중 reload 가 필요한 watch (#2107) 는 별도 cache-bust 적용 예정.
+  const url = pathToFileURL(absPath).href;
+  let mod: Record<string, unknown>;
+  try {
+    mod = await import(url);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ERR_MODULE_NOT_FOUND" || code === "ENOENT") {
+      throw new Error(`@zts/core: config file not found: ${absPath}`);
+    }
+    throw err;
+  }
   const config = (mod as { default?: unknown }).default ?? mod;
   if (typeof config !== "object" || config === null || Array.isArray(config)) {
     throw new Error(
@@ -103,4 +114,15 @@ async function importAndResolveDefault(absPath: string): Promise<UserConfig> {
     );
   }
   return config as UserConfig;
+}
+
+function readFileOrThrowNotFound(absPath: string): string {
+  try {
+    return readFileSync(absPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`@zts/core: config file not found: ${absPath}`);
+    }
+    throw err;
+  }
 }
