@@ -135,6 +135,41 @@ pub const TranspileOptionsDto = struct {
     define: ?[]const DefineEntry = null,
     /// `--stop-after=<phase>` 동등. JSON 값은 `scan`/`parse`/`semantic`/`transform`/`codegen`.
     stopAfter: ?StopAfter = null,
+
+    // ─── bundler-only 필드 (#2105 / Phase 2-3) ─────────────────────────────────
+    // 이 필드들은 transpile 모드에선 무시. `applyZtsConfigJson` 이 CliOptions 의
+    // bundler 리스트로 매핑한다. function-form `manualChunks` 는 JS-only 라
+    // JSON 에서는 record form (`[{name, patterns}]`) 만 지원.
+    external: ?[]const []const u8 = null,
+    alias: ?[]const AliasDto = null,
+    loader: ?[]const LoaderDto = null,
+    conditions: ?[]const []const u8 = null,
+    resolveExtensions: ?[]const []const u8 = null,
+    mainFields: ?[]const []const u8 = null,
+    banner: ?[]const u8 = null,
+    footer: ?[]const u8 = null,
+    assetNames: ?[]const u8 = null,
+    chunkNames: ?[]const u8 = null,
+    entryNames: ?[]const u8 = null,
+    preserveModules: ?bool = null,
+    preserveModulesRoot: ?[]const u8 = null,
+    inlineDynamicImports: ?bool = null,
+    manualChunks: ?[]const ManualChunkDto = null,
+};
+
+pub const AliasDto = struct {
+    from: []const u8,
+    to: []const u8,
+};
+
+pub const LoaderDto = struct {
+    ext: []const u8,
+    loader: []const u8,
+};
+
+pub const ManualChunkDto = struct {
+    name: []const u8,
+    patterns: []const []const u8,
 };
 
 /// JSON payload를 파싱해 `TranspileOptions`로 변환한다.
