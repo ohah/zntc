@@ -139,6 +139,7 @@ export function defineConfig<T extends UserConfigInput>(config: T): T {
 
 export { findConfigPath, importAndResolveDefault, loadConfig } from "./src/config-loader";
 export type { ConfigEnv, UserConfig, UserConfigFn, UserConfigInput } from "./src/config-loader";
+export { envToDefine, loadEnv } from "./src/load-env";
 
 import type { UserConfigInput } from "./src/config-loader";
 

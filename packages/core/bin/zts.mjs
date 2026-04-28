@@ -14,8 +14,17 @@ try {
 } catch {
   coreModule = await import("../index.ts");
 }
-const { init, transpile, build, buildSync, findConfigPath, importAndResolveDefault, loadConfig } =
-  coreModule;
+const {
+  init,
+  transpile,
+  build,
+  buildSync,
+  envToDefine,
+  findConfigPath,
+  importAndResolveDefault,
+  loadConfig,
+  loadEnv,
+} = coreModule;
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { resolve, dirname, basename, extname, join } from "node:path";
 import { createServer } from "node:http";
@@ -100,6 +109,8 @@ function parseArgs(argv) {
     keyfile: undefined,
     configPath: undefined, // --config <path> 명시 시 자동 탐색 우회
     mode: undefined, // --mode <name> 함수형 config / mode 별 config 머지 (#2110) 에서 사용
+    envPrefixes: undefined, // --env-prefix=VITE_,ZTS_ — undefined 면 loadEnv default 사용
+    envDir: undefined, // --env-dir <path> — undefined 면 cwd
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -380,6 +391,22 @@ function parseArgs(argv) {
       opts.mode = arg.slice("--mode=".length);
       continue;
     }
+    if (arg === "--env-prefix") {
+      opts.envPrefixes = args[++i].split(",").filter(Boolean);
+      continue;
+    }
+    if (arg.startsWith("--env-prefix=")) {
+      opts.envPrefixes = arg.slice("--env-prefix=".length).split(",").filter(Boolean);
+      continue;
+    }
+    if (arg === "--env-dir") {
+      opts.envDir = args[++i];
+      continue;
+    }
+    if (arg.startsWith("--env-dir=")) {
+      opts.envDir = arg.slice("--env-dir=".length);
+      continue;
+    }
     if (arg === "--plugin") {
       opts.pluginPaths.push(args[++i]);
       continue;
@@ -644,18 +671,25 @@ async function loadAutoConfig(opts) {
     throw new Error(`failed to load config — file not found: ${explicit}`);
   }
   const configPath = explicit ?? findConfigPath(process.cwd());
-  if (!configPath) return null;
 
   const command = opts.serve ? "serve" : opts.watch ? "watch" : "bundle";
   const mode = opts.mode ?? (command === "bundle" ? "production" : "development");
+
+  // .env 파일 4단계 우선순위로 로드 (#2106). prefix 미지정 시 default `["VITE_", "ZTS_"]`.
+  const envDir = opts.envDir ? resolve(opts.envDir) : process.cwd();
+  const dotenvVars = loadEnv(mode, envDir, opts.envPrefixes);
+
   const env = {
     command,
     mode,
-    env: process.env,
+    env: { ...process.env, ...dotenvVars },
   };
 
+  if (!configPath) return { config: null, env, dotenvVars };
+
   try {
-    return await loadConfig(configPath, env);
+    const config = await loadConfig(configPath, env);
+    return { config, env, dotenvVars };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`failed to load config — ${reason}`);
@@ -1126,14 +1160,20 @@ async function runServe(opts, config) {
 async function main() {
   const opts = parseArgs(process.argv);
 
-  // config 자동 탐색 + 머지 (CLI > config > tsconfig). entry 검사 전에 적용해야
-  // config 의 entryPoints 가 검사 통과에 기여한다.
-  // 명시적 --config <path> flag 는 #2103 (Phase 2-1) 에서 추가.
+  // config 자동 탐색 + .env 로드 + 머지 (CLI > config > tsconfig). entry 검사 전에
+  // 적용해야 config 의 entryPoints 가 검사 통과에 기여한다.
   // init() 은 entry 검사 후로 미뤄 no-args 경로의 NAPI dlopen 비용을 절감한다.
   // (config 가 .ts 면 loadConfig 내부에서 init() 이 idempotent 하게 호출됨)
-  const config = await loadAutoConfig(opts);
+  const { config, env: configEnv, dotenvVars } = await loadAutoConfig(opts);
   if (config) {
     mergeConfigIntoOpts(opts, config);
+  }
+
+  // import.meta.env.* + import.meta.env.MODE/PROD/DEV/SSR 정적 치환을 define 으로
+  // 자동 주입. 사용자 명시 define 이 동일 키를 덮어쓰면 그대로 우선.
+  const envDefine = envToDefine(dotenvVars, configEnv.mode);
+  for (const [key, value] of Object.entries(envDefine)) {
+    if (opts.define[key] === undefined) opts.define[key] = value;
   }
 
   if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve) {

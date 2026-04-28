@@ -1619,3 +1619,84 @@ describe("CLI: 함수형 config + --config flag", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// ─── .env 자동 로드 + import.meta.env 정적 치환 (#2106 / Phase 2-4) ───
+
+describe("CLI: .env 자동 로드", () => {
+  test(".env 의 VITE_* 키가 import.meta.env 로 정적 치환됨", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-env-vite-"));
+    writeFileSync(join(dir, ".env"), "VITE_API=https://prod.example.com");
+    writeFileSync(join(dir, "entry.ts"), "console.log(import.meta.env.VITE_API);");
+    const { stdout, exitCode } = runCli(["--bundle", join(dir, "entry.ts")], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("https://prod.example.com");
+    expect(stdout).not.toContain("import.meta.env.VITE_API");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("import.meta.env.MODE / PROD / DEV 자동 주입", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-env-mode-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      `console.log("mode=" + import.meta.env.MODE);
+       console.log("prod=" + import.meta.env.PROD);`,
+    );
+    const { stdout, exitCode } = runCli(["--bundle", join(dir, "entry.ts")], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("production");
+    expect(stdout).toContain("true");
+    expect(stdout).not.toContain("import.meta.env.MODE");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test(".env.{mode}.local 우선순위 (4단계)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-env-priority-"));
+    writeFileSync(join(dir, ".env"), "VITE_K=base");
+    writeFileSync(join(dir, ".env.local"), "VITE_K=local");
+    writeFileSync(join(dir, ".env.production"), "VITE_K=prod");
+    writeFileSync(join(dir, ".env.production.local"), "VITE_K=prod-local");
+    writeFileSync(join(dir, "entry.ts"), "console.log(import.meta.env.VITE_K);");
+    const { stdout, exitCode } = runCli(["--bundle", join(dir, "entry.ts")], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("prod-local");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("--mode <name> 으로 mode 별 분기", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-env-mode-flag-"));
+    writeFileSync(join(dir, ".env.production"), "VITE_HOST=prod");
+    writeFileSync(join(dir, ".env.development"), "VITE_HOST=dev");
+    writeFileSync(join(dir, "entry.ts"), "console.log(import.meta.env.VITE_HOST);");
+
+    const buildResult = runCli(["--bundle", "--mode=production", join(dir, "entry.ts")], {
+      cwd: dir,
+    });
+    expect(buildResult.exitCode).toBe(0);
+    expect(buildResult.stdout).toContain("prod");
+
+    const devResult = runCli(["--bundle", "--mode=development", join(dir, "entry.ts")], {
+      cwd: dir,
+    });
+    expect(devResult.exitCode).toBe(0);
+    expect(devResult.stdout).toContain("dev");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("--env-prefix=CUSTOM_ 로 prefix 변경", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-env-prefix-"));
+    writeFileSync(join(dir, ".env"), "VITE_NOT_EXPOSED=hidden\nCUSTOM_API=allowed");
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "console.log(import.meta.env.CUSTOM_API);\nconsole.log(import.meta.env.VITE_NOT_EXPOSED);",
+    );
+    const { stdout, exitCode } = runCli(
+      ["--bundle", "--env-prefix=CUSTOM_", join(dir, "entry.ts")],
+      { cwd: dir },
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("allowed");
+    // VITE_NOT_EXPOSED 는 정적 치환 안 일어나 import.meta.env 참조 그대로 (런타임 undefined).
+    expect(stdout).toContain("import.meta.env.VITE_NOT_EXPOSED");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
