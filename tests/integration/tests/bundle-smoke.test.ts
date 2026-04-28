@@ -1854,6 +1854,78 @@ describe("에셋 로더 + RN 프리셋", () => {
     expect(result.stderr).not.toContain("No loader");
     expect(result.stdout).toContain("undefined");
   });
+
+  // ─── #2157 builtin loader codegen 검증 ─────────────────────────────────────
+
+  test("loader=text → UTF-8 string default export", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const greeting = require('./greeting.txt');\nconsole.log(greeting);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "greeting.txt"), "Hello, ZTS!");
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--loader:.txt=text",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    expect(result.stdout).toContain("Hello, ZTS!");
+  });
+
+  test("loader=base64 → 순수 base64 string (data URL prefix 없음)", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const data = require('./blob.bin');\nconsole.log(data);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "blob.bin"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--loader:.bin=base64",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    // PNG signature 첫 4 바이트 0x89 0x50 0x4e 0x47 → base64 "iVBORw=="
+    expect(result.stdout).toContain("iVBORw==");
+    // data URL prefix 가 없어야 함 (dataurl loader 와 구별).
+    expect(result.stdout).not.toContain("data:");
+  });
+
+  test("loader=binary → __toBinary base64 + Uint8Array runtime helper", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const data = require('./blob.bin');\nconsole.log(data);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "blob.bin"), Buffer.from([0x01, 0x02, 0x03, 0x04, 0x05]));
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--loader:.bin=binary",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    // base64("\x01\x02\x03\x04\x05") = "AQIDBAU="
+    expect(result.stdout).toContain('__toBinary("AQIDBAU=")');
+    // __toBinary runtime helper 가 inline
+    expect(result.stdout).toContain("Uint8Array");
+  });
+
+  test("loader=dataurl 의 MIME — .svg → image/svg+xml", async () => {
+    const fixture = await createFixture({
+      "entry.ts": `const svg = require('./vec.svg');\nconsole.log(svg);`,
+    });
+    cleanup = fixture.cleanup;
+    writeFileSync(join(fixture.dir, "vec.svg"), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--loader:.svg=dataurl",
+    ]);
+    expect(result.stderr).not.toContain("No loader");
+    expect(result.stdout).toContain("data:image/svg+xml;base64,");
+  });
 });
 
 describe("JSON named exports", () => {

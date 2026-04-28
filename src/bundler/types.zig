@@ -434,6 +434,9 @@ pub const Loader = enum {
     /// 파일을 base64 data URL로 인라인.
     /// export default "data:image/png;base64,..."
     dataurl,
+    /// 파일을 base64 string 으로 인라인 (data URL prefix 없음).
+    /// export default "iVBORw0KG..."
+    base64,
     /// 파일을 UTF-8 문자열로 export.
     /// export default "file contents..."
     text,
@@ -468,10 +471,11 @@ pub const Loader = enum {
     }
 
     /// 문자열에서 Loader enum으로 변환 (CLI 파싱용).
-    /// "file", "dataurl", "text", "binary", "copy", "json", "css", "empty" 지원.
+    /// esbuild/rolldown 호환 — js/jsx/ts/tsx 4 string 모두 `.javascript` 로 normalize.
     pub fn fromString(s: []const u8) ?Loader {
         if (std.mem.eql(u8, s, "file")) return .file;
         if (std.mem.eql(u8, s, "dataurl")) return .dataurl;
+        if (std.mem.eql(u8, s, "base64")) return .base64;
         if (std.mem.eql(u8, s, "text")) return .text;
         if (std.mem.eql(u8, s, "binary")) return .binary;
         if (std.mem.eql(u8, s, "copy")) return .copy;
@@ -485,11 +489,11 @@ pub const Loader = enum {
         return null;
     }
 
-    /// asset 로더인지 (file/dataurl/text/binary/copy/empty).
+    /// asset 로더인지 (file/dataurl/base64/text/binary/copy/empty).
     /// JS/JSON/CSS가 아닌 로더.
     pub fn isAsset(self: Loader) bool {
         return switch (self) {
-            .file, .dataurl, .text, .binary, .copy, .empty => true,
+            .file, .dataurl, .base64, .text, .binary, .copy, .empty => true,
             else => false,
         };
     }
