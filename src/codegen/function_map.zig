@@ -35,9 +35,9 @@ pub const RangeMapping = struct {
 /// 호출자가 소유해야 한다. 빌더는 이름을 복사하지 않고 참조만 저장한다.
 pub const FunctionMapBuilder = struct {
     allocator: std.mem.Allocator,
-    /// 등장 순 이름 목록.
+    /// 등장 순 이름 목록. 빌더가 owned UTF-8 으로 보관 (deinit 에서 일괄 해제).
     names: std.ArrayList([]const u8) = .empty,
-    /// 이름 → names 인덱스 (중복 제거). 키는 외부 소유 슬라이스 참조.
+    /// 이름 → names 인덱스 (중복 제거). 키는 `names` 의 owned 슬라이스를 가리킨다.
     names_map: std.StringHashMapUnmanaged(u32) = .empty,
     /// VLQ mappings 버퍼.
     mappings: std.ArrayList(u8) = .empty,
@@ -54,6 +54,7 @@ pub const FunctionMapBuilder = struct {
     }
 
     pub fn deinit(self: *FunctionMapBuilder) void {
+        for (self.names.items) |n| self.allocator.free(n);
         self.names.deinit(self.allocator);
         self.names_map.deinit(self.allocator);
         self.mappings.deinit(self.allocator);
@@ -69,8 +70,9 @@ pub const FunctionMapBuilder = struct {
         if (self.last_pushed_name) |last| {
             if (std.mem.eql(u8, last, mapping.name)) return;
         }
-        self.last_pushed_name = mapping.name;
         const name_index = try self.internName(mapping.name);
+        // `last_pushed_name` 은 builder owned slice 를 가리켜 caller name 의 lifetime 에 의존하지 않는다.
+        self.last_pushed_name = self.names.items[name_index];
 
         const new_line: i32 = @intCast(mapping.line);
         const line_delta: i32 = new_line - self.last_line;
@@ -129,9 +131,16 @@ pub const FunctionMapBuilder = struct {
     fn internName(self: *FunctionMapBuilder, name: []const u8) !u32 {
         const gop = try self.names_map.getOrPut(self.allocator, name);
         if (!gop.found_existing) {
+            const owned = self.allocator.dupe(u8, name) catch |err| {
+                _ = self.names_map.remove(name);
+                return err;
+            };
+            errdefer self.allocator.free(owned);
             const idx: u32 = @intCast(self.names.items.len);
+            try self.names.append(self.allocator, owned);
+            // `getOrPut` 의 key_ptr 은 caller 의 borrowed slice — owned 로 교체해 hashmap 도 자체 소유.
+            gop.key_ptr.* = owned;
             gop.value_ptr.* = idx;
-            try self.names.append(self.allocator, name);
         }
         return gop.value_ptr.*;
     }
