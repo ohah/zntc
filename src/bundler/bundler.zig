@@ -578,15 +578,13 @@ pub const Bundler = struct {
                 // specifier 끝 따옴표 찾기
                 if (std.mem.indexOf(u8, code[after + 1 ..], "\"")) |quote_end| {
                     const spec = code[after + 1 .. after + 1 + quote_end];
-                    // 닫는 괄호 찾기
-                    if (std.mem.indexOf(u8, code[abs_start..], ")")) |paren_end| {
-                        const replace_end = abs_start + paren_end + 1;
+                    // 닫는 괄호 찾기. 두 번째 인수가 CJS import.meta 변환으로
+                    // pathToFileURL(__filename)처럼 중첩 호출이 될 수 있다.
+                    if (findMatchingParen(code, abs_start + needle.len - 1)) |close_paren| {
+                        const replace_end = close_paren + 1;
                         if (spec_to_filename.get(spec)) |filename| {
                             try result.appendSlice(self.allocator, code[pos..abs_start]);
-                            try result.append(self.allocator, '"');
-                            try result.appendSlice(self.allocator, "./");
-                            try result.appendSlice(self.allocator, filename);
-                            try result.append(self.allocator, '"');
+                            try self.appendWorkerURLReplacement(&result, filename);
                             pos = replace_end;
                             continue;
                         }
@@ -608,7 +606,70 @@ pub const Bundler = struct {
         contents: []const u8,
     };
 
-    /// Worker 파일을 독립 IIFE 번들로 빌드한다.
+    fn findMatchingParen(code: []const u8, open_paren: usize) ?usize {
+        var depth: usize = 0;
+        var i = open_paren;
+        var quote: ?u8 = null;
+        var escaped = false;
+
+        while (i < code.len) : (i += 1) {
+            const c = code[i];
+            if (quote) |q| {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == q) {
+                    quote = null;
+                }
+                continue;
+            }
+
+            switch (c) {
+                '"', '\'', '`' => quote = c,
+                '(' => depth += 1,
+                ')' => {
+                    if (depth == 0) return null;
+                    depth -= 1;
+                    if (depth == 0) return i;
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn workerFormat(self: *const Bundler) EmitOptions.Format {
+        return if (self.options.platform == .node and self.options.format == .cjs) .cjs else .iife;
+    }
+
+    fn workerExtension(format: EmitOptions.Format) []const u8 {
+        return switch (format) {
+            .cjs => ".cjs",
+            else => ".js",
+        };
+    }
+
+    fn appendWorkerURLReplacement(self: *Bundler, result: *std.ArrayListUnmanaged(u8), filename: []const u8) !void {
+        if (self.options.platform == .node) {
+            try result.appendSlice(self.allocator, "new URL(\"./");
+            try result.appendSlice(self.allocator, filename);
+            try result.appendSlice(self.allocator, "\", ");
+            if (self.options.format == .cjs) {
+                try result.appendSlice(self.allocator, "require(\"node:url\").pathToFileURL(__filename).href)");
+            } else {
+                try result.appendSlice(self.allocator, "import.meta.url)");
+            }
+            return;
+        }
+
+        try result.append(self.allocator, '"');
+        try result.appendSlice(self.allocator, "./");
+        try result.appendSlice(self.allocator, filename);
+        try result.append(self.allocator, '"');
+    }
+
+    /// Worker 파일을 별도 번들로 빌드한다.
     fn buildWorker(self: *Bundler, worker_path: []const u8) !WorkerBuildResult {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -639,8 +700,10 @@ pub const Bundler = struct {
         const entry_arr: [1][]const u8 = .{entry_path};
         try worker_graph.build(&entry_arr);
 
+        const format = self.workerFormat();
+
         // 링킹
-        var worker_linker = Linker.init(arena_alloc, &worker_graph, .iife);
+        var worker_linker = Linker.init(arena_alloc, &worker_graph, format);
         // #1621: worker 청크도 minify 시 preamble 축약 이름 사용.
         worker_linker.minify_whitespace = self.options.minify_whitespace;
         try worker_linker.link();
@@ -650,9 +713,9 @@ pub const Bundler = struct {
         });
         defer worker_linker.deinit();
 
-        // emit (IIFE 포맷)
+        // emit
         var emit_opts = self.makeEmitOptions();
-        emit_opts.format = .iife;
+        emit_opts.format = format;
         const worker_result = try emitter.emitWithTreeShaking(
             arena_alloc,
             &worker_graph,
@@ -665,7 +728,7 @@ pub const Bundler = struct {
         // content hash로 파일명 생성
         const hash = std.hash.Crc32.hash(worker_output);
         const basename = std.fs.path.stem(std.fs.path.basename(worker_path));
-        const filename = try std.fmt.allocPrint(self.allocator, "{s}-{x:0>8}.js", .{ basename, hash });
+        const filename = try std.fmt.allocPrint(self.allocator, "{s}-{x:0>8}{s}", .{ basename, hash, workerExtension(format) });
         const contents = try self.allocator.dupe(u8, worker_output);
 
         return .{ .filename = filename, .contents = contents };

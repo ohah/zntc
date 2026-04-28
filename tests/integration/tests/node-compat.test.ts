@@ -1,7 +1,8 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { createFixture, runNode, runZts, runZtsInDir } from "./helpers";
 import { join, basename } from "node:path";
-import { readFileSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 /// CJS/Node 프리셋으로 번들하고 outFile 경로 반환. 번들 실패 시 throw.
 async function bundleCjsNode(dir: string, entry: string, outName = "out.cjs"): Promise<string> {
@@ -227,6 +228,60 @@ describe("Node.js 호환 edge case", () => {
         readFileSync(join(outDir, n), "utf8").includes("createRequire(import.meta.url)"),
       );
       expect(hasShim).toBe(true);
+    });
+  });
+
+  describe("worker_threads", () => {
+    test("CJS Node worker: new Worker(new URL) emits and runs worker bundle", async () => {
+      const f = await createFixture({
+        "app.ts": `
+          import { Worker } from "node:worker_threads";
+          import { writeFileSync } from "node:fs";
+
+          const worker = new Worker(new URL("./worker.ts", import.meta.url));
+          worker.on("message", (value) => {
+            console.log("worker:" + value);
+            writeFileSync(new URL("./worker-result.txt", import.meta.url), String(value));
+          });
+          worker.on("error", (err) => {
+            console.error(err && err.stack ? err.stack : err);
+            process.exitCode = 1;
+          });
+          worker.on("exit", (code) => {
+            if (code !== 0) process.exitCode = code;
+          });
+          worker.postMessage(20);
+        `,
+        "worker.ts": `
+          import { parentPort } from "node:worker_threads";
+
+          parentPort!.on("message", (value) => {
+            parentPort!.postMessage(value + 22);
+            parentPort!.close();
+          });
+        `,
+      });
+      cleanup = f.cleanup;
+
+      const outFile = await bundleCjsNode(f.dir, "app.ts");
+      let out = readFileSync(outFile, "utf8");
+      const summaryStart = out.indexOf("\nBundled ");
+      if (summaryStart !== -1) {
+        out = out.slice(0, summaryStart);
+        writeFileSync(outFile, out);
+      }
+      expect(out).toContain('new Worker(new URL("./worker-');
+      expect(out).toContain('require("node:url").pathToFileURL(__filename).href');
+      expect(out).not.toContain("./worker.ts");
+
+      const workerFile = readdirSync(f.dir).find((name) => /^worker-[a-f0-9]{8}\.cjs$/.test(name));
+      expect(workerFile).toBeDefined();
+      const workerOut = readFileSync(join(f.dir, workerFile!), "utf8");
+      expect(workerOut).toContain('require("node:worker_threads")');
+
+      const run = spawnSync("node", [outFile], { encoding: "utf8" });
+      expect(run.status).toBe(0);
+      expect(readFileSync(join(f.dir, "worker-result.txt"), "utf8")).toBe("42");
     });
   });
 });
