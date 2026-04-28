@@ -1910,13 +1910,21 @@ pub const Linker = struct {
 
             if (sem.scope_maps.len == 0) continue;
 
-            // 분석 대상 (namespace 또는 virtual-namespace named) import 가 하나도 없으면
+            // 분석 대상 (namespace, virtual-namespace named, 또는 CJS default) import 가 하나도 없으면
             // index 구축 전에 outer skip — AST 전체 순회 비용 회피 (#1735).
             const has_candidate = blk: {
                 for (importer.import_bindings) |ib| {
                     const is_namespace = ib.kind == .namespace;
                     const is_named_candidate = ib.kind == .named and ib.namespace_used_properties == null;
-                    if (is_namespace or is_named_candidate) break :blk true;
+                    const is_cjs_default_candidate = cjs_default: {
+                        if (ib.kind != .default) break :cjs_default false;
+                        if (ib.import_record_index >= importer.import_records.len) break :cjs_default false;
+                        const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
+                        if (source_mod_idx.isNone()) break :cjs_default false;
+                        const source = self.graph.getModule(source_mod_idx) orelse break :cjs_default false;
+                        break :cjs_default source.wrap_kind == .cjs;
+                    };
+                    if (is_namespace or is_named_candidate or is_cjs_default_candidate) break :blk true;
                 }
                 break :blk false;
             };
@@ -1937,14 +1945,18 @@ pub const Linker = struct {
             for (importer.import_bindings) |*ib| {
                 const is_namespace = ib.kind == .namespace;
                 const is_named_candidate = ib.kind == .named and ib.namespace_used_properties == null;
-                if (!is_namespace and !is_named_candidate) continue;
                 if (ib.import_record_index >= importer.import_records.len) continue;
                 const source_mod_idx = importer.import_records[ib.import_record_index].resolved;
                 if (source_mod_idx.isNone()) continue;
                 const source = self.graph.getModule(source_mod_idx) orelse continue;
+                const is_cjs_default_candidate = ib.kind == .default and source.wrap_kind == .cjs;
+                if (!is_namespace and !is_named_candidate and !is_cjs_default_candidate) continue;
 
                 // `.named` 경로는 virtual namespace (re_export_namespace 타겟)일 때만 처리.
-                // `.namespace`는 항상 대상 — collectNamespaceAccesses 결과를 scope-aware로 재평가.
+                // `.namespace`와 CJS default는 항상 대상 — collectNamespaceAccesses 결과를
+                // scope-aware로 재평가한다. CJS default는 `import React from "react";
+                // React.createElement(...)` 같은 member-only 사용을 CJS export fact pruning과
+                // 연결하기 위한 정밀화다.
                 if (is_named_candidate) {
                     var is_virtual_ns = false;
                     for (source.export_bindings) |eb| {
@@ -1971,9 +1983,10 @@ pub const Linker = struct {
                 defer access.deinit(self.allocator);
 
                 if (access.kind == .@"opaque") {
-                    // `.namespace`는 text-based 결과를 신뢰하지 않음 — null로 덮어써 fallback.
-                    // `.named` virtual ns는 null 유지(기존 동작).
-                    if (is_namespace) {
+                    // `.namespace`와 CJS default는 text-based 결과를 신뢰하지 않음 —
+                    // null로 덮어써 전체 namespace/default fallback. `.named` virtual ns는
+                    // null 유지(기존 동작).
+                    if (is_namespace or is_cjs_default_candidate) {
                         ib.namespace_used_properties = null;
                         ib.namespace_used_property_stmts = null;
                     }

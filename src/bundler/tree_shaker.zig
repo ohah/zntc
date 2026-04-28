@@ -659,6 +659,18 @@ pub const TreeShaker = struct {
                     const target_mod_idx = @intFromEnum(rec.resolved);
                     const target_module = self.graph.getModule(rec.resolved) orelse continue;
                     if (target_module.wrap_kind != .cjs) continue;
+                    if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
+                        !self.isExportUsed(@intCast(target_mod_idx), ALL_EXPORTS_SENTINEL) and
+                        self.hasAnyUsedExportDirect(@intCast(target_mod_idx)) and
+                        isModuleExportsRequireStmtForSpan(o, infos, @intCast(item.stmt), rec.span))
+                    {
+                        const target_infos = module_stmt_infos[target_mod_idx] orelse {
+                            try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                            continue;
+                        };
+                        try self.seedSideEffectStmts(@intCast(target_mod_idx), target_infos, &queue, reachable_stmts);
+                        continue;
+                    }
                     try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
                 }
             }
@@ -782,6 +794,17 @@ pub const TreeShaker = struct {
         }
 
         if (target_module_for_import.wrap_kind == .cjs and ib.kind == .default) {
+            if (ib.namespace_used_properties) |props| {
+                for (props, 0..) |prop_name, pi| {
+                    if (dispatch_stmt) |ds| gate: {
+                        const prop_stmts = ib.namespace_used_property_stmts orelse break :gate;
+                        if (pi >= prop_stmts.len) break :gate;
+                        if (!containsU32(prop_stmts[pi], ds)) continue;
+                    }
+                    try self.seedCjsExportOrAll(@intCast(target), prop_name, queue, module_stmt_infos, reachable_stmts);
+                }
+                return;
+            }
             try self.markAndSeedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
             return;
         }
@@ -928,6 +951,9 @@ pub const TreeShaker = struct {
             if (try self.seedNodeBufferModuleObjectExport(mod_idx, export_name, target_infos, queue, reachable_stmts)) {
                 return;
             }
+            if (try self.seedCjsModuleExportsRequireProxy(mod_idx, export_name, target_infos, queue, module_stmt_infos, reachable_stmts)) {
+                return;
+            }
             if (try self.seedCjsExportFactsByName(mod_idx, target_infos, export_name, queue, reachable_stmts)) {
                 return;
             }
@@ -963,6 +989,36 @@ pub const TreeShaker = struct {
                 reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
             }
             try self.enqueue(mod_idx, @intCast(si), reachable_stmts, queue);
+            return true;
+        }
+        return false;
+    }
+
+    fn seedCjsModuleExportsRequireProxy(
+        self: *TreeShaker,
+        mod_idx: u32,
+        export_name: []const u8,
+        infos: StmtInfos,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!bool {
+        const m = self.getModule(mod_idx) orelse return false;
+        const ast = &(m.ast orelse return false);
+
+        for (infos.stmts, 0..) |stmt, si| {
+            const stmt_ni: usize = stmt.node_idx;
+            if (stmt_ni >= ast.nodes.items.len) continue;
+            const require_span = moduleExportsRequireSpanAt(ast, @enumFromInt(stmt_ni)) orelse continue;
+            const target = requireTargetForSpan(m, require_span) orelse continue;
+            const target_idx: u32 = @intFromEnum(target);
+            if (target_idx == mod_idx) continue;
+
+            if (reachable_stmts[mod_idx] == null) {
+                reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
+            }
+            try self.enqueue(mod_idx, @intCast(si), reachable_stmts, queue);
+            try self.seedCjsExportOrAll(target_idx, export_name, queue, module_stmt_infos, reachable_stmts);
             return true;
         }
         return false;
@@ -1143,6 +1199,23 @@ pub const TreeShaker = struct {
         }
     }
 
+    fn seedSideEffectStmts(
+        self: *TreeShaker,
+        mod_idx: u32,
+        infos: StmtInfos,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        self.included.set(mod_idx);
+        if (reachable_stmts[mod_idx] == null) {
+            reachable_stmts[mod_idx] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
+        }
+        for (infos.stmts, 0..) |stmt, si| {
+            if (!stmt.has_side_effects) continue;
+            try self.enqueue(mod_idx, @intCast(si), reachable_stmts, queue);
+        }
+    }
+
     fn markAndSeedAllStmts(
         self: *TreeShaker,
         mod_idx: u32,
@@ -1153,6 +1226,30 @@ pub const TreeShaker = struct {
         try self.markAllExportsUsed(mod_idx);
         self.included.set(mod_idx);
         try self.seedAllStmts(mod_idx, queue, module_stmt_infos, reachable_stmts);
+        try self.seedModuleExportsRequireProxyTargetsAll(mod_idx, queue, module_stmt_infos, reachable_stmts);
+    }
+
+    fn seedModuleExportsRequireProxyTargetsAll(
+        self: *TreeShaker,
+        mod_idx: u32,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!void {
+        const m = self.getModule(mod_idx) orelse return;
+        const infos = if (mod_idx < module_stmt_infos.len) module_stmt_infos[mod_idx] else null;
+        const target_infos = infos orelse return;
+        const ast = &(m.ast orelse return);
+        for (target_infos.stmts) |stmt| {
+            const stmt_ni = stmt.node_idx;
+            if (stmt_ni >= ast.nodes.items.len) continue;
+            const require_span = moduleExportsRequireSpanAt(ast, @enumFromInt(stmt_ni)) orelse continue;
+            const target = requireTargetForSpan(m, require_span) orelse continue;
+            const target_idx: u32 = @intFromEnum(target);
+            if (target_idx == mod_idx) continue;
+            if (self.isExportUsed(target_idx, ALL_EXPORTS_SENTINEL)) continue;
+            try self.markAndSeedAllStmts(target_idx, queue, module_stmt_infos, reachable_stmts);
+        }
     }
 
     fn collectDirectUsedExportNames(self: *TreeShaker, module_index: u32) !std.ArrayListUnmanaged([]const u8) {
@@ -1396,7 +1493,11 @@ pub const TreeShaker = struct {
             }
 
             if (target_module.wrap_kind == .cjs) {
-                if (ib.kind == .default or ib.kind == .namespace) {
+                if (ib.kind == .default and ib.namespace_used_properties != null) {
+                    for (ib.namespace_used_properties.?) |prop_name| {
+                        try self.markExportUsed(@intCast(target_mod), prop_name);
+                    }
+                } else if (ib.kind == .default or ib.kind == .namespace) {
                     try self.markAllExportsUsed(@intCast(target_mod));
                 } else {
                     try self.markExportUsed(@intCast(target_mod), ib.imported_name);
@@ -1890,14 +1991,14 @@ fn isModuleExportsAssignedNodeBufferObject(
     if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return false;
     const expr = ast.nodes.items[@intFromEnum(expr_idx)];
     if (expr.tag != .assignment_expression) return false;
-    if (!isModuleExportsLhsForNodeBufferFact(ast, expr.data.binary.left)) return false;
+    if (!isModuleExportsLhs(ast, expr.data.binary.left)) return false;
     const rhs_idx = expr.data.binary.right;
     if (rhs_idx.isNone() or @intFromEnum(rhs_idx) >= ast.nodes.items.len) return false;
     const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
     return rhs.tag == .identifier_reference and buffer_names.contains(ast.getText(rhs.span));
 }
 
-fn isModuleExportsLhsForNodeBufferFact(ast: *const Ast, idx: NodeIndex) bool {
+fn isModuleExportsLhs(ast: *const Ast, idx: NodeIndex) bool {
     const parts = staticMemberParts(ast, idx) orelse return false;
     const obj = ast.nodes.items[@intFromEnum(parts.object)];
     const prop = ast.nodes.items[@intFromEnum(parts.property)];
@@ -1923,6 +2024,73 @@ fn isCjsNamedExportLhs(ast: *const Ast, idx: NodeIndex) bool {
         inner_prop.tag == .identifier_reference and
         std.mem.eql(u8, ast.getText(inner_obj.span), "module") and
         std.mem.eql(u8, ast.getText(inner_prop.span), "exports");
+}
+
+fn moduleExportsRequireSpanAt(ast: *const Ast, idx: NodeIndex) ?@import("../lexer/token.zig").Span {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    const stmt = ast.nodes.items[@intFromEnum(idx)];
+    if (stmt.tag == .block_statement) {
+        const inner = singleBlockStatement(ast, idx) orelse return null;
+        return moduleExportsRequireSpanAt(ast, inner);
+    }
+    if (stmt.tag == .if_statement) {
+        const t = stmt.data.ternary;
+        if (moduleExportsRequireSpanAt(ast, t.b)) |span| return span;
+        if (!t.c.isNone()) return moduleExportsRequireSpanAt(ast, t.c);
+        return null;
+    }
+    if (stmt.tag != .expression_statement) return null;
+    const expr_idx = stmt.data.unary.operand;
+    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr.tag != .assignment_expression) return null;
+    const op: Kind = @enumFromInt(expr.data.binary.flags);
+    if (op != .eq) return null;
+    if (!isModuleExportsLhs(ast, expr.data.binary.left)) return null;
+
+    const rhs_idx = expr.data.binary.right;
+    if (rhs_idx.isNone() or @intFromEnum(rhs_idx) >= ast.nodes.items.len) return null;
+    const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
+    if (rhs.tag != .call_expression) return null;
+    const e = rhs.data.extra;
+    if (!ast.hasExtra(e, 2)) return null;
+
+    const callee_idx = ast.readExtraNode(e, 0);
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return null;
+    const callee = ast.nodes.items[@intFromEnum(callee_idx)];
+    if (callee.tag != .identifier_reference or !std.mem.eql(u8, ast.getText(callee.span), "require")) return null;
+
+    const args_start = ast.readExtra(e, 1);
+    const args_len = ast.readExtra(e, 2);
+    if (args_len != 1 or args_start >= ast.extra_data.items.len) return null;
+    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return null;
+    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    if (arg.tag != .string_literal) return null;
+    return arg.span;
+}
+
+fn requireTargetForSpan(m: *const Module, span: @import("../lexer/token.zig").Span) ?ModuleIndex {
+    for (m.import_records) |rec| {
+        if (rec.kind != .require) continue;
+        if (rec.resolved.isNone()) continue;
+        if (rec.span.start == span.start and rec.span.end == span.end) return rec.resolved;
+    }
+    return null;
+}
+
+fn isModuleExportsRequireStmtForSpan(
+    m: *const Module,
+    infos: StmtInfos,
+    stmt_idx: u32,
+    span: @import("../lexer/token.zig").Span,
+) bool {
+    if (stmt_idx >= infos.stmts.len) return false;
+    const ast = &(m.ast orelse return false);
+    const stmt_ni = infos.stmts[stmt_idx].node_idx;
+    if (stmt_ni >= ast.nodes.items.len) return false;
+    const require_span = moduleExportsRequireSpanAt(ast, @enumFromInt(stmt_ni)) orelse return false;
+    return require_span.start == span.start and require_span.end == span.end;
 }
 
 fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeIndex, property: NodeIndex } {
