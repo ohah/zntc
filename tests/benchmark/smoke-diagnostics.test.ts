@@ -64,17 +64,15 @@ describe("benchmark smoke diagnostics", () => {
   });
 
   test("size-gap.ts reports CJS export pattern audit for target projects", () => {
-    const r = runBun([
-      "run",
-      "tests/benchmark/size-gap.ts",
-      "--projects=safe-buffer,cookie,path-to-regexp",
-    ]);
+    const r = runBun(["run", "tests/benchmark/size-gap.ts"]);
 
     expect(r.status, r.stderr?.toString()).toBe(0);
     const stdout = r.stdout.toString();
     expect(stdout).toContain("safe-buffer");
     expect(stdout).toContain("cookie");
     expect(stdout).toContain("path-to-regexp");
+    expect(stdout).toContain("object-assign");
+    expect(stdout).toContain("merge-descriptors");
     expect(stdout).toContain("ZTS-only strings");
     expect(stdout).toContain("Wrapper markers");
     expect(stdout).toContain("Top-level declarations");
@@ -82,6 +80,7 @@ describe("benchmark smoke diagnostics", () => {
     expect(stdout).toContain("Pattern counts:");
     expect(stdout).toMatch(/exports\.x =: \d+/);
     expect(stdout).toMatch(/module\.exports\.x =: \d+/);
+    expect(stdout).toMatch(/module\.exports =: \d+/);
     expect(stdout).toMatch(/module\.exports = \{ \.\.\. \}: \d+/);
     expect(stdout).toMatch(/Object\.defineProperty\(\.\.\., \{ value \}\): \d+/);
     expect(stdout).toMatch(/Object\.defineProperty\(\.\.\., \{ value: member \}\): \d+/);
@@ -102,6 +101,12 @@ describe("benchmark smoke diagnostics", () => {
     );
     expect(stdout).toMatch(
       /## path-to-regexp[\s\S]*Removed dead marker candidates:[\s\S]*exports\.compile =/,
+    );
+    expect(stdout).toMatch(
+      /## object-assign[\s\S]*CJS export pattern audit[\s\S]*module\.exports =: 1/,
+    );
+    expect(stdout).toMatch(
+      /## merge-descriptors[\s\S]*CJS export pattern audit[\s\S]*module\.exports =: 1/,
     );
   });
 

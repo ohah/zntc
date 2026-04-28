@@ -33,6 +33,7 @@ interface CjsExportAudit {
 type CjsExportPattern =
   | "exports.x ="
   | "module.exports.x ="
+  | "module.exports ="
   | "module.exports = { ... }"
   | "Object.defineProperty(..., { value })"
   | "Object.defineProperty(..., { value: member })"
@@ -41,6 +42,7 @@ type CjsExportPattern =
 const cjsExportPatterns: CjsExportPattern[] = [
   "exports.x =",
   "module.exports.x =",
+  "module.exports =",
   "module.exports = { ... }",
   "Object.defineProperty(..., { value })",
   "Object.defineProperty(..., { value: member })",
@@ -50,7 +52,7 @@ const cjsExportPatterns: CjsExportPattern[] = [
 function parseProjects(): string[] {
   const arg = process.argv.find((a) => a.startsWith("--projects="));
   if (!arg) {
-    return ["safe-buffer", "cookie", "path-to-regexp"];
+    return ["safe-buffer", "cookie", "path-to-regexp", "object-assign", "merge-descriptors"];
   }
   return arg
     .slice("--projects=".length)
@@ -128,6 +130,7 @@ function countCjsExportPatterns(text: string): Record<CjsExportPattern, number> 
   return {
     "exports.x =": [...text.matchAll(/(^|[^\w$.])exports\.[A-Za-z_$][\w$]*\s*=/gm)].length,
     "module.exports.x =": [...text.matchAll(/\bmodule\.exports\.[A-Za-z_$][\w$]*\s*=/g)].length,
+    "module.exports =": [...text.matchAll(/\bmodule\.exports\s*=/g)].length,
     "module.exports = { ... }": [...text.matchAll(/\bmodule\.exports\s*=\s*\{/g)].length,
     "Object.defineProperty(..., { value })": [
       ...text.matchAll(
@@ -158,6 +161,9 @@ function collectCjsExportMarkers(text: string): Map<string, number> {
   }
   for (const _match of text.matchAll(/\bmodule\.exports\s*=\s*\{/g)) {
     increment(markers, "module.exports = {");
+  }
+  for (const _match of text.matchAll(/\bmodule\.exports\s*=\s*(?!\{)/g)) {
+    increment(markers, "module.exports =");
   }
   for (const match of text.matchAll(
     /\bObject\.defineProperty\s*\(\s*(exports|module\.exports)\s*,\s*(["'`])((?:\\.|(?!\2).)+)\2\s*,\s*\{[^}]*\bvalue\b/g,
