@@ -133,9 +133,11 @@ describe("런타임 헬퍼: __copyProps / __toCommonJS", () => {
 
   test("번들 출력에 getOwnPropertyNames/getOwnPropertyDescriptor가 포함된다", async () => {
     // __copyProps가 rolldown 방식의 프로퍼티 열거를 사용하는지 번들 코드로 검증.
+    // `__esModule` marker 로 fast path (`require_x()` 직접 사용) 비활성화 → __toESM/__copyProps 강제 emit.
+    // `module.exports.__esModule` 형태로 marker 를 두어 wrapper body 에 "module.exports" 텍스트 유지.
     const { dir, cleanup: c } = await createFixture({
       "index.ts": `import mod from './cjs.js'; console.log(mod);`,
-      "cjs.js": `module.exports = { x: 1 };`,
+      "cjs.js": `module.exports = { x: 1 }; module.exports.__esModule = true;`,
     });
     cleanup = c;
 
