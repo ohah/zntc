@@ -1522,6 +1522,7 @@ pub fn emitModule(
         .module_format = if (module.wrap_kind.isWrapped()) .cjs else .esm,
         // __esm 모듈: exports.x/module.exports 생성 억제 (__export()가 대신 처리)
         .skip_cjs_exports = module.wrap_kind == .esm,
+        .skip_cjs_named_export_decls = module.module_type == .json and module.wrap_kind == .cjs,
         // __esm 모듈: const → var (TDZ 방지)
         .use_var_for_imports = module.wrap_kind == .esm,
         .linking_metadata = if (metadata) |*m| m else null,

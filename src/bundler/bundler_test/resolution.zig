@@ -595,6 +595,37 @@ test "JSON import: named exports + default export coexist" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "\"test\"") != null);
 }
 
+test "JSON require: CJS consumer emits default object without duplicate named exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs",
+        \\const version = require('./package.json').version;
+        \\console.log(version);
+    );
+    try writeFile(tmp.dir, "package.json",
+        \\{
+        \\  "name": "fixture",
+        \\  "version": "1.2.3",
+        \\  "scripts": { "test": "zts" },
+        \\  "devDependencies": { "zts": "workspace:*" }
+        \\}
+    );
+
+    const entry = try absPath(&tmp, "entry.cjs");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.name") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.scripts") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.devDependencies") == null);
+}
+
 test "JSON import: non-object JSON has no named exports" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
