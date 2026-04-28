@@ -71,18 +71,18 @@ pub const TOESM_RUNTIME =
     \\
 ;
 pub const TOESM_RUNTIME_MIN =
-    "var " ++ NAMES.CREATE_MIN ++ "=Object.create;" ++
-    "var " ++ NAMES.GET_PROTO_OF_MIN ++ "=Object.getPrototypeOf;" ++
-    "var " ++ NAMES.DEF_PROP_MIN ++ "=Object.defineProperty;" ++
-    "var " ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "=Object.getOwnPropertyNames;" ++
-    "var " ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor;" ++
-    "var " ++ NAMES.HAS_OWN_MIN ++ "=Object.prototype.hasOwnProperty;" ++
-    "var " ++ NAMES.COPY_PROPS_MIN ++ "=(to,from,except,desc)=>{" ++
+    "var " ++ NAMES.CREATE_MIN ++ "=Object.create," ++
+    NAMES.GET_PROTO_OF_MIN ++ "=Object.getPrototypeOf," ++
+    NAMES.DEF_PROP_MIN ++ "=Object.defineProperty," ++
+    NAMES.GET_OWN_PROP_NAMES_MIN ++ "=Object.getOwnPropertyNames," ++
+    NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor," ++
+    NAMES.HAS_OWN_MIN ++ "=Object.prototype.hasOwnProperty," ++
+    NAMES.COPY_PROPS_MIN ++ "=(to,from,desc)=>{" ++
     "if(from&&typeof from===\"object\"||typeof from===\"function\"){" ++
-    "for(var keys=" ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "(from),i=0,n=keys.length,key;i<n;i++){" ++
+    "for(var keys=" ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "(from),i=0,key;i<keys.length;i++){" ++
     "key=keys[i];" ++
-    "if(!" ++ NAMES.HAS_OWN_MIN ++ ".call(to,key)&&key!==except)" ++
-    NAMES.DEF_PROP_MIN ++ "(to,key,{get:((k)=>from[k]).bind(null,key),enumerable:!(desc=" ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "(from,key))||desc.enumerable})" ++
+    "if(!" ++ NAMES.HAS_OWN_MIN ++ ".call(to,key))" ++
+    NAMES.DEF_PROP_MIN ++ "(to,key,{get:(k=>()=>from[k])(key),enumerable:!(desc=" ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "(from,key))||desc.enumerable})" ++
     "}}return to};" ++
     "var " ++ NAMES.TOESM_MIN ++ "=(mod,isNodeMode,target)=>(" ++
     "target=mod!=null?" ++ NAMES.CREATE_MIN ++ "(" ++ NAMES.GET_PROTO_OF_MIN ++ "(mod)):{}," ++
@@ -111,17 +111,17 @@ pub const TOESM_RUNTIME_CONFIGURABLE =
     \\
 ;
 pub const TOESM_RUNTIME_CONFIGURABLE_MIN =
-    "var " ++ NAMES.CREATE_MIN ++ "=Object.create;" ++
-    "var " ++ NAMES.GET_PROTO_OF_MIN ++ "=Object.getPrototypeOf;" ++
-    "var " ++ NAMES.DEF_PROP_MIN ++ "=Object.defineProperty;" ++
-    "var " ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "=Object.getOwnPropertyNames;" ++
-    "var " ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor;" ++
-    "var " ++ NAMES.HAS_OWN_MIN ++ "=Object.prototype.hasOwnProperty;" ++
-    "var " ++ NAMES.COPY_PROPS_MIN ++ "=function(to,from,except,desc){" ++
+    "var " ++ NAMES.CREATE_MIN ++ "=Object.create," ++
+    NAMES.GET_PROTO_OF_MIN ++ "=Object.getPrototypeOf," ++
+    NAMES.DEF_PROP_MIN ++ "=Object.defineProperty," ++
+    NAMES.GET_OWN_PROP_NAMES_MIN ++ "=Object.getOwnPropertyNames," ++
+    NAMES.GET_OWN_PROP_DESC_MIN ++ "=Object.getOwnPropertyDescriptor," ++
+    NAMES.HAS_OWN_MIN ++ "=Object.prototype.hasOwnProperty," ++
+    NAMES.COPY_PROPS_MIN ++ "=function(to,from,desc){" ++
     "if(from&&typeof from===\"object\"||typeof from===\"function\"){" ++
-    "for(var keys=" ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "(from),i=0,n=keys.length,key;i<n;i++){" ++
+    "for(var keys=" ++ NAMES.GET_OWN_PROP_NAMES_MIN ++ "(from),i=0,key;i<keys.length;i++){" ++
     "key=keys[i];" ++
-    "if(!" ++ NAMES.HAS_OWN_MIN ++ ".call(to,key)&&key!==except)" ++
+    "if(!" ++ NAMES.HAS_OWN_MIN ++ ".call(to,key))" ++
     NAMES.DEF_PROP_MIN ++ "(to,key,{get:(function(k){return from[k]}).bind(null,key),enumerable:!(desc=" ++ NAMES.GET_OWN_PROP_DESC_MIN ++ "(from,key))||desc.enumerable,configurable:true})" ++
     "}}return to};" ++
     "var " ++ NAMES.TOESM_MIN ++ "=function(mod,isNodeMode,target){" ++

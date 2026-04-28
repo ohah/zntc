@@ -2903,14 +2903,14 @@ test "#1621 minify: Object.* alias shortened ($dp/$cr/$gP/$gN/$gD/$hO/$cp)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // Object.* alias 축약 선언 7종 전부 존재.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cr=Object.create") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $gP=Object.getPrototypeOf") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $dp=Object.defineProperty") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $gN=Object.getOwnPropertyNames") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $gD=Object.getOwnPropertyDescriptor") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $hO=Object.prototype.hasOwnProperty") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cp=") != null);
+    // Object.* alias 축약 선언 7종 전부 존재. 단일 var 선언으로 compact 될 수 있다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cr=Object.create,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$gP=Object.getPrototypeOf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$dp=Object.defineProperty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$gN=Object.getOwnPropertyNames") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$gD=Object.getOwnPropertyDescriptor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$hO=Object.prototype.hasOwnProperty") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$cp=") != null);
     // 원본 긴 이름 전부 미출현.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__create") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__getProtoOf") == null);
@@ -2919,6 +2919,82 @@ test "#1621 minify: Object.* alias shortened ($dp/$cr/$gP/$gN/$gD/$hO/$cp)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__getOwnPropDesc") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__hasOwn") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__copyProps") == null);
+}
+
+test "#1621 minify: __toESM compact __copyProps shape" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeToEsmFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // Object.* alias는 하나의 var 선언으로 compact 되어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var $cr=Object.create,$gP=Object.getPrototypeOf,$dp=Object.defineProperty,$gN=Object.getOwnPropertyNames,$gD=Object.getOwnPropertyDescriptor,$hO=Object.prototype.hasOwnProperty,$cp=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ";var $gP=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ";var $dp=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ";var $gN=") == null);
+
+    // __copyProps는 내부 2-arg 호출만 사용하므로 except와 n 보조 변수를 다시 도입하지 않는다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "except") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "key!==") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "n=keys.length") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "i<n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "i<keys.length") != null);
+
+    // 일반 minified variant는 짧은 arrow IIFE로 key를 capture하고 descriptor enumerable은 유지한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get:(k=>()=>from[k])(key)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "enumerable:!(desc=$gD(from,key))||desc.enumerable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "getOwnPropertyNames") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "getOwnPropertyDescriptor") != null);
+}
+
+test "#1621 minify+react-native: configurable __toESM stays ES5 and compact" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeToEsmFixture(tmp.dir);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .platform = .react_native,
+        .configurable_exports = true,
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // RN/Hermes variant는 ES5 function form과 configurable descriptor를 유지한다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$cp=function(to,from,desc)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "$tE=function(mod,isNodeMode,target)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "configurable:true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get:(function(k){return from[k]}).bind(null,key)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get:(k=>()=>from[k])(key)") == null);
+
+    // compacting invariant는 configurable variant에도 동일하게 적용된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "except") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "key!==") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "n=keys.length") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "i<keys.length") != null);
 }
 
 test "#1621 minify: __commonJS body uses $r for __require" {
