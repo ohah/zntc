@@ -1327,6 +1327,31 @@ async function runServe(opts, config) {
   }
 }
 
+// ─── Build dispatch ───
+
+/**
+ * 단일/워크스페이스 흐름 공통 dispatch — 모드별 (`runServe`/`runWatch`/`runBundle`/`runTranspile`)
+ * 진입점 호출 + bundle 의 user error 카운트 반환. caller (main / runWorkspace) 가 exit 처리.
+ *
+ * 반환 형태가 다른 두 호출 사이트의 drift 를 차단 — 모드 분기/추가가 1곳에서 끝남.
+ */
+async function dispatchBuild(opts, config) {
+  if (opts.serve) {
+    await runServe(opts, config);
+    return { errors: 0 };
+  }
+  if (opts.watch) {
+    await runWatch(opts, config);
+    return { errors: 0 };
+  }
+  if (opts.bundle) {
+    const result = await runBundle(opts, config);
+    return { errors: result.errors.length };
+  }
+  await runTranspile(opts);
+  return { errors: 0 };
+}
+
 // ─── Workspace mode (#2111) ───
 
 /**
@@ -1435,16 +1460,8 @@ async function runWorkspace(opts, workspacePath) {
 
     init();
     try {
-      if (subOpts.serve) {
-        await runServe(subOpts, merged);
-      } else if (subOpts.watch) {
-        await runWatch(subOpts, merged);
-      } else if (subOpts.bundle) {
-        const result = await runBundle(subOpts, merged);
-        if (result.errors.length > 0) exitCode = 1;
-      } else {
-        await runTranspile(subOpts);
-      }
+      const r = await dispatchBuild(subOpts, merged);
+      if (r.errors > 0) exitCode = 1;
     } catch (err) {
       console.error(`error [workspace ${w.name}]: ${err.message}`);
       exitCode = 1;
@@ -1504,16 +1521,8 @@ async function main() {
   init();
 
   try {
-    if (opts.serve) {
-      await runServe(opts, config);
-    } else if (opts.watch) {
-      await runWatch(opts, config);
-    } else if (opts.bundle) {
-      const result = await runBundle(opts, config);
-      if (result.errors.length > 0) process.exit(1);
-    } else {
-      await runTranspile(opts);
-    }
+    const r = await dispatchBuild(opts, config);
+    if (r.errors > 0) process.exit(1);
   } catch (err) {
     console.error(`error: ${err.message}`);
     process.exit(1);
