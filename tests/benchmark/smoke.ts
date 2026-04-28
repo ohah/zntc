@@ -840,6 +840,16 @@ const projects: ProjectConfig[] = [
     },
   },
   {
+    name: "object-freeze-pure-call",
+    pkg: "(synthetic)",
+    entry: `import { used } from './_smoke_object_freeze_pure_call_lib.js';\nconsole.log(used);`,
+    files: {
+      "_smoke_object_freeze_pure_call_lib.js":
+        `export const used = "MATCH";\n` +
+        `const dead = Object.freeze({ marker: "UNUSED_SMOKE_OBJECT_FREEZE" });\n`,
+    },
+  },
+  {
     name: "on-finished",
     pkg: "on-finished",
     entry: `import onf from 'on-finished';\nconsole.log(typeof onf);`,

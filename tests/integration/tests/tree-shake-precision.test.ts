@@ -372,3 +372,43 @@ describe("#1665 class-level tree-shake 정밀도", () => {
     expect(bundle).toContain("class-static-effect-1665");
   });
 });
+
+describe("known pure call 기반 DCE", () => {
+  test("unused Object.freeze with pure arg is dropped", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib";\nconsole.log(used);\n`,
+        "lib.ts":
+          `export const used = "MATCH";\n` +
+          `const frozen = Object.freeze({ marker: "unused-object-freeze-marker" });\n` +
+          `console.log(used);\n`,
+      },
+      "index.ts",
+      "object-freeze-pure",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).not.toContain("unused-object-freeze-marker");
+  });
+
+  test("Object.freeze with shadowed callee or impure arg is preserved", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import "./impure";\nimport "./shadow";\n`,
+        "impure.ts":
+          `function sideEffect() { console.log("impure-freeze-arg-marker"); return {}; }\n` +
+          `Object.freeze(sideEffect());\n`,
+        "shadow.ts":
+          `const Object = { freeze(value) { console.log("shadow-freeze-marker"); return value; } };\n` +
+          `Object.freeze({ marker: "shadow-freeze-value" });\n`,
+      },
+      "index.ts",
+      "object-freeze-unsafe",
+    );
+
+    const out = runBundleSource(bundle);
+    expect(out).toContain("impure-freeze-arg-marker");
+    expect(out).toContain("shadow-freeze-marker");
+    expect(bundle).toContain("shadow-freeze-value");
+  });
+});

@@ -817,6 +817,37 @@ test "pure annotation: /*#__PURE__*/ myFunc() 은 whitelist 무관하게 pure" {
     try expectPure(&ctx, 0, true);
 }
 
+test "known pure call: Object.freeze with pure arg is pure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const a = Object.freeze({ tag: "pure" });
+        \\const b = Object.freeze([1, 2, 3]);
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 0, true);
+    try expectPure(&ctx, 1, true);
+    try std.testing.expect(!purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 0), null));
+}
+
+test "known pure call: Object.freeze is guarded by shadowing and arg purity" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const a = Object.freeze(sideEffect());
+        \\const obj = {};
+        \\const c = Object.freeze(obj);
+        \\const Object = { freeze(value) { console.log("shadow-freeze"); return value; } };
+        \\const b = Object.freeze({ tag: "shadowed" });
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    try expectPure(&ctx, 0, false);
+    try expectPure(&ctx, 2, false);
+    try expectPure(&ctx, 4, false);
+}
+
 // ================================================================
 // null unresolved_globals — 기존 동작 유지 (#1567 호환)
 // ================================================================
