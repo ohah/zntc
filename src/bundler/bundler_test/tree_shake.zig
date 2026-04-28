@@ -938,6 +938,29 @@ test "TreeShaking CJS: module.exports object keeps used helper and removes unuse
     try std.testing.expect(std.mem.indexOf(u8, result.output, "OBJECT_UNUSED_PRIVATE_MARKER") == null);
 }
 
+test "TreeShaking CJS: named import prunes module.exports object static member value" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { used } from './lib.js'; console.log(used());");
+    try writeFile(tmp.dir, "lib.js",
+        \\const liveNs = { value: function used() { return "USED_OBJECT_MEMBER_VALUE_MARKER"; } };
+        \\const deadNs = { value: function unused() { return "UNUSED_OBJECT_MEMBER_VALUE_MARKER"; } };
+        \\module.exports = { used: liveNs.value, unused: deadNs.value };
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "USED_OBJECT_MEMBER_VALUE_MARKER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "UNUSED_OBJECT_MEMBER_VALUE_MARKER") == null);
+}
+
 test "TreeShaking CJS: unsafe module.exports object shapes are preserved" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

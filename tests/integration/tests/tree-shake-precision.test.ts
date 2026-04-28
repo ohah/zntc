@@ -260,6 +260,25 @@ describe("CJS static export fact 기반 DCE", () => {
     expect(bundle).not.toContain("deadNs");
   });
 
+  test("module.exports object export — static member value keeps base object and prunes unused member export", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib.cjs";\nconsole.log(used());\n`,
+        "lib.cjs":
+          `const liveNs = { value: function used() { return "MATCH"; } };\n` +
+          `const deadNs = { value: function unused() { return "unused-object-member-value-marker"; } };\n` +
+          `module.exports = { used: liveNs.value, unused: deadNs.value };\n`,
+      },
+      "index.ts",
+      "cjs-module-exports-object-member-value",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).toContain("liveNs");
+    expect(bundle).not.toContain("unused-object-member-value-marker");
+    expect(bundle).not.toContain("deadNs");
+  });
+
   test("Object.defineProperty __esModule marker — named import prunes safe marker", () => {
     const bundle = bundleFiles(
       {

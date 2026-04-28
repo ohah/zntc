@@ -873,6 +873,17 @@ const projects: ProjectConfig[] = [
     },
   },
   {
+    name: "cjs-module-exports-object-member-value",
+    pkg: "(synthetic)",
+    entry: `import { used } from './_smoke_cjs_module_exports_object_member_value_lib.cjs';\nconsole.log(used());`,
+    files: {
+      "_smoke_cjs_module_exports_object_member_value_lib.cjs":
+        `const liveNs = { value: function used() { return "MATCH"; } };\n` +
+        `const deadNs = { value: function dead() { return "UNUSED_SMOKE_OBJECT_MEMBER_VALUE"; } };\n` +
+        `module.exports = { used: liveNs.value, dead: deadNs.value };\n`,
+    },
+  },
+  {
     name: "on-finished",
     pkg: "on-finished",
     entry: `import onf from 'on-finished';\nconsole.log(typeof onf);`,
