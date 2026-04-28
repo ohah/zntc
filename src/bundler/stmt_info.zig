@@ -329,6 +329,26 @@ fn isIdentifierReference(ast: *const Ast, idx: NodeIndex) bool {
     return ast.nodes.items[@intFromEnum(idx)].tag == .identifier_reference;
 }
 
+fn definePropertyDescriptorValueSeedNode(ast: *const Ast, value_idx: NodeIndex) ?NodeIndex {
+    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return null;
+    const value = ast.nodes.items[@intFromEnum(value_idx)];
+    if (value.tag == .identifier_reference) return value_idx;
+
+    if (value.tag != .static_member_expression) return null;
+    const e = value.data.extra;
+    if (!ast.hasExtra(e, 2)) return null;
+    const flags = ast.readExtra(e, 2);
+    if ((flags & ast_mod.MemberFlags.optional_chain) != 0) return null;
+
+    const object_idx = ast.readExtraNode(e, 0);
+    const property_idx = ast.readExtraNode(e, 1);
+    if (!isIdentifierReference(ast, object_idx)) return null;
+    if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return null;
+    const property = ast.nodes.items[@intFromEnum(property_idx)];
+    if (property.tag != .identifier_reference and property.tag != .private_identifier) return null;
+    return object_idx;
+}
+
 fn singleReturnIdentifierFromFunctionBody(ast: *const Ast, body_idx: NodeIndex) ?NodeIndex {
     if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return null;
     const body = ast.nodes.items[@intFromEnum(body_idx)];
@@ -451,8 +471,8 @@ fn definePropertyDescriptorExportNode(
         if (std.mem.eql(u8, name, "value")) {
             if (result != null) return null;
             if (!purity.isExprPure(ast, prop_value, unresolved_globals)) return null;
-            if (!isIdentifierReference(ast, prop_value)) return null;
-            result = .{ .rhs_node = prop_value, .kind = .define_property_value };
+            const seed_node = definePropertyDescriptorValueSeedNode(ast, prop_value) orelse return null;
+            result = .{ .rhs_node = seed_node, .kind = .define_property_value };
         } else if (std.mem.eql(u8, name, "get")) {
             if (result != null) return null;
             const returned = zeroParamFunctionReturnIdentifier(ast, prop_value) orelse return null;

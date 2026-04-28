@@ -127,6 +127,7 @@ interface ProjectConfig {
   name: string;
   pkg: string;
   entry: string;
+  files?: Record<string, string>;
   external?: string[];
   format?: "esm" | "cjs";
   platform?: "node" | "browser";
@@ -160,8 +161,17 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
 
   // entry 파일을 benchmark 디렉토리에 작성 (node_modules resolve를 위해)
   const entryFile = join(__dirname, `_smoke_entry_${p.name}.ts`);
+  const extraFiles: string[] = [];
   try {
     writeFileSync(entryFile, p.entry);
+    if (p.files) {
+      for (const [relativePath, content] of Object.entries(p.files)) {
+        const filePath = join(__dirname, relativePath);
+        mkdirSync(dirname(filePath), { recursive: true });
+        writeFileSync(filePath, content);
+        extraFiles.push(filePath);
+      }
+    }
 
     // tsconfig.json 생성 (decorator 등 옵션이 필요한 경우)
     const tsconfigFile = join(__dirname, `_smoke_tsconfig_${p.name}.json`);
@@ -314,6 +324,11 @@ function testProject(p: ProjectConfig, options: SmokeOptions = {}): SmokeResult 
     try {
       rmSync(entryFile);
     } catch {}
+    for (const filePath of extraFiles) {
+      try {
+        rmSync(filePath);
+      } catch {}
+    }
     try {
       rmSync(tsconfigFile);
     } catch {}
@@ -811,6 +826,18 @@ const projects: ProjectConfig[] = [
     name: "cookie",
     pkg: "cookie",
     entry: `import { serialize } from 'cookie';\nconsole.log(serialize('a', 'b'));`,
+  },
+  {
+    name: "cjs-define-property-member-value",
+    pkg: "(synthetic)",
+    entry: `import { used } from './_smoke_cjs_define_property_member_value_lib.cjs';\nconsole.log(used());`,
+    files: {
+      "_smoke_cjs_define_property_member_value_lib.cjs":
+        `const liveNs = { value: function used() { return "MATCH"; } };\n` +
+        `const deadNs = { value: function unused() { return "UNUSED_SMOKE_DEFINE_MEMBER_VALUE"; } };\n` +
+        `Object.defineProperty(exports, "used", { value: liveNs.value });\n` +
+        `Object.defineProperty(exports, "unused", { value: deadNs.value });\n`,
+    },
   },
   {
     name: "on-finished",

@@ -240,6 +240,26 @@ describe("CJS static export fact 기반 DCE", () => {
     expect(bundle).not.toContain(`"unused"`);
   });
 
+  test("Object.defineProperty value export — static member value keeps base object and prunes unused member export", () => {
+    const bundle = bundleFiles(
+      {
+        "index.ts": `import { used } from "./lib.cjs";\nconsole.log(used());\n`,
+        "lib.cjs":
+          `const liveNs = { value: function used() { return "MATCH"; } };\n` +
+          `const deadNs = { value: function unused() { return "unused-member-value-marker"; } };\n` +
+          `Object.defineProperty(exports, "used", { value: liveNs.value });\n` +
+          `Object.defineProperty(exports, "unused", { value: deadNs.value });\n`,
+      },
+      "index.ts",
+      "cjs-define-property-member-value",
+    );
+
+    expect(runBundleSource(bundle)).toContain("MATCH");
+    expect(bundle).toContain("liveNs");
+    expect(bundle).not.toContain("unused-member-value-marker");
+    expect(bundle).not.toContain("deadNs");
+  });
+
   test("Object.defineProperty getter export — module.exports target and arrow getter are supported", () => {
     const bundle = bundleFiles(
       {
