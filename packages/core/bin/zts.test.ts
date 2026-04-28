@@ -284,7 +284,7 @@ describe("CLI: bundle", () => {
     rmSync(extDir, { recursive: true, force: true });
   });
 
-  test("번들 + --banner:js + --footer:js", () => {
+  test("번들 + --banner:js + --footer:js (esbuild 호환 alias)", () => {
     const { stdout, exitCode } = runCli([
       "--bundle",
       join(dir, "entry.ts"),
@@ -294,6 +294,29 @@ describe("CLI: bundle", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("/* banner */");
     expect(stdout).toContain("/* footer */");
+  });
+
+  test("번들 + --banner + --footer (정식 형태 — BuildOptions.banner 와 1:1)", () => {
+    const { stdout, exitCode } = runCli([
+      "--bundle",
+      join(dir, "entry.ts"),
+      "--banner=/* TOP */",
+      "--footer=/* BOTTOM */",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("/* TOP */");
+    expect(stdout).toContain("/* BOTTOM */");
+  });
+
+  test("--banner 가 = 안의 = 도 보존", () => {
+    // `--banner=key=value` 같이 value 안에 = 가 있어도 split 으로 truncation 안 됨.
+    const { stdout, exitCode } = runCli([
+      "--bundle",
+      join(dir, "entry.ts"),
+      "--banner=/* key=value */",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("/* key=value */");
   });
 
   test("번들 + --clean (outdir 정리 후 빌드)", () => {

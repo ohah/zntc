@@ -190,6 +190,13 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     // charset — CLI 는 `--charset=utf8/ascii` 식 enum, BuildOptions/TranspileOptions 는
     // `charsetUtf8: boolean` (1:N 매핑). zts.mjs 에서 enum→boolean 변환.
     "--charset=",
+    // banner/footer — `--banner=`/`--footer=` 가 정식 (BuildOptions 와 1:1).
+    // `--banner:js=`/`--footer:js=` 는 esbuild 호환 silent alias — 동일 키로 매핑.
+    "--banner:js=",
+    "--footer:js=",
+    // out-extension — esbuild 식 namespace (`--out-extension:.js=`). BuildOptions 의
+    // `outExtension: string` (단일) 와 1:N. zts.mjs 가 `.js` 만 받아 단일 string 으로 변환.
+    "--out-extension:.js=",
   ]);
 
   // BuildOptions/TranspileOptions 에 있고 CLI 에 없는 키 (의도적). 함수형/고급 옵션.
@@ -268,10 +275,6 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
       if (cliOnlyFlags.has(flag)) continue;
       const candidate = flagToCandidateKey(flag);
       if (knownKeys.has(candidate)) continue;
-      // banner:js / footer:js — 도출 후보가 `bannerJs`/`footerJs` 인데 실제 키는 `banner`/`footer`.
-      // CLI namespace 패턴이 BuildOptions 와 다른 의도된 케이스 — 별도 통과.
-      const stripped = candidate.replace(/Js$/, "");
-      if (knownKeys.has(stripped)) continue;
       unmapped.push({ flag, candidate });
     }
     if (unmapped.length > 0) {
@@ -288,12 +291,7 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     for (const flag of cliFlags) {
       if (cliOnlyFlags.has(flag)) continue;
       const candidate = flagToCandidateKey(flag);
-      if (knownKeys.has(candidate)) {
-        cliExposedKeys.add(candidate);
-        continue;
-      }
-      const stripped = candidate.replace(/Js$/, "");
-      if (knownKeys.has(stripped)) cliExposedKeys.add(stripped);
+      if (knownKeys.has(candidate)) cliExposedKeys.add(candidate);
     }
 
     const missing: string[] = [];

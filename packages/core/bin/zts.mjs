@@ -275,12 +275,25 @@ function parseArgs(argv) {
       opts.publicPath = arg.split("=")[1];
       continue;
     }
+    // `--banner=<text>` 가 정식 — `BuildOptions.banner: string` 과 1:1 매핑.
+    // `--banner:js=<text>` 는 esbuild 호환 alias (silent — deprecated 경고 없음).
+    // BuildOptions 가 단일 string 인 동안은 namespace key (`:js`) 가 무의미하지만 esbuild 에서
+    // 옮겨 오는 사용자가 자연스럽게 동작하도록 유지. 향후 CSS bundling 도입 시 이 entry 가
+    // namespace 의미 회복.
+    if (arg.startsWith("--banner=")) {
+      opts.banner = arg.slice("--banner=".length);
+      continue;
+    }
     if (arg.startsWith("--banner:js=")) {
-      opts.banner = arg.split("=").slice(1).join("=");
+      opts.banner = arg.slice("--banner:js=".length);
+      continue;
+    }
+    if (arg.startsWith("--footer=")) {
+      opts.footer = arg.slice("--footer=".length);
       continue;
     }
     if (arg.startsWith("--footer:js=")) {
-      opts.footer = arg.split("=").slice(1).join("=");
+      opts.footer = arg.slice("--footer:js=".length);
       continue;
     }
     if (arg.startsWith("--entry-names=")) {
