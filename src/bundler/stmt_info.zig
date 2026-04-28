@@ -8,9 +8,10 @@
 //! emitter: used_names 정제
 
 const std = @import("std");
-const Ast = @import("../parser/ast.zig").Ast;
-const Node = @import("../parser/ast.zig").Node;
-const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const ast_mod = @import("../parser/ast.zig");
+const Ast = ast_mod.Ast;
+const Node = ast_mod.Node;
+const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Reference = @import("../semantic/symbol.zig").Reference;
@@ -32,6 +33,7 @@ pub const CjsExportFact = struct {
         assignment,
         object_property,
         define_property_value,
+        define_property_getter,
 
         /// stmt 자체가 단일 export 라 BFS seed 시 stmt 전체를 enqueue 하면 충분한지.
         /// `assignment` (`exports.foo = rhs`) 만 그렇고, 나머지는 같은 stmt 안에 여러 export
@@ -322,11 +324,84 @@ fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
     };
 }
 
-fn definePropertyDescriptorValueNode(
+fn isIdentifierReference(ast: *const Ast, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
+    return ast.nodes.items[@intFromEnum(idx)].tag == .identifier_reference;
+}
+
+fn singleReturnIdentifierFromFunctionBody(ast: *const Ast, body_idx: NodeIndex) ?NodeIndex {
+    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return null;
+    const body = ast.nodes.items[@intFromEnum(body_idx)];
+    if (body.tag != .block_statement) return null;
+
+    const list = body.data.list;
+    if (list.start + list.len > ast.extra_data.items.len) return null;
+    if (list.len != 1) return null;
+
+    const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[list.start]);
+    if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) return null;
+    const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+    if (stmt.tag != .return_statement) return null;
+
+    const ret = stmt.data.unary.operand;
+    return if (isIdentifierReference(ast, ret)) ret else null;
+}
+
+fn zeroParamFunctionReturnIdentifier(ast: *const Ast, fn_idx: NodeIndex) ?NodeIndex {
+    if (fn_idx.isNone() or @intFromEnum(fn_idx) >= ast.nodes.items.len) return null;
+    const fn_node = ast.nodes.items[@intFromEnum(fn_idx)];
+
+    const body_slot: u32 = switch (fn_node.tag) {
+        .function_expression => 2,
+        .arrow_function_expression => 1,
+        else => return null,
+    };
+    const flags_slot: u32 = switch (fn_node.tag) {
+        .function_expression => 3,
+        .arrow_function_expression => 2,
+        else => unreachable,
+    };
+    if (!ast.hasExtra(fn_node.data.extra, flags_slot)) return null;
+
+    const flags = ast.readExtra(fn_node.data.extra, flags_slot);
+    switch (fn_node.tag) {
+        .function_expression => if ((flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) != 0) return null,
+        .arrow_function_expression => if ((flags & ast_mod.ArrowFlags.is_async) != 0) return null,
+        else => unreachable,
+    }
+    if (ast.functionParamsList(fn_node).len != 0) return null;
+
+    const body_idx = ast.readExtraNode(fn_node.data.extra, body_slot);
+    if (fn_node.tag == .arrow_function_expression and isIdentifierReference(ast, body_idx)) {
+        return body_idx;
+    }
+    return singleReturnIdentifierFromFunctionBody(ast, body_idx);
+}
+
+fn methodReturnIdentifier(ast: *const Ast, method_idx: NodeIndex) ?NodeIndex {
+    if (method_idx.isNone() or @intFromEnum(method_idx) >= ast.nodes.items.len) return null;
+    const method = ast.nodes.items[@intFromEnum(method_idx)];
+    if (method.tag != .method_definition) return null;
+    if (!ast.hasExtra(method.data.extra, ast_mod.MethodExtra.flags)) return null;
+
+    const flags = ast.readExtra(method.data.extra, ast_mod.MethodExtra.flags);
+    if ((flags & (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator | ast_mod.MethodFlags.is_setter)) != 0) return null;
+    if (ast.functionParamsList(method).len != 0) return null;
+
+    const body_idx = ast.readExtraNode(method.data.extra, ast_mod.MethodExtra.body);
+    return singleReturnIdentifierFromFunctionBody(ast, body_idx);
+}
+
+const DefinePropertyDescriptorExport = struct {
+    rhs_node: NodeIndex,
+    kind: CjsExportFact.Kind,
+};
+
+fn definePropertyDescriptorExportNode(
     ast: *const Ast,
     descriptor_idx: NodeIndex,
     unresolved_globals: ?*const purity.GlobalRefSet,
-) ?NodeIndex {
+) ?DefinePropertyDescriptorExport {
     if (descriptor_idx.isNone() or @intFromEnum(descriptor_idx) >= ast.nodes.items.len) return null;
     const descriptor = ast.nodes.items[@intFromEnum(descriptor_idx)];
     if (descriptor.tag != .object_expression) return null;
@@ -336,20 +411,23 @@ fn definePropertyDescriptorValueNode(
     const indices = ast.extra_data.items[list.start .. list.start + list.len];
     if (indices.len == 0) return null;
 
-    // descriptor 의 정적 키는 최대 4 개 (value/writable/enumerable/configurable).
-    // get/set 은 진입 시 reject — accessor 는 prune 안전하지 않음.
-    var seen: [4][]const u8 = undefined;
+    // descriptor 의 정적 키만 허용한다. spread/computed/duplicate/accessor 혼합은
+    // defineProperty semantics 보존을 위해 fact 대상에서 제외한다.
+    var seen: [5][]const u8 = undefined;
     var seen_len: usize = 0;
-    var value_node: ?NodeIndex = null;
+    var result: ?DefinePropertyDescriptorExport = null;
 
     for (indices) |raw_prop| {
         const prop_idx: NodeIndex = @enumFromInt(raw_prop);
         if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
         const prop = ast.nodes.items[@intFromEnum(prop_idx)];
-        if (prop.tag != .object_property) return null;
 
-        const name = plainObjectKeyName(ast, prop.data.binary.left) orelse return null;
-        if (std.mem.eql(u8, name, "get") or std.mem.eql(u8, name, "set")) return null;
+        const key_idx = switch (prop.tag) {
+            .object_property => prop.data.binary.left,
+            .method_definition => ast.readExtraNode(prop.data.extra, ast_mod.MethodExtra.key),
+            else => return null,
+        };
+        const name = plainObjectKeyName(ast, key_idx) orelse return null;
         if (seen_len >= seen.len) return null;
         for (seen[0..seen_len]) |prev| {
             if (std.mem.eql(u8, prev, name)) return null;
@@ -357,18 +435,34 @@ fn definePropertyDescriptorValueNode(
         seen[seen_len] = name;
         seen_len += 1;
 
+        if (std.mem.eql(u8, name, "set")) return null;
+
+        if (prop.tag == .method_definition) {
+            if (!std.mem.eql(u8, name, "get")) return null;
+            if (result != null) return null;
+            const returned = methodReturnIdentifier(ast, prop_idx) orelse return null;
+            result = .{ .rhs_node = returned, .kind = .define_property_getter };
+            continue;
+        }
+
         const prop_value = Ast.objectPropertyValue(prop);
         if (prop_value.isNone() or @intFromEnum(prop_value) >= ast.nodes.items.len) return null;
-        if (!purity.isExprPure(ast, prop_value, unresolved_globals)) return null;
 
         if (std.mem.eql(u8, name, "value")) {
-            const value = ast.nodes.items[@intFromEnum(prop_value)];
-            if (value.tag != .identifier_reference) return null;
-            value_node = prop_value;
+            if (result != null) return null;
+            if (!purity.isExprPure(ast, prop_value, unresolved_globals)) return null;
+            if (!isIdentifierReference(ast, prop_value)) return null;
+            result = .{ .rhs_node = prop_value, .kind = .define_property_value };
+        } else if (std.mem.eql(u8, name, "get")) {
+            if (result != null) return null;
+            const returned = zeroParamFunctionReturnIdentifier(ast, prop_value) orelse return null;
+            result = .{ .rhs_node = returned, .kind = .define_property_getter };
+        } else {
+            if (!purity.isExprPure(ast, prop_value, unresolved_globals)) return null;
         }
     }
 
-    return value_node;
+    return result;
 }
 
 fn cjsDefinePropertyExportCandidateForStmt(
@@ -403,14 +497,14 @@ fn cjsDefinePropertyExportCandidateForStmt(
 
     if (std.mem.eql(u8, export_name, "__esModule")) return null;
 
-    const value_node = definePropertyDescriptorValueNode(ast, descriptor_idx, unresolved_globals) orelse return null;
+    const descriptor_export = definePropertyDescriptorExportNode(ast, descriptor_idx, unresolved_globals) orelse return null;
 
     name_transferred = true;
     return .{
         .export_name = export_name,
         .export_assignment_node = @intFromEnum(expr_idx),
-        .rhs_node = value_node,
-        .kind = .define_property_value,
+        .rhs_node = descriptor_export.rhs_node,
+        .kind = descriptor_export.kind,
     };
 }
 
