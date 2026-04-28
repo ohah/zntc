@@ -153,8 +153,11 @@ describe("Node.js 호환 edge case", () => {
 
       const meta = JSON.parse(readFileSync(join(f.dir, "meta.json"), "utf8"));
       const inputs = Object.keys(meta.inputs);
-      // realpath 로 안 따라감 → .store 경로 미등장, link path 만 등장.
+      // realpath 로 안 따라감 → .store 경로 미등장 + link path (.store 미포함) 등장.
       expect(inputs.some((p) => p.includes("/.store/foo@1/"))).toBe(false);
+      expect(
+        inputs.some((p) => p.endsWith("/node_modules/foo/index.js") && !p.includes("/.store/")),
+      ).toBe(true);
     });
   });
 
