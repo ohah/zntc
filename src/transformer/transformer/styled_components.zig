@@ -93,29 +93,38 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     // 이 PR 은 default binding 만 처리. named (`{ styled }`) 는 후속.
 }
 
-/// tag 표현식이 styled binding 을 사용하는지 확인 (root identifier 만 비교).
-/// 인식: `<binding>.X` / `<binding>(arg)`. 미인식 (후속 PR): chain `.attrs(...)` / `.withConfig(...)`.
+/// tag 표현식의 chain root 가 styled binding 인지 확인.
+/// 인식 (모두):
+///   - `<binding>.X` (static_member)
+///   - `<binding>(arg)` (call)
+///   - `<binding>.X.attrs({...})` / `<binding>(X).attrs({...})` (chain: call→member→identifier)
+///   - `<binding>.X.attrs({...}).attrs({...})` (다중 체인)
+///   - `<binding>.X.withConfig({...})` (사용자 명시 withConfig — 본 PR 은 추가 .withConfig
+///     를 한 번 더 append 하므로 styled-components 의 later-wins 시맨틱에 의존; 후속 PR 에서
+///     기존 withConfig 인식 시 merge / skip 분기)
 fn tagUsesBinding(self: *Transformer, tag_idx: NodeIndex) bool {
-    if (tag_idx.isNone()) return false;
     const binding = self.plugins.styled_components.default_binding orelse return false;
-    const tag_node = self.ast.getNode(tag_idx);
-    const root_idx: NodeIndex = switch (tag_node.tag) {
-        .static_member_expression => blk: {
-            // extra = [object, property, flags]
-            if (!self.ast.hasExtra(tag_node.data.extra, 1)) return false;
-            break :blk @enumFromInt(self.ast.extra_data.items[tag_node.data.extra]);
-        },
-        .call_expression => blk: {
-            // extra = [callee, args_start, args_len, flags]
-            if (!self.ast.hasExtra(tag_node.data.extra, 0)) return false;
-            break :blk @enumFromInt(self.ast.extra_data.items[tag_node.data.extra]);
-        },
-        else => return false,
-    };
-    if (root_idx.isNone()) return false;
-    const root_node = self.ast.getNode(root_idx);
-    if (root_node.tag != .identifier_reference) return false;
-    return std.mem.eql(u8, self.ast.getText(root_node.data.string_ref), binding);
+    var current = tag_idx;
+    while (true) {
+        if (current.isNone()) return false;
+        const node = self.ast.getNode(current);
+        switch (node.tag) {
+            .identifier_reference => {
+                return std.mem.eql(u8, self.ast.getText(node.data.string_ref), binding);
+            },
+            .static_member_expression => {
+                // extra = [object, property, flags] — root 방향으로 object 만 따라감.
+                if (!self.ast.hasExtra(node.data.extra, 1)) return false;
+                current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+            },
+            .call_expression => {
+                // extra = [callee, args_start, args_len, flags] — root 방향으로 callee 만 따라감.
+                if (!self.ast.hasExtra(node.data.extra, 0)) return false;
+                current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+            },
+            else => return false,
+        }
+    }
 }
 
 /// `visitVariableDeclarator` 의 post-visit hook. caller 가 init.tag 를 사전 검사한 뒤

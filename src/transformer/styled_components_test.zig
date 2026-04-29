@@ -91,7 +91,7 @@ test "styled-components: @emotion/styled source 는 미감지" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
-test "styled-components: .attrs(...) chain 은 skip (이번 PR 스코프 외)" {
+test "styled-components: .attrs(...) chain — 체인 끝에 withConfig 추가" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -102,9 +102,39 @@ test "styled-components: .attrs(...) chain 은 skip (이번 PR 스코프 외)" {
         ".tsx",
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Input") != null);
-    // chain 안에 .withConfig 이 끼워져선 안 됨 (root tag detection 만 인식).
-    // attrs 의 type:"text" object 에 displayName 이 들어가면 안 됨 — withConfig 자체가 없어야 함.
+    try expectDisplayName(r.output, "Input");
+    // attrs 자체는 보존되어야 함 — chain 가 망가지면 안 됨.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".attrs(") != null);
+}
+
+test "styled-components: 다중 체인 styled(X).attrs() 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\import Inner from "./inner";
+        \\const Wrapped = styled(Inner).attrs(props => ({ id: props.id }))`color: blue;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Wrapped");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".attrs(") != null);
+}
+
+test "styled-components: 다른 라이브러리의 비슷한 체인은 미인식" {
+    // emotion 의 styled (다른 binding) 은 chain 이어도 우리 transform 영향 받지 않음.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import emotionStyled from "@emotion/styled";
+        \\const X = emotionStyled.div.attrs({})`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
