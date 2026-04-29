@@ -234,4 +234,25 @@ test "SourceMap: export all as namespace has mapping" {
     try r.expectMappingAt("export", 0, 0);
 }
 
+test "SourceMap: import default specifier identifier mapping" {
+    var r = try e2eSourceMap(std.testing.allocator, "import foo from \"./mod\";");
+    defer r.deinit();
+    // foo 식별자가 col 7 에서 시작하므로 원본 col 7 에 매핑되어야 한다.
+    try r.expectMappingAt("foo", 0, 7);
+}
+
+test "SourceMap: import namespace specifier identifier mapping" {
+    var r = try e2eSourceMap(std.testing.allocator, "import * as ns from \"./mod\";");
+    defer r.deinit();
+    // ns 식별자는 col 12 에서 시작.
+    try r.expectMappingAt("ns", 0, 12);
+}
+
+test "SourceMap: export specifier rename target identifier mapping" {
+    var r = try e2eSourceMap(std.testing.allocator, "const a = 1;\nexport { a as b };");
+    defer r.deinit();
+    // export { a as b } — `b` 는 line 1, col 14 에서 시작.
+    try r.expectMappingAt("b }", 1, 14);
+}
+
 // ================================================================
