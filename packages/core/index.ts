@@ -296,6 +296,57 @@ export interface ManualChunksMeta {
 }
 
 /**
+ * `compiler` 네임스페이스 — 라이브러리별 1st-party transform 설정 (`@next/swc` 호환 surface).
+ *
+ * 현재는 타입 stub. Zig transformer 가 아직 인식하지 않아 런타임 효과 없음.
+ * 후속 epic 에서 styled-components / emotion 1st-party transform 도입 시 활성화.
+ */
+export interface CompilerOptions {
+  /**
+   * styled-components 1st-party transform.
+   * `babel-plugin-styled-components` / `@swc/plugin-styled-components` 와 동일한 변환 의도.
+   */
+  styledComponents?: boolean | StyledComponentsOptions;
+  /**
+   * emotion 1st-party transform.
+   * `@emotion/babel-plugin` / `@swc/plugin-emotion` 와 동일한 변환 의도.
+   */
+  emotion?: boolean | EmotionOptions;
+}
+
+/** styled-components transform 옵션 (`babel-plugin-styled-components` 호환). */
+export interface StyledComponentsOptions {
+  /** devtools 표시용 displayName 자동 부여 (default: NODE_ENV !== "production") */
+  displayName?: boolean;
+  /** SSR hydration 안정화용 결정론적 componentId hash (default: true) */
+  ssr?: boolean;
+  /** componentId 에 파일명 포함 (default: true) */
+  fileName?: boolean;
+  /** CSS 화이트스페이스 minify (default: true) */
+  minify?: boolean;
+  /** 모던 JS 로 다운레벨된 템플릿 리터럴 인식 (default: true) */
+  transpileTemplateLiterals?: boolean;
+  /** styled.X 가 부수효과 없음을 minifier 에 알림 (default: false) */
+  pure?: boolean;
+  /** displayName / componentId 의 namespace prefix — 다중 styled 인스턴스 격리 */
+  namespace?: string;
+  /** [meta] 표시 (default: false) */
+  meta?: boolean;
+}
+
+/** emotion transform 옵션 (`@emotion/babel-plugin` 호환). */
+export interface EmotionOptions {
+  /** sourceMap 생성 (default: true) */
+  sourceMap?: boolean;
+  /** 변수명을 CSS class label 로 자동 부여 (default: "dev-only") */
+  autoLabel?: "always" | "dev-only" | "never";
+  /** label format string. tokens: `[local]`, `[filename]`, `[dirname]` (default: "[local]") */
+  labelFormat?: string;
+  /** import 경로 alias — fork 또는 vendored emotion 사용 시 */
+  importMap?: Record<string, Record<string, { canonicalImport: [string, string] }>>;
+}
+
+/**
  * Common build options shared by all platforms.
  * `platform` + `target` 조합은 `BuildOptions` 에서 discriminated union으로 제한됨.
  */
@@ -579,6 +630,23 @@ interface BuildOptionsCommon {
    *   을 호출해 lazy 엔드포인트로 serve 하는 경우 권장.
    */
   emitDiskSourcemap?: boolean;
+  /**
+   * 라이브러리별 1st-party transform 설정 (`@next/swc` 의 `compiler` 와 호환 surface).
+   *
+   * 현재는 타입 stub — Zig transformer 가 아직 인식하지 않아 런타임 효과 없음.
+   * 후속 epic 에서 styled-components / emotion 1st-party transform 도입 시 활성화.
+   *
+   * @example
+   * ```ts
+   * defineConfig({
+   *   compiler: {
+   *     styledComponents: true,
+   *     emotion: { autoLabel: "dev-only" },
+   *   },
+   * });
+   * ```
+   */
+  compiler?: CompilerOptions;
 }
 
 /**

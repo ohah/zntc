@@ -334,7 +334,8 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
   // 키 추가 시 그곳 1곳에만 등록하면 typo-suggest 와 cli-schema-sync 모두 자동 통과.
   const buildOptionsOnlyKeys: ReadonlySet<string> = new Set([
     ...NAPI_INTERNAL_ONLY_KEYS,
-    // 함수형 (CLI 표현 불가)
+    // 함수형 / 중첩 객체 (CLI 표현 불가)
+    "compiler", // compiler.styledComponents / compiler.emotion — 중첩 객체, CLI 미노출
     "manualChunks",
     "plugins",
     // entry — positional argument (flag 아님)

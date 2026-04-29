@@ -6,6 +6,7 @@
     "./packages/core",
     "./packages/wasm",
     "./documents",
+    "./examples/web",
     "./tests/integration",
     "./tests/e2e",
     "./tests/benchmark"
