@@ -13,7 +13,7 @@ test "styled-components: styled.X 선언에 displayName 주입" {
         std.testing.allocator,
         \\import styled from "styled-components";
         \\const Button = styled.div`color: red;`;
-        ,
+    ,
         .{ .styled_components = true },
         default_cg,
         ".tsx",
@@ -30,7 +30,7 @@ test "styled-components: styled(Component) 선언에 displayName 주입" {
         \\import styled from "styled-components";
         \\import Inner from "./inner";
         \\const Wrapped = styled(Inner)`color: blue;`;
-        ,
+    ,
         .{ .styled_components = true },
         default_cg,
         ".tsx",
@@ -46,7 +46,7 @@ test "styled-components: 옵션 비활성 시 주입 없음" {
         std.testing.allocator,
         \\import styled from "styled-components";
         \\const Button = styled.div`color: red;`;
-        ,
+    ,
         .{ .styled_components = false },
         default_cg,
         ".tsx",
@@ -62,7 +62,7 @@ test "styled-components: import 없으면 주입 없음" {
         std.testing.allocator,
         \\const styled = { div: () => null };
         \\const Button = styled.div`color: red;`;
-        ,
+    ,
         .{ .styled_components = true },
         default_cg,
         ".tsx",
@@ -77,7 +77,7 @@ test "styled-components: @emotion/styled source 는 미감지" {
         std.testing.allocator,
         \\import styled from "@emotion/styled";
         \\const Button = styled.div`color: red;`;
-        ,
+    ,
         .{ .styled_components = true },
         default_cg,
         ".tsx",
@@ -92,7 +92,7 @@ test "styled-components: .attrs(...) chain 은 skip (이번 PR 스코프 외)" {
         std.testing.allocator,
         \\import styled from "styled-components";
         \\const Input = styled.input.attrs({ type: "text" })`padding: 4px;`;
-        ,
+    ,
         .{ .styled_components = true },
         default_cg,
         ".tsx",
@@ -107,7 +107,7 @@ test "styled-components: styled-components/native source 도 인식" {
         std.testing.allocator,
         \\import styled from "styled-components/native";
         \\const Box = styled.View`padding: 16px;`;
-        ,
+    ,
         .{ .styled_components = true },
         default_cg,
         ".tsx",
@@ -124,7 +124,7 @@ test "styled-components: import alias 도 추적" {
         std.testing.allocator,
         \\import s from "styled-components";
         \\const Btn = s.div`color: red;`;
-        ,
+    ,
         .{ .styled_components = true },
         default_cg,
         ".tsx",
