@@ -76,12 +76,16 @@ pub const StyledComponentsState = struct {
     display_name_span: ?Span = null,
     component_id_span: ?Span = null,
 
-    /// componentId hash 의 file 부분 — `options.jsx_filename` 의 wyhash 8-hex.
+    /// componentId hash 의 file 부분 — `options.jsx_filename` 의 wyhash 32-bit truncated 8-hex.
     /// SSR hydration 안정화: 같은 파일에서 같은 hash 보장 (counter 와 결합).
+    /// 32-bit truncation 은 일반 monorepo (수만 파일) 에서도 collision 무시 가능.
     file_hash_hex: ?[8]u8 = null,
 
     /// componentId 의 0-based counter — 같은 파일 내 styled 컴포넌트 등장 순서.
     /// SWC 의 next_id 와 동일 (sc-<file_hash>-<counter>).
+    /// **Invariant**: Transformer 가 파일당 새로 생성된다는 가정에 의존 — 재사용 금지.
+    /// 주의: 컴포넌트 추가/순서 변경 시 이후 ID 가 모두 shift → partial-deploy SSR
+    /// mismatch 가능. Babel 의 name-based hash 와 trade-off (SWC fixture 호환 우선).
     component_counter: u32 = 0,
 };
 

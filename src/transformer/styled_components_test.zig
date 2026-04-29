@@ -24,7 +24,7 @@ test "styled-components: styled.X 선언 → withConfig({displayName}) 래핑" {
         \\import styled from "styled-components";
         \\const Button = styled.div`color: red;`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -39,7 +39,7 @@ test "styled-components: styled(Component) 선언 → withConfig({displayName})"
         \\import Inner from "./inner";
         \\const Wrapped = styled(Inner)`color: blue;`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -69,7 +69,7 @@ test "styled-components: import 없으면 변환 없음" {
         \\const styled = { div: () => null };
         \\const Button = styled.div`color: red;`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -83,7 +83,7 @@ test "styled-components: @emotion/styled source 는 미감지" {
         \\import styled from "@emotion/styled";
         \\const Button = styled.div`color: red;`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -97,7 +97,7 @@ test "styled-components: .attrs(...) chain 은 skip (이번 PR 스코프 외)" {
         \\import styled from "styled-components";
         \\const Input = styled.input.attrs({ type: "text" })`padding: 4px;`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -114,7 +114,7 @@ test "styled-components: styled-components/native source 도 인식" {
         \\import styled from "styled-components/native";
         \\const Box = styled.View`padding: 16px;`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -129,7 +129,7 @@ test "styled-components: import alias 도 추적" {
         \\import s from "styled-components";
         \\const Btn = s.div`color: red;`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -143,7 +143,7 @@ test "styled-components: template literal 내용은 그대로 보존" {
         \\import styled from "styled-components";
         \\const C = styled.div`width: 100%; color: ${'red'};`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -151,6 +151,22 @@ test "styled-components: template literal 내용은 그대로 보존" {
     try expectDisplayName(r.output, "C");
     try std.testing.expect(std.mem.indexOf(u8, r.output, "width: 100%") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color:") != null);
+}
+
+test "styled-components: jsx_filename 빈 문자열 시 componentId 생략 (displayName 만)" {
+    // SSR 안전성: filename 없으면 cross-file ID 충돌 위험 → componentId 생략 (graceful degradation).
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const X = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true }, // jsx_filename 미지정 (default "")
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"X\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId") == null);
 }
 
 test "styled-components: componentId counter 가 같은 파일 내 0,1,2 로 증가" {
@@ -161,7 +177,7 @@ test "styled-components: componentId counter 가 같은 파일 내 0,1,2 로 증
         \\const B = styled.div`color: blue;`;
         \\const C = styled.div`color: green;`;
     ,
-        .{ .styled_components = true },
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
