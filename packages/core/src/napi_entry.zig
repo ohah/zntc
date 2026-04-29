@@ -625,7 +625,7 @@ const NapiPlugin = struct {
     name: []const u8,
     tsfn: c.napi_threadsafe_function,
 
-    const HookType = enum { resolveId, load, transform, renderChunk, generateBundle, astFunction, resolveContext };
+    const HookType = enum { resolveId, load, transform, renderChunk, generateBundle, astFunction, resolveContext, buildStart, buildEnd, closeBundle };
 
     const PluginResponse = struct {
         resolved_path: ?[]const u8 = null,
@@ -741,6 +741,9 @@ const NapiPlugin = struct {
             .generateBundle => "generateBundle",
             .astFunction => "astFunction",
             .resolveContext => "resolveContext",
+            .buildStart => "buildStart",
+            .buildEnd => "buildEnd",
+            .closeBundle => "closeBundle",
         };
         _ = c.napi_create_string_utf8(env, hook_name.ptr, hook_name.len, &hook_str);
 
@@ -900,6 +903,25 @@ const NapiPlugin = struct {
         _ = self.callHookFull(.generateBundle, "", null, output_files);
     }
 
+    fn pluginBuildStart(ctx: ?*anyopaque) PluginError!void {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+        _ = self.callHook(.buildStart, "", null);
+    }
+
+    fn pluginBuildEnd(ctx: ?*anyopaque, build_error: ?*const bundler_mod.types.BundlerDiagnostic) PluginError!void {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+        // Phase 1 minimal forward — message string 만 JS Error 로 wrap.
+        // code/severity/file_path/span/step/suggestion 손실은 follow-up 으로 RollupError 호환
+        // 객체 (`{ code, message, file, line }`) 직렬화 검토 (#2156 follow-up).
+        const msg = if (build_error) |d| d.message else "";
+        _ = self.callHook(.buildEnd, msg, null);
+    }
+
+    fn pluginCloseBundle(ctx: ?*anyopaque) PluginError!void {
+        const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
+        _ = self.callHook(.closeBundle, "", null);
+    }
+
     /// JSON string field 인코딩 — `"` `\` 와 control char escape.
     fn appendJsonString(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) !void {
         try buf.append(alloc, '"');
@@ -989,6 +1011,12 @@ const NapiPlugin = struct {
             .generateBundle = pluginGenerateBundle,
             .onFunction = pluginAstFunction,
             .resolveContext = pluginResolveContext,
+            .buildStart = pluginBuildStart,
+            .buildEnd = pluginBuildEnd,
+            // closeBundle 은 native 측에서 호출 안 함 — Rollup 의미 보존을 위해 JS layer
+            // (writeOutputFiles 후) 가 dispatcher 통해 직접 호출. native bundle() 끝 시점은
+            // contents 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
+            .closeBundle = null,
         };
     }
 

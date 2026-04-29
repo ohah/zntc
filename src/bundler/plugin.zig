@@ -102,6 +102,18 @@ pub const Plugin = struct {
     /// 번들 생성 완료 알림. 모든 플러그인에 호출됨.
     generateBundle: ?*const fn (ctx: ?*anyopaque, output_files: []const OutputFile) void = null,
 
+    /// bundle 시작 시 1회 호출. esbuild `onStart`, Rollup/Vite/rolldown `buildStart` 동일.
+    /// 옵션 인자는 Zig 측에서 안 넘김 — JS 어댑터가 자체 context 로 forward.
+    buildStart: ?*const fn (ctx: ?*anyopaque) PluginError!void = null,
+
+    /// bundle 종료 시 1회 호출. 성공/실패 모두 dispatch. 실패 시 fatal diagnostic 첫 항목 전달.
+    /// esbuild `onEnd`, Rollup/Vite/rolldown `buildEnd` 동일.
+    buildEnd: ?*const fn (ctx: ?*anyopaque, build_error: ?*const types.BundlerDiagnostic) PluginError!void = null,
+
+    /// write 완료 후 1회 호출. watch 모드면 매 rebuild 마다 재호출.
+    /// Rollup/Vite/rolldown `closeBundle` 동일. esbuild 는 `onDispose` 라 명명 다름.
+    closeBundle: ?*const fn (ctx: ?*anyopaque) PluginError!void = null,
+
     /// `require.context(dir, recursive, filter)` 매칭 결과 주입 (#1579 Phase 2).
     /// ZTS 자체 regex executor 가 없어서 (#1771) host runtime 의 RegExp 에 위임.
     ///
@@ -302,6 +314,37 @@ pub const PluginRunner = struct {
         for (self.plugins) |p| {
             if (p.generateBundle) |hook| {
                 hook(p.context, output_files);
+            }
+        }
+    }
+
+    /// buildStart: 모든 플러그인 실행. 한 plugin 이 실패하면 즉시 stop + 에러 전파.
+    /// bundle 시작 직후 1회만 호출.
+    pub fn runBuildStart(self: *const PluginRunner) PluginError!void {
+        for (self.plugins) |p| {
+            if (p.buildStart) |hook| try hook(p.context);
+        }
+    }
+
+    /// buildEnd: 모든 플러그인 실행. plugin 에러는 swallow — 본 build 의 결과를 가리지 않음.
+    /// build_error 가 non-null 이면 build failure (fatal diagnostic 의 첫 항목).
+    pub fn runBuildEnd(
+        self: *const PluginRunner,
+        build_error: ?*const types.BundlerDiagnostic,
+    ) void {
+        for (self.plugins) |p| {
+            if (p.buildEnd) |hook| {
+                hook(p.context, build_error) catch {};
+            }
+        }
+    }
+
+    /// closeBundle: 모든 플러그인 실행. plugin 에러는 swallow — write 후 cleanup 단계라 caller 영향 없음.
+    /// watch 모드는 매 rebuild 마다 호출.
+    pub fn runCloseBundle(self: *const PluginRunner) void {
+        for (self.plugins) |p| {
+            if (p.closeBundle) |hook| {
+                hook(p.context) catch {};
             }
         }
     }

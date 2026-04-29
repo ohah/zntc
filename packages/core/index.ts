@@ -763,20 +763,22 @@ export interface PluginBuild {
   ): void;
   onGenerateBundle(callback: (outputs: OutputFile[]) => void | Promise<void>): void;
   /**
-   * Bundle 시작 시 1회 호출. Rollup `buildStart` 와 동일 의미. 인자로 build 옵션 전달
-   * (인스펙션 용도, 수정은 silent ignore).
+   * Bundle 시작 시 1회 호출. esbuild `onStart`, Rollup/Vite/rolldown `buildStart` 동일 (#2156).
+   * watch 모드는 매 rebuild 마다 호출됨 (Rollup 5+ 정책과 동일).
    *
-   * 현재 `build()`/`buildSync()` 만 지원. watch 모드의 rebuild 별 호출은 미구현 (별도 follow-up).
+   * 인자는 없음 — esbuild `onStart` 와 동일. plugin 자체 setup 시 `BuildOptions` 가 이미 전달됨.
    */
-  onBuildStart(callback: (options: BuildOptions) => void | Promise<void>): void;
+  onBuildStart(callback: () => void | Promise<void>): void;
   /**
-   * Bundle 종료 시 1회 호출. Rollup `buildEnd` 와 동일 — 성공/실패 모두 호출, 실패 시 error 전달.
-   * `onCloseBundle` 보다 먼저 호출됨 (write 전).
+   * Bundle 종료 시 1회 호출. 성공/실패 모두 dispatch. 실패 시 fatal diagnostic 의 첫 항목을
+   * `Error` 로 wrap 해서 전달 (#2156). watch 모드는 매 rebuild 마다 호출.
+   *
+   * `onCloseBundle` 보다 먼저 호출됨.
    */
   onBuildEnd(callback: (error?: Error) => void | Promise<void>): void;
   /**
-   * Output 파일 write 완료 후 1회 호출. Rollup `closeBundle` 와 동일 — temp 파일 cleanup,
-   * 외부 시스템에 빌드 완료 알림 등에 사용.
+   * Output 파일 결정 직후 1회 호출 (#2156). Rollup `closeBundle` 와 동일 — temp 파일 cleanup,
+   * 외부 시스템에 빌드 완료 알림 등에 사용. watch 모드는 매 rebuild 마다 호출.
    */
   onCloseBundle(callback: () => void | Promise<void>): void;
   onAstFunction(
@@ -860,7 +862,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     resolveContext: [],
   };
   const generateBundleCallbacks: Array<(outputs: OutputFile[]) => void | Promise<void>> = [];
-  const buildStartCallbacks: Array<(options: BuildOptions) => void | Promise<void>> = [];
+  const buildStartCallbacks: Array<() => void | Promise<void>> = [];
   const buildEndCallbacks: Array<(error?: Error) => void | Promise<void>> = [];
   const closeBundleCallbacks: Array<() => void | Promise<void>> = [];
   const astFunctionHooks: HookEntry[] = [];
@@ -966,11 +968,14 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
       return null;
     }
     if (hookName === "buildStart") {
-      await runFireAndForget(buildStartCallbacks, arg1 as BuildOptions);
+      await runFireAndForget(buildStartCallbacks, undefined);
       return null;
     }
     if (hookName === "buildEnd") {
-      await runFireAndForget(buildEndCallbacks, arg1 as Error | undefined);
+      // native 측이 fatal diagnostic message 를 string 으로 forward — 빈 문자열은 정상 build.
+      const msg = arg1 as string;
+      const err = msg && msg.length > 0 ? new Error(msg) : undefined;
+      await runFireAndForget(buildEndCallbacks, err);
       return null;
     }
     if (hookName === "closeBundle") {
@@ -1194,18 +1199,11 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   const dispatcher = allPlugins.length ? createPluginDispatcher(allPlugins) : null;
   if (dispatcher) napiOptions._pluginDispatcher = dispatcher;
 
-  if (dispatcher) await dispatcher("buildStart", options, null);
-
-  let result: BuildResult;
-  try {
-    result = await native.build(napiOptions);
-  } catch (err) {
-    if (dispatcher) {
-      await dispatcher("buildEnd", err instanceof Error ? err : new Error(String(err)), null);
-    }
-    throw err;
-  }
-  if (dispatcher) await dispatcher("buildEnd", undefined, null);
+  // lifecycle hook (#2156): buildStart / buildEnd 는 native bundler 가 dispatch (single source).
+  // JS 측에서 별도 호출 시 이중 발화. 단 closeBundle 은 Rollup 의미 ("write 완료 후") 보존을
+  // 위해 writeOutputFiles 다음에 JS layer 가 직접 호출 — native bundle() 끝 시점은 contents
+  // 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
+  const result: BuildResult = await native.build(napiOptions);
 
   postProcessCssOutputs(result, options);
   writeOutputFiles(result, options);
@@ -1372,8 +1370,10 @@ export interface RollupPlugin {
     chunk: string,
   ): MaybePromise<string | null | undefined | void | { code: string }>;
   generateBundle?(outputs: OutputFile[]): MaybePromise<void>;
-  /** Bundle 시작 시 1회. Rollup `buildStart` 호환 — `this` 인자 미지원, options 만 forward. */
-  buildStart?(options: BuildOptions): MaybePromise<void>;
+  /** Bundle 시작 시 1회. esbuild `onStart` / Rollup `buildStart` 호환 (#2156).
+   *  ZTS 는 인자 없이 호출 (esbuild 스타일) — Rollup plugin 이 `options` 인자를 기대하면
+   *  plugin 자체 closure 로 받아둘 것. `this` context 는 미지원. */
+  buildStart?(): MaybePromise<void>;
   /** Bundle 종료 시 1회. Rollup `buildEnd` 호환 — error 가 있으면 빌드 실패. */
   buildEnd?(error?: Error): MaybePromise<void>;
   /** Output 파일 write 완료 후. Rollup `closeBundle` 호환. */
@@ -1445,8 +1445,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
 
       if (rollupPlugin.buildStart) {
         const hook = rollupPlugin.buildStart;
-        build.onBuildStart(async (opts) => {
-          await hook(opts);
+        build.onBuildStart(async () => {
+          await hook();
         });
       }
 

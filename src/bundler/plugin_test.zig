@@ -683,3 +683,173 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
 
 // Note: ResolvedModule = union(fs.Namespace) 자체가 컴파일 타임에 모든 Namespace
 // variant 의 payload 정의 강제 — 별도 exhaustive 검증 테스트 불필요.
+
+// ============================================================
+// Lifecycle hooks: buildStart / buildEnd / closeBundle (#2156)
+// ============================================================
+
+const types = @import("types.zig");
+
+const LifecycleLog = struct {
+    var build_start_count: u32 = 0;
+    var build_end_count: u32 = 0;
+    var close_bundle_count: u32 = 0;
+    var build_end_error_was_null: bool = true;
+    var build_end_error_code: ?types.BundlerDiagnostic.ErrorCode = null;
+    var build_start_should_fail: bool = false;
+
+    fn reset() void {
+        build_start_count = 0;
+        build_end_count = 0;
+        close_bundle_count = 0;
+        build_end_error_was_null = true;
+        build_end_error_code = null;
+        build_start_should_fail = false;
+    }
+};
+
+fn lifecycleBuildStart(_: ?*anyopaque) plugin_mod.PluginError!void {
+    LifecycleLog.build_start_count += 1;
+    if (LifecycleLog.build_start_should_fail) return error.PluginFailed;
+}
+
+fn lifecycleBuildEnd(_: ?*anyopaque, build_error: ?*const types.BundlerDiagnostic) plugin_mod.PluginError!void {
+    LifecycleLog.build_end_count += 1;
+    LifecycleLog.build_end_error_was_null = build_error == null;
+    if (build_error) |d| LifecycleLog.build_end_error_code = d.code;
+}
+
+fn lifecycleCloseBundle(_: ?*anyopaque) plugin_mod.PluginError!void {
+    LifecycleLog.close_bundle_count += 1;
+}
+
+test "PluginRunner: buildStart 모든 plugin 순차 실행" {
+    LifecycleLog.reset();
+    const plugins = [_]Plugin{
+        .{ .name = "p1", .buildStart = lifecycleBuildStart },
+        .{ .name = "p2", .buildStart = lifecycleBuildStart },
+    };
+    const runner = PluginRunner.init(&plugins);
+    try runner.runBuildStart();
+    try std.testing.expectEqual(@as(u32, 2), LifecycleLog.build_start_count);
+}
+
+test "PluginRunner: buildStart 한 plugin 실패 시 즉시 stop + 에러 전파" {
+    LifecycleLog.reset();
+    LifecycleLog.build_start_should_fail = true;
+    const plugins = [_]Plugin{
+        .{ .name = "fail", .buildStart = lifecycleBuildStart },
+        .{ .name = "never", .buildStart = lifecycleBuildStart },
+    };
+    const runner = PluginRunner.init(&plugins);
+    try std.testing.expectError(error.PluginFailed, runner.runBuildStart());
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_start_count); // 두 번째 plugin 미호출
+}
+
+test "PluginRunner: buildEnd error 인자 전달" {
+    LifecycleLog.reset();
+    const diag = types.BundlerDiagnostic{
+        .code = .unresolved_import,
+        .severity = .@"error",
+        .message = "test error",
+        .file_path = "test.ts",
+        .span = .{ .start = 0, .end = 0 },
+        .step = .resolve,
+    };
+    const plugins = [_]Plugin{
+        .{ .name = "p1", .buildEnd = lifecycleBuildEnd },
+    };
+    const runner = PluginRunner.init(&plugins);
+    runner.runBuildEnd(&diag);
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_end_count);
+    try std.testing.expect(!LifecycleLog.build_end_error_was_null);
+    try std.testing.expectEqual(types.BundlerDiagnostic.ErrorCode.unresolved_import, LifecycleLog.build_end_error_code.?);
+}
+
+fn lifecycleAlwaysFails(_: ?*anyopaque, _: ?*const types.BundlerDiagnostic) plugin_mod.PluginError!void {
+    return error.PluginFailed;
+}
+
+fn lifecycleCloseBundleAlwaysFails(_: ?*anyopaque) plugin_mod.PluginError!void {
+    return error.PluginFailed;
+}
+
+test "PluginRunner: buildEnd / closeBundle 의 plugin 에러는 swallow" {
+    LifecycleLog.reset();
+    const plugins = [_]Plugin{
+        .{ .name = "fail", .buildEnd = lifecycleAlwaysFails, .closeBundle = lifecycleCloseBundleAlwaysFails },
+        .{ .name = "p2", .buildEnd = lifecycleBuildEnd, .closeBundle = lifecycleCloseBundle },
+    };
+    const runner = PluginRunner.init(&plugins);
+    runner.runBuildEnd(null);
+    runner.runCloseBundle();
+    // 첫 plugin 이 실패해도 두 번째 plugin 까지 호출됨
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_end_count);
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.close_bundle_count);
+}
+
+test "Plugin integration: lifecycle hook 호출 순서 + 정상 build → buildEnd(null)" {
+    LifecycleLog.reset();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{
+            .name = "lifecycle",
+            .buildStart = lifecycleBuildStart,
+            .buildEnd = lifecycleBuildEnd,
+            .closeBundle = lifecycleCloseBundle,
+        },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_start_count);
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_end_count);
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.close_bundle_count);
+    try std.testing.expect(LifecycleLog.build_end_error_was_null);
+}
+
+test "Plugin integration: buildStart 실패 시 build 실패 + errdefer 경로로 buildEnd + closeBundle 호출" {
+    LifecycleLog.reset();
+    LifecycleLog.build_start_should_fail = true;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const x = 1;");
+
+    const entry = try absPath(&tmp, "index.ts");
+    defer std.testing.allocator.free(entry);
+
+    const plugins = [_]Plugin{
+        .{
+            .name = "fail-start",
+            .buildStart = lifecycleBuildStart,
+            .buildEnd = lifecycleBuildEnd,
+            .closeBundle = lifecycleCloseBundle,
+        },
+    };
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .plugins = &plugins,
+    });
+    defer b.deinit();
+
+    try std.testing.expectError(error.PluginFailed, b.bundle());
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_start_count);
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.build_end_count);
+    try std.testing.expectEqual(@as(u32, 1), LifecycleLog.close_bundle_count);
+    try std.testing.expect(LifecycleLog.build_end_error_was_null); // catastrophic path: build_error=null
+}
