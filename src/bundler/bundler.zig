@@ -123,6 +123,9 @@ pub const BundleOptions = struct {
     root_dir: ?[]const u8 = null,
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// styled-components 1st-party transform (compiler.styledComponents).
+    /// 현재 PR 은 displayName 만 — componentId / SSR / minify 는 후속.
+    styled_components: bool = false,
     /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
     collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
@@ -625,6 +628,7 @@ pub const Bundler = struct {
         // #1961: worker 모듈도 transformer pre-pass 가 동일 옵션 사용 — drift 방지.
         worker_graph.worklet_transform = self.options.worklet_transform;
         worker_graph.react_refresh = self.options.react_refresh;
+        worker_graph.styled_components = self.options.styled_components;
         worker_graph.code_splitting = self.options.code_splitting;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
@@ -783,6 +787,7 @@ pub const Bundler = struct {
         // react_refresh / code_splitting) 만 별도 mirror.
         graph.worklet_transform = self.options.worklet_transform;
         graph.react_refresh = self.options.react_refresh;
+        graph.styled_components = self.options.styled_components;
         graph.code_splitting = self.options.code_splitting;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();

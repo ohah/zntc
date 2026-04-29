@@ -55,6 +55,7 @@ const jsx_lowering_mod = @import("jsx_lowering.zig");
 const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const worklet_mod = @import("transformer/worklet.zig");
+const styled_components_mod = @import("transformer/styled_components.zig");
 pub const ast_plugin_mod = @import("ast_plugin.zig");
 pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
 pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
@@ -106,6 +107,10 @@ pub const TransformOptions = struct {
     define: []const DefineEntry = &.{},
     /// React Fast Refresh 활성화. 컴포넌트에 $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
+    /// styled-components 1st-party transform 활성화 (compiler.styledComponents).
+    /// 활성 시 `const X = styled.div\`...\`` 같은 선언에 displayName 자동 부여.
+    /// componentId / SSR / CSS minify 등 추가 변환은 후속 PR.
+    styled_components: bool = false,
     /// useDefineForClassFields=false: instance field를 constructor의 this.x = value 할당으로 변환.
     /// true(기본값)이면 class field를 그대로 유지 (TC39 [[Define]] semantics).
     /// false이면 TS 4.x 이전 동작 — field를 constructor body로 이동 ([[Set]] semantics).
@@ -564,6 +569,7 @@ pub const Transformer = struct {
         self.plugins.refresh.registrations.deinit(self.allocator);
         for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
         self.plugins.refresh.signatures.deinit(self.allocator);
+        self.plugins.styled_components.registrations.deinit(self.allocator);
         self.trailing_nodes.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);

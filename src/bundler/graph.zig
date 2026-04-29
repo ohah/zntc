@@ -137,6 +137,9 @@ pub const ModuleGraph = struct {
     /// React Fast Refresh — dev_mode + user_code 에 transformer 가 등록 코드 주입.
     /// graph 가 직접 사용 (parseModule 의 is_user_code 분기).
     react_refresh: bool = false,
+    /// styled-components 1st-party transform — user_code 에 displayName 주입.
+    /// react_refresh 와 동일하게 node_modules 는 건드리지 않음 (선언자 이름 수집 무의미).
+    styled_components: bool = false,
     /// code splitting 활성화. helper module virtual import (#1961) 는 splitting 모드에서만
     /// 활성 — single-bundle 모드는 helper module 의 declaration 이 statement-level shake
     /// 로 elide 되는 회귀가 있어 기존 preamble 모델 유지.
@@ -1713,6 +1716,7 @@ pub const ModuleGraph = struct {
 
         var opts = self.transform_options_base;
         opts.react_refresh = self.react_refresh and is_user_code;
+        opts.styled_components = self.styled_components and is_user_code;
         opts.plugins = merged_plugins;
         opts.jsx_transform = ast_ptr.has_jsx;
         opts.jsx_filename = module.path;
