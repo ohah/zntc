@@ -117,18 +117,12 @@ fn tagUsesBinding(self: *Transformer, tag_idx: NodeIndex) bool {
     return std.mem.eql(u8, self.ast.getText(root_node.data.string_ref), binding);
 }
 
-/// `visitVariableDeclarator` 의 post-visit hook. visit 후 init 이 styled tagged template
-/// 이면 tag 를 `.withConfig({displayName})` 로 wrap 한 새 tagged_template 으로 교체.
-///
-/// 옵션 비활성 / binding 미감지 / pattern 불일치 시 init_idx 그대로 반환.
-pub fn maybeWrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
-    if (!self.options.styled_components) return init_idx;
-    if (self.plugins.styled_components.default_binding == null) return init_idx;
+/// `visitVariableDeclarator` 의 post-visit hook. caller 가 init.tag 를 사전 검사한 뒤
+/// tagged_template_expression 일 때만 호출 — 옵션 비활성 / binding 미감지 / 다른 tag 면
+/// caller 가 미리 거른다.
+pub fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (var_name.len == 0) return init_idx;
-    if (init_idx.isNone()) return init_idx;
-
     const init_node = self.ast.getNode(init_idx);
-    if (init_node.tag != .tagged_template_expression) return init_idx;
 
     // tagged_template extra = [tag, template, flags]
     const e = init_node.data.extra;
@@ -139,10 +133,7 @@ pub fn maybeWrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []c
 
     if (!tagUsesBinding(self, tag_idx)) return init_idx;
 
-    // 새 tag = <orig_tag>.withConfig({ displayName: "<var_name>" })
     const new_tag = try buildWithConfigCall(self, tag_idx, var_name);
-
-    // 새 tagged_template — 같은 template + flags, 새 tag.
     const new_extra = try self.ast.addExtras(&.{
         @intFromEnum(new_tag),
         @intFromEnum(template_idx),
@@ -156,27 +147,32 @@ pub fn maybeWrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []c
 }
 
 /// `<tag>.withConfig({ displayName: "<var_name>" })` call_expression 빌드.
+/// "withConfig" / "displayName" span 은 PluginState 에 lazy 캐싱 — 매 호출마다 string_table
+/// 에 같은 문자열이 append 되는 것을 피한다 (refresh.zig 의 $RefreshReg$ span 패턴과 동일).
 fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     const zero = Span{ .start = 0, .end = 0 };
-    const with_config_span = try self.ast.addString("withConfig");
-    const display_name_key_span = try self.ast.addString("displayName");
+    const state = &self.plugins.styled_components;
+    if (state.with_config_span == null) state.with_config_span = try self.ast.addString("withConfig");
+    if (state.display_name_span == null) state.display_name_span = try self.ast.addString("displayName");
+    const with_config_span = state.with_config_span.?;
+    const display_name_key_span = state.display_name_span.?;
+
     var quoted_buf: [256]u8 = undefined;
     const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{var_name}) catch return error.OutOfMemory;
     const quoted_span = try self.ast.addString(quoted);
 
-    // <tag>.withConfig — static_member_expression
     const with_config_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = with_config_span,
         .data = .{ .string_ref = with_config_span },
     });
-    const member = try addExtraNode(self, .static_member_expression, zero, &.{
+    // extra = [object, property, flags]
+    const member = try self.addExtraNode(.static_member_expression, zero, &.{
         @intFromEnum(tag_idx),
         @intFromEnum(with_config_ref),
         0,
     });
 
-    // displayName: "<var_name>" — object_property (binary = { left=key, right=value, flags=0 })
     const key = try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = display_name_key_span,
@@ -187,13 +183,13 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
         .span = quoted_span,
         .data = .{ .string_ref = quoted_span },
     });
+    // object_property: binary = { left=key, right=value, flags }
     const property = try self.ast.addNode(.{
         .tag = .object_property,
         .span = zero,
         .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
     });
 
-    // { displayName: "..." } — object_expression (list of properties)
     const obj_list = try self.ast.addNodeList(&.{property});
     const obj = try self.ast.addNode(.{
         .tag = .object_expression,
@@ -201,18 +197,12 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
         .data = .{ .list = obj_list },
     });
 
-    // <tag>.withConfig({...}) — call_expression (extra = [callee, args_start, args_len, flags])
+    // call_expression: extra = [callee, args_start, args_len, flags]
     const args = try self.ast.addNodeList(&.{obj});
-    return addExtraNode(self, .call_expression, zero, &.{
+    return self.addExtraNode(.call_expression, zero, &.{
         @intFromEnum(member),
         args.start,
         args.len,
         0,
     });
-}
-
-/// `Transformer.addExtraNode` 와 동일 — 모듈 외부에서도 호출 가능하도록 wrapper.
-fn addExtraNode(self: *Transformer, tag: Node.Tag, span: Span, extras: []const u32) Error!NodeIndex {
-    const e = try self.ast.addExtras(extras);
-    return self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = e } });
 }
