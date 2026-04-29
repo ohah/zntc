@@ -198,7 +198,7 @@ const CliOptions = struct {
     /// ArrayList 로 보관하고 BundleOptions 에 slice 로 전달. dedupe/정규화는 emitter 단에서.
     globals_list: std.ArrayList(lib.bundler.types.GlobalEntry) = .empty,
     /// inlineDynamicImports: dynamic import target 을 entry chunk 에 인라인 (Rollup 호환).
-    /// 현재 CLI flag 미노출 — `zts.config.json` 의 `inlineDynamicImports` 로만 설정.
+    /// CLI: `--inline-dynamic-imports` / config.json: `inlineDynamicImports`.
     inline_dynamic_imports: bool = false,
 
     const RnPlatform = enum {
@@ -612,6 +612,9 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             opts.preserve_modules = true;
         } else if (std.mem.startsWith(u8, arg, "--preserve-modules-root=")) {
             opts.preserve_modules_root = arg["--preserve-modules-root=".len..];
+        } else if (std.mem.eql(u8, arg, "--inline-dynamic-imports")) {
+            // Rollup `inlineDynamicImports` 호환 — dynamic import target 을 entry 에 인라인.
+            opts.inline_dynamic_imports = true;
         } else if (std.mem.eql(u8, arg, "--external")) {
             if (i + 1 < args.len) {
                 i += 1;
