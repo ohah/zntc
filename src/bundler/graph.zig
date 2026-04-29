@@ -2684,6 +2684,12 @@ pub const ModuleGraph = struct {
     fn parseCssModule(self: *ModuleGraph, module: *Module) void {
         const css_scanner_mod = @import("css_scanner.zig");
 
+        if (std.mem.endsWith(u8, std.fs.path.basename(module.path), ".module.css")) {
+            self.addDiag(.no_loader, .@"error", module.path, Span.EMPTY, .parse, "CSS Modules (.module.css) are not supported by the native CSS pipeline yet", "Use plain CSS, or transform CSS Modules through a plugin before ZTS bundles the app");
+            module.state = .ready;
+            return;
+        }
+
         module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         const arena_alloc = module.parse_arena.?.allocator();
 

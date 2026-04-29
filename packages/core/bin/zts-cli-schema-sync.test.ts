@@ -294,6 +294,8 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "--entry-html=",
     "--public-dir",
     "--public-dir=",
+    "--spa-fallback",
+    "--spa-fallback=",
     "--plugin",
     "--log-level=",
     // dev server

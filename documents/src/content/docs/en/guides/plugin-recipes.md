@@ -137,6 +137,10 @@ zts dev
 zts build
 ```
 
+CSS Modules (`.module.css`) are still outside the app CSS pipeline scope. They
+fail explicitly instead of emitting incorrect JS; use plain CSS or transform them
+through a JS plugin.
+
 For library builds that need to inject CSS from a JS plugin, run PostCSS from a
 `load` hook:
 

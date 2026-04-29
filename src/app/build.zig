@@ -164,13 +164,25 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
     }
 
     const first_script_output = if (result.outputs) |outs| outs[0].path else "bundle.js";
-    for (html_entry.module_scripts.items) |src| {
+    for (html_entry.module_scripts.items, 0..) |src, i| {
+        const script_output = if (result.outputs) |outs|
+            if (i < outs.len) outs[i].path else first_script_output
+        else
+            first_script_output;
         const parts = splitUrl(src);
-        const new_url = try joinBaseUrlWithSuffix(allocator, base, first_script_output, parts.suffix);
+        const new_url = try joinBaseUrlWithSuffix(allocator, base, script_output, parts.suffix);
         defer allocator.free(new_url);
         const next = try replaceOwned(allocator, html, src, new_url);
         allocator.free(html);
         html = next;
+    }
+
+    if (opts.splitting) {
+        if (result.outputs) |outs| {
+            const next = try injectModulePreloads(allocator, html, outs, html_entry.module_scripts.items.len, base);
+            allocator.free(html);
+            html = next;
+        }
     }
 
     for (html_entry.stylesheets.items) |href| {
@@ -532,6 +544,72 @@ fn injectIntoHtml(allocator: std.mem.Allocator, html: []const u8, tag: []const u
         }
     }
     return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ tag, html });
+}
+
+fn injectModulePreloads(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    outputs: []const bundler_mod.emitter.OutputFile,
+    entry_count: usize,
+    base: []const u8,
+) ![]const u8 {
+    if (outputs.len == 0 or entry_count == 0) return allocator.dupe(u8, html);
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+    var seen_keys: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (seen_keys.items) |key| allocator.free(key);
+        seen_keys.deinit(allocator);
+    }
+    var tags = std.ArrayList(u8).empty;
+    defer tags.deinit(allocator);
+
+    const limit = @min(entry_count, outputs.len);
+    for (outputs[0..limit]) |out| {
+        try appendModulePreloadImports(allocator, outputs, out.imports, base, &seen, &seen_keys, &tags);
+    }
+    if (tags.items.len == 0) return allocator.dupe(u8, html);
+    return injectIntoHtml(allocator, html, tags.items);
+}
+
+fn appendModulePreloadImports(
+    allocator: std.mem.Allocator,
+    outputs: []const bundler_mod.emitter.OutputFile,
+    imports: []const []const u8,
+    base: []const u8,
+    seen: *std.StringHashMap(void),
+    seen_keys: *std.ArrayList([]const u8),
+    tags: *std.ArrayList(u8),
+) !void {
+    for (imports) |path| {
+        if (!isJavaScriptOutput(path) or seen.contains(path)) continue;
+        const owned = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned);
+        try seen.put(owned, {});
+        try seen_keys.append(allocator, owned);
+
+        const url = try joinBaseUrl(allocator, base, path);
+        defer allocator.free(url);
+        const tag = try std.fmt.allocPrint(allocator, "<link rel=\"modulepreload\" href=\"{s}\">", .{url});
+        defer allocator.free(tag);
+        if (tags.items.len > 0) try tags.append(allocator, '\n');
+        try tags.appendSlice(allocator, tag);
+
+        if (findOutputByPath(outputs, path)) |dep| {
+            try appendModulePreloadImports(allocator, outputs, dep.imports, base, seen, seen_keys, tags);
+        }
+    }
+}
+
+fn findOutputByPath(outputs: []const bundler_mod.emitter.OutputFile, path: []const u8) ?bundler_mod.emitter.OutputFile {
+    for (outputs) |out| {
+        if (std.mem.eql(u8, out.path, path)) return out;
+    }
+    return null;
+}
+
+fn isJavaScriptOutput(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".mjs");
 }
 
 fn joinBaseUrl(allocator: std.mem.Allocator, base: []const u8, rel: []const u8) ![]const u8 {

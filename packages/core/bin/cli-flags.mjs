@@ -129,6 +129,7 @@ export const FLAG_REGISTRY = [
 
   // ─── kind=string-default — bool 단독 시 default, `--key=val` 시 val ───
   { kind: "string-default", flag: "--metafile", target: "metafile", default: "meta.json" },
+  { kind: "string-default", flag: "--spa-fallback", target: "spaFallback", default: "index.html" },
 
   // ─── kind=array — push (반복 지정) ───
   { kind: "array", flag: "--external", target: "external" },
