@@ -51,6 +51,7 @@ HTML asset URL, `%ENV%` 토큰을 rewrite하며 static split chunk는 `modulepre
 watch하고 CSS-only 변경은 stylesheet HMR로 보냅니다. Tailwind v4는
 `@tailwindcss/postcss` 설정을 지원합니다. 앱 모드는 CSS Modules(`.module.css`)를
 scoped class map으로 변환하며 default export와 가능한 named export를 제공합니다.
+`.scss` / `.sass`는 선택 의존성 `sass`가 설치되어 있으면 PostCSS 전에 CSS로 컴파일됩니다.
 
 ## 입출력
 

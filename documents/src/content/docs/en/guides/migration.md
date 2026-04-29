@@ -247,7 +247,7 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | CSS Modules (`.module.css`) | Supported in app mode. Provides default exports and valid named exports |
 | CSS `@import` | Built-in Lightning CSS or `--loader:.css=text` |
 | PostCSS (`postcss.config.js`) | Supported in app mode. `zts dev` watches PostCSS dependencies and sends CSS-only HMR |
-| Sass/Less/Stylus | Not supported. Pre-compile before build |
+| Sass/Less/Stylus | Sass/SCSS is supported in app mode. Less/Stylus are not supported |
 | `public/` static directory | Supported in app mode (`--public-dir`) |
 | HTML entry (`index.html`) | Supported in app mode (`--entry-html`) |
 | SPA fallback | `zts preview --spa-fallback` |
@@ -296,7 +296,7 @@ module.exports = {
 | `raw-loader` / `asset/source` | `--loader:.txt=text` |
 | `svg-loader` / `@svgr/webpack` | `--loader:.svg=text`/`file`/`dataurl` or plugin |
 | `json-loader` | `--loader:.json=json` (built-in default) |
-| `sass-loader` / `less-loader` / `stylus-loader` | Not supported. Pre-compile needed |
+| `sass-loader` / `less-loader` / `stylus-loader` | Sass/SCSS is supported in app mode. Pre-compile Less/Stylus |
 | `postcss-loader` | Not supported. Replaced by Lightning CSS post-processing |
 | `html-loader` | Not supported. `--loader:.html=text` for string conversion |
 | `worker-loader` | Not supported (general Worker bundle support separate) |

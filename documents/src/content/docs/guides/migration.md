@@ -247,7 +247,7 @@ export default defineConfig({
 | CSS Modules (`.module.css`) | 앱 모드에서 지원. default export와 가능한 named export 제공 |
 | CSS `@import` | Lightning CSS 내장 후처리 또는 `--loader:.css=text` |
 | PostCSS (`postcss.config.js`) | 앱 모드에서 지원. `zts dev`는 PostCSS dependency watch와 CSS-only HMR 지원 |
-| Sass/Less/Stylus | 미지원. 빌드 전 사전 컴파일 필요 |
+| Sass/Less/Stylus | Sass/SCSS는 앱 모드에서 지원. Less/Stylus는 미지원 |
 | `public/` 정적 디렉토리 | 앱 모드에서 지원 (`--public-dir`) |
 | HTML 엔트리 (`index.html`) | 앱 모드에서 지원 (`--entry-html`) |
 | SPA fallback | `zts preview --spa-fallback` |
@@ -296,7 +296,7 @@ module.exports = {
 | `raw-loader` / `asset/source` | `--loader:.txt=text` |
 | `svg-loader` / `@svgr/webpack` | `--loader:.svg=text`/`file`/`dataurl` 또는 플러그인 |
 | `json-loader` | `--loader:.json=json` (기본 내장) |
-| `sass-loader` / `less-loader` / `stylus-loader` | 미지원. 사전 컴파일 필요 |
+| `sass-loader` / `less-loader` / `stylus-loader` | Sass/SCSS는 앱 모드에서 지원. Less/Stylus는 사전 컴파일 필요 |
 | `postcss-loader` | 미지원. Lightning CSS 플러그인으로 대체 |
 | `html-loader` | 미지원. `--loader:.html=text` 로 문자열화는 가능 |
 | `worker-loader` | 미지원 (Bundle 내 Worker 일반 지원은 별도) |
