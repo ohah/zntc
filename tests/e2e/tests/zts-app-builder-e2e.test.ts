@@ -173,8 +173,77 @@ test.describe("zts dev E2E", () => {
   test("dev 모드도 public/ 와 stylesheet 자산을 서빙한다", async ({ request }) => {
     const fav = await request.get(`http://localhost:${DEV_PORT}/favicon.svg`);
     expect(fav.status()).toBe(200);
-    const css = await request.get(`http://localhost:${DEV_PORT}/style.css`);
+    // stylesheet 의 source path 가 link href + emit path 양쪽에서 보존된다.
+    const css = await request.get(`http://localhost:${DEV_PORT}/src/style.css`);
     expect(css.status()).toBe(200);
     expect(await css.text()).toContain("rgb(220, 230, 240)");
+  });
+});
+
+// ─── 서브디렉토리 같은 basename CSS 두 개가 build → preview 후 브라우저에 모두 적용된다 ───
+test.describe("zts build: nested CSS path preservation E2E", () => {
+  let nestedDir: string;
+  let nestedPreview: ChildProcess | null = null;
+  const NESTED_PORT = 3996;
+
+  test.beforeAll(async () => {
+    nestedDir = await mkdtemp(join(tmpdir(), "zts-app-nested-css-e2e-"));
+    const files: Record<string, string> = {
+      "index.html": `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>nested</title>
+    <link rel="stylesheet" href="/src/a/style.css" />
+    <link rel="stylesheet" href="/src/b/style.css" />
+  </head>
+  <body>
+    <div data-testid="aaa" class="aaa">a</div>
+    <div data-testid="bbb" class="bbb">b</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>`,
+      "src/main.ts": `console.log("ok");`,
+      "src/a/style.css": `.aaa { color: rgb(255, 0, 0); }`,
+      "src/b/style.css": `.bbb { color: rgb(0, 0, 255); }`,
+    };
+    for (const [name, content] of Object.entries(files)) {
+      const filePath = join(nestedDir, name);
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, content);
+    }
+
+    const built = spawnSync(ZTS_BIN, ["build", nestedDir, "--outdir", join(nestedDir, "dist")], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (built.status !== 0) {
+      throw new Error(`zts build (nested CSS) failed: ${built.stderr}`);
+    }
+
+    nestedPreview = spawn(
+      ZTS_BIN,
+      ["preview", join(nestedDir, "dist"), "--port", String(NESTED_PORT)],
+      { stdio: "pipe" },
+    );
+    await new Promise((r) => setTimeout(r, 2000));
+  });
+
+  test.afterAll(async () => {
+    if (nestedPreview) {
+      nestedPreview.kill();
+      await new Promise((r) => nestedPreview!.on("close", r));
+    }
+    if (nestedDir) await rm(nestedDir, { recursive: true, force: true });
+  });
+
+  test("같은 basename 의 서브디렉토리 CSS 두 개가 모두 서빙되고 색상이 적용된다", async ({
+    page,
+  }) => {
+    await page.goto(`http://localhost:${NESTED_PORT}/`);
+    const aColor = await page.getByTestId("aaa").evaluate((el) => getComputedStyle(el).color);
+    const bColor = await page.getByTestId("bbb").evaluate((el) => getComputedStyle(el).color);
+    expect(aColor).toBe("rgb(255, 0, 0)");
+    expect(bColor).toBe("rgb(0, 0, 255)");
   });
 });
