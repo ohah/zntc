@@ -3412,6 +3412,44 @@ describe("CLI: Vite-style app builder", () => {
     }
   });
 
+  test("dev .module.scss edit triggers full reload (not css-update fast-path)", async () => {
+    // `.module.scss` 는 class-name map 이 변할 수 있어 fast-path 자격 박탈 — full reload
+    // 가 보장되어야 한다 (`isSassOnlyChange` 가 module variant 를 제외하는지 검증).
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-module-scss-reload-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      'import s from "./card.module.scss"; console.log(s.card);',
+    );
+    writeFileSync(join(dir, "src", "card.module.scss"), ".card { color: rgb(1, 2, 3); }");
+
+    const port = 13230 + Math.floor(Math.random() * 80);
+    const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    try {
+      const messagePromise = new Promise<any>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(String(event.data));
+          if (msg.type === "css-update" || msg.type === "full-reload") {
+            ws.close();
+            resolve(msg);
+          }
+        };
+        ws.onerror = () => resolve({ type: "error" });
+        setTimeout(() => resolve({ type: "timeout" }), 5000);
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      writeFileSync(join(dir, "src", "card.module.scss"), ".card { color: rgb(7, 8, 9); }");
+      const msg = await messagePromise;
+      expect(msg.type).toBe("full-reload");
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("dev preserves sub-directory CSS path (no basename collision)", async () => {
     // 서브디렉토리에 같은 basename 을 가진 두 CSS 파일이 있으면, root-기준 relative path 가
     // 보존되어 HTML link 와 emit path 가 둘 다 분리된다.
