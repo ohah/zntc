@@ -95,36 +95,56 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     // 이 PR 은 default binding 만 처리. named (`{ styled }`) 는 후속.
 }
 
-/// tag 표현식의 chain root 가 styled binding 인지 확인.
+/// chain 분석 결과 — `wrapStyledTag` 가 wrap 여부를 결정하는 데 사용.
+const ChainAnalysis = struct {
+    /// chain root identifier 가 styled binding 과 일치
+    matches_binding: bool,
+    /// chain 어딘가에 사용자 명시 `.withConfig({...})` 가 있음 — wrap 시 user 의 ID 가 우리
+    /// 자동 ID 로 override 되는 footgun 회피용 skip 신호
+    has_user_with_config: bool,
+};
+
+/// tag 표현식의 chain root 가 styled binding 인지 + 사용자 명시 withConfig 가 있는지 확인.
 /// 인식 (모두):
 ///   - `<binding>.X` (static_member)
 ///   - `<binding>(arg)` (call)
 ///   - `<binding>.X.attrs({...})` / `<binding>(X).attrs({...})` (chain: call→member→identifier)
 ///   - `<binding>.X.attrs({...}).attrs({...})` (다중 체인)
-///   - `<binding>.X.withConfig({...})` (사용자 명시 withConfig — 본 PR 은 추가 .withConfig
-///     를 한 번 더 append 하므로 styled-components 의 later-wins 시맨틱에 의존; 후속 PR 에서
-///     기존 withConfig 인식 시 merge / skip 분기)
-fn tagUsesBinding(self: *Transformer, tag_idx: NodeIndex) bool {
-    const binding = self.plugins.styled_components.default_binding orelse return false;
+///   - `<binding>.X.withConfig({...})` — matches_binding 이지만 has_user_with_config=true 라서
+///     wrap 시 skip 됨 (later-wins 로 user 의 componentId 가 override 되는 것을 방지)
+fn analyzeTagChain(self: *Transformer, tag_idx: NodeIndex) ChainAnalysis {
+    const result_no_match: ChainAnalysis = .{ .matches_binding = false, .has_user_with_config = false };
+    const binding = self.plugins.styled_components.default_binding orelse return result_no_match;
+    var has_with_config = false;
     var current = tag_idx;
     while (true) {
-        if (current.isNone()) return false;
+        if (current.isNone()) return result_no_match;
         const node = self.ast.getNode(current);
         switch (node.tag) {
             .identifier_reference => {
-                return std.mem.eql(u8, self.ast.getText(node.data.string_ref), binding);
+                const matches = std.mem.eql(u8, self.ast.getText(node.data.string_ref), binding);
+                return .{ .matches_binding = matches, .has_user_with_config = has_with_config };
             },
             .static_member_expression => {
-                // extra = [object, property, flags] — root 방향으로 object 만 따라감.
-                if (!self.ast.hasExtra(node.data.extra, 1)) return false;
+                // extra = [object, property, flags] — property 가 "withConfig" 면 표시.
+                if (!self.ast.hasExtra(node.data.extra, 1)) return result_no_match;
+                const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra + 1]);
+                if (!prop_idx.isNone()) {
+                    const prop_node = self.ast.getNode(prop_idx);
+                    if (prop_node.tag == .identifier_reference) {
+                        if (std.mem.eql(u8, self.ast.getText(prop_node.data.string_ref), "withConfig")) {
+                            has_with_config = true;
+                        }
+                    }
+                }
                 current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
             },
             .call_expression => {
                 // extra = [callee, args_start, args_len, flags] — root 방향으로 callee 만 따라감.
-                if (!self.ast.hasExtra(node.data.extra, 0)) return false;
+                if (!self.ast.hasExtra(node.data.extra, 0)) return result_no_match;
                 current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
             },
-            else => return false,
+            else => return result_no_match,
         }
     }
 }
@@ -238,7 +258,12 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
     const template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
     const flags = self.ast.extra_data.items[e + 2];
 
-    if (!tagUsesBinding(self, tag_idx)) return init_idx;
+    const chain = analyzeTagChain(self, tag_idx);
+    if (!chain.matches_binding) return init_idx;
+    // 사용자가 명시 `.withConfig({...})` 작성한 경우 wrap 시 later-wins 시맨틱으로 user 의
+    // componentId 가 우리 자동 ID 로 override 되는 footgun. 보수적 skip — user 의 명시 의도
+    // 존중.
+    if (chain.has_user_with_config) return init_idx;
 
     const new_tag = try buildWithConfigCall(self, tag_idx, var_name);
     const new_extra = try self.ast.addExtras(&.{

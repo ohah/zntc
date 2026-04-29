@@ -212,6 +212,57 @@ test "styled-components: object property string-key { \"My Comp\": ... } 도 인
     try expectDisplayName(r.output, "MyComp");
 }
 
+test "styled-components: 사용자 명시 .withConfig 가 있으면 wrap 안 함" {
+    // 사용자가 자신의 componentId 를 박은 경우, 우리가 추가 .withConfig 를 chain 에 더하면
+    // styled-components 의 later-wins 시맨틱으로 user 의 ID 가 우리 자동 ID 로 override 됨.
+    // 이를 footgun 으로 보고 보수적으로 skip — user 의 명시 의도 존중.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const X = styled.div.withConfig({ componentId: "user-id" })`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 우리 자동 wrap 은 없어야 함 — user 의 withConfig 는 보존.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "user-id") != null);
+    // displayName 자동 부여도 안 됨.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName") == null);
+}
+
+test "styled-components: 사용자 .withConfig + .attrs 체인도 skip" {
+    // chain 에 user 의 withConfig 가 어디든 있으면 skip — order 무관.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Y = styled.div.attrs({ id: "y" }).withConfig({ componentId: "y-id" })`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "y-id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName") == null);
+}
+
+test "styled-components: .attrs 만 있는 chain 은 정상 wrap" {
+    // attrs 는 user-config 가 아니므로 정상 wrap — 회귀 보호.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Z = styled.div.attrs({ id: "z" })`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Z");
+}
+
 test "styled-components: 조건부 ternary — 양쪽 branch 에 같은 displayName" {
     var r = try e2eFull(
         std.testing.allocator,
