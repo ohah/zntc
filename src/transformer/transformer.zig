@@ -2491,6 +2491,22 @@ pub const Transformer = struct {
                 if (inner.isNone()) return null;
                 return self.evalConstEnumExpr(inner, ctx);
             },
+            // TS / Flow 타입 wrapper — 값에는 영향 없으니 inner 만 평가 (#2193).
+            // 누락 시 `Blue = "B" as any` 같은 cast 가 들어간 멤버 한 개 때문에
+            // collectConstEnum 의 `orelse return` 으로 enum 전체 등록이 실패하고,
+            // declaration 은 transformer 가 drop 한 상태로 참조만 남아 ReferenceError.
+            .ts_as_expression,
+            .ts_satisfies_expression,
+            .ts_non_null_expression,
+            .ts_type_assertion,
+            .ts_instantiation_expression,
+            .flow_as_expression,
+            .flow_type_cast_expression,
+            => {
+                const inner = node.data.unary.operand;
+                if (inner.isNone()) return null;
+                return self.evalConstEnumExpr(inner, ctx);
+            },
             .unary_expression => {
                 const ue = node.data.extra;
                 if (ue + 1 >= self.ast.extra_data.items.len) return null;
