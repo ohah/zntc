@@ -1,5 +1,28 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { bundleAndRun } from "./helpers";
+import { spawnSync } from "node:child_process";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { bundleAndRun, runZts } from "./helpers";
+
+/// Transpile-only (no --bundle) helper. mangler 의 *transpile* path 동작을 격리
+/// 검증할 때 사용. bundleAndRun 은 --bundle 을 강제하므로 inner-name elision 같은
+/// 별도 pass 와 섞여 mangler 단독 동작을 잡아내기 어렵다 (#2197).
+async function transpileAndRun(source: string, extraArgs: string[] = []) {
+  const dir = mkdtempSync(join(tmpdir(), "zts-mangler-"));
+  const inFile = join(dir, "in.ts");
+  const outFile = join(dir, "out.js");
+  writeFileSync(inFile, source);
+  const r = await runZts([inFile, "-o", outFile, ...extraArgs]);
+  const exec = spawnSync("bun", ["run", outFile], { encoding: "utf-8", timeout: 10000 });
+  return {
+    transpileExitCode: r.exitCode,
+    transpileStderr: r.stderr,
+    runOutput: (exec.stdout || "").trimEnd(),
+    runStderr: (exec.stderr || "").trimEnd(),
+    cleanup: async () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
 
 describe("mangler --minify 회귀", () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -219,5 +242,41 @@ describe("mangler --minify 회귀", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toBe("LR");
+  });
+
+  // #2197: named class expression 의 inner name 은 mangle 대상에서 제외해야 함.
+  // 외부 var 와 inner class name 이 같은 slot 으로 합쳐지면 `.name` 프로퍼티가 mangled
+  // 식별자로 바뀌어 spec 위반 (ECMA: class expression inner name binding 은 외부 scope 에
+  // 안 보이지만 .name 으로 관찰 가능).
+  //
+  // 격리: transpile-only path. --bundle 모드에는 inner-name elision pass 가 별도로
+  // 동작 (esbuild 와 동일한 minifier convention) 하므로 그 path 와 섞이지 않게 분리.
+  test("named class expression 의 .name 이 mangle 후에도 보존된다 (#2197)", async () => {
+    const result = await transpileAndRun("const Foo = class Bar {};\nconsole.log(Foo.name);\n", [
+      "--minify",
+    ]);
+    cleanup = result.cleanup;
+
+    expect(result.transpileExitCode).toBe(0);
+    expect(result.runOutput).toBe("Bar");
+  });
+
+  // class body 안에서 inner name 으로 self-reference 하는 경우에도 동일하게 보존되어야
+  // 함 (Bar 가 mangle 되면 self-ref 와 .name 둘 다 깨짐).
+  test("class expression body 의 self-reference 와 .name 이 모두 보존된다 (#2197)", async () => {
+    const result = await transpileAndRun(
+      [
+        "const Foo = class Bar {",
+        "  static n = 0;",
+        "  static count() { return ++Bar.n; }",
+        "};",
+        "console.log(Foo.count(), Foo.count(), Foo.name);",
+      ].join("\n"),
+      ["--minify"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.transpileExitCode).toBe(0);
+    expect(result.runOutput).toBe("1 2 Bar");
   });
 });

@@ -130,8 +130,12 @@ pub const DeclFlags = packed struct(u16) {
     /// Annex B: if/else body의 function declaration (sloppy mode).
     /// catch body에서 catch parameter와의 충돌 검사를 건너뛰기 위해 필요.
     is_annex_b_function: bool = false,
+    /// `const Foo = class Bar {}` 의 inner `Bar` 같은 named class expression 의
+    /// inner name binding. ECMA spec: 외부 scope 에서 안 보이고 `.name` 프로퍼티로만
+    /// 관찰됨. mangler 가 이 이름을 mangle 하면 `.name` 도 변하므로 (#2197) skip.
+    is_class_expr_name: bool = false,
     /// 나머지 패딩
-    _padding: u2 = 0,
+    _padding: u1 = 0,
 
     /// 모든 "값(value)" 비트. 재선언 체크에 사용할 전체 마스크.
     pub const all_values: DeclFlags = .{
