@@ -320,46 +320,9 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     ) catch return error.InvalidConfig;
 
     // ─── TranspileOptions-shaped 필드 ──────────────────────────────────────
-    if (dto.target) |t| {
-        opts.es_target = t;
-        opts.unsupported = lib.transformer.TransformOptions.compat.fromESTarget(t);
-    }
-    if (dto.unsupported) |u| {
-        opts.unsupported = @bitCast(@as(u32, @bitCast(opts.unsupported)) | u);
-    }
-    if (dto.flow == true) opts.flow = true;
-    if (dto.jsxInJs == true) opts.jsx_in_js = true;
-    if (dto.jsx) |v| opts.jsx_runtime = v;
-    // 문자열 필드는 config 수명이 함수 종료 후 해제됨 → dupe 필수.
-    if (dto.jsxFactory) |s| if (s.len > 0 and !std.mem.eql(u8, s, "React.createElement")) {
-        opts.jsx_factory = try allocator.dupe(u8, s);
-    };
-    if (dto.jsxFragment) |s| if (s.len > 0 and !std.mem.eql(u8, s, "React.Fragment")) {
-        opts.jsx_fragment = try allocator.dupe(u8, s);
-    };
-    if (dto.jsxImportSource) |s| if (s.len > 0 and !std.mem.eql(u8, s, "react")) {
-        opts.jsx_import_source = try allocator.dupe(u8, s);
-    };
-    if (dto.dropConsole == true) opts.drop_console = true;
-    if (dto.dropDebugger == true) opts.drop_debugger = true;
-    if (dto.asciiOnly == true) opts.ascii_only = true;
-    if (dto.charsetUtf8 == true) opts.charset_utf8 = true;
-    if (dto.experimentalDecorators == true) opts.experimental_decorators = true;
-    if (dto.emitDecoratorMetadata == true) opts.emit_decorator_metadata = true;
-    if (dto.useDefineForClassFields == false) opts.use_define_for_class_fields = false;
-    if (dto.verbatimModuleSyntax == true) opts.verbatim_module_syntax = true;
-    if (dto.format) |v| opts.module_format = v;
-    if (dto.quotes) |v| opts.quote_style = v;
-    if (dto.platform) |v| opts.platform = v;
-    if (dto.minifyWhitespace == true) opts.minify_whitespace = true;
-    if (dto.minifyIdentifiers == true) opts.minify_identifiers = true;
-    if (dto.minifySyntax == true) opts.minify_syntax = true;
-    if (dto.sourcemap == true) opts.sourcemap = true;
-    if (dto.sourcemapDebugIds == true) opts.sourcemap_debug_ids = true;
-    if (dto.sourcesContent == false) opts.sources_content = false;
-    if (dto.sourceRoot) |s| if (s.len > 0) {
-        opts.source_root = try allocator.dupe(u8, s);
-    };
+    // optionsFromJson 과 공유 helper — silent drift 차단. dto 명시 시 항상 override
+    // (boolean 필드도 false 명시 가능). string 은 config 수명 만료 후 살아남도록 dupe.
+    try lib.transpile.applyTranspileSharedFields(opts, &dto, allocator, true);
 
     // ─── bundler-only 필드 (#2105) ─────────────────────────────────────────
     if (dto.external) |list| for (list) |s| {
