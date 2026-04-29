@@ -1718,6 +1718,28 @@ test "Parser: yield is identifier outside generator" {
     try std.testing.expect(parser.errors.items.len == 0);
 }
 
+test "Parser: yield in non-generator function (module) emits clear diagnostic (#2210)" {
+    var scanner = try Scanner.init(std.testing.allocator, "function notGen() { yield 1; }");
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    parser.is_module = true;
+    defer parser.deinit();
+
+    _ = try parser.parse();
+    // 명확한 진단 emit + yield 키워드 위치 정확.
+    try std.testing.expect(parser.errors.items.len > 0);
+    var found = false;
+    for (parser.errors.items) |err| {
+        if (err.code) |c| if (c == .yield_outside_generator) {
+            found = true;
+            // yield 키워드 위치는 'function notGen() { ' 다음 = offset 20
+            try std.testing.expectEqual(@as(u32, 20), err.span.start);
+            break;
+        };
+    }
+    try std.testing.expect(found);
+}
+
 test "Parser: await is identifier in script mode" {
     var scanner = try Scanner.init(std.testing.allocator, "var await = 1;");
     defer scanner.deinit();

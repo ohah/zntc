@@ -775,7 +775,16 @@ fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
         },
         // yield expression은 parseAssignmentExpression에서 처리됨 (ECMAScript 14.4)
         // generator 안에서 여기에 도달하면 identifier reference로 해석 → 에러
-        .kw_yield => return parsePostfixExpression(self),
+        .kw_yield => {
+            // generator 가 아닌 함수 본문에서 yield 사용 → 명확한 진단 (#2210).
+            // await 패턴 (in_async / in_module 비교) 과 동일하게 in_generator
+            // 검사 후 fail 하면 yield 키워드 위치에 진단 emit. fallthrough 로
+            // identifier 처리는 유지해 후속 토큰에 cascade 에러가 나지 않도록.
+            if (self.is_module and !self.in_namespace and self.ctx.in_function and !self.ctx.in_generator) {
+                try self.addErrorCode(self.currentSpan(), "'yield' is not allowed outside generator function", .yield_outside_generator);
+            }
+            return parsePostfixExpression(self);
+        },
         else => return parsePostfixExpression(self),
     }
 }
