@@ -184,6 +184,7 @@ pub const Code = enum(u16) {
     flow_opaque_type = 914,
     ts_index_sig_modifier = 915,
     ts_index_sig_optional = 916,
+    yield_outside_generator = 917,
 
     // ═══════════════════════════════════════════════════════
     // 1000-1099: 시맨틱 — 재선언/스코프
@@ -391,6 +392,7 @@ pub const Code = enum(u16) {
             .await_in_async_arrow_params => "'await' is not allowed in async arrow function parameters",
             .yield_in_parameters => "'yield' expression is not allowed in formal parameters",
             .yield_in_arrow_params => "'yield' is not allowed in arrow function parameters",
+            .yield_outside_generator => "'yield' is not allowed outside generator function",
             .template_invalid_escape => "Invalid escape sequence in template literal",
             .template_continuation_expected => "Expected template continuation",
             .jsx_tag_expected => "JSX tag name expected",
