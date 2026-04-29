@@ -212,6 +212,55 @@ test "styled-components: object property string-key { \"My Comp\": ... } 도 인
     try expectDisplayName(r.output, "MyComp");
 }
 
+test "styled-components: 조건부 ternary — 양쪽 branch 에 같은 displayName" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Test = isDark ? styled.div`color: white;` : styled.div`color: black;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 두 branch 가 모두 wrap 되어야 함 — Test displayName 이 두 번 등장.
+    var count: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, r.output, i, "displayName: \"Test\"")) |pos| : (i = pos + 1) {
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "styled-components: 괄호 안 styled.div 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Wrapped = (styled.div`color: red;`);
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Wrapped");
+}
+
+test "styled-components: 조건부 한쪽 branch 만 styled — wrap 후에도 다른 쪽 보존" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Test = cond ? styled.div`color: red;` : null;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Test");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "null") != null);
+}
+
 test "styled-components: assignment `Component = styled.div\\`...\\`` 인식" {
     var r = try e2eFull(
         std.testing.allocator,

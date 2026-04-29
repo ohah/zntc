@@ -147,7 +147,7 @@ pub fn maybeWrapAssignment(self: *Transformer, assignment_idx: NodeIndex) Error!
     const left = node.data.binary.left;
     const right = node.data.binary.right;
     if (left.isNone() or right.isNone()) return assignment_idx;
-    if (self.ast.getNode(right).tag != .tagged_template_expression) return assignment_idx;
+    if (!isWrappableExpr(self.ast.getNode(right).tag)) return assignment_idx;
     const left_node = self.ast.getNode(left);
     // 일반 assignment: LHS 가 assignment_target_identifier (parser 가 destructuring 컨텍스트
     // 외에서도 단순 식별자 LHS 를 이 태그로 변환).
@@ -156,7 +156,7 @@ pub fn maybeWrapAssignment(self: *Transformer, assignment_idx: NodeIndex) Error!
     const var_name = self.ast.getText(left_node.data.string_ref);
     if (var_name.len == 0) return assignment_idx;
 
-    const new_right = try wrapStyledTag(self, right, var_name);
+    const new_right = try wrapStyledTagInExpr(self, right, var_name);
     if (new_right == right) return assignment_idx;
     return self.ast.addNode(.{
         .tag = .assignment_expression,
@@ -165,9 +165,61 @@ pub fn maybeWrapAssignment(self: *Transformer, assignment_idx: NodeIndex) Error!
     });
 }
 
-/// `visitVariableDeclarator` 의 post-visit hook. caller 가 init.tag 를 사전 검사한 뒤
-/// tagged_template_expression 일 때만 호출 — 옵션 비활성 / binding 미감지 / 다른 tag 면
-/// caller 가 미리 거른다.
+/// 표현식이 styled tagged template 을 (직접 / 조건부 / 괄호 안에) 포함하면 wrap.
+/// caller 가 init.tag 를 사전 검사 (`isWrappableExpr`) 한 뒤 호출.
+///
+/// 인식 expression 형태:
+///   - `styled.div\`...\`` (직접)
+///   - `cond ? styled.div\`\` : styled.div\`\`` (양쪽 branch 에 같은 var_name 적용 — babel 동작)
+///   - `(styled.div\`\`)` (괄호 안)
+///   - 위 조합 (조건부 안의 괄호 등)
+pub fn wrapStyledTagInExpr(self: *Transformer, expr_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+    if (expr_idx.isNone()) return expr_idx;
+    const node = self.ast.getNode(expr_idx);
+    switch (node.tag) {
+        .tagged_template_expression => return wrapStyledTag(self, expr_idx, var_name),
+        .conditional_expression => {
+            // ternary: a=test, b=consequent, c=alternate. test 는 전파하지 않음 (boolean expr).
+            const old_b = node.data.ternary.b;
+            const old_c = node.data.ternary.c;
+            const new_b = try wrapStyledTagInExpr(self, old_b, var_name);
+            const new_c = try wrapStyledTagInExpr(self, old_c, var_name);
+            if (new_b == old_b and new_c == old_c) return expr_idx;
+            return self.ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = node.span,
+                .data = .{ .ternary = .{
+                    .a = node.data.ternary.a,
+                    .b = new_b,
+                    .c = new_c,
+                } },
+            });
+        },
+        .parenthesized_expression => {
+            const old_inner = node.data.unary.operand;
+            const new_inner = try wrapStyledTagInExpr(self, old_inner, var_name);
+            if (new_inner == old_inner) return expr_idx;
+            return self.ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = new_inner, .flags = node.data.unary.flags } },
+            });
+        },
+        else => return expr_idx,
+    }
+}
+
+/// caller 의 fast-path 사전 필터 — wrapStyledTagInExpr 가 처리할 수 있는 형태인지.
+/// 옵션 OFF / binding 미감지 / 단순 식별자 init (`= 5`, `= other`) 같은 케이스에서 var_name
+/// 추출 + 함수 호출 비용을 회피.
+pub fn isWrappableExpr(tag: ast_mod.Node.Tag) bool {
+    return tag == .tagged_template_expression or
+        tag == .conditional_expression or
+        tag == .parenthesized_expression;
+}
+
+/// 직접 styled tagged template 일 때만 호출되는 wrap (caller 가 tag 검증 후 호출).
+/// `wrapStyledTagInExpr` 의 재귀 base case.
 pub fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (var_name.len == 0) return init_idx;
     const init_node = self.ast.getNode(init_idx);

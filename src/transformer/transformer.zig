@@ -2933,12 +2933,12 @@ pub const Transformer = struct {
         if (self.options.styled_components and
             self.plugins.styled_components.default_binding != null and
             !new_init.isNone() and !new_name.isNone() and
-            self.ast.getNode(new_init).tag == .tagged_template_expression)
+            styled_components_mod.isWrappableExpr(self.ast.getNode(new_init).tag))
         {
             const new_name_node = self.ast.getNode(new_name);
             if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
                 const var_name = self.ast.getText(new_name_node.data.string_ref);
-                new_init = try styled_components_mod.wrapStyledTag(self, new_init, var_name);
+                new_init = try styled_components_mod.wrapStyledTagInExpr(self, new_init, var_name);
             }
         }
         const none = @intFromEnum(NodeIndex.none);
@@ -4388,10 +4388,10 @@ pub const Transformer = struct {
         if (self.options.styled_components and
             self.plugins.styled_components.default_binding != null and
             !new_value.isNone() and !new_key.isNone() and
-            self.ast.getNode(new_value).tag == .tagged_template_expression)
+            styled_components_mod.isWrappableExpr(self.ast.getNode(new_value).tag))
         {
             if (styled_components_mod.objectPropertyKeyName(self, new_key)) |prop_name| {
-                new_value = try styled_components_mod.wrapStyledTag(self, new_value, prop_name);
+                new_value = try styled_components_mod.wrapStyledTagInExpr(self, new_value, prop_name);
             }
         }
         return self.ast.addNode(.{
