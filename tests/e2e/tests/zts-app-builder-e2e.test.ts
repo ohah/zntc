@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 
 const ZTS_BIN = resolve(__dirname, "../../../zig-out/bin/zts");
 const ZTS_JS_CLI = resolve(__dirname, "../../../packages/core/bin/zts.mjs");
+const ZTS_JS_RUNTIME = "bun";
 const BUILD_PREVIEW_PORT = 3997;
 const DEV_PORT = 3998;
 const CSS_MODULE_PREVIEW_PORT = 3995;
@@ -297,7 +298,7 @@ el.textContent = styles.button.includes("button_button__") ? "scoped" : "raw";
     await writeCssModuleFixture(dir);
 
     const built = spawnSync(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "build", dir, "--outdir", join(dir, "dist")],
       {
         encoding: "utf8",
@@ -309,7 +310,7 @@ el.textContent = styles.button.includes("button_button__") ? "scoped" : "raw";
     }
 
     const preview = spawn(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "preview", join(dir, "dist"), "--port", String(CSS_MODULE_PREVIEW_PORT)],
       { stdio: "pipe" },
     );
@@ -337,7 +338,7 @@ el.textContent = styles.button.includes("button_button__") ? "scoped" : "raw";
     const dir = await mkdtemp(join(tmpdir(), "zts-app-css-mod-dev-e2e-"));
     await writeCssModuleFixture(dir);
     const server = spawn(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "dev", dir, "--port", String(CSS_MODULE_DEV_PORT)],
       {
         stdio: "pipe",
@@ -416,7 +417,7 @@ $label-color: rgb(140, 30, 20);
     await writeScssFixture(dir);
 
     const built = spawnSync(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "build", dir, "--outdir", join(dir, "dist")],
       {
         encoding: "utf8",
@@ -428,7 +429,7 @@ $label-color: rgb(140, 30, 20);
     }
 
     const preview = spawn(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "preview", join(dir, "dist"), "--port", String(SCSS_PREVIEW_PORT)],
       { stdio: "pipe" },
     );
@@ -480,7 +481,7 @@ $label-color: rgb(170, 20, 60)
     }
 
     const built = spawnSync(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "build", dir, "--outdir", join(dir, "dist")],
       {
         encoding: "utf8",
@@ -492,7 +493,7 @@ $label-color: rgb(170, 20, 60)
     }
 
     const preview = spawn(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "preview", join(dir, "dist"), "--port", String(SASS_HTML_PREVIEW_PORT)],
       { stdio: "pipe" },
     );
@@ -516,7 +517,7 @@ $label-color: rgb(170, 20, 60)
     const dir = await mkdtemp(join(tmpdir(), "zts-app-scss-dev-e2e-"));
     await writeScssFixture(dir);
     const server = spawn(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "dev", dir, "--port", String(SCSS_DEV_PORT)],
       {
         stdio: "pipe",
@@ -554,7 +555,7 @@ $label-color: rgb(170, 20, 60)
     const dir = await mkdtemp(join(tmpdir(), "zts-app-scss-recovery-e2e-"));
     await writeScssFixture(dir);
     const server = spawn(
-      process.execPath,
+      ZTS_JS_RUNTIME,
       [ZTS_JS_CLI, "dev", dir, "--port", String(SCSS_RECOVERY_DEV_PORT)],
       {
         stdio: "pipe",
