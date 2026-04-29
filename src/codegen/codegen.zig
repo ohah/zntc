@@ -119,6 +119,12 @@ pub const CodegenOptions = struct {
     /// __esm 호이스팅 모드: variable_declaration을 할당문으로 변환 (키워드 제거).
     /// emitter가 var 선언을 래퍼 밖에 별도 배치.
     esm_var_assign_only: bool = false,
+    /// circular 모듈 (cycle_group > 0) 의 top-level `const`/`let` 을 `var` 로 강등 (#2198).
+    /// 같은 IIFE/scope 안에 hoisted IL 이 그대로 emit 되면 cycle 모듈끼리 정의 전 참조가
+    /// 발생해 TDZ ReferenceError 가 throw됨 (esbuild 와 동일 패턴 — var 호이스팅으로
+    /// `undefined` fallback). `var` 강등 후엔 ESM live binding 의미를 *대부분* 보존:
+    /// cycle init 중 read 는 `undefined`, init 후 read 는 정상 값.
+    force_var_for_cycle: bool = false,
     /// dev mode 모듈 ID. 설정 시 import.meta.hot → __zts_make_hot("id") 변환.
     dev_module_id: ?[]const u8 = null,
     /// import.meta.glob 레코드. codegen이 glob 호출을 객체 리터럴로 직접 출력.
@@ -2462,9 +2468,27 @@ pub const Codegen = struct {
             !name.isNone() and
             self.indent_level == 0;
 
+        // #2198: cycle 모듈의 top-level class declaration → `var X = class { ... }`.
+        // class declaration 자체가 block-scoped 라 `var` 강등으로는 부족, class
+        // expression 으로 변환해야 hoist 가능 (esbuild 호환). decorator 가 있으면
+        // 출력 순서가 `var X = ` → decorator → `class` → body 라 결과는
+        // `var X = @dec class {...}` — Stage 3 decorator spec 의 inline class
+        // expression decorator 가 valid 라서 syntax 깨지지 않음.
+        const convert_to_var_class_expr = self.options.force_var_for_cycle and
+            !convert_to_assign and
+            node.tag == .class_declaration and
+            !name.isNone() and
+            self.indent_level == 0;
+
         if (convert_to_assign) {
             try self.emitNode(name);
             try self.write(" = ");
+        } else if (convert_to_var_class_expr) {
+            try self.write("var ");
+            try self.emitNode(name);
+            try self.writeSpace();
+            try self.writeByte('=');
+            try self.writeSpace();
         }
 
         // decorator 출력: @log @validate class Foo {} (esbuild 호환: 공백 구분)
@@ -2477,7 +2501,9 @@ pub const Codegen = struct {
         }
 
         try self.write("class");
-        if (!name.isNone()) {
+        // var X = class { ... } 으로 변환 시 inner name 은 emit 안 함 (anonymous expression).
+        // .name 프로퍼티는 spec 의 NamedEvaluation 으로 외부 var 이름 ("X") 으로 fallback.
+        if (!name.isNone() and !convert_to_var_class_expr) {
             try self.writeByte(' ');
             try self.emitNode(name);
         }
@@ -2487,7 +2513,7 @@ pub const Codegen = struct {
         }
         try self.emitNode(body);
 
-        if (convert_to_assign) {
+        if (convert_to_assign or convert_to_var_class_expr) {
             try self.writeByte(';');
         }
 
@@ -2725,7 +2751,14 @@ pub const Codegen = struct {
             // destructuring → fall through to normal path (var 키워드 유지)
         }
 
-        const keyword = switch (kind) {
+        // #2198: cycle 모듈의 top-level let/const 는 var 로 강등 — 정의 전 참조 시
+        // TDZ throw 대신 var 호이스팅 의미 (`undefined`) 로 fallback. for-init / nested
+        // scope 는 영향 없음 (이 패스가 indent_level==0 의 ESM-flat 출력에서만 작용).
+        const demote_to_var = self.options.force_var_for_cycle and
+            self.indent_level == 0 and
+            !self.in_for_init and
+            (kind == .@"const" or kind == .let);
+        const keyword = if (demote_to_var) "var " else switch (kind) {
             .@"var" => "var ",
             .let => "let ",
             .@"const" => "const ",

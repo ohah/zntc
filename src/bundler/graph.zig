@@ -2211,6 +2211,20 @@ pub const ModuleGraph = struct {
                 self.cycle_counter += 1;
                 const entry_mod = self.modules.at(entry.idx);
                 entry_mod.cycle_group = self.cycle_counter;
+                // cycle 의 *모든 멤버* 에 같은 cycle_group 부여 (#2198).
+                // stack 거꾸로 따라가며 back-edge target (entry.idx) 까지 marking →
+                // cycle 안 모듈의 const/let 을 emit 시 var 로 강등 (esbuild 호환,
+                // ESM live binding 으로 TDZ 회피). post=true 가 path 상 노드 표식.
+                {
+                    var k = stack.items.len;
+                    while (k > 0) {
+                        k -= 1;
+                        const e = stack.items[k];
+                        if (!e.post) continue;
+                        self.modules.at(e.idx).cycle_group = self.cycle_counter;
+                        if (e.idx == entry.idx) break;
+                    }
+                }
                 self.addDiag(
                     .circular_dependency,
                     .warning,
