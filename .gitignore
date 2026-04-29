@@ -10,6 +10,7 @@ node_modules/
 
 # Playwright
 test-results/
+tests/e2e/test-results/
 
 # compat-table report (CI에서 생성)
 tests/integration/compat-table-report.json
