@@ -32,7 +32,8 @@ zts preview [outdir]       # serve built files only
 
 The default app layout is `index.html`, `public/`, `src/main.ts(x)`, and `.env*`.
 `zts build` uses `<script type="module" src>` as bundle entries and rewrites CSS
-`url()`, HTML asset URLs, and `%ENV%` tokens.
+`url()`, HTML asset URLs, and `%ENV%` tokens. `zts dev` uses the same HTML/env/public
+prepare step and updates stylesheets for CSS edits without a full page reload.
 
 | Option | Description |
 |--------|-------------|
@@ -44,8 +45,9 @@ The default app layout is `index.html`, `public/`, `src/main.ts(x)`, and `.env*`
 | `--env-dir <dir>` | directory for `.env*` files |
 
 If the app root contains `postcss.config.{js,mjs,cjs,json}` or `.postcssrc*`,
-ZTS automatically applies it to imported CSS. Tailwind v4 works via
-`@tailwindcss/postcss`.
+ZTS automatically applies it to CSS. In `zts dev`, original CSS files and PostCSS
+`dependency` / `dir-dependency` messages are watched and CSS-only edits are sent
+as stylesheet HMR updates. Tailwind v4 works via `@tailwindcss/postcss`.
 
 ## I/O
 

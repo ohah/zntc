@@ -231,12 +231,12 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 
 | Vite feature | ZTS equivalent |
 |----------|---------|
-| `vite` (dev server) | `zts --serve --bundle <entry>` (HMR supported) |
-| `vite build` | `zts --bundle <entry> --outdir dist --splitting --minify --sourcemap` |
-| `vite preview` | Not supported. Use `zts --serve dist` for static serving |
-| `import.meta.env.MODE` | `--define:import.meta.env.MODE=\"production\"` |
-| `import.meta.env.DEV` | `--define:import.meta.env.DEV=true` (manual) |
-| `.env` / `.env.production` auto-load | Not supported. Use `dotenv` + `--define` to inject manually |
+| `vite` (dev server) | `zts dev` (HTML/env/public prepare + CSS-only HMR) |
+| `vite build` | `zts build`, or `zts --bundle <entry> --outdir dist --splitting --minify --sourcemap` for library builds |
+| `vite preview` | `zts preview dist` |
+| `import.meta.env.MODE` | App mode auto-loads `.env*`; CLI bundles can use `--define:import.meta.env.MODE=\"production\"` |
+| `import.meta.env.DEV` | App mode injects dev/build mode automatically; CLI bundles can use `--define:import.meta.env.DEV=true` |
+| `.env` / `.env.production` auto-load | Supported in app mode (`--env-dir`, `--env-prefix`) |
 | `import.meta.glob` | Not supported (planned) |
 | `import.meta.hot` | Supported (`--serve --bundle`) |
 | `import.meta.url` | Supported (ESM standard) |
@@ -246,10 +246,10 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | `@vitejs/plugin-legacy` | Partial via `--target=es5` etc. |
 | CSS Modules (`.module.css`) | Built-in Lightning CSS post-processing (auto-detected) |
 | CSS `@import` | Built-in Lightning CSS or `--loader:.css=text` |
-| PostCSS (`postcss.config.js`) | Not supported. Replaced by Lightning CSS post-processing |
+| PostCSS (`postcss.config.js`) | Supported in app mode. `zts dev` watches PostCSS dependencies and sends CSS-only HMR |
 | Sass/Less/Stylus | Not supported. Pre-compile before build |
-| `public/` static directory | Not supported. Copy manually or use `--loader:.svg=file` |
-| HTML entry (`index.html`) | Not supported. Only JS/TS entries |
+| `public/` static directory | Supported in app mode (`--public-dir`) |
+| HTML entry (`index.html`) | Supported in app mode (`--entry-html`) |
 | `resolve.alias` | `--alias:name=target` |
 | `resolve.conditions` | `--conditions=...` |
 | `optimizeDeps` (pre-bundling) | Not needed (handled during bundling) |

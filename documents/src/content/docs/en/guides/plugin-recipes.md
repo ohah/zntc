@@ -104,11 +104,41 @@ el.className = styles.container; // → hashed class name
 
 ## PostCSS + Tailwind CSS
 
-Process Tailwind CSS via PostCSS.
+The `zts dev` / `zts build` app mode reads `postcss.config.*` automatically and
+handles CSS-only HMR in the dev server. Tailwind v4 uses the
+`@tailwindcss/postcss` plugin.
 
 ```bash
 npm install postcss tailwindcss @tailwindcss/postcss
 ```
+
+```typescript
+// postcss.config.mjs
+export default {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+```
+
+```css
+/* src/style.css */
+@import "tailwindcss";
+```
+
+```html
+<!-- index.html -->
+<link rel="stylesheet" href="/src/style.css" />
+<script type="module" src="/src/main.ts"></script>
+```
+
+```bash
+zts dev
+zts build
+```
+
+For library builds that need to inject CSS from a JS plugin, run PostCSS from a
+`load` hook:
 
 ```typescript
 // zts.config.ts

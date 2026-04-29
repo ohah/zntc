@@ -104,11 +104,41 @@ el.className = styles.container; // → 해싱된 클래스명
 
 ## PostCSS + Tailwind CSS
 
-PostCSS로 Tailwind CSS를 처리합니다.
+`zts dev` / `zts build` 앱 모드는 `postcss.config.*`를 자동으로 읽고 dev 서버에서
+CSS-only HMR까지 처리합니다. Tailwind v4는 `@tailwindcss/postcss` 플러그인을
+사용합니다.
 
 ```bash
 npm install postcss tailwindcss @tailwindcss/postcss
 ```
+
+```typescript
+// postcss.config.mjs
+export default {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+```
+
+```css
+/* src/style.css */
+@import "tailwindcss";
+```
+
+```html
+<!-- index.html -->
+<link rel="stylesheet" href="/src/style.css" />
+<script type="module" src="/src/main.ts"></script>
+```
+
+```bash
+zts dev
+zts build
+```
+
+CSS를 JS 플러그인에서 직접 주입해야 하는 라이브러리 빌드는 다음처럼 `load` 훅에서
+PostCSS를 실행할 수 있습니다.
 
 ```typescript
 // zts.config.ts

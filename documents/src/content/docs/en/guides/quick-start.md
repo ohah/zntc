@@ -59,3 +59,24 @@ zts --serve
 # Bundle + HMR
 zts --serve --bundle src/index.ts
 ```
+
+## App Builder
+
+For Vite-style `index.html` apps, use `zts dev` / `zts build`.
+
+```html
+<!-- index.html -->
+<link rel="stylesheet" href="/src/style.css" />
+<script type="module" src="/src/main.ts"></script>
+```
+
+```bash
+# HTML/env/public prepare + bundle + CSS HMR
+zts dev
+
+# write dist/
+zts build
+```
+
+If the app root contains `postcss.config.*`, ZTS applies it to CSS in both dev
+and build. Tailwind v4 uses `@tailwindcss/postcss`.
