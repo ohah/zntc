@@ -1,4 +1,4 @@
-//! `TranspileOptionsDto` (Zig) ↔ `TranspileOptions` (TS) 필드 동기화 검증.
+//! `ConfigOptionsDto` (Zig) ↔ `TranspileOptions` (TS) 필드 동기화 검증.
 //!
 //! #1446에서 Zig struct가 JSON schema의 단일 소스가 됐지만, TS 쪽의
 //! `TranspileOptions` interface는 JSDoc/union 유지를 위해 handwritten으로
@@ -11,7 +11,7 @@
 //!     자체 처리하는 필드들 — filename/browserslist/minify 등).
 
 const std = @import("std");
-const TranspileOptionsDto = @import("transpile.zig").TranspileOptionsDto;
+const ConfigOptionsDto = @import("transpile.zig").ConfigOptionsDto;
 
 /// TS `TranspileOptions`에만 있는 (Zig로 전달되지 않거나 JS 래퍼가 해석하는)
 /// 필드. 리스트에 없는 TS-only 필드가 발견되면 테스트 실패 — 의도된 추가라면
@@ -125,12 +125,12 @@ test "schema diff: Zig DTO fields are covered by TS TranspileOptions" {
     try std.testing.expect(ts_fields.items.len > 0);
 
     // 1. Zig DTO 필드가 TS에 모두 있는지 (internal 필드는 zig_only_allowlist에서 제외)
-    const zig_fields = @typeInfo(TranspileOptionsDto).@"struct".fields;
+    const zig_fields = @typeInfo(ConfigOptionsDto).@"struct".fields;
     inline for (zig_fields) |f| {
         const is_internal = comptime contains(&zig_only_allowlist, f.name);
         if (!is_internal and !contains(ts_fields.items, f.name)) {
             std.debug.print(
-                "\n[schema drift] Zig TranspileOptionsDto.{s} is missing from TS TranspileOptions in packages/shared/index.ts\n",
+                "\n[schema drift] Zig ConfigOptionsDto.{s} is missing from TS TranspileOptions in packages/shared/index.ts\n",
                 .{f.name},
             );
             return error.ZigFieldMissingFromTs;

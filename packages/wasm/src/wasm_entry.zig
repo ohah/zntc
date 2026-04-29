@@ -94,7 +94,7 @@ const decodeFlags = transpile_mod.decodeFlags;
 
 /// 소스 코드를 트랜스파일한다.
 ///
-/// opts_json: TranspileOptionsDto JSON payload (ptr+len). camelCase 키. 빈 문자열이면 기본값.
+/// opts_json: ConfigOptionsDto JSON payload (ptr+len). camelCase 키. 빈 문자열이면 기본값.
 ///
 /// 반환값: packed u64 (상위 32비트: 포인터, 하위 32비트: 길이, 0=에러)
 export fn transpile(

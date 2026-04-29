@@ -105,7 +105,7 @@ pub const TranspileOptions = struct {
 ///
 /// 이 struct는 JSON schema emitter(tools/emit_schema.zig)가 comptime
 /// `@typeInfo`로 반사해 단일 소스 보장. 필드를 바꾸면 schema도 함께 재생성.
-pub const TranspileOptionsDto = struct {
+pub const ConfigOptionsDto = struct {
     target: ?@import("transformer/compat.zig").ESTarget = null,
     unsupported: ?u32 = null,
     flow: ?bool = null,
@@ -180,7 +180,7 @@ pub const LoaderDto = struct {
 ///
 /// 오류: JSON 파싱 실패 / 알 수 없는 enum 문자열 → error 반환.
 pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !TranspileOptions {
-    const parsed = std.json.parseFromSliceLeaky(TranspileOptionsDto, allocator, json, .{ .ignore_unknown_fields = true }) catch return error.InvalidOptions;
+    const parsed = std.json.parseFromSliceLeaky(ConfigOptionsDto, allocator, json, .{ .ignore_unknown_fields = true }) catch return error.InvalidOptions;
 
     var opts: TranspileOptions = .{};
     const compat = @import("transformer/compat.zig");

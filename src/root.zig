@@ -57,5 +57,5 @@ test {
 
     // test files
     _ = @import("config_test.zig");
-    _ = @import("transpile_options_dto_test.zig");
+    _ = @import("config_options_dto_test.zig");
 }

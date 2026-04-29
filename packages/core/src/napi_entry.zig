@@ -91,7 +91,7 @@ fn getStringArg(env: c.napi_env, value: c.napi_value, alloc: std.mem.Allocator) 
 // ─── transpile 함수 ───
 
 /// transpile(source, filename, optionsJson)
-/// optionsJson: TranspileOptionsDto JSON payload (camelCase 키)
+/// optionsJson: ConfigOptionsDto JSON payload (camelCase 키)
 /// → { code: string, map?: string, errors?: string }
 fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
     var argc: usize = 3;

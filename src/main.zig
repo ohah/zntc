@@ -313,7 +313,7 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     // raw DTO 파싱 — `optionsFromJson` 은 TranspileOptions 만 추출하므로 bundler-only
     // 필드를 동시에 매핑하려면 DTO 직접 파싱이 필요.
     const dto = std.json.parseFromSliceLeaky(
-        lib.transpile.TranspileOptionsDto,
+        lib.transpile.ConfigOptionsDto,
         arena_alloc,
         content,
         .{ .ignore_unknown_fields = true },
