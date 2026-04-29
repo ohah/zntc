@@ -751,7 +751,9 @@ export interface PluginBuild {
   ): void;
   onLoad(
     options: { filter: RegExp },
-    callback: (args: { path: string }) => HookResult<{ contents: string; loader?: string }>,
+    callback: (args: {
+      path: string;
+    }) => HookResult<{ contents: string | Uint8Array; loader?: string }>,
   ): void;
   onTransform(
     options: { filter: RegExp },

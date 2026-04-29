@@ -223,25 +223,59 @@ fn getObjectString(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc
     return getStringArg(env, val, alloc);
 }
 
-/// `getObjectString` 와 동일하지만 빈 문자열도 valid 로 받음 (zero-length slice 반환).
-/// plugin onLoad 의 `contents: ""` (의도적 빈 module — `loader: 'empty'` 등) 케이스 보존.
-fn getObjectStringAllowEmpty(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const u8 {
+/// plugin onLoad 의 `contents` 가 string 일 수도 있고 Uint8Array/Buffer 일 수도 있음.
+/// 후자는 binary-safe (PNG/JPG 등 raw bytes 가 utf-8 invalid 일 수 있음). (#2157 follow-up)
+/// - string: utf-8 디코드된 byte slice 그대로 (빈 string 도 valid — `loader: 'empty'` 등)
+/// - Node.js Buffer: napi_is_buffer 로 먼저 확인 (V8 Uint8Array subclass 지만 공식 API 분리)
+/// - Uint8Array typed array: byteLength 만큼 raw bytes 복사
+/// - 그 외 type 또는 missing: null
+fn getObjectBytes(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const u8 {
     const val = getNamedProperty(env, obj, key) orelse return null;
     var ty: c.napi_valuetype = undefined;
-    if (c.napi_typeof(env, val, &ty) != c.napi_ok or ty != c.napi_string) return null;
-    var len: usize = 0;
-    if (c.napi_get_value_string_utf8(env, val, null, 0, &len) != c.napi_ok) return null;
-    if (len == 0) {
-        const empty = alloc.alloc(u8, 0) catch return null;
-        return empty;
+    if (c.napi_typeof(env, val, &ty) != c.napi_ok) return null;
+    if (ty == c.napi_string) {
+        var len: usize = 0;
+        if (c.napi_get_value_string_utf8(env, val, null, 0, &len) != c.napi_ok) return null;
+        if (len == 0) {
+            return alloc.alloc(u8, 0) catch null;
+        }
+        const buf = alloc.alloc(u8, len + 1) catch return null;
+        var actual: usize = 0;
+        if (c.napi_get_value_string_utf8(env, val, buf.ptr, len + 1, &actual) != c.napi_ok) {
+            alloc.free(buf);
+            return null;
+        }
+        return buf[0..actual];
     }
-    const buf = alloc.alloc(u8, len + 1) catch return null;
-    var actual: usize = 0;
-    if (c.napi_get_value_string_utf8(env, val, buf.ptr, len + 1, &actual) != c.napi_ok) {
-        alloc.free(buf);
-        return null;
+    // Node.js Buffer: napi_is_buffer 가 권위 있음. 일부 런타임에서 napi_is_typedarray 가
+    // false 일 가능성 있어 별도 처리.
+    var is_buffer: bool = false;
+    if (c.napi_is_buffer(env, val, &is_buffer) == c.napi_ok and is_buffer) {
+        var byte_len: usize = 0;
+        var data_ptr: ?*anyopaque = null;
+        if (c.napi_get_buffer_info(env, val, &data_ptr, &byte_len) != c.napi_ok) return null;
+        return copyBytesOrEmpty(alloc, data_ptr, byte_len);
     }
-    return buf[0..actual];
+    // Uint8Array / Uint8ClampedArray: raw bytes 복사. 다른 typed array (Int8Array/Float32Array 등)
+    // 는 silent reject — plugin 작성 실수 시 contents missing 으로 표면화.
+    var is_typed: bool = false;
+    if (c.napi_is_typedarray(env, val, &is_typed) != c.napi_ok or !is_typed) return null;
+    var ta_type: c.napi_typedarray_type = undefined;
+    var byte_len: usize = 0;
+    var data_ptr: ?*anyopaque = null;
+    if (c.napi_get_typedarray_info(env, val, &ta_type, &byte_len, &data_ptr, null, null) != c.napi_ok) return null;
+    if (ta_type != c.napi_uint8_array and ta_type != c.napi_uint8_clamped_array) return null;
+    return copyBytesOrEmpty(alloc, data_ptr, byte_len);
+}
+
+fn copyBytesOrEmpty(alloc: std.mem.Allocator, data_ptr: ?*anyopaque, byte_len: usize) ?[]const u8 {
+    if (byte_len == 0) {
+        return alloc.alloc(u8, 0) catch null;
+    }
+    const src_ptr: [*]const u8 = @ptrCast(data_ptr orelse return null);
+    const out = alloc.alloc(u8, byte_len) catch return null;
+    @memcpy(out, src_ptr[0..byte_len]);
+    return out;
 }
 
 fn getObjectStringArray(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const []const u8 {
@@ -695,8 +729,9 @@ const NapiPlugin = struct {
         }
         resp.is_external = getObjectBool(env, js_result, "external", false);
         resp.is_disabled = getObjectBool(env, js_result, "disabled", false);
-        // plugin onLoad 의 `contents` 는 빈 string 도 의도적 (loader: 'empty' 등) — allow empty.
-        if (getObjectStringAllowEmpty(env, js_result, "contents", native_alloc)) |contents| {
+        // plugin onLoad 의 `contents` — string / Uint8Array / Buffer 모두 받음. binary safe.
+        // 빈 string 도 의도적 (loader: 'empty' 등) — allow empty.
+        if (getObjectBytes(env, js_result, "contents", native_alloc)) |contents| {
             resp.code = contents;
         }
         if (resp.code == null) {
