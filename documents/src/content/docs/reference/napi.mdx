@@ -1,0 +1,218 @@
+---
+title: NAPI / JavaScript API
+description: "@zts/core 의 transpile / build / watch / vitePlugin 등 주요 함수 레퍼런스"
+---
+
+{/* 옵션 표는 cherry-pick — source-of-truth 는 reference/options. 옵션 추가 시 양쪽 모두 갱신 검토. */}
+
+import Mermaid from "@components/Mermaid";
+import { NAPI_ARCHITECTURE_CHART } from "@components/diagrams";
+
+`@zts/core` 는 ZTS 엔진을 Node.js / Bun 에서 in-process 호출하는 NAPI 바인딩입니다. CLI 와 동일한 옵션을 프로그래머블하게 사용할 수 있습니다.
+
+> **TypeDoc 자동 생성 레퍼런스**: 모든 export 의 상세 type 시그니처는 사이드바의 **API Reference** 그룹 참고. 이 페이지는 사용자 친화적 요약입니다.
+
+## 아키텍처
+
+`@zts/core` 는 **JS 표면 (사용자 API + plugin dispatcher)** + **NAPI bridge** + **Zig native engine** 3 layer 구조입니다.
+
+<Mermaid client:visible chart={NAPI_ARCHITECTURE_CHART} />
+
+| Layer | 책임 |
+|---|---|
+| **JS** (`packages/core/index.ts`) | 사용자 API surface, 옵션 정규화, plugin lifecycle 호출 |
+| **Plugin Dispatcher** | hook 등록 / 매 모듈마다 NAPI threadsafe-fn 통해 JS callback 호출 |
+| **NAPI bridge** (`packages/core/src/napi_entry.zig` → `zts.node`) | JS↔Zig boundary. JSON payload 변환, plugin dispatch |
+| **Zig engine** (`src/`) | Scanner → Parser → Semantic → Transformer → Codegen 단일 흐름 + Bundler → Linker → Tree-shaker → Emitter 번들 흐름 |
+
+JS plugin 의 `onResolve` / `onLoad` 등은 native bundler 가 모듈을 만나는 시점마다 NAPI threadsafe function 으로 JS dispatcher 를 깨워 호출 — Zig worker 가 응답을 기다리는 sync 모델 (Promise 결과까지 wait).
+
+## 설치 + 초기화
+
+```bash
+bun add @zts/core
+```
+
+```ts
+import { init, close, transpile, build, watch } from "@zts/core";
+
+init();           // NAPI addon 로드 (한 번만)
+// ... 사용 ...
+close();          // 종료 시 cleanup
+```
+
+## `transpile(source, options)`
+
+단일 파일 트랜스파일. 번들링 없이 TypeScript / JSX / Flow / 데코레이터 변환만.
+
+```ts
+import { transpile } from "@zts/core";
+
+const r = transpile("const x: number = 42;", {
+  target: "es2020",
+  jsx: "automatic",
+  sourcemap: true,
+});
+
+console.log(r.code);    // "const x = 42;"
+console.log(r.map);     // 소스맵 JSON
+```
+
+**핵심 옵션** (전체: [Transpile 옵션](/zts/reference/options/)):
+- `target` — `es5` / `es2015`–`es2025` / `esnext`
+- `jsx` — `classic` / `automatic` / `automatic-dev`
+- `flow` — Flow 타입 스트리핑
+- `experimentalDecorators` / `emitDecoratorMetadata`
+- `minifyWhitespace` / `minifyIdentifiers` / `minifySyntax`
+- `define` — `{ key: value }` 정적 치환
+- `sourcemap` / `sourcemapDebugIds`
+- `tsconfigPath` / `tsconfigRaw`
+
+## `build(options)` / `buildSync(options)`
+
+번들링. esbuild / Rollup / rolldown 호환 옵션.
+
+```ts
+import { build } from "@zts/core";
+
+const result = await build({
+  entryPoints: ["src/index.ts"],
+  outdir: "dist",
+  bundle: true,
+  splitting: true,
+  format: "esm",
+  platform: "browser",
+  minify: true,
+  sourcemap: true,
+  outputExports: "named",            // CJS/UMD entry export 형식 (#2159)
+  inlineDynamicImports: false,       // dynamic import 인라인 여부 (#2185)
+  manualChunks: (id, meta) => {      // record form 또는 함수형
+    if (id.includes("node_modules")) return "vendor";
+    return null;
+  },
+});
+
+console.log(`Built ${result.outputFiles.length} files`);
+```
+
+`buildSync()` 는 동기 버전 — JS 플러그인 미지원 (스레드 모델 한계). 단순 단일 파일 빌드에 적합.
+
+**번들 전용 옵션**:
+- `entryPoints` — 진입점 배열
+- `outdir` / `outfile`
+- `splitting` — code splitting
+- `preserveModules` / `preserveModulesRoot`
+- `inlineDynamicImports`
+- `external` — `string[]` 또는 RegExp
+- `alias` — `Record<string, string>` 또는 `[{find, replacement}]` (Vite 형식, #2153)
+- `loader` — `Record<string, "file" | "dataurl" | "base64" | "binary" | "text" | "copy" | "empty">`
+- `manualChunks` — 함수형 또는 record form (#2186)
+- `outputExports` — `"auto" | "named" | "default" | "none"` (#2159)
+- `banner` / `footer`
+- `entryNames` / `chunkNames` / `assetNames`
+- `metafile` / `analyze`
+- `sourcemap` / `sourcemapMode` (`"linked" | "inline" | "external" | "hidden"`, #2152)
+- `logLevel` / `logOverride` / `logLimit` (#2158)
+
+## `watch(options)`
+
+증분 빌드 watch 모드. 파일 변경 시 자동 rebuild.
+
+```ts
+import { watch } from "@zts/core";
+
+const handle = watch({
+  entryPoints: ["src/index.ts"],
+  outdir: "dist",
+  bundle: true,
+  onReady: () => console.log("first build ready"),
+  onRebuild: (event) => {
+    console.log("rebuild", event.changedFiles);
+  },
+});
+
+// 종료 시
+handle.stop();
+```
+
+## `vitePlugin(rollupPlugin)`
+
+Rollup plugin 을 ZTS 의 `ZtsPlugin` 으로 변환하는 어댑터. Vite plugin 도 Rollup 호환이라 그대로 사용 가능.
+
+```ts
+import { build, vitePlugin } from "@zts/core";
+import someRollupPlugin from "rollup-plugin-something";
+
+await build({
+  entryPoints: ["src/index.ts"],
+  plugins: [vitePlugin(someRollupPlugin())],
+});
+```
+
+지원 hook: `resolveId` / `load` / `transform` / `renderChunk` / `generateBundle` / `buildStart` / `buildEnd` / `closeBundle` (#2156).
+
+## ZTS plugin 직접 작성
+
+Rollup-style hook 인터페이스. 자세한 내용은 [Plugins 가이드](/zts/guides/plugins/) 참고.
+
+```ts
+import type { ZtsPlugin } from "@zts/core";
+
+const myPlugin: ZtsPlugin = {
+  name: "my-plugin",
+  setup(build) {
+    build.onResolve({ filter: /^@my\// }, (args) => ({
+      path: resolve(__dirname, args.path),
+    }));
+    build.onLoad({ filter: /\.md$/ }, (args) => ({
+      contents: readFileSync(args.path, "utf-8"),
+      loader: "text",          // (#2157) loader override
+    }));
+    build.onTransform({ filter: /\.ts$/ }, (args) => ({
+      code: args.code.replace(/__VERSION__/g, '"1.0.0"'),
+    }));
+    build.onBuildStart(() => console.log("started"));      // (#2156)
+    build.onBuildEnd((err) => err && console.error(err));  // (#2156)
+    build.onCloseBundle(() => console.log("done"));        // (#2156)
+  },
+};
+```
+
+## `defineConfig(config)`
+
+`zts.config.ts` 에서 type-safe 한 config 작성용 helper. 런타임 동작 없음 — 단순 identity 함수.
+
+```ts
+// zts.config.ts
+import { defineConfig } from "@zts/core";
+
+export default defineConfig({
+  bundle: {
+    entryPoints: ["src/index.ts"],
+    outdir: "dist",
+    minify: true,
+  },
+});
+```
+
+## `benchmark(options)`
+
+ZTS / esbuild / swc 등을 같은 입력에 적용해 단계별 시간 측정. 벤치마크 결과는 [Benchmarks](/zts/reference/benchmarks/) 참고.
+
+```ts
+import { benchmark } from "@zts/core";
+
+const r = benchmark({
+  source: "...",
+  iterations: 100,
+  engines: ["zts", "esbuild"],
+});
+```
+
+## 참고
+
+- 모든 export 상세 시그니처: **API Reference** (사이드바) (TypeDoc auto-generated)
+- [CLI](/zts/reference/cli/) — 동일 옵션을 명령행에서 사용
+- [Transpile 옵션](/zts/reference/options/) — JSON Schema 기반 전체 옵션 표
+- [Plugins 가이드](/zts/guides/plugins/) — plugin hook 작성법
+- [Vite 플러그인](/zts/guides/dev-server/) — `vite-plugin-zts`

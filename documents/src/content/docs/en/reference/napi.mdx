@@ -1,0 +1,218 @@
+---
+title: NAPI / JavaScript API
+description: Reference for @zts/core's transpile / build / watch / vitePlugin and other primary entry points
+---
+
+{/* Options below are cherry-picked — source of truth is reference/options. Update both when adding options. */}
+
+import Mermaid from "@components/Mermaid";
+import { NAPI_ARCHITECTURE_CHART } from "@components/diagrams";
+
+`@zts/core` is the NAPI binding that runs the ZTS engine in-process from Node.js / Bun. The same options as the CLI are available programmatically.
+
+> **TypeDoc-generated reference**: detailed type signatures for every export live under the **API Reference** sidebar group. This page is a user-friendly summary.
+
+## Architecture
+
+`@zts/core` is structured as 3 layers: **JS surface (user API + plugin dispatcher)** + **NAPI bridge** + **Zig native engine**.
+
+<Mermaid client:visible chart={NAPI_ARCHITECTURE_CHART} />
+
+| Layer | Responsibility |
+|---|---|
+| **JS** (`packages/core/index.ts`) | User-facing API surface, option normalization, plugin lifecycle dispatch |
+| **Plugin Dispatcher** | hook registration; per-module call into JS callbacks via NAPI threadsafe-fn |
+| **NAPI bridge** (`packages/core/src/napi_entry.zig` → `zts.node`) | JS↔Zig boundary. JSON payload conversion, plugin dispatch |
+| **Zig engine** (`src/`) | Scanner → Parser → Semantic → Transformer → Codegen for transpile + Bundler → Linker → Tree-shaker → Emitter for bundle |
+
+Plugin hooks like `onResolve` / `onLoad` are awoken via NAPI threadsafe-fn whenever the native bundler needs them — the Zig worker waits synchronously for the JS callback's response (including Promise resolution).
+
+## Install + initialize
+
+```bash
+bun add @zts/core
+```
+
+```ts
+import { init, close, transpile, build, watch } from "@zts/core";
+
+init();           // load NAPI addon (call once)
+// ... use ...
+close();          // cleanup on shutdown
+```
+
+## `transpile(source, options)`
+
+Single-file transpile. TypeScript / JSX / Flow / decorator transforms only — no bundling.
+
+```ts
+import { transpile } from "@zts/core";
+
+const r = transpile("const x: number = 42;", {
+  target: "es2020",
+  jsx: "automatic",
+  sourcemap: true,
+});
+
+console.log(r.code);    // "const x = 42;"
+console.log(r.map);     // sourcemap JSON
+```
+
+**Key options** (full list: [Transpile Options](/zts/en/reference/options/)):
+- `target` — `es5` / `es2015`–`es2025` / `esnext`
+- `jsx` — `classic` / `automatic` / `automatic-dev`
+- `flow` — Flow type stripping
+- `experimentalDecorators` / `emitDecoratorMetadata`
+- `minifyWhitespace` / `minifyIdentifiers` / `minifySyntax`
+- `define` — `{ key: value }` static replace
+- `sourcemap` / `sourcemapDebugIds`
+- `tsconfigPath` / `tsconfigRaw`
+
+## `build(options)` / `buildSync(options)`
+
+Bundling. Options compatible with esbuild / Rollup / rolldown.
+
+```ts
+import { build } from "@zts/core";
+
+const result = await build({
+  entryPoints: ["src/index.ts"],
+  outdir: "dist",
+  bundle: true,
+  splitting: true,
+  format: "esm",
+  platform: "browser",
+  minify: true,
+  sourcemap: true,
+  outputExports: "named",            // CJS/UMD entry export shape (#2159)
+  inlineDynamicImports: false,       // inline dynamic imports (#2185)
+  manualChunks: (id, meta) => {      // function or record form
+    if (id.includes("node_modules")) return "vendor";
+    return null;
+  },
+});
+
+console.log(`Built ${result.outputFiles.length} files`);
+```
+
+`buildSync()` is the sync variant — does not support JS plugins (threading model limitation). Suitable for simple single-file builds.
+
+**Bundle-specific options**:
+- `entryPoints`
+- `outdir` / `outfile`
+- `splitting` — code splitting
+- `preserveModules` / `preserveModulesRoot`
+- `inlineDynamicImports`
+- `external` — `string[]` or RegExp
+- `alias` — `Record<string, string>` or `[{find, replacement}]` (Vite-style, #2153)
+- `loader` — `Record<string, "file" | "dataurl" | "base64" | "binary" | "text" | "copy" | "empty">`
+- `manualChunks` — function or record form (#2186)
+- `outputExports` — `"auto" | "named" | "default" | "none"` (#2159)
+- `banner` / `footer`
+- `entryNames` / `chunkNames` / `assetNames`
+- `metafile` / `analyze`
+- `sourcemap` / `sourcemapMode` (`"linked" | "inline" | "external" | "hidden"`, #2152)
+- `logLevel` / `logOverride` / `logLimit` (#2158)
+
+## `watch(options)`
+
+Incremental watch-mode build. Auto rebuild on file change.
+
+```ts
+import { watch } from "@zts/core";
+
+const handle = watch({
+  entryPoints: ["src/index.ts"],
+  outdir: "dist",
+  bundle: true,
+  onReady: () => console.log("first build ready"),
+  onRebuild: (event) => {
+    console.log("rebuild", event.changedFiles);
+  },
+});
+
+// shutdown
+handle.stop();
+```
+
+## `vitePlugin(rollupPlugin)`
+
+Adapter that converts a Rollup plugin into a ZTS `ZtsPlugin`. Vite plugins are Rollup-compatible, so they also work directly.
+
+```ts
+import { build, vitePlugin } from "@zts/core";
+import someRollupPlugin from "rollup-plugin-something";
+
+await build({
+  entryPoints: ["src/index.ts"],
+  plugins: [vitePlugin(someRollupPlugin())],
+});
+```
+
+Forwarded hooks: `resolveId` / `load` / `transform` / `renderChunk` / `generateBundle` / `buildStart` / `buildEnd` / `closeBundle` (#2156).
+
+## Authoring a ZTS plugin
+
+Rollup-style hook interface. See the [Plugins guide](/zts/en/guides/plugins/) for details.
+
+```ts
+import type { ZtsPlugin } from "@zts/core";
+
+const myPlugin: ZtsPlugin = {
+  name: "my-plugin",
+  setup(build) {
+    build.onResolve({ filter: /^@my\// }, (args) => ({
+      path: resolve(__dirname, args.path),
+    }));
+    build.onLoad({ filter: /\.md$/ }, (args) => ({
+      contents: readFileSync(args.path, "utf-8"),
+      loader: "text",          // (#2157) loader override
+    }));
+    build.onTransform({ filter: /\.ts$/ }, (args) => ({
+      code: args.code.replace(/__VERSION__/g, '"1.0.0"'),
+    }));
+    build.onBuildStart(() => console.log("started"));      // (#2156)
+    build.onBuildEnd((err) => err && console.error(err));  // (#2156)
+    build.onCloseBundle(() => console.log("done"));        // (#2156)
+  },
+};
+```
+
+## `defineConfig(config)`
+
+Type-safe helper for `zts.config.ts`. No runtime behavior — identity function only.
+
+```ts
+// zts.config.ts
+import { defineConfig } from "@zts/core";
+
+export default defineConfig({
+  bundle: {
+    entryPoints: ["src/index.ts"],
+    outdir: "dist",
+    minify: true,
+  },
+});
+```
+
+## `benchmark(options)`
+
+Run ZTS / esbuild / swc with the same input and measure per-stage time. See [Benchmarks](/zts/reference/benchmarks/) for results.
+
+```ts
+import { benchmark } from "@zts/core";
+
+const r = benchmark({
+  source: "...",
+  iterations: 100,
+  engines: ["zts", "esbuild"],
+});
+```
+
+## See also
+
+- Detailed signatures of every export: **API Reference** (sidebar) (TypeDoc auto-generated)
+- [CLI](/zts/en/reference/cli/) — same options on the command line
+- [Transpile Options](/zts/en/reference/options/) — full options table from JSON Schema
+- [Plugins guide](/zts/en/guides/plugins/) — how to author plugin hooks
+- [Vite plugin](/zts/en/guides/dev-server/) — `vite-plugin-zts`
