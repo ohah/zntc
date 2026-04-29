@@ -212,6 +212,76 @@ test "styled-components: object property string-key { \"My Comp\": ... } 도 인
     try expectDisplayName(r.output, "MyComp");
 }
 
+test "styled-components: 논리 `cond && styled.div\\`\\`` 우변 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Lazy = enabled && styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Lazy");
+}
+
+test "styled-components: 논리 `default || styled.div\\`\\`` 우변 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Fallback = userOverride || styled.div`color: blue;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Fallback");
+}
+
+test "styled-components: TS cast `styled.div\\`\\` as Component` 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Casted = styled.div`color: red;` as React.FC;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Casted");
+}
+
+test "styled-components: TS satisfies `... satisfies T` 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Sat = styled.div`color: red;` satisfies React.FC;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Sat");
+}
+
+test "styled-components: TS non-null `...!` 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const NN = styled.div`color: red;`!;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "NN");
+}
+
 test "styled-components: 사용자 명시 .withConfig 가 있으면 wrap 안 함" {
     // 사용자가 자신의 componentId 를 박은 경우, 우리가 추가 .withConfig 를 chain 에 더하면
     // styled-components 의 later-wins 시맨틱으로 user 의 ID 가 우리 자동 ID 로 override 됨.

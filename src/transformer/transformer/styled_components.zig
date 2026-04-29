@@ -186,14 +186,17 @@ pub fn maybeWrapAssignment(self: *Transformer, assignment_idx: NodeIndex) Error!
     });
 }
 
-/// 표현식이 styled tagged template 을 (직접 / 조건부 / 괄호 안에) 포함하면 wrap.
+/// 표현식이 styled tagged template 을 (직접 / wrapper 안에) 포함하면 wrap.
 /// caller 가 init.tag 를 사전 검사 (`isWrappableExpr`) 한 뒤 호출.
 ///
-/// 인식 expression 형태:
+/// 인식 expression wrapper:
 ///   - `styled.div\`...\`` (직접)
-///   - `cond ? styled.div\`\` : styled.div\`\`` (양쪽 branch 에 같은 var_name 적용 — babel 동작)
-///   - `(styled.div\`\`)` (괄호 안)
-///   - 위 조합 (조건부 안의 괄호 등)
+///   - `cond ? styled.div\`\` : styled.div\`\`` (양쪽 branch — babel 동작)
+///   - `(styled.div\`\`)` (괄호)
+///   - `cond && styled.div\`\`` / `default || styled.div\`\`` / `?? styled.div\`\`` (논리 — 우변만)
+///   - `styled.div\`\` as Component` / `... satisfies T` / `...!` / legacy `<T>...` (TS 캐스트)
+///   - `styled.div\`\` as Foo` (Flow 캐스트)
+///   - 위 조합 (캐스트 안의 괄호 등)
 pub fn wrapStyledTagInExpr(self: *Transformer, expr_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (expr_idx.isNone()) return expr_idx;
     const node = self.ast.getNode(expr_idx);
@@ -216,12 +219,37 @@ pub fn wrapStyledTagInExpr(self: *Transformer, expr_idx: NodeIndex, var_name: []
                 } },
             });
         },
-        .parenthesized_expression => {
+        .logical_expression => {
+            // binary: left, right, flags. && 의 right 가 결과값. || / ?? 도 fallback 위치
+            // 가 right 라 동일하게 처리. left 는 전파하지 않음 (대부분 condition / default 가
+            // styled 컴포넌트가 아니어서 false-positive 위험).
+            const old_right = node.data.binary.right;
+            const new_right = try wrapStyledTagInExpr(self, old_right, var_name);
+            if (new_right == old_right) return expr_idx;
+            return self.ast.addNode(.{
+                .tag = .logical_expression,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = node.data.binary.left,
+                    .right = new_right,
+                    .flags = node.data.binary.flags,
+                } },
+            });
+        },
+        .parenthesized_expression,
+        .ts_as_expression,
+        .ts_satisfies_expression,
+        .ts_type_assertion,
+        .ts_non_null_expression,
+        .flow_as_expression,
+        .flow_type_cast_expression,
+        => {
+            // 모두 unary { operand, flags } — operand 만 walk.
             const old_inner = node.data.unary.operand;
             const new_inner = try wrapStyledTagInExpr(self, old_inner, var_name);
             if (new_inner == old_inner) return expr_idx;
             return self.ast.addNode(.{
-                .tag = .parenthesized_expression,
+                .tag = node.tag,
                 .span = node.span,
                 .data = .{ .unary = .{ .operand = new_inner, .flags = node.data.unary.flags } },
             });
@@ -231,9 +259,20 @@ pub fn wrapStyledTagInExpr(self: *Transformer, expr_idx: NodeIndex, var_name: []
 }
 
 fn isWrappableExpr(tag: ast_mod.Node.Tag) bool {
-    return tag == .tagged_template_expression or
-        tag == .conditional_expression or
-        tag == .parenthesized_expression;
+    return switch (tag) {
+        .tagged_template_expression,
+        .conditional_expression,
+        .logical_expression,
+        .parenthesized_expression,
+        .ts_as_expression,
+        .ts_satisfies_expression,
+        .ts_type_assertion,
+        .ts_non_null_expression,
+        .flow_as_expression,
+        .flow_type_cast_expression,
+        => true,
+        else => false,
+    };
 }
 
 /// caller 의 fast-path 사전 필터 — visitVariableDeclarator / visitObjectProperty 가 매
