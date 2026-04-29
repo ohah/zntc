@@ -2916,6 +2916,10 @@ pub const Transformer = struct {
 
     /// variable_declarator: extra_data = [name, type_ann, init]
     fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
+        // styled-components 1st-party transform — init 이 styled tagged template 이면 변수
+        // 이름을 PluginState 에 누적 (옵션 활성 시).
+        styled_components_mod.detectStyledDeclaration(self, node);
+
         const e = node.data.extra;
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
         const new_init = try self.visitNode(self.readNodeIdx(e, 2));
@@ -4395,10 +4399,14 @@ pub const Transformer = struct {
     }
 
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        // styled-components 1st-party transform — source 가 "styled-components" 면 default
+        // specifier 의 로컬 이름을 PluginState 에 저장 (옵션 활성 시).
+        styled_components_mod.detectStyledImport(self, node);
+
         const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
 
         // Unused import 제거: 모든 specifier의 reference_count가 0이면 import 전체를 제거.
-        // side-effect import는 specifier가 없으므로 제거 불가.
+        // side-effect import는 specifier가 없으면 제거 불가.
         // verbatimModuleSyntax=true면 elision 생략 — 값 import는 그대로 보존.
         if (!self.options.verbatim_module_syntax and
             self.symbols.len > 0 and self.symbol_ids.items.len > 0 and x.specs_len > 0)
