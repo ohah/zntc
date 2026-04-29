@@ -626,6 +626,19 @@ pub const SemanticAnalyzer = struct {
         self.recordDeclareRef(@intCast(sym_index), target_scope);
     }
 
+    /// `const Foo = class Bar {}` 의 inner `Bar` 같은 named class expression 의
+    /// inner name 을 등록하면서 `is_class_expr_name` 표식을 부여한다 (#2197).
+    /// mangler 가 이 비트를 보면 mangle 대상에서 제외하여 `.name` 프로퍼티가 보존된다.
+    /// `declareSymbolWithNode` 가 redeclaration 충돌 시 push 를 건너뛰는 케이스를
+    /// 방어하기 위해 호출 전후 길이 비교로 실제 push 여부를 검증한다.
+    fn declareClassExprInnerName(self: *SemanticAnalyzer, name_span: Span, node_idx: u32) AllocError!void {
+        const before_len = self.symbols.items.len;
+        try self.declareSymbolWithNode(name_span, .class_decl, name_span, node_idx);
+        if (self.symbols.items.len > before_len) {
+            self.symbols.items[before_len].decl_flags.is_class_expr_name = true;
+        }
+    }
+
     /// 선언을 `references` 배열에 `flags.declare` 로 기록. #1669.
     /// 현재 `enable_stmt_info` + 유효 stmt_idx 가 있을 때만 기록.
     /// `scope_id` 는 선언 대상 scope — top-level 판별은 buildFromSemantic 에서 수행.
@@ -2499,7 +2512,7 @@ pub const SemanticAnalyzer = struct {
         // 이 심볼로 resolve되고, body scope 종료 후 외부 참조는 다른 심볼(또는 unresolved).
         if (!class_expr_name_idx.isNone()) {
             const name_node = self.ast.getNode(class_expr_name_idx);
-            try self.declareSymbolWithNode(name_node.span, .class_decl, name_node.span, @intFromEnum(class_expr_name_idx));
+            try self.declareClassExprInnerName(name_node.span, @intFromEnum(class_expr_name_idx));
         }
 
         if (!body_idx.isNone() and @intFromEnum(body_idx) < self.ast.nodes.items.len) {
