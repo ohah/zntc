@@ -43,6 +43,69 @@ test "Codegen: class private field" {
     try std.testing.expectEqualStrings("class Foo{#x=1;}", r.output);
 }
 
+// TS parameter property — `public/private/protected/readonly` 가 ctor 파라미터에 붙으면
+// `this.x = x` 할당이 자동 생성된다. derived class 에서는 super() 후에 와야 ReferenceError 회피.
+
+test "Codegen: TS param property base class — body 앞 prepend" {
+    // base ctor: super() 가 없으므로 body 앞에 this.x = x 삽입.
+    var r = try e2e(std.testing.allocator, "class Foo { constructor(public x: number) {} }");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.x=x") != null);
+}
+
+test "Codegen: TS param property derived class — super() 후에 prepend" {
+    // derived ctor: super() 호출 전에 this.* 접근하면 ReferenceError 이므로 super() 뒤로 와야.
+    var r = try e2e(std.testing.allocator,
+        \\class Base { constructor(public x: number) {} }
+        \\class Derived extends Base {
+        \\  constructor(x: number, public y: number) { super(x); }
+        \\}
+    );
+    defer r.deinit();
+    // Derived 의 ctor body 에서 super(x) 가 this.y=y 보다 앞에 와야 한다.
+    const out = r.output;
+    const super_pos = std.mem.indexOf(u8, out, "super(x)") orelse return error.SuperCallNotFound;
+    const assign_pos = std.mem.indexOf(u8, out, "this.y=y") orelse return error.AssignNotFound;
+    try std.testing.expect(super_pos < assign_pos);
+}
+
+test "Codegen: TS param property derived multi — 모든 할당이 super() 뒤" {
+    var r = try e2e(std.testing.allocator,
+        \\class Base { constructor() {} }
+        \\class Derived extends Base {
+        \\  constructor(public a: number, readonly b: string, private c: boolean) { super(); }
+        \\}
+    );
+    defer r.deinit();
+    const out = r.output;
+    const super_pos = std.mem.indexOf(u8, out, "super()") orelse return error.SuperCallNotFound;
+    for ([_][]const u8{ "this.a=a", "this.b=b", "this.c=c" }) |needle| {
+        const p = std.mem.indexOf(u8, out, needle) orelse return error.AssignNotFound;
+        try std.testing.expect(super_pos < p);
+    }
+}
+
+test "Codegen: TS param property derived — body 의 다른 stmt 보존" {
+    // super() 와 prepend 한 this.* 사이에 body 의 기존 stmt 들이 끼지 않아야 한다.
+    var r = try e2e(std.testing.allocator,
+        \\class Base { constructor() {} }
+        \\class Derived extends Base {
+        \\  constructor(public x: number) {
+        \\    super();
+        \\    console.log("after");
+        \\  }
+        \\}
+    );
+    defer r.deinit();
+    const out = r.output;
+    const super_pos = std.mem.indexOf(u8, out, "super()") orelse return error.SuperCallNotFound;
+    const assign_pos = std.mem.indexOf(u8, out, "this.x=x") orelse return error.AssignNotFound;
+    const log_pos = std.mem.indexOf(u8, out, "console.log") orelse return error.LogNotFound;
+    // super() < this.x=x < console.log
+    try std.testing.expect(super_pos < assign_pos);
+    try std.testing.expect(assign_pos < log_pos);
+}
+
 // ============================================================
 // E2E Tests: Arrow Function
 // ============================================================

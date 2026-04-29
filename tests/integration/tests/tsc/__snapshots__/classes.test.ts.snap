@@ -1885,8 +1885,8 @@ class BaseC {
 }
 class DerivedA extends BaseA {
 	constructor(x) {
-		this.x = x;
 		super(x);
+		this.x = x;
 	}
 	createInstance() {
 		new DerivedA(5);
@@ -1900,8 +1900,8 @@ class DerivedA extends BaseA {
 }
 class DerivedB extends BaseB {
 	constructor(x) {
-		this.x = x;
 		super(x);
+		this.x = x;
 	}
 	createInstance() {
 		new DerivedB(7);
@@ -1918,8 +1918,8 @@ class DerivedB extends BaseB {
 class DerivedC extends BaseC {
 	// error
 	constructor(x) {
-		this.x = x;
 		super(x);
+		this.x = x;
 	}
 	createInstance() {
 		new DerivedC(9);
@@ -2135,8 +2135,8 @@ exports[`TSC: classes classConstructorParametersAccessibility3 1`] = `
 }
 class Derived extends Base {
 	constructor(p) {
-		this.p = p;
 		super(p);
+		this.p = p;
 		this.p;
 	}
 }
@@ -2358,8 +2358,8 @@ class C extends A {
 	// This is the usual behavior of readonly properties:
 	// if one is redeclared in a base class, then it can be assigned to.
 	constructor(x) {
-		this.x = x;
 		super(x);
+		this.x = x;
 		this.x = 1;
 	}
 }
@@ -2372,8 +2372,8 @@ class D {
 // Fails, can't redeclare readonly property
 class E extends D {
 	constructor(x) {
-		this.x = x;
 		super(x);
+		this.x = x;
 		this.x = 1;
 	}
 }
@@ -2499,15 +2499,15 @@ class Derived extends Base {
 }
 class Derived2 extends Base {
 	constructor(y) {
-		this.y = y;
 		var a = 1;
 		super();
+		this.y = y;
 	}
 }
 class Derived3 extends Base {
 	constructor(y) {
-		this.y = y;
 		super();
+		this.y = y;
 		var a = 1;
 	}
 }
@@ -2590,24 +2590,24 @@ class Derived extends Base {
 // ok
 class Derived2 extends Base {
 	constructor(a) {
-		this.a = a;
 		super(this);
+		this.a = a;
 	}
 }
 // error
 class Derived3 extends Base {
 	constructor(a) {
-		this.a = a;
 		super(() => this);
+		this.a = a;
 	}
 }
 // error
 class Derived4 extends Base {
 	constructor(a) {
-		this.a = a;
 		super(function() {
 			return this;
 		});
+		this.a = a;
 	}
 }
 // ok
@@ -3171,10 +3171,10 @@ exports[`TSC: classes emitStatementsBeforeSuperCall 1`] = `
 class Sub extends Base {
 	// @ts-ignore
 	constructor(p) {
-		this.p = p;
 		console.log("hi");
 		// should emit before super
 		super();
+		this.p = p;
 	}
 	field = 0;
 }
@@ -3182,10 +3182,10 @@ class Test extends Base {
 	prop;
 	// @ts-ignore
 	constructor(p) {
-		this.p = p;
 		1;
 		// should emit before super
 		super();
+		this.p = p;
 		this.prop = 1;
 	}
 }
@@ -3198,9 +3198,9 @@ exports[`TSC: classes emitStatementsBeforeSuperCallWithDefineFields 1`] = `
 class Sub extends Base {
 	// @ts-ignore
 	constructor(p) {
-		this.p = p;
 		console.log("hi");
 		super();
+		this.p = p;
 	}
 	field = 0;
 }
@@ -3208,9 +3208,9 @@ class Test extends Base {
 	prop;
 	// @ts-ignore
 	constructor(p) {
-		this.p = p;
 		1;
 		super();
+		this.p = p;
 		this.prop = 1;
 	}
 }
@@ -8970,8 +8970,8 @@ exports[`TSC: classes mixinClassesAnnotated 1`] = `
 }
 class Derived extends Base {
 	constructor(x,y,z) {
-		this.z = z;
 		super(x, y);
+		this.z = z;
 	}
 }
 const Printable = (superClass) => class extends superClass {
@@ -9025,8 +9025,8 @@ exports[`TSC: classes mixinClassesAnonymous 1`] = `
 }
 class Derived extends Base {
 	constructor(x,y,z) {
-		this.z = z;
 		super(x, y);
+		this.z = z;
 	}
 }
 const Printable = (superClass) => class extends superClass {
@@ -9916,8 +9916,8 @@ class B {
 class C extends B {
 	z = this.ka;
 	constructor(ka) {
-		this.ka = ka;
 		super();
+		this.ka = ka;
 	}
 	ki = this.ka;
 }
@@ -10624,8 +10624,8 @@ exports[`TSC: classes propertyOverridesAccessors5 1`] = `
 }
 class B extends A {
 	constructor(p) {
-		this.p = p;
 		super();
+		this.p = p;
 	}
 }
 "
@@ -10679,8 +10679,8 @@ class Derived extends Base {
 	b = this.a;
 	/*undefined*/
 	constructor(a) {
-		this.a = a;
 		super();
+		this.a = a;
 	}
 }
 "

@@ -3163,6 +3163,18 @@ pub const Transformer = struct {
         return try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     }
 
+    /// derived class constructor 의 super() 직후에 this.x = x; 문들을 삽입한다.
+    /// (kept-class 경로 — visitMethodDefinition. ES5 lowering 은 postProcessDerivedConstructorBody 사용).
+    pub fn insertParameterPropertyAssignmentsAfterSuper(self: *Transformer, body_idx: NodeIndex, prop_names: []const NodeIndex) Error!NodeIndex {
+        const pp_list = try self.buildParameterPropertyStatements(prop_names);
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+        for (self.ast.extra_data.items[pp_list.start .. pp_list.start + pp_list.len]) |raw_idx| {
+            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        }
+        return self.insertStatementsAfterSuper(body_idx, self.scratch.items[scratch_top..]);
+    }
+
     /// block_statement 바디 앞에 this.x = x; 문들을 삽입한다 (base class ctor 용).
     /// derived class 는 super() 호출 이전에 박으면 super() 후 새 인스턴스에 손실되므로 사용 금지 —
     /// `buildParameterPropertyStatements` + `postProcessDerivedConstructorBody` 경로를 사용하라.
@@ -4181,28 +4193,29 @@ pub const Transformer = struct {
         self.needs_arguments_var = false;
         self.super_call_this_alias = false;
 
+        const is_ctor = (flags & ast_mod.MethodFlags.is_static) == 0 and blk: {
+            const key_node = self.ast.getNode(self.readNodeIdx(e, 0));
+            if (key_node.tag != .identifier_reference) break :blk false;
+            break :blk std.mem.eql(u8, self.ast.getText(key_node.span), "constructor");
+        };
+
         // ES2015 new.target: method → constructor 또는 void 0
         const saved_new_target_ctx = self.new_target_ctx;
         if (self.options.unsupported.new_target) {
-            const is_ctor = blk: {
-                if ((flags & ast_mod.MethodFlags.is_static) != 0) break :blk false;
-                const key_idx = self.readNodeIdx(e, 0);
-                const key_node = self.ast.getNode(key_idx);
-                if (key_node.tag == .identifier_reference) {
-                    const name = self.ast.getText(key_node.span);
-                    break :blk std.mem.eql(u8, name, "constructor");
-                }
-                break :blk false;
-            };
             self.new_target_ctx = if (is_ctor) .constructor else .method;
         }
         defer self.new_target_ctx = saved_new_target_ctx;
 
         var new_body = try self.visitBodyWorkletAware(self.readNodeIdx(e, 2));
 
-        // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
+        // parameter property: derived class constructor 는 super() 후에, 그 외에는 body 앞에 prepend.
+        // 전자에서 prepend 하면 `this` 가 super() 전 접근되어 ReferenceError.
         if (pp.prop_count > 0 and !new_body.isNone()) {
-            new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+            if (is_ctor and self.current_super_class != null) {
+                new_body = try self.insertParameterPropertyAssignmentsAfterSuper(new_body, pp.prop_names[0..pp.prop_count]);
+            } else {
+                new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+            }
         }
 
         // arrow가 this/arguments를 사용했으면 var _this = this; 등 삽입

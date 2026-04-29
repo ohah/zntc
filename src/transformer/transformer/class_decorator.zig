@@ -39,7 +39,16 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             ast_mod.NodeIndex.none
         else
             try self.visitNode(raw_name_idx);
-        const new_super = try self.visitNode(self.readNodeIdx(e, ast_mod.ClassExtra.super));
+        const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
+        const new_super = try self.visitNode(super_idx);
+
+        // body visit 동안 derived class 여부를 method 변환부에 알린다 (parameter property
+        // 가 super() 후로 가야 하는 경로 판별용).
+        const saved_super_class = self.current_super_class;
+        if (!super_idx.isNone()) {
+            self.current_super_class = self.ast.getNode(super_idx).span;
+        }
+        defer self.current_super_class = saved_super_class;
 
         var current_body_idx = self.readNodeIdx(e, ast_mod.ClassExtra.body);
 
