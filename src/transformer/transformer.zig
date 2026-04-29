@@ -1585,6 +1585,43 @@ pub const Transformer = struct {
         return ref;
     }
 
+    /// JSX → `React.createElement` 변환처럼 transformer 가 *원본 AST 에 없는*
+    /// 식별자 노드를 만들 때, 그 이름으로 root scope (module/global) 의 binding
+    /// 을 lookup 하여 symbol_id 를 attach 한다 (#2196).
+    ///
+    /// 이렇게 해야 mangler/linker 가 원본 binding 의 rename 결과를 새 노드에도
+    /// 그대로 반영. lookup 실패 시 (해당 이름의 root binding 없음) 그냥 패스 —
+    /// 원본 그대로 emit 됨.
+    ///
+    /// **Limitation**: root scope (scope_id=0) 만 검색. 함수 안에서 declare 한
+    /// `function f() { const React = ...; return <div/>; }` 같은 shadowed binding
+    /// 은 미지원 — JSX runtime 식별자가 함수 스코프에 있으면 lookup 실패 후
+    /// silent fallback 으로 원본 이름 그대로 emit. 외부에 동일 이름 root binding
+    /// 이 있으면 mangle 불일치 발생 가능. 실세계 React 코드 패턴이 거의 항상
+    /// module/global level 이라 의도된 trade-off.
+    ///
+    /// linear scan 이지만 호출 빈도 (factory head 식별자만) 가 낮아 비용 무시할
+    /// 수준. 측정 후 필요하면 root scope sym map caching 으로 follow-up.
+    pub fn attachRootScopeSymbolByName(self: *Transformer, node_idx: NodeIndex, name: []const u8) void {
+        if (self.symbols.len == 0) return;
+        if (self.symbol_ids.items.len == 0) return;
+        if (node_idx.isNone()) return;
+
+        for (self.symbols, 0..) |sym, i| {
+            if (sym.scope_id.isNone()) continue;
+            if (sym.scope_id.toIndex() != 0) continue;
+            const sym_name = sym.nameText(self.ast.source);
+            if (std.mem.eql(u8, sym_name, name)) {
+                const ni = @intFromEnum(node_idx);
+                self.ensureSymbolIds(ni);
+                if (ni < self.symbol_ids.items.len) {
+                    self.symbol_ids.items[ni] = @intCast(i);
+                }
+                return;
+            }
+        }
+    }
+
     /// export default class/function → ES5 lowering 시 operand가 .none이 되는 케이스 처리.
     /// lowerClassDeclaration이 pending_nodes에 function 등을 넣고 .none을 반환하므로,
     /// 클래스/함수 이름(또는 익명의 합성 이름 _Class)의 identifier reference를 operand로 사용.

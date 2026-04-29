@@ -1194,11 +1194,19 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// "A.B.C" 형태의 factory 문자열을 static_member_expression 체인으로 변환.
         /// "React.createElement" → static_member(React, createElement)
+        ///
+        /// 첫 식별자 (head — `React`/`jsx`/`h`) 는 외부 binding 을 가리키므로 root scope
+        /// 에서 symbol_id lookup → attach 한다 (#2196). 이렇게 안 하면 mangler 가
+        /// 원본 binding 만 rename 하고 여기서 만든 새 노드는 mangle 대상에서 누락 →
+        /// `const n=...; React.createElement(...)` 같은 ReferenceError. 멤버 (`createElement`,
+        /// `Fragment`) 는 property access 라 lookup 불필요.
         fn makeFactoryCallee(self: *Transformer, factory: []const u8) Transformer.Error!NodeIndex {
             // dot이 없으면 단순 identifier
             const dot_pos = std.mem.indexOf(u8, factory, ".");
             if (dot_pos == null) {
-                return helpers.makeIdentifierRef(self, factory);
+                const node = try helpers.makeIdentifierRef(self, factory);
+                self.attachRootScopeSymbolByName(node, factory);
+                return node;
             }
 
             // dot 기반 분할: "A.B.C" → ["A", "B", "C"]
@@ -1210,6 +1218,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 const part_node = try helpers.makeIdentifierRef(self, part);
 
                 if (current.isNone()) {
+                    self.attachRootScopeSymbolByName(part_node, part);
                     current = part_node;
                 } else {
                     const span_val = try self.ast.addString(factory);
