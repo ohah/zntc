@@ -62,10 +62,11 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 | 옵션 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
 | `splitting` | `boolean` | `false` | dynamic import 경계에서 청크 분리 + 공유 모듈 추출 |
-| `manualChunks` | `(id, meta) => string \| null` | — | Rollup 호환 사용자 정의 분할. [상세 가이드](/zts/guides/manual-chunks/) |
-| `inlineDynamicImports` | `boolean` | `false` | dynamic import target 을 importer chunk 로 흡수 + `__esm` 래핑 (단일 파일 출력) |
+| `manualChunks` | `(id, meta) => string \| null` 또는 `[{name, patterns}]` | — | Rollup 호환 사용자 정의 분할. JS API 는 함수형, `zts.config.json` 은 record form (#2186). [상세 가이드](/zts/guides/manual-chunks/) |
+| `inlineDynamicImports` | `boolean` | `false` | dynamic import target 을 importer chunk 로 흡수 + `__esm` 래핑 (단일 파일 출력). CLI: `--inline-dynamic-imports` (#2185) |
 | `external` | `string[]` | `[]` | 번들에서 제외할 specifier 목록. graph 에는 phantom Module 로 등록 |
 | `preserveModules` | `boolean` | `false` | 번들 대신 원본 디렉토리 구조 유지 (Rollup 호환) |
+| `outputExports` | `auto`, `named`, `default`, `none` | `auto` | CJS/UMD entry export 형식 (Rollup `output.exports` 호환, #2159). `default` 모드 + named export 섞이면 빌드 실패 |
 
 ### Minify
 
@@ -87,6 +88,7 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 | 옵션 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
 | `sourcemap` | `boolean` | `false` | 소스맵 JSON 생성 |
+| `sourcemapMode` | `linked`, `inline`, `external`, `hidden` | `linked` | 소스맵 출력 형식 (#2152). `linked` = 외부 파일 + `sourceMappingURL` 주석 (esbuild/rolldown 기본값) |
 | `sourcemapDebugIds` | `boolean` | `false` | Sentry 호환 Debug ID 삽입 |
 | `sourcesContent` | `boolean` | `true` | 소스맵에 원본 소스 포함 |
 | `sourceRoot` | `string` | `""` | 소스맵의 `sourceRoot` 필드 |

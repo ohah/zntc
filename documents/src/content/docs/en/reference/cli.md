@@ -62,7 +62,8 @@ zts --bundle <entry.ts> --plugin zts.config.js        # JS plugin
 
 | Option | Description |
 |--------|-------------|
-| `--sourcemap` | External `.js.map` |
+| `--sourcemap` | External `.js.map` with `sourceMappingURL` comment (linked, default) |
+| `--sourcemap=linked` | Explicit linked mode (#2152) — same as above |
 | `--sourcemap=inline` | Inline data URL |
 | `--sourcemap=external` | External file, no comment |
 | `--sourcemap=hidden` | External only (omit comment) |
@@ -118,10 +119,12 @@ zts --bundle <entry.ts> --plugin zts.config.js        # JS plugin
 | `--splitting` | Code splitting (requires `--outdir`) |
 | `--preserve-modules` | Per-module output (library build) |
 | `--preserve-modules-root=<dir>` | Root for output structure |
+| `--inline-dynamic-imports` | Absorb dynamic-import targets into the entry chunk (Rollup `inlineDynamicImports`, #2185) |
+| `--output-exports=<mode>` | CJS/UMD entry export shape — `auto\|named\|default\|none` (Rollup `output.exports`, #2159) |
 | `--entry-names=<pattern>` | Entry name pattern (`[name]`, `[hash]`) |
 | `--chunk-names=<pattern>` | Chunk name pattern |
 | `--asset-names=<pattern>` | Asset name pattern |
-| `--loader:.ext=type` | Loader by extension (`file\|dataurl\|text\|binary\|copy\|json\|css\|js\|ts\|jsx\|tsx`) |
+| `--loader:.ext=type` | Loader by extension (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
 | `--metafile` / `--metafile=<path>` | Build meta JSON (stdout or file) |
 | `--analyze` | Bundle analysis report |
 | `--legal-comments=<mode>` | License comments: `none\|inline\|eof\|linked\|external` |

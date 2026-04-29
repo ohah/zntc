@@ -65,6 +65,46 @@ Custom module content loading (first-match).
 }
 ```
 
+#### `loader` option — asset loader override (#2157)
+
+When the object returned from `load` includes `loader`, the graph overrides the module loader to that value (skipping extension inference). Same semantics as esbuild's `onLoad` callback `loader: 'text' | 'binary' | ...`.
+
+```typescript
+{
+  name: 'md-as-text',
+  load(id) {
+    if (id.endsWith('.md')) {
+      return {
+        contents: readFileSync(id, 'utf-8'),
+        loader: 'text',     // emit file contents as a string default export
+      };
+    }
+    return null;
+  }
+}
+```
+
+Supported loaders: `text` / `dataurl` / `base64` / `binary` / `empty` / `javascript` / `json` / `css`.
+
+#### `contents` binary support (#2157 follow-up)
+
+`contents` accepts `string` or `Uint8Array` / Node.js `Buffer` — PNG/JPG and other utf-8-invalid byte sequences are forwarded losslessly.
+
+```typescript
+{
+  name: 'png-as-dataurl',
+  load(id) {
+    if (id.endsWith('.png')) {
+      return {
+        contents: readFileSync(id),  // Buffer / Uint8Array — binary safe
+        loader: 'dataurl',
+      };
+    }
+    return null;
+  }
+}
+```
+
 ### transform
 
 Transform module code (chaining -- all plugins applied in order).
@@ -106,6 +146,30 @@ Called after bundle generation is complete.
   }
 }
 ```
+
+### buildStart / buildEnd / closeBundle (#2156)
+
+Bundle lifecycle hooks. Compatible with esbuild's `onStart` / `onEnd` / `onDispose` and Rollup/Vite/rolldown's `buildStart` / `buildEnd` / `closeBundle`.
+
+| Hook | When | Argument |
+|---|---|---|
+| `buildStart` | Once at bundle start (every rebuild in watch mode) | none |
+| `buildEnd` | Right after output contents are determined | `error?: Error` (message of the first fatal diagnostic on failure) |
+| `closeBundle` | After output files are written | none |
+
+```typescript
+{
+  name: 'lifecycle',
+  buildStart() { console.log('build started'); },
+  buildEnd(err) {
+    if (err) console.error('build failed:', err.message);
+    else console.log('output ready');
+  },
+  closeBundle() { console.log('write done'); },
+}
+```
+
+Call order: `buildStart → onLoad / onTransform → buildEnd → closeBundle`. With multiple plugins each hook fires in sequence. Errors thrown from `buildEnd` / `closeBundle` are swallowed so they don't mask the actual build result.
 
 ## Build API
 

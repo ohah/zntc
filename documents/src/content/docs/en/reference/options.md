@@ -57,6 +57,17 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 | `asciiOnly` | `boolean` | `false` | Escape non-ASCII as hex escape sequences |
 | `charsetUtf8` | `boolean` | `false` | Preserve non-ASCII verbatim |
 
+### Code Splitting / Chunks
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `splitting` | `boolean` | `false` | Split chunks at dynamic-import boundaries and extract shared modules |
+| `manualChunks` | `(id, meta) => string \| null` or `[{name, patterns}]` | — | Rollup-compatible custom chunking. Function form via JS API; record form via `zts.config.json` (#2186). [See guide](/zts/guides/manual-chunks/) |
+| `inlineDynamicImports` | `boolean` | `false` | Absorb dynamic-import targets into the importer chunk + `__esm` wrapping (single-file output). CLI: `--inline-dynamic-imports` (#2185) |
+| `external` | `string[]` | `[]` | Specifiers to exclude from the bundle. Registered as phantom modules in the graph |
+| `preserveModules` | `boolean` | `false` | Preserve original directory structure instead of bundling (Rollup compatible) |
+| `outputExports` | `auto`, `named`, `default`, `none` | `auto` | CJS/UMD entry export shape (Rollup `output.exports` compatible, #2159). `default` mode + named exports → build error |
+
 ### Minify
 
 | Option | Type | Default | Description |
@@ -77,6 +88,7 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `sourcemap` | `boolean` | `false` | Emit sourcemap JSON |
+| `sourcemapMode` | `linked`, `inline`, `external`, `hidden` | `linked` | Sourcemap output style (#2152). `linked` = external `.js.map` + `sourceMappingURL` comment (esbuild/rolldown default) |
 | `sourcemapDebugIds` | `boolean` | `false` | Sentry-compatible Debug ID |
 | `sourcesContent` | `boolean` | `true` | Include original source in sourcemap |
 | `sourceRoot` | `string` | `""` | Sourcemap `sourceRoot` field |

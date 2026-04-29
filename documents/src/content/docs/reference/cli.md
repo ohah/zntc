@@ -62,7 +62,8 @@ zts --bundle <entry.ts> --plugin zts.config.js        # JS 플러그인
 
 | 옵션 | 설명 |
 |------|------|
-| `--sourcemap` | `.js.map` 외부 파일 |
+| `--sourcemap` | `.js.map` 외부 파일 + `sourceMappingURL` 주석 (linked, 기본) |
+| `--sourcemap=linked` | linked 명시 (#2152) — 동일 |
 | `--sourcemap=inline` | data URL 인라인 |
 | `--sourcemap=external` | sourceMappingURL 주석 없이 외부만 |
 | `--sourcemap=hidden` | 외부 파일 생성만 (주석 생략) |
@@ -118,10 +119,12 @@ zts --bundle <entry.ts> --plugin zts.config.js        # JS 플러그인
 | `--splitting` | 코드 스플리팅 (`--outdir` 필요) |
 | `--preserve-modules` | 모듈별 출력 (라이브러리 빌드) |
 | `--preserve-modules-root=<dir>` | 출력 구조 기준 디렉토리 |
+| `--inline-dynamic-imports` | dynamic import target 을 entry chunk 에 흡수 (Rollup `inlineDynamicImports`, #2185) |
+| `--output-exports=<mode>` | CJS/UMD entry export 형식 — `auto\|named\|default\|none` (Rollup `output.exports`, #2159) |
 | `--entry-names=<pattern>` | 엔트리 파일명 패턴 (`[name]`, `[hash]`) |
 | `--chunk-names=<pattern>` | 청크 파일명 패턴 |
 | `--asset-names=<pattern>` | 에셋 파일명 패턴 |
-| `--loader:.ext=type` | 확장자별 로더 (`file\|dataurl\|text\|binary\|copy\|json\|css\|js\|ts\|jsx\|tsx`) |
+| `--loader:.ext=type` | 확장자별 로더 (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
 | `--metafile` / `--metafile=<path>` | 빌드 메타 JSON (stdout 또는 파일) |
 | `--analyze` | 번들 분석 리포트 |
 | `--legal-comments=<mode>` | 라이선스 주석: `none\|inline\|eof\|linked\|external` |

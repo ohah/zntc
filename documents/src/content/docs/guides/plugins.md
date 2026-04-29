@@ -103,6 +103,46 @@ export default defineConfig({
 }
 ```
 
+#### `loader` 옵션 — asset 로더 override (#2157)
+
+`load` 가 반환하는 객체에 `loader` 를 명시하면 graph 가 그 값으로 module loader 를 override 합니다 (확장자 추론 무시). esbuild `onLoad` callback 의 `loader: 'text' | 'binary' | ...` 와 동일.
+
+```typescript
+{
+  name: 'md-as-text',
+  load(id) {
+    if (id.endsWith('.md')) {
+      return {
+        contents: readFileSync(id, 'utf-8'),
+        loader: 'text',     // 파일 내용을 string default export 로 처리
+      };
+    }
+    return null;
+  }
+}
+```
+
+지원 loader: `text` / `dataurl` / `base64` / `binary` / `empty` / `javascript` / `json` / `css`.
+
+#### `contents` binary 지원 (#2157 follow-up)
+
+`contents` 는 `string` 또는 `Uint8Array` / Node.js `Buffer` 모두 받습니다 — PNG/JPG 등 utf-8 invalid bytes 도 손실 없이 forward.
+
+```typescript
+{
+  name: 'png-as-dataurl',
+  load(id) {
+    if (id.endsWith('.png')) {
+      return {
+        contents: readFileSync(id),  // Buffer / Uint8Array — binary safe
+        loader: 'dataurl',
+      };
+    }
+    return null;
+  }
+}
+```
+
 ### transform
 
 모듈 코드를 변환합니다 (chaining — 모든 플러그인 순서대로 적용).
@@ -144,6 +184,30 @@ export default defineConfig({
   }
 }
 ```
+
+### buildStart / buildEnd / closeBundle (#2156)
+
+Bundle lifecycle hook. esbuild `onStart` / `onEnd` / `onDispose`, Rollup/Vite/rolldown `buildStart` / `buildEnd` / `closeBundle` 호환.
+
+| Hook | 호출 시점 | 인자 |
+|---|---|---|
+| `buildStart` | bundle 시작 직후 1회 (watch 모드는 매 rebuild) | 없음 |
+| `buildEnd` | output contents 결정 직후 | `error?: Error` (build 실패 시 fatal diagnostic 의 message) |
+| `closeBundle` | output 파일 write 완료 후 | 없음 |
+
+```typescript
+{
+  name: 'lifecycle',
+  buildStart() { console.log('build started'); },
+  buildEnd(err) {
+    if (err) console.error('build failed:', err.message);
+    else console.log('output ready');
+  },
+  closeBundle() { console.log('write done'); },
+}
+```
+
+호출 순서: `buildStart → onLoad / onTransform → buildEnd → closeBundle`. 다중 plugin 시 모두 순차 실행. `buildEnd` / `closeBundle` 의 plugin 에러는 swallow — 본 build 결과를 가리지 않음.
 
 ## Build API
 
