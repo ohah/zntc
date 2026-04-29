@@ -175,6 +175,82 @@ pub const LoaderDto = struct {
     loader: []const u8,
 };
 
+/// `ConfigOptionsDto` 의 transpile-shaped 필드를 target 으로 매핑하는 공통 helper.
+/// `optionsFromJson` (TranspileOptions) 와 `main.applyZtsConfigJson` (CliOptions) 가 공유 —
+/// 두 함수의 매핑이 drift 하지 않도록 single source of truth. (memory P2 deferred)
+///
+/// `dupe_strings` 가 true 면 string 필드를 `allocator.dupe` 로 복사 (long-lived target).
+/// false 면 dto 의 string slice 를 그대로 borrow (arena/parsed-from-json lifetime).
+///
+/// 모든 boolean 필드는 dto 명시 시 always override (true/false 둘 다 set). esbuild/rolldown
+/// 정책과 일치 — config 의 explicit 값이 default 를 덮어쓴다.
+///
+/// caller 가 처리해야 할 차이:
+/// - `define` (struct field name 차이: `define` vs `define_list`)
+/// - `stopAfter` (struct field name 차이: `stop_after` vs `core_stop_after`)
+/// - `tsconfig` merge / bundler-only 필드 (target struct 별로 다름)
+pub fn applyTranspileSharedFields(
+    target: anytype,
+    dto: *const ConfigOptionsDto,
+    allocator: std.mem.Allocator,
+    comptime dupe_strings: bool,
+) !void {
+    const compat = @import("transformer/compat.zig");
+
+    if (dto.target) |t| {
+        target.es_target = t;
+        // unsupported 가 명시되지 않았으면 target 으로부터 자동 도출.
+        if (dto.unsupported == null) {
+            target.unsupported = compat.fromESTarget(t);
+        }
+    }
+    if (dto.unsupported) |u| target.unsupported = @bitCast(u);
+    if (dto.flow) |v| target.flow = v;
+    if (dto.jsxInJs) |v| target.jsx_in_js = v;
+    if (dto.jsx) |v| target.jsx_runtime = v;
+    if (dto.jsxFactory) |s| if (s.len > 0) {
+        target.jsx_factory = if (dupe_strings) try allocator.dupe(u8, s) else s;
+    };
+    if (dto.jsxFragment) |s| if (s.len > 0) {
+        target.jsx_fragment = if (dupe_strings) try allocator.dupe(u8, s) else s;
+    };
+    if (dto.jsxImportSource) |s| if (s.len > 0) {
+        target.jsx_import_source = if (dupe_strings) try allocator.dupe(u8, s) else s;
+    };
+    if (dto.dropConsole) |v| target.drop_console = v;
+    if (dto.dropDebugger) |v| target.drop_debugger = v;
+    if (dto.asciiOnly) |v| target.ascii_only = v;
+    if (dto.charsetUtf8) |v| target.charset_utf8 = v;
+    if (dto.experimentalDecorators) |v| target.experimental_decorators = v;
+    if (dto.emitDecoratorMetadata) |v| target.emit_decorator_metadata = v;
+    if (dto.useDefineForClassFields) |v| target.use_define_for_class_fields = v;
+    if (dto.verbatimModuleSyntax) |v| target.verbatim_module_syntax = v;
+    if (dto.tsconfigPath) |s| if (s.len > 0) {
+        const dup = if (dupe_strings) try allocator.dupe(u8, s) else s;
+        // CliOptions 는 historical 이유로 같은 의미 필드를 `project_path` 로 보유 (`-p` /
+        // `--project` / `--tsconfig-path` 모두 이 한 필드로 통일). TranspileOptions 는
+        // `tsconfig_path` 사용. 둘 중 존재하는 쪽으로 set.
+        const T = @TypeOf(target.*);
+        if (@hasField(T, "tsconfig_path")) {
+            target.tsconfig_path = dup;
+        } else if (@hasField(T, "project_path")) {
+            target.project_path = dup;
+        }
+    };
+    if (dto.format) |v| target.module_format = v;
+    if (dto.quotes) |v| target.quote_style = v;
+    if (dto.platform) |v| target.platform = v;
+    if (dto.minifyWhitespace) |v| target.minify_whitespace = v;
+    if (dto.minifyIdentifiers) |v| target.minify_identifiers = v;
+    if (dto.minifySyntax) |v| target.minify_syntax = v;
+    if (dto.sourcemap) |v| target.sourcemap = v;
+    if (dto.sourcemapDebugIds) |v| target.sourcemap_debug_ids = v;
+    if (dto.sourcesContent) |v| target.sources_content = v;
+    if (dto.sourceRoot) |s| if (s.len > 0) {
+        target.source_root = if (dupe_strings) try allocator.dupe(u8, s) else s;
+    };
+}
+
 /// JSON payload를 파싱해 `TranspileOptions`로 변환한다.
 /// allocator는 arena 권장 — 반환된 값의 문자열/슬라이스 수명을 책임진다.
 ///
@@ -183,49 +259,8 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
     const parsed = std.json.parseFromSliceLeaky(ConfigOptionsDto, allocator, json, .{ .ignore_unknown_fields = true }) catch return error.InvalidOptions;
 
     var opts: TranspileOptions = .{};
-    const compat = @import("transformer/compat.zig");
 
-    if (parsed.target) |t| opts.es_target = t;
-    if (parsed.unsupported) |u| {
-        opts.unsupported = @bitCast(u);
-    } else if (opts.es_target) |t| {
-        opts.unsupported = compat.fromESTarget(t);
-    }
-    if (parsed.flow) |v| opts.flow = v;
-    if (parsed.jsxInJs) |v| opts.jsx_in_js = v;
-    if (parsed.jsx) |v| opts.jsx_runtime = v;
-    if (parsed.jsxFactory) |s| if (s.len > 0) {
-        opts.jsx_factory = s;
-    };
-    if (parsed.jsxFragment) |s| if (s.len > 0) {
-        opts.jsx_fragment = s;
-    };
-    if (parsed.jsxImportSource) |s| if (s.len > 0) {
-        opts.jsx_import_source = s;
-    };
-    if (parsed.dropConsole) |v| opts.drop_console = v;
-    if (parsed.dropDebugger) |v| opts.drop_debugger = v;
-    if (parsed.asciiOnly) |v| opts.ascii_only = v;
-    if (parsed.charsetUtf8) |v| opts.charset_utf8 = v;
-    if (parsed.experimentalDecorators) |v| opts.experimental_decorators = v;
-    if (parsed.emitDecoratorMetadata) |v| opts.emit_decorator_metadata = v;
-    if (parsed.useDefineForClassFields) |v| opts.use_define_for_class_fields = v;
-    if (parsed.verbatimModuleSyntax) |v| opts.verbatim_module_syntax = v;
-    if (parsed.tsconfigPath) |s| if (s.len > 0) {
-        opts.tsconfig_path = s;
-    };
-    if (parsed.format) |v| opts.module_format = v;
-    if (parsed.quotes) |v| opts.quote_style = v;
-    if (parsed.platform) |v| opts.platform = v;
-    if (parsed.minifyWhitespace) |v| opts.minify_whitespace = v;
-    if (parsed.minifyIdentifiers) |v| opts.minify_identifiers = v;
-    if (parsed.minifySyntax) |v| opts.minify_syntax = v;
-    if (parsed.sourcemap) |v| opts.sourcemap = v;
-    if (parsed.sourcemapDebugIds) |v| opts.sourcemap_debug_ids = v;
-    if (parsed.sourcesContent) |v| opts.sources_content = v;
-    if (parsed.sourceRoot) |s| if (s.len > 0) {
-        opts.source_root = s;
-    };
+    try applyTranspileSharedFields(&opts, &parsed, allocator, false);
     if (parsed.define) |d| opts.define = d;
     if (parsed.stopAfter) |v| opts.stop_after = v;
 

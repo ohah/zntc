@@ -250,4 +250,28 @@ describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
     expect(result.exitCode).toBe(0);
     expect(readFileSync(outFile, "utf8")).toContain("NO_CONFIG");
   });
+
+  test("tsconfigPath: zts.config.json 의 tsconfigPath 가 정상 적용 (이전엔 silent drop)", async () => {
+    // applyZtsConfigJson 이 tsconfigPath 매핑을 누락했던 silent drift 의 fix 검증.
+    // tsconfig.json 에 experimentalDecorators=true 명시 → @decorator 구문 파싱 통과.
+    const fixture = await createFixture({
+      "index.ts":
+        "function dec(t:any,k:string){}\nclass A { @dec method(){} }\nconsole.log('TSCONFIG_OK');",
+      "tsconfig.custom.json": JSON.stringify({
+        compilerOptions: { experimentalDecorators: true, target: "es2022" },
+      }),
+      "zts.config.json": JSON.stringify({ tsconfigPath: "tsconfig.custom.json" }),
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, "out.js");
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "-o",
+      outFile,
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(outFile, "utf8")).toContain("TSCONFIG_OK");
+  });
 });
