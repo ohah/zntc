@@ -50,8 +50,8 @@ If the app root contains `postcss.config.{js,mjs,cjs,json}` or `.postcssrc*`,
 ZTS automatically applies it to CSS. In `zts dev`, original CSS files and PostCSS
 `dependency` / `dir-dependency` messages are watched and CSS-only edits are sent
 as stylesheet HMR updates. Tailwind v4 works via `@tailwindcss/postcss`. CSS
-Modules (`.module.css`) are still outside the app CSS pipeline scope and fail
-explicitly.
+Modules (`.module.css`) in app mode are transformed into scoped class maps with
+default exports and valid named exports.
 
 ## I/O
 

@@ -2643,6 +2643,152 @@ describe("CLI: Vite-style app builder", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("modulepreload deduplicates shared chunk across multiple entries", () => {
+    // 여러 entry 가 같은 shared chunk 를 import 하면 modulepreload 는 entry 마다 중복
+    // 추가하지 말고 단 1회만 주입되어야 한다 (`appendModulePreloadImports` 의 seen set
+    // 동작 검증). ZTS 코드 분할은 동일 reachability mask 모듈을 한 chunk 로 머지하므로
+    // 이 setup 에서는 1개의 shared chunk 만 생긴다.
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-modulepreload-dedup-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      [
+        '<script type="module" src="/src/page-a.ts"></script>',
+        '<script type="module" src="/src/page-b.ts"></script>',
+      ].join(""),
+    );
+    writeFileSync(join(dir, "src", "shared.ts"), 'export const s = "shared";');
+    writeFileSync(
+      join(dir, "src", "page-a.ts"),
+      'import { s } from "./shared"; console.log("a", s);',
+    );
+    writeFileSync(
+      join(dir, "src", "page-b.ts"),
+      'import { s } from "./shared"; console.log("b", s);',
+    );
+
+    const outdir = join(dir, "dist");
+    const { exitCode } = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(exitCode).toBe(0);
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    const preloadHrefs = [...html.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map(
+      (m) => m[1],
+    );
+    expect(preloadHrefs.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(preloadHrefs).size).toBe(preloadHrefs.length);
+    // shared chunk 만 modulepreload 대상이고 entry chunk 자신은 포함되지 않아야 한다.
+    const scripts = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1]);
+    for (const href of preloadHrefs) {
+      expect(scripts).not.toContain(href);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("multiple module scripts each map to their own entry output", () => {
+    // Entry chunk 들은 emitter 내부에서 exec_order(=DFS post-order) 로 정렬되어
+    // 출력되므로, html 의 <script> 순서와 outputs 순서가 항상 일치한다고 가정하면
+    // 깨질 수 있다. build.zig 는 entry path → output 을 module_ids 로 매칭하므로
+    // 여기서는 alphabetical 역순/공유 의존성 등으로 자연스럽게 정렬을 흔들면서도
+    // 각 <script> 가 자기 entry 의 hashed output 으로 정확히 rewrite 되는지 확인한다.
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-entry-mapping-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      [
+        // 알파벳 역순 (zeta, alpha) — DFS exec_index 와 무관하게 src 가 자기 chunk 로 매핑되어야 함.
+        '<script type="module" src="/src/zeta.ts"></script>',
+        '<script type="module" src="/src/alpha.ts"></script>',
+      ].join(""),
+    );
+    writeFileSync(join(dir, "src", "shared.ts"), 'export const s = "s";');
+    writeFileSync(
+      join(dir, "src", "alpha.ts"),
+      'import { s } from "./shared"; console.log("ALPHA", s);',
+    );
+    writeFileSync(
+      join(dir, "src", "zeta.ts"),
+      'import { s } from "./shared"; console.log("ZETA", s);',
+    );
+
+    const outdir = join(dir, "dist");
+    const { exitCode } = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(exitCode).toBe(0);
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    const scripts = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1]);
+    expect(scripts.length).toBe(2);
+    expect(scripts[0]).toMatch(/\/zeta-[a-f0-9]+\.js$/);
+    expect(scripts[1]).toMatch(/\/alpha-[a-f0-9]+\.js$/);
+    // 각 hashed output 의 실제 내용도 자기 entry 의 console.log 를 포함해야 함.
+    const zetaPath = join(outdir, scripts[0].replace(/^\//, ""));
+    const alphaPath = join(outdir, scripts[1].replace(/^\//, ""));
+    expect(readFileSync(zetaPath, "utf8")).toContain("ZETA");
+    expect(readFileSync(alphaPath, "utf8")).toContain("ALPHA");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("preview without --spa-fallback returns 404 for route-like misses", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-preview-no-spa-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<div id="app">noop</div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), "console.log('noop');");
+
+    const outdir = join(dir, "dist");
+    const buildResult = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(buildResult.exitCode).toBe(0);
+
+    const port = 12860 + Math.floor(Math.random() * 100);
+    // --spa-fallback 미지정 — route-like 요청도 그대로 404 여야 한다.
+    const proc = spawn(RUNTIME, [CLI, "preview", outdir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+
+    try {
+      const res = await fetch(`http://localhost:${port}/dashboard/settings`, {
+        headers: { accept: "text/html" },
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("preview --spa-fallback=custom.html honors a custom fallback file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-preview-spa-custom-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<div id="app">root</div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), "console.log('root');");
+
+    const outdir = join(dir, "dist");
+    const buildResult = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(buildResult.exitCode).toBe(0);
+    // 별도 custom fallback 파일을 outdir 에 직접 추가 — preview 만 검증하면 충분.
+    writeFileSync(join(outdir, "custom.html"), "<title>CUSTOM_FALLBACK</title>");
+
+    const port = 12970 + Math.floor(Math.random() * 100);
+    const proc = spawn(
+      RUNTIME,
+      [CLI, "preview", outdir, `--port=${port}`, "--spa-fallback=custom.html"],
+      { cwd: dir },
+    );
+    await waitForServer(port);
+
+    try {
+      const html = await fetch(`http://localhost:${port}/some/route`, {
+        headers: { accept: "text/html" },
+      }).then((r) => r.text());
+      expect(html).toContain("CUSTOM_FALLBACK");
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("build rewrites stylesheet url assets and HTML assets with query/hash", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-app-assets-"));
     mkdirSync(join(dir, "src"), { recursive: true });
@@ -2843,20 +2989,84 @@ describe("CLI: Vite-style app builder", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("CSS Modules are rejected explicitly in app CSS pipeline", () => {
+  test("CSS Modules default and named exports map to scoped CSS in app build", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-app-css-module-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<div id="app"></div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      [
+        'import styles, { card } from "./card.module.css";',
+        'document.getElementById("app").className = `${styles.card} ${styles["title-text"]} ${card}`;',
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "src", "card.module.css"),
+      [
+        '.card { color: rgb(255, 0, 0); background-image: url("./icon.png"); }',
+        ".card.active { outline-color: rgb(0, 0, 0); }",
+        ".title-text { background: white; }",
+      ].join("\n"),
+    );
+    writeFileSync(join(dir, "src", "icon.png"), "icon");
+
+    const outdir = join(dir, "dist");
+    const { exitCode, stderr } = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("[css-modules] processed 1 CSS module file");
+
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    expect(html).toContain('rel="stylesheet"');
+    const scriptPath = scriptPathFromHtml(html);
+    const js = readFileSync(join(outdir, scriptPath.slice(1)), "utf8");
+    expect(js).toContain('"card"');
+    expect(js).toMatch(/card_card__[A-Za-z0-9_-]{5}/);
+    expect(js).not.toContain('import "./card.module.css"');
+
+    const cssPath = (html.match(/href="([^"]+\.css)"/) ?? [])[1];
+    expect(cssPath).toBeTruthy();
+    const css = readFileSync(join(outdir, cssPath.slice(1)), "utf8");
+    expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{5}/);
+    expect(css).toMatch(/\.card_active__[A-Za-z0-9_-]{5}/);
+    expect(css).toMatch(/\.card_title_text__[A-Za-z0-9_-]{5}/);
+    expect(css).toContain('url("./icon.png")');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("CSS Modules are transformed after PostCSS in app build", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-css-module-postcss-"));
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
     writeFileSync(
       join(dir, "src", "main.ts"),
-      'import styles from "./card.module.css"; console.log(styles.card);',
+      'import styles from "./card.module.css"; console.log(styles.card, styles.injected);',
     );
     writeFileSync(join(dir, "src", "card.module.css"), ".card { color: red; }");
+    writeFileSync(
+      join(dir, "postcss.config.mjs"),
+      [
+        "export default {",
+        "  plugins: [",
+        "    { postcssPlugin: 'zts-css-mod-postcss', Once(root) { root.append({ selector: '.injected', nodes: [] }); } },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
 
     const outdir = join(dir, "dist");
     const { exitCode, stderr } = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
-    expect(exitCode).toBe(1);
-    expect(stderr).toContain("CSS Modules (.module.css) are not supported");
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("[postcss] processed 1 CSS file");
+    expect(stderr).toContain("[css-modules] processed 1 CSS module file");
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    const cssPath = (html.match(/href="([^"]+\.css)"/) ?? [])[1];
+    expect(cssPath).toBeTruthy();
+    const css = readFileSync(join(outdir, cssPath.slice(1)), "utf8");
+    expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{5}/);
+    expect(css).toMatch(/\.card_injected__[A-Za-z0-9_-]{5}/);
     rmSync(dir, { recursive: true, force: true });
   });
 

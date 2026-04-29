@@ -400,18 +400,17 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   const root = resolve(opts.appRoot ?? ".");
   const outdir = resolve(opts.outdir ?? join(root, "dist"));
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
-  assertNoAppCssModules(root, outdir);
-  let postcssRoot = null;
+  let pipelineRoot = null;
   try {
-    postcssRoot = await preparePostcssAppRoot(root, outdir, configEnv, opts.logLevel, "build");
+    pipelineRoot = await prepareAppCssPipelineRoot(root, outdir, configEnv, opts.logLevel, "build");
     const result = buildAppSync({
-      root: postcssRoot ?? root,
+      root: pipelineRoot ?? root,
       outdir,
       entryHtml: opts.entryHtml ?? "index.html",
       publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
       base: normalizeBase(opts.base ?? opts.publicPath ?? "/"),
       mode: configEnv.mode,
-      envDir: opts.envDir ? resolve(opts.envDir) : (postcssRoot ?? root),
+      envDir: opts.envDir ? resolve(opts.envDir) : (pipelineRoot ?? root),
       envPrefixes: opts.envPrefixes,
       define: Object.keys(opts.define).length > 0 ? opts.define : undefined,
       minify: opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax,
@@ -423,7 +422,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
     }
     return result;
   } finally {
-    if (postcssRoot) cleanupPostcssTempRoot(postcssRoot);
+    if (pipelineRoot) cleanupPostcssTempRoot(pipelineRoot);
   }
 }
 
@@ -455,21 +454,27 @@ function createAppDevController(opts, root, configEnv) {
   let cssDeps = new Set();
   let cssDirDeps = new Set();
   let primaryHref = null;
+  let pipelineRoot = null;
 
   return {
     root,
     outdir,
     base,
     async prepare() {
-      assertNoAppCssModules(root, outdir);
+      if (pipelineRoot) {
+        cleanupPostcssTempRoot(pipelineRoot);
+        pipelineRoot = null;
+      }
+      pipelineRoot = await prepareAppCssPipelineRoot(root, outdir, configEnv, opts.logLevel, "dev");
+      const prepareRoot = pipelineRoot ?? root;
       const prepared = prepareAppDevSync({
-        root,
+        root: prepareRoot,
         outdir,
         entryHtml: opts.entryHtml ?? "index.html",
         publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
         base,
         mode: configEnv.mode,
-        envDir: opts.envDir ? resolve(opts.envDir) : root,
+        envDir: opts.envDir ? resolve(opts.envDir) : prepareRoot,
         envPrefixes: opts.envPrefixes,
       });
       injectAppDevHmrClient(outdir);
@@ -493,6 +498,7 @@ function createAppDevController(opts, root, configEnv) {
       return POSTCSS_CONFIG_NAMES.includes(basename(absPath));
     },
     isCssOnlyChange(absPath) {
+      if (isCssModuleFile(absPath)) return false;
       if (absPath.endsWith(".css")) return true;
       if (cssDeps.has(absPath)) return true;
       for (const dir of cssDirDeps) {
@@ -726,50 +732,260 @@ function collectCssFiles(dir, skipDir = null) {
   return files;
 }
 
-function assertNoAppCssModules(root, outdir) {
-  const hit = findAppCssModuleReference(root, new Set([resolve(outdir)]));
-  if (!hit) return;
-  throw new Error(
-    `CSS Modules (.module.css) are not supported by zts app CSS pipeline yet: ${relative(root, hit)}`,
-  );
-}
-
-function findAppCssModuleReference(dir, skip) {
-  if (!existsSync(dir)) return null;
-  const absDir = resolve(dir);
-  for (const ignored of skip) {
-    if (absDir === ignored || absDir.startsWith(`${ignored}${sep}`)) return null;
-  }
+function collectAppFiles(dir, { skipDir = null, predicate = () => true } = {}) {
+  if (!existsSync(dir)) return [];
+  const files = [];
   for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === ".git" || entry === "dist" || entry === ".zts-dev") {
-      continue;
-    }
+    if (entry === "node_modules" || entry === ".git") continue;
     const path = join(dir, entry);
     const stat = statSync(path);
+    if (skipDir && stat.isDirectory() && resolve(path) === resolve(skipDir)) continue;
     if (stat.isDirectory()) {
-      const found = findAppCssModuleReference(path, skip);
-      if (found) return found;
-      continue;
+      files.push(...collectAppFiles(path, { skipDir, predicate }));
+    } else if (stat.isFile() && predicate(path)) {
+      files.push(path);
     }
-    if (!stat.isFile() || !isAppSourceForCssModuleScan(path)) continue;
-    const text = readFileSync(path, "utf8");
-    if (referencesCssModulePath(path, text)) return path;
   }
-  return null;
+  return files;
+}
+
+function isCssModuleFile(path) {
+  return basename(path).endsWith(".module.css");
 }
 
 function isAppSourceForCssModuleScan(path) {
-  return /\.(?:html|mjs|cjs|js|jsx|ts|tsx)$/.test(path);
+  return /\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(path);
 }
 
-function referencesCssModulePath(path, text) {
-  if (!text.includes(".module.css")) return false;
-  if (/\.html?$/i.test(path)) {
-    return /\b(?:href|src)\s*=\s*["'][^"']*\.module\.css(?:[?#][^"']*)?["']/i.test(text);
-  }
-  return /(?:\bimport\s+(?:[^"'()]+\s+from\s*)?|\bimport\s*\(|\brequire\s*\()\s*["'][^"']*\.module\.css(?:[?#][^"']*)?["']/i.test(
-    text,
+function hasCssModules(root, outdir) {
+  return (
+    collectAppFiles(root, {
+      skipDir: outdir,
+      predicate: (path) => isCssModuleFile(path),
+    }).length > 0
   );
+}
+
+function cssModuleGeneratedCssPath(file) {
+  return file.replace(/\.module\.css$/i, ".module.zts.css");
+}
+
+function cssModuleProxyPath(file) {
+  return `${file}.js`;
+}
+
+function cssModuleLocalName(root, file, local) {
+  const rel = relative(root, file).replaceAll(sep, "/");
+  const fileName = basename(file, ".module.css").replace(/[^a-zA-Z0-9_]/g, "_");
+  const safeLocal = local.replace(/[^a-zA-Z0-9_]/g, "_");
+  const hash = createHash("sha1").update(`${rel}:${local}`).digest("base64url").slice(0, 5);
+  return `${fileName}_${safeLocal}__${hash}`;
+}
+
+function scanCssModuleClassTokens(css) {
+  const tokens = [];
+  let i = 0;
+  while (i < css.length) {
+    const ch = css[i];
+    const next = css[i + 1];
+    if ((ch === '"' || ch === "'") && css[i - 1] !== "\\") {
+      i = skipCssString(css, i, ch);
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      const end = css.indexOf("*/", i + 2);
+      i = end === -1 ? css.length : end + 2;
+      continue;
+    }
+    if (startsWithCssIdent(css, i, "url(")) {
+      i = skipCssUrl(css, i + 4);
+      continue;
+    }
+    if (ch === "." && isCssIdentStart(next)) {
+      let end = i + 2;
+      while (end < css.length && isCssIdent(css[end])) end += 1;
+      tokens.push({ start: i, end, local: css.slice(i + 1, end) });
+      i = end;
+      continue;
+    }
+    i += 1;
+  }
+  return tokens;
+}
+
+function skipCssString(css, start, quote) {
+  let i = start + 1;
+  while (i < css.length) {
+    if (css[i] === "\\" && i + 1 < css.length) {
+      i += 2;
+      continue;
+    }
+    if (css[i] === quote) return i + 1;
+    i += 1;
+  }
+  return css.length;
+}
+
+function skipCssUrl(css, start) {
+  let i = start;
+  while (i < css.length) {
+    if ((css[i] === '"' || css[i] === "'") && css[i - 1] !== "\\") {
+      i = skipCssString(css, i, css[i]);
+      continue;
+    }
+    if (css[i] === ")") return i + 1;
+    i += 1;
+  }
+  return css.length;
+}
+
+function startsWithCssIdent(css, offset, value) {
+  return css.slice(offset, offset + value.length).toLowerCase() === value;
+}
+
+function isCssIdentStart(ch) {
+  return ch === "_" || (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z");
+}
+
+function isCssIdent(ch) {
+  return isCssIdentStart(ch) || ch === "-" || (ch >= "0" && ch <= "9");
+}
+
+function collectCssModuleClasses(css) {
+  return [...new Set(scanCssModuleClassTokens(css).map((token) => token.local))];
+}
+
+function rewriteCssModuleClasses(css, mapping) {
+  const tokens = scanCssModuleClassTokens(css);
+  let out = "";
+  let offset = 0;
+  for (const token of tokens) {
+    const scoped = mapping[token.local];
+    if (!scoped) continue;
+    out += css.slice(offset, token.start);
+    out += `.${scoped}`;
+    offset = token.end;
+  }
+  out += css.slice(offset);
+  return out;
+}
+
+function isValidExportName(name) {
+  return /^[$A-Z_a-z][$\w]*$/.test(name) && !CSS_MODULE_RESERVED_EXPORTS.has(name);
+}
+
+const CSS_MODULE_RESERVED_EXPORTS = new Set([
+  "arguments",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "implements",
+  "import",
+  "in",
+  "instanceof",
+  "interface",
+  "let",
+  "new",
+  "null",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "return",
+  "static",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with",
+  "yield",
+]);
+
+function buildCssModuleProxy(root, file, generatedCssPath, css, mapping) {
+  const cssImport = `./${basename(generatedCssPath)}`;
+  const cssText = JSON.stringify(css);
+  const stylesJson = JSON.stringify(mapping);
+  const named = Object.keys(mapping)
+    .filter(isValidExportName)
+    .map((name) => `export const ${name} = ${JSON.stringify(mapping[name])};`)
+    .join("\n");
+  return [
+    `import ${JSON.stringify(cssImport)};`,
+    `const styles = ${stylesJson};`,
+    "export default styles;",
+    named,
+    'if (import.meta.env.DEV && typeof document !== "undefined") {',
+    `  const css = ${cssText};`,
+    `  const id = ${JSON.stringify(`zts-css-module:${relative(root, file)}`)};`,
+    '  let tag = document.querySelector(`style[data-zts-css-module="${id}"]`);',
+    "  if (!tag) {",
+    '    tag = document.createElement("style");',
+    '    tag.setAttribute("data-zts-css-module", id);',
+    "    document.head.appendChild(tag);",
+    "  }",
+    "  tag.textContent = css;",
+    "}",
+    "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function transformCssModules(root, logLevel) {
+  const moduleFiles = collectAppFiles(root, { predicate: (path) => isCssModuleFile(path) });
+  if (moduleFiles.length === 0) return 0;
+
+  for (const file of moduleFiles) {
+    const css = readFileSync(file, "utf8");
+    const mapping = {};
+    for (const local of collectCssModuleClasses(css)) {
+      mapping[local] = cssModuleLocalName(root, file, local);
+    }
+    const rewrittenCss = rewriteCssModuleClasses(css, mapping);
+    const generatedCssPath = cssModuleGeneratedCssPath(file);
+    writeFileSync(generatedCssPath, rewrittenCss);
+    writeFileSync(
+      cssModuleProxyPath(file),
+      buildCssModuleProxy(root, file, generatedCssPath, rewrittenCss, mapping),
+    );
+  }
+
+  for (const source of collectAppFiles(root, { predicate: isAppSourceForCssModuleScan })) {
+    const input = readFileSync(source, "utf8");
+    const output = input.replace(
+      /(["'])([^"']+\.module\.css)([?#][^"']*)?\1/g,
+      (_match, quote, spec, suffix = "") => `${quote}${spec}.js${suffix}${quote}`,
+    );
+    if (output !== input) writeFileSync(source, output);
+  }
+
+  if (logLevel !== "silent") {
+    console.error(`[css-modules] processed ${moduleFiles.length} CSS module file(s)`);
+  }
+  return moduleFiles.length;
 }
 
 async function loadPostcssConfig(root, configEnv) {
@@ -878,11 +1094,13 @@ function collectPostcssMessages(messages, deps, dirDeps) {
   }
 }
 
-async function preparePostcssAppRoot(root, outdir, configEnv, logLevel, phase) {
+async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phase) {
   const configPath = findPostcssConfig(root);
-  if (!configPath) return null;
+  const needsCssModules = hasCssModules(root, outdir);
+  if (!configPath && !needsCssModules) return null;
   const tempRoot = copyAppRootForPostcss(root, outdir, phase);
   await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel);
+  transformCssModules(tempRoot, logLevel);
   return tempRoot;
 }
 
@@ -906,8 +1124,7 @@ function requestAcceptsHtml(accept) {
 }
 
 function looksLikeAssetPath(pathname) {
-  const last = pathname.slice(pathname.lastIndexOf("/") + 1);
-  return last.includes(".");
+  return extname(pathname) !== "";
 }
 
 // ─── Transpile 모드 ───
@@ -1453,24 +1670,16 @@ async function runServe(opts, config, { appDev = null } = {}) {
     let filePath = join(serveDir, pathname);
     if (!existsSync(filePath)) {
       const fallback = normalizeSpaFallback(opts.spaFallback);
-      const acceptsHtml = requestAcceptsHtml(accept);
-      if (fallback && acceptsHtml && !looksLikeAssetPath(pathname)) {
-        const fallbackPath = resolve(serveDir, fallback);
-        if (fallbackPath !== serveDir && !fallbackPath.startsWith(`${serveDir}${sep}`)) {
-          return { status: 404, body: "Not Found", type: "text/plain" };
-        }
-        if (existsSync(fallbackPath)) {
-          filePath = fallbackPath;
-        } else {
-          return { status: 404, body: "Not Found", type: "text/plain" };
-        }
-      } else {
+      if (!fallback || !requestAcceptsHtml(accept) || looksLikeAssetPath(pathname)) {
         return { status: 404, body: "Not Found", type: "text/plain" };
       }
-    }
-
-    if (!existsSync(filePath)) {
-      return { status: 404, body: "Not Found", type: "text/plain" };
+      const fallbackPath = resolve(serveDir, fallback);
+      const insideServeDir =
+        fallbackPath === serveDir || fallbackPath.startsWith(`${serveDir}${sep}`);
+      if (!insideServeDir || !existsSync(fallbackPath)) {
+        return { status: 404, body: "Not Found", type: "text/plain" };
+      }
+      filePath = fallbackPath;
     }
 
     const ext = extname(filePath);
