@@ -239,7 +239,11 @@ pub const RuntimeHelpers = packed struct(u32) {
     tdz: bool = false,
     /// __read: array destructuring iterable protocol read
     read: bool = false,
-    _padding: u7 = 0,
+    /// __decorateClass: TS legacy `experimentalDecorators` 변환 (#2194).
+    /// transpile-only 모드에서도 헬퍼 정의가 출력에 inline 되도록 transformer 가
+    /// 호출 emit 시 함께 set 한다.
+    legacy_decorator: bool = false,
+    _padding: u6 = 0,
 };
 
 /// 단일 AST append-only 변환기.

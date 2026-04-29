@@ -1251,6 +1251,8 @@ pub fn transformExperimentalDecorators(
     // #1621: minify 시 $dC 축약.
     const decorate_name = rt.helperName("__decorateClass", self.options.minify_whitespace);
     const decorate_span = try self.ast.addString(decorate_name);
+    // 헬퍼 정의가 transpile-only 모드에서도 inline 되도록 표식 (#2194).
+    self.runtime_helpers.legacy_decorator = true;
 
     // class 이름 텍스트를 가져옴 (let Foo = class Foo {} 에 필요)
     const class_name_text = if (!new_name.isNone()) blk: {
