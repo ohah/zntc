@@ -119,6 +119,7 @@ export default defineConfig({
           translations: { en: "Reference" },
           items: [
             { label: "CLI", slug: "reference/cli", translations: { en: "CLI" } },
+            { label: "NAPI / JS API", slug: "reference/napi", translations: { en: "NAPI / JS API" } },
             { label: "Transpile 옵션", slug: "reference/options", translations: { en: "Transpile Options" } },
             { label: "벤치마크", slug: "reference/benchmarks", translations: { en: "Benchmarks" } },
             {
