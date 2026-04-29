@@ -1241,7 +1241,10 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   // boolean 또는 객체 (세밀 제어 옵션). 현재는 enabled 여부만 Zig 로 전달.
   // 후속 PR 에서 객체 옵션 (displayName / ssr / fileName / minify 등) 도 throughpass.
   delete napiOptions.compiler;
-  if (options.compiler?.styledComponents !== undefined && options.compiler.styledComponents !== false) {
+  if (
+    options.compiler?.styledComponents !== undefined &&
+    options.compiler.styledComponents !== false
+  ) {
     napiOptions.styledComponents = true;
   }
   if (options.compiler?.emotion !== undefined && options.compiler.emotion !== false) {
