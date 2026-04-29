@@ -55,6 +55,7 @@ import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from "./cli-flags.mjs";
 
@@ -427,28 +428,171 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
 async function runAppDev(opts, config, configEnv, _dotenvVars) {
   const root = resolve(opts.appRoot ?? ".");
   opts.outdir = opts.outdir || join(root, ".zts-dev");
-  // dev 모드는 원본 root 를 watcher 가 감지해야 하므로 postcss temp copy 사용 안 함.
-  // postcss config 발견 시 사용자에게 build 시점만 적용된다고 알림.
-  if (findPostcssConfig(root) && opts.logLevel !== "silent") {
-    console.error(
-      "[postcss] config detected — skipped in dev mode (applied only by `zts build`). HMR would otherwise watch a temp copy.",
-    );
-  }
-  const prepared = prepareAppDevSync({
-    root,
-    outdir: opts.outdir,
-    entryHtml: opts.entryHtml ?? "index.html",
-    publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
-    base: normalizeBase(opts.base ?? opts.publicPath ?? "/"),
-    mode: configEnv.mode,
-    envDir: opts.envDir ? resolve(opts.envDir) : root,
-    envPrefixes: opts.envPrefixes,
-  });
+  const appDev = createAppDevController(opts, root, configEnv);
+  const prepared = await appDev.prepare();
 
   opts.entryPoints = [prepared.entryPath];
   opts.serveDir = opts.outdir;
+  opts.appDev = appDev;
 
   return runServe(opts, config);
+}
+
+function createAppDevController(opts, root, configEnv) {
+  const outdir = resolve(opts.outdir || join(root, ".zts-dev"));
+  const base = normalizeBase(opts.base ?? opts.publicPath ?? "/");
+  const state = {
+    cssDeps: new Set(),
+    cssDirDeps: new Set(),
+    cssHrefs: new Set(),
+  };
+
+  return {
+    root,
+    outdir,
+    base,
+    state,
+    async prepare() {
+      const prepared = prepareAppDevSync({
+        root,
+        outdir,
+        entryHtml: opts.entryHtml ?? "index.html",
+        publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
+        base,
+        mode: configEnv.mode,
+        envDir: opts.envDir ? resolve(opts.envDir) : root,
+        envPrefixes: opts.envPrefixes,
+      });
+      injectAppDevHmrClient(outdir);
+      return prepared;
+    },
+    async afterBundle() {
+      const result = await runPostcssForAppDev(root, outdir, configEnv, opts.logLevel, base);
+      state.cssDeps = result.deps;
+      state.cssDirDeps = result.dirDeps;
+      state.cssHrefs = result.hrefs;
+      injectAppDevHmrClient(outdir);
+      return result;
+    },
+    isPostcssConfig(absPath) {
+      return POSTCSS_CONFIG_NAMES.includes(basename(absPath));
+    },
+    isCssOnlyChange(absPath) {
+      if (absPath.endsWith(".css")) return true;
+      if (state.cssDeps.has(absPath)) return true;
+      for (const dir of state.cssDirDeps) {
+        if (absPath === dir || absPath.startsWith(`${dir}${sep}`)) return true;
+      }
+      return false;
+    },
+    hrefFor(absPath) {
+      if (absPath.endsWith(".css")) return joinUrl(base, basename(absPath));
+      return state.cssHrefs.values().next().value ?? joinUrl(base, "style.css");
+    },
+  };
+}
+
+function joinUrl(base, rel) {
+  if (!base) return rel;
+  return `${base}${rel}`;
+}
+
+function injectAppDevHmrClient(outdir) {
+  const htmlPath = join(outdir, "index.html");
+  if (!existsSync(htmlPath)) return;
+  const html = readFileSync(htmlPath, "utf8");
+  if (html.includes("/__zts_app_dev_hmr__")) return;
+  const tag = `<script type="module" src="/__zts_app_dev_hmr__"></script>`;
+  const next = html.includes("</head>")
+    ? html.replace("</head>", `${tag}\n</head>`)
+    : html.replace("<script", `${tag}\n<script`);
+  writeFileSync(htmlPath, next);
+}
+
+const APP_DEV_HMR_CLIENT = `
+const socketProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+const socket = new WebSocket(socketProtocol + "//" + location.host + "/__hmr");
+socket.addEventListener("message", (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === "full-reload") {
+    location.reload();
+    return;
+  }
+  if (msg.type !== "css-update") return;
+  const stamp = msg.timestamp || Date.now();
+  const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
+  let updated = false;
+  for (const link of links) {
+    const href = link.getAttribute("href");
+    if (!href) continue;
+    const current = new URL(href, location.href);
+    const target = new URL(msg.href || current.pathname, location.href);
+    if (msg.href && current.pathname !== target.pathname) continue;
+    const next = new URL(current.href);
+    next.searchParams.set("t", String(stamp));
+    const replacement = link.cloneNode();
+    replacement.href = next.href;
+    replacement.onload = () => link.remove();
+    replacement.onerror = () => location.reload();
+    link.after(replacement);
+    updated = true;
+  }
+  if (!updated) location.reload();
+});
+`;
+
+function createAppDevHmrChannel() {
+  const clients = new Set();
+  return {
+    accept(req, socket) {
+      const key = req.headers["sec-websocket-key"];
+      if (!key) {
+        socket.destroy();
+        return;
+      }
+      const accept = createHash("sha1")
+        .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+        .digest("base64");
+      socket.write(
+        [
+          "HTTP/1.1 101 Switching Protocols",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Accept: ${accept}`,
+          "",
+          "",
+        ].join("\r\n"),
+      );
+      clients.add(socket);
+      socket.on("close", () => clients.delete(socket));
+      socket.on("error", () => clients.delete(socket));
+      writeWsText(socket, JSON.stringify({ type: "connected" }));
+    },
+    broadcast(message) {
+      const text = JSON.stringify(message);
+      for (const socket of clients) writeWsText(socket, text);
+    },
+  };
+}
+
+function writeWsText(socket, text) {
+  if (socket.destroyed) return;
+  const payload = Buffer.from(text);
+  let header;
+  if (payload.length < 126) {
+    header = Buffer.from([0x81, payload.length]);
+  } else if (payload.length < 65536) {
+    header = Buffer.allocUnsafe(4);
+    header[0] = 0x81;
+    header[1] = 126;
+    header.writeUInt16BE(payload.length, 2);
+  } else {
+    header = Buffer.allocUnsafe(10);
+    header[0] = 0x81;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(payload.length), 2);
+  }
+  socket.write(Buffer.concat([header, payload]));
 }
 
 const POSTCSS_CONFIG_NAMES = [
@@ -580,6 +724,66 @@ async function runPostcssIfConfigured(root, cssDir, skipDir, configEnv, logLevel
     console.error(
       `[postcss] processed ${cssFiles.length} CSS file(s) using ${basename(config.file ?? "postcss config")}`,
     );
+  }
+}
+
+async function runPostcssForAppDev(root, outdir, configEnv, logLevel, base) {
+  const deps = new Set();
+  const dirDeps = new Set();
+  const hrefs = new Set();
+  const configPath = findPostcssConfig(root);
+  if (!configPath) {
+    for (const file of collectCssFiles(root, outdir)) hrefs.add(joinUrl(base, basename(file)));
+    return { deps, dirDeps, hrefs, processed: 0 };
+  }
+
+  const requireFromRoot = createRequire(join(root, "package.json"));
+  const postcssrc = requireFromAppOrCli(requireFromRoot, "postcss-load-config");
+  const postcssModule = requireFromAppOrCli(requireFromRoot, "postcss");
+  const postcss = postcssModule.default ?? postcssModule;
+  const config = await postcssrc({ cwd: root, env: configEnv.mode }, root).catch((err) => {
+    if (err?.message?.includes("No PostCSS Config found")) return null;
+    throw err;
+  });
+  if (!config || (config.plugins ?? []).length === 0) {
+    return { deps, dirDeps, hrefs, processed: 0 };
+  }
+
+  mkdirSync(outdir, { recursive: true });
+  const cssFiles = collectCssFiles(root, outdir);
+  deps.add(resolve(config.file ?? configPath));
+  for (const file of cssFiles) {
+    const outputName = basename(file);
+    const outputPath = join(outdir, outputName);
+    const input = readFileSync(file, "utf8");
+    const result = await postcss(config.plugins).process(input, {
+      ...config.options,
+      from: file,
+      to: outputPath,
+    });
+    writeFileSync(outputPath, result.css);
+    if (result.map) writeFileSync(`${outputPath}.map`, result.map.toString());
+    deps.add(resolve(file));
+    hrefs.add(joinUrl(base, outputName));
+    collectPostcssMessages(result.messages, deps, dirDeps);
+  }
+
+  if (logLevel !== "silent") {
+    console.error(
+      `[postcss] processed ${cssFiles.length} CSS file(s) using ${basename(config.file ?? "postcss config")}`,
+    );
+  }
+  return { deps, dirDeps, hrefs, processed: cssFiles.length };
+}
+
+function collectPostcssMessages(messages, deps, dirDeps) {
+  for (const message of messages ?? []) {
+    if (message.type === "dependency" && message.file) deps.add(resolve(message.file));
+    if (message.type === "dir-dependency") {
+      const dir = message.dir ?? message.directory;
+      if (dir) dirDeps.add(resolve(dir));
+    }
+    if (message.type === "context-dependency" && message.file) deps.add(resolve(message.file));
   }
 }
 
@@ -1092,6 +1296,7 @@ function emitRestart(opts, reason) {
 
 async function runServe(opts, config) {
   const isBun = typeof globalThis.Bun !== "undefined";
+  const hmr = opts.appDev ? createAppDevHmrChannel() : null;
   const mimeTypes = {
     ".html": "text/html",
     ".js": "application/javascript",
@@ -1112,6 +1317,7 @@ async function runServe(opts, config) {
   if (opts.bundle && opts.entryPoints.length > 0) {
     opts.outdir = opts.outdir || join(opts.serveDir, ".zts-serve");
     await runBundle(opts, config);
+    if (opts.appDev) await opts.appDev.afterBundle();
 
     // watch도 같이
     if (!opts.watch) {
@@ -1124,6 +1330,13 @@ async function runServe(opts, config) {
 
   function handleRequest(reqUrl) {
     let pathname = new URL(reqUrl, "http://localhost").pathname;
+    if (opts.appDev && pathname === "/__zts_app_dev_hmr__") {
+      return {
+        status: 200,
+        body: APP_DEV_HMR_CLIENT,
+        type: "application/javascript",
+      };
+    }
     if (base && base !== "/" && pathname.startsWith(base)) {
       pathname = "/" + pathname.slice(base.length);
     }
@@ -1209,6 +1422,17 @@ async function runServe(opts, config) {
           handler,
         )
       : createServer(handler);
+    if (hmr) {
+      server.on("upgrade", (req, socket) => {
+        const pathname = new URL(req.url, `${useTls ? "https" : "http"}://${req.headers.host}`)
+          .pathname;
+        if (pathname !== "/__hmr") {
+          socket.destroy();
+          return;
+        }
+        hmr.accept(req, socket);
+      });
+    }
     server.listen(opts.port, opts.host);
   }
 
@@ -1221,10 +1445,58 @@ async function runServe(opts, config) {
   if (opts.watch && opts.bundle) {
     const { watch: fsWatch } = await import("node:fs");
     let debounceTimer = null;
+    let rebuilding = false;
+    let pending = false;
+
+    async function rebuildForChange(absPath) {
+      if (rebuilding) {
+        pending = true;
+        return;
+      }
+      rebuilding = true;
+      try {
+        if (opts.appDev) {
+          if (opts.appDev.isCssOnlyChange(absPath) || opts.appDev.isPostcssConfig(absPath)) {
+            await opts.appDev.afterBundle();
+            hmr?.broadcast({
+              type: "css-update",
+              href: opts.appDev.hrefFor(absPath),
+              timestamp: Date.now(),
+            });
+            if (opts.logLevel !== "silent") console.error("[serve] css updated");
+            return;
+          }
+
+          const prepared = await opts.appDev.prepare();
+          opts.entryPoints = [prepared.entryPath];
+          await runBundle(opts, config);
+          await opts.appDev.afterBundle();
+          hmr?.broadcast({ type: "full-reload", timestamp: Date.now() });
+          if (opts.logLevel !== "silent") console.error("[serve] rebuilt");
+          return;
+        }
+
+        await runBundle(opts, config);
+        if (opts.logLevel !== "silent") console.error("[serve] rebuilt");
+      } catch (err) {
+        console.error("[serve] rebuild error:", err);
+        hmr?.broadcast({ type: "full-reload", timestamp: Date.now() });
+      } finally {
+        rebuilding = false;
+        if (pending) {
+          pending = false;
+          rebuildForChange(absPath);
+        }
+      }
+    }
 
     const watchDirs = new Set();
-    for (const entry of opts.entryPoints) {
-      watchDirs.add(dirname(resolve(entry)));
+    if (opts.appDev) {
+      watchDirs.add(opts.appDev.root);
+    } else {
+      for (const entry of opts.entryPoints) {
+        watchDirs.add(dirname(resolve(entry)));
+      }
     }
     const restartTriggers = computeRestartTriggers(opts);
     for (const dir of restartTriggers.dirs) watchDirs.add(dir);
@@ -1232,19 +1504,19 @@ async function runServe(opts, config) {
     for (const dir of watchDirs) {
       fsWatch(dir, { recursive: true }, (_event, filename) => {
         if (!filename || filename.includes("node_modules") || filename.includes(".git")) return;
-        if (restartTriggers.matches(filename)) {
+        const absPath = resolve(dir, filename);
+        if (
+          opts.outdir &&
+          (absPath === resolve(opts.outdir) || absPath.startsWith(`${resolve(opts.outdir)}${sep}`))
+        ) {
+          return;
+        }
+        if (!opts.appDev && restartTriggers.matches(filename)) {
           emitRestart(opts, "config 또는 .env 파일 변경 감지");
           return;
         }
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(async () => {
-          try {
-            await runBundle(opts, config);
-            if (opts.logLevel !== "silent") console.error("[serve] rebuilt");
-          } catch (err) {
-            console.error("[serve] rebuild error:", err);
-          }
-        }, opts.watchDelay);
+        debounceTimer = setTimeout(() => rebuildForChange(absPath), opts.watchDelay);
       });
     }
   }
