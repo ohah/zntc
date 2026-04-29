@@ -402,7 +402,14 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
   let pipelineRoot = null;
   try {
-    pipelineRoot = await prepareAppCssPipelineRoot(root, outdir, configEnv, opts.logLevel, "build");
+    const pipeline = await prepareAppCssPipelineRoot(
+      root,
+      outdir,
+      configEnv,
+      opts.logLevel,
+      "build",
+    );
+    pipelineRoot = pipeline?.tempRoot ?? null;
     const result = buildAppSync({
       root: pipelineRoot ?? root,
       outdir,
@@ -460,12 +467,23 @@ function createAppDevController(opts, root, configEnv) {
     root,
     outdir,
     base,
-    async prepare() {
-      if (pipelineRoot) {
+    async prepare(dirtyPaths = null) {
+      // pipelineRoot 가 살아 있고 dirty 정보가 있으면 in-place incremental sync 로 비싼
+      // cpSync 회피 (BACKLOG #70). 첫 빌드거나 dirty 정보 없으면 기존처럼 fresh tempRoot.
+      const reuseRoot = pipelineRoot && dirtyPaths != null;
+      if (pipelineRoot && !reuseRoot) {
         cleanupPostcssTempRoot(pipelineRoot);
         pipelineRoot = null;
       }
-      pipelineRoot = await prepareAppCssPipelineRoot(root, outdir, configEnv, opts.logLevel, "dev");
+      const pipeline = await prepareAppCssPipelineRoot(
+        root,
+        outdir,
+        configEnv,
+        opts.logLevel,
+        "dev",
+        reuseRoot ? { existingTempRoot: pipelineRoot, dirtyPaths } : undefined,
+      );
+      pipelineRoot = pipeline?.tempRoot ?? null;
       const prepareRoot = pipelineRoot ?? root;
       const prepared = prepareAppDevSync({
         root: prepareRoot,
@@ -478,6 +496,15 @@ function createAppDevController(opts, root, configEnv) {
         envPrefixes: opts.envPrefixes,
       });
       injectAppDevHmrClient(outdir);
+      // dev mode 한정: bundler 가 splitting=false 라 CSS chunk 를 emit 하지 않으므로
+      // Sass / CSS Modules 의 컴파일 결과를 tempRoot 에서 outdir 로 mirror 하고 HTML 에
+      // `<link rel="stylesheet">` 를 주입해 브라우저까지 도달시킨다. 이렇게 하면 native
+      // HMR client 가 `<link>` swap 으로 갱신을 처리할 수 있어 inline `<style>` 우회가
+      // 불필요해진다.
+      if (pipeline && pipeline.generatedCssAbsPaths.length > 0) {
+        const rels = mirrorPipelineCssToOutdir(pipelineRoot, outdir, pipeline.generatedCssAbsPaths);
+        injectAppDevPipelineCssLinks(outdir, base, rels);
+      }
       return prepared;
     },
     async afterBundle({ changedPath = null } = {}) {
@@ -502,14 +529,47 @@ function createAppDevController(opts, root, configEnv) {
     },
     isCssOnlyChange(absPath) {
       // CSS Modules 는 class 이름 매핑이 변할 수 있어 JS proxy 도 같이 재생성 필요 →
-      // CSS-only HMR 로 갈음할 수 없고 full reload 가 안전한 기본값.
+      // CSS-only HMR 로 갈음할 수 없고 full reload 가 안전한 기본값. Sass 도 module
+      // variant (`*.module.scss`) 는 같은 이유로 제외.
       if (isCssModuleFile(absPath)) return false;
+      if (absPath.endsWith(".module.scss") || absPath.endsWith(".module.sass")) return false;
       if (absPath.endsWith(".css")) return true;
+      if (isCssPreprocessorFile(absPath)) return true;
       if (cssDeps.has(absPath)) return true;
       for (const dir of cssDirDeps) {
         if (absPath === dir || absPath.startsWith(`${dir}${sep}`)) return true;
       }
       return false;
+    },
+    isSassOnlyChange(absPath) {
+      // Sass fast-path 자격 — non-module `.scss/.sass` 단일 변경. import dep 추적 없으므로
+      // 이 파일을 import 한 다른 sass 파일은 갱신 누락 가능 (BACKLOG #71 deps tracking).
+      return (
+        isCssPreprocessorFile(absPath) &&
+        !absPath.endsWith(".module.scss") &&
+        !absPath.endsWith(".module.sass")
+      );
+    },
+    async rebuildScssIncremental(absPath) {
+      // pipelineRoot 가 없으면 fast-path 진입 못함 (full reload 로 fallback).
+      if (!pipelineRoot) return null;
+      const srcTemp = join(pipelineRoot, relative(root, absPath));
+      mkdirSync(dirname(srcTemp), { recursive: true });
+      cpSync(absPath, srcTemp);
+      const sass = loadSassCompiler(root);
+      const result = sass.compile(srcTemp, {
+        style: "expanded",
+        loadPaths: [dirname(srcTemp), pipelineRoot],
+        sourceMap: false,
+      });
+      const cssTempPath = cssPreprocessorOutputPath(srcTemp);
+      writeFileSync(cssTempPath, result.css);
+      // 컴파일된 CSS 도 outdir 에 mirror 해서 dev server 가 서빙 가능하게.
+      const cssRel = relative(pipelineRoot, cssTempPath);
+      const dst = join(outdir, cssRel);
+      mkdirSync(dirname(dst), { recursive: true });
+      cpSync(cssTempPath, dst);
+      return joinUrl(base, cssRel.replaceAll(sep, "/"));
     },
     hrefFor(absPath) {
       if (absPath.endsWith(".css")) return joinUrl(base, relative(root, absPath));
@@ -557,6 +617,33 @@ function injectAppDevBundleCssLinks(outdir, base, bundleResult) {
     }
     if (cssHrefs.length === 0) return null;
     return cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join("\n");
+  });
+}
+
+// dev mode 의 sass / css-modules 컴파일 결과는 tempPipelineRoot 에만 있어 dev server 가
+// 서빙 못 한다. 같은 rel path 로 outdir 에 복사해 `/<rel>` 로 fetch 가능하게 만든다.
+function mirrorPipelineCssToOutdir(pipelineRoot, outdir, absPaths) {
+  const rels = [];
+  for (const abs of absPaths) {
+    const rel = relative(pipelineRoot, abs);
+    const dst = join(outdir, rel);
+    mkdirSync(dirname(dst), { recursive: true });
+    cpSync(abs, dst);
+    rels.push(rel);
+  }
+  return rels;
+}
+
+function injectAppDevPipelineCssLinks(outdir, base, cssRelPaths) {
+  if (cssRelPaths.length === 0) return;
+  injectIntoDevHtml(outdir, (html) => {
+    const tags = [];
+    for (const rel of cssRelPaths) {
+      const href = joinUrl(base, rel.replaceAll(sep, "/"));
+      if (html.includes(`href="${href}"`) || html.includes(`href='${href}'`)) continue;
+      tags.push(`<link rel="stylesheet" href="${href}">`);
+    }
+    return tags.length === 0 ? null : tags.join("\n");
   });
 }
 
@@ -673,6 +760,23 @@ function findPostcssConfig(root) {
     if (existsSync(path)) return path;
   }
   return null;
+}
+
+// Incremental: dirty 만 root → tempRoot 로 mirror. transform 들은 여전히 tempRoot 의
+// 모든 source 를 처리하지만, 비싼 cpSync 는 변경분으로 한정 (BACKLOG #70).
+function syncDirtyFilesIntoTempRoot(root, tempRoot, dirtyPaths) {
+  for (const abs of dirtyPaths) {
+    const rel = relative(root, abs);
+    if (!rel || rel.startsWith("..")) continue;
+    const dst = join(tempRoot, rel);
+    if (existsSync(abs)) {
+      mkdirSync(dirname(dst), { recursive: true });
+      cpSync(abs, dst);
+    } else if (existsSync(dst)) {
+      // root 에서 삭제된 파일은 tempRoot 에서도 제거.
+      rmSync(dst, { force: true });
+    }
+  }
 }
 
 function copyAppRootForPostcss(root, outdir, phase) {
@@ -800,42 +904,23 @@ function isStyleReferenceSource(path) {
   return /\.(?:html|mjs|cjs|js|jsx|ts|tsx)$/.test(path);
 }
 
-// Dev mode 한정 inline `<style>` 주입 스니펫. bundler 가 build mode 에서는 CSS 를 별도
-// chunk 로 emit 하고 `injectAppDevBundleCssLinks` 가 `<link>` 를 HTML 에 박아 native HMR
-// (`CssUpdate` → link swap) 가 처리하지만, **dev mode 에선 bundler 가 CSS chunk 를 emit
-// 하지 않아** Sass/CSS-Modules 컴파일 결과가 브라우저까지 도달할 경로가 없다. 이 스니펫
-// 이 그 다리 역할 — `import.meta.env.DEV` 가드로 production 에서는 통째 tree-shake.
-// 향후 dev bundler 가 CSS chunk 를 emit 하게 되면 이 스니펫은 제거 대상 (BACKLOG #73).
-function buildDevStyleInjector(kind, file, root, css) {
-  const attr = `data-zts-${kind}`;
-  const cssText = JSON.stringify(css);
-  const idText = JSON.stringify(`zts-${kind}:${relative(root, file)}`);
-  return [
-    'if (import.meta.env.DEV && typeof document !== "undefined") {',
-    `  const css = ${cssText};`,
-    `  const id = ${idText};`,
-    `  let tag = document.querySelector(\`style[${attr}="\${id}"]\`);`,
-    "  if (!tag) {",
-    '    tag = document.createElement("style");',
-    `    tag.setAttribute(${JSON.stringify(attr)}, id);`,
-    "    document.head.appendChild(tag);",
-    "  }",
-    "  tag.textContent = css;",
-    "}",
-  ].join("\n");
-}
-
-function buildCssPreprocessorProxy(root, file, cssPath, css) {
+function buildCssPreprocessorProxy(cssPath) {
+  // proxy 는 bundler 의 module graph 에서 CSS 를 side-effect 로 추적하기 위한 entry.
+  // 실제 CSS 는 build mode 에서는 bundler 의 CSS chunk 로, dev mode 에서는 컴파일된 CSS
+  // 를 outdir 로 복사한 뒤 HTML `<link>` 로 서빙한다 (`mirrorPipelineCssToOutdir` 참고).
   const cssImport = `./${basename(cssPath)}`;
-  return [
-    `import ${JSON.stringify(cssImport)};`,
-    buildDevStyleInjector("css-preprocessor", file, root, css),
-    "",
-  ].join("\n");
+  return `import ${JSON.stringify(cssImport)};\n`;
 }
 
-function transformCssPreprocessors(root, files, sourceFiles, logLevel) {
-  if (files.length === 0) return 0;
+function transformCssPreprocessors(root, files, sourceFiles, logLevel, opts = {}) {
+  if (files.length === 0) return [];
+  const { dirtyOnly = null, dirtySources = null } = opts;
+  const targets = dirtyOnly ? files.filter((f) => dirtyOnly.has(f)) : files;
+  // Generated CSS path 는 입력 파일에 결정적 — 컴파일 안 해도 path 는 항상 알 수 있다.
+  // dirty 만 다시 컴파일하고, 전체 list 는 항상 반환해 outdir mirror 가 누락 없게.
+  if (targets.length === 0) {
+    return files.map(cssPreprocessorOutputPath);
+  }
 
   let sass;
   try {
@@ -848,7 +933,7 @@ function transformCssPreprocessors(root, files, sourceFiles, logLevel) {
     throw new Error(message);
   }
 
-  for (const file of files) {
+  for (const file of targets) {
     const result = sass.compile(file, {
       style: "expanded",
       loadPaths: [dirname(file), root],
@@ -856,17 +941,16 @@ function transformCssPreprocessors(root, files, sourceFiles, logLevel) {
     });
     const cssPath = cssPreprocessorOutputPath(file);
     writeFileSync(cssPath, result.css);
-    writeFileSync(
-      cssPreprocessorProxyPath(file),
-      buildCssPreprocessorProxy(root, file, cssPath, result.css),
-    );
+    writeFileSync(cssPreprocessorProxyPath(file), buildCssPreprocessorProxy(cssPath));
   }
 
-  rewriteSassReferences(sourceFiles);
+  // dirty source 만 freshly cp 됐으므로 그쪽에만 rewriter 적용 (이전 prep 의 source 들은
+  // 이미 rewrite 된 상태). 전체 prep 일 때는 sourceFiles 자체가 전체.
+  rewriteSassReferences(dirtySources ?? sourceFiles);
   if (logLevel !== "silent") {
-    console.error(`[sass] processed ${files.length} Sass/SCSS file(s)`);
+    console.error(`[sass] processed ${targets.length} Sass/SCSS file(s)`);
   }
-  return files.length;
+  return files.map(cssPreprocessorOutputPath);
 }
 
 function isCssModuleFile(path) {
@@ -1035,7 +1119,9 @@ const CSS_MODULE_RESERVED_EXPORTS = new Set([
   "yield",
 ]);
 
-function buildCssModuleProxy(root, file, generatedCssPath, css, mapping) {
+function buildCssModuleProxy(generatedCssPath, mapping) {
+  // CSS 자체는 generated `.module.zts.css` 가 책임 — proxy 는 class-name map 의 default
+  // export 와 valid named export 만 emit. dev/build 모두 CSS 는 `<link>` 로 도달.
   const cssImport = `./${basename(generatedCssPath)}`;
   const stylesJson = JSON.stringify(mapping);
   const named = Object.keys(mapping)
@@ -1047,7 +1133,6 @@ function buildCssModuleProxy(root, file, generatedCssPath, css, mapping) {
     `const styles = ${stylesJson};`,
     "export default styles;",
     named,
-    buildDevStyleInjector("css-module", file, root, css),
     "",
   ]
     .filter(Boolean)
@@ -1071,10 +1156,15 @@ function rewriteCssModuleReferences(sourceFiles) {
   }
 }
 
-function transformCssModules(root, moduleFiles, styleSources, logLevel) {
-  if (moduleFiles.length === 0) return 0;
+function transformCssModules(root, moduleFiles, styleSources, logLevel, opts = {}) {
+  if (moduleFiles.length === 0) return [];
+  const { dirtyOnly = null, dirtySources = null } = opts;
+  const targets = dirtyOnly ? moduleFiles.filter((f) => dirtyOnly.has(f)) : moduleFiles;
+  if (targets.length === 0) {
+    return moduleFiles.map(cssModuleGeneratedCssPath);
+  }
 
-  for (const file of moduleFiles) {
+  for (const file of targets) {
     const css = readFileSync(file, "utf8");
     const mapping = {};
     for (const local of collectCssModuleClasses(css)) {
@@ -1083,18 +1173,15 @@ function transformCssModules(root, moduleFiles, styleSources, logLevel) {
     const rewrittenCss = rewriteCssModuleClasses(css, mapping);
     const generatedCssPath = cssModuleGeneratedCssPath(file);
     writeFileSync(generatedCssPath, rewrittenCss);
-    writeFileSync(
-      cssModuleProxyPath(file),
-      buildCssModuleProxy(root, file, generatedCssPath, rewrittenCss, mapping),
-    );
+    writeFileSync(cssModuleProxyPath(file), buildCssModuleProxy(generatedCssPath, mapping));
   }
 
-  rewriteCssModuleReferences(styleSources);
+  rewriteCssModuleReferences(dirtySources ?? styleSources);
 
   if (logLevel !== "silent") {
-    console.error(`[css-modules] processed ${moduleFiles.length} CSS module file(s)`);
+    console.error(`[css-modules] processed ${targets.length} CSS module file(s)`);
   }
-  return moduleFiles.length;
+  return moduleFiles.map(cssModuleGeneratedCssPath);
 }
 
 async function loadPostcssConfig(root, configEnv) {
@@ -1203,7 +1290,8 @@ function collectPostcssMessages(messages, deps, dirDeps) {
   }
 }
 
-async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phase) {
+async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phase, options = {}) {
+  const { existingTempRoot = null, dirtyPaths = null } = options;
   const configPath = findPostcssConfig(root);
   // Pre-copy walk: preprocessor + module 파일 존재 여부 결정. styleSourceFiles 까지
   // 같이 모아두면 두 transform 의 source-rewriter 가 walk 를 안 돌게 할 수 있는데, 그
@@ -1218,7 +1306,13 @@ async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phas
   const needsSource = preprocessorFiles.length > 0 || moduleFiles.length > 0;
 
   if (!configPath && !needsSource) return null;
-  const tempRoot = copyAppRootForPostcss(root, outdir, phase);
+  // Incremental: existing tempRoot 가 있으면 dirty 파일만 sync (BACKLOG #70). 초기 빌드는
+  // 전체 cpSync. dirtyPaths 가 null 이면 안전쪽 fallback 으로 간주해 full sync.
+  const tempRoot = existingTempRoot ?? copyAppRootForPostcss(root, outdir, phase);
+  const isIncremental = existingTempRoot && dirtyPaths;
+  if (isIncremental) {
+    syncDirtyFilesIntoTempRoot(root, tempRoot, dirtyPaths);
+  }
 
   const toTemp = (path) => join(tempRoot, relative(root, path));
   // styleSourceFiles 는 Sass / CSS Modules 의 import-specifier rewriter 만 사용. postcss
@@ -1227,26 +1321,74 @@ async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phas
     ? collectAppFiles(tempRoot, { predicate: isStyleReferenceSource })
     : [];
 
+  // Incremental 모드에서 transforms 가 다시 계산할 dirty 입력 set 을 미리 만든다.
+  // — sass: dirty `.scss/.sass` 만 컴파일
+  // — css-modules: dirty `.module.css` (또는 dirty `.module.scss` 의 sass 산출물) 만 scoping
+  // — source rewriter: freshly cp 된 dirty source 만 (나머지는 이전 prep 의 rewrite 가 살아있음)
+  // postcss 는 자체 changedPath 옵션이 있어 별도 호출 (afterBundle / runPostcssForAppDev) 가 처리.
+  let dirtySassSet = null;
+  let dirtyModuleSet = null;
+  let dirtySourceList = null;
+  if (isIncremental) {
+    const dirtyTempPaths = dirtyPaths.map(toTemp);
+    dirtySassSet = new Set(dirtyTempPaths.filter((p) => isCssPreprocessorFile(p)));
+    dirtyModuleSet = new Set(dirtyTempPaths.filter((p) => isCssModuleFile(p)));
+    // dirty `.module.scss` → sass 산출물 `.module.css` 도 css-modules dirty 입력에 포함.
+    for (const sassDirty of dirtySassSet) {
+      const cssOut = cssPreprocessorOutputPath(sassDirty);
+      if (isCssModuleFile(cssOut)) dirtyModuleSet.add(cssOut);
+    }
+    dirtySourceList = dirtyTempPaths.filter((p) => isStyleReferenceSource(p) && existsSync(p));
+  }
+
   // 파이프라인 순서 (유지 필수):
   //  1. Sass: `*.scss/.sass` → `*.css` (`.module.scss` 면 `.module.css` 가 새로 생김)
   //  2. PostCSS: 모든 `*.css` 에 변환 적용 (Tailwind 등이 `@apply` 같은 룰 주입)
   //  3. CSS Modules: postcss 가 주입한 `.injected` 같은 selector 까지 scoping
   // 순서가 바뀌면 postcss 가 추가한 selector 가 scoped 안 되거나 sass 미컴파일 상태로
   // postcss 가 돌아 깨진다 — 통합 테스트 `Sass output flows through PostCSS before CSS Modules scoping` 참고.
-  transformCssPreprocessors(tempRoot, preprocessorFiles.map(toTemp), styleSourceFiles, logLevel);
-  await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel);
+  const sassOutputs = transformCssPreprocessors(
+    tempRoot,
+    preprocessorFiles.map(toTemp),
+    styleSourceFiles,
+    logLevel,
+    isIncremental ? { dirtyOnly: dirtySassSet, dirtySources: dirtySourceList } : undefined,
+  );
+  // Incremental 모드에서 dirty 가 모두 non-CSS 면 postcss prep 도 skip — 이미 이전 prep
+  // 결과가 tempRoot 에 살아 있다. CSS / SCSS / postcss config 가 dirty 일 때만 재실행.
+  const postcssRelevant =
+    !isIncremental ||
+    dirtyPaths.some(
+      (p) => isCssFile(p) || isCssPreprocessorFile(p) || POSTCSS_CONFIG_NAMES.includes(basename(p)),
+    );
+  if (postcssRelevant) {
+    await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel);
+  }
   // `*.module.scss` 는 위 sass 단계에서 `*.module.css` 가 새로 만들어지므로, 사전 walk
   // 가 본 모듈 리스트엔 빠져 있다. preprocessor 출력 경로를 재계산해 보강.
   const generatedModuleFiles = preprocessorFiles
     .map(cssPreprocessorOutputPath)
     .filter(isCssModuleFile);
-  transformCssModules(
+  const moduleOutputs = transformCssModules(
     tempRoot,
     [...moduleFiles, ...generatedModuleFiles].map(toTemp),
     styleSourceFiles,
     logLevel,
+    isIncremental ? { dirtyOnly: dirtyModuleSet, dirtySources: dirtySourceList } : undefined,
   );
-  return tempRoot;
+  // dev mode 가 brwoser 까지 CSS 를 도달시키도록 outdir mirror 에 사용. build mode 는
+  // bundler 가 entry 의 `import "./generated.css"` 를 따라 CSS chunk 를 emit 하므로
+  // 별도로 mirror 할 필요 없음 (소비자가 결정).
+  // `.module.scss` 의 sass 산출물 (`*.module.css`) 은 그 자체가 CSS Modules 입력으로
+  // 다시 들어가 결국 `*.module.zts.css` 로 emit 되므로 mirror 대상에서 제외.
+  const moduleInputCssPaths = new Set(
+    generatedModuleFiles.map((p) => join(tempRoot, relative(root, p))),
+  );
+  const generatedCssAbsPaths = [
+    ...sassOutputs.filter((p) => !moduleInputCssPaths.has(p)),
+    ...moduleOutputs,
+  ];
+  return { tempRoot, generatedCssAbsPaths };
 }
 
 async function runAppPreview(opts) {
@@ -1959,8 +2101,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
       if (opts.logLevel !== "silent") console.error("[serve] css updated");
     }
 
-    async function rebuildAppDevFull() {
-      const prepared = await appDev.prepare();
+    async function rebuildAppDevFull(dirtyPaths = null) {
+      const prepared = await appDev.prepare(dirtyPaths);
       opts.entryPoints = [prepared.entryPath];
       const bundleResult = await runBundle(opts, config);
       appDev.injectBundleCssLinks(bundleResult);
@@ -1990,7 +2132,17 @@ async function runServe(opts, config, { appDev = null } = {}) {
             const cssChanges = paths.filter(
               (p) => p.endsWith(".css") && !appDev.isPostcssConfig(p),
             );
-            if (cssChanges.length === 1 && paths.length === 1) {
+            // 단일 non-module `.scss/.sass` 변경 → 그 파일만 재컴파일하고 outdir mirror
+            // 후 CssUpdate broadcast (BACKLOG #71). full pipeline rebuild + cpSync 회피.
+            if (paths.length === 1 && appDev.isSassOnlyChange(paths[0])) {
+              const href = await appDev.rebuildScssIncremental(paths[0]);
+              if (href) {
+                hmr?.broadcast({ type: HMR_MSG.CssUpdate, href, timestamp: Date.now() });
+                if (opts.logLevel !== "silent") console.error("[serve] sass updated");
+              } else {
+                await rebuildAppDevFull();
+              }
+            } else if (cssChanges.length === 1 && paths.length === 1) {
               await rebuildAppDevCss(cssChanges[0]);
             } else {
               await appDev.afterBundle();
@@ -1998,7 +2150,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
               if (opts.logLevel !== "silent") console.error("[serve] css updated");
             }
           } else {
-            await rebuildAppDevFull();
+            await rebuildAppDevFull(paths);
           }
         }
       } catch (err) {

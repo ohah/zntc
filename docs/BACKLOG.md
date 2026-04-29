@@ -53,10 +53,10 @@ CSS Modules + Sass 도입 (PR #2225) 후 식별된 후속 작업.
 
 | # | 항목 | 비고 |
 |---|------|------|
-| 70 | dev rebuild full re-prep (cpSync) 비용 | `createAppDevController.prepare()` 가 매 full reload 마다 `copyAppRootForPostcss` (전체 트리 cpSync) + postcss + Sass + CSS Modules 재실행. 1k 파일 앱이면 prepare 만 수백 ms. incremental sync (변경 파일만 mirror) 또는 in-memory VFS overlay 가 근본 해결 |
-| 71 | `.scss` 단일 파일 fast-path | `.scss/.sass` 단일 변경은 `isCssOnlyChange=false` 라 `rebuildAppDevFull` → 전체 cpSync 트리거. self-contained transform 이라 (해당 파일만 sass.compile + css 갱신 + `CssUpdate` HMR broadcast) fast-path 가능. #70 의 pipelineRoot incremental 모델 의존 |
+| ~~70~~ | ~~dev rebuild full re-prep (cpSync) 비용~~ | ✅ 해결: `prepare(dirtyPaths)` 가 incremental — 변경 파일만 cpSync, sass/css-modules transform 도 dirty 입력만 재처리, postcss prep 호출 자체도 CSS 관련 dirty 가 없으면 skip. JS-only 변경은 cpSync (dirty 만) + rewriter (dirty 만) 만 수행 — 풀 prep 의 비용 거의 전부 회피. |
+| ~~71~~ | ~~`.scss` 단일 파일 fast-path~~ | ✅ 해결: 단일 non-module `.scss/.sass` 변경은 `isCssOnlyChange=true` 로 분류되어 `rebuildScssIncremental` 진입 — 그 파일만 sass.compile + tempRoot/outdir 갱신 + `CssUpdate` broadcast. import dep 추적 없으므로 다른 sass 파일이 이 파일을 import 하면 갱신 누락 (별 issue 로 sass loadPaths dep tracking) |
 | 72 | E2E `setTimeout(2000-2500)` → readiness poll | `tests/e2e/tests/zts-app-builder-e2e.test.ts` 가 dev/preview 서버 기동 대기로 fixed `setTimeout` 사용 — 느린 CI 에서 flaky 가능성. `fetch(url)` 폴링 helper (ECONNREFUSED 재시도 / 200 까지) 도입해 일괄 대체 |
-| 73 | Dev mode 에서 bundler 가 CSS chunk 를 emit 하지 않음 | Build mode 는 splitting 으로 `*.css` 를 별도 chunk 로 출력해 `<link>` 로 서빙되지만, Dev mode 는 `bundle.js` + `index.html` 만 outdir 에 만들어진다. 그래서 Sass / CSS Modules 의 컴파일된 CSS (tempRoot 에만 존재) 가 브라우저에 도달할 길이 없어, proxy 의 `import.meta.env.DEV` inline `<style>` 주입이 다리 역할 중. 문제: 같은 CSS 가 두 번 (bundle 후 link + inline) DOM 에 들어가는 case 도 있고, dev 와 build 의 CSS 처리 경로가 갈려 유지보수 비용. Dev bundler 가 CSS chunk 도 emit 하게 통일하고 inline 주입 (`buildDevStyleInjector`) 제거가 목표. |
+| ~~73~~ | ~~Dev mode 에서 bundler 가 CSS chunk 를 emit 하지 않음~~ | ✅ 해결: bundler 측은 그대로 두고, JS 파이프라인이 sass / css-modules 컴파일 산출물을 tempRoot → outdir 로 mirror 하고 HTML 에 `<link>` 를 주입. inline `<style>` 우회 (`buildDevStyleInjector`) 제거. |
 
 ---
 
