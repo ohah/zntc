@@ -1,0 +1,10 @@
+const MARKER_COND = true;
+const MARKER_RES = MARKER_COND
+  ? "MARKER_TRUE_BRANCH"
+  : "MARKER_FALSE_BRANCH";
+const MARKER_NESTED = MARKER_COND
+  ? MARKER_RES
+    ? 1
+    : 2
+  : 3;
+console.log(MARKER_RES, MARKER_NESTED);
