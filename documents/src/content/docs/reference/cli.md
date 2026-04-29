@@ -32,7 +32,8 @@ zts preview [outdir]       # 빌드 산출물 정적 서빙
 
 기본 구조는 `index.html`, `public/`, `src/main.ts(x)`, `.env*`입니다.
 `zts build`는 `<script type="module" src>`를 번들 엔트리로 사용하고, CSS `url()`,
-HTML asset URL, `%ENV%` 토큰을 rewrite합니다.
+HTML asset URL, `%ENV%` 토큰을 rewrite합니다. `zts dev`는 같은 HTML/env/public
+prepare 단계를 사용하고 CSS 변경은 페이지 전체 reload 없이 stylesheet만 갱신합니다.
 
 | 옵션 | 설명 |
 |------|------|
@@ -43,8 +44,10 @@ HTML asset URL, `%ENV%` 토큰을 rewrite합니다.
 | `--env-prefix <list>` | 노출할 env prefix CSV (기본: `VITE_,ZTS_`) |
 | `--env-dir <dir>` | `.env*` 파일 탐색 디렉토리 |
 
-앱 root에 `postcss.config.{js,mjs,cjs,json}` 또는 `.postcssrc*`가 있으면 imported CSS에
-자동 적용됩니다. Tailwind v4는 `@tailwindcss/postcss` 설정을 지원합니다.
+앱 root에 `postcss.config.{js,mjs,cjs,json}` 또는 `.postcssrc*`가 있으면 CSS에 자동
+적용됩니다. `zts dev`는 원본 CSS와 PostCSS `dependency` / `dir-dependency` 메시지를
+watch하고 CSS-only 변경은 stylesheet HMR로 보냅니다. Tailwind v4는
+`@tailwindcss/postcss` 설정을 지원합니다.
 
 ## 입출력
 

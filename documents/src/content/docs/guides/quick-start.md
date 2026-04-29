@@ -59,3 +59,24 @@ zts --serve
 # 번들 + HMR
 zts --serve --bundle src/index.ts
 ```
+
+## 앱 빌더
+
+Vite 스타일의 `index.html` 앱은 `zts dev` / `zts build`를 사용합니다.
+
+```html
+<!-- index.html -->
+<link rel="stylesheet" href="/src/style.css" />
+<script type="module" src="/src/main.ts"></script>
+```
+
+```bash
+# HTML/env/public prepare + bundle + CSS HMR
+zts dev
+
+# dist/에 빌드 산출물 쓰기
+zts build
+```
+
+앱 root에 `postcss.config.*`가 있으면 dev와 build 모두 CSS에 적용됩니다.
+Tailwind v4는 `@tailwindcss/postcss`로 설정합니다.

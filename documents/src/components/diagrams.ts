@@ -4,22 +4,22 @@
  */
 
 export const NAPI_ARCHITECTURE_CHART = `flowchart TD
-    UC[User Code<br/>Node / Bun / Vite]
-    JS[<b>@zts/core JS layer</b><br/>transpile · build · watch<br/>defineConfig · vitePlugin]
-    PD[Plugin Dispatcher<br/>onResolve · onLoad<br/>onTransform · lifecycle]
-    NAPI[zts.node<br/>NAPI v8 addon]
+    UC["User Code<br/>Node / Bun / Vite"]
+    JS["<b>@zts/core JS layer</b><br/>transpile · build · watch<br/>defineConfig · vitePlugin"]
+    PD["Plugin Dispatcher<br/>onResolve · onLoad<br/>onTransform · lifecycle"]
+    NAPI["zts.node<br/>NAPI v8 addon"]
 
     subgraph Native["Zig Native Engine"]
         direction TB
-        Lex[Lexer / Scanner]
-        Parse[Parser<br/>TS · JSX · Flow · Decorators]
-        Sem[Semantic Analyzer<br/>scope · symbol · references]
-        Trans[Transformer<br/>type strip · JSX · downlevel]
-        CG[Codegen]
-        Bundle[Bundler<br/>resolver · graph]
-        Link[Linker<br/>scope hoisting · imports]
-        Shake[Tree Shaker<br/>statement · symbol · purity]
-        Emit[Emitter<br/>chunk · sourcemap · assets]
+        Lex["Lexer / Scanner"]
+        Parse["Parser<br/>TS · JSX · Flow · Decorators"]
+        Sem["Semantic Analyzer<br/>scope · symbol · references"]
+        Trans["Transformer<br/>type strip · JSX · downlevel"]
+        CG["Codegen"]
+        Bundle["Bundler<br/>resolver · graph"]
+        Link["Linker<br/>scope hoisting · imports"]
+        Shake["Tree Shaker<br/>statement · symbol · purity"]
+        Emit["Emitter<br/>chunk · sourcemap · assets"]
 
         Lex --> Parse --> Sem --> Trans --> CG
         Parse -.-> Bundle
@@ -30,5 +30,5 @@ export const NAPI_ARCHITECTURE_CHART = `flowchart TD
     JS <--> PD
     JS --> NAPI
     NAPI <--> Native
-    PD <-.threadsafe callback.-> NAPI
+    PD -. "threadsafe callback" .-> NAPI
 `;

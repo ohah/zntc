@@ -231,12 +231,12 @@ export default defineConfig({
 
 | Vite 기능 | ZTS 대응 |
 |----------|---------|
-| `vite` (dev server) | `zts --serve --bundle <entry>` (HMR 지원) |
-| `vite build` | `zts --bundle <entry> --outdir dist --splitting --minify --sourcemap` |
-| `vite preview` | 미지원. `zts --serve dist` 로 정적 서빙 |
-| `import.meta.env.MODE` | `--define:import.meta.env.MODE=\"production\"` |
-| `import.meta.env.DEV` | `--define:import.meta.env.DEV=true` (수동) |
-| `.env` / `.env.production` 자동 로드 | 미지원. `dotenv` + `--define`으로 수동 주입 |
+| `vite` (dev server) | `zts dev` (HTML/env/public prepare + CSS-only HMR) |
+| `vite build` | `zts build` 또는 library build는 `zts --bundle <entry> --outdir dist --splitting --minify --sourcemap` |
+| `vite preview` | `zts preview dist` |
+| `import.meta.env.MODE` | 앱 모드는 `.env*` 자동 로드, CLI 번들은 `--define:import.meta.env.MODE=\"production\"` |
+| `import.meta.env.DEV` | 앱 모드는 dev/build mode로 자동 주입, CLI 번들은 `--define:import.meta.env.DEV=true` |
+| `.env` / `.env.production` 자동 로드 | 앱 모드에서 지원 (`--env-dir`, `--env-prefix`) |
 | `import.meta.glob` | 미지원 (구현 예정) |
 | `import.meta.hot` | 지원 (`--serve --bundle`) |
 | `import.meta.url` | 지원 (ESM 표준) |
@@ -246,10 +246,10 @@ export default defineConfig({
 | `@vitejs/plugin-legacy` | `--target=es5` 등으로 일부 대응 |
 | CSS Modules (`.module.css`) | Lightning CSS 내장 후처리 (자동 감지) |
 | CSS `@import` | Lightning CSS 내장 후처리 또는 `--loader:.css=text` |
-| PostCSS (`postcss.config.js`) | 미지원. Lightning CSS 후처리로 대체 |
+| PostCSS (`postcss.config.js`) | 앱 모드에서 지원. `zts dev`는 PostCSS dependency watch와 CSS-only HMR 지원 |
 | Sass/Less/Stylus | 미지원. 빌드 전 사전 컴파일 필요 |
-| `public/` 정적 디렉토리 | 미지원. 직접 복사 또는 `--loader:.svg=file` 등 |
-| HTML 엔트리 (`index.html`) | 미지원. JS/TS 엔트리만 |
+| `public/` 정적 디렉토리 | 앱 모드에서 지원 (`--public-dir`) |
+| HTML 엔트리 (`index.html`) | 앱 모드에서 지원 (`--entry-html`) |
 | `resolve.alias` | `--alias:name=target` |
 | `resolve.conditions` | `--conditions=...` |
 | `optimizeDeps` (pre-bundling) | 불필요 (번들 시 직접 처리) |
