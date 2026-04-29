@@ -47,6 +47,19 @@ D053에서 "Phase 6(minifier/bundler)에서 추가"로 예정됐던 semantic 확
 
 ---
 
+## App pipeline 성능 / 테스트 인프라
+
+CSS Modules + Sass 도입 (PR #2225) 후 식별된 후속 작업.
+
+| # | 항목 | 비고 |
+|---|------|------|
+| 70 | dev rebuild full re-prep (cpSync) 비용 | `createAppDevController.prepare()` 가 매 full reload 마다 `copyAppRootForPostcss` (전체 트리 cpSync) + postcss + Sass + CSS Modules 재실행. 1k 파일 앱이면 prepare 만 수백 ms. incremental sync (변경 파일만 mirror) 또는 in-memory VFS overlay 가 근본 해결 |
+| 71 | `.scss` 단일 파일 fast-path | `.scss/.sass` 단일 변경은 `isCssOnlyChange=false` 라 `rebuildAppDevFull` → 전체 cpSync 트리거. self-contained transform 이라 (해당 파일만 sass.compile + css 갱신 + `CssUpdate` HMR broadcast) fast-path 가능. #70 의 pipelineRoot incremental 모델 의존 |
+| 72 | E2E `setTimeout(2000-2500)` → readiness poll | `tests/e2e/tests/zts-app-builder-e2e.test.ts` 가 dev/preview 서버 기동 대기로 fixed `setTimeout` 사용 — 느린 CI 에서 flaky 가능성. `fetch(url)` 폴링 helper (ECONNREFUSED 재시도 / 200 까지) 도입해 일괄 대체 |
+| 73 | Dev mode 에서 bundler 가 CSS chunk 를 emit 하지 않음 | Build mode 는 splitting 으로 `*.css` 를 별도 chunk 로 출력해 `<link>` 로 서빙되지만, Dev mode 는 `bundle.js` + `index.html` 만 outdir 에 만들어진다. 그래서 Sass / CSS Modules 의 컴파일된 CSS (tempRoot 에만 존재) 가 브라우저에 도달할 길이 없어, proxy 의 `import.meta.env.DEV` inline `<style>` 주입이 다리 역할 중. 문제: 같은 CSS 가 두 번 (bundle 후 link + inline) DOM 에 들어가는 case 도 있고, dev 와 build 의 CSS 처리 경로가 갈려 유지보수 비용. Dev bundler 가 CSS chunk 도 emit 하게 통일하고 inline 주입 (`buildDevStyleInjector`) 제거가 목표. |
+
+---
+
 ## TS 타입 전용 (d.ts 생성 시 필요)
 
 ZTS는 타입 체크를 하지 않으므로 (스트리핑만) 당장 필요하지 않음.

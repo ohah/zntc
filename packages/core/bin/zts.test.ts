@@ -3077,14 +3077,14 @@ describe("CLI: Vite-style app builder", () => {
     const html = readFileSync(join(outdir, "index.html"), "utf8");
     const scriptPath = scriptPathFromHtml(html);
     const js = readFileSync(join(outdir, scriptPath.slice(1)), "utf8");
-    expect(js).toMatch(/card_card__[A-Za-z0-9_-]{5}/);
-    expect(js).toMatch(/card_postcss_added__[A-Za-z0-9_-]{5}/);
+    expect(js).toMatch(/card_card__[A-Za-z0-9_-]{8}/);
+    expect(js).toMatch(/card_postcss_added__[A-Za-z0-9_-]{8}/);
     const cssPath = (html.match(/href="([^"]+\.css)"/) ?? [])[1];
     expect(cssPath).toBeTruthy();
     const css = readFileSync(join(outdir, cssPath.slice(1)), "utf8");
     expect(css).toContain("rgb(9, 8, 7)");
-    expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{5} \.card_child__/);
-    expect(css).toMatch(/\.card_postcss_added__[A-Za-z0-9_-]{5}/);
+    expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{8} \.card_child__/);
+    expect(css).toMatch(/\.card_postcss_added__[A-Za-z0-9_-]{8}/);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -3137,15 +3137,15 @@ describe("CLI: Vite-style app builder", () => {
     const scriptPath = scriptPathFromHtml(html);
     const js = readFileSync(join(outdir, scriptPath.slice(1)), "utf8");
     expect(js).toContain('"card"');
-    expect(js).toMatch(/card_card__[A-Za-z0-9_-]{5}/);
+    expect(js).toMatch(/card_card__[A-Za-z0-9_-]{8}/);
     expect(js).not.toContain('import "./card.module.css"');
 
     const cssPath = (html.match(/href="([^"]+\.css)"/) ?? [])[1];
     expect(cssPath).toBeTruthy();
     const css = readFileSync(join(outdir, cssPath.slice(1)), "utf8");
-    expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{5}/);
-    expect(css).toMatch(/\.card_active__[A-Za-z0-9_-]{5}/);
-    expect(css).toMatch(/\.card_title_text__[A-Za-z0-9_-]{5}/);
+    expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{8}/);
+    expect(css).toMatch(/\.card_active__[A-Za-z0-9_-]{8}/);
+    expect(css).toMatch(/\.card_title_text__[A-Za-z0-9_-]{8}/);
     expect(css).toContain('url("./icon.png")');
     rmSync(dir, { recursive: true, force: true });
   });
@@ -3210,13 +3210,13 @@ describe("CLI: Vite-style app builder", () => {
     const html = readFileSync(join(outdir, "index.html"), "utf8");
     const scriptPath = scriptPathFromHtml(html);
     const js = readFileSync(join(outdir, scriptPath.slice(1)), "utf8");
-    expect(js).toMatch(/button_button__[A-Za-z0-9_-]{5}/);
-    expect(js).toMatch(/button_child__[A-Za-z0-9_-]{5}/);
+    expect(js).toMatch(/button_button__[A-Za-z0-9_-]{8}/);
+    expect(js).toMatch(/button_child__[A-Za-z0-9_-]{8}/);
     const cssPath = (html.match(/href="([^"]+\.css)"/) ?? [])[1];
     expect(cssPath).toBeTruthy();
     const css = readFileSync(join(outdir, cssPath.slice(1)), "utf8");
     expect(css).toContain("rgb(1, 2, 3)");
-    expect(css).toMatch(/\.button_button__[A-Za-z0-9_-]{5} \.button_child__/);
+    expect(css).toMatch(/\.button_button__[A-Za-z0-9_-]{8} \.button_child__/);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -3249,8 +3249,8 @@ describe("CLI: Vite-style app builder", () => {
     const cssPath = (html.match(/href="([^"]+\.css)"/) ?? [])[1];
     expect(cssPath).toBeTruthy();
     const css = readFileSync(join(outdir, cssPath.slice(1)), "utf8");
-    expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{5}/);
-    expect(css).toMatch(/\.card_injected__[A-Za-z0-9_-]{5}/);
+    expect(css).toMatch(/\.card_card__[A-Za-z0-9_-]{8}/);
+    expect(css).toMatch(/\.card_injected__[A-Za-z0-9_-]{8}/);
     rmSync(dir, { recursive: true, force: true });
   });
 

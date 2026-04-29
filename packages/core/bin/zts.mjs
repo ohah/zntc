@@ -778,13 +778,14 @@ function loadSassCompiler(root) {
   return requireFromAppOrCli(requireFromRoot, "sass");
 }
 
-// HTML 은 `<link href="x.scss">` 를 그대로 컴파일된 CSS 로, JS/TS 는 dev `<style>` injection
-// 가 들어간 `.css.js` proxy 로 다른 확장자로 rewrite. CSS Modules 는 HTML 미지원이라
-// 같은 헬퍼를 쓰지 않는다 — 아래 transformCssModules 의 인라인 regex 참고.
+// HTML 은 `<link href="x.scss">` 를 그대로 컴파일된 CSS 로, JS/TS 는 `.css.js` proxy
+// (`import "./generated.css"` 한 줄짜리) 로 다른 확장자로 rewrite. CSS Modules 의
+// `.module.css` rewriter (rewriteCssModuleReferences) 는 HTML 미지원이라 별도 함수.
 function rewriteSassReferences(sourceFiles) {
   const pattern = /(["'])([^"']+\.(?:scss|sass))([?#][^"']*)?\1/g;
   for (const source of sourceFiles) {
     const input = readFileSync(source, "utf8");
+    if (!input.includes(".scss") && !input.includes(".sass")) continue;
     const toExt = source.endsWith(".html") ? ".css" : ".css.js";
     const output = input.replace(
       pattern,
@@ -799,10 +800,12 @@ function isStyleReferenceSource(path) {
   return /\.(?:html|mjs|cjs|js|jsx|ts|tsx)$/.test(path);
 }
 
-// Dev mode 에서 `<style data-zts-${kind}>` 태그를 head 에 (재)삽입하는 inline 스니펫.
-// `import "./generated.css"` 가 bundler 의 CSS 출력으로 흘러간 뒤 첫 paint 까지의 race
-// 를 줄이고 HMR 시 동일 id 의 tag.textContent 만 swap 하면 끝나도록 하기 위함.
-// `import.meta.env.DEV` 는 production define 으로 false 치환 → 분기 통째 tree-shake.
+// Dev mode 한정 inline `<style>` 주입 스니펫. bundler 가 build mode 에서는 CSS 를 별도
+// chunk 로 emit 하고 `injectAppDevBundleCssLinks` 가 `<link>` 를 HTML 에 박아 native HMR
+// (`CssUpdate` → link swap) 가 처리하지만, **dev mode 에선 bundler 가 CSS chunk 를 emit
+// 하지 않아** Sass/CSS-Modules 컴파일 결과가 브라우저까지 도달할 경로가 없다. 이 스니펫
+// 이 그 다리 역할 — `import.meta.env.DEV` 가드로 production 에서는 통째 tree-shake.
+// 향후 dev bundler 가 CSS chunk 를 emit 하게 되면 이 스니펫은 제거 대상 (BACKLOG #73).
 function buildDevStyleInjector(kind, file, root, css) {
   const attr = `data-zts-${kind}`;
   const cssText = JSON.stringify(css);
@@ -882,7 +885,9 @@ function cssModuleLocalName(root, file, local) {
   const rel = relative(root, file).replaceAll(sep, "/");
   const fileName = basename(file, ".module.css").replace(/[^a-zA-Z0-9_]/g, "_");
   const safeLocal = local.replace(/[^a-zA-Z0-9_]/g, "_");
-  const hash = createHash("sha1").update(`${rel}:${local}`).digest("base64url").slice(0, 5);
+  // 8 chars (~48 bits) 면 100k 클래스에서도 birthday collision <0.001%. 5 chars (~30 bits)
+  // 일 때 10k 키만 돼도 ~5% 라 무성격 시각적 충돌이 가능했음.
+  const hash = createHash("sha1").update(`${rel}:${local}`).digest("base64url").slice(0, 8);
   return `${fileName}_${safeLocal}__${hash}`;
 }
 
@@ -1051,7 +1056,21 @@ function buildCssModuleProxy(root, file, generatedCssPath, css, mapping) {
 
 // CSS Modules 의 source rewrite 는 HTML 미지원 — `<link href="x.module.css">` 같은 직접
 // 참조는 일반 CSS 로 취급되므로 `.js` 로 rewrite 하면 안 됨. styleSources 에서 .html
-// 만 제외해서 사용한다.
+// 은 제외하고 import specifier 만 `.module.css.js` 로 redirect 한다.
+function rewriteCssModuleReferences(sourceFiles) {
+  const pattern = /(["'])([^"']+\.module\.css)([?#][^"']*)?\1/g;
+  for (const source of sourceFiles) {
+    if (/\.html?$/i.test(source)) continue;
+    const input = readFileSync(source, "utf8");
+    if (!input.includes(".module.css")) continue;
+    const output = input.replace(
+      pattern,
+      (_match, quote, spec, suffix = "") => `${quote}${spec}.js${suffix}${quote}`,
+    );
+    if (output !== input) writeFileSync(source, output);
+  }
+}
+
 function transformCssModules(root, moduleFiles, styleSources, logLevel) {
   if (moduleFiles.length === 0) return 0;
 
@@ -1070,17 +1089,7 @@ function transformCssModules(root, moduleFiles, styleSources, logLevel) {
     );
   }
 
-  const pattern = /(["'])([^"']+\.module\.css)([?#][^"']*)?\1/g;
-  for (const source of styleSources) {
-    if (/\.html?$/i.test(source)) continue;
-    const input = readFileSync(source, "utf8");
-    if (!input.includes(".module.css")) continue;
-    const output = input.replace(
-      pattern,
-      (_match, quote, spec, suffix = "") => `${quote}${spec}.js${suffix}${quote}`,
-    );
-    if (output !== input) writeFileSync(source, output);
-  }
+  rewriteCssModuleReferences(styleSources);
 
   if (logLevel !== "silent") {
     console.error(`[css-modules] processed ${moduleFiles.length} CSS module file(s)`);
@@ -1196,37 +1205,45 @@ function collectPostcssMessages(messages, deps, dirDeps) {
 
 async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phase) {
   const configPath = findPostcssConfig(root);
-  // 한 번의 walk 로 모든 transform 의 입력 파일을 수집. 이전엔 hasCssPreprocessors /
-  // hasCssModules / 각 transform 안의 walk + source-rewriter 의 walk 까지 합쳐 5–6번
-  // 트리 traversal 을 수행했음.
-  const sourceFiles = collectAppFiles(root, {
+  // Pre-copy walk: preprocessor + module 파일 존재 여부 결정. styleSourceFiles 까지
+  // 같이 모아두면 두 transform 의 source-rewriter 가 walk 를 안 돌게 할 수 있는데, 그
+  // 둘 다 실행 안 되는 경우 (postcss-only 빌드) 에는 styleSourceFiles 자체가 dead 라
+  // predicate 에서 제외하고 transform 분기 진입 시점에 한 번만 모은다.
+  const stylePipelineFiles = collectAppFiles(root, {
     skipDir: outdir,
-    predicate: (path) =>
-      isCssPreprocessorFile(path) || isCssModuleFile(path) || isStyleReferenceSource(path),
+    predicate: (path) => isCssPreprocessorFile(path) || isCssModuleFile(path),
   });
-  const preprocessorFiles = sourceFiles.filter(isCssPreprocessorFile);
-  const moduleFiles = sourceFiles.filter(isCssModuleFile);
-  const styleSourceFiles = sourceFiles.filter(isStyleReferenceSource);
+  const preprocessorFiles = stylePipelineFiles.filter(isCssPreprocessorFile);
+  const moduleFiles = stylePipelineFiles.filter(isCssModuleFile);
+  const needsSource = preprocessorFiles.length > 0 || moduleFiles.length > 0;
 
-  if (!configPath && preprocessorFiles.length === 0 && moduleFiles.length === 0) return null;
+  if (!configPath && !needsSource) return null;
   const tempRoot = copyAppRootForPostcss(root, outdir, phase);
 
-  // tempRoot 로 path 변환 — 위 walk 결과는 root 기준이므로 prefix 만 갈아끼우면 충분.
   const toTemp = (path) => join(tempRoot, relative(root, path));
-  transformCssPreprocessors(
-    tempRoot,
-    preprocessorFiles.map(toTemp),
-    styleSourceFiles.map(toTemp),
-    logLevel,
-  );
+  // styleSourceFiles 는 Sass / CSS Modules 의 import-specifier rewriter 만 사용. postcss
+  // -only 경로면 비워두고 walk 자체를 건너뛴다.
+  const styleSourceFiles = needsSource
+    ? collectAppFiles(tempRoot, { predicate: isStyleReferenceSource })
+    : [];
+
+  // 파이프라인 순서 (유지 필수):
+  //  1. Sass: `*.scss/.sass` → `*.css` (`.module.scss` 면 `.module.css` 가 새로 생김)
+  //  2. PostCSS: 모든 `*.css` 에 변환 적용 (Tailwind 등이 `@apply` 같은 룰 주입)
+  //  3. CSS Modules: postcss 가 주입한 `.injected` 같은 selector 까지 scoping
+  // 순서가 바뀌면 postcss 가 추가한 selector 가 scoped 안 되거나 sass 미컴파일 상태로
+  // postcss 가 돌아 깨진다 — 통합 테스트 `Sass output flows through PostCSS before CSS Modules scoping` 참고.
+  transformCssPreprocessors(tempRoot, preprocessorFiles.map(toTemp), styleSourceFiles, logLevel);
   await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel);
+  // `*.module.scss` 는 위 sass 단계에서 `*.module.css` 가 새로 만들어지므로, 사전 walk
+  // 가 본 모듈 리스트엔 빠져 있다. preprocessor 출력 경로를 재계산해 보강.
   const generatedModuleFiles = preprocessorFiles
     .map(cssPreprocessorOutputPath)
     .filter(isCssModuleFile);
   transformCssModules(
     tempRoot,
     [...moduleFiles, ...generatedModuleFiles].map(toTemp),
-    styleSourceFiles.map(toTemp),
+    styleSourceFiles,
     logLevel,
   );
   return tempRoot;
