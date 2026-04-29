@@ -128,6 +128,36 @@ export async function runZts(
   return runCmd([ZTS_BIN, ...args], options);
 }
 
+/// Transpile-only (no `--bundle`) helper. ZTS 의 *transpile* path 단독 동작을
+/// 격리 검증할 때 사용. `bundleAndRun` 은 `--bundle` 을 강제하므로 inner-name
+/// elision 같은 별도 pass 와 섞여 transpile 단독 동작을 잡아내기 어렵다 (#2194,
+/// #2197). source 를 임시 파일에 쓰고 ZTS 로 트랜스파일 → bun 으로 실행 → stdout/stderr
+/// 비교를 한 번에.
+export async function transpileAndRun(
+  source: string,
+  extraArgs: string[] = [],
+): Promise<{
+  transpileExitCode: number;
+  transpileStderr: string;
+  runOutput: string;
+  runStderr: string;
+  cleanup: () => Promise<void>;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), "zts-transpile-"));
+  const inFile = join(dir, "in.ts");
+  const outFile = join(dir, "out.js");
+  await writeFile(inFile, source);
+  const r = await runZts([inFile, "-o", outFile, ...extraArgs]);
+  const exec = await runCmd(["bun", "run", outFile]);
+  return {
+    transpileExitCode: r.exitCode,
+    transpileStderr: r.stderr,
+    runOutput: exec.stdout.trimEnd(),
+    runStderr: exec.stderr.trimEnd(),
+    cleanup: async () => rm(dir, { recursive: true, force: true }),
+  };
+}
+
 /// Node로 JS 파일을 실행. exit != 0 시 stdout/stderr를 포함한 에러 throw (디버깅 편의).
 export async function runNode(file: string): Promise<{ stdout: string; stderr: string }> {
   const { stdout, stderr, exitCode } = await runCmd(["node", file]);

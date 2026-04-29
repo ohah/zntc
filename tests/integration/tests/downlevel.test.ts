@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { bundleAndRun, createFixture, runZts } from "./helpers";
+import { bundleAndRun, createFixture, runZts, transpileAndRun } from "./helpers";
 
 // 런타임 헬퍼는 번들러가 자동 주입 (emitter.zig의 appendRuntimeHelpers)
 
@@ -4862,6 +4862,33 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("Alice true col:id,col:name,meth:greet");
+    });
+
+    // #2194: transpile-only 모드에서도 `__decorateClass` 헬퍼 정의가 emit 되어야 함.
+    // 기존 테스트들은 모두 bundle 모드(`bundleAndRun`)였고 번들 runtime preamble 이
+    // 헬퍼를 주입해 가려져 있었음. transpile-only 격리 시 ReferenceError 가 났던 회귀.
+    test("transpile-only 에서 __decorateClass 헬퍼가 inline emit 된다 (#2194)", async () => {
+      const result = await transpileAndRun(
+        [
+          "function tag(label: string) {",
+          "  return function (target: any, key?: string) {",
+          "    target.__tags = target.__tags || [];",
+          "    target.__tags.push(label + ':' + (key || 'class'));",
+          "  };",
+          "}",
+          "@tag('cls')",
+          "class D {",
+          "  @tag('m') hi() { return 'hi'; }",
+          "}",
+          "console.log((D.prototype as any).__tags?.join('|'), new D().hi());",
+        ].join("\n"),
+        ["--experimental-decorators"],
+      );
+      cleanup = result.cleanup;
+
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).not.toContain("ReferenceError");
+      expect(result.runOutput).toBe("m:hi hi");
     });
   });
 

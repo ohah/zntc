@@ -1,28 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { bundleAndRun, runZts } from "./helpers";
-
-/// Transpile-only (no --bundle) helper. mangler 의 *transpile* path 동작을 격리
-/// 검증할 때 사용. bundleAndRun 은 --bundle 을 강제하므로 inner-name elision 같은
-/// 별도 pass 와 섞여 mangler 단독 동작을 잡아내기 어렵다 (#2197).
-async function transpileAndRun(source: string, extraArgs: string[] = []) {
-  const dir = mkdtempSync(join(tmpdir(), "zts-mangler-"));
-  const inFile = join(dir, "in.ts");
-  const outFile = join(dir, "out.js");
-  writeFileSync(inFile, source);
-  const r = await runZts([inFile, "-o", outFile, ...extraArgs]);
-  const exec = spawnSync("bun", ["run", outFile], { encoding: "utf-8", timeout: 10000 });
-  return {
-    transpileExitCode: r.exitCode,
-    transpileStderr: r.stderr,
-    runOutput: (exec.stdout || "").trimEnd(),
-    runStderr: (exec.stderr || "").trimEnd(),
-    cleanup: async () => rmSync(dir, { recursive: true, force: true }),
-  };
-}
+import { bundleAndRun, transpileAndRun } from "./helpers";
 
 describe("mangler --minify 회귀", () => {
   let cleanup: (() => Promise<void>) | undefined;
