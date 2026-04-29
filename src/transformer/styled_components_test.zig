@@ -8,12 +8,14 @@ const CodegenOptions = helpers.CodegenOptions;
 
 const default_cg: CodegenOptions = .{ .minify_whitespace = false };
 
-/// 출력에 `withConfig({ displayName: "<expected>" })` 가 나타나는지 검증 (whitespace tolerant).
+/// 출력에 `withConfig({ displayName: "<expected>" })` + componentId 패턴이 나타나는지 검증.
+/// componentId 는 `sc-<8hex>-<digit>` 형태만 확인 (정확 hash 는 file path 의존이라 변동 가능).
 fn expectDisplayName(output: []const u8, expected: []const u8) !void {
     var quoted_buf: [256]u8 = undefined;
     const needle = std.fmt.bufPrint(&quoted_buf, "displayName: \"{s}\"", .{expected}) catch return error.OutOfMemory;
     try std.testing.expect(std.mem.indexOf(u8, output, needle) != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "withConfig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "componentId: \"sc-") != null);
 }
 
 test "styled-components: styled.X 선언 → withConfig({displayName}) 래핑" {
@@ -149,4 +151,23 @@ test "styled-components: template literal 내용은 그대로 보존" {
     try expectDisplayName(r.output, "C");
     try std.testing.expect(std.mem.indexOf(u8, r.output, "width: 100%") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color:") != null);
+}
+
+test "styled-components: componentId counter 가 같은 파일 내 0,1,2 로 증가" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const A = styled.div`color: red;`;
+        \\const B = styled.div`color: blue;`;
+        \\const C = styled.div`color: green;`;
+    ,
+        .{ .styled_components = true },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 같은 파일 내 file_hash 는 동일, counter 만 0/1/2 로 증가.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "-0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "-2\"") != null);
 }
