@@ -50,4 +50,5 @@ test {
     _ = @import("minify_test.zig");
     _ = @import("worklet_test.zig");
     _ = @import("worklet_babel_parity_test.zig");
+    _ = @import("styled_components_test.zig");
 }
