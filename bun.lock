@@ -8,6 +8,7 @@
         "@emotion/css": "^11.13.5",
         "@emotion/react": "^11.14.0",
         "@tailwindcss/postcss": "^4.2.2",
+        "hermes-engine-cli": "^0.12.0",
         "lodash-es": "^4.17.21",
         "mobx": "^6.13.0",
         "oxfmt": "^0.41.0",
@@ -2001,6 +2002,8 @@
     "hast-util-whitespace": ["hast-util-whitespace@3.0.0", "", { "dependencies": { "@types/hast": "^3.0.0" } }, "sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw=="],
 
     "hastscript": ["hastscript@9.0.1", "", { "dependencies": { "@types/hast": "^3.0.0", "comma-separated-tokens": "^2.0.0", "hast-util-parse-selector": "^4.0.0", "property-information": "^7.0.0", "space-separated-tokens": "^2.0.0" } }, "sha512-g7df9rMFX/SPi34tyGCyUBREQoKkapwdY/T04Qn9TDWfHhAYt4/I0gMVirzK5wEzeUqIjEB+LXC/ypb7Aqno5w=="],
+
+    "hermes-engine-cli": ["hermes-engine-cli@0.12.0", "", {}, "sha512-72a5yvwSC2qWtxJ80nlcoCCfNTkpYI8VVAfOro4FL9O105NM8Vpigz/A5Nq1rECKdP7M1N81HHiYL6jU5N1gYw=="],
 
     "hoist-non-react-statics": ["hoist-non-react-statics@3.3.2", "", { "dependencies": { "react-is": "^16.7.0" } }, "sha512-/gGivxi8JPKWNm/W0jSmzcMPpfpPLc3dY/6GxhX2hQ9iGj3aDfklV4ET7NjKpSinLpJ5vafa9iiGIEZg10SfBw=="],
 

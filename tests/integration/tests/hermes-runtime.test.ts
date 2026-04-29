@@ -17,15 +17,21 @@ const EXAMPLE_APP = resolve(import.meta.dir, "fixtures/rn-example-app");
 
 // Hermes 런타임 바이너리 경로 탐색
 function findHermes(): string | null {
-  // 1. hermes-engine-cli (npm global)
+  const hermesDir = process.platform === "linux" ? "linux64-bin" : "osx-bin";
+  // 1. workspace node_modules (devDependencies 로 추가됨 — `bun install` 만으로
+  //    로컬 검증 가능). #2218 fix: 이전엔 npm global 만 봐서 `npm install -g`
+  //    안 한 로컬 환경에선 silent skip.
+  const wsRoot = resolve(import.meta.dir, "../../..");
+  const local = resolve(wsRoot, "node_modules/hermes-engine-cli", hermesDir, "hermes");
+  if (existsSync(local)) return local;
+  // 2. npm global (CI 의 `npm install -g hermes-engine-cli` path)
   const globalNpm = Bun.spawnSync(["npm", "root", "-g"]);
   if (globalNpm.exitCode === 0) {
     const dir = globalNpm.stdout.toString().trim();
-    const hermesDir = process.platform === "linux" ? "linux64-bin" : "osx-bin";
     const p = resolve(dir, `hermes-engine-cli/${hermesDir}/hermes`);
     if (existsSync(p)) return p;
   }
-  // 2. PATH
+  // 3. PATH
   const which = Bun.spawnSync(["which", "hermes"]);
   if (which.exitCode === 0) return which.stdout.toString().trim();
   return null;
