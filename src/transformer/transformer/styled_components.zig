@@ -45,6 +45,7 @@ const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const module_parser = @import("../../parser/module.zig");
 const import_scanner = @import("../../bundler/import_scanner.zig");
+const wyhash = @import("../../util/wyhash.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -146,20 +147,33 @@ pub fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const 
     });
 }
 
-/// `<tag>.withConfig({ displayName: "<var_name>" })` call_expression 빌드.
-/// "withConfig" / "displayName" span 은 PluginState 에 lazy 캐싱 — 매 호출마다 string_table
-/// 에 같은 문자열이 append 되는 것을 피한다 (refresh.zig 의 $RefreshReg$ span 패턴과 동일).
+/// `<tag>.withConfig({ displayName: "<var_name>", componentId: "sc-<hash>-<n>" })` 빌드.
+///
+/// componentId 는 SSR hydration 을 위한 결정론적 식별자. file path 기반 wyhash 8-hex +
+/// 파일 내 등장 순서 counter — SWC 의 sc-<hash>-<n> 형식과 동일. 같은 파일을 다시 빌드해도
+/// 같은 ID, 다른 파일은 (충돌 매우 희박) 다른 ID.
 fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     const zero = Span{ .start = 0, .end = 0 };
     const state = &self.plugins.styled_components;
     if (state.with_config_span == null) state.with_config_span = try self.ast.addString("withConfig");
     if (state.display_name_span == null) state.display_name_span = try self.ast.addString("displayName");
+    if (state.component_id_span == null) state.component_id_span = try self.ast.addString("componentId");
+    if (state.file_hash_hex == null) state.file_hash_hex = wyhash.hashHex8(self.options.jsx_filename);
+
     const with_config_span = state.with_config_span.?;
     const display_name_key_span = state.display_name_span.?;
+    const component_id_key_span = state.component_id_span.?;
+    const file_hash = state.file_hash_hex.?;
+    const component_index = state.component_counter;
+    state.component_counter += 1;
 
-    var quoted_buf: [256]u8 = undefined;
-    const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{var_name}) catch return error.OutOfMemory;
-    const quoted_span = try self.ast.addString(quoted);
+    var display_buf: [256]u8 = undefined;
+    const display_quoted = std.fmt.bufPrint(&display_buf, "\"{s}\"", .{var_name}) catch return error.OutOfMemory;
+    const display_value_span = try self.ast.addString(display_quoted);
+
+    var component_id_buf: [64]u8 = undefined;
+    const component_id_quoted = std.fmt.bufPrint(&component_id_buf, "\"sc-{s}-{d}\"", .{ file_hash, component_index }) catch return error.OutOfMemory;
+    const component_id_value_span = try self.ast.addString(component_id_quoted);
 
     const with_config_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
@@ -173,24 +187,10 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
         0,
     });
 
-    const key = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = display_name_key_span,
-        .data = .{ .string_ref = display_name_key_span },
-    });
-    const value = try self.ast.addNode(.{
-        .tag = .string_literal,
-        .span = quoted_span,
-        .data = .{ .string_ref = quoted_span },
-    });
-    // object_property: binary = { left=key, right=value, flags }
-    const property = try self.ast.addNode(.{
-        .tag = .object_property,
-        .span = zero,
-        .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
-    });
+    const display_property = try buildKeyStringProperty(self, display_name_key_span, display_value_span);
+    const component_id_property = try buildKeyStringProperty(self, component_id_key_span, component_id_value_span);
 
-    const obj_list = try self.ast.addNodeList(&.{property});
+    const obj_list = try self.ast.addNodeList(&.{ display_property, component_id_property });
     const obj = try self.ast.addNode(.{
         .tag = .object_expression,
         .span = zero,
@@ -204,5 +204,27 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
         args.start,
         args.len,
         0,
+    });
+}
+
+/// `key: "value"` object_property 노드 빌드. key 는 identifier_reference, value 는
+/// 따옴표 포함 문자열 리터럴 span 으로 미리 준비되어 있어야 함.
+fn buildKeyStringProperty(self: *Transformer, key_span: Span, quoted_value_span: Span) Error!NodeIndex {
+    const zero = Span{ .start = 0, .end = 0 };
+    const key = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = key_span,
+        .data = .{ .string_ref = key_span },
+    });
+    const value = try self.ast.addNode(.{
+        .tag = .string_literal,
+        .span = quoted_value_span,
+        .data = .{ .string_ref = quoted_value_span },
+    });
+    // object_property: binary = { left=key, right=value, flags }
+    return self.ast.addNode(.{
+        .tag = .object_property,
+        .span = zero,
+        .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
     });
 }

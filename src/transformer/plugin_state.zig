@@ -74,6 +74,15 @@ pub const StyledComponentsState = struct {
     /// 비용을 피하기 위한 lazy 캐시. 첫 wrap 시점에 채워짐.
     with_config_span: ?Span = null,
     display_name_span: ?Span = null,
+    component_id_span: ?Span = null,
+
+    /// componentId hash 의 file 부분 — `options.jsx_filename` 의 wyhash 8-hex.
+    /// SSR hydration 안정화: 같은 파일에서 같은 hash 보장 (counter 와 결합).
+    file_hash_hex: ?[8]u8 = null,
+
+    /// componentId 의 0-based counter — 같은 파일 내 styled 컴포넌트 등장 순서.
+    /// SWC 의 next_id 와 동일 (sc-<file_hash>-<counter>).
+    component_counter: u32 = 0,
 };
 
 pub const PluginState = struct {
