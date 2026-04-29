@@ -1733,7 +1733,9 @@ fn emitOutputExportsConflictDiag(
         .code = .output_exports_conflict,
         .severity = .@"error",
         .message = msg,
-        .file_path = try linker.allocator.dupe(u8, module_path),
+        // borrowed — module.path 가 owner. 다른 진단 사이트 (linker/metadata.zig) 와 일관.
+        // linker.fatal_diagnostics deinit 은 message 만 free 하므로 owned dupe 시 leak.
+        .file_path = module_path,
         .span = Span.EMPTY,
         .step = .emit,
     });
