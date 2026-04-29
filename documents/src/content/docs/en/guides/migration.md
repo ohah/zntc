@@ -244,12 +244,13 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | `@vitejs/plugin-react` Fast Refresh | Built-in HMR (React Refresh) |
 | `@vitejs/plugin-vue` | Not supported |
 | `@vitejs/plugin-legacy` | Partial via `--target=es5` etc. |
-| CSS Modules (`.module.css`) | Built-in Lightning CSS post-processing (auto-detected) |
+| CSS Modules (`.module.css`) | Not supported. `.module.css` fails explicitly |
 | CSS `@import` | Built-in Lightning CSS or `--loader:.css=text` |
 | PostCSS (`postcss.config.js`) | Supported in app mode. `zts dev` watches PostCSS dependencies and sends CSS-only HMR |
 | Sass/Less/Stylus | Not supported. Pre-compile before build |
 | `public/` static directory | Supported in app mode (`--public-dir`) |
 | HTML entry (`index.html`) | Supported in app mode (`--entry-html`) |
+| SPA fallback | `zts preview --spa-fallback` |
 | `resolve.alias` | `--alias:name=target` |
 | `resolve.conditions` | `--conditions=...` |
 | `optimizeDeps` (pre-bundling) | Not needed (handled during bundling) |

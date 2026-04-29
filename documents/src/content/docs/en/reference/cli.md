@@ -32,8 +32,9 @@ zts preview [outdir]       # serve built files only
 
 The default app layout is `index.html`, `public/`, `src/main.ts(x)`, and `.env*`.
 `zts build` uses `<script type="module" src>` as bundle entries and rewrites CSS
-`url()`, HTML asset URLs, and `%ENV%` tokens. `zts dev` uses the same HTML/env/public
-prepare step and updates stylesheets for CSS edits without a full page reload.
+`url()`, HTML asset URLs, and `%ENV%` tokens, and injects `modulepreload` links
+for static split chunks. `zts dev` uses the same HTML/env/public prepare step and
+updates stylesheets for CSS edits without a full page reload.
 
 | Option | Description |
 |--------|-------------|
@@ -43,11 +44,14 @@ prepare step and updates stylesheets for CSS edits without a full page reload.
 | `--mode <name>` | env/config mode (`dev`: `development`, `build`: `production`) |
 | `--env-prefix <list>` | exposed env prefix CSV (default: `VITE_,ZTS_`) |
 | `--env-dir <dir>` | directory for `.env*` files |
+| `--spa-fallback[=file]` | in `preview`, fall back route-like 404 requests to `index.html` or the given file |
 
 If the app root contains `postcss.config.{js,mjs,cjs,json}` or `.postcssrc*`,
 ZTS automatically applies it to CSS. In `zts dev`, original CSS files and PostCSS
 `dependency` / `dir-dependency` messages are watched and CSS-only edits are sent
-as stylesheet HMR updates. Tailwind v4 works via `@tailwindcss/postcss`.
+as stylesheet HMR updates. Tailwind v4 works via `@tailwindcss/postcss`. CSS
+Modules (`.module.css`) are still outside the app CSS pipeline scope and fail
+explicitly.
 
 ## I/O
 

@@ -170,6 +170,7 @@ function parseArgs(argv) {
     entryHtml: undefined,
     publicDir: undefined,
     base: undefined,
+    spaFallback: undefined,
   };
 
   if (appCommand === "dev") {
@@ -399,6 +400,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   const root = resolve(opts.appRoot ?? ".");
   const outdir = resolve(opts.outdir ?? join(root, "dist"));
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
+  assertNoAppCssModules(root, outdir);
   let postcssRoot = null;
   try {
     postcssRoot = await preparePostcssAppRoot(root, outdir, configEnv, opts.logLevel, "build");
@@ -459,6 +461,7 @@ function createAppDevController(opts, root, configEnv) {
     outdir,
     base,
     async prepare() {
+      assertNoAppCssModules(root, outdir);
       const prepared = prepareAppDevSync({
         root,
         outdir,
@@ -723,6 +726,52 @@ function collectCssFiles(dir, skipDir = null) {
   return files;
 }
 
+function assertNoAppCssModules(root, outdir) {
+  const hit = findAppCssModuleReference(root, new Set([resolve(outdir)]));
+  if (!hit) return;
+  throw new Error(
+    `CSS Modules (.module.css) are not supported by zts app CSS pipeline yet: ${relative(root, hit)}`,
+  );
+}
+
+function findAppCssModuleReference(dir, skip) {
+  if (!existsSync(dir)) return null;
+  const absDir = resolve(dir);
+  for (const ignored of skip) {
+    if (absDir === ignored || absDir.startsWith(`${ignored}${sep}`)) return null;
+  }
+  for (const entry of readdirSync(dir)) {
+    if (entry === "node_modules" || entry === ".git" || entry === "dist" || entry === ".zts-dev") {
+      continue;
+    }
+    const path = join(dir, entry);
+    const stat = statSync(path);
+    if (stat.isDirectory()) {
+      const found = findAppCssModuleReference(path, skip);
+      if (found) return found;
+      continue;
+    }
+    if (!stat.isFile() || !isAppSourceForCssModuleScan(path)) continue;
+    const text = readFileSync(path, "utf8");
+    if (referencesCssModulePath(path, text)) return path;
+  }
+  return null;
+}
+
+function isAppSourceForCssModuleScan(path) {
+  return /\.(?:html|mjs|cjs|js|jsx|ts|tsx)$/.test(path);
+}
+
+function referencesCssModulePath(path, text) {
+  if (!text.includes(".module.css")) return false;
+  if (/\.html?$/i.test(path)) {
+    return /\b(?:href|src)\s*=\s*["'][^"']*\.module\.css(?:[?#][^"']*)?["']/i.test(text);
+  }
+  return /(?:\bimport\s+(?:[^"'()]+\s+from\s*)?|\bimport\s*\(|\brequire\s*\()\s*["'][^"']*\.module\.css(?:[?#][^"']*)?["']/i.test(
+    text,
+  );
+}
+
 async function loadPostcssConfig(root, configEnv) {
   const requireFromRoot = createRequire(join(root, "package.json"));
   const postcssrc = requireFromAppOrCli(requireFromRoot, "postcss-load-config");
@@ -843,6 +892,22 @@ async function runAppPreview(opts) {
   opts.bundle = false;
   opts.watch = false;
   return runServe(opts, null);
+}
+
+function normalizeSpaFallback(value) {
+  if (value === undefined || value === null || value === false || value === "false") return null;
+  const raw = value === true ? "index.html" : String(value);
+  return raw.startsWith("/") ? raw.slice(1) : raw;
+}
+
+function requestAcceptsHtml(accept) {
+  if (!accept) return true;
+  return accept.includes("text/html") || accept.includes("*/*");
+}
+
+function looksLikeAssetPath(pathname) {
+  const last = pathname.slice(pathname.lastIndexOf("/") + 1);
+  return last.includes(".");
 }
 
 // ─── Transpile 모드 ───
@@ -1002,6 +1067,7 @@ function mergeConfigIntoOpts(opts, config) {
     "outputExports",
     "outExtensionJs",
     "metafile",
+    "spaFallback",
     "outfile",
     "outdir",
     "outbase",
@@ -1370,7 +1436,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
   const serveDir = resolve(opts.outdir || opts.serveDir);
   const base = normalizeBase(opts.base ?? "/");
 
-  function handleRequest(reqUrl) {
+  function handleRequest(reqUrl, accept = "") {
     let pathname = new URL(reqUrl, "http://localhost").pathname;
     if (appDev && pathname === APP_DEV_HMR_CLIENT_PATH) {
       return {
@@ -1384,7 +1450,25 @@ async function runServe(opts, config, { appDev = null } = {}) {
     }
     if (pathname === "/") pathname = "/index.html";
 
-    const filePath = join(serveDir, pathname);
+    let filePath = join(serveDir, pathname);
+    if (!existsSync(filePath)) {
+      const fallback = normalizeSpaFallback(opts.spaFallback);
+      const acceptsHtml = requestAcceptsHtml(accept);
+      if (fallback && acceptsHtml && !looksLikeAssetPath(pathname)) {
+        const fallbackPath = resolve(serveDir, fallback);
+        if (fallbackPath !== serveDir && !fallbackPath.startsWith(`${serveDir}${sep}`)) {
+          return { status: 404, body: "Not Found", type: "text/plain" };
+        }
+        if (existsSync(fallbackPath)) {
+          filePath = fallbackPath;
+        } else {
+          return { status: 404, body: "Not Found", type: "text/plain" };
+        }
+      } else {
+        return { status: 404, body: "Not Found", type: "text/plain" };
+      }
+    }
+
     if (!existsSync(filePath)) {
       return { status: 404, body: "Not Found", type: "text/plain" };
     }
@@ -1416,7 +1500,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
           }
         }
 
-        const { status, body, type } = handleRequest(req.url);
+        const { status, body, type } = handleRequest(req.url, req.headers.get("accept") ?? "");
         return new Response(body, {
           status,
           headers: {
@@ -1467,7 +1551,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         }
       }
 
-      const { status, body, type } = handleRequest(req.url);
+      const { status, body, type } = handleRequest(req.url, req.headers.accept ?? "");
       res.writeHead(status, {
         "Content-Type": type,
         "Access-Control-Allow-Origin": "*",

@@ -2572,6 +2572,77 @@ describe("CLI: Vite-style app builder", () => {
     }
   });
 
+  test("preview --spa-fallback serves index.html for route-like misses only", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-preview-spa-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<div id="app">spa</div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), "console.log('spa');");
+
+    const outdir = join(dir, "dist");
+    const buildResult = runCli(["build", dir, "--outdir", outdir, "--base", "/app/"], {
+      cwd: dir,
+    });
+    expect(buildResult.exitCode).toBe(0);
+
+    const port = 12750 + Math.floor(Math.random() * 100);
+    const proc = spawn(
+      RUNTIME,
+      [CLI, "preview", outdir, `--port=${port}`, "--base", "/app/", "--spa-fallback"],
+      { cwd: dir },
+    );
+    await waitForServer(port);
+
+    try {
+      const html = await fetch(`http://localhost:${port}/app/dashboard/settings`, {
+        headers: { accept: "text/html" },
+      }).then((r) => r.text());
+      expect(html).toContain('<div id="app">spa</div>');
+
+      const missingAsset = await fetch(`http://localhost:${port}/app/missing.png`);
+      expect(missingAsset.status).toBe(404);
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("build injects modulepreload links for static split chunks", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-modulepreload-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      [
+        '<script type="module" src="/src/admin.ts"></script>',
+        '<script type="module" src="/src/client.ts"></script>',
+      ].join(""),
+    );
+    writeFileSync(
+      join(dir, "src", "admin.ts"),
+      'import { shared } from "./shared"; console.log("admin", shared);',
+    );
+    writeFileSync(
+      join(dir, "src", "client.ts"),
+      'import { shared } from "./shared"; console.log("client", shared);',
+    );
+    writeFileSync(join(dir, "src", "shared.ts"), 'export const shared = "shared";');
+
+    const outdir = join(dir, "dist");
+    const { exitCode } = runCli(["build", dir, "--outdir", outdir, "--base", "/app/"], {
+      cwd: dir,
+    });
+    expect(exitCode).toBe(0);
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    expect(html).toMatch(/<link rel="modulepreload" href="\/app\/chunk-[a-f0-9]+\.js">/);
+    const scripts = html.match(/<script[^>]+src="([^"]+)"/g) ?? [];
+    expect(scripts.length).toBe(2);
+    expect(scripts[0]).toMatch(/\/app\/admin-[a-f0-9]+\.js/);
+    expect(scripts[1]).toMatch(/\/app\/client-[a-f0-9]+\.js/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("build rewrites stylesheet url assets and HTML assets with query/hash", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-app-assets-"));
     mkdirSync(join(dir, "src"), { recursive: true });
@@ -2769,6 +2840,23 @@ describe("CLI: Vite-style app builder", () => {
     const css = readFileSync(join(outdir, "main.css"), "utf8");
     expect(css).toContain(".text-red-500");
     expect(css).not.toContain('@import "tailwindcss"');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("CSS Modules are rejected explicitly in app CSS pipeline", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-css-module-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      'import styles from "./card.module.css"; console.log(styles.card);',
+    );
+    writeFileSync(join(dir, "src", "card.module.css"), ".card { color: red; }");
+
+    const outdir = join(dir, "dist");
+    const { exitCode, stderr } = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("CSS Modules (.module.css) are not supported");
     rmSync(dir, { recursive: true, force: true });
   });
 

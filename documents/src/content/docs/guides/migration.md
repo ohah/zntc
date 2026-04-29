@@ -244,12 +244,13 @@ export default defineConfig({
 | `@vitejs/plugin-react` Fast Refresh | HMR 내장 (React Refresh) |
 | `@vitejs/plugin-vue` | 미지원 |
 | `@vitejs/plugin-legacy` | `--target=es5` 등으로 일부 대응 |
-| CSS Modules (`.module.css`) | Lightning CSS 내장 후처리 (자동 감지) |
+| CSS Modules (`.module.css`) | 미지원. `.module.css`는 명시적으로 에러 처리 |
 | CSS `@import` | Lightning CSS 내장 후처리 또는 `--loader:.css=text` |
 | PostCSS (`postcss.config.js`) | 앱 모드에서 지원. `zts dev`는 PostCSS dependency watch와 CSS-only HMR 지원 |
 | Sass/Less/Stylus | 미지원. 빌드 전 사전 컴파일 필요 |
 | `public/` 정적 디렉토리 | 앱 모드에서 지원 (`--public-dir`) |
 | HTML 엔트리 (`index.html`) | 앱 모드에서 지원 (`--entry-html`) |
+| SPA fallback | `zts preview --spa-fallback` |
 | `resolve.alias` | `--alias:name=target` |
 | `resolve.conditions` | `--conditions=...` |
 | `optimizeDeps` (pre-bundling) | 불필요 (번들 시 직접 처리) |
