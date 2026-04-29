@@ -19,6 +19,10 @@ const BUILD_PREVIEW_PORT = 3997;
 const DEV_PORT = 3998;
 const CSS_MODULE_PREVIEW_PORT = 3995;
 const CSS_MODULE_DEV_PORT = 3994;
+const SCSS_PREVIEW_PORT = 3993;
+const SCSS_DEV_PORT = 3992;
+const SASS_HTML_PREVIEW_PORT = 3991;
+const SCSS_RECOVERY_DEV_PORT = 3990;
 
 const FIXTURE: Record<string, string> = {
   "index.html": `<!doctype html>
@@ -365,6 +369,220 @@ el.textContent = styles.button.includes("button_button__") ? "scoped" : "raw";
       await expect
         .poll(() => button.evaluate((el) => getComputedStyle(el).color), { timeout: 6000 })
         .toBe("rgb(120, 10, 10)");
+    } finally {
+      server.kill();
+      await new Promise((r) => server.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── Sass/SCSS: optional Sass compiler 경로를 실제 브라우저에서 검증 ───
+test.describe("zts app Sass/SCSS E2E", () => {
+  async function writeScssFixture(dir: string): Promise<void> {
+    const files: Record<string, string> = {
+      "index.html": `<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>scss</title></head>
+  <body>
+    <section data-testid="panel" class="panel"><span class="label">SCSS</span></section>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>`,
+      "src/main.ts": `import "./style.scss";
+document.querySelector("[data-testid=panel]")!.setAttribute("data-ready", "yes");
+`,
+      "src/_tokens.scss": `$panel-color: rgb(10, 70, 120);
+$label-color: rgb(140, 30, 20);
+`,
+      "src/style.scss": `@use "./tokens" as *;
+.panel {
+  color: $panel-color;
+  .label {
+    color: $label-color;
+  }
+}
+`,
+    };
+    for (const [name, content] of Object.entries(files)) {
+      const filePath = join(dir, name);
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, content);
+    }
+  }
+
+  test("build + preview compiles SCSS imports and nesting", async ({ page }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-scss-build-e2e-"));
+    await writeScssFixture(dir);
+
+    const built = spawnSync(
+      process.execPath,
+      [ZTS_JS_CLI, "build", dir, "--outdir", join(dir, "dist")],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    if (built.status !== 0) {
+      throw new Error(`zts build scss failed: ${built.stderr}`);
+    }
+
+    const preview = spawn(
+      process.execPath,
+      [ZTS_JS_CLI, "preview", join(dir, "dist"), "--port", String(SCSS_PREVIEW_PORT)],
+      { stdio: "pipe" },
+    );
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      await page.goto(`http://localhost:${SCSS_PREVIEW_PORT}/`);
+      await expect(page.getByTestId("panel")).toHaveAttribute("data-ready", "yes");
+      expect(await page.getByTestId("panel").evaluate((el) => getComputedStyle(el).color)).toBe(
+        "rgb(10, 70, 120)",
+      );
+      expect(await page.locator(".label").evaluate((el) => getComputedStyle(el).color)).toBe(
+        "rgb(140, 30, 20)",
+      );
+    } finally {
+      preview.kill();
+      await new Promise((r) => preview.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("build + preview compiles HTML-linked indented .sass", async ({ page }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-sass-html-e2e-"));
+    const files: Record<string, string> = {
+      "index.html": `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>sass-html</title>
+    <link rel="stylesheet" href="/src/direct.sass" />
+  </head>
+  <body>
+    <article data-testid="direct" class="direct"><span class="direct-label">SASS</span></article>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>`,
+      "src/main.ts": `document.querySelector("[data-testid=direct]")!.setAttribute("data-ready", "yes");`,
+      "src/direct.sass": `$direct-color: rgb(42, 80, 110)
+$label-color: rgb(170, 20, 60)
+.direct
+  color: $direct-color
+  .direct-label
+    color: $label-color
+`,
+    };
+    for (const [name, content] of Object.entries(files)) {
+      const filePath = join(dir, name);
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, content);
+    }
+
+    const built = spawnSync(
+      process.execPath,
+      [ZTS_JS_CLI, "build", dir, "--outdir", join(dir, "dist")],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    if (built.status !== 0) {
+      throw new Error(`zts build .sass failed: ${built.stderr}`);
+    }
+
+    const preview = spawn(
+      process.execPath,
+      [ZTS_JS_CLI, "preview", join(dir, "dist"), "--port", String(SASS_HTML_PREVIEW_PORT)],
+      { stdio: "pipe" },
+    );
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      await page.goto(`http://localhost:${SASS_HTML_PREVIEW_PORT}/`);
+      const direct = page.getByTestId("direct");
+      await expect(direct).toHaveAttribute("data-ready", "yes");
+      expect(await direct.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(42, 80, 110)");
+      expect(await page.locator(".direct-label").evaluate((el) => getComputedStyle(el).color)).toBe(
+        "rgb(170, 20, 60)",
+      );
+    } finally {
+      preview.kill();
+      await new Promise((r) => preview.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev recompiles SCSS through full reload fallback", async ({ page }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-scss-dev-e2e-"));
+    await writeScssFixture(dir);
+    const server = spawn(
+      process.execPath,
+      [ZTS_JS_CLI, "dev", dir, "--port", String(SCSS_DEV_PORT)],
+      {
+        stdio: "pipe",
+      },
+    );
+    await new Promise((r) => setTimeout(r, 2500));
+
+    try {
+      await page.goto(`http://localhost:${SCSS_DEV_PORT}/`);
+      const panel = page.getByTestId("panel");
+      expect(await panel.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(10, 70, 120)");
+
+      await writeFile(
+        join(dir, "src/style.scss"),
+        `@use "./tokens" as *;
+.panel {
+  color: rgb(20, 100, 40);
+  .label {
+    color: $label-color;
+  }
+}
+`,
+      );
+      await expect
+        .poll(() => panel.evaluate((el) => getComputedStyle(el).color), { timeout: 7000 })
+        .toBe("rgb(20, 100, 40)");
+    } finally {
+      server.kill();
+      await new Promise((r) => server.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev recovers after an SCSS syntax error is fixed", async ({ page }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-scss-recovery-e2e-"));
+    await writeScssFixture(dir);
+    const server = spawn(
+      process.execPath,
+      [ZTS_JS_CLI, "dev", dir, "--port", String(SCSS_RECOVERY_DEV_PORT)],
+      {
+        stdio: "pipe",
+      },
+    );
+    await new Promise((r) => setTimeout(r, 2500));
+
+    try {
+      await page.goto(`http://localhost:${SCSS_RECOVERY_DEV_PORT}/`);
+      const panel = page.getByTestId("panel");
+      expect(await panel.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(10, 70, 120)");
+
+      await writeFile(join(dir, "src/style.scss"), ".panel { color: rgb(1, 1, ");
+      await new Promise((r) => setTimeout(r, 800));
+      await writeFile(
+        join(dir, "src/style.scss"),
+        `@use "./tokens" as *;
+.panel {
+  color: rgb(90, 45, 135);
+  .label {
+    color: $label-color;
+  }
+}
+`,
+      );
+      await expect
+        .poll(() => panel.evaluate((el) => getComputedStyle(el).color), { timeout: 9000 })
+        .toBe("rgb(90, 45, 135)");
     } finally {
       server.kill();
       await new Promise((r) => server.on("close", r));

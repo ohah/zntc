@@ -494,10 +494,15 @@ function createAppDevController(opts, root, configEnv) {
       primaryHref = result.primaryHref;
       return result;
     },
+    injectBundleCssLinks(bundleResult) {
+      injectAppDevBundleCssLinks(outdir, base, bundleResult);
+    },
     isPostcssConfig(absPath) {
       return POSTCSS_CONFIG_NAMES.includes(basename(absPath));
     },
     isCssOnlyChange(absPath) {
+      // CSS Modules 는 class 이름 매핑이 변할 수 있어 JS proxy 도 같이 재생성 필요 →
+      // CSS-only HMR 로 갈음할 수 없고 full reload 가 안전한 기본값.
       if (isCssModuleFile(absPath)) return false;
       if (absPath.endsWith(".css")) return true;
       if (cssDeps.has(absPath)) return true;
@@ -518,7 +523,7 @@ function joinUrl(base, rel) {
   return `${base}${rel}`;
 }
 
-function injectAppDevHmrClient(outdir) {
+function injectIntoDevHtml(outdir, build) {
   const htmlPath = join(outdir, "index.html");
   let html;
   try {
@@ -527,12 +532,32 @@ function injectAppDevHmrClient(outdir) {
     if (err?.code === "ENOENT") return;
     throw err;
   }
-  if (html.includes(APP_DEV_HMR_CLIENT_PATH)) return;
-  const tag = `<script type="module" src="${APP_DEV_HMR_CLIENT_PATH}"></script>`;
+  const tag = build(html);
+  if (!tag) return;
   const next = html.includes("</head>")
     ? html.replace("</head>", `${tag}\n</head>`)
     : html.replace("<script", `${tag}\n<script`);
   writeFileSync(htmlPath, next);
+}
+
+function injectAppDevHmrClient(outdir) {
+  injectIntoDevHtml(outdir, (html) => {
+    if (html.includes(APP_DEV_HMR_CLIENT_PATH)) return null;
+    return `<script type="module" src="${APP_DEV_HMR_CLIENT_PATH}"></script>`;
+  });
+}
+
+function injectAppDevBundleCssLinks(outdir, base, bundleResult) {
+  injectIntoDevHtml(outdir, (html) => {
+    const cssHrefs = [];
+    for (const file of bundleResult?.outputFiles ?? []) {
+      if (!file?.path || !isCssFile(file.path)) continue;
+      const href = joinUrl(base, basename(file.path));
+      if (!html.includes(`href="${href}"`) && !html.includes(`href='${href}'`)) cssHrefs.push(href);
+    }
+    if (cssHrefs.length === 0) return null;
+    return cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join("\n");
+  });
 }
 
 const APP_DEV_HMR_CLIENT = `
@@ -715,59 +740,138 @@ function requireFromAppOrCli(requireFromRoot, specifier) {
   }
 }
 
-function collectCssFiles(dir, skipDir = null) {
+function collectAppFiles(dir, { skipDir = null, predicate = () => true } = {}) {
   if (!existsSync(dir)) return [];
+  const skipResolved = skipDir ? resolve(skipDir) : null;
   const files = [];
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === ".git") continue;
-    const path = join(dir, entry);
-    const stat = statSync(path);
-    if (skipDir && stat.isDirectory() && resolve(path) === resolve(skipDir)) continue;
-    if (stat.isDirectory()) {
-      files.push(...collectCssFiles(path, skipDir));
-    } else if (stat.isFile() && path.endsWith(".css")) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name === ".git") continue;
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (skipResolved && resolve(path) === skipResolved) continue;
+      files.push(...collectAppFiles(path, { skipDir, predicate }));
+    } else if (entry.isFile() && predicate(path)) {
       files.push(path);
     }
   }
   return files;
 }
 
-function collectAppFiles(dir, { skipDir = null, predicate = () => true } = {}) {
-  if (!existsSync(dir)) return [];
-  const files = [];
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === ".git") continue;
-    const path = join(dir, entry);
-    const stat = statSync(path);
-    if (skipDir && stat.isDirectory() && resolve(path) === resolve(skipDir)) continue;
-    if (stat.isDirectory()) {
-      files.push(...collectAppFiles(path, { skipDir, predicate }));
-    } else if (stat.isFile() && predicate(path)) {
-      files.push(path);
-    }
+const isCssFile = (path) => path.endsWith(".css");
+
+const CSS_PREPROCESSOR_EXTENSIONS = new Set([".scss", ".sass"]);
+
+function isCssPreprocessorFile(path) {
+  return CSS_PREPROCESSOR_EXTENSIONS.has(extname(path));
+}
+
+function cssPreprocessorOutputPath(file) {
+  return file.replace(/\.(?:scss|sass)$/i, ".css");
+}
+
+function cssPreprocessorProxyPath(file) {
+  return `${cssPreprocessorOutputPath(file)}.js`;
+}
+
+function loadSassCompiler(root) {
+  const requireFromRoot = createRequire(join(root, "package.json"));
+  return requireFromAppOrCli(requireFromRoot, "sass");
+}
+
+// HTML 은 `<link href="x.scss">` 를 그대로 컴파일된 CSS 로, JS/TS 는 dev `<style>` injection
+// 가 들어간 `.css.js` proxy 로 다른 확장자로 rewrite. CSS Modules 는 HTML 미지원이라
+// 같은 헬퍼를 쓰지 않는다 — 아래 transformCssModules 의 인라인 regex 참고.
+function rewriteSassReferences(sourceFiles) {
+  const pattern = /(["'])([^"']+\.(?:scss|sass))([?#][^"']*)?\1/g;
+  for (const source of sourceFiles) {
+    const input = readFileSync(source, "utf8");
+    const toExt = source.endsWith(".html") ? ".css" : ".css.js";
+    const output = input.replace(
+      pattern,
+      (_match, quote, spec, suffix = "") =>
+        `${quote}${spec.replace(/\.(?:scss|sass)$/i, toExt)}${suffix}${quote}`,
+    );
+    if (output !== input) writeFileSync(source, output);
   }
-  return files;
+}
+
+function isStyleReferenceSource(path) {
+  return /\.(?:html|mjs|cjs|js|jsx|ts|tsx)$/.test(path);
+}
+
+// Dev mode 에서 `<style data-zts-${kind}>` 태그를 head 에 (재)삽입하는 inline 스니펫.
+// `import "./generated.css"` 가 bundler 의 CSS 출력으로 흘러간 뒤 첫 paint 까지의 race
+// 를 줄이고 HMR 시 동일 id 의 tag.textContent 만 swap 하면 끝나도록 하기 위함.
+// `import.meta.env.DEV` 는 production define 으로 false 치환 → 분기 통째 tree-shake.
+function buildDevStyleInjector(kind, file, root, css) {
+  const attr = `data-zts-${kind}`;
+  const cssText = JSON.stringify(css);
+  const idText = JSON.stringify(`zts-${kind}:${relative(root, file)}`);
+  return [
+    'if (import.meta.env.DEV && typeof document !== "undefined") {',
+    `  const css = ${cssText};`,
+    `  const id = ${idText};`,
+    `  let tag = document.querySelector(\`style[${attr}="\${id}"]\`);`,
+    "  if (!tag) {",
+    '    tag = document.createElement("style");',
+    `    tag.setAttribute(${JSON.stringify(attr)}, id);`,
+    "    document.head.appendChild(tag);",
+    "  }",
+    "  tag.textContent = css;",
+    "}",
+  ].join("\n");
+}
+
+function buildCssPreprocessorProxy(root, file, cssPath, css) {
+  const cssImport = `./${basename(cssPath)}`;
+  return [
+    `import ${JSON.stringify(cssImport)};`,
+    buildDevStyleInjector("css-preprocessor", file, root, css),
+    "",
+  ].join("\n");
+}
+
+function transformCssPreprocessors(root, files, sourceFiles, logLevel) {
+  if (files.length === 0) return 0;
+
+  let sass;
+  try {
+    sass = loadSassCompiler(root);
+  } catch (err) {
+    const message =
+      err?.code === "MODULE_NOT_FOUND" || err?.code === "ERR_MODULE_NOT_FOUND"
+        ? "Sass/SCSS support requires the optional `sass` package. Install it with `bun add -d sass` or `npm install -D sass`."
+        : `Failed to load sass: ${err?.message ?? err}`;
+    throw new Error(message);
+  }
+
+  for (const file of files) {
+    const result = sass.compile(file, {
+      style: "expanded",
+      loadPaths: [dirname(file), root],
+      sourceMap: false,
+    });
+    const cssPath = cssPreprocessorOutputPath(file);
+    writeFileSync(cssPath, result.css);
+    writeFileSync(
+      cssPreprocessorProxyPath(file),
+      buildCssPreprocessorProxy(root, file, cssPath, result.css),
+    );
+  }
+
+  rewriteSassReferences(sourceFiles);
+  if (logLevel !== "silent") {
+    console.error(`[sass] processed ${files.length} Sass/SCSS file(s)`);
+  }
+  return files.length;
 }
 
 function isCssModuleFile(path) {
   return basename(path).endsWith(".module.css");
 }
 
-function isAppSourceForCssModuleScan(path) {
-  return /\.(?:mjs|cjs|js|jsx|ts|tsx)$/.test(path);
-}
-
-function hasCssModules(root, outdir) {
-  return (
-    collectAppFiles(root, {
-      skipDir: outdir,
-      predicate: (path) => isCssModuleFile(path),
-    }).length > 0
-  );
-}
-
 function cssModuleGeneratedCssPath(file) {
-  return file.replace(/\.module\.css$/i, ".module.zts.css");
+  return file.replace(/\.module\.css$/, ".module.zts.css");
 }
 
 function cssModuleProxyPath(file) {
@@ -782,6 +886,8 @@ function cssModuleLocalName(root, file, local) {
   return `${fileName}_${safeLocal}__${hash}`;
 }
 
+// 지원 범위: 일반 `.class-name` 토큰의 위치 추출. `:global`/`:local` 슈도, `composes:`
+// 룰, `@keyframes` 이름 scoping 등 고급 CSS Modules 스펙은 미지원.
 function scanCssModuleClassTokens(css) {
   const tokens = [];
   let i = 0;
@@ -926,7 +1032,6 @@ const CSS_MODULE_RESERVED_EXPORTS = new Set([
 
 function buildCssModuleProxy(root, file, generatedCssPath, css, mapping) {
   const cssImport = `./${basename(generatedCssPath)}`;
-  const cssText = JSON.stringify(css);
   const stylesJson = JSON.stringify(mapping);
   const named = Object.keys(mapping)
     .filter(isValidExportName)
@@ -937,25 +1042,17 @@ function buildCssModuleProxy(root, file, generatedCssPath, css, mapping) {
     `const styles = ${stylesJson};`,
     "export default styles;",
     named,
-    'if (import.meta.env.DEV && typeof document !== "undefined") {',
-    `  const css = ${cssText};`,
-    `  const id = ${JSON.stringify(`zts-css-module:${relative(root, file)}`)};`,
-    '  let tag = document.querySelector(`style[data-zts-css-module="${id}"]`);',
-    "  if (!tag) {",
-    '    tag = document.createElement("style");',
-    '    tag.setAttribute("data-zts-css-module", id);',
-    "    document.head.appendChild(tag);",
-    "  }",
-    "  tag.textContent = css;",
-    "}",
+    buildDevStyleInjector("css-module", file, root, css),
     "",
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-function transformCssModules(root, logLevel) {
-  const moduleFiles = collectAppFiles(root, { predicate: (path) => isCssModuleFile(path) });
+// CSS Modules 의 source rewrite 는 HTML 미지원 — `<link href="x.module.css">` 같은 직접
+// 참조는 일반 CSS 로 취급되므로 `.js` 로 rewrite 하면 안 됨. styleSources 에서 .html
+// 만 제외해서 사용한다.
+function transformCssModules(root, moduleFiles, styleSources, logLevel) {
   if (moduleFiles.length === 0) return 0;
 
   for (const file of moduleFiles) {
@@ -973,10 +1070,13 @@ function transformCssModules(root, logLevel) {
     );
   }
 
-  for (const source of collectAppFiles(root, { predicate: isAppSourceForCssModuleScan })) {
+  const pattern = /(["'])([^"']+\.module\.css)([?#][^"']*)?\1/g;
+  for (const source of styleSources) {
+    if (/\.html?$/i.test(source)) continue;
     const input = readFileSync(source, "utf8");
+    if (!input.includes(".module.css")) continue;
     const output = input.replace(
-      /(["'])([^"']+\.module\.css)([?#][^"']*)?\1/g,
+      pattern,
       (_match, quote, spec, suffix = "") => `${quote}${spec}.js${suffix}${quote}`,
     );
     if (output !== input) writeFileSync(source, output);
@@ -1013,7 +1113,7 @@ function logPostcssProcessed(logLevel, count, configFile) {
 async function runPostcssIfConfigured(root, cssDir, skipDir, configEnv, logLevel) {
   const loaded = await loadPostcssConfig(root, configEnv);
   if (!loaded) return;
-  const cssFiles = collectCssFiles(cssDir, skipDir);
+  const cssFiles = collectAppFiles(cssDir, { skipDir, predicate: isCssFile });
   await Promise.all(
     cssFiles.map(async (file) => {
       const input = readFileSync(file, "utf8");
@@ -1042,7 +1142,7 @@ async function runPostcssForAppDev({
   let primaryHref = null;
   const configPath = findPostcssConfig(root);
   if (!configPath) {
-    const first = collectCssFiles(root, outdir)[0];
+    const first = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile })[0];
     if (first) primaryHref = joinUrl(base, relative(root, first));
     return { deps, dirDeps, primaryHref, processed: 0 };
   }
@@ -1052,7 +1152,7 @@ async function runPostcssForAppDev({
   deps.add(resolve(loaded.configFile ?? configPath));
 
   mkdirSync(outdir, { recursive: true });
-  const allCssFiles = collectCssFiles(root, outdir);
+  const allCssFiles = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile });
   // 단일 CSS 파일 변경이면 그 파일만 reprocess. 그 외(첫 빌드, postcss config 변경 등)는 전체.
   const targets =
     changedPath && changedPath.endsWith(".css") && allCssFiles.includes(changedPath)
@@ -1096,11 +1196,39 @@ function collectPostcssMessages(messages, deps, dirDeps) {
 
 async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phase) {
   const configPath = findPostcssConfig(root);
-  const needsCssModules = hasCssModules(root, outdir);
-  if (!configPath && !needsCssModules) return null;
+  // 한 번의 walk 로 모든 transform 의 입력 파일을 수집. 이전엔 hasCssPreprocessors /
+  // hasCssModules / 각 transform 안의 walk + source-rewriter 의 walk 까지 합쳐 5–6번
+  // 트리 traversal 을 수행했음.
+  const sourceFiles = collectAppFiles(root, {
+    skipDir: outdir,
+    predicate: (path) =>
+      isCssPreprocessorFile(path) || isCssModuleFile(path) || isStyleReferenceSource(path),
+  });
+  const preprocessorFiles = sourceFiles.filter(isCssPreprocessorFile);
+  const moduleFiles = sourceFiles.filter(isCssModuleFile);
+  const styleSourceFiles = sourceFiles.filter(isStyleReferenceSource);
+
+  if (!configPath && preprocessorFiles.length === 0 && moduleFiles.length === 0) return null;
   const tempRoot = copyAppRootForPostcss(root, outdir, phase);
+
+  // tempRoot 로 path 변환 — 위 walk 결과는 root 기준이므로 prefix 만 갈아끼우면 충분.
+  const toTemp = (path) => join(tempRoot, relative(root, path));
+  transformCssPreprocessors(
+    tempRoot,
+    preprocessorFiles.map(toTemp),
+    styleSourceFiles.map(toTemp),
+    logLevel,
+  );
   await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel);
-  transformCssModules(tempRoot, logLevel);
+  const generatedModuleFiles = preprocessorFiles
+    .map(cssPreprocessorOutputPath)
+    .filter(isCssModuleFile);
+  transformCssModules(
+    tempRoot,
+    [...moduleFiles, ...generatedModuleFiles].map(toTemp),
+    styleSourceFiles.map(toTemp),
+    logLevel,
+  );
   return tempRoot;
 }
 
@@ -1641,8 +1769,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
   // 번들 모드면 먼저 빌드
   if (opts.bundle && opts.entryPoints.length > 0) {
     opts.outdir = opts.outdir || join(opts.serveDir, ".zts-serve");
-    await runBundle(opts, config);
-    if (appDev) await appDev.afterBundle();
+    const bundleResult = await runBundle(opts, config);
+    if (appDev) {
+      appDev.injectBundleCssLinks(bundleResult);
+      await appDev.afterBundle();
+    }
 
     // watch도 같이
     if (!opts.watch) {
@@ -1814,7 +1945,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
     async function rebuildAppDevFull() {
       const prepared = await appDev.prepare();
       opts.entryPoints = [prepared.entryPath];
-      await runBundle(opts, config);
+      const bundleResult = await runBundle(opts, config);
+      appDev.injectBundleCssLinks(bundleResult);
       await appDev.afterBundle();
       hmr?.broadcast({ type: HMR_MSG.FullReload, timestamp: Date.now() });
       if (opts.logLevel !== "silent") console.error("[serve] rebuilt");
