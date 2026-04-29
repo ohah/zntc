@@ -3564,6 +3564,7 @@ fn parseBuildOptions(
         .dev_mode = getObjectBool(env, opts_obj, "devMode", false),
         .root_dir = root_dir,
         .react_refresh = getObjectBool(env, opts_obj, "reactRefresh", false),
+        .styled_components = getObjectBool(env, opts_obj, "styledComponents", false),
         .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
         // RN 프리셋(bundler.zig의 RN_BOOL_PRESET 단일 소스): platform=react-native이면
         // 사용자가 명시하지 않아도 CLI와 동일하게 auto-enable. worklet_transform 없이는
