@@ -523,7 +523,8 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
     const root = ownStr(env, opts_obj, "root", &owned_strings) orelse ".";
     const outdir = ownStr(env, opts_obj, "outdir", &owned_strings) orelse "dist";
     const entry_html = ownStr(env, opts_obj, "entryHtml", &owned_strings) orelse "index.html";
-    const public_dir = ownStr(env, opts_obj, "publicDir", &owned_strings);
+    const public_dir_value = ownStr(env, opts_obj, "publicDir", &owned_strings);
+    const public_dir: ?[]const u8 = if (getObjectBool(env, opts_obj, "disablePublicDir", false)) null else (public_dir_value orelse "public");
     const base = ownStr(env, opts_obj, "base", &owned_strings) orelse "/";
     const mode = ownStr(env, opts_obj, "mode", &owned_strings) orelse "production";
     const env_dir = ownStr(env, opts_obj, "envDir", &owned_strings);
@@ -548,11 +549,11 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
     }
     defer if (define_entries.len > 0) native_alloc.free(define_entries);
 
-    var result = @import("zts_lib").app.build.buildApp(native_alloc, .{
+    const output_count = @import("zts_lib").app.build.buildApp(native_alloc, .{
         .root = root,
         .outdir = outdir,
         .entry_html = entry_html,
-        .public_dir = public_dir orelse "public",
+        .public_dir = public_dir,
         .base = base,
         .mode = mode,
         .env_dir = env_dir,
@@ -564,7 +565,6 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
     }) catch |err| {
         return throwError(env, @errorName(err));
     };
-    defer result.deinit(native_alloc);
 
     var js_result: c.napi_value = undefined;
     if (c.napi_create_object(env, &js_result) != c.napi_ok) return throwError(env, "failed to create result");
@@ -579,7 +579,7 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
     _ = c.napi_create_array(env, &js_warnings);
     _ = c.napi_set_named_property(env, js_result, "warnings", js_warnings);
     var js_count: c.napi_value = undefined;
-    _ = c.napi_create_uint32(env, @intCast(result.output_count), &js_count);
+    _ = c.napi_create_uint32(env, @intCast(output_count), &js_count);
     _ = c.napi_set_named_property(env, js_result, "outputCount", js_count);
     return js_result;
 }
@@ -618,7 +618,8 @@ fn napiPrepareAppDevSync(env: c.napi_env, info: c.napi_callback_info) callconv(.
     const root = ownStr(env, opts_obj, "root", &owned_strings) orelse ".";
     const outdir = ownStr(env, opts_obj, "outdir", &owned_strings) orelse ".zts-dev";
     const entry_html = ownStr(env, opts_obj, "entryHtml", &owned_strings) orelse "index.html";
-    const public_dir = ownStr(env, opts_obj, "publicDir", &owned_strings);
+    const public_dir_value = ownStr(env, opts_obj, "publicDir", &owned_strings);
+    const public_dir: ?[]const u8 = if (getObjectBool(env, opts_obj, "disablePublicDir", false)) null else (public_dir_value orelse "public");
     const base = ownStr(env, opts_obj, "base", &owned_strings) orelse "/";
     const mode = ownStr(env, opts_obj, "mode", &owned_strings) orelse "development";
     const env_dir = ownStr(env, opts_obj, "envDir", &owned_strings);
@@ -633,7 +634,7 @@ fn napiPrepareAppDevSync(env: c.napi_env, info: c.napi_callback_info) callconv(.
         .root = root,
         .outdir = outdir,
         .entry_html = entry_html,
-        .public_dir = public_dir orelse "public",
+        .public_dir = public_dir,
         .base = base,
         .mode = mode,
         .env_dir = env_dir,

@@ -22,12 +22,6 @@ pub const AppBuildOptions = struct {
     splitting: bool = true,
 };
 
-pub const AppBuildResult = struct {
-    output_count: usize,
-
-    pub fn deinit(_: *AppBuildResult, _: std.mem.Allocator) void {}
-};
-
 pub const AppDevPrepareOptions = struct {
     root: []const u8 = ".",
     outdir: []const u8 = ".zts-dev",
@@ -60,7 +54,7 @@ const HtmlEntry = struct {
     }
 };
 
-pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !AppBuildResult {
+pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
     const root = try std.fs.path.resolve(allocator, &.{opts.root});
     defer allocator.free(root);
     const outdir = try std.fs.path.resolve(allocator, &.{ root, opts.outdir });
@@ -136,16 +130,16 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !AppBuildRe
     var output_count: usize = 0;
     if (result.outputs) |outs| {
         for (outs) |out| {
-            try writeOutput(outdir, out.path, out.contents);
+            try writeOutput(allocator, outdir, out.path, out.contents);
             try addReserved(allocator, &reserved, &reserved_keys, out.path);
             output_count += 1;
         }
     } else {
-        try writeOutput(outdir, "bundle.js", result.output);
+        try writeOutput(allocator, outdir, "bundle.js", result.output);
         try addReserved(allocator, &reserved, &reserved_keys, "bundle.js");
         output_count += 1;
         if (result.sourcemap) |sm| {
-            try writeOutput(outdir, "bundle.js.map", sm);
+            try writeOutput(allocator, outdir, "bundle.js.map", sm);
             try addReserved(allocator, &reserved, &reserved_keys, "bundle.js.map");
             output_count += 1;
         }
@@ -154,7 +148,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !AppBuildRe
     defer emitted_css.deinit(allocator);
     if (result.asset_outputs) |outs| {
         for (outs) |out| {
-            try writeOutput(outdir, out.path, out.contents);
+            try writeOutput(allocator, outdir, out.path, out.contents);
             try addReserved(allocator, &reserved, &reserved_keys, out.path);
             if (std.mem.endsWith(u8, out.path, ".css")) try emitted_css.append(allocator, out.path);
             output_count += 1;
@@ -188,7 +182,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !AppBuildRe
             defer allocator.free(contents);
             const rewritten_css = try rewriteCssUrls(allocator, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
             defer allocator.free(rewritten_css);
-            try writeOutput(outdir, name, rewritten_css);
+            try writeOutput(allocator, outdir, name, rewritten_css);
             try addReserved(allocator, &reserved, &reserved_keys, name);
             const href_parts = splitUrl(href);
             const new_url = try joinBaseUrlWithSuffix(allocator, base, name, href_parts.suffix);
@@ -238,16 +232,14 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !AppBuildRe
     }
 
     if (opts.public_dir) |public_dir| {
-        if (!std.mem.eql(u8, public_dir, "false")) {
-            const public_abs = try std.fs.path.resolve(allocator, &.{ root, public_dir });
-            defer allocator.free(public_abs);
-            try copyPublicDir(allocator, public_abs, outdir, &reserved, &output_count);
-        }
+        const public_abs = try std.fs.path.resolve(allocator, &.{ root, public_dir });
+        defer allocator.free(public_abs);
+        try copyPublicDir(allocator, public_abs, outdir, &reserved, &output_count);
     }
 
-    try writeOutput(outdir, "index.html", html);
+    try writeOutput(allocator, outdir, "index.html", html);
     output_count += 1;
-    return .{ .output_count = output_count };
+    return output_count;
 }
 
 pub fn prepareDev(allocator: std.mem.Allocator, opts: AppDevPrepareOptions) !AppDevPrepareResult {
@@ -314,7 +306,7 @@ pub fn prepareDev(allocator: std.mem.Allocator, opts: AppDevPrepareOptions) !App
             defer allocator.free(contents);
             const rewritten_css = try rewriteCssUrls(allocator, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
             defer allocator.free(rewritten_css);
-            try writeOutput(outdir, name, rewritten_css);
+            try writeOutput(allocator, outdir, name, rewritten_css);
             try addReserved(allocator, &reserved, &reserved_keys, name);
             const href_parts = splitUrl(href);
             const new_url = try joinBaseUrlWithSuffix(allocator, base, name, href_parts.suffix);
@@ -326,32 +318,29 @@ pub fn prepareDev(allocator: std.mem.Allocator, opts: AppDevPrepareOptions) !App
         }
     }
     if (opts.public_dir) |public_dir| {
-        if (!std.mem.eql(u8, public_dir, "false")) {
-            const public_abs = try std.fs.path.resolve(allocator, &.{ root, public_dir });
-            defer allocator.free(public_abs);
-            try copyPublicDir(allocator, public_abs, outdir, &reserved, &output_count);
-        }
+        const public_abs = try std.fs.path.resolve(allocator, &.{ root, public_dir });
+        defer allocator.free(public_abs);
+        try copyPublicDir(allocator, public_abs, outdir, &reserved, &output_count);
     }
-    try writeOutput(outdir, "index.html", html);
+    try writeOutput(allocator, outdir, "index.html", html);
     output_count += 1;
 
     return .{ .entry_path = entry_path, .output_count = output_count };
 }
 
 fn mergeDefines(allocator: std.mem.Allocator, env_defines: []const app_env.DefineEntry, user_defines: []const DefineEntry) ![]DefineEntry {
+    var user_keys = std.StringHashMap(void).init(allocator);
+    defer user_keys.deinit();
+    try user_keys.ensureTotalCapacity(@intCast(user_defines.len));
+    for (user_defines) |entry| user_keys.putAssumeCapacity(entry.key, {});
+
     var list: std.ArrayList(DefineEntry) = .empty;
     errdefer list.deinit(allocator);
+    try list.ensureTotalCapacity(allocator, env_defines.len + user_defines.len);
     for (env_defines) |entry| {
-        var overridden = false;
-        for (user_defines) |user| {
-            if (std.mem.eql(u8, user.key, entry.key)) {
-                overridden = true;
-                break;
-            }
-        }
-        if (!overridden) try list.append(allocator, .{ .key = entry.key, .value = entry.value });
+        if (!user_keys.contains(entry.key)) list.appendAssumeCapacity(.{ .key = entry.key, .value = entry.value });
     }
-    for (user_defines) |entry| try list.append(allocator, entry);
+    for (user_defines) |entry| list.appendAssumeCapacity(entry);
     return try list.toOwnedSlice(allocator);
 }
 
@@ -450,9 +439,9 @@ fn isExternalUrl(value: []const u8) bool {
         std.mem.startsWith(u8, value, "data:");
 }
 
-fn writeOutput(outdir: []const u8, rel_path: []const u8, contents: []const u8) !void {
-    const path = try std.fs.path.join(std.heap.page_allocator, &.{ outdir, rel_path });
-    defer std.heap.page_allocator.free(path);
+fn writeOutput(allocator: std.mem.Allocator, outdir: []const u8, rel_path: []const u8, contents: []const u8) !void {
+    const path = try std.fs.path.join(allocator, &.{ outdir, rel_path });
+    defer allocator.free(path);
     if (std.fs.path.dirname(path)) |dir| try std.fs.cwd().makePath(dir);
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
@@ -561,7 +550,7 @@ fn copyAssetFile(
     if (!reserved.contains(name)) {
         const contents = try std.fs.cwd().readFileAlloc(allocator, asset_path, 100 * 1024 * 1024);
         defer allocator.free(contents);
-        try writeOutput(outdir, name, contents);
+        try writeOutput(allocator, outdir, name, contents);
         try addReserved(allocator, reserved, reserved_keys, name);
         output_count.* += 1;
     }
@@ -598,12 +587,13 @@ fn rewriteCssUrls(
             try out.appendSlice(allocator, css[start .. close + 1]);
         } else {
             const parts = splitUrl(raw);
-            const rel_for_url = if (parts.path.len > 0 and parts.path[0] == '/') parts.path[1..] else blk: {
+            const root_absolute = parts.path.len > 0 and parts.path[0] == '/';
+            const rel_for_url = if (root_absolute) parts.path[1..] else blk: {
                 const asset_path = try std.fs.path.resolve(allocator, &.{ style_dir, parts.path });
                 defer allocator.free(asset_path);
                 break :blk try copyAssetFile(allocator, asset_path, outdir, reserved, reserved_keys, output_count);
             };
-            defer if (!(parts.path.len > 0 and parts.path[0] == '/')) allocator.free(rel_for_url);
+            defer if (!root_absolute) allocator.free(rel_for_url);
             const rewritten = try joinBaseUrlWithSuffix(allocator, base, rel_for_url, parts.suffix);
             defer allocator.free(rewritten);
             try out.appendSlice(allocator, "url(\"");
@@ -655,7 +645,7 @@ fn copyPublicDirInner(
                 defer allocator.free(src);
                 const contents = try std.fs.cwd().readFileAlloc(allocator, src, 100 * 1024 * 1024);
                 defer allocator.free(contents);
-                try writeOutput(outdir, rel, contents);
+                try writeOutput(allocator, outdir, rel, contents);
                 output_count.* += 1;
             },
             else => {},
@@ -675,9 +665,8 @@ test "app build emits rewritten html and public files" {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
-    var result = try buildApp(std.testing.allocator, .{ .root = root, .base = "/app/" });
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expect(result.output_count >= 3);
+    const output_count = try buildApp(std.testing.allocator, .{ .root = root, .base = "/app/" });
+    try std.testing.expect(output_count >= 3);
 
     const html_path = try std.fs.path.join(std.testing.allocator, &.{ root, "dist", "index.html" });
     defer std.testing.allocator.free(html_path);
@@ -725,8 +714,7 @@ test "app build rewrites stylesheet url assets and relative html assets" {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
-    var result = try buildApp(std.testing.allocator, .{ .root = root, .base = "/app/", .public_dir = null });
-    defer result.deinit(std.testing.allocator);
+    _ = try buildApp(std.testing.allocator, .{ .root = root, .base = "/app/", .public_dir = null });
 
     const style_path = try std.fs.path.join(std.testing.allocator, &.{ root, "dist", "style.css" });
     defer std.testing.allocator.free(style_path);

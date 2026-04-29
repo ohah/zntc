@@ -1307,17 +1307,19 @@ export function buildSync(options: BuildOptions): BuildResult {
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  const { publicDir, ...rest } = options;
   return native.buildAppSync({
-    ...options,
-    publicDir: options.publicDir === false ? "false" : options.publicDir,
+    ...rest,
+    ...(publicDir === false ? { disablePublicDir: true } : publicDir !== undefined ? { publicDir } : {}),
   });
 }
 
 export function prepareAppDevSync(options: AppDevPrepareOptions = {}): AppDevPrepareResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  const { publicDir, ...rest } = options;
   return native.prepareAppDevSync({
-    ...options,
-    publicDir: options.publicDir === false ? "false" : options.publicDir,
+    ...rest,
+    ...(publicDir === false ? { disablePublicDir: true } : publicDir !== undefined ? { publicDir } : {}),
   });
 }
 
