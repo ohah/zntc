@@ -2917,16 +2917,20 @@ pub const Transformer = struct {
     /// variable_declarator: extra_data = [name, type_ann, init]
     fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
         const e = node.data.extra;
-        const name_idx = self.readNodeIdx(e, 0);
-        const new_name = try self.visitNode(name_idx);
+        const new_name = try self.visitNode(self.readNodeIdx(e, 0));
         var new_init = try self.visitNode(self.readNodeIdx(e, 2));
-        // styled-components: post-visit 로 init 이 styled tagged template 이면 tag 를
-        // `.withConfig({displayName})` 로 wrap. binding name 은 변환 후에도 변동 없음.
-        if (!new_init.isNone() and !name_idx.isNone() and self.options.styled_components) {
-            const name_node = self.ast.getNode(name_idx);
-            if (name_node.tag == .binding_identifier or name_node.tag == .identifier_reference) {
-                const var_name = self.ast.getText(name_node.data.string_ref);
-                new_init = try styled_components_mod.maybeWrapStyledTag(self, new_init, var_name);
+        // styled-components: tag 를 `.withConfig({displayName})` 로 wrap. fast-path 로 1) 옵션,
+        // 2) binding 감지, 3) init.tag == tagged_template_expression 을 사전 거른 뒤에만
+        // 본 helper 호출. var_name 은 block-scoping rename 후 안전하도록 new_name 에서 읽음.
+        if (self.options.styled_components and
+            self.plugins.styled_components.default_binding != null and
+            !new_init.isNone() and !new_name.isNone() and
+            self.ast.getNode(new_init).tag == .tagged_template_expression)
+        {
+            const new_name_node = self.ast.getNode(new_name);
+            if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
+                const var_name = self.ast.getText(new_name_node.data.string_ref);
+                new_init = try styled_components_mod.wrapStyledTag(self, new_init, var_name);
             }
         }
         const none = @intFromEnum(NodeIndex.none);

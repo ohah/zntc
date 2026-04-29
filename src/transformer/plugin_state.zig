@@ -69,6 +69,11 @@ pub const StyledComponentsState = struct {
     /// alias 가 있으면 그 이름 (예: `import s from "styled-components"` → "s").
     /// import 가 없으면 null — 이후 모든 wrap 이 no-op.
     default_binding: ?[]const u8 = null,
+
+    /// `.withConfig({...})` 래핑 시 매 컴포넌트마다 동일 문자열을 string_table 에 추가하는
+    /// 비용을 피하기 위한 lazy 캐시. 첫 wrap 시점에 채워짐.
+    with_config_span: ?Span = null,
+    display_name_span: ?Span = null,
 };
 
 pub const PluginState = struct {
