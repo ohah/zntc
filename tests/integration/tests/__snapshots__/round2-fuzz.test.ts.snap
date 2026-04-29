@@ -1,0 +1,102 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`Round 2 fuzz 01-namespace-merge.ts 1`] = `"1 2 11 8"`;
+
+exports[`Round 2 fuzz 02-namespace-nested.ts 1`] = `"5 10 105"`;
+
+exports[`Round 2 fuzz 03-abstract-override.ts 1`] = `"common:impl"`;
+
+exports[`Round 2 fuzz 04-using.ts 1`] = `"inside,disposed"`;
+
+exports[`Round 2 fuzz 05-await-using.ts 1`] = `"inside,async-disposed"`;
+
+exports[`Round 2 fuzz 06-iterator-helpers.ts 1`] = `"[ 10, 30, 50 ]"`;
+
+exports[`Round 2 fuzz 07-set-methods.ts 1`] = `
+"3,4
+1,2,3,4,5,6
+1,2"
+`;
+
+exports[`Round 2 fuzz 08-regex-v.ts 1`] = `"true false true"`;
+
+exports[`Round 2 fuzz 09-import-meta-url.ts 1`] = `"string true"`;
+
+exports[`Round 2 fuzz 10-pure-annotation.ts 1`] = `
+"called
+done"
+`;
+
+exports[`Round 2 fuzz 11-precedence-edge.ts 1`] = `
+"0
+512
+-8
+string
+true false
+7 9"
+`;
+
+exports[`Round 2 fuzz 12-assignment-target.ts 1`] = `"2,1,3 {"a":1,"b":10,"d":99}"`;
+
+exports[`Round 2 fuzz 13-private-brand.ts 1`] = `"true false false"`;
+
+exports[`Round 2 fuzz 14-static-block-order.ts 1`] = `"A1,Ax,A2 1"`;
+
+exports[`Round 2 fuzz 15-async-finally.ts 1`] = `"1 2"`;
+
+exports[`Round 2 fuzz 16-gen-return-finally.ts 1`] = `
+"cleanup
+1 99 true"
+`;
+
+exports[`Round 2 fuzz 17-string-codepoint.ts 1`] = `"7 5 1f600"`;
+
+exports[`Round 2 fuzz 18-template-nested.ts 1`] = `"123 a|b|c##1,2"`;
+
+exports[`Round 2 fuzz 19-numeric-edge.ts 1`] = `
+"1e+21 1e-7 0.30000000000000004 5e-324 9007199254740992 4294967295
+15 10 1000000 1.5e-10"
+`;
+
+exports[`Round 2 fuzz 20-sequence-comma.ts 1`] = `"3 [ 5, 7 ] 12"`;
+
+exports[`Round 2 fuzz 21-throw-finally.ts 1`] = `"b"`;
+
+exports[`Round 2 fuzz 22-optional-chain-call.ts 1`] = `
+"42
+undefined
+undefined
+42.00"
+`;
+
+exports[`Round 2 fuzz 23-class-fields-init-order.ts 1`] = `"1 2 101"`;
+
+exports[`Round 2 fuzz 24-arguments-arrow.ts 1`] = `"[ 3, 2 ]"`;
+
+exports[`Round 2 fuzz 25-tagged-raw.ts 1`] = `
+"a
+béc	d##a\\nb\\u00E9c\\td"
+`;
+
+exports[`Round 2 fuzz 26-symbol-iter.ts 1`] = `"1,2,3,4,5"`;
+
+exports[`Round 2 fuzz 27-symbol-asynciter.ts 1`] = `"6"`;
+
+exports[`Round 2 fuzz 28-getter-setter-symbol.ts 1`] = `"8 s:5,g,s:8,g"`;
+
+exports[`Round 2 fuzz 29-export-equals.ts 1`] = `""`;
+
+exports[`Round 2 fuzz 30-import-equals.ts 1`] = `"function"`;
+
+exports[`Round 2 fuzz 31-decorator-stage3.ts 1`] = `"[greet]hi x"`;
+
+exports[`Round 2 fuzz 32-decorator-accessor.ts 1`] = `"0 1 2"`;
+
+exports[`Round 2 fuzz 33-nested-destruct.ts 1`] = `"1 99"`;
+
+exports[`Round 2 fuzz 34-spread-call-rest.ts 1`] = `
+"21
+10 30,40,50"
+`;
+
+exports[`Round 2 fuzz 35-strict-mode.ts 1`] = `"TypeError"`;

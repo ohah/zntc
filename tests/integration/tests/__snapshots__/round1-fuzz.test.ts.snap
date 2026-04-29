@@ -1,0 +1,112 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`Round 1 fuzz 01-const-enum.ts 1`] = `"1 2 B"`;
+
+exports[`Round 1 fuzz 02-enum-reverse.ts 1`] = `"0 5 6 A B C"`;
+
+exports[`Round 1 fuzz 03-enum-str.ts 1`] = `"x y undefined undefined"`;
+
+exports[`Round 1 fuzz 04-namespace-merge.ts 1`] = `"1 2"`;
+
+exports[`Round 1 fuzz 05-param-props.ts 1`] = `"1/a/true"`;
+
+exports[`Round 1 fuzz 06-private-fields.ts 1`] = `"3 2"`;
+
+exports[`Round 1 fuzz 07-static-block.ts 1`] = `"1 11"`;
+
+exports[`Round 1 fuzz 08-getter-setter.ts 1`] = `"7 set:5,get,set:7,get"`;
+
+exports[`Round 1 fuzz 09-super-arrow.ts 1`] = `"A/B"`;
+
+exports[`Round 1 fuzz 10-logical-assign.ts 1`] = `
+"1 2 undefined
+10"
+`;
+
+exports[`Round 1 fuzz 11-optional-chain.ts 1`] = `
+"42
+undefined
+42
+undefined"
+`;
+
+exports[`Round 1 fuzz 12-tagged-template.ts 1`] = `
+"a
+b|c	d|e##a\\nb|c\\td|e##1,2"
+`;
+
+exports[`Round 1 fuzz 13-regex-named.ts 1`] = `"2026 04 0"`;
+
+exports[`Round 1 fuzz 14-bigint.ts 1`] = `"9007199254740994n 18446744073709551616n 340282366920938463463374607431768211456n bigint"`;
+
+exports[`Round 1 fuzz 15-spread-order.ts 1`] = `
+"{"a":99,"b":2,"c":3} b,a
+1,2,3,4,5"
+`;
+
+exports[`Round 1 fuzz 16-destructure.ts 1`] = `
+"10 5
+99
+{"a":1,"b":2}"
+`;
+
+exports[`Round 1 fuzz 17-for-of-let.ts 1`] = `
+"0,1,2
+a,b,c"
+`;
+
+exports[`Round 1 fuzz 18-generator.ts 1`] = `"1,2,3,4,"`;
+
+exports[`Round 1 fuzz 19-async-iter.ts 1`] = `"6"`;
+
+exports[`Round 1 fuzz 20-precedence.ts 1`] = `
+"512
+-8
+5 5
+stringy
+a12 3a"
+`;
+
+exports[`Round 1 fuzz 21-tdz.ts 1`] = `
+"TDZ: ReferenceError
+1 2 3"
+`;
+
+exports[`Round 1 fuzz 22-class-expr.ts 1`] = `"Bar-static Bar"`;
+
+exports[`Round 1 fuzz 23-computed-key.ts 1`] = `"1 2 0,1,2"`;
+
+exports[`Round 1 fuzz 24-jsx.tsx 1`] = `"{"type":"Fragment","props":{},"children":[{"type":"div","props":{"className":"a","id":"x"},"children":["hello ",3]},{"type":"span","props":{},"children":[]}]}"`;
+
+exports[`Round 1 fuzz 25-string-escape.ts 1`] = `"14 14 "a\\tb\\nc\\\\d\\"eéf😀g" "tpl x \\\\y \\r raw""`;
+
+exports[`Round 1 fuzz 26-numeric.ts 1`] = `
+"0.30000000000000004 1e+21 255 15 5 1000000 0.5 5 150
+9007199254740991 5e-324"
+`;
+
+exports[`Round 1 fuzz 27-asi.ts 1`] = `
+"undefined
+1
+2
+12"
+`;
+
+exports[`Round 1 fuzz 28-try-catch.ts 1`] = `
+"caught-no-binding
+string raw"
+`;
+
+exports[`Round 1 fuzz 29-default-export-fn.ts 1`] = `""`;
+
+exports[`Round 1 fuzz 30-import-meta.ts 1`] = `"object url-string"`;
+
+exports[`Round 1 fuzz 31-labeled.ts 1`] = `"0,1,2,10,20,21"`;
+
+exports[`Round 1 fuzz 32-satisfies.ts 1`] = `"2 TWO"`;
+
+exports[`Round 1 fuzz 33-as-const.ts 1`] = `"1,2,3 x 5"`;
+
+exports[`Round 1 fuzz 34-decorator-legacy.ts 1`] = `"undefined hi"`;
+
+exports[`Round 1 fuzz 35-arrow-vs-paren.ts 1`] = `"6 3 6 z"`;
