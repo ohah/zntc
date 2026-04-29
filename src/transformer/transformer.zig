@@ -1028,6 +1028,15 @@ pub const Transformer = struct {
                         }
                     }
                 }
+                // styled-components: `Component = styled.div\`...\`` 도 wrap 대상.
+                // visitBinaryNode 결과의 right 가 styled tagged template 이면 LHS identifier
+                // 이름을 displayName 으로 사용해 wrap. =, +=, ||= 등 모든 연산자에서 동작
+                // (의미상 = 만 styled component 할당이지만 가드 추가 비용 vs 자연스러운 케이스
+                // 커버 trade-off — 비-= 연산자 + tagged template 조합은 거의 없음).
+                if (self.options.styled_components and self.plugins.styled_components.default_binding != null) {
+                    const new_idx = try self.visitBinaryNode(idx);
+                    return styled_components_mod.maybeWrapAssignment(self, new_idx);
+                }
                 return self.visitBinaryNode(idx);
             },
             .while_statement,

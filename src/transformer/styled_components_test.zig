@@ -212,6 +212,37 @@ test "styled-components: object property string-key { \"My Comp\": ... } 도 인
     try expectDisplayName(r.output, "MyComp");
 }
 
+test "styled-components: assignment `Component = styled.div\\`...\\`` 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\let Component;
+        \\Component = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Component");
+}
+
+test "styled-components: assignment 의 LHS 가 member expression 이면 skip" {
+    // obj.field = styled.div`` — 정적 이름 추출 불가 (member 의 어떤 이름을 쓸지 모호) → skip.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const obj = {};
+        \\obj.field = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+}
+
 test "styled-components: object property string-key 의 escape 는 보수적으로 reject" {
     // plainStringLiteralValue 는 raw vs decoded 시맨틱 차이를 피하려고 backslash 포함 문자열을
     // 거절. 후속 PR 에서 decode 후 매칭 도입 시 이 케이스를 변환하도록 변경 가능.

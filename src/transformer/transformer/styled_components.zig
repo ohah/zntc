@@ -137,6 +137,34 @@ pub fn objectPropertyKeyName(self: *Transformer, key_idx: NodeIndex) ?[]const u8
     return name;
 }
 
+/// `Component = styled.div\`...\`` 형태 처리. visitBinaryNode 의 결과 (assignment_expression)
+/// 를 받아 right 가 styled tagged template 이면 LHS identifier 이름으로 wrap.
+/// LHS 가 member / computed / destructuring 이면 skip — 정적 이름 추출 불가.
+pub fn maybeWrapAssignment(self: *Transformer, assignment_idx: NodeIndex) Error!NodeIndex {
+    if (assignment_idx.isNone()) return assignment_idx;
+    const node = self.ast.getNode(assignment_idx);
+    if (node.tag != .assignment_expression) return assignment_idx;
+    const left = node.data.binary.left;
+    const right = node.data.binary.right;
+    if (left.isNone() or right.isNone()) return assignment_idx;
+    if (self.ast.getNode(right).tag != .tagged_template_expression) return assignment_idx;
+    const left_node = self.ast.getNode(left);
+    // 일반 assignment: LHS 가 assignment_target_identifier (parser 가 destructuring 컨텍스트
+    // 외에서도 단순 식별자 LHS 를 이 태그로 변환).
+    // identifier_reference 경로는 일부 변환 후 노드 (block-scope rename 등) 대응.
+    if (left_node.tag != .assignment_target_identifier and left_node.tag != .identifier_reference) return assignment_idx;
+    const var_name = self.ast.getText(left_node.data.string_ref);
+    if (var_name.len == 0) return assignment_idx;
+
+    const new_right = try wrapStyledTag(self, right, var_name);
+    if (new_right == right) return assignment_idx;
+    return self.ast.addNode(.{
+        .tag = .assignment_expression,
+        .span = node.span,
+        .data = .{ .binary = .{ .left = left, .right = new_right, .flags = node.data.binary.flags } },
+    });
+}
+
 /// `visitVariableDeclarator` 의 post-visit hook. caller 가 init.tag 를 사전 검사한 뒤
 /// tagged_template_expression 일 때만 호출 — 옵션 비활성 / binding 미감지 / 다른 tag 면
 /// caller 가 미리 거른다.
