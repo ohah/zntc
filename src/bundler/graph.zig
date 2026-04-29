@@ -473,6 +473,8 @@ pub const ModuleGraph = struct {
         var in_stack = try std.DynamicBitSet.initEmpty(self.allocator, count);
         defer in_stack.deinit();
 
+        var entry_indices: std.ArrayList(ModuleIndex) = .empty;
+        defer entry_indices.deinit(self.allocator);
         for (entry_points) |entry_path| {
             if (self.path_to_module.get(entry_path)) |idx| {
                 const ei = @intFromEnum(idx);
@@ -480,8 +482,13 @@ pub const ModuleGraph = struct {
                     self.modules.at(ei).is_entry_point = true;
                 }
                 try self.dfs(idx, &visited, &in_stack);
+                try entry_indices.append(self.allocator, idx);
             }
         }
+
+        // dfs 는 dependencies 만 따라가서 exec_index/TLA 분석 정확. dynamic edge 통한
+        // static cycle 멤버 marking 은 별도 pass (#2211).
+        try self.markCyclesViaDynamic(entry_indices.items);
 
         self.promoteExportsKinds();
         self.registerWrapperSymbols();
@@ -2242,7 +2249,10 @@ pub const ModuleGraph = struct {
             // 후처리를 먼저 push (LIFO이므로 나중에 실행)
             try stack.append(self.allocator, .{ .idx = entry.idx, .post = true });
 
-            // 의존성을 역순으로 push (원래 순서대로 방문하기 위해)
+            // 의존성을 역순으로 push (원래 순서대로 방문하기 위해).
+            // dynamic_imports 는 *exec_index/TLA 전파 분석용 dfs* 에선 따라가지
+            // 않는다 (lazy 라 평가 순서/TLA 전파에 무관). cycle marking 은 별도
+            // pass `markCyclesViaDynamic` 에서 dynamic edge 도 같이 본다 (#2211).
             const deps = self.modules.at(entry.idx).dependencies.items;
             var j: usize = deps.len;
             while (j > 0) {
@@ -2250,6 +2260,81 @@ pub const ModuleGraph = struct {
                 const dep = @intFromEnum(deps[j]);
                 if (dep < self.modules.count() and !visited.isSet(dep)) {
                     try stack.append(self.allocator, .{ .idx = dep, .post = false });
+                }
+            }
+        }
+    }
+
+    /// dynamic edge 도 따라가는 별도 cycle marking pass (#2211).
+    /// 기본 dfs 는 `dependencies` 만 follow 해서 exec_index/TLA 전파 분석 정확성을
+    /// 유지. 그러나 dynamic target 이 다른 모듈과 *static cycle* 이면 cycle 멤버
+    /// marking 이 필요 — `dependencies + dynamic_imports` 양쪽 따라가는 별도 dfs 로
+    /// cycle_group 만 부여한다 (exec_index 는 건드리지 않음).
+    fn markCyclesViaDynamic(self: *ModuleGraph, entry_indices: []const ModuleIndex) !void {
+        const count = self.modules.count();
+        if (count == 0) return;
+
+        var visited = try std.DynamicBitSet.initEmpty(self.allocator, count);
+        defer visited.deinit();
+        var in_stack = try std.DynamicBitSet.initEmpty(self.allocator, count);
+        defer in_stack.deinit();
+
+        const DfsEntry = struct { idx: u32, post: bool };
+        var stack: std.ArrayList(DfsEntry) = .empty;
+        defer stack.deinit(self.allocator);
+
+        for (entry_indices) |entry_idx| {
+            const start = @intFromEnum(entry_idx);
+            if (start >= count) continue;
+            if (visited.isSet(start)) continue;
+            try stack.append(self.allocator, .{ .idx = start, .post = false });
+
+            while (stack.items.len > 0) {
+                const entry = stack.pop() orelse break;
+
+                if (entry.post) {
+                    in_stack.unset(entry.idx);
+                    visited.set(entry.idx);
+                    continue;
+                }
+
+                if (visited.isSet(entry.idx)) continue;
+
+                if (in_stack.isSet(entry.idx)) {
+                    // back-edge — cycle 의 모든 stack 멤버에 같은 cycle_group 부여.
+                    // 기존 (정적 dfs) 가 부여한 cycle_group 이 있으면 그 위에 덮어쓰지
+                    // 않고 새로 dynamic-only cycle 만 카운터 증가.
+                    self.cycle_counter += 1;
+                    var k = stack.items.len;
+                    while (k > 0) {
+                        k -= 1;
+                        const e = stack.items[k];
+                        if (!e.post) continue;
+                        if (self.modules.at(e.idx).cycle_group == 0) {
+                            self.modules.at(e.idx).cycle_group = self.cycle_counter;
+                        }
+                        if (e.idx == entry.idx) break;
+                    }
+                    if (self.modules.at(entry.idx).cycle_group == 0) {
+                        self.modules.at(entry.idx).cycle_group = self.cycle_counter;
+                    }
+                    continue;
+                }
+
+                in_stack.set(entry.idx);
+                try stack.append(self.allocator, .{ .idx = entry.idx, .post = true });
+
+                const cur_mod = self.modules.at(entry.idx);
+                const dep_groups = [_][]const ModuleIndex{ cur_mod.dependencies.items, cur_mod.dynamic_imports.items };
+                for (dep_groups) |group| {
+                    var j: usize = group.len;
+                    while (j > 0) {
+                        j -= 1;
+                        const dep = @intFromEnum(group[j]);
+                        if (dep < count and !visited.isSet(dep)) {
+                            try stack.append(self.allocator, .{ .idx = dep, .post = false });
+                        }
+                    }
                 }
             }
         }

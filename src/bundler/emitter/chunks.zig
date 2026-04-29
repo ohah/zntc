@@ -702,6 +702,65 @@ fn rewriteDynamicImports(
 /// `import("specifier")` 호출 전체를 미리 만들어진 expression 으로 교체.
 /// 매칭 실패 시 null. codegen 출력 형태 (`import("./x")`) 만 처리 — import attributes
 /// 같은 second-arg 폼은 미지원 (현재 codegen 이 emit 하지 않음).
+/// Single-file output 용 dynamic import 재작성 (chunk_graph 없음 가정).
+/// `emit` (라인 258) 가 사용하는 single-file path 는 chunk 분리 없이 모든 모듈을
+/// 한 파일에 합치므로 *동일 bundle = same_chunk* 라는 단순 가정만 필요. dynamic
+/// target 이 `wrap_kind = .esm` 으로 promote 됐으면 `Promise.resolve().then(...)`
+/// 패턴으로 호출 재작성. target 이 미 promote 면 조용히 그대로 둠 — 외부 sibling
+/// 파일 fallback 으로 동작 (해당 케이스는 #2211 follow-up 으로 별도 처리).
+pub fn rewriteDynamicImportsSingleFile(
+    allocator: std.mem.Allocator,
+    code: []const u8,
+    module: *const Module,
+    graph: *const ModuleGraph,
+) ![]const u8 {
+    if (module.import_records.len == 0) return try allocator.dupe(u8, code);
+    if (!graph.inline_dynamic_imports) return try allocator.dupe(u8, code);
+
+    var has_dynamic = false;
+    for (module.import_records) |rec| {
+        if (rec.kind == .dynamic_import and rec.resolved != .none) {
+            has_dynamic = true;
+            break;
+        }
+    }
+    if (!has_dynamic) return try allocator.dupe(u8, code);
+
+    var result = try allocator.dupe(u8, code);
+    errdefer allocator.free(result);
+
+    for (module.import_records) |rec| {
+        if (rec.kind != .dynamic_import) continue;
+        if (rec.resolved == .none) continue;
+
+        const target_mod = graph.getModule(rec.resolved) orelse continue;
+        const replacement_expr = switch (target_mod.wrap_kind) {
+            .esm => blk: {
+                const init_name = try target_mod.allocInitName(allocator);
+                defer allocator.free(init_name);
+                const exports_name = try target_mod.allocExportsName(allocator);
+                defer allocator.free(exports_name);
+                break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>({s}(),{s}))", .{ init_name, exports_name });
+            },
+            .cjs => blk: {
+                const require_name = try target_mod.allocRequireName(allocator);
+                defer allocator.free(require_name);
+                break :blk try std.fmt.allocPrint(allocator, "Promise.resolve().then(()=>{s}())", .{require_name});
+            },
+            .none => continue,
+        };
+        defer allocator.free(replacement_expr);
+
+        const new_result_opt = try rewriteImportCallToWrapper(allocator, result, rec.specifier, replacement_expr);
+        if (new_result_opt) |new_result| {
+            allocator.free(result);
+            result = new_result;
+        }
+    }
+
+    return result;
+}
+
 fn rewriteImportCallToWrapper(
     allocator: std.mem.Allocator,
     code: []const u8,
