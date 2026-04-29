@@ -675,7 +675,6 @@ pub const Transformer = struct {
             root = try self.appendRefreshRegistrations(root);
         }
 
-
         self.ast.transformed_root = root;
         self.ast.assertInvariants();
         return root;
