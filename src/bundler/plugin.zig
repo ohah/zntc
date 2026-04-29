@@ -18,6 +18,14 @@ const ast_plugin_mod = @import("../transformer/ast_plugin.zig");
 pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
 pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
 
+/// `Plugin.load` 가 반환할 수 있는 결과 — esbuild `OnLoadResult`, Rollup `{ code, ... }` 호환.
+/// `loader` 가 non-null 이면 graph 가 그 값으로 module loader override (확장자 추론 무시).
+/// (#2157)
+pub const LoadResult = struct {
+    contents: []const u8,
+    loader: ?types.Loader = null,
+};
+
 /// 플러그인 훅에서 반환할 수 있는 에러 타입.
 /// anyerror를 쓰지 않고 specific error set으로 제한하여
 /// 호출부에서 switch로 명시적 처리 가능.
@@ -89,7 +97,10 @@ pub const Plugin = struct {
 
     /// 모듈 내용 로딩 (virtual module, 커스텀 로더).
     /// non-null 반환 시 파일 시스템 읽기를 건너뜀.
-    load: ?*const fn (ctx: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) PluginError!?[]const u8 = null,
+    /// `LoadResult.loader` 를 non-null 로 반환하면 graph 가 module loader 를 그 값으로 override
+    /// (확장자 기반 추론 무시) — esbuild `onLoad` callback 의 `loader: 'text' | 'binary' | ...`
+    /// 와 동일 의미. (#2157)
+    load: ?*const fn (ctx: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) PluginError!?LoadResult = null,
 
     /// 코드 변환 (codegen 직후, CJS 래핑 전).
     /// non-null 반환 시 원본 코드를 반환값으로 교체.
@@ -251,7 +262,7 @@ pub const PluginRunner = struct {
         self: *const PluginRunner,
         path: []const u8,
         allocator: std.mem.Allocator,
-    ) PluginError!?[]const u8 {
+    ) PluginError!?LoadResult {
         for (self.plugins) |p| {
             if (p.load) |hook| {
                 if (try hook(p.context, path, allocator)) |result| {

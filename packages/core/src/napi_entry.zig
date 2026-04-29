@@ -223,6 +223,27 @@ fn getObjectString(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc
     return getStringArg(env, val, alloc);
 }
 
+/// `getObjectString` 와 동일하지만 빈 문자열도 valid 로 받음 (zero-length slice 반환).
+/// plugin onLoad 의 `contents: ""` (의도적 빈 module — `loader: 'empty'` 등) 케이스 보존.
+fn getObjectStringAllowEmpty(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const u8 {
+    const val = getNamedProperty(env, obj, key) orelse return null;
+    var ty: c.napi_valuetype = undefined;
+    if (c.napi_typeof(env, val, &ty) != c.napi_ok or ty != c.napi_string) return null;
+    var len: usize = 0;
+    if (c.napi_get_value_string_utf8(env, val, null, 0, &len) != c.napi_ok) return null;
+    if (len == 0) {
+        const empty = alloc.alloc(u8, 0) catch return null;
+        return empty;
+    }
+    const buf = alloc.alloc(u8, len + 1) catch return null;
+    var actual: usize = 0;
+    if (c.napi_get_value_string_utf8(env, val, buf.ptr, len + 1, &actual) != c.napi_ok) {
+        alloc.free(buf);
+        return null;
+    }
+    return buf[0..actual];
+}
+
 fn getObjectStringArray(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc: std.mem.Allocator) ?[]const []const u8 {
     const val = getNamedProperty(env, obj, key) orelse return null;
     return parseStringArray(env, val, alloc);
@@ -642,6 +663,9 @@ const NapiPlugin = struct {
         /// JS plugin 의 onResolveContext 가 반환한 `{ context: string[] }` 의 string[] 부분.
         /// outer slice = native_alloc 소유 (graph 가 free), inner string = JS lifetime.
         context_matches: ?[]const []const u8 = null,
+        /// onLoad callback 의 `loader: 'text' | 'binary' | 'dataurl' | 'base64' | ...`. (#2157)
+        /// Loader.fromString 으로 변환된 결과. null = override 안 함.
+        loader_override: ?bundler_mod.types.Loader = null,
     };
 
     /// Per-call 요청 컨텍스트. 여러 워커 스레드가 동시에 호출해도 안전.
@@ -671,7 +695,8 @@ const NapiPlugin = struct {
         }
         resp.is_external = getObjectBool(env, js_result, "external", false);
         resp.is_disabled = getObjectBool(env, js_result, "disabled", false);
-        if (getObjectString(env, js_result, "contents", native_alloc)) |contents| {
+        // plugin onLoad 의 `contents` 는 빈 string 도 의도적 (loader: 'empty' 등) — allow empty.
+        if (getObjectStringAllowEmpty(env, js_result, "contents", native_alloc)) |contents| {
             resp.code = contents;
         }
         if (resp.code == null) {
@@ -689,6 +714,14 @@ const NapiPlugin = struct {
         // require.context 응답 파싱: { context: string[] } (#1579 Phase 2.5)
         if (getNamedProperty(env, js_result, "context")) |ctx_val| {
             resp.context_matches = parseStringArray(env, ctx_val, native_alloc);
+        }
+        // onLoad: loader override (#2157). resp.code 가 있을 때만 의미 있어 gate — onResolve /
+        // transform / lifecycle 응답에서 불필요한 NAPI getNamedProperty 회피.
+        if (resp.code != null) {
+            if (getObjectString(env, js_result, "loader", native_alloc)) |loader_str| {
+                defer native_alloc.free(loader_str);
+                resp.loader_override = bundler_mod.types.Loader.fromString(loader_str);
+            }
         }
         return resp;
     }
@@ -883,9 +916,17 @@ const NapiPlugin = struct {
         return null;
     }
 
-    fn pluginLoad(ctx: ?*anyopaque, path: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
+    fn pluginLoad(ctx: ?*anyopaque, path: []const u8, alloc: std.mem.Allocator) PluginError!?plugin_mod.LoadResult {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
-        return self.callCodeHook(.load, path, null, alloc);
+        const resp = self.callHook(.load, path, null) orelse return null;
+        defer if (resp.resolved_path) |p| native_alloc.free(p);
+        const result_code = resp.code orelse return null;
+        const contents = alloc.dupe(u8, result_code) catch {
+            native_alloc.free(result_code);
+            return error.OutOfMemory;
+        };
+        native_alloc.free(result_code);
+        return .{ .contents = contents, .loader = resp.loader_override };
     }
 
     fn pluginTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {

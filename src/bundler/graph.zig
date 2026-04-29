@@ -1197,12 +1197,33 @@ pub const ModuleGraph = struct {
                     return;
                 },
             };
-            if (load_result) |plugin_source| {
-                // 플러그인이 내용을 반환 → JS 모듈로 전환하여 아래 파싱 경로를 탐
-                module.module_type = .javascript;
-                module.loader = .javascript;
+            if (load_result) |plugin_result| {
+                // 플러그인이 내용을 반환. (#2157) `loader` 가 명시되면 raw bytes 를 그 loader 의
+                // 값 표현식으로 변환 (parseAssetModule 와 동일한 assetSourceFromBytes 헬퍼).
+                // asset 변환 성공 시 parseAssetModule 와 동일하게 ast 없이 종료 → emitter 의
+                // emitAssetModule 가 `module.exports = <source>` 로 wrap. JS 파이프라인 진입 시
+                // source 가 단순 표현식 ("text") 이라 default export 없는 빈 모듈로 emit 되어
+                // import binding 이 깨진다.
                 module.parse_arena = tmp_arena;
-                module.source = plugin_source;
+                const arena_alloc = tmp_arena.allocator();
+                if (plugin_result.loader) |loader_override| {
+                    module.loader = loader_override;
+                    if (self.assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path)) |expr| {
+                        module.source = expr;
+                        module.module_type = .javascript;
+                        module.exports_kind = .commonjs;
+                        module.wrap_kind = .cjs;
+                        module.side_effects = false;
+                        module.state = .ready;
+                        return;
+                    }
+                    // asset 변환 미지원 loader (file/copy/javascript/json/css/none): raw 그대로 JS 파이프라인.
+                    module.source = plugin_result.contents;
+                } else {
+                    module.loader = .javascript;
+                    module.source = plugin_result.contents;
+                }
+                module.module_type = .javascript;
                 // module_type 분기를 건너뛰고 JS 파싱 경로로 직접 이동
                 // (아래 "모듈별 Arena" 블록은 parse_arena가 이미 설정되어 있으므로 건너뜀)
             } else {
@@ -2598,65 +2619,57 @@ pub const ModuleGraph = struct {
     ///
     /// asset_registry 모드의 .file/.copy는 loader를 .javascript로 바꿔 fall-through
     /// 신호를 보내고, 호출자가 일반 JS 파이프라인을 이어 실행한다.
+    /// raw bytes 를 asset loader 의 값 표현식으로 변환 (`text` → `"<escaped>"`,
+    /// `dataurl` → `"data:<mime>;base64,..."`, `base64` / `binary` / `empty`).
+    /// `parseAssetModule` 와 plugin onLoad loader override 두 경로 모두 사용하는 single source.
+    /// `file` / `copy` 는 asset_outputs 라이프사이클이 별개라 제외 — caller 가 별도 처리.
+    /// `javascript` / `json` / `css` / `none` 은 변환 없이 raw contents 가 source — null 반환.
+    /// (#2157)
+    fn assetSourceFromBytes(
+        self: *ModuleGraph,
+        alloc: std.mem.Allocator,
+        loader: types.Loader,
+        raw: []const u8,
+        module_path: []const u8,
+    ) ?[]const u8 {
+        return switch (loader) {
+            .text => blk: {
+                const escaped = escapeJsString(alloc, raw) catch break :blk null;
+                break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{escaped}) catch null;
+            },
+            .dataurl => blk: {
+                const encoded = base64Encode(alloc, raw) catch break :blk null;
+                const full_mime = mime.fromExtension(module_path);
+                const mime_type = if (std.mem.indexOf(u8, full_mime, ";")) |semi|
+                    full_mime[0..semi]
+                else
+                    full_mime;
+                break :blk std.fmt.allocPrint(alloc, "\"data:{s};base64,{s}\"", .{ mime_type, encoded }) catch null;
+            },
+            .base64 => blk: {
+                const encoded = base64Encode(alloc, raw) catch break :blk null;
+                break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{encoded}) catch null;
+            },
+            .binary => blk: {
+                const encoded = base64Encode(alloc, raw) catch break :blk null;
+                const to_bin_name = runtime_helpers.helperName("__toBinary", self.transform_options_base.minify_whitespace);
+                break :blk std.fmt.allocPrint(alloc, "{s}(\"{s}\")", .{ to_bin_name, encoded }) catch null;
+            },
+            .empty => "undefined",
+            .file, .copy, .javascript, .json, .css, .none => null,
+        };
+    }
+
     fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
         module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         const arena_alloc = module.parse_arena.?.allocator();
 
         switch (module.loader) {
-            .text => {
-                // UTF-8 문자열로 읽어서 JS 문자열 리터럴 생성
-                const content = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
-                const escaped = escapeJsString(arena_alloc, content) catch {
-                    module.state = .ready;
-                    return;
-                };
-                // source에는 값 표현식만 저장 (JSON 모듈과 동일 패턴)
-                // emitter에서 var asset_X = <source>; 형태로 출력
-                module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{escaped}) catch {
-                    module.state = .ready;
-                    return;
-                };
-            },
-            .dataurl => {
-                // 바이너리 읽기 → base64 인코딩 → data URL 문자열
+            .text, .dataurl, .base64, .binary => {
+                // text/dataurl/base64/binary: 모두 raw bytes → JS 표현식 변환. assetSourceFromBytes
+                // 헬퍼가 plugin onLoad 경로와 공유 (#2157).
                 const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
-                const encoded = base64Encode(arena_alloc, raw) catch {
-                    module.state = .ready;
-                    return;
-                };
-                const full_mime = mime.fromExtension(module.path);
-                const mime_type = if (std.mem.indexOf(u8, full_mime, ";")) |semi|
-                    full_mime[0..semi]
-                else
-                    full_mime;
-
-                module.source = std.fmt.allocPrint(arena_alloc, "\"data:{s};base64,{s}\"", .{ mime_type, encoded }) catch {
-                    module.state = .ready;
-                    return;
-                };
-            },
-            .base64 => {
-                // 바이너리 읽기 → base64 인코딩 → 순수 base64 문자열 (data URL prefix 없음)
-                const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
-                const encoded = base64Encode(arena_alloc, raw) catch {
-                    module.state = .ready;
-                    return;
-                };
-                module.source = std.fmt.allocPrint(arena_alloc, "\"{s}\"", .{encoded}) catch {
-                    module.state = .ready;
-                    return;
-                };
-            },
-            .binary => {
-                // 바이너리 읽기 → base64 인코딩 → __toBinary("...") 호출 표현식
-                const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
-                const encoded = base64Encode(arena_alloc, raw) catch {
-                    module.state = .ready;
-                    return;
-                };
-                // #1621: minify 시 $tb 축약.
-                const to_bin_name = runtime_helpers.helperName("__toBinary", self.transform_options_base.minify_whitespace);
-                module.source = std.fmt.allocPrint(arena_alloc, "{s}(\"{s}\")", .{ to_bin_name, encoded }) catch {
+                module.source = self.assetSourceFromBytes(arena_alloc, module.loader, raw, module.path) orelse {
                     module.state = .ready;
                     return;
                 };

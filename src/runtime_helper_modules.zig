@@ -395,7 +395,7 @@ fn loadHook(
     ctx: ?*anyopaque,
     path: []const u8,
     allocator: std.mem.Allocator,
-) plugin_mod.PluginError!?[]const u8 {
+) plugin_mod.PluginError!?plugin_mod.LoadResult {
     if (!isVirtualId(path)) return null;
     const short = path[ID_PREFIX.len..];
     const m = findModule(short) orelse return null;
@@ -404,7 +404,8 @@ fn loadHook(
         @ptrCast(@alignCast(c))
     else
         &default_opts;
-    return try buildSource(allocator, m, opts.*);
+    const contents = try buildSource(allocator, m, opts.*);
+    return .{ .contents = contents };
 }
 
 fn findModule(short: []const u8) ?*const HelperModule {
@@ -607,9 +608,9 @@ test "smoke: 모든 MODULES 의 helper 가 source 에 export 됨" {
 test "loadHook: virtual ID → source 반환" {
     const allocator = std.testing.allocator;
     const opts = SourceOptions{};
-    const src = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/generator", allocator)).?;
-    defer allocator.free(src);
-    try std.testing.expect(std.mem.indexOf(u8, src, "__generator") != null);
+    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/generator", allocator)).?;
+    defer allocator.free(result.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.contents, "__generator") != null);
 }
 
 test "loadHook: 비 virtual ID 는 null" {
@@ -629,9 +630,9 @@ test "loadHook: ctx 의 minify 옵션이 source 에 반영 (alias export)" {
     // ctx 캐스트 회귀 방지 — ctx 가 무시되면 default_opts 사용해서 alias 가 없을 것.
     const allocator = std.testing.allocator;
     const opts = SourceOptions{ .minify = true };
-    const src = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/generator", allocator)).?;
-    defer allocator.free(src);
-    try std.testing.expect(std.mem.indexOf(u8, src, "$gn as __generator") != null);
+    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/generator", allocator)).?;
+    defer allocator.free(result.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.contents, "$gn as __generator") != null);
 }
 
 test "resolveIdHook: virtual specifier 만 가로챔" {
@@ -658,6 +659,6 @@ test "makePlugin: hook 호출이 ctx 통해 동작" {
     try std.testing.expect(resolved == .virtual);
 
     const loaded = (try p.load.?(p.context, "\x00zts:runtime/generator", allocator)).?;
-    defer allocator.free(loaded);
-    try std.testing.expect(std.mem.indexOf(u8, loaded, "__generator") != null);
+    defer allocator.free(loaded.contents);
+    try std.testing.expect(std.mem.indexOf(u8, loaded.contents, "__generator") != null);
 }
