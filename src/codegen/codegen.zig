@@ -2876,12 +2876,14 @@ pub const Codegen = struct {
             switch (spec_node.tag) {
                 .import_default_specifier => {
                     if (!first) try self.write(",");
+                    try self.addSourceMapping(spec_node.span);
                     try self.writeNodeSpan(spec_node);
                     first = false;
                 },
                 .import_namespace_specifier => {
                     if (!first) try self.write(",");
                     try self.write("* as ");
+                    try self.addSourceMapping(spec_node.span);
                     try self.writeNodeSpan(spec_node);
                     first = false;
                 },
@@ -3053,6 +3055,7 @@ pub const Codegen = struct {
     /// import_default_specifier / import_namespace_specifier의 이름을 renames 적용하여 출력.
     /// 이 노드들은 identifier_reference가 아니라 별도 태그이므로 emitNode에서 renames를 거치지 않음.
     fn emitSpecifierWithRename(self: *Codegen, idx: NodeIndex, spec: Node) !void {
+        try self.addSourceMapping(spec.span);
         if (self.options.linking_metadata) |meta| {
             const ni = @intFromEnum(idx);
             if (ni < meta.symbol_ids.len) {
@@ -3075,7 +3078,9 @@ pub const Codegen = struct {
         const imported = spec_node.data.binary.left;
         const local = spec_node.data.binary.right;
         // imported: 항상 원본 이름 (exports 객체 키 = rename 전 이름)
-        try self.writeSpan(self.ast.getNode(imported).span);
+        const imported_node = self.ast.getNode(imported);
+        try self.addSourceMapping(imported_node.span);
+        try self.writeSpan(imported_node.span);
         // local이 rename 되었거나 원본 imported와 다른 경우 → separator + local 출력
         const needs_rename = blk: {
             if (local.isNone() or @intFromEnum(local) == @intFromEnum(imported)) break :blk false;
@@ -3148,9 +3153,11 @@ pub const Codegen = struct {
         const exported_node = self.ast.getNode(exported_idx);
         const local_text = self.ast.getText(local_node.span);
         const exported_text = self.ast.getText(exported_node.span);
+        try self.addSourceMapping(local_node.span);
         try self.write(local_text);
         if (!std.mem.eql(u8, local_text, exported_text)) {
             try self.write(" as ");
+            try self.addSourceMapping(exported_node.span);
             try self.write(exported_text);
         }
     }
