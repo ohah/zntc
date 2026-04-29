@@ -2,7 +2,7 @@
 
 exports[`TSC: expressions arrayLiteralInference 1`] = `
 "// Repro from #31204
-export var AppType = /* @__PURE__ */ ((AppType) => {AppType[AppType["HeaderDetail"]="HeaderDetail"]="HeaderDetail";AppType[AppType["HeaderMultiDetail"]="HeaderMultiDetail"]="HeaderMultiDetail";AppType[AppType["AdvancedList"]="AdvancedList"]="AdvancedList";AppType[AppType["Standard"]="Standard"]="Standard";AppType[AppType["Relationship"]="Relationship"]="Relationship";AppType[AppType["Report"]="Report"]="Report";AppType[AppType["Composite"]="Composite"]="Composite";AppType[AppType["ListOnly"]="ListOnly"]="ListOnly";AppType[AppType["ModuleSettings"]="ModuleSettings"]="ModuleSettings";return AppType;})(AppType || {});
+export var AppType = /* @__PURE__ */ ((AppType) => {AppType["HeaderDetail"]="HeaderDetail";AppType["HeaderMultiDetail"]="HeaderMultiDetail";AppType["AdvancedList"]="AdvancedList";AppType["Standard"]="Standard";AppType["Relationship"]="Relationship";AppType["Report"]="Report";AppType["Composite"]="Composite";AppType["ListOnly"]="ListOnly";AppType["ModuleSettings"]="ModuleSettings";return AppType;})(AppType || {});
 export var AppStyle = /* @__PURE__ */ ((AppStyle) => {AppStyle[AppStyle["Tree"]=0]="Tree";AppStyle[AppStyle["TreeEntity"]=1]="TreeEntity";AppStyle[AppStyle["Standard"]=2]="Standard";AppStyle[AppStyle["MiniApp"]=3]="MiniApp";AppStyle[AppStyle["PivotTable"]=4]="PivotTable";return AppStyle;})(AppStyle || {});
 const appTypeStylesWithError = new Map([[AppType.Standard, [AppStyle.Standard, AppStyle.MiniApp]], [AppType.Relationship, [AppStyle.Standard, AppStyle.Tree, AppStyle.TreeEntity]], [AppType.AdvancedList, [AppStyle.Standard, AppStyle.MiniApp]]]);
 // Repro from #31204
@@ -6949,7 +6949,7 @@ var let = {};
 `;
 
 exports[`TSC: expressions stringEnumInElementAccess01 1`] = `
-"var E = /* @__PURE__ */ ((E) => {E[E["A"]="a"]="A";E[E["B"]="b"]="B";E[E["C"]="c"]="C";return E;})(E || {});
+"var E = /* @__PURE__ */ ((E) => {E["A"]="a";E["B"]="b";E["C"]="c";return E;})(E || {});
 const snb = item[e];
 "
 `;
