@@ -2796,18 +2796,25 @@ describe("CLI: Vite-style app builder", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("dev skips postcss config with warning (watcher correctness)", async () => {
-    // dev 모드는 watcher 가 사용자의 원본 source 를 감지해야 한다. postcss temp copy 를
-    // 사용하면 원본 편집을 놓치므로 dev 에서는 skip + 경고 출력. build 에서만 적용.
+  test("dev applies PostCSS config and serves transformed CSS", async () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-postcss-"));
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(
       join(dir, "index.html"),
-      '<title>dev</title><script type="module" src="/src/main.ts"></script>',
+      '<title>dev</title><link rel="stylesheet" href="/src/style.css"><script type="module" src="/src/main.ts"></script>',
     );
-    writeFileSync(join(dir, "src", "main.ts"), 'import "./style.css";\nconsole.log("ok");');
+    writeFileSync(join(dir, "src", "main.ts"), 'console.log("ok");');
     writeFileSync(join(dir, "src", "style.css"), ".x{color:red}");
-    writeFileSync(join(dir, "postcss.config.mjs"), "export default { plugins: [] };\n");
+    writeFileSync(
+      join(dir, "postcss.config.mjs"),
+      [
+        "export default {",
+        "  plugins: [",
+        "    { postcssPlugin: 'zts-dev-postcss', Once(root) { root.append({ selector: '.dev-postcss-ok', nodes: [] }); } },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
 
     const port = 12800 + Math.floor(Math.random() * 100);
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
@@ -2817,9 +2824,50 @@ describe("CLI: Vite-style app builder", () => {
     try {
       const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
       expect(html).toContain("<title>dev</title>");
+      expect(html).toContain("/__zts_app_dev_hmr__");
+      const css = await fetch(`http://localhost:${port}/style.css`).then((r) => r.text());
+      expect(css).toContain(".dev-postcss-ok");
       const stderrText = stderrChunks.join("");
-      expect(stderrText).toContain("[postcss] config detected");
-      expect(stderrText).toContain("skipped in dev mode");
+      expect(stderrText).toContain("[postcss] processed 1 CSS file");
+      expect(stderrText).not.toContain("skipped in dev mode");
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev CSS source edit emits css-update instead of full-reload", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-css-hmr-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<link rel="stylesheet" href="/src/style.css"><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), 'console.log("ok");');
+    writeFileSync(join(dir, "src", "style.css"), ".x{color:red}");
+    writeFileSync(join(dir, "postcss.config.mjs"), "export default { plugins: [] };\n");
+
+    const port = 12900 + Math.floor(Math.random() * 100);
+    const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    try {
+      const messagePromise = new Promise<any>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(String(event.data));
+          if (msg.type === "css-update" || msg.type === "full-reload") {
+            ws.close();
+            resolve(msg);
+          }
+        };
+        ws.onerror = () => resolve({ type: "error" });
+        setTimeout(() => resolve({ type: "timeout" }), 5000);
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      writeFileSync(join(dir, "src", "style.css"), ".x{color:blue}");
+      const msg = await messagePromise;
+      expect(msg.type).toBe("css-update");
+      expect(msg.href).toBe("/style.css");
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
