@@ -183,6 +183,67 @@ test "styled-components: template literal 내용은 그대로 보존" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color:") != null);
 }
 
+test "styled-components: object property { One: styled.div`` } 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const styles = { One: styled.div`color: red;`, Two: styled.span`color: blue;` };
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "One");
+    try expectDisplayName(r.output, "Two");
+}
+
+test "styled-components: object property string-key { \"My Comp\": ... } 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const styles = { "MyComp": styled.div`color: red;` };
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "MyComp");
+}
+
+test "styled-components: object property string-key 의 escape 는 보수적으로 reject" {
+    // plainStringLiteralValue 는 raw vs decoded 시맨틱 차이를 피하려고 backslash 포함 문자열을
+    // 거절. 후속 PR 에서 decode 후 매칭 도입 시 이 케이스를 변환하도록 변경 가능.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const styles = { "A\"B": styled.div`color: red;` };
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+}
+
+test "styled-components: computed property key 는 미인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const key = "X";
+        \\const styles = { [key]: styled.div`color: red;` };
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // computed key 는 displayName 추출 불가 — 변환 안 일어남.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+}
+
 test "styled-components: jsx_filename 빈 문자열 시 componentId 생략 (displayName 만)" {
     // SSR 안전성: filename 없으면 cross-file ID 충돌 위험 → componentId 생략 (graceful degradation).
     var r = try e2eFull(
