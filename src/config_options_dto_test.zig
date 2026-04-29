@@ -215,6 +215,9 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "target",
     "browserslist",
     "plugins",
+    "compiler", // 1st-party transform 네임스페이스 (compiler.styledComponents/emotion).
+    // 현재 stub — Zig transformer 가 아직 인식하지 않음. 후속 PR 에서 styled-components /
+    // emotion transform 도입 시 Zig DTO 로 옮김.
     "jsxSideEffects",
     "assetRegistry", // RN asset_registry 모듈 처리
     "scopeHoist", // bundler 옵션 (#1389)
