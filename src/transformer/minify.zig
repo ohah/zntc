@@ -783,10 +783,15 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     if (counts[sym_id] != 1) return;
     const read_ni = first_loc[sym_id];
     if (read_ni == std.math.maxInt(u32) or read_ni >= ast.nodes.items.len) return;
-    // Top-level declarations may be observed through TDZ/hoisting if a read appears before
-    // the declaration. Keep the simple, common production-env case where the only read is
-    // syntactically after the declaration.
-    if (scope_idx == 0 and sourceSpanStart(ast.nodes.items[read_ni]) <= sourceSpanStart(node)) return;
+    // Forward-reference 검증 (#2195). read 가 declaration 이전이면 TDZ throw 대상이라
+    // inline 금지 — `let x = 1; console.log(x)` 와 `console.log(x); let x = 1;` 의 의미가
+    // 다름 (전자는 1, 후자는 ReferenceError). 이전엔 top-level 만 검증해 block-scoped
+    // TDZ (try/if/{} 안 let) 의 semantic 이 깨졌었음.
+    //
+    // closure 안의 read 는 textually 이전이라도 *실행 시점* 이 declaration 이후라 TDZ
+    // 위반 아님인데, 그래도 sourceSpan 비교만으로 conservative 하게 inline 거부 →
+    // 안전 우선 (semantic-preserving).
+    if (sourceSpanStart(ast.nodes.items[read_ni]) <= sourceSpanStart(node)) return;
 
     const init_ni = @intFromEnum(init_idx);
     if (init_ni >= ast.nodes.items.len) return;
