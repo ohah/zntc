@@ -137,8 +137,8 @@ zts dev
 zts build
 ```
 
-CSS Modules(`.module.css`)는 아직 app CSS pipeline 범위 밖입니다. 현재는 조용히 잘못된
-JS를 내보내지 않도록 명시적으로 실패하며, plain CSS 또는 JS 플러그인 변환을 사용하세요.
+앱 모드의 CSS Modules(`.module.css`)는 별도 플러그인 없이 scoped class map으로
+변환됩니다. default export와 유효한 식별자 형태의 named export를 사용할 수 있습니다.
 
 CSS를 JS 플러그인에서 직접 주입해야 하는 라이브러리 빌드는 다음처럼 `load` 훅에서
 PostCSS를 실행할 수 있습니다.

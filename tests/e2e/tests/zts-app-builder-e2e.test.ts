@@ -14,8 +14,11 @@ import { dirname, join, resolve } from "node:path";
  */
 
 const ZTS_BIN = resolve(__dirname, "../../../zig-out/bin/zts");
+const ZTS_JS_CLI = resolve(__dirname, "../../../packages/core/bin/zts.mjs");
 const BUILD_PREVIEW_PORT = 3997;
 const DEV_PORT = 3998;
+const CSS_MODULE_PREVIEW_PORT = 3995;
+const CSS_MODULE_DEV_PORT = 3994;
 
 const FIXTURE: Record<string, string> = {
   "index.html": `<!doctype html>
@@ -245,5 +248,127 @@ test.describe("zts build: nested CSS path preservation E2E", () => {
     const bColor = await page.getByTestId("bbb").evaluate((el) => getComputedStyle(el).color);
     expect(aColor).toBe("rgb(255, 0, 0)");
     expect(bColor).toBe("rgb(0, 0, 255)");
+  });
+});
+
+// ─── CSS Modules: JS class map + 실제 브라우저 스타일 적용까지 검증 ───
+test.describe("zts app CSS Modules E2E", () => {
+  async function writeCssModuleFixture(dir: string): Promise<void> {
+    const files: Record<string, string> = {
+      "index.html": `<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>css-modules</title></head>
+  <body>
+    <button data-testid="button"></button>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>`,
+      "src/main.ts": `import styles, { button } from "./button.module.css";
+const el = document.querySelector("[data-testid=button]")!;
+el.className = \`\${styles.button} \${styles["label-text"]} \${button}\`;
+el.textContent = styles.button.includes("button_button__") ? "scoped" : "raw";
+`,
+      "src/button.module.css": `.button {
+  color: rgb(7, 92, 34);
+  background: rgb(241, 244, 248);
+}
+.label-text {
+  border-top-color: rgb(80, 90, 100);
+  border-top-style: solid;
+  border-top-width: 3px;
+}
+`,
+    };
+    for (const [name, content] of Object.entries(files)) {
+      const filePath = join(dir, name);
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, content);
+    }
+  }
+
+  test("build + preview applies scoped class names without a page-side workaround", async ({
+    page,
+  }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-css-mod-build-e2e-"));
+    await writeCssModuleFixture(dir);
+
+    const built = spawnSync(
+      process.execPath,
+      [ZTS_JS_CLI, "build", dir, "--outdir", join(dir, "dist")],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    if (built.status !== 0) {
+      throw new Error(`zts build css modules failed: ${built.stderr}`);
+    }
+
+    const preview = spawn(
+      process.execPath,
+      [ZTS_JS_CLI, "preview", join(dir, "dist"), "--port", String(CSS_MODULE_PREVIEW_PORT)],
+      { stdio: "pipe" },
+    );
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      await page.goto(`http://localhost:${CSS_MODULE_PREVIEW_PORT}/`);
+      const button = page.getByTestId("button");
+      await expect(button).toHaveText("scoped");
+      const className = await button.evaluate((el) => el.className);
+      expect(className).toContain("button_button__");
+      expect(className).toContain("button_label_text__");
+      expect(className).not.toContain(" label-text ");
+      expect(await button.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(7, 92, 34)");
+      expect(await button.evaluate((el) => getComputedStyle(el).borderTopColor)).toBe(
+        "rgb(80, 90, 100)",
+      );
+    } finally {
+      preview.kill();
+      await new Promise((r) => preview.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev applies CSS Modules through the app pipeline", async ({ page }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-css-mod-dev-e2e-"));
+    await writeCssModuleFixture(dir);
+    const server = spawn(
+      process.execPath,
+      [ZTS_JS_CLI, "dev", dir, "--port", String(CSS_MODULE_DEV_PORT)],
+      {
+        stdio: "pipe",
+      },
+    );
+    await new Promise((r) => setTimeout(r, 2500));
+
+    try {
+      await page.goto(`http://localhost:${CSS_MODULE_DEV_PORT}/`);
+      const button = page.getByTestId("button");
+      await expect(button).toHaveText("scoped");
+      const className = await button.evaluate((el) => el.className);
+      expect(className).toContain("button_button__");
+      expect(await button.evaluate((el) => getComputedStyle(el).color)).toBe("rgb(7, 92, 34)");
+
+      await writeFile(
+        join(dir, "src/button.module.css"),
+        `.button {
+  color: rgb(120, 10, 10);
+  background: rgb(241, 244, 248);
+}
+.label-text {
+  border-top-color: rgb(80, 90, 100);
+  border-top-style: solid;
+  border-top-width: 3px;
+}
+`,
+      );
+      await expect
+        .poll(() => button.evaluate((el) => getComputedStyle(el).color), { timeout: 6000 })
+        .toBe("rgb(120, 10, 10)");
+    } finally {
+      server.kill();
+      await new Promise((r) => server.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
