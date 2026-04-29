@@ -237,3 +237,84 @@ test "stmt_info: multi-statement module with arrow closures (arktype pattern)" {
         try std.testing.expect(reachable.isSet(1)); // flatMorph import reachable
     }
 }
+
+fn buildTestInfosWithCjs(allocator: std.mem.Allocator, source: []const u8) !struct {
+    infos: ModuleStmtInfos,
+    arena: std.heap.ArenaAllocator,
+} {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, source);
+    var parser = Parser.init(arena_alloc, &scanner);
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
+    try analyzer.analyze();
+
+    const infos = (try build(
+        allocator,
+        &parser.ast,
+        analyzer.symbols.items,
+        analyzer.symbol_ids.items,
+        &analyzer.unresolved_references,
+        true,
+    )) orelse return error.NullResult;
+
+    return .{ .infos = infos, .arena = arena };
+}
+
+test "stmt_info: CJS export fact 가 함수 body 내부 dynamic exports access 시 prune 비활성화" {
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfosWithCjs(alloc,
+        \\exports.a = 1;
+        \\exports.c = [];
+        \\exports.e = function init() { exports.c.push(99); };
+        \\exports.e();
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    // 함수 body 안에서 exports.c.push(...) 가 발견되므로 모든 fact 의 is_safe_to_prune = false
+    try std.testing.expect(r.infos.cjs_export_facts.len > 0);
+    for (r.infos.cjs_export_facts) |fact| {
+        try std.testing.expect(!fact.is_safe_to_prune);
+    }
+}
+
+test "stmt_info: CJS export fact 가 함수 body 없는 모듈에서는 prune 가능 유지" {
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfosWithCjs(alloc,
+        \\exports.a = 1;
+        \\exports.b = "hello";
+        \\exports.c = [];
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    // 함수 정의가 없어 dynamic access 도 없음. 기존 prune 결정 유지.
+    try std.testing.expect(r.infos.cjs_export_facts.len > 0);
+    var any_safe = false;
+    for (r.infos.cjs_export_facts) |fact| {
+        if (fact.is_safe_to_prune) any_safe = true;
+    }
+    try std.testing.expect(any_safe);
+}
+
+test "stmt_info: 함수 RHS 가 exports 안 참조하면 prune 가능 유지" {
+    const alloc = std.testing.allocator;
+    var r = try buildTestInfosWithCjs(alloc,
+        \\exports.used = function used() { return 1; };
+        \\exports.unused = function unused() { return 2; };
+    );
+    defer r.infos.deinit();
+    defer r.arena.deinit();
+
+    try std.testing.expect(r.infos.cjs_export_facts.len > 0);
+    var any_safe = false;
+    for (r.infos.cjs_export_facts) |fact| {
+        if (fact.is_safe_to_prune) any_safe = true;
+    }
+    try std.testing.expect(any_safe);
+}

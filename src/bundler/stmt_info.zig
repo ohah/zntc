@@ -774,6 +774,70 @@ fn invalidateConflictingCjsExportFacts(facts: []CjsExportFact, stmts: []StmtInfo
     }
 }
 
+/// CJS module 의 함수 body 안에서 `exports` 식별자가 동적으로 access 되면
+/// (예: `function init() { exports.X.push(...) }`), RHS purity 만으로는 export prune 안전성을
+/// 증명할 수 없다. mime-types 패턴 — top-level `exports.X = []` 가 RHS pure 라 prune
+/// 후보지만, 다른 함수 호출 시점에 `exports.X.push(...)` 로 mutate 됨.
+///
+/// 휴리스틱: 함수/메서드 노드 span 안에서 `exports` identifier 가 한 번이라도 발견되면
+/// 모든 fact invalidate (esbuild/rolldown 의 CJS black-box 정책). top-level 의 `exports.X = ...`
+/// 나 `Object.defineProperty(exports, ...)` 같은 패턴은 함수 밖이라 영향 없음.
+///
+/// `unresolved_globals` 가 `exports` 를 포함 안 하면 ESM 모듈이거나 user 가 `var exports = ...`
+/// 한 케이스라 작업 자체가 의미 없어 즉시 종료. 함수 이름 식별자는 `binding_identifier` 라
+/// 여기 outer loop 의 `identifier_reference` 검사를 거치지 않으므로 false-positive 안 일어남.
+fn invalidateFactsForNestedExportsAccess(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    facts: []CjsExportFact,
+    stmts: []StmtInfo,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+) void {
+    if (facts.len == 0) return;
+    if (unresolved_globals) |g| {
+        if (!g.contains("exports")) return;
+    }
+
+    var fn_spans: std.ArrayListUnmanaged(Span) = .empty;
+    defer fn_spans.deinit(allocator);
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .arrow_function_expression,
+            .function,
+            .method_definition,
+            => fn_spans.append(allocator, node.span) catch return,
+            else => continue,
+        }
+    }
+    if (fn_spans.items.len == 0) return;
+
+    var has_nested = false;
+    outer: for (ast.nodes.items) |node| {
+        if (node.tag != .identifier_reference) continue;
+        if (node.span.end - node.span.start != "exports".len) continue;
+        if (!std.mem.eql(u8, ast.getText(node.span), "exports")) continue;
+        for (fn_spans.items) |fs| {
+            if (node.span.start >= fs.start and node.span.end <= fs.end and
+                (node.span.start != fs.start or node.span.end != fs.end))
+            {
+                has_nested = true;
+                break :outer;
+            }
+        }
+    }
+
+    if (!has_nested) return;
+    for (facts) |*f| {
+        if (!f.is_safe_to_prune) continue;
+        f.is_safe_to_prune = false;
+        if (f.statement_index < stmts.len) {
+            stmts[f.statement_index].has_side_effects = true;
+        }
+    }
+}
+
 /// statement span 배열에서 pos를 포함하는 statement를 binary search.
 /// statement span은 소스 순서로 비중첩.
 pub fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
@@ -1077,6 +1141,7 @@ pub fn buildFromSemantic(
     }
 
     invalidateConflictingCjsExportFacts(cjs_export_facts_buf.items, stmts);
+    invalidateFactsForNestedExportsAccess(allocator, ast, cjs_export_facts_buf.items, stmts, unresolved_globals);
 
     const sym_to_writer_stmts = try finalizeWriterBuckets(allocator, writer_buckets, sym_to_stmt);
 
@@ -1260,6 +1325,7 @@ pub fn build(
     }
 
     invalidateConflictingCjsExportFacts(cjs_export_facts_buf.items, stmts);
+    invalidateFactsForNestedExportsAccess(allocator, ast, cjs_export_facts_buf.items, stmts, unresolved_globals);
 
     const sym_to_writer_stmts = try finalizeWriterBuckets(allocator, writer_bufs, sym_to_stmt);
 
