@@ -458,6 +458,17 @@ interface BuildOptionsCommon {
    * errors / warnings 각 배열에 동일 limit 적용 — 초과 항목은 자동 truncate.
    */
   logLimit?: number;
+  /**
+   * CJS / UMD entry export 형식 (Rollup `output.exports` 호환, #2159). ESM 출력에서는 무시.
+   *
+   *  - `"auto"` (default): default-only → `module.exports = X`. named-only → `exports.X = X`
+   *    (no `__esModule` flag). mixed → `exports.X = X` + `__esModule` flag.
+   *  - `"named"`: 항상 named (`exports.X = X`). default 있으면 `__esModule` flag 자동 추가
+   *    (rolldown `IfDefaultProp` 동작 — default 없을 때는 flag 없음).
+   *  - `"default"`: `module.exports = X` 단일 — default-only 일 때만. named 섞이면 warning + 빈 출력.
+   *  - `"none"`: export 출력 안 함.
+   */
+  outputExports?: "auto" | "named" | "default" | "none";
   /** tsconfig.json 인라인 JSON 오버라이드 */
   tsconfigRaw?: string;
   /**

@@ -34,6 +34,8 @@ const CliOptions = struct {
     sourcemap: bool = false,
     /// 소스맵 출력 형식 (#2152) — esbuild/rolldown 호환.
     sourcemap_mode: lib.codegen.sourcemap.SourceMapMode = .linked,
+    /// CJS / UMD entry export 형식 (#2159) — Rollup output.exports 호환.
+    output_exports: lib.bundler.OutputExports = .auto,
     /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
     sourcemap_debug_ids: bool = false,
     /// Metro x_facebook_sources function map (--sourcemap-function-map).
@@ -515,6 +517,13 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             const val = arg["--sourcemap=".len..];
             opts.sourcemap_mode = lib.codegen.sourcemap.SourceMapMode.fromString(val) orelse {
                 try stderr.print("zts: invalid --sourcemap value: {s} (expected: linked, external, inline)\n", .{val});
+                std.process.exit(1);
+            };
+        } else if (std.mem.startsWith(u8, arg, "--output-exports=")) {
+            // #2159 — `--output-exports=auto|named|default|none`
+            const val = arg["--output-exports=".len..];
+            opts.output_exports = lib.bundler.OutputExports.fromString(val) orelse {
+                try stderr.print("zts: invalid --output-exports value: {s} (expected: auto, named, default, none)\n", .{val});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "--sourcemap-debug-ids")) {
@@ -1902,6 +1911,7 @@ pub fn main() !void {
             .drop_labels = opts.drop_labels_list.items,
             .drop_console = opts.drop_console,
             .drop_debugger = opts.drop_debugger,
+            .output_exports = opts.output_exports,
             .pure = opts.pure_list.items,
             .tsconfig_raw = opts.tsconfig_raw,
             .node_paths = opts.node_paths_list.items,

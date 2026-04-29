@@ -263,6 +263,16 @@ fn parseLogFilterOptions(env: c.napi_env, obj: c.napi_value) LogFilterOptions {
     };
 }
 
+/// `outputExports` 옵션 (#2159) — `"auto"` / `"named"` / `"default"` / `"none"`.
+/// 미지정 또는 invalid 면 `.auto` (Rollup default).
+fn parseOutputExports(env: c.napi_env, obj: c.napi_value) bundler_mod.OutputExports {
+    var buf: [16]u8 = undefined;
+    const val = getNamedProperty(env, obj, "outputExports") orelse return .auto;
+    var len: usize = 0;
+    if (c.napi_get_value_string_utf8(env, val, &buf, buf.len, &len) != c.napi_ok) return .auto;
+    return bundler_mod.OutputExports.fromString(buf[0..len]) orelse .auto;
+}
+
 /// JS 배열 값을 문자열 슬라이스로 변환. (key 없이 직접 배열 값을 받는 버전)
 /// 빈 배열은 명시적으로 빈 slice 반환 (caller 가 "0개" 와 "invalid" 를 구분 가능).
 fn parseStringArray(env: c.napi_env, val: c.napi_value, alloc: std.mem.Allocator) ?[]const []const u8 {
@@ -3270,6 +3280,8 @@ fn parseBuildOptions(
         // #2155: bundle 모드에도 transpile 동일 drop console/debugger 적용.
         .drop_console = getObjectBool(env, opts_obj, "dropConsole", false),
         .drop_debugger = getObjectBool(env, opts_obj, "dropDebugger", false),
+        // #2159: CJS / UMD entry export 형식 — auto / named / default / none.
+        .output_exports = parseOutputExports(env, opts_obj),
         .pure = pure orelse &.{},
         .tsconfig_raw = tsconfig_raw,
         .node_paths = node_paths orelse &.{},
