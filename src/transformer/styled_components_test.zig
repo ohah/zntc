@@ -8,7 +8,15 @@ const CodegenOptions = helpers.CodegenOptions;
 
 const default_cg: CodegenOptions = .{ .minify_whitespace = false };
 
-test "styled-components: styled.X 선언에 displayName 주입" {
+/// 출력에 `withConfig({ displayName: "<expected>" })` 가 나타나는지 검증 (whitespace tolerant).
+fn expectDisplayName(output: []const u8, expected: []const u8) !void {
+    var quoted_buf: [256]u8 = undefined;
+    const needle = std.fmt.bufPrint(&quoted_buf, "displayName: \"{s}\"", .{expected}) catch return error.OutOfMemory;
+    try std.testing.expect(std.mem.indexOf(u8, output, needle) != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "withConfig") != null);
+}
+
+test "styled-components: styled.X 선언 → withConfig({displayName}) 래핑" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -19,12 +27,10 @@ test "styled-components: styled.X 선언에 displayName 주입" {
         ".tsx",
     );
     defer r.deinit();
-
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Button.displayName=\"Button\"") != null or
-        std.mem.indexOf(u8, r.output, "Button.displayName = \"Button\"") != null);
+    try expectDisplayName(r.output, "Button");
 }
 
-test "styled-components: styled(Component) 선언에 displayName 주입" {
+test "styled-components: styled(Component) 선언 → withConfig({displayName})" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -36,12 +42,10 @@ test "styled-components: styled(Component) 선언에 displayName 주입" {
         ".tsx",
     );
     defer r.deinit();
-
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Wrapped.displayName=\"Wrapped\"") != null or
-        std.mem.indexOf(u8, r.output, "Wrapped.displayName = \"Wrapped\"") != null);
+    try expectDisplayName(r.output, "Wrapped");
 }
 
-test "styled-components: 옵션 비활성 시 주입 없음" {
+test "styled-components: 옵션 비활성 시 변환 없음" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -52,11 +56,11 @@ test "styled-components: 옵션 비활성 시 주입 없음" {
         ".tsx",
     );
     defer r.deinit();
-
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".displayName") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName") == null);
 }
 
-test "styled-components: import 없으면 주입 없음" {
+test "styled-components: import 없으면 변환 없음" {
     // styled binding 이 없으므로 detection no-op. 옵션 활성이어도 변환 안 일어남.
     var r = try e2eFull(
         std.testing.allocator,
@@ -68,8 +72,7 @@ test "styled-components: import 없으면 주입 없음" {
         ".tsx",
     );
     defer r.deinit();
-
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".displayName") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
 test "styled-components: @emotion/styled source 는 미감지" {
@@ -83,8 +86,7 @@ test "styled-components: @emotion/styled source 는 미감지" {
         ".tsx",
     );
     defer r.deinit();
-
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ".displayName") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
 test "styled-components: .attrs(...) chain 은 skip (이번 PR 스코프 외)" {
@@ -98,8 +100,10 @@ test "styled-components: .attrs(...) chain 은 skip (이번 PR 스코프 외)" {
         ".tsx",
     );
     defer r.deinit();
-
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Input.displayName") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Input") != null);
+    // chain 안에 .withConfig 이 끼워져선 안 됨 (root tag detection 만 인식).
+    // attrs 의 type:"text" object 에 displayName 이 들어가면 안 됨 — withConfig 자체가 없어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
 test "styled-components: styled-components/native source 도 인식" {
@@ -113,9 +117,7 @@ test "styled-components: styled-components/native source 도 인식" {
         ".tsx",
     );
     defer r.deinit();
-
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Box.displayName=\"Box\"") != null or
-        std.mem.indexOf(u8, r.output, "Box.displayName = \"Box\"") != null);
+    try expectDisplayName(r.output, "Box");
 }
 
 test "styled-components: import alias 도 추적" {
@@ -130,7 +132,21 @@ test "styled-components: import alias 도 추적" {
         ".tsx",
     );
     defer r.deinit();
+    try expectDisplayName(r.output, "Btn");
+}
 
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Btn.displayName=\"Btn\"") != null or
-        std.mem.indexOf(u8, r.output, "Btn.displayName = \"Btn\"") != null);
+test "styled-components: template literal 내용은 그대로 보존" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const C = styled.div`width: 100%; color: ${'red'};`;
+    ,
+        .{ .styled_components = true },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "C");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "width: 100%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color:") != null);
 }

@@ -569,7 +569,6 @@ pub const Transformer = struct {
         self.plugins.refresh.registrations.deinit(self.allocator);
         for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
         self.plugins.refresh.signatures.deinit(self.allocator);
-        self.plugins.styled_components.registrations.deinit(self.allocator);
         self.trailing_nodes.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
@@ -676,10 +675,6 @@ pub const Transformer = struct {
             root = try self.appendRefreshRegistrations(root);
         }
 
-        // styled-components: PR 1 은 displayName 만, withConfig / componentId 는 후속.
-        if (self.options.styled_components and self.plugins.styled_components.registrations.items.len > 0) {
-            root = try styled_components_mod.appendDisplayNameAssignments(self, root);
-        }
 
         self.ast.transformed_root = root;
         self.ast.assertInvariants();
@@ -2921,11 +2916,19 @@ pub const Transformer = struct {
 
     /// variable_declarator: extra_data = [name, type_ann, init]
     fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
-        try styled_components_mod.detectStyledDeclaration(self, node);
-
         const e = node.data.extra;
-        const new_name = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_init = try self.visitNode(self.readNodeIdx(e, 2));
+        const name_idx = self.readNodeIdx(e, 0);
+        const new_name = try self.visitNode(name_idx);
+        var new_init = try self.visitNode(self.readNodeIdx(e, 2));
+        // styled-components: post-visit 로 init 이 styled tagged template 이면 tag 를
+        // `.withConfig({displayName})` 로 wrap. binding name 은 변환 후에도 변동 없음.
+        if (!new_init.isNone() and !name_idx.isNone() and self.options.styled_components) {
+            const name_node = self.ast.getNode(name_idx);
+            if (name_node.tag == .binding_identifier or name_node.tag == .identifier_reference) {
+                const var_name = self.ast.getText(name_node.data.string_ref);
+                new_init = try styled_components_mod.maybeWrapStyledTag(self, new_init, var_name);
+            }
+        }
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(.variable_declarator, node.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
     }
