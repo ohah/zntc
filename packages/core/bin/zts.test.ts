@@ -2770,6 +2770,65 @@ describe("CLI: Vite-style app builder", () => {
     expect(css).not.toContain('@import "tailwindcss"');
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("build does not collide when JS imports CSS that HTML also references", () => {
+    // entry main.ts 가 import './main.css' 하고 HTML 도 같은 파일을 link 로 참조하면
+    // bundler 가 main.css 를 emit. 이전엔 stylesheet 처리에서 OutputCollision 으로
+    // hard-fail 했지만, 이제는 bundler emit 결과를 재사용하고 HTML href 만 rewrite 한다.
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-css-collision-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<link rel="stylesheet" href="/src/main.css"><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), "import './main.css';\nconsole.log('ok');");
+    writeFileSync(join(dir, "src", "main.css"), ".hero{color:red}");
+
+    const outdir = join(dir, "dist");
+    const { exitCode, stderr } = runCli(
+      ["build", dir, "--outdir", outdir, "--no-splitting"],
+      { cwd: dir },
+    );
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("OutputCollision");
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    expect(html).toContain('href="/main.css"');
+    expect(existsSync(join(outdir, "main.css"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("dev skips postcss config with warning (watcher correctness)", async () => {
+    // dev 모드는 watcher 가 사용자의 원본 source 를 감지해야 한다. postcss temp copy 를
+    // 사용하면 원본 편집을 놓치므로 dev 에서는 skip + 경고 출력. build 에서만 적용.
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-postcss-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<title>dev</title><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), 'import "./style.css";\nconsole.log("ok");');
+    writeFileSync(join(dir, "src", "style.css"), ".x{color:red}");
+    writeFileSync(
+      join(dir, "postcss.config.mjs"),
+      "export default { plugins: [] };\n",
+    );
+
+    const port = 12800 + Math.floor(Math.random() * 100);
+    const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
+    const stderrChunks: string[] = [];
+    proc.stderr?.on("data", (chunk) => stderrChunks.push(chunk.toString()));
+    await waitForServer(port);
+    try {
+      const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
+      expect(html).toContain("<title>dev</title>");
+      const stderrText = stderrChunks.join("");
+      expect(stderrText).toContain("[postcss] config detected");
+      expect(stderrText).toContain("skipped in dev mode");
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── mode-specific config 자동 머지 (#2110 / Phase 3-3) ───

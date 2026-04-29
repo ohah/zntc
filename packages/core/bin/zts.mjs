@@ -427,22 +427,21 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
 async function runAppDev(opts, config, configEnv, _dotenvVars) {
   const root = resolve(opts.appRoot ?? ".");
   opts.outdir = opts.outdir || join(root, ".zts-dev");
-  const postcssRoot = await preparePostcssAppRoot(
-    root,
-    opts.outdir,
-    configEnv,
-    opts.logLevel,
-    "dev",
-  );
-  const effectiveRoot = postcssRoot ?? root;
+  // dev 모드는 원본 root 를 watcher 가 감지해야 하므로 postcss temp copy 사용 안 함.
+  // postcss config 발견 시 사용자에게 build 시점만 적용된다고 알림.
+  if (findPostcssConfig(root) && opts.logLevel !== "silent") {
+    console.error(
+      "[postcss] config detected — skipped in dev mode (applied only by `zts build`). HMR would otherwise watch a temp copy.",
+    );
+  }
   const prepared = prepareAppDevSync({
-    root: effectiveRoot,
+    root,
     outdir: opts.outdir,
     entryHtml: opts.entryHtml ?? "index.html",
     publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
     base: normalizeBase(opts.base ?? opts.publicPath ?? "/"),
     mode: configEnv.mode,
-    envDir: opts.envDir ? resolve(opts.envDir) : effectiveRoot,
+    envDir: opts.envDir ? resolve(opts.envDir) : root,
     envPrefixes: opts.envPrefixes,
   });
 

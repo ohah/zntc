@@ -177,20 +177,22 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         if (try resolveHtmlRef(allocator, root, html_dir, href)) |style_path| {
             defer allocator.free(style_path);
             const name = std.fs.path.basename(style_path);
-            if (reserved.contains(name)) return error.OutputCollision;
-            const contents = try std.fs.cwd().readFileAlloc(allocator, style_path, 10 * 1024 * 1024);
-            defer allocator.free(contents);
-            const rewritten_css = try rewriteCssUrls(allocator, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
-            defer allocator.free(rewritten_css);
-            try writeOutput(allocator, outdir, name, rewritten_css);
-            try addReserved(allocator, &reserved, &reserved_keys, name);
             const href_parts = splitUrl(href);
+            const already_emitted = reserved.contains(name);
+            if (!already_emitted) {
+                const contents = try std.fs.cwd().readFileAlloc(allocator, style_path, 10 * 1024 * 1024);
+                defer allocator.free(contents);
+                const rewritten_css = try rewriteCssUrls(allocator, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
+                defer allocator.free(rewritten_css);
+                try writeOutput(allocator, outdir, name, rewritten_css);
+                try addReserved(allocator, &reserved, &reserved_keys, name);
+                output_count += 1;
+            }
             const new_url = try joinBaseUrlWithSuffix(allocator, base, name, href_parts.suffix);
             defer allocator.free(new_url);
             const next = try replaceOwned(allocator, html, href, new_url);
             allocator.free(html);
             html = next;
-            output_count += 1;
         }
     }
 
@@ -301,20 +303,22 @@ pub fn prepareDev(allocator: std.mem.Allocator, opts: AppDevPrepareOptions) !App
         if (try resolveHtmlRef(allocator, root, html_dir, href)) |style_path| {
             defer allocator.free(style_path);
             const name = std.fs.path.basename(style_path);
-            if (reserved.contains(name)) return error.OutputCollision;
-            const contents = try std.fs.cwd().readFileAlloc(allocator, style_path, 10 * 1024 * 1024);
-            defer allocator.free(contents);
-            const rewritten_css = try rewriteCssUrls(allocator, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
-            defer allocator.free(rewritten_css);
-            try writeOutput(allocator, outdir, name, rewritten_css);
-            try addReserved(allocator, &reserved, &reserved_keys, name);
             const href_parts = splitUrl(href);
+            const already_emitted = reserved.contains(name);
+            if (!already_emitted) {
+                const contents = try std.fs.cwd().readFileAlloc(allocator, style_path, 10 * 1024 * 1024);
+                defer allocator.free(contents);
+                const rewritten_css = try rewriteCssUrls(allocator, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
+                defer allocator.free(rewritten_css);
+                try writeOutput(allocator, outdir, name, rewritten_css);
+                try addReserved(allocator, &reserved, &reserved_keys, name);
+                output_count += 1;
+            }
             const new_url = try joinBaseUrlWithSuffix(allocator, base, name, href_parts.suffix);
             defer allocator.free(new_url);
             const next = try replaceOwned(allocator, html, href, new_url);
             allocator.free(html);
             html = next;
-            output_count += 1;
         }
     }
     if (opts.public_dir) |public_dir| {
@@ -731,4 +735,36 @@ test "app build rewrites stylesheet url assets and relative html assets" {
 
     try tmp.dir.access("dist/bg.png", .{});
     try tmp.dir.access("dist/logo.png", .{});
+}
+
+test "app build does not collide when bundler emits CSS that HTML also references" {
+    // entry main.ts 가 import './main.css' 하고 HTML 도 같은 파일을 link 로 참조하는 시나리오.
+    // bundler 는 entry basename 기반으로 main.css 를 asset_output 으로 emit (splitting=false 이면
+    // entry_names = "[name]") → reserved 에 main.css 등록. 같은 basename 의 stylesheet 가 hard-fail
+    // 되지 않고 bundler 의 emit 결과를 재사용해야 한다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("src");
+    try tmp.dir.writeFile(.{
+        .sub_path = "index.html",
+        .data = "<link rel=\"stylesheet\" href=\"/src/main.css\"><script type=\"module\" src=\"/src/main.ts\"></script>",
+    });
+    try tmp.dir.writeFile(.{ .sub_path = "src/main.ts", .data = "import './main.css';\nconsole.log('x');" });
+    try tmp.dir.writeFile(.{ .sub_path = "src/main.css", .data = ".hero{color:red}" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    _ = try buildApp(std.testing.allocator, .{
+        .root = root,
+        .base = "/",
+        .public_dir = null,
+        .splitting = false,
+    });
+
+    const html_path = try std.fs.path.join(std.testing.allocator, &.{ root, "dist", "index.html" });
+    defer std.testing.allocator.free(html_path);
+    const html = try std.fs.cwd().readFileAlloc(std.testing.allocator, html_path, 1024 * 1024);
+    defer std.testing.allocator.free(html);
+    try std.testing.expect(std.mem.indexOf(u8, html, "href=\"/main.css\"") != null);
+    try tmp.dir.access("dist/main.css", .{});
 }
