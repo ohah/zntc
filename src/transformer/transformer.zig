@@ -676,8 +676,7 @@ pub const Transformer = struct {
             root = try self.appendRefreshRegistrations(root);
         }
 
-        // styled-components: 감지된 컴포넌트마다 `<Var>.displayName = "<Var>";` 추가.
-        // (PR 1) componentId / withConfig 래핑 등은 후속 PR.
+        // styled-components: PR 1 은 displayName 만, withConfig / componentId 는 후속.
         if (self.options.styled_components and self.plugins.styled_components.registrations.items.len > 0) {
             root = try styled_components_mod.appendDisplayNameAssignments(self, root);
         }
@@ -2922,9 +2921,7 @@ pub const Transformer = struct {
 
     /// variable_declarator: extra_data = [name, type_ann, init]
     fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
-        // styled-components 1st-party transform — init 이 styled tagged template 이면 변수
-        // 이름을 PluginState 에 누적 (옵션 활성 시).
-        styled_components_mod.detectStyledDeclaration(self, node);
+        try styled_components_mod.detectStyledDeclaration(self, node);
 
         const e = node.data.extra;
         const new_name = try self.visitNode(self.readNodeIdx(e, 0));
@@ -4405,9 +4402,7 @@ pub const Transformer = struct {
     }
 
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
-        // styled-components 1st-party transform — source 가 "styled-components" 면 default
-        // specifier 의 로컬 이름을 PluginState 에 저장 (옵션 활성 시).
-        styled_components_mod.detectStyledImport(self, node);
+        try styled_components_mod.detectStyledImport(self, node);
 
         const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
 
