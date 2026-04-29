@@ -298,4 +298,63 @@ describe("mangler --minify 회귀", () => {
     expect(result.runStderr).not.toContain("ReferenceError");
     expect(result.runOutput).toBe("Fragment x");
   });
+
+  // #2195: block-scoped `let` 의 declaration 이전 사용 (TDZ) 은 inline 대상에서 제외.
+  // 이전엔 top-level (scope_idx=0) 한정으로만 forward-reference 검증을 돌려서 try/{}
+  // 같은 block scope 의 `let` 은 무조건 단순 inline → declaration 제거 → ReferenceError
+  // 가 사라져 spec 위반. fix 는 모든 scope 에 forward-reference 검증을 적용.
+  test("try 블록 안 let 의 TDZ 가 minify 후에도 보존된다 (#2195)", async () => {
+    const result = await transpileAndRun(
+      [
+        "try {",
+        "  console.log(x);",
+        "  let x = 1;",
+        "} catch (e: any) {",
+        "  console.log('CAUGHT:' + e.constructor.name);",
+        "}",
+      ].join("\n"),
+      ["--minify"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.transpileExitCode).toBe(0);
+    expect(result.runOutput).toBe("CAUGHT:ReferenceError");
+  });
+
+  // nested scope: 함수 body > try block 의 forward-reference. fix 가 모든 scope depth
+  // 에서 동작하는지 검증 (이전 fix 가 top-level 만 잡았던 이유로 함수 안 block 이
+  // 사각지대였음).
+  test("함수 body 안 nested block-scoped let 의 forward-reference 도 inline 금지 (#2195)", async () => {
+    const result = await transpileAndRun(
+      [
+        "function run() {",
+        "  try {",
+        "    console.log(y);",
+        "    let y = 99;",
+        "    return y;",
+        "  } catch (e: any) {",
+        "    return 'CAUGHT:' + e.constructor.name;",
+        "  }",
+        "}",
+        "console.log(run());",
+      ].join("\n"),
+      ["--minify"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.transpileExitCode).toBe(0);
+    expect(result.runOutput).toBe("CAUGHT:ReferenceError");
+  });
+
+  // sanity check: declaration 이후 사용은 여전히 inline (forward-reference 없으면 동작 유지).
+  test("declaration 이후 사용은 single-use inline 유지 (#2195 회귀 가드)", async () => {
+    const result = await transpileAndRun(
+      ["function f() {", "  let z = 7;", "  return z + 1;", "}", "console.log(f());"].join("\n"),
+      ["--minify"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.transpileExitCode).toBe(0);
+    expect(result.runOutput).toBe("8");
+  });
 });
