@@ -167,6 +167,74 @@ describe("#2209: dynamic import default lazy-wrap", () => {
     expect(result.runOutput).toBe(["helper evaluated", "a evaluated", "entry: A:H-VAL"].join("\n"));
   });
 
+  // side-effect-only dynamic target. exports 없는 모듈은 exports_kind=.none 이라
+  // Pass 4 의 `isEsm()` 체크에 걸려 wrap_kind 가 promote 안 됐었음 → rewriter 의
+  // `.none` arm fallback → 외부 sibling 파일 의존. fix: `.commonjs` 만 skip 하고
+  // `.none` 도 ESM 으로 승격.
+  test("side-effect-only dynamic target 도 lazy wrap (외부 sibling fallback 제거)", async () => {
+    const result = await bundleAndRun(
+      {
+        "sfx.ts": `
+          console.log("side-effect");
+          (globalThis as any).SFX_LOADED = true;
+        `,
+        "index.ts": `
+          async function run() { await import("./sfx.ts"); return (globalThis as any).SFX_LOADED; }
+          run().then(v => console.log("entry:", v));
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    // side-effect 가 *한 번만* 출력 — 이전엔 두 번 (eager + sibling fallback).
+    expect(result.runOutput).toBe(["side-effect", "entry: true"].join("\n"));
+  });
+
+  // CJS dynamic target — Pass 1 의 require 처리에서 wrap_kind=.cjs 로 set 되고
+  // rewriter 의 `.cjs` arm 이 `Promise.resolve().then(()=>require_x())` 변환.
+  test("CJS dynamic target: require_X() 호출로 변환", async () => {
+    const result = await bundleAndRun(
+      {
+        "dep.cjs": `
+          module.exports = { value: "from-cjs" };
+          console.log("cjs evaluated");
+        `,
+        "index.ts": `
+          async function run() { return (await import("./dep.cjs")).value; }
+          run().then(v => console.log("entry:", v));
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe(["cjs evaluated", "entry: from-cjs"].join("\n"));
+  });
+
+  // JSON dynamic target — module_type=.json 도 정상 lazy wrap (default export 로 접근).
+  test("JSON dynamic target: default export 접근", async () => {
+    const result = await bundleAndRun(
+      {
+        "data.json": `{ "value": "json-loaded" }`,
+        "index.ts": `
+          async function run() { return (await import("./data.json")).default.value; }
+          run().then(v => console.log("entry:", v));
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("entry: json-loaded");
+  });
+
   // 3-way static cycle 이 dynamic target 안에서 형성된 케이스. dfs 가 dependencies +
   // dynamic_imports 둘 다 따라가야 cycle 의 모든 멤버 (a, b, c) 에 marking + var 강등.
   test("3-way static cycle + dynamic importer (#2211 확장)", async () => {

@@ -2438,12 +2438,19 @@ pub const ModuleGraph = struct {
         // Pass 4: inlineDynamicImports — dynamic-import target 만 __esm 래핑.
         // 일반 모듈은 scope-hoisting 그대로, dynamic target 만 lazy factory 로
         // 묶어서 emitter 가 `import("./x")` 호출을 init/exports 호출로 재작성.
+        //
+        // exports_kind 검사: `.commonjs` 는 Pass 1 의 require 처리에서 이미 wrap_kind
+        // =.cjs 로 set 됐어야 (require 안 받은 CJS 도 exports_kind 만 있고 .none 인
+        // wrap_kind 면 여기서 wrap 안전). `.none` (script / side-effect only) 도
+        // ESM lazy wrap 으로 승격해야 호출이 init() 으로 재작성됨 — 그렇지 않으면
+        // codegen 의 `.none` arm fallback 으로 외부 sibling 파일 의존 (#2211 후속).
         if (self.inline_dynamic_imports) {
             var it = self.modules.iterator(0);
             while (it.next()) |m| {
                 if (m.dynamic_importers.items.len == 0) continue;
                 if (m.wrap_kind != .none) continue;
-                if (!m.exports_kind.isEsm()) continue;
+                if (m.exports_kind == .commonjs) continue; // Pass 1 책임
+                if (m.exports_kind == .none) m.exports_kind = .esm;
                 m.wrap_kind = .esm;
             }
         }
