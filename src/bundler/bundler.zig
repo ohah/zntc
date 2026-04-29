@@ -677,6 +677,19 @@ pub const Bundler = struct {
         var t_shake: u64 = 0;
         var t_emit: u64 = 0;
 
+        // Plugin lifecycle (#2156): buildStart 즉시, buildEnd 는 정상 path 끝 또는 errdefer.
+        // closeBundle 은 NAPI 경유 시 JS layer (writeOutputFiles 후) 가 dispatch — Rollup
+        // 의미 ("write 완료 후") 보존. native Plugin 의 closeBundle 만 여기서 호출.
+        // watch 모드 (incremental) 는 매 rebuild 마다 bundle() 재호출 → 자연스럽게 매번 dispatch.
+        // errdefer 를 buildStart 호출 *전* 에 등록 — buildStart 가 throw 해도 cleanup 경로 실행.
+        const lifecycle_runner = plugin_mod.PluginRunner.init(self.options.plugins);
+        // catastrophic error path — build_error 추출 불가하므로 null 전달.
+        errdefer {
+            lifecycle_runner.runBuildEnd(null);
+            lifecycle_runner.runCloseBundle();
+        }
+        try lifecycle_runner.runBuildStart();
+
         // 타이머는 항상 동작 (watch 관측성용 — HMR phaseDurations 에 노출).
         // 추가로 `profile` 모듈 activation 시 같은 구간에 .graph/.link/.shake/.emit scope 가 기록된다.
         var timer: ?std.time.Timer = std.time.Timer.start() catch null;
@@ -1284,6 +1297,21 @@ pub const Bundler = struct {
                 store.putModule(m.path, m, mtime);
             }
         }
+
+        var first_err: ?*const types.BundlerDiagnostic = null;
+        if (linker) |*l| {
+            if (l.fatal_diagnostics.items.len > 0) first_err = &l.fatal_diagnostics.items[0];
+        }
+        if (first_err == null) {
+            for (graph.diagnostics.items) |*d| {
+                if (d.severity == .@"error") {
+                    first_err = d;
+                    break;
+                }
+            }
+        }
+        lifecycle_runner.runBuildEnd(first_err);
+        lifecycle_runner.runCloseBundle();
 
         return .{
             .output = output,
