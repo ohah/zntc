@@ -2492,6 +2492,38 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("ab");
     });
 
+    test("string enum: no reverse mapping (TS spec)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            enum S { X = 'x', Y = 'y' }
+            console.log((S as any)['x'], (S as any)['y'], Object.keys(S).length);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("undefined undefined 2");
+    });
+
+    test("mixed enum: numeric reverse, string forward-only", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            enum E { A = 1, B = 'b' }
+            console.log(JSON.stringify(E));
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('{"1":"A","A":1,"B":"b"}');
+    });
+
     test("namespace + enum 조합", async () => {
       const result = await bundleAndRun(
         {
