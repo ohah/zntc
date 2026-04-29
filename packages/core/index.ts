@@ -1310,7 +1310,11 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   const { publicDir, ...rest } = options;
   return native.buildAppSync({
     ...rest,
-    ...(publicDir === false ? { disablePublicDir: true } : publicDir !== undefined ? { publicDir } : {}),
+    ...(publicDir === false
+      ? { disablePublicDir: true }
+      : publicDir !== undefined
+        ? { publicDir }
+        : {}),
   });
 }
 
@@ -1319,7 +1323,11 @@ export function prepareAppDevSync(options: AppDevPrepareOptions = {}): AppDevPre
   const { publicDir, ...rest } = options;
   return native.prepareAppDevSync({
     ...rest,
-    ...(publicDir === false ? { disablePublicDir: true } : publicDir !== undefined ? { publicDir } : {}),
+    ...(publicDir === false
+      ? { disablePublicDir: true }
+      : publicDir !== undefined
+        ? { publicDir }
+        : {}),
   });
 }
 

@@ -2785,10 +2785,9 @@ describe("CLI: Vite-style app builder", () => {
     writeFileSync(join(dir, "src", "main.css"), ".hero{color:red}");
 
     const outdir = join(dir, "dist");
-    const { exitCode, stderr } = runCli(
-      ["build", dir, "--outdir", outdir, "--no-splitting"],
-      { cwd: dir },
-    );
+    const { exitCode, stderr } = runCli(["build", dir, "--outdir", outdir, "--no-splitting"], {
+      cwd: dir,
+    });
     expect(exitCode).toBe(0);
     expect(stderr).not.toContain("OutputCollision");
     const html = readFileSync(join(outdir, "index.html"), "utf8");
@@ -2808,10 +2807,7 @@ describe("CLI: Vite-style app builder", () => {
     );
     writeFileSync(join(dir, "src", "main.ts"), 'import "./style.css";\nconsole.log("ok");');
     writeFileSync(join(dir, "src", "style.css"), ".x{color:red}");
-    writeFileSync(
-      join(dir, "postcss.config.mjs"),
-      "export default { plugins: [] };\n",
-    );
+    writeFileSync(join(dir, "postcss.config.mjs"), "export default { plugins: [] };\n");
 
     const port = 12800 + Math.floor(Math.random() * 100);
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
