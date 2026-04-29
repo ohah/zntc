@@ -11,22 +11,23 @@
 //! import styled from "styled-components";
 //! const Button = styled.div`color: red;`;
 //!
-//! // 출력 (babel-plugin-styled-components 의 표준 형태)
+//! // 출력 (이번 PR — babel/swc 표준 형태)
 //! import styled from "styled-components";
 //! const Button = styled.div.withConfig({ displayName: "Button" })`color: red;`;
 //! ```
 //!
-//! 본 ZTS 구현은 **iterative**:
-//! - **현재 (이번 PR)**: post-declaration `Button.displayName = "Button";` — DevTools 표시 충족
-//! - **후속 PR**: `.withConfig(...)` 래핑 + componentId hash + SSR 안정화
+//! ## 진화
+//!
+//! - PR 2228 (이전): post-decl `Button.displayName = "Button";` — DevTools 만 충족
+//! - **본 PR**: in-place `.withConfig({ displayName })` 래핑 — babel/swc 호환 출력
+//! - 후속 PR: componentId hash + SSR 안정화 + chained `.attrs(...)` / `.withConfig(...)`
 //!
 //! ## hook point
 //!
-//! - `visitImportDeclaration`: source 가 "styled-components" / "styled-components/native" 면
-//!   default specifier 의 로컬 이름을 `state.default_binding` 에 저장.
-//! - `visitVariableDeclarator`: init 이 `<binding>.X\`...\`` / `<binding>(X)\`...\`` 형태이면
-//!   `state.registrations` 에 변수 이름 추가.
-//! - 프로그램 끝 (`run`): registrations 마다 `<name>.displayName = "<name>";` 주입.
+//! - `visitImportDeclaration`: source 가 styled-components 면 default specifier 의 로컬
+//!   이름을 `state.default_binding` 에 저장.
+//! - `visitVariableDeclarator`: init 변환 후 결과가 `<binding>.X\`...\`` /
+//!   `<binding>(arg)\`...\`` 이면 tag 를 `.withConfig({...})` 로 wrap 한 새 노드로 교체.
 //!
 //! ## 미지원 케이스 (후속 PR)
 //!
@@ -47,7 +48,6 @@ const import_scanner = @import("../../bundler/import_scanner.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
-const StyledComponentRegistration = @import("../plugin_state.zig").StyledComponentRegistration;
 
 /// v6+ 는 "/native" subpath 도 인정. 추가될 가능성 있음 (vendored fork 등).
 pub const STYLED_SOURCES: []const []const u8 = &.{
@@ -117,119 +117,102 @@ fn tagUsesBinding(self: *Transformer, tag_idx: NodeIndex) bool {
     return std.mem.eql(u8, self.ast.getText(root_node.data.string_ref), binding);
 }
 
-/// `visitVariableDeclarator` hook — init 이 styled tagged template 이면 변수 이름을 등록.
-pub fn detectStyledDeclaration(self: *Transformer, node: Node) Error!void {
-    if (!self.options.styled_components) return;
-    if (self.plugins.styled_components.default_binding == null) return;
-
-    // variable_declarator extra = [name, type_annotation, init]
-    const e = node.data.extra;
-    if (!self.ast.hasExtra(e, 2)) return;
-    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-    const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
-    if (init_idx.isNone()) return;
+/// `visitVariableDeclarator` 의 post-visit hook. visit 후 init 이 styled tagged template
+/// 이면 tag 를 `.withConfig({displayName})` 로 wrap 한 새 tagged_template 으로 교체.
+///
+/// 옵션 비활성 / binding 미감지 / pattern 불일치 시 init_idx 그대로 반환.
+pub fn maybeWrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+    if (!self.options.styled_components) return init_idx;
+    if (self.plugins.styled_components.default_binding == null) return init_idx;
+    if (var_name.len == 0) return init_idx;
+    if (init_idx.isNone()) return init_idx;
 
     const init_node = self.ast.getNode(init_idx);
-    if (init_node.tag != .tagged_template_expression) return;
+    if (init_node.tag != .tagged_template_expression) return init_idx;
 
-    // tagged_template_expression extra = [tag, template, flags]
-    const te = init_node.data.extra;
-    if (!self.ast.hasExtra(te, 1)) return;
-    const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[te]);
-    if (!tagUsesBinding(self, tag_idx)) return;
+    // tagged_template extra = [tag, template, flags]
+    const e = init_node.data.extra;
+    if (!self.ast.hasExtra(e, 2)) return init_idx;
+    const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    const flags = self.ast.extra_data.items[e + 2];
 
-    if (name_idx.isNone()) return;
-    const name_node = self.ast.getNode(name_idx);
-    if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return;
-    const var_name = self.ast.getText(name_node.data.string_ref);
-    if (var_name.len == 0) return;
+    if (!tagUsesBinding(self, tag_idx)) return init_idx;
 
-    try self.plugins.styled_components.registrations.append(self.allocator, .{ .name = var_name });
+    // 새 tag = <orig_tag>.withConfig({ displayName: "<var_name>" })
+    const new_tag = try buildWithConfigCall(self, tag_idx, var_name);
+
+    // 새 tagged_template — 같은 template + flags, 새 tag.
+    const new_extra = try self.ast.addExtras(&.{
+        @intFromEnum(new_tag),
+        @intFromEnum(template_idx),
+        flags,
+    });
+    return self.ast.addNode(.{
+        .tag = .tagged_template_expression,
+        .span = init_node.span,
+        .data = .{ .extra = new_extra },
+    });
 }
 
-// ================================================================
-// AST 변환 — 프로그램 끝에 displayName 할당문 주입
-// ================================================================
-
-/// `<Var>.displayName = "<Var>";` 단일 expression_statement 빌드.
-/// `display_name_span` 은 caller 에서 한 번만 만들어 재사용 (per-registration addString 회피).
-fn buildDisplayNameAssignment(
-    self: *Transformer,
-    reg: StyledComponentRegistration,
-    display_name_span: Span,
-) Error!NodeIndex {
+/// `<tag>.withConfig({ displayName: "<var_name>" })` call_expression 빌드.
+fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     const zero = Span{ .start = 0, .end = 0 };
-    const name_span = try self.ast.addString(reg.name);
+    const with_config_span = try self.ast.addString("withConfig");
+    const display_name_key_span = try self.ast.addString("displayName");
     var quoted_buf: [256]u8 = undefined;
-    const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{reg.name}) catch return error.OutOfMemory;
+    const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{var_name}) catch return error.OutOfMemory;
     const quoted_span = try self.ast.addString(quoted);
 
-    const obj_ref = try self.ast.addNode(.{
+    // <tag>.withConfig — static_member_expression
+    const with_config_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
-        .span = name_span,
-        .data = .{ .string_ref = name_span },
+        .span = with_config_span,
+        .data = .{ .string_ref = with_config_span },
     });
-    const prop_ref = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = display_name_span,
-        .data = .{ .string_ref = display_name_span },
-    });
-    const member = try self.addExtraNode(.static_member_expression, zero, &.{
-        @intFromEnum(obj_ref),
-        @intFromEnum(prop_ref),
+    const member = try addExtraNode(self, .static_member_expression, zero, &.{
+        @intFromEnum(tag_idx),
+        @intFromEnum(with_config_ref),
         0,
+    });
+
+    // displayName: "<var_name>" — object_property (binary = { left=key, right=value, flags=0 })
+    const key = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = display_name_key_span,
+        .data = .{ .string_ref = display_name_key_span },
     });
     const value = try self.ast.addNode(.{
         .tag = .string_literal,
         .span = quoted_span,
         .data = .{ .string_ref = quoted_span },
     });
-    const assign = try self.ast.addNode(.{
-        .tag = .assignment_expression,
+    const property = try self.ast.addNode(.{
+        .tag = .object_property,
         .span = zero,
-        .data = .{ .binary = .{ .left = member, .right = value, .flags = 0 } },
+        .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
     });
-    return self.ast.addNode(.{
-        .tag = .expression_statement,
+
+    // { displayName: "..." } — object_expression (list of properties)
+    const obj_list = try self.ast.addNodeList(&.{property});
+    const obj = try self.ast.addNode(.{
+        .tag = .object_expression,
         .span = zero,
-        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+        .data = .{ .list = obj_list },
+    });
+
+    // <tag>.withConfig({...}) — call_expression (extra = [callee, args_start, args_len, flags])
+    const args = try self.ast.addNodeList(&.{obj});
+    return addExtraNode(self, .call_expression, zero, &.{
+        @intFromEnum(member),
+        args.start,
+        args.len,
+        0,
     });
 }
 
-/// `addExtraNode` thin wrapper — `Transformer.addExtraNode` (transformer.zig:2772) 와 동일,
-/// 모듈 외부에서도 호출 가능하도록 노출.
+/// `Transformer.addExtraNode` 와 동일 — 모듈 외부에서도 호출 가능하도록 wrapper.
 fn addExtraNode(self: *Transformer, tag: Node.Tag, span: Span, extras: []const u32) Error!NodeIndex {
     const e = try self.ast.addExtras(extras);
     return self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = e } });
-}
-
-/// 프로그램 body 끝에 등록된 styled 컴포넌트마다 `<Var>.displayName = "<Var>";` 추가.
-pub fn appendDisplayNameAssignments(self: *Transformer, root: NodeIndex) Error!NodeIndex {
-    const prog = self.ast.getNode(root);
-    if (prog.tag != .program) return root;
-    if (self.plugins.styled_components.registrations.items.len == 0) return root;
-
-    // "displayName" 은 모든 할당이 공유하므로 단일 span 으로 캐싱 (refresh.zig:105 의 $RefreshReg$ 패턴).
-    const display_name_span = try self.ast.addString("displayName");
-
-    const old_list = prog.data.list;
-    const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
-
-    const scratch_top = self.scratch.items.len;
-    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-    for (old_stmts) |raw_idx| {
-        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
-    }
-    for (self.plugins.styled_components.registrations.items) |reg| {
-        const stmt = try buildDisplayNameAssignment(self, reg, display_name_span);
-        try self.scratch.append(self.allocator, stmt);
-    }
-
-    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    return self.ast.addNode(.{
-        .tag = .program,
-        .span = prog.span,
-        .data = .{ .list = new_list },
-    });
 }

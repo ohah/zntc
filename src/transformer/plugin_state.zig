@@ -64,22 +64,11 @@ pub const RefreshState = struct {
     suppress_registration: bool = false,
 };
 
-/// styled-components 1st-party transform 의 감지 결과.
-/// 변환 완료 후 프로그램 끝에 `<Var>.displayName = "<Var>";` 주입에 사용.
-pub const StyledComponentRegistration = struct {
-    /// 컴포넌트 변수 이름 (= displayName 값)
-    name: []const u8,
-};
-
 pub const StyledComponentsState = struct {
     /// `import styled from "styled-components"` 의 default binding 로컬 이름.
     /// alias 가 있으면 그 이름 (예: `import s from "styled-components"` → "s").
-    /// import 가 없으면 null — 이후 모든 detection 이 no-op.
+    /// import 가 없으면 null — 이후 모든 wrap 이 no-op.
     default_binding: ?[]const u8 = null,
-
-    /// 감지된 styled 컴포넌트 목록.
-    /// 변환 완료 후 프로그램 끝에서 일괄 주입.
-    registrations: std.ArrayList(StyledComponentRegistration) = .empty,
 };
 
 pub const PluginState = struct {
