@@ -932,6 +932,11 @@ export interface AppBuildOptions {
   sourcemap?: boolean;
   /** Enable code splitting for the application bundle. */
   splitting?: boolean;
+  /**
+   * 라이브러리별 1st-party transform (`@next/swc` 의 `compiler` 와 호환 surface).
+   * BuildOptions 와 동일 의미 — bundle / app 빌드 양쪽에서 같은 옵션 표현 사용.
+   */
+  compiler?: CompilerOptions;
 }
 
 /**
@@ -1385,7 +1390,7 @@ export function buildSync(options: BuildOptions): BuildResult {
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
-  const { publicDir, ...rest } = options;
+  const { publicDir, compiler, ...rest } = options;
   return native.buildAppSync({
     ...rest,
     ...(publicDir === false
@@ -1393,6 +1398,11 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
       : publicDir !== undefined
         ? { publicDir }
         : {}),
+    // compiler.* → flat NAPI fields. enabled boolean 만 우선 (옵션 객체는 후속 PR).
+    ...(compiler?.styledComponents !== undefined && compiler.styledComponents !== false
+      ? { styledComponents: true }
+      : {}),
+    ...(compiler?.emotion !== undefined && compiler.emotion !== false ? { emotion: true } : {}),
   });
 }
 

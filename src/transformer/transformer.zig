@@ -676,6 +676,12 @@ pub const Transformer = struct {
             root = try self.appendRefreshRegistrations(root);
         }
 
+        // styled-components: 감지된 컴포넌트마다 `<Var>.displayName = "<Var>";` 추가.
+        // (PR 1) componentId / withConfig 래핑 등은 후속 PR.
+        if (self.options.styled_components and self.plugins.styled_components.registrations.items.len > 0) {
+            root = try styled_components_mod.appendDisplayNameAssignments(self, root);
+        }
+
         self.ast.transformed_root = root;
         self.ast.assertInvariants();
         return root;

@@ -562,6 +562,7 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
         .minify = getObjectBool(env, opts_obj, "minify", false),
         .sourcemap = getObjectBool(env, opts_obj, "sourcemap", false),
         .splitting = getObjectBool(env, opts_obj, "splitting", true),
+        .styled_components = getObjectBool(env, opts_obj, "styledComponents", false),
     }) catch |err| {
         return throwError(env, @errorName(err));
     };

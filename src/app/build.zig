@@ -20,6 +20,8 @@ pub const AppBuildOptions = struct {
     minify: bool = false,
     sourcemap: bool = false,
     splitting: bool = true,
+    /// styled-components 1st-party transform 활성화 (compiler.styledComponents).
+    styled_components: bool = false,
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -111,6 +113,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .asset_names = "[name]-[hash]",
         .output_filename = "bundle.js",
         .root_dir = root,
+        .styled_components = opts.styled_components,
     });
     defer bundler.deinit();
 
