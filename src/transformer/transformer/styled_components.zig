@@ -45,6 +45,7 @@ const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const module_parser = @import("../../parser/module.zig");
 const import_scanner = @import("../../bundler/import_scanner.zig");
+const stmt_info = @import("../../bundler/stmt_info.zig");
 const wyhash = @import("../../util/wyhash.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
@@ -125,6 +126,15 @@ fn tagUsesBinding(self: *Transformer, tag_idx: NodeIndex) bool {
             else => return false,
         }
     }
+}
+
+/// object_property 의 key 노드에서 displayName 으로 사용할 이름을 추출.
+/// `stmt_info.plainObjectKeyName` 재사용 — escape 포함 문자열 (`{ "A\"B": ... }`) 은
+/// 보수적으로 reject 하여 raw vs decoded 시맨틱 차이로 인한 잘못된 매칭 방지.
+pub fn objectPropertyKeyName(self: *Transformer, key_idx: NodeIndex) ?[]const u8 {
+    const name = stmt_info.plainObjectKeyName(self.ast, key_idx) orelse return null;
+    if (name.len == 0) return null;
+    return name;
 }
 
 /// `visitVariableDeclarator` 의 post-visit hook. caller 가 init.tag 를 사전 검사한 뒤

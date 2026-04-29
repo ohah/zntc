@@ -4373,7 +4373,18 @@ pub const Transformer = struct {
         else
             try self.visitNode(key_idx);
         self.propagateSymbolId(key_idx, new_key);
-        const new_value = try self.visitNode(node.data.binary.right);
+        var new_value = try self.visitNode(node.data.binary.right);
+        // styled-components: { One: styled.div`...` } 의 value 가 styled tagged template 이면
+        // property key 이름을 displayName 으로 사용해 wrap. variable_declarator 와 동일 패턴.
+        if (self.options.styled_components and
+            self.plugins.styled_components.default_binding != null and
+            !new_value.isNone() and !new_key.isNone() and
+            self.ast.getNode(new_value).tag == .tagged_template_expression)
+        {
+            if (styled_components_mod.objectPropertyKeyName(self, new_key)) |prop_name| {
+                new_value = try styled_components_mod.wrapStyledTag(self, new_value, prop_name);
+            }
+        }
         return self.ast.addNode(.{
             .tag = .object_property,
             .span = node.span,

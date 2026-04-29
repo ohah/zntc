@@ -324,7 +324,7 @@ fn isCjsExportObjectExpr(ast: *const Ast, idx: NodeIndex) bool {
 
 /// string_literal 의 escape 가 풀린 형태로 비교 안 하므로 raw 와 source-after-decode
 /// 가 다른 경우는 reject — 잘못된 export 매칭을 막는 보수적 가드.
-fn plainStringLiteralValue(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
+pub fn plainStringLiteralValue(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
     const n = ast.nodes.items[@intFromEnum(idx)];
     if (n.tag != .string_literal) return null;
@@ -333,7 +333,10 @@ fn plainStringLiteralValue(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     return Ast.stripStringQuotes(raw);
 }
 
-fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
+/// object_property 의 key 노드에서 정적 이름을 추출 (escape-bearing string 은 reject).
+/// 인식: `identifier_reference` (`{ x: ... }`), `string_literal` (`{ "x": ... }`).
+/// 미인식: `computed_property_key`, `numeric_literal`, escape 포함 문자열.
+pub fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return null;
     const key = ast.nodes.items[@intFromEnum(key_idx)];
     return switch (key.tag) {
