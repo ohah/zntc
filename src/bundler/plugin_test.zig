@@ -73,9 +73,10 @@ test "PluginRunner: resolveId first mode" {
 
 // --- load 훅 테스트 ---
 
-fn testLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn testLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.LoadResult {
     if (std.mem.endsWith(u8, path, ".custom")) {
-        return try allocator.dupe(u8, "export default 'custom-loaded';");
+        const contents = try allocator.dupe(u8, "export default 'custom-loaded';");
+        return .{ .contents = contents };
     }
     return null;
 }
@@ -88,8 +89,8 @@ test "PluginRunner: load first mode" {
 
     const result = try runner.runLoad("module.custom", std.testing.allocator);
     try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings("export default 'custom-loaded';", result.?);
-    std.testing.allocator.free(result.?);
+    try std.testing.expectEqualStrings("export default 'custom-loaded';", result.?.contents);
+    std.testing.allocator.free(result.?.contents);
 
     // 매칭 안 되는 확장자 → null (파일 시스템에서 읽기)
     const result2 = try runner.runLoad("module.ts", std.testing.allocator);
@@ -352,13 +353,14 @@ test "Plugin integration: transform output invalidates compiled cache (#2038)" {
 
 var compiled_cache_load_marker: []const u8 = "A";
 
-fn cacheSensitiveLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn cacheSensitiveLoadHook(_: ?*anyopaque, path: []const u8, allocator: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.LoadResult {
     if (!std.mem.endsWith(u8, path, "index.ts")) return null;
-    return std.fmt.allocPrint(
+    const contents = std.fmt.allocPrint(
         allocator,
         "const marker = \"plugin-load-cache-{s}-2038\";\nconsole.log(marker);\n",
         .{compiled_cache_load_marker},
     ) catch return error.OutOfMemory;
+    return .{ .contents = contents };
 }
 
 test "Plugin integration: load output invalidates compiled cache (#2038)" {
@@ -544,7 +546,7 @@ test "Plugin integration: resolveId null falls through to default resolver" {
 
 // --- load 훅이 null 반환 시 파일 시스템 폴백 ---
 
-fn nullLoadHook(_: ?*anyopaque, _: []const u8, _: std.mem.Allocator) plugin_mod.PluginError!?[]const u8 {
+fn nullLoadHook(_: ?*anyopaque, _: []const u8, _: std.mem.Allocator) plugin_mod.PluginError!?plugin_mod.LoadResult {
     return null;
 }
 

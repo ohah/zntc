@@ -2253,6 +2253,58 @@ test "Asset loader: dataurl — base64 data URL" {
     try std.testing.expect(result.asset_outputs == null);
 }
 
+test "Asset loader: base64 — pure base64 string (no data URL prefix)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import s from './data.bin';\nconsole.log(s);");
+    try tmp.dir.writeFile(.{ .sub_path = "data.bin", .data = &.{ 0x48, 0x69 } }); // "Hi"
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".bin", .loader = .base64 }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // base64("Hi") = "SGk=" — pure base64, no data URL prefix
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"SGk=\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "data:") == null);
+    try std.testing.expect(result.asset_outputs == null);
+}
+
+test "Asset loader: copy — raw passthrough to asset output" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import url from './doc.pdf';\nconsole.log(url);");
+    try tmp.dir.writeFile(.{ .sub_path = "doc.pdf", .data = "PDF-RAW-CONTENTS" });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".pdf", .loader = .copy }},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // copy 도 file 처럼 hash 가 붙은 path 를 export 하고, raw bytes 가 asset_outputs 에 포함됨.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "doc-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, ".pdf") != null);
+    try std.testing.expect(result.asset_outputs != null);
+    try std.testing.expectEqual(@as(usize, 1), result.asset_outputs.?.len);
+    try std.testing.expectEqualStrings("PDF-RAW-CONTENTS", result.asset_outputs.?[0].contents);
+}
+
 test "Asset loader: file — hash filename + asset output" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
