@@ -2595,9 +2595,10 @@ describe("CLI: Vite-style app builder", () => {
     expect(exitCode).toBe(0);
 
     const html = readFileSync(join(outdir, "index.html"), "utf8");
-    expect(html).toContain('href="/app/style.css?v=1"');
+    // stylesheet source 의 root-기준 relative path 가 link href 에 보존된다.
+    expect(html).toContain('href="/app/src/style.css?v=1"');
     expect(html).toContain('src="/app/logo.png?raw#x"');
-    expect(readFileSync(join(outdir, "style.css"), "utf8")).toContain(
+    expect(readFileSync(join(outdir, "src", "style.css"), "utf8")).toContain(
       'url("/app/bg.png?v=2#hash")',
     );
     expect(existsSync(join(outdir, "bg.png"))).toBe(true);
@@ -2791,8 +2792,10 @@ describe("CLI: Vite-style app builder", () => {
     expect(exitCode).toBe(0);
     expect(stderr).not.toContain("OutputCollision");
     const html = readFileSync(join(outdir, "index.html"), "utf8");
-    expect(html).toContain('href="/main.css"');
+    // bundler 가 emit 한 main.css 와 stylesheet 가 가리키는 src/main.css 가 서로 다른 path 로 분리.
+    expect(html).toContain('href="/src/main.css"');
     expect(existsSync(join(outdir, "main.css"))).toBe(true);
+    expect(existsSync(join(outdir, "src", "main.css"))).toBe(true);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2825,7 +2828,9 @@ describe("CLI: Vite-style app builder", () => {
       const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
       expect(html).toContain("<title>dev</title>");
       expect(html).toContain("/__zts_app_dev_hmr__");
-      const css = await fetch(`http://localhost:${port}/style.css`).then((r) => r.text());
+      // stylesheet source 의 root-기준 relative path 가 link href 와 emit path 양쪽에서 보존된다.
+      expect(html).toContain('href="/src/style.css"');
+      const css = await fetch(`http://localhost:${port}/src/style.css`).then((r) => r.text());
       expect(css).toContain(".dev-postcss-ok");
       const stderrText = stderrChunks.join("");
       expect(stderrText).toContain("[postcss] processed 1 CSS file");
@@ -2867,7 +2872,136 @@ describe("CLI: Vite-style app builder", () => {
       writeFileSync(join(dir, "src", "style.css"), ".x{color:blue}");
       const msg = await messagePromise;
       expect(msg.type).toBe("css-update");
-      expect(msg.href).toBe("/style.css");
+      expect(msg.href).toBe("/src/style.css");
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev preserves sub-directory CSS path (no basename collision)", async () => {
+    // 서브디렉토리에 같은 basename 을 가진 두 CSS 파일이 있으면, root-기준 relative path 가
+    // 보존되어 HTML link 와 emit path 가 둘 다 분리된다.
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-css-nested-"));
+    mkdirSync(join(dir, "src", "a"), { recursive: true });
+    mkdirSync(join(dir, "src", "b"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      [
+        '<link rel="stylesheet" href="/src/a/style.css">',
+        '<link rel="stylesheet" href="/src/b/style.css">',
+        '<script type="module" src="/src/main.ts"></script>',
+      ].join(""),
+    );
+    writeFileSync(join(dir, "src", "main.ts"), 'console.log("ok");');
+    writeFileSync(join(dir, "src", "a", "style.css"), ".aaa{color:red}");
+    writeFileSync(join(dir, "src", "b", "style.css"), ".bbb{color:blue}");
+
+    const port = 13000 + Math.floor(Math.random() * 100);
+    const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    try {
+      const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
+      expect(html).toContain('href="/src/a/style.css"');
+      expect(html).toContain('href="/src/b/style.css"');
+      const aCss = await fetch(`http://localhost:${port}/src/a/style.css`).then((r) => r.text());
+      const bCss = await fetch(`http://localhost:${port}/src/b/style.css`).then((r) => r.text());
+      expect(aCss).toContain(".aaa");
+      expect(bCss).toContain(".bbb");
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev incremental PostCSS reprocesses only the changed CSS", async () => {
+    // 단일 CSS 변경 시 changedPath 만 reprocess → stderr 에 "processed 1 CSS file".
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-css-incr-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      [
+        '<link rel="stylesheet" href="/src/a.css">',
+        '<link rel="stylesheet" href="/src/b.css">',
+        '<script type="module" src="/src/main.ts"></script>',
+      ].join(""),
+    );
+    writeFileSync(join(dir, "src", "main.ts"), 'console.log("ok");');
+    writeFileSync(join(dir, "src", "a.css"), ".a{color:red}");
+    writeFileSync(join(dir, "src", "b.css"), ".b{color:blue}");
+    writeFileSync(
+      join(dir, "postcss.config.mjs"),
+      [
+        "export default {",
+        "  plugins: [",
+        "    { postcssPlugin: 'zts-noop', Once() {} },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+
+    const port = 13100 + Math.floor(Math.random() * 100);
+    const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
+    const stderrChunks: string[] = [];
+    proc.stderr?.on("data", (chunk) => stderrChunks.push(chunk.toString()));
+    await waitForServer(port);
+    try {
+      // 초기 빌드: 두 CSS 모두 처리.
+      expect(stderrChunks.join("")).toContain("[postcss] processed 2 CSS file");
+      stderrChunks.length = 0;
+
+      // a.css 한 파일만 변경 → incremental, "processed 1 CSS file".
+      const messagePromise = new Promise<any>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(String(event.data));
+          if (msg.type === "css-update" || msg.type === "full-reload") {
+            ws.close();
+            resolve(msg);
+          }
+        };
+        setTimeout(() => resolve({ type: "timeout" }), 5000);
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      writeFileSync(join(dir, "src", "a.css"), ".a{color:green}");
+      await messagePromise;
+      // 이벤트 후 stderr flush 위해 잠시 대기.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(stderrChunks.join("")).toContain("[postcss] processed 1 CSS file");
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev under Bun runtime: /__hmr WebSocket connects", async () => {
+    // RUNTIME=node 가 기본이라 Bun.serve 분기는 별도 케이스. bun 이 PATH 에 있다고 가정.
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-bun-hmr-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<title>bun-dev</title><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), 'console.log("ok");');
+
+    const port = 13200 + Math.floor(Math.random() * 100);
+    const proc = spawn("bun", [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+    try {
+      const messagePromise = new Promise<any>((resolve) => {
+        const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(String(event.data));
+          if (msg.type === "connected") {
+            ws.close();
+            resolve(msg);
+          }
+        };
+        ws.onerror = () => resolve({ type: "error" });
+        setTimeout(() => resolve({ type: "timeout" }), 5000);
+      });
+      const msg = await messagePromise;
+      expect(msg.type).toBe("connected");
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });

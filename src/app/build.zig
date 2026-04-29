@@ -176,19 +176,20 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
     for (html_entry.stylesheets.items) |href| {
         if (try resolveHtmlRef(allocator, root, html_dir, href)) |style_path| {
             defer allocator.free(style_path);
-            const name = std.fs.path.basename(style_path);
+            const rel = try stylesheetRelFromRoot(allocator, root, style_path);
+            defer allocator.free(rel);
             const href_parts = splitUrl(href);
-            const already_emitted = reserved.contains(name);
+            const already_emitted = reserved.contains(rel);
             if (!already_emitted) {
                 const contents = try std.fs.cwd().readFileAlloc(allocator, style_path, 10 * 1024 * 1024);
                 defer allocator.free(contents);
                 const rewritten_css = try rewriteCssUrls(allocator, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
                 defer allocator.free(rewritten_css);
-                try writeOutput(allocator, outdir, name, rewritten_css);
-                try addReserved(allocator, &reserved, &reserved_keys, name);
+                try writeOutput(allocator, outdir, rel, rewritten_css);
+                try addReserved(allocator, &reserved, &reserved_keys, rel);
                 output_count += 1;
             }
-            const new_url = try joinBaseUrlWithSuffix(allocator, base, name, href_parts.suffix);
+            const new_url = try joinBaseUrlWithSuffix(allocator, base, rel, href_parts.suffix);
             defer allocator.free(new_url);
             const next = try replaceOwned(allocator, html, href, new_url);
             allocator.free(html);
@@ -302,19 +303,20 @@ pub fn prepareDev(allocator: std.mem.Allocator, opts: AppDevPrepareOptions) !App
     for (html_entry.stylesheets.items) |href| {
         if (try resolveHtmlRef(allocator, root, html_dir, href)) |style_path| {
             defer allocator.free(style_path);
-            const name = std.fs.path.basename(style_path);
+            const rel = try stylesheetRelFromRoot(allocator, root, style_path);
+            defer allocator.free(rel);
             const href_parts = splitUrl(href);
-            const already_emitted = reserved.contains(name);
+            const already_emitted = reserved.contains(rel);
             if (!already_emitted) {
                 const contents = try std.fs.cwd().readFileAlloc(allocator, style_path, 10 * 1024 * 1024);
                 defer allocator.free(contents);
                 const rewritten_css = try rewriteCssUrls(allocator, contents, style_path, outdir, base, &reserved, &reserved_keys, &output_count);
                 defer allocator.free(rewritten_css);
-                try writeOutput(allocator, outdir, name, rewritten_css);
-                try addReserved(allocator, &reserved, &reserved_keys, name);
+                try writeOutput(allocator, outdir, rel, rewritten_css);
+                try addReserved(allocator, &reserved, &reserved_keys, rel);
                 output_count += 1;
             }
-            const new_url = try joinBaseUrlWithSuffix(allocator, base, name, href_parts.suffix);
+            const new_url = try joinBaseUrlWithSuffix(allocator, base, rel, href_parts.suffix);
             defer allocator.free(new_url);
             const next = try replaceOwned(allocator, html, href, new_url);
             allocator.free(html);
@@ -441,6 +443,19 @@ fn isExternalUrl(value: []const u8) bool {
         std.mem.startsWith(u8, value, "https://") or
         std.mem.startsWith(u8, value, "//") or
         std.mem.startsWith(u8, value, "data:");
+}
+
+/// `<link rel=stylesheet>` source 의 outdir-내 emit path 를 결정한다.
+/// root 안의 파일은 root-기준 relative path 를 그대로 보존하여 동일 basename 충돌을 차단한다.
+/// root 밖(예: 외부 디렉토리에서 symlink)은 fallback 으로 basename 을 사용.
+fn stylesheetRelFromRoot(allocator: std.mem.Allocator, root: []const u8, style_path: []const u8) ![]const u8 {
+    const rel = std.fs.path.relative(allocator, root, style_path) catch
+        return allocator.dupe(u8, std.fs.path.basename(style_path));
+    if (rel.len == 0 or std.mem.startsWith(u8, rel, "..")) {
+        allocator.free(rel);
+        return allocator.dupe(u8, std.fs.path.basename(style_path));
+    }
+    return rel;
 }
 
 fn writeOutput(allocator: std.mem.Allocator, outdir: []const u8, rel_path: []const u8, contents: []const u8) !void {
@@ -720,7 +735,8 @@ test "app build rewrites stylesheet url assets and relative html assets" {
 
     _ = try buildApp(std.testing.allocator, .{ .root = root, .base = "/app/", .public_dir = null });
 
-    const style_path = try std.fs.path.join(std.testing.allocator, &.{ root, "dist", "style.css" });
+    // stylesheet 는 source root-기준 relative path 로 emit (dist/src/style.css).
+    const style_path = try std.fs.path.join(std.testing.allocator, &.{ root, "dist", "src", "style.css" });
     defer std.testing.allocator.free(style_path);
     const css = try std.fs.cwd().readFileAlloc(std.testing.allocator, style_path, 1024 * 1024);
     defer std.testing.allocator.free(css);
@@ -730,7 +746,7 @@ test "app build rewrites stylesheet url assets and relative html assets" {
     defer std.testing.allocator.free(html_path);
     const html = try std.fs.cwd().readFileAlloc(std.testing.allocator, html_path, 1024 * 1024);
     defer std.testing.allocator.free(html);
-    try std.testing.expect(std.mem.indexOf(u8, html, "href=\"/app/style.css?v=1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "href=\"/app/src/style.css?v=1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "src=\"/app/logo.png?raw#x\"") != null);
 
     try tmp.dir.access("dist/bg.png", .{});
@@ -740,8 +756,8 @@ test "app build rewrites stylesheet url assets and relative html assets" {
 test "app build does not collide when bundler emits CSS that HTML also references" {
     // entry main.ts 가 import './main.css' 하고 HTML 도 같은 파일을 link 로 참조하는 시나리오.
     // bundler 는 entry basename 기반으로 main.css 를 asset_output 으로 emit (splitting=false 이면
-    // entry_names = "[name]") → reserved 에 main.css 등록. 같은 basename 의 stylesheet 가 hard-fail
-    // 되지 않고 bundler 의 emit 결과를 재사용해야 한다.
+    // entry_names = "[name]") → reserved 에 main.css 등록. HTML stylesheet 의 source 는
+    // root-기준 relative path "src/main.css" 로 별도 emit 되므로 충돌하지 않는다 (서로 다른 path).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.makePath("src");
@@ -765,6 +781,42 @@ test "app build does not collide when bundler emits CSS that HTML also reference
     defer std.testing.allocator.free(html_path);
     const html = try std.fs.cwd().readFileAlloc(std.testing.allocator, html_path, 1024 * 1024);
     defer std.testing.allocator.free(html);
-    try std.testing.expect(std.mem.indexOf(u8, html, "href=\"/main.css\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "href=\"/src/main.css\"") != null);
+    try tmp.dir.access("dist/src/main.css", .{});
     try tmp.dir.access("dist/main.css", .{});
+}
+
+test "app build preserves nested CSS source path (no basename collision)" {
+    // 서브디렉토리에 같은 basename 의 CSS 파일을 두 개 두면, root-기준 relative path 가
+    // 보존되어 outdir/src/a/style.css 와 outdir/src/b/style.css 로 분리 emit 된다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("src/a");
+    try tmp.dir.makePath("src/b");
+    try tmp.dir.writeFile(.{
+        .sub_path = "index.html",
+        .data = "<link rel=\"stylesheet\" href=\"/src/a/style.css\"><link rel=\"stylesheet\" href=\"/src/b/style.css\"><script type=\"module\" src=\"/src/main.ts\"></script>",
+    });
+    try tmp.dir.writeFile(.{ .sub_path = "src/main.ts", .data = "console.log('x');" });
+    try tmp.dir.writeFile(.{ .sub_path = "src/a/style.css", .data = ".a{color:red}" });
+    try tmp.dir.writeFile(.{ .sub_path = "src/b/style.css", .data = ".b{color:blue}" });
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    _ = try buildApp(std.testing.allocator, .{ .root = root, .base = "/", .public_dir = null });
+
+    try tmp.dir.access("dist/src/a/style.css", .{});
+    try tmp.dir.access("dist/src/b/style.css", .{});
+
+    const html_path = try std.fs.path.join(std.testing.allocator, &.{ root, "dist", "index.html" });
+    defer std.testing.allocator.free(html_path);
+    const html = try std.fs.cwd().readFileAlloc(std.testing.allocator, html_path, 1024 * 1024);
+    defer std.testing.allocator.free(html);
+    try std.testing.expect(std.mem.indexOf(u8, html, "href=\"/src/a/style.css\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "href=\"/src/b/style.css\"") != null);
+    const a_css_path = try std.fs.path.join(std.testing.allocator, &.{ root, "dist", "src", "a", "style.css" });
+    defer std.testing.allocator.free(a_css_path);
+    const a_css = try std.fs.cwd().readFileAlloc(std.testing.allocator, a_css_path, 1024);
+    defer std.testing.allocator.free(a_css);
+    try std.testing.expect(std.mem.indexOf(u8, a_css, ".a") != null);
 }
