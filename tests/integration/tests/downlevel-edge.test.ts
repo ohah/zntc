@@ -2460,6 +2460,40 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       expect(result.runOutput).toBe("Red 2");
     });
 
+    test("const enum + as any cast: 값 인라인 + declaration drop (#2193)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const enum Color { Red = 1, Green, Blue = "B" as any }
+            console.log(Color.Red, Color.Green, Color.Blue);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 2 B");
+    });
+
+    test("const enum + satisfies / non-null / type-assertion cast (#2193)", async () => {
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            const enum E1 { A = 1 satisfies number, B = "x" satisfies string }
+            const enum E2 { A = 5! }
+            const enum E3 { A = <number>10 }
+            console.log(E1.A, E1.B, E2.A, E3.A);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("1 x 5 10");
+    });
+
     test("const enum inline", async () => {
       const result = await bundleAndRun(
         {
