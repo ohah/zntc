@@ -3556,6 +3556,10 @@ pub const Codegen = struct {
             else
                 false;
 
+            // single-line IIFE: 멤버별 anchor 가 없으면 직전 segment 로 fallback 되어
+            // debugger 가 잘못된 line 을 표시.
+            try self.addSourceMapping(member_name.span);
+
             // numeric: Color[Color["Red"]=0]="Red"  → outer wrap 추가
             // string : Color["X"]="x"               → wrap 없음
             if (!is_string_member) {
@@ -3614,6 +3618,8 @@ pub const Codegen = struct {
         }
 
         // return Color;})(Color || {});
+        // IIFE trailing 도 enum 이름 위치로 anchor — 마지막 멤버 segment 로의 fallback 방지.
+        try self.addSourceMapping(name_node.span);
         try self.write("return ");
         try self.write(param_name);
         try self.write(";})(");

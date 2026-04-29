@@ -255,4 +255,22 @@ test "SourceMap: export specifier rename target identifier mapping" {
     try r.expectMappingAt("b }", 1, 14);
 }
 
+test "SourceMap: enum members map to their source line" {
+    // multi-line enum 이 single-line IIFE 로 emit 되어도 각 멤버가 자기 source line 으로 매핑되어야 함.
+    const src =
+        \\enum Color {
+        \\  Red = "r",
+        \\  Green = "g",
+        \\}
+    ;
+    var r = try e2eSourceMap(std.testing.allocator, src);
+    defer r.deinit();
+    // 멤버 시작 emit 이 source line 으로 anchor.
+    try r.expectMappingAt("Color[\"Red\"]", 1, 2);
+    try r.expectMappingAt("Color[\"Green\"]", 2, 2);
+    // IIFE trailing (`return X;})...`) 은 enum 이름 위치 (line 0, col 5) 로 anchor —
+    // 마지막 멤버 segment 로의 fallback 방지.
+    try r.expectMappingAt("return Color", 0, 5);
+}
+
 // ================================================================
