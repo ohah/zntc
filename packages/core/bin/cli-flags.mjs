@@ -69,6 +69,7 @@ export const FLAG_REGISTRY = [
   { kind: "bool", flag: "--shim-missing-exports", target: "shimMissingExports" },
   { kind: "bool", flag: "--ascii-only", target: "asciiOnly" },
   { kind: "bool", flag: "--preserve-modules", target: "preserveModules" },
+  { kind: "bool", flag: "--inline-dynamic-imports", target: "inlineDynamicImports" },
   { kind: "bool", flag: "--preserve-symlinks", target: "preserveSymlinks" },
   { kind: "bool", flag: "--jsx-dev", target: "jsxDev" },
   { kind: "bool", flag: "--clean", target: "clean" },

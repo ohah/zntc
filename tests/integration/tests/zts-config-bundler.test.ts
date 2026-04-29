@@ -251,6 +251,35 @@ describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
     expect(readFileSync(outFile, "utf8")).toContain("NO_CONFIG");
   });
 
+  test("--inline-dynamic-imports CLI flag: dynamic target 이 entry chunk 에 흡수", async () => {
+    // 이전엔 config.json `inlineDynamicImports` 만 노출되어 있었음. CLI flag 추가 검증.
+    const fixture = await createFixture({
+      "entry.ts": `
+        async function boot() { const m = await import("./lazy"); console.log(m.v); }
+        boot();
+      `,
+      "lazy.ts": 'export const v = "INLINE_OK";',
+    });
+    cleanup = fixture.cleanup;
+
+    const outDir = join(fixture.dir, "dist");
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "entry.ts"),
+      "--outdir",
+      outDir,
+      "--splitting",
+      "--inline-dynamic-imports",
+      "--format=esm",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const { readdirSync } = require("node:fs");
+    const files = readdirSync(outDir);
+    // inline 적용 시 단일 chunk
+    expect(files.length).toBe(1);
+    expect(readFileSync(join(outDir, files[0]), "utf8")).toContain("INLINE_OK");
+  });
+
   test("tsconfigPath: zts.config.json 의 tsconfigPath 가 정상 적용 (이전엔 silent drop)", async () => {
     // applyZtsConfigJson 이 tsconfigPath 매핑을 누락했던 silent drift 의 fix 검증.
     // tsconfig.json 에 experimentalDecorators=true 명시 → @decorator 구문 파싱 통과.
