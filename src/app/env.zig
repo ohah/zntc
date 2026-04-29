@@ -17,14 +17,11 @@ pub fn loadEnv(allocator: std.mem.Allocator, opts: LoadOptions) !EnvMap {
     var merged = EnvMap.init(allocator);
     errdefer deinitMap(&merged, allocator);
 
-    const files = [_][]const u8{
-        ".env",
-        ".env.local",
-        try std.fmt.allocPrint(allocator, ".env.{s}", .{opts.mode}),
-        try std.fmt.allocPrint(allocator, ".env.{s}.local", .{opts.mode}),
-    };
-    defer allocator.free(files[2]);
-    defer allocator.free(files[3]);
+    const mode_file = try std.fmt.allocPrint(allocator, ".env.{s}", .{opts.mode});
+    defer allocator.free(mode_file);
+    const mode_local_file = try std.fmt.allocPrint(allocator, ".env.{s}.local", .{opts.mode});
+    defer allocator.free(mode_local_file);
+    const files = [_][]const u8{ ".env", ".env.local", mode_file, mode_local_file };
 
     for (files) |name| {
         const path = try std.fs.path.join(allocator, &.{ opts.env_dir, name });

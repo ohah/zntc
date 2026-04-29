@@ -415,7 +415,7 @@ fn runAppCommand(allocator: std.mem.Allocator, opts: AppCliOptions) !void {
         .build => {
             const outdir = opts.outdir orelse "dist";
             if (opts.clean) try deleteAppOutput(allocator, root, outdir);
-            var result = app_build.buildApp(allocator, .{
+            const written = app_build.buildApp(allocator, .{
                 .root = root,
                 .outdir = outdir,
                 .entry_html = opts.entry_html,
@@ -431,10 +431,7 @@ fn runAppCommand(allocator: std.mem.Allocator, opts: AppCliOptions) !void {
                 try stderr.print("zts build: app build failed: {}\n", .{err});
                 std.process.exit(1);
             };
-            defer result.deinit(allocator);
-            if (!std.mem.eql(u8, mode, "silent")) {
-                try stderr.print("[build] wrote {d} files to {s}\n", .{ result.output_count, outdir });
-            }
+            try stderr.print("[build] wrote {d} files to {s}\n", .{ written, outdir });
         },
         .dev => {
             const dev_outdir = opts.outdir orelse ".zts-dev";
