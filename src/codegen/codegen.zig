@@ -3510,9 +3510,18 @@ pub const Codegen = struct {
             // 문자열 리터럴 키의 따옴표 제거: 'a' → a, "a b" → a b
             const member_text = Ast.stripStringQuotes(raw_text);
 
-            // Color[Color["Red"] = 0] = "Red";
-            try self.write(param_name);
-            try self.writeByte('[');
+            // String enum 멤버는 reverse mapping 을 만들지 않음 (TS spec).
+            const is_string_member = if (member_values.get(member_text)) |resolved|
+                resolved == .str
+            else
+                false;
+
+            // numeric: Color[Color["Red"]=0]="Red"  → outer wrap 추가
+            // string : Color["X"]="x"               → wrap 없음
+            if (!is_string_member) {
+                try self.write(param_name);
+                try self.writeByte('[');
+            }
             try self.write(param_name);
             try self.write("[\"");
             try self.write(member_text);
@@ -3555,9 +3564,13 @@ pub const Codegen = struct {
                 auto_value += 1;
             }
 
-            try self.write("]=\"");
-            try self.write(member_text);
-            try self.write("\";");
+            if (is_string_member) {
+                try self.writeByte(';');
+            } else {
+                try self.write("]=\"");
+                try self.write(member_text);
+                try self.write("\";");
+            }
         }
 
         // return Color;})(Color || {});
