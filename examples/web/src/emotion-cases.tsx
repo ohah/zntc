@@ -17,6 +17,7 @@ import { css, Global } from "@emotion/react";
 import styled from "@emotion/styled";
 
 // 1. css prop — emotion 의 시그니처 패턴. transform 으로 hoist 대상.
+// styled-cases.tsx 의 Card 와 시각적으로 일치하게 유지 (두 라이브러리 authoring 비교가 목적).
 const cardCss = css`
   border: 1px solid #ddd;
   border-radius: 8px;
@@ -26,14 +27,17 @@ const cardCss = css`
 `;
 
 // 2. styled (emotion 도 동일 API)
-const Pill = styled.span<{ tone: "info" | "warn" | "danger" }>`
+type Tone = "info" | "warn" | "danger";
+const TONE_BG: Record<Tone, string> = { info: "#dbeafe", warn: "#fef3c7", danger: "#fee2e2" };
+const TONE_FG: Record<Tone, string> = { info: "#1e40af", warn: "#92400e", danger: "#991b1b" };
+
+const Pill = styled.span<{ tone: Tone }>`
   display: inline-block;
   padding: 2px 8px;
   border-radius: 999px;
   font-size: 12px;
-  background: ${({ tone }) =>
-    tone === "info" ? "#dbeafe" : tone === "warn" ? "#fef3c7" : "#fee2e2"};
-  color: ${({ tone }) => (tone === "info" ? "#1e40af" : tone === "warn" ? "#92400e" : "#991b1b")};
+  background: ${({ tone }) => TONE_BG[tone]};
+  color: ${({ tone }) => TONE_FG[tone]};
 `;
 
 // 3. dynamic css 함수 — autoLabel 의 검증 대상 (변수명 = label)
