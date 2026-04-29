@@ -181,6 +181,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "charsetUtf8",
   "asciiOnly",
   "quotes",
+  // ─── 1st-party transform 네임스페이스 (compiler.styledComponents/emotion 등) ───
+  "compiler",
   // ─── 기타 ───
   "flow",
   "plugins",
