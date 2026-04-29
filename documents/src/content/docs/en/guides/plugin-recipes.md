@@ -137,9 +137,9 @@ zts dev
 zts build
 ```
 
-CSS Modules (`.module.css`) are still outside the app CSS pipeline scope. They
-fail explicitly instead of emitting incorrect JS; use plain CSS or transform them
-through a JS plugin.
+App-mode CSS Modules (`.module.css`) are transformed into scoped class maps
+without a separate plugin. You can use the default export and valid named
+exports.
 
 For library builds that need to inject CSS from a JS plugin, run PostCSS from a
 `load` hook:

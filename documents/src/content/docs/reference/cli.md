@@ -49,8 +49,8 @@ HTML asset URL, `%ENV%` 토큰을 rewrite하며 static split chunk는 `modulepre
 앱 root에 `postcss.config.{js,mjs,cjs,json}` 또는 `.postcssrc*`가 있으면 CSS에 자동
 적용됩니다. `zts dev`는 원본 CSS와 PostCSS `dependency` / `dir-dependency` 메시지를
 watch하고 CSS-only 변경은 stylesheet HMR로 보냅니다. Tailwind v4는
-`@tailwindcss/postcss` 설정을 지원합니다. CSS Modules(`.module.css`)는 아직 app CSS
-pipeline 범위 밖이며 명시적으로 에러 처리됩니다.
+`@tailwindcss/postcss` 설정을 지원합니다. 앱 모드는 CSS Modules(`.module.css`)를
+scoped class map으로 변환하며 default export와 가능한 named export를 제공합니다.
 
 ## 입출력
 

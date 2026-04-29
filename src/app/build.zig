@@ -116,7 +116,10 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
 
     var result = try bundler.bundle();
     defer result.deinit(allocator);
-    if (result.hasErrors()) return error.BundleFailed;
+    if (result.hasErrors()) {
+        printAppBundleDiagnostics(result.getDiagnostics());
+        return error.BundleFailed;
+    }
 
     var reserved = std.StringHashMap(void).init(allocator);
     defer reserved.deinit();
@@ -163,12 +166,16 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         html = next;
     }
 
-    const first_script_output = if (result.outputs) |outs| outs[0].path else "bundle.js";
+    // Entry chunks are emitted sorted by `exec_order` (post-order DFS index),
+    // not by `entry_points` array order. Match each `<script type="module">` to
+    // its chunk via `module_ids` (chunk → entry path) so the script `src` is
+    // rewritten to the correct hashed output even when one entry imports another.
+    const default_script_output = if (result.outputs) |outs| outs[0].path else "bundle.js";
     for (html_entry.module_scripts.items, 0..) |src, i| {
         const script_output = if (result.outputs) |outs|
-            if (i < outs.len) outs[i].path else first_script_output
+            findEntryOutputPath(outs, entry_points[i]) orelse default_script_output
         else
-            first_script_output;
+            default_script_output;
         const parts = splitUrl(src);
         const new_url = try joinBaseUrlWithSuffix(allocator, base, script_output, parts.suffix);
         defer allocator.free(new_url);
@@ -554,6 +561,14 @@ fn injectModulePreloads(
     base: []const u8,
 ) ![]const u8 {
     if (outputs.len == 0 or entry_count == 0) return allocator.dupe(u8, html);
+
+    // path → outputs index 를 한 번만 빌드. 이전엔 recursive walker 가 매 import 마다
+    // outputs 를 선형 스캔 (O(N²)) 했음. outputs 자체에 대한 alias 라 owned key 불필요.
+    var by_path = std.StringHashMap(usize).init(allocator);
+    defer by_path.deinit();
+    try by_path.ensureTotalCapacity(@intCast(outputs.len));
+    for (outputs, 0..) |out, i| by_path.putAssumeCapacity(out.path, i);
+
     var seen = std.StringHashMap(void).init(allocator);
     defer seen.deinit();
     var seen_keys: std.ArrayList([]const u8) = .empty;
@@ -566,7 +581,7 @@ fn injectModulePreloads(
 
     const limit = @min(entry_count, outputs.len);
     for (outputs[0..limit]) |out| {
-        try appendModulePreloadImports(allocator, outputs, out.imports, base, &seen, &seen_keys, &tags);
+        try appendModulePreloadImports(allocator, outputs, &by_path, out.imports, base, &seen, &seen_keys, &tags);
     }
     if (tags.items.len == 0) return allocator.dupe(u8, html);
     return injectIntoHtml(allocator, html, tags.items);
@@ -575,6 +590,7 @@ fn injectModulePreloads(
 fn appendModulePreloadImports(
     allocator: std.mem.Allocator,
     outputs: []const bundler_mod.emitter.OutputFile,
+    by_path: *const std.StringHashMap(usize),
     imports: []const []const u8,
     base: []const u8,
     seen: *std.StringHashMap(void),
@@ -583,10 +599,7 @@ fn appendModulePreloadImports(
 ) !void {
     for (imports) |path| {
         if (!isJavaScriptOutput(path) or seen.contains(path)) continue;
-        const owned = try allocator.dupe(u8, path);
-        errdefer allocator.free(owned);
-        try seen.put(owned, {});
-        try seen_keys.append(allocator, owned);
+        try addReserved(allocator, seen, seen_keys, path);
 
         const url = try joinBaseUrl(allocator, base, path);
         defer allocator.free(url);
@@ -595,21 +608,34 @@ fn appendModulePreloadImports(
         if (tags.items.len > 0) try tags.append(allocator, '\n');
         try tags.appendSlice(allocator, tag);
 
-        if (findOutputByPath(outputs, path)) |dep| {
-            try appendModulePreloadImports(allocator, outputs, dep.imports, base, seen, seen_keys, tags);
+        if (by_path.get(path)) |idx| {
+            try appendModulePreloadImports(allocator, outputs, by_path, outputs[idx].imports, base, seen, seen_keys, tags);
         }
     }
 }
 
-fn findOutputByPath(outputs: []const bundler_mod.emitter.OutputFile, path: []const u8) ?bundler_mod.emitter.OutputFile {
+fn findEntryOutputPath(outputs: []const bundler_mod.emitter.OutputFile, entry_path: []const u8) ?[]const u8 {
     for (outputs) |out| {
-        if (std.mem.eql(u8, out.path, path)) return out;
+        if (out.kind != .chunk) continue;
+        for (out.module_ids) |mid| {
+            if (std.mem.eql(u8, mid, entry_path)) return out.path;
+        }
     }
     return null;
 }
 
 fn isJavaScriptOutput(path: []const u8) bool {
     return std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".mjs");
+}
+
+fn printAppBundleDiagnostics(diags: []const bundler_mod.BundleResult.OwnedDiagnostic) void {
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+    for (diags) |d| {
+        if (d.severity != .@"error") continue;
+        const where = if (d.file_path.len > 0) d.file_path else "<input>";
+        stderr.print("error[{s}]: {s}\n  at {s}\n", .{ @tagName(d.code), d.message, where }) catch {};
+        if (d.suggestion) |s| stderr.print("  hint: {s}\n", .{s}) catch {};
+    }
 }
 
 fn joinBaseUrl(allocator: std.mem.Allocator, base: []const u8, rel: []const u8) ![]const u8 {
