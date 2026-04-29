@@ -137,7 +137,100 @@ describe("#2209: dynamic import default lazy-wrap", () => {
     expect(out).toBe("split-mode");
   });
 
-  // dynamic import target 의 transitive static dep 중복 평가 / cycle 마킹 확장은
-  // 별도 follow-up 이슈로 분리. 본 PR 은 default lazy-wrap + 명시 false 진단 처리에
-  // 한정.
+  // #2211: dynamic target 의 transitive static dep 도 self-contained 하게 처리.
+  // 이전엔 single-file path 에 dynamic import 재작성 헬퍼가 없어 외부 sibling
+  // 파일로 fallback 됨 (helper 두 번 평가). 이번 fix 후 `Promise.resolve().then(...)`
+  // 변환으로 번들 안에서 한 번만 평가.
+  test("dynamic target 의 transitive static dep 가 한 번만 평가된다 (#2211)", async () => {
+    const result = await bundleAndRun(
+      {
+        "helper.ts": `
+          export const helper = "H-VAL";
+          console.log("helper evaluated");
+        `,
+        "a.ts": `
+          import { helper } from "./helper.ts";
+          export const a = "A:" + helper;
+          console.log("a evaluated");
+        `,
+        "index.ts": `
+          async function run() { return (await import("./a.ts")).a; }
+          run().then(v => console.log("entry:", v));
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe(["helper evaluated", "a evaluated", "entry: A:H-VAL"].join("\n"));
+  });
+
+  // 3-way static cycle 이 dynamic target 안에서 형성된 케이스. dfs 가 dependencies +
+  // dynamic_imports 둘 다 따라가야 cycle 의 모든 멤버 (a, b, c) 에 marking + var 강등.
+  test("3-way static cycle + dynamic importer (#2211 확장)", async () => {
+    const result = await bundleAndRun(
+      {
+        "a.ts": `
+          import { b } from "./b.ts";
+          export const a = "A";
+          console.log("a-load:", b);
+        `,
+        "b.ts": `
+          import { c } from "./c.ts";
+          export const b = "B";
+          console.log("b-load:", c);
+        `,
+        "c.ts": `
+          import { a } from "./a.ts";
+          export const c = "C";
+          console.log("c-load:", a);
+        `,
+        "index.ts": `
+          async function run() { return (await import("./a.ts")).a; }
+          run().then(v => console.log("entry:", v));
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runStderr).not.toContain("Cannot access");
+    expect(result.runStderr).not.toContain("Cannot find module");
+    expect(result.runOutput).toContain("entry: A");
+  });
+
+  // #2211 두 번째 케이스: dynamic target 이 다른 모듈과 *static cycle* 을 형성하면
+  // cycle marking 이 dynamic edge 도 따라가야 cycle 멤버 모두에 var 강등 (#2198) 적용.
+  test("dynamic target + static cycle: 멤버 var 강등으로 TDZ 회피 (#2211)", async () => {
+    const result = await bundleAndRun(
+      {
+        "a.ts": `
+          import { b } from "./b.ts";
+          export const a = "A";
+          console.log("a-load:", b);
+        `,
+        "b.ts": `
+          import { a } from "./a.ts";
+          export const b = "B";
+          console.log("b-load:", a);
+        `,
+        "index.ts": `
+          async function run() { return (await import("./a.ts")).a; }
+          run().then(v => console.log("entry:", v));
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runStderr).not.toContain("Cannot access");
+    expect(result.runStderr).not.toContain("Cannot find module");
+    expect(result.runOutput).toContain("entry: A");
+  });
 });

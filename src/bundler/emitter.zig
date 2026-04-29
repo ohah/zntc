@@ -704,11 +704,20 @@ pub fn emitWithTreeShaking(
             }
         }
 
+        // #2211: single-file output 의 dynamic import 호출 재작성. emit 함수는
+        // chunk_graph 없는 path 라 chunks.rewriteDynamicImports 의 chunk 검증을
+        // 우회하는 single-file 전용 헬퍼 사용. wrap_kind=.esm 인 dynamic target 의
+        // `import("./x")` 를 `Promise.resolve().then(() => (init_x(), exports_x))`
+        // 로 변환 → bundle self-contained (외부 sibling 파일 fallback 제거).
+        const rewritten = chunks.rewriteDynamicImportsSingleFile(allocator, code, m, graph) catch null;
+        defer if (rewritten) |r| allocator.free(r);
+        const code_after_rewrite = rewritten orelse code;
+
         // RSC: ESM entry 모듈만 호이스트 대상. IIFE/CJS는 의미 없음.
         const code_to_append = if (is_entry and options.format == .esm)
-            chunks.extractLeadingDirectives(code, &hoisted_directives, allocator) catch code
+            chunks.extractLeadingDirectives(code_after_rewrite, &hoisted_directives, allocator) catch code_after_rewrite
         else
-            code;
+            code_after_rewrite;
 
         try module_output.appendSlice(allocator, code_to_append);
         module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
