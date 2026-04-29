@@ -224,6 +224,7 @@ test "styled-components: 논리 `cond && styled.div\\`\\`` 우변 wrap" {
     );
     defer r.deinit();
     try expectDisplayName(r.output, "Lazy");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "&&") != null); // wrapper 보존
 }
 
 test "styled-components: 논리 `default || styled.div\\`\\`` 우변 wrap" {
@@ -238,6 +239,22 @@ test "styled-components: 논리 `default || styled.div\\`\\`` 우변 wrap" {
     );
     defer r.deinit();
     try expectDisplayName(r.output, "Fallback");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "||") != null); // wrapper 보존
+}
+
+test "styled-components: 좌변이 styled 인 `styled.div\\`\\` || fallback` 은 미인식 (의도)" {
+    // 좌변 wrap 은 단락평가 시맨틱 영향 위험으로 skip — 가드 회귀 보호.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const X = styled.div`color: red;` || LegacyBtn;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
 test "styled-components: TS cast `styled.div\\`\\` as Component` 인식" {
@@ -252,6 +269,7 @@ test "styled-components: TS cast `styled.div\\`\\` as Component` 인식" {
     );
     defer r.deinit();
     try expectDisplayName(r.output, "Casted");
+    // TS cast 자체는 codegen 에서 strip — operand (= wrap 된 styled tag) 만 남음.
 }
 
 test "styled-components: TS satisfies `... satisfies T` 인식" {
@@ -266,6 +284,7 @@ test "styled-components: TS satisfies `... satisfies T` 인식" {
     );
     defer r.deinit();
     try expectDisplayName(r.output, "Sat");
+    // satisfies 는 codegen 에서 strip — wrap 된 operand 만 남음.
 }
 
 test "styled-components: TS non-null `...!` 인식" {
@@ -280,6 +299,7 @@ test "styled-components: TS non-null `...!` 인식" {
     );
     defer r.deinit();
     try expectDisplayName(r.output, "NN");
+    // non-null assertion (!) 은 TS 전용 — codegen 에서 strip.
 }
 
 test "styled-components: 사용자 명시 .withConfig 가 있으면 wrap 안 함" {

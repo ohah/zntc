@@ -186,6 +186,26 @@ pub fn maybeWrapAssignment(self: *Transformer, assignment_idx: NodeIndex) Error!
     });
 }
 
+/// `parenthesized_expression` + 모든 type assertion 류 — 공통적으로 unary { operand, flags }
+/// 데이터 변형. wrapStyledTagInExpr 와 isWrappableExpr 가 이 set 을 공유.
+///
+/// 주의: codegen / semantic / worklet 등 다른 pass 도 비슷한 set 을 가짐. 향후 cross-cutting
+/// refactor 로 es_helpers 의 `TRANSPARENT_WRAPPER_TAGS` 같은 단일 source 화 권장 (별도 PR).
+fn isUnaryWrapperTag(tag: ast_mod.Node.Tag) bool {
+    return switch (tag) {
+        .parenthesized_expression,
+        .ts_as_expression,
+        .ts_satisfies_expression,
+        .ts_type_assertion,
+        .ts_non_null_expression,
+        .ts_instantiation_expression,
+        .flow_as_expression,
+        .flow_type_cast_expression,
+        => true,
+        else => false,
+    };
+}
+
 /// 표현식이 styled tagged template 을 (직접 / wrapper 안에) 포함하면 wrap.
 /// caller 가 init.tag 를 사전 검사 (`isWrappableExpr`) 한 뒤 호출.
 ///
@@ -194,85 +214,69 @@ pub fn maybeWrapAssignment(self: *Transformer, assignment_idx: NodeIndex) Error!
 ///   - `cond ? styled.div\`\` : styled.div\`\`` (양쪽 branch — babel 동작)
 ///   - `(styled.div\`\`)` (괄호)
 ///   - `cond && styled.div\`\`` / `default || styled.div\`\`` / `?? styled.div\`\`` (논리 — 우변만)
-///   - `styled.div\`\` as Component` / `... satisfies T` / `...!` / legacy `<T>...` (TS 캐스트)
-///   - `styled.div\`\` as Foo` (Flow 캐스트)
-///   - 위 조합 (캐스트 안의 괄호 등)
+///   - `styled.div\`\` as T` / `... satisfies T` / `...!` / legacy `<T>...` / Foo<T> 인스턴스화 (TS)
+///   - `styled.div\`\` as Foo` (Flow)
+///   - 위 조합
+///
+/// 미인식 (의도된 한계):
+///   - `styled.div\`\` || fallback` 처럼 좌변이 styled 인 논리 — wrap 시 단락평가 시맨틱이
+///     변할 수 있어 보수적 skip
 pub fn wrapStyledTagInExpr(self: *Transformer, expr_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (expr_idx.isNone()) return expr_idx;
     const node = self.ast.getNode(expr_idx);
-    switch (node.tag) {
-        .tagged_template_expression => return wrapStyledTag(self, expr_idx, var_name),
-        .conditional_expression => {
-            // ternary: a=test, b=consequent, c=alternate. test 는 전파하지 않음 (boolean expr).
-            const old_b = node.data.ternary.b;
-            const old_c = node.data.ternary.c;
-            const new_b = try wrapStyledTagInExpr(self, old_b, var_name);
-            const new_c = try wrapStyledTagInExpr(self, old_c, var_name);
-            if (new_b == old_b and new_c == old_c) return expr_idx;
-            return self.ast.addNode(.{
-                .tag = .conditional_expression,
-                .span = node.span,
-                .data = .{ .ternary = .{
-                    .a = node.data.ternary.a,
-                    .b = new_b,
-                    .c = new_c,
-                } },
-            });
-        },
-        .logical_expression => {
-            // binary: left, right, flags. && 의 right 가 결과값. || / ?? 도 fallback 위치
-            // 가 right 라 동일하게 처리. left 는 전파하지 않음 (대부분 condition / default 가
-            // styled 컴포넌트가 아니어서 false-positive 위험).
-            const old_right = node.data.binary.right;
-            const new_right = try wrapStyledTagInExpr(self, old_right, var_name);
-            if (new_right == old_right) return expr_idx;
-            return self.ast.addNode(.{
-                .tag = .logical_expression,
-                .span = node.span,
-                .data = .{ .binary = .{
-                    .left = node.data.binary.left,
-                    .right = new_right,
-                    .flags = node.data.binary.flags,
-                } },
-            });
-        },
-        .parenthesized_expression,
-        .ts_as_expression,
-        .ts_satisfies_expression,
-        .ts_type_assertion,
-        .ts_non_null_expression,
-        .flow_as_expression,
-        .flow_type_cast_expression,
-        => {
-            // 모두 unary { operand, flags } — operand 만 walk.
-            const old_inner = node.data.unary.operand;
-            const new_inner = try wrapStyledTagInExpr(self, old_inner, var_name);
-            if (new_inner == old_inner) return expr_idx;
-            return self.ast.addNode(.{
-                .tag = node.tag,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = new_inner, .flags = node.data.unary.flags } },
-            });
-        },
-        else => return expr_idx,
+    if (node.tag == .tagged_template_expression) return wrapStyledTag(self, expr_idx, var_name);
+
+    if (node.tag == .conditional_expression) {
+        // ternary: a=test, b=consequent, c=alternate. test 는 전파 안 함 (boolean expr).
+        const old_b = node.data.ternary.b;
+        const old_c = node.data.ternary.c;
+        const new_b = try wrapStyledTagInExpr(self, old_b, var_name);
+        const new_c = try wrapStyledTagInExpr(self, old_c, var_name);
+        if (new_b == old_b and new_c == old_c) return expr_idx;
+        return self.ast.addNode(.{
+            .tag = .conditional_expression,
+            .span = node.span,
+            .data = .{ .ternary = .{ .a = node.data.ternary.a, .b = new_b, .c = new_c } },
+        });
     }
+
+    if (node.tag == .logical_expression) {
+        // && 의 right 가 결과값. || / ?? 도 fallback 위치가 right. left 는 condition/default
+        // 라 보통 styled 가 아닐뿐더러, 좌변이 styled 인 `styled.div\`\` || fallback` 케이스는
+        // wrap 시 단락평가 시맨틱이 영향 받을 수 있어 보수적 skip.
+        const old_right = node.data.binary.right;
+        const new_right = try wrapStyledTagInExpr(self, old_right, var_name);
+        if (new_right == old_right) return expr_idx;
+        return self.ast.addNode(.{
+            .tag = .logical_expression,
+            .span = node.span,
+            .data = .{ .binary = .{
+                .left = node.data.binary.left,
+                .right = new_right,
+                .flags = node.data.binary.flags,
+            } },
+        });
+    }
+
+    if (isUnaryWrapperTag(node.tag)) {
+        const old_inner = node.data.unary.operand;
+        const new_inner = try wrapStyledTagInExpr(self, old_inner, var_name);
+        if (new_inner == old_inner) return expr_idx;
+        return self.ast.addNode(.{
+            .tag = node.tag,
+            .span = node.span,
+            .data = .{ .unary = .{ .operand = new_inner, .flags = node.data.unary.flags } },
+        });
+    }
+
+    return expr_idx;
 }
 
 fn isWrappableExpr(tag: ast_mod.Node.Tag) bool {
-    return switch (tag) {
-        .tagged_template_expression,
-        .conditional_expression,
-        .logical_expression,
-        .parenthesized_expression,
-        .ts_as_expression,
-        .ts_satisfies_expression,
-        .ts_type_assertion,
-        .ts_non_null_expression,
-        .flow_as_expression,
-        .flow_type_cast_expression,
-        => true,
-        else => false,
-    };
+    return tag == .tagged_template_expression or
+        tag == .conditional_expression or
+        tag == .logical_expression or
+        isUnaryWrapperTag(tag);
 }
 
 /// caller 의 fast-path 사전 필터 — visitVariableDeclarator / visitObjectProperty 가 매
