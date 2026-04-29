@@ -1528,6 +1528,14 @@ pub fn emitModule(
         .skip_cjs_named_export_decls = module.module_type == .json and module.wrap_kind == .cjs,
         // __esm 모듈: const → var (TDZ 방지)
         .use_var_for_imports = module.wrap_kind == .esm,
+        // cycle 모듈 의 top-level const/let → var 강등 (#2198, esbuild 호환).
+        // 같은 IIFE 안에 hoisted 모듈들이 정의 전 상호 참조 시 TDZ throw → var
+        // 호이스팅으로 `undefined` fallback. ESM live binding 의미를 대부분 보존.
+        //
+        // wrap_kind != .none (`__esm`/`__commonJS` wrap) 인 cycle 모듈은 이미 별도
+        // 변환 path (`esm_var_assign_only`, `use_var_for_imports`) 가 동일 효과를
+        // 만들어주므로 이중 처리 → 호이스팅 충돌 회피하기 위해 .none 만 대상.
+        .force_var_for_cycle = module.cycle_group != 0 and module.wrap_kind == .none,
         .linking_metadata = if (metadata) |*m| m else null,
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
