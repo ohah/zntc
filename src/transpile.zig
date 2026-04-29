@@ -80,6 +80,11 @@ pub const TranspileOptions = struct {
     sourcemap: bool = false,
     /// Sentry Debug ID (--sourcemap-debug-ids). 소스맵 + JS에 동일 UUID를 삽입.
     sourcemap_debug_ids: bool = false,
+    /// `--sourcemap` 시 sourceMappingURL footer + map.file 필드에 사용할 출력 파일명
+    /// (basename only, 확장자 포함 e.g. "out.js"). null/empty 면 footer 안 부착하고
+    /// map.file 은 source path 로 fallback (NAPI/library mode 처럼 *어디로 쓰일지
+    /// 모르는* 케이스 — 호출자가 후처리). #2217.
+    sourcemap_output_filename: []const u8 = "",
     source_root: []const u8 = "",
     sources_content: bool = true,
     platform: @import("codegen/codegen.zig").Platform = .browser,
@@ -558,24 +563,44 @@ pub fn transpileWithCallback(
         break :blk &debug_id_buf;
     } else null;
 
-    // 9. 소스맵 생성
+    // 9. 소스맵 생성. map.file 필드는 출력 파일명을 가리켜야 함 (Source Map Rev3
+    // spec — source path 가 아닌 *생성된* 파일). caller 가 sourcemap_output_filename
+    // 을 알려주면 그 값을, 아니면 빈 문자열 (spec 상 optional 필드 — invalid 한
+    // source path 보다 안전. CLI 는 main.zig 에서 자동 set, library/NAPI 호출자는
+    // 직접 전달 권장). #2217.
+    const map_file_name: []const u8 = options.sourcemap_output_filename;
     var sourcemap_json: ?[]const u8 = null;
     if (options.sourcemap) {
         if (cg.sm_builder) |*sm| {
             sm.debug_id = debug_id;
-            if (sm.generateJSON(file_path) catch null) |sm_json| {
+            if (sm.generateJSON(map_file_name) catch null) |sm_json| {
                 sourcemap_json = allocator.dupe(u8, sm_json) catch null;
             }
         }
     }
 
-    // 10. debugId 주석을 출력 코드 끝에 추가
-    const final_output = if (debug_id) |did| blk: {
+    // 10. footer 부착: sourceMappingURL (#2217) + debugId.
+    // sourcemap_output_filename 이 있으면 `//# sourceMappingURL=<file>.map` 도 emit.
+    // debugId 와 함께 부착하면 Sentry/DevTools 가 둘 다 인식.
+    const need_sm_footer = options.sourcemap and
+        sourcemap_json != null and
+        options.sourcemap_output_filename.len > 0;
+    const final_output = if (debug_id != null or need_sm_footer) blk: {
         var buf: std.ArrayList(u8) = .empty;
         buf.appendSlice(arena_alloc, output) catch break :blk output;
-        buf.appendSlice(arena_alloc, "//# debugId=") catch break :blk output;
-        buf.appendSlice(arena_alloc, did) catch break :blk output;
-        buf.append(arena_alloc, '\n') catch break :blk output;
+        if (output.len > 0 and output[output.len - 1] != '\n') {
+            buf.append(arena_alloc, '\n') catch break :blk output;
+        }
+        if (need_sm_footer) {
+            buf.appendSlice(arena_alloc, "//# sourceMappingURL=") catch break :blk output;
+            buf.appendSlice(arena_alloc, options.sourcemap_output_filename) catch break :blk output;
+            buf.appendSlice(arena_alloc, ".map\n") catch break :blk output;
+        }
+        if (debug_id) |did| {
+            buf.appendSlice(arena_alloc, "//# debugId=") catch break :blk output;
+            buf.appendSlice(arena_alloc, did) catch break :blk output;
+            buf.append(arena_alloc, '\n') catch break :blk output;
+        }
         break :blk buf.items;
     } else output;
 

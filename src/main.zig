@@ -1334,7 +1334,15 @@ fn transpileFile(
     // 핵심 트랜스파일 — transpile.zig에 위임 (에러 시 코드 프레임 출력 콜백).
     // 파이프라인 단계별 타이밍은 `--profile` 플래그가 활성화됐을 때 `profile` 모듈이
     // hot-path timer 로 수집한다 (PR 3 이후 hot-path 에 삽입).
-    var result = transpile_mod.transpileWithCallback(allocator, source, file_path, options.core, &printErrors) catch |err| {
+    //
+    // sourcemap output filename: `--sourcemap` + `-o out.js` 인 single-file CLI 에서
+    // map.file 필드 + sourceMappingURL footer 가 정확한 output 파일명을 가리키도록
+    // basename 만 전달 (#2217). stdout 출력 모드는 빈 문자열 → footer 안 부착.
+    var core_opts = options.core;
+    if (core_opts.sourcemap and output_path != null) {
+        core_opts.sourcemap_output_filename = std.fs.path.basename(output_path.?);
+    }
+    var result = transpile_mod.transpileWithCallback(allocator, source, file_path, core_opts, &printErrors) catch |err| {
         // 콜백에서 이미 상세 에러를 출력했으므로, 파싱/시맨틱 에러는 추가 메시지 불필요
         switch (err) {
             error.ParseError, error.SemanticError => {},
