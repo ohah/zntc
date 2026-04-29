@@ -3361,8 +3361,11 @@ describe("CLI: Vite-style app builder", () => {
     }
   });
 
-  test("dev SCSS source edit falls back to full-reload and updates emitted CSS", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-scss-reload-"));
+  test("dev single SCSS edit takes the css-update fast-path", async () => {
+    // 단일 non-module `.scss` 변경은 그 파일만 재컴파일 → outdir mirror → CssUpdate
+    // broadcast 로 끝난다 (full reload 안 함, BACKLOG #71). `.module.scss` 는 여전히 full
+    // reload (class map 갱신 가능).
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-scss-fast-"));
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(
       join(dir, "index.html"),
@@ -3371,12 +3374,17 @@ describe("CLI: Vite-style app builder", () => {
     writeFileSync(join(dir, "src", "main.ts"), 'import "./style.scss";');
     writeFileSync(join(dir, "src", "style.scss"), ".box { color: rgb(1, 2, 3); }");
 
-    const port = 12980 + Math.floor(Math.random() * 100);
+    const port = 13150 + Math.floor(Math.random() * 80);
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
+    async function fetchEmittedCss(): Promise<string> {
+      const html = await fetch(`http://localhost:${port}/`).then((r) => r.text());
+      const href = html.match(/<link\s+rel="stylesheet"\s+href="([^"]+)"/)?.[1];
+      expect(href).toBeTruthy();
+      return fetch(`http://localhost:${port}${href}`).then((r) => r.text());
+    }
     try {
-      const initialBundle = await fetch(`http://localhost:${port}/bundle.js`).then((r) => r.text());
-      expect(initialBundle).toContain("rgb(1, 2, 3)");
+      expect(await fetchEmittedCss()).toContain("rgb(1, 2, 3)");
 
       const messagePromise = new Promise<any>((resolve) => {
         const ws = new WebSocket(`ws://localhost:${port}/__hmr`);
@@ -3393,10 +3401,11 @@ describe("CLI: Vite-style app builder", () => {
       await new Promise((r) => setTimeout(r, 300));
       writeFileSync(join(dir, "src", "style.scss"), ".box { color: rgb(4, 5, 6); }");
       const msg = await messagePromise;
-      expect(msg.type).toBe("full-reload");
+      expect(msg.type).toBe("css-update");
+      // CssUpdate 의 href 는 컴파일된 `.css` 경로 — broadcast payload 에 포함됨.
+      expect(msg.href).toMatch(/\/src\/style\.css$/);
       await new Promise((r) => setTimeout(r, 300));
-      const updatedBundle = await fetch(`http://localhost:${port}/bundle.js`).then((r) => r.text());
-      expect(updatedBundle).toContain("rgb(4, 5, 6)");
+      expect(await fetchEmittedCss()).toContain("rgb(4, 5, 6)");
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
