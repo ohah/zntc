@@ -2338,8 +2338,9 @@ describe("CLI: .env 자동 로드", () => {
     );
     expect(exitCode).toBe(0);
     expect(stdout).toContain("allowed");
-    // VITE_NOT_EXPOSED 는 정적 치환 안 일어나 import.meta.env 참조 그대로 (런타임 undefined).
-    expect(stdout).toContain("import.meta.env.VITE_NOT_EXPOSED");
+    // full import.meta.env 객체 치환 후 미노출 키는 런타임 undefined property 접근으로 남는다.
+    expect(stdout).toContain(".VITE_NOT_EXPOSED");
+    expect(stdout).not.toContain('"hidden"');
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2361,8 +2362,9 @@ describe("CLI: .env 자동 로드", () => {
     );
     expect(exitCode).toBe(0);
     expect(stdout).toContain("allowed");
-    // cwd 의 .env 는 envDir 변경 시 읽히지 않음 — 치환 미발생.
-    expect(stdout).toContain("import.meta.env.VITE_FROM_CWD");
+    // cwd 의 .env 는 envDir 변경 시 읽히지 않음 — full env 객체에도 포함되지 않는다.
+    expect(stdout).toContain(".VITE_FROM_CWD");
+    expect(stdout).not.toContain("ignored");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2386,8 +2388,9 @@ describe("CLI: .env 자동 로드", () => {
     expect(stdout).toContain('"a"');
     expect(stdout).toContain('"b"');
     expect(stdout).toContain('"c"');
-    // UNRELATED 는 prefix 매칭 안 되어 정적 치환 미발생.
-    expect(stdout).toContain("import.meta.env.UNRELATED");
+    // UNRELATED 는 prefix 매칭 안 되어 full env 객체에도 포함되지 않는다.
+    expect(stdout).toContain(".UNRELATED");
+    expect(stdout).not.toContain("hidden");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -2428,6 +2431,343 @@ describe("CLI: .env 자동 로드", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain('"a"');
     expect(stdout).toContain('"b"');
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("CLI: Vite-style app builder", () => {
+  function scriptPathFromHtml(html: string): string {
+    const match = html.match(/<script[^>]+src="([^"]+)"/);
+    expect(match).not.toBeNull();
+    return match![1];
+  }
+
+  test("build [root] rewrites HTML, injects env, and copies public/", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-build-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    mkdirSync(join(dir, "public"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      [
+        "<!doctype html>",
+        "<html><head>",
+        "<title>%VITE_TITLE%</title>",
+        '<link rel="icon" href="/favicon.svg">',
+        "</head><body>",
+        '<script type="module" src="/src/main.ts"></script>',
+        "</body></html>",
+      ].join(""),
+    );
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      "console.log(import.meta.env.MODE, import.meta.env.PROD, import.meta.env.BASE_URL, import.meta.env.VITE_TITLE);",
+    );
+    writeFileSync(join(dir, ".env.production"), "VITE_TITLE=ZTS App\n");
+    writeFileSync(join(dir, "public", "favicon.svg"), "<svg></svg>");
+
+    const outdir = join(dir, "dist");
+    const { exitCode, stderr } = runCli(
+      ["build", dir, "--outdir", outdir, "--base", "/app/", "--clean"],
+      {
+        cwd: dir,
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("error:");
+
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    expect(html).toContain("<title>ZTS App</title>");
+    expect(html).toContain('href="/app/favicon.svg"');
+    const scriptPath = scriptPathFromHtml(html);
+    expect(scriptPath).toMatch(/^\/app\/main-[a-f0-9]+\.js$/);
+    expect(readFileSync(join(outdir, scriptPath.replace("/app/", "")), "utf8")).toContain(
+      '"ZTS App"',
+    );
+    expect(existsSync(join(outdir, "favicon.svg"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("public output collision fails deterministically", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-public-collision-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    mkdirSync(join(dir, "public"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(join(dir, "src", "main.ts"), "console.log(1);");
+    writeFileSync(join(dir, "public", "index.html"), "collision");
+
+    const outdir = join(dir, "dist");
+    const { exitCode, stderr } = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("PublicDirCollision");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("dev [root] serves prepared app HTML and development env", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    mkdirSync(join(dir, "public"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<title>%VITE_TITLE%</title><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      "console.log(import.meta.env.VITE_TITLE, import.meta.env.MODE);",
+    );
+    writeFileSync(join(dir, ".env.development"), "VITE_TITLE=Dev App\n");
+    writeFileSync(join(dir, "public", "favicon.svg"), "<svg></svg>");
+
+    const port = 12600 + Math.floor(Math.random() * 100);
+    const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`, "--base", "/app/"], {
+      cwd: dir,
+    });
+    await waitForServer(port);
+
+    try {
+      const html = await fetch(`http://localhost:${port}/app/`).then((r) => r.text());
+      expect(html).toContain("<title>Dev App</title>");
+      expect(html).toContain('src="/app/bundle.js"');
+
+      const js = await fetch(`http://localhost:${port}/app/bundle.js`).then((r) => r.text());
+      expect(js).toContain('"Dev App"');
+      expect(js).toContain('"development"');
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("preview [outdir] serves built files under base without rebuilding", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-preview-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<h1>%VITE_TITLE%</h1><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), "console.log(import.meta.env.MODE);");
+    writeFileSync(join(dir, ".env.production"), "VITE_TITLE=Preview App\n");
+
+    const outdir = join(dir, "dist");
+    const buildResult = runCli(["build", dir, "--outdir", outdir, "--base", "/app/"], {
+      cwd: dir,
+    });
+    expect(buildResult.exitCode).toBe(0);
+
+    const port = 12700 + Math.floor(Math.random() * 100);
+    const proc = spawn(RUNTIME, [CLI, "preview", outdir, `--port=${port}`, "--base", "/app/"], {
+      cwd: dir,
+    });
+    await waitForServer(port);
+
+    try {
+      const html = await fetch(`http://localhost:${port}/app/`).then((r) => r.text());
+      expect(html).toContain("<h1>Preview App</h1>");
+      const scriptPath = scriptPathFromHtml(html);
+      expect(scriptPath).toMatch(/^\/app\/main-[a-f0-9]+\.js$/);
+      const js = await fetch(`http://localhost:${port}${scriptPath}`).then((r) => r.text());
+      expect(js).toContain('"production"');
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("build rewrites stylesheet url assets and HTML assets with query/hash", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-assets-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      [
+        '<link rel="stylesheet" href="/src/style.css?v=1">',
+        '<img src="/src/logo.png?raw#x">',
+        '<script type="module" src="/src/main.ts"></script>',
+      ].join(""),
+    );
+    writeFileSync(join(dir, "src", "main.ts"), "console.log('assets');");
+    writeFileSync(join(dir, "src", "style.css"), ".hero{background:url('./bg.png?v=2#hash')}");
+    writeFileSync(join(dir, "src", "bg.png"), "bg");
+    writeFileSync(join(dir, "src", "logo.png"), "logo");
+
+    const outdir = join(dir, "dist");
+    const { exitCode } = runCli(["build", dir, "--outdir", outdir, "--base", "/app/"], {
+      cwd: dir,
+    });
+    expect(exitCode).toBe(0);
+
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    expect(html).toContain('href="/app/style.css?v=1"');
+    expect(html).toContain('src="/app/logo.png?raw#x"');
+    expect(readFileSync(join(outdir, "style.css"), "utf8")).toContain(
+      'url("/app/bg.png?v=2#hash")',
+    );
+    expect(existsSync(join(outdir, "bg.png"))).toBe(true);
+    expect(existsSync(join(outdir, "logo.png"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("custom --entry-html and --public-dir false", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-entry-public-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    mkdirSync(join(dir, "public"), { recursive: true });
+    writeFileSync(
+      join(dir, "app.html"),
+      '<h1>%VITE_TITLE%</h1><script type="module" src="./src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), "console.log(import.meta.env.VITE_TITLE);");
+    writeFileSync(join(dir, ".env.production"), "VITE_TITLE=Custom Entry\n");
+    writeFileSync(join(dir, "public", "favicon.svg"), "<svg></svg>");
+
+    const outdir = join(dir, "dist");
+    const { exitCode } = runCli(
+      ["build", dir, "--entry-html", "app.html", "--public-dir", "false", "--outdir", outdir],
+      { cwd: dir },
+    );
+    expect(exitCode).toBe(0);
+    expect(readFileSync(join(outdir, "index.html"), "utf8")).toContain("<h1>Custom Entry</h1>");
+    expect(existsSync(join(outdir, "favicon.svg"))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("full import.meta.env object is statically injected in app build", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-env-object-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      "console.log(import.meta.env.VITE_TITLE, import.meta.env.BASE_URL, import.meta.env.MODE, import.meta.env);",
+    );
+    writeFileSync(join(dir, ".env.production"), "VITE_TITLE=Object Env\n");
+
+    const outdir = join(dir, "dist");
+    const { exitCode } = runCli(["build", dir, "--outdir", outdir, "--base", "/app/"], {
+      cwd: dir,
+    });
+    expect(exitCode).toBe(0);
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    const scriptPath = scriptPathFromHtml(html);
+    const js = readFileSync(join(outdir, scriptPath.replace("/app/", "")), "utf8");
+    expect(js).toContain('"Object Env"');
+    expect(js).toContain('"/app/"');
+    expect(js).toContain('"production"');
+    expect(js).toContain('"VITE_TITLE":"Object Env"');
+    expect(js).not.toContain("import.meta.env");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("same app uses development env in dev and production env in build", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-env-parity-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(join(dir, "src", "main.ts"), "console.log(import.meta.env.VITE_NAME);");
+    writeFileSync(join(dir, ".env.development"), "VITE_NAME=from-dev\n");
+    writeFileSync(join(dir, ".env.production"), "VITE_NAME=from-prod\n");
+
+    const outdir = join(dir, "dist");
+    const buildResult = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(buildResult.exitCode).toBe(0);
+    const builtHtml = readFileSync(join(outdir, "index.html"), "utf8");
+    const builtScriptPath = scriptPathFromHtml(builtHtml);
+    expect(readFileSync(join(outdir, builtScriptPath.slice(1)), "utf8")).toContain('"from-prod"');
+
+    const port = 12800 + Math.floor(Math.random() * 100);
+    const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
+    await waitForServer(port);
+
+    try {
+      const js = await fetch(`http://localhost:${port}/bundle.js`).then((r) => r.text());
+      expect(js).toContain('"from-dev"');
+      expect(js).not.toContain("from-prod");
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("--env-prefix controls app env exposure", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-env-prefix-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      ["console.log(import.meta.env.CUSTOM_NAME);", "console.log(import.meta.env.VITE_NAME);"].join(
+        "\n",
+      ),
+    );
+    writeFileSync(join(dir, ".env.production"), "CUSTOM_NAME=allowed\nVITE_NAME=hidden\n");
+
+    const outdir = join(dir, "dist");
+    const { exitCode } = runCli(["build", dir, "--outdir", outdir, "--env-prefix", "CUSTOM_"], {
+      cwd: dir,
+    });
+    expect(exitCode).toBe(0);
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    const scriptPath = scriptPathFromHtml(html);
+    const js = readFileSync(join(outdir, scriptPath.slice(1)), "utf8");
+    expect(js).toContain('"allowed"');
+    expect(js).toContain(".VITE_NAME");
+    expect(js).not.toContain('"hidden"');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("JS-imported CSS is linked from HTML and processed by PostCSS", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-postcss-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<div class="card">PostCSS</div><script type="module" src="/src/main.ts"></script>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), 'import "./style.css"; console.log("css");');
+    writeFileSync(
+      join(dir, "src", "style.css"),
+      ".card { color: red; }\n.card { background: white; }\n",
+    );
+    writeFileSync(
+      join(dir, "postcss.config.mjs"),
+      [
+        "export default {",
+        "  plugins: [",
+        "    { postcssPlugin: 'zts-test-postcss', Once(root) { root.append({ selector: '.postcss-ok', nodes: [] }); } },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+
+    const outdir = join(dir, "dist");
+    const { exitCode, stderr } = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("[postcss] processed 1 CSS file");
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    expect(html).toContain('rel="stylesheet"');
+    expect(html).toContain('href="/main.css"');
+    const css = readFileSync(join(outdir, "main.css"), "utf8");
+    expect(css).toContain(".postcss-ok");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("Tailwind v4 @tailwindcss/postcss app fixture", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-tailwind-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "index.html"),
+      '<main class="text-red-500"><script type="module" src="/src/main.ts"></script></main>',
+    );
+    writeFileSync(join(dir, "src", "main.ts"), 'import "./style.css";');
+    writeFileSync(
+      join(dir, "src", "style.css"),
+      '@import "tailwindcss";\n@source "../index.html";\n',
+    );
+    writeFileSync(
+      join(dir, "postcss.config.mjs"),
+      'export default { plugins: { "@tailwindcss/postcss": {} } };\n',
+    );
+
+    const outdir = join(dir, "dist");
+    const { exitCode, stderr } = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("[postcss] processed 1 CSS file");
+    const css = readFileSync(join(outdir, "main.css"), "utf8");
+    expect(css).toContain(".text-red-500");
+    expect(css).not.toContain('@import "tailwindcss"');
     rmSync(dir, { recursive: true, force: true });
   });
 });

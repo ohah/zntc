@@ -74,6 +74,8 @@ interface NativeModule {
     optionsJson: string,
   ): { code: string; map?: string; errors?: string };
   buildSync(options: Record<string, unknown>): NativeBuildResult;
+  buildAppSync(options: Record<string, unknown>): NativeBuildResult & { outputCount?: number };
+  prepareAppDevSync(options: Record<string, unknown>): { entryPath: string; outputCount?: number };
   build(options: Record<string, unknown>): Promise<NativeBuildResult>;
   watch(options: Record<string, unknown>): NativeWatchHandle;
   benchmark(options: Record<string, unknown>): {
@@ -831,6 +833,69 @@ export interface BuildResult {
   errors: Diagnostic[];
   warnings: Diagnostic[];
   metafile?: string;
+  outputCount?: number;
+}
+
+/**
+ * Options for building a Vite-style browser application from an HTML entry.
+ */
+export interface AppBuildOptions {
+  /** Application root directory used to resolve index.html, public/, and env files. */
+  root?: string;
+  /** Output directory for the production app build. Defaults to "dist". */
+  outdir?: string;
+  /** HTML entry file to scan for module scripts, stylesheets, and static assets. */
+  entryHtml?: string;
+  /** Public assets directory to copy as-is, or false to disable public asset copying. */
+  publicDir?: string | false;
+  /** Base URL prefix used when rewriting HTML and emitted asset URLs. */
+  base?: string;
+  /** Environment mode used for .env resolution and import.meta.env defaults. */
+  mode?: string;
+  /** Directory to load .env files from. Defaults to the application root. */
+  envDir?: string;
+  /** Environment variable prefixes that are exposed to import.meta.env. */
+  envPrefixes?: string[];
+  /** Additional compile-time defines merged into the underlying bundle build. */
+  define?: Record<string, string>;
+  /** Minify emitted JavaScript and CSS when supported by the underlying builder. */
+  minify?: boolean;
+  /** Emit sourcemaps for bundled application assets. */
+  sourcemap?: boolean;
+  /** Enable code splitting for the application bundle. */
+  splitting?: boolean;
+}
+
+/**
+ * Options for preparing a Vite-style application for the development server.
+ */
+export interface AppDevPrepareOptions {
+  /** Application root directory used to resolve index.html, public/, and env files. */
+  root?: string;
+  /** Temporary output directory used by the dev server. Defaults to ".zts-dev". */
+  outdir?: string;
+  /** HTML entry file to scan for module scripts, stylesheets, and static assets. */
+  entryHtml?: string;
+  /** Public assets directory to copy as-is, or false to disable public asset copying. */
+  publicDir?: string | false;
+  /** Base URL prefix used when rewriting dev HTML and asset URLs. */
+  base?: string;
+  /** Environment mode used for .env resolution. Defaults to "development". */
+  mode?: string;
+  /** Directory to load .env files from. Defaults to the application root. */
+  envDir?: string;
+  /** Environment variable prefixes that are exposed to import.meta.env. */
+  envPrefixes?: string[];
+}
+
+/**
+ * Result produced after preparing an application entry for dev-server bundling.
+ */
+export interface AppDevPrepareResult {
+  /** Prepared JavaScript entry path that the dev server should bundle and serve. */
+  entryPath: string;
+  /** Number of files emitted while preparing the dev app, when available. */
+  outputCount?: number;
 }
 
 /**
@@ -1238,6 +1303,22 @@ export function buildSync(options: BuildOptions): BuildResult {
   postProcessCssOutputs(result, options);
   writeOutputFiles(result, options);
   return result;
+}
+
+export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  return native.buildAppSync({
+    ...options,
+    publicDir: options.publicDir === false ? "false" : options.publicDir,
+  });
+}
+
+export function prepareAppDevSync(options: AppDevPrepareOptions = {}): AppDevPrepareResult {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  return native.prepareAppDevSync({
+    ...options,
+    publicDir: options.publicDir === false ? "false" : options.publicDir,
+  });
 }
 
 /**

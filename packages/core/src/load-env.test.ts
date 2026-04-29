@@ -138,11 +138,33 @@ describe("envToDefine", () => {
   test("MODE/PROD/DEV/SSR 자동 주입 + 사용자 키 포함", () => {
     const define = envToDefine({ VITE_API: "https://api" }, "production");
     expect(define).toEqual({
+      "import.meta.env": JSON.stringify({
+        MODE: "production",
+        PROD: true,
+        DEV: false,
+        SSR: false,
+        BASE_URL: "/",
+        VITE_API: "https://api",
+      }),
       "import.meta.env.MODE": '"production"',
       "import.meta.env.PROD": "true",
       "import.meta.env.DEV": "false",
       "import.meta.env.SSR": "false",
+      "import.meta.env.BASE_URL": '"/"',
       "import.meta.env.VITE_API": '"https://api"',
+    });
+  });
+
+  test("BASE_URL can be provided and full import.meta.env object is injected", () => {
+    const define = envToDefine({ ZTS_FLAG: "on" }, "development", "/app/");
+    expect(define["import.meta.env.BASE_URL"]).toBe('"/app/"');
+    expect(JSON.parse(define["import.meta.env"])).toEqual({
+      MODE: "development",
+      PROD: false,
+      DEV: true,
+      SSR: false,
+      BASE_URL: "/app/",
+      ZTS_FLAG: "on",
     });
   });
 

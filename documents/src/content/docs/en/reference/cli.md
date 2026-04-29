@@ -22,6 +22,31 @@ zts --bundle <entry.ts> --preserve-modules --outdir dist  # per-module (library)
 zts --bundle <entry.ts> --plugin zts.config.js        # JS plugin
 ```
 
+## App Builder
+
+```bash
+zts dev [root]             # index.html-based dev server
+zts build [root]           # HTML rewrite + hashed assets → dist/
+zts preview [outdir]       # serve built files only
+```
+
+The default app layout is `index.html`, `public/`, `src/main.ts(x)`, and `.env*`.
+`zts build` uses `<script type="module" src>` as bundle entries and rewrites CSS
+`url()`, HTML asset URLs, and `%ENV%` tokens.
+
+| Option | Description |
+|--------|-------------|
+| `--entry-html <file>` | HTML entry file (default: `index.html`) |
+| `--public-dir <dir\|false>` | public copy directory or disabled |
+| `--base <path>` | HTML/CSS asset URL prefix |
+| `--mode <name>` | env/config mode (`dev`: `development`, `build`: `production`) |
+| `--env-prefix <list>` | exposed env prefix CSV (default: `VITE_,ZTS_`) |
+| `--env-dir <dir>` | directory for `.env*` files |
+
+If the app root contains `postcss.config.{js,mjs,cjs,json}` or `.postcssrc*`,
+ZTS automatically applies it to imported CSS. Tailwind v4 works via
+`@tailwindcss/postcss`.
+
 ## I/O
 
 | Option | Description |

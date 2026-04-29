@@ -288,6 +288,12 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "--env-dir=",
     "--env-prefix",
     "--env-prefix=",
+    "--base",
+    "--base=",
+    "--entry-html",
+    "--entry-html=",
+    "--public-dir",
+    "--public-dir=",
     "--plugin",
     "--log-level=",
     // dev server
