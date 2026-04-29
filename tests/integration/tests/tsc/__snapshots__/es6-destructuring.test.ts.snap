@@ -662,7 +662,7 @@ console.log(aVal, bVal);
 `;
 
 exports[`TSC: es6/destructuring destructuringObjectBindingPatternAndAssignment7 1`] = `
-"var K = /* @__PURE__ */ ((K) => {K[K["a"]="a"]="a";K[K["b"]="b"]="b";return K;})(K || {});
+"var K = /* @__PURE__ */ ((K) => {K["a"]="a";K["b"]="b";return K;})(K || {});
 const { [K.a]:aVal, [K.b]:bVal } = (() => {
 	return { [K.a]: 1, [K.b]: 1 };
 })();
