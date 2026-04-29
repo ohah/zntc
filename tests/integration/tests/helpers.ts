@@ -136,6 +136,7 @@ export async function runZts(
 export async function transpileAndRun(
   source: string,
   extraArgs: string[] = [],
+  opts: { ext?: "ts" | "tsx" | "js" | "jsx" } = {},
 ): Promise<{
   transpileExitCode: number;
   transpileStderr: string;
@@ -144,7 +145,7 @@ export async function transpileAndRun(
   cleanup: () => Promise<void>;
 }> {
   const dir = await mkdtemp(join(tmpdir(), "zts-transpile-"));
-  const inFile = join(dir, "in.ts");
+  const inFile = join(dir, `in.${opts.ext ?? "ts"}`);
   const outFile = join(dir, "out.js");
   await writeFile(inFile, source);
   const r = await runZts([inFile, "-o", outFile, ...extraArgs]);

@@ -256,4 +256,46 @@ describe("mangler --minify 회귀", () => {
     expect(result.transpileExitCode).toBe(0);
     expect(result.runOutput).toBe("1 2 Bar");
   });
+
+  // #2196: JSX 가 만든 `React.createElement(...)` 호출의 head 식별자 (`React`)
+  // 가 mangle 결과로 attach 되도록. 이전엔 transformer 가 만든 새 노드에 symbol_id
+  // 가 없어 mangler 가 무시 → outer var 만 mangle, JSX 호출은 원본 `React` 그대로
+  // → `ReferenceError: React is not defined`.
+  test("JSX factory head identifier 가 mangle 결과로 따라간다 (#2196)", async () => {
+    const result = await transpileAndRun(
+      [
+        "const React = { createElement: (t: any, p: any, ...c: any[]) => ({ t, p, c }), Fragment: 'F' };",
+        "const el = <div>hi</div>;",
+        "console.log(JSON.stringify(el));",
+      ].join("\n"),
+      ["--minify"],
+      { ext: "tsx" },
+    );
+    cleanup = result.cleanup;
+
+    expect(result.transpileExitCode).toBe(0);
+    expect(result.runStderr).not.toContain("ReferenceError");
+    expect(result.runOutput).toBe('{"t":"div","p":null,"c":["hi"]}');
+  });
+
+  // Fragment + 중첩 element + spread props 까지 같은 mangle path 통과 검증.
+  test("JSX Fragment + 중첩 element + spread props 도 mangle 후 정상 (#2196)", async () => {
+    const result = await transpileAndRun(
+      [
+        "const React = {",
+        "  createElement(t: any, p: any, ...c: any[]) { return { type: t, props: p || {}, children: c }; },",
+        "  Fragment: 'Fragment',",
+        "};",
+        "const el = (<><div className='a' {...{ id: 'x' }}>hi {1+2}</div><span /></>);",
+        "console.log(el.type, (el as any).children[0].props.id);",
+      ].join("\n"),
+      ["--minify"],
+      { ext: "tsx" },
+    );
+    cleanup = result.cleanup;
+
+    expect(result.transpileExitCode).toBe(0);
+    expect(result.runStderr).not.toContain("ReferenceError");
+    expect(result.runOutput).toBe("Fragment x");
+  });
 });
