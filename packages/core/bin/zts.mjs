@@ -416,6 +416,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       minify: opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax,
       sourcemap: opts.sourcemap,
       splitting: opts.splitting || undefined,
+      compiler: config?.compiler,
     });
     if (opts.logLevel !== "silent") {
       console.error(`[build] wrote ${result.outputCount ?? 0} files to ${outdir}`);

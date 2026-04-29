@@ -40,6 +40,8 @@ const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const token_mod = @import("../../lexer/token.zig");
+const Span = token_mod.Span;
 const module_parser = @import("../../parser/module.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
@@ -175,3 +177,89 @@ pub fn detectStyledDeclaration(self: *Transformer, node: Node) void {
 
     self.plugins.styled_components.registrations.append(self.allocator, .{ .name = var_name }) catch return;
 }
+
+// ================================================================
+// AST 변환 — 프로그램 끝에 displayName 할당문 주입
+// ================================================================
+
+/// `Component.displayName = "Component";` 단일 expression_statement 노드를 빌드.
+fn buildDisplayNameAssignment(self: *Transformer, reg: StyledComponentRegistration) Error!NodeIndex {
+    const zero = Span{ .start = 0, .end = 0 };
+    const name_span = try self.ast.addString(reg.name);
+    const display_name_span = try self.ast.addString("displayName");
+    // string literal 은 따옴표 포함된 텍스트 — 결과 코드에 그대로 출력됨.
+    var quoted_buf: [256]u8 = undefined;
+    const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{reg.name}) catch return error.OutOfMemory;
+    const quoted_span = try self.ast.addString(quoted);
+
+    // <Var>
+    const obj_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = name_span,
+        .data = .{ .string_ref = name_span },
+    });
+    // displayName (property identifier_reference 로 표기 — codegen 에서 dot member 로 출력)
+    const prop_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = display_name_span,
+        .data = .{ .string_ref = display_name_span },
+    });
+    // <Var>.displayName : extra = [object, property, flags]
+    const member_extras = try self.ast.addExtras(&.{
+        @intFromEnum(obj_ref),
+        @intFromEnum(prop_ref),
+        0,
+    });
+    const member = try self.ast.addNode(.{
+        .tag = .static_member_expression,
+        .span = zero,
+        .data = .{ .extra = member_extras },
+    });
+    // "<Var>"
+    const value = try self.ast.addNode(.{
+        .tag = .string_literal,
+        .span = quoted_span,
+        .data = .{ .string_ref = quoted_span },
+    });
+    // <Var>.displayName = "<Var>"
+    const assign = try self.ast.addNode(.{
+        .tag = .assignment_expression,
+        .span = zero,
+        .data = .{ .binary = .{ .left = member, .right = value, .flags = 0 } },
+    });
+    return self.ast.addNode(.{
+        .tag = .expression_statement,
+        .span = zero,
+        .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+    });
+}
+
+/// 프로그램 body 끝에 등록된 styled 컴포넌트마다 `<Var>.displayName = "<Var>";` 추가.
+/// 호출 시점: transformer 의 root visit 완료 후 (react_refresh 패턴과 동일).
+pub fn appendDisplayNameAssignments(self: *Transformer, root: NodeIndex) Error!NodeIndex {
+    const prog = self.ast.getNode(root);
+    if (prog.tag != .program) return root;
+    if (self.plugins.styled_components.registrations.items.len == 0) return root;
+
+    const old_list = prog.data.list;
+    const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+    for (old_stmts) |raw_idx| {
+        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+    }
+    for (self.plugins.styled_components.registrations.items) |reg| {
+        const stmt = try buildDisplayNameAssignment(self, reg);
+        try self.scratch.append(self.allocator, stmt);
+    }
+
+    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return self.ast.addNode(.{
+        .tag = .program,
+        .span = prog.span,
+        .data = .{ .list = new_list },
+    });
+}
+
