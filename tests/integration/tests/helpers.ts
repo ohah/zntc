@@ -240,6 +240,45 @@ export async function runZtsInDir(
   return { stdout, stderr, exitCode };
 }
 
+/// `zts.config.json` / CLI flag 통합 테스트의 `mkdtempSync → write → runZtsInDir`
+/// 보일러플레이트 흡수. caller 는 `cleanup` 만 afterEach 에 등록하면 됨.
+///
+/// `--bundle <entry>` 와 `-o outFile` (또는 `--outdir outDir`) 은 자동 주입 — caller 는
+/// 추가 옵션만 `args` 에 전달. `outDir` 명시 시 outFile 대신 outdir 모드.
+export async function runConfigBundle(opts: {
+  files: Record<string, string>;
+  /** entry 상대 경로 (fixture dir 기준). 기본 `index.ts`. */
+  entry?: string;
+  /** 추가 CLI 옵션 (`--bundle` / `-o` / `--outdir` 은 자동 주입). */
+  args?: string[];
+  /** outdir 모드 명시 (없으면 `-o out.js` 모드). */
+  outDir?: string;
+}): Promise<{
+  dir: string;
+  /** `-o` 모드에서 set. outDir 모드면 undefined. */
+  outFile?: string;
+  /** `--outdir` 모드에서 set. 기본 모드면 undefined. */
+  outDir?: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  cleanup: () => Promise<void>;
+}> {
+  const { dir, cleanup } = await createFixture(opts.files);
+  const entry = opts.entry ?? "index.ts";
+  const useOutDir = opts.outDir !== undefined;
+  const outFile = useOutDir ? undefined : join(dir, "out.js");
+  const outDir = useOutDir ? join(dir, opts.outDir!) : undefined;
+  const ioArgs = useOutDir ? ["--outdir", outDir!] : ["-o", outFile!];
+  const result = await runZtsInDir(dir, [
+    "--bundle",
+    join(dir, entry),
+    ...ioArgs,
+    ...(opts.args ?? []),
+  ]);
+  return { dir, outFile, outDir, ...result, cleanup };
+}
+
 export async function bundleAndRun(
   files: Record<string, string>,
   entry: string = "index.ts",

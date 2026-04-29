@@ -6,10 +6,10 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { createFixture, runZtsInDir } from "./helpers";
+import { createFixture, runZtsInDir, runConfigBundle } from "./helpers";
 
 describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -22,24 +22,18 @@ describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
   });
 
   test("external: bare specifier 가 require/import 로 보존됨", async () => {
-    const fixture = await createFixture({
-      "index.ts": `import * as fs from "node:fs";\nconsole.log(fs);`,
-      "zts.config.json": JSON.stringify({ external: ["node:fs"] }),
+    const r = await runConfigBundle({
+      files: {
+        "index.ts": `import * as fs from "node:fs";\nconsole.log(fs);`,
+        "zts.config.json": JSON.stringify({ external: ["node:fs"] }),
+      },
+      args: ["--format=esm"],
     });
-    cleanup = fixture.cleanup;
+    cleanup = r.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
-      outFile,
-      "--format=esm",
-    ]);
-    expect(result.exitCode).toBe(0);
-    const out = readFileSync(outFile, "utf8");
+    expect(r.exitCode).toBe(0);
     // external 이면 import 가 보존됨 (인라인 안 됨).
-    expect(out).toMatch(/from\s+["']node:fs["']/);
+    expect(readFileSync(r.outFile!, "utf8")).toMatch(/from\s+["']node:fs["']/);
   });
 
   test("alias: from→to 매핑이 적용됨", async () => {
@@ -66,46 +60,36 @@ describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
   });
 
   test("define: 키-값 쌍 → 정적 치환", async () => {
-    const fixture = await createFixture({
-      "index.ts": `console.log(__VER__);`,
-      "zts.config.json": JSON.stringify({
-        define: [{ key: "__VER__", value: '"v1.0.0"' }],
-      }),
+    const r = await runConfigBundle({
+      files: {
+        "index.ts": `console.log(__VER__);`,
+        "zts.config.json": JSON.stringify({
+          define: [{ key: "__VER__", value: '"v1.0.0"' }],
+        }),
+      },
     });
-    cleanup = fixture.cleanup;
+    cleanup = r.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
-      outFile,
-    ]);
-    expect(result.exitCode).toBe(0);
-    const out = readFileSync(outFile, "utf8");
+    expect(r.exitCode).toBe(0);
+    const out = readFileSync(r.outFile!, "utf8");
     expect(out).toContain('"v1.0.0"');
     expect(out).not.toContain("__VER__");
   });
 
   test("banner / footer 가 출력에 포함됨", async () => {
-    const fixture = await createFixture({
-      "index.ts": "console.log('mid');",
-      "zts.config.json": JSON.stringify({
-        banner: "/* banner-line */",
-        footer: "/* footer-line */",
-      }),
+    const r = await runConfigBundle({
+      files: {
+        "index.ts": "console.log('mid');",
+        "zts.config.json": JSON.stringify({
+          banner: "/* banner-line */",
+          footer: "/* footer-line */",
+        }),
+      },
     });
-    cleanup = fixture.cleanup;
+    cleanup = r.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
-      outFile,
-    ]);
-    expect(result.exitCode).toBe(0);
-    const out = readFileSync(outFile, "utf8");
+    expect(r.exitCode).toBe(0);
+    const out = readFileSync(r.outFile!, "utf8");
     expect(out.indexOf("banner-line")).toBeGreaterThanOrEqual(0);
     expect(out.indexOf("footer-line")).toBeGreaterThanOrEqual(0);
     expect(out.indexOf("banner-line")).toBeLessThan(out.indexOf("mid"));
@@ -113,32 +97,27 @@ describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
   });
 
   test("conditions: package.json exports 분기에 사용", async () => {
-    const fixture = await createFixture({
-      "node_modules/lib/package.json": JSON.stringify({
-        name: "lib",
-        exports: {
-          ".": {
-            "test-cond": "./test.js",
-            default: "./default.js",
+    const r = await runConfigBundle({
+      files: {
+        "node_modules/lib/package.json": JSON.stringify({
+          name: "lib",
+          exports: {
+            ".": {
+              "test-cond": "./test.js",
+              default: "./default.js",
+            },
           },
-        },
-      }),
-      "node_modules/lib/test.js": `export const tag = "CONDITION_OK";`,
-      "node_modules/lib/default.js": `export const tag = "DEFAULT_FALLBACK";`,
-      "index.ts": `import { tag } from "lib";\nconsole.log(tag);`,
-      "zts.config.json": JSON.stringify({ conditions: ["test-cond"] }),
+        }),
+        "node_modules/lib/test.js": `export const tag = "CONDITION_OK";`,
+        "node_modules/lib/default.js": `export const tag = "DEFAULT_FALLBACK";`,
+        "index.ts": `import { tag } from "lib";\nconsole.log(tag);`,
+        "zts.config.json": JSON.stringify({ conditions: ["test-cond"] }),
+      },
     });
-    cleanup = fixture.cleanup;
+    cleanup = r.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
-      outFile,
-    ]);
-    expect(result.exitCode).toBe(0);
-    const out = readFileSync(outFile, "utf8");
+    expect(r.exitCode).toBe(0);
+    const out = readFileSync(r.outFile!, "utf8");
     expect(out).toContain("CONDITION_OK");
     expect(out).not.toContain("DEFAULT_FALLBACK");
   });
@@ -205,7 +184,6 @@ describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
     ]);
     expect(result.exitCode).toBe(0);
     // preserveModules 시 a.js, b.js, index.js 등 분리 emit.
-    const { readdirSync } = require("node:fs");
     const files = readdirSync(outDir);
     expect(files.length).toBeGreaterThan(1);
   });
@@ -253,88 +231,71 @@ describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
 
   test("manualChunks: record form 매핑 — vendor chunk 분리", async () => {
     // 이전엔 zts.config.json 의 manualChunks 가 silent 무시됨. record form 매핑 검증.
-    const fixture = await createFixture({
-      "src/a.ts": 'export const a = "PKG_A";',
-      "src/b.ts": 'export const b = "PKG_B";',
-      "index.ts": 'import { a } from "./src/a";\nimport { b } from "./src/b";\nconsole.log(a, b);',
-      "zts.config.json": JSON.stringify({
-        manualChunks: [{ name: "vendor", patterns: ["src/a", "src/b"] }],
-      }),
+    const r = await runConfigBundle({
+      files: {
+        "src/a.ts": 'export const a = "PKG_A";',
+        "src/b.ts": 'export const b = "PKG_B";',
+        "index.ts":
+          'import { a } from "./src/a";\nimport { b } from "./src/b";\nconsole.log(a, b);',
+        "zts.config.json": JSON.stringify({
+          manualChunks: [{ name: "vendor", patterns: ["src/a", "src/b"] }],
+        }),
+      },
+      outDir: "dist",
+      args: ["--splitting", "--format=esm"],
     });
-    cleanup = fixture.cleanup;
+    cleanup = r.cleanup;
 
-    const outDir = join(fixture.dir, "dist");
-    const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "--outdir",
-      outDir,
-      "--splitting",
-      "--format=esm",
-    ]);
-    expect(result.exitCode).toBe(0);
-    const { readdirSync } = require("node:fs");
-    const files = readdirSync(outDir);
+    expect(r.exitCode).toBe(0);
+    const files = readdirSync(r.outDir!);
     // manualChunks 가 적용되면 vendor chunk 분리 → 2+ 파일 emit.
     expect(files.length).toBeGreaterThan(1);
-    // vendor chunk 가 a/b 마커를 포함.
     const vendorFile = files.find((f: string) => f.startsWith("vendor"));
     expect(vendorFile).toBeDefined();
-    const vendorContents = readFileSync(join(outDir, vendorFile!), "utf8");
+    const vendorContents = readFileSync(join(r.outDir!, vendorFile!), "utf8");
     expect(vendorContents).toContain("PKG_A");
     expect(vendorContents).toContain("PKG_B");
   });
 
   test("--inline-dynamic-imports CLI flag: dynamic target 이 entry chunk 에 흡수", async () => {
     // 이전엔 config.json `inlineDynamicImports` 만 노출되어 있었음. CLI flag 추가 검증.
-    const fixture = await createFixture({
-      "entry.ts": `
+    const r = await runConfigBundle({
+      files: {
+        "entry.ts": `
         async function boot() { const m = await import("./lazy"); console.log(m.v); }
         boot();
       `,
-      "lazy.ts": 'export const v = "INLINE_OK";',
+        "lazy.ts": 'export const v = "INLINE_OK";',
+      },
+      entry: "entry.ts",
+      outDir: "dist",
+      args: ["--splitting", "--inline-dynamic-imports", "--format=esm"],
     });
-    cleanup = fixture.cleanup;
+    cleanup = r.cleanup;
 
-    const outDir = join(fixture.dir, "dist");
-    const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      join(fixture.dir, "entry.ts"),
-      "--outdir",
-      outDir,
-      "--splitting",
-      "--inline-dynamic-imports",
-      "--format=esm",
-    ]);
-    expect(result.exitCode).toBe(0);
-    const { readdirSync } = require("node:fs");
-    const files = readdirSync(outDir);
+    expect(r.exitCode).toBe(0);
+    const files = readdirSync(r.outDir!);
     // inline 적용 시 단일 chunk
     expect(files.length).toBe(1);
-    expect(readFileSync(join(outDir, files[0]), "utf8")).toContain("INLINE_OK");
+    expect(readFileSync(join(r.outDir!, files[0]), "utf8")).toContain("INLINE_OK");
   });
 
   test("tsconfigPath: zts.config.json 의 tsconfigPath 가 정상 적용 (이전엔 silent drop)", async () => {
     // applyZtsConfigJson 이 tsconfigPath 매핑을 누락했던 silent drift 의 fix 검증.
     // tsconfig.json 에 experimentalDecorators=true 명시 → @decorator 구문 파싱 통과.
-    const fixture = await createFixture({
-      "index.ts":
-        "function dec(t:any,k:string){}\nclass A { @dec method(){} }\nconsole.log('TSCONFIG_OK');",
-      "tsconfig.custom.json": JSON.stringify({
-        compilerOptions: { experimentalDecorators: true, target: "es2022" },
-      }),
-      "zts.config.json": JSON.stringify({ tsconfigPath: "tsconfig.custom.json" }),
+    const r = await runConfigBundle({
+      files: {
+        "index.ts":
+          "function dec(t:any,k:string){}\nclass A { @dec method(){} }\nconsole.log('TSCONFIG_OK');",
+        "tsconfig.custom.json": JSON.stringify({
+          compilerOptions: { experimentalDecorators: true, target: "es2022" },
+        }),
+        "zts.config.json": JSON.stringify({ tsconfigPath: "tsconfig.custom.json" }),
+      },
     });
-    cleanup = fixture.cleanup;
+    cleanup = r.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
-      outFile,
-    ]);
-    expect(result.exitCode).toBe(0);
-    expect(readFileSync(outFile, "utf8")).toContain("TSCONFIG_OK");
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(r.outFile!, "utf8")).toContain("TSCONFIG_OK");
   });
 });
