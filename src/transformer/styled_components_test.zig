@@ -1,12 +1,4 @@
 //! styled-components 1st-party transform 회귀 테스트.
-//!
-//! 검증 시나리오:
-//! 1. import + styled.X 선언 → displayName 주입
-//! 2. import + styled(Component) 선언 → displayName 주입
-//! 3. 옵션 비활성 → 주입 없음 (no-op)
-//! 4. import 없음 → styled binding 미감지 → 주입 없음
-//! 5. 다른 source ("@emotion/styled") → 주입 없음
-//! 6. .attrs(...) chain → 의도적 skip (현재 PR 스코프)
 
 const std = @import("std");
 const helpers = @import("../codegen/codegen_test/helpers.zig");

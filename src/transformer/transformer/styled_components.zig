@@ -43,27 +43,18 @@ const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const module_parser = @import("../../parser/module.zig");
+const import_scanner = @import("../../bundler/import_scanner.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const StyledComponentRegistration = @import("../plugin_state.zig").StyledComponentRegistration;
 
-/// styled-components import source 문자열 (정확 매치). v6+ 는 "/native" subpath 도 인정.
+/// v6+ 는 "/native" subpath 도 인정. 추가될 가능성 있음 (vendored fork 등).
 pub const STYLED_SOURCES: []const []const u8 = &.{
     "styled-components",
     "styled-components/native",
 };
 
-/// string_literal 의 텍스트에서 따옴표를 제거. 빈 문자열 / 따옴표 없는 경우 null.
-fn unquoteStringLiteral(raw: []const u8) ?[]const u8 {
-    if (raw.len < 2) return null;
-    const q = raw[0];
-    if (q != '"' and q != '\'' and q != '`') return null;
-    if (raw[raw.len - 1] != q) return null;
-    return raw[1 .. raw.len - 1];
-}
-
-/// import source 가 styled-components 인지 확인.
 pub fn isStyledImportSource(source: []const u8) bool {
     for (STYLED_SOURCES) |s| {
         if (std.mem.eql(u8, s, source)) return true;
@@ -71,26 +62,20 @@ pub fn isStyledImportSource(source: []const u8) bool {
     return false;
 }
 
-/// `visitImportDeclaration` 의 hook. styled-components import 면 default specifier
-/// 로컬 이름을 `state.styled_components.default_binding` 에 저장.
-///
-/// 호출 시점: visitImportDeclaration 의 본격 변환 전. 옵션 비활성 시 즉시 return.
-pub fn detectStyledImport(self: *Transformer, node: Node) void {
+/// `visitImportDeclaration` hook — source 가 styled-components 면 default specifier 의 로컬
+/// 이름을 binding 으로 등록. 옵션 비활성 시 즉시 return (hot path).
+pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     if (!self.options.styled_components) return;
-    // 이미 다른 styled-components import 가 감지된 경우 — 중복 import 는 드물지만,
-    // 첫 import 의 binding 을 유지 (babel-plugin 동작).
+    // 첫 styled-components import 만 사용 (babel-plugin 동작과 일치).
     if (self.plugins.styled_components.default_binding != null) return;
 
     const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
-    // source 노드에서 unquoted 텍스트 추출.
     if (x.source.isNone()) return;
     const source_node = self.ast.getNode(x.source);
     if (source_node.tag != .string_literal) return;
-    const raw = self.ast.getText(source_node.span);
-    const source_text = unquoteStringLiteral(raw) orelse return;
+    const source_text = import_scanner.stripQuotes(self.ast.getText(source_node.span)) orelse return;
     if (!isStyledImportSource(source_text)) return;
 
-    // specifiers 순회 — default specifier 의 local 이름 찾기.
     var i: u32 = 0;
     while (i < x.specs_len) : (i += 1) {
         const spec_idx_raw = self.ast.extra_data.items[x.specs_start + i];
@@ -107,54 +92,39 @@ pub fn detectStyledImport(self: *Transformer, node: Node) void {
     // 이 PR 은 default binding 만 처리. named (`{ styled }`) 는 후속.
 }
 
-/// tag 표현식이 styled binding 을 사용하는지 확인.
-/// 인식 케이스 (이번 PR):
-///   - `<binding>.X` (static_member_expression) → true
-///   - `<binding>(arg)` (call_expression) → true
-/// 미인식 (후속 PR):
-///   - `<binding>.X.attrs({...})` chain
-///   - `<binding>.X.withConfig({...})` chain
-fn tagUsesBinding(self: *Transformer, tag_idx: NodeIndex, binding: []const u8) bool {
+/// tag 표현식이 styled binding 을 사용하는지 확인 (root identifier 만 비교).
+/// 인식: `<binding>.X` / `<binding>(arg)`. 미인식 (후속 PR): chain `.attrs(...)` / `.withConfig(...)`.
+fn tagUsesBinding(self: *Transformer, tag_idx: NodeIndex) bool {
     if (tag_idx.isNone()) return false;
+    const binding = self.plugins.styled_components.default_binding orelse return false;
     const tag_node = self.ast.getNode(tag_idx);
-    switch (tag_node.tag) {
-        .static_member_expression => {
+    const root_idx: NodeIndex = switch (tag_node.tag) {
+        .static_member_expression => blk: {
             // extra = [object, property, flags]
-            const e = tag_node.data.extra;
-            if (e + 1 >= self.ast.extra_data.items.len) return false;
-            const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            if (obj_idx.isNone()) return false;
-            const obj_node = self.ast.getNode(obj_idx);
-            if (obj_node.tag != .identifier_reference) return false;
-            const name = self.ast.getText(obj_node.data.string_ref);
-            return std.mem.eql(u8, name, binding);
+            if (!self.ast.hasExtra(tag_node.data.extra, 1)) return false;
+            break :blk @enumFromInt(self.ast.extra_data.items[tag_node.data.extra]);
         },
-        .call_expression => {
+        .call_expression => blk: {
             // extra = [callee, args_start, args_len, flags]
-            const e = tag_node.data.extra;
-            if (e >= self.ast.extra_data.items.len) return false;
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            if (callee_idx.isNone()) return false;
-            const callee_node = self.ast.getNode(callee_idx);
-            if (callee_node.tag != .identifier_reference) return false;
-            const name = self.ast.getText(callee_node.data.string_ref);
-            return std.mem.eql(u8, name, binding);
+            if (!self.ast.hasExtra(tag_node.data.extra, 0)) return false;
+            break :blk @enumFromInt(self.ast.extra_data.items[tag_node.data.extra]);
         },
         else => return false,
-    }
+    };
+    if (root_idx.isNone()) return false;
+    const root_node = self.ast.getNode(root_idx);
+    if (root_node.tag != .identifier_reference) return false;
+    return std.mem.eql(u8, self.ast.getText(root_node.data.string_ref), binding);
 }
 
-/// `visitVariableDeclarator` hook. init 이 styled tagged template 이면 변수 이름을
-/// `state.styled_components.registrations` 에 추가.
-///
-/// 호출 시점: visitVariableDeclarator 의 변환 직전. 옵션 비활성 / binding 미감지 시 no-op.
-pub fn detectStyledDeclaration(self: *Transformer, node: Node) void {
+/// `visitVariableDeclarator` hook — init 이 styled tagged template 이면 변수 이름을 등록.
+pub fn detectStyledDeclaration(self: *Transformer, node: Node) Error!void {
     if (!self.options.styled_components) return;
-    const binding = self.plugins.styled_components.default_binding orelse return;
+    if (self.plugins.styled_components.default_binding == null) return;
 
     // variable_declarator extra = [name, type_annotation, init]
     const e = node.data.extra;
-    if (e + 2 >= self.ast.extra_data.items.len) return;
+    if (!self.ast.hasExtra(e, 2)) return;
     const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
     const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
     if (init_idx.isNone()) return;
@@ -162,66 +132,58 @@ pub fn detectStyledDeclaration(self: *Transformer, node: Node) void {
     const init_node = self.ast.getNode(init_idx);
     if (init_node.tag != .tagged_template_expression) return;
 
-    // tagged_template_expression: extra = [tag, template, flags]
+    // tagged_template_expression extra = [tag, template, flags]
     const te = init_node.data.extra;
-    if (te + 1 >= self.ast.extra_data.items.len) return;
+    if (!self.ast.hasExtra(te, 1)) return;
     const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[te]);
-    if (!tagUsesBinding(self, tag_idx, binding)) return;
+    if (!tagUsesBinding(self, tag_idx)) return;
 
-    // 변수 이름 추출 — binding_identifier.string_ref 의 텍스트.
     if (name_idx.isNone()) return;
     const name_node = self.ast.getNode(name_idx);
     if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return;
     const var_name = self.ast.getText(name_node.data.string_ref);
     if (var_name.len == 0) return;
 
-    self.plugins.styled_components.registrations.append(self.allocator, .{ .name = var_name }) catch return;
+    try self.plugins.styled_components.registrations.append(self.allocator, .{ .name = var_name });
 }
 
 // ================================================================
 // AST 변환 — 프로그램 끝에 displayName 할당문 주입
 // ================================================================
 
-/// `Component.displayName = "Component";` 단일 expression_statement 노드를 빌드.
-fn buildDisplayNameAssignment(self: *Transformer, reg: StyledComponentRegistration) Error!NodeIndex {
+/// `<Var>.displayName = "<Var>";` 단일 expression_statement 빌드.
+/// `display_name_span` 은 caller 에서 한 번만 만들어 재사용 (per-registration addString 회피).
+fn buildDisplayNameAssignment(
+    self: *Transformer,
+    reg: StyledComponentRegistration,
+    display_name_span: Span,
+) Error!NodeIndex {
     const zero = Span{ .start = 0, .end = 0 };
     const name_span = try self.ast.addString(reg.name);
-    const display_name_span = try self.ast.addString("displayName");
-    // string literal 은 따옴표 포함된 텍스트 — 결과 코드에 그대로 출력됨.
     var quoted_buf: [256]u8 = undefined;
     const quoted = std.fmt.bufPrint(&quoted_buf, "\"{s}\"", .{reg.name}) catch return error.OutOfMemory;
     const quoted_span = try self.ast.addString(quoted);
 
-    // <Var>
     const obj_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = name_span,
         .data = .{ .string_ref = name_span },
     });
-    // displayName (property identifier_reference 로 표기 — codegen 에서 dot member 로 출력)
     const prop_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
         .span = display_name_span,
         .data = .{ .string_ref = display_name_span },
     });
-    // <Var>.displayName : extra = [object, property, flags]
-    const member_extras = try self.ast.addExtras(&.{
+    const member = try self.addExtraNode(.static_member_expression, zero, &.{
         @intFromEnum(obj_ref),
         @intFromEnum(prop_ref),
         0,
     });
-    const member = try self.ast.addNode(.{
-        .tag = .static_member_expression,
-        .span = zero,
-        .data = .{ .extra = member_extras },
-    });
-    // "<Var>"
     const value = try self.ast.addNode(.{
         .tag = .string_literal,
         .span = quoted_span,
         .data = .{ .string_ref = quoted_span },
     });
-    // <Var>.displayName = "<Var>"
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero,
@@ -234,12 +196,21 @@ fn buildDisplayNameAssignment(self: *Transformer, reg: StyledComponentRegistrati
     });
 }
 
+/// `addExtraNode` thin wrapper — `Transformer.addExtraNode` (transformer.zig:2772) 와 동일,
+/// 모듈 외부에서도 호출 가능하도록 노출.
+fn addExtraNode(self: *Transformer, tag: Node.Tag, span: Span, extras: []const u32) Error!NodeIndex {
+    const e = try self.ast.addExtras(extras);
+    return self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = e } });
+}
+
 /// 프로그램 body 끝에 등록된 styled 컴포넌트마다 `<Var>.displayName = "<Var>";` 추가.
-/// 호출 시점: transformer 의 root visit 완료 후 (react_refresh 패턴과 동일).
 pub fn appendDisplayNameAssignments(self: *Transformer, root: NodeIndex) Error!NodeIndex {
     const prog = self.ast.getNode(root);
     if (prog.tag != .program) return root;
     if (self.plugins.styled_components.registrations.items.len == 0) return root;
+
+    // "displayName" 은 모든 할당이 공유하므로 단일 span 으로 캐싱 (refresh.zig:105 의 $RefreshReg$ 패턴).
+    const display_name_span = try self.ast.addString("displayName");
 
     const old_list = prog.data.list;
     const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
@@ -251,7 +222,7 @@ pub fn appendDisplayNameAssignments(self: *Transformer, root: NodeIndex) Error!N
         try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
     }
     for (self.plugins.styled_components.registrations.items) |reg| {
-        const stmt = try buildDisplayNameAssignment(self, reg);
+        const stmt = try buildDisplayNameAssignment(self, reg, display_name_span);
         try self.scratch.append(self.allocator, stmt);
     }
 
@@ -262,4 +233,3 @@ pub fn appendDisplayNameAssignments(self: *Transformer, root: NodeIndex) Error!N
         .data = .{ .list = new_list },
     });
 }
-
