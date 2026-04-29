@@ -140,6 +140,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "preserveSymlinks",
   // ─── Bundle 출력 ───
   "splitting",
+  "outputExports",
   "preserveModules",
   "preserveModulesRoot",
   "inlineDynamicImports",

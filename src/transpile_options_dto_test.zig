@@ -54,6 +54,7 @@ const bundler_only_fields = [_][]const u8{
     "inlineDynamicImports",
     "manualChunks",
     "sourcemapMode",
+    "outputExports",
 };
 
 /// TS interface 본문에서 필드명을 추출한다. 간단 파서: `interface <name> {` 블록

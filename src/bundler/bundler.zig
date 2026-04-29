@@ -59,6 +59,32 @@ pub const RN_DEFAULT_BLOCK_LIST: []const []const u8 = &.{
     "\\/__fixtures__\\/",
 };
 
+/// CJS / UMD 출력 시 entry export 형식 — Rollup `output.exports` 호환 (#2159).
+///
+///  - `auto` (default): default-only → `module.exports = X` 단일, named-only → `exports.X = X`,
+///                       mixed → 양쪽 + `__esModule` flag (interop)
+///  - `named`         : 항상 named (`exports.X = X` + `__esModule` flag if has default)
+///  - `default_`      : `module.exports = X` 단일 — default-only 일 때만, named 섞이면 에러
+///  - `none`          : export 출력 안 함
+///
+/// ESM 출력에서는 무시 (`export { ... }` 그대로 emit). `default_` trailing underscore 는 Zig keyword 회피.
+pub const OutputExports = enum {
+    auto,
+    named,
+    default_,
+    none,
+
+    /// CLI / NAPI string 입력을 enum 으로 변환. invalid 면 null.
+    /// `default` ↔ `.default_` 매핑은 Zig keyword 회피 (`SourceMapMode.inline_` 동일 패턴).
+    pub fn fromString(s: []const u8) ?OutputExports {
+        if (std.mem.eql(u8, s, "auto")) return .auto;
+        if (std.mem.eql(u8, s, "named")) return .named;
+        if (std.mem.eql(u8, s, "default")) return .default_;
+        if (std.mem.eql(u8, s, "none")) return .none;
+        return null;
+    }
+};
+
 pub const BundleOptions = struct {
     entry_points: []const []const u8,
     format: EmitOptions.Format = .esm,
@@ -257,6 +283,8 @@ pub const BundleOptions = struct {
     drop_console: bool = false,
     /// `--drop=debugger` (#2155). `debugger;` statement 를 transformer 에서 제거.
     drop_debugger: bool = false,
+    /// CJS / UMD entry export 출력 형식 (#2159). ESM 출력에서는 무시.
+    output_exports: OutputExports = .auto,
     /// --pure:NAME: 순수 함수로 마킹할 글로벌 함수명 목록
     pure: []const []const u8 = &.{},
     /// --tsconfig-raw: tsconfig.json 인라인 오버라이드 JSON
@@ -523,6 +551,7 @@ pub const Bundler = struct {
             .unsupported = base.unsupported,
             .keep_names = base.keep_names,
             .drop_labels = base.drop_labels,
+            .output_exports = self.options.output_exports,
             .jsx_runtime = base.jsx_runtime,
             .jsx_factory = base.jsx_factory,
             .jsx_fragment = base.jsx_fragment,

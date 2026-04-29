@@ -75,6 +75,8 @@ function parseArgs(argv) {
     sourcemap: false,
     // undefined: NAPI 측이 missing 시 "linked" fallback. CLI/config 명시 시 override.
     sourcemapMode: undefined,
+    // undefined: NAPI 측이 missing 시 "auto" fallback (#2159).
+    outputExports: undefined,
     sourcemapDebugIds: false,
     sourcesContent: true,
     splitting: false,
@@ -488,6 +490,7 @@ function mergeConfigIntoOpts(opts, config) {
     "jobs",
     "logLevel",
     "logLimit",
+    "outputExports",
     "outExtensionJs",
     "metafile",
     "outfile",
@@ -623,6 +626,7 @@ async function runBundle(opts, config) {
     legalComments: opts.legalComments,
     logLevel: opts.logLevel,
     logLimit: opts.logLimit,
+    outputExports: opts.outputExports,
     resolveExtensions: opts.resolveExtensions.length > 0 ? opts.resolveExtensions : undefined,
     mainFields: opts.mainFields.length > 0 ? opts.mainFields : undefined,
     // NAPI 가 tsconfig paths / baseUrl 을 alias 로 변환해 resolver 에 주입하도록 전달.

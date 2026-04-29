@@ -96,6 +96,8 @@ export const FLAG_REGISTRY = [
   },
   { kind: "string", flag: "--rn-platform", target: "rnPlatform", forms: ["equal"] },
   { kind: "string", flag: "--source-root", target: "sourceRoot", forms: ["equal"] },
+  // #2159 — `--output-exports=auto|named|default|none` (Rollup output.exports 호환).
+  { kind: "string", flag: "--output-exports", target: "outputExports", forms: ["equal"] },
   { kind: "string", flag: "--banner", target: "banner", forms: ["equal"] },
   { kind: "string", flag: "--footer", target: "footer", forms: ["equal"] },
 
