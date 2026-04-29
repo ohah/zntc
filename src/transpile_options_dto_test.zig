@@ -305,3 +305,12 @@ test "schema diff: bundler_only_fields are all in TS BuildOptionsCommon" {
         return error.TsBuildOptionMissingFromZig;
     }
 }
+
+test "AliasDto / ManualChunkDto 는 bundler/types entry 타입의 alias — drift 차단" {
+    const transpile = @import("transpile.zig");
+    const bundler_types_mod = @import("bundler/types.zig");
+
+    // type 자체가 같아야 — 한 정의 변경 시 다른 곳 자동 반영. drift 차단.
+    try std.testing.expect(transpile.AliasDto == bundler_types_mod.AliasEntry);
+    try std.testing.expect(transpile.ManualChunkDto == bundler_types_mod.ManualChunkEntry);
+}

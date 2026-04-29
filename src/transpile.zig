@@ -18,6 +18,7 @@ const DefineEntry = @import("transformer/transformer.zig").DefineEntry;
 const Codegen = @import("codegen/codegen.zig").Codegen;
 const SourceMap = @import("codegen/sourcemap.zig");
 const Mangler = @import("codegen/mod.zig").mangler;
+const bundler_types = @import("bundler/types.zig");
 const LinkingMetadata = @import("bundler/linker.zig").LinkingMetadata;
 const rt = @import("bundler/runtime_helpers.zig");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
@@ -163,19 +164,15 @@ pub const TranspileOptionsDto = struct {
     manualChunks: ?[]const ManualChunkDto = null,
 };
 
-pub const AliasDto = struct {
-    from: []const u8,
-    to: []const u8,
-};
+/// `AliasDto` / `ManualChunkDto` 는 `bundler/types.zig` 의 entry 타입과 layout 동일 —
+/// silent drift 방지용 직접 재사용 (별도 DTO 유지 시 두 정의 동기화 의무 발생).
+/// `LoaderDto` 만 string 표현 vs enum 차이로 별도 유지.
+pub const AliasDto = bundler_types.AliasEntry;
+pub const ManualChunkDto = bundler_types.ManualChunkEntry;
 
 pub const LoaderDto = struct {
     ext: []const u8,
     loader: []const u8,
-};
-
-pub const ManualChunkDto = struct {
-    name: []const u8,
-    patterns: []const []const u8,
 };
 
 /// JSON payload를 파싱해 `TranspileOptions`로 변환한다.
