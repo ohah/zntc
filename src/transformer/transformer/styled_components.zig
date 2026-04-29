@@ -31,11 +31,12 @@
 //!
 //! ## 미지원 케이스 (후속 PR)
 //!
-//! - 조건부: `cond ? styled.div\`\` : styled.div\`\`` (var 이름 단일)
 //! - 클래스 정적 필드: `class { static Child = styled.div\`\` }` (이름 = "Child")
-//! - 객체 프로퍼티: `{ One: styled.div\`\` }` (이름 = "One")
-//! - 체인: `styled.div.attrs({...})\`\`` / `styled.div.withConfig({...})\`\``
-//! - 할당: `var X = Y = styled.div\`\``
+//! - 사용자 명시 `.withConfig({...})` 인식 시 merge / skip
+//! - 논리 (`cond && styled.div\`\``)
+//! - IIFE (`(() => styled.div\`\`)()`)
+//! - chained `var X = Y = styled.div\`\`` 의 outermost name 우선
+//! - TS cast: `(styled.div\`\` as any)` / `... satisfies T`
 
 const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
@@ -209,18 +210,24 @@ pub fn wrapStyledTagInExpr(self: *Transformer, expr_idx: NodeIndex, var_name: []
     }
 }
 
-/// caller 의 fast-path 사전 필터 — wrapStyledTagInExpr 가 처리할 수 있는 형태인지.
-/// 옵션 OFF / binding 미감지 / 단순 식별자 init (`= 5`, `= other`) 같은 케이스에서 var_name
-/// 추출 + 함수 호출 비용을 회피.
-pub fn isWrappableExpr(tag: ast_mod.Node.Tag) bool {
+fn isWrappableExpr(tag: ast_mod.Node.Tag) bool {
     return tag == .tagged_template_expression or
         tag == .conditional_expression or
         tag == .parenthesized_expression;
 }
 
-/// 직접 styled tagged template 일 때만 호출되는 wrap (caller 가 tag 검증 후 호출).
-/// `wrapStyledTagInExpr` 의 재귀 base case.
-pub fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+/// caller 의 fast-path 사전 필터 — visitVariableDeclarator / visitObjectProperty 가 매
+/// declarator 마다 호출. 옵션 OFF / binding 미감지 / wrappable 하지 않은 init 면 var_name
+/// 추출 + 함수 호출 비용을 회피.
+pub fn shouldAttemptWrap(self: *Transformer, expr_idx: NodeIndex) bool {
+    if (!self.options.styled_components) return false;
+    if (self.plugins.styled_components.default_binding == null) return false;
+    if (expr_idx.isNone()) return false;
+    return isWrappableExpr(self.ast.getNode(expr_idx).tag);
+}
+
+/// `wrapStyledTagInExpr` 의 재귀 base case — 직접 tagged_template 일 때만 호출.
+fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (var_name.len == 0) return init_idx;
     const init_node = self.ast.getNode(init_idx);
 

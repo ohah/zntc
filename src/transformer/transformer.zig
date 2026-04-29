@@ -2930,11 +2930,7 @@ pub const Transformer = struct {
         // styled-components: tag 를 `.withConfig({displayName})` 로 wrap. fast-path 로 1) 옵션,
         // 2) binding 감지, 3) init.tag == tagged_template_expression 을 사전 거른 뒤에만
         // 본 helper 호출. var_name 은 block-scoping rename 후 안전하도록 new_name 에서 읽음.
-        if (self.options.styled_components and
-            self.plugins.styled_components.default_binding != null and
-            !new_init.isNone() and !new_name.isNone() and
-            styled_components_mod.isWrappableExpr(self.ast.getNode(new_init).tag))
-        {
+        if (!new_name.isNone() and styled_components_mod.shouldAttemptWrap(self, new_init)) {
             const new_name_node = self.ast.getNode(new_name);
             if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
                 const var_name = self.ast.getText(new_name_node.data.string_ref);
@@ -4385,11 +4381,7 @@ pub const Transformer = struct {
         var new_value = try self.visitNode(node.data.binary.right);
         // styled-components: { One: styled.div`...` } 의 value 가 styled tagged template 이면
         // property key 이름을 displayName 으로 사용해 wrap. variable_declarator 와 동일 패턴.
-        if (self.options.styled_components and
-            self.plugins.styled_components.default_binding != null and
-            !new_value.isNone() and !new_key.isNone() and
-            styled_components_mod.isWrappableExpr(self.ast.getNode(new_value).tag))
-        {
+        if (!new_key.isNone() and styled_components_mod.shouldAttemptWrap(self, new_value)) {
             if (styled_components_mod.objectPropertyKeyName(self, new_key)) |prop_name| {
                 new_value = try styled_components_mod.wrapStyledTagInExpr(self, new_value, prop_name);
             }
