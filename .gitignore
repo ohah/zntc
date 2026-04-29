@@ -31,6 +31,8 @@ documents/dist/
 # JS build output
 packages/core/dist/
 packages/wasm/dist/
+# 루트 cwd 에 떨어지는 임시 빌드 산출물 (NAPI 직접 호출 경로 / examples 빌드 leftover).
+/dist/
 
 # NAPI default bundle output — manual smoke test 가 outfile/outdir 미지정 시 cwd 에
 # `bundle.js`/`bundle.js.map` 을 떨어뜨리는 경우가 있음 (PR 사이클에서 실수로 commit 된 사례).
