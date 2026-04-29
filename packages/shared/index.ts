@@ -162,7 +162,7 @@ export function targetToUnsupported(target?: Target): number {
 // ─── JSON payload 구성 (Zig optionsFromJson과 1:1 매핑) ───
 
 /**
- * TranspileOptions를 Zig `TranspileOptionsDto` JSON으로 직렬화한다.
+ * TranspileOptions를 Zig `ConfigOptionsDto` JSON으로 직렬화한다.
  *
  * - 기본값은 생략 (payload 크기 최소화)
  * - enum 키는 Zig enum name과 일치 (예: "react-native" → "react_native")

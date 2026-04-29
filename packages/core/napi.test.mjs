@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const addonPath = join(__dirname, "../../zig-out/lib/zts.node");
 const native = require(addonPath);
 
-// 옵션은 단일 JSON payload (camelCase, Zig TranspileOptionsDto와 매핑).
+// 옵션은 단일 JSON payload (camelCase, Zig ConfigOptionsDto와 매핑).
 // 기본값(useDefineForClassFields, sourcesContent 등)은 Zig 측에서 처리하므로 생략 가능.
 const call = (src, filename, opts = {}) => native.transpile(src, filename, JSON.stringify(opts));
 
