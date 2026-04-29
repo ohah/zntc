@@ -203,6 +203,9 @@ const CliOptions = struct {
     /// inlineDynamicImports: dynamic import target 을 entry chunk 에 인라인 (Rollup 호환).
     /// CLI: `--inline-dynamic-imports` / config.json: `inlineDynamicImports`.
     inline_dynamic_imports: bool = false,
+    /// 사용자가 `inline_dynamic_imports` 를 명시했는지. true / false 둘 다 추적 —
+    /// 명시 false + single-file output 일 때 자동 승격을 막아야 의도가 보존됨 (#2209).
+    inline_dynamic_imports_explicit: bool = false,
 
     const RnPlatform = enum {
         none,
@@ -659,7 +662,10 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
     if (dto.preserveModulesRoot) |s| if (s.len > 0) {
         opts.preserve_modules_root = try allocator.dupe(u8, s);
     };
-    if (dto.inlineDynamicImports == true) opts.inline_dynamic_imports = true;
+    if (dto.inlineDynamicImports) |v| {
+        opts.inline_dynamic_imports = v;
+        opts.inline_dynamic_imports_explicit = true;
+    }
     // manualChunks: record form 매핑 — `[{name, patterns}]`. function form 은 JS-only.
     if (dto.manualChunks) |list| for (list) |e| {
         const patterns = try allocator.alloc([]const u8, e.patterns.len);
@@ -905,6 +911,13 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.eql(u8, arg, "--inline-dynamic-imports")) {
             // Rollup `inlineDynamicImports` 호환 — dynamic import target 을 entry 에 인라인.
             opts.inline_dynamic_imports = true;
+            opts.inline_dynamic_imports_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--no-inline-dynamic-imports")) {
+            // 명시적으로 인라인 끄기. single-file output + dynamic import 와 함께면
+            // 자동 승격이 막히고 명확한 에러로 분리 정책 (--splitting / --preserve-modules)
+            // 선택을 요구.
+            opts.inline_dynamic_imports = false;
+            opts.inline_dynamic_imports_explicit = true;
         } else if (std.mem.eql(u8, arg, "--external")) {
             if (i + 1 < args.len) {
                 i += 1;
@@ -1198,6 +1211,27 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
     // preamble과 __esm 래핑이 스코프 격리를 담당.
     if (opts.is_bundle and opts.platform == .browser and !opts.bundle_format_explicit and !opts.preserve_modules) {
         opts.bundle_format = .iife;
+    }
+
+    // #2209: single-file output 모드에서 dynamic import 가 있으면 자동으로 entry chunk
+    // 에 인라인 (esbuild 호환). graph.zig::promoteExportsKinds Pass 4 가 dynamic
+    // target 을 `wrap_kind = .esm` 으로 promote → emitter 가 `import("./x")` 호출을
+    // `init_x()` + `x_exports` 로 재작성. 이렇게 안 하면 default 모드에서 dynamic
+    // target 이 inline 됐는데 호출은 외부 path 그대로 남아 `Cannot find module` 에러.
+    if (opts.is_bundle and !opts.splitting and !opts.preserve_modules) {
+        if (!opts.inline_dynamic_imports_explicit) {
+            // 명시 안 함 — 자동 승격 (esbuild 호환).
+            opts.inline_dynamic_imports = true;
+        } else if (!opts.inline_dynamic_imports) {
+            // 명시 false + single-file 은 논리 모순 (어떤 번들러도 처리 안 함).
+            // 자동 승격 대신 명확한 에러로 분리 정책 (--splitting / --preserve-modules)
+            // 선택을 요구.
+            try stderr.print(
+                "error: --no-inline-dynamic-imports requires --splitting or --preserve-modules in bundle mode\n",
+                .{},
+            );
+            return error.InvalidArgs;
+        }
     }
 
     // 자동 define:
