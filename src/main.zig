@@ -86,6 +86,9 @@ const CliOptions = struct {
     /// --fallback:NAME=PATH (webpack resolve.fallback). 일반 해석 실패 시에만 적용.
     /// PATH 대신 "false"로 쓰면 빈 모듈로 대체.
     fallback_list: std.ArrayList(FallbackEntry) = .empty,
+    /// `zts.config.json` 의 `manualChunks` (record form: `[{name, patterns}]`) 매핑.
+    /// CLI flag 없음 — config.json 만. function form 은 JS-only 라 NAPI 경유.
+    manual_chunks_list: std.ArrayList(ManualChunkEntry) = .empty,
     /// --block-list=PATTERN (반복). Metro resolver.blockList 호환.
     /// JS regex source 스타일 문자열 (`\/ios\/`, `\.bak$` 등).
     block_list: std.ArrayList([]const u8) = .empty,
@@ -212,6 +215,7 @@ const CliOptions = struct {
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
     const LoaderEnum = @import("zts_lib").bundler.types.Loader;
     const LegalCommentsEnum = @import("zts_lib").bundler.types.LegalComments;
+    const ManualChunkEntry = @import("zts_lib").bundler.types.ManualChunkEntry;
 
     const LogLevel = enum {
         silent,
@@ -229,6 +233,7 @@ const CliOptions = struct {
         self.conditions_list.deinit(alloc);
         self.alias_list.deinit(alloc);
         self.fallback_list.deinit(alloc);
+        self.manual_chunks_list.deinit(alloc);
         self.block_list.deinit(alloc);
         self.loader_list.deinit(alloc);
         for (self.inject_list.items) |p| alloc.free(p);
@@ -376,9 +381,15 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
         opts.preserve_modules_root = try allocator.dupe(u8, s);
     };
     if (dto.inlineDynamicImports == true) opts.inline_dynamic_imports = true;
-    // manualChunks: record form 만 지원. 현재 CliOptions 에 manual_chunks_list 가
-    // 없어 follow-up 으로 분리. CLI 의 `manualChunks` JSON 명시는 silent 무시 —
-    // 사용자 영향 없도록 #2105 follow-up 에 트래킹.
+    // manualChunks: record form 매핑 — `[{name, patterns}]`. function form 은 JS-only.
+    if (dto.manualChunks) |list| for (list) |e| {
+        const patterns = try allocator.alloc([]const u8, e.patterns.len);
+        for (e.patterns, 0..) |p, i| patterns[i] = try allocator.dupe(u8, p);
+        try opts.manual_chunks_list.append(allocator, .{
+            .name = try allocator.dupe(u8, e.name),
+            .patterns = patterns,
+        });
+    };
 }
 
 /// CLI 인자를 파싱하여 CliOptions를 반환한다.
@@ -1825,6 +1836,7 @@ pub fn main() !void {
             .alias = opts.alias_list.items,
             .ts_paths = resolved_paths.entries,
             .fallback = opts.fallback_list.items,
+            .manual_chunks = opts.manual_chunks_list.items,
             .block_list = opts.block_list.items,
             .public_path = opts.public_path orelse "",
             .banner_js = opts.banner_js,

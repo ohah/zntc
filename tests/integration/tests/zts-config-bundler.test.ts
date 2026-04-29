@@ -251,6 +251,40 @@ describe("Zig CLI: zts.config.json bundler-only 옵션 (#2105)", () => {
     expect(readFileSync(outFile, "utf8")).toContain("NO_CONFIG");
   });
 
+  test("manualChunks: record form 매핑 — vendor chunk 분리", async () => {
+    // 이전엔 zts.config.json 의 manualChunks 가 silent 무시됨. record form 매핑 검증.
+    const fixture = await createFixture({
+      "src/a.ts": 'export const a = "PKG_A";',
+      "src/b.ts": 'export const b = "PKG_B";',
+      "index.ts": 'import { a } from "./src/a";\nimport { b } from "./src/b";\nconsole.log(a, b);',
+      "zts.config.json": JSON.stringify({
+        manualChunks: [{ name: "vendor", patterns: ["src/a", "src/b"] }],
+      }),
+    });
+    cleanup = fixture.cleanup;
+
+    const outDir = join(fixture.dir, "dist");
+    const result = await runZtsInDir(fixture.dir, [
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "--outdir",
+      outDir,
+      "--splitting",
+      "--format=esm",
+    ]);
+    expect(result.exitCode).toBe(0);
+    const { readdirSync } = require("node:fs");
+    const files = readdirSync(outDir);
+    // manualChunks 가 적용되면 vendor chunk 분리 → 2+ 파일 emit.
+    expect(files.length).toBeGreaterThan(1);
+    // vendor chunk 가 a/b 마커를 포함.
+    const vendorFile = files.find((f: string) => f.startsWith("vendor"));
+    expect(vendorFile).toBeDefined();
+    const vendorContents = readFileSync(join(outDir, vendorFile!), "utf8");
+    expect(vendorContents).toContain("PKG_A");
+    expect(vendorContents).toContain("PKG_B");
+  });
+
   test("--inline-dynamic-imports CLI flag: dynamic target 이 entry chunk 에 흡수", async () => {
     // 이전엔 config.json `inlineDynamicImports` 만 노출되어 있었음. CLI flag 추가 검증.
     const fixture = await createFixture({
