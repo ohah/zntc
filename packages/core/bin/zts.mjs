@@ -18,8 +18,10 @@ const {
   init,
   transpile,
   build,
+  buildAppSync,
   buildSync,
   envToDefine,
+  prepareAppDevSync,
   filterWorkspaces,
   findConfigPath,
   findModeConfigPath,
@@ -35,20 +37,43 @@ const {
   suggestKey,
   warnUnknownKeys,
 } = coreModule;
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
-import { resolve, dirname, basename, extname, join } from "node:path";
+import {
+  mkdirSync,
+  cpSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  mkdtempSync,
+  symlinkSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { resolve, dirname, basename, extname, join, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from "./cli-flags.mjs";
 
 export { KNOWN_FLAGS };
+const requireFromCli = createRequire(import.meta.url);
+const cliNodeModules = resolve(dirname(fileURLToPath(import.meta.url)), "../../..", "node_modules");
+const postcssTempRoots = new Set();
+let postcssCleanupRegistered = false;
 
 // ─── CLI 인자 파싱 ───
 
 function parseArgs(argv) {
   const args = argv.slice(2);
+  const appCommands = new Set(["dev", "build", "preview"]);
+  const appCommand = appCommands.has(args[0]) ? args.shift() : undefined;
   const opts = {
+    appCommand,
+    appRoot: undefined,
+    previewDir: undefined,
     entryPoints: [],
     // SCALAR_KEYS (mergeConfigIntoOpts) 의 다른 키들과 동일하게 `undefined` 기본값 사용.
     // 과거 `null` 이었으나 머지 조건이 `=== undefined` 라 `zts.config.json` 의 outdir/outfile
@@ -141,7 +166,20 @@ function parseArgs(argv) {
     envDir: undefined, // --env-dir <path> — undefined 면 cwd
     workspaceConfig: undefined, // --workspace-config <path> — 명시 시 자동 탐색 우회 (#2111)
     workspace: undefined, // --workspace <name> — 단일 entry 만 빌드 (#2111)
+    entryHtml: undefined,
+    publicDir: undefined,
+    base: undefined,
   };
+
+  if (appCommand === "dev") {
+    opts.serve = true;
+    opts.bundle = true;
+    opts.watch = true;
+  } else if (appCommand === "build") {
+    opts.bundle = true;
+  } else if (appCommand === "preview") {
+    opts.serve = true;
+  }
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -154,7 +192,13 @@ function parseArgs(argv) {
 
     // positional (파일 경로)
     if (!arg.startsWith("-")) {
-      opts.entryPoints.push(arg);
+      if (opts.appCommand === "dev" || opts.appCommand === "build") {
+        opts.appRoot = opts.appRoot ?? arg;
+      } else if (opts.appCommand === "preview") {
+        opts.previewDir = opts.previewDir ?? arg;
+      } else {
+        opts.entryPoints.push(arg);
+      }
       continue;
     }
 
@@ -335,6 +379,225 @@ function writeOutputFiles(outputFiles, outfile, outdir) {
       writeFileSync(outPath, file.text);
     }
   }
+}
+
+function normalizeBase(base) {
+  if (!base) return "/";
+  if (base === ".") return "";
+  let out = base.startsWith("/") ? base : `/${base}`;
+  if (!out.endsWith("/")) out += "/";
+  return out;
+}
+
+async function runAppBuild(opts, config, configEnv, _dotenvVars) {
+  if (config?.plugins?.length || opts.pluginPaths.length > 0) {
+    throw new Error(
+      "zts build app mode does not support JS plugins yet; use --bundle for plugin builds",
+    );
+  }
+  const root = resolve(opts.appRoot ?? ".");
+  const outdir = resolve(opts.outdir ?? join(root, "dist"));
+  if (opts.clean) rmSync(outdir, { recursive: true, force: true });
+  let postcssRoot = null;
+  try {
+    postcssRoot = await preparePostcssAppRoot(root, outdir, configEnv, opts.logLevel, "build");
+    const result = buildAppSync({
+      root: postcssRoot ?? root,
+      outdir,
+      entryHtml: opts.entryHtml ?? "index.html",
+      publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
+      base: normalizeBase(opts.base ?? opts.publicPath ?? "/"),
+      mode: configEnv.mode,
+      envDir: opts.envDir ? resolve(opts.envDir) : (postcssRoot ?? root),
+      envPrefixes: opts.envPrefixes,
+      define: Object.keys(opts.define).length > 0 ? opts.define : undefined,
+      minify: opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax,
+      sourcemap: opts.sourcemap,
+      splitting: opts.splitting || undefined,
+    });
+    if (opts.logLevel !== "silent") {
+      console.error(`[build] wrote ${result.outputCount ?? 0} files to ${outdir}`);
+    }
+    return result;
+  } finally {
+    if (postcssRoot) cleanupPostcssTempRoot(postcssRoot);
+  }
+}
+
+async function runAppDev(opts, config, configEnv, _dotenvVars) {
+  const root = resolve(opts.appRoot ?? ".");
+  opts.outdir = opts.outdir || join(root, ".zts-dev");
+  const postcssRoot = await preparePostcssAppRoot(
+    root,
+    opts.outdir,
+    configEnv,
+    opts.logLevel,
+    "dev",
+  );
+  const effectiveRoot = postcssRoot ?? root;
+  const prepared = prepareAppDevSync({
+    root: effectiveRoot,
+    outdir: opts.outdir,
+    entryHtml: opts.entryHtml ?? "index.html",
+    publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
+    base: normalizeBase(opts.base ?? opts.publicPath ?? "/"),
+    mode: configEnv.mode,
+    envDir: opts.envDir ? resolve(opts.envDir) : effectiveRoot,
+    envPrefixes: opts.envPrefixes,
+  });
+
+  opts.entryPoints = [prepared.entryPath];
+  opts.serveDir = opts.outdir;
+
+  return runServe(opts, config);
+}
+
+const POSTCSS_CONFIG_NAMES = [
+  "postcss.config.mjs",
+  "postcss.config.js",
+  "postcss.config.cjs",
+  "postcss.config.json",
+  ".postcssrc",
+  ".postcssrc.json",
+  ".postcssrc.js",
+  ".postcssrc.cjs",
+  ".postcssrc.mjs",
+];
+
+function findPostcssConfig(root) {
+  for (const name of POSTCSS_CONFIG_NAMES) {
+    const path = join(root, name);
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
+function copyAppRootForPostcss(root, outdir, phase) {
+  const tempRoot = mkdtempSync(join(tmpdir(), `zts-postcss-${phase}-`));
+  registerPostcssTempRoot(tempRoot);
+  const skip = new Set([
+    resolve(outdir),
+    resolve(tempRoot),
+    resolve(join(root, "node_modules")),
+    resolve(join(root, ".git")),
+    resolve(join(root, "dist")),
+    resolve(join(root, ".zts-dev")),
+  ]);
+  cpSync(root, tempRoot, {
+    recursive: true,
+    dereference: false,
+    filter(source) {
+      const abs = resolve(source);
+      if (abs === resolve(root)) return true;
+      for (const ignored of skip) {
+        if (abs === ignored || abs.startsWith(`${ignored}${sep}`)) return false;
+      }
+      return true;
+    },
+  });
+  const appNodeModules = join(root, "node_modules");
+  const nodeModulesTarget = existsSync(appNodeModules) ? appNodeModules : cliNodeModules;
+  if (existsSync(nodeModulesTarget)) {
+    symlinkSync(nodeModulesTarget, join(tempRoot, "node_modules"), "dir");
+  }
+  return tempRoot;
+}
+
+function registerPostcssTempRoot(tempRoot) {
+  postcssTempRoots.add(tempRoot);
+  if (postcssCleanupRegistered) return;
+  postcssCleanupRegistered = true;
+  const cleanupAll = () => {
+    for (const root of postcssTempRoots) rmSync(root, { recursive: true, force: true });
+    postcssTempRoots.clear();
+  };
+  process.once("exit", cleanupAll);
+  process.once("SIGINT", () => {
+    cleanupAll();
+    process.exit(130);
+  });
+  process.once("SIGTERM", () => {
+    cleanupAll();
+    process.exit(143);
+  });
+}
+
+function cleanupPostcssTempRoot(tempRoot) {
+  postcssTempRoots.delete(tempRoot);
+  rmSync(tempRoot, { recursive: true, force: true });
+}
+
+function requireFromAppOrCli(requireFromRoot, specifier) {
+  try {
+    return requireFromRoot(specifier);
+  } catch (err) {
+    const code = err?.code;
+    if (code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") throw err;
+    return requireFromCli(specifier);
+  }
+}
+
+function collectCssFiles(dir, skipDir = null) {
+  if (!existsSync(dir)) return [];
+  const files = [];
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    const stat = statSync(path);
+    if (skipDir && stat.isDirectory() && resolve(path) === resolve(skipDir)) continue;
+    if (path.includes(`${sep}node_modules${sep}`)) continue;
+    if (stat.isDirectory()) {
+      files.push(...collectCssFiles(path, skipDir));
+    } else if (stat.isFile() && path.endsWith(".css")) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
+async function runPostcssIfConfigured(root, cssDir, skipDir, configEnv, logLevel) {
+  const requireFromRoot = createRequire(join(root, "package.json"));
+  const postcssrc = requireFromAppOrCli(requireFromRoot, "postcss-load-config");
+  const postcssModule = requireFromAppOrCli(requireFromRoot, "postcss");
+  const postcss = postcssModule.default ?? postcssModule;
+  const config = await postcssrc({ cwd: root, env: configEnv.mode }, root).catch((err) => {
+    if (err?.message?.includes("No PostCSS Config found")) return null;
+    throw err;
+  });
+  if (!config) return;
+  const plugins = config.plugins ?? [];
+  if (plugins.length === 0) return;
+  const cssFiles = collectCssFiles(cssDir, skipDir);
+  for (const file of cssFiles) {
+    const input = readFileSync(file, "utf8");
+    const result = await postcss(plugins).process(input, {
+      ...config.options,
+      from: file,
+      to: file,
+    });
+    writeFileSync(file, result.css);
+    if (result.map) writeFileSync(`${file}.map`, result.map.toString());
+  }
+  if (logLevel !== "silent") {
+    console.error(
+      `[postcss] processed ${cssFiles.length} CSS file(s) using ${basename(config.file ?? "postcss config")}`,
+    );
+  }
+}
+
+async function preparePostcssAppRoot(root, outdir, configEnv, logLevel, phase) {
+  const configPath = findPostcssConfig(root);
+  if (!configPath) return null;
+  const tempRoot = copyAppRootForPostcss(root, outdir, phase);
+  await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel);
+  return tempRoot;
+}
+
+async function runAppPreview(opts) {
+  opts.serveDir = resolve(opts.previewDir ?? opts.outdir ?? "dist");
+  opts.outdir = undefined;
+  opts.bundle = false;
+  opts.watch = false;
+  return runServe(opts, null);
 }
 
 // ─── Transpile 모드 ───
@@ -858,9 +1121,13 @@ async function runServe(opts, config) {
   }
 
   const serveDir = resolve(opts.outdir || opts.serveDir);
+  const base = normalizeBase(opts.base ?? "/");
 
   function handleRequest(reqUrl) {
     let pathname = new URL(reqUrl, "http://localhost").pathname;
+    if (base && base !== "/" && pathname.startsWith(base)) {
+      pathname = "/" + pathname.slice(base.length);
+    }
     if (pathname === "/") pathname = "/index.html";
 
     const filePath = join(serveDir, pathname);
@@ -1001,7 +1268,19 @@ async function runServe(opts, config) {
  *
  * 반환 형태가 다른 두 호출 사이트의 drift 를 차단 — 모드 분기/추가가 1곳에서 끝남.
  */
-async function dispatchBuild(opts, config) {
+async function dispatchBuild(opts, config, configEnv, dotenvVars) {
+  if (opts.appCommand === "build") {
+    const result = await runAppBuild(opts, config, configEnv, dotenvVars);
+    return { errors: result.errors.length };
+  }
+  if (opts.appCommand === "dev") {
+    await runAppDev(opts, config, configEnv, dotenvVars);
+    return { errors: 0 };
+  }
+  if (opts.appCommand === "preview") {
+    await runAppPreview(opts);
+    return { errors: 0 };
+  }
   if (opts.serve) {
     await runServe(opts, config);
     return { errors: 0 };
@@ -1126,7 +1405,7 @@ async function runWorkspace(opts, workspacePath) {
 
     init();
     try {
-      const r = await dispatchBuild(subOpts, merged);
+      const r = await dispatchBuild(subOpts, merged, { mode }, {});
       if (r.errors > 0) exitCode = 1;
     } catch (err) {
       console.error(`error [workspace ${w.name}]: ${err.message}`);
@@ -1140,6 +1419,9 @@ async function runWorkspace(opts, workspacePath) {
 
 async function main() {
   const opts = parseArgs(process.argv);
+  if ((opts.appCommand === "dev" || opts.appCommand === "build") && !opts.envDir) {
+    opts.envDir = resolve(opts.appRoot ?? ".");
+  }
 
   // workspace 자동 탐색 — `--workspace-config <path>` 명시 또는 cwd 의 zts.workspace.*
   // 발견 시 워크스페이스 fan-out 모드로 분기. 나머지 단일 build 흐름은 우회.
@@ -1170,15 +1452,22 @@ async function main() {
 
   // import.meta.env.* + import.meta.env.MODE/PROD/DEV/SSR 정적 치환을 define 으로
   // 자동 주입. 사용자 명시 define 이 동일 키를 덮어쓰면 그대로 우선.
-  const envDefine = envToDefine(dotenvVars, configEnv.mode);
+  const envDefine = envToDefine(
+    dotenvVars,
+    configEnv.mode,
+    normalizeBase(opts.base ?? opts.publicPath ?? "/"),
+  );
   for (const [key, value] of Object.entries(envDefine)) {
     if (opts.define[key] === undefined) opts.define[key] = value;
   }
 
-  if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve) {
+  if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve && !opts.appCommand) {
     console.error("Usage: zts [options] <file.ts>");
     console.error("       zts --bundle <entry.ts> -o out.js");
     console.error("       zts --serve --bundle <entry.ts>");
+    console.error("       zts dev [root]");
+    console.error("       zts build [root]");
+    console.error("       zts preview [outdir]");
     process.exit(1);
   }
 
@@ -1187,7 +1476,7 @@ async function main() {
   init();
 
   try {
-    const r = await dispatchBuild(opts, config);
+    const r = await dispatchBuild(opts, config, configEnv, dotenvVars);
     if (r.errors > 0) process.exit(1);
   } catch (err) {
     console.error(`error: ${err.message}`);

@@ -20,7 +20,6 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, resolve as pathResolve } from "node:path";
 
 import {
-  CONFIG_EXT_PRIORITY,
   type ConfigEnv,
   defaultConfigEnv,
   findConfigPath,
@@ -28,6 +27,8 @@ import {
   loadModuleDefault,
   type UserConfig,
 } from "./config-loader.ts";
+
+const CONFIG_EXT_PRIORITY_LOCAL = [".ts", ".mts", ".cts", ".mjs", ".js", ".cjs", ".json"] as const;
 
 /**
  * 디렉토리 경로 또는 단일 `*` 가 포함된 glob.
@@ -96,7 +97,7 @@ export function defineWorkspace<T extends WorkspaceInput>(input: T): T {
  * workspace 파일 자동 탐색 우선순위. `CONFIG_EXT_PRIORITY` 와 동일 정책 — 동일 디렉토리에
  * 다중 확장자 존재 시 첫 매치를 반환한다 (`.ts` > `.mts` > `.cts` > `.mjs` > `.js` > `.cjs` > `.json`).
  */
-export const WORKSPACE_EXT_PRIORITY = CONFIG_EXT_PRIORITY;
+export const WORKSPACE_EXT_PRIORITY = CONFIG_EXT_PRIORITY_LOCAL;
 
 /**
  * `cwd` 에서 `zts.workspace.{ext}` 를 자동 탐색.

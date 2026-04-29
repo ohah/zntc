@@ -95,16 +95,26 @@ export function loadEnv(
  * `import.meta.env.MODE` / `PROD` / `DEV` / `SSR` 를 자동 주입한다 (Vite 호환).
  * 사용자 정의 키는 모두 `JSON.stringify` 로 직렬화해 ZTS define 에 안전한 리터럴 형태로 전달.
  */
-export function envToDefine(env: Record<string, string>, mode: string): Record<string, string> {
-  const define: Record<string, string> = {
-    "import.meta.env.MODE": JSON.stringify(mode),
-    "import.meta.env.PROD": JSON.stringify(mode === "production"),
-    "import.meta.env.DEV": JSON.stringify(mode !== "production"),
+export function envToDefine(
+  env: Record<string, string>,
+  mode: string,
+  baseUrl = "/",
+): Record<string, string> {
+  const envObject: Record<string, string | boolean> = {
+    MODE: mode,
+    PROD: mode === "production",
+    DEV: mode !== "production",
     // ZTS 는 현재 SSR 빌드를 별도 mode 로 구분하지 않아 항상 false. 향후 SSR 지원 시
     // BuildOptions 의 ssr 플래그 (또는 새 옵션) 와 연동해야 함.
-    "import.meta.env.SSR": JSON.stringify(false),
+    SSR: false,
+    BASE_URL: baseUrl,
   };
-  for (const [key, value] of Object.entries(env)) {
+  for (const [key, value] of Object.entries(env)) envObject[key] = value;
+
+  const define: Record<string, string> = {
+    "import.meta.env": JSON.stringify(envObject),
+  };
+  for (const [key, value] of Object.entries(envObject)) {
     define[`import.meta.env.${key}`] = JSON.stringify(value);
   }
   return define;

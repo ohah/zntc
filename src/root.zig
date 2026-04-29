@@ -22,6 +22,7 @@ pub const test262 = @import("test262/mod.zig");
 pub const bundler = @import("bundler/mod.zig");
 pub const runtime_helper_modules = @import("runtime_helper_modules.zig");
 pub const server = @import("server/mod.zig");
+pub const app = @import("app/mod.zig");
 pub const transpile = @import("transpile.zig");
 pub const string_escape = @import("string_escape.zig");
 pub const util = @import("util/mod.zig");
@@ -41,6 +42,7 @@ test {
     _ = bundler;
     _ = runtime_helper_modules;
     _ = server;
+    _ = app;
     _ = @import("test_arena.zig");
     _ = util.wyhash;
 

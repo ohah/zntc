@@ -117,6 +117,9 @@ export const FLAG_REGISTRY = [
   { kind: "string", flag: "--workspace-config", target: "workspaceConfig" },
   { kind: "string", flag: "--workspace", target: "workspace" },
   { kind: "string", flag: "--env-dir", target: "envDir" },
+  { kind: "string", flag: "--entry-html", target: "entryHtml" },
+  { kind: "string", flag: "--public-dir", target: "publicDir" },
+  { kind: "string", flag: "--base", target: "base" },
 
   // ─── kind=int — parseInt ───
   { kind: "int", flag: "--watch-delay", target: "watchDelay", forms: ["equal"] },

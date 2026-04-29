@@ -257,6 +257,288 @@ const CliOptions = struct {
     }
 };
 
+const AppCommand = enum { dev, build, preview };
+
+const AppCliOptions = struct {
+    command: AppCommand,
+    root_or_outdir: ?[]const u8 = null,
+    outdir: ?[]const u8 = null,
+    entry_html: []const u8 = "index.html",
+    public_dir: ?[]const u8 = "public",
+    base: []const u8 = "/",
+    mode: ?[]const u8 = null,
+    env_dir: ?[]const u8 = null,
+    env_prefixes: std.ArrayList([]const u8) = .empty,
+    port: u16 = 12300,
+    host: []const u8 = "localhost",
+    open: bool = false,
+    clean: bool = false,
+    minify: bool = false,
+    sourcemap: bool = false,
+    splitting: bool = true,
+    proxy_list: std.ArrayList(lib.server.DevServer.ProxyRule) = .empty,
+
+    fn deinit(self: *AppCliOptions, allocator: std.mem.Allocator) void {
+        self.env_prefixes.deinit(allocator);
+        self.proxy_list.deinit(allocator);
+    }
+};
+
+fn parseAppCommandName(name: []const u8) ?AppCommand {
+    if (std.mem.eql(u8, name, "dev")) return .dev;
+    if (std.mem.eql(u8, name, "build")) return .build;
+    if (std.mem.eql(u8, name, "preview")) return .preview;
+    return null;
+}
+
+fn parseAppArgs(allocator: std.mem.Allocator, command: AppCommand, args: []const []const u8) !?AppCliOptions {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+    var opts = AppCliOptions{ .command = command };
+    errdefer opts.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try printUsage(stdout);
+            return null;
+        } else if (try appStringFlag(args, &i, "--outdir")) |value| {
+            opts.outdir = value;
+        } else if (try appStringFlag(args, &i, "--entry-html")) |value| {
+            opts.entry_html = value;
+        } else if (try appStringFlag(args, &i, "--public-dir")) |value| {
+            opts.public_dir = value;
+        } else if (try appStringFlag(args, &i, "--base")) |value| {
+            opts.base = value;
+        } else if (try appStringFlag(args, &i, "--mode")) |value| {
+            opts.mode = value;
+        } else if (try appStringFlag(args, &i, "--env-dir")) |value| {
+            opts.env_dir = value;
+        } else if (try appStringFlag(args, &i, "--env-prefix")) |value| {
+            try appendCsv(&opts.env_prefixes, allocator, value);
+        } else if (try appStringFlag(args, &i, "--port")) |value| {
+            opts.port = std.fmt.parseInt(u16, value, 10) catch {
+                try stderr.print("zts {s}: invalid --port value: {s}\n", .{ @tagName(command), value });
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--host")) {
+            if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
+                i += 1;
+                opts.host = args[i];
+            } else {
+                opts.host = "0.0.0.0";
+            }
+        } else if (std.mem.startsWith(u8, arg, "--host=")) {
+            opts.host = arg["--host=".len..];
+        } else if (std.mem.eql(u8, arg, "--open")) {
+            opts.open = true;
+        } else if (std.mem.eql(u8, arg, "--clean")) {
+            opts.clean = true;
+        } else if (std.mem.eql(u8, arg, "--minify")) {
+            opts.minify = true;
+        } else if (std.mem.eql(u8, arg, "--sourcemap")) {
+            opts.sourcemap = true;
+        } else if (std.mem.eql(u8, arg, "--splitting")) {
+            opts.splitting = true;
+        } else if (std.mem.eql(u8, arg, "--no-splitting")) {
+            opts.splitting = false;
+        } else if (try appStringFlag(args, &i, "--proxy")) |value| {
+            try parseAppProxy(&opts, allocator, value, stderr);
+        } else if (arg.len > 0 and arg[0] != '-') {
+            if (opts.root_or_outdir == null) {
+                opts.root_or_outdir = arg;
+            } else {
+                try stderr.print("zts {s}: unexpected positional argument: {s}\n", .{ @tagName(command), arg });
+                std.process.exit(1);
+            }
+        } else {
+            try stderr.print("zts {s}: unknown option: {s}\n", .{ @tagName(command), arg });
+            std.process.exit(1);
+        }
+    }
+    return opts;
+}
+
+fn appStringFlag(args: []const []const u8, index: *usize, name: []const u8) !?[]const u8 {
+    const arg = args[index.*];
+    if (std.mem.startsWith(u8, arg, name) and arg.len > name.len and arg[name.len] == '=') {
+        return arg[name.len + 1 ..];
+    }
+    if (!std.mem.eql(u8, arg, name)) return null;
+    if (index.* + 1 >= args.len) return error.MissingFlagValue;
+    index.* += 1;
+    return args[index.*];
+}
+
+fn appendCsv(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, value: []const u8) !void {
+    var it = std.mem.splitScalar(u8, value, ',');
+    while (it.next()) |raw| {
+        const part = std.mem.trim(u8, raw, " \t\r\n");
+        if (part.len > 0) try list.append(allocator, part);
+    }
+}
+
+fn parseAppProxy(opts: *AppCliOptions, allocator: std.mem.Allocator, value: []const u8, stderr: anytype) !void {
+    const eq_pos = std.mem.indexOf(u8, value, "=") orelse {
+        try stderr.print("zts {s}: --proxy requires PATH=TARGET\n", .{@tagName(opts.command)});
+        std.process.exit(1);
+    };
+    const path_str = value[0..eq_pos];
+    const target_str = value[eq_pos + 1 ..];
+    const after_scheme = if (std.mem.indexOf(u8, target_str, "://")) |s| target_str[s + 3 ..] else target_str;
+    var target_host: []const u8 = after_scheme;
+    var target_port: u16 = 80;
+    if (std.mem.indexOf(u8, after_scheme, ":")) |colon| {
+        target_host = after_scheme[0..colon];
+        target_port = std.fmt.parseInt(u16, after_scheme[colon + 1 ..], 10) catch 80;
+    }
+    try opts.proxy_list.append(allocator, .{
+        .path = path_str,
+        .target = target_str,
+        .target_host = target_host,
+        .target_port = target_port,
+    });
+}
+
+fn runAppCommand(allocator: std.mem.Allocator, opts: AppCliOptions) !void {
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const app_build = lib.app.build;
+    const app_env = lib.app.env;
+    const mode = opts.mode orelse if (opts.command == .build) "production" else "development";
+    const root = if (opts.command == .preview) "." else opts.root_or_outdir orelse ".";
+    const env_prefixes = if (opts.env_prefixes.items.len > 0) opts.env_prefixes.items else &[_][]const u8{ "VITE_", "ZTS_" };
+    const base = try normalizeAppBase(allocator, opts.base);
+    defer allocator.free(base);
+
+    switch (opts.command) {
+        .build => {
+            const outdir = opts.outdir orelse "dist";
+            if (opts.clean) try deleteAppOutput(allocator, root, outdir);
+            var result = app_build.buildApp(allocator, .{
+                .root = root,
+                .outdir = outdir,
+                .entry_html = opts.entry_html,
+                .public_dir = opts.public_dir,
+                .base = base,
+                .mode = mode,
+                .env_dir = opts.env_dir,
+                .env_prefixes = env_prefixes,
+                .minify = opts.minify,
+                .sourcemap = opts.sourcemap,
+                .splitting = opts.splitting,
+            }) catch |err| {
+                try stderr.print("zts build: app build failed: {}\n", .{err});
+                std.process.exit(1);
+            };
+            defer result.deinit(allocator);
+            if (!std.mem.eql(u8, mode, "silent")) {
+                try stderr.print("[build] wrote {d} files to {s}\n", .{ result.output_count, outdir });
+            }
+        },
+        .dev => {
+            const dev_outdir = opts.outdir orelse ".zts-dev";
+            if (opts.clean) try deleteAppOutput(allocator, root, dev_outdir);
+            var prepared = app_build.prepareDev(allocator, .{
+                .root = root,
+                .outdir = dev_outdir,
+                .entry_html = opts.entry_html,
+                .public_dir = opts.public_dir,
+                .base = base,
+                .mode = mode,
+                .env_dir = opts.env_dir,
+                .env_prefixes = env_prefixes,
+            }) catch |err| {
+                try stderr.print("zts dev: app prepare failed: {}\n", .{err});
+                std.process.exit(1);
+            };
+            defer prepared.deinit(allocator);
+
+            const root_abs = try std.fs.path.resolve(allocator, &.{root});
+            defer allocator.free(root_abs);
+            const dev_outdir_abs = try std.fs.path.resolve(allocator, &.{ root_abs, dev_outdir });
+            defer allocator.free(dev_outdir_abs);
+            var env_map = try app_env.loadEnv(allocator, .{
+                .mode = mode,
+                .env_dir = opts.env_dir orelse root_abs,
+                .prefixes = env_prefixes,
+            });
+            defer app_env.deinitMap(&env_map, allocator);
+            const app_defines = try app_env.envToDefine(allocator, &env_map, mode, base);
+            defer app_env.freeDefines(allocator, app_defines);
+            const server_defines = try copyAppDefinesForBundler(allocator, app_defines);
+            defer allocator.free(server_defines);
+
+            var dev_server = lib.server.DevServer.init(allocator, .{
+                .root_dir = dev_outdir_abs,
+                .port = opts.port,
+                .host = opts.host,
+                .open = opts.open,
+                .entry_point = prepared.entry_path,
+                .proxy = opts.proxy_list.items,
+                .base_path = base,
+                .define = server_defines,
+            }) catch |err| {
+                try stderr.print("zts dev: failed to start dev server: {}\n", .{err});
+                std.process.exit(1);
+            };
+            defer dev_server.deinit();
+            dev_server.start() catch |err| {
+                try stderr.print("zts dev: server failed: {}\n", .{err});
+                std.process.exit(1);
+            };
+        },
+        .preview => {
+            const preview_dir = opts.root_or_outdir orelse opts.outdir orelse "dist";
+            const preview_abs = try std.fs.path.resolve(allocator, &.{preview_dir});
+            defer allocator.free(preview_abs);
+            var server = lib.server.DevServer.init(allocator, .{
+                .root_dir = preview_abs,
+                .port = opts.port,
+                .host = opts.host,
+                .open = opts.open,
+                .entry_point = null,
+                .proxy = opts.proxy_list.items,
+                .base_path = base,
+            }) catch |err| {
+                try stderr.print("zts preview: failed to start server: {}\n", .{err});
+                std.process.exit(1);
+            };
+            defer server.deinit();
+            server.start() catch |err| {
+                try stderr.print("zts preview: server failed: {}\n", .{err});
+                std.process.exit(1);
+            };
+        },
+    }
+}
+
+fn normalizeAppBase(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    if (raw.len == 0) return allocator.dupe(u8, "/");
+    if (std.mem.eql(u8, raw, ".")) return allocator.dupe(u8, "");
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    if (raw[0] != '/') try out.append(allocator, '/');
+    try out.appendSlice(allocator, raw);
+    if (out.items.len > 0 and out.items[out.items.len - 1] != '/') try out.append(allocator, '/');
+    return try out.toOwnedSlice(allocator);
+}
+
+fn deleteAppOutput(allocator: std.mem.Allocator, root: []const u8, outdir: []const u8) !void {
+    const path = try std.fs.path.resolve(allocator, &.{ root, outdir });
+    defer allocator.free(path);
+    std.fs.cwd().access(path, .{}) catch return;
+    try std.fs.cwd().deleteTree(path);
+}
+
+fn copyAppDefinesForBundler(allocator: std.mem.Allocator, app_defines: []const lib.app.env.DefineEntry) ![]lib.transformer.DefineEntry {
+    const out = try allocator.alloc(lib.transformer.DefineEntry, app_defines.len);
+    for (app_defines, 0..) |entry, i| {
+        out[i] = .{ .key = entry.key, .value = entry.value };
+    }
+    return out;
+}
+
 /// `--globals SPEC=GLOBAL` 인자를 파싱하여 `opts.globals_list` 에 추가한다.
 /// comma 로 여러 항목 구분 가능. 유효하지 않으면 stderr 에 경고 후 무시.
 fn parseGlobalsArg(opts: *CliOptions, allocator: std.mem.Allocator, val: []const u8, stderr: anytype) !void {
@@ -1454,6 +1736,16 @@ pub fn main() !void {
     // Subcommand dispatch — `zts bench ...` 는 별도 경로.
     if (args.len >= 2 and std.mem.eql(u8, args[1], "bench")) {
         return runBench(allocator, args[2..]);
+    }
+    if (args.len >= 2) {
+        if (parseAppCommandName(args[1])) |command| {
+            var app_opts = parseAppArgs(allocator, command, args[2..]) catch |err| {
+                try stderr.print("zts {s}: argument error: {}\n", .{ @tagName(command), err });
+                std.process.exit(1);
+            } orelse return;
+            defer app_opts.deinit(allocator);
+            return runAppCommand(allocator, app_opts);
+        }
     }
 
     var opts = try parseCliArguments(args, allocator) orelse return;
@@ -2655,6 +2947,9 @@ fn printUsage(writer: anytype) !void {
         \\  zts --bundle <entry.ts>          Bundle to stdout
         \\  zts --bundle <entry.ts> -o out   Bundle to file
         \\  zts --bundle <entry.ts> --splitting --outdir dist  Code splitting
+        \\  zts dev [root]                  Serve an app from index.html
+        \\  zts build [root]                Build an app from index.html
+        \\  zts preview [outdir]            Serve built static files
         \\  zts - < input.ts                 Read from stdin
         \\  zts bench --phase=<CATS> <file>  Benchmark a specific phase (see below)
         \\
@@ -2681,6 +2976,14 @@ fn printUsage(writer: anytype) !void {
         \\  --serve [dir]                    Start static file server (default: .)
         \\  --serve --bundle <entry.ts>      Bundle and serve entry point
         \\  --port <number>                  Server port (default: 3000)
+        \\
+        \\App builder:
+        \\  --entry-html <file>              HTML entry relative to root (default: index.html)
+        \\  --public-dir <dir|false>         Copy public dir to output root (default: public)
+        \\  --base <path>                    Base URL prefix for HTML/assets (default: /)
+        \\  --mode <name>                    Env mode (dev=development, build=production)
+        \\  --env-dir <dir>                  Directory for .env files (default: app root)
+        \\  --env-prefix <csv>               Exposed env prefixes (default: VITE_,ZTS_)
         \\
         \\Bundle options:
         \\  --bundle                         Enable bundle mode

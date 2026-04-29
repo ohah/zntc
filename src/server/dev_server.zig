@@ -286,6 +286,8 @@ pub const DevServer = struct {
     shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     plugins: []const plugin_mod.Plugin = &.{},
     proxy: []const ProxyRule = &.{},
+    base_path: []const u8 = "/",
+    define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     sourcemap_cache: struct {
         mutex: std.Thread.Mutex = .{},
         data: ?[]const u8 = null,
@@ -310,6 +312,8 @@ pub const DevServer = struct {
         entry_point: ?[]const u8 = null,
         plugins: []const plugin_mod.Plugin = &.{},
         proxy: []const ProxyRule = &.{},
+        base_path: []const u8 = "/",
+        define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     };
 
     const max_file_size: u64 = 50 * 1024 * 1024;
@@ -353,6 +357,8 @@ pub const DevServer = struct {
             .abs_entry = abs_entry,
             .plugins = options.plugins,
             .proxy = options.proxy,
+            .base_path = options.base_path,
+            .define = options.define,
             .event_ring = EventRing.init(allocator),
         };
     }
@@ -650,6 +656,7 @@ pub const DevServer = struct {
             .react_refresh = true,
             .collect_module_codes = true,
             .plugins = self.plugins,
+            .define = self.define,
         });
         defer inc_bundler.deinit();
 
@@ -1169,7 +1176,8 @@ pub const DevServer = struct {
 
         const target = request.head.target;
         const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
-        const raw_path = target[0..path_end];
+        const raw_path_with_base = target[0..path_end];
+        const raw_path = self.stripBasePath(raw_path_with_base);
 
         const rel_path = sanitizePath(raw_path) orelse {
             try request.respond("403 Forbidden", .{
@@ -1243,6 +1251,7 @@ pub const DevServer = struct {
             .root_dir = self.root_path,
             .react_refresh = true,
             .plugins = self.plugins,
+            .define = self.define,
         });
         defer bundler.deinit();
 
@@ -1474,6 +1483,15 @@ pub const DevServer = struct {
         });
 
         getLog().print("  200 {s}\n", .{rel_path}) catch {};
+    }
+
+    fn stripBasePath(self: *const DevServer, raw_path: []const u8) []const u8 {
+        if (self.base_path.len == 0 or std.mem.eql(u8, self.base_path, "/")) return raw_path;
+        if (!std.mem.startsWith(u8, raw_path, self.base_path)) return raw_path;
+        const rest = raw_path[self.base_path.len..];
+        if (rest.len == 0) return "/";
+        if (rest[0] == '/') return rest;
+        return raw_path;
     }
 
     const cors_headers = [_]http.Header{

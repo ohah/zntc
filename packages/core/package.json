@@ -33,6 +33,8 @@
   },
   "optionalDependencies": {
     "browserslist": "^4.24.0",
-    "lightningcss": "^1.28.0"
+    "lightningcss": "^1.28.0",
+    "postcss": "^8.5.8",
+    "postcss-load-config": "^6.0.1"
   }
 }

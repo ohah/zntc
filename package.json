@@ -30,6 +30,8 @@
     "mobx": "^6.13.0",
     "oxfmt": "^0.41.0",
     "oxlint": "^1.56.0",
+    "postcss": "^8.5.8",
+    "postcss-load-config": "^6.0.1",
     "react": "^19.0.0",
     "styled-components": "^6.4.0",
     "tailwindcss": "^4.2.2",
