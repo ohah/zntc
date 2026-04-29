@@ -212,6 +212,55 @@ test "styled-components: object property string-key { \"My Comp\": ... } 도 인
     try expectDisplayName(r.output, "MyComp");
 }
 
+test "styled-components: 클래스 정적 필드 `static Child = styled.div\\`\\``" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\class Comp {
+        \\  static Child = styled.div`color: red;`;
+        \\}
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Child");
+}
+
+test "styled-components: 클래스 인스턴스 필드 `field = styled.div\\`\\`` 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\class Comp {
+        \\  Inner = styled.div`color: red;`;
+        \\}
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Inner");
+}
+
+test "styled-components: 클래스 computed key `[expr] = ...` 는 미인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const key = "X";
+        \\class Comp {
+        \\  static [key] = styled.div`color: red;`;
+        \\}
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+}
+
 test "styled-components: 논리 `cond && styled.div\\`\\`` 우변 wrap" {
     var r = try e2eFull(
         std.testing.allocator,

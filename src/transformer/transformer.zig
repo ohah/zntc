@@ -4333,7 +4333,15 @@ pub const Transformer = struct {
         // abstract(0x20), declare(0x40), Flow variance(0x80)는 타입 전용이므로 완전히 스트리핑
         if (self.options.strip_types and (flags & 0xE0) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        var new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        // styled-components: `class { static Child = styled.div\`\` }` 의 value 가 styled
+        // tagged template 이면 field key 를 displayName 으로 사용해 wrap. 인스턴스 필드도
+        // 동일하게 처리 (드물지만 가능). objectProperty 패턴 재사용.
+        if (!new_key.isNone() and styled_components_mod.shouldAttemptWrap(self, new_value)) {
+            if (styled_components_mod.objectPropertyKeyName(self, new_key)) |key_name| {
+                new_value = try styled_components_mod.wrapStyledTagInExpr(self, new_value, key_name);
+            }
+        }
         // experimentalDecorators 모드에서는 decorator를 class 수준에서 처리하므로
         // property_definition에서는 제거한다.
         const new_decos = if (self.options.experimental_decorators)
@@ -4353,7 +4361,14 @@ pub const Transformer = struct {
         // declare accessor는 타입 전용이므로 완전히 스트리핑
         if (self.options.strip_types and (flags & ast_mod.PropertyFlags.is_declare) != 0) return NodeIndex.none;
         const new_key = try self.visitNode(self.readNodeIdx(e, 0));
-        const new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        var new_value = try self.visitNode(self.readNodeIdx(e, 1));
+        // styled-components: property_definition 와 동일 — accessor 필드도 init 이 styled
+        // tagged template 이면 wrap. 드물지만 symmetry.
+        if (!new_key.isNone() and styled_components_mod.shouldAttemptWrap(self, new_value)) {
+            if (styled_components_mod.objectPropertyKeyName(self, new_key)) |key_name| {
+                new_value = try styled_components_mod.wrapStyledTagInExpr(self, new_value, key_name);
+            }
+        }
         const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = self.readU32(e, 4) });
         return self.addExtraNode(.accessor_property, node.span, &.{
             @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
