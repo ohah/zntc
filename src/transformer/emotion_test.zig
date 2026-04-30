@@ -640,6 +640,176 @@ test "emotion: JSX deep member `<Foo.Bar.Baz css={...}>` — rightmost (Baz) 로
     try expectAutoLabel(r.output, "Baz");
 }
 
+// ─── ClassNames render-prop ───
+// `<ClassNames>{({css}) => <div className={css`...`}/>}</ClassNames>` 패턴.
+// destructured `css` 는 import 가 아니라 render-prop 함수 매개변수 — scope frame
+// infra 로 그 함수 안에서만 emotion css 로 인식.
+
+test "emotion: <ClassNames> render-prop 의 destructured css 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames } from "@emotion/react";
+        \\const el = <ClassNames>{({ css }) => <div className={css`color: red;`} />}</ClassNames>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "emotion: ClassNames 의 const X = css`...` binding form 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames } from "@emotion/react";
+        \\const el = <ClassNames>{({ css }) => {
+        \\  const card = css`color: red;`;
+        \\  return <div className={card} />;
+        \\}}</ClassNames>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // `const card = css`...`` 형태도 scope-local css binding 으로 인식 → label:card
+    try expectAutoLabel(r.output, "card");
+}
+
+test "emotion: ClassNames destructure alias `{ css: cs }` 도 추적" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames } from "@emotion/react";
+        \\const el = <ClassNames>{({ css: cs }) => <div className={cs`color: blue;`} />}</ClassNames>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+}
+
+test "emotion: ClassNames import alias `import { ClassNames as CN }` 도 추적" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames as CN } from "@emotion/react";
+        \\const el = <CN>{({ css }) => <div className={css`color: red;`} />}</CN>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+}
+
+test "emotion: ClassNames scope 밖에서는 className attr 처리 안 함" {
+    // `<div className={fn`...`}/>` 가 ClassNames 밖에서는 일반 className 으로 처리 →
+    // autoLabel 적용 안 됨. scope 격리 검증.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div className={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // import 된 css 가 className 에 쓰여도 (ClassNames 밖이므로) 처리 안 됨.
+    // css attr 만 인식 — className 은 ClassNames scope 안에서만.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+    // 원본 css 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "emotion: ClassNames nested — outer/inner scope frame 독립" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames } from "@emotion/react";
+        \\const el = <ClassNames>{({ css: outerCss }) =>
+        \\  <ClassNames>{({ css: innerCss }) =>
+        \\    <div className={innerCss`color: red;`} />
+        \\  }</ClassNames>
+        \\}</ClassNames>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // inner scope frame 의 innerCss 가 우선 — div 에 label 적용됨
+    try expectAutoLabel(r.output, "div");
+}
+
+test "emotion: ClassNames function_expression render-prop 도 인식" {
+    // arrow 가 아닌 function expression 도 처리.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames } from "@emotion/react";
+        \\const el = <ClassNames>{function ({ css }) {
+        \\  return <div className={css`color: red;`} />;
+        \\}}</ClassNames>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+}
+
+test "emotion: ClassNames render-prop param 이 destructure 아니면 no-op" {
+    // `(props) => ...` 형태는 css local 이 추출 안 됨 → scope frame push 안 함.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames } from "@emotion/react";
+        \\const el = <ClassNames>{(props) => <div className={props.css`color: red;`} />}</ClassNames>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // scope 미진입 — className 처리 안 됨. crash 도 없어야 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+}
+
+test "emotion: <ClassNames> 에 render-prop child 없어도 crash 없음" {
+    // children 이 text/element/없음 — render-prop 함수 못 찾음 → no-op.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames } from "@emotion/react";
+        \\const el = <ClassNames>fallback text</ClassNames>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+}
+
+test "emotion: ClassNames render-prop 안에 import css 가 있어도 scope-local 우선" {
+    // import 된 `css` 와 destructured local `cs` 가 공존 — destructured 가 우선.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css, ClassNames } from "@emotion/react";
+        \\const outer = css`color: blue;`;
+        \\const el = <ClassNames>{({ css: cs }) => <div className={cs`color: red;`} />}</ClassNames>;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "outer"); // import css 의 binding form
+    try expectAutoLabel(r.output, "div"); // ClassNames render-prop 의 className inline
+}
+
 test "emotion: <Foo.Global styles={...}> false-positive 방지 — member 면 미인식" {
     // rightmost 가 "Global" 이라도 사용자 컴포넌트의 member 면 emotion Global 이 아님.
     // 단순 jsx_identifier 만 elementMatchesGlobal 매칭.
