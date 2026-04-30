@@ -1314,6 +1314,102 @@ fn extractCssTemplateIdx(self: *Transformer, css_value_idx: NodeIndex) ?NodeInde
 /// `_styled`, `_styled2`, ... 로 mangled (`resolveStyledInjectName`).
 const DEFAULT_STYLED_BINDING = "styled";
 
+/// template_literal 의 `${expr}` interpolation 을 prop 으로 forward — 각 expression 을
+/// `p => p._cssN` arrow function 으로 교체하고, 원본 expression 을 `_cssN={expr}`
+/// jsx_attribute 로 만들어 caller 의 forwarded_attrs 에 push. babel-plugin-styled-components
+/// 의 expressions reduce 와 동등 (단, ZTS 는 binding/function 검출 없이 모든 expression
+/// 을 forward — closure capture 회피, 사용자가 props 기반 동적 스타일링 가능).
+///
+/// no-interp template (data.none == 0) 은 input 그대로 반환.
+fn forwardTemplateInterpolations(
+    self: *Transformer,
+    template_idx: NodeIndex,
+    forwarded_attrs: *std.ArrayList(NodeIndex),
+) Error!NodeIndex {
+    if (template_idx.isNone()) return template_idx;
+    const template = self.ast.getNode(template_idx);
+    if (template.tag != .template_literal) return template_idx;
+    if (template.data.none == 0) return template_idx; // no-interp
+    const list = template.data.list;
+    if (list.len == 0) return template_idx;
+
+    const items = self.ast.extra_data.items[list.start .. list.start + list.len];
+    const top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(top);
+    const zero = Span{ .start = 0, .end = 0 };
+
+    for (items) |raw| {
+        const idx: NodeIndex = @enumFromInt(raw);
+        const node = self.ast.getNode(idx);
+        if (node.tag == .template_element) {
+            try self.scratch.append(self.allocator, idx);
+            continue;
+        }
+
+        // expression — forward
+        var prop_buf: [32]u8 = undefined;
+        const local_id = forwarded_attrs.items.len;
+        const prop_name = std.fmt.bufPrint(&prop_buf, "_css{d}", .{local_id}) catch unreachable;
+        const prop_name_span = try self.ast.addString(prop_name);
+
+        // jsx_attribute: `_cssN={original_expr}` (binary { left=name, right=value }).
+        const attr_name = try self.ast.addNode(.{
+            .tag = .jsx_identifier,
+            .span = prop_name_span,
+            .data = .{ .string_ref = prop_name_span },
+        });
+        const attr = try self.ast.addNode(.{
+            .tag = .jsx_attribute,
+            .span = zero,
+            .data = .{ .binary = .{ .left = attr_name, .right = idx, .flags = 0 } },
+        });
+        try forwarded_attrs.append(self.allocator, attr);
+
+        // arrow function `p => p._cssN`. arrow extras = [params, body, flags].
+        const p_span = try self.ast.addString("p");
+        const p_param_binding = try self.ast.addNode(.{
+            .tag = .binding_identifier,
+            .span = p_span,
+            .data = .{ .string_ref = p_span },
+        });
+        const params_list = try self.ast.addNodeList(&.{p_param_binding});
+        const params = try self.ast.addNode(.{
+            .tag = .formal_parameters,
+            .span = zero,
+            .data = .{ .list = params_list },
+        });
+        const p_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = p_span,
+            .data = .{ .string_ref = p_span },
+        });
+        const prop_member_span = try self.ast.addString(prop_name);
+        const prop_member_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = prop_member_span,
+            .data = .{ .string_ref = prop_member_span },
+        });
+        const member = try self.addExtraNode(.static_member_expression, zero, &.{
+            @intFromEnum(p_ref),
+            @intFromEnum(prop_member_ref),
+            0,
+        });
+        const arrow = try self.addExtraNode(.arrow_function_expression, zero, &.{
+            @intFromEnum(params),
+            @intFromEnum(member),
+            0,
+        });
+        try self.scratch.append(self.allocator, arrow);
+    }
+
+    const new_list = try self.ast.addNodeList(self.scratch.items[top..]);
+    return self.ast.addNode(.{
+        .tag = .template_literal,
+        .span = template.span,
+        .data = .{ .list = new_list },
+    });
+}
+
 /// program body 의 module-level binding 이름을 sink 에 수집 — semantic analyzer 가
 /// 안 돌았을 때의 fallback. 처리 statement: import / var-let-const / function / class /
 /// export-named / export-default. destructuring pattern 은 skip (false-positive 위험
@@ -1520,6 +1616,16 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     const generated_span = try self.ast.addString(generated_name);
     const zero = Span{ .start = 0, .end = 0 };
 
+    // template_literal 의 `${expr}` interpolation 을 prop 으로 forward (babel parity).
+    // 각 expression 을 `p => p._<cssN>` arrow function 으로 교체 + jsx_attribute 추가.
+    // 결과 attrs (css 제거 + forwarded props) 는 attrs rebuild 단계에서 합침.
+    var forwarded_attrs: std.ArrayList(NodeIndex) = .empty;
+    defer forwarded_attrs.deinit(self.allocator);
+    const final_template_idx: NodeIndex = if (use_object_form)
+        .none
+    else
+        try forwardTemplateInterpolations(self, css_template_idx, &forwarded_attrs);
+
     const styled_ref_span = try self.ast.addString(default_binding);
     const styled_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
@@ -1562,7 +1668,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         });
     } else try self.addExtraNode(.tagged_template_expression, zero, &.{
         @intFromEnum(styled_tag),
-        @intFromEnum(css_template_idx),
+        @intFromEnum(final_template_idx),
         0,
     });
 
@@ -1597,6 +1703,8 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[attrs_start + j]);
         try self.scratch.append(self.allocator, idx);
     }
+    // template interpolation forwarding 으로 생성된 prop attr 들 추가 (`_css0={expr0}` 등).
+    for (forwarded_attrs.items) |attr| try self.scratch.append(self.allocator, attr);
     const new_attrs_list = try self.ast.addNodeList(self.scratch.items[top..]);
 
     const new_tag = try self.ast.addNode(.{
