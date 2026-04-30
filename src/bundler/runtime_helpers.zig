@@ -610,6 +610,8 @@ pub const TAGGED_TEMPLATE_RUNTIME_MIN = "var " ++ NAMES.TAGGED_TEMPLATE_MIN ++ "
 
 /// __rest: object destructuring rest (ES2018). TypeScript __rest 호환.
 /// exclude 배열에 없는 own 프로퍼티 + Symbol 프로퍼티 복사.
+/// `e[]` in-place String 정규화: computed key 가 number/Symbol 일 수 있어 indexOf 비교 전에 String 화 (Symbol 제외).
+/// transformer 가 매 호출마다 새 array literal 을 만드므로 (es2015_destructuring.buildRestCall) cache 충돌 없음.
 pub const REST_RUNTIME =
     \\var __rest = function(s, e) {
     \\  var t = {};
