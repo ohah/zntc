@@ -1658,10 +1658,11 @@ test "styled (cssProp Step 2): css binding alias `import { css as cx }` 도 인�
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
 }
 
-test "styled (cssProp): Custom component (PascalCase) 는 미지원 (후속 PR)" {
+test "styled (cssProp Step 3): Custom component (PascalCase) 는 styled(Foo) 로 wrap" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
+        \\const Button = (props) => null;
         \\const el = <Button css={`color: red;`}>x</Button>;
     ,
         .{
@@ -1675,7 +1676,32 @@ test "styled (cssProp): Custom component (PascalCase) 는 미지원 (후속 PR)"
         ".tsx",
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_") == null);
+    // styled(Button) 호출 형태로 변환
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled(Button)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "styled (cssProp Step 3): jsx_member_expression `<Foo.Bar css>` → styled(Foo.Bar)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Foo = { Bar: (props) => null };
+        \\const el = <Foo.Bar css={`color: red;`}>x</Foo.Bar>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled(Foo.Bar)") != null);
 }
 
 test "styled (namespace): ssr=false 시 componentId 자체 생략 — namespace 도 영향 없음" {

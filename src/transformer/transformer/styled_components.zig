@@ -1236,6 +1236,56 @@ fn buildKeyStringProperty(self: *Transformer, key_span: Span, quoted_value_span:
 //   Step 5: object form
 //   Step 6: styled import auto-inject + program-level hoisting
 
+/// JSX tag 노드 (jsx_identifier 또는 jsx_member_expression) 를 일반 expression
+/// (identifier_reference 또는 static_member_expression) 으로 변환. Custom component
+/// `<Foo css>` / `<Foo.Bar css>` 의 styled() call 인자 빌드용.
+fn jsxTagToExpr(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    const node = self.ast.getNode(idx);
+    switch (node.tag) {
+        .jsx_identifier => {
+            const name_text = self.ast.getText(node.span);
+            const span = try self.ast.addString(name_text);
+            return self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = span,
+                .data = .{ .string_ref = span },
+            });
+        },
+        .jsx_member_expression => {
+            // binary { left=object, right=property } — 둘 다 jsx_identifier 또는 jsx_member_expression
+            const obj_idx = node.data.binary.left;
+            const prop_idx = node.data.binary.right;
+            const obj_expr = try jsxTagToExpr(self, obj_idx);
+            // property 는 identifier_reference (member 의 right 자리)
+            const prop_node = self.ast.getNode(prop_idx);
+            const prop_span = try self.ast.addString(self.ast.getText(prop_node.span));
+            const prop_ref = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = prop_span,
+                .data = .{ .string_ref = prop_span },
+            });
+            const zero = Span{ .start = 0, .end = 0 };
+            return self.addExtraNode(.static_member_expression, zero, &.{
+                @intFromEnum(obj_expr),
+                @intFromEnum(prop_ref),
+                0,
+            });
+        },
+        else => return idx, // unrecognized — caller 가 isCustomComponentTag 로 사전 가드
+    }
+}
+
+/// jsx tag 가 Custom component (PascalCase 시작 jsx_identifier 또는 jsx_member_expression).
+fn isCustomComponentTag(self: *Transformer, idx: NodeIndex) bool {
+    if (idx.isNone()) return false;
+    const node = self.ast.getNode(idx);
+    if (node.tag == .jsx_member_expression) return true;
+    if (node.tag != .jsx_identifier) return false;
+    const text = self.ast.getText(node.span);
+    if (text.len == 0) return false;
+    return text[0] >= 'A' and text[0] <= 'Z';
+}
+
 /// css value 노드에서 wrap 대상 template_literal 추출:
 ///   - 직접 template_literal (`css={\`...\`}`) → 그대로 반환
 ///   - styled-components `css\`...\`` (`css={css\`...\`}`) → 그 quasi 만 추출
@@ -1277,10 +1327,16 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
 
     if (tag_name_idx.isNone()) return null;
     const tag_name_node = self.ast.getNode(tag_name_idx);
-    if (tag_name_node.tag != .jsx_identifier) return null;
-    const tag_text = self.ast.getText(tag_name_node.span);
-    if (tag_text.len == 0) return null;
-    if (tag_text[0] < 'a' or tag_text[0] > 'z') return null;
+    // 지원 tag 형태:
+    //   1. intrinsic: jsx_identifier with lowercase 시작 → `styled.<tag>\`\``
+    //   2. custom: jsx_identifier with uppercase 시작 또는 jsx_member_expression → `styled(<expr>)\`\``
+    const is_intrinsic = (tag_name_node.tag == .jsx_identifier) and blk: {
+        const t = self.ast.getText(tag_name_node.span);
+        if (t.len == 0) break :blk false;
+        break :blk t[0] >= 'a' and t[0] <= 'z';
+    };
+    const is_custom = isCustomComponentTag(self, tag_name_idx);
+    if (!is_intrinsic and !is_custom) return null;
 
     var css_attr_pos: ?u32 = null;
     var css_value_idx: NodeIndex = .none;
@@ -1323,17 +1379,30 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         .span = styled_ref_span,
         .data = .{ .string_ref = styled_ref_span },
     });
-    const tag_prop_span = try self.ast.addString(tag_text);
-    const tag_prop = try self.ast.addNode(.{
-        .tag = .identifier_reference,
-        .span = tag_prop_span,
-        .data = .{ .string_ref = tag_prop_span },
-    });
-    const styled_tag = try self.addExtraNode(.static_member_expression, zero, &.{
-        @intFromEnum(styled_ref),
-        @intFromEnum(tag_prop),
-        0,
-    });
+    // intrinsic: `styled.<tag>` (static_member), custom: `styled(<expr>)` (call_expression)
+    const styled_tag = if (is_intrinsic) blk: {
+        const tag_text_span = try self.ast.addString(self.ast.getText(tag_name_node.span));
+        const tag_prop = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = tag_text_span,
+            .data = .{ .string_ref = tag_text_span },
+        });
+        break :blk try self.addExtraNode(.static_member_expression, zero, &.{
+            @intFromEnum(styled_ref),
+            @intFromEnum(tag_prop),
+            0,
+        });
+    } else blk: {
+        const tag_expr = try jsxTagToExpr(self, tag_name_idx);
+        const args_list = try self.ast.addNodeList(&.{tag_expr});
+        // call_expression: extra = [callee, args_start, args_len, flags]
+        break :blk try self.addExtraNode(.call_expression, zero, &.{
+            @intFromEnum(styled_ref),
+            args_list.start,
+            args_list.len,
+            0,
+        });
+    };
 
     const tagged_template = try self.addExtraNode(.tagged_template_expression, zero, &.{
         @intFromEnum(styled_tag),
