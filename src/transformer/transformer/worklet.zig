@@ -22,6 +22,7 @@ const Span = token_mod.Span;
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
+const string_list = @import("../../util/string_list.zig");
 
 /// Closure 변수 정보. name + 원본 identifier_reference NodeIndex (scope hoisting rename용).
 pub const ClosureVar = struct {
@@ -191,14 +192,7 @@ pub fn collectClosureVars(
         if (locals.contains(name)) continue;
         if (isGlobal(name)) continue;
         // 사용자 설정 globals (옵션)도 closure에서 제외
-        var is_user_global = false;
-        for (self.options.worklet_globals) |g| {
-            if (std.mem.eql(u8, g, name)) {
-                is_user_global = true;
-                break;
-            }
-        }
-        if (is_user_global) continue;
+        if (string_list.contains(self.options.worklet_globals, name)) continue;
         const duped = self.allocator.dupe(u8, name) catch return error.OutOfMemory;
         try result.append(self.allocator, .{ .name = duped, .ref_idx = entry.value_ptr.* });
     }
@@ -209,14 +203,7 @@ pub fn collectClosureVars(
         const base_name = entry.key_ptr.*;
         if (locals.contains(base_name)) continue;
         if (isGlobal(base_name)) continue;
-        var is_user_global = false;
-        for (self.options.worklet_globals) |g| {
-            if (std.mem.eql(u8, g, base_name)) {
-                is_user_global = true;
-                break;
-            }
-        }
-        if (is_user_global) continue;
+        if (string_list.contains(self.options.worklet_globals, base_name)) continue;
         const base_duped = self.allocator.dupe(u8, base_name) catch return error.OutOfMemory;
         // factory key: "<BaseClass>__classFactory"
         const factory_name = std.fmt.allocPrint(self.allocator, "{s}__classFactory", .{base_name}) catch return error.OutOfMemory;
