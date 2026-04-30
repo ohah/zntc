@@ -1566,6 +1566,9 @@ pub fn emitModule(
         .dev_module_id = if (options.dev_mode and module.dev_id.len > 0) module.dev_id else null,
         .import_records = module.import_records,
         .worker_map = if (options.worker_map_per_module) |outer| outer.getPtr(module.path) else null,
+        .assert_no_raw_private_syntax = options.unsupported.class or
+            options.unsupported.class_private_field or
+            options.unsupported.class_private_method,
     });
     // 소스맵용: line_offsets와 소스 파일 등록
     if (options.sourcemap.enable) {

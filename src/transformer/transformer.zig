@@ -567,6 +567,8 @@ pub const Transformer = struct {
         member_span: Span = .{ .start = 0, .end = 0 },
         /// 0 = method, 1 = getter, 2 = setter (#1523).
         kind: u8 = 0,
+        is_static: bool = false,
+        class_name: ?[]const u8 = null,
     };
 
     // RefreshRegistration / RefreshSignature 타입 정의는 plugin_state.zig로 이사.

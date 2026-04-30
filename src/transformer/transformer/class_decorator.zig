@@ -35,7 +35,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         // #1592로 ClassExpression name이 body scope 심볼로 등록되어
         // reference_count == 0이 정확한 "미참조" 시그널. ClassDeclaration은 외부
         // scope 심볼이라 body 내부 ref만 count되지 않으므로 대상에서 제외.
-        const new_name = if (shouldDropClassExprName(self, node.tag, raw_name_idx))
+        var new_name = if (shouldDropClassExprName(self, node.tag, raw_name_idx))
             ast_mod.NodeIndex.none
         else
             try self.visitNode(raw_name_idx);
@@ -76,6 +76,12 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 
         const lower_pm = self.options.unsupported.class_private_method;
         const lower_pf = self.options.unsupported.class_private_field;
+        if ((lower_pm or lower_pf) and node.tag == .class_expression and new_name.isNone() and
+            classBodyHasStaticPrivateMember(self, current_body_idx, lower_pm, lower_pf))
+        {
+            const tmp_span = try es_helpers.makeTempVarSpan(self);
+            new_name = try es_helpers.makeBindingIdentifier(self, tmp_span);
+        }
         var had_private_methods = false;
         var had_private_fields = false;
 
@@ -212,6 +218,44 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
     // Slow path: useDefineForClassFields=false 또는 experimentalDecorators
     // 클래스 바디의 멤버들을 개별로 분석해야 하므로, class_body를 직접 순회한다.
     return self.visitClassWithAssignSemantics(node);
+}
+
+fn classBodyHasStaticPrivateMember(self: *Transformer, body_idx: NodeIndex, lower_methods: bool, lower_fields: bool) bool {
+    if (body_idx.isNone()) return false;
+    const body_node = self.ast.getNode(body_idx);
+    if (body_node.tag != .class_body) return false;
+
+    const start = body_node.data.list.start;
+    const len = body_node.data.list.len;
+    if (start + len > self.ast.extra_data.items.len) return false;
+
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[start + i]));
+        switch (member.tag) {
+            .method_definition => {
+                if (!lower_methods) continue;
+                const e = member.data.extra;
+                if (e + ast_mod.MethodExtra.flags >= self.ast.extra_data.items.len) continue;
+                const flags = self.readU32(e, ast_mod.MethodExtra.flags);
+                if ((flags & ast_mod.MethodFlags.is_static) == 0) continue;
+                const key = self.readNodeIdx(e, ast_mod.MethodExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) return true;
+            },
+            .property_definition => {
+                if (!lower_fields) continue;
+                const e = member.data.extra;
+                if (e + ast_mod.PropertyExtra.flags >= self.ast.extra_data.items.len) continue;
+                const flags = self.readU32(e, ast_mod.PropertyExtra.flags);
+                if ((flags & ast_mod.PropertyFlags.is_static) == 0) continue;
+                const key = self.readNodeIdx(e, ast_mod.PropertyExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .private_identifier) return true;
+            },
+            else => {},
+        }
+    }
+
+    return false;
 }
 
 /// class_expression의 private method / static block 다운레벨 결과를 IIFE로 래핑한다.

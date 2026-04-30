@@ -1519,6 +1519,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // private method 매핑 조회
             for (self.current_private_methods) |pm| {
                 if (!std.mem.eql(u8, pm.original_name, orig)) continue;
+                if (pm.is_static) {
+                    const new_obj = try self.visitNode(right_idx);
+                    const class_ref = try es_helpers.makeIdentifierRef(self, pm.class_name orelse "undefined");
+                    return self.ast.addNode(.{
+                        .tag = .binary_expression,
+                        .span = node.span,
+                        .data = .{ .binary = .{
+                            .left = new_obj,
+                            .right = class_ref,
+                            .flags = @intFromEnum(token_mod.Kind.eq3),
+                        } },
+                    });
+                }
                 return buildWeakMapCall(self, pm.weakset_name, "has", right_idx, &.{}, node.span);
             }
 

@@ -14,6 +14,7 @@ const e2eJSXAutomatic = helpers.e2eJSXAutomatic;
 const e2eJSXDev = helpers.e2eJSXDev;
 const e2eJSXAutomaticTarget = helpers.e2eJSXAutomaticTarget;
 const e2eJSXClassicTarget = helpers.e2eJSXClassicTarget;
+const codegen_mod = helpers.codegen_mod;
 
 // Private Method (#method → WeakSet + standalone function)
 // ============================================================
@@ -206,14 +207,17 @@ test "private method: nested class expression inside outer class body (es2021)" 
     try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _n") == null);
 }
 
-test "private static method: class expression — no stitching even if passthrough (es2021)" {
-    // 현재 static private method는 다운레벨링 대상이 아니어서 원본 class expression 유지.
-    // 최소한의 회귀 방지: 쉼표 stitching 버그가 재발하지 않는지 확인.
-    // TODO(es2021): static private method 다운레벨링 구현 시 IIFE 래핑도 같이 검증.
+test "private static method: class expression lowers without stitching (es2021)" {
     var r = try e2eTarget(std.testing.allocator,
-        \\const W = class { static #m() { return 1; } };
+        \\const W = class {
+        \\  static #m() { return 1; }
+        \\  static call() { return this.#m(); }
+        \\};
     , .es2021);
     defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_m_fn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".#m(") == null);
     // 쉼표 stitching 부재 (버그 증상)
     try std.testing.expect(std.mem.indexOf(u8, r.output, ",var _m") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "},var ") == null);
@@ -231,6 +235,57 @@ test "private getter: class expression wrapped in IIFE (es2021)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "})()") != null);
     // 쉼표 stitching 없음
     try std.testing.expect(std.mem.indexOf(u8, r.output, "},var ") == null);
+}
+
+test "private static method: class declaration call lowers (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  static #m() { return 1; }
+        \\  static call() { return Foo.#m(); }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _m={writable:true,value:_m_fn}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _m_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(Foo,Foo,_m).call(Foo)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".#m(") == null);
+}
+
+test "private static method: method reference binds receiver (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  static #m() { return this; }
+        \\  static ref() { return this.#m; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet(this,Foo,_m).bind(this)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".#m") == null);
+}
+
+test "private static method: brand check lowers to class identity (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  static #m() { return 1; }
+        \\  static has(o) { return #m in o; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "o===Foo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "#m in") == null);
+}
+
+test "private static method: es2022 target preserves original" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  static #m() { return 1; }
+        \\  static call() { return this.#m(); }
+        \\}
+    , .es2022);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "static #m()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "this.#m()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classStaticPrivateFieldSpecGet") == null);
 }
 
 // 회귀 가드: private *field* 의 arrow init 안에서 다른 private *method* 호출이
@@ -268,6 +323,31 @@ test "private field arrow init: this.#method() inside nested arrow lowers (es5)"
     // raw private method call 이 남으면 안 됨
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".#applyModern(") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".#applyLegacy(") == null);
+}
+
+test "private downlevel debug invariant: raw private syntax absent after transform" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\class Foo {
+        \\  #handler = () => { this.#flush(); };
+        \\  #flush() { return 1; }
+        \\}
+    ;
+
+    var scanner = try helpers.Scanner.init(allocator, source);
+    var parser = helpers.Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const parsed_root = try parser.parse();
+    try std.testing.expect(codegen_mod.hasRawPrivateSyntax(&parser.ast, parsed_root));
+
+    const unsupported = TransformOptions.compat.fromESTarget(.es2021);
+    var transformer = try helpers.Transformer.init(allocator, &parser.ast, .{
+        .unsupported = unsupported,
+    });
+    const transformed_root = try transformer.transform();
+    try std.testing.expect(!codegen_mod.hasRawPrivateSyntax(transformer.ast, transformed_root));
 }
 
 test "private method: es2022 target preserves original" {

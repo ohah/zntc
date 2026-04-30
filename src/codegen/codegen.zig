@@ -10,6 +10,7 @@
 //! - references/esbuild/internal/js_printer/js_printer.go
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const Tag = Node.Tag;
@@ -137,6 +138,9 @@ pub const CodegenOptions = struct {
     /// 로 직접 emit. bundler 가 모듈별로 sub-map 을 추출해 주입한다 (graph.worker_entries 에서
     /// 도출). null/empty 면 fast-exit — worker 가 없는 모듈에서 추가 비용 0.
     worker_map: ?*const std.StringHashMap([]const u8) = null,
+    /// Debug 빌드 전용 내부 invariant. private syntax downlevel 대상인데 transformer 후
+    /// raw private AST가 codegen까지 도달하면 사용자 입력 에러가 아니라 transformer 버그다.
+    assert_no_raw_private_syntax: bool = false,
 };
 
 /// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
@@ -256,6 +260,14 @@ pub const Codegen = struct {
     /// 특정 statement 노드 목록만 코드로 생성한다 (__esm var 호이스팅용).
     /// root는 collectTopLevelDeclNames에만 사용. 실제 출력은 stmt_indices에서.
     pub fn generateStatements(self: *Codegen, root: NodeIndex, stmt_indices: []const u32) ![]const u8 {
+        if (builtin.mode == .Debug and self.options.assert_no_raw_private_syntax) {
+            for (stmt_indices) |raw_idx| {
+                const node_idx: NodeIndex = @enumFromInt(raw_idx);
+                if (hasRawPrivateSyntax(self.ast, node_idx)) {
+                    @panic("internal compiler invariant violated: raw private syntax reached codegen after downlevel transform");
+                }
+            }
+        }
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len / 2);
         self.collectTopLevelDeclNames(root);
         var emitted = false;
@@ -274,6 +286,12 @@ pub const Codegen = struct {
     pub fn generate(self: *Codegen, root: NodeIndex) ![]const u8 {
         var scope = @import("../profile.zig").begin(.codegen);
         defer scope.end();
+
+        if (builtin.mode == .Debug and self.options.assert_no_raw_private_syntax and
+            hasRawPrivateSyntax(self.ast, root))
+        {
+            @panic("internal compiler invariant violated: raw private syntax reached codegen after downlevel transform");
+        }
 
         // 출력 크기는 보통 소스 크기와 비슷 → 사전 할당
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len);
@@ -4022,3 +4040,57 @@ pub const Codegen = struct {
         }
     }
 };
+
+pub fn hasRawPrivateSyntax(ast: *const Ast, root: NodeIndex) bool {
+    if (root.isNone()) return false;
+    const raw = @intFromEnum(root);
+    if (raw >= ast.nodes.items.len) return false;
+
+    const node = ast.getNode(root);
+    switch (node.tag) {
+        .private_field_expression, .private_identifier => return true,
+        else => {},
+    }
+
+    switch (Node.Tag.dataKind(node.tag)) {
+        .leaf => return false,
+        .unary => return hasRawPrivateSyntax(ast, node.data.unary.operand),
+        .binary => return hasRawPrivateSyntax(ast, node.data.binary.left) or
+            hasRawPrivateSyntax(ast, node.data.binary.right),
+        .ternary => return hasRawPrivateSyntax(ast, node.data.ternary.a) or
+            hasRawPrivateSyntax(ast, node.data.ternary.b) or
+            hasRawPrivateSyntax(ast, node.data.ternary.c),
+        .list => return nodeListHasRawPrivateSyntax(ast, node.data.list),
+        .extra => {
+            const base = node.data.extra;
+            for (Node.Tag.extraChildOffsets(node.tag)) |offset| {
+                const extra_idx = base + offset;
+                if (extra_idx >= ast.extra_data.items.len) continue;
+                if (hasRawPrivateSyntax(ast, @enumFromInt(ast.extra_data.items[extra_idx]))) {
+                    return true;
+                }
+            }
+            for (Node.Tag.extraListOffsets(node.tag)) |offsets| {
+                const start_idx = base + offsets[0];
+                const len_idx = base + offsets[1];
+                if (start_idx >= ast.extra_data.items.len or len_idx >= ast.extra_data.items.len) continue;
+                const list = NodeList{
+                    .start = ast.extra_data.items[start_idx],
+                    .len = ast.extra_data.items[len_idx],
+                };
+                if (nodeListHasRawPrivateSyntax(ast, list)) return true;
+            }
+            return false;
+        },
+    }
+}
+
+fn nodeListHasRawPrivateSyntax(ast: *const Ast, list: NodeList) bool {
+    if (list.start > ast.extra_data.items.len) return false;
+    const end = list.start + list.len;
+    if (end > ast.extra_data.items.len) return false;
+    for (ast.extra_data.items[list.start..end]) |raw_child| {
+        if (hasRawPrivateSyntax(ast, @enumFromInt(raw_child))) return true;
+    }
+    return false;
+}
