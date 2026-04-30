@@ -608,6 +608,55 @@ test "emotion: bare `injectGlobal`...`` (binding 없음) — no-op 으로 통과
     try std.testing.expect(std.mem.indexOf(u8, r.output, "box-sizing: border-box") != null);
 }
 
+// ─── JSX member expression ───
+// `<Components.Button css={...}>` 같은 member expression 의 rightmost identifier 를
+// label 로 사용 (babel-plugin-emotion 동작과 일치).
+
+test "emotion: JSX member `<Foo.Bar css={...}>` — rightmost (Bar) 로 label" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <Foo.Bar css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Bar");
+}
+
+test "emotion: JSX deep member `<Foo.Bar.Baz css={...}>` — rightmost (Baz) 로 label" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <Foo.Bar.Baz css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Baz");
+}
+
+test "emotion: <Foo.Global styles={...}> false-positive 방지 — member 면 미인식" {
+    // rightmost 가 "Global" 이라도 사용자 컴포넌트의 member 면 emotion Global 이 아님.
+    // 단순 jsx_identifier 만 elementMatchesGlobal 매칭.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { Global, css } from "@emotion/react";
+        \\const el = <Foo.Global styles={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // <Foo.Global> 의 styles 는 처리 안 됨 — Foo.Global 은 emotion Global 이 아님
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+}
+
 test "emotion: <Global css={...}> 는 css attr 로 처리 (styles 가 아니라)" {
     // Global 이라도 css attr 을 쓰면 일반 inline css 경로 — 정상 동작 확인.
     var r = try e2eFull(

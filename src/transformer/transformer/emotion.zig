@@ -221,24 +221,46 @@ pub fn maybeApplyAutoLabelForJsxAttr(
     if (value_idx.isNone()) return value_idx;
 
     const label = jsxElementLabel(self, tag_name_idx) orelse return value_idx;
-    const is_global_styles = is_styles and elementMatchesGlobal(self, label);
+    const is_global_styles = is_styles and elementMatchesGlobal(self, tag_name_idx);
     if (!is_css and !is_global_styles) return value_idx;
 
     return try maybeApplyAutoLabel(self, value_idx, label);
 }
 
-/// JSX element 이름 (label) 이 import 된 `Global` binding 과 일치하는지.
-fn elementMatchesGlobal(self: *Transformer, element_label: []const u8) bool {
+/// JSX element 가 import 된 `Global` binding 과 일치하는지.
+///
+/// **단순 jsx_identifier 만 매칭** — `<Foo.Global>` 같은 member expression 은 거부.
+/// 이유: rightmost 가 "Global" 이라도 사용자 컴포넌트 (`<Foo.Global>`) 가 emotion 의
+/// `Global` 일 가능성은 0 → false-positive 방지. 정식으로 지원하려면 namespace import
+/// (`import * as Em`) 추적이 필요한데 현재 범위 밖.
+fn elementMatchesGlobal(self: *Transformer, tag_name_idx: NodeIndex) bool {
     const binding = self.plugins.emotion.global_binding orelse return false;
-    return std.mem.eql(u8, element_label, binding);
+    if (tag_name_idx.isNone()) return false;
+    const tag_node = self.ast.getNode(tag_name_idx);
+    if (tag_node.tag != .jsx_identifier) return false;
+    return std.mem.eql(u8, self.ast.getText(tag_node.span), binding);
 }
 
-/// JSX element label 추출. jsx_identifier 만 — member/namespaced 는 후속 PR.
+/// JSX element label 추출 — autoLabel 의 source 로 쓰일 이름.
+///
+/// 처리:
+///   - `jsx_identifier` (`<Button>`) → "Button"
+///   - `jsx_member_expression` (`<Foo.Bar>`, `<Foo.Bar.Baz>`) → rightmost identifier
+///     (babel-plugin-emotion 동작과 일치 — 의미 있는 부분이 rightmost).
 fn jsxElementLabel(self: *Transformer, tag_name_idx: NodeIndex) ?[]const u8 {
     if (tag_name_idx.isNone()) return null;
-    const tag_node = self.ast.getNode(tag_name_idx);
-    if (tag_node.tag != .jsx_identifier) return null;
-    return self.ast.getText(tag_node.span);
+    var current = tag_name_idx;
+    while (true) {
+        const node = self.ast.getNode(current);
+        switch (node.tag) {
+            .jsx_identifier => return self.ast.getText(node.span),
+            .jsx_member_expression => {
+                current = node.data.binary.right;
+                if (current.isNone()) return null;
+            },
+            else => return null,
+        }
+    }
 }
 
 /// tag 가 emotion 인식 패턴인지 확인.
