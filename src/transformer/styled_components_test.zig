@@ -1006,3 +1006,134 @@ test "styled-components: componentId counter 가 같은 파일 내 0,1,2 로 증
     try std.testing.expect(std.mem.indexOf(u8, r.output, "-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "-2\"") != null);
 }
+
+// ─── named helper imports (css / keyframes / createGlobalStyle / injectGlobal) ───
+// `import { css, keyframes, ... } from "styled-components"` 인식 + minify 옵션
+// 적용. helper 는 컴포넌트 아니라 CSS 조각이라 displayName/componentId 안 붙임.
+
+test "styled (helper): import { css } 인식 + minify 옵션 적용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "styled-components";
+        \\const styles = css`
+        \\  color:   red;
+        \\  padding: 8px;
+        \\`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // CSS minify 적용 — 다중 공백 collapse
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+    // 원본 indented 다중라인 형태가 아니어야 함 (collapsed)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "  color:   red;") == null);
+    // helper 라 displayName 안 들어감
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName") == null);
+}
+
+test "styled (helper): import { keyframes } 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { keyframes } from "styled-components";
+        \\const fadeIn = keyframes`
+        \\  from { opacity: 0; }
+        \\  to   { opacity: 1; }
+        \\`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "opacity: 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "  to   {") == null);
+}
+
+test "styled (helper): import { createGlobalStyle } 인식 + minify" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { createGlobalStyle } from "styled-components";
+        \\const Global = createGlobalStyle`
+        \\  body  {  margin: 0;  }
+        \\`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "margin: 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "  body  {  ") == null);
+}
+
+test "styled (helper): import alias `import { css as cx }` 도 추적" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css as cx } from "styled-components";
+        \\const s = cx`
+        \\  color:  blue;
+        \\`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: blue") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "  color:  blue;") == null);
+}
+
+test "styled (helper): default `styled` 와 named `css` 동시 import" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled, { css } from "styled-components";
+        \\const helper = css`
+        \\  color:  red;
+        \\`;
+        \\const Btn = styled.div`color: blue;`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // helper 의 css 도 minify, styled.div 도 wrap (displayName 등) + minify
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Btn\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "  color:  red;") == null);
+}
+
+test "styled (helper): non-styled-components source 의 css 는 미인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const styles = css`
+        \\  color:   red;
+        \\`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // emotion 의 css 는 styled-components helper 로 인식 안 됨 — minify 적용 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "  color:   red;") != null);
+}
+
+test "styled (helper): minify 옵션 비활성 — 인식만 하고 변환 안 함" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "styled-components";
+        \\const styles = css`
+        \\  color:  red;
+        \\`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" }, // minify 미설정
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // minify 비활성 — 원본 그대로
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "  color:  red;") != null);
+}
