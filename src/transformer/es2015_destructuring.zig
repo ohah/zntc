@@ -369,30 +369,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
-                const access = if (key_node.tag == .computed_property_key) blk: {
-                    const key_span = try es_helpers.makeTempVarSpan(self);
-                    const key_assign = try self.ast.addNode(.{
-                        .tag = .assignment_expression,
-                        .span = span,
-                        .data = .{ .binary = .{
-                            .left = try es_helpers.makeTempVarRef(self, key_span, span),
-                            .right = try self.visitNode(key_node.data.unary.operand),
-                            .flags = @intFromEnum(token_mod.Kind.eq),
-                        } },
-                    });
-                    try self.scratch.append(self.allocator, key_assign);
-                    if (exclude_count < exclude_keys.len) {
-                        exclude_keys[exclude_count] = try es_helpers.makeTempVarRef(self, key_span, span);
-                        exclude_count += 1;
-                    }
-                    break :blk try es_helpers.makeComputedMember(self, ref, try es_helpers.makeTempVarRef(self, key_span, span), span);
-                } else blk: {
-                    if (exclude_count < exclude_keys.len) {
-                        exclude_keys[exclude_count] = try makeRestExcludeKey(self, key_node);
-                        exclude_count += 1;
-                    }
-                    break :blk try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
-                };
+                const access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, &exclude_count, .assign, span);
 
                 if (prop.tag == .assignment_target_property_identifier) {
                     const target_node = try self.ast.addNode(.{
@@ -555,24 +532,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
 
-                const member_access = if (key_node.tag == .computed_property_key) blk: {
-                    const key_span = try es_helpers.makeTempVarSpan(self);
-                    const key_binding = try es_helpers.makeBindingIdentifier(self, key_span);
-                    const key_value = try self.visitNode(key_node.data.unary.operand);
-                    const key_decl = try es_helpers.makeDeclarator(self, key_binding, key_value, span);
-                    try self.scratch.append(self.allocator, key_decl);
-                    if (exclude_count < exclude_keys.len) {
-                        exclude_keys[exclude_count] = try es_helpers.makeTempVarRef(self, key_span, span);
-                        exclude_count += 1;
-                    }
-                    break :blk try es_helpers.makeComputedMember(self, ref, try es_helpers.makeTempVarRef(self, key_span, span), span);
-                } else blk: {
-                    if (exclude_count < exclude_keys.len) {
-                        exclude_keys[exclude_count] = try makeRestExcludeKey(self, key_node);
-                        exclude_count += 1;
-                    }
-                    break :blk try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
-                };
+                const member_access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, &exclude_count, .decl, span);
 
                 // value 처리: shorthand vs long-form, default value
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
@@ -797,6 +757,59 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
         }
 
+        const ComputedKeyMode = enum { decl, assign };
+
+        /// object pattern 의 한 property 에 대해 `_ref[key]` member access 를 만들고, rest 가 있으면
+        /// exclude key 도 같은 capture 결과로 모아둔다.
+        ///
+        /// computed key (`{[k()]: a}`) 는 평가 순서 보존을 위해 한 번 임시 변수로 캡쳐 — destructuring
+        /// declarator 컨텍스트에서는 `_key=expr` declarator, assignment-target 컨텍스트에서는
+        /// `(_key=expr)` assignment_expression 형태로 `self.scratch` 에 push 한다.
+        ///
+        /// non-computed key (identifier/string/number) 는 캡쳐 없이 곧장 member access 를 만들고,
+        /// rest exclude 는 raw key 를 따옴표로 감싼 string literal 로 등록한다.
+        fn emitObjectMemberAccessForRest(
+            self: *Transformer,
+            ref: NodeIndex,
+            key_node: Node,
+            key_idx: NodeIndex,
+            exclude_keys: []NodeIndex,
+            exclude_count: *usize,
+            mode: ComputedKeyMode,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
+            if (key_node.tag == .computed_property_key) {
+                const key_span = try es_helpers.makeTempVarSpan(self);
+                const capture: NodeIndex = switch (mode) {
+                    .decl => blk: {
+                        const key_binding = try es_helpers.makeBindingIdentifier(self, key_span);
+                        const key_value = try self.visitNode(key_node.data.unary.operand);
+                        break :blk try es_helpers.makeDeclarator(self, key_binding, key_value, span);
+                    },
+                    .assign => try self.ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = span,
+                        .data = .{ .binary = .{
+                            .left = try es_helpers.makeTempVarRef(self, key_span, span),
+                            .right = try self.visitNode(key_node.data.unary.operand),
+                            .flags = @intFromEnum(token_mod.Kind.eq),
+                        } },
+                    }),
+                };
+                try self.scratch.append(self.allocator, capture);
+                if (exclude_count.* < exclude_keys.len) {
+                    exclude_keys[exclude_count.*] = try es_helpers.makeTempVarRef(self, key_span, span);
+                    exclude_count.* += 1;
+                }
+                return es_helpers.makeComputedMember(self, ref, try es_helpers.makeTempVarRef(self, key_span, span), span);
+            }
+            if (exclude_count.* < exclude_keys.len) {
+                exclude_keys[exclude_count.*] = try makeRestExcludeKey(self, key_node);
+                exclude_count.* += 1;
+            }
+            return es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
+        }
+
         fn makeRestExcludeKey(self: *Transformer, key_node: Node) Transformer.Error!NodeIndex {
             const raw = switch (key_node.tag) {
                 .identifier_reference, .binding_identifier => self.ast.getText(key_node.span),
@@ -810,7 +823,35 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             return self.wrapInStringLiteral(raw);
         }
 
-        /// rest = __rest(_ref, ["key1", key2]) declarator 생성.
+        /// `__rest(_ref, [exclude_keys...])` 호출과 visit 된 binding 을 한 쌍으로 빌드.
+        /// declarator 컨텍스트와 assignment 컨텍스트가 같은 11-step 보일러플레이트를 공유 (#1287).
+        fn buildRestCall(
+            self: *Transformer,
+            rest_idx: NodeIndex,
+            ref_span: Span,
+            exclude_keys: []const NodeIndex,
+            span: Span,
+        ) Transformer.Error!struct { binding: NodeIndex, call: NodeIndex } {
+            const binding = try self.visitNode(rest_idx);
+            const rest_callee = try es_helpers.makeRuntimeHelperRef(self, "__rest");
+            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            for (exclude_keys) |key| {
+                try self.scratch.append(self.allocator, key);
+            }
+            const arr_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            const arr_node = try self.ast.addNode(.{
+                .tag = .array_expression,
+                .span = span,
+                .data = .{ .list = arr_list },
+            });
+            const call = try es_helpers.makeCallExpr(self, rest_callee, &.{ ref, arr_node }, span);
+            return .{ .binding = binding, .call = call };
+        }
+
+        /// rest = __rest(_ref, [...]) declarator (declaration 컨텍스트).
         fn buildRestDeclarator(
             self: *Transformer,
             rest_idx: NodeIndex,
@@ -818,35 +859,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             exclude_keys: []const NodeIndex,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const binding = try self.visitNode(rest_idx);
-
-            // __rest 호출: __rest(_ref, ["key1", "key2"])
-            const rest_callee = try es_helpers.makeRuntimeHelperRef(self, "__rest");
-
-            // _ref 참조
-            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-
-            // exclude 배열: ["key1", "key2"]
-            const scratch_top = self.scratch.items.len;
-            defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-            for (exclude_keys) |key| {
-                try self.scratch.append(self.allocator, key);
-            }
-
-            const arr_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const arr_node = try self.ast.addNode(.{
-                .tag = .array_expression,
-                .span = span,
-                .data = .{ .list = arr_list },
-            });
-
-            // __rest(_ref, [...])
-            const call = try es_helpers.makeCallExpr(self, rest_callee, &.{ ref, arr_node }, span);
-
-            return es_helpers.makeDeclarator(self, binding, call, span);
+            const parts = try buildRestCall(self, rest_idx, ref_span, exclude_keys, span);
+            return es_helpers.makeDeclarator(self, parts.binding, parts.call, span);
         }
 
+        /// rest = __rest(_ref, [...]) assignment (assignment-target 컨텍스트).
         fn buildRestAssignment(
             self: *Transformer,
             rest_idx: NodeIndex,
@@ -854,26 +871,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             exclude_keys: []const NodeIndex,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const binding = try self.visitNode(rest_idx);
-            const rest_callee = try es_helpers.makeRuntimeHelperRef(self, "__rest");
-            const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
-
-            const scratch_top = self.scratch.items.len;
-            defer self.scratch.shrinkRetainingCapacity(scratch_top);
-            for (exclude_keys) |key| {
-                try self.scratch.append(self.allocator, key);
-            }
-            const arr_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const arr_node = try self.ast.addNode(.{
-                .tag = .array_expression,
-                .span = span,
-                .data = .{ .list = arr_list },
-            });
-            const call = try es_helpers.makeCallExpr(self, rest_callee, &.{ ref, arr_node }, span);
+            const parts = try buildRestCall(self, rest_idx, ref_span, exclude_keys, span);
             return self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = binding, .right = call, .flags = 0 } },
+                .data = .{ .binary = .{ .left = parts.binding, .right = parts.call, .flags = 0 } },
             });
         }
         /// for_in_statement를 기본적으로 visit (ternary 자식 3개 재귀 방문).

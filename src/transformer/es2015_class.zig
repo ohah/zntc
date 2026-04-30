@@ -1768,7 +1768,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                     const member_idx = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) blk: {
                         const memo_key = try memoizeStaticComputedFieldKey(self, &cm, self.ast.getNode(key).data.unary.operand, member.span);
-                        break :blk try replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key);
+                        break :blk try es_helpers.replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key);
                     } else @as(NodeIndex, @enumFromInt(raw_idx));
 
                     if (kind == 1 or kind == 2) {
@@ -2089,24 +2089,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const memo = try es_helpers.memoizeComputedKey(self, key_expr, span);
             try cm.accessor_key_memos.append(self.allocator, memo.decl);
             return memo.computed_key;
-        }
-
-        fn replaceMethodDefinitionKey(self: *Transformer, method_idx: NodeIndex, new_key: NodeIndex) Transformer.Error!NodeIndex {
-            const method = self.ast.getNode(method_idx);
-            const me = method.data.extra;
-            const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_key),
-                self.ast.extra_data.items[me + MethodExtra.params],
-                self.ast.extra_data.items[me + MethodExtra.body],
-                self.ast.extra_data.items[me + MethodExtra.flags],
-                self.ast.extra_data.items[me + MethodExtra.deco_start],
-                self.ast.extra_data.items[me + MethodExtra.deco_len],
-            });
-            return self.ast.addNode(.{
-                .tag = .method_definition,
-                .span = method.span,
-                .data = .{ .extra = new_extra },
-            });
         }
 
         /// computed accessor getter method_definition 생성. `get [_acc_key_N]() { return return_expr; }`.
@@ -2556,6 +2538,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         fn injectInstanceFieldsAfterSuperExpr(self: *Transformer, expr_idx: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             if (expr_idx.isNone() or instance_fields.len == 0) return expr_idx;
+            // sub-tree 안에 super-call 이 없으면 AST 재구성 비용을 들일 필요가 없다.
+            // `containsSuperCallAssignment` 는 read-only 라 비용이 작다.
+            if (!containsSuperCallAssignment(self, expr_idx)) return expr_idx;
             const node = self.ast.getNode(expr_idx);
 
             if (isSuperThisAssignment(self, node)) {
@@ -2692,7 +2677,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const init: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra + 2]);
                     return containsSuperCallAssignment(self, init);
                 },
-                .call_expression => {
+                .call_expression, .new_expression => {
                     if (isSuperCallLike(self, node)) return true;
                     const e = node.data.extra;
                     const args_start = self.ast.extra_data.items[e + 1];

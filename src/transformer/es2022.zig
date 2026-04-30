@@ -135,7 +135,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     try static_block_iifes.append(self.allocator, static_assign);
                 } else if (member.tag == .method_definition) {
                     if (lookupKeyMemo(static_key_memos.items, raw_idx)) |memo_key| {
-                        try self.scratch.append(self.allocator, try replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key));
+                        try self.scratch.append(self.allocator, try es_helpers.replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key));
                     } else if (already_visited) {
                         try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
                     } else {
@@ -192,24 +192,6 @@ pub fn ES2022(comptime Transformer: type) type {
                 if (m.raw_idx == raw_idx) return m.key_ref;
             }
             return null;
-        }
-
-        fn replaceMethodDefinitionKey(self: *Transformer, method_idx: NodeIndex, new_key: NodeIndex) Transformer.Error!NodeIndex {
-            const method = self.ast.getNode(method_idx);
-            const me = method.data.extra;
-            const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_key),
-                self.ast.extra_data.items[me + ast_mod.MethodExtra.params],
-                self.ast.extra_data.items[me + ast_mod.MethodExtra.body],
-                self.ast.extra_data.items[me + ast_mod.MethodExtra.flags],
-                self.ast.extra_data.items[me + ast_mod.MethodExtra.deco_start],
-                self.ast.extra_data.items[me + ast_mod.MethodExtra.deco_len],
-            });
-            return self.ast.addNode(.{
-                .tag = .method_definition,
-                .span = method.span,
-                .data = .{ .extra = new_extra },
-            });
         }
 
         /// public static field 의 `Class.key = init;` assignment 를 합성한다.

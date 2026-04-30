@@ -144,13 +144,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 });
 
                 if (node.tag == .class_expression) {
-                    var combined_pre: std.ArrayList(NodeIndex) = .empty;
-                    defer combined_pre.deinit(self.allocator);
-                    try combined_pre.appendSlice(self.allocator, static_key_memos.items);
-                    try combined_pre.appendSlice(self.allocator, pre_stmts.items);
                     return wrapClassExprInIIFE(
                         self,
-                        combined_pre.items,
+                        static_key_memos.items,
+                        pre_stmts.items,
                         class_result,
                         static_block_iifes.items,
                         new_name,
@@ -186,6 +183,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
             if (node.tag == .class_expression) {
                 return wrapClassExprInIIFE(
                     self,
+                    &.{},
                     pre_stmts.items,
                     class_result,
                     &.{},
@@ -224,7 +222,8 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
 /// 동일하므로 재복사 불필요).
 fn wrapClassExprInIIFE(
     self: *Transformer,
-    pre_stmts: []const NodeIndex,
+    pre_stmts_a: []const NodeIndex,
+    pre_stmts_b: []const NodeIndex,
     class_expr_node: NodeIndex,
     post_stmts: []const NodeIndex,
     new_name: NodeIndex,
@@ -249,7 +248,8 @@ fn wrapClassExprInIIFE(
 
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-    try self.scratch.appendSlice(self.allocator, pre_stmts);
+    try self.scratch.appendSlice(self.allocator, pre_stmts_a);
+    try self.scratch.appendSlice(self.allocator, pre_stmts_b);
     try self.scratch.append(self.allocator, class_decl);
     try self.scratch.appendSlice(self.allocator, post_stmts);
 
