@@ -263,3 +263,114 @@ test "emotion: tag 가 css.something 같은 chain 이면 미인식" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
 }
+
+test "emotion: JSX inline `<div css={css`...`}>` autoLabel — element 이름 prepend" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+    // 원본 css 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red;") != null);
+}
+
+test "emotion: JSX inline `<Button css={css`...`}>` — Component 이름 prepend" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <Button css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Button");
+}
+
+test "emotion: JSX inline css — emotion_auto_label=false 면 skip" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .emotion_auto_label = false, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red;") != null);
+}
+
+test "emotion: JSX 의 css 와 다른 attr 동시 — css 만 label 추가" {
+    // pair-test: 같은 element 에 className+css 둘 다 있을 때 css 만 처리되는지.
+    // label 갯수 1 이어야 함 — css 는 인식, className 은 인식 안 됨.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div className={css`padding: 8px;`} css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // label:div; 가 정확히 1번 — css attr 의 value 에만.
+    var count: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, r.output, search_from, "label:div;")) |pos| {
+        count += 1;
+        search_from = pos + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "emotion: JSX inline css — 보간 있는 css 도 첫 quasi 에 prepend" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={css`color: ${color}; padding: 8px;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "${color}") != null);
+}
+
+test "emotion: JSX inline css — non-emotion tag (`<div css={foo`...`}>`) 미인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\const foo = (s) => s;
+        \\const el = <div css={foo`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+}
+
+test "emotion: JSX inline css — classic runtime 에서도 동작" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .classic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+}
