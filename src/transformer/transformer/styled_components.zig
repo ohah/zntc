@@ -1313,12 +1313,16 @@ fn extractCssTemplateIdx(self: *Transformer, css_value_idx: NodeIndex) ?NodeInde
 /// `<X css={...}>` JSX prop 을 styled component 추출 시도. MVP: intrinsic tag +
 /// template_literal 또는 `css\`\`` tagged template + styled default_binding 존재 시.
 /// 미매칭 시 null 반환.
+/// auto-inject 시 사용할 styled default binding 이름. 사용자 코드에 같은 이름의 다른
+/// 선언 (`const styled = ...` 같은 module-scope 변수) 이 있으면 prepended import 와 충돌 —
+/// babel 처럼 unique mangling 은 미적용. follow-up: collision detection + `_styled` fallback.
+const DEFAULT_STYLED_BINDING = "styled";
+
 pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?ast_mod.Node {
     if (!self.options.styled_components or !self.options.styled_components_css_prop) return null;
     if (jsx_node.tag != .jsx_element) return null;
-    // styled binding: 사용자 import 가 있으면 그 이름, 없으면 "styled" 사용 + auto-inject flag.
-    // transpile.zig 가 flag 보고 program 시작에 `import styled from "styled-components"` prepend.
-    const default_binding: []const u8 = self.plugins.styled_components.default_binding orelse "styled";
+    // 사용자 import 가 있으면 그 이름, 없으면 DEFAULT_STYLED_BINDING + auto-inject flag.
+    const default_binding: []const u8 = self.plugins.styled_components.default_binding orelse DEFAULT_STYLED_BINDING;
 
     const e = jsx_node.data.extra;
     const tag_name_idx = self.readNodeIdx(e, 0);
@@ -1379,7 +1383,8 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     state.css_prop_counter += 1;
 
     var name_buf: [64]u8 = undefined;
-    const generated_name = std.fmt.bufPrint(&name_buf, "_styled_{d}", .{counter}) catch return null;
+    // `_styled_<u32>` 최대 길이 18 bytes — 64 byte buffer 에 항상 fit (overflow 불가).
+    const generated_name = std.fmt.bufPrint(&name_buf, "_styled_{d}", .{counter}) catch unreachable;
     const generated_span = try self.ast.addString(generated_name);
     const zero = Span{ .start = 0, .end = 0 };
 
