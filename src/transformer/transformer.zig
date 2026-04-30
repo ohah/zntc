@@ -1171,6 +1171,13 @@ pub const Transformer = struct {
                 return self.visitMemberExpression(node);
             },
             .private_field_expression => {
+                if (self.options.unsupported.optional_chaining or
+                    ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0))
+                {
+                    if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
+                        return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
+                    }
+                }
                 // ES2022: this.#method → _method_fn.bind(this) (참조만, 호출 아닌 경우)
                 if (self.current_private_methods.len > 0) {
                     if (es2022.ES2022(Transformer).lowerPrivateMethodGet(self, node)) |result| {
@@ -1181,12 +1188,6 @@ pub const Transformer = struct {
                 if ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0) {
                     if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldGet(self, node)) |result| {
                         return result;
-                    }
-                }
-                // ES 다운레벨링: ?. → ternary (target < es2020)
-                if (self.options.unsupported.optional_chaining) {
-                    if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
-                        return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
                 }
                 return self.visitMemberExpression(node);

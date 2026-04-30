@@ -165,6 +165,21 @@ console.log(JSON.stringify(log));
 `,
   },
   {
+    name: "derived-constructor-return-super-in-object-member",
+    code: `
+const log = [];
+class Base { constructor(v) { log.push("base:" + v); this.v = v; } }
+class Child extends Base {
+  field = log.push("field:" + this.v);
+  constructor() {
+    return ({ x: super(8) }).x;
+  }
+}
+new Child();
+console.log(JSON.stringify(log));
+`,
+  },
+  {
     name: "private-field-brand-and-update",
     code: `
 class Counter {
@@ -230,6 +245,20 @@ class A {
   static read() { return [this.#x, Object.getOwnPropertyNames(this.prototype), Object.keys(this), log]; }
 }
 console.log(JSON.stringify(A.read()));
+`,
+  },
+  {
+    name: "static-optional-super-method-field",
+    code: `
+const log = [];
+class Base {
+  static m(v) { log.push("m:" + v); return v + 1; }
+}
+class A extends Base {
+  static x = super.m?.(1);
+  static { log.push("block:" + this.x); }
+}
+console.log(JSON.stringify([A.x, log]));
 `,
   },
   {
@@ -304,6 +333,22 @@ let picked, rest;
 function k() { log.push("key"); return "b"; }
 ({ [k()]: picked, ...rest } = src);
 console.log(JSON.stringify({ picked, rest, log }));
+`,
+  },
+  {
+    name: "private-optional-chain-still-lowers-private-field",
+    code: `
+class A {
+  #x = 0;
+  get self() { return this; }
+  run() {
+    this.self?.#x;
+    this.#x ||= 2;
+    this.#x &&= 3;
+    return this.#x;
+  }
+}
+console.log(JSON.stringify(new A().run()));
 `,
   },
   {
