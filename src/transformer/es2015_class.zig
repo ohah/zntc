@@ -888,8 +888,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
 
                 if (self.options.unsupported.nullish_coalescing) {
-                    const neq_null = try es_helpers.makeNeqNull(self, get_read, span);
-                    const get_value = try buildSuperPropGet(self, prop_ref.value, span);
+                    const read_capture = try es_helpers.captureToTemp(self, get_read, span);
+                    const neq_null = try es_helpers.makeNeqNull(self, read_capture.paren_assign, span);
+                    const get_value = try es_helpers.makeTempVarRef(self, read_capture.span, span);
                     const cond = try self.ast.addNode(.{
                         .tag = .conditional_expression,
                         .span = span,
@@ -1807,7 +1808,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
 
                     if (is_static and !init_val.isNone()) {
-                        try cm.static_elements.append(self.allocator, .{ .field = .{ .key = key, .init = init_val } });
+                        const static_key = if (key_node.tag == .computed_property_key)
+                            try memoizeStaticComputedFieldKey(self, &cm, key_node.data.unary.operand, span)
+                        else
+                            key;
+                        try cm.static_elements.append(self.allocator, .{ .field = .{ .key = static_key, .init = init_val } });
                     } else if (!is_static and !init_val.isNone()) {
                         const this_node = try self.ast.addNode(.{
                             .tag = .this_expression,
@@ -2089,6 +2094,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
+        fn memoizeStaticComputedFieldKey(self: *Transformer, cm: anytype, key_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+            const temp_init = try self.visitNode(key_expr);
+            const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, temp_init, span);
+            try cm.accessor_key_memos.append(
+                self.allocator,
+                try es_helpers.makeVarDeclaration(self, &.{temp_decl}, .@"var", span),
+            );
+            return makeComputedKeyRef(self, temp_span, span);
+        }
+
         /// computed accessor getter method_definition 생성. `get [_acc_key_N]() { return return_expr; }`.
         fn buildComputedAccessorGetter(self: *Transformer, computed_key: NodeIndex, return_expr: NodeIndex, is_static: bool, span: Span) Transformer.Error!NodeIndex {
             return self.buildGetterMethod(computed_key, return_expr, is_static, span);
@@ -2194,11 +2211,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
         fn buildStaticFieldAssignWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
             const saved_static = self.current_super_is_static;
             const saved_receiver = self.current_super_static_receiver;
+            const saved_class_name = self.static_block_class_name;
+            const saved_this_depth = self.this_depth;
             self.current_super_is_static = true;
             self.current_super_static_receiver = class_name_span;
+            self.static_block_class_name = class_name_span;
+            self.this_depth = 0;
             defer {
                 self.current_super_is_static = saved_static;
                 self.current_super_static_receiver = saved_receiver;
+                self.static_block_class_name = saved_class_name;
+                self.this_depth = saved_this_depth;
             }
             return buildFieldAssign(self, obj, key_idx, init_idx, span);
         }
@@ -2514,6 +2537,31 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         .data = .{ .list = new_list },
                     });
                 },
+                .return_statement => {
+                    const scratch_top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+                    const ret_span = try es_helpers.makeTempVarSpan(self);
+                    const ret_binding = try es_helpers.makeBindingIdentifier(self, ret_span);
+                    const ret_decl = try es_helpers.makeDeclarator(self, ret_binding, stmt.data.unary.operand, stmt.span);
+                    try self.scratch.append(
+                        self.allocator,
+                        try es_helpers.makeVarDeclaration(self, &.{ret_decl}, .@"var", stmt.span),
+                    );
+                    try appendInstanceFields(self, instance_fields, span);
+                    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                        .tag = .return_statement,
+                        .span = stmt.span,
+                        .data = .{ .unary = .{ .operand = try es_helpers.makeTempVarRef(self, ret_span, stmt.span), .flags = 0 } },
+                    }));
+
+                    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    return self.ast.addNode(.{
+                        .tag = .block_statement,
+                        .span = stmt.span,
+                        .data = .{ .list = new_list },
+                    });
+                },
                 else => return stmt_idx,
             }
         }
@@ -2538,6 +2586,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (expr_idx.isNone()) return false;
                     return containsSuperCallAssignment(self, expr_idx);
                 },
+                .return_statement => {
+                    return containsSuperCallAssignment(self, node.data.unary.operand);
+                },
                 .parenthesized_expression => {
                     return containsSuperCallAssignment(self, node.data.unary.operand);
                 },
@@ -2560,7 +2611,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const init: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra + 2]);
                     return containsSuperCallAssignment(self, init);
                 },
-                .call_expression => return isSuperCallLike(self, node),
+                .call_expression => {
+                    if (isSuperCallLike(self, node)) return true;
+                    const e = node.data.extra;
+                    const args_start = self.ast.extra_data.items[e + 1];
+                    const args_len = self.ast.extra_data.items[e + 2];
+                    for (self.ast.extra_data.items[args_start .. args_start + args_len]) |raw_idx| {
+                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
+                },
                 .assignment_expression => {
                     const left = self.ast.getNode(node.data.binary.left);
                     if (left.tag != .identifier_reference and left.tag != .assignment_target_identifier) return false;

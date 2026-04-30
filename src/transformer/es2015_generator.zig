@@ -1098,16 +1098,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             try collectBodyOperations(self, try_body, ops, next_label);
 
-            const catch_label = next_label.*;
-            next_label.* += 1;
+            const catch_label: ?u32 = if (!catch_clause.isNone()) blk: {
+                const label = next_label.*;
+                next_label.* += 1;
+                break :blk label;
+            } else null;
 
             // try body 끝 break placeholder
             const try_break_slot = ops.items.len;
             try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } });
 
-            try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-
             if (!catch_clause.isNone()) {
+                try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
+
                 const catch_node = self.ast.getNode(catch_clause);
                 const catch_param = catch_node.data.binary.left;
                 const catch_body_idx = catch_node.data.binary.right;
@@ -1128,8 +1131,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // catch body 끝 break placeholder
-            const catch_break_slot = ops.items.len;
-            try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } });
+            const catch_break_slot: ?usize = if (!catch_clause.isNone()) blk: {
+                const slot = ops.items.len;
+                try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = 0 } });
+                break :blk slot;
+            } else null;
 
             var finally_label: ?u32 = null;
             if (!finally_body.isNone()) {
@@ -1151,7 +1157,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // finally가 있으면 __generator 런타임이 _.label < t[2] 체크로
             // finally로 자동 우회 + _.ops.push(op)로 원래 목적지 보존.
             ops.items[try_break_slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
-            ops.items[catch_break_slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
+            if (catch_break_slot) |slot| {
+                ops.items[slot] = .{ .code = .break_op, .arg = .{ .label = end_label } };
+            }
 
             const trys_push = try buildTrysPush(self, try_label, catch_label, finally_label, end_label, stmt.span);
             ops.items[trys_push_slot] = .{ .code = .statement, .arg = .{ .node = trys_push } };
@@ -1159,7 +1167,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state.trys.push([try_label, catch_label, finally_label, end_label]) expression_statement 생성.
         /// finally_label이 null이면 void 0을 출력하여 런타임의 _.label < t[2] 체크를 skip시킨다.
-        fn buildTrysPush(self: *Transformer, try_label: u32, catch_label: u32, finally_label: ?u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
+        fn buildTrysPush(self: *Transformer, try_label: u32, catch_label: ?u32, finally_label: ?u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
             const state_ref = try es_helpers.makeIdentifierRef(self, "_state");
 
             // _state.trys
@@ -1172,7 +1180,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // [try_label, catch_label, finally_label, end_label] 배열 (TypeScript __generator 스펙)
             const n0 = try es_helpers.makeNumericLiteral(self, try_label);
-            const n1 = try es_helpers.makeNumericLiteral(self, catch_label);
+            const n1 = if (catch_label) |cl|
+                try es_helpers.makeNumericLiteral(self, cl)
+            else
+                try es_helpers.makeVoidZero(self, span);
             const n2 = if (finally_label) |fl|
                 try es_helpers.makeNumericLiteral(self, fl)
             else
