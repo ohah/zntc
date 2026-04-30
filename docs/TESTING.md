@@ -36,6 +36,14 @@ cd tests/integration && bun test         # CLI/NAPI 통합 테스트
 cd tests/e2e && bun test                 # Playwright E2E (dev server, 브라우저)
 ```
 
+### 실 라이브러리 fixture
+- 루트 `bun install` 로 `clsx`/`nanoid`/`zod`/`react`/`react-dom`/`preact`/`immer`/`date-fns`/`rxjs`/`lodash-es` 등 자동 설치 → `manual-chunks-smoke` / `inline-dynamic-imports-smoke` 의 `test.skipIf(!hasPackage(...))` 통과.
+- **emotion v10** 은 v11 과 동일 트리에 공존 불가 → 별도 격리 install 필요:
+  ```bash
+  cd tests/integration/fixtures/emotion-v10 && bun install
+  ```
+  미설치 시 `emotion-v10.test.ts` 의 `describe.skipIf(!hasV10)` 로 전체 skip.
+
 `tests/integration/tests/` 주요 스위트 (총 60+):
 
 **번들러 / 코드젠**
