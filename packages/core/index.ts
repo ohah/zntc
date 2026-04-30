@@ -1248,6 +1248,9 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
       if (sc.minify === true) napiOptions.styledComponentsMinify = true;
       if (sc.fileName === false) napiOptions.styledComponentsFileName = false;
       if (sc.pure === true) napiOptions.styledComponentsPure = true;
+      if (typeof sc.namespace === "string" && sc.namespace.length > 0) {
+        napiOptions.styledComponentsNamespace = sc.namespace;
+      }
     }
   }
   const em = options.compiler?.emotion;
@@ -1437,6 +1440,9 @@ function buildCompilerNapiFields(compiler: AppBuildOptions["compiler"]): Record<
     if (sc.minify === true) out.styledComponentsMinify = true;
     if (sc.fileName === false) out.styledComponentsFileName = false;
     if (sc.pure === true) out.styledComponentsPure = true;
+    if (typeof sc.namespace === "string" && sc.namespace.length > 0) {
+      out.styledComponentsNamespace = sc.namespace;
+    }
   }
 
   const em = compiler?.emotion;

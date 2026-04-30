@@ -141,6 +141,10 @@ pub const TransformOptions = struct {
     /// `/* @__PURE__ */` annotation 추가. 미사용 styled component 의 dead-code elimination
     /// (tree shaking) 활성. babel-plugin-styled-components 의 `pure` 옵션과 동일.
     styled_components_pure: bool = false,
+    /// styled-components.namespace 옵션 (default "" 비활성) — componentId 에 prefix 부여:
+    /// `<namespace>__sc-<hash>-<counter>`. monorepo / library 환경에서 같은 styled-components
+    /// 가 다른 의존성 트리에 들어가도 componentId 충돌 회피. babel-plugin 동일 동작.
+    styled_components_namespace: []const u8 = "",
     /// emotion 1st-party transform (compiler.emotion).
     /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
     /// `import { css } from "@emotion/react"` 의 named binding 추적.

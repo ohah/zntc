@@ -1354,3 +1354,99 @@ test "styled (pure): 옵션 비활성 시 helper 에도 annotation 없음" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") == null);
 }
+
+// ─── namespace 옵션 (default "" 비활성) ───
+// `compiler.styledComponents: { namespace: "myapp" }` 활성 시 componentId 에 prefix 부여.
+// monorepo / library 환경에서 다른 의존성 트리에 같은 styled-components 가 존재해도
+// componentId 충돌 회피.
+
+test "styled (namespace): default 빈 문자열 — prefix 없음" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // componentId = sc-<hash>-0 (prefix 없음)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId: \"sc-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "myapp__sc-") == null);
+}
+
+test "styled (namespace): 'myapp' 설정 — componentId 에 prefix" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .styled_components_namespace = "myapp", .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // componentId = "myapp__sc-<hash>-0"
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId: \"myapp__sc-") != null);
+}
+
+test "styled (namespace): 사용자 .withConfig MERGE 케이스도 적용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const X = styled.div.withConfig({ displayName: "Custom" })`color: red;`;
+    ,
+        .{ .styled_components = true, .styled_components_namespace = "myorg", .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 사용자 displayName 보존, ZTS 가 추가하는 componentId 에 prefix 적용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Custom") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId: \"myorg__sc-") != null);
+}
+
+test "styled (namespace): displayName 은 영향 없음 (componentId 만 prefix)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_namespace = "myapp",
+            .styled_components_file_name = false,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // displayName 은 그대로 var 이름 (namespace prefix 없음)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Btn\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"myapp") == null);
+    // componentId 만 prefix
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId: \"myapp__sc-") != null);
+}
+
+test "styled (namespace): ssr=false 시 componentId 자체 생략 — namespace 도 영향 없음" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_namespace = "myapp",
+            .styled_components_ssr = false,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // componentId 자체가 없어 namespace 도 emit 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "myapp__") == null);
+}

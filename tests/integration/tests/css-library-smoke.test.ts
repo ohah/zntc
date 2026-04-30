@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { createFixture, hasPackage, linkNodeModules, runZts } from "./helpers";
+import { createFixture, hasPackage, linkNodeModules, runZts, runZtsInDir } from "./helpers";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 
@@ -376,5 +376,42 @@ describe.skipIf(!hasStyledComponents)("CSS Library Smoke — Styled-Components",
     expect(js).toContain("keyframes");
     expect(js).toMatch(/var StyledKf = \(\(React/);
     expect(js).toMatch(/\}\)\(React[^)]*\);\s*$/);
+  });
+
+  it("styled-components compiler.namespace — componentId 에 prefix 적용", async () => {
+    const fixture = await createFixture({
+      "index.ts": `
+        import styled from "styled-components";
+        const Button = styled.button\`color: red;\`;
+        console.log(typeof Button);
+      `,
+      "zts.config.json": JSON.stringify({
+        compiler: { styledComponents: { namespace: "myorg" } },
+      }),
+    });
+    cleanup = fixture.cleanup;
+
+    await linkNodeModules(fixture.dir, [
+      "styled-components",
+      "tslib",
+      "stylis",
+      "css-to-react-native",
+      "camelize",
+      "css-color-keywords",
+      "postcss-value-parser",
+      "shallowequal",
+    ]);
+
+    const outFile = join(fixture.dir, "out.js");
+    const bundle = await runZtsInDir(
+      fixture.dir,
+      ["--bundle", "index.ts", "-o", outFile, "--external", "react", "--external", "react-dom"],
+      { bin: "js" },
+    );
+    expect(bundle.exitCode).toBe(0);
+
+    const js = await readFile(outFile, "utf-8");
+    // componentId 에 namespace prefix
+    expect(js).toContain("myorg__sc-");
   });
 });
