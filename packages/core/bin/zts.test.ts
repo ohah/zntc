@@ -7,6 +7,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { spawn, spawnSync, execSync } from "node:child_process";
+import { createServer as createNetServer } from "node:net";
 import {
   cpSync,
   mkdtempSync,
@@ -34,6 +35,18 @@ async function waitForServer(port: number, maxRetries = 20, interval = 100, prot
     }
   }
   throw new Error(`Server on port ${port} did not start`);
+}
+
+async function occupyPort(port: number) {
+  const server = createNetServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(port, "localhost", () => {
+      server.off("error", rejectListen);
+      resolveListen();
+    });
+  });
+  return () => new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 }
 
 function shellQuote(value: string) {
@@ -2647,6 +2660,69 @@ describe("CLI: Vite-style app builder", () => {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("dev [root] retries next port when server.strictPort is false", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-server-port-retry-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(join(dir, "src", "main.ts"), "console.log('port-retry');");
+    const port = 12880 + Math.floor(Math.random() * 50);
+    const releasePort = await occupyPort(port);
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({ server: { port, strictPort: false } }),
+    );
+
+    const proc = spawn(RUNTIME, [CLI, "dev", dir], {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    await waitForServer(port + 1);
+
+    try {
+      const js = await fetch(`http://localhost:${port + 1}/bundle.js`).then((r) => r.text());
+      expect(js).toContain("port-retry");
+      expect(stderr).toContain(`[serve] http://localhost:${port + 1}`);
+    } finally {
+      proc.kill();
+      await releasePort();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev [root] fails on occupied port when server.strictPort is true", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-app-dev-server-strict-port-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(join(dir, "src", "main.ts"), "console.log('strict-port');");
+    const port = 12940 + Math.floor(Math.random() * 50);
+    const releasePort = await occupyPort(port);
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({ server: { port, strictPort: true } }),
+    );
+
+    const result = await new Promise<{ code: number | null; stderr: string }>((resolveExit) => {
+      const proc = spawn(RUNTIME, [CLI, "dev", dir], {
+        cwd: dir,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stderr = "";
+      proc.stderr?.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      proc.on("exit", (code) => resolveExit({ code, stderr }));
+    });
+
+    await releasePort();
+    rmSync(dir, { recursive: true, force: true });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/EADDRINUSE|address already in use/i);
   });
 
   test("dev restarts and reloads zts.config changes", async () => {

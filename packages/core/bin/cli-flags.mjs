@@ -76,6 +76,7 @@ export const FLAG_REGISTRY = [
   { kind: "bool", flag: "--preserve-symlinks", target: "preserveSymlinks" },
   { kind: "bool", flag: "--jsx-dev", target: "jsxDev" },
   { kind: "bool", flag: "--clean", target: "clean" },
+  { kind: "bool", flag: "--strict-port", target: "strictPort" },
 
   // ─── kind=string — string scalar (`--key=value` 단방향) ───
   { kind: "string", flag: "--format", target: "format", forms: ["equal"] },

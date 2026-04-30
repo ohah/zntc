@@ -121,6 +121,7 @@ function usageLines(command) {
       "Options:",
       "  --host [host]              Host to listen on (default: localhost)",
       "  --port <port>              Port to listen on (default: 12300)",
+      "  --strict-port              Exit if the specified port is already in use",
       "  --open                     Open the preview URL in the browser",
       "  --base <path>              Base public path",
       "  --spa-fallback[=path]      Serve an HTML fallback for app routes",
@@ -177,6 +178,7 @@ function parseArgs(argv) {
     serveDir: ".",
     port: undefined,
     host: undefined,
+    strictPort: false,
     open: false,
     proxy: {},
     format: undefined,
@@ -511,6 +513,9 @@ function mergeServerConfigIntoOpts(opts, config) {
     const host = normalizeServerHost(server.host);
     if (host !== undefined) opts.host = host;
   }
+  if (opts.strictPort === false && server.strictPort === true) {
+    opts.strictPort = true;
+  }
   if (opts.open === false && server.open === true) {
     opts.open = true;
   }
@@ -519,6 +524,26 @@ function mergeServerConfigIntoOpts(opts, config) {
 function applyServerDefaults(opts) {
   if (opts.port === undefined) opts.port = 12300;
   if (opts.host === undefined) opts.host = "localhost";
+}
+
+function isPortInUseError(err) {
+  const code = err?.code;
+  const message = String(err?.message ?? err);
+  return code === "EADDRINUSE" || /address already in use|port .*in use/i.test(message);
+}
+
+async function resolveServePort(opts, start) {
+  let port = opts.port;
+  for (;;) {
+    try {
+      const server = await start(port);
+      opts.port = port;
+      return server;
+    } catch (err) {
+      if (opts.strictPort || !isPortInUseError(err)) throw err;
+      port += 1;
+    }
+  }
 }
 
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
@@ -2204,7 +2229,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
         key: globalThis.Bun.file(opts.keyfile),
       };
     }
-    serverHandle = globalThis.Bun.serve(serveOpts);
+    serverHandle = await resolveServePort(opts, (port) => {
+      serveOpts.port = port;
+      return globalThis.Bun.serve(serveOpts);
+    });
   } else {
     // Node.js http/https
     const handler = async (req, res) => {
@@ -2252,8 +2280,23 @@ async function runServe(opts, config, { appDev = null } = {}) {
         hmr.accept(req, socket);
       });
     }
-    server.listen(opts.port, opts.host);
-    serverHandle = server;
+    serverHandle = await resolveServePort(
+      opts,
+      (port) =>
+        new Promise((resolveListen, rejectListen) => {
+          const onError = (err) => {
+            server.off("listening", onListening);
+            rejectListen(err);
+          };
+          const onListening = () => {
+            server.off("error", onError);
+            resolveListen(server);
+          };
+          server.once("error", onError);
+          server.once("listening", onListening);
+          server.listen(port, opts.host);
+        }),
+    );
   }
 
   async function closeServerForRestart() {
