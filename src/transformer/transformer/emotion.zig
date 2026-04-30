@@ -45,6 +45,8 @@ const plugin_state = @import("../plugin_state.zig");
 const sourcemap_mod = @import("../../codegen/sourcemap.zig");
 
 /// emotion `css` / `keyframes` named import 가 export 되는 source 들.
+/// JS 측 `EMOTION_CSS_CANONICAL_SOURCES` (`packages/core/index.ts`) 와 동기화 — babel
+/// importMap 의 `canonicalImport[0]` 분류에 사용.
 pub const EMOTION_CSS_SOURCES: []const []const u8 = &.{
     "@emotion/react",
     "@emotion/css",
@@ -75,6 +77,17 @@ pub fn isEmotionCssSource(source: []const u8) bool {
 
 pub fn isEmotionStyledSource(source: []const u8) bool {
     return isInList(source, EMOTION_STYLED_SOURCES);
+}
+
+/// 사용자 옵션 (`emotion.extraCssSources`) 에 등록된 vendored re-export 패키지 매칭.
+fn isEmotionCssSourceWithExtras(self: *const Transformer, source: []const u8) bool {
+    if (isEmotionCssSource(source)) return true;
+    return isInList(source, self.options.emotion_extra_css_sources);
+}
+
+fn isEmotionStyledSourceWithExtras(self: *const Transformer, source: []const u8) bool {
+    if (isEmotionStyledSource(source)) return true;
+    return isInList(source, self.options.emotion_extra_styled_sources);
 }
 
 /// emotion named-import (`{ X }` 형태) 별 EmotionState 필드 매핑. 새 named API 가
@@ -111,8 +124,8 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
     if (source_node.tag != .string_literal) return;
     const source_text = import_scanner.stripQuotes(self.ast.getText(source_node.span)) orelse return;
 
-    const want_css_or_keyframes = isEmotionCssSource(source_text);
-    const want_styled = isEmotionStyledSource(source_text) and self.plugins.emotion.styled_binding == null;
+    const want_css_or_keyframes = isEmotionCssSourceWithExtras(self, source_text);
+    const want_styled = isEmotionStyledSourceWithExtras(self, source_text) and self.plugins.emotion.styled_binding == null;
     if (!want_css_or_keyframes and !want_styled) return;
 
     var i: u32 = 0;

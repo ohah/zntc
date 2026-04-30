@@ -40,6 +40,10 @@ pub const AppBuildOptions = struct {
     emotion_source_map: bool = false,
     /// emotion.labelFormat 옵션 — label 포맷 템플릿.
     emotion_label_format: []const u8 = "",
+    /// emotion.importMap re-export 케이스 단순화 — vendored emotion css source.
+    emotion_extra_css_sources: []const []const u8 = &.{},
+    /// emotion.importMap re-export 케이스 단순화 — vendored emotion styled source.
+    emotion_extra_styled_sources: []const []const u8 = &.{},
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -141,6 +145,8 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .emotion_auto_label = opts.emotion_auto_label,
         .emotion_source_map = opts.emotion_source_map,
         .emotion_label_format = opts.emotion_label_format,
+        .emotion_extra_css_sources = opts.emotion_extra_css_sources,
+        .emotion_extra_styled_sources = opts.emotion_extra_styled_sources,
     });
     defer bundler.deinit();
 

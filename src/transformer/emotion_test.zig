@@ -236,6 +236,60 @@ test "emotion: 다른 라이브러리 source (`stitches`) 는 미감지" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
 }
 
+test "emotion (importMap): extraCssSources 로 vendored re-export 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@my-org/emotion-utils";
+        \\const button = css`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_extra_css_sources = &.{"@my-org/emotion-utils"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "button");
+}
+
+test "emotion (importMap): extraStyledSources 로 vendored styled fork 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@my-org/emotion-styled";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_extra_styled_sources = &.{"@my-org/emotion-styled"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Btn");
+}
+
+test "emotion (importMap): extraCssSources 미등록 source 는 여전히 미감지" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@my-org/emotion-utils";
+        \\const button = css`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_extra_css_sources = &.{"@other-org/emotion-utils"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+}
+
 test "emotion: @emotion/styled default — styled.div`` 도 autoLabel" {
     var r = try e2eFull(
         std.testing.allocator,
