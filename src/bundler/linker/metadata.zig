@@ -814,8 +814,9 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
     return require_rewrites;
 }
 
-/// 엔트리 포인트의 최종 export 문을 생성한다. (e.g. "export { x, y$1 as y };\n")
-/// is_entry가 false이거나 export가 없으면 null 반환.
+/// 엔트리 포인트의 최종 export entry를 생성한다.
+/// is_entry가 false이거나 emit 대상 export가 없으면 null 반환. 반환 slice 의
+/// `local`/`exported` 는 모듈 소유 — caller 는 slice 자체만 free.
 pub fn buildFinalExports(
     self: *const Linker,
     is_entry: bool,
@@ -824,20 +825,32 @@ pub fn buildFinalExports(
 ) !?[]const LinkingMetadata.FinalExportEntry {
     if (!is_entry or export_bindings.len == 0) return null;
 
-    var entries: std.ArrayListUnmanaged(LinkingMetadata.FinalExportEntry) = .empty;
-    errdefer entries.deinit(self.allocator);
+    // re-export-all / `*` 가 섞여 있어도 export_bindings.len 이 entry 수의 상한.
+    // 단일 alloc + resize-shrink 로 ArrayList grow/realloc 회피.
+    const buf = try self.allocator.alloc(LinkingMetadata.FinalExportEntry, export_bindings.len);
+    errdefer self.allocator.free(buf);
+    var n: usize = 0;
     for (export_bindings) |eb| {
         if (eb.kind.isReExportAll()) continue;
         if (std.mem.eql(u8, eb.exported_name, "*")) continue;
         const actual_name = self.getCanonicalForExport(eb, module_index);
-        try entries.append(self.allocator, .{
+        buf[n] = .{
             .local = actual_name,
             .exported = eb.exported_name,
             .is_default = std.mem.eql(u8, eb.exported_name, "default"),
-        });
+        };
+        n += 1;
     }
-    if (entries.items.len == 0) return null;
-    return try entries.toOwnedSlice(self.allocator);
+    if (n == 0) {
+        self.allocator.free(buf);
+        return null;
+    }
+    if (n == export_bindings.len) return buf;
+    if (self.allocator.resize(buf, n)) return buf[0..n];
+    // resize 실패: 정확한 크기로 dupe 후 원본 free.
+    const shrunk = try self.allocator.dupe(LinkingMetadata.FinalExportEntry, buf[0..n]);
+    self.allocator.free(buf);
+    return shrunk;
 }
 
 /// 크로스-모듈 상수 인라인 맵을 생성한다.

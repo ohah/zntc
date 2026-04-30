@@ -190,11 +190,13 @@ pub const LinkingMetadata = struct {
     skip_nodes: std.DynamicBitSet,
     /// symbol_id → 새 이름. codegen이 식별자 출력 시 symbol_ids[node_idx]로 조회.
     renames: std.AutoHashMap(u32, []const u8),
-    /// dev metadata의 exports 할당 문자열. scope-hoisted entry export는
-    /// final_export_entries를 사용한다.
+    /// dev 모드(`buildDevMetadata`) 가 채우는 모듈 단위 `exports.x = x;` 문자열.
+    /// scope-hoisted 번들(`buildMetadataForAst`/`buildMetadata`) 은 `final_export_entries`
+    /// 를 채우고 이 필드는 null.
     final_exports: ?[]const u8,
-    /// 엔트리 포인트의 최종 export entry. scope-hoisted entry export를 emitter가
-    /// 포맷별로 출력할 때 사용한다.
+    /// scope-hoisted 엔트리의 최종 export entry. emitter 가 포맷별 (ESM/CJS/IIFE/UMD/AMD)
+    /// 로 출력할 때 사용. `local`/`exported` 는 borrowed — 모듈 parse arena 또는 symbol
+    /// table 소유 (deinit 은 slice 자체만 free).
     final_export_entries: ?[]const FinalExportEntry = null,
     /// 노드 인덱스 → 심볼 인덱스 매핑. 빌림 — deinit에서 해제하지 않음.
     /// module.parse_arena 또는 transformer.symbol_ids(emit_arena)가 소유.

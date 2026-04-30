@@ -1685,8 +1685,7 @@ pub fn emitModule(
             break :blk @as(?[]const u8, null);
         }
         if (options.format == .cjs) {
-            // #2176: linker가 전달한 typed entry를 CJS의 `module.exports` / `exports.X` 형태로 변환.
-            // mode 별 분기 (auto/named/default_/none) 는 emitCjsEntryExports 에서 결정.
+            // mode (auto/named/default_/none) 별 emit 분기는 emitCjsEntryExports 에서 결정.
             cjs_exports_buf = emitCjsEntryExports(allocator, entries, options.output_exports) catch |err| switch (err) {
                 error.OutputExportsDefaultRequiresSingleDefault => {
                     // default mode 인데 named 섞임 — Rollup 도 동일 케이스 throw.
