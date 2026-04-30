@@ -46,7 +46,6 @@ import {
   rmSync,
   mkdtempSync,
   symlinkSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { resolve, relative, dirname, basename, extname, join, sep } from "node:path";
@@ -67,12 +66,83 @@ let postcssCleanupRegistered = false;
 
 // ─── CLI 인자 파싱 ───
 
+function usageLines(command) {
+  if (command === "dev") {
+    return [
+      "Usage: zts dev [root] [options]",
+      "",
+      "Options:",
+      "  --host [host]              Host to listen on (default: localhost)",
+      "  --port <port>              Port to listen on (default: 12300)",
+      "  --open                     Open the app URL in the browser",
+      "  --mode <mode>              Load mode-specific config and .env files",
+      "  --base <path>              Base public path",
+      "  --entry-html <path>        HTML entry file",
+      "  --public-dir <path|false>  Public directory to serve",
+      "  --help, -h                 Show this help message",
+    ];
+  }
+  if (command === "build") {
+    return [
+      "Usage: zts build [root] [options]",
+      "",
+      "Options:",
+      "  --outdir <dir>             Output directory",
+      "  --mode <mode>              Load mode-specific config and .env files",
+      "  --base <path>              Base public path",
+      "  --entry-html <path>        HTML entry file",
+      "  --public-dir <path|false>  Public directory to copy",
+      "  --minify                   Minify output",
+      "  --sourcemap[=mode]         Emit source maps",
+      "  --help, -h                 Show this help message",
+    ];
+  }
+  if (command === "preview") {
+    return [
+      "Usage: zts preview [outdir] [options]",
+      "",
+      "Options:",
+      "  --host [host]              Host to listen on (default: localhost)",
+      "  --port <port>              Port to listen on (default: 12300)",
+      "  --open                     Open the preview URL in the browser",
+      "  --base <path>              Base public path",
+      "  --spa-fallback[=path]      Serve an HTML fallback for app routes",
+      "  --certfile <path>          HTTPS certificate file",
+      "  --keyfile <path>           HTTPS key file",
+      "  --help, -h                 Show this help message",
+    ];
+  }
+  return [
+    "Usage: zts [options] <file.ts>",
+    "       zts --bundle <entry.ts> -o out.js",
+    "       zts --serve --bundle <entry.ts>",
+    "       zts dev [root]",
+    "       zts build [root]",
+    "       zts preview [outdir]",
+    "",
+    "Options:",
+    "  --bundle                   Bundle dependencies",
+    "  --outdir <dir>             Output directory",
+    "  --outfile <file>, -o <file> Output file",
+    "  --watch, -w                Rebuild on changes",
+    "  --serve [dir]              Serve bundled output",
+    "  --config <path>            Config file path",
+    "  --help, -h                 Show this help message",
+  ];
+}
+
+function printUsage(command, stream = console.log) {
+  stream(usageLines(command).join("\n"));
+}
+
 function parseArgs(argv) {
   const args = argv.slice(2);
   const appCommands = new Set(["dev", "build", "preview"]);
   const appCommand = appCommands.has(args[0]) ? args.shift() : undefined;
   const opts = {
     appCommand,
+    help: false,
+    parseError: false,
     appRoot: undefined,
     previewDir: undefined,
     entryPoints: [],
@@ -249,6 +319,7 @@ function parseArgs(argv) {
           : `warning: unknown option '${arg}'`,
       );
     }
+    opts.parseError = true;
   }
 
   // jsx-dev 단축어
@@ -2396,6 +2467,17 @@ async function runWorkspace(opts, workspacePath) {
 
 async function main() {
   const opts = parseArgs(process.argv);
+
+  if (opts.help) {
+    printUsage(opts.appCommand);
+    return;
+  }
+
+  if (opts.parseError) {
+    printUsage(opts.appCommand, console.error);
+    process.exit(1);
+  }
+
   if ((opts.appCommand === "dev" || opts.appCommand === "build") && !opts.envDir) {
     opts.envDir = resolve(opts.appRoot ?? ".");
   }
@@ -2439,12 +2521,7 @@ async function main() {
   }
 
   if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve && !opts.appCommand) {
-    console.error("Usage: zts [options] <file.ts>");
-    console.error("       zts --bundle <entry.ts> -o out.js");
-    console.error("       zts --serve --bundle <entry.ts>");
-    console.error("       zts dev [root]");
-    console.error("       zts build [root]");
-    console.error("       zts preview [outdir]");
+    printUsage(undefined, console.error);
     process.exit(1);
   }
 

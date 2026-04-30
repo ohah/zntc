@@ -268,11 +268,13 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
   // 새 CLI-only flag 추가 시 여기 등록.
   const cliOnlyFlags: ReadonlySet<string> = new Set([
     // 빌드 모드 / 명령
+    "--help",
     "--bundle",
     "--watch",
     "--watch-json",
     "--watch-delay=",
     "--serve",
+    "--no-splitting",
     "--open",
     "--clean",
     // 설정 / 환경

@@ -20,6 +20,7 @@
  *   aliases: 추가 flag 이름 (`-o`, `--tsconfig-path`).
  *   extra:   부수효과 — 매칭 시 함께 set 할 키-값 (`{ watch: true }`).
  *   default: bool 단독 등장 시 default 값 (kind="string-default" 의 metafile 패턴).
+ *   value:   bool flag 가 설정할 값. 생략 시 true (`--no-*` alias 는 false 지정).
  *   enum:    enum→bool 매핑 (`{ utf8: true }` → `--charset=utf8` 시 charsetUtf8=true).
  *   noop:    true 면 매칭만 하고 set 안 함 (deprecated/TODO flag).
  *
@@ -39,6 +40,7 @@
  */
 export const FLAG_REGISTRY = [
   // ─── kind=bool — boolean toggle ───
+  { kind: "bool", flag: "--help", target: "help", aliases: ["-h"] },
   { kind: "bool", flag: "--bundle", target: "bundle" },
   { kind: "bool", flag: "--watch", target: "watch", aliases: ["-w"] },
   { kind: "bool", flag: "--watch-json", target: "watchJson", extra: { watch: true } },
@@ -59,6 +61,7 @@ export const FLAG_REGISTRY = [
   },
   { kind: "bool", flag: "--sourcemap-debug-ids", target: "sourcemapDebugIds" },
   { kind: "bool", flag: "--splitting", target: "splitting" },
+  { kind: "bool", flag: "--no-splitting", target: "splitting", value: false },
   { kind: "bool", flag: "--analyze", target: "analyze", extra: { metafile: "meta.json" } },
   { kind: "bool", flag: "--flow", target: "flow" },
   { kind: "bool", flag: "--experimental-decorators", target: "experimentalDecorators" },
@@ -206,7 +209,7 @@ function tryMatchSpec(spec, arg, args, i) {
       if (allFlags.includes(arg)) {
         return spec.noop
           ? { spec, action: { type: "noop" }, consumed: 1 }
-          : { spec, action: { type: "set", value: true }, consumed: 1 };
+          : { spec, action: { type: "set", value: spec.value ?? true }, consumed: 1 };
       }
       return null;
 

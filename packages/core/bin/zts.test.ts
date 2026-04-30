@@ -1313,10 +1313,27 @@ describe("CLI: arg parsing", () => {
     expect(exitCode).toBe(0);
   });
 
-  test("unknown 옵션 → warning", () => {
+  test("--help exits before starting subcommands", () => {
+    for (const command of ["dev", "build", "preview"]) {
+      const { stdout, stderr, exitCode } = runCli([command, "--help", "--port", "12799"], {
+        timeout: 2000,
+      });
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toContain(`Usage: zts ${command}`);
+    }
+
+    const short = runCli(["dev", "-h"], { timeout: 2000 });
+    expect(short.exitCode).toBe(0);
+    expect(short.stdout).toContain("Usage: zts dev");
+    expect(short.stderr).toBe("");
+  });
+
+  test("unknown 옵션 → warning 후 abort", () => {
     const { stderr, exitCode } = runCli([join(dir, "input.ts"), "--unknown-flag"]);
-    expect(exitCode).toBe(0); // warning이지 에러는 아님
+    expect(exitCode).toBe(1);
     expect(stderr).toContain("unknown option");
+    expect(stderr).toContain("Usage: zts");
   });
 });
 
