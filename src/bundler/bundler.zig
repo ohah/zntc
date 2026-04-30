@@ -130,6 +130,8 @@ pub const BundleOptions = struct {
     styled_components_ssr: bool = true,
     /// styled-components.minify 옵션 — CSS template whitespace collapse.
     styled_components_minify: bool = false,
+    /// emotion 1st-party transform (compiler.emotion). 활성 시 css 템플릿에 autoLabel 적용.
+    emotion: bool = false,
     /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
     collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
@@ -635,6 +637,7 @@ pub const Bundler = struct {
         worker_graph.styled_components = self.options.styled_components;
         worker_graph.styled_components_ssr = self.options.styled_components_ssr;
         worker_graph.styled_components_minify = self.options.styled_components_minify;
+        worker_graph.emotion = self.options.emotion;
         worker_graph.code_splitting = self.options.code_splitting;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
@@ -796,6 +799,7 @@ pub const Bundler = struct {
         graph.styled_components = self.options.styled_components;
         graph.styled_components_ssr = self.options.styled_components_ssr;
         graph.styled_components_minify = self.options.styled_components_minify;
+        graph.emotion = self.options.emotion;
         graph.code_splitting = self.options.code_splitting;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();

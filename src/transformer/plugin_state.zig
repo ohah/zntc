@@ -64,6 +64,12 @@ pub const RefreshState = struct {
     suppress_registration: bool = false,
 };
 
+pub const EmotionState = struct {
+    /// `import { css } from "@emotion/react"` 의 local binding 이름 (alias 포함).
+    /// import 가 없으면 null — autoLabel transform 미적용.
+    css_binding: ?[]const u8 = null,
+};
+
 pub const StyledComponentsState = struct {
     /// `import styled from "styled-components"` 의 default binding 로컬 이름.
     /// alias 가 있으면 그 이름 (예: `import s from "styled-components"` → "s").
@@ -93,4 +99,5 @@ pub const PluginState = struct {
     worklet: WorkletState = .{},
     refresh: RefreshState = .{},
     styled_components: StyledComponentsState = .{},
+    emotion: EmotionState = .{},
 };
