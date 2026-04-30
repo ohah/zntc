@@ -75,6 +75,28 @@ pub fn isEmotionStyledSource(source: []const u8) bool {
     return isInList(source, EMOTION_STYLED_SOURCES);
 }
 
+/// emotion named-import (`{ X }` 형태) 별 EmotionState 필드 매핑. 새 named API 가
+/// 추가되면 여기에 한 줄만 더하면 import 인식 + tagMatchesEmotion (해당 시) 까지 자동.
+const NamedImportSpec = struct {
+    imported: []const u8,
+    field: []const u8,
+};
+
+const NAMED_IMPORT_SPECS = [_]NamedImportSpec{
+    .{ .imported = "css", .field = "css_binding" },
+    .{ .imported = "keyframes", .field = "keyframes_binding" },
+    .{ .imported = "injectGlobal", .field = "inject_global_binding" },
+    .{ .imported = "Global", .field = "global_binding" },
+};
+
+/// `tagMatchesEmotion` 의 identifier 형태 매칭에 참여하는 binding 필드들.
+/// `Global` 은 JSX element 매칭이라 제외, `styled` 는 chain 처리라 제외.
+const TAG_BINDING_FIELDS = [_][]const u8{
+    "css_binding",
+    "keyframes_binding",
+    "inject_global_binding",
+};
+
 /// `visitImportDeclaration` hook — emotion source 의 `{ css }` named specifier 또는
 /// `@emotion/styled` 의 default specifier 를 binding 으로 저장.
 pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
@@ -116,10 +138,13 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
                 if (local_node.tag != .identifier_reference and local_node.tag != .binding_identifier) continue;
                 const local_name = self.ast.getText(local_node.data.string_ref);
                 if (local_name.len == 0) continue;
-                if (std.mem.eql(u8, imported_name, "css") and self.plugins.emotion.css_binding == null) {
-                    self.plugins.emotion.css_binding = local_name;
-                } else if (std.mem.eql(u8, imported_name, "keyframes") and self.plugins.emotion.keyframes_binding == null) {
-                    self.plugins.emotion.keyframes_binding = local_name;
+                inline for (NAMED_IMPORT_SPECS) |spec| {
+                    if (std.mem.eql(u8, imported_name, spec.imported) and
+                        @field(self.plugins.emotion, spec.field) == null)
+                    {
+                        @field(self.plugins.emotion, spec.field) = local_name;
+                        break;
+                    }
                 }
             },
             else => {},
@@ -171,27 +196,41 @@ pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []
 
 /// JSX attribute value autoLabel hook — `lowerJSXAttribute` 에서 호출.
 ///
-/// `<X css={css\`...\`}>` 처럼 binding 이 없는 inline 시나리오를 위해 element 이름을
-/// label source 로 사용한다. `<Button css={...}>` → `label:Button;`,
-/// `<div css={...}>` → `label:div;`.
+/// 두 가지 시나리오 처리:
+///   1. **모든 element 의 `css` attr** — `<Button css={css\`...\`}>` → `label:Button;`,
+///      `<div css={css\`...\`}>` → `label:div;`.
+///   2. **`<Global>` element 의 `styles` attr** — `<Global styles={css\`...\`}>` →
+///      `label:Global;` (alias 시 alias 이름). emotion 이 import 한 `Global` binding 과
+///      element name 이 일치할 때만 `styles` 를 인식 — `styles` 자체는 너무 일반적이라
+///      false-positive 위험 (다른 라이브러리의 styles prop) 방지.
 ///
-/// 처리 흐름:
-///   1. attribute 이름이 `css` 가 아니면 통과
-///   2. parser 가 attribute value 에는 jsx_expression_container 를 만들지 않고
-///      내부 expression 을 직접 저장 (parser/jsx.zig:301-325). value 가
-///      tagged_template_expression 이 아니면 통과.
-///   3. element label 추출 후 `maybeApplyAutoLabel` 로 template 변형 (emotion + autoLabel
-///      옵션 검사도 거기서 수행).
+/// 공통 흐름: parser 가 attribute value 에 jsx_expression_container 를 만들지 않고
+/// 내부 expression 을 직접 저장 (parser/jsx.zig:301-325). label 추출 후 기존
+/// `maybeApplyAutoLabel` 로 template 변형 (emotion + autoLabel 옵션 검사도 거기서).
 pub fn maybeApplyAutoLabelForJsxAttr(
     self: *Transformer,
     attr_name: []const u8,
     value_idx: NodeIndex,
     tag_name_idx: NodeIndex,
 ) Error!NodeIndex {
-    if (!std.mem.eql(u8, attr_name, "css")) return value_idx;
+    // hot path: 모든 JSX attribute (className/onClick/id/...) 마다 호출 — attr-name
+    // 빠른 reject 를 AST 접근 (`jsxElementLabel`) 보다 먼저 수행.
+    const is_css = std.mem.eql(u8, attr_name, "css");
+    const is_styles = std.mem.eql(u8, attr_name, "styles");
+    if (!is_css and !is_styles) return value_idx;
     if (value_idx.isNone()) return value_idx;
+
     const label = jsxElementLabel(self, tag_name_idx) orelse return value_idx;
+    const is_global_styles = is_styles and elementMatchesGlobal(self, label);
+    if (!is_css and !is_global_styles) return value_idx;
+
     return try maybeApplyAutoLabel(self, value_idx, label);
+}
+
+/// JSX element 이름 (label) 이 import 된 `Global` binding 과 일치하는지.
+fn elementMatchesGlobal(self: *Transformer, element_label: []const u8) bool {
+    const binding = self.plugins.emotion.global_binding orelse return false;
+    return std.mem.eql(u8, element_label, binding);
 }
 
 /// JSX element label 추출. jsx_identifier 만 — member/namespaced 는 후속 PR.
@@ -215,11 +254,10 @@ fn tagMatchesEmotion(self: *Transformer, tag_idx: NodeIndex) bool {
     // 의 `css` 는 member API 가 없어 chain 시 부정확한 라벨 위험).
     if (tag_node.tag == .identifier_reference) {
         const text = self.ast.getText(tag_node.data.string_ref);
-        if (state.css_binding) |b| {
-            if (std.mem.eql(u8, text, b)) return true;
-        }
-        if (state.keyframes_binding) |b| {
-            if (std.mem.eql(u8, text, b)) return true;
+        inline for (TAG_BINDING_FIELDS) |field_name| {
+            if (@field(state, field_name)) |b| {
+                if (std.mem.eql(u8, text, b)) return true;
+            }
         }
         return false;
     }
