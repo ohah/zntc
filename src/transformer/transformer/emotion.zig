@@ -82,9 +82,9 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
     if (source_node.tag != .string_literal) return;
     const source_text = import_scanner.stripQuotes(self.ast.getText(source_node.span)) orelse return;
 
-    const want_css = isEmotionCssSource(source_text) and self.plugins.emotion.css_binding == null;
+    const want_css_or_keyframes = isEmotionCssSource(source_text);
     const want_styled = isEmotionStyledSource(source_text) and self.plugins.emotion.styled_binding == null;
-    if (!want_css and !want_styled) return;
+    if (!want_css_or_keyframes and !want_styled) return;
 
     var i: u32 = 0;
     while (i < x.specs_len) : (i += 1) {
@@ -100,19 +100,23 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
                 self.plugins.emotion.styled_binding = local_name;
             },
             .import_specifier => {
-                if (!want_css) continue;
+                if (!want_css_or_keyframes) continue;
                 // binary { left=imported, right=local }
                 const imported_idx = spec_node.data.binary.left;
                 const local_idx = spec_node.data.binary.right;
                 if (imported_idx.isNone() or local_idx.isNone()) continue;
                 const imported_node = self.ast.getNode(imported_idx);
                 if (imported_node.tag != .identifier_reference) continue;
-                if (!std.mem.eql(u8, self.ast.getText(imported_node.data.string_ref), "css")) continue;
+                const imported_name = self.ast.getText(imported_node.data.string_ref);
                 const local_node = self.ast.getNode(local_idx);
                 if (local_node.tag != .identifier_reference and local_node.tag != .binding_identifier) continue;
                 const local_name = self.ast.getText(local_node.data.string_ref);
                 if (local_name.len == 0) continue;
-                self.plugins.emotion.css_binding = local_name;
+                if (std.mem.eql(u8, imported_name, "css") and self.plugins.emotion.css_binding == null) {
+                    self.plugins.emotion.css_binding = local_name;
+                } else if (std.mem.eql(u8, imported_name, "keyframes") and self.plugins.emotion.keyframes_binding == null) {
+                    self.plugins.emotion.keyframes_binding = local_name;
+                }
             },
             else => {},
         }
@@ -160,16 +164,22 @@ pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []
     });
 }
 
-/// tag 가 emotion 인식 패턴 (css binding, styled.X, styled(X)) 인지 확인.
+/// tag 가 emotion 인식 패턴 (css binding, keyframes binding, styled.X, styled(X)) 인지 확인.
 fn tagMatchesEmotion(self: *Transformer, tag_idx: NodeIndex) bool {
     if (tag_idx.isNone()) return false;
     const state = &self.plugins.emotion;
     const tag_node = self.ast.getNode(tag_idx);
     switch (tag_node.tag) {
         .identifier_reference => {
-            // `css\`...\`` — css_binding 일치만 인식.
-            const binding = state.css_binding orelse return false;
-            return std.mem.eql(u8, self.ast.getText(tag_node.data.string_ref), binding);
+            // `css\`...\`` 또는 `keyframes\`...\`` — 둘 중 어느 binding 이든 일치.
+            const text = self.ast.getText(tag_node.data.string_ref);
+            if (state.css_binding) |b| {
+                if (std.mem.eql(u8, text, b)) return true;
+            }
+            if (state.keyframes_binding) |b| {
+                if (std.mem.eql(u8, text, b)) return true;
+            }
+            return false;
         },
         .static_member_expression => {
             // `styled.div\`...\`` — object 가 styled_binding 일치.

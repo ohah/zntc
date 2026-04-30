@@ -159,6 +159,50 @@ test "emotion: styled alias `import s from \"@emotion/styled\"` 도 추적" {
     try expectAutoLabel(r.output, "Btn");
 }
 
+test "emotion: keyframes`...` 도 autoLabel" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { keyframes } from "@emotion/react";
+        \\const fadeIn = keyframes`from { opacity: 0; } to { opacity: 1; }`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "fadeIn");
+}
+
+test "emotion: 같은 import 의 css + keyframes 동시 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css, keyframes } from "@emotion/react";
+        \\const spin = keyframes`from { rotate: 0; } to { rotate: 360deg; }`;
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "spin");
+    try expectAutoLabel(r.output, "card");
+}
+
+test "emotion: keyframes alias `import { keyframes as kf }` 도 추적" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { keyframes as kf } from "@emotion/react";
+        \\const fadeIn = kf`from { opacity: 0; }`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "fadeIn");
+}
+
 test "emotion: tag 가 css.something 같은 chain 이면 미인식" {
     // chain 형태는 후속 PR. 단순 css binding 만 인식.
     var r = try e2eFull(
