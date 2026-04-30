@@ -342,6 +342,19 @@ pub const TranspileResult = struct {
     }
 };
 
+/// `prefix` 가 null/빈 문자열이면 `body` 그대로, 아니면 `prefix + body` 의 새 buffer 반환.
+/// OOM 시 fallback 으로 body 그대로 반환 (transpile output 보존). JSX/cssProp 의 module-level
+/// import auto-inject 둘 다 같은 모양이라 공유.
+fn prependImportLine(allocator: std.mem.Allocator, prefix: ?[]const u8, body: []const u8) []const u8 {
+    const p = prefix orelse return body;
+    if (p.len == 0) return body;
+    var combined: std.ArrayList(u8) = .empty;
+    combined.ensureTotalCapacity(allocator, p.len + body.len) catch return body;
+    combined.appendSliceAssumeCapacity(p);
+    combined.appendSliceAssumeCapacity(body);
+    return combined.items;
+}
+
 /// 소스 문자열을 트랜스파일한다. I/O 없음, 순수 함수.
 ///
 /// file_path는 확장자 감지용으로만 사용 (실제 파일 읽기 안 함).
@@ -534,27 +547,19 @@ pub fn transpileWithCallback(
     const raw_output = cg.generate(root) catch return error.CodegenError;
 
     // 6.5. JSX import prepend (transformer가 JSX lowering 수행한 경우)
-    const jsx_output = if (transformer.jsx_import_info.hasImports()) blk: {
+    const jsx_import_str: ?[]const u8 = if (transformer.jsx_import_info.hasImports()) blk: {
         const is_dev = options.jsx_runtime == .automatic_dev;
-        if (transformer.jsx_import_info.buildImportString(arena_alloc, options.jsx_import_source, is_dev)) |import_str| {
-            var combined: std.ArrayList(u8) = .empty;
-            combined.ensureTotalCapacity(arena_alloc, import_str.len + raw_output.len) catch break :blk raw_output;
-            combined.appendSliceAssumeCapacity(import_str);
-            combined.appendSliceAssumeCapacity(raw_output);
-            break :blk combined.items;
-        } else break :blk raw_output;
-    } else raw_output;
+        break :blk transformer.jsx_import_info.buildImportString(arena_alloc, options.jsx_import_source, is_dev);
+    } else null;
+    const jsx_output = prependImportLine(arena_alloc, jsx_import_str, raw_output);
 
     // 6.6. styled-components cssProp auto-inject — 사용자 코드에 styled import 가 없는데
     // cssProp transform 이 일어난 경우 program 시작에 `import styled from "styled-components"`.
-    const css_prop_output = if (transformer.plugins.styled_components.css_prop_needs_import) blk: {
-        const styled_import = "import styled from \"styled-components\";\n";
-        var combined: std.ArrayList(u8) = .empty;
-        combined.ensureTotalCapacity(arena_alloc, styled_import.len + jsx_output.len) catch break :blk jsx_output;
-        combined.appendSliceAssumeCapacity(styled_import);
-        combined.appendSliceAssumeCapacity(jsx_output);
-        break :blk combined.items;
-    } else jsx_output;
+    const css_prop_import: ?[]const u8 = if (transformer.plugins.styled_components.css_prop_needs_import)
+        "import styled from \"styled-components\";\n"
+    else
+        null;
+    const css_prop_output = prependImportLine(arena_alloc, css_prop_import, jsx_output);
 
     // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;
