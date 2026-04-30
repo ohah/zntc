@@ -110,18 +110,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_is_static = saved_super_static;
             defer self.current_super_static_receiver = saved_super_static_receiver;
 
-            // 클래스 바디 멤버 분류
+            // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
 
-            // classifyMembers 안의 inner 매핑은 main loop visit 동안만 유효 (accessor_property 가
-            // 추가하는 backing private 은 그 매핑에 빠져 있음). 여기서 외부 lifetime 으로 다시 build.
+            // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
+            // 이후 deferred visit (static block / instance init) 가 이 매핑으로 lowering.
             const saved_private_fields = self.current_private_fields;
             const total_private = try setupPrivateFieldMappings(self, &cm, name_span);
             defer {
                 if (total_private > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
             }
+            try visitDeferredStaticBlocks(self, &cm, name_span);
 
             const saved_private_methods = self.current_private_methods;
             if (cm.private_methods.items.len > 0) {
@@ -158,9 +159,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span));
                 self.runtime_helpers.class_static_private_field = true;
             }
+            try emitInstanceInits(self, &cm, span);
             try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, span);
-
-            try appendPrivateFieldInits(self, &cm, span);
 
             // IIFE 내부 function (fresh identifier — linker 무관)
             var func_node = if (cm.constructor_idx) |ctor_idx|
@@ -234,6 +234,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         try self.scratch.append(self.allocator, static_assign);
                     },
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
+                    .raw_stmt => unreachable, // visitDeferredStaticBlocks 가 호출됐어야 함
                 }
             }
 
@@ -347,17 +348,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_is_static = saved_super_static;
             defer self.current_super_static_receiver = saved_super_static_receiver;
 
-            // 바디 멤버 분류
+            // 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
 
-            // 외부 lifetime 매핑 — accessor_property 가 main loop 에서 추가한 backing private 까지 포함.
+            // 매핑은 모든 private field 가 모인 뒤 단일 지점에서 build — 이후 deferred visit 들이 이 매핑으로 lowering.
             const saved_private_fields = self.current_private_fields;
             const total_private_ce = try setupPrivateFieldMappings(self, &cm, name_span);
             defer {
                 if (total_private_ce > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
             }
+            try visitDeferredStaticBlocks(self, &cm, name_span);
 
             // private method 매핑 설정
             const saved_private_methods = self.current_private_methods;
@@ -366,7 +368,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             defer self.current_private_methods = saved_private_methods;
 
-            try appendPrivateFieldInits(self, &cm, span);
+            try emitInstanceInits(self, &cm, span);
 
             // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
@@ -490,6 +492,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 switch (element) {
                     .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try es_helpers.makeIdentifierRefFromSpan(self, name_span), field.key, field.init, name_span, span)),
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
+                    .raw_stmt => unreachable, // visitDeferredStaticBlocks 가 호출됐어야 함
                 }
             }
 
@@ -1604,6 +1607,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
         const StaticElement = union(enum) {
             field: FieldInfo,
             stmt: NodeIndex,
+            /// classifyMembers 안에서 visit 가 보류된 raw static_block 본문 statement.
+            /// caller 가 setupPrivateFieldMappings 로 매핑을 set 한 뒤 `visitDeferredStaticBlocks`
+            /// 가 visit 해서 `.stmt` 로 in-place 대체한다 — 이 방식으로 source order 가 보존된다.
+            raw_stmt: NodeIndex,
         };
 
         const AccessorInfo = struct {
@@ -1621,14 +1628,34 @@ pub fn ES2015Class(comptime Transformer: type) type {
             init: NodeIndex, // 초기값 (none이면 undefined)
         };
 
-        /// 클래스 바디 멤버를 분류: constructor, methods, instance_fields, static_elements, accessors, private_fields, static_private_fields, private_methods.
+        /// instance field init 의 emission 정보를 source order 로 보존하는 union.
+        /// 분류 단계 (classifyMembers) 에서는 raw key/init 만 push 하고, mapping 이 set 된 뒤에
+        /// `emitInstanceInits` 가 한 번에 visit 해 statement 로 빌드한다.
+        const InstanceInit = union(enum) {
+            /// private field (`#x = init` 또는 accessor backing `#_x_acc = init`).
+            /// idx 는 cm.private_fields 안의 위치를 가리킨다 — drain 시점에 pf.name/pf.init 으로 buildPrivateFieldInit.
+            private_field: usize,
+            /// public field (`x = init` 또는 `[k()] = init`).
+            public_field: struct {
+                key: NodeIndex,
+                init: NodeIndex,
+            },
+        };
+
+        /// 클래스 바디 멤버를 분류: constructor, methods, instance_inits (deferred), static_elements, accessors, private_fields, static_private_fields, private_methods.
         /// `static_elements`: static field/static block 을 소스 순서대로 보존한다 (TC39 spec — class evaluation 시
         /// 필드와 블록이 선언 순서대로 실행). 별도 array 로 나누면 순서 정보가 사라져 `static a; { use a; } static b;` 같은
         /// 의존 체인이 깨진다.
+        ///
+        /// `instance_inits`: instance field/private/accessor-backing init 을 deferred entry 로 source order 보존.
+        /// classifyMembers 가 끝난 뒤 `setupPrivateFieldMappings` 로 매핑이 완성된 다음 `emitInstanceInits` 가
+        /// 한 번에 visit + statement 빌드 → cm.instance_fields. visit 가 mapping 을 필요로 하기 때문에 분류와
+        /// emission 을 phase 분리한 것 (이전엔 dual setup + 카운터로 우회).
         const ClassifiedMembers = struct {
             constructor_idx: ?NodeIndex,
             methods: std.ArrayList(MethodInfo),
             instance_fields: std.ArrayList(NodeIndex),
+            instance_inits: std.ArrayList(InstanceInit) = .empty,
             static_elements: std.ArrayList(StaticElement),
             accessors: std.ArrayList(AccessorInfo),
             private_fields: std.ArrayList(PrivateFieldInfo),
@@ -1646,10 +1673,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             /// instance field init에 arrow this 캡처가 필요한 경우 true.
             /// super class 없는 class에서 var _this = this; 삽입에 사용.
             fields_need_this_alias: bool = false,
-            /// main loop 가 source order 로 emit 한 instance private field init 의 개수.
-            /// `appendPrivateFieldInits` 가 이 다음 인덱스부터 (accessor_property 가 추가한 backing 등)
-            /// 마저 emit 하기 위한 cursor. 두 emission 사이트의 좌표 (#1287 follow-up).
-            private_field_inits_emitted: usize = 0,
 
             fn deinit(cm: *ClassifiedMembers, allocator: std.mem.Allocator) void {
                 for (cm.private_fields.items) |pf| {
@@ -1665,6 +1688,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 for (cm.synthesized_private_names.items) |s| allocator.free(s);
                 cm.methods.deinit(allocator);
                 cm.instance_fields.deinit(allocator);
+                cm.instance_inits.deinit(allocator);
                 cm.static_elements.deinit(allocator);
                 cm.accessors.deinit(allocator);
                 cm.private_fields.deinit(allocator);
@@ -1674,38 +1698,93 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
         };
 
-        fn appendPrivateFieldInfo(self: *Transformer, cm: *ClassifiedMembers, key_node: Node, init_val: NodeIndex, is_static: bool) Transformer.Error!void {
-            // getText는 source_text 또는 string_table(Stage 3 생성 span)을 가리키는데,
-            // 후자는 후속 addString realloc으로 dangling된다 (#1481 · findPrivateFieldMapping 키).
-            const orig_name_owned = try self.allocator.dupe(u8, self.ast.getText(key_node.span));
-            try cm.synthesized_private_names.append(self.allocator, orig_name_owned);
-            const field_info = PrivateFieldInfo{
-                .name = try es_helpers.makePrivateVarName(self.allocator, orig_name_owned),
-                .original_name = orig_name_owned,
-                .init = init_val,
-            };
-            if (is_static) {
-                try cm.static_private_fields.append(self.allocator, field_info);
-            } else {
-                try cm.private_fields.append(self.allocator, field_info);
+        /// classifyMembers 가 보류한 `.raw_stmt` static block entry 를 visit 해서 `.stmt` 로 in-place 대체.
+        /// caller 는 이 함수 호출 전에 setupPrivateFieldMappings 로 매핑을 set 해야 한다 — 그래야 본문
+        /// 안의 `this.#x` / `super.x` 등이 정확히 lowering 된다. 본문 visit 시 transformer state 를 static
+        /// block 컨텍스트로 set (this_depth=0, current_super_is_static=true, receiver/class_name = class span).
+        fn visitDeferredStaticBlocks(self: *Transformer, cm: *ClassifiedMembers, class_name_span: Span) Transformer.Error!void {
+            // 모든 .raw_stmt 가 이미 visit 됐으면 빠르게 종료.
+            var has_raw = false;
+            for (cm.static_elements.items) |elem| {
+                if (elem == .raw_stmt) {
+                    has_raw = true;
+                    break;
+                }
+            }
+            if (!has_raw) return;
+
+            const saved_sb_name = self.static_block_class_name;
+            const saved_sb_depth = self.this_depth;
+            const saved_super_static = self.current_super_is_static;
+            const saved_super_static_receiver = self.current_super_static_receiver;
+            self.static_block_class_name = class_name_span;
+            self.this_depth = 0;
+            self.current_super_is_static = true;
+            self.current_super_static_receiver = class_name_span;
+            defer {
+                self.static_block_class_name = saved_sb_name;
+                self.this_depth = saved_sb_depth;
+                self.current_super_is_static = saved_super_static;
+                self.current_super_static_receiver = saved_super_static_receiver;
+            }
+
+            for (cm.static_elements.items) |*elem| {
+                switch (elem.*) {
+                    .raw_stmt => |raw| {
+                        const visited = try self.visitNode(raw);
+                        if (visited.isNone()) {
+                            // visit 가 노드를 drop 한 경우 (declare 등) — `void 0` placeholder 로 슬롯 채워
+                            // source order 를 유지하되 emit 시 의미 없는 statement 로 남는다. 실제 사례는 거의 없음.
+                            elem.* = .{ .stmt = try self.ast.addNode(.{
+                                .tag = .empty_statement,
+                                .span = .{ .start = 0, .end = 0 },
+                                .data = .{ .none = 0 },
+                            }) };
+                        } else {
+                            elem.* = .{ .stmt = visited };
+                        }
+                    },
+                    else => {},
+                }
             }
         }
 
-        /// classifyMembers main loop 가 emit 하지 못한 instance private field init 을 마저 emit.
-        /// 주로 `classifyAccessorProperty` 가 main loop 안에서 `cm.private_fields` 에 추가로 넣은
-        /// accessor backing (`#_x_acc` 등) 이 대상. 카운터 `private_field_inits_emitted` 가 main loop 가
-        /// 이미 처리한 instance private 의 개수를 가리키므로 그 인덱스부터 끝까지가 미emit 분이다.
-        fn appendPrivateFieldInits(self: *Transformer, cm: *ClassifiedMembers, span: Span) Transformer.Error!void {
-            if (cm.private_field_inits_emitted >= cm.private_fields.items.len) return;
+        /// `cm.instance_inits` 의 deferred entry 를 source order 로 visit 해서 statement 를 빌드하고
+        /// `cm.instance_fields` 에 push. caller 는 이 함수를 호출하기 전에 `setupPrivateFieldMappings` 로
+        /// 매핑을 set 해 둬야 한다 — 이후 `this.#x` / `_x.get(this)` 등의 lowering 이 정확히 이루어진다.
+        ///
+        /// derived class 안의 instance field init 은 arrow this 캡처가 `_this` 별칭으로 lowering 되도록
+        /// `super_call_this_alias` context 를 set 한다 (super class 가 있을 때만).
+        fn emitInstanceInits(self: *Transformer, cm: *ClassifiedMembers, span: Span) Transformer.Error!void {
+            if (cm.instance_inits.items.len == 0) return;
+
+            const saved_field_alias = self.super_call_this_alias;
             const saved_needs_this = self.needs_this_var;
-            for (cm.private_fields.items[cm.private_field_inits_emitted..]) |pf| {
-                const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
+            if (self.current_super_class != null) {
+                self.super_call_this_alias = true;
+            }
+            defer self.super_call_this_alias = saved_field_alias;
+
+            for (cm.instance_inits.items) |entry| {
+                const init_stmt = switch (entry) {
+                    .private_field => |idx| blk: {
+                        const pf = cm.private_fields.items[idx];
+                        break :blk try buildPrivateFieldInit(self, pf.name, pf.init, span);
+                    },
+                    .public_field => |pub_init| blk: {
+                        const this_node = try self.ast.addNode(.{
+                            .tag = .this_expression,
+                            .span = span,
+                            .data = .{ .none = 0 },
+                        });
+                        break :blk try buildFieldAssign(self, this_node, pub_init.key, pub_init.init, span);
+                    },
+                };
                 if (self.needs_this_var and !saved_needs_this) {
                     cm.fields_need_this_alias = true;
                 }
                 self.needs_this_var = saved_needs_this;
                 try cm.instance_fields.append(self.allocator, init_stmt);
-                cm.private_field_inits_emitted += 1;
             }
         }
 
@@ -1733,6 +1812,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         }
 
         fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span, class_name_span: Span) Transformer.Error!ClassifiedMembers {
+            _ = class_name_span; // 호출자 시그니처 호환 — 본 함수는 class_name 을 사용하지 않는다 (static block visit 가 deferred 됨).
             const body_node = self.ast.getNode(body_idx);
             const members_start = body_node.data.list.start;
             const members_len = body_node.data.list.len;
@@ -1748,39 +1828,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .private_methods = .empty,
             };
 
-            // pre-scan: private field info 를 main loop 앞에서 모은다. method/field body 안의 #x 참조를
-            // visitNode 가 lowering 하려면 self.current_private_fields 가 미리 채워져 있어야 한다 — 후속
-            // setupPrivateFieldMappings 가 cm.private_fields / cm.static_private_fields 를 참조해 매핑을 빌드하므로
-            // 여기서 정보만 수집해 둔다. emission 자체는 main loop 가 source order 로 처리.
-            var private_scan_loop: u32 = 0;
-            while (private_scan_loop < members_len) : (private_scan_loop += 1) {
-                const raw_idx = self.ast.extra_data.items[members_start + private_scan_loop];
-                const member = self.ast.getNode(@enumFromInt(raw_idx));
-                if (member.tag != .property_definition) continue;
-                const pe = member.data.extra;
-                const key: NodeIndex = self.readNodeIdx(pe, PropertyExtra.key);
-                if (key.isNone()) continue;
-                const key_node = self.ast.getNode(key);
-                if (key_node.tag != .private_identifier) continue;
-                const init_val: NodeIndex = self.readNodeIdx(pe, PropertyExtra.init);
-                const flags = self.readU32(pe, PropertyExtra.flags);
-                const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
-                try appendPrivateFieldInfo(self, &cm, key_node, init_val, is_static);
-            }
-
-            // inner 매핑 set up: main loop 가 [computed_key] = this.#priv 같은 init 을 visit 할 때 #priv 가
-            // current_private_fields 에 있어야 lowering 됨. accessor_property 는 main loop 가 진행되며
-            // cm.private_fields 에 더 추가하므로, 여기 매핑은 일시적이고 caller 가 outer lifetime 으로 다시 build 한다.
-            const saved_private_fields = self.current_private_fields;
-            const temp_private_count = try setupPrivateFieldMappings(self, &cm, class_name_span);
-            defer {
-                if (temp_private_count > 0) self.allocator.free(self.current_private_fields);
-                self.current_private_fields = saved_private_fields;
-            }
-
-            // visitNode/addNode/buildFieldAssign이 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
+            // 분류 phase — visitNode 호출 없이 metadata 만 모은다. instance field init / accessor backing 의
+            // 실제 statement build 는 caller 가 setupPrivateFieldMappings 로 매핑을 set 한 뒤
+            // `emitInstanceInits` 로 한 번에 처리한다. 이 phase 분리로 init 안의 `this.#x` 참조가 항상
+            // 완성된 매핑 (regular private + accessor backing 포함) 으로 lowering 된다.
             var m_loop: u32 = 0;
-            var instance_private_field_idx: usize = 0;
             while (m_loop < members_len) : (m_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + m_loop];
                 const member = self.ast.getNode(@enumFromInt(raw_idx));
@@ -1852,24 +1904,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const flags = self.readU32(pe, PropertyExtra.flags);
                     const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
 
-                    // private field (#x) 는 pre-scan 에서 cm.private_fields 에 수집됐다.
-                    // 여기서는 source order 에 맞춰 instance_fields 에 init 을 emit —
-                    // 같은 클래스의 public field init (`[k()]=this.#v`) 보다 앞 위치에서 visit 되도록.
-                    // 후속 `appendPrivateFieldInits` 가 카운터 (`private_field_inits_emitted`) 를 보고
-                    // 이미 emit 된 만큼 skip 하고, 메인 루프가 못 본 accessor backing 만 처리한다.
+                    // private field (#x) → cm.private_fields/static_private_fields 에 등록.
+                    // instance 의 경우 source order 추적용으로 instance_inits 에도 entry 를 push —
+                    // emitInstanceInits 가 매핑 set 후에 buildPrivateFieldInit 으로 statement 를 만든다.
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag == .private_identifier) {
-                        if (!is_static and instance_private_field_idx < cm.private_fields.items.len) {
-                            const saved_needs_this = self.needs_this_var;
-                            const pf = cm.private_fields.items[instance_private_field_idx];
-                            instance_private_field_idx += 1;
-                            const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
-                            if (self.needs_this_var and !saved_needs_this) {
-                                cm.fields_need_this_alias = true;
-                            }
-                            self.needs_this_var = saved_needs_this;
-                            try cm.instance_fields.append(self.allocator, init_stmt);
-                            cm.private_field_inits_emitted += 1;
+                        const orig_name_owned = try self.allocator.dupe(u8, self.ast.getText(key_node.span));
+                        try cm.synthesized_private_names.append(self.allocator, orig_name_owned);
+                        const field_info = PrivateFieldInfo{
+                            .name = try es_helpers.makePrivateVarName(self.allocator, orig_name_owned),
+                            .original_name = orig_name_owned,
+                            .init = init_val,
+                        };
+                        if (is_static) {
+                            try cm.static_private_fields.append(self.allocator, field_info);
+                        } else {
+                            const idx = cm.private_fields.items.len;
+                            try cm.private_fields.append(self.allocator, field_info);
+                            try cm.instance_inits.append(self.allocator, .{ .private_field = idx });
                         }
                         continue;
                     }
@@ -1881,62 +1933,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             key;
                         try cm.static_elements.append(self.allocator, .{ .field = .{ .key = static_key, .init = init_val } });
                     } else if (!is_static and !init_val.isNone()) {
-                        const this_node = try self.ast.addNode(.{
-                            .tag = .this_expression,
-                            .span = span,
-                            .data = .{ .none = 0 },
-                        });
-                        // field init의 arrow function이 this를 캡처하려면 _this 필요.
-                        // super class 있으면 _this = __callSuper(...)로 이미 존재하므로
-                        // super_call_this_alias로 모든 this → _this 치환.
-                        // super class 없는 경우 arrow body의 this 캡처는
-                        // arrow_this_depth > 0 체크(transformer.zig)에서 별도 처리.
-                        const saved_field_alias = self.super_call_this_alias;
-                        const saved_needs_this = self.needs_this_var;
-                        if (self.current_super_class != null) {
-                            self.super_call_this_alias = true;
-                        }
-                        defer self.super_call_this_alias = saved_field_alias;
-                        const field_stmt = try buildFieldAssign(self, this_node, key, init_val, span);
-                        // arrow → function 변환이 needs_this_var를 설정했으면 기록
-                        if (self.needs_this_var and !saved_needs_this) {
-                            cm.fields_need_this_alias = true;
-                        }
-                        self.needs_this_var = saved_needs_this;
-                        try cm.instance_fields.append(self.allocator, field_stmt);
+                        // 실제 statement build + visitNode 는 emitInstanceInits 가 매핑 set 후에 처리.
+                        try cm.instance_inits.append(self.allocator, .{ .public_field = .{ .key = key, .init = init_val } });
                     }
                 } else if (member.tag == .static_block) {
                     const sb_body_idx = member.data.unary.operand;
                     if (!sb_body_idx.isNone()) {
                         const sb_body = self.ast.getNode(sb_body_idx);
                         if (sb_body.tag == .block_statement) {
-                            // Class IIFE body로 flatten할 때 static block의 `this`는 class 자체를
-                            // 가리키던 scope가 사라진다. transformer.zig:1135의 치환 훅을 활성화해
-                            // this → class name identifier로 바꾼다. 중첩 함수 안의 this는
-                            // this_depth > 0이므로 영향받지 않음.
-                            const saved_sb_name = self.static_block_class_name;
-                            const saved_sb_depth = self.this_depth;
-                            const saved_super_static = self.current_super_is_static;
-                            const saved_super_static_receiver = self.current_super_static_receiver;
-                            self.static_block_class_name = class_name_span;
-                            self.this_depth = 0;
-                            self.current_super_is_static = true;
-                            self.current_super_static_receiver = class_name_span;
-                            defer {
-                                self.static_block_class_name = saved_sb_name;
-                                self.this_depth = saved_sb_depth;
-                                self.current_super_is_static = saved_super_static;
-                                self.current_super_static_receiver = saved_super_static_receiver;
-                            }
+                            // 본문 visit 는 deferred — static block 안의 `this?.#x` 가 lowering 되려면
+                            // private mapping 이 set 되어 있어야 하고, accessor backing 이 main loop 가
+                            // 더 진행되며 cm.private_fields 에 추가된다. 둘이 끝난 뒤 visitDeferredStaticBlocks
+                            // 가 .raw_stmt 를 visit 해 .stmt 로 대체.
                             const sb_stmts_start = sb_body.data.list.start;
                             const sb_stmts_len = sb_body.data.list.len;
                             var i_loop: u32 = 0;
                             while (i_loop < sb_stmts_len) : (i_loop += 1) {
                                 const sb_raw = self.ast.extra_data.items[sb_stmts_start + i_loop];
-                                const new_stmt = try self.visitNode(@enumFromInt(sb_raw));
-                                if (!new_stmt.isNone()) {
-                                    try cm.static_elements.append(self.allocator, .{ .stmt = new_stmt });
-                                }
+                                try cm.static_elements.append(self.allocator, .{ .raw_stmt = @enumFromInt(sb_raw) });
                             }
                         }
                     }
@@ -1987,7 +2001,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (is_static) {
                 try cm.static_private_fields.append(self.allocator, pfi);
             } else {
+                const idx = cm.private_fields.items.len;
                 try cm.private_fields.append(self.allocator, pfi);
+                try cm.instance_inits.append(self.allocator, .{ .private_field = idx });
             }
 
             const getter_idx = try buildAccessorGetter(self, key_node.span, storage_span, is_static, span);
@@ -2045,7 +2061,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .original_name = storage_name_owned,
                 .init = init_idx,
             };
+            const idx = cm.private_fields.items.len;
             try cm.private_fields.append(self.allocator, pfi);
+            try cm.instance_inits.append(self.allocator, .{ .private_field = idx });
 
             // getter/setter 의 key 는 동일 private_identifier "#x" 를 각각 새 노드로 생성 (AST 노드 공유 금지).
             const priv_key_get = try self.ast.addNode(.{
@@ -2111,7 +2129,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (is_static) {
                 try cm.static_private_fields.append(self.allocator, pfi);
             } else {
+                const idx = cm.private_fields.items.len;
                 try cm.private_fields.append(self.allocator, pfi);
+                try cm.instance_inits.append(self.allocator, .{ .private_field = idx });
             }
 
             // key memoization — IIFE body 앞에 `var _acc_key_N = <key_expr>;` 선언 추가, 이후 get/set 은
