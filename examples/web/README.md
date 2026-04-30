@@ -18,6 +18,9 @@ cd examples/web && bun run build
 cd examples/web && bun run preview
 ```
 
+`dev` / `build` / `preview` script 는 실행 전에 `packages/core` JS dist 를 자동으로 빌드한다.
+CLI 를 직접 실행할 때 dist 가 없다면 루트에서 `bun run --cwd packages/core build:js` 를 먼저 실행한다.
+
 `zts.config.ts` 에서 `compiler.styledComponents` / `compiler.emotion` 활성. 두 transform 모두 1st-party 로 ZTS 안에서 동작 (별도 babel/swc plugin 불필요).
 
 ## 현재 지원되는 transform

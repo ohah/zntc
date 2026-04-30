@@ -4,8 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "bun run --cwd ../../packages/core build:js",
     "dev": "zts dev",
+    "prebuild": "bun run --cwd ../../packages/core build:js",
     "build": "zts build",
+    "prepreview": "bun run --cwd ../../packages/core build:js",
     "preview": "zts preview"
   },
   "dependencies": {

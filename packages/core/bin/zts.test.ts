@@ -7,7 +7,15 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { spawn, spawnSync, execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from "node:fs";
+import {
+  cpSync,
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+  mkdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -77,6 +85,30 @@ function runNodeEval(
   const command = [RUNTIME, "-e", code].map(shellQuote).join(" ");
   return readRedirectedProcessOutput(command, options);
 }
+
+describe("CLI: bootstrap", () => {
+  test("prints actionable setup error when built JS dist is missing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-cli-bootstrap-"));
+    try {
+      const binDir = join(dir, "bin");
+      mkdirSync(binDir, { recursive: true });
+      cpSync(CLI, join(binDir, "zts.mjs"));
+      cpSync(resolve(import.meta.dir, "cli-flags.mjs"), join(binDir, "cli-flags.mjs"));
+
+      const result = readRedirectedProcessOutput(
+        [RUNTIME, join(binDir, "zts.mjs"), "--help"].map(shellQuote).join(" "),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("error: @zts/core JS bundle is missing");
+      expect(result.stderr).toContain("help: run `bun run --cwd packages/core build:js`");
+      expect(result.stderr).not.toContain("../index.ts");
+      expect(result.stderr).not.toContain("packages/shared/index");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 // ─── Transpile 모드 ───
 
