@@ -550,13 +550,16 @@ pub const Transformer = struct {
         symbol_id: ?u32,
     };
 
+    /// `class_name` 으로 instance/static 을 구분 — null 이면 instance (WeakMap 기반),
+    /// non-null 이면 static (descriptor 객체 + class brand check).
     pub const PrivateFieldMapping = struct {
         original_name: []const u8, // "#x"
         var_name: []const u8, // "_x"
-        is_static: bool = false, // static private field → descriptor 객체 패턴
-        class_name: ?[]const u8 = null, // static일 때 클래스명 (brand check용)
+        class_name: ?[]const u8 = null, // null → instance, non-null → static (brand check 클래스명)
     };
 
+    /// `class_name` 으로 instance/static 을 구분 — null 이면 instance (WeakSet 기반),
+    /// non-null 이면 static (descriptor 객체 + class brand check).
     pub const PrivateMethodMapping = struct {
         original_name: []const u8, // "#method" (원본 소스 텍스트)
         weakset_name: []const u8, // "_method" (WeakSet 변수명 — 같은 name 의 getter/setter 공유)
@@ -567,8 +570,7 @@ pub const Transformer = struct {
         member_span: Span = .{ .start = 0, .end = 0 },
         /// method / getter / setter (#1523).
         kind: @import("es_helpers.zig").PrivateMethodKind = .method,
-        is_static: bool = false,
-        class_name: ?[]const u8 = null,
+        class_name: ?[]const u8 = null, // null → instance, non-null → static
     };
 
     // RefreshRegistration / RefreshSignature 타입 정의는 plugin_state.zig로 이사.
