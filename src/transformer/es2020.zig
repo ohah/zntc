@@ -465,6 +465,14 @@ pub fn ES2020(comptime Transformer: type) type {
         }
 
         fn makeThisOrAlias(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
+            if (self.current_super_is_static) {
+                const receiver_span = self.current_super_static_receiver orelse return self.ast.addNode(.{
+                    .tag = .this_expression,
+                    .span = span,
+                    .data = .{ .none = 0 },
+                });
+                return helpers.makeIdentifierRefFromSpan(self, receiver_span);
+            }
             if (self.options.unsupported.arrow and self.arrow_this_depth > 0) {
                 self.needs_this_var = true;
                 return helpers.makeIdentifierRef(self, "_this");

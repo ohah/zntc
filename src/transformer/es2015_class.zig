@@ -39,6 +39,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
+const es2015_params = @import("es2015_params.zig");
 const es2022 = @import("es2022.zig");
 // #1752: 공용 helper 이름 모듈 (transformer → bundler 역의존 회피).
 const rt = @import("../runtime_helper_names.zig");
@@ -227,7 +228,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 switch (element) {
                     .field => |field| {
                         const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, fresh_name_span);
-                        const static_assign = try buildStaticFieldAssignWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
+                        const static_assign = try buildStaticFieldDefinePropertyWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
                         try self.scratch.append(self.allocator, static_assign);
                     },
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
@@ -484,7 +485,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             for (cm.static_elements.items) |element| {
                 switch (element) {
-                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldAssignWithCtx(self, try es_helpers.makeIdentifierRefFromSpan(self, name_span), field.key, field.init, name_span, span)),
+                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try es_helpers.makeIdentifierRefFromSpan(self, name_span), field.key, field.init, name_span, span)),
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
                 }
             }
@@ -1642,6 +1643,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             /// instance field init에 arrow this 캡처가 필요한 경우 true.
             /// super class 없는 class에서 var _this = this; 삽입에 사용.
             fields_need_this_alias: bool = false,
+            private_field_inits_emitted: usize = 0,
 
             fn deinit(cm: *ClassifiedMembers, allocator: std.mem.Allocator) void {
                 for (cm.private_fields.items) |pf| {
@@ -1666,17 +1668,36 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
         };
 
+        fn appendPrivateFieldInfo(self: *Transformer, cm: *ClassifiedMembers, key_node: Node, init_val: NodeIndex, is_static: bool) Transformer.Error!void {
+            // getText는 source_text 또는 string_table(Stage 3 생성 span)을 가리키는데,
+            // 후자는 후속 addString realloc으로 dangling된다 (#1481 · findPrivateFieldMapping 키).
+            const orig_name_owned = try self.allocator.dupe(u8, self.ast.getText(key_node.span));
+            try cm.synthesized_private_names.append(self.allocator, orig_name_owned);
+            const field_info = PrivateFieldInfo{
+                .name = try es_helpers.makePrivateVarName(self.allocator, orig_name_owned),
+                .original_name = orig_name_owned,
+                .init = init_val,
+            };
+            if (is_static) {
+                try cm.static_private_fields.append(self.allocator, field_info);
+            } else {
+                try cm.private_fields.append(self.allocator, field_info);
+            }
+        }
+
         /// private field init을 빌드하여 instance_fields에 추가.
         /// arrow function의 this 캡처를 감지하여 fields_need_this_alias 설정.
         fn appendPrivateFieldInits(self: *Transformer, cm: *ClassifiedMembers, span: Span) Transformer.Error!void {
             const saved_needs_this = self.needs_this_var;
-            for (cm.private_fields.items) |pf| {
+            if (cm.private_field_inits_emitted >= cm.private_fields.items.len) return;
+            for (cm.private_fields.items[cm.private_field_inits_emitted..]) |pf| {
                 const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
                 if (self.needs_this_var and !saved_needs_this) {
                     cm.fields_need_this_alias = true;
                 }
                 self.needs_this_var = saved_needs_this;
                 try cm.instance_fields.append(self.allocator, init_stmt);
+                cm.private_field_inits_emitted += 1;
             }
         }
 
@@ -1719,8 +1740,32 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .private_methods = .empty,
             };
 
+            var private_scan_loop: u32 = 0;
+            while (private_scan_loop < members_len) : (private_scan_loop += 1) {
+                const raw_idx = self.ast.extra_data.items[members_start + private_scan_loop];
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                if (member.tag != .property_definition) continue;
+                const pe = member.data.extra;
+                const key: NodeIndex = self.readNodeIdx(pe, PropertyExtra.key);
+                if (key.isNone()) continue;
+                const key_node = self.ast.getNode(key);
+                if (key_node.tag != .private_identifier) continue;
+                const init_val: NodeIndex = self.readNodeIdx(pe, PropertyExtra.init);
+                const flags = self.readU32(pe, PropertyExtra.flags);
+                const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
+                try appendPrivateFieldInfo(self, &cm, key_node, init_val, is_static);
+            }
+
+            const saved_private_fields = self.current_private_fields;
+            const temp_private_count = try setupPrivateFieldMappings(self, &cm, class_name_span);
+            defer {
+                if (temp_private_count > 0) self.allocator.free(self.current_private_fields);
+                self.current_private_fields = saved_private_fields;
+            }
+
             // visitNode/addNode/buildFieldAssign이 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
             var m_loop: u32 = 0;
+            var instance_private_field_idx: usize = 0;
             while (m_loop < members_len) : (m_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + m_loop];
                 const member = self.ast.getNode(@enumFromInt(raw_idx));
@@ -1795,19 +1840,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     // private field (#x) → instance: WeakMap, static: descriptor 객체
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag == .private_identifier) {
-                        // getText는 source_text 또는 string_table(Stage 3 생성 span)을 가리키는데,
-                        // 후자는 후속 addString realloc으로 dangling된다 (#1481 · findPrivateFieldMapping 키).
-                        const orig_name_owned = try self.allocator.dupe(u8, self.ast.getText(key_node.span));
-                        try cm.synthesized_private_names.append(self.allocator, orig_name_owned);
-                        const field_info = PrivateFieldInfo{
-                            .name = try es_helpers.makePrivateVarName(self.allocator, orig_name_owned),
-                            .original_name = orig_name_owned,
-                            .init = init_val,
-                        };
-                        if (is_static) {
-                            try cm.static_private_fields.append(self.allocator, field_info);
-                        } else {
-                            try cm.private_fields.append(self.allocator, field_info);
+                        if (!is_static and instance_private_field_idx < cm.private_fields.items.len) {
+                            const saved_needs_this = self.needs_this_var;
+                            const pf = cm.private_fields.items[instance_private_field_idx];
+                            instance_private_field_idx += 1;
+                            const init_stmt = try buildPrivateFieldInit(self, pf.name, pf.init, span);
+                            if (self.needs_this_var and !saved_needs_this) {
+                                cm.fields_need_this_alias = true;
+                            }
+                            self.needs_this_var = saved_needs_this;
+                            try cm.instance_fields.append(self.allocator, init_stmt);
+                            cm.private_field_inits_emitted += 1;
                         }
                         continue;
                     }
@@ -2193,7 +2236,31 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
-        fn buildStaticFieldAssignWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
+        fn buildStaticFieldDefineProperty(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const new_init = try self.visitNode(init_idx);
+            const config_prop = try buildBooleanProp(self, "configurable", true, span);
+            const enumerable_prop = try buildBooleanProp(self, "enumerable", true, span);
+            const writable_prop = try buildBooleanProp(self, "writable", true, span);
+            const value_prop = try buildValueProp(self, new_init, span);
+            const desc_list = try self.ast.addNodeList(&.{ config_prop, enumerable_prop, writable_prop, value_prop });
+            const desc_obj = try self.ast.addNode(.{
+                .tag = .object_expression,
+                .span = span,
+                .data = .{ .list = desc_list },
+            });
+
+            const obj_str_span = try self.ast.addString("Object");
+            const dp_str_span = try self.ast.addString("defineProperty");
+            const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+            const call = try es_helpers.buildObjectDefinePropertyCall(self, obj_str_span, dp_str_span, obj, key_arg, desc_obj, span);
+            return self.ast.addNode(.{
+                .tag = .expression_statement,
+                .span = span,
+                .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+            });
+        }
+
+        fn buildStaticFieldDefinePropertyWithCtx(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, class_name_span: Span, span: Span) Transformer.Error!NodeIndex {
             const saved_static = self.current_super_is_static;
             const saved_receiver = self.current_super_static_receiver;
             const saved_class_name = self.static_block_class_name;
@@ -2208,7 +2275,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.static_block_class_name = saved_class_name;
                 self.this_depth = saved_this_depth;
             }
-            return buildFieldAssign(self, obj, key_idx, init_idx, span);
+            return buildStaticFieldDefineProperty(self, obj, key_idx, init_idx, span);
         }
 
         /// function_declaration의 body 앞에 문들을 삽입 (in-place).
@@ -2248,7 +2315,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // TS parameter property(`constructor(public x)`)는 modifier 만 strip 되어 일반 형태로 visit 되지만,
             // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
-            const pp = try self.visitParamsCollectProperties(params_list_old);
+            var pp = try self.visitParamsCollectProperties(params_list_old);
+            var param_lowering: ?es2015_params.ES2015Params(Transformer).LowerResult = null;
+            if (es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, pp.new_params)) {
+                param_lowering = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, pp.new_params, span);
+            }
+            defer if (param_lowering) |*lr| lr.body_stmts.deinit(self.allocator);
 
             // new.target: class constructor → function_named (ES5 class 변환 후 일반 함수)
             const saved_new_target_ctx = self.new_target_ctx;
@@ -2258,6 +2330,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.new_target_ctx = saved_new_target_ctx;
 
             var new_body = try visitMethodBody(self, body_idx, span);
+
+            const lowered_params = if (param_lowering) |lr| lr.new_params else pp.new_params;
+            const param_stmts = if (param_lowering) |lr| lr.body_stmts.items else &[_]NodeIndex{};
 
             if (is_derived) {
                 // derived class 의 parameter property `this.x = x` 는 super() 이후에 와야 한다.
@@ -2272,18 +2347,25 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
                     for (instance_fields) |f| try self.scratch.append(self.allocator, f);
                     try transformDerivedConstructorReturns(self, new_body);
-                    new_body = try postProcessDerivedConstructorBody(self, new_body, self.scratch.items[scratch_top..], span);
+                    new_body = try postProcessDerivedConstructorBody(self, new_body, param_stmts, self.scratch.items[scratch_top..], span);
                 } else {
                     try transformDerivedConstructorReturns(self, new_body);
-                    new_body = try postProcessDerivedConstructorBody(self, new_body, instance_fields, span);
+                    new_body = try postProcessDerivedConstructorBody(self, new_body, param_stmts, instance_fields, span);
                 }
-            } else if (pp.prop_count > 0 and !new_body.isNone()) {
-                // base class: super() 가 없으므로 body 앞에 `this.x = x` prepend.
-                new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+            } else if ((param_stmts.len > 0 or pp.prop_count > 0) and !new_body.isNone()) {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                for (param_stmts) |stmt| try self.scratch.append(self.allocator, stmt);
+                if (pp.prop_count > 0) {
+                    const pp_stmts_list = try self.buildParameterPropertyStatements(pp.prop_names[0..pp.prop_count]);
+                    const pp_stmts = self.ast.extra_data.items[pp_stmts_list.start .. pp_stmts_list.start + pp_stmts_list.len];
+                    for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+                }
+                new_body = try self.prependStatementsToBody(new_body, self.scratch.items[scratch_top..]);
             }
 
             const none = @intFromEnum(NodeIndex.none);
-            const new_params_node = try self.ast.addFormalParameters(pp.new_params, span);
+            const new_params_node = try self.ast.addFormalParameters(lowered_params, span);
             const func_extra = try self.ast.addExtras(&.{
                 @intFromEnum(name),
                 @intFromEnum(new_params_node),
@@ -2384,7 +2466,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// ES6 스펙: class fields는 super() 직후, constructor body 이전에 초기화.
         /// lowerSuperCall이 _this = __callSuper(...) 대입식을 생성하므로,
         /// 해당 대입식을 포함하는 statement를 찾아 그 직후에 fields를 삽입한다.
-        fn postProcessDerivedConstructorBody(self: *Transformer, body: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn postProcessDerivedConstructorBody(self: *Transformer, body: NodeIndex, param_stmts: []const NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const body_node = self.ast.getNode(body);
             if (body_node.tag != .block_statement) return body;
 
@@ -2408,6 +2490,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // var _this; (초기화 없는 선언) — extra_data grow 가능
             try self.scratch.append(self.allocator, try self.buildVarDecl("_this", .none, span));
+
+            for (param_stmts) |stmt| {
+                if (containsSuperCallAssignment(self, stmt)) {
+                    try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt, instance_fields, span));
+                } else {
+                    try self.scratch.append(self.allocator, stmt);
+                }
+            }
 
             for (self.ast.extra_data.items[stmts_start .. stmts_start + stmts_len]) |raw_idx| {
                 const stmt_idx: NodeIndex = @enumFromInt(raw_idx);
@@ -2636,6 +2726,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         .flags = node.data.binary.flags,
                     } },
                 }),
+                .logical_expression => return self.ast.addNode(.{
+                    .tag = .logical_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = try injectInstanceFieldsAfterSuperExpr(self, node.data.binary.left, instance_fields, span),
+                        .right = try injectInstanceFieldsAfterSuperExpr(self, node.data.binary.right, instance_fields, span),
+                        .flags = node.data.binary.flags,
+                    } },
+                }),
+                .assignment_expression => return self.ast.addNode(.{
+                    .tag = .assignment_expression,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = try injectInstanceFieldsAfterSuperExpr(self, node.data.binary.left, instance_fields, span),
+                        .right = try injectInstanceFieldsAfterSuperExpr(self, node.data.binary.right, instance_fields, span),
+                        .flags = node.data.binary.flags,
+                    } },
+                }),
                 .spread_element, .computed_property_key => return self.ast.addNode(.{
                     .tag = node.tag,
                     .span = node.span,
@@ -2739,14 +2847,21 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     return containsSuperCallAssignment(self, node.data.binary.left) or
                         containsSuperCallAssignment(self, node.data.binary.right);
                 },
+                .logical_expression => {
+                    return containsSuperCallAssignment(self, node.data.binary.left) or
+                        containsSuperCallAssignment(self, node.data.binary.right);
+                },
                 .spread_element, .computed_property_key => {
                     return containsSuperCallAssignment(self, node.data.unary.operand);
                 },
                 .assignment_expression => {
                     const left = self.ast.getNode(node.data.binary.left);
-                    if (left.tag != .identifier_reference and left.tag != .assignment_target_identifier) return false;
                     const right = self.ast.getNode(node.data.binary.right);
-                    return isSuperCallLike(self, right);
+                    if ((left.tag == .identifier_reference or left.tag == .assignment_target_identifier) and isSuperCallLike(self, right)) {
+                        return true;
+                    }
+                    return containsSuperCallAssignment(self, node.data.binary.left) or
+                        containsSuperCallAssignment(self, node.data.binary.right);
                 },
                 .if_statement, .conditional_expression => {
                     if (containsSuperCallAssignment(self, node.data.ternary.b)) return true;

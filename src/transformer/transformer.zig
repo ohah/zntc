@@ -4086,6 +4086,7 @@ pub const Transformer = struct {
                         new_body,
                         lexical_names.items,
                         &flow,
+                        null,
                         node.span,
                     );
 

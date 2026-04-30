@@ -613,6 +613,7 @@ pub const TAGGED_TEMPLATE_RUNTIME_MIN = "var " ++ NAMES.TAGGED_TEMPLATE_MIN ++ "
 pub const REST_RUNTIME =
     \\var __rest = function(s, e) {
     \\  var t = {};
+    \\  for (var i = 0; i < e.length; i++) e[i] = typeof e[i] === "symbol" ? e[i] : String(e[i]);
     \\  for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0) t[p] = s[p];
     \\  if (typeof Object.getOwnPropertySymbols === "function")
     \\    for (var i = 0, symbols = Object.getOwnPropertySymbols(s); i < symbols.length; i++)
@@ -622,7 +623,7 @@ pub const REST_RUNTIME =
     \\};
     \\
 ;
-pub const REST_RUNTIME_MIN = "var " ++ NAMES.REST_MIN ++ "=function(s,e){var t={};for(var p in s)if(Object.prototype.hasOwnProperty.call(s,p)&&e.indexOf(p)<0)t[p]=s[p];if(typeof Object.getOwnPropertySymbols===\"function\")for(var i=0,symbols=Object.getOwnPropertySymbols(s);i<symbols.length;i++)if(e.indexOf(symbols[i])<0&&Object.prototype.propertyIsEnumerable.call(s,symbols[i]))t[symbols[i]]=s[symbols[i]];return t};";
+pub const REST_RUNTIME_MIN = "var " ++ NAMES.REST_MIN ++ "=function(s,e){var t={};for(var i=0;i<e.length;i++)e[i]=typeof e[i]===\"symbol\"?e[i]:String(e[i]);for(var p in s)if(Object.prototype.hasOwnProperty.call(s,p)&&e.indexOf(p)<0)t[p]=s[p];if(typeof Object.getOwnPropertySymbols===\"function\")for(var i=0,symbols=Object.getOwnPropertySymbols(s);i<symbols.length;i++)if(e.indexOf(symbols[i])<0&&Object.prototype.propertyIsEnumerable.call(s,symbols[i]))t[symbols[i]]=s[symbols[i]];return t};";
 
 // ============================================================
 // Asset Loader

@@ -180,6 +180,36 @@ console.log(JSON.stringify(log));
 `,
   },
   {
+    name: "derived-constructor-return-super-in-logical-expression",
+    code: `
+const log = [];
+class Base { constructor(v) { log.push("base:" + v); this.v = v; } }
+class Child extends Base {
+  field = log.push("field:" + this.v);
+  constructor() {
+    return false || super(5);
+  }
+}
+new Child();
+console.log(JSON.stringify(log));
+`,
+  },
+  {
+    name: "derived-constructor-default-param-super-fields",
+    code: `
+const log = [];
+class Base { constructor(v) { log.push("base:" + v); this.v = v; } }
+class Child extends Base {
+  field = log.push("field:" + this.v);
+  constructor(arg = super(10)) {
+    return arg;
+  }
+}
+new Child();
+console.log(JSON.stringify(log));
+`,
+  },
+  {
     name: "private-field-brand-and-update",
     code: `
 class Counter {
@@ -259,6 +289,60 @@ class A extends Base {
   static { log.push("block:" + this.x); }
 }
 console.log(JSON.stringify([A.x, log]));
+`,
+  },
+  {
+    name: "static-name-field-uses-define-property",
+    code: `
+class A {
+  static name = "Custom";
+  static x = this.name;
+}
+console.log(JSON.stringify([A.name, A.x, Object.prototype.propertyIsEnumerable.call(A, "name")]));
+`,
+  },
+  {
+    name: "static-optional-super-computed-method-field",
+    code: `
+const log = [];
+class Base {
+  static m(v) { log.push("m:" + v + ":" + this.label); return v + 1; }
+}
+class A extends Base {
+  static label = "A";
+  static key = "m";
+  static x = super[this.key]?.(1);
+  static { log.push("block:" + this.x); }
+}
+console.log(JSON.stringify([A.x, log]));
+`,
+  },
+  {
+    name: "static-super-logical-assignment-field",
+    code: `
+const log = [];
+class Base {
+  static get x() { log.push("get:" + this.label); return this._x; }
+  static set x(v) { log.push("set:" + v + ":" + this.label); this._x = v; }
+}
+class A extends Base {
+  static label = "A";
+  static _x = 0;
+  static y = (super.x ||= 9);
+}
+console.log(JSON.stringify([A.y, A._x, log]));
+`,
+  },
+  {
+    name: "static-block-private-optional-chain",
+    code: `
+const log = [];
+class A {
+  static #x = 1;
+  static { log.push(this?.#x); }
+  static y = log.push("field");
+}
+console.log(JSON.stringify(log));
 `,
   },
   {
@@ -352,12 +436,52 @@ console.log(JSON.stringify(new A().run()));
 `,
   },
   {
+    name: "object-rest-private-optional-computed-key",
+    code: `
+class A {
+  #x = 1;
+  get self() { return this; }
+  run(obj) {
+    const { [this.self?.#x]: picked, ...rest } = obj;
+    return [picked, rest];
+  }
+}
+console.log(JSON.stringify(new A().run({ 1: "one", a: 2 })));
+`,
+  },
+  {
+    name: "computed-public-field-reads-private-field-order",
+    code: `
+const log = [];
+function key() { log.push("key"); return "x"; }
+class A {
+  #v = 2;
+  [key()] = this.#v;
+  read() { return [this.x, log]; }
+}
+console.log(JSON.stringify(new A().read()));
+`,
+  },
+  {
     name: "for-of-let-closure-continue",
     code: `
 const fns = [];
 for (let x of [1, 2, 3, 4]) {
   if (x % 2) continue;
   fns.push(() => x);
+}
+console.log(JSON.stringify(fns.map((fn) => fn())));
+`,
+  },
+  {
+    name: "for-of-let-closure-labeled-continue",
+    code: `
+const fns = [];
+outer: for (let x of [1, 2, 3]) {
+  for (let y of [4]) {
+    if (x === 2) continue outer;
+    fns.push(() => x + y);
+  }
 }
 console.log(JSON.stringify(fns.map((fn) => fn())));
 `,

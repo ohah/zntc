@@ -401,6 +401,7 @@ pub fn ES2022(comptime Transformer: type) type {
             while (j < body_len) : (j += 1) {
                 const raw_idx = self.ast.extra_data.items[body_start + j];
                 const member_idx: NodeIndex = @enumFromInt(raw_idx);
+                const member = self.ast.getNode(member_idx);
 
                 if (method_mapping_idx < method_mappings.items.len and
                     @intFromEnum(method_mappings.items[method_mapping_idx].member_idx) == raw_idx)
@@ -424,6 +425,27 @@ pub fn ES2022(comptime Transformer: type) type {
                         try ctor_init_stmts.append(self.allocator, init_stmt);
                     }
                     continue;
+                }
+
+                if (lower_fields and member.tag == .property_definition) {
+                    const pe = member.data.extra;
+                    const key: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
+                    const flags = self.readU32(pe, ast_mod.PropertyExtra.flags);
+                    const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
+                    if (!is_static and !key.isNone()) {
+                        const key_node = self.ast.getNode(key);
+                        if (key_node.tag != .private_identifier) {
+                            const lowered_key = if (key_node.tag == .computed_property_key) blk: {
+                                const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span);
+                                try pre_stmts.append(self.allocator, memo.decl);
+                                break :blk memo.computed_key;
+                            } else key;
+                            const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
+                            const init_stmt = try buildPublicFieldSetInit(self, lowered_key, init_val, span);
+                            try ctor_init_stmts.append(self.allocator, init_stmt);
+                            continue;
+                        }
+                    }
                 }
 
                 const new_member = try self.visitNode(member_idx);
@@ -459,6 +481,22 @@ pub fn ES2022(comptime Transformer: type) type {
                 .data = .{ .list = new_list },
             });
             return true;
+        }
+
+        fn buildPublicFieldSetInit(self: *Transformer, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const this_node = try self.ast.addNode(.{
+                .tag = .this_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            });
+            const member = try es_helpers.makeMemberFromKeyIdx(self, this_node, key_idx, span);
+            const init = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try self.visitNode(init_idx);
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = span,
+                .data = .{ .binary = .{ .left = member, .right = init, .flags = 0 } },
+            });
+            return es_helpers.makeExprStmt(self, assign, span);
         }
 
         /// 빈 constructor method_definition에 init_stmts를 넣어 생성.
