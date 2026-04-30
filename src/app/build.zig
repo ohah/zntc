@@ -36,6 +36,9 @@ pub const AppBuildOptions = struct {
     styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
     /// styled-components.topLevelImportPaths 옵션 — vendored fork import source list.
     styled_components_top_level_import_paths: []const []const u8 = &.{},
+    /// styled-components.cssProp 옵션 — `<div css={...}>` JSX prop 을 styled component
+    /// 로 extract. transform 구현은 후속 PR — 현재는 옵션 surface 만.
+    styled_components_css_prop: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -147,6 +150,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .styled_components_namespace = opts.styled_components_namespace,
         .styled_components_meaningless_file_names = opts.styled_components_meaningless_file_names,
         .styled_components_top_level_import_paths = opts.styled_components_top_level_import_paths,
+        .styled_components_css_prop = opts.styled_components_css_prop,
         .emotion = opts.emotion,
         .emotion_auto_label = opts.emotion_auto_label,
         .emotion_source_map = opts.emotion_source_map,

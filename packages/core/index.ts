@@ -341,6 +341,12 @@ export interface StyledComponentsOptions {
    * equality 로 단순화 — 대부분의 실용 케이스 (vendored fork) 커버.
    */
   topLevelImportPaths?: string[];
+  /**
+   * `<div css={...}>` JSX prop 을 module-level styled component 로 추출 (default: false).
+   * babel-plugin-styled-components default true 와 다르게 ZTS 는 후속 PR 에서 단계별
+   * transform 구현 — 현재는 옵션 surface 만, true 켜도 transform 미적용 (사용자 코드 안전).
+   */
+  cssProp?: boolean;
   /** [meta] 표시 (default: false) */
   meta?: boolean;
 }
@@ -1268,6 +1274,7 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
       if (Array.isArray(sc.topLevelImportPaths)) {
         napiOptions.styledComponentsTopLevelImportPaths = sc.topLevelImportPaths;
       }
+      if (sc.cssProp === true) napiOptions.styledComponentsCssProp = true;
     }
   }
   const em = options.compiler?.emotion;
@@ -1510,6 +1517,7 @@ function buildCompilerNapiFields(compiler: AppBuildOptions["compiler"]): Record<
     if (Array.isArray(sc.topLevelImportPaths)) {
       out.styledComponentsTopLevelImportPaths = sc.topLevelImportPaths;
     }
+    if (sc.cssProp === true) out.styledComponentsCssProp = true;
   }
 
   const em = compiler?.emotion;

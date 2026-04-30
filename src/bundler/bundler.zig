@@ -140,6 +140,8 @@ pub const BundleOptions = struct {
     styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
     /// styled-components.topLevelImportPaths 옵션 — vendored fork import source list.
     styled_components_top_level_import_paths: []const []const u8 = &.{},
+    /// styled-components.cssProp 옵션 — `<div css={...}>` extract (후속 PR 에서 transform 구현).
+    styled_components_css_prop: bool = false,
     /// emotion 1st-party transform (compiler.emotion). 활성 시 css 템플릿에 autoLabel 적용.
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -662,6 +664,7 @@ pub const Bundler = struct {
         worker_graph.styled_components_namespace = self.options.styled_components_namespace;
         worker_graph.styled_components_meaningless_file_names = self.options.styled_components_meaningless_file_names;
         worker_graph.styled_components_top_level_import_paths = self.options.styled_components_top_level_import_paths;
+        worker_graph.styled_components_css_prop = self.options.styled_components_css_prop;
         worker_graph.emotion = self.options.emotion;
         worker_graph.emotion_auto_label = self.options.emotion_auto_label;
         worker_graph.emotion_source_map = self.options.emotion_source_map;
@@ -834,6 +837,7 @@ pub const Bundler = struct {
         graph.styled_components_namespace = self.options.styled_components_namespace;
         graph.styled_components_meaningless_file_names = self.options.styled_components_meaningless_file_names;
         graph.styled_components_top_level_import_paths = self.options.styled_components_top_level_import_paths;
+        graph.styled_components_css_prop = self.options.styled_components_css_prop;
         graph.emotion = self.options.emotion;
         graph.emotion_auto_label = self.options.emotion_auto_label;
         graph.emotion_source_map = self.options.emotion_source_map;

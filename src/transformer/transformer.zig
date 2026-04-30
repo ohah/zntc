@@ -154,6 +154,11 @@ pub const TransformOptions = struct {
     /// 패턴을 받지만 ZTS 는 fixed string equality 로 단순화 — 대부분의 실용 케이스 커버,
     /// glob 필요 시 후속 PR.
     styled_components_top_level_import_paths: []const []const u8 = &.{},
+    /// styled-components.cssProp 옵션 — `<div css={...}>` JSX prop 을 module-level
+    /// hoisted styled component 로 추출. babel-plugin-styled-components default true 와
+    /// 동등하지만 ZTS 는 후속 PR 에서 단계별 transform 구현 — 현재는 옵션 surface 만 노출.
+    /// transform 미구현 상태에서 true 켜도 no-op (사용자 코드 안전).
+    styled_components_css_prop: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
     /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
     /// `import { css } from "@emotion/react"` 의 named binding 추적.
