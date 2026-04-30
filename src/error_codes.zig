@@ -185,6 +185,7 @@ pub const Code = enum(u16) {
     ts_index_sig_modifier = 915,
     ts_index_sig_optional = 916,
     yield_outside_generator = 917,
+    ts_syntax_in_js = 918,
 
     // ═══════════════════════════════════════════════════════
     // 1000-1099: 시맨틱 — 재선언/스코프
@@ -402,6 +403,7 @@ pub const Code = enum(u16) {
             .flow_opaque_type => "Expected 'type' after 'opaque'",
             .ts_index_sig_modifier => "Modifiers cannot appear on index signature parameters",
             .ts_index_sig_optional => "An index signature parameter cannot have a question mark",
+            .ts_syntax_in_js => "TypeScript syntax is not allowed in JavaScript source",
             // 시맨틱: 재선언
             .identifier_redeclared => "Identifier has already been declared",
             .binding_strict_mode => "Cannot be used as a binding identifier in strict mode",
