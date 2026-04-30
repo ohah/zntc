@@ -649,9 +649,9 @@ interface BuildOptionsCommon {
   /** watchFolders 스캔 시 제외할 파일 glob (루트 기준 상대 경로). */
   watchExclude?: string[];
   /** watch 모드 빌드 완료 콜백 */
-  onReady?: (event: WatchReadyEvent) => void;
+  onReady?: (event: WatchReadyEvent) => void | Promise<void>;
   /** watch 모드 리빌드 콜백 */
-  onRebuild?: (event: WatchRebuildEvent) => void;
+  onRebuild?: (event: WatchRebuildEvent) => void | Promise<void>;
   /**
    * `.map` 파일을 디스크에 기록할지 여부 (Issue #1727 Phase B).
    *
@@ -1240,6 +1240,16 @@ function arrayAliasToPlugin(
   };
 }
 
+/// Array 형태 alias (#2153) 가 있으면 onResolve plugin 으로 변환해 user plugins 앞에
+/// prepend — 다른 plugin 보다 먼저 매칭돼 alias 치환 우선 적용 (Vite 동작). plugin 이
+/// 하나도 없으면 null. build() 와 watch() 가 동일한 머지 규칙을 공유.
+function resolveDispatcher(options: BuildOptions) {
+  const arrayAlias = Array.isArray(options.alias) ? options.alias : null;
+  const userPlugins = options.plugins ?? [];
+  const allPlugins = arrayAlias ? [arrayAliasToPlugin(arrayAlias), ...userPlugins] : userPlugins;
+  return allPlugins.length ? createPluginDispatcher(allPlugins) : null;
+}
+
 function isBrowserLikeBuildPlatform(platform: BuildOptions["platform"] | undefined): boolean {
   return platform === undefined || platform === "browser" || platform === "react-native";
 }
@@ -1476,13 +1486,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
 
   const napiOptions = prepareNapiOptions(options);
-
-  // Array 형태 alias (#2153) — onResolve plugin 으로 변환해 user plugins 앞에 prepend.
-  // 다른 plugin 의 onResolve 보다 먼저 매칭되어 alias 치환이 우선 적용 (Vite 동작).
-  const arrayAlias = Array.isArray(options.alias) ? options.alias : null;
-  const userPlugins = options.plugins ?? [];
-  const allPlugins = arrayAlias ? [arrayAliasToPlugin(arrayAlias), ...userPlugins] : userPlugins;
-  const dispatcher = allPlugins.length ? createPluginDispatcher(allPlugins) : null;
+  const dispatcher = resolveDispatcher(options);
   if (dispatcher) napiOptions._pluginDispatcher = dispatcher;
 
   // lifecycle hook (#2156): buildStart / buildEnd 는 native bundler 가 dispatch (single source).
@@ -1832,9 +1836,31 @@ export function watch(options: BuildOptions): WatchHandle {
   if (!native) throw new Error("call init() first");
 
   const nativeOpts = prepareNapiOptions(options);
+  const dispatcher = resolveDispatcher(options);
 
-  if (options.plugins && options.plugins.length > 0) {
-    nativeOpts._pluginDispatcher = createPluginDispatcher(options.plugins);
+  if (dispatcher) {
+    nativeOpts._pluginDispatcher = dispatcher;
+
+    // closeBundle 은 native callback 안에서 fire-and-forget — 호출자가 await 받지 못하므로
+    // rejection 은 swallow (unhandledRejection 노이즈 방지). build() 가 await 하는 것과는
+    // 구조적으로 다른 환경.
+    const dispatchCloseBundle = () => {
+      void dispatcher("closeBundle", undefined, null).catch(() => {});
+    };
+
+    // user callback throw / rejection 은 swallow — 호출자가 await 못 받으므로
+    // unhandledRejection 으로 새지 않게 `.catch` 로 닫는다. closeBundle 은 항상 1회.
+    const wrapWatchCallback =
+      <T>(callback?: (event: T) => void | Promise<void>) =>
+      (event: T) => {
+        void Promise.resolve()
+          .then(() => callback?.(event))
+          .finally(dispatchCloseBundle)
+          .catch(() => {});
+      };
+
+    nativeOpts.onReady = wrapWatchCallback(options.onReady);
+    nativeOpts.onRebuild = wrapWatchCallback(options.onRebuild);
   }
 
   return native.watch(nativeOpts);

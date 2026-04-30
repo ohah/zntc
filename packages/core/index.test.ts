@@ -4119,6 +4119,191 @@ describe("watch()", () => {
     rmSync(dir, { recursive: true });
   }, 10000);
 
+  test("plugin lifecycle hooks: 초기 build 와 rebuild 마다 buildStart → buildEnd → callback → closeBundle 순서", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-lifecycle-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const events: string[] = [];
+    const { promise: initialCloseP, resolve: initialCloseDone } = Promise.withResolvers<void>();
+    const { promise: rebuildCloseP, resolve: rebuildCloseDone } = Promise.withResolvers<void>();
+    let closeCount = 0;
+    let handle: ReturnType<typeof watch> | undefined;
+
+    const plugin: ZtsPlugin = {
+      name: "watch-lifecycle",
+      setup(build) {
+        build.onBuildStart(() => {
+          events.push("buildStart");
+        });
+        build.onBuildEnd((err) => {
+          events.push(err ? `buildEnd:${err.message}` : "buildEnd");
+        });
+        build.onCloseBundle(() => {
+          events.push("closeBundle");
+          closeCount++;
+          if (closeCount === 1) initialCloseDone();
+          if (closeCount === 2) rebuildCloseDone();
+        });
+      },
+    };
+
+    try {
+      handle = watch({
+        entryPoints: [join(dir, "entry.ts")],
+        plugins: [plugin],
+        onReady() {
+          events.push("onReady");
+        },
+        onRebuild(event) {
+          events.push(`onRebuild:${event.success ? "ok" : "err"}`);
+        },
+      });
+
+      await initialCloseP;
+      expect(events).toEqual(["buildStart", "buildEnd", "onReady", "closeBundle"]);
+
+      await new Promise((r) => setTimeout(r, 100));
+      writeFileSync(join(dir, "entry.ts"), "export const x = 2;");
+
+      await rebuildCloseP;
+      expect(events).toEqual([
+        "buildStart",
+        "buildEnd",
+        "onReady",
+        "closeBundle",
+        "buildStart",
+        "buildEnd",
+        "onRebuild:ok",
+        "closeBundle",
+      ]);
+      expect(events.filter((event) => event === "buildStart").length).toBe(2);
+      expect(events.filter((event) => event === "buildEnd").length).toBe(2);
+      expect(events.filter((event) => event === "closeBundle").length).toBe(2);
+    } finally {
+      handle?.stop();
+      rmSync(dir, { recursive: true });
+    }
+  }, 10000);
+
+  test("vitePlugin watch lifecycle: Rollup buildStart / buildEnd / closeBundle 을 초기 build 와 rebuild 에서 호출", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-vite-lifecycle-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const events: string[] = [];
+    const { promise: initialCloseP, resolve: initialCloseDone } = Promise.withResolvers<void>();
+    const { promise: rebuildCloseP, resolve: rebuildCloseDone } = Promise.withResolvers<void>();
+    let closeCount = 0;
+    let handle: ReturnType<typeof watch> | undefined;
+
+    const rollupPlugin: RollupPlugin = {
+      name: "rollup-watch-lifecycle",
+      buildStart() {
+        events.push("rollup-buildStart");
+      },
+      buildEnd(err) {
+        events.push(err ? `rollup-buildEnd:${err.message}` : "rollup-buildEnd");
+      },
+      closeBundle() {
+        events.push("rollup-closeBundle");
+        closeCount++;
+        if (closeCount === 1) initialCloseDone();
+        if (closeCount === 2) rebuildCloseDone();
+      },
+    };
+
+    try {
+      handle = watch({
+        entryPoints: [join(dir, "entry.ts")],
+        plugins: [vitePlugin(rollupPlugin)],
+        onReady() {
+          events.push("onReady");
+        },
+        onRebuild(event) {
+          events.push(`onRebuild:${event.success ? "ok" : "err"}`);
+        },
+      });
+
+      await initialCloseP;
+      expect(events).toEqual([
+        "rollup-buildStart",
+        "rollup-buildEnd",
+        "onReady",
+        "rollup-closeBundle",
+      ]);
+
+      await new Promise((r) => setTimeout(r, 100));
+      writeFileSync(join(dir, "entry.ts"), "export const x = 2;");
+
+      await rebuildCloseP;
+      expect(events).toEqual([
+        "rollup-buildStart",
+        "rollup-buildEnd",
+        "onReady",
+        "rollup-closeBundle",
+        "rollup-buildStart",
+        "rollup-buildEnd",
+        "onRebuild:ok",
+        "rollup-closeBundle",
+      ]);
+      expect(events.filter((event) => event === "rollup-buildStart").length).toBe(2);
+      expect(events.filter((event) => event === "rollup-buildEnd").length).toBe(2);
+      expect(events.filter((event) => event === "rollup-closeBundle").length).toBe(2);
+    } finally {
+      handle?.stop();
+      rmSync(dir, { recursive: true });
+    }
+  }, 10000);
+
+  test("plugin lifecycle hooks: watch 사용자 콜백 실패 후에도 closeBundle 호출", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-watch-lifecycle-error-"));
+    writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
+
+    const events: string[] = [];
+    const { promise: initialCloseP, resolve: initialCloseDone } = Promise.withResolvers<void>();
+    const { promise: rebuildCloseP, resolve: rebuildCloseDone } = Promise.withResolvers<void>();
+    let closeCount = 0;
+    let handle: ReturnType<typeof watch> | undefined;
+
+    const plugin: ZtsPlugin = {
+      name: "watch-lifecycle-error",
+      setup(build) {
+        build.onCloseBundle(() => {
+          events.push("closeBundle");
+          closeCount++;
+          if (closeCount === 1) initialCloseDone();
+          if (closeCount === 2) rebuildCloseDone();
+        });
+      },
+    };
+
+    try {
+      handle = watch({
+        entryPoints: [join(dir, "entry.ts")],
+        plugins: [plugin],
+        onReady() {
+          events.push("onReady");
+          throw new Error("ready failed");
+        },
+        async onRebuild() {
+          events.push("onRebuild");
+          throw new Error("rebuild failed");
+        },
+      });
+
+      await initialCloseP;
+      expect(events).toEqual(["onReady", "closeBundle"]);
+
+      await new Promise((r) => setTimeout(r, 100));
+      writeFileSync(join(dir, "entry.ts"), "export const x = 2;");
+
+      await rebuildCloseP;
+      expect(events).toEqual(["onReady", "closeBundle", "onRebuild", "closeBundle"]);
+    } finally {
+      handle?.stop();
+      rmSync(dir, { recursive: true });
+    }
+  }, 10000);
+
   test("devMode에서 moduleCodes diff → updates 전달", async () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-watch-"));
     writeFileSync(join(dir, "entry.ts"), "export const x = 1;");
@@ -6194,8 +6379,6 @@ describe("@zts/core plugin lifecycle", () => {
 });
 
 // ─── plugin onLoad loader override (#2157) ───
-
-import { spawnSync } from "node:child_process";
 
 /** 출력 코드를 dynamic import 로 실행해 console.log 결과를 캡처. plugin loader override 의
  *  end-to-end 동작 검증 — bundle 결과가 실제 런타임에서 import 바인딩과 default export 가
