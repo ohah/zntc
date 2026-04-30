@@ -2684,14 +2684,14 @@ pub fn memberKeyToStringLiteral(self: *Transformer, key: NodeIndex) Error!NodeIn
     return key;
 }
 
-/// 텍스트를 따옴표로 감싸서 string_literal 노드 생성
+/// 텍스트를 따옴표로 감싸서 string_literal 노드 생성.
+/// `addString` 이 string_table 로 복사하므로 임시 버퍼는 함수 종료시 free 된다.
+/// 길이 제한 없음 — 이전의 `[256]u8` 스택 버퍼는 긴 키(base64 / 합성 식별자)를 silent
+/// truncate 하던 latent bug 였다.
 pub fn wrapInStringLiteral(self: *Transformer, text: []const u8) Error!NodeIndex {
-    var buf: [256]u8 = undefined;
-    buf[0] = '"';
-    const len = @min(text.len, buf.len - 2);
-    @memcpy(buf[1 .. 1 + len], text[0..len]);
-    buf[1 + len] = '"';
-    const span = try self.ast.addString(buf[0 .. 2 + len]);
+    const quoted = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{text});
+    defer self.allocator.free(quoted);
+    const span = try self.ast.addString(quoted);
     return self.ast.addNode(.{ .tag = .string_literal, .span = span, .data = .{ .string_ref = span } });
 }
 
