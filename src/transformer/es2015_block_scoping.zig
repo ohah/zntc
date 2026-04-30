@@ -220,6 +220,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             visited_body: NodeIndex,
             lexical_names: []const []const u8,
             flow: *const FlowResult,
+            local_label: ?[]const u8,
             span: Span,
         ) Transformer.Error!struct { loop_fn: NodeIndex, call_and_check: NodeIndex } {
             // --- _loop 함수명 생성 ---
@@ -311,7 +312,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- 제어 흐름 후처리: var _ret = _loop(i); if (...) ... ---
             var final_stmt: NodeIndex = undefined;
             if (needs_ret_var) {
-                final_stmt = try buildControlFlowCheck(self, loop_call, flow, span);
+                final_stmt = try buildControlFlowCheck(self, loop_call, flow, local_label, span);
             } else {
                 final_stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,
@@ -708,6 +709,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             self: *Transformer,
             loop_call: NodeIndex,
             flow: *const FlowResult,
+            local_label: ?[]const u8,
             span: Span,
         ) Transformer.Error!NodeIndex {
             const scratch_top = self.scratch.items.len;
@@ -787,17 +789,23 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         .span = span,
                         .data = .{ .binary = .{ .left = ret_ref, .right = sentinel_str, .flags = @intFromEnum(token_mod.Kind.eq3) } },
                     });
-                    const label_span = try self.ast.addString(label);
-                    const label_node = try self.ast.addNode(.{
-                        .tag = .identifier_reference,
-                        .span = label_span,
-                        .data = .{ .string_ref = label_span },
-                    });
-                    const ctrl_tag: Tag = if (std.mem.eql(u8, kw, "break")) .break_statement else .continue_statement;
-                    const ctrl_stmt = try self.ast.addNode(.{
-                        .tag = ctrl_tag,
+                    const ctrl_stmt = if (local_label != null and std.mem.eql(u8, local_label.?, label)) blk: {
+                        const label_span = try self.ast.addString(label);
+                        const label_node = try self.ast.addNode(.{
+                            .tag = .identifier_reference,
+                            .span = label_span,
+                            .data = .{ .string_ref = label_span },
+                        });
+                        const ctrl_tag: Tag = if (std.mem.eql(u8, kw, "break")) .break_statement else .continue_statement;
+                        break :blk try self.ast.addNode(.{
+                            .tag = ctrl_tag,
+                            .span = span,
+                            .data = .{ .unary = .{ .operand = label_node, .flags = 0 } },
+                        });
+                    } else try self.ast.addNode(.{
+                        .tag = .return_statement,
                         .span = span,
-                        .data = .{ .unary = .{ .operand = label_node, .flags = 0 } },
+                        .data = .{ .unary = .{ .operand = sentinel_str, .flags = 0 } },
                     });
                     const if_ctrl = try self.ast.addNode(.{
                         .tag = .if_statement,

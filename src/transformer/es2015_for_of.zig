@@ -192,12 +192,17 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     flow.labels = .empty;
                     defer flow.labels.deinit(self.allocator);
                     BlockScoping.analyzeControlFlow(self, body, &flow, 0, 0);
+                    const local_label = if (label_name_idx.isNone())
+                        null
+                    else
+                        self.ast.getText(self.ast.getNode(label_name_idx).span);
 
                     const result = try BlockScoping.buildLoopClosureWithFlow(
                         self,
                         new_body,
                         lexical_names.items,
                         &flow,
+                        local_label,
                         span,
                     );
                     loop_fn_decl = result.loop_fn;

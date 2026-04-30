@@ -658,6 +658,17 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
 
     // 키
     const key = try self.parsePropertyKey();
+    const is_constructor_member = blk: {
+        if (key.isNone() or (flags & ast_mod.MethodFlags.is_static) != 0) break :blk false;
+        const key_node = self.ast.getNode(key);
+        const key_text = if (key_node.tag == .identifier_reference)
+            self.ast.source[key_node.span.start..key_node.span.end]
+        else if (key_node.tag == .string_literal and key_node.span.end > key_node.span.start + 2)
+            self.ast.source[key_node.span.start + 1 .. key_node.span.end - 1]
+        else
+            @as([]const u8, "");
+        break :blk std.mem.eql(u8, key_text, "constructor");
+    };
 
     // TS optional class field: foo?: Type (프로퍼티 이름 뒤의 ?)
     // TS definite assignment: foo!: Type (프로퍼티 이름 뒤의 !)
@@ -684,6 +695,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         const saved_in_async_for_params = self.ctx.in_async;
         const saved_in_generator_for_params = self.ctx.in_generator;
         const saved_super_prop_for_params = self.allow_super_property;
+        const saved_super_call_for_params = self.allow_super_call;
         self.in_static_initializer = false;
         self.in_class_field = false;
         // 메서드의 파라미터에서 async/generator 컨텍스트 설정
@@ -692,6 +704,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.ctx.in_generator = (flags & ast_mod.MethodFlags.is_generator) != 0;
         // class 메서드의 파라미터에서 super.prop 허용 (ECMAScript 15.7.5)
         self.allow_super_property = true;
+        self.allow_super_call = self.has_super_class and is_constructor_member;
         try self.expect(.l_paren);
         self.in_formal_parameters = true;
         try self.trySkipThisParameter();
@@ -783,6 +796,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.ctx.in_async = saved_in_async_for_params;
         self.ctx.in_generator = saved_in_generator_for_params;
         self.allow_super_property = saved_super_prop_for_params;
+        self.allow_super_call = saved_super_call_for_params;
         const param_list = try self.ast.addNodeList(self.scratch.items[param_top..]);
         self.restoreScratch(param_top);
         const params_node = try self.wrapAsFormalParametersFromList(param_list, .{ .start = 0, .end = 0 });
