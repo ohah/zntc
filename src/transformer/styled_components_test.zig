@@ -464,10 +464,8 @@ test "styled-components: TS non-null `...!` 인식" {
     // non-null assertion (!) 은 TS 전용 — codegen 에서 strip.
 }
 
-test "styled-components: 사용자 명시 .withConfig 가 있으면 wrap 안 함" {
-    // 사용자가 자신의 componentId 를 박은 경우, 우리가 추가 .withConfig 를 chain 에 더하면
-    // styled-components 의 later-wins 시맨틱으로 user 의 ID 가 우리 자동 ID 로 override 됨.
-    // 이를 footgun 으로 보고 보수적으로 skip — user 의 명시 의도 존중.
+test "styled-components: 사용자 명시 .withConfig 에 displayName MERGE" {
+    // 사용자 componentId 는 보존 + ZTS 가 displayName 자동 추가.
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -478,14 +476,59 @@ test "styled-components: 사용자 명시 .withConfig 가 있으면 wrap 안 함
         ".tsx",
     );
     defer r.deinit();
-    // 우리 자동 wrap 은 없어야 함 — user 의 withConfig 는 보존.
+    // user 의 componentId 그대로 보존.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "user-id") != null);
-    // displayName 자동 부여도 안 됨.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName") == null);
+    // displayName 은 ZTS 가 추가.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"X\"") != null);
+    // 추가 .withConfig 호출 없음 (merge 라 한 번만).
+    var count: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, r.output, i, "withConfig(")) |pos| : (i = pos + 1) {
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
 }
 
-test "styled-components: 사용자 .withConfig + .attrs 체인도 skip" {
-    // chain 에 user 의 withConfig 가 어디든 있으면 skip — order 무관.
+test "styled-components: spread element 도 prepend 전략으로 안전하게 MERGE" {
+    // ZTS 자동값을 spread 보다 앞에 두면 user 의 spread 또는 explicit key 가 자연스럽게
+    // 우리 값을 override (= user-intended). later-wins footgun 회피.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Sp = styled.div.withConfig({ ...userConfig, custom: 1 })`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // ZTS 자동 displayName 추가됨. spread 보다 앞에 있어야 user 의 spread 가 override 가능.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Sp\"") != null);
+    // displayName 이 spread 보다 먼저 나타나야 함.
+    const display_pos = std.mem.indexOf(u8, r.output, "displayName: \"Sp\"") orelse return error.NotFound;
+    const spread_pos = std.mem.indexOf(u8, r.output, "...userConfig") orelse return error.NotFound;
+    try std.testing.expect(display_pos < spread_pos);
+}
+
+test "styled-components: 사용자가 displayName 도 박았으면 그대로 보존" {
+    // 사용자가 자체 displayName 을 명시 — ZTS 자동값으로 override 안 함.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const X = styled.div.withConfig({ displayName: "Custom", componentId: "u" })`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Custom\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"X\"") == null);
+}
+
+test "styled-components: outer .withConfig — .attrs 가 안에 있어도 MERGE" {
+    // outer 가 .withConfig 면 (chain 의 마지막 호출) 해당 obj 에 displayName MERGE.
+    // 가운데 .attrs 는 보존.
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -497,7 +540,26 @@ test "styled-components: 사용자 .withConfig + .attrs 체인도 skip" {
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "y-id") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Y\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".attrs(") != null); // attrs 보존
+}
+
+test "styled-components: chain 중간 .withConfig 도 MERGE — outer 가 .attrs 여도 OK" {
+    // chain 어디에 있든 .withConfig 의 args 에 prepend. rewriteChainAt 가 outer 까지 rebuild.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Z = styled.div.withConfig({ componentId: "z-id" }).attrs({ id: "z" })`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "z-id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Z\"") != null);
+    // attrs 도 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".attrs(") != null);
 }
 
 test "styled-components: .attrs 만 있는 chain 은 정상 wrap" {

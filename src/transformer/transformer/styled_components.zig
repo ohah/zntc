@@ -95,27 +95,20 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     // 이 PR 은 default binding 만 처리. named (`{ styled }`) 는 후속.
 }
 
-/// chain 분석 결과 — `wrapStyledTag` 가 wrap 여부를 결정하는 데 사용.
+/// chain 분석 결과 — `wrapStyledTag` 가 wrap / merge 결정에 사용.
 const ChainAnalysis = struct {
     /// chain root identifier 가 styled binding 과 일치
     matches_binding: bool,
-    /// chain 어딘가에 사용자 명시 `.withConfig({...})` 가 있음 — wrap 시 user 의 ID 가 우리
-    /// 자동 ID 로 override 되는 footgun 회피용 skip 신호
-    has_user_with_config: bool,
+    /// 사용자 명시 `.withConfig(<obj>)` call_expression 의 idx — 가장 outer (= 런타임
+    /// later-wins 결과). 없으면 .none. chain 중간에 있어도 capture.
+    user_with_config_call: NodeIndex = .none,
 };
 
-/// tag 표현식의 chain root 가 styled binding 인지 + 사용자 명시 withConfig 가 있는지 확인.
-/// 인식 (모두):
-///   - `<binding>.X` (static_member)
-///   - `<binding>(arg)` (call)
-///   - `<binding>.X.attrs({...})` / `<binding>(X).attrs({...})` (chain: call→member→identifier)
-///   - `<binding>.X.attrs({...}).attrs({...})` (다중 체인)
-///   - `<binding>.X.withConfig({...})` — matches_binding 이지만 has_user_with_config=true 라서
-///     wrap 시 skip 됨 (later-wins 로 user 의 componentId 가 override 되는 것을 방지)
+/// tag chain 분석. root binding 매칭 + 사용자 .withConfig 위치까지 한 번 walk 로 수집.
 fn analyzeTagChain(self: *Transformer, tag_idx: NodeIndex) ChainAnalysis {
-    const result_no_match: ChainAnalysis = .{ .matches_binding = false, .has_user_with_config = false };
+    const result_no_match: ChainAnalysis = .{ .matches_binding = false };
     const binding = self.plugins.styled_components.default_binding orelse return result_no_match;
-    var has_with_config = false;
+    var user_with_config: NodeIndex = .none;
     var current = tag_idx;
     while (true) {
         if (current.isNone()) return result_no_match;
@@ -123,26 +116,32 @@ fn analyzeTagChain(self: *Transformer, tag_idx: NodeIndex) ChainAnalysis {
         switch (node.tag) {
             .identifier_reference => {
                 const matches = std.mem.eql(u8, self.ast.getText(node.data.string_ref), binding);
-                return .{ .matches_binding = matches, .has_user_with_config = has_with_config };
+                return .{ .matches_binding = matches, .user_with_config_call = user_with_config };
             },
             .static_member_expression => {
-                // extra = [object, property, flags] — property 가 "withConfig" 면 표시.
                 if (!self.ast.hasExtra(node.data.extra, 1)) return result_no_match;
-                const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra + 1]);
-                if (!prop_idx.isNone()) {
-                    const prop_node = self.ast.getNode(prop_idx);
-                    if (prop_node.tag == .identifier_reference) {
-                        if (std.mem.eql(u8, self.ast.getText(prop_node.data.string_ref), "withConfig")) {
-                            has_with_config = true;
-                        }
-                    }
-                }
                 current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
             },
             .call_expression => {
-                // extra = [callee, args_start, args_len, flags] — root 방향으로 callee 만 따라감.
                 if (!self.ast.hasExtra(node.data.extra, 0)) return result_no_match;
-                current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+                // Check if this call is `<X>.withConfig(...)` — capture outermost (= first encountered).
+                const callee_raw = self.ast.extra_data.items[node.data.extra];
+                const callee_idx: NodeIndex = @enumFromInt(callee_raw);
+                if (user_with_config.isNone() and !callee_idx.isNone()) {
+                    const callee_node = self.ast.getNode(callee_idx);
+                    if (callee_node.tag == .static_member_expression and self.ast.hasExtra(callee_node.data.extra, 1)) {
+                        const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[callee_node.data.extra + 1]);
+                        if (!prop_idx.isNone()) {
+                            const prop_node = self.ast.getNode(prop_idx);
+                            if (prop_node.tag == .identifier_reference and
+                                std.mem.eql(u8, self.ast.getText(prop_node.data.string_ref), "withConfig"))
+                            {
+                                user_with_config = current;
+                            }
+                        }
+                    }
+                }
+                current = callee_idx;
             },
             else => return result_no_match,
         }
@@ -418,6 +417,95 @@ pub fn shouldAttemptWrap(self: *Transformer, expr_idx: NodeIndex) bool {
     return isWrappableExpr(self.ast.getNode(expr_idx).tag);
 }
 
+/// 주어진 `.withConfig(<obj>)` call_expression 노드의 args object 가 object_expression 이면
+/// 반환. 아니면 null (computed args / 인자 없음 / array literal 등 — MERGE 불가).
+fn withConfigCallArgsObj(self: *Transformer, call_idx: NodeIndex) ?NodeIndex {
+    const node = self.ast.getNode(call_idx);
+    if (node.tag != .call_expression) return null;
+    if (!self.ast.hasExtra(node.data.extra, 2)) return null;
+    const args_start = self.ast.extra_data.items[node.data.extra + 1];
+    const args_len = self.ast.extra_data.items[node.data.extra + 2];
+    if (args_len < 1) return null;
+    const arg0_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
+    if (arg0_idx.isNone()) return null;
+    if (self.ast.getNode(arg0_idx).tag != .object_expression) return null;
+    return arg0_idx;
+}
+
+/// chain 의 `target_call_idx` 를 `new_call_idx` 로 swap 한 새 chain 을 빌드.
+/// `current_idx` 부터 descend 하며 target 을 찾고, 만나면 new_call 로 교체. 위로 돌아오면서
+/// member/call 노드를 새 child 로 rebuild. 변경 없으면 current_idx 그대로 반환 (identity).
+fn rewriteChainAt(
+    self: *Transformer,
+    current_idx: NodeIndex,
+    target_call_idx: NodeIndex,
+    new_call_idx: NodeIndex,
+) Error!NodeIndex {
+    if (current_idx == target_call_idx) return new_call_idx;
+    if (current_idx.isNone()) return current_idx;
+    const node = self.ast.getNode(current_idx);
+    switch (node.tag) {
+        .static_member_expression => {
+            if (!self.ast.hasExtra(node.data.extra, 1)) return current_idx;
+            const obj_raw = self.ast.extra_data.items[node.data.extra];
+            const obj_idx: NodeIndex = @enumFromInt(obj_raw);
+            const new_obj = try rewriteChainAt(self, obj_idx, target_call_idx, new_call_idx);
+            if (new_obj == obj_idx) return current_idx;
+            const prop_raw = self.ast.extra_data.items[node.data.extra + 1];
+            const flags = if (self.ast.hasExtra(node.data.extra, 2))
+                self.ast.extra_data.items[node.data.extra + 2]
+            else
+                0;
+            return try self.addExtraNode(.static_member_expression, node.span, &.{ @intFromEnum(new_obj), prop_raw, flags });
+        },
+        .call_expression => {
+            if (!self.ast.hasExtra(node.data.extra, 2)) return current_idx;
+            const callee_raw = self.ast.extra_data.items[node.data.extra];
+            const callee_idx: NodeIndex = @enumFromInt(callee_raw);
+            const new_callee = try rewriteChainAt(self, callee_idx, target_call_idx, new_call_idx);
+            if (new_callee == callee_idx) return current_idx;
+            const args_start = self.ast.extra_data.items[node.data.extra + 1];
+            const args_len = self.ast.extra_data.items[node.data.extra + 2];
+            const flags = if (self.ast.hasExtra(node.data.extra, 3))
+                self.ast.extra_data.items[node.data.extra + 3]
+            else
+                0;
+            return try self.addExtraNode(.call_expression, node.span, &.{ @intFromEnum(new_callee), args_start, args_len, flags });
+        },
+        else => return current_idx,
+    }
+}
+
+/// object_expression 의 정적 key 들을 한 번만 스캔하여 displayName / componentId 존재
+/// 여부 + spread_element 동반 여부를 동시 반환. spread (`{ ...config }`) 가 있으면 런타임에
+/// override 될 수 있어 MERGE 자체를 하면 안 됨 (later-wins 시맨틱) — caller 가 SKIP fallback.
+const ObjectKeyScan = struct {
+    has_display: bool,
+    has_component_id: bool,
+    has_spread: bool,
+};
+
+fn scanObjectKeys(self: *Transformer, obj_idx: NodeIndex) ObjectKeyScan {
+    var result: ObjectKeyScan = .{ .has_display = false, .has_component_id = false, .has_spread = false };
+    const obj_node = self.ast.getNode(obj_idx);
+    const list = obj_node.data.list;
+    const props = self.ast.extra_data.items[list.start .. list.start + list.len];
+    for (props) |raw| {
+        const prop_idx: NodeIndex = @enumFromInt(raw);
+        if (prop_idx.isNone()) continue;
+        const prop_node = self.ast.getNode(prop_idx);
+        if (prop_node.tag == .spread_element) {
+            result.has_spread = true;
+            continue;
+        }
+        if (prop_node.tag != .object_property) continue;
+        const name = stmt_info.plainObjectKeyName(self.ast, prop_node.data.binary.left) orelse continue;
+        if (std.mem.eql(u8, name, "displayName")) result.has_display = true;
+        if (std.mem.eql(u8, name, "componentId")) result.has_component_id = true;
+    }
+    return result;
+}
+
 /// `wrapStyledTagInExpr` 의 재귀 base case — 직접 tagged_template 일 때만 호출.
 fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (var_name.len == 0) return init_idx;
@@ -432,10 +520,13 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
 
     const chain = analyzeTagChain(self, tag_idx);
     if (!chain.matches_binding) return init_idx;
-    // 사용자가 명시 `.withConfig({...})` 작성한 경우 wrap 시 later-wins 시맨틱으로 user 의
-    // componentId 가 우리 자동 ID 로 override 되는 footgun. 보수적 skip — user 의 명시 의도
-    // 존중.
-    if (chain.has_user_with_config) return init_idx;
+    // 사용자 명시 `.withConfig(<obj>)` 가 있으면 MERGE — chain 어디에 있든 (outer 든
+    // 중간이든) 그 call 의 args object 에 ZTS 자동 displayName/componentId 를 prepend.
+    // 이미 박힌 key 는 보존, spread (`{...config}`) 는 prepend 위치라 user 의 spread 가
+    // 우리 값을 자연스럽게 override (= user-intended 시맨틱).
+    if (!chain.user_with_config_call.isNone()) {
+        return try mergeIntoUserWithConfig(self, init_idx, tag_idx, chain.user_with_config_call, template_idx, flags, var_name);
+    }
 
     const new_tag = try buildWithConfigCall(self, tag_idx, var_name);
     const new_extra = try self.ast.addExtras(&.{
@@ -447,6 +538,118 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
         .tag = .tagged_template_expression,
         .span = init_node.span,
         .data = .{ .extra = new_extra },
+    });
+}
+
+/// 사용자 `.withConfig(<obj>)` 의 args object 에 ZTS 자동 displayName/componentId 를
+/// **prepend** (스프레드보다 앞) — 사용자가 이미 박은 key 는 그대로 보존되고, spread 가
+/// 우리 값을 override 할 수 있어 user-intended 시맨틱 보장.
+///
+/// chain 어디에 있든 (outer 든 중간이든) 동일 처리. `target_call_idx` 가 .withConfig 이고
+/// 첫 인자가 object_expression 이라는 보장을 caller 에서 받음 (`analyzeTagChain` + `withConfigCallArgsObj`).
+fn mergeIntoUserWithConfig(
+    self: *Transformer,
+    init_idx: NodeIndex,
+    tag_idx: NodeIndex,
+    target_call_idx: NodeIndex,
+    template_idx: NodeIndex,
+    template_flags: u32,
+    var_name: []const u8,
+) Error!NodeIndex {
+    // 1. target call 의 args object 검증
+    const args_obj_idx = withConfigCallArgsObj(self, target_call_idx) orelse return init_idx;
+
+    const state = &self.plugins.styled_components;
+    if (state.display_name_span == null) state.display_name_span = try self.ast.addString("displayName");
+
+    const scan = scanObjectKeys(self, args_obj_idx);
+    const want_component_id = self.options.styled_components_ssr and self.options.jsx_filename.len > 0;
+    if (want_component_id and state.component_id_span == null) {
+        state.component_id_span = try self.ast.addString("componentId");
+        if (state.file_hash_hex == null) state.file_hash_hex = wyhash.hashHex8(self.options.jsx_filename);
+    }
+
+    const need_display = !scan.has_display;
+    const need_component_id = want_component_id and !scan.has_component_id;
+    if (!need_display and !need_component_id) return init_idx;
+
+    // 2. 새 args object 빌드 — ZTS props 를 PREPEND (spread 보다 앞에 위치).
+    //    → user 의 spread 또는 explicit static key 가 자동으로 우리 값을 override.
+    const old_obj = self.ast.getNode(args_obj_idx);
+    const old_list = old_obj.data.list;
+    const old_props = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
+
+    const props_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(props_top);
+
+    if (need_display) {
+        var display_buf: [256]u8 = undefined;
+        const display_quoted = std.fmt.bufPrint(&display_buf, "\"{s}\"", .{var_name}) catch return error.OutOfMemory;
+        const display_value_span = try self.ast.addString(display_quoted);
+        const display_property = try buildKeyStringProperty(self, state.display_name_span.?, display_value_span);
+        try self.scratch.append(self.allocator, display_property);
+    }
+    if (need_component_id) {
+        var component_id_buf: [64]u8 = undefined;
+        const component_index = state.component_counter;
+        state.component_counter += 1;
+        const component_id_quoted = std.fmt.bufPrint(
+            &component_id_buf,
+            "\"sc-{s}-{d}\"",
+            .{ state.file_hash_hex.?, component_index },
+        ) catch return error.OutOfMemory;
+        const component_id_value_span = try self.ast.addString(component_id_quoted);
+        const component_id_property = try buildKeyStringProperty(self, state.component_id_span.?, component_id_value_span);
+        try self.scratch.append(self.allocator, component_id_property);
+    }
+    for (old_props) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+
+    const new_obj_list = try self.ast.addNodeList(self.scratch.items[props_top..]);
+    const new_obj = try self.ast.addNode(.{
+        .tag = .object_expression,
+        .span = old_obj.span,
+        .data = .{ .list = new_obj_list },
+    });
+
+    // 3. 새 call_expression: target_call 의 callee 그대로, args 의 첫번째만 교체.
+    const target_call_node = self.ast.getNode(target_call_idx);
+    const callee_idx_raw = self.ast.extra_data.items[target_call_node.data.extra];
+    const args_start = self.ast.extra_data.items[target_call_node.data.extra + 1];
+    const args_len = self.ast.extra_data.items[target_call_node.data.extra + 2];
+    const call_flags = if (self.ast.hasExtra(target_call_node.data.extra, 3))
+        self.ast.extra_data.items[target_call_node.data.extra + 3]
+    else
+        0;
+
+    const args_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(args_top);
+    try self.scratch.append(self.allocator, new_obj);
+    var i: u32 = 1;
+    while (i < args_len) : (i += 1) {
+        try self.scratch.append(self.allocator, @enumFromInt(self.ast.extra_data.items[args_start + i]));
+    }
+    const new_args_list = try self.ast.addNodeList(self.scratch.items[args_top..]);
+
+    const new_call = try self.addExtraNode(.call_expression, target_call_node.span, &.{
+        callee_idx_raw,
+        new_args_list.start,
+        new_args_list.len,
+        call_flags,
+    });
+
+    // 4. chain 의 target_call 을 new_call 로 swap (recursive rebuild).
+    const new_tag = try rewriteChainAt(self, tag_idx, target_call_idx, new_call);
+
+    // 5. 새 tagged_template 빌드.
+    const new_tt_extra = try self.ast.addExtras(&.{
+        @intFromEnum(new_tag),
+        @intFromEnum(template_idx),
+        template_flags,
+    });
+    return self.ast.addNode(.{
+        .tag = .tagged_template_expression,
+        .span = self.ast.getNode(init_idx).span,
+        .data = .{ .extra = new_tt_extra },
     });
 }
 
