@@ -127,6 +127,11 @@ pub const Parser = struct {
     /// TypeScript 모드 (.ts/.tsx/.mts). TS에서는 function overload, duplicate export 등이 합법.
     is_ts: bool = false,
 
+    /// 명시적으로 JS/JSX source type 으로 파싱 중이면 TypeScript-only syntax 를 거부한다.
+    /// 기본 standalone parser 는 기존 호환성을 위해 permissive 이고, bundler loader 또는
+    /// standalone transpile filename 이 js/jsx 계열로 확정된 경우에만 활성화한다.
+    reject_ts_syntax_in_js: bool = false,
+
     /// Flow 모드 (.js/.jsx + @flow pragma, .js.flow, 또는 --flow CLI).
     /// Flow 타입 어노테이션 파싱 및 스트리핑을 활성화한다.
     is_flow: bool = false,
@@ -289,11 +294,13 @@ pub const Parser = struct {
     /// 번들러용: .ts/.tsx를 확정 module로 파싱 (await 키워드, strict mode 항상 적용)
     pub fn configureForBundler(self: *Parser, ext: []const u8) void {
         self.applyExtension(ext, false);
+        self.rejectTypeScriptSyntaxForJavaScriptSource(ext);
     }
 
     /// 번들러용: 확장자 매칭을 거치지 않고 TS/JSX 플래그를 직접 적용한다.
     /// `--loader:.foo=tsx` 처럼 확장자와 parser 의미가 어긋날 때 사용.
     pub fn configureForBundlerKind(self: *Parser, is_ts: bool, is_jsx: bool) void {
+        self.reject_ts_syntax_in_js = !is_ts;
         if (is_ts) {
             self.is_module = true;
             self.scanner.is_module = true;
@@ -319,6 +326,16 @@ pub const Parser = struct {
         }
         if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
             self.is_jsx = true;
+        }
+    }
+
+    /// 명시 JS 계열 source type 은 TS syntax 를 허용하지 않는다.
+    /// `transpile(source)` 기본 filename 은 여전히 input.ts 이므로 기존 permissive 기본값은 유지된다.
+    pub fn rejectTypeScriptSyntaxForJavaScriptSource(self: *Parser, ext: []const u8) void {
+        if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx") or
+            std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".cjs"))
+        {
+            self.reject_ts_syntax_in_js = true;
         }
     }
 
@@ -2074,6 +2091,7 @@ pub const Parser = struct {
 
     pub fn parseTsTypeParameterDeclaration(self: *Parser) ParseError2!NodeIndex {
         if (self.is_flow) return flow.parseTypeParameterDeclaration(self);
+        try self.rejectTypeScriptSyntaxInJavaScript("TypeScript type parameters are not allowed when parsing as JavaScript");
         return ts.parseTsTypeParameterDeclaration(self);
     }
 
@@ -2099,6 +2117,9 @@ pub const Parser = struct {
 
     pub fn tryParseTypeAnnotation(self: *Parser) ParseError2!NodeIndex {
         if (self.is_flow) return flow.tryParseTypeAnnotation(self);
+        if (self.current() == .colon) {
+            try self.rejectTypeScriptSyntaxInJavaScript("TypeScript type annotations are not allowed when parsing as JavaScript");
+        }
         return ts.tryParseTypeAnnotation(self);
     }
 
@@ -2110,6 +2131,7 @@ pub const Parser = struct {
         if (self.current() == .kw_this) {
             const next = try self.peekNextKind();
             if (next == .colon) {
+                try self.rejectTypeScriptSyntaxInJavaScript("TypeScript this parameters are not allowed when parsing as JavaScript");
                 try self.advance(); // skip 'this'
                 _ = try self.tryParseTypeAnnotation(); // skip ': Type'
                 _ = try self.eat(.comma);
@@ -2119,7 +2141,15 @@ pub const Parser = struct {
 
     pub fn tryParseReturnType(self: *Parser) ParseError2!NodeIndex {
         if (self.is_flow) return flow.tryParseReturnType(self);
+        if (self.current() == .colon) {
+            try self.rejectTypeScriptSyntaxInJavaScript("TypeScript return type annotations are not allowed when parsing as JavaScript");
+        }
         return ts.tryParseReturnType(self);
+    }
+
+    fn rejectTypeScriptSyntaxInJavaScript(self: *Parser, message: []const u8) ParseError2!void {
+        if (!self.reject_ts_syntax_in_js or self.is_ts or self.is_flow) return;
+        try self.addErrorCode(self.currentSpan(), message, .ts_syntax_in_js);
     }
 
     pub fn parseType(self: *Parser) ParseError2!NodeIndex {

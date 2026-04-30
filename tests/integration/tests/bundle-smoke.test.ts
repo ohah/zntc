@@ -67,6 +67,80 @@ describe("번들 스모크 테스트", () => {
     expect(result.runOutput).toBe("test");
   });
 
+  test("CLI --loader:.foo=js/jsx/ts/tsx parser strictness", async () => {
+    const { dir, cleanup: c } = await createFixture({
+      "entry-js.ts": `import { value } from "./value-js.foo"; console.log(value);`,
+      "value-js.foo": `export const value: number = 1;`,
+      "entry-ts.ts": `import { value } from "./value-ts.foo"; console.log(value);`,
+      "value-ts.foo": `export const value: number = 1;`,
+      "entry-jsx.ts": `import { value } from "./value-jsx.foo"; console.log(value);`,
+      "value-jsx.foo": `const h = (tag) => tag; export const value = <span />;`,
+      "entry-jsx-ts.ts": `import { value } from "./value-jsx-ts.foo"; console.log(value);`,
+      "value-jsx-ts.foo": `const h = (tag) => tag; export const value: string = <span />;`,
+      "entry-tsx.ts": `import { value } from "./value-tsx.foo"; console.log(value);`,
+      "value-tsx.foo": `const h = (tag: string) => tag; export const value: string = <div />;`,
+    });
+    cleanup = c;
+
+    const jsOut = join(dir, "js.js");
+    const jsResult = await runZts([
+      "--bundle",
+      join(dir, "entry-js.ts"),
+      "-o",
+      jsOut,
+      "--loader:.foo=js",
+    ]);
+    expect(jsResult.exitCode).not.toBe(0);
+    expect(jsResult.stderr).toContain("TypeScript");
+
+    const tsOut = join(dir, "ts.js");
+    const tsResult = await runZts([
+      "--bundle",
+      join(dir, "entry-ts.ts"),
+      "-o",
+      tsOut,
+      "--loader:.foo=ts",
+    ]);
+    expect(tsResult.exitCode).toBe(0);
+
+    const jsxOut = join(dir, "jsx.js");
+    const jsxResult = await runZts([
+      "--bundle",
+      join(dir, "entry-jsx.ts"),
+      "-o",
+      jsxOut,
+      "--loader:.foo=jsx",
+      "--jsx=classic",
+      "--jsx-factory=h",
+    ]);
+    expect(jsxResult.exitCode).toBe(0);
+
+    const jsxTsOut = join(dir, "jsx-ts.js");
+    const jsxTsResult = await runZts([
+      "--bundle",
+      join(dir, "entry-jsx-ts.ts"),
+      "-o",
+      jsxTsOut,
+      "--loader:.foo=jsx",
+      "--jsx=classic",
+      "--jsx-factory=h",
+    ]);
+    expect(jsxTsResult.exitCode).not.toBe(0);
+    expect(jsxTsResult.stderr).toContain("TypeScript");
+
+    const tsxOut = join(dir, "tsx.js");
+    const tsxResult = await runZts([
+      "--bundle",
+      join(dir, "entry-tsx.ts"),
+      "-o",
+      tsxOut,
+      "--loader:.foo=tsx",
+      "--jsx=classic",
+      "--jsx-factory=h",
+    ]);
+    expect(tsxResult.exitCode).toBe(0);
+  });
+
   test("forward reference — 같은 이름 변수의 올바른 참조", async () => {
     // 두 모듈이 같은 이름의 top-level 변수(helper)를 갖고,
     // forward reference(helper가 greet보다 뒤에 선언)가 있을 때

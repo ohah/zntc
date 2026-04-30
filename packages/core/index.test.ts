@@ -40,6 +40,24 @@ describe("@zts/core", () => {
     expect(result.map).toBeUndefined();
   });
 
+  test("transpile: 명시적 .js/.jsx filename은 TypeScript syntax를 거부", () => {
+    expect(() => transpile("const x: number = 1;", { filename: "input.js" })).toThrow("ParseError");
+    expect(() =>
+      transpile("const h = (tag) => tag;\nconst x: string = <div />;", {
+        filename: "input.jsx",
+        jsx: "classic",
+        jsxFactory: "h",
+      }),
+    ).toThrow("ParseError");
+
+    const jsxOnly = transpile("const h = (tag) => tag;\nconst x = <div />;", {
+      filename: "input.jsx",
+      jsx: "classic",
+      jsxFactory: "h",
+    });
+    expect(jsxOnly.code).not.toContain("<div");
+  });
+
   test("인터페이스 스트리핑", () => {
     const result = transpile("interface Foo { bar: string; }\nconst x = 1;");
     expect(result.code).not.toContain("interface");
@@ -2519,6 +2537,37 @@ describe("BuildOptions: 누락 옵션 노출 (#1005)", () => {
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).not.toContain("<span");
     expect(await runBundleStdout(result.outputFiles[0].text)).toBe("span");
+  });
+
+  test("loader: .foo=js/jsx → TypeScript syntax를 거부", async () => {
+    writeFileSync(
+      join(dir, "entry-loader-js-strict.ts"),
+      'import { value } from "./value-js-strict.foo";\nconsole.log(value);',
+    );
+    writeFileSync(join(dir, "value-js-strict.foo"), "export const value: number = 1;");
+    const jsResult = await build({
+      entryPoints: [join(dir, "entry-loader-js-strict.ts")],
+      loader: { ".foo": "js" },
+    });
+    expect(jsResult.errors.length).toBeGreaterThan(0);
+    expect(jsResult.errors[0].text).toContain("TypeScript");
+
+    writeFileSync(
+      join(dir, "entry-loader-jsx-strict.ts"),
+      'import { value } from "./value-jsx-strict.foo";\nconsole.log(value);',
+    );
+    writeFileSync(
+      join(dir, "value-jsx-strict.foo"),
+      "const h = (tag) => tag;\nexport const value: string = <span />;",
+    );
+    const jsxResult = await build({
+      entryPoints: [join(dir, "entry-loader-jsx-strict.ts")],
+      loader: { ".foo": "jsx" },
+      jsx: "classic",
+      jsxFactory: "h",
+    });
+    expect(jsxResult.errors.length).toBeGreaterThan(0);
+    expect(jsxResult.errors[0].text).toContain("TypeScript");
   });
 
   test("resolveExtensions: 커스텀 확장자 순서가 적용됨", () => {
@@ -6251,8 +6300,6 @@ describe("@zts/core plugin lifecycle", () => {
 
 // ─── plugin onLoad loader override (#2157) ───
 
-import { spawnSync } from "node:child_process";
-
 /** 출력 코드를 dynamic import 로 실행해 console.log 결과를 캡처. plugin loader override 의
  *  end-to-end 동작 검증 — bundle 결과가 실제 런타임에서 import 바인딩과 default export 가
  *  올바르게 매칭됨을 검증한다. */
@@ -6475,6 +6522,60 @@ describe("@zts/core plugin onLoad loader", () => {
     expect(r.outputFiles[0].text).not.toContain(": string");
     expect(await runBundleStdout(r.outputFiles[0].text)).toBe("div");
     rmSync(dir, { recursive: true });
+  });
+
+  test("loader='js'/'jsx'/'ts'/'tsx': onLoad parser mode strictness", async () => {
+    async function runOnLoadCase(loader: "js" | "jsx" | "ts" | "tsx", contents: string) {
+      const dir = mkdtempSync(join(tmpdir(), `zts-onload-${loader}-strict-`));
+      writeFileSync(
+        join(dir, "entry.ts"),
+        "import { value } from './virtual.foo';\nconsole.log(value);",
+      );
+      writeFileSync(join(dir, "virtual.foo"), "");
+      const plugin: ZtsPlugin = {
+        name: `foo-as-${loader}`,
+        setup(build) {
+          build.onLoad({ filter: /\.foo$/ }, () => ({ contents, loader }));
+        },
+      };
+      const r = await build({
+        entryPoints: [join(dir, "entry.ts")],
+        plugins: [plugin],
+        jsx: "classic",
+        jsxFactory: "h",
+      });
+      rmSync(dir, { recursive: true, force: true });
+      return r;
+    }
+
+    const jsResult = await runOnLoadCase("js", "export const value: number = 1;");
+    expect(jsResult.errors.length).toBeGreaterThan(0);
+    expect(jsResult.errors[0].text).toContain("TypeScript");
+
+    const tsResult = await runOnLoadCase("ts", "export const value: number = 1;");
+    expect(tsResult.errors.length).toBe(0);
+    expect(await runBundleStdout(tsResult.outputFiles[0].text)).toBe("1");
+
+    const jsxResult = await runOnLoadCase(
+      "jsx",
+      "const h = (tag) => tag;\nexport const value = <span />;",
+    );
+    expect(jsxResult.errors.length).toBe(0);
+    expect(await runBundleStdout(jsxResult.outputFiles[0].text)).toBe("span");
+
+    const jsxTsResult = await runOnLoadCase(
+      "jsx",
+      "const h = (tag) => tag;\nexport const value: string = <span />;",
+    );
+    expect(jsxTsResult.errors.length).toBeGreaterThan(0);
+    expect(jsxTsResult.errors[0].text).toContain("TypeScript");
+
+    const tsxResult = await runOnLoadCase(
+      "tsx",
+      "const h = (tag: string) => tag;\nexport const value: string = <div />;",
+    );
+    expect(tsxResult.errors.length).toBe(0);
+    expect(await runBundleStdout(tsxResult.outputFiles[0].text)).toBe("div");
   });
 
   test("loader='bogus' (미지원 string): override 무시 → JS 모듈로 처리 (fromString null)", async () => {
