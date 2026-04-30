@@ -950,7 +950,15 @@ pub const Transformer = struct {
             .jsx_opening_element => self.visitJSXOpeningElement(node),
 
             // === 단항 노드: 자식 1개 재귀 방문 ===
-            .expression_statement,
+            .expression_statement => {
+                // emotion `injectGlobal\`...\`;` 같은 expression-statement form 에 sourceMap
+                // 적용. autoLabel 은 var 이름이 없어 미적용 — sourceMap 만 부여.
+                if (self.options.emotion and self.options.emotion_source_map) {
+                    const new_idx = try self.visitUnaryNode(idx);
+                    return emotion_mod.maybeTransformExpressionStatement(self, new_idx);
+                }
+                return self.visitUnaryNode(idx);
+            },
             .return_statement,
             .throw_statement,
             .spread_element,
