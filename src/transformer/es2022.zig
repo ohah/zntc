@@ -88,8 +88,14 @@ pub fn ES2022(comptime Transformer: type) type {
             const pending_top = self.pending_nodes.items.len;
             defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
-            var static_key_memos = std.AutoHashMap(u32, NodeIndex).init(self.allocator);
-            defer static_key_memos.deinit();
+            // pre-pass: 공개 static field 의 computed key 를 `var _N = <expr>;` 로 캡쳐해 클래스 평가 직전에 hoist.
+            // 메인 루프와 분리한 이유 — TC39 spec 상 모든 computed key 는 class body 평가 전에 한 번만 평가되어야
+            // 하므로, 사이에 끼어들 수 있는 static block 보다 먼저 emit 되어야 한다 (test fixture
+            // `static-computed-key-order-with-blocks` 참조).
+            // 항목 수 ≤ 클래스 내 공개 static computed-key field 개수(통상 0–3) → linear scan 이 HashMap 보다 저렴.
+            const KeyMemo = struct { raw_idx: u32, key_ref: NodeIndex };
+            var static_key_memos: std.ArrayList(KeyMemo) = .empty;
+            defer static_key_memos.deinit(self.allocator);
 
             if (class_name_span != null) {
                 var key_i: u32 = 0;
@@ -102,15 +108,9 @@ pub fn ES2022(comptime Transformer: type) type {
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag != .computed_property_key) continue;
 
-                    const temp_span = try es_helpers.makeTempVarSpan(self);
-                    const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
-                    const temp_init = try self.visitNode(key_node.data.unary.operand);
-                    const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, temp_init, member.span);
-                    try static_block_iifes.append(
-                        self.allocator,
-                        try es_helpers.makeVarDeclaration(self, &.{temp_decl}, .@"var", member.span),
-                    );
-                    try static_key_memos.put(raw_idx, try makeComputedKeyRef(self, temp_span, member.span));
+                    const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span);
+                    try static_block_iifes.append(self.allocator, memo.decl);
+                    try static_key_memos.append(self.allocator, .{ .raw_idx = raw_idx, .key_ref = memo.computed_key });
                 }
             }
 
@@ -124,7 +124,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     const iife = try buildStaticBlockIIFE(self, member, class_name_span);
                     try static_block_iifes.append(self.allocator, iife);
                 } else if (class_name_span != null and member.tag == .property_definition and isPublicStaticField(self, member)) {
-                    const static_assign = try buildStaticFieldAssign(self, member, class_name_span.?, already_visited, static_key_memos.get(raw_idx));
+                    const static_assign = try buildStaticFieldAssign(self, member, class_name_span.?, lookupKeyMemo(static_key_memos.items, raw_idx));
                     try static_block_iifes.append(self.allocator, static_assign);
                 } else if (already_visited) {
                     try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
@@ -171,21 +171,20 @@ pub fn ES2022(comptime Transformer: type) type {
             return (flags & ast_mod.PropertyFlags.is_static) != 0;
         }
 
-        fn makeComputedKeyRef(self: *Transformer, var_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const id_ref = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = var_span,
-                .data = .{ .string_ref = var_span },
-            });
-            return self.ast.addNode(.{
-                .tag = .computed_property_key,
-                .span = span,
-                .data = .{ .unary = .{ .operand = id_ref, .flags = 0 } },
-            });
+        fn lookupKeyMemo(memos: anytype, raw_idx: u32) ?NodeIndex {
+            for (memos) |m| {
+                if (m.raw_idx == raw_idx) return m.key_ref;
+            }
+            return null;
         }
 
-        fn buildStaticFieldAssign(self: *Transformer, member: Node, class_name_span: Span, already_visited: bool, key_override: ?NodeIndex) Transformer.Error!NodeIndex {
-            _ = already_visited;
+        /// public static field 의 `Class.key = init;` assignment 를 합성한다.
+        /// `key_override` 가 있으면 (computed key memo 결과) raw key 대신 사용한다.
+        /// init 은 항상 `static_block_class_name`/`current_super_static_receiver` 가 설정된 채
+        /// 재방문된다 — `lowerPrivateMembers` 가 먼저 visit 했더라도 `super.x` / `this.#priv` 가
+        /// static 컨텍스트 기준으로 재 lowering 되어야 정상 동작 (test fixture
+        /// `static-private-and-public-order` 참조).
+        fn buildStaticFieldAssign(self: *Transformer, member: Node, class_name_span: Span, key_override: ?NodeIndex) Transformer.Error!NodeIndex {
             const pe = member.data.extra;
             const key: NodeIndex = key_override orelse self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
             const init: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
