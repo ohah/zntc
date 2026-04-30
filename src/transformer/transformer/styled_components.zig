@@ -417,8 +417,11 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
 
     const with_config_span = state.with_config_span.?;
     const display_name_key_span = state.display_name_span.?;
-    const has_filename = self.options.jsx_filename.len > 0;
-    if (has_filename) {
+    // componentId 는 두 조건 모두 만족 시 emit:
+    //  1. ssr 옵션 활성 (default true) — 사용자가 명시적으로 끄지 않음
+    //  2. jsx_filename 존재 — file 부분 hash 의 입력
+    const emit_component_id = self.options.styled_components_ssr and self.options.jsx_filename.len > 0;
+    if (emit_component_id) {
         if (state.component_id_span == null) state.component_id_span = try self.ast.addString("componentId");
         if (state.file_hash_hex == null) state.file_hash_hex = wyhash.hashHex8(self.options.jsx_filename);
     }
@@ -441,7 +444,7 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
 
     const display_property = try buildKeyStringProperty(self, display_name_key_span, display_value_span);
 
-    const obj_list = if (has_filename) blk: {
+    const obj_list = if (emit_component_id) blk: {
         var component_id_buf: [64]u8 = undefined;
         const component_index = state.component_counter;
         state.component_counter += 1;

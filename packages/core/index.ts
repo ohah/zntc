@@ -1238,14 +1238,14 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
     delete napiOptions.browserslist;
   }
   // compiler.styledComponents / compiler.emotion → flat NAPI fields.
-  // boolean 또는 객체 (세밀 제어 옵션). 현재는 enabled 여부만 Zig 로 전달.
-  // 후속 PR 에서 객체 옵션 (displayName / ssr / fileName / minify 등) 도 throughpass.
+  // boolean 또는 객체 (세밀 제어 옵션). 현재 인식 객체 옵션: ssr.
   delete napiOptions.compiler;
-  if (
-    options.compiler?.styledComponents !== undefined &&
-    options.compiler.styledComponents !== false
-  ) {
+  const sc = options.compiler?.styledComponents;
+  if (sc !== undefined && sc !== false) {
     napiOptions.styledComponents = true;
+    if (typeof sc === "object" && sc.ssr === false) {
+      napiOptions.styledComponentsSsr = false;
+    }
   }
   if (options.compiler?.emotion !== undefined && options.compiler.emotion !== false) {
     napiOptions.emotion = true;
@@ -1401,9 +1401,12 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
       : publicDir !== undefined
         ? { publicDir }
         : {}),
-    // compiler.* → flat NAPI fields. enabled boolean 만 우선 (옵션 객체는 후속 PR).
+    // compiler.* → flat NAPI fields. boolean / 객체 form 양쪽 인식.
     ...(compiler?.styledComponents !== undefined && compiler.styledComponents !== false
       ? { styledComponents: true }
+      : {}),
+    ...(typeof compiler?.styledComponents === "object" && compiler.styledComponents.ssr === false
+      ? { styledComponentsSsr: false }
       : {}),
     ...(compiler?.emotion !== undefined && compiler.emotion !== false ? { emotion: true } : {}),
   });

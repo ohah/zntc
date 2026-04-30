@@ -124,8 +124,10 @@ pub const BundleOptions = struct {
     /// React Fast Refresh 활성화. $RefreshReg$/$RefreshSig$ 주입.
     react_refresh: bool = false,
     /// styled-components 1st-party transform (compiler.styledComponents).
-    /// 현재 PR 은 displayName 만 — componentId / SSR / minify 는 후속.
     styled_components: bool = false,
+    /// styled-components.ssr 옵션 — false 면 componentId 생략 (displayName 만).
+    /// `@next/swc` 의 compiler.styledComponents.ssr 와 동일.
+    styled_components_ssr: bool = true,
     /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
     collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
@@ -629,6 +631,7 @@ pub const Bundler = struct {
         worker_graph.worklet_transform = self.options.worklet_transform;
         worker_graph.react_refresh = self.options.react_refresh;
         worker_graph.styled_components = self.options.styled_components;
+        worker_graph.styled_components_ssr = self.options.styled_components_ssr;
         worker_graph.code_splitting = self.options.code_splitting;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
@@ -788,6 +791,7 @@ pub const Bundler = struct {
         graph.worklet_transform = self.options.worklet_transform;
         graph.react_refresh = self.options.react_refresh;
         graph.styled_components = self.options.styled_components;
+        graph.styled_components_ssr = self.options.styled_components_ssr;
         graph.code_splitting = self.options.code_splitting;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();

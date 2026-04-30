@@ -595,6 +595,35 @@ test "styled-components: computed property key 는 미인식" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
+test "styled-components: ssr=false 시 componentId 생략, displayName 만" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx", .styled_components_ssr = false },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Btn\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId") == null);
+}
+
+test "styled-components: ssr=true (default) 시 componentId emit" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" }, // ssr defaults to true
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId: \"sc-") != null);
+}
+
 test "styled-components: jsx_filename 빈 문자열 시 componentId 생략 (displayName 만)" {
     // SSR 안전성: filename 없으면 cross-file ID 충돌 위험 → componentId 생략 (graceful degradation).
     var r = try e2eFull(
