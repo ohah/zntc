@@ -30,6 +30,8 @@ pub const AppBuildOptions = struct {
     emotion: bool = false,
     /// emotion.autoLabel 옵션 — false 면 autoLabel skip.
     emotion_auto_label: bool = true,
+    /// emotion.sourceMap 옵션 — true 면 css 템플릿 끝에 inline sourceMap 주석을 append.
+    emotion_source_map: bool = false,
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -126,6 +128,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .styled_components_minify = opts.styled_components_minify,
         .emotion = opts.emotion,
         .emotion_auto_label = opts.emotion_auto_label,
+        .emotion_source_map = opts.emotion_source_map,
     });
     defer bundler.deinit();
 

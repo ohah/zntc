@@ -94,6 +94,12 @@ pub const EmotionState = struct {
     /// 현재 frame 의 binding 들이 outer (import 기반) binding 보다 우선 적용 →
     /// destructured local 이름 (`{ css: cs }` 의 `cs`) 도 emotion css 로 인식.
     scope_stack: std.ArrayList(EmotionScopeFrame) = .empty,
+
+    /// sourceMap 활성 시 byte offset → (line, col) 변환을 위한 캐시. 각 entry 가
+    /// `\n` 의 byte offset. lazy-build (첫 sourceMap 호출 시 source 전체 스캔), 이후
+    /// binary search 로 O(log n) per template — 다수 emotion template 이 있는 파일에서
+    /// 전체 source re-scan 회피.
+    newline_offsets: ?std.ArrayList(u32) = null,
 };
 
 /// `<ClassNames>` render-prop 함수 매개변수에서 destructure 된 local binding 이름들.

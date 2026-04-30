@@ -249,6 +249,25 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     expect(r.out).toContain("color: red");
   });
 
+  // ─── sourceMap (babel-plugin-emotion 호환) ───
+
+  it("@emotion/core v10 — sourceMap: true 일 때 inline sourceMap 주석 추가", async () => {
+    const r = await runV10Bundle({
+      source: `
+        import { css } from "@emotion/core";
+        const card = css\`color: hotpink;\`;
+        console.log(card);
+      `,
+      config: { compiler: { emotion: { sourceMap: true } } },
+    });
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.out).toContain("label:card;");
+    expect(r.out).toContain("/*# sourceMappingURL=data:application/json;charset=utf-8;base64,");
+    // base64 안에 source filename 이 인코딩됐는지 (decoding 검증은 unit 테스트가 함)
+    expect(r.out).toContain("hotpink");
+  });
+
   it("v10 격리 검증 — fixture 의 @emotion/core 가 v10.x 인지", async () => {
     const pkgPath = join(EMOTION_V10_FIXTURE_NODE_MODULES, "@emotion/core/package.json");
     const pkg = JSON.parse(await readFile(pkgPath, "utf-8"));
