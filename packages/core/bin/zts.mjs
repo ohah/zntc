@@ -7,13 +7,50 @@
  * Watch/Serve는 JS 레이어에서 구현.
  */
 
-// Node.js: dist/index.js, Bun: index.ts 직접
-let coreModule;
-try {
-  coreModule = await import("../dist/index.js");
-} catch {
-  coreModule = await import("../index.ts");
+import {
+  mkdirSync,
+  cpSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  mkdtempSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { resolve, relative, dirname, basename, extname, join, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+
+import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from "./cli-flags.mjs";
+
+function isMissingBuiltCore(error) {
+  if (!error || error.code !== "ERR_MODULE_NOT_FOUND") return false;
+  const builtCorePath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
+  return String(error.message ?? "").includes(builtCorePath);
 }
+
+async function loadCoreModule() {
+  try {
+    return await import("../dist/index.js");
+  } catch (error) {
+    if (!isMissingBuiltCore(error)) throw error;
+    console.error("error: @zts/core JS bundle is missing");
+    console.error("");
+    console.error("note: zts CLI runs the built JS entry at packages/core/dist/index.js.");
+    console.error("note: source TypeScript is not loaded directly by Node.");
+    console.error("");
+    console.error("help: run `bun run --cwd packages/core build:js` from the repository root.");
+    console.error("help: for a full local build, run `bun run --cwd packages/core build`.");
+    process.exit(1);
+  }
+}
+
+const coreModule = await loadCoreModule();
 const {
   init,
   transpile,
@@ -37,26 +74,6 @@ const {
   suggestKey,
   warnUnknownKeys,
 } = coreModule;
-import {
-  mkdirSync,
-  cpSync,
-  existsSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  mkdtempSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { resolve, relative, dirname, basename, extname, join, sep } from "node:path";
-import { tmpdir } from "node:os";
-import { createServer } from "node:http";
-import { createServer as createHttpsServer } from "node:https";
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
-
-import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from "./cli-flags.mjs";
 
 export { KNOWN_FLAGS };
 const requireFromCli = createRequire(import.meta.url);
