@@ -338,8 +338,8 @@ export interface StyledComponentsOptions {
 export interface EmotionOptions {
   /** sourceMap 생성 (default: true) */
   sourceMap?: boolean;
-  /** 변수명을 CSS class label 로 자동 부여 (default: "dev-only") */
-  autoLabel?: "always" | "dev-only" | "never";
+  /** 변수명을 CSS class label 로 자동 부여 (default: "dev-only"). `false` 는 autoLabel 을 끈다. */
+  autoLabel?: "always" | "dev-only" | "never" | false;
   /** label format string. tokens: `[local]`, `[filename]`, `[dirname]` (default: "[local]") */
   labelFormat?: string;
   /** import 경로 alias — fork 또는 vendored emotion 사용 시 */

@@ -28,11 +28,13 @@ pub fn ES2021(comptime Transformer: type) type {
             const paren_assign = try es_helpers.makeParenExpr(self, assign, node.span);
 
             if (self.options.unsupported.nullish_coalescing) {
-                const neq_null = try es_helpers.makeNeqNull(self, target.read, node.span);
+                const captured = try es_helpers.captureToTemp(self, target.read, node.span);
+                const captured_value = try es_helpers.makeTempVarRef(self, captured.span, node.span);
+                const neq_null = try es_helpers.makeNeqNull(self, captured.paren_assign, node.span);
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
-                    .data = .{ .ternary = .{ .a = neq_null, .b = target.value, .c = paren_assign } },
+                    .data = .{ .ternary = .{ .a = neq_null, .b = captured_value, .c = paren_assign } },
                 });
             }
 
