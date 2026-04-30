@@ -353,13 +353,16 @@ fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u
 }
 
 /// arrow body 내 return 들을 재귀 walk — return 의 operand 가 styled tagged template 이면 wrap.
+/// `es2015_block_scoping.transformStmtFlow` 와 동일한 dispatch 패턴 — control flow 노드의
+/// statement child 들을 재귀로 traverse, identity 보존. (Path-A visitor #1672 D2 도입 시
+/// 정렬 가능.)
+///
 /// 인식 case:
 ///   - `return X;` (직접)
-///   - `{ ...; return X; }` (block 안)
-///   - `if (cond) return X;` / `if (cond) return X; else return Y;` (if/else)
-///   - `if (cond) { ... return X; }` (if + block)
-/// 미인식 (후속 PR):
-///   - `try { return X } catch {}` / `switch (cond) { case 1: return X; }`
+///   - `{ ...; return X; }` (block_statement)
+///   - `if (cond) return X;` / `if-else` (if_statement, ternary b/c)
+///   - `try { return X } catch (e) { return Y } finally { return Z }` (try_statement)
+///   - `switch (x) { case 1: return X; default: return Y; }` (switch_statement)
 fn wrapStyledInStmt(self: *Transformer, stmt_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (stmt_idx.isNone()) return stmt_idx;
     const node = self.ast.getNode(stmt_idx);
@@ -377,8 +380,7 @@ fn wrapStyledInStmt(self: *Transformer, stmt_idx: NodeIndex, var_name: []const u
         },
         .block_statement => return wrapStyledInBlockReturns(self, stmt_idx, var_name),
         .if_statement => {
-            // ternary: a=test, b=consequent, c=alternate. consequent / alternate 둘 다 walk
-            // (자식 stmt 일 수도, block 일 수도, 또는 다시 if 일 수도).
+            // ternary: a=test, b=consequent, c=alternate
             const old_b = node.data.ternary.b;
             const old_c = node.data.ternary.c;
             const new_b = try wrapStyledInStmt(self, old_b, var_name);
@@ -390,30 +392,144 @@ fn wrapStyledInStmt(self: *Transformer, stmt_idx: NodeIndex, var_name: []const u
                 .data = .{ .ternary = .{ .a = node.data.ternary.a, .b = new_b, .c = new_c } },
             });
         },
+        .try_statement => {
+            // ternary: a=try block, b=catch_clause (or .none), c=finally block (or .none)
+            const old_a = node.data.ternary.a;
+            const old_b = node.data.ternary.b;
+            const old_c = node.data.ternary.c;
+            const new_a = try wrapStyledInStmt(self, old_a, var_name);
+            const new_b = try wrapStyledInCatchClause(self, old_b, var_name);
+            const new_c = try wrapStyledInStmt(self, old_c, var_name);
+            if (new_a == old_a and new_b == old_b and new_c == old_c) return stmt_idx;
+            return self.ast.addNode(.{
+                .tag = .try_statement,
+                .span = node.span,
+                .data = .{ .ternary = .{ .a = new_a, .b = new_b, .c = new_c } },
+            });
+        },
+        .switch_statement => return wrapStyledInSwitch(self, stmt_idx, var_name),
+        // switch_case 는 wrapStyledInSwitch 의 walkStmtList 로 dispatch — 자식 stmts 만 walk.
+        .switch_case => return wrapStyledInSwitchCase(self, stmt_idx, var_name),
+        .while_statement, .do_while_statement, .labeled_statement => {
+            // binary: left=test/label, right=body. (do_while_statement 도 같은 layout —
+            // parser 는 test 를 left 에, body 를 right 에 저장.)
+            const old_body = node.data.binary.right;
+            const new_body = try wrapStyledInStmt(self, old_body, var_name);
+            if (new_body == old_body) return stmt_idx;
+            return self.ast.addNode(.{
+                .tag = node.tag,
+                .span = node.span,
+                .data = .{ .binary = .{
+                    .left = node.data.binary.left,
+                    .right = new_body,
+                    .flags = node.data.binary.flags,
+                } },
+            });
+        },
+        .for_statement => {
+            // extra = [init, test, update, body]. body 만 walk.
+            if (!self.ast.hasExtra(node.data.extra, 3)) return stmt_idx;
+            const old_body: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra + 3]);
+            const new_body = try wrapStyledInStmt(self, old_body, var_name);
+            if (new_body == old_body) return stmt_idx;
+            return try self.addExtraNode(.for_statement, node.span, &.{
+                self.ast.extra_data.items[node.data.extra],
+                self.ast.extra_data.items[node.data.extra + 1],
+                self.ast.extra_data.items[node.data.extra + 2],
+                @intFromEnum(new_body),
+            });
+        },
+        .for_in_statement, .for_of_statement, .for_await_of_statement => {
+            // ternary: a=left binding, b=right iterable, c=body. body 만 walk.
+            const old_c = node.data.ternary.c;
+            const new_c = try wrapStyledInStmt(self, old_c, var_name);
+            if (new_c == old_c) return stmt_idx;
+            return self.ast.addNode(.{
+                .tag = node.tag,
+                .span = node.span,
+                .data = .{ .ternary = .{ .a = node.data.ternary.a, .b = node.data.ternary.b, .c = new_c } },
+            });
+        },
         else => return stmt_idx,
     }
+}
+
+/// catch_clause: binary { left=param (or .none), right=block_statement }. body block 만 walk.
+fn wrapStyledInCatchClause(self: *Transformer, idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+    if (idx.isNone()) return idx;
+    const node = self.ast.getNode(idx);
+    if (node.tag != .catch_clause) return idx;
+    const old_body = node.data.binary.right;
+    const new_body = try wrapStyledInStmt(self, old_body, var_name);
+    if (new_body == old_body) return idx;
+    return self.ast.addNode(.{
+        .tag = .catch_clause,
+        .span = node.span,
+        .data = .{ .binary = .{
+            .left = node.data.binary.left,
+            .right = new_body,
+            .flags = node.data.binary.flags,
+        } },
+    });
+}
+
+/// stmt list 를 wrapStyledInStmt 로 walk — 변경 없으면 null 반환 (caller identity 보존),
+/// 변경 있으면 새 NodeList 반환. block_statement / switch_statement / switch_case 의
+/// 공통 list-walking 패턴 통합.
+fn walkStmtList(self: *Transformer, list_start: u32, list_len: u32, var_name: []const u8) Error!?ast_mod.NodeList {
+    const top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(top);
+
+    var changed = false;
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const item_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
+        const new_item = try wrapStyledInStmt(self, item_idx, var_name);
+        if (new_item != item_idx) changed = true;
+        try self.scratch.append(self.allocator, new_item);
+    }
+
+    if (!changed) return null;
+    return try self.ast.addNodeList(self.scratch.items[top..]);
+}
+
+/// switch_statement: extra = [discriminant, cases_start, cases_len]. 각 case 를 walk.
+fn wrapStyledInSwitch(self: *Transformer, switch_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+    const node = self.ast.getNode(switch_idx);
+    if (!self.ast.hasExtra(node.data.extra, 2)) return switch_idx;
+    const cases_start = self.ast.extra_data.items[node.data.extra + 1];
+    const cases_len = self.ast.extra_data.items[node.data.extra + 2];
+
+    // switch_case 도 dispatch 통과 — wrapStyledInStmt 가 .switch_case arm 으로 분기.
+    const new_list = (try walkStmtList(self, cases_start, cases_len, var_name)) orelse return switch_idx;
+    return try self.addExtraNode(.switch_statement, node.span, &.{
+        self.ast.extra_data.items[node.data.extra],
+        new_list.start,
+        new_list.len,
+    });
+}
+
+/// switch_case: extra = [test (or .none for default), stmts_start, stmts_len]. stmts walk.
+fn wrapStyledInSwitchCase(self: *Transformer, case_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+    const node = self.ast.getNode(case_idx);
+    if (node.tag != .switch_case) return case_idx;
+    if (!self.ast.hasExtra(node.data.extra, 2)) return case_idx;
+    const stmts_start = self.ast.extra_data.items[node.data.extra + 1];
+    const stmts_len = self.ast.extra_data.items[node.data.extra + 2];
+
+    const new_list = (try walkStmtList(self, stmts_start, stmts_len, var_name)) orelse return case_idx;
+    return try self.addExtraNode(.switch_case, node.span, &.{
+        self.ast.extra_data.items[node.data.extra],
+        new_list.start,
+        new_list.len,
+    });
 }
 
 /// block_statement 의 statements 순회 — 각 stmt 를 wrapStyledInStmt 로 재귀 walk.
 fn wrapStyledInBlockReturns(self: *Transformer, block_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     const block_node = self.ast.getNode(block_idx);
     const list = block_node.data.list;
-    const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
-
-    const scratch_top = self.scratch.items.len;
-    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-    var changed = false;
-    for (stmts) |raw| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw);
-        const new_stmt = try wrapStyledInStmt(self, stmt_idx, var_name);
-        if (new_stmt != stmt_idx) changed = true;
-        try self.scratch.append(self.allocator, new_stmt);
-    }
-
-    if (!changed) return block_idx;
-
-    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    const new_list = (try walkStmtList(self, list.start, list.len, var_name)) orelse return block_idx;
     return self.ast.addNode(.{
         .tag = .block_statement,
         .span = block_node.span,

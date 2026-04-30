@@ -18,6 +18,17 @@ fn expectDisplayName(output: []const u8, expected: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, output, "componentId: \"sc-") != null);
 }
 
+/// 출력의 `withConfig(` 호출 횟수가 expected 인지 검증 — 다중 wrap 케이스 (ternary,
+/// if-else, try/catch/finally, switch case) 에서 사용.
+fn expectWithConfigCount(output: []const u8, expected: usize) !void {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, output, i, "withConfig(")) |pos| : (i = pos + 1) {
+        count += 1;
+    }
+    try std.testing.expectEqual(expected, count);
+}
+
 test "styled-components: styled.X 선언 → withConfig({displayName}) 래핑" {
     var r = try e2eFull(
         std.testing.allocator,
@@ -323,12 +334,7 @@ test "styled-components: if-else 양쪽 branch 의 return 모두 wrap" {
     defer r.deinit();
     try expectDisplayName(r.output, "Pick");
     // 두 번 wrap 되었어야 — withConfig 가 2번 등장.
-    var count: usize = 0;
-    var i: usize = 0;
-    while (std.mem.indexOfPos(u8, r.output, i, "withConfig(")) |pos| : (i = pos + 1) {
-        count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), count);
+    try expectWithConfigCount(r.output, 2);
 }
 
 test "styled-components: 중첩 if 안 block 안의 return 도 wrap" {
@@ -351,8 +357,7 @@ test "styled-components: 중첩 if 안 block 안의 return 도 wrap" {
     try expectDisplayName(r.output, "Deep");
 }
 
-test "styled-components: try/switch 중첩은 아직 미인식 (회귀 가드)" {
-    // try / switch 안의 return 은 후속 PR — 현재는 wrap 안 됨.
+test "styled-components: try-block 안 return 도 wrap" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -363,7 +368,121 @@ test "styled-components: try/switch 중첩은 아직 미인식 (회귀 가드)" 
         ".tsx",
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+    try expectDisplayName(r.output, "Tried");
+}
+
+test "styled-components: try/catch/finally 모든 block 안 return wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Multi = (() => {
+        \\  try { return styled.div`color: red;`; }
+        \\  catch (e) { return styled.span`color: blue;`; }
+        \\  finally { return styled.section`color: green;`; }
+        \\})();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Multi");
+    try expectWithConfigCount(r.output, 3);
+}
+
+test "styled-components: switch case 의 return 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Switched = (() => {
+        \\  switch (kind) {
+        \\    case "a": return styled.div`color: red;`;
+        \\    case "b": return styled.span`color: blue;`;
+        \\    default: return styled.section`color: gray;`;
+        \\  }
+        \\})();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Switched");
+    try expectWithConfigCount(r.output, 3);
+}
+
+test "styled-components: for/while/do-while body 안 return 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Looped = (() => {
+        \\  while (cond) return styled.div`color: red;`;
+        \\  for (let i = 0; i < 1; i++) return styled.span`color: blue;`;
+        \\  do { return styled.section`color: green;`; } while (false);
+        \\})();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Looped");
+    try expectWithConfigCount(r.output, 3);
+}
+
+test "styled-components: for-in / for-of body 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Iter = (() => {
+        \\  for (const k in obj) return styled.div`color: red;`;
+        \\  for (const x of arr) return styled.span`color: blue;`;
+        \\})();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Iter");
+    try expectWithConfigCount(r.output, 2);
+}
+
+test "styled-components: labeled statement body 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Labeled = (() => {
+        \\  outer: { return styled.div`color: red;`; }
+        \\})();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Labeled");
+}
+
+test "styled-components: switch case + block 안 return 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Cases = (() => {
+        \\  switch (kind) {
+        \\    case "a": {
+        \\      log();
+        \\      return styled.div`color: red;`;
+        \\    }
+        \\  }
+        \\})();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Cases");
 }
 
 test "styled-components: 일반 함수 호출 `someFn(...)` 은 IIFE 가 아님 (회귀 가드)" {
@@ -538,12 +657,7 @@ test "styled-components: 사용자 명시 .withConfig 에 displayName MERGE" {
     // displayName 은 ZTS 가 추가.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"X\"") != null);
     // 추가 .withConfig 호출 없음 (merge 라 한 번만).
-    var count: usize = 0;
-    var i: usize = 0;
-    while (std.mem.indexOfPos(u8, r.output, i, "withConfig(")) |pos| : (i = pos + 1) {
-        count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 1), count);
+    try expectWithConfigCount(r.output, 1);
 }
 
 test "styled-components: spread element 도 prepend 전략으로 안전하게 MERGE" {
