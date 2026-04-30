@@ -1661,35 +1661,33 @@ pub fn emitModule(
 
     // __esm 래핑은 emitEsmWrappedModule()에서 처리 (early return)
 
-    // CJS import preamble + final_exports를 하나의 concat으로 합침 (중간 할당 누수 방지)
+    // CJS import preamble + final exports를 하나의 concat으로 합침 (중간 할당 누수 방지)
     const preamble = if (metadata) |md| md.cjs_import_preamble else null;
+    const final_export_entries = if (metadata) |md| md.final_export_entries else null;
     const raw_final_exports = if (metadata) |md| md.final_exports else null;
 
-    // 래핑 포맷 (IIFE/UMD/AMD): "export { x }" → "return { x }" 변환 (factory 반환값).
+    // 래핑 포맷 (IIFE/UMD/AMD): entry export entries → factory 반환값.
     // 래핑 + globalName 없음: export 구문은 syntax error → 제거.
     // CJS: export 구문은 불필요 (CJS 래핑이 exports 처리).
-    // linker는 format-agnostic하게 "export {}" 를 생성하므로, emitter에서 포맷별 치환/제거.
     var wrapped_return_buf: ?[]const u8 = null;
     defer if (wrapped_return_buf) |buf| allocator.free(buf);
 
     var cjs_exports_buf: ?[]const u8 = null;
     defer if (cjs_exports_buf) |buf| allocator.free(buf);
 
-    const final_exports = if (raw_final_exports) |fe| blk: {
+    const final_exports = if (final_export_entries) |entries| blk: {
         if (options.format.isWrappedFormat()) {
             if (options.format != .iife or options.global_name != null) {
-                if (std.mem.startsWith(u8, fe, "export {")) {
-                    wrapped_return_buf = try std.mem.concat(allocator, u8, &.{ "return {", fe["export {".len..] });
-                    break :blk wrapped_return_buf.?;
-                }
+                wrapped_return_buf = try emitWrappedEntryExports(allocator, entries);
+                break :blk wrapped_return_buf.?;
             }
             // 래핑 포맷 (globalName 없음, IIFE): export는 syntax error이므로 제거
             break :blk @as(?[]const u8, null);
         }
         if (options.format == .cjs) {
-            // #2159: ESM `export { ... };` 를 CJS 의 `module.exports` / `exports.X` 형태로 변환.
+            // #2176: linker가 전달한 typed entry를 CJS의 `module.exports` / `exports.X` 형태로 변환.
             // mode 별 분기 (auto/named/default_/none) 는 emitCjsEntryExports 에서 결정.
-            cjs_exports_buf = emitCjsEntryExports(allocator, fe, options.output_exports) catch |err| switch (err) {
+            cjs_exports_buf = emitCjsEntryExports(allocator, entries, options.output_exports) catch |err| switch (err) {
                 error.OutputExportsDefaultRequiresSingleDefault => {
                     // default mode 인데 named 섞임 — Rollup 도 동일 케이스 throw.
                     // graph diagnostic 으로 emit (result.errors 노출, 사용자 fail-fast).
@@ -1700,8 +1698,9 @@ pub fn emitModule(
             };
             break :blk cjs_exports_buf;
         }
-        break :blk fe;
-    } else null;
+        cjs_exports_buf = try emitEsmEntryExports(allocator, entries);
+        break :blk cjs_exports_buf;
+    } else raw_final_exports;
 
     if (preamble != null or final_exports != null) {
         // RSC: 디렉티브가 preamble보다 위에 와야 인식 (preserve-modules에서 자체 파일이 되는 경우).
@@ -1730,6 +1729,7 @@ pub fn emitModule(
 // --- #2159 output.exports CJS 변환 ---
 
 const OutputExports = @import("bundler.zig").OutputExports;
+const FinalExportEntry = LinkingMetadata.FinalExportEntry;
 
 /// `output.exports = "default"` + named 섞인 케이스를 graph diagnostic 으로 emit (#2159).
 /// pending_diagnostics 와 동일하게 linker 의 `fatal_diagnostics` 에 append — `result.errors`
@@ -1759,7 +1759,57 @@ fn emitOutputExportsConflictDiag(
     });
 }
 
-/// ESM `export { local, local2 as exported, default_local as default };\n` 를 CJS 출력으로 변환.
+/// Entry export struct를 ESM `export { ... }` 구문으로 출력.
+fn emitEsmEntryExports(
+    allocator: std.mem.Allocator,
+    entries: []const FinalExportEntry,
+) ![]const u8 {
+    if (entries.len == 0) return try allocator.dupe(u8, "");
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "export {");
+    for (entries, 0..) |e, i| {
+        if (i > 0) try out.appendSlice(allocator, ",");
+        try out.append(allocator, ' ');
+        try out.appendSlice(allocator, e.local);
+        if (!std.mem.eql(u8, e.local, e.exported)) {
+            try out.appendSlice(allocator, " as ");
+            try out.appendSlice(allocator, e.exported);
+        }
+    }
+    try out.appendSlice(allocator, " };\n");
+    return try out.toOwnedSlice(allocator);
+}
+
+/// IIFE/UMD/AMD factory 반환값으로 entry exports를 출력.
+fn emitWrappedEntryExports(
+    allocator: std.mem.Allocator,
+    entries: []const FinalExportEntry,
+) ![]const u8 {
+    if (entries.len == 0) return try allocator.dupe(u8, "");
+
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "return {");
+    for (entries, 0..) |e, i| {
+        if (i > 0) try out.appendSlice(allocator, ",");
+        try out.append(allocator, ' ');
+        if (!e.is_default and std.mem.eql(u8, e.local, e.exported)) {
+            try out.appendSlice(allocator, e.local);
+        } else {
+            try out.appendSlice(allocator, e.exported);
+            try out.appendSlice(allocator, ": ");
+            try out.appendSlice(allocator, e.local);
+        }
+    }
+    try out.appendSlice(allocator, " };\n");
+    return try out.toOwnedSlice(allocator);
+}
+
+/// Entry export struct를 CJS 출력으로 변환.
 /// mode 별 emit 분기:
 ///   auto    : default-only → `module.exports = X`, named-only → `exports.X = X`, mixed → 양쪽 + esModule
 ///   named   : 항상 named (`exports.X = X`) + esModule (default 있으면)
@@ -1769,41 +1819,17 @@ fn emitOutputExportsConflictDiag(
 /// caller-owned slice 반환. 빈 결과는 빈 string (null 아님 — caller 가 final_exports 자리에 넣음).
 fn emitCjsEntryExports(
     allocator: std.mem.Allocator,
-    esm_export_str: []const u8,
+    entries: []const FinalExportEntry,
     mode: OutputExports,
 ) ![]const u8 {
     if (mode == .none) return try allocator.dupe(u8, "");
-
-    // ESM 형태 strip — `export { ... };\n` 의 `{` 와 `};` 사이 본문만.
-    // linker (linker/metadata.zig:buildFinalExports) 가 이 형식을 보장. mismatch 시
-    // debug assert 가 회귀 catch (release 는 silent fallback 으로 빈 출력).
-    const open = std.mem.indexOfScalar(u8, esm_export_str, '{') orelse return try allocator.dupe(u8, "");
-    const close = std.mem.lastIndexOfScalar(u8, esm_export_str, '}') orelse return try allocator.dupe(u8, "");
-    std.debug.assert(open < close);
-    if (close <= open + 1) return try allocator.dupe(u8, "");
-    const body = std.mem.trim(u8, esm_export_str[open + 1 .. close], " \t\n");
-
-    // entries 파싱 — `, ` 분리 → 각 entry `local` 또는 `local as exported`.
-    var entries: std.ArrayListUnmanaged(struct { local: []const u8, exported: []const u8 }) = .empty;
-    defer entries.deinit(allocator);
-
-    var it = std.mem.splitScalar(u8, body, ',');
-    while (it.next()) |raw_entry| {
-        const entry = std.mem.trim(u8, raw_entry, " \t\n");
-        if (entry.len == 0) continue;
-        const as_idx = std.mem.indexOf(u8, entry, " as ");
-        const local = if (as_idx) |i| std.mem.trim(u8, entry[0..i], " \t") else entry;
-        const exported = if (as_idx) |i| std.mem.trim(u8, entry[i + 4 ..], " \t") else entry;
-        try entries.append(allocator, .{ .local = local, .exported = exported });
-    }
-
-    if (entries.items.len == 0) return try allocator.dupe(u8, "");
+    if (entries.len == 0) return try allocator.dupe(u8, "");
 
     // default / named 분리
     var default_local: ?[]const u8 = null;
     var has_named = false;
-    for (entries.items) |e| {
-        if (std.mem.eql(u8, e.exported, "default")) {
+    for (entries) |e| {
+        if (e.is_default) {
             default_local = e.local;
         } else {
             has_named = true;
@@ -1820,7 +1846,7 @@ fn emitCjsEntryExports(
             try out.writer(allocator).print("module.exports = {s};\n", .{default_local.?});
         },
         .named => {
-            for (entries.items) |e| {
+            for (entries) |e| {
                 try out.writer(allocator).print("exports.{s} = {s};\n", .{ e.exported, e.local });
             }
             if (default_local != null) {
@@ -1834,14 +1860,14 @@ fn emitCjsEntryExports(
                     try out.writer(allocator).print("module.exports = {s};\n", .{dl});
                 } else {
                     // mixed — named 형태 + esModule flag
-                    for (entries.items) |e| {
+                    for (entries) |e| {
                         try out.writer(allocator).print("exports.{s} = {s};\n", .{ e.exported, e.local });
                     }
                     try out.appendSlice(allocator, "Object.defineProperty(exports, \"__esModule\", {value: true});\n");
                 }
             } else {
                 // named-only — esModule flag 없음 (Rollup 기본 auto 동작)
-                for (entries.items) |e| {
+                for (entries) |e| {
                     try out.writer(allocator).print("exports.{s} = {s};\n", .{ e.exported, e.local });
                 }
             }
@@ -1852,19 +1878,28 @@ fn emitCjsEntryExports(
 }
 
 test "emitCjsEntryExports: auto mode default-only → module.exports" {
-    const out = try emitCjsEntryExports(std.testing.allocator, "export { x as default };\n", .auto);
+    const entries = &.{FinalExportEntry{ .local = "x", .exported = "default", .is_default = true }};
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("module.exports = x;\n", out);
 }
 
 test "emitCjsEntryExports: auto mode named-only → exports.X (no esModule)" {
-    const out = try emitCjsEntryExports(std.testing.allocator, "export { a, b };\n", .auto);
+    const entries = &.{
+        FinalExportEntry{ .local = "a", .exported = "a", .is_default = false },
+        FinalExportEntry{ .local = "b", .exported = "b", .is_default = false },
+    };
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("exports.a = a;\nexports.b = b;\n", out);
 }
 
 test "emitCjsEntryExports: auto mode mixed → exports.X + esModule" {
-    const out = try emitCjsEntryExports(std.testing.allocator, "export { a, b as default };\n", .auto);
+    const entries = &.{
+        FinalExportEntry{ .local = "a", .exported = "a", .is_default = false },
+        FinalExportEntry{ .local = "b", .exported = "default", .is_default = true },
+    };
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .auto);
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "exports.a = a;") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "exports.default = b;") != null);
@@ -1872,27 +1907,59 @@ test "emitCjsEntryExports: auto mode mixed → exports.X + esModule" {
 }
 
 test "emitCjsEntryExports: named mode → 항상 named + esModule (default 있으면)" {
-    const out = try emitCjsEntryExports(std.testing.allocator, "export { x as default };\n", .named);
+    const entries = &.{FinalExportEntry{ .local = "x", .exported = "default", .is_default = true }};
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .named);
     defer std.testing.allocator.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "exports.default = x;") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "__esModule") != null);
 }
 
 test "emitCjsEntryExports: default_ mode default-only → module.exports" {
-    const out = try emitCjsEntryExports(std.testing.allocator, "export { x as default };\n", .default_);
+    const entries = &.{FinalExportEntry{ .local = "x", .exported = "default", .is_default = true }};
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .default_);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("module.exports = x;\n", out);
 }
 
 test "emitCjsEntryExports: default_ mode named 섞이면 error" {
-    const result = emitCjsEntryExports(std.testing.allocator, "export { a, b as default };\n", .default_);
+    const entries = &.{
+        FinalExportEntry{ .local = "a", .exported = "a", .is_default = false },
+        FinalExportEntry{ .local = "b", .exported = "default", .is_default = true },
+    };
+    const result = emitCjsEntryExports(std.testing.allocator, entries, .default_);
     try std.testing.expectError(error.OutputExportsDefaultRequiresSingleDefault, result);
 }
 
 test "emitCjsEntryExports: none mode → 빈 string" {
-    const out = try emitCjsEntryExports(std.testing.allocator, "export { a, b };\n", .none);
+    const entries = &.{
+        FinalExportEntry{ .local = "a", .exported = "a", .is_default = false },
+        FinalExportEntry{ .local = "b", .exported = "b", .is_default = false },
+    };
+    const out = try emitCjsEntryExports(std.testing.allocator, entries, .none);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("", out);
+}
+
+test "emitEsmEntryExports: emits export statement from typed entries" {
+    const entries = &.{
+        FinalExportEntry{ .local = "a", .exported = "a", .is_default = false },
+        FinalExportEntry{ .local = "b$1", .exported = "b", .is_default = false },
+        FinalExportEntry{ .local = "x", .exported = "default", .is_default = true },
+    };
+    const out = try emitEsmEntryExports(std.testing.allocator, entries);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("export { a, b$1 as b, x as default };\n", out);
+}
+
+test "emitWrappedEntryExports: emits object return from typed entries" {
+    const entries = &.{
+        FinalExportEntry{ .local = "a", .exported = "a", .is_default = false },
+        FinalExportEntry{ .local = "b$1", .exported = "b", .is_default = false },
+        FinalExportEntry{ .local = "x", .exported = "default", .is_default = true },
+    };
+    const out = try emitWrappedEntryExports(std.testing.allocator, entries);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("return { a, b: b$1, default: x };\n", out);
 }
 
 // --- CJS wrap functions (emitter/cjs_wrap.zig) ---

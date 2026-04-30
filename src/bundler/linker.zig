@@ -190,8 +190,12 @@ pub const LinkingMetadata = struct {
     skip_nodes: std.DynamicBitSet,
     /// symbol_id → 새 이름. codegen이 식별자 출력 시 symbol_ids[node_idx]로 조회.
     renames: std.AutoHashMap(u32, []const u8),
-    /// 엔트리 포인트의 최종 export 문 (e.g. "export { x, y$1 as y };\n")
+    /// dev metadata의 exports 할당 문자열. scope-hoisted entry export는
+    /// final_export_entries를 사용한다.
     final_exports: ?[]const u8,
+    /// 엔트리 포인트의 최종 export entry. scope-hoisted entry export를 emitter가
+    /// 포맷별로 출력할 때 사용한다.
+    final_export_entries: ?[]const FinalExportEntry = null,
     /// 노드 인덱스 → 심볼 인덱스 매핑. 빌림 — deinit에서 해제하지 않음.
     /// module.parse_arena 또는 transformer.symbol_ids(emit_arena)가 소유.
     symbol_ids: []const ?u32,
@@ -253,6 +257,12 @@ pub const LinkingMetadata = struct {
         }
     };
 
+    pub const FinalExportEntry = struct {
+        local: []const u8,
+        exported: []const u8,
+        is_default: bool,
+    };
+
     pub const NsInlineObjects = struct {
         entries: []const Entry = &.{},
 
@@ -285,6 +295,7 @@ pub const LinkingMetadata = struct {
         self.owned_rename_values.deinit(self.allocator);
         self.renames.deinit();
         if (self.final_exports) |fe| self.allocator.free(fe);
+        if (self.final_export_entries) |entries| self.allocator.free(entries);
         if (self.cjs_import_preamble) |p| self.allocator.free(p);
         self.const_values.deinit(self.allocator);
         // require_rewrites 해제 (keys는 import record 소유, values만 해제)
