@@ -152,6 +152,8 @@ pub const ModuleGraph = struct {
     styled_components_namespace: []const u8 = "",
     /// styled-components.meaninglessFileNames 옵션 — displayName fallback basename list.
     styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
+    /// styled-components.topLevelImportPaths 옵션 — vendored fork import source list.
+    styled_components_top_level_import_paths: []const []const u8 = &.{},
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -1747,6 +1749,7 @@ pub const ModuleGraph = struct {
         opts.styled_components_pure = self.styled_components_pure;
         opts.styled_components_namespace = self.styled_components_namespace;
         opts.styled_components_meaningless_file_names = self.styled_components_meaningless_file_names;
+        opts.styled_components_top_level_import_paths = self.styled_components_top_level_import_paths;
         opts.emotion = self.emotion and is_user_code;
         opts.emotion_auto_label = self.emotion_auto_label;
         opts.emotion_source_map = self.emotion_source_map;

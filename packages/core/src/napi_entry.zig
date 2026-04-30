@@ -588,6 +588,11 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
         for (arr) |s| owned_strings.append(native_alloc, s) catch return throwError(env, "OutOfMemory");
         owned_arrays.append(native_alloc, arr) catch return throwError(env, "OutOfMemory");
     }
+    const sc_top_level = getObjectStringArray(env, opts_obj, "styledComponentsTopLevelImportPaths", native_alloc);
+    if (sc_top_level) |arr| {
+        for (arr) |s| owned_strings.append(native_alloc, s) catch return throwError(env, "OutOfMemory");
+        owned_arrays.append(native_alloc, arr) catch return throwError(env, "OutOfMemory");
+    }
 
     const output_count = @import("zts_lib").app.build.buildApp(native_alloc, .{
         .root = root,
@@ -609,6 +614,7 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
         .styled_components_pure = getObjectBool(env, opts_obj, "styledComponentsPure", false),
         .styled_components_namespace = getObjectString(env, opts_obj, "styledComponentsNamespace", native_alloc) orelse "",
         .styled_components_meaningless_file_names = sc_meaningless orelse &.{"index"},
+        .styled_components_top_level_import_paths = sc_top_level orelse &.{},
         .emotion = getObjectBool(env, opts_obj, "emotion", false),
         .emotion_auto_label = getAutoLabelMode(env, opts_obj, native_alloc),
         .emotion_source_map = getObjectBool(env, opts_obj, "emotionSourceMap", false),
@@ -3527,6 +3533,13 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
+    // styledComponentsTopLevelImportPaths: string[]
+    const sc_top_level = getObjectStringArray(env, opts_obj, "styledComponentsTopLevelImportPaths", native_alloc);
+    if (sc_top_level) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
     // pure: string[]
     const pure = getObjectStringArray(env, opts_obj, "pure", native_alloc);
     if (pure) |arr| {
@@ -3643,6 +3656,7 @@ fn parseBuildOptions(
         .styled_components_pure = getObjectBool(env, opts_obj, "styledComponentsPure", false),
         .styled_components_namespace = getObjectString(env, opts_obj, "styledComponentsNamespace", native_alloc) orelse "",
         .styled_components_meaningless_file_names = sc_meaningless orelse &.{"index"},
+        .styled_components_top_level_import_paths = sc_top_level orelse &.{},
         .emotion = getObjectBool(env, opts_obj, "emotion", false),
         .emotion_auto_label = getAutoLabelMode(env, opts_obj, native_alloc),
         .emotion_source_map = getObjectBool(env, opts_obj, "emotionSourceMap", false),

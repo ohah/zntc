@@ -335,6 +335,12 @@ export interface StyledComponentsOptions {
    * (default: `["index"]`). babel-plugin-styled-components 의 동일 옵션과 동등.
    */
   meaninglessFileNames?: string[];
+  /**
+   * vendored fork (e.g. `@my-org/styled`) 도 styled-components 처럼 인식할 import source
+   * 목록. babel-plugin-styled-components 는 picomatch glob 을 받지만 ZTS 는 fixed string
+   * equality 로 단순화 — 대부분의 실용 케이스 (vendored fork) 커버.
+   */
+  topLevelImportPaths?: string[];
   /** [meta] 표시 (default: false) */
   meta?: boolean;
 }
@@ -1259,6 +1265,9 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
       if (Array.isArray(sc.meaninglessFileNames)) {
         napiOptions.styledComponentsMeaninglessFileNames = sc.meaninglessFileNames;
       }
+      if (Array.isArray(sc.topLevelImportPaths)) {
+        napiOptions.styledComponentsTopLevelImportPaths = sc.topLevelImportPaths;
+      }
     }
   }
   const em = options.compiler?.emotion;
@@ -1497,6 +1506,9 @@ function buildCompilerNapiFields(compiler: AppBuildOptions["compiler"]): Record<
     }
     if (Array.isArray(sc.meaninglessFileNames)) {
       out.styledComponentsMeaninglessFileNames = sc.meaninglessFileNames;
+    }
+    if (Array.isArray(sc.topLevelImportPaths)) {
+      out.styledComponentsTopLevelImportPaths = sc.topLevelImportPaths;
     }
   }
 

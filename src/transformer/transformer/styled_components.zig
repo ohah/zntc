@@ -65,6 +65,16 @@ pub fn isStyledImportSource(source: []const u8) bool {
     return false;
 }
 
+/// 사용자 옵션 (`styled_components_top_level_import_paths`) 매칭 포함 — vendored fork
+/// 인식. babel-plugin-styled-components 의 `topLevelImportPaths` 단순화 (fixed string).
+fn isStyledImportSourceWithExtras(self: *const Transformer, source: []const u8) bool {
+    if (isStyledImportSource(source)) return true;
+    for (self.options.styled_components_top_level_import_paths) |s| {
+        if (std.mem.eql(u8, s, source)) return true;
+    }
+    return false;
+}
+
 /// styled-components 의 named helper imports — minify 등 transform 에 사용.
 const NamedHelperSpec = struct {
     imported: []const u8,
@@ -94,7 +104,7 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     const source_node = self.ast.getNode(x.source);
     if (source_node.tag != .string_literal) return;
     const source_text = import_scanner.stripQuotes(self.ast.getText(source_node.span)) orelse return;
-    if (!isStyledImportSource(source_text)) return;
+    if (!isStyledImportSourceWithExtras(self, source_text)) return;
 
     var i: u32 = 0;
     while (i < x.specs_len) : (i += 1) {

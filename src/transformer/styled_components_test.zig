@@ -1242,6 +1242,45 @@ test "styled (meaninglessFileNames): 사용자 list 의 basename 도 fallback" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Button__Inner\"") != null);
 }
 
+test "styled (topLevelImportPaths): vendored fork 도 styled 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@my-org/styled";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_top_level_import_paths = &.{"@my-org/styled"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // vendored fork 의 default import 도 styled 처럼 wrap → withConfig + displayName
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Btn") != null);
+}
+
+test "styled (topLevelImportPaths): 미등록 source 는 무시 (보호 회귀)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@my-org/styled";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_top_level_import_paths = &.{"@other-org/styled"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 매칭 안 되는 fork 는 그대로 → withConfig 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+}
+
 test "styled (meaninglessFileNames): 빈 list 면 `index` fallback 도 비활성" {
     // 빈 array 로 override 하면 babel 기본 `index` fallback 도 안 적용 — 그대로 `index__Inner`.
     var r = try e2eFull(
