@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { bundleAndRun } from "./helpers";
+import { bundleAndRun, transpileAndRun } from "./helpers";
 
 describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -111,6 +111,201 @@ describe("ES 다운레벨링 엣지케이스 (복합 조합)", () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe("5");
+    });
+  });
+
+  describe("syntax audit regressions", () => {
+    test("logical nullish assignment reads member value only once", async () => {
+      const result = await transpileAndRun(
+        `
+          const log: string[] = [];
+          const obj = {
+            _x: 0,
+            get x() { log.push("get:" + this._x); return this._x; },
+            set x(v: number) { log.push("set:" + v); this._x = v; },
+          };
+          obj.x ||= 2;
+          obj.x &&= 3;
+          obj.x ??= 4;
+          console.log(JSON.stringify({ x: obj.x, log }));
+        `,
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).toBe("");
+      expect(result.runOutput).toBe(
+        JSON.stringify({
+          x: 3,
+          log: ["get:0", "set:2", "get:2", "set:3", "get:3", "get:3"],
+        }),
+      );
+    });
+
+    test("logical assignment preserves complex receiver and computed key single evaluation", async () => {
+      const result = await transpileAndRun(
+        `
+          const log: string[] = [];
+          const state = { value: 1 };
+          function getObj() {
+            log.push("obj");
+            return {
+              get value() { log.push("get:" + state.value); return state.value; },
+              set value(v: number) { log.push("set:" + v); state.value = v; },
+            };
+          }
+          function key() {
+            log.push("key");
+            return "value";
+          }
+          getObj()[key()] ??= 9;
+          getObj()[key()] &&= 5;
+          console.log(JSON.stringify({ value: state.value, log }));
+        `,
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).toBe("");
+      expect(result.runOutput).toBe(
+        JSON.stringify({
+          value: 5,
+          log: ["obj", "key", "get:1", "obj", "key", "get:1", "set:5"],
+        }),
+      );
+    });
+
+    test("derived constructor fields initialize after super assigned through variable initializer", async () => {
+      const result = await transpileAndRun(
+        `
+          const log: string[] = [];
+          class Base {
+            v: number;
+            constructor(v: number) { log.push("base:" + v); this.v = v; }
+          }
+          class Child extends Base {
+            field = log.push("field:" + this.v);
+            constructor() {
+              log.push("before");
+              const result = super(log.push("arg"));
+              log.push("after:" + (result === this));
+            }
+          }
+          new Child();
+          console.log(JSON.stringify(log));
+        `,
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).toBe("");
+      expect(result.runOutput).toBe(
+        JSON.stringify(["before", "arg", "base:2", "field:2", "after:true"]),
+      );
+    });
+
+    test("derived constructor fields initialize on nested super assignment paths", async () => {
+      const result = await transpileAndRun(
+        `
+          const log: string[] = [];
+          class Base {
+            v: number;
+            constructor(v: number) { log.push("base:" + v); this.v = v; }
+          }
+          class Child extends Base {
+            a = log.push("a:" + this.v);
+            b = log.push("b:" + this.v);
+            constructor(flag: boolean) {
+              log.push("before");
+              if (flag) {
+                const first = (log.push("branch"), super(7));
+                log.push("after:" + (first === this));
+              } else {
+                super(9);
+              }
+            }
+          }
+          new Child(true);
+          console.log(JSON.stringify(log));
+        `,
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).toBe("");
+      expect(result.runOutput).toBe(
+        JSON.stringify(["before", "branch", "base:7", "a:7", "b:7", "after:true"]),
+      );
+    });
+
+    test("static blocks stay interleaved with static fields", async () => {
+      const result = await transpileAndRun(
+        `
+          const log: string[] = [];
+          class A {
+            static a = log.push("a");
+            static { log.push("block:" + this.a); }
+            static b = log.push("b");
+          }
+          console.log(JSON.stringify([A.a, A.b, log]));
+        `,
+        ["--target=es2019"],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).toBe("");
+      expect(result.runOutput).toBe(JSON.stringify([1, 3, ["a", "block:1", "b"]]));
+    });
+
+    test("static fields and multiple static blocks preserve class evaluation order in ES5 class lowering", async () => {
+      const result = await transpileAndRun(
+        `
+          const log: string[] = [];
+          class A {
+            static a = log.push("a");
+            static { log.push("block1:" + this.a); }
+            static b = log.push("b");
+            static { log.push("block2:" + this.b); }
+            static c = log.push("c");
+          }
+          console.log(JSON.stringify([A.a, A.b, A.c, log]));
+        `,
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).toBe("");
+      expect(result.runOutput).toBe(
+        JSON.stringify([1, 3, 5, ["a", "block1:1", "b", "block2:3", "c"]]),
+      );
+    });
+
+    test("async generator finally yield works when for-await breaks", async () => {
+      const result = await transpileAndRun(
+        `
+          async function* gen() {
+            try {
+              yield 1;
+              yield await Promise.resolve(2);
+            } finally {
+              yield 3;
+            }
+          }
+          (async () => {
+            const out: number[] = [];
+            for await (const v of gen()) {
+              out.push(v);
+              if (v === 2) break;
+            }
+            console.log(JSON.stringify(out));
+          })();
+        `,
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.transpileExitCode).toBe(0);
+      expect(result.runStderr).toBe("");
+      expect(result.runOutput).toBe(JSON.stringify([1, 2]));
     });
   });
 

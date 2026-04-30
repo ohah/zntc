@@ -97,6 +97,9 @@ pub fn ES2022(comptime Transformer: type) type {
                     // static block → IIFE로 변환
                     const iife = try buildStaticBlockIIFE(self, member, class_name_span);
                     try static_block_iifes.append(self.allocator, iife);
+                } else if (class_name_span != null and member.tag == .property_definition and isPublicStaticField(self, member)) {
+                    const static_assign = try buildStaticFieldAssign(self, member, class_name_span.?, already_visited);
+                    try static_block_iifes.append(self.allocator, static_assign);
                 } else if (already_visited) {
                     try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
                 } else {
@@ -130,6 +133,51 @@ pub fn ES2022(comptime Transformer: type) type {
         // Private Fields (#field) → WeakMap + ctor init
         // lowerPrivateMembers (아래) 참조.
         // ================================================================
+
+        fn isPublicStaticField(self: *Transformer, member: Node) bool {
+            const pe = member.data.extra;
+            const key: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
+            if (key.isNone()) return false;
+            const key_node = self.ast.getNode(key);
+            if (key_node.tag == .private_identifier) return false;
+
+            const flags = self.readU32(pe, ast_mod.PropertyExtra.flags);
+            return (flags & ast_mod.PropertyFlags.is_static) != 0;
+        }
+
+        fn buildStaticFieldAssign(self: *Transformer, member: Node, class_name_span: Span, already_visited: bool) Transformer.Error!NodeIndex {
+            const pe = member.data.extra;
+            const key: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
+            const init: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
+
+            const saved_static = self.current_super_is_static;
+            const saved_receiver = self.current_super_static_receiver;
+            self.current_super_is_static = true;
+            self.current_super_static_receiver = class_name_span;
+            defer {
+                self.current_super_is_static = saved_static;
+                self.current_super_static_receiver = saved_receiver;
+            }
+
+            const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
+            const member_ref = try es_helpers.makeMemberFromKeyIdx(self, class_ref, key, member.span);
+            const value = if (init.isNone())
+                try es_helpers.makeVoidZero(self, member.span)
+            else if (already_visited)
+                init
+            else
+                try self.visitNode(init);
+            const assign = try self.ast.addNode(.{
+                .tag = .assignment_expression,
+                .span = member.span,
+                .data = .{ .binary = .{ .left = member_ref, .right = value, .flags = 0 } },
+            });
+            return self.ast.addNode(.{
+                .tag = .expression_statement,
+                .span = member.span,
+                .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
+            });
+        }
 
         /// method_definition의 body 앞에 문들을 삽입하여 새 method_definition 반환.
         fn injectIntoMethod(self: *Transformer, method_node_idx: NodeIndex, stmts: []const NodeIndex, has_super: bool) Transformer.Error!NodeIndex {

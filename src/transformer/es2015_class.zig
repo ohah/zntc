@@ -223,13 +223,15 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // static fields/blocks 는 class evaluation 중 실행된다. extends class 의 경우 IIFE
             // 밖으로 내보내면 super lowering 이 참조하는 _super scope가 사라지므로 IIFE 내부에서
             // __extends 이후, return 이전에 실행한다.
-            for (cm.static_fields.items) |field| {
-                const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, fresh_name_span);
-                const static_assign = try buildStaticFieldAssignWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
-                try self.scratch.append(self.allocator, static_assign);
-            }
-            for (cm.static_block_stmts.items) |sb_stmt| {
-                try self.scratch.append(self.allocator, sb_stmt);
+            for (cm.static_elements.items) |element| {
+                switch (element) {
+                    .field => |field| {
+                        const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, fresh_name_span);
+                        const static_assign = try buildStaticFieldAssignWithCtx(self, class_ref, field.key, field.init, fresh_name_span, span);
+                        try self.scratch.append(self.allocator, static_assign);
+                    },
+                    .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
+                }
             }
 
             // return ClassName;
@@ -369,10 +371,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
 
             // has_extra를 먼저 계산하여 func_node를 올바른 이름으로 한 번만 빌드
-            const has_extra = cm.methods.items.len > 0 or cm.static_fields.items.len > 0 or
+            const has_extra = cm.methods.items.len > 0 or cm.static_elements.items.len > 0 or
                 cm.accessors.items.len > 0 or cm.private_fields.items.len > 0 or
                 cm.static_private_fields.items.len > 0 or cm.private_methods.items.len > 0 or
-                cm.static_block_stmts.items.len > 0 or (has_super and super_span != null);
+                (has_super and super_span != null);
 
             // IIFE 경로면 fresh identifier (symbol 없음), 단순 경로면 원본 name_node.
             // `name_span`은 이미 addString/source에 저장된 stable Span이므로 그대로 재사용.
@@ -480,11 +482,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_top..]);
 
-            for (cm.static_fields.items) |field| {
-                try self.scratch.append(self.allocator, try buildStaticFieldAssignWithCtx(self, try es_helpers.makeIdentifierRefFromSpan(self, name_span), field.key, field.init, name_span, span));
-            }
-            for (cm.static_block_stmts.items) |sb_stmt| {
-                try self.scratch.append(self.allocator, sb_stmt);
+            for (cm.static_elements.items) |element| {
+                switch (element) {
+                    .field => |field| try self.scratch.append(self.allocator, try buildStaticFieldAssignWithCtx(self, try es_helpers.makeIdentifierRefFromSpan(self, name_span), field.key, field.init, name_span, span)),
+                    .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
+                }
             }
 
             // return ClassName;
@@ -1594,6 +1596,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             init: NodeIndex,
         };
 
+        const StaticElement = union(enum) {
+            field: FieldInfo,
+            stmt: NodeIndex,
+        };
+
         const AccessorInfo = struct {
             member_idx: NodeIndex,
             is_static: bool,
@@ -1615,6 +1622,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             methods: std.ArrayList(MethodInfo),
             instance_fields: std.ArrayList(NodeIndex),
             static_fields: std.ArrayList(FieldInfo),
+            static_elements: std.ArrayList(StaticElement),
             accessors: std.ArrayList(AccessorInfo),
             private_fields: std.ArrayList(PrivateFieldInfo),
             /// static private fields: descriptor 객체 패턴.
@@ -1648,6 +1656,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 cm.methods.deinit(allocator);
                 cm.instance_fields.deinit(allocator);
                 cm.static_fields.deinit(allocator);
+                cm.static_elements.deinit(allocator);
                 cm.accessors.deinit(allocator);
                 cm.private_fields.deinit(allocator);
                 cm.static_private_fields.deinit(allocator);
@@ -1704,6 +1713,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .methods = .empty,
                 .instance_fields = .empty,
                 .static_fields = .empty,
+                .static_elements = .empty,
                 .accessors = .empty,
                 .private_fields = .empty,
                 .static_private_fields = .empty,
@@ -1800,7 +1810,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
 
                     if (is_static and !init_val.isNone()) {
-                        try cm.static_fields.append(self.allocator, .{ .key = key, .init = init_val });
+                        const field_info = FieldInfo{ .key = key, .init = init_val };
+                        try cm.static_fields.append(self.allocator, field_info);
+                        try cm.static_elements.append(self.allocator, .{ .field = field_info });
                     } else if (!is_static and !init_val.isNone()) {
                         const this_node = try self.ast.addNode(.{
                             .tag = .this_expression,
@@ -1857,6 +1869,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                                 const new_stmt = try self.visitNode(@enumFromInt(sb_raw));
                                 if (!new_stmt.isNone()) {
                                     try cm.static_block_stmts.append(self.allocator, new_stmt);
+                                    try cm.static_elements.append(self.allocator, .{ .stmt = new_stmt });
                                 }
                             }
                         }
@@ -2491,7 +2504,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         } },
                     });
                 },
-                else => return stmt_idx,
+                else => {
+                    const scratch_top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+                    try self.scratch.append(self.allocator, stmt_idx);
+                    try appendInstanceFields(self, instance_fields, span);
+
+                    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    return self.ast.addNode(.{
+                        .tag = .block_statement,
+                        .span = stmt.span,
+                        .data = .{ .list = new_list },
+                    });
+                },
             }
         }
 
@@ -2525,11 +2551,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
                     return false;
                 },
+                .variable_declaration => {
+                    const start = self.ast.extra_data.items[node.data.extra + 1];
+                    const len = self.ast.extra_data.items[node.data.extra + 2];
+                    for (self.ast.extra_data.items[start .. start + len]) |raw_idx| {
+                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
+                    }
+                    return false;
+                },
+                .variable_declarator => {
+                    const init: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra + 2]);
+                    return containsSuperCallAssignment(self, init);
+                },
+                .call_expression => return isSuperCallLike(self, node),
                 .assignment_expression => {
                     const left = self.ast.getNode(node.data.binary.left);
-                    if (left.tag != .identifier_reference) return false;
+                    if (left.tag != .identifier_reference and left.tag != .assignment_target_identifier) return false;
                     const right = self.ast.getNode(node.data.binary.right);
-                    return isCallSuperCall(self, right);
+                    return isSuperCallLike(self, right);
                 },
                 .if_statement, .conditional_expression => {
                     if (containsSuperCallAssignment(self, node.data.ternary.b)) return true;
@@ -2558,6 +2597,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const helper_names = @import("../runtime_helper_names.zig");
             return std.mem.eql(u8, name, "__callSuper") or
                 std.mem.eql(u8, name, helper_names.NAMES.CALL_SUPER_MIN);
+        }
+
+        fn isSuperCallLike(self: *Transformer, node: Node) bool {
+            if (node.tag != .call_expression) return false;
+            const e = node.data.extra;
+            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            if (callee_idx.isNone()) return false;
+            const callee = self.ast.getNode(callee_idx);
+            if (callee.tag == .super_expression) return true;
+            return isCallSuperCall(self, node);
         }
 
         /// 빈 function declaration (constructor가 없는 경우)
