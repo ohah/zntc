@@ -67,6 +67,19 @@ pub const Plugin = plugin_mod.Plugin;
 /// `parser.scan_results.DefineEntry` 와 동일 정의 — parser 의 inline scan 도 같은 entries 사용.
 pub const DefineEntry = @import("../parser/scan_results.zig").DefineEntry;
 
+/// emotion.autoLabel 모드. 다른 emotion 도구들 (`@emotion/babel-plugin` 등) 의
+/// `'always' | 'dev-only' | 'never'` 와 동일 의미.
+pub const AutoLabelMode = enum {
+    /// label 적용 안 함.
+    never,
+    /// 항상 label 적용 (ZTS 기본 — 기존 사용자 영향 없음).
+    always,
+    /// `process.env.NODE_ENV` define 이 `"production"` 이면 .never, 아니면 .always.
+    /// runtime conditional 이 아니라 compile-time 단정 — `--define:process.env.NODE_ENV=...`
+    /// 가 설정돼 있어야 의미 있음.
+    dev_only,
+};
+
 /// 정규화 버퍼 크기. `process.env.NODE_ENV`류 식별자 체인은 훨씬 짧지만 여유.
 /// 초과 시 normalizeOptionalChain은 null을 반환해 치환을 스킵한다.
 const DEFINE_KEY_NORM_BUF: usize = 256;
@@ -124,10 +137,13 @@ pub const TransformOptions = struct {
     /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
     /// `import { css } from "@emotion/react"` 의 named binding 추적.
     emotion: bool = false,
-    /// emotion.autoLabel 옵션 — false 면 autoLabel transform 만 skip (binding tracking
-    /// 자체는 동작 — 향후 Global / sourceMap 같은 다른 emotion features 와 분리).
-    /// `compiler.emotion: { autoLabel: false }` 로 설정.
-    emotion_auto_label: bool = true,
+    /// emotion.autoLabel 옵션. 3 모드:
+    ///   - `.always` — 항상 label 적용 (기본).
+    ///   - `.never` — 절대 label 적용 안 함.
+    ///   - `.dev_only` — `process.env.NODE_ENV` define 이 `"production"` 이면 .never,
+    ///     아니면 .always (compile-time 결정 — runtime conditional emit 아님).
+    /// `compiler.emotion: { autoLabel: "always" | "dev-only" | "never" | false (=never) }`.
+    emotion_auto_label: AutoLabelMode = .always,
     /// emotion.sourceMap 옵션 — true 면 css 템플릿 끝에 inline sourceMap 주석을 append.
     /// `compiler.emotion: { sourceMap: true }`. babel-plugin-emotion 동작과 일치 —
     /// DevTools 에서 CSS 위치 → source 위치 추적 가능.

@@ -183,7 +183,7 @@ pub fn maybeTransformEmotionTemplate(
 
     if (!tagMatchesEmotion(self, tag_idx)) return init_idx;
 
-    const apply_label = self.options.emotion_auto_label and var_name.len > 0;
+    const apply_label = labelEnabledNow(self) and var_name.len > 0;
     const apply_sm = self.options.emotion_source_map;
     if (!apply_label and !apply_sm) return init_idx;
 
@@ -585,6 +585,34 @@ fn transformInterpTemplate(
         .span = node.span,
         .data = .{ .list = new_list },
     });
+}
+
+/// 현재 빌드에서 autoLabel 적용 여부. `.always` 즉시 true, `.never` 즉시 false,
+/// `.dev_only` 는 `process.env.NODE_ENV` define 이 `"production"` 인지 확인 — 그러면
+/// false (production build), 아니면 true (development build).
+fn labelEnabledNow(self: *Transformer) bool {
+    return switch (self.options.emotion_auto_label) {
+        .never => false,
+        .always => true,
+        .dev_only => !defineMatchesProduction(self),
+    };
+}
+
+/// `process.env.NODE_ENV` define entry 가 `"production"` 으로 설정됐는지.
+/// value 는 JS 표현식 string (e.g. `"\"production\""` JSON-encoded). quote 제거 후 비교.
+fn defineMatchesProduction(self: *Transformer) bool {
+    for (self.options.define) |entry| {
+        if (!std.mem.eql(u8, entry.key, "process.env.NODE_ENV")) continue;
+        const v = entry.value;
+        if (v.len < 2) return false;
+        const first = v[0];
+        const last = v[v.len - 1];
+        if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) {
+            return std.mem.eql(u8, v[1 .. v.len - 1], "production");
+        }
+        return false;
+    }
+    return false;
 }
 
 fn writeLabelPrefix(self: *Transformer, buf: *std.ArrayList(u8), var_name: []const u8) Error!void {

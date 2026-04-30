@@ -1252,7 +1252,15 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   if (em !== undefined && em !== false) {
     napiOptions.emotion = true;
     if (typeof em === "object") {
-      if (em.autoLabel === false) napiOptions.emotionAutoLabel = false;
+      // autoLabel: string ("never"|"always"|"dev-only") 또는 boolean (legacy false=never).
+      // 누락 시 NAPI 측 default `.always`.
+      if (em.autoLabel === false) {
+        napiOptions.emotionAutoLabel = "never";
+      } else if (em.autoLabel === true) {
+        napiOptions.emotionAutoLabel = "always";
+      } else if (typeof em.autoLabel === "string") {
+        napiOptions.emotionAutoLabel = em.autoLabel;
+      }
       if (em.sourceMap === true) napiOptions.emotionSourceMap = true;
       if (typeof em.labelFormat === "string" && em.labelFormat.length > 0) {
         napiOptions.emotionLabelFormat = em.labelFormat;
@@ -1422,8 +1430,12 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
       : {}),
     ...(compiler?.emotion !== undefined && compiler.emotion !== false ? { emotion: true } : {}),
     ...(typeof compiler?.emotion === "object" && compiler.emotion.autoLabel === false
-      ? { emotionAutoLabel: false }
-      : {}),
+      ? { emotionAutoLabel: "never" }
+      : typeof compiler?.emotion === "object" && compiler.emotion.autoLabel === true
+        ? { emotionAutoLabel: "always" }
+        : typeof compiler?.emotion === "object" && typeof compiler.emotion.autoLabel === "string"
+          ? { emotionAutoLabel: compiler.emotion.autoLabel }
+          : {}),
     ...(typeof compiler?.emotion === "object" && compiler.emotion.sourceMap === true
       ? { emotionSourceMap: true }
       : {}),

@@ -155,7 +155,7 @@ test "emotion: { autoLabel: false } 옵션 — emotion 활성이지만 label ski
         \\import { css } from "@emotion/react";
         \\const button = css`color: red;`;
     ,
-        .{ .emotion = true, .emotion_auto_label = false, .jsx_filename = "test.tsx" },
+        .{ .emotion = true, .emotion_auto_label = .never, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -403,7 +403,7 @@ test "emotion: JSX inline css — emotion_auto_label=false 면 skip" {
         \\import { css } from "@emotion/react";
         \\const el = <div css={css`color: red;`} />;
     ,
-        .{ .emotion = true, .emotion_auto_label = false, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        .{ .emotion = true, .emotion_auto_label = .never, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -841,7 +841,7 @@ test "emotion (sourceMap): autoLabel false + sourceMap true — sourceMap 만 �
         \\import { css } from "@emotion/react";
         \\const card = css`color: red;`;
     ,
-        .{ .emotion = true, .emotion_auto_label = false, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        .{ .emotion = true, .emotion_auto_label = .never, .emotion_source_map = true, .jsx_filename = "test.tsx" },
         default_cg,
         ".tsx",
     );
@@ -964,6 +964,101 @@ test "emotion (sourceMap): base64 디코딩 → JSON 구조 정합성 검증" {
     try std.testing.expect(std.mem.indexOf(u8, json_buf, "\"sourcesContent\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_buf, "\"mappings\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_buf, "\"names\":[]") != null);
+}
+
+// ─── autoLabel mode (never / always / dev-only) ───
+// `.dev_only` 는 `process.env.NODE_ENV` define 이 `"production"` 이면 `.never`,
+// 아니면 `.always`. compile-time 결정 — runtime conditional 아님.
+
+const transformer_mod = @import("transformer.zig");
+
+const define_prod = [_]transformer_mod.DefineEntry{
+    .{ .key = "process.env.NODE_ENV", .value = "\"production\"" },
+};
+const define_dev = [_]transformer_mod.DefineEntry{
+    .{ .key = "process.env.NODE_ENV", .value = "\"development\"" },
+};
+
+test "emotion (autoLabel mode): .always — 기존 동작 유지" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_auto_label = .always, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "card");
+}
+
+test "emotion (autoLabel mode): .never — label 추가 안 됨" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_auto_label = .never, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "emotion (autoLabel mode): .dev_only + NODE_ENV=production → .never 동작" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_auto_label = .dev_only,
+            .define = &define_prod,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // production define → label 안 들어감
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:card;") == null);
+}
+
+test "emotion (autoLabel mode): .dev_only + NODE_ENV=development → .always 동작" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_auto_label = .dev_only,
+            .define = &define_dev,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "card");
+}
+
+test "emotion (autoLabel mode): .dev_only — define 없으면 .always (기본 dev 가정)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_auto_label = .dev_only, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "card");
 }
 
 // ─── labelFormat ───
