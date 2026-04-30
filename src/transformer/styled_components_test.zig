@@ -1771,6 +1771,55 @@ test "styled (cssProp Step 3): Custom component (PascalCase) 는 styled(Foo) 로
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
 }
 
+test "styled (cssProp A2): template `${expr}` interpolation prop forwarding" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const color = "red";
+        \\const el = <div css={`color: ${color};`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 변환 결과:
+    //   const _styled_0 = styled.div`color: ${p => p._css0};`;
+    //   <_styled_0 _css0={color}>x</_styled_0>
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "p._css0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_css0:") != null or std.mem.indexOf(u8, r.output, "_css0=") != null or std.mem.indexOf(u8, r.output, "_css0\":") != null);
+    // 원본 `color` 가 attr value 로 전달되어야
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color") != null);
+}
+
+test "styled (cssProp A2): 다중 interpolation 도 각각 _css0/_css1 로 forward" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={`color: ${color}; padding: ${padding}px;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "p._css0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "p._css1") != null);
+}
+
 test "styled (cssProp Step 4): object form `<div css={{...}}>` → styled.div({...})" {
     var r = try e2eFull(
         std.testing.allocator,
