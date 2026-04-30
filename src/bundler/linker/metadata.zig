@@ -688,7 +688,7 @@ pub fn buildMetadataForAst(
     }
 
     // 3. 엔트리 포인트 final exports
-    const final_exports = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
+    const final_export_entries = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
 
     // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
     const const_values = try self.buildCrossModuleConstValues(self.getModule(module_index).?, sem);
@@ -720,7 +720,8 @@ pub fn buildMetadataForAst(
     return .{
         .skip_nodes = skip_nodes,
         .renames = renames,
-        .final_exports = final_exports,
+        .final_exports = null,
+        .final_export_entries = final_export_entries,
         .symbol_ids = sem.symbol_ids,
         .cjs_import_preamble = combined_preamble,
         .require_rewrites = require_rewrites,
@@ -820,31 +821,23 @@ pub fn buildFinalExports(
     is_entry: bool,
     module_index: u32,
     export_bindings: []const ExportBinding,
-) !?[]const u8 {
+) !?[]const LinkingMetadata.FinalExportEntry {
     if (!is_entry or export_bindings.len == 0) return null;
 
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(self.allocator);
-    try buf.appendSlice(self.allocator, "export {");
-    var first = true;
+    var entries: std.ArrayListUnmanaged(LinkingMetadata.FinalExportEntry) = .empty;
+    errdefer entries.deinit(self.allocator);
     for (export_bindings) |eb| {
         if (eb.kind.isReExportAll()) continue;
         if (std.mem.eql(u8, eb.exported_name, "*")) continue;
-        if (!first) try buf.appendSlice(self.allocator, ",");
-        first = false;
         const actual_name = self.getCanonicalForExport(eb, module_index);
-        try buf.append(self.allocator, ' ');
-        try buf.appendSlice(self.allocator, actual_name);
-        if (!std.mem.eql(u8, actual_name, eb.exported_name)) {
-            try buf.appendSlice(self.allocator, " as ");
-            try buf.appendSlice(self.allocator, eb.exported_name);
-        }
+        try entries.append(self.allocator, .{
+            .local = actual_name,
+            .exported = eb.exported_name,
+            .is_default = std.mem.eql(u8, eb.exported_name, "default"),
+        });
     }
-    try buf.appendSlice(self.allocator, " };\n");
-    if (!first) {
-        return try self.allocator.dupe(u8, buf.items);
-    }
-    return null;
+    if (entries.items.len == 0) return null;
+    return try entries.toOwnedSlice(self.allocator);
 }
 
 /// 크로스-모듈 상수 인라인 맵을 생성한다.
@@ -1309,38 +1302,13 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
     }
 
     // 5. 엔트리 포인트: final exports
-    var final_exports: ?[]const u8 = null;
-    if (is_entry and m.export_bindings.len > 0) {
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(self.allocator);
-        try buf.appendSlice(self.allocator, "export {");
-        var first = true;
-        for (m.export_bindings) |eb| {
-            if (eb.kind.isReExportAll()) continue;
-            if (std.mem.eql(u8, eb.exported_name, "*")) continue;
-
-            if (!first) try buf.appendSlice(self.allocator, ",");
-            first = false;
-
-            const actual_name = self.getCanonicalForExport(eb, module_index);
-
-            try buf.append(self.allocator, ' ');
-            try buf.appendSlice(self.allocator, actual_name);
-            if (!std.mem.eql(u8, actual_name, eb.exported_name)) {
-                try buf.appendSlice(self.allocator, " as ");
-                try buf.appendSlice(self.allocator, eb.exported_name);
-            }
-        }
-        try buf.appendSlice(self.allocator, " };\n");
-        if (!first) {
-            final_exports = try self.allocator.dupe(u8, buf.items);
-        }
-    }
+    const final_export_entries = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
 
     return .{
         .skip_nodes = skip_nodes,
         .renames = renames,
-        .final_exports = final_exports,
+        .final_exports = null,
+        .final_export_entries = final_export_entries,
         .symbol_ids = sem.symbol_ids,
         .allocator = self.allocator,
     };

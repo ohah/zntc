@@ -1229,6 +1229,25 @@ describe("@zts/core 번들 포맷/플랫폼", () => {
     expect(result.outputFiles[0].text).toContain("MyLib");
   });
 
+  test("IIFE + globalName: aliased/default exports become return object properties", () => {
+    const aliasDir = mkdtempSync(join(tmpdir(), "zts-iife-export-return-"));
+    writeFileSync(
+      join(aliasDir, "index.ts"),
+      "const internal = 1;\nexport { internal as answer };\nexport default internal;",
+    );
+
+    const result = buildSync({
+      entryPoints: [join(aliasDir, "index.ts")],
+      format: "iife",
+      globalName: "MyLib",
+    });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain("return { answer: internal, default: internal };");
+    expect(text).not.toContain(" as ");
+    rmSync(aliasDir, { recursive: true, force: true });
+  });
+
   test("platform=node", () => {
     const result = buildSync({
       entryPoints: [join(dir, "index.ts")],
