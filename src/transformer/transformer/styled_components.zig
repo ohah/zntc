@@ -71,11 +71,14 @@ const NamedHelperSpec = struct {
     field: []const u8,
 };
 
+// `injectGlobal` 은 typically expression-statement (`injectGlobal\`...\`;`) 로 사용되는데
+// `maybeMinifyHelperTemplate` 의 hook 이 `visitVariableDeclarator` post-only 라 minify
+// 적용 안 됨 → 일관성 위해 named import 추적도 제외 (helpers list 에서 빼서 false
+// advertising 방지). expression_statement hook 추가 시 함께 부활.
 const NAMED_HELPER_SPECS = [_]NamedHelperSpec{
     .{ .imported = "css", .field = "css_binding" },
     .{ .imported = "keyframes", .field = "keyframes_binding" },
     .{ .imported = "createGlobalStyle", .field = "create_global_style_binding" },
-    .{ .imported = "injectGlobal", .field = "inject_global_binding" },
 };
 
 /// `visitImportDeclaration` hook — source 가 styled-components 면:
@@ -137,7 +140,6 @@ const HELPER_BINDING_FIELDS = [_][]const u8{
     "css_binding",
     "keyframes_binding",
     "create_global_style_binding",
-    "inject_global_binding",
 };
 
 /// `visitVariableDeclarator` post-hook — tag 가 styled-components named helper 면
