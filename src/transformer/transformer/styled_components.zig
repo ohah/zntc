@@ -1310,19 +1310,152 @@ fn extractCssTemplateIdx(self: *Transformer, css_value_idx: NodeIndex) ?NodeInde
     return null;
 }
 
-/// `<X css={...}>` JSX prop 을 styled component 추출 시도. MVP: intrinsic tag +
-/// template_literal 또는 `css\`\`` tagged template + styled default_binding 존재 시.
-/// 미매칭 시 null 반환.
-/// auto-inject 시 사용할 styled default binding 이름. 사용자 코드에 같은 이름의 다른
-/// 선언 (`const styled = ...` 같은 module-scope 변수) 이 있으면 prepended import 와 충돌 —
-/// babel 처럼 unique mangling 은 미적용. follow-up: collision detection + `_styled` fallback.
+/// auto-inject 시 사용할 styled default binding 의 base name. collision 발생 시
+/// `_styled`, `_styled2`, ... 로 mangled (`resolveStyledInjectName`).
 const DEFAULT_STYLED_BINDING = "styled";
+
+/// program body 의 module-level binding 이름을 sink 에 수집 — semantic analyzer 가
+/// 안 돌았을 때의 fallback. 처리 statement: import / var-let-const / function / class /
+/// export-named / export-default. destructuring pattern 은 skip (false-positive 위험
+/// 보다 false-negative 더 안전).
+fn collectModuleLevelBindingsFallback(
+    self: *Transformer,
+    program_idx: NodeIndex,
+    sink: *std.StringHashMap(void),
+) Error!void {
+    const program = self.ast.getNode(program_idx);
+    if (program.tag != .program) return;
+    const list = program.data.list;
+    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        try collectBindingsFromStatement(self, @enumFromInt(raw), sink);
+    }
+}
+
+fn collectBindingsFromStatement(
+    self: *Transformer,
+    stmt_idx: NodeIndex,
+    sink: *std.StringHashMap(void),
+) Error!void {
+    if (stmt_idx.isNone()) return;
+    const node = self.ast.getNode(stmt_idx);
+    switch (node.tag) {
+        .import_declaration => {
+            const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
+            var i: u32 = 0;
+            while (i < x.specs_len) : (i += 1) {
+                const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[x.specs_start + i]);
+                if (spec_idx.isNone()) continue;
+                const spec = self.ast.getNode(spec_idx);
+                switch (spec.tag) {
+                    .import_default_specifier, .import_namespace_specifier => {
+                        try sink.put(self.ast.getText(spec.data.string_ref), {});
+                    },
+                    .import_specifier => {
+                        const local_idx = spec.data.binary.right;
+                        if (!local_idx.isNone()) {
+                            try sink.put(self.ast.getText(self.ast.getNode(local_idx).span), {});
+                        }
+                    },
+                    else => {},
+                }
+            }
+        },
+        .variable_declaration => {
+            const e = node.data.extra;
+            const list_start = self.ast.extra_data.items[e + 1];
+            const list_len = self.ast.extra_data.items[e + 2];
+            for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
+                const decl_idx: NodeIndex = @enumFromInt(raw);
+                if (decl_idx.isNone()) continue;
+                const decl = self.ast.getNode(decl_idx);
+                if (decl.tag != .variable_declarator) continue;
+                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl.data.extra]);
+                if (name_idx.isNone()) continue;
+                const name_node = self.ast.getNode(name_idx);
+                if (name_node.tag == .binding_identifier) {
+                    try sink.put(self.ast.getText(name_node.span), {});
+                }
+            }
+        },
+        .function_declaration, .class_declaration => {
+            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+            if (!name_idx.isNone()) {
+                try sink.put(self.ast.getText(self.ast.getNode(name_idx).span), {});
+            }
+        },
+        .export_named_declaration => {
+            // extras[0] 자리의 inner declaration 재귀 (`export const x = ...` 등)
+            const e = node.data.extra;
+            if (self.ast.hasExtra(e, 0)) {
+                const inner: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                if (!inner.isNone()) try collectBindingsFromStatement(self, inner, sink);
+            }
+        },
+        .export_default_declaration => {
+            // export_default_declaration 은 unary layout — `node.data.unary.operand` 가
+            // inner. (extras 가정은 OOB / garbage 인덱스 회귀 — module.zig:653 와 동일
+            // layout 사용해야 함.)
+            const inner = node.data.unary.operand;
+            if (!inner.isNone()) try collectBindingsFromStatement(self, inner, sink);
+        },
+        else => {},
+    }
+}
+
+/// auto-inject styled binding 이름 결정 — root-scope binding collision 시 `_styled`,
+/// `_styled2`, ... 후보 순회. 첫 cssProp transform 시 lazy 호출 후 결과 캐싱
+/// (`css_prop_inject_name`).
+///
+/// 우선 `symbols` (semantic analyzer 결과) 활용 — root-scope symbol 만 순회. analyzer
+/// 미실행 시 (e.g. transformer-only 단위 테스트 path) program body 를 직접 walk.
+fn resolveStyledInjectName(self: *Transformer) Error![]const u8 {
+    const state = &self.plugins.styled_components;
+    if (state.css_prop_needs_import) return state.css_prop_inject_name;
+
+    var bindings: std.StringHashMap(void) = .init(self.allocator);
+    defer bindings.deinit();
+    if (self.symbols.len > 0) {
+        for (self.symbols) |sym| {
+            if (sym.scope_id.isNone()) continue;
+            if (sym.scope_id.toIndex() != 0) continue;
+            try bindings.put(sym.nameText(self.ast.source), {});
+        }
+    } else {
+        const root_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
+        try collectModuleLevelBindingsFallback(self, root_idx, &bindings);
+    }
+
+    if (!bindings.contains(DEFAULT_STYLED_BINDING)) {
+        state.css_prop_inject_name = DEFAULT_STYLED_BINDING;
+        state.css_prop_needs_import = true;
+        return DEFAULT_STYLED_BINDING;
+    }
+
+    var name_buf: [32]u8 = undefined;
+    var i: u32 = 1;
+    while (true) : (i += 1) {
+        const candidate = if (i == 1)
+            std.fmt.bufPrint(&name_buf, "_styled", .{}) catch unreachable
+        else
+            std.fmt.bufPrint(&name_buf, "_styled{d}", .{i}) catch unreachable;
+        if (!bindings.contains(candidate)) {
+            const owned = try self.allocator.dupe(u8, candidate);
+            state.css_prop_inject_name = owned;
+            state.css_prop_inject_name_owned = true;
+            state.css_prop_needs_import = true;
+            return owned;
+        }
+    }
+}
 
 pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?ast_mod.Node {
     if (!self.options.styled_components or !self.options.styled_components_css_prop) return null;
     if (jsx_node.tag != .jsx_element) return null;
-    // 사용자 import 가 있으면 그 이름, 없으면 DEFAULT_STYLED_BINDING + auto-inject flag.
-    const default_binding: []const u8 = self.plugins.styled_components.default_binding orelse DEFAULT_STYLED_BINDING;
+    // 사용자 import 있으면 그 이름. 없으면 collision detection 후 unique 이름 + auto-inject flag.
+    const default_binding: []const u8 = if (self.plugins.styled_components.default_binding) |b|
+        b
+    else
+        try resolveStyledInjectName(self);
 
     const e = jsx_node.data.extra;
     const tag_name_idx = self.readNodeIdx(e, 0);
@@ -1378,7 +1511,6 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         extractCssTemplateIdx(self, css_value_idx) orelse return null;
 
     const state = &self.plugins.styled_components;
-    if (state.default_binding == null) state.css_prop_needs_import = true;
     const counter = state.css_prop_counter;
     state.css_prop_counter += 1;
 

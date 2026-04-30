@@ -666,6 +666,10 @@ pub const Transformer = struct {
         self.plugins.emotion.scope_stack.deinit(self.allocator);
         if (self.plugins.emotion.newline_offsets) |*list| list.deinit(self.allocator);
         self.plugins.styled_components.css_prop_pending_decls.deinit(self.allocator);
+        // collision 발생 시 mangled name 은 heap-owned. owned flag 로 free 판정 (Zig 의
+        // string-literal pooling 이 implementation-defined 이라 ptr 비교 fragile).
+        const sc = &self.plugins.styled_components;
+        if (sc.css_prop_inject_name_owned) self.allocator.free(sc.css_prop_inject_name);
         self.trailing_nodes.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
