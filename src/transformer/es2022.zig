@@ -673,7 +673,7 @@ pub fn ES2022(comptime Transformer: type) type {
             if (mapping.is_static) {
                 self.runtime_helpers.class_static_private_field = true;
                 const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
-                const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
+                const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name.?);
                 const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.weakset_name);
                 return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, class_ref, desc_ref }, span);
             }
