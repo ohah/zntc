@@ -397,7 +397,7 @@ test "emotion: JSX inline `<Button css={css`...`}>` — Component 이름 prepend
     try expectAutoLabel(r.output, "Button");
 }
 
-test "emotion: JSX inline css — emotion_auto_label=false 면 skip" {
+test "emotion: JSX inline css — autoLabel .never 면 skip" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import { css } from "@emotion/react";

@@ -1418,33 +1418,36 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
       : publicDir !== undefined
         ? { publicDir }
         : {}),
-    // compiler.* → flat NAPI fields. boolean / 객체 form 양쪽 인식.
-    ...(compiler?.styledComponents !== undefined && compiler.styledComponents !== false
-      ? { styledComponents: true }
-      : {}),
-    ...(typeof compiler?.styledComponents === "object" && compiler.styledComponents.ssr === false
-      ? { styledComponentsSsr: false }
-      : {}),
-    ...(typeof compiler?.styledComponents === "object" && compiler.styledComponents.minify === true
-      ? { styledComponentsMinify: true }
-      : {}),
-    ...(compiler?.emotion !== undefined && compiler.emotion !== false ? { emotion: true } : {}),
-    ...(typeof compiler?.emotion === "object" && compiler.emotion.autoLabel === false
-      ? { emotionAutoLabel: "never" }
-      : typeof compiler?.emotion === "object" && compiler.emotion.autoLabel === true
-        ? { emotionAutoLabel: "always" }
-        : typeof compiler?.emotion === "object" && typeof compiler.emotion.autoLabel === "string"
-          ? { emotionAutoLabel: compiler.emotion.autoLabel }
-          : {}),
-    ...(typeof compiler?.emotion === "object" && compiler.emotion.sourceMap === true
-      ? { emotionSourceMap: true }
-      : {}),
-    ...(typeof compiler?.emotion === "object" &&
-    typeof compiler.emotion.labelFormat === "string" &&
-    compiler.emotion.labelFormat.length > 0
-      ? { emotionLabelFormat: compiler.emotion.labelFormat }
-      : {}),
+    // compiler.* → flat NAPI fields. `prepareNapiOptions` 와 동일 변환을 한 곳에서.
+    ...buildCompilerNapiFields(compiler),
   });
+}
+
+/// `compiler.styledComponents` / `compiler.emotion` (boolean / 객체 form) 를 평면 NAPI
+/// 필드로 변환. `prepareNapiOptions` (buildSync) 와 `buildAppSync` 양쪽이 공유.
+function buildCompilerNapiFields(compiler: AppBuildOptions["compiler"]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+
+  const sc = compiler?.styledComponents;
+  if (sc !== undefined && sc !== false) out.styledComponents = true;
+  if (typeof sc === "object") {
+    if (sc.ssr === false) out.styledComponentsSsr = false;
+    if (sc.minify === true) out.styledComponentsMinify = true;
+  }
+
+  const em = compiler?.emotion;
+  if (em !== undefined && em !== false) out.emotion = true;
+  if (typeof em === "object") {
+    if (em.autoLabel === false) out.emotionAutoLabel = "never";
+    else if (em.autoLabel === true) out.emotionAutoLabel = "always";
+    else if (typeof em.autoLabel === "string") out.emotionAutoLabel = em.autoLabel;
+    if (em.sourceMap === true) out.emotionSourceMap = true;
+    if (typeof em.labelFormat === "string" && em.labelFormat.length > 0) {
+      out.emotionLabelFormat = em.labelFormat;
+    }
+  }
+
+  return out;
 }
 
 export function prepareAppDevSync(options: AppDevPrepareOptions = {}): AppDevPrepareResult {
