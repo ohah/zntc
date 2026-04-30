@@ -1280,6 +1280,24 @@ test "styled (topLevelImportPaths): glob `@my-org/*` 도 vendored fork 매칭" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") != null);
 }
 
+test "styled (topLevelImportPaths): brace expansion 매칭" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@my-org/styled";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_top_level_import_paths = &.{"@{my-org,co}/*"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") != null);
+}
+
 test "styled (topLevelImportPaths): glob 미매칭 fork 는 무시" {
     var r = try e2eFull(
         std.testing.allocator,
