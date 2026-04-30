@@ -929,6 +929,42 @@ test "emotion (sourceMap): JSX inline `<div css={css`...`}>` 도 sourceMap 적�
     try expectSourceMapComment(r.output);
 }
 
+test "emotion (sourceMap): expression-statement `injectGlobal`...`;` 에도 sourceMap 적용" {
+    // babel-plugin-emotion 동작: side-effect call 형태에도 dev-build sourceMap 부여.
+    // autoLabel 은 var 이름이 없어 적용 안 됨 (tag binding 만 매칭하면 sourceMap 만).
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { injectGlobal } from "@emotion/css";
+        \\injectGlobal`* { box-sizing: border-box; }`;
+    ,
+        .{ .emotion = true, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectSourceMapComment(r.output);
+    // var 이름이 없으니 label: 없음 — false-positive 방지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+    // 원본 css 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "box-sizing: border-box") != null);
+}
+
+test "emotion (sourceMap): expression-statement form — sourceMap 옵션 비활성 시 미변경" {
+    // sourceMap 옵션 false 면 expression-statement hook 도 no-op 이어야 함.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { injectGlobal } from "@emotion/css";
+        \\injectGlobal`* { box-sizing: border-box; }`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "sourceMappingURL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "box-sizing: border-box") != null);
+}
+
 test "emotion (sourceMap): base64 디코딩 → JSON 구조 정합성 검증" {
     // 실제 base64 를 디코딩해 JSON 이 valid 한지, 핵심 필드가 들어있는지 확인.
     // VLQ 인코딩 회귀 (sign bit / continuation bit 순서 등) 를 잡기 위함.

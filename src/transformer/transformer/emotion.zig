@@ -214,6 +214,28 @@ pub fn maybeTransformEmotionTemplate(
     });
 }
 
+/// `visitNode(.expression_statement)` post-hook — operand 가 emotion tagged template 이면
+/// sourceMap 적용. binding 이 없으니 autoLabel 은 적용 불가, sourceMap 만 부여
+/// (babel-plugin-emotion 의 expression-statement 형태 파리티).
+///
+/// `stmt_idx` 는 이미 `visitUnaryNode` 가 처리한 `expression_statement` 노드. 여기서는
+/// 그 operand 만 다시 보고 필요하면 노드 한 번 더 만든다.
+pub fn maybeTransformExpressionStatement(self: *Transformer, stmt_idx: NodeIndex) Error!NodeIndex {
+    if (!self.options.emotion or !self.options.emotion_source_map) return stmt_idx;
+    if (stmt_idx.isNone()) return stmt_idx;
+
+    const stmt_node = self.ast.getNode(stmt_idx);
+    const operand = stmt_node.data.unary.operand;
+    const transformed = try maybeTransformEmotionTemplate(self, operand, "");
+    if (transformed == operand) return stmt_idx;
+
+    return self.ast.addNode(.{
+        .tag = .expression_statement,
+        .span = stmt_node.span,
+        .data = .{ .unary = .{ .operand = transformed, .flags = stmt_node.data.unary.flags } },
+    });
+}
+
 /// JSX attribute value autoLabel hook — `lowerJSXAttribute` 에서 호출.
 ///
 /// 두 가지 시나리오 처리:
