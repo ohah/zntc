@@ -134,6 +134,8 @@ pub const BundleOptions = struct {
     styled_components_file_name: bool = true,
     /// styled-components.pure 옵션 — `/* @__PURE__ */` annotation 추가 (tree-shaking).
     styled_components_pure: bool = false,
+    /// styled-components.namespace 옵션 — componentId 에 `<namespace>__` prefix.
+    styled_components_namespace: []const u8 = "",
     /// emotion 1st-party transform (compiler.emotion). 활성 시 css 템플릿에 autoLabel 적용.
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -649,6 +651,7 @@ pub const Bundler = struct {
         worker_graph.styled_components_minify = self.options.styled_components_minify;
         worker_graph.styled_components_file_name = self.options.styled_components_file_name;
         worker_graph.styled_components_pure = self.options.styled_components_pure;
+        worker_graph.styled_components_namespace = self.options.styled_components_namespace;
         worker_graph.emotion = self.options.emotion;
         worker_graph.emotion_auto_label = self.options.emotion_auto_label;
         worker_graph.emotion_source_map = self.options.emotion_source_map;
@@ -816,6 +819,7 @@ pub const Bundler = struct {
         graph.styled_components_minify = self.options.styled_components_minify;
         graph.styled_components_file_name = self.options.styled_components_file_name;
         graph.styled_components_pure = self.options.styled_components_pure;
+        graph.styled_components_namespace = self.options.styled_components_namespace;
         graph.emotion = self.options.emotion;
         graph.emotion_auto_label = self.options.emotion_auto_label;
         graph.emotion_source_map = self.options.emotion_source_map;

@@ -30,6 +30,8 @@ pub const AppBuildOptions = struct {
     styled_components_file_name: bool = true,
     /// styled-components.pure 옵션 — `/* @__PURE__ */` annotation (tree-shaking).
     styled_components_pure: bool = false,
+    /// styled-components.namespace 옵션 — componentId 에 `<namespace>__` prefix.
+    styled_components_namespace: []const u8 = "",
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -134,6 +136,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .styled_components_minify = opts.styled_components_minify,
         .styled_components_file_name = opts.styled_components_file_name,
         .styled_components_pure = opts.styled_components_pure,
+        .styled_components_namespace = opts.styled_components_namespace,
         .emotion = opts.emotion,
         .emotion_auto_label = opts.emotion_auto_label,
         .emotion_source_map = opts.emotion_source_map,

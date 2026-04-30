@@ -989,15 +989,9 @@ fn mergeIntoUserWithConfig(
         try self.scratch.append(self.allocator, display_property);
     }
     if (need_component_id) {
-        var component_id_buf: [64]u8 = undefined;
         const component_index = state.component_counter;
         state.component_counter += 1;
-        const component_id_quoted = std.fmt.bufPrint(
-            &component_id_buf,
-            "\"sc-{s}-{d}\"",
-            .{ state.file_hash_hex.?, component_index },
-        ) catch return error.OutOfMemory;
-        const component_id_value_span = try self.ast.addString(component_id_quoted);
+        const component_id_value_span = try buildComponentIdSpan(self, state.file_hash_hex.?, component_index);
         const component_id_property = try buildKeyStringProperty(self, state.component_id_span.?, component_id_value_span);
         try self.scratch.append(self.allocator, component_id_property);
     }
@@ -1097,15 +1091,9 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
     const display_property = try buildKeyStringProperty(self, display_name_key_span, display_value_span);
 
     const obj_list = if (emit_component_id) blk: {
-        var component_id_buf: [64]u8 = undefined;
         const component_index = state.component_counter;
         state.component_counter += 1;
-        const component_id_quoted = std.fmt.bufPrint(
-            &component_id_buf,
-            "\"sc-{s}-{d}\"",
-            .{ state.file_hash_hex.?, component_index },
-        ) catch return error.OutOfMemory;
-        const component_id_value_span = try self.ast.addString(component_id_quoted);
+        const component_id_value_span = try buildComponentIdSpan(self, state.file_hash_hex.?, component_index);
         const component_id_property = try buildKeyStringProperty(self, state.component_id_span.?, component_id_value_span);
         break :blk try self.ast.addNodeList(&.{ display_property, component_id_property });
     } else try self.ast.addNodeList(&.{display_property});
@@ -1181,6 +1169,19 @@ fn ensureDisplayNameBlock(self: *Transformer) ?[]const u8 {
     if (block.len == 0) return null;
     state.display_name_block = block;
     return block;
+}
+
+/// componentId 의 따옴표 포함 string literal span 빌드. namespace 옵션 활성 시
+/// `<namespace>__sc-<hash>-<counter>`, 비활성 시 `sc-<hash>-<counter>`.
+/// namespace 길이가 임의로 길 수 있어 동적 할당 (`allocPrint`) — fixed buf 함정 회피.
+fn buildComponentIdSpan(self: *Transformer, file_hash: [8]u8, counter: u32) Error!Span {
+    const ns = self.options.styled_components_namespace;
+    const quoted = if (ns.len > 0)
+        try std.fmt.allocPrint(self.allocator, "\"{s}__sc-{s}-{d}\"", .{ ns, file_hash, counter })
+    else
+        try std.fmt.allocPrint(self.allocator, "\"sc-{s}-{d}\"", .{ file_hash, counter });
+    defer self.allocator.free(quoted);
+    return self.ast.addString(quoted);
 }
 
 /// pure 옵션 활성 시 tagged_template_expression flags 에 `is_pure` (`/* @__PURE__ */`)
