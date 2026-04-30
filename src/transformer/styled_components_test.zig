@@ -262,8 +262,7 @@ test "styled-components: 다중 paren `((() => ...))()` 도 처리" {
     try expectDisplayName(r.output, "Deep");
 }
 
-test "styled-components: IIFE block body `(() => { return ... })()` 미지원" {
-    // 첫 iteration 은 expression body 만 — return statement walker 는 후속.
+test "styled-components: IIFE block body `(() => { return ... })()` 인식" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -274,6 +273,39 @@ test "styled-components: IIFE block body `(() => { return ... })()` 미지원" {
         ".tsx",
     );
     defer r.deinit();
+    try expectDisplayName(r.output, "Lazy");
+}
+
+test "styled-components: IIFE block body 다중 statement + return" {
+    // pre-statement 가 있어도 return 의 operand 만 wrap.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Lazy = (() => { console.log("setup"); return styled.div`color: red;`; })();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Lazy");
+    // pre-statement 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log") != null);
+}
+
+test "styled-components: IIFE block body 의 중첩 return 은 미인식 (top-level only)" {
+    // top-level statement 의 return 만 walk — `if (...) return X` 형태는 후속 PR.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Lazy = (() => { if (cond) return styled.div`color: red;`; return null; })();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 첫 return 은 if 안 — top-level 이 아니라 wrap 안 됨.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
