@@ -330,6 +330,11 @@ export interface StyledComponentsOptions {
   pure?: boolean;
   /** displayName / componentId 의 namespace prefix — 다중 styled 인스턴스 격리 */
   namespace?: string;
+  /**
+   * basename 이 의미 없을 때 displayName prefix 를 parent dir 로 fallback 시키는 list
+   * (default: `["index"]`). babel-plugin-styled-components 의 동일 옵션과 동등.
+   */
+  meaninglessFileNames?: string[];
   /** [meta] 표시 (default: false) */
   meta?: boolean;
 }
@@ -1251,6 +1256,9 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
       if (typeof sc.namespace === "string" && sc.namespace.length > 0) {
         napiOptions.styledComponentsNamespace = sc.namespace;
       }
+      if (Array.isArray(sc.meaninglessFileNames)) {
+        napiOptions.styledComponentsMeaninglessFileNames = sc.meaninglessFileNames;
+      }
     }
   }
   const em = options.compiler?.emotion;
@@ -1486,6 +1494,9 @@ function buildCompilerNapiFields(compiler: AppBuildOptions["compiler"]): Record<
     if (sc.pure === true) out.styledComponentsPure = true;
     if (typeof sc.namespace === "string" && sc.namespace.length > 0) {
       out.styledComponentsNamespace = sc.namespace;
+    }
+    if (Array.isArray(sc.meaninglessFileNames)) {
+      out.styledComponentsMeaninglessFileNames = sc.meaninglessFileNames;
     }
   }
 

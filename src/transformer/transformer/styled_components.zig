@@ -1161,7 +1161,7 @@ fn ensureDisplayNameBlock(self: *Transformer) ?[]const u8 {
     const ext = std.fs.path.extension(basename_full);
     const basename_no_ext = basename_full[0 .. basename_full.len - ext.len];
 
-    const block = if (std.mem.eql(u8, basename_no_ext, "index")) blk: {
+    const block = if (isMeaninglessBasename(self, basename_no_ext)) blk: {
         const dir = std.fs.path.dirname(filename) orelse return null;
         break :blk std.fs.path.basename(dir);
     } else basename_no_ext;
@@ -1169,6 +1169,15 @@ fn ensureDisplayNameBlock(self: *Transformer) ?[]const u8 {
     if (block.len == 0) return null;
     state.display_name_block = block;
     return block;
+}
+
+/// `meaninglessFileNames` 옵션의 basename 매칭 — list 에 포함되면 parent dir 로 fallback.
+/// 기본 list 는 `["index"]` (babel parity), 사용자가 빈 array 로 override 하면 비활성.
+fn isMeaninglessBasename(self: *Transformer, basename_no_ext: []const u8) bool {
+    for (self.options.styled_components_meaningless_file_names) |name| {
+        if (std.mem.eql(u8, basename_no_ext, name)) return true;
+    }
+    return false;
 }
 
 /// componentId 의 따옴표 포함 string literal span 빌드. namespace 옵션 활성 시

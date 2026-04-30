@@ -145,6 +145,10 @@ pub const TransformOptions = struct {
     /// `<namespace>__sc-<hash>-<counter>`. monorepo / library 환경에서 같은 styled-components
     /// 가 다른 의존성 트리에 들어가도 componentId 충돌 회피. babel-plugin 동일 동작.
     styled_components_namespace: []const u8 = "",
+    /// styled-components.meaninglessFileNames 옵션 — `<basename>__<var>` displayName 의
+    /// basename 이 의미 없는 이름 (default `index`) 이면 parent dir 명으로 fallback.
+    /// babel-plugin-styled-components 의 동일 옵션과 동등 — 빈 array 면 fallback 비활성.
+    styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
     /// emotion 1st-party transform (compiler.emotion).
     /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
     /// `import { css } from "@emotion/react"` 의 named binding 추적.

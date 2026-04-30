@@ -1223,6 +1223,44 @@ test "styled (fileName): false 옵션 — prefix 없이 var 만" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Button__") == null);
 }
 
+test "styled (meaninglessFileNames): 사용자 list 의 basename 도 fallback" {
+    // 사용자 옵션으로 `styles` 도 의미 없는 basename 으로 등록 — parent dir 로 fallback.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Inner = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_meaningless_file_names = &.{ "index", "styles" },
+            .jsx_filename = "src/Button/styles.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Button__Inner\"") != null);
+}
+
+test "styled (meaninglessFileNames): 빈 list 면 `index` fallback 도 비활성" {
+    // 빈 array 로 override 하면 babel 기본 `index` fallback 도 안 적용 — 그대로 `index__Inner`.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Inner = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_meaningless_file_names = &.{},
+            .jsx_filename = "src/Button/index.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"index__Inner\"") != null);
+}
+
 test "styled (fileName): jsx_filename 빈 문자열 — prefix 안 붙음" {
     var r = try e2eFull(
         std.testing.allocator,

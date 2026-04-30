@@ -32,6 +32,8 @@ pub const AppBuildOptions = struct {
     styled_components_pure: bool = false,
     /// styled-components.namespace 옵션 — componentId 에 `<namespace>__` prefix.
     styled_components_namespace: []const u8 = "",
+    /// styled-components.meaninglessFileNames 옵션 — basename fallback list (default `["index"]`).
+    styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -141,6 +143,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .styled_components_file_name = opts.styled_components_file_name,
         .styled_components_pure = opts.styled_components_pure,
         .styled_components_namespace = opts.styled_components_namespace,
+        .styled_components_meaningless_file_names = opts.styled_components_meaningless_file_names,
         .emotion = opts.emotion,
         .emotion_auto_label = opts.emotion_auto_label,
         .emotion_source_map = opts.emotion_source_map,
