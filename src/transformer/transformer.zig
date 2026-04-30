@@ -128,6 +128,10 @@ pub const TransformOptions = struct {
     /// 자체는 동작 — 향후 Global / sourceMap 같은 다른 emotion features 와 분리).
     /// `compiler.emotion: { autoLabel: false }` 로 설정.
     emotion_auto_label: bool = true,
+    /// emotion.sourceMap 옵션 — true 면 css 템플릿 끝에 inline sourceMap 주석을 append.
+    /// `compiler.emotion: { sourceMap: true }`. babel-plugin-emotion 동작과 일치 —
+    /// DevTools 에서 CSS 위치 → source 위치 추적 가능.
+    emotion_source_map: bool = false,
     /// useDefineForClassFields=false: instance field를 constructor의 this.x = value 할당으로 변환.
     /// true(기본값)이면 class field를 그대로 유지 (TC39 [[Define]] semantics).
     /// false이면 TS 4.x 이전 동작 — field를 constructor body로 이동 ([[Set]] semantics).
@@ -587,6 +591,7 @@ pub const Transformer = struct {
         for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
         self.plugins.refresh.signatures.deinit(self.allocator);
         self.plugins.emotion.scope_stack.deinit(self.allocator);
+        if (self.plugins.emotion.newline_offsets) |*list| list.deinit(self.allocator);
         self.trailing_nodes.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
@@ -2966,7 +2971,7 @@ pub const Transformer = struct {
             const new_name_node = self.ast.getNode(new_name);
             if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
                 const var_name = self.ast.getText(new_name_node.data.string_ref);
-                new_init = try emotion_mod.maybeApplyAutoLabel(self, new_init, var_name);
+                new_init = try emotion_mod.maybeTransformEmotionTemplate(self, new_init, var_name);
             }
         }
         const none = @intFromEnum(NodeIndex.none);

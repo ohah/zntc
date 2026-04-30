@@ -134,6 +134,8 @@ pub const BundleOptions = struct {
     emotion: bool = false,
     /// emotion.autoLabel 옵션 — false 면 autoLabel skip.
     emotion_auto_label: bool = true,
+    /// emotion.sourceMap 옵션 — true 면 css 템플릿 끝에 inline sourceMap 주석을 append.
+    emotion_source_map: bool = false,
     /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
     collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
@@ -641,6 +643,7 @@ pub const Bundler = struct {
         worker_graph.styled_components_minify = self.options.styled_components_minify;
         worker_graph.emotion = self.options.emotion;
         worker_graph.emotion_auto_label = self.options.emotion_auto_label;
+        worker_graph.emotion_source_map = self.options.emotion_source_map;
         worker_graph.code_splitting = self.options.code_splitting;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
@@ -804,6 +807,7 @@ pub const Bundler = struct {
         graph.styled_components_minify = self.options.styled_components_minify;
         graph.emotion = self.options.emotion;
         graph.emotion_auto_label = self.options.emotion_auto_label;
+        graph.emotion_source_map = self.options.emotion_source_map;
         graph.code_splitting = self.options.code_splitting;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();

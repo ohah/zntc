@@ -567,6 +567,7 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
         .styled_components_minify = getObjectBool(env, opts_obj, "styledComponentsMinify", false),
         .emotion = getObjectBool(env, opts_obj, "emotion", false),
         .emotion_auto_label = getObjectBool(env, opts_obj, "emotionAutoLabel", true),
+        .emotion_source_map = getObjectBool(env, opts_obj, "emotionSourceMap", false),
     }) catch |err| {
         return throwError(env, @errorName(err));
     };
@@ -3574,6 +3575,7 @@ fn parseBuildOptions(
         .styled_components_minify = getObjectBool(env, opts_obj, "styledComponentsMinify", false),
         .emotion = getObjectBool(env, opts_obj, "emotion", false),
         .emotion_auto_label = getObjectBool(env, opts_obj, "emotionAutoLabel", true),
+        .emotion_source_map = getObjectBool(env, opts_obj, "emotionSourceMap", false),
         .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
         // RN 프리셋(bundler.zig의 RN_BOOL_PRESET 단일 소스): platform=react-native이면
         // 사용자가 명시하지 않아도 CLI와 동일하게 auto-enable. worklet_transform 없이는

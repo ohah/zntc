@@ -42,6 +42,7 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const plugin_state = @import("../plugin_state.zig");
+const sourcemap_mod = @import("../../codegen/sourcemap.zig");
 
 /// emotion `css` / `keyframes` named import 가 export 되는 source 들.
 pub const EMOTION_CSS_SOURCES: []const []const u8 = &.{
@@ -154,20 +155,21 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
     }
 }
 
-/// `visitVariableDeclarator` 의 post-visit hook. tag 가 emotion binding 이면 첫 quasi 에
-/// `label:<var_name>;` prepend.
+/// `visitVariableDeclarator` 의 post-visit hook + JSX inline css attr hook 의 공용 코어.
+/// tag 가 emotion binding 이면 두 가지 transform 중 활성된 것 적용:
+///   - **autoLabel** — 첫 quasi 시작에 `label:<var_name>;` prepend (`emotion_auto_label`).
+///   - **sourceMap** — 마지막 quasi 끝에 inline `/*# sourceMappingURL=... */` append
+///     (`emotion_source_map`). babel-plugin-emotion 동작과 동일.
 ///
 /// 인식 형태:
 ///   - `css\`...\`` (css_binding identifier 직접)
-///   - `styled.div\`...\`` (styled_binding 의 static_member 첫 단계)
-///   - `styled(Component)\`...\`` (styled_binding 의 call 첫 단계)
-///
-/// 미인식 (후속 PR):
-///   - `css.x\`...\`` / `styled.div.attrs({})\`...\`` 같은 추가 chain
-pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+///   - `styled.div\`...\`` / `styled(Component)\`...\`` (styled_binding chain)
+pub fn maybeTransformEmotionTemplate(
+    self: *Transformer,
+    init_idx: NodeIndex,
+    var_name: []const u8,
+) Error!NodeIndex {
     if (!self.options.emotion) return init_idx;
-    if (!self.options.emotion_auto_label) return init_idx; // opt-out: emotion 활성이지만 autoLabel skip
-    if (var_name.len == 0) return init_idx;
     if (init_idx.isNone()) return init_idx;
 
     const init_node = self.ast.getNode(init_idx);
@@ -181,7 +183,23 @@ pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []
 
     if (!tagMatchesEmotion(self, tag_idx)) return init_idx;
 
-    const new_template = try prependLabelToTemplate(self, template_idx, var_name);
+    const apply_label = self.options.emotion_auto_label and var_name.len > 0;
+    const apply_sm = self.options.emotion_source_map;
+    if (!apply_label and !apply_sm) return init_idx;
+
+    const label_text: ?[]const u8 = if (apply_label) var_name else null;
+
+    var sm_buf: std.ArrayList(u8) = .empty;
+    defer sm_buf.deinit(self.allocator);
+    if (apply_sm) {
+        try ensureNewlineCache(self);
+        const pos = byteOffsetToLineColCached(self, init_node.span.start);
+        const filename = if (self.options.jsx_filename.len > 0) self.options.jsx_filename else "unknown";
+        try buildSourceMapComment(self.allocator, &sm_buf, self.ast.source, filename, pos);
+    }
+    const sm_text: ?[]const u8 = if (apply_sm) sm_buf.items else null;
+
+    const new_template = try transformEmotionTemplate(self, template_idx, label_text, sm_text);
     if (new_template == template_idx) return init_idx;
 
     const new_extra = try self.ast.addExtras(&.{
@@ -208,7 +226,8 @@ pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []
 ///
 /// 공통 흐름: parser 가 attribute value 에 jsx_expression_container 를 만들지 않고
 /// 내부 expression 을 직접 저장 (parser/jsx.zig:301-325). label 추출 후 기존
-/// `maybeApplyAutoLabel` 로 template 변형 (emotion + autoLabel 옵션 검사도 거기서).
+/// `maybeTransformEmotionTemplate` 로 template 변형 (emotion + autoLabel + sourceMap
+/// 옵션 검사도 거기서).
 pub fn maybeApplyAutoLabelForJsxAttr(
     self: *Transformer,
     attr_name: []const u8,
@@ -231,7 +250,7 @@ pub fn maybeApplyAutoLabelForJsxAttr(
     if (is_styles and !elementMatchesGlobal(self, tag_name_idx)) return value_idx;
 
     const label = jsxElementLabel(self, tag_name_idx) orelse return value_idx;
-    return try maybeApplyAutoLabel(self, value_idx, label);
+    return try maybeTransformEmotionTemplate(self, value_idx, label);
 }
 
 /// JSX element 가 import 된 `Global` binding 과 일치하는지 — 단순 identifier 만.
@@ -426,23 +445,32 @@ fn chainRootIsStyledBinding(self: *Transformer, tag_idx: NodeIndex) bool {
     }
 }
 
-/// template_literal 의 첫 quasi 시작에 `label:<name>;` prepend. no-interp / interp 둘 다 처리.
-fn prependLabelToTemplate(self: *Transformer, template_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+/// template_literal 변환 — `label_text` 가 있으면 첫 quasi 에 prepend, `source_map_text` 가
+/// 있으면 마지막 quasi 에 append. no-interp / interp 둘 다 처리.
+/// 둘 다 null 이면 호출되지 않음 (caller 가 가드).
+fn transformEmotionTemplate(
+    self: *Transformer,
+    template_idx: NodeIndex,
+    label_text: ?[]const u8,
+    source_map_text: ?[]const u8,
+) Error!NodeIndex {
     const node = self.ast.getNode(template_idx);
     if (node.tag != .template_literal) return template_idx;
 
     if (node.data.none == 0) {
-        return try prependLabelToNoInterpTemplate(self, template_idx, node, var_name);
+        return try transformNoInterpTemplate(self, template_idx, node, label_text, source_map_text);
     }
-    return try prependLabelToInterpTemplate(self, template_idx, node, var_name);
+    return try transformInterpTemplate(self, template_idx, node, label_text, source_map_text);
 }
 
-/// no-interp `\`text\`` — `\`label:<name>;text\`` 빌드.
-fn prependLabelToNoInterpTemplate(
+/// no-interp: 단일 span (`\`text\``) — label 은 backtick 다음, sourceMap 은 closing
+/// backtick 직전에 삽입.
+fn transformNoInterpTemplate(
     self: *Transformer,
     template_idx: NodeIndex,
     node: ast_mod.Node,
-    var_name: []const u8,
+    label_text: ?[]const u8,
+    source_map_text: ?[]const u8,
 ) Error!NodeIndex {
     const raw = self.ast.getText(node.span);
     if (raw.len < 2 or raw[0] != '`' or raw[raw.len - 1] != '`') return template_idx;
@@ -451,8 +479,9 @@ fn prependLabelToNoInterpTemplate(
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
     try buf.append(self.allocator, '`');
-    try writeLabelPrefix(self.allocator, &buf, var_name);
+    if (label_text) |l| try writeLabelPrefix(self.allocator, &buf, l);
     try buf.appendSlice(self.allocator, inner);
+    if (source_map_text) |sm| try buf.appendSlice(self.allocator, sm);
     try buf.append(self.allocator, '`');
 
     const new_span = try self.ast.addString(buf.items);
@@ -463,12 +492,14 @@ fn prependLabelToNoInterpTemplate(
     });
 }
 
-/// interp template — 첫 template_element 시작에 `label:<name>;` prepend.
-fn prependLabelToInterpTemplate(
+/// interp: children = [te0, expr0, te1, expr1, ..., teN]. label 은 te0 시작에,
+/// sourceMap 은 teN (마지막 template_element) 끝에 삽입.
+fn transformInterpTemplate(
     self: *Transformer,
     template_idx: NodeIndex,
     node: ast_mod.Node,
-    var_name: []const u8,
+    label_text: ?[]const u8,
+    source_map_text: ?[]const u8,
 ) Error!NodeIndex {
     const list = node.data.list;
     if (list.len == 0) return template_idx;
@@ -478,32 +509,75 @@ fn prependLabelToInterpTemplate(
     const first_node = self.ast.getNode(first_idx);
     if (first_node.tag != .template_element) return template_idx;
 
-    // 첫 element span: `\`text${` (head) — 첫 char 가 backtick, 끝이 `${`.
-    const raw = self.ast.getText(first_node.span);
-    if (raw.len < 3 or raw[0] != '`') return template_idx;
-    if (raw[raw.len - 2] != '$' or raw[raw.len - 1] != '{') return template_idx;
-    const inner = raw[1 .. raw.len - 2];
+    // 마지막 template_element 위치 (children 중 가장 큰 i where items[i].tag == template_element).
+    var last_te_pos: usize = 0;
+    for (items, 0..) |raw_idx, i| {
+        const idx: NodeIndex = @enumFromInt(raw_idx);
+        if (self.ast.getNode(idx).tag == .template_element) last_te_pos = i;
+    }
+    const last_idx: NodeIndex = @enumFromInt(items[last_te_pos]);
 
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(self.allocator);
-    try buf.append(self.allocator, '`');
-    try writeLabelPrefix(self.allocator, &buf, var_name);
-    try buf.appendSlice(self.allocator, inner);
-    try buf.append(self.allocator, '$');
-    try buf.append(self.allocator, '{');
+    // First element 재작성 — `\`text${` → `\`label:<name>;text${`
+    var new_first: NodeIndex = first_idx;
+    if (label_text) |l| {
+        const raw = self.ast.getText(first_node.span);
+        if (raw.len < 3 or raw[0] != '`') return template_idx;
+        if (raw[raw.len - 2] != '$' or raw[raw.len - 1] != '{') return template_idx;
+        const inner = raw[1 .. raw.len - 2];
 
-    const new_first_span = try self.ast.addString(buf.items);
-    const new_first = try self.ast.addNode(.{
-        .tag = .template_element,
-        .span = new_first_span,
-        .data = .{ .none = 0 },
-    });
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.append(self.allocator, '`');
+        try writeLabelPrefix(self.allocator, &buf, l);
+        try buf.appendSlice(self.allocator, inner);
+        try buf.appendSlice(self.allocator, "${");
 
-    // children list 재구성 — 첫 번째만 교체, 나머지는 그대로.
+        const new_first_span = try self.ast.addString(buf.items);
+        new_first = try self.ast.addNode(.{
+            .tag = .template_element,
+            .span = new_first_span,
+            .data = .{ .none = 0 },
+        });
+    }
+
+    // Last element 재작성 — `}text\`` → `}text<sourcemap>\``
+    var new_last: NodeIndex = last_idx;
+    if (source_map_text) |sm| {
+        const last_node = self.ast.getNode(last_idx);
+        const raw = self.ast.getText(last_node.span);
+        if (raw.len < 2 or raw[raw.len - 1] != '`') return template_idx;
+        if (raw[0] != '}') return template_idx;
+        const inner = raw[1 .. raw.len - 1];
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.append(self.allocator, '}');
+        try buf.appendSlice(self.allocator, inner);
+        try buf.appendSlice(self.allocator, sm);
+        try buf.append(self.allocator, '`');
+
+        const new_last_span = try self.ast.addString(buf.items);
+        new_last = try self.ast.addNode(.{
+            .tag = .template_element,
+            .span = new_last_span,
+            .data = .{ .none = 0 },
+        });
+    }
+
+    if (new_first == first_idx and new_last == last_idx) return template_idx;
+
+    // children list 재구성 — first/last 만 교체.
     const top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(top);
-    try self.scratch.append(self.allocator, new_first);
-    for (items[1..]) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+    for (items, 0..) |raw_idx, i| {
+        if (i == 0 and new_first != first_idx) {
+            try self.scratch.append(self.allocator, new_first);
+        } else if (i == last_te_pos and new_last != last_idx) {
+            try self.scratch.append(self.allocator, new_last);
+        } else {
+            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        }
+    }
 
     const new_list = try self.ast.addNodeList(self.scratch.items[top..]);
     return self.ast.addNode(.{
@@ -517,4 +591,80 @@ fn writeLabelPrefix(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), var_n
     try buf.appendSlice(allocator, "label:");
     try buf.appendSlice(allocator, var_name);
     try buf.append(allocator, ';');
+}
+
+// ─── sourceMap 생성 (babel-plugin-emotion source-maps.js 호환) ───
+//
+// 한 css template 마다 inline sourceMap 1개 매핑: `generated:{1,0} → source:{line, col}`.
+// CSS 안에 `/*# sourceMappingURL=data:application/json;base64,... */` 주석으로 embed —
+// emotion 런타임이 CSS 출력에 보존, DevTools 가 해석해 source 위치 점프 가능.
+
+pub const LineCol = struct { line: u32, col: u32 };
+
+/// 첫 sourceMap 호출 시 source 전체를 한 번 스캔해 newline 위치를 캐시. 이후 호출에서는
+/// binary search 로 O(log n) lookup — 다수 emotion template 이 있는 파일에서 O(n²) 회피.
+fn ensureNewlineCache(self: *Transformer) Error!void {
+    if (self.plugins.emotion.newline_offsets != null) return;
+    var list: std.ArrayList(u32) = .empty;
+    errdefer list.deinit(self.allocator);
+    for (self.ast.source, 0..) |c, i| {
+        if (c == '\n') try list.append(self.allocator, @intCast(i));
+    }
+    self.plugins.emotion.newline_offsets = list;
+}
+
+/// 캐시된 newline offset 들로 byte offset → 0-indexed (line, col) — sourceMap VLQ 호환.
+fn byteOffsetToLineColCached(self: *Transformer, offset: u32) LineCol {
+    const offsets = if (self.plugins.emotion.newline_offsets) |list| list.items else return .{ .line = 0, .col = 0 };
+    // first index where offsets[i] >= offset
+    var lo: usize = 0;
+    var hi: usize = offsets.len;
+    while (lo < hi) {
+        const mid = (lo + hi) / 2;
+        if (offsets[mid] < offset) lo = mid + 1 else hi = mid;
+    }
+    const line: u32 = @intCast(lo);
+    const col: u32 = if (lo == 0) offset else offset - offsets[lo - 1] - 1;
+    return .{ .line = line, .col = col };
+}
+
+/// inline sourceMap 주석을 `buf` 에 빌드: `/*# sourceMappingURL=data:application/json;
+/// charset=utf-8;base64,<b64> */` 형식.
+fn buildSourceMapComment(
+    allocator: std.mem.Allocator,
+    buf: *std.ArrayList(u8),
+    source: []const u8,
+    filename: []const u8,
+    pos: LineCol,
+) Error!void {
+    // VLQ mappings — 단일 segment: gen_col=0, src_idx=0, src_line=pos.line, src_col=pos.col.
+    var vlq_buf: std.ArrayList(u8) = .empty;
+    defer vlq_buf.deinit(allocator);
+    try sourcemap_mod.encodeVLQ(allocator, &vlq_buf, 0);
+    try sourcemap_mod.encodeVLQ(allocator, &vlq_buf, 0);
+    try sourcemap_mod.encodeVLQ(allocator, &vlq_buf, @intCast(pos.line));
+    try sourcemap_mod.encodeVLQ(allocator, &vlq_buf, @intCast(pos.col));
+
+    // JSON: {"version":3,"sources":["<filename>"],"sourcesContent":["<source>"],
+    //        "mappings":"<vlq>","names":[]}
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(allocator);
+    try json.appendSlice(allocator, "{\"version\":3,\"sources\":[");
+    try sourcemap_mod.appendJsonStringTo(allocator, &json, filename);
+    try json.appendSlice(allocator, "],\"sourcesContent\":[");
+    try sourcemap_mod.appendJsonStringTo(allocator, &json, source);
+    try json.appendSlice(allocator, "],\"mappings\":\"");
+    try json.appendSlice(allocator, vlq_buf.items);
+    try json.appendSlice(allocator, "\",\"names\":[]}");
+
+    // base64 encode JSON
+    const enc = std.base64.standard.Encoder;
+    const b64_len = enc.calcSize(json.items.len);
+    const b64_buf = try allocator.alloc(u8, b64_len);
+    defer allocator.free(b64_buf);
+    _ = enc.encode(b64_buf, json.items);
+
+    try buf.appendSlice(allocator, "/*# sourceMappingURL=data:application/json;charset=utf-8;base64,");
+    try buf.appendSlice(allocator, b64_buf);
+    try buf.appendSlice(allocator, " */");
 }

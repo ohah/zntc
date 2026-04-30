@@ -810,6 +810,177 @@ test "emotion: ClassNames render-prop 안에 import css 가 있어도 scope-loca
     try expectAutoLabel(r.output, "div"); // ClassNames render-prop 의 className inline
 }
 
+// ─── emotion sourceMap (babel-plugin-emotion source-maps.js 호환) ───
+// `compiler.emotion: { sourceMap: true }` 일 때 css template 끝에 inline sourceMap
+// 주석을 append. DevTools 가 CSS 위치 → source 위치 추적 가능.
+
+fn expectSourceMapComment(output: []const u8) !void {
+    try std.testing.expect(
+        std.mem.indexOf(u8, output, "/*# sourceMappingURL=data:application/json;charset=utf-8;base64,") != null,
+    );
+}
+
+test "emotion (sourceMap): css binding form — 템플릿 끝에 sourceMappingURL 주석 append" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "card"); // autoLabel 도 동시 적용
+    try expectSourceMapComment(r.output);
+}
+
+test "emotion (sourceMap): autoLabel false + sourceMap true — sourceMap 만 적용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_auto_label = false, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:card;") == null);
+    try expectSourceMapComment(r.output);
+}
+
+test "emotion (sourceMap): 옵션 비활성 시 sourceMap 주석 추가 안 됨" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" }, // emotion_source_map 기본 false
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "card");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "sourceMappingURL") == null);
+}
+
+test "emotion (sourceMap): 보간 있는 css — 마지막 quasi 끝에 append (첫 quasi 의 label 과 분리)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const themed = css`color: ${color}; padding: 8px;`;
+    ,
+        .{ .emotion = true, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "themed");
+    try expectSourceMapComment(r.output);
+    // sourceMap 주석이 마지막 quasi 안에 있어야 — backtick 직전에 위치
+    const backtick_pos = std.mem.lastIndexOf(u8, r.output, "`") orelse return error.NotFound;
+    const sm_pos = std.mem.indexOf(u8, r.output, "sourceMappingURL") orelse return error.NotFound;
+    try std.testing.expect(sm_pos < backtick_pos);
+}
+
+test "emotion (sourceMap): keyframes 도 sourceMap 적용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { keyframes } from "@emotion/react";
+        \\const fadeIn = keyframes`from { opacity: 0; }`;
+    ,
+        .{ .emotion = true, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "fadeIn");
+    try expectSourceMapComment(r.output);
+}
+
+test "emotion (sourceMap): styled.div 도 sourceMap 적용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@emotion/styled";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Btn");
+    try expectSourceMapComment(r.output);
+}
+
+test "emotion (sourceMap): JSX inline `<div css={css`...`}>` 도 sourceMap 적용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .emotion_source_map = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+    try expectSourceMapComment(r.output);
+}
+
+test "emotion (sourceMap): base64 디코딩 → JSON 구조 정합성 검증" {
+    // 실제 base64 를 디코딩해 JSON 이 valid 한지, 핵심 필드가 들어있는지 확인.
+    // VLQ 인코딩 회귀 (sign bit / continuation bit 순서 등) 를 잡기 위함.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+
+    // base64 추출 — `base64,` 와 ` */` 사이.
+    const prefix = "base64,";
+    const suffix = " */";
+    const start = std.mem.indexOf(u8, r.output, prefix) orelse return error.NoBase64Prefix;
+    const after_prefix = start + prefix.len;
+    const end = std.mem.indexOfPos(u8, r.output, after_prefix, suffix) orelse return error.NoBase64Suffix;
+    const b64 = r.output[after_prefix..end];
+
+    // 디코드.
+    const decoder = std.base64.standard.Decoder;
+    const json_len = try decoder.calcSizeForSlice(b64);
+    const json_buf = try std.testing.allocator.alloc(u8, json_len);
+    defer std.testing.allocator.free(json_buf);
+    try decoder.decode(json_buf, b64);
+
+    // sourceMap v3 spec 의 핵심 필드 검증.
+    try std.testing.expect(std.mem.startsWith(u8, json_buf, "{\"version\":3,"));
+    try std.testing.expect(std.mem.indexOf(u8, json_buf, "\"sources\":[\"test.tsx\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_buf, "\"sourcesContent\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_buf, "\"mappings\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_buf, "\"names\":[]") != null);
+}
+
+test "emotion (sourceMap): non-emotion tag 는 sourceMap 도 추가 안 됨" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\const foo = (s) => s;
+        \\const x = foo`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_source_map = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // emotion binding 이 아니므로 sourceMap 도 적용 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "sourceMappingURL") == null);
+}
+
 test "emotion: <Foo.Global styles={...}> false-positive 방지 — member 면 미인식" {
     // rightmost 가 "Global" 이라도 사용자 컴포넌트의 member 면 emotion Global 이 아님.
     // 단순 jsx_identifier 만 elementMatchesGlobal 매칭.
