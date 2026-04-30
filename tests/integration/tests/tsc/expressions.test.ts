@@ -8183,9 +8183,9 @@ f((a: any) => "")`,
       [],
     );
   });
-  // TODO: expectError가 에러를 기대하지만 ZTS가 성공적으로 트랜스파일함 — TS 타입 체크 미지원
-  test.skip("generatedContextualTyping", async () => {
-    await expectError(
+  // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
+  test("generatedContextualTyping", async () => {
+    await expectPass(
       `
 class Base { private p; }
 class Derived1 extends Base { private m; }
@@ -10596,9 +10596,9 @@ foo((y: string) => {
       [],
     );
   });
-  // TODO: expectError가 에러를 기대하지만 ZTS가 성공적으로 트랜스파일함 — TS 타입 체크 미지원
-  test.skip("contextuallyTypedIife", async () => {
-    await expectError(
+  // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
+  test("contextuallyTypedIife", async () => {
+    await expectPass(
       `// arrow
 (jake => { })("build");
 // function expression
@@ -10634,9 +10634,9 @@ let eleven = (o => o.a(11))({ a: function(n) { return n; } });
       [],
     );
   });
-  // TODO: expectError가 에러를 기대하지만 ZTS가 성공적으로 트랜스파일함 — TS 타입 체크 미지원
-  test.skip("contextuallyTypedIifeStrict", async () => {
-    await expectError(
+  // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
+  test("contextuallyTypedIifeStrict", async () => {
+    await expectPass(
       `// arrow
 (jake => { })("build");
 // function expression
