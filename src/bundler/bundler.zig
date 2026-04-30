@@ -132,6 +132,8 @@ pub const BundleOptions = struct {
     styled_components_minify: bool = false,
     /// emotion 1st-party transform (compiler.emotion). 활성 시 css 템플릿에 autoLabel 적용.
     emotion: bool = false,
+    /// emotion.autoLabel 옵션 — false 면 autoLabel skip.
+    emotion_auto_label: bool = true,
     /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
     collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
@@ -638,6 +640,7 @@ pub const Bundler = struct {
         worker_graph.styled_components_ssr = self.options.styled_components_ssr;
         worker_graph.styled_components_minify = self.options.styled_components_minify;
         worker_graph.emotion = self.options.emotion;
+        worker_graph.emotion_auto_label = self.options.emotion_auto_label;
         worker_graph.code_splitting = self.options.code_splitting;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
@@ -800,6 +803,7 @@ pub const Bundler = struct {
         graph.styled_components_ssr = self.options.styled_components_ssr;
         graph.styled_components_minify = self.options.styled_components_minify;
         graph.emotion = self.options.emotion;
+        graph.emotion_auto_label = self.options.emotion_auto_label;
         graph.code_splitting = self.options.code_splitting;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();
