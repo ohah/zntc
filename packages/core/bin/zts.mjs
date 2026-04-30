@@ -2014,19 +2014,27 @@ function computeRestartTriggers(opts) {
 }
 
 function emitRestart(opts, reason) {
+  return emitRestartAfter(opts, reason, null);
+}
+
+async function emitRestartAfter(opts, reason, beforeSpawn) {
   if (opts.watchJson) {
     console.log(JSON.stringify({ type: "restart", reason }));
   } else if (opts.logLevel !== "silent") {
     console.error(`[watch] ${reason} — restarting CLI...`);
   }
+  if (beforeSpawn) await beforeSpawn();
   // 자식 프로세스 spawn 후 종료 — 새 프로세스가 fresh config/env 로 시작.
   // stdio inherit 으로 부모의 출력 스트림을 그대로 이어받는다.
-  import("node:child_process").then(({ spawn }) => {
-    const child = spawn(process.argv[0], process.argv.slice(1), {
-      stdio: "inherit",
-      env: process.env,
-    });
-    child.on("exit", (code) => process.exit(code ?? 0));
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.argv[0], process.argv.slice(1), {
+    stdio: "inherit",
+    env: process.env,
+  });
+  child.on("exit", (code) => process.exit(code ?? 0));
+  child.on("error", (err) => {
+    console.error(`[watch] restart failed: ${err}`);
+    process.exit(1);
   });
 }
 
@@ -2035,6 +2043,7 @@ function emitRestart(opts, reason) {
 async function runServe(opts, config, { appDev = null } = {}) {
   const isBun = typeof globalThis.Bun !== "undefined";
   const hmr = appDev ? createAppDevHmrChannel() : null;
+  let serverHandle = null;
   const mimeTypes = {
     ".html": "text/html",
     ".js": "application/javascript",
@@ -2152,7 +2161,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         key: globalThis.Bun.file(opts.keyfile),
       };
     }
-    globalThis.Bun.serve(serveOpts);
+    serverHandle = globalThis.Bun.serve(serveOpts);
   } else {
     // Node.js http/https
     const handler = async (req, res) => {
@@ -2201,6 +2210,20 @@ async function runServe(opts, config, { appDev = null } = {}) {
       });
     }
     server.listen(opts.port, opts.host);
+    serverHandle = server;
+  }
+
+  async function closeServerForRestart() {
+    if (!serverHandle) return;
+    if (typeof serverHandle.stop === "function") {
+      await serverHandle.stop();
+      return;
+    }
+    if (typeof serverHandle.close === "function") {
+      await new Promise((resolveClose, rejectClose) => {
+        serverHandle.close((err) => (err ? rejectClose(err) : resolveClose()));
+      });
+    }
   }
 
   const protocol = useTls ? "https" : "http";
@@ -2304,8 +2327,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
         if (!filename || filename.includes("node_modules") || filename.includes(".git")) return;
         const absPath = resolve(dir, filename);
         if (outdirAbs && (absPath === outdirAbs || absPath.startsWith(outdirPrefix))) return;
-        if (!appDev && restartTriggers.matches(filename)) {
-          emitRestart(opts, "config 또는 .env 파일 변경 감지");
+        if (restartTriggers.matches(filename)) {
+          void emitRestartAfter(opts, "config 또는 .env 파일 변경 감지", closeServerForRestart);
           return;
         }
         dirty.add(absPath);
