@@ -825,32 +825,23 @@ pub fn buildFinalExports(
 ) !?[]const LinkingMetadata.FinalExportEntry {
     if (!is_entry or export_bindings.len == 0) return null;
 
-    // re-export-all / `*` 가 섞여 있어도 export_bindings.len 이 entry 수의 상한.
-    // 단일 alloc + resize-shrink 로 ArrayList grow/realloc 회피.
-    const buf = try self.allocator.alloc(LinkingMetadata.FinalExportEntry, export_bindings.len);
-    errdefer self.allocator.free(buf);
-    var n: usize = 0;
+    // re-export-all / `*` 는 entry export 가 아니므로 skip — len 이 entry 상한.
+    var entries: std.ArrayListUnmanaged(LinkingMetadata.FinalExportEntry) = .empty;
+    errdefer entries.deinit(self.allocator);
+    try entries.ensureTotalCapacityPrecise(self.allocator, export_bindings.len);
     for (export_bindings) |eb| {
         if (eb.kind.isReExportAll()) continue;
         if (std.mem.eql(u8, eb.exported_name, "*")) continue;
-        const actual_name = self.getCanonicalForExport(eb, module_index);
-        buf[n] = .{
-            .local = actual_name,
+        entries.appendAssumeCapacity(.{
+            .local = self.getCanonicalForExport(eb, module_index),
             .exported = eb.exported_name,
-            .is_default = std.mem.eql(u8, eb.exported_name, "default"),
-        };
-        n += 1;
+        });
     }
-    if (n == 0) {
-        self.allocator.free(buf);
+    if (entries.items.len == 0) {
+        entries.deinit(self.allocator);
         return null;
     }
-    if (n == export_bindings.len) return buf;
-    if (self.allocator.resize(buf, n)) return buf[0..n];
-    // resize 실패: 정확한 크기로 dupe 후 원본 free.
-    const shrunk = try self.allocator.dupe(LinkingMetadata.FinalExportEntry, buf[0..n]);
-    self.allocator.free(buf);
-    return shrunk;
+    return try entries.toOwnedSlice(self.allocator);
 }
 
 /// 크로스-모듈 상수 인라인 맵을 생성한다.

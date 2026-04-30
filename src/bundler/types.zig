@@ -539,13 +539,6 @@ pub const JsParserKind = enum {
             .js, .jsx => false,
         };
     }
-
-    pub fn isJsx(self: JsParserKind) bool {
-        return switch (self) {
-            .jsx, .tsx => true,
-            .js, .ts => false,
-        };
-    }
 };
 
 pub const ParsedLoader = struct {

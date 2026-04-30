@@ -291,6 +291,18 @@ pub const Parser = struct {
         self.applyExtension(ext, false);
     }
 
+    /// 번들러용: 확장자 매칭을 거치지 않고 TS/JSX 플래그를 직접 적용한다.
+    /// `--loader:.foo=tsx` 처럼 확장자와 parser 의미가 어긋날 때 사용.
+    pub fn configureForBundlerKind(self: *Parser, is_ts: bool, is_jsx: bool) void {
+        if (is_ts) {
+            self.is_module = true;
+            self.scanner.is_module = true;
+            self.is_unambiguous = false;
+            self.is_ts = true;
+        }
+        if (is_jsx) self.is_jsx = true;
+    }
+
     fn applyExtension(self: *Parser, ext: []const u8, ts_unambiguous: bool) void {
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs")) {
             self.is_module = true;
