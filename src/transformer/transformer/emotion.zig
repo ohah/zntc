@@ -42,18 +42,22 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 
-/// emotion `css` import source 문자열 — 흔한 4가지 entry 모두 인정.
+/// emotion `css` / `keyframes` named import 가 export 되는 source 들.
 pub const EMOTION_CSS_SOURCES: []const []const u8 = &.{
     "@emotion/react",
     "@emotion/css",
     "@emotion/core", // legacy v10
     "@emotion/native", // RN
+    "@emotion/primitives", // RN primitives
+    "@emotion/primitives-core", // RN primitives 의 core
 };
 
-/// emotion `styled` default import source 문자열.
+/// emotion default `styled` import 가 export 되는 source 들.
 pub const EMOTION_STYLED_SOURCES: []const []const u8 = &.{
     "@emotion/styled",
     "@emotion/native", // @emotion/native 는 default styled 도 export
+    "@emotion/primitives", // RN primitives 도 default styled
+    "@emotion/styled-base", // 저레벨 패키지 — 일부 사용자 직접 import
 };
 
 fn isInList(source: []const u8, list: []const []const u8) bool {
