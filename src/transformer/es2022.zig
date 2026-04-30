@@ -323,9 +323,8 @@ pub fn ES2022(comptime Transformer: type) type {
                         if (key_node.tag != .private_identifier) continue;
 
                         const orig_name = self.ast.getText(key_node.span);
-                        const kind = (flags >> 1) & 0x03;
-                        const pm_kind: u8 = if (kind == 1) 1 else if (kind == 2) 2 else 0;
-                        const names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, pm_kind);
+                        const pm_kind = es_helpers.privateMethodKindFromFlags(flags);
+                        const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name, pm_kind);
                         try method_mappings.append(self.allocator, .{
                             .original_name = orig_name,
                             .weakset_name = names.ws_name,
@@ -611,7 +610,7 @@ pub fn ES2022(comptime Transformer: type) type {
 
             // this.#m() 호출 — 오직 kind=0 (메서드) 만 매칭. getter/setter 는 this.#x() 형태가
             // 아니라 this.#x / this.#x = v 패턴이므로 lowerPrivateMethodGet / lowerPrivateFieldSet 에서 처리 (#1523).
-            const mapping = findPrivateMethodMappingOfKind(self, orig_name, 0) orelse return null;
+            const mapping = findPrivateMethodMappingOfKind(self, orig_name, .method) orelse return null;
 
             const args_start = self.readU32(ce, 1);
             const args_len = self.readU32(ce, 2);
@@ -655,15 +654,15 @@ pub fn ES2022(comptime Transformer: type) type {
 
             const orig_name = self.ast.getText(prop_node.span);
             // getter 우선 — 같은 name 의 setter 와 method 는 공존 불가하므로 분기 안전.
-            const mapping = findPrivateMethodMappingOfKind(self, orig_name, 1) orelse
-                findPrivateMethodMappingOfKind(self, orig_name, 0) orelse
+            const mapping = findPrivateMethodMappingOfKind(self, orig_name, .getter) orelse
+                findPrivateMethodMappingOfKind(self, orig_name, .method) orelse
                 return null;
 
             const new_obj = try self.visitNode(obj_idx);
             const get_call = try buildMethodGetCall(self, new_obj, mapping, node.span);
 
             // getter → `.call(this)` 즉시 호출 (값 반환). 메서드 → `.bind(this)` 바운드 참조.
-            const access_prop_name: []const u8 = if (mapping.kind == 1) "call" else "bind";
+            const access_prop_name: []const u8 = if (mapping.kind == .getter) "call" else "bind";
             const access_prop = try es_helpers.makeIdentifierRef(self, access_prop_name);
             const callee = try es_helpers.makeStaticMember(self, get_call, access_prop, node.span);
             return es_helpers.makeCallExpr(self, callee, &.{new_obj}, node.span);
@@ -694,7 +693,7 @@ pub fn ES2022(comptime Transformer: type) type {
         }
 
         /// 같은 name 에 method/getter/setter 가 공존할 경우 kind 필터링 매핑 검색 (#1523).
-        pub fn findPrivateMethodMappingOfKind(self: *const Transformer, orig_name: []const u8, kind: u8) ?Transformer.PrivateMethodMapping {
+        pub fn findPrivateMethodMappingOfKind(self: *const Transformer, orig_name: []const u8, kind: es_helpers.PrivateMethodKind) ?Transformer.PrivateMethodMapping {
             for (self.current_private_methods) |m| {
                 if (m.kind == kind and std.mem.eql(u8, m.original_name, orig_name)) return m;
             }

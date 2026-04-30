@@ -565,8 +565,8 @@ pub const Transformer = struct {
         // standalone function_declaration 의 span 으로 사용 — leading comment 가
         // `function _fn()` 뒤가 아니라 함수 앞에서 flush 되도록 (#1516).
         member_span: Span = .{ .start = 0, .end = 0 },
-        /// 0 = method, 1 = getter, 2 = setter (#1523).
-        kind: u8 = 0,
+        /// method / getter / setter (#1523).
+        kind: @import("es_helpers.zig").PrivateMethodKind = .method,
         is_static: bool = false,
         class_name: ?[]const u8 = null,
     };

@@ -168,9 +168,7 @@ pub fn e2eTarget(allocator: std.mem.Allocator, source: []const u8, target: Trans
     const unsupported = TransformOptions.compat.fromESTarget(target);
     return e2eFull(allocator, source, .{ .unsupported = unsupported }, .{
         .minify_whitespace = true,
-        .assert_no_raw_private_syntax = unsupported.class or
-            unsupported.class_private_field or
-            unsupported.class_private_method,
+        .assert_no_raw_private_syntax = unsupported.requiresPrivateDownlevel(),
     }, ".ts");
 }
 

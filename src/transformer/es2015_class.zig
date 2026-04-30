@@ -1289,12 +1289,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const prop_node_pre = self.ast.getNode(prop_idx);
                 if (prop_node_pre.tag == .private_identifier) {
                     const orig_name = self.ast.getText(prop_node_pre.span);
-                    if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, orig_name, 2)) |setter_mapping| {
+                    if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, orig_name, .setter)) |setter_mapping| {
                         if (op_kind_pre == .eq) {
                             return lowerPrivateSetterCall(self, setter_mapping, obj_idx, node.data.binary.right, node.span);
                         }
                         if (compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
-                            if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, orig_name, 1)) |getter_mapping| {
+                            if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, orig_name, .getter)) |getter_mapping| {
                                 return lowerPrivateAccessorCompoundAssign(self, getter_mapping, setter_mapping, obj_idx, bin_op, node.data.binary.right, node.span);
                             }
                         }
@@ -1855,7 +1855,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
                     const is_abstract = (flags & ast_mod.MethodFlags.is_abstract) != 0;
                     const is_declare = (flags & ast_mod.MethodFlags.is_declare) != 0;
-                    const kind = (flags >> 1) & 0x03; // 0=method, 1=get, 2=set (MethodFlags.is_getter/is_setter를 >>1 shift해 0/1/2 값으로)
+                    const pm_kind = es_helpers.privateMethodKindFromFlags(flags);
+                    const kind = @intFromEnum(pm_kind);
 
                     // 본문 없는 메서드 스트리핑: abstract, declare, TS 오버로드 시그니처
                     const method_body: NodeIndex = @enumFromInt(self.readU32(me, MethodExtra.body));
@@ -1874,8 +1875,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         if (key_node.tag == .private_identifier) {
                             const orig_name = self.ast.getText(key_node.span); // "#bar"
 
-                            const pm_kind: u8 = if (kind == 1) 1 else if (kind == 2) 2 else 0;
-                            const names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, pm_kind);
+                            const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name, pm_kind);
 
                             try cm.private_methods.append(self.allocator, .{
                                 .member_idx = @enumFromInt(raw_idx),
@@ -2093,24 +2093,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const setter_target = try makePrivateFieldAccess(self, storage_span, span);
             const setter_idx = try self.buildSetterMethod(priv_key_set, setter_target, false, span);
 
-            const get_names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, 1);
+            const get_names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name, .getter);
             try cm.private_methods.append(self.allocator, .{
                 .member_idx = getter_idx,
                 .original_name = orig_name,
                 .weakset_name = get_names.ws_name,
                 .func_name = get_names.fn_name,
                 .member_span = member_span,
-                .kind = 1,
+                .kind = .getter,
             });
 
-            const set_names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, 2);
+            const set_names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name, .setter);
             try cm.private_methods.append(self.allocator, .{
                 .member_idx = setter_idx,
                 .original_name = orig_name,
                 .weakset_name = set_names.ws_name,
                 .func_name = set_names.fn_name,
                 .member_span = member_span,
-                .kind = 2,
+                .kind = .setter,
             });
         }
 

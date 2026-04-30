@@ -145,6 +145,26 @@ pub fn children(ast: *const Ast, node: Node) ChildIterator {
     };
 }
 
+/// `root` 서브트리에 raw `#x` private syntax (`private_field_expression` /
+/// `private_identifier`) 가 남아 있는지 검사. transformer 가 lowering 했어야 할 노드가
+/// codegen 까지 도달했는지 검증하는 debug invariant 용도 — 정상 코드 경로에서는 항상 false.
+pub fn hasRawPrivateSyntax(ast: *const Ast, root: NodeIndex) bool {
+    if (root.isNone()) return false;
+    if (@intFromEnum(root) >= ast.nodes.items.len) return false;
+
+    const node = ast.nodes.items[@intFromEnum(root)];
+    switch (node.tag) {
+        .private_field_expression, .private_identifier => return true,
+        else => {},
+    }
+
+    var it = children(ast, node);
+    while (it.next()) |child_idx| {
+        if (hasRawPrivateSyntax(ast, child_idx)) return true;
+    }
+    return false;
+}
+
 /// AST 루트(마지막 program 노드)에서 도달 가능한 노드 인덱스를 pre-order로 수집한다.
 /// transformer는 새 노드를 append하면서 이전 노드를 orphan으로 남길 수 있으므로,
 /// post-transform 분석은 `ast.nodes.items` 전체 순회 대신 이 결과를 사용해야 한다.

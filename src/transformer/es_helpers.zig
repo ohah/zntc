@@ -1011,26 +1011,36 @@ pub fn makePrivateVarName(allocator: std.mem.Allocator, orig_name: []const u8) !
     return buf;
 }
 
-/// "#bar" → { ws_name="_bar", fn_name="_bar_fn" }
-pub fn makePrivateMethodNames(allocator: std.mem.Allocator, orig_name: []const u8) !PrivateMethodNames {
-    return makePrivateMethodNamesWithKind(allocator, orig_name, 0);
-}
-
-/// kind 별 suffix: 0=method → "_fn", 1=getter → "_get", 2=setter → "_set" (#1523).
-/// "#x" + kind=1 → { ws_name="_x", fn_name="_x_get" }
-pub fn makePrivateMethodNamesWithKind(allocator: std.mem.Allocator, orig_name: []const u8, kind: u8) !PrivateMethodNames {
+/// kind 별 suffix: method → "_fn", getter → "_get", setter → "_set" (#1523).
+/// "#x" + .getter → { ws_name="_x", fn_name="_x_get" }
+pub fn makePrivateMethodNames(allocator: std.mem.Allocator, orig_name: []const u8, kind: PrivateMethodKind) !PrivateMethodNames {
     const ws_name = try makePrivateVarName(allocator, orig_name);
     const bare = orig_name[1..];
     const suffix: []const u8 = switch (kind) {
-        1 => "_get",
-        2 => "_set",
-        else => "_fn",
+        .method => "_fn",
+        .getter => "_get",
+        .setter => "_set",
     };
     const fn_name = try allocator.alloc(u8, 1 + bare.len + suffix.len);
     fn_name[0] = '_';
     @memcpy(fn_name[1 .. 1 + bare.len], bare);
     @memcpy(fn_name[1 + bare.len ..], suffix);
     return .{ .ws_name = ws_name, .fn_name = fn_name };
+}
+
+/// private method 종류. kind 비트(`(method_flags >> 1) & 0x03`) 와 1:1 (#1523).
+pub const PrivateMethodKind = enum(u8) {
+    method = 0,
+    getter = 1,
+    setter = 2,
+};
+
+/// MethodFlags 의 is_getter(bit 1) / is_setter(bit 2) 를 PrivateMethodKind 로 추출.
+/// getter+setter 동시 set 은 parser invariant 상 불가 → debug assert.
+pub fn privateMethodKindFromFlags(method_flags: u32) PrivateMethodKind {
+    const bits = (method_flags >> 1) & 0x03;
+    std.debug.assert(bits <= 2);
+    return @enumFromInt(@as(u8, @intCast(bits)));
 }
 
 /// var _name = new Constructor(); 선언 생성. (WeakMap, WeakSet 등)
