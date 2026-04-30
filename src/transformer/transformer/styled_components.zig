@@ -1236,8 +1236,33 @@ fn buildKeyStringProperty(self: *Transformer, key_span: Span, quoted_value_span:
 //   Step 5: object form
 //   Step 6: styled import auto-inject + program-level hoisting
 
+/// css value 노드에서 wrap 대상 template_literal 추출:
+///   - 직접 template_literal (`css={\`...\`}`) → 그대로 반환
+///   - styled-components `css\`...\`` (`css={css\`...\`}`) → 그 quasi 만 추출
+///   - 그 외 (object_expression, identifier 등) → null (후속 PR 에서 지원)
+fn extractCssTemplateIdx(self: *Transformer, css_value_idx: NodeIndex) ?NodeIndex {
+    const node = self.ast.getNode(css_value_idx);
+    if (node.tag == .template_literal) return css_value_idx;
+    if (node.tag == .tagged_template_expression) {
+        const e = node.data.extra;
+        if (!self.ast.hasExtra(e, 1)) return null;
+        const inner_tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+        const inner_template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+        if (inner_tag_idx.isNone() or inner_template_idx.isNone()) return null;
+        const inner_tag_node = self.ast.getNode(inner_tag_idx);
+        if (inner_tag_node.tag != .identifier_reference) return null;
+        const css_binding = self.plugins.styled_components.css_binding orelse return null;
+        if (!std.mem.eql(u8, self.ast.getText(inner_tag_node.data.string_ref), css_binding)) return null;
+        const inner_template_node = self.ast.getNode(inner_template_idx);
+        if (inner_template_node.tag != .template_literal) return null;
+        return inner_template_idx;
+    }
+    return null;
+}
+
 /// `<X css={...}>` JSX prop 을 styled component 추출 시도. MVP: intrinsic tag +
-/// template_literal css value + styled default_binding 존재 시. 미매칭 시 null 반환.
+/// template_literal 또는 `css\`\`` tagged template + styled default_binding 존재 시.
+/// 미매칭 시 null 반환.
 pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?ast_mod.Node {
     if (!self.options.styled_components or !self.options.styled_components_css_prop) return null;
     if (jsx_node.tag != .jsx_element) return null;
@@ -1278,8 +1303,10 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     if (css_attr_pos == null) return null;
     if (css_value_idx.isNone()) return null;
 
-    const css_value_node = self.ast.getNode(css_value_idx);
-    if (css_value_node.tag != .template_literal) return null;
+    // css value 가:
+    //   - template_literal 직접 (`css={\`...\`}`) → 그대로
+    //   - styled-components 의 `css\`...\`` tagged template → quasi (template_literal) 만 추출
+    const css_template_idx = extractCssTemplateIdx(self, css_value_idx) orelse return null;
 
     const state = &self.plugins.styled_components;
     const counter = state.css_prop_counter;
@@ -1310,7 +1337,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
 
     const tagged_template = try self.addExtraNode(.tagged_template_expression, zero, &.{
         @intFromEnum(styled_tag),
-        @intFromEnum(css_value_idx),
+        @intFromEnum(css_template_idx),
         0,
     });
 

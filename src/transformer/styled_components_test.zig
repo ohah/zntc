@@ -1615,6 +1615,49 @@ test "styled (cssProp): styled import 없으면 no-op (auto-inject 후속 PR)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_") == null);
 }
 
+test "styled (cssProp Step 2): css tagged template 도 인식 (quasi 만 추출)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled, { css } from "styled-components";
+        \\const el = <div css={css`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled.div") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "styled (cssProp Step 2): css binding alias `import { css as cx }` 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled, { css as cx } from "styled-components";
+        \\const el = <div css={cx`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
 test "styled (cssProp): Custom component (PascalCase) 는 미지원 (후속 PR)" {
     var r = try e2eFull(
         std.testing.allocator,
