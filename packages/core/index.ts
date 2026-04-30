@@ -336,9 +336,9 @@ export interface StyledComponentsOptions {
    */
   meaninglessFileNames?: string[];
   /**
-   * vendored fork (e.g. `@my-org/styled`, `@my-org/*`) 도 styled-components 처럼 인식할
-   * import source 목록. 단일 `*` glob 지원 — picomatch 풀 스펙 (multi `*`, `?`, `[]`,
-   * brace expansion) 은 미지원.
+   * vendored fork 인식할 import source 목록 (e.g. `@my-org/styled`, `@my-org/*`,
+   * `@{my-org,co}/*`). picomatch 호환 glob — `*`, `?`, `[abc]`/`[a-z]`/`[!abc]`,
+   * `{a,b}` (nested 가능).
    */
   topLevelImportPaths?: string[];
   /**
