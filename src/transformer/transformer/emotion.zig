@@ -479,7 +479,7 @@ fn transformNoInterpTemplate(
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
     try buf.append(self.allocator, '`');
-    if (label_text) |l| try writeLabelPrefix(self.allocator, &buf, l);
+    if (label_text) |l| try writeLabelPrefix(self, &buf, l);
     try buf.appendSlice(self.allocator, inner);
     if (source_map_text) |sm| try buf.appendSlice(self.allocator, sm);
     try buf.append(self.allocator, '`');
@@ -528,7 +528,7 @@ fn transformInterpTemplate(
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.allocator);
         try buf.append(self.allocator, '`');
-        try writeLabelPrefix(self.allocator, &buf, l);
+        try writeLabelPrefix(self, &buf, l);
         try buf.appendSlice(self.allocator, inner);
         try buf.appendSlice(self.allocator, "${");
 
@@ -587,10 +587,113 @@ fn transformInterpTemplate(
     });
 }
 
-fn writeLabelPrefix(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), var_name: []const u8) Error!void {
-    try buf.appendSlice(allocator, "label:");
-    try buf.appendSlice(allocator, var_name);
-    try buf.append(allocator, ';');
+fn writeLabelPrefix(self: *Transformer, buf: *std.ArrayList(u8), var_name: []const u8) Error!void {
+    try buf.appendSlice(self.allocator, "label:");
+    try writeFormattedLabel(self, buf, var_name);
+    try buf.append(self.allocator, ';');
+}
+
+/// labelFormat 기반 label 문자열을 buf 에 append.
+///
+/// 동작:
+///   - var_name 자체 sanitize (invalid CSS char → `-`, trim)
+///   - labelFormat 비어있으면 sanitized var_name 만 emit
+///   - 토큰 치환 (case-insensitive): `[local]` / `[filename]` / `[dirname]`
+///   - filename basename 이 `index` 면 parent dir 명으로 fallback
+fn writeFormattedLabel(self: *Transformer, buf: *std.ArrayList(u8), var_name: []const u8) Error!void {
+    const format = self.options.emotion_label_format;
+    if (format.len == 0) {
+        try writeSanitizedLabelPart(self.allocator, buf, var_name);
+        return;
+    }
+
+    // filename / dirname 추출 — basename 이 `index` 면 dirname 으로 fallback.
+    const filename_full = self.options.jsx_filename;
+    const dirname_full = std.fs.path.dirname(filename_full) orelse "";
+    const dirname_local = std.fs.path.basename(dirname_full);
+    const basename_full = std.fs.path.basename(filename_full);
+    const ext = std.fs.path.extension(basename_full);
+    const basename_no_ext = basename_full[0 .. basename_full.len - ext.len];
+    const filename_local = if (std.mem.eql(u8, basename_no_ext, "index")) dirname_local else basename_no_ext;
+
+    // 토큰 치환: `[local]` / `[filename]` / `[dirname]` (case-insensitive).
+    var i: usize = 0;
+    while (i < format.len) {
+        const remaining = format[i..];
+        if (matchTokenIgnoreCase(remaining, "[local]")) |len| {
+            try writeSanitizedLabelPart(self.allocator, buf, var_name);
+            i += len;
+        } else if (matchTokenIgnoreCase(remaining, "[filename]")) |len| {
+            try writeSanitizedLabelPart(self.allocator, buf, filename_local);
+            i += len;
+        } else if (matchTokenIgnoreCase(remaining, "[dirname]")) |len| {
+            try writeSanitizedLabelPart(self.allocator, buf, dirname_local);
+            i += len;
+        } else {
+            try buf.append(self.allocator, format[i]);
+            i += 1;
+        }
+    }
+}
+
+/// `s` 가 `token` 과 case-insensitive 로 시작하면 token.len 반환, 아니면 null.
+fn matchTokenIgnoreCase(s: []const u8, token: []const u8) ?usize {
+    if (s.len < token.len) return null;
+    for (s[0..token.len], token) |a, b| {
+        if (std.ascii.toLower(a) != std.ascii.toLower(b)) return null;
+    }
+    return token.len;
+}
+
+/// label 의 한 부분을 sanitize 후 buf 에 append. invalid CSS class char
+/// (`!"#$%&'()*+,./:;<=>?@[]^|}~{` + backtick + backslash) → `-`, 양 끝 공백 trim.
+/// ASCII 문자만 대상 — non-ASCII (한글 등) 는 통과 (CSS class 로 유효).
+fn writeSanitizedLabelPart(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), raw: []const u8) Error!void {
+    const trimmed = std.mem.trim(u8, raw, " \t\n\r");
+    for (trimmed) |c| {
+        if (isInvalidCssClassChar(c)) {
+            try buf.append(allocator, '-');
+        } else {
+            try buf.append(allocator, c);
+        }
+    }
+}
+
+fn isInvalidCssClassChar(c: u8) bool {
+    return switch (c) {
+        '!',
+        '"',
+        '#',
+        '$',
+        '%',
+        '&',
+        '\'',
+        '(',
+        ')',
+        '*',
+        '+',
+        ',',
+        '.',
+        '/',
+        ':',
+        ';',
+        '<',
+        '=',
+        '>',
+        '?',
+        '@',
+        '[',
+        '\\',
+        ']',
+        '^',
+        '`',
+        '|',
+        '}',
+        '~',
+        '{',
+        => true,
+        else => false,
+    };
 }
 
 // ─── sourceMap 생성 (babel-plugin-emotion source-maps.js 호환) ───

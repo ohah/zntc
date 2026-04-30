@@ -32,6 +32,8 @@ pub const AppBuildOptions = struct {
     emotion_auto_label: bool = true,
     /// emotion.sourceMap 옵션 — true 면 css 템플릿 끝에 inline sourceMap 주석을 append.
     emotion_source_map: bool = false,
+    /// emotion.labelFormat 옵션 — label 포맷 템플릿.
+    emotion_label_format: []const u8 = "",
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -129,6 +131,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .emotion = opts.emotion,
         .emotion_auto_label = opts.emotion_auto_label,
         .emotion_source_map = opts.emotion_source_map,
+        .emotion_label_format = opts.emotion_label_format,
     });
     defer bundler.deinit();
 
