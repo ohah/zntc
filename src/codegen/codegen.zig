@@ -2287,6 +2287,15 @@ pub const Codegen = struct {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (e + 1 >= extras.len) return;
+        // flags 슬롯 (extras[e+2]) 의 `is_pure` bit 가 켜져 있으면 `/* @__PURE__ */`
+        // annotation emit. minifier (Terser/esbuild/rolldown) 가 미사용 tagged template
+        // 호출을 dead-code elimination 가능 (styled-components `pure` 옵션 등).
+        if (e + 2 < extras.len) {
+            const TaggedTemplateFlags = ast_mod.TaggedTemplateFlags;
+            const flags = extras[e + 2];
+            const is_pure = (flags & TaggedTemplateFlags.is_pure) != 0;
+            if (is_pure and !self.options.minify_whitespace) try self.write("/* @__PURE__ */ ");
+        }
         try self.emitNode(@enumFromInt(extras[e]));
         try self.emitNode(@enumFromInt(extras[e + 1]));
     }

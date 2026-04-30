@@ -146,6 +146,8 @@ pub const ModuleGraph = struct {
     styled_components_minify: bool = false,
     /// styled-components.fileName 옵션 — displayName 에 `<basename>__` prefix.
     styled_components_file_name: bool = true,
+    /// styled-components.pure 옵션 — `/* @__PURE__ */` annotation (tree-shaking).
+    styled_components_pure: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -1734,6 +1736,7 @@ pub const ModuleGraph = struct {
         opts.styled_components_ssr = self.styled_components_ssr;
         opts.styled_components_minify = self.styled_components_minify;
         opts.styled_components_file_name = self.styled_components_file_name;
+        opts.styled_components_pure = self.styled_components_pure;
         opts.emotion = self.emotion and is_user_code;
         opts.emotion_auto_label = self.emotion_auto_label;
         opts.emotion_source_map = self.emotion_source_map;

@@ -137,6 +137,10 @@ pub const TransformOptions = struct {
     /// `<basename>__<var_name>` prefix. `index.tsx` 같은 의미 없는 이름은 parent dir
     /// 명으로 fallback. false 면 `<var_name>` 만.
     styled_components_file_name: bool = true,
+    /// styled-components.pure 옵션 (default false) — styled component 생성 expression 에
+    /// `/* @__PURE__ */` annotation 추가. 미사용 styled component 의 dead-code elimination
+    /// (tree shaking) 활성. babel-plugin-styled-components 의 `pure` 옵션과 동일.
+    styled_components_pure: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
     /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
     /// `import { css } from "@emotion/react"` 의 named binding 추적.
