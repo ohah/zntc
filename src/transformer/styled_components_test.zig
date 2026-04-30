@@ -1252,3 +1252,105 @@ test "styled (fileName): basename 이 digit 으로 시작 → `_` prefix" {
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"_123Button__Btn\"") != null);
 }
+
+// ─── pure 옵션 (default false, babel 동일) ───
+// `compiler.styledComponents: { pure: true }` 활성 시 styled component 생성 expression
+// 앞에 `/* @__PURE__ */` annotation 부여 — minifier 가 미사용 component 를 tree-shake.
+
+test "styled (pure): default false — annotation 없음" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") == null);
+}
+
+test "styled (pure): true — styled.div 앞에 annotation" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .styled_components_pure = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") != null);
+    // annotation 이 styled.div.withConfig 앞에 와야
+    const pure_pos = std.mem.indexOf(u8, r.output, "/* @__PURE__ */") orelse return error.NotFound;
+    const styled_pos = std.mem.indexOf(u8, r.output, "styled.div") orelse return error.NotFound;
+    try std.testing.expect(pure_pos < styled_pos);
+}
+
+test "styled (pure): styled(Component) chain 도 annotation" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\import Inner from "./inner";
+        \\const Wrapped = styled(Inner)`color: blue;`;
+    ,
+        .{ .styled_components = true, .styled_components_pure = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") != null);
+}
+
+test "styled (pure): 사용자 .withConfig MERGE 케이스도 annotation" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const X = styled.div.withConfig({ componentId: "user-id" })`color: red;`;
+    ,
+        .{ .styled_components = true, .styled_components_pure = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "user-id") != null);
+}
+
+test "styled (pure): helper css`...` 도 annotation" {
+    // css helper 도 PURE 적용 → 미사용 css fragment tree-shaking.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "styled-components";
+        \\const styles = css`
+        \\  color:  red;
+        \\`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_pure = true,
+            .styled_components_minify = true,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") != null);
+}
+
+test "styled (pure): 옵션 비활성 시 helper 에도 annotation 없음" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "styled-components";
+        \\const styles = css`color: red;`;
+    ,
+        .{ .styled_components = true, .styled_components_minify = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") == null);
+}

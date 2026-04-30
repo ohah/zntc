@@ -162,12 +162,13 @@ pub fn maybeMinifyHelperTemplate(self: *Transformer, init_idx: NodeIndex) Error!
     if (!tagMatchesStyledHelper(self, tag_idx)) return init_idx;
 
     const new_template = try minifyCssTemplate(self, template_idx);
-    if (new_template == template_idx) return init_idx;
+    const final_flags = applyPureFlag(self, flags);
+    if (new_template == template_idx and final_flags == flags) return init_idx;
 
     const new_extra = try self.ast.addExtras(&.{
         @intFromEnum(tag_idx),
         @intFromEnum(new_template),
-        flags,
+        final_flags,
     });
     return self.ast.addNode(.{
         .tag = .tagged_template_expression,
@@ -932,7 +933,7 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
     const new_extra = try self.ast.addExtras(&.{
         @intFromEnum(new_tag),
         @intFromEnum(final_template),
-        flags,
+        applyPureFlag(self, flags),
     });
     return self.ast.addNode(.{
         .tag = .tagged_template_expression,
@@ -1046,7 +1047,7 @@ fn mergeIntoUserWithConfig(
     const new_tt_extra = try self.ast.addExtras(&.{
         @intFromEnum(new_tag),
         @intFromEnum(final_template),
-        template_flags,
+        applyPureFlag(self, template_flags),
     });
     return self.ast.addNode(.{
         .tag = .tagged_template_expression,
@@ -1180,6 +1181,15 @@ fn ensureDisplayNameBlock(self: *Transformer) ?[]const u8 {
     if (block.len == 0) return null;
     state.display_name_block = block;
     return block;
+}
+
+/// pure 옵션 활성 시 tagged_template_expression flags 에 `is_pure` (`/* @__PURE__ */`)
+/// OR. codegen 이 emit 시 styled component 생성 expression 앞에 annotation 부여.
+/// minifier (Terser/esbuild/rolldown) 가 미사용 styled component 의 dead-code
+/// elimination 적용 가능.
+fn applyPureFlag(self: *Transformer, flags: u32) u32 {
+    if (!self.options.styled_components_pure) return flags;
+    return flags | ast_mod.TaggedTemplateFlags.is_pure;
 }
 
 /// `key: "value"` object_property 노드 빌드. key 는 identifier_reference, value 는
