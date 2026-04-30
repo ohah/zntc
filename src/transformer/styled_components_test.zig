@@ -293,8 +293,7 @@ test "styled-components: IIFE block body 다중 statement + return" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log") != null);
 }
 
-test "styled-components: IIFE block body 의 중첩 return 은 미인식 (top-level only)" {
-    // top-level statement 의 return 만 walk — `if (...) return X` 형태는 후속 PR.
+test "styled-components: IIFE block 안 if-statement 의 return 도 wrap" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -305,7 +304,65 @@ test "styled-components: IIFE block body 의 중첩 return 은 미인식 (top-le
         ".tsx",
     );
     defer r.deinit();
-    // 첫 return 은 if 안 — top-level 이 아니라 wrap 안 됨.
+    try expectDisplayName(r.output, "Lazy");
+}
+
+test "styled-components: if-else 양쪽 branch 의 return 모두 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Pick = (() => {
+        \\  if (cond) return styled.div`color: red;`;
+        \\  else return styled.span`color: blue;`;
+        \\})();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Pick");
+    // 두 번 wrap 되었어야 — withConfig 가 2번 등장.
+    var count: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, r.output, i, "withConfig(")) |pos| : (i = pos + 1) {
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "styled-components: 중첩 if 안 block 안의 return 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Deep = (() => {
+        \\  if (cond) {
+        \\    setup();
+        \\    return styled.div`color: red;`;
+        \\  }
+        \\  return null;
+        \\})();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Deep");
+}
+
+test "styled-components: try/switch 중첩은 아직 미인식 (회귀 가드)" {
+    // try / switch 안의 return 은 후속 PR — 현재는 wrap 안 됨.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Tried = (() => { try { return styled.div`color: red;`; } catch {} })();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 

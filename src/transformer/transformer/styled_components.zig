@@ -352,12 +352,49 @@ fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u
     });
 }
 
-/// arrow block body `{ ...; return X }` — return statement 의 operand 만 walk. 변경 없으면
-/// 원본 block_idx 반환 (identity 보존).
-///
-/// **Top-level only**: `if (...) return X` / `try { return X } catch {}` / `switch (...) { case
-/// ...: return X }` 같이 중첩 statement 안의 return 은 미인식. ZTS 의 단방향 visitor
-/// 모델에서 control-flow 노드를 일반화 walk 하는 건 후속 epic.
+/// arrow body 내 return 들을 재귀 walk — return 의 operand 가 styled tagged template 이면 wrap.
+/// 인식 case:
+///   - `return X;` (직접)
+///   - `{ ...; return X; }` (block 안)
+///   - `if (cond) return X;` / `if (cond) return X; else return Y;` (if/else)
+///   - `if (cond) { ... return X; }` (if + block)
+/// 미인식 (후속 PR):
+///   - `try { return X } catch {}` / `switch (cond) { case 1: return X; }`
+fn wrapStyledInStmt(self: *Transformer, stmt_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+    if (stmt_idx.isNone()) return stmt_idx;
+    const node = self.ast.getNode(stmt_idx);
+    switch (node.tag) {
+        .return_statement => {
+            const old_operand = node.data.unary.operand;
+            if (old_operand.isNone() or !shouldAttemptWrap(self, old_operand)) return stmt_idx;
+            const new_operand = try wrapStyledTagInExpr(self, old_operand, var_name);
+            if (new_operand == old_operand) return stmt_idx;
+            return self.ast.addNode(.{
+                .tag = .return_statement,
+                .span = node.span,
+                .data = .{ .unary = .{ .operand = new_operand, .flags = node.data.unary.flags } },
+            });
+        },
+        .block_statement => return wrapStyledInBlockReturns(self, stmt_idx, var_name),
+        .if_statement => {
+            // ternary: a=test, b=consequent, c=alternate. consequent / alternate 둘 다 walk
+            // (자식 stmt 일 수도, block 일 수도, 또는 다시 if 일 수도).
+            const old_b = node.data.ternary.b;
+            const old_c = node.data.ternary.c;
+            const new_b = try wrapStyledInStmt(self, old_b, var_name);
+            const new_c = try wrapStyledInStmt(self, old_c, var_name);
+            if (new_b == old_b and new_c == old_c) return stmt_idx;
+            return self.ast.addNode(.{
+                .tag = .if_statement,
+                .span = node.span,
+                .data = .{ .ternary = .{ .a = node.data.ternary.a, .b = new_b, .c = new_c } },
+            });
+        },
+        else => return stmt_idx,
+    }
+}
+
+/// block_statement 의 statements 순회 — 각 stmt 를 wrapStyledInStmt 로 재귀 walk.
 fn wrapStyledInBlockReturns(self: *Transformer, block_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     const block_node = self.ast.getNode(block_idx);
     const list = block_node.data.list;
@@ -369,24 +406,9 @@ fn wrapStyledInBlockReturns(self: *Transformer, block_idx: NodeIndex, var_name: 
     var changed = false;
     for (stmts) |raw| {
         const stmt_idx: NodeIndex = @enumFromInt(raw);
-        const stmt_node = self.ast.getNode(stmt_idx);
-        if (stmt_node.tag == .return_statement) {
-            const old_operand = stmt_node.data.unary.operand;
-            if (!old_operand.isNone() and shouldAttemptWrap(self, old_operand)) {
-                const new_operand = try wrapStyledTagInExpr(self, old_operand, var_name);
-                if (new_operand != old_operand) {
-                    changed = true;
-                    const new_return = try self.ast.addNode(.{
-                        .tag = .return_statement,
-                        .span = stmt_node.span,
-                        .data = .{ .unary = .{ .operand = new_operand, .flags = stmt_node.data.unary.flags } },
-                    });
-                    try self.scratch.append(self.allocator, new_return);
-                    continue;
-                }
-            }
-        }
-        try self.scratch.append(self.allocator, stmt_idx);
+        const new_stmt = try wrapStyledInStmt(self, stmt_idx, var_name);
+        if (new_stmt != stmt_idx) changed = true;
+        try self.scratch.append(self.allocator, new_stmt);
     }
 
     if (!changed) return block_idx;
