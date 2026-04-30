@@ -164,44 +164,55 @@ pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []
     });
 }
 
-/// tag 가 emotion 인식 패턴 (css binding, keyframes binding, styled.X, styled(X)) 인지 확인.
+/// tag 가 emotion 인식 패턴인지 확인.
+///   - `css\`...\`` / `keyframes\`...\`` — 직접 identifier 만
+///   - `styled.X\`...\`` / `styled(X)\`...\`` / `styled.div.withComponent(...)\`...\`` —
+///     chain walker (root identifier 가 styled_binding 이면 인식)
 fn tagMatchesEmotion(self: *Transformer, tag_idx: NodeIndex) bool {
     if (tag_idx.isNone()) return false;
     const state = &self.plugins.emotion;
     const tag_node = self.ast.getNode(tag_idx);
-    switch (tag_node.tag) {
-        .identifier_reference => {
-            // `css\`...\`` 또는 `keyframes\`...\`` — 둘 중 어느 binding 이든 일치.
-            const text = self.ast.getText(tag_node.data.string_ref);
-            if (state.css_binding) |b| {
-                if (std.mem.eql(u8, text, b)) return true;
-            }
-            if (state.keyframes_binding) |b| {
-                if (std.mem.eql(u8, text, b)) return true;
-            }
-            return false;
-        },
-        .static_member_expression => {
-            // `styled.div\`...\`` — object 가 styled_binding 일치.
-            const binding = state.styled_binding orelse return false;
-            if (!self.ast.hasExtra(tag_node.data.extra, 1)) return false;
-            const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[tag_node.data.extra]);
-            if (obj_idx.isNone()) return false;
-            const obj_node = self.ast.getNode(obj_idx);
-            if (obj_node.tag != .identifier_reference) return false;
-            return std.mem.eql(u8, self.ast.getText(obj_node.data.string_ref), binding);
-        },
-        .call_expression => {
-            // `styled(Component)\`...\`` — callee 가 styled_binding 일치.
-            const binding = state.styled_binding orelse return false;
-            if (!self.ast.hasExtra(tag_node.data.extra, 0)) return false;
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[tag_node.data.extra]);
-            if (callee_idx.isNone()) return false;
-            const callee_node = self.ast.getNode(callee_idx);
-            if (callee_node.tag != .identifier_reference) return false;
-            return std.mem.eql(u8, self.ast.getText(callee_node.data.string_ref), binding);
-        },
-        else => return false,
+
+    // 직접 identifier — css 또는 keyframes binding 만 인식 (`css.x` 같은 chain 은 제외 — emotion
+    // 의 `css` 는 member API 가 없어 chain 시 부정확한 라벨 위험).
+    if (tag_node.tag == .identifier_reference) {
+        const text = self.ast.getText(tag_node.data.string_ref);
+        if (state.css_binding) |b| {
+            if (std.mem.eql(u8, text, b)) return true;
+        }
+        if (state.keyframes_binding) |b| {
+            if (std.mem.eql(u8, text, b)) return true;
+        }
+        return false;
+    }
+
+    // chain (member / call) — root 까지 walk 해서 styled_binding 매치 확인.
+    // styled.div / styled(X) / styled.div.withComponent(...) / styled(X).withComponent(...) 등.
+    return chainRootIsStyledBinding(self, tag_idx);
+}
+
+/// chain root identifier 가 styled_binding 인지 확인. styled-components 의 analyzeTagChain
+/// 과 동일 패턴 (descend `static_member_expression.object` / `call_expression.callee`).
+fn chainRootIsStyledBinding(self: *Transformer, tag_idx: NodeIndex) bool {
+    const binding = self.plugins.emotion.styled_binding orelse return false;
+    var current = tag_idx;
+    while (true) {
+        if (current.isNone()) return false;
+        const node = self.ast.getNode(current);
+        switch (node.tag) {
+            .identifier_reference => {
+                return std.mem.eql(u8, self.ast.getText(node.data.string_ref), binding);
+            },
+            .static_member_expression => {
+                if (!self.ast.hasExtra(node.data.extra, 1)) return false;
+                current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+            },
+            .call_expression => {
+                if (!self.ast.hasExtra(node.data.extra, 0)) return false;
+                current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+            },
+            else => return false,
+        }
     }
 }
 
