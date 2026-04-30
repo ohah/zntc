@@ -136,6 +136,11 @@ pub const StyledComponentsState = struct {
     /// 32-bit truncation 은 일반 monorepo (수만 파일) 에서도 collision 무시 가능.
     file_hash_hex: ?[8]u8 = null,
 
+    /// fileName 옵션 활성 시 displayName 의 prefix 부분 캐시 — `<basename>__`. 첫 wrap
+    /// 호출 시점에 채워짐. basename 이 `index` 면 parent dir 명으로 fallback.
+    /// `options.jsx_filename` 가 비어있거나 fileName 옵션 비활성이면 null.
+    display_name_block: ?[]const u8 = null,
+
     /// componentId 의 0-based counter — 같은 파일 내 styled 컴포넌트 등장 순서.
     /// SWC 의 next_id 와 동일 (sc-<file_hash>-<counter>).
     /// **Invariant**: Transformer 가 파일당 새로 생성된다는 가정에 의존 — 재사용 금지.
