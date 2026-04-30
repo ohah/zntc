@@ -305,6 +305,7 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "--port=",
     "--host",
     "--host=",
+    "--strict-port",
     "--certfile",
     "--keyfile",
     "--proxy",
