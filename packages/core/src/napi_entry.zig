@@ -924,9 +924,10 @@ const NapiPlugin = struct {
         /// JS plugin 의 onResolveContext 가 반환한 `{ context: string[] }` 의 string[] 부분.
         /// outer slice = native_alloc 소유 (graph 가 free), inner string = JS lifetime.
         context_matches: ?[]const []const u8 = null,
-        /// onLoad callback 의 `loader: 'text' | 'binary' | 'dataurl' | 'base64' | ...`. (#2157)
-        /// Loader.fromString 으로 변환된 결과. null = override 안 함.
+        /// onLoad callback 의 `loader: 'text' | 'binary' | 'tsx' | ...`. (#2157)
+        /// ParsedLoader.fromString 으로 변환된 결과. null = override 안 함.
         loader_override: ?bundler_mod.types.Loader = null,
+        loader_js_kind: ?bundler_mod.types.JsParserKind = null,
     };
 
     /// Per-call 요청 컨텍스트. 여러 워커 스레드가 동시에 호출해도 안전.
@@ -982,7 +983,10 @@ const NapiPlugin = struct {
         if (resp.code != null) {
             if (getObjectString(env, js_result, "loader", native_alloc)) |loader_str| {
                 defer native_alloc.free(loader_str);
-                resp.loader_override = bundler_mod.types.Loader.fromString(loader_str);
+                if (bundler_mod.types.ParsedLoader.fromString(loader_str)) |parsed_loader| {
+                    resp.loader_override = parsed_loader.loader;
+                    resp.loader_js_kind = parsed_loader.js_kind;
+                }
             }
         }
         return resp;
@@ -1188,7 +1192,7 @@ const NapiPlugin = struct {
             return error.OutOfMemory;
         };
         native_alloc.free(result_code);
-        return .{ .contents = contents, .loader = resp.loader_override };
+        return .{ .contents = contents, .loader = resp.loader_override, .js_kind = resp.loader_js_kind };
     }
 
     fn pluginTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
@@ -3369,8 +3373,12 @@ fn parseBuildOptions(
         for (pairs) |pair| {
             if (!trackStr(owned_strings, pair[0])) return null;
             if (!trackStr(owned_strings, pair[1])) return null;
-            const loader = bundler_mod.types.Loader.fromString(pair[1]) orelse continue;
-            overrides[valid_count] = .{ .ext = pair[0], .loader = loader };
+            const parsed_loader = bundler_mod.types.ParsedLoader.fromString(pair[1]) orelse continue;
+            overrides[valid_count] = .{
+                .ext = pair[0],
+                .loader = parsed_loader.loader,
+                .js_kind = parsed_loader.js_kind,
+            };
             valid_count += 1;
         }
         native_alloc.free(pairs);

@@ -24,6 +24,7 @@ pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
 pub const LoadResult = struct {
     contents: []const u8,
     loader: ?types.Loader = null,
+    js_kind: ?types.JsParserKind = null,
 };
 
 /// 플러그인 훅에서 반환할 수 있는 에러 타입.

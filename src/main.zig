@@ -216,7 +216,7 @@ const CliOptions = struct {
     const AliasEntry = BundleOptions.AliasEntry;
     const FallbackEntry = @import("zts_lib").bundler.types.FallbackEntry;
     const LoaderOverride = @import("zts_lib").bundler.types.LoaderOverride;
-    const LoaderEnum = @import("zts_lib").bundler.types.Loader;
+    const ParsedLoader = @import("zts_lib").bundler.types.ParsedLoader;
     const LegalCommentsEnum = @import("zts_lib").bundler.types.LegalComments;
     const ManualChunkEntry = @import("zts_lib").bundler.types.ManualChunkEntry;
 
@@ -628,10 +628,11 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
         });
     };
     if (dto.loader) |list| for (list) |l| {
-        const loader_enum = std.meta.stringToEnum(lib.bundler.types.Loader, l.loader) orelse continue;
+        const parsed_loader = lib.bundler.types.ParsedLoader.fromString(l.loader) orelse continue;
         try opts.loader_list.append(allocator, .{
             .ext = try allocator.dupe(u8, l.ext),
-            .loader = loader_enum,
+            .loader = parsed_loader.loader,
+            .js_kind = parsed_loader.js_kind,
         });
     };
     if (dto.conditions) |list| for (list) |s| {
@@ -1176,13 +1177,14 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
             if (std.mem.indexOf(u8, kv, "=")) |eq_pos| {
                 const ext_str = kv[0..eq_pos];
                 const loader_str = kv[eq_pos + 1 ..];
-                if (CliOptions.LoaderEnum.fromString(loader_str)) |loader| {
+                if (CliOptions.ParsedLoader.fromString(loader_str)) |parsed_loader| {
                     try opts.loader_list.append(allocator, .{
                         .ext = ext_str,
-                        .loader = loader,
+                        .loader = parsed_loader.loader,
+                        .js_kind = parsed_loader.js_kind,
                     });
                 } else {
-                    try stderr.print("zts: unknown loader '{s}' (expected: file, dataurl, text, binary, copy, json, css, empty, js)\n", .{loader_str});
+                    try stderr.print("zts: unknown loader '{s}' (expected: file, dataurl, base64, text, binary, copy, json, css, empty, js, jsx, ts, tsx)\n", .{loader_str});
                     std.process.exit(1);
                 }
             } else {

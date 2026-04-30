@@ -182,6 +182,9 @@ pub const Module = struct {
     /// 모듈의 로딩 방식 (file/dataurl/text/binary/copy 등).
     /// addModule에서 확장자 또는 --loader 옵션으로 결정.
     loader: types.Loader = .none,
+    /// JS/TS/JSX/TSX parser mode. `loader` 는 `.javascript` 로 유지하면서
+    /// --loader:.foo=tsx 같은 parser 의미를 보존한다.
+    js_parser_kind: ?types.JsParserKind = null,
     /// 모듈의 export 방식 (CJS/ESM 판별)
     exports_kind: types.ExportsKind = .none,
     /// 모듈 래핑 방식 (CJS → __commonJS 팩토리 함수)

@@ -499,12 +499,87 @@ pub const Loader = enum {
     }
 };
 
+/// JS-family loader strings choose parser/transform syntax while still using
+/// the `.javascript` bundler loader.
+pub const JsParserKind = enum {
+    js,
+    jsx,
+    ts,
+    tsx,
+
+    pub fn fromExtension(ext: []const u8) ?JsParserKind {
+        if (std.mem.eql(u8, ext, ".ts") or
+            std.mem.eql(u8, ext, ".mts") or
+            std.mem.eql(u8, ext, ".cts"))
+        {
+            return .ts;
+        }
+        if (std.mem.eql(u8, ext, ".tsx")) return .tsx;
+        if (std.mem.eql(u8, ext, ".jsx")) return .jsx;
+        if (std.mem.eql(u8, ext, ".js") or
+            std.mem.eql(u8, ext, ".mjs") or
+            std.mem.eql(u8, ext, ".cjs"))
+        {
+            return .js;
+        }
+        return null;
+    }
+
+    pub fn fromString(s: []const u8) ?JsParserKind {
+        if (std.mem.eql(u8, s, "js")) return .js;
+        if (std.mem.eql(u8, s, "jsx")) return .jsx;
+        if (std.mem.eql(u8, s, "ts")) return .ts;
+        if (std.mem.eql(u8, s, "tsx")) return .tsx;
+        return null;
+    }
+
+    pub fn isTypeScript(self: JsParserKind) bool {
+        return switch (self) {
+            .ts, .tsx => true,
+            .js, .jsx => false,
+        };
+    }
+
+    pub fn isJsx(self: JsParserKind) bool {
+        return switch (self) {
+            .jsx, .tsx => true,
+            .js, .ts => false,
+        };
+    }
+};
+
+pub const ParsedLoader = struct {
+    loader: Loader,
+    js_kind: ?JsParserKind = null,
+
+    pub fn fromExtension(ext: []const u8) ParsedLoader {
+        const loader = Loader.fromExtension(ext);
+        return .{
+            .loader = loader,
+            .js_kind = if (loader == .javascript) JsParserKind.fromExtension(ext) else null,
+        };
+    }
+
+    pub fn fromString(s: []const u8) ?ParsedLoader {
+        if (JsParserKind.fromString(s)) |js_kind| {
+            return .{ .loader = .javascript, .js_kind = js_kind };
+        }
+        const loader = Loader.fromString(s) orelse return null;
+        return .{
+            .loader = loader,
+            .js_kind = if (loader == .javascript) .js else null,
+        };
+    }
+};
+
 /// --loader:.ext=type CLI 옵션 하나를 나타내는 쌍.
 pub const LoaderOverride = struct {
     /// 확장자 (dot 포함, 예: ".png")
     ext: []const u8,
     /// 적용할 로더
     loader: Loader,
+    /// JS 계열 loader 문자열이 선택한 parser kind.
+    js_kind: ?JsParserKind = null,
 };
 
 // ============================================================
