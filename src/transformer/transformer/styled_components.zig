@@ -644,42 +644,34 @@ fn scanObjectKeys(self: *Transformer, obj_idx: NodeIndex) ObjectKeyScan {
     return result;
 }
 
-/// no-interpolation template_literal (`\`color: red;\``) 의 CSS whitespace 를 minify.
-/// codegen.zig:2270 의 convention 따라 `data.none == 0` 으로 no-interp 판정.
-/// 보간 있는 template (`data.list.len > 0`) 은 후속 PR. 변경 없으면 identity (template_idx).
+/// template_literal 의 CSS whitespace 를 minify. no-interp / 보간 있는 케이스 모두 처리.
+/// codegen.zig:2270 convention — `data.none == 0` 이면 no-interp (text in node.span),
+/// 그 외엔 children 이 alternating template_element + expression.
+/// 변경 없으면 identity (template_idx).
 fn minifyCssTemplate(self: *Transformer, template_idx: NodeIndex) Error!NodeIndex {
     if (template_idx.isNone()) return template_idx;
     const node = self.ast.getNode(template_idx);
     if (node.tag != .template_literal) return template_idx;
-    if (node.data.none != 0) return template_idx; // 보간 있음 — codegen.zig:2270 convention.
 
+    if (node.data.none == 0) {
+        // no-interp: text 는 node.span 에 직접 — `\`text\`` 형태.
+        return try minifyNoInterpTemplate(self, template_idx, node);
+    }
+    return try minifyInterpTemplate(self, template_idx, node);
+}
+
+/// no-interp template — `\`text\`` 한 덩어리. inner 추출 → collapse → re-wrap.
+fn minifyNoInterpTemplate(self: *Transformer, template_idx: NodeIndex, node: ast_mod.Node) Error!NodeIndex {
     const raw = self.ast.getText(node.span);
     if (raw.len < 2 or raw[0] != '`' or raw[raw.len - 1] != '`') return template_idx;
     const inner = raw[1 .. raw.len - 1];
-
-    // Fast-path: 이미 minimal (collapse 할 ws run / leading-trailing ws 없음) 이면 alloc 회피.
     if (!needsCssMinify(inner)) return template_idx;
 
-    // 단일 버퍼 — `\`` + collapsed + `\`` 한 번에 빌드.
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(self.allocator);
     try buf.append(self.allocator, '`');
-    var prev_ws = true; // leading whitespace skip
-    for (inner) |c| {
-        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
-            if (!prev_ws) {
-                try buf.append(self.allocator, ' ');
-                prev_ws = true;
-            }
-        } else {
-            try buf.append(self.allocator, c);
-            prev_ws = false;
-        }
-    }
-    // trailing whitespace strip — closing backtick 직전 ws 제거.
-    while (buf.items.len > 1 and buf.items[buf.items.len - 1] == ' ') {
-        _ = buf.pop();
-    }
+    try collapseCssWhitespace(self.allocator, &buf, inner, true);
+    stripTrailingSpaces(&buf);
     try buf.append(self.allocator, '`');
 
     const new_span = try self.ast.addString(buf.items);
@@ -690,19 +682,123 @@ fn minifyCssTemplate(self: *Transformer, template_idx: NodeIndex) Error!NodeInde
     });
 }
 
-/// CSS minify 가 변경을 만들지 검사 — leading/trailing whitespace, 또는 ws run (>1) 이 있으면 true.
-/// alloc 회피 fast-path.
-fn needsCssMinify(inner: []const u8) bool {
+/// 보간 있는 template — children 이 `template_element[0], expr, template_element[1], ...,
+/// template_element[N]`. 각 template_element 의 quasi text 를 minify (marker 보존).
+///   - 첫 element: `\`text${`
+///   - 중간 element: `}text${`
+///   - 마지막 element: `}text\``
+fn minifyInterpTemplate(self: *Transformer, template_idx: NodeIndex, node: ast_mod.Node) Error!NodeIndex {
+    const list = node.data.list;
+    const items = self.ast.extra_data.items[list.start .. list.start + list.len];
+
+    const top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(top);
+
+    var changed = false;
+    for (items) |raw_idx| {
+        const child_idx: NodeIndex = @enumFromInt(raw_idx);
+        const child = self.ast.getNode(child_idx);
+        if (child.tag != .template_element) {
+            // expression — 그대로.
+            try self.scratch.append(self.allocator, child_idx);
+            continue;
+        }
+        const new_child = try minifyTemplateElement(self, child_idx, child);
+        if (new_child != child_idx) changed = true;
+        try self.scratch.append(self.allocator, new_child);
+    }
+
+    if (!changed) return template_idx;
+
+    const new_list = try self.ast.addNodeList(self.scratch.items[top..]);
+    return self.ast.addNode(.{
+        .tag = .template_literal,
+        .span = node.span,
+        .data = .{ .list = new_list },
+    });
+}
+
+/// template_element 의 marker (`\``/`${`/`}`) 를 보존하면서 inner CSS text 를 minify.
+fn minifyTemplateElement(self: *Transformer, element_idx: NodeIndex, node: ast_mod.Node) Error!NodeIndex {
+    const raw = self.ast.getText(node.span);
+    if (raw.len < 2) return element_idx;
+
+    // Leading marker: `\`` (head) or `}` (middle/tail). Trailing marker: `${` (head/middle) or `\`` (tail).
+    const lead = raw[0];
+    if (lead != '`' and lead != '}') return element_idx;
+    const has_dollar_open = raw.len >= 2 and raw[raw.len - 2] == '$' and raw[raw.len - 1] == '{';
+    const trail_len: usize = if (has_dollar_open) 2 else 1; // `${` = 2 bytes, `\`` = 1 byte
+    if (!has_dollar_open and raw[raw.len - 1] != '`') return element_idx;
+
+    const inner = raw[1 .. raw.len - trail_len];
+    // 첫 quasi (leading=`) 만 leading-ws 스킵, 마지막 quasi (trailing=`) 만 trailing-ws 스킵.
+    // 중간 / 인접 ${} 의 quasi 는 보간 경계에 ws 가 의미 있으므로 양 끝 trim 안 함 (collapse 만).
+    const skip_leading = lead == '`';
+    const skip_trailing = !has_dollar_open; // closing `\``
+    if (!needsCssMinifyQuasi(inner, skip_leading, skip_trailing)) return element_idx;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(self.allocator);
+    try buf.append(self.allocator, lead);
+    try collapseCssWhitespace(self.allocator, &buf, inner, skip_leading);
+    if (skip_trailing) stripTrailingSpaces(&buf);
+    if (has_dollar_open) {
+        try buf.append(self.allocator, '$');
+        try buf.append(self.allocator, '{');
+    } else {
+        try buf.append(self.allocator, '`');
+    }
+
+    const new_span = try self.ast.addString(buf.items);
+    return self.ast.addNode(.{
+        .tag = .template_element,
+        .span = new_span,
+        .data = .{ .none = 0 },
+    });
+}
+
+/// CSS whitespace collapse — `text` (markers 제외된 inner) 를 buf 에 append. ws run 을 single
+/// space 로. `skip_leading=true` 면 첫 ws run skip.
+fn collapseCssWhitespace(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), inner: []const u8, skip_leading: bool) Error!void {
+    var prev_ws = skip_leading;
+    for (inner) |c| {
+        if (isCssWhitespace(c)) {
+            if (!prev_ws) {
+                try buf.append(allocator, ' ');
+                prev_ws = true;
+            }
+        } else {
+            try buf.append(allocator, c);
+            prev_ws = false;
+        }
+    }
+}
+
+/// buf 끝의 ' ' 들을 pop. closing marker (`\``) 를 추가하기 직전 호출.
+fn stripTrailingSpaces(buf: *std.ArrayList(u8)) void {
+    while (buf.items.len > 1 and buf.items[buf.items.len - 1] == ' ') {
+        _ = buf.pop();
+    }
+}
+
+/// quasi 용 needsMinify 체크 — leading/trailing 검사를 옵션으로.
+fn needsCssMinifyQuasi(inner: []const u8, check_leading: bool, check_trailing: bool) bool {
     if (inner.len == 0) return false;
-    if (isCssWhitespace(inner[0]) or isCssWhitespace(inner[inner.len - 1])) return true;
+    if (check_leading and isCssWhitespace(inner[0])) return true;
+    if (check_trailing and isCssWhitespace(inner[inner.len - 1])) return true;
     var prev_ws = false;
     for (inner) |c| {
         const ws = isCssWhitespace(c);
-        if (ws and prev_ws) return true; // 다중 ws run
-        if (c == '\t' or c == '\n' or c == '\r') return true; // non-space ws 는 항상 collapse 대상
+        if (ws and prev_ws) return true;
+        if (c == '\t' or c == '\n' or c == '\r') return true;
         prev_ws = ws;
     }
     return false;
+}
+
+/// no-interp 전용 needsMinify — 양 끝 trim + ws run collapse 검사.
+fn needsCssMinify(inner: []const u8) bool {
+    return needsCssMinifyQuasi(inner, true, true);
 }
 
 inline fn isCssWhitespace(c: u8) bool {

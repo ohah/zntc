@@ -899,13 +899,13 @@ test "styled-components: minify=false (default) 면 CSS 보존" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "\n  color") != null);
 }
 
-test "styled-components: minify — interpolation 있는 template 은 보존 (후속 PR)" {
-    // 보간 있는 template_literal (data.list.len > 0) 는 첫 iteration 에서 skip.
+test "styled-components: minify — interpolation 있는 template 도 minify (각 quasi 별)" {
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
         \\const Btn = styled.div`
         \\  color: ${color};
+        \\  padding: 8px;
         \\`;
     ,
         .{ .styled_components = true, .jsx_filename = "test.tsx", .styled_components_minify = true },
@@ -914,8 +914,33 @@ test "styled-components: minify — interpolation 있는 template 은 보존 (�
     );
     defer r.deinit();
     try expectDisplayName(r.output, "Btn");
-    // interpolation 있으면 minify skip — newline 보존.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "\n  color") != null);
+    // 각 quasi 가 minify 됨 — 들여쓰기 제거.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\n  color") == null);
+    // 보간 marker `${color}` 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "${color}") != null);
+}
+
+test "styled-components: minify — 다중 보간 사이 quasi 도 처리" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Multi = styled.div`
+        \\  color: ${a};
+        \\  padding: ${b}px ${c}px;
+        \\`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx", .styled_components_minify = true },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Multi");
+    // 모든 보간 보존 (3개)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "${a}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "${b}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "${c}") != null);
+    // 들여쓰기 / newline 제거됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\n  ") == null);
 }
 
 test "styled-components: ssr=false 시 componentId 생략, displayName 만" {
