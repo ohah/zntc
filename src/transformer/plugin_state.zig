@@ -114,6 +114,17 @@ pub const StyledComponentsState = struct {
     /// import 가 없으면 null — 이후 모든 wrap 이 no-op.
     default_binding: ?[]const u8 = null,
 
+    /// `import { css } from "styled-components"` named import 의 local binding 이름.
+    /// minify 적용에 사용 (`styled.X` 처럼 displayName/componentId 는 부여 안 함 —
+    /// helper 는 컴포넌트 아닌 CSS 조각 빌더).
+    css_binding: ?[]const u8 = null,
+    /// `import { keyframes } from "styled-components"` named import.
+    keyframes_binding: ?[]const u8 = null,
+    /// `import { createGlobalStyle } from "styled-components"` named import.
+    create_global_style_binding: ?[]const u8 = null,
+    /// `import { injectGlobal } from "styled-components"` named import.
+    inject_global_binding: ?[]const u8 = null,
+
     /// `.withConfig({...})` 래핑 시 매 컴포넌트마다 동일 문자열을 string_table 에 추가하는
     /// 비용을 피하기 위한 lazy 캐시. 첫 wrap 시점에 채워짐.
     with_config_span: ?Span = null,

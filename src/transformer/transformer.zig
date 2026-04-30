@@ -2995,6 +2995,11 @@ pub const Transformer = struct {
                 new_init = try emotion_mod.maybeTransformEmotionTemplate(self, new_init, var_name);
             }
         }
+        // styled-components named helper minify: const X = css`...` / keyframes`...` 등.
+        // helper 는 컴포넌트가 아니라 CSS 조각이라 displayName/componentId 는 안 붙임.
+        if (self.options.styled_components and !new_init.isNone()) {
+            new_init = try styled_components_mod.maybeMinifyHelperTemplate(self, new_init);
+        }
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(.variable_declarator, node.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
     }

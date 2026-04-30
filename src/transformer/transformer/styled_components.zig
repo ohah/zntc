@@ -65,12 +65,26 @@ pub fn isStyledImportSource(source: []const u8) bool {
     return false;
 }
 
-/// `visitImportDeclaration` hook — source 가 styled-components 면 default specifier 의 로컬
-/// 이름을 binding 으로 등록. 옵션 비활성 시 즉시 return (hot path).
+/// styled-components 의 named helper imports — minify 등 transform 에 사용.
+const NamedHelperSpec = struct {
+    imported: []const u8,
+    field: []const u8,
+};
+
+const NAMED_HELPER_SPECS = [_]NamedHelperSpec{
+    .{ .imported = "css", .field = "css_binding" },
+    .{ .imported = "keyframes", .field = "keyframes_binding" },
+    .{ .imported = "createGlobalStyle", .field = "create_global_style_binding" },
+    .{ .imported = "injectGlobal", .field = "inject_global_binding" },
+};
+
+/// `visitImportDeclaration` hook — source 가 styled-components 면:
+///   - default specifier 의 local 이름을 `default_binding` 에 저장 (`styled.X\`\``).
+///   - named specifier (`{ css, keyframes, createGlobalStyle, injectGlobal }`) 은
+///     각각 helper binding 필드에 저장 — minify 등 helper-level transform 에 사용.
+/// 옵션 비활성 시 즉시 return (hot path).
 pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     if (!self.options.styled_components) return;
-    // 첫 styled-components import 만 사용 (babel-plugin 동작과 일치).
-    if (self.plugins.styled_components.default_binding != null) return;
 
     const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
     if (x.source.isNone()) return;
@@ -85,14 +99,95 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
         const spec_idx: NodeIndex = @enumFromInt(spec_idx_raw);
         if (spec_idx.isNone()) continue;
         const spec_node = self.ast.getNode(spec_idx);
-        if (spec_node.tag != .import_default_specifier) continue;
-        const local_name = self.ast.getText(spec_node.data.string_ref);
-        if (local_name.len == 0) continue;
-        self.plugins.styled_components.default_binding = local_name;
-        return;
+        switch (spec_node.tag) {
+            .import_default_specifier => {
+                if (self.plugins.styled_components.default_binding != null) continue;
+                const local_name = self.ast.getText(spec_node.data.string_ref);
+                if (local_name.len == 0) continue;
+                self.plugins.styled_components.default_binding = local_name;
+            },
+            .import_specifier => {
+                // binary { left=imported, right=local }
+                const imported_idx = spec_node.data.binary.left;
+                const local_idx = spec_node.data.binary.right;
+                if (imported_idx.isNone() or local_idx.isNone()) continue;
+                const imported_node = self.ast.getNode(imported_idx);
+                if (imported_node.tag != .identifier_reference) continue;
+                const imported_name = self.ast.getText(imported_node.data.string_ref);
+                const local_node = self.ast.getNode(local_idx);
+                if (local_node.tag != .identifier_reference and local_node.tag != .binding_identifier) continue;
+                const local_name = self.ast.getText(local_node.data.string_ref);
+                if (local_name.len == 0) continue;
+                inline for (NAMED_HELPER_SPECS) |spec| {
+                    if (std.mem.eql(u8, imported_name, spec.imported) and
+                        @field(self.plugins.styled_components, spec.field) == null)
+                    {
+                        @field(self.plugins.styled_components, spec.field) = local_name;
+                        break;
+                    }
+                }
+            },
+            else => {},
+        }
     }
-    // default specifier 없음 — `import { css } from "styled-components"` 같은 named-only.
-    // 이 PR 은 default binding 만 처리. named (`{ styled }`) 는 후속.
+}
+
+/// helper binding 필드 이름 (`maybeMinifyHelperTemplate` 의 tag 매칭에 사용).
+const HELPER_BINDING_FIELDS = [_][]const u8{
+    "css_binding",
+    "keyframes_binding",
+    "create_global_style_binding",
+    "inject_global_binding",
+};
+
+/// `visitVariableDeclarator` post-hook — tag 가 styled-components named helper 면
+/// minify 옵션 적용. helper 는 컴포넌트 아닌 CSS 조각이라 displayName/componentId
+/// injection 은 안 함 (그건 `wrapStyledTag` 의 `styled.X` 만).
+pub fn maybeMinifyHelperTemplate(self: *Transformer, init_idx: NodeIndex) Error!NodeIndex {
+    if (!self.options.styled_components) return init_idx;
+    if (!self.options.styled_components_minify) return init_idx;
+    if (init_idx.isNone()) return init_idx;
+
+    const init_node = self.ast.getNode(init_idx);
+    if (init_node.tag != .tagged_template_expression) return init_idx;
+
+    const e = init_node.data.extra;
+    if (!self.ast.hasExtra(e, 2)) return init_idx;
+    const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    const flags = self.ast.extra_data.items[e + 2];
+
+    if (!tagMatchesStyledHelper(self, tag_idx)) return init_idx;
+
+    const new_template = try minifyCssTemplate(self, template_idx);
+    if (new_template == template_idx) return init_idx;
+
+    const new_extra = try self.ast.addExtras(&.{
+        @intFromEnum(tag_idx),
+        @intFromEnum(new_template),
+        flags,
+    });
+    return self.ast.addNode(.{
+        .tag = .tagged_template_expression,
+        .span = init_node.span,
+        .data = .{ .extra = new_extra },
+    });
+}
+
+/// tag 가 styled-components helper binding 의 단순 identifier 인지 확인.
+/// `css.x\`\`` 같은 chain 은 미인식 — helper 는 chain 없이 직접 tagged template.
+fn tagMatchesStyledHelper(self: *Transformer, tag_idx: NodeIndex) bool {
+    if (tag_idx.isNone()) return false;
+    const tag_node = self.ast.getNode(tag_idx);
+    if (tag_node.tag != .identifier_reference) return false;
+    const text = self.ast.getText(tag_node.data.string_ref);
+    const state = &self.plugins.styled_components;
+    inline for (HELPER_BINDING_FIELDS) |field_name| {
+        if (@field(state, field_name)) |b| {
+            if (std.mem.eql(u8, text, b)) return true;
+        }
+    }
+    return false;
 }
 
 /// chain 분석 결과 — `wrapStyledTag` 가 wrap / merge 결정에 사용.
