@@ -479,6 +479,21 @@ function normalizeBase(base) {
   return out;
 }
 
+function isBrowserLikePlatform(platform) {
+  return platform === undefined || platform === "browser" || platform === "react-native";
+}
+
+function injectDefaultNodeEnvDefine(opts) {
+  if (opts.define["process.env.NODE_ENV"] !== undefined) return;
+
+  const appBrowserCommand = opts.appCommand === "dev" || opts.appCommand === "build";
+  const browserBundle = opts.bundle && (isBrowserLikePlatform(opts.platform) || opts.minifySyntax);
+  if (!appBrowserCommand && !browserBundle) return;
+
+  const isDev = opts.appCommand === "dev" || opts.serve || opts.watch;
+  opts.define["process.env.NODE_ENV"] = isDev ? '"development"' : '"production"';
+}
+
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   if (config?.plugins?.length || opts.pluginPaths.length > 0) {
     throw new Error(
@@ -2559,6 +2574,7 @@ async function main() {
   for (const [key, value] of Object.entries(envDefine)) {
     if (opts.define[key] === undefined) opts.define[key] = value;
   }
+  injectDefaultNodeEnvDefine(opts);
 
   if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve && !opts.appCommand) {
     printUsage(undefined, console.error);

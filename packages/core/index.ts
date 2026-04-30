@@ -1226,8 +1226,37 @@ function arrayAliasToPlugin(
   };
 }
 
+function isBrowserLikeBuildPlatform(platform: BuildOptions["platform"] | undefined): boolean {
+  return platform === undefined || platform === "browser" || platform === "react-native";
+}
+
+function withDefaultBuildDefines(options: BuildOptions): Record<string, string> | undefined {
+  const define = { ...options.define };
+  const browserLike = isBrowserLikeBuildPlatform(options.platform) || options.minifySyntax === true;
+
+  if (browserLike && define["process.env.NODE_ENV"] === undefined) {
+    define["process.env.NODE_ENV"] = options.devMode ? '"development"' : '"production"';
+  }
+  if (options.platform === "react-native" && define.__DEV__ === undefined) {
+    define.__DEV__ = options.devMode ? "true" : "false";
+  }
+
+  return Object.keys(define).length > 0 ? define : undefined;
+}
+
+function withDefaultAppBuildDefines(options: AppBuildOptions): Record<string, string> | undefined {
+  const define = { ...options.define };
+  if (define["process.env.NODE_ENV"] === undefined) {
+    define["process.env.NODE_ENV"] =
+      (options.mode ?? "production") === "production" ? '"production"' : '"development"';
+  }
+  return define;
+}
+
 function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   const napiOptions: Record<string, unknown> = { ...options };
+  const define = withDefaultBuildDefines(options);
+  if (define) napiOptions.define = define;
   delete napiOptions.write;
   delete napiOptions.outdir;
   delete napiOptions.plugins;
@@ -1486,6 +1515,7 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
   const { publicDir, compiler, ...rest } = options;
   return native.buildAppSync({
     ...rest,
+    define: withDefaultAppBuildDefines(options),
     ...(publicDir === false
       ? { disablePublicDir: true }
       : publicDir !== undefined
