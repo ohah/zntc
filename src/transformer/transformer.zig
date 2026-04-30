@@ -149,6 +149,11 @@ pub const TransformOptions = struct {
     /// basename 이 의미 없는 이름 (default `index`) 이면 parent dir 명으로 fallback.
     /// babel-plugin-styled-components 의 동일 옵션과 동등 — 빈 array 면 fallback 비활성.
     styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
+    /// styled-components.topLevelImportPaths 옵션 — vendored fork (e.g. `@my-org/styled`)
+    /// 도 styled-components import 처럼 인식. babel-plugin-styled-components 는 picomatch
+    /// 패턴을 받지만 ZTS 는 fixed string equality 로 단순화 — 대부분의 실용 케이스 커버,
+    /// glob 필요 시 후속 PR.
+    styled_components_top_level_import_paths: []const []const u8 = &.{},
     /// emotion 1st-party transform (compiler.emotion).
     /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
     /// `import { css } from "@emotion/react"` 의 named binding 추적.
