@@ -38,15 +38,17 @@ const V10_STYLED_PACKAGES = [
 ];
 
 /// v10 fixture 패키지 + emotion config 로 번들. 9× boilerplate 흡수.
+/// 번들이 실패 (exitCode != 0) 하면 stderr 를 포함해 throw — silent 빈 `out` 으로
+/// 다운스트림 assertion 이 헷갈리는 메시지를 내는 것을 방지.
 async function runV10Bundle(opts: {
   source: string;
   config: object;
-  /** 기본 `index.tsx`. 파일명 그대로 entry 가 됨. */
+  /** 기본 `index.ts`. JSX 가 필요하면 `index.tsx` 로 override. */
   entry?: string;
   /** 기본 V10_CSS_PACKAGES. styled 가 필요하면 V10_STYLED_PACKAGES. */
   packages?: string[];
 }): Promise<{ out: string; cleanup: () => Promise<void>; exitCode: number }> {
-  const entry = opts.entry ?? "index.tsx";
+  const entry = opts.entry ?? "index.ts";
   const fixture = await createFixture({
     [entry]: opts.source,
     "zts.config.json": JSON.stringify(opts.config),
@@ -59,7 +61,13 @@ async function runV10Bundle(opts: {
   const result = await runZtsInDir(fixture.dir, ["--bundle", entry, "-o", outFile], {
     bin: "js",
   });
-  const out = result.exitCode === 0 ? await readFile(outFile, "utf-8") : "";
+  if (result.exitCode !== 0) {
+    await fixture.cleanup();
+    throw new Error(
+      `zts bundle failed (exit ${result.exitCode})\nstderr:\n${result.stderr}\nstdout:\n${result.stdout}`,
+    );
+  }
+  const out = await readFile(outFile, "utf-8");
   return { out, cleanup: fixture.cleanup, exitCode: result.exitCode };
 }
 
@@ -81,7 +89,6 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const card = css\`color: hotpink; font-size: 20px;\`;
         console.log(card);
       `,
-      entry: "index.ts",
       config: { compiler: { emotion: true } },
     });
     cleanup = r.cleanup;
@@ -97,7 +104,6 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const fadeIn = keyframes\`from { opacity: 0; } to { opacity: 1; }\`;
         console.log(fadeIn);
       `,
-      entry: "index.ts",
       config: { compiler: { emotion: true } },
     });
     cleanup = r.cleanup;
@@ -114,7 +120,6 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const card = css\`color: red; animation: \${spin} 1s linear;\`;
         console.log(card);
       `,
-      entry: "index.ts",
       config: { compiler: { emotion: true } },
     });
     cleanup = r.cleanup;
@@ -167,6 +172,7 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const el = <div css={css\`color: hotpink;\`}>hello</div>;
         console.log(el);
       `,
+      entry: "index.tsx",
       config: { compiler: { emotion: true } },
     });
     cleanup = r.cleanup;
@@ -184,7 +190,6 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const card = css\`color: red;\`;
         console.log(card);
       `,
-      entry: "index.ts",
       config: { compiler: { emotion: false } },
     });
     cleanup = r.cleanup;
@@ -202,7 +207,6 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const card = css\`color: red;\`;
         console.log(card);
       `,
-      entry: "index.ts",
       config: { compiler: { emotion: { autoLabel: false } } },
     });
     cleanup = r.cleanup;
