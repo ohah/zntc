@@ -216,7 +216,7 @@ fn isUnaryWrapperTag(tag: ast_mod.Node.Tag) bool {
 ///   - `cond && styled.div\`\`` / `default || styled.div\`\`` / `?? styled.div\`\`` (논리 — 우변만)
 ///   - `styled.div\`\` as T` / `... satisfies T` / `...!` / legacy `<T>...` / Foo<T> 인스턴스화 (TS)
 ///   - `styled.div\`\` as Foo` (Flow)
-///   - `(() => styled.div\`\`)()` IIFE — 단일 expression body 만 (block body `{ return ... }` 미지원)
+///   - `(() => styled.div\`\`)()` IIFE — expression body + block body `{ return X }` 둘 다
 ///   - 위 조합
 ///
 /// 미인식 (의도된 한계):
@@ -279,7 +279,7 @@ pub fn wrapStyledTagInExpr(self: *Transformer, expr_idx: NodeIndex, var_name: []
 
 /// IIFE `(() => <body>)()` / `(() => <body>)(...args)` — body 에 styled tagged template 이
 /// 있으면 body 를 wrap 한 새 call_expression 빌드.
-/// 첫 iteration: arrow expression body 만 인식 (block body `{ return X }` 는 후속).
+/// expression body + block body (`{ ...; return X }`) 둘 다 인식.
 /// callee 가 arrow function 이 아니면 (일반 함수 호출) early-return — hot path 보호.
 fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     const call_node = self.ast.getNode(call_idx);
@@ -303,11 +303,12 @@ fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u
     const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arrow_node.data.extra + 1]);
     if (body_idx.isNone()) return call_idx;
 
-    // block body (`() => { return ... }`) 는 후속 PR — return statement walking 필요.
+    // expression body 또는 block body 분기.
     const body_node = self.ast.getNode(body_idx);
-    if (body_node.tag == .block_statement) return call_idx;
-
-    const new_body = try wrapStyledTagInExpr(self, body_idx, var_name);
+    const new_body = if (body_node.tag == .block_statement)
+        try wrapStyledInBlockReturns(self, body_idx, var_name)
+    else
+        try wrapStyledTagInExpr(self, body_idx, var_name);
     if (new_body == body_idx) return call_idx;
 
     // Rebuild arrow with new body (params / flags 그대로).
@@ -349,6 +350,53 @@ fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u
         args_start,
         args_len,
         call_flags,
+    });
+}
+
+/// arrow block body `{ ...; return X }` — return statement 의 operand 만 walk. 변경 없으면
+/// 원본 block_idx 반환 (identity 보존).
+///
+/// **Top-level only**: `if (...) return X` / `try { return X } catch {}` / `switch (...) { case
+/// ...: return X }` 같이 중첩 statement 안의 return 은 미인식. ZTS 의 단방향 visitor
+/// 모델에서 control-flow 노드를 일반화 walk 하는 건 후속 epic.
+fn wrapStyledInBlockReturns(self: *Transformer, block_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+    const block_node = self.ast.getNode(block_idx);
+    const list = block_node.data.list;
+    const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
+
+    const scratch_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+    var changed = false;
+    for (stmts) |raw| {
+        const stmt_idx: NodeIndex = @enumFromInt(raw);
+        const stmt_node = self.ast.getNode(stmt_idx);
+        if (stmt_node.tag == .return_statement) {
+            const old_operand = stmt_node.data.unary.operand;
+            if (!old_operand.isNone() and shouldAttemptWrap(self, old_operand)) {
+                const new_operand = try wrapStyledTagInExpr(self, old_operand, var_name);
+                if (new_operand != old_operand) {
+                    changed = true;
+                    const new_return = try self.ast.addNode(.{
+                        .tag = .return_statement,
+                        .span = stmt_node.span,
+                        .data = .{ .unary = .{ .operand = new_operand, .flags = stmt_node.data.unary.flags } },
+                    });
+                    try self.scratch.append(self.allocator, new_return);
+                    continue;
+                }
+            }
+        }
+        try self.scratch.append(self.allocator, stmt_idx);
+    }
+
+    if (!changed) return block_idx;
+
+    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    return self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = block_node.span,
+        .data = .{ .list = new_list },
     });
 }
 
