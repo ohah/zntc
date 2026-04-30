@@ -1761,6 +1761,10 @@ async function runBundle(opts, config) {
     jobs: opts.jobs,
     outbase: opts.outbase,
     plugins: plugins.length > 0 ? plugins : undefined,
+    // compiler.styledComponents / compiler.emotion 도 bundle 모드에서 forward.
+    // 누락 시 `zts.config.json` 의 `compiler` 설정이 silently drop 돼 1st-party transform
+    // (autoLabel 등) 이 활성화 안 됨.
+    compiler: config?.compiler,
   };
 
   const result = plugins.length > 0 ? await build(buildOpts) : buildSync(buildOpts);

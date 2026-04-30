@@ -6,6 +6,9 @@ import { dirname, join, resolve } from "node:path";
 
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
 export const ZTS_BIN = join(PROJECT_ROOT, "zig-out/bin/zts");
+/// JS CLI (NAPI 기반). `compiler.emotion` / `compiler.styledComponents` 같은 JS-only
+/// 옵션을 검증하려면 Zig CLI 대신 이 경로를 사용해야 함.
+export const ZTS_JS_CLI = join(PROJECT_ROOT, "packages/core/bin/zts.mjs");
 const INTEGRATION_NODE_MODULES = resolve(import.meta.dir, "../node_modules");
 const LOOKUP_ROOTS = [join(PROJECT_ROOT, "node_modules"), INTEGRATION_NODE_MODULES];
 
@@ -77,14 +80,22 @@ export async function createReactStubFixture(
 ///
 /// symlink 자체는 존재하지 않는 target으로도 생성되므로, 먼저 target 존재를
 /// 확인한 뒤에 심볼릭 링크를 만든다 (broken symlink 방지).
-export async function linkNodeModules(dir: string, packages: string[]): Promise<void> {
+///
+/// `extraRoots` 옵션: 기본 LOOKUP_ROOTS 보다 우선해서 검색할 추가 root.
+/// 격리 fixture (예: emotion v10) 의 node_modules 를 v11 보다 먼저 매칭하기 위함.
+export async function linkNodeModules(
+  dir: string,
+  packages: string[],
+  options: { extraRoots?: string[] } = {},
+): Promise<void> {
+  const roots = [...(options.extraRoots ?? []), ...LOOKUP_ROOTS];
   const nmDir = join(dir, "node_modules");
   await mkdir(nmDir, { recursive: true });
   const scopes = new Set(packages.filter((p) => p.startsWith("@")).map((p) => p.split("/")[0]));
   await Promise.all([...scopes].map((s) => mkdir(join(nmDir, s), { recursive: true })));
   await Promise.all(
     packages.map(async (pkg) => {
-      for (const root of LOOKUP_ROOTS) {
+      for (const root of roots) {
         const target = join(root, pkg);
         try {
           await stat(join(target, "package.json"));
@@ -98,6 +109,24 @@ export async function linkNodeModules(dir: string, packages: string[]): Promise<
       }
     }),
   );
+}
+
+/// emotion v10 격리 fixture (`tests/integration/fixtures/emotion-v10/node_modules`).
+/// `linkNodeModules({ extraRoots: [EMOTION_V10_FIXTURE_NODE_MODULES] })` 형태로 사용.
+export const EMOTION_V10_FIXTURE_NODE_MODULES = resolve(
+  import.meta.dir,
+  "../fixtures/emotion-v10/node_modules",
+);
+
+/// emotion v10 fixture 가 설치돼 있는지 검사 — `bun install` 이 실행됐는지.
+/// CI 에서 fixture install 을 빼먹은 경우 `describe.skipIf` 로 우회 가능.
+export function hasEmotionV10Fixture(): boolean {
+  try {
+    statSync(join(EMOTION_V10_FIXTURE_NODE_MODULES, "@emotion/core/package.json"));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface RunOptions {
@@ -258,11 +287,18 @@ export async function waitForNdjsonLines<T = Record<string, unknown>>(
   );
 }
 
+/// `bin` 옵션:
+///   - `"zig"` (기본) — Zig CLI (`zts` 바이너리). 빠르고 standalone.
+///   - `"js"` — JS CLI (`packages/core/bin/zts.mjs` via bun). NAPI 기반.
+///     `compiler.emotion` / `compiler.styledComponents` 같은 JS-only 옵션이
+///     `zts.config.json` 으로부터 NAPI 로 forward 되는지 검증할 때 사용.
 export async function runZtsInDir(
   dir: string,
   args: string[],
+  options: { bin?: "zig" | "js" } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const proc = spawn({ cmd: [ZTS_BIN, ...args], stdout: "pipe", stderr: "pipe", cwd: dir });
+  const cmd = options.bin === "js" ? ["bun", ZTS_JS_CLI, ...args] : [ZTS_BIN, ...args];
+  const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe", cwd: dir });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
