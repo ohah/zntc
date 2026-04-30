@@ -233,6 +233,43 @@ test "private getter: class expression wrapped in IIFE (es2021)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "},var ") == null);
 }
 
+// 회귀 가드: private *field* 의 arrow init 안에서 다른 private *method* 호출이
+// lowering 되는지. classifyMembers 의 inner setup 이 current_private_methods 를
+// 빠뜨리면 arrow body 의 `this.#m()` 호출이 raw 로 남아 hermesc/Node syntax error
+// (RN DebuggingOverlayRegistry 의 #onDrawTraceUpdates → #drawTraceUpdatesModern 패턴).
+test "private field arrow init: this.#method() inside arrow lowers (es2021)" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Foo {
+        \\  #handler = () => { this.#flush(); };
+        \\  #flush() { return 1; }
+        \\}
+    , .es2021);
+    defer r.deinit();
+    // arrow body 안의 #flush() 호출이 helper 경유로 변환됨 (_this 또는 this — alias 변수명은 무관)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_flush_fn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodGet") != null);
+    // raw `.#flush(` 호출이 남아있지 않아야 함
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".#flush(") == null);
+}
+
+test "private field arrow init: this.#method() inside nested arrow lowers (es5)" {
+    // ES5 다운레벨은 arrow 도 function expression 으로 풀어 _this alias 가 명시적으로 등장.
+    var r = try e2eTarget(std.testing.allocator,
+        \\class Reg {
+        \\  #onUpdate = (x) => { if (x) { this.#applyModern(x); } else { this.#applyLegacy(); } };
+        \\  #applyModern(x) { return x; }
+        \\  #applyLegacy() { return 0; }
+        \\}
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_applyModern_fn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_applyLegacy_fn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__classPrivateMethodGet") != null);
+    // raw private method call 이 남으면 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".#applyModern(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ".#applyLegacy(") == null);
+}
+
 test "private method: es2022 target preserves original" {
     var r = try e2eTarget(std.testing.allocator,
         \\class Foo {
