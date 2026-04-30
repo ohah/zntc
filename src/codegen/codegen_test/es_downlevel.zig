@@ -2271,8 +2271,13 @@ test "ES2015: class with computed method uses bracket notation" {
 test "ES2015: static computed field uses bracket notation" {
     var r = try e2eTarget(std.testing.allocator, "var k='x';class F{static [k]=1;}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "F[") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "]=1") != null);
+    // computed key 는 hoist 된 임시 변수 (`var _a=k;`) 로 캡쳐된 뒤 `F[_a]=1` 형태로 emit 된다.
+    // 정확한 temp 이름에 결합되지 않도록 prefix/suffix 사이의 식별자만 검증한다.
+    const prefix = std.mem.indexOf(u8, r.output, "F[") orelse return error.TestUnexpectedResult;
+    const suffix = std.mem.indexOfPos(u8, r.output, prefix + 2, "]=1") orelse return error.TestUnexpectedResult;
+    const key = r.output[prefix + 2 .. suffix];
+    try std.testing.expect(key.len > 0);
+    try std.testing.expect(std.ascii.isAlphabetic(key[0]) or key[0] == '_');
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "F.[k]"), null);
 }
 

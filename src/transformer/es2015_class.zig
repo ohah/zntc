@@ -2059,7 +2059,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             try cm.accessor_key_memos.append(self.allocator, var_decl);
 
             // computed key 노드: computed_property_key(identifier_reference("_acc_key_N")) — getter/setter 각 1개씩.
-            const getter_key = try makeComputedKeyRef(self, mem_var_span, span);
+            const getter_key = try es_helpers.makeComputedKeyRef(self, mem_var_span, span);
             const getter_return = try makePrivateFieldAccess(self, storage_span, span);
             const getter_idx = try buildComputedAccessorGetter(self, getter_key, getter_return, is_static, span);
             try cm.accessors.append(self.allocator, .{
@@ -2069,7 +2069,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .member_span = member_span,
             });
 
-            const setter_key = try makeComputedKeyRef(self, mem_var_span, span);
+            const setter_key = try es_helpers.makeComputedKeyRef(self, mem_var_span, span);
             const setter_target = try makePrivateFieldAccess(self, storage_span, span);
             const setter_idx = try buildComputedAccessorSetter(self, setter_key, setter_target, is_static, span);
             try cm.accessors.append(self.allocator, .{
@@ -2080,30 +2080,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             });
         }
 
-        /// computed_property_key(identifier_reference(name)) 노드 생성 — accessor method key 로 사용.
-        fn makeComputedKeyRef(self: *Transformer, var_span: Span, span: Span) Transformer.Error!NodeIndex {
-            const id_ref = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = var_span,
-                .data = .{ .string_ref = var_span },
-            });
-            return self.ast.addNode(.{
-                .tag = .computed_property_key,
-                .span = span,
-                .data = .{ .unary = .{ .operand = id_ref, .flags = 0 } },
-            });
-        }
-
         fn memoizeStaticComputedFieldKey(self: *Transformer, cm: anytype, key_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const temp_span = try es_helpers.makeTempVarSpan(self);
-            const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
-            const temp_init = try self.visitNode(key_expr);
-            const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, temp_init, span);
-            try cm.accessor_key_memos.append(
-                self.allocator,
-                try es_helpers.makeVarDeclaration(self, &.{temp_decl}, .@"var", span),
-            );
-            return makeComputedKeyRef(self, temp_span, span);
+            const memo = try es_helpers.memoizeComputedKey(self, key_expr, span);
+            try cm.accessor_key_memos.append(self.allocator, memo.decl);
+            return memo.computed_key;
         }
 
         /// computed accessor getter method_definition 생성. `get [_acc_key_N]() { return return_expr; }`.

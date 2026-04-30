@@ -135,6 +135,40 @@ pub fn unwrapTransparentWrappers(self: anytype, idx: NodeIndex) NodeIndex {
     }
 }
 
+/// `computed_property_key(identifier_reference(var_span))` 노드 생성.
+/// 임시 변수에 캡쳐된 computed key 식을 다시 key 위치로 참조할 때 사용 (#1511, static field key memoization).
+pub fn makeComputedKeyRef(self: anytype, var_span: Span, span: Span) !NodeIndex {
+    const id_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = var_span,
+        .data = .{ .string_ref = var_span },
+    });
+    return self.ast.addNode(.{
+        .tag = .computed_property_key,
+        .span = span,
+        .data = .{ .unary = .{ .operand = id_ref, .flags = 0 } },
+    });
+}
+
+/// computed key 식을 `var _N = <expr>;` 으로 캡쳐하고, 그 자리에는 `[_N]` 참조를 둘 수 있게 한다.
+/// 반환값: 변수 선언 statement + key 위치에 끼워넣을 computed_property_key.
+/// 호출자는 `decl` 을 적절한 hoist 위치(class IIFE 위/accessor_key_memos)에 추가하고,
+/// `computed_key` 를 method_definition / property_definition 의 key 로 사용한다.
+pub const ComputedKeyMemo = struct {
+    decl: NodeIndex,
+    computed_key: NodeIndex,
+};
+pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span) !ComputedKeyMemo {
+    const temp_span = try makeTempVarSpan(self);
+    const temp_binding = try makeBindingIdentifier(self, temp_span);
+    const temp_init = try self.visitNode(key_expr);
+    const temp_decl = try makeDeclarator(self, temp_binding, temp_init, span);
+    return .{
+        .decl = try makeVarDeclaration(self, &.{temp_decl}, .@"var", span),
+        .computed_key = try makeComputedKeyRef(self, temp_span, span),
+    };
+}
+
 /// `void 0` 노드를 새 AST에 생성.
 pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
     const zero_span = try self.ast.addString("0");
