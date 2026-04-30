@@ -1311,12 +1311,24 @@ describe("CLI: arg parsing", () => {
   test("--define:KEY=VALUE", () => {
     const defDir = mkdtempSync(join(tmpdir(), "zts-cli-define-"));
     writeFileSync(join(defDir, "input.ts"), "console.log(process.env.NODE_ENV);");
-    const { exitCode } = runCli([
+    const { stdout, exitCode } = runCli([
       "--bundle",
       join(defDir, "input.ts"),
       '--define:process.env.NODE_ENV="production"',
     ]);
     expect(exitCode).toBe(0);
+    expect(stdout).toContain('"production"');
+    expect(stdout).not.toContain("process.env.NODE_ENV");
+    rmSync(defDir, { recursive: true, force: true });
+  });
+
+  test("browser bundle defaults process.env.NODE_ENV to production", () => {
+    const defDir = mkdtempSync(join(tmpdir(), "zts-cli-node-env-"));
+    writeFileSync(join(defDir, "input.ts"), "console.log(process.env.NODE_ENV);");
+    const { stdout, exitCode } = runCli(["--bundle", join(defDir, "input.ts")]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('"production"');
+    expect(stdout).not.toContain("process.env.NODE_ENV");
     rmSync(defDir, { recursive: true, force: true });
   });
 
@@ -2509,7 +2521,7 @@ describe("CLI: Vite-style app builder", () => {
     );
     writeFileSync(
       join(dir, "src", "main.ts"),
-      "console.log(import.meta.env.MODE, import.meta.env.PROD, import.meta.env.BASE_URL, import.meta.env.VITE_TITLE);",
+      "console.log(import.meta.env.MODE, import.meta.env.PROD, import.meta.env.BASE_URL, import.meta.env.VITE_TITLE, process.env.NODE_ENV);",
     );
     writeFileSync(join(dir, ".env.production"), "VITE_TITLE=ZTS App\n");
     writeFileSync(join(dir, "public", "favicon.svg"), "<svg></svg>");
@@ -2529,9 +2541,10 @@ describe("CLI: Vite-style app builder", () => {
     expect(html).toContain('href="/app/favicon.svg"');
     const scriptPath = scriptPathFromHtml(html);
     expect(scriptPath).toMatch(/^\/app\/main-[a-f0-9]+\.js$/);
-    expect(readFileSync(join(outdir, scriptPath.replace("/app/", "")), "utf8")).toContain(
-      '"ZTS App"',
-    );
+    const js = readFileSync(join(outdir, scriptPath.replace("/app/", "")), "utf8");
+    expect(js).toContain('"ZTS App"');
+    expect(js).toContain('"production"');
+    expect(js).not.toContain("process.env.NODE_ENV");
     expect(existsSync(join(outdir, "favicon.svg"))).toBe(true);
     rmSync(dir, { recursive: true, force: true });
   });
@@ -2561,7 +2574,7 @@ describe("CLI: Vite-style app builder", () => {
     );
     writeFileSync(
       join(dir, "src", "main.ts"),
-      "console.log(import.meta.env.VITE_TITLE, import.meta.env.MODE);",
+      "console.log(import.meta.env.VITE_TITLE, import.meta.env.MODE, process.env.NODE_ENV);",
     );
     writeFileSync(join(dir, ".env.development"), "VITE_TITLE=Dev App\n");
     writeFileSync(join(dir, "public", "favicon.svg"), "<svg></svg>");
@@ -2580,6 +2593,7 @@ describe("CLI: Vite-style app builder", () => {
       const js = await fetch(`http://localhost:${port}/app/bundle.js`).then((r) => r.text());
       expect(js).toContain('"Dev App"');
       expect(js).toContain('"development"');
+      expect(js).not.toContain("process.env.NODE_ENV");
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });

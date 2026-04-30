@@ -245,6 +245,32 @@ describe("@zts/core buildSync", () => {
     expect(result.outputFiles[0].text).toContain("Hello");
   });
 
+  test("browser bundle defaults process.env.NODE_ENV to production", () => {
+    const nodeEnvDir = mkdtempSync(join(tmpdir(), "zts-napi-node-env-"));
+    writeFileSync(join(nodeEnvDir, "entry.ts"), "console.log(process.env.NODE_ENV);");
+    const result = buildSync({ entryPoints: [join(nodeEnvDir, "entry.ts")] });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain('"production"');
+    expect(result.outputFiles[0].text).not.toContain("process.env.NODE_ENV");
+    rmSync(nodeEnvDir, { recursive: true, force: true });
+  });
+
+  test("react-native bundle defaults __DEV__ and NODE_ENV from devMode", () => {
+    const rnDir = mkdtempSync(join(tmpdir(), "zts-napi-rn-env-"));
+    writeFileSync(join(rnDir, "entry.ts"), "console.log(__DEV__, process.env.NODE_ENV);");
+    const result = buildSync({
+      entryPoints: [join(rnDir, "entry.ts")],
+      platform: "react-native",
+      devMode: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("true");
+    expect(result.outputFiles[0].text).toContain('"development"');
+    expect(result.outputFiles[0].text).not.toContain("__DEV__");
+    expect(result.outputFiles[0].text).not.toContain("process.env.NODE_ENV");
+    rmSync(rnDir, { recursive: true, force: true });
+  });
+
   test("CJS 포맷", () => {
     const result = buildSync({
       entryPoints: [join(dir, "entry.ts")],
