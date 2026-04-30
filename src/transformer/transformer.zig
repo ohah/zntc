@@ -149,10 +149,9 @@ pub const TransformOptions = struct {
     /// basename 이 의미 없는 이름 (default `index`) 이면 parent dir 명으로 fallback.
     /// babel-plugin-styled-components 의 동일 옵션과 동등 — 빈 array 면 fallback 비활성.
     styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
-    /// styled-components.topLevelImportPaths 옵션 — vendored fork (e.g. `@my-org/styled`)
-    /// 도 styled-components import 처럼 인식. babel-plugin-styled-components 는 picomatch
-    /// 패턴을 받지만 ZTS 는 fixed string equality 로 단순화 — 대부분의 실용 케이스 커버,
-    /// glob 필요 시 후속 PR.
+    /// styled-components.topLevelImportPaths 옵션 — vendored fork (e.g. `@my-org/styled`,
+    /// `@my-org/*`) 도 styled-components import 처럼 인식. 단일 `*` glob 지원 — picomatch
+    /// 풀 스펙 (multi `*`, `?`, `[]`, brace expansion) 은 미지원.
     styled_components_top_level_import_paths: []const []const u8 = &.{},
     /// styled-components.cssProp 옵션 — `<div css={...}>` JSX prop 을 module-level
     /// hoisted styled component 로 추출. babel-plugin-styled-components default true 와

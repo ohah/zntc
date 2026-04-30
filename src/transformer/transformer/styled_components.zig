@@ -64,10 +64,11 @@ pub fn isStyledImportSource(source: []const u8) bool {
 }
 
 /// 사용자 옵션 (`styled_components_top_level_import_paths`) 매칭 포함 — vendored fork
-/// 인식. babel-plugin-styled-components 의 `topLevelImportPaths` 단순화 (fixed string).
+/// 인식. babel-plugin-styled-components 의 `topLevelImportPaths` 와 동등 — 단일 `*`
+/// glob 지원 (e.g. `@my-org/*`). picomatch 풀 스펙은 미지원.
 fn isStyledImportSourceWithExtras(self: *const Transformer, source: []const u8) bool {
     if (isStyledImportSource(source)) return true;
-    return string_list.contains(self.options.styled_components_top_level_import_paths, source);
+    return string_list.anyGlobMatch(self.options.styled_components_top_level_import_paths, source);
 }
 
 /// styled-components 의 named helper imports — minify 등 transform 에 사용.

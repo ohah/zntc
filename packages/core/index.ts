@@ -336,9 +336,9 @@ export interface StyledComponentsOptions {
    */
   meaninglessFileNames?: string[];
   /**
-   * vendored fork (e.g. `@my-org/styled`) 도 styled-components 처럼 인식할 import source
-   * 목록. babel-plugin-styled-components 는 picomatch glob 을 받지만 ZTS 는 fixed string
-   * equality 로 단순화 — 대부분의 실용 케이스 (vendored fork) 커버.
+   * vendored fork (e.g. `@my-org/styled`, `@my-org/*`) 도 styled-components 처럼 인식할
+   * import source 목록. 단일 `*` glob 지원 — picomatch 풀 스펙 (multi `*`, `?`, `[]`,
+   * brace expansion) 은 미지원.
    */
   topLevelImportPaths?: string[];
   /**

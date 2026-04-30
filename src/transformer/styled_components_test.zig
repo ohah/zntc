@@ -1262,6 +1262,42 @@ test "styled (topLevelImportPaths): vendored fork 도 styled 인식" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Btn") != null);
 }
 
+test "styled (topLevelImportPaths): glob `@my-org/*` 도 vendored fork 매칭" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@my-org/styled-fork";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_top_level_import_paths = &.{"@my-org/*"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") != null);
+}
+
+test "styled (topLevelImportPaths): glob 미매칭 fork 는 무시" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@other-org/styled";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_top_level_import_paths = &.{"@my-org/*"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+}
+
 test "styled (topLevelImportPaths): 미등록 source 는 무시 (보호 회귀)" {
     var r = try e2eFull(
         std.testing.allocator,
