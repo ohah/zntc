@@ -135,6 +135,7 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
 ///   - `css.x\`...\`` / `styled.div.attrs({})\`...\`` 같은 추가 chain
 pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (!self.options.emotion) return init_idx;
+    if (!self.options.emotion_auto_label) return init_idx; // opt-out: emotion 활성이지만 autoLabel skip
     if (var_name.len == 0) return init_idx;
     if (init_idx.isNone()) return init_idx;
 

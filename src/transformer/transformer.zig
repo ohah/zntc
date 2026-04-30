@@ -124,6 +124,10 @@ pub const TransformOptions = struct {
     /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
     /// `import { css } from "@emotion/react"` 의 named binding 추적.
     emotion: bool = false,
+    /// emotion.autoLabel 옵션 — false 면 autoLabel transform 만 skip (binding tracking
+    /// 자체는 동작 — 향후 Global / sourceMap 같은 다른 emotion features 와 분리).
+    /// `compiler.emotion: { autoLabel: false }` 로 설정.
+    emotion_auto_label: bool = true,
     /// useDefineForClassFields=false: instance field를 constructor의 this.x = value 할당으로 변환.
     /// true(기본값)이면 class field를 그대로 유지 (TC39 [[Define]] semantics).
     /// false이면 TS 4.x 이전 동작 — field를 constructor body로 이동 ([[Set]] semantics).

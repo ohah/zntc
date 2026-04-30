@@ -74,6 +74,23 @@ test "emotion: @emotion/css source 도 인식" {
     try expectAutoLabel(r.output, "card");
 }
 
+test "emotion: { autoLabel: false } 옵션 — emotion 활성이지만 label skip" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const button = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_auto_label = false, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // emotion 활성이지만 autoLabel 명시적 disable — label 추가 안 됨.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+    // 원본 css 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red;") != null);
+}
+
 test "emotion: 옵션 비활성 시 변환 없음" {
     var r = try e2eFull(
         std.testing.allocator,

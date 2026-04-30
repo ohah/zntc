@@ -146,6 +146,8 @@ pub const ModuleGraph = struct {
     styled_components_minify: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
+    /// emotion.autoLabel 옵션 — false 면 autoLabel skip.
+    emotion_auto_label: bool = true,
     /// code splitting 활성화. helper module virtual import (#1961) 는 splitting 모드에서만
     /// 활성 — single-bundle 모드는 helper module 의 declaration 이 statement-level shake
     /// 로 elide 되는 회귀가 있어 기존 preamble 모델 유지.
@@ -1726,6 +1728,7 @@ pub const ModuleGraph = struct {
         opts.styled_components_ssr = self.styled_components_ssr;
         opts.styled_components_minify = self.styled_components_minify;
         opts.emotion = self.emotion and is_user_code;
+        opts.emotion_auto_label = self.emotion_auto_label;
         opts.plugins = merged_plugins;
         opts.jsx_transform = ast_ptr.has_jsx;
         opts.jsx_filename = module.path;

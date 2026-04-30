@@ -28,6 +28,8 @@ pub const AppBuildOptions = struct {
     styled_components_minify: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
+    /// emotion.autoLabel 옵션 — false 면 autoLabel skip.
+    emotion_auto_label: bool = true,
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -123,6 +125,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .styled_components_ssr = opts.styled_components_ssr,
         .styled_components_minify = opts.styled_components_minify,
         .emotion = opts.emotion,
+        .emotion_auto_label = opts.emotion_auto_label,
     });
     defer bundler.deinit();
 
