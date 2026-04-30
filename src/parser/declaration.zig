@@ -40,6 +40,20 @@ fn isModifierTerminator(kind: Kind) bool {
         kind == .semicolon or kind == .r_curly or kind == .bang or kind == .question;
 }
 
+/// class member key 의 식별자 텍스트를 source 에서 추출.
+/// `identifier_reference` 는 span 그대로, `string_literal` 은 따옴표 제거. 그 외는 빈 문자열.
+fn classMemberKeyText(self: *Parser, key: NodeIndex) []const u8 {
+    if (key.isNone()) return "";
+    const key_node = self.ast.getNode(key);
+    if (key_node.tag == .identifier_reference) {
+        return self.ast.source[key_node.span.start..key_node.span.end];
+    }
+    if (key_node.tag == .string_literal and key_node.span.end > key_node.span.start + 2) {
+        return self.ast.source[key_node.span.start + 1 .. key_node.span.end - 1];
+    }
+    return "";
+}
+
 /// 함수 body 또는 TS 오버로드 시그니처 (세미콜론으로 끝나면 body 없음)
 fn parseFunctionBodyOrOverload(self: *Parser) ParseError2!NodeIndex {
     // TS function overload: 세미콜론 또는 EOF로 body 없음
@@ -658,17 +672,8 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
 
     // 키
     const key = try self.parsePropertyKey();
-    const is_constructor_member = blk: {
-        if (key.isNone() or (flags & ast_mod.MethodFlags.is_static) != 0) break :blk false;
-        const key_node = self.ast.getNode(key);
-        const key_text = if (key_node.tag == .identifier_reference)
-            self.ast.source[key_node.span.start..key_node.span.end]
-        else if (key_node.tag == .string_literal and key_node.span.end > key_node.span.start + 2)
-            self.ast.source[key_node.span.start + 1 .. key_node.span.end - 1]
-        else
-            @as([]const u8, "");
-        break :blk std.mem.eql(u8, key_text, "constructor");
-    };
+    const is_constructor_member = (flags & ast_mod.MethodFlags.is_static) == 0 and
+        std.mem.eql(u8, classMemberKeyText(self, key), "constructor");
 
     // TS optional class field: foo?: Type (프로퍼티 이름 뒤의 ?)
     // TS definite assignment: foo!: Type (프로퍼티 이름 뒤의 !)
@@ -821,13 +826,7 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // class field 이름 검증 (ECMAScript 15.7.1)
     if (!key.isNone()) {
         const key_node = self.ast.getNode(key);
-        // identifier 또는 string literal 키에서 이름 추출
-        const key_text = if (key_node.tag == .identifier_reference)
-            self.ast.source[key_node.span.start..key_node.span.end]
-        else if (key_node.tag == .string_literal and key_node.span.end > key_node.span.start + 2)
-            self.ast.source[key_node.span.start + 1 .. key_node.span.end - 1] // 따옴표 제거
-        else
-            @as([]const u8, "");
+        const key_text = classMemberKeyText(self, key);
 
         if (key_text.len > 0) {
             // class field 이름 'constructor' 금지 — static/non-static 모두 (ECMAScript 15.7.1)
