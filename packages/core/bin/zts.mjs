@@ -546,6 +546,13 @@ async function resolveServePort(opts, start) {
   }
 }
 
+function getAutoConfigSearchDir(opts) {
+  if (opts.appCommand === "dev" || opts.appCommand === "build") {
+    return resolve(opts.appRoot ?? ".");
+  }
+  return process.cwd();
+}
+
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   if (config?.plugins?.length || opts.pluginPaths.length > 0) {
     throw new Error(
@@ -1678,13 +1685,14 @@ async function loadAutoConfig(opts) {
   if (explicit && !existsSync(explicit)) {
     throw new Error(`failed to load config — file not found: ${explicit}`);
   }
-  const configPath = explicit ?? findConfigPath(process.cwd());
+  const configSearchDir = getAutoConfigSearchDir(opts);
+  const configPath = explicit ?? findConfigPath(configSearchDir);
 
   const command = opts.serve ? "serve" : opts.watch ? "watch" : "bundle";
   const mode = opts.mode ?? (command === "bundle" ? "production" : "development");
 
   // .env 파일 4단계 우선순위로 로드 (#2106). prefix 미지정 시 default `["VITE_", "ZTS_"]`.
-  const envDir = opts.envDir ? resolve(opts.envDir) : process.cwd();
+  const envDir = opts.envDir ? resolve(opts.envDir) : configSearchDir;
   const dotenvVars = loadEnv(mode, envDir, opts.envPrefixes);
 
   // dotenv 키 중 shell env 에도 정의된 건 shell 값으로 override (CI/배포 시 .env
@@ -1702,7 +1710,7 @@ async function loadAutoConfig(opts) {
 
   // mode-specific config 자동 탐색 + 머지 (#2110). `--config <path>` 명시 시
   // 그 파일이 단독 source — mode-specific 자동 탐색 안 함 (사용자 의도 존중).
-  const modeConfigPath = explicit ? null : findModeConfigPath(process.cwd(), mode);
+  const modeConfigPath = explicit ? null : findModeConfigPath(configSearchDir, mode);
 
   if (!configPath && !modeConfigPath) return { config: null, env, dotenvVars };
 
@@ -2053,16 +2061,17 @@ async function runWatch(opts, config) {
  */
 function computeRestartTriggers(opts) {
   const dirs = new Set();
-  const envDir = opts.envDir ? resolve(opts.envDir) : process.cwd();
+  const configSearchDir = getAutoConfigSearchDir(opts);
+  const envDir = opts.envDir ? resolve(opts.envDir) : configSearchDir;
   dirs.add(envDir);
 
   const explicitConfig = opts.configPath ? resolve(opts.configPath) : null;
-  const autoConfig = explicitConfig ?? findConfigPath(process.cwd());
+  const autoConfig = explicitConfig ?? findConfigPath(configSearchDir);
   if (autoConfig) dirs.add(dirname(autoConfig));
 
   const mode = opts.mode ?? (opts.serve || opts.watch ? "development" : "production");
   // mode-specific config (`zts.config.${mode}.{ext}`) 변경도 restart trigger (#2110).
-  const modeConfig = explicitConfig ? null : findModeConfigPath(process.cwd(), mode);
+  const modeConfig = explicitConfig ? null : findModeConfigPath(configSearchDir, mode);
   if (modeConfig) dirs.add(dirname(modeConfig));
 
   const configBase = autoConfig ? basename(autoConfig) : null;

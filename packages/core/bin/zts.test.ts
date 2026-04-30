@@ -2562,6 +2562,37 @@ describe("CLI: Vite-style app builder", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("build [root] loads root argument config from outside cwd", () => {
+    const parent = mkdtempSync(join(tmpdir(), "zts-app-build-parent-config-"));
+    const dir = join(parent, "app");
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      "document.body.textContent = __APP_LABEL__; console.log(__APP_LABEL__);",
+    );
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({ define: { __APP_LABEL__: JSON.stringify("base-config") } }),
+    );
+    writeFileSync(
+      join(dir, "zts.config.production.json"),
+      JSON.stringify({ define: { __APP_LABEL__: JSON.stringify("root-mode-config") } }),
+    );
+
+    const outdir = join(parent, "dist");
+    const { exitCode, stderr } = runCli(["build", dir, "--outdir", outdir], { cwd: parent });
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("error:");
+
+    const html = readFileSync(join(outdir, "index.html"), "utf8");
+    const scriptPath = scriptPathFromHtml(html);
+    const js = readFileSync(join(outdir, scriptPath.replace(/^\//, "")), "utf8");
+    expect(js).toContain('"root-mode-config"');
+    expect(js).not.toContain("__APP_LABEL__");
+    rmSync(parent, { recursive: true, force: true });
+  });
+
   test("public output collision fails deterministically", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-app-public-collision-"));
     mkdirSync(join(dir, "src"), { recursive: true });
@@ -2610,6 +2641,38 @@ describe("CLI: Vite-style app builder", () => {
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev [root] loads root argument config from outside cwd", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "zts-app-dev-parent-config-"));
+    const dir = join(parent, "app");
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
+    writeFileSync(
+      join(dir, "src", "main.ts"),
+      "document.body.textContent = __APP_LABEL__; console.log(__APP_LABEL__);",
+    );
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({ define: { __APP_LABEL__: JSON.stringify("base-config") } }),
+    );
+    writeFileSync(
+      join(dir, "zts.config.development.json"),
+      JSON.stringify({ define: { __APP_LABEL__: JSON.stringify("root-dev-config") } }),
+    );
+
+    const port = 12620 + Math.floor(Math.random() * 100);
+    const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: parent });
+    await waitForServer(port);
+
+    try {
+      const js = await fetch(`http://localhost:${port}/bundle.js`).then((r) => r.text());
+      expect(js).toContain('"root-dev-config"');
+      expect(js).not.toContain("__APP_LABEL__");
+    } finally {
+      proc.kill();
+      rmSync(parent, { recursive: true, force: true });
     }
   });
 
