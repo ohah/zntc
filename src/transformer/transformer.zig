@@ -586,6 +586,13 @@ pub const Transformer = struct {
         return (self.options.unsupported.class or self.current_super_is_static) and self.current_super_class != null;
     }
 
+    /// 현재 scope 의 private field 가 `WeakMap.get/set` lowering 대상인지 판정.
+    /// `class` / `class_private_field` 옵션 둘 중 하나라도 켜져 있고, 현재 visit 중인
+    /// class 가 private field 를 갖고 있을 때 true.
+    pub inline fn hasActivePrivateFieldLowering(self: *const Transformer) bool {
+        return (self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0;
+    }
+
     pub fn init(allocator: std.mem.Allocator, source_ast: *const Ast, options: TransformOptions) Error!Transformer {
         var opts = options;
         if (opts.experimental_decorators) opts.use_define_for_class_fields = false;
@@ -1087,7 +1094,7 @@ pub const Transformer = struct {
                 // lowerPrivateFieldSet 단일 경로에서 처리 — es2021/es2016 등은 좌변에
                 // `(a = b)` 패턴을 만들어 get()/helper call에 대입하게 되므로 먼저 가로챈다.
                 // (esbuild의 lowerAssign이나 SWC/Babel plugin 순서와 동일한 선점 패턴.)
-                if ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0) {
+                if (self.hasActivePrivateFieldLowering()) {
                     const left_idx = node.data.binary.left;
                     if (!left_idx.isNone()) {
                         const left_node = self.ast.getNode(left_idx);
@@ -1171,9 +1178,12 @@ pub const Transformer = struct {
                 return self.visitMemberExpression(node);
             },
             .private_field_expression => {
-                if (self.options.unsupported.optional_chaining or
-                    ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0))
-                {
+                // 순서 중요: `?.` 를 먼저 ternary 로 풀어야 한다. 아래의 lowerPrivateMethodGet /
+                // lowerPrivateFieldGet 이 만든 `_x.get(this)` 호출이 `?.` short-circuit 안에 들어가면
+                // base 가 null/undefined 일 때도 evaluate 되어 spec 위반이다.
+                // class_private_field 가 lowering 대상이면 target 이 ES2020+ 라도 chain 자체를
+                // 미리 풀어야 같은 회피가 가능 — `unsupported.optional_chaining` 만으로는 부족.
+                if (self.options.unsupported.optional_chaining or self.hasActivePrivateFieldLowering()) {
                     if (es2020.ES2020(Transformer).findOptionalChainBase(self, node)) |base_idx| {
                         return es2020.ES2020(Transformer).lowerOptionalChain(self, node, base_idx);
                     }
@@ -1185,7 +1195,7 @@ pub const Transformer = struct {
                     }
                 }
                 // ES2015/ES2022: this.#x → _x.get(this)
-                if ((self.options.unsupported.class or self.options.unsupported.class_private_field) and self.current_private_fields.len > 0) {
+                if (self.hasActivePrivateFieldLowering()) {
                     if (es2015_class.ES2015Class(Transformer).lowerPrivateFieldGet(self, node)) |result| {
                         return result;
                     }

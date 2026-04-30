@@ -2616,24 +2616,34 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
                     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
                         const prop_idx: NodeIndex = @enumFromInt(raw_idx);
-                        const prop = self.ast.getNode(prop_idx);
-                        if (prop.tag == .object_property) {
-                            try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                                .tag = .object_property,
-                                .span = prop.span,
-                                .data = .{ .binary = .{
-                                    .left = prop.data.binary.left,
-                                    .right = try injectInstanceFieldsAfterSuperExpr(self, prop.data.binary.right, instance_fields, span),
-                                    .flags = prop.data.binary.flags,
-                                } },
-                            }));
-                        } else {
+                        // 부작용 없는 prop 은 그대로 통과 — 매번 복제하면 N props 중 1 개만 super 가 있어도
+                        // 전체 list 가 새로 만들어지는 낭비가 발생.
+                        if (!containsSuperCallAssignment(self, prop_idx)) {
                             try self.scratch.append(self.allocator, prop_idx);
+                            continue;
                         }
+                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, prop_idx, instance_fields, span));
                     }
                     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                     return self.ast.addNode(.{ .tag = .object_expression, .span = node.span, .data = .{ .list = new_list } });
                 },
+                .object_property => return self.ast.addNode(.{
+                    .tag = .object_property,
+                    .span = node.span,
+                    .data = .{ .binary = .{
+                        .left = try injectInstanceFieldsAfterSuperExpr(self, node.data.binary.left, instance_fields, span),
+                        .right = try injectInstanceFieldsAfterSuperExpr(self, node.data.binary.right, instance_fields, span),
+                        .flags = node.data.binary.flags,
+                    } },
+                }),
+                .spread_element, .computed_property_key => return self.ast.addNode(.{
+                    .tag = node.tag,
+                    .span = node.span,
+                    .data = .{ .unary = .{
+                        .operand = try injectInstanceFieldsAfterSuperExpr(self, node.data.unary.operand, instance_fields, span),
+                        .flags = node.data.unary.flags,
+                    } },
+                }),
                 .conditional_expression => return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
@@ -2719,10 +2729,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .object_expression => {
                     const list = node.data.list;
                     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-                        const prop = self.ast.getNode(@enumFromInt(raw_idx));
-                        if (prop.tag == .object_property and containsSuperCallAssignment(self, prop.data.binary.right)) return true;
+                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
                     }
                     return false;
+                },
+                // object_property: key(left) 와 value(right) 둘 다 super-call 을 품을 수 있다
+                // (`{ [super(1)]: 'x' }` 처럼 computed key 안에 들어간 경우 포함).
+                .object_property => {
+                    return containsSuperCallAssignment(self, node.data.binary.left) or
+                        containsSuperCallAssignment(self, node.data.binary.right);
+                },
+                .spread_element, .computed_property_key => {
+                    return containsSuperCallAssignment(self, node.data.unary.operand);
                 },
                 .assignment_expression => {
                     const left = self.ast.getNode(node.data.binary.left);
