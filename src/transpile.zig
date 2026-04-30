@@ -554,11 +554,12 @@ pub fn transpileWithCallback(
     const jsx_output = prependImportLine(arena_alloc, jsx_import_str, raw_output);
 
     // 6.6. styled-components cssProp auto-inject — 사용자 코드에 styled import 가 없는데
-    // cssProp transform 이 일어난 경우 program 시작에 `import styled from "styled-components"`.
-    const css_prop_import: ?[]const u8 = if (transformer.plugins.styled_components.css_prop_needs_import)
-        "import styled from \"styled-components\";\n"
-    else
-        null;
+    // cssProp transform 이 일어난 경우 program 시작에 styled import 추가. binding 이름은
+    // collision detection 후 결정된 `css_prop_inject_name` 사용.
+    const css_prop_import: ?[]const u8 = if (transformer.plugins.styled_components.css_prop_needs_import) blk: {
+        const name = transformer.plugins.styled_components.css_prop_inject_name;
+        break :blk std.fmt.allocPrint(arena_alloc, "import {s} from \"styled-components\";\n", .{name}) catch null;
+    } else null;
     const css_prop_output = prependImportLine(arena_alloc, css_prop_import, jsx_output);
 
     // 7. 런타임 헬퍼 prepend

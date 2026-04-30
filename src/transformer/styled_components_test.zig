@@ -1640,6 +1640,52 @@ test "styled (cssProp Step 5): styled import 없으면 자동 import 추가" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, ",const _styled_") == null);
 }
 
+test "styled (cssProp B2): collision 시 _styled mangling — `const styled` 충돌" {
+    // 사용자 module-level 에 `const styled = ...` 이 이미 있으면 prepended import 와
+    // redeclaration 충돌. 우리는 `_styled` 로 mangling 후 사용.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\const styled = somethingElse;
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // generated decl 의 RHS 가 `_styled.div` 형태여야 (mangled binding)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled.div") != null);
+    // 사용자 const styled 는 그대로 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const styled = somethingElse") != null);
+}
+
+test "styled (cssProp B2): 다중 collision — `const styled, _styled` 둘 다 있으면 _styled2" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\const styled = a;
+        \\const _styled = b;
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled2.div") != null);
+}
+
 test "styled (cssProp Step 5): cssProp transform 안 일어나면 auto-inject 도 안 함" {
     // 옵션 활성이지만 jsx 안 쓰면 transform 자체가 안 일어남 → auto-inject 도 안 됨.
     var r = try e2eFull(
