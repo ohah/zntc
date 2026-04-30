@@ -369,6 +369,8 @@ export interface DevServerOptions {
   port?: number;
   /** Host to listen on. `true` means `0.0.0.0`, matching Vite. CLI `--host` overrides this value. */
   host?: string | boolean;
+  /** Exit if the configured port is already in use instead of trying the next port. */
+  strictPort?: boolean;
   /** Open the served URL in the browser after startup. CLI `--open` overrides this value. */
   open?: boolean;
 }
