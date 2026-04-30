@@ -88,6 +88,32 @@ pub fn ES2022(comptime Transformer: type) type {
             const pending_top = self.pending_nodes.items.len;
             defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
+            var static_key_memos = std.AutoHashMap(u32, NodeIndex).init(self.allocator);
+            defer static_key_memos.deinit();
+
+            if (class_name_span != null) {
+                var key_i: u32 = 0;
+                while (key_i < body_len) : (key_i += 1) {
+                    const raw_idx = self.ast.extra_data.items[body_start + key_i];
+                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    if (member.tag != .property_definition or !isPublicStaticField(self, member)) continue;
+                    const pe = member.data.extra;
+                    const key: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
+                    const key_node = self.ast.getNode(key);
+                    if (key_node.tag != .computed_property_key) continue;
+
+                    const temp_span = try es_helpers.makeTempVarSpan(self);
+                    const temp_binding = try es_helpers.makeBindingIdentifier(self, temp_span);
+                    const temp_init = try self.visitNode(key_node.data.unary.operand);
+                    const temp_decl = try es_helpers.makeDeclarator(self, temp_binding, temp_init, member.span);
+                    try static_block_iifes.append(
+                        self.allocator,
+                        try es_helpers.makeVarDeclaration(self, &.{temp_decl}, .@"var", member.span),
+                    );
+                    try static_key_memos.put(raw_idx, try makeComputedKeyRef(self, temp_span, member.span));
+                }
+            }
+
             // while 인덱스 루프: visitNode/buildStaticBlockIIFE가 extra_data를 재할당할 수 있으므로 슬라이스 캐시 금지
             var j: u32 = 0;
             while (j < body_len) : (j += 1) {
@@ -98,7 +124,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     const iife = try buildStaticBlockIIFE(self, member, class_name_span);
                     try static_block_iifes.append(self.allocator, iife);
                 } else if (class_name_span != null and member.tag == .property_definition and isPublicStaticField(self, member)) {
-                    const static_assign = try buildStaticFieldAssign(self, member, class_name_span.?, already_visited);
+                    const static_assign = try buildStaticFieldAssign(self, member, class_name_span.?, already_visited, static_key_memos.get(raw_idx));
                     try static_block_iifes.append(self.allocator, static_assign);
                 } else if (already_visited) {
                     try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
@@ -145,26 +171,44 @@ pub fn ES2022(comptime Transformer: type) type {
             return (flags & ast_mod.PropertyFlags.is_static) != 0;
         }
 
-        fn buildStaticFieldAssign(self: *Transformer, member: Node, class_name_span: Span, already_visited: bool) Transformer.Error!NodeIndex {
+        fn makeComputedKeyRef(self: *Transformer, var_span: Span, span: Span) Transformer.Error!NodeIndex {
+            const id_ref = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = var_span,
+                .data = .{ .string_ref = var_span },
+            });
+            return self.ast.addNode(.{
+                .tag = .computed_property_key,
+                .span = span,
+                .data = .{ .unary = .{ .operand = id_ref, .flags = 0 } },
+            });
+        }
+
+        fn buildStaticFieldAssign(self: *Transformer, member: Node, class_name_span: Span, already_visited: bool, key_override: ?NodeIndex) Transformer.Error!NodeIndex {
+            _ = already_visited;
             const pe = member.data.extra;
-            const key: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
+            const key: NodeIndex = key_override orelse self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
             const init: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
 
             const saved_static = self.current_super_is_static;
             const saved_receiver = self.current_super_static_receiver;
+            const saved_class_name = self.static_block_class_name;
+            const saved_this_depth = self.this_depth;
             self.current_super_is_static = true;
             self.current_super_static_receiver = class_name_span;
+            self.static_block_class_name = class_name_span;
+            self.this_depth = 0;
             defer {
                 self.current_super_is_static = saved_static;
                 self.current_super_static_receiver = saved_receiver;
+                self.static_block_class_name = saved_class_name;
+                self.this_depth = saved_this_depth;
             }
 
             const class_ref = try es_helpers.makeIdentifierRefFromSpan(self, class_name_span);
             const member_ref = try es_helpers.makeMemberFromKeyIdx(self, class_ref, key, member.span);
             const value = if (init.isNone())
                 try es_helpers.makeVoidZero(self, member.span)
-            else if (already_visited)
-                init
             else
                 try self.visitNode(init);
             const assign = try self.ast.addNode(.{
