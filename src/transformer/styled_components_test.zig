@@ -860,6 +860,64 @@ test "styled-components: computed property key 는 미인식" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
 }
 
+test "styled-components: minify=true 시 CSS whitespace collapse" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Card = styled.div`
+        \\  color: red;
+        \\  padding: 8px;
+        \\`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx", .styled_components_minify = true },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Card");
+    // newlines / 다중 스페이스가 single space 로 collapse — `\n  color` 같은 패턴 사라짐.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\n  color") == null);
+    // 단일 space 로 분리된 ` color: red; padding: 8px;` 형태로 합쳐짐 (basic minify).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red; padding: 8px;") != null);
+}
+
+test "styled-components: minify=false (default) 면 CSS 보존" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Card = styled.div`
+        \\  color: red;
+        \\`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" }, // minify defaults false
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Card");
+    // 원본 newline 보존 — minify 안 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\n  color") != null);
+}
+
+test "styled-components: minify — interpolation 있는 template 은 보존 (후속 PR)" {
+    // 보간 있는 template_literal (data.list.len > 0) 는 첫 iteration 에서 skip.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`
+        \\  color: ${color};
+        \\`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx", .styled_components_minify = true },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Btn");
+    // interpolation 있으면 minify skip — newline 보존.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\n  color") != null);
+}
+
 test "styled-components: ssr=false 시 componentId 생략, displayName 만" {
     var r = try e2eFull(
         std.testing.allocator,

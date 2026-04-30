@@ -644,6 +644,71 @@ fn scanObjectKeys(self: *Transformer, obj_idx: NodeIndex) ObjectKeyScan {
     return result;
 }
 
+/// no-interpolation template_literal (`\`color: red;\``) 의 CSS whitespace 를 minify.
+/// codegen.zig:2270 의 convention 따라 `data.none == 0` 으로 no-interp 판정.
+/// 보간 있는 template (`data.list.len > 0`) 은 후속 PR. 변경 없으면 identity (template_idx).
+fn minifyCssTemplate(self: *Transformer, template_idx: NodeIndex) Error!NodeIndex {
+    if (template_idx.isNone()) return template_idx;
+    const node = self.ast.getNode(template_idx);
+    if (node.tag != .template_literal) return template_idx;
+    if (node.data.none != 0) return template_idx; // 보간 있음 — codegen.zig:2270 convention.
+
+    const raw = self.ast.getText(node.span);
+    if (raw.len < 2 or raw[0] != '`' or raw[raw.len - 1] != '`') return template_idx;
+    const inner = raw[1 .. raw.len - 1];
+
+    // Fast-path: 이미 minimal (collapse 할 ws run / leading-trailing ws 없음) 이면 alloc 회피.
+    if (!needsCssMinify(inner)) return template_idx;
+
+    // 단일 버퍼 — `\`` + collapsed + `\`` 한 번에 빌드.
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(self.allocator);
+    try buf.append(self.allocator, '`');
+    var prev_ws = true; // leading whitespace skip
+    for (inner) |c| {
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            if (!prev_ws) {
+                try buf.append(self.allocator, ' ');
+                prev_ws = true;
+            }
+        } else {
+            try buf.append(self.allocator, c);
+            prev_ws = false;
+        }
+    }
+    // trailing whitespace strip — closing backtick 직전 ws 제거.
+    while (buf.items.len > 1 and buf.items[buf.items.len - 1] == ' ') {
+        _ = buf.pop();
+    }
+    try buf.append(self.allocator, '`');
+
+    const new_span = try self.ast.addString(buf.items);
+    return self.ast.addNode(.{
+        .tag = .template_literal,
+        .span = new_span,
+        .data = .{ .list = .{ .start = 0, .len = 0 } },
+    });
+}
+
+/// CSS minify 가 변경을 만들지 검사 — leading/trailing whitespace, 또는 ws run (>1) 이 있으면 true.
+/// alloc 회피 fast-path.
+fn needsCssMinify(inner: []const u8) bool {
+    if (inner.len == 0) return false;
+    if (isCssWhitespace(inner[0]) or isCssWhitespace(inner[inner.len - 1])) return true;
+    var prev_ws = false;
+    for (inner) |c| {
+        const ws = isCssWhitespace(c);
+        if (ws and prev_ws) return true; // 다중 ws run
+        if (c == '\t' or c == '\n' or c == '\r') return true; // non-space ws 는 항상 collapse 대상
+        prev_ws = ws;
+    }
+    return false;
+}
+
+inline fn isCssWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
 /// `wrapStyledTagInExpr` 의 재귀 base case — 직접 tagged_template 일 때만 호출.
 fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (var_name.len == 0) return init_idx;
@@ -667,9 +732,13 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
     }
 
     const new_tag = try buildWithConfigCall(self, tag_idx, var_name);
+    const final_template = if (self.options.styled_components_minify)
+        try minifyCssTemplate(self, template_idx)
+    else
+        template_idx;
     const new_extra = try self.ast.addExtras(&.{
         @intFromEnum(new_tag),
-        @intFromEnum(template_idx),
+        @intFromEnum(final_template),
         flags,
     });
     return self.ast.addNode(.{
@@ -778,10 +847,14 @@ fn mergeIntoUserWithConfig(
     // 4. chain 의 target_call 을 new_call 로 swap (recursive rebuild).
     const new_tag = try rewriteChainAt(self, tag_idx, target_call_idx, new_call);
 
-    // 5. 새 tagged_template 빌드.
+    // 5. 새 tagged_template 빌드 (minify 옵션 시 template 도 minify).
+    const final_template = if (self.options.styled_components_minify)
+        try minifyCssTemplate(self, template_idx)
+    else
+        template_idx;
     const new_tt_extra = try self.ast.addExtras(&.{
         @intFromEnum(new_tag),
-        @intFromEnum(template_idx),
+        @intFromEnum(final_template),
         template_flags,
     });
     return self.ast.addNode(.{

@@ -24,6 +24,8 @@ pub const AppBuildOptions = struct {
     styled_components: bool = false,
     /// styled-components.ssr 옵션 — false 면 componentId 생략.
     styled_components_ssr: bool = true,
+    /// styled-components.minify 옵션 — CSS template whitespace collapse.
+    styled_components_minify: bool = false,
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -117,6 +119,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .root_dir = root,
         .styled_components = opts.styled_components,
         .styled_components_ssr = opts.styled_components_ssr,
+        .styled_components_minify = opts.styled_components_minify,
     });
     defer bundler.deinit();
 

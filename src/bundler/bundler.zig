@@ -128,6 +128,8 @@ pub const BundleOptions = struct {
     /// styled-components.ssr 옵션 — false 면 componentId 생략 (displayName 만).
     /// `@next/swc` 의 compiler.styledComponents.ssr 와 동일.
     styled_components_ssr: bool = true,
+    /// styled-components.minify 옵션 — CSS template whitespace collapse.
+    styled_components_minify: bool = false,
     /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
     collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
@@ -632,6 +634,7 @@ pub const Bundler = struct {
         worker_graph.react_refresh = self.options.react_refresh;
         worker_graph.styled_components = self.options.styled_components;
         worker_graph.styled_components_ssr = self.options.styled_components_ssr;
+        worker_graph.styled_components_minify = self.options.styled_components_minify;
         worker_graph.code_splitting = self.options.code_splitting;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
@@ -792,6 +795,7 @@ pub const Bundler = struct {
         graph.react_refresh = self.options.react_refresh;
         graph.styled_components = self.options.styled_components;
         graph.styled_components_ssr = self.options.styled_components_ssr;
+        graph.styled_components_minify = self.options.styled_components_minify;
         graph.code_splitting = self.options.code_splitting;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();

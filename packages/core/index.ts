@@ -1243,8 +1243,9 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   const sc = options.compiler?.styledComponents;
   if (sc !== undefined && sc !== false) {
     napiOptions.styledComponents = true;
-    if (typeof sc === "object" && sc.ssr === false) {
-      napiOptions.styledComponentsSsr = false;
+    if (typeof sc === "object") {
+      if (sc.ssr === false) napiOptions.styledComponentsSsr = false;
+      if (sc.minify === true) napiOptions.styledComponentsMinify = true;
     }
   }
   if (options.compiler?.emotion !== undefined && options.compiler.emotion !== false) {
@@ -1407,6 +1408,9 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
       : {}),
     ...(typeof compiler?.styledComponents === "object" && compiler.styledComponents.ssr === false
       ? { styledComponentsSsr: false }
+      : {}),
+    ...(typeof compiler?.styledComponents === "object" && compiler.styledComponents.minify === true
+      ? { styledComponentsMinify: true }
       : {}),
     ...(compiler?.emotion !== undefined && compiler.emotion !== false ? { emotion: true } : {}),
   });
