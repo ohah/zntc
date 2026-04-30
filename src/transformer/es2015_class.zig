@@ -111,7 +111,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_static_receiver = saved_super_static_receiver;
 
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
-            var cm = try classifyMembers(self, body_idx, span, name_span);
+            var cm = try classifyMembers(self, body_idx, span);
             defer cm.deinit(self.allocator);
 
             // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
@@ -349,7 +349,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_static_receiver = saved_super_static_receiver;
 
             // 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
-            var cm = try classifyMembers(self, body_idx, span, name_span);
+            var cm = try classifyMembers(self, body_idx, span);
             defer cm.deinit(self.allocator);
 
             // 매핑은 모든 private field 가 모인 뒤 단일 지점에서 build — 이후 deferred visit 들이 이 매핑으로 lowering.
@@ -1698,12 +1698,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
         };
 
-        /// classifyMembers 가 보류한 `.raw_stmt` static block entry 를 visit 해서 `.stmt` 로 in-place 대체.
+        /// classifyMembers 가 보류한 `.raw_stmt` static block entry 를 visit 해서 `.stmt` 로 변환한다.
         /// caller 는 이 함수 호출 전에 setupPrivateFieldMappings 로 매핑을 set 해야 한다 — 그래야 본문
         /// 안의 `this.#x` / `super.x` 등이 정확히 lowering 된다. 본문 visit 시 transformer state 를 static
         /// block 컨텍스트로 set (this_depth=0, current_super_is_static=true, receiver/class_name = class span).
+        ///
+        /// visit 결과가 none 이면 (declare 같은 strip 대상) 해당 entry 는 새 list 에서 drop —
+        /// 원본 동작 (`if (!new_stmt.isNone()) append`) 과 동치.
         fn visitDeferredStaticBlocks(self: *Transformer, cm: *ClassifiedMembers, class_name_span: Span) Transformer.Error!void {
-            // 모든 .raw_stmt 가 이미 visit 됐으면 빠르게 종료.
             var has_raw = false;
             for (cm.static_elements.items) |elem| {
                 if (elem == .raw_stmt) {
@@ -1728,25 +1730,22 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.current_super_static_receiver = saved_super_static_receiver;
             }
 
-            for (cm.static_elements.items) |*elem| {
-                switch (elem.*) {
+            var new_elements: std.ArrayList(StaticElement) = .empty;
+            errdefer new_elements.deinit(self.allocator);
+            try new_elements.ensureTotalCapacity(self.allocator, cm.static_elements.items.len);
+            for (cm.static_elements.items) |elem| {
+                switch (elem) {
                     .raw_stmt => |raw| {
                         const visited = try self.visitNode(raw);
-                        if (visited.isNone()) {
-                            // visit 가 노드를 drop 한 경우 (declare 등) — `void 0` placeholder 로 슬롯 채워
-                            // source order 를 유지하되 emit 시 의미 없는 statement 로 남는다. 실제 사례는 거의 없음.
-                            elem.* = .{ .stmt = try self.ast.addNode(.{
-                                .tag = .empty_statement,
-                                .span = .{ .start = 0, .end = 0 },
-                                .data = .{ .none = 0 },
-                            }) };
-                        } else {
-                            elem.* = .{ .stmt = visited };
+                        if (!visited.isNone()) {
+                            new_elements.appendAssumeCapacity(.{ .stmt = visited });
                         }
                     },
-                    else => {},
+                    else => new_elements.appendAssumeCapacity(elem),
                 }
             }
+            cm.static_elements.deinit(self.allocator);
+            cm.static_elements = new_elements;
         }
 
         /// `cm.instance_inits` 의 deferred entry 를 source order 로 visit 해서 statement 를 빌드하고
@@ -1811,8 +1810,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             return total;
         }
 
-        fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span, class_name_span: Span) Transformer.Error!ClassifiedMembers {
-            _ = class_name_span; // 호출자 시그니처 호환 — 본 함수는 class_name 을 사용하지 않는다 (static block visit 가 deferred 됨).
+        fn classifyMembers(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!ClassifiedMembers {
             const body_node = self.ast.getNode(body_idx);
             const members_start = body_node.data.list.start;
             const members_len = body_node.data.list.len;

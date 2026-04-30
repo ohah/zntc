@@ -463,6 +463,54 @@ console.log(JSON.stringify(new A().read()));
 `,
   },
   {
+    // phase-split 검증: public field init 이 여러 private field 를 참조. classifyMembers 가
+    // collect-only 라 visit 시점에 cm.private_fields 에 #a/#b 둘 다 모인 뒤 단일
+    // setupPrivateFieldMappings 로 매핑이 build 되어 두 reference 모두 lowering 된다.
+    name: "public-field-reads-multiple-private-fields",
+    code: `
+class A {
+  #a = 1;
+  #b = 2;
+  c = this.#a + this.#b;
+  d = this.#a * 10 + this.#b;
+  read() { return [this.c, this.d]; }
+}
+console.log(JSON.stringify(new A().read()));
+`,
+  },
+  {
+    // phase-split 검증: 다중 static block 사이에 static private field 가 선언돼도 두 block 모두
+    // 매핑을 본다 (각각 deferred visit 됨, setup 은 모든 private 수집 후 단일).
+    // band-aid 였다면 두 번째 block 이 #y 매핑을 못 보는 lifetime 충돌이 가능했다.
+    name: "static-blocks-interleaved-with-private",
+    code: `
+const log = [];
+class A {
+  static #x = 1;
+  static { log.push("b1:" + this.#x); }
+  static #y = 2;
+  static { log.push("b2:" + this.#y); }
+}
+console.log(JSON.stringify(log));
+`,
+  },
+  {
+    // phase-split 검증: instance_inits drain 이 source order 를 정확히 따르는지 — 모든 init 이
+    // 한 emission 사이트에서 drain 되고 source 순서대로 cm.instance_fields 에 push 되는지 검증.
+    name: "source-order-private-public-interleaved",
+    code: `
+const log = [];
+class A {
+  #a = log.push("a");
+  b = log.push("b");
+  #c = log.push("c");
+  d = log.push("d");
+  read() { return [this.#a, this.b, this.#c, this.d, log]; }
+}
+console.log(JSON.stringify(new A().read()));
+`,
+  },
+  {
     name: "for-of-let-closure-continue",
     code: `
 const fns = [];
