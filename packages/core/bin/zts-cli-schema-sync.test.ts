@@ -340,6 +340,7 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "compiler", // compiler.styledComponents / compiler.emotion — 중첩 객체, CLI 미노출
     "manualChunks",
     "plugins",
+    "server", // server.port / server.host 는 개별 CLI flag 와 config-only nested 객체 양쪽 지원
     // entry — positional argument (flag 아님)
     "entryPoints",
     "filename", // transpile 의 filename — stdin 모드일 때 의미, CLI 가 자동 결정

@@ -175,8 +175,8 @@ function parseArgs(argv) {
     watchDelay: 100,
     serve: false,
     serveDir: ".",
-    port: 12300,
-    host: "localhost",
+    port: undefined,
+    host: undefined,
     open: false,
     proxy: {},
     format: undefined,
@@ -492,6 +492,33 @@ function injectDefaultNodeEnvDefine(opts) {
 
   const isDev = opts.appCommand === "dev" || opts.serve || opts.watch;
   opts.define["process.env.NODE_ENV"] = isDev ? '"development"' : '"production"';
+}
+
+function normalizeServerHost(host) {
+  if (host === true) return "0.0.0.0";
+  if (typeof host === "string" && host.length > 0) return host;
+  return undefined;
+}
+
+function mergeServerConfigIntoOpts(opts, config) {
+  const server = config?.server;
+  if (!server || typeof server !== "object") return;
+
+  if (opts.port === undefined && Number.isInteger(server.port)) {
+    opts.port = server.port;
+  }
+  if (opts.host === undefined) {
+    const host = normalizeServerHost(server.host);
+    if (host !== undefined) opts.host = host;
+  }
+  if (opts.open === false && server.open === true) {
+    opts.open = true;
+  }
+}
+
+function applyServerDefaults(opts) {
+  if (opts.port === undefined) opts.port = 12300;
+  if (opts.host === undefined) opts.host = "localhost";
 }
 
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
@@ -1775,6 +1802,7 @@ function mergeConfigIntoOpts(opts, config) {
       opts[key] = { ...config[key], ...opts[key] };
     }
   }
+  mergeServerConfigIntoOpts(opts, config);
 
   return opts;
 }
@@ -2543,6 +2571,7 @@ async function main() {
     ? resolve(opts.workspaceConfig)
     : findWorkspacePath(process.cwd());
   if (workspacePath) {
+    applyServerDefaults(opts);
     if (opts.workspaceConfig && !existsSync(workspacePath)) {
       throw new Error(`failed to load workspace — file not found: ${workspacePath}`);
     }
@@ -2563,6 +2592,7 @@ async function main() {
     }
     mergeConfigIntoOpts(opts, config);
   }
+  applyServerDefaults(opts);
 
   // import.meta.env.* + import.meta.env.MODE/PROD/DEV/SSR 정적 치환을 define 으로
   // 자동 주입. 사용자 명시 define 이 동일 키를 덮어쓰면 그대로 우선.

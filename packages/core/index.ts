@@ -363,6 +363,16 @@ export interface EmotionOptions {
   importMap?: Record<string, Record<string, { canonicalImport: [string, string] }>>;
 }
 
+/** Vite-style dev server options used by `zts dev` / `zts --serve`. */
+export interface DevServerOptions {
+  /** Port to listen on. CLI `--port` overrides this value. */
+  port?: number;
+  /** Host to listen on. `true` means `0.0.0.0`, matching Vite. CLI `--host` overrides this value. */
+  host?: string | boolean;
+  /** Open the served URL in the browser after startup. CLI `--open` overrides this value. */
+  open?: boolean;
+}
+
 /**
  * Common build options shared by all platforms.
  * `platform` + `target` 조합은 `BuildOptions` 에서 discriminated union으로 제한됨.
@@ -429,6 +439,8 @@ interface BuildOptionsCommon {
    * 키는 식별자 또는 `obj.prop` 같은 멤버 표현식, 값은 JS 표현식 문자열.
    * 예: `{ "__DEV__": "false", "process.env.NODE_ENV": '"production"' }` */
   define?: Record<string, string>;
+  /** Dev server defaults for `zts dev` / `zts --serve`. CLI flags still take precedence. */
+  server?: DevServerOptions;
   /** Import 경로 별칭 — 두 형태 지원 (esbuild / Vite 호환):
    *
    * 1. **Object 형태** (esbuild `alias`): exact + prefix 매칭. 정해진 specifier 만 치환.

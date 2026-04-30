@@ -132,6 +132,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "external",
   "alias",
   "define",
+  "server",
   "loader",
   "conditions",
   "resolveExtensions",

@@ -226,6 +226,7 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "experimentalCodeCache", // persistent cache 실험
     "watch", // CLI flag, BuildOptions 노출 안 함이 정석이지만 일부 wrapper 가 노출
     "extends", // config-only
+    "server", // config-only dev server defaults
 
     // ─── BuildOptions / NAPI 전용 — Zig DTO 미노출이 의도된 것들 ──────────────
     // 사용자 코드가 NAPI 또는 build() JS API 로 직접 전달. CLI / config 경로는 미사용.
