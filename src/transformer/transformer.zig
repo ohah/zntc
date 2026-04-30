@@ -586,6 +586,7 @@ pub const Transformer = struct {
         self.plugins.refresh.registrations.deinit(self.allocator);
         for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
         self.plugins.refresh.signatures.deinit(self.allocator);
+        self.plugins.emotion.scope_stack.deinit(self.allocator);
         self.trailing_nodes.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
@@ -897,6 +898,12 @@ pub const Transformer = struct {
 
             // JSX element/opening_element: .extra 형식 (tag, attrs, children)
             .jsx_element => {
+                // `<ClassNames>{({css}) => ...}</ClassNames>` 진입 시 destructured `css`
+                // 의 local 이름을 scope frame 에 push — render-prop 함수 안의
+                // tagged_template_expression 이 visit 될 때 인식되도록.
+                const pushed_emotion_scope = try emotion_mod.maybeEnterClassNamesScope(self, node);
+                defer if (pushed_emotion_scope) emotion_mod.exitClassNamesScope(self);
+
                 if (self.options.jsx_transform) {
                     return jsx_lowering_mod.JsxLowering(Transformer).lowerJSXElement(self, node);
                 }

@@ -85,6 +85,21 @@ pub const EmotionState = struct {
     /// `<Global styles={css\`...\`} />` JSX element 의 `styles` attr 에 element 이름
     /// 기반 label prepend (`label:Global;`).
     global_binding: ?[]const u8 = null,
+
+    /// `import { ClassNames } from "@emotion/react"` 의 local binding 이름 (alias 포함).
+    /// `<ClassNames>{({css}) => ...}</ClassNames>` render-prop 패턴 인식에 사용.
+    class_names_binding: ?[]const u8 = null,
+
+    /// `<ClassNames>` render-prop 진입 시 push, exit 시 pop 되는 scope frame stack.
+    /// 현재 frame 의 binding 들이 outer (import 기반) binding 보다 우선 적용 →
+    /// destructured local 이름 (`{ css: cs }` 의 `cs`) 도 emotion css 로 인식.
+    scope_stack: std.ArrayList(EmotionScopeFrame) = .empty,
+};
+
+/// `<ClassNames>` render-prop 함수 매개변수에서 destructure 된 local binding 이름들.
+/// css 만 추적 — `cx`/`theme` 는 autoLabel 에 무관.
+pub const EmotionScopeFrame = struct {
+    css_binding: ?[]const u8 = null,
 };
 
 pub const StyledComponentsState = struct {

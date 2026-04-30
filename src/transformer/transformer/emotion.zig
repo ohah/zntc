@@ -41,6 +41,7 @@ const import_scanner = @import("../../bundler/import_scanner.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
+const plugin_state = @import("../plugin_state.zig");
 
 /// emotion `css` / `keyframes` named import 가 export 되는 source 들.
 pub const EMOTION_CSS_SOURCES: []const []const u8 = &.{
@@ -87,6 +88,7 @@ const NAMED_IMPORT_SPECS = [_]NamedImportSpec{
     .{ .imported = "keyframes", .field = "keyframes_binding" },
     .{ .imported = "injectGlobal", .field = "inject_global_binding" },
     .{ .imported = "Global", .field = "global_binding" },
+    .{ .imported = "ClassNames", .field = "class_names_binding" },
 };
 
 /// `tagMatchesEmotion` 의 identifier 형태 매칭에 참여하는 binding 필드들.
@@ -217,28 +219,25 @@ pub fn maybeApplyAutoLabelForJsxAttr(
     // 빠른 reject 를 AST 접근 (`jsxElementLabel`) 보다 먼저 수행.
     const is_css = std.mem.eql(u8, attr_name, "css");
     const is_styles = std.mem.eql(u8, attr_name, "styles");
-    if (!is_css and !is_styles) return value_idx;
+    // className 은 ClassNames render-prop scope 안에서만 인식 (밖에서는 일반 className
+    // 이라 절대 처리 금지 — scope_stack 비어있으면 즉시 false).
+    const is_classnames_inline = self.plugins.emotion.scope_stack.items.len > 0 and
+        std.mem.eql(u8, attr_name, "className");
+    if (!is_css and !is_styles and !is_classnames_inline) return value_idx;
     if (value_idx.isNone()) return value_idx;
 
-    const label = jsxElementLabel(self, tag_name_idx) orelse return value_idx;
-    const is_global_styles = is_styles and elementMatchesGlobal(self, tag_name_idx);
-    if (!is_css and !is_global_styles) return value_idx;
+    // styles attr 은 `<Global>` element 일 때만 통과 — 다른 element 에서는 false-positive
+    // 위험 (다른 라이브러리/사용자 컴포넌트의 styles prop).
+    if (is_styles and !elementMatchesGlobal(self, tag_name_idx)) return value_idx;
 
+    const label = jsxElementLabel(self, tag_name_idx) orelse return value_idx;
     return try maybeApplyAutoLabel(self, value_idx, label);
 }
 
-/// JSX element 가 import 된 `Global` binding 과 일치하는지.
-///
-/// **단순 jsx_identifier 만 매칭** — `<Foo.Global>` 같은 member expression 은 거부.
-/// 이유: rightmost 가 "Global" 이라도 사용자 컴포넌트 (`<Foo.Global>`) 가 emotion 의
-/// `Global` 일 가능성은 0 → false-positive 방지. 정식으로 지원하려면 namespace import
-/// (`import * as Em`) 추적이 필요한데 현재 범위 밖.
+/// JSX element 가 import 된 `Global` binding 과 일치하는지 — 단순 identifier 만.
 fn elementMatchesGlobal(self: *Transformer, tag_name_idx: NodeIndex) bool {
     const binding = self.plugins.emotion.global_binding orelse return false;
-    if (tag_name_idx.isNone()) return false;
-    const tag_node = self.ast.getNode(tag_name_idx);
-    if (tag_node.tag != .jsx_identifier) return false;
-    return std.mem.eql(u8, self.ast.getText(tag_node.span), binding);
+    return jsxIdentifierEquals(self, tag_name_idx, binding);
 }
 
 /// JSX element label 추출 — autoLabel 의 source 로 쓰일 이름.
@@ -263,6 +262,111 @@ fn jsxElementLabel(self: *Transformer, tag_name_idx: NodeIndex) ?[]const u8 {
     }
 }
 
+/// `<ClassNames>` JSX element 진입 시 scope frame 을 push.
+/// 반환 true: scope 가 push 됐으니 caller 가 `exitClassNamesScope` 로 pop 책임.
+/// 반환 false: ClassNames 가 아니거나 render-prop 패턴이 아님 → no-op.
+///
+/// 인식하는 패턴:
+/// ```
+/// <ClassNames>
+///   {({ css }) => <div className={css`...`}/>}
+/// </ClassNames>
+/// ```
+/// children 첫 노드가 jsx_expression_container 의 arrow_function/function_expression,
+/// 그 첫 param 이 object_pattern 으로 `css` 를 destructure (alias 도 추적).
+pub fn maybeEnterClassNamesScope(self: *Transformer, jsx_node: ast_mod.Node) Error!bool {
+    if (!self.options.emotion) return false;
+    const binding = self.plugins.emotion.class_names_binding orelse return false;
+
+    // jsx_element extra: [tag_name, attrs_start, attrs_len, children_start, children_len]
+    const e = jsx_node.data.extra;
+    if (!self.ast.hasExtra(e, 4)) return false;
+    const tag_name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    if (!jsxIdentifierEquals(self, tag_name_idx, binding)) return false;
+
+    const children_start = self.ast.extra_data.items[e + 3];
+    const children_len = self.ast.extra_data.items[e + 4];
+
+    const fn_idx = findRenderPropFunction(self, children_start, children_len) orelse return false;
+    const css_local = extractDestructuredCssLocal(self, fn_idx) orelse return false;
+
+    try self.plugins.emotion.scope_stack.append(
+        self.allocator,
+        .{ .css_binding = css_local },
+    );
+    return true;
+}
+
+/// `maybeEnterClassNamesScope` 가 true 반환했을 때 caller 가 호출 (defer pattern).
+pub fn exitClassNamesScope(self: *Transformer) void {
+    _ = self.plugins.emotion.scope_stack.pop();
+}
+
+/// 단순 jsx_identifier 의 텍스트가 `expected` 와 일치하는지.
+/// `<Foo.X>` 같은 member expression / namespaced 는 거부 — false-positive 방지
+/// (사용자 컴포넌트의 member 가 emotion binding 일 가능성 0).
+fn jsxIdentifierEquals(self: *Transformer, idx: NodeIndex, expected: []const u8) bool {
+    if (idx.isNone()) return false;
+    const node = self.ast.getNode(idx);
+    if (node.tag != .jsx_identifier) return false;
+    return std.mem.eql(u8, self.ast.getText(node.span), expected);
+}
+
+/// children 중 첫 번째 jsx_expression_container 안의 arrow/function_expression 을 반환.
+/// 텍스트 노드 / 다른 element 는 skip.
+fn findRenderPropFunction(self: *Transformer, children_start: u32, children_len: u32) ?NodeIndex {
+    if (children_len == 0) return null;
+    const indices = self.ast.extra_data.items[children_start .. children_start + children_len];
+    for (indices) |raw_idx| {
+        const child_idx: NodeIndex = @enumFromInt(raw_idx);
+        const child = self.ast.getNode(child_idx);
+        if (child.tag != .jsx_expression_container) continue;
+        const inner = child.data.unary.operand;
+        if (inner.isNone()) continue;
+        const inner_node = self.ast.getNode(inner);
+        if (inner_node.tag == .arrow_function_expression or
+            inner_node.tag == .function_expression)
+        {
+            return inner;
+        }
+    }
+    return null;
+}
+
+/// 함수 첫 param 의 object_pattern 에서 destructured `css` 의 local 이름 추출.
+/// 처리: shorthand `{ css }` → "css", aliased `{ css: cs }` → "cs".
+/// nested pattern / default value 등은 first PR 범위 밖 → null.
+fn extractDestructuredCssLocal(self: *Transformer, fn_idx: NodeIndex) ?[]const u8 {
+    const fn_node = self.ast.getNode(fn_idx);
+    const params = self.ast.functionParams(fn_node);
+    if (params.len == 0) return null;
+    const first_param_idx: NodeIndex = @enumFromInt(params[0]);
+    const first_param = self.ast.getNode(first_param_idx);
+    if (first_param.tag != .object_pattern) return null;
+
+    const list = first_param.data.list;
+    if (list.len == 0) return null;
+    const props = self.ast.extra_data.items[list.start .. list.start + list.len];
+
+    for (props) |raw_idx| {
+        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
+        const prop = self.ast.getNode(prop_idx);
+        if (prop.tag != .binding_property) continue;
+
+        const key_idx = prop.data.binary.left;
+        const value_idx = prop.data.binary.right;
+        if (key_idx.isNone() or value_idx.isNone()) continue;
+
+        const key_node = self.ast.getNode(key_idx);
+        if (!std.mem.eql(u8, self.ast.getText(key_node.span), "css")) continue;
+
+        const value_node = self.ast.getNode(value_idx);
+        if (value_node.tag != .binding_identifier) return null;
+        return self.ast.getText(value_node.span);
+    }
+    return null;
+}
+
 /// tag 가 emotion 인식 패턴인지 확인.
 ///   - `css\`...\`` / `keyframes\`...\`` — 직접 identifier 만
 ///   - `styled.X\`...\`` / `styled(X)\`...\`` / `styled.div.withComponent(...)\`...\`` —
@@ -276,6 +380,14 @@ fn tagMatchesEmotion(self: *Transformer, tag_idx: NodeIndex) bool {
     // 의 `css` 는 member API 가 없어 chain 시 부정확한 라벨 위험).
     if (tag_node.tag == .identifier_reference) {
         const text = self.ast.getText(tag_node.data.string_ref);
+        // scope frame 우선 — `<ClassNames>` render-prop 의 destructured `css` 는 outer
+        // import binding 보다 우선해야 함 (정확히 그 함수 안에서만 유효).
+        if (state.scope_stack.items.len > 0) {
+            const top = state.scope_stack.items[state.scope_stack.items.len - 1];
+            if (top.css_binding) |b| {
+                if (std.mem.eql(u8, text, b)) return true;
+            }
+        }
         inline for (TAG_BINDING_FIELDS) |field_name| {
             if (@field(state, field_name)) |b| {
                 if (std.mem.eql(u8, text, b)) return true;
