@@ -154,6 +154,8 @@ pub const ModuleGraph = struct {
     styled_components_meaningless_file_names: []const []const u8 = &.{"index"},
     /// styled-components.topLevelImportPaths 옵션 — vendored fork import source list.
     styled_components_top_level_import_paths: []const []const u8 = &.{},
+    /// styled-components.cssProp 옵션 — `<div css={...}>` extract (후속 PR 에서 transform 구현).
+    styled_components_css_prop: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -1750,6 +1752,7 @@ pub const ModuleGraph = struct {
         opts.styled_components_namespace = self.styled_components_namespace;
         opts.styled_components_meaningless_file_names = self.styled_components_meaningless_file_names;
         opts.styled_components_top_level_import_paths = self.styled_components_top_level_import_paths;
+        opts.styled_components_css_prop = self.styled_components_css_prop;
         opts.emotion = self.emotion and is_user_code;
         opts.emotion_auto_label = self.emotion_auto_label;
         opts.emotion_source_map = self.emotion_source_map;
