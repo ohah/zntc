@@ -268,6 +268,26 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     expect(r.out).toContain("hotpink");
   });
 
+  it("@emotion/core v10 — `<div css={{color:'red'}}>` object literal 도 css(...) wrap", async () => {
+    const r = await runV10Bundle({
+      source: `
+        /** @jsx jsx */
+        import { jsx, css } from "@emotion/core";
+        const el = <div css={{ color: 'hotpink' }} />;
+        console.log(el);
+      `,
+      entry: "index.tsx",
+      config: { compiler: { emotion: true } },
+    });
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    // css({...}) call 형태 + PURE annotation + label arg
+    expect(r.out).toContain("/* @__PURE__ */");
+    expect(r.out).toContain("css({");
+    expect(r.out).toContain('"label:div;"');
+    expect(r.out).toContain("hotpink");
+  });
+
   it("v10 격리 검증 — fixture 의 @emotion/core 가 v10.x 인지", async () => {
     const pkgPath = join(EMOTION_V10_FIXTURE_NODE_MODULES, "@emotion/core/package.json");
     const pkg = JSON.parse(await readFile(pkgPath, "utf-8"));

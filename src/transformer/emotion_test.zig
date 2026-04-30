@@ -1198,6 +1198,176 @@ test "emotion (labelFormat): jsx_filename 없으면 [filename]/[dirname] = 빈 �
     try expectAutoLabel(r.output, "--card");
 }
 
+// ─── Object/Array css prop ───
+// `<div css={{color:'red'}}>` / `<div css={[a, b]}>` 를 `css(value, "label:div;")` call
+// 로 wrap. `/* @__PURE__ */` annotation 까지 부여 — minifier tree-shaking 활성.
+// css binding 이 import 안 됐으면 no-op (auto-inject 별도 작업).
+
+test "emotion (object css): `<div css={{color:'red'}}>` → css(...) call wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={{ color: 'red' }} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // css(...) call 로 wrap + label 인자 + PURE annotation
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"label:div;\"") != null);
+}
+
+test "emotion (object css): `<Button css={[a, b]}>` array literal 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <Button css={[styleA, styleB]} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css([") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"label:Button;\"") != null);
+}
+
+test "emotion (object css): css alias `import { css as cx }` 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css as cx } from "@emotion/react";
+        \\const el = <div css={{ color: 'red' }} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // alias 'cx' 가 callee
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "cx({") != null);
+}
+
+test "emotion (object css): css import 없으면 no-op" {
+    // css binding 이 import 안 됐으니 wrap 안 함 — 사용자 코드 그대로.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\const el = <div css={{ color: 'red' }} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // wrap 안 됨 → object literal 그대로 css prop 으로
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css({") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"label:") == null);
+}
+
+test "emotion (object css): autoLabel .never — wrap 은 하되 label 인자 생략" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={{ color: 'red' }} />;
+    ,
+        .{ .emotion = true, .emotion_auto_label = .never, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // wrap + PURE 는 적용, label 인자만 생략
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"label:") == null);
+}
+
+test "emotion (object css): non-css attr (className 등) 는 wrap 안 함" {
+    // className 의 object literal 은 emotion css prop 이 아니므로 wrap 금지.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div className={{ foo: 'bar' }} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css({") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"label:") == null);
+}
+
+test "emotion (object css): non-object/array value (identifier) 는 wrap 안 함" {
+    // someStyles 같은 변수 참조는 사용자가 이미 적절한 형태로 만들었다고 가정 — wrap 금지.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={someStyles} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css(someStyles") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"label:") == null);
+}
+
+test "emotion (object css): `<Global styles={obj}/>` 도 css(...) wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { Global, css } from "@emotion/react";
+        \\const el = <Global styles={{ body: { margin: 0 } }} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "/* @__PURE__ */") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"label:Global;\"") != null);
+}
+
+test "emotion (object css): non-Global element 의 styles 는 wrap 안 함" {
+    // styles attr 의 element-match 가드는 wrap 경로에도 동일 적용.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <SomeComp styles={{ color: 'red' }} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // Global binding 없거나 element 가 Global 아님 → wrap 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css({") == null);
+}
+
+test "emotion (object css): tagged template + object 둘 다 처리 (분기 검증)" {
+    // 같은 파일 안에 두 형태 공존 — tagged template 은 prepend, object 는 wrap.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const a = <div css={css`color: red;`} />;
+        \\const b = <div css={{ color: 'blue' }} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // tagged template path: label 이 quasi 안에 prepend
+    try expectAutoLabel(r.output, "div");
+    // object path: css({...}) wrap 형태
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "\"label:div;\"") != null);
+}
+
 test "emotion (sourceMap): non-emotion tag 는 sourceMap 도 추가 안 됨" {
     var r = try e2eFull(
         std.testing.allocator,
