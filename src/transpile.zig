@@ -545,16 +545,27 @@ pub fn transpileWithCallback(
         } else break :blk raw_output;
     } else raw_output;
 
+    // 6.6. styled-components cssProp auto-inject — 사용자 코드에 styled import 가 없는데
+    // cssProp transform 이 일어난 경우 program 시작에 `import styled from "styled-components"`.
+    const css_prop_output = if (transformer.plugins.styled_components.css_prop_needs_import) blk: {
+        const styled_import = "import styled from \"styled-components\";\n";
+        var combined: std.ArrayList(u8) = .empty;
+        combined.ensureTotalCapacity(arena_alloc, styled_import.len + jsx_output.len) catch break :blk jsx_output;
+        combined.appendSliceAssumeCapacity(styled_import);
+        combined.appendSliceAssumeCapacity(jsx_output);
+        break :blk combined.items;
+    } else jsx_output;
+
     // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;
     const has_helpers = @as(u32, @bitCast(rh)) != 0;
     const output = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         rt.appendRuntimeHelpers(&buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch
-            break :blk jsx_output;
-        buf.appendSlice(arena_alloc, jsx_output) catch break :blk jsx_output;
+            break :blk css_prop_output;
+        buf.appendSlice(arena_alloc, css_prop_output) catch break :blk css_prop_output;
         break :blk buf.items;
-    } else jsx_output;
+    } else css_prop_output;
 
     // 8. Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
     var debug_id_buf: [36]u8 = undefined;

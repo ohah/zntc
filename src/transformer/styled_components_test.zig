@@ -1596,7 +1596,7 @@ test "styled (cssProp): 옵션 비활성 시 변환 없음 (안전한 기본 동
     try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_") == null);
 }
 
-test "styled (cssProp): styled import 없으면 no-op (auto-inject 후속 PR)" {
+test "styled (cssProp Step 5): styled import 없으면 자동 import 추가" {
     var r = try e2eFull(
         std.testing.allocator,
         \\const el = <div css={`color: red;`}>x</div>;
@@ -1612,7 +1612,32 @@ test "styled (cssProp): styled import 없으면 no-op (auto-inject 후속 PR)" {
         ".tsx",
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    // 본 PR scope: transform 자체는 동작 + needs_import flag set. 실제 prepend 는
+    // transpile.zig 의 6.6 hook 이 담당하므로 e2eFull 의 raw codegen 출력엔 import 가
+    // 안 들어감 — 통합 테스트에서 검증.
+    // hoisting 검증 — `const _styled_0` 이 별도 statement 로 program body 에 있어야 (이전
+    // 버그: declarator list 안에 들어가서 `const el = ...,const _styled_0=...,;` 형태 invalid).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const _styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",const _styled_") == null);
+}
+
+test "styled (cssProp Step 5): cssProp transform 안 일어나면 auto-inject 도 안 함" {
+    // 옵션 활성이지만 jsx 안 쓰면 transform 자체가 안 일어남 → auto-inject 도 안 됨.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\const x = 1;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "import styled") == null);
 }
 
 test "styled (cssProp Step 2): css tagged template 도 인식 (quasi 만 추출)" {

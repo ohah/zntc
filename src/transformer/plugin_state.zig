@@ -13,6 +13,8 @@
 const std = @import("std");
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const ast_mod = @import("../parser/ast.zig");
+const NodeIndex = ast_mod.NodeIndex;
 
 pub const WorkletState = struct {
     /// auto-workletization 플래그.
@@ -151,6 +153,16 @@ pub const StyledComponentsState = struct {
     /// cssProp transform 으로 추출된 styled component 의 0-based counter — generated
     /// identifier (`_styled_<n>`) 의 unique suffix. 파일별 reset.
     css_prop_counter: u32 = 0,
+
+    /// cssProp transform 시 사용자 코드에 `import styled from "styled-components"` 가
+    /// 없어 transpile.zig 가 자동 prepend 해야 함. JSX import auto-inject 패턴과 동일.
+    css_prop_needs_import: bool = false,
+
+    /// cssProp transform 으로 만들어진 module-level decl 들 — program body 끝에 hoist.
+    /// `trailing_nodes` 는 nearest list 가 program 이 아니면 declarator list 같은
+    /// 부적절한 위치에 들어가 invalid syntax 가 되므로 별도 list 로 관리. visitProgram
+    /// 에서 drain.
+    css_prop_pending_decls: std.ArrayList(NodeIndex) = .empty,
 };
 
 pub const PluginState = struct {
