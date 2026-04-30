@@ -1843,6 +1843,57 @@ test "styled (cssProp Step 4): object form `<div css={{...}}>` → styled.div({.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color:") != null);
 }
 
+test "styled (cssProp A1): object form dynamic value prop forwarding" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const theme = { primary: "red" };
+        \\const el = <div css={{ color: theme.primary, fontSize: 14 }}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 변환 결과:
+    //   const _styled_0 = styled.div(p => ({ color: p._css0, fontSize: 14 }));
+    //   <_styled_0 _css0={theme.primary}>x</_styled_0>
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "p._css0") != null);
+    // primitive (14) 는 inline 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "fontSize: 14") != null or
+        std.mem.indexOf(u8, r.output, "fontSize:14") != null);
+}
+
+test "styled (cssProp A1): object 안 모든 값이 primitive 면 forwarding 없음 (기본 call form)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={{ color: "red", fontSize: 14 }}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // primitive 만 있으면 arrow wrap 안 함 (기존 Step 4 동작)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_css") == null);
+    // styled.div({...}) 는 그대로
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled.div({") != null);
+}
+
 test "styled (cssProp Step 4): object form 으로 Custom component 도 wrap" {
     var r = try e2eFull(
         std.testing.allocator,
