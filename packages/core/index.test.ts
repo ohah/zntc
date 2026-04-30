@@ -2465,6 +2465,62 @@ describe("BuildOptions: 누락 옵션 노출 (#1005)", () => {
     expect(result.outputFiles[0].text).toContain("hello text");
   });
 
+  test("loader: .foo=ts → 커스텀 확장자를 TypeScript로 파싱", async () => {
+    writeFileSync(
+      join(dir, "entry-loader-ts.ts"),
+      'import { value } from "./value.foo";\nconsole.log(value);',
+    );
+    writeFileSync(join(dir, "value.foo"), "export const value: number = 1;");
+    const result = await build({
+      entryPoints: [join(dir, "entry-loader-ts.ts")],
+      loader: { ".foo": "ts" },
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain(": number");
+    expect(await runBundleStdout(result.outputFiles[0].text)).toBe("1");
+  });
+
+  test("loader: .foo=tsx → 커스텀 확장자에서 TSX를 파싱", async () => {
+    writeFileSync(
+      join(dir, "entry-loader-tsx.ts"),
+      'import { value } from "./view.foo";\nconsole.log(value);',
+    );
+    writeFileSync(
+      join(dir, "view.foo"),
+      "const h = (tag: string) => tag;\nexport const value: string = <div />;",
+    );
+    const result = await build({
+      entryPoints: [join(dir, "entry-loader-tsx.ts")],
+      loader: { ".foo": "tsx" },
+      jsx: "classic",
+      jsxFactory: "h",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain("<div");
+    expect(result.outputFiles[0].text).not.toContain(": string");
+    expect(await runBundleStdout(result.outputFiles[0].text)).toBe("div");
+  });
+
+  test("loader: .foo=jsx → 커스텀 확장자에서 JSX를 파싱", async () => {
+    writeFileSync(
+      join(dir, "entry-loader-jsx.ts"),
+      'import { value } from "./view-jsx.foo";\nconsole.log(value);',
+    );
+    writeFileSync(
+      join(dir, "view-jsx.foo"),
+      "const h = (tag) => tag;\nexport const value = <span />;",
+    );
+    const result = await build({
+      entryPoints: [join(dir, "entry-loader-jsx.ts")],
+      loader: { ".foo": "jsx" },
+      jsx: "classic",
+      jsxFactory: "h",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).not.toContain("<span");
+    expect(await runBundleStdout(result.outputFiles[0].text)).toBe("span");
+  });
+
   test("resolveExtensions: 커스텀 확장자 순서가 적용됨", () => {
     const result = buildSync({
       entryPoints: [join(dir, "entry.ts")],
@@ -6390,6 +6446,34 @@ describe("@zts/core plugin onLoad loader", () => {
     };
     const r = await build({ entryPoints: [join(dir, "entry.ts")], plugins: [plugin] });
     expect(await runBundleStdout(r.outputFiles[0].text)).toBe("true");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("loader='tsx': onLoad contents를 TSX parser mode로 처리", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-onload-tsx-"));
+    writeFileSync(
+      join(dir, "entry.ts"),
+      "import { value } from './virtual.foo';\nconsole.log(value);",
+    );
+    writeFileSync(join(dir, "virtual.foo"), "");
+    const plugin: ZtsPlugin = {
+      name: "foo-as-tsx",
+      setup(build) {
+        build.onLoad({ filter: /\.foo$/ }, () => ({
+          contents: "const h = (tag: string) => tag;\nexport const value: string = <div />;",
+          loader: "tsx",
+        }));
+      },
+    };
+    const r = await build({
+      entryPoints: [join(dir, "entry.ts")],
+      plugins: [plugin],
+      jsx: "classic",
+      jsxFactory: "h",
+    });
+    expect(r.outputFiles[0].text).not.toContain("<div");
+    expect(r.outputFiles[0].text).not.toContain(": string");
+    expect(await runBundleStdout(r.outputFiles[0].text)).toBe("div");
     rmSync(dir, { recursive: true });
   });
 

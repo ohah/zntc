@@ -341,11 +341,13 @@ pub const ModuleGraph = struct {
 
     /// 확장자에 대한 로더를 결정한다.
     /// --loader 오버라이드가 있으면 우선 사용, 없으면 확장자 기본값.
-    fn resolveLoader(self: *const ModuleGraph, ext: []const u8) types.Loader {
+    fn resolveLoader(self: *const ModuleGraph, ext: []const u8) types.ParsedLoader {
         for (self.loader_overrides) |override| {
-            if (std.mem.eql(u8, override.ext, ext)) return override.loader;
+            if (std.mem.eql(u8, override.ext, ext)) {
+                return .{ .loader = override.loader, .js_kind = override.js_kind };
+            }
         }
-        return types.Loader.fromExtension(ext);
+        return types.ParsedLoader.fromExtension(ext);
     }
 
     /// 진입점들로부터 모듈 그래프를 구축한다.
@@ -753,11 +755,10 @@ pub const ModuleGraph = struct {
         const ext = std.fs.path.extension(abs_path);
         module.module_type = ModuleType.fromExtension(ext);
         // 로더 결정: --loader 오버라이드 → 확장자 기본값
-        module.loader = self.resolveLoader(ext);
-        // asset 로더가 설정되면 module_type도 .asset으로 업데이트
-        if (module.loader.isAsset()) {
-            module.module_type = .asset;
-        }
+        const parsed_loader = self.resolveLoader(ext);
+        module.loader = parsed_loader.loader;
+        module.js_parser_kind = parsed_loader.js_kind;
+        module.module_type = moduleTypeForLoader(module.module_type, module.loader);
         try self.modules.append(self.allocator, module);
         try self.path_to_module.put(path_owned, index);
 
@@ -1246,6 +1247,7 @@ pub const ModuleGraph = struct {
                 const arena_alloc = tmp_arena.allocator();
                 if (plugin_result.loader) |loader_override| {
                     module.loader = loader_override;
+                    module.js_parser_kind = plugin_result.js_kind;
                     if (self.assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path)) |expr| {
                         module.source = expr;
                         module.module_type = .javascript;
@@ -1259,6 +1261,7 @@ pub const ModuleGraph = struct {
                     module.source = plugin_result.contents;
                 } else {
                     module.loader = .javascript;
+                    module.js_parser_kind = types.JsParserKind.fromExtension(std.fs.path.extension(module.path));
                     module.source = plugin_result.contents;
                 }
                 module.module_type = .javascript;
@@ -1414,7 +1417,7 @@ pub const ModuleGraph = struct {
 
         var parser = Parser.init(arena_alloc, &scanner);
         const ext = std.fs.path.extension(module.path);
-        parser.configureForBundler(ext);
+        configureParserForModule(&parser, module, ext);
 
         // Flow 모드: --flow CLI 또는 .js.flow/.jsx.flow 확장자 (pragma는 parse() 내부에서 감지)
         // is_ts와 is_flow는 상호 배타 — TS 파일에서는 Flow 무시
@@ -1830,7 +1833,7 @@ pub const ModuleGraph = struct {
         var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
         analyzer.is_strict_mode = true;
         analyzer.is_module = true;
-        analyzer.is_ts = isTypeScriptPath(module.path);
+        analyzer.is_ts = isTypeScriptModule(module);
         analyzer.is_flow = self.flow or isFlowPath(module.path);
         analyzer.enable_stmt_info = true;
         try analyzer.analyze();
@@ -1980,8 +1983,32 @@ pub const ModuleGraph = struct {
         );
     }
 
-    fn isTypeScriptPath(path: []const u8) bool {
-        const ext = std.fs.path.extension(path);
+    fn configureParserForModule(parser: *Parser, module: *const Module, ext: []const u8) void {
+        if (module.js_parser_kind) |kind| {
+            parser.configureForBundler(switch (kind) {
+                .js => ".js",
+                .jsx => ".jsx",
+                .ts => ".ts",
+                .tsx => ".tsx",
+            });
+            return;
+        }
+        parser.configureForBundler(ext);
+    }
+
+    fn moduleTypeForLoader(default_type: ModuleType, loader: types.Loader) ModuleType {
+        return switch (loader) {
+            .javascript => .javascript,
+            .json => .json,
+            .css => .css,
+            .file, .dataurl, .base64, .text, .binary, .copy, .empty => .asset,
+            .none => default_type,
+        };
+    }
+
+    fn isTypeScriptModule(module: *const Module) bool {
+        if (module.js_parser_kind) |kind| return kind.isTypeScript();
+        const ext = std.fs.path.extension(module.path);
         return std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
             std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts");
     }
@@ -2888,6 +2915,7 @@ pub const ModuleGraph = struct {
                     };
                     module.module_type = .javascript;
                     module.loader = .javascript;
+                    module.js_parser_kind = .js;
                     return;
                 }
 

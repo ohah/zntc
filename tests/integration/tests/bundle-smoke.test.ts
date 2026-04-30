@@ -1855,6 +1855,55 @@ describe("에셋 로더 + RN 프리셋", () => {
     expect(result.stdout).toContain("undefined");
   });
 
+  test("--loader:.foo=ts → 커스텀 확장자를 TypeScript로 파싱", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.ts": `import { value } from "./value.foo";\nconsole.log(value);`,
+        "value.foo": `export const value: number = 1;`,
+      },
+      "entry.ts",
+      ["--loader:.foo=ts"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("1");
+    expect(result.bundleOutput).not.toContain(": number");
+  });
+
+  test("--loader:.foo=tsx → 커스텀 확장자에서 TS 타입과 JSX를 함께 처리", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.ts": `import { value } from "./view.foo";\nconsole.log(value);`,
+        "view.foo": `const h = (tag: string) => tag;\nexport const value: string = <div />;`,
+      },
+      "entry.ts",
+      ["--loader:.foo=tsx", "--jsx=classic", "--jsx-factory=h"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("div");
+    expect(result.bundleOutput).not.toContain("<div");
+    expect(result.bundleOutput).not.toContain(": string");
+  });
+
+  test("--loader:.foo=jsx → 커스텀 확장자에서 JSX를 처리", async () => {
+    const result = await bundleAndRun(
+      {
+        "entry.ts": `import { value } from "./view.foo";\nconsole.log(value);`,
+        "view.foo": `const h = (tag) => tag;\nexport const value = <span />;`,
+      },
+      "entry.ts",
+      ["--loader:.foo=jsx", "--jsx=classic", "--jsx-factory=h"],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe("span");
+    expect(result.bundleOutput).not.toContain("<span");
+  });
+
   // ─── #2157 builtin loader codegen 검증 ─────────────────────────────────────
 
   test("loader=text → UTF-8 string default export", async () => {
