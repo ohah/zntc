@@ -1226,3 +1226,142 @@ fn buildKeyStringProperty(self: *Transformer, key_span: Span, quoted_value_span:
         .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
     });
 }
+
+// ─── cssProp transform (Round 4: 단계별 구현) ───
+//
+// 본 PR (Step 1) 은 hook entry + state counter + stub 만. 실제 transform 은 후속 PR:
+//   Step 2: intrinsic tag (lowercase) + template_literal css value MVP
+//   Step 3: tagged template (`css\`\``) css value
+//   Step 4: custom component (`<Foo css>`) → `styled(Foo)\`\``
+//   Step 5: object form
+//   Step 6: styled import auto-inject + program-level hoisting
+
+/// `<X css={...}>` JSX prop 을 styled component 추출 시도. MVP: intrinsic tag +
+/// template_literal css value + styled default_binding 존재 시. 미매칭 시 null 반환.
+pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?ast_mod.Node {
+    if (!self.options.styled_components or !self.options.styled_components_css_prop) return null;
+    if (jsx_node.tag != .jsx_element) return null;
+    const default_binding = self.plugins.styled_components.default_binding orelse return null;
+
+    const e = jsx_node.data.extra;
+    const tag_name_idx = self.readNodeIdx(e, 0);
+    const attrs_start = self.readU32(e, 1);
+    const attrs_len = self.readU32(e, 2);
+    const children_start = self.readU32(e, 3);
+    const children_len = self.readU32(e, 4);
+
+    if (tag_name_idx.isNone()) return null;
+    const tag_name_node = self.ast.getNode(tag_name_idx);
+    if (tag_name_node.tag != .jsx_identifier) return null;
+    const tag_text = self.ast.getText(tag_name_node.span);
+    if (tag_text.len == 0) return null;
+    if (tag_text[0] < 'a' or tag_text[0] > 'z') return null;
+
+    var css_attr_pos: ?u32 = null;
+    var css_value_idx: NodeIndex = .none;
+    var i: u32 = 0;
+    while (i < attrs_len) : (i += 1) {
+        const attr_idx_raw = self.ast.extra_data.items[attrs_start + i];
+        const attr_idx: NodeIndex = @enumFromInt(attr_idx_raw);
+        if (attr_idx.isNone()) continue;
+        const attr_node = self.ast.getNode(attr_idx);
+        if (attr_node.tag != .jsx_attribute) continue;
+        const name_idx = attr_node.data.binary.left;
+        if (name_idx.isNone()) continue;
+        const name_node = self.ast.getNode(name_idx);
+        if (name_node.tag != .jsx_identifier) continue;
+        if (!std.mem.eql(u8, self.ast.getText(name_node.span), "css")) continue;
+        css_attr_pos = i;
+        css_value_idx = attr_node.data.binary.right;
+        break;
+    }
+    if (css_attr_pos == null) return null;
+    if (css_value_idx.isNone()) return null;
+
+    const css_value_node = self.ast.getNode(css_value_idx);
+    if (css_value_node.tag != .template_literal) return null;
+
+    const state = &self.plugins.styled_components;
+    const counter = state.css_prop_counter;
+    state.css_prop_counter += 1;
+
+    var name_buf: [64]u8 = undefined;
+    const generated_name = std.fmt.bufPrint(&name_buf, "_styled_{d}", .{counter}) catch return null;
+    const generated_span = try self.ast.addString(generated_name);
+    const zero = Span{ .start = 0, .end = 0 };
+
+    const styled_ref_span = try self.ast.addString(default_binding);
+    const styled_ref = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = styled_ref_span,
+        .data = .{ .string_ref = styled_ref_span },
+    });
+    const tag_prop_span = try self.ast.addString(tag_text);
+    const tag_prop = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = tag_prop_span,
+        .data = .{ .string_ref = tag_prop_span },
+    });
+    const styled_tag = try self.addExtraNode(.static_member_expression, zero, &.{
+        @intFromEnum(styled_ref),
+        @intFromEnum(tag_prop),
+        0,
+    });
+
+    const tagged_template = try self.addExtraNode(.tagged_template_expression, zero, &.{
+        @intFromEnum(styled_tag),
+        @intFromEnum(css_value_idx),
+        0,
+    });
+
+    const binding_id = try self.ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = generated_span,
+        .data = .{ .string_ref = generated_span },
+    });
+    const none_idx = @intFromEnum(NodeIndex.none);
+    const declarator = try self.addExtraNode(.variable_declarator, zero, &.{
+        @intFromEnum(binding_id),
+        none_idx,
+        @intFromEnum(tagged_template),
+    });
+
+    const decl_list = try self.ast.addNodeList(&.{declarator});
+    const var_decl = try self.addExtraNode(.variable_declaration, zero, &.{
+        @intFromEnum(ast_mod.VariableDeclarationKind.@"const"),
+        decl_list.start,
+        decl_list.len,
+    });
+
+    try self.trailing_nodes.append(self.allocator, var_decl);
+
+    const top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(top);
+    var j: u32 = 0;
+    while (j < attrs_len) : (j += 1) {
+        if (j == css_attr_pos.?) continue;
+        const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[attrs_start + j]);
+        try self.scratch.append(self.allocator, idx);
+    }
+    const new_attrs_list = try self.ast.addNodeList(self.scratch.items[top..]);
+
+    const new_tag = try self.ast.addNode(.{
+        .tag = .jsx_identifier,
+        .span = generated_span,
+        .data = .{ .string_ref = generated_span },
+    });
+
+    const new_extra = try self.ast.addExtras(&.{
+        @intFromEnum(new_tag),
+        new_attrs_list.start,
+        new_attrs_list.len,
+        children_start,
+        children_len,
+    });
+
+    return ast_mod.Node{
+        .tag = .jsx_element,
+        .span = jsx_node.span,
+        .data = .{ .extra = new_extra },
+    };
+}

@@ -1543,6 +1543,98 @@ test "styled (namespace): displayName 은 영향 없음 (componentId 만 prefix)
     try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId: \"myapp__sc-") != null);
 }
 
+// ─── cssProp transform (Round 4) ───
+// 본 PR (Step 1) 은 hook entry + counter + stub. transform 검증 테스트는 후속 PR 에서.
+// 옵션 켜도 transform 미적용 (사용자 코드 안전) 만 검증.
+
+// ─── cssProp transform (Round 4 Step 1: MVP) ───
+// `<div css={\`color: red;\`}>` → `<_styled_0>` + nearest list 에 styled.div 컴포넌트 decl.
+// MVP 범위: intrinsic tag (lowercase) + template_literal css value + styled default_binding 존재 시.
+
+test "styled (cssProp): intrinsic tag + template_literal css value 추출" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // generated identifier `_styled_0` 가 module-level decl 로 추가되어야
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    // styled.div 호출이 있어야 (withConfig wrap 결과)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled.div") != null);
+    // 원본 css 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "styled (cssProp): 옵션 비활성 시 변환 없음 (안전한 기본 동작)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            // styled_components_css_prop 미지정 (default false)
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_") == null);
+}
+
+test "styled (cssProp): styled import 없으면 no-op (auto-inject 후속 PR)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_") == null);
+}
+
+test "styled (cssProp): Custom component (PascalCase) 는 미지원 (후속 PR)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <Button css={`color: red;`}>x</Button>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_") == null);
+}
+
 test "styled (namespace): ssr=false 시 componentId 자체 생략 — namespace 도 영향 없음" {
     var r = try e2eFull(
         std.testing.allocator,

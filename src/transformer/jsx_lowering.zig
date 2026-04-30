@@ -25,6 +25,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const helpers = @import("es_helpers.zig");
 const emotion = @import("transformer/emotion.zig");
+const styled_components_mod = @import("transformer/styled_components.zig");
 
 /// JSX 런타임 모드 (codegen의 JsxRuntime을 그대로 사용)
 pub const JsxRuntime = @import("../codegen/codegen.zig").JsxRuntime;
@@ -104,7 +105,11 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// jsx_element → call_expression 변환
         pub fn lowerJSXElement(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            const e = node.data.extra;
+            // cssProp pre-processing — `<X css={...}>` 를 styled component 로 추출하고
+            // tag 를 generated identifier 로 교체. 미매칭 (옵션 비활성/형태 미지원) 시 원본 유지.
+            const working_node = (try styled_components_mod.maybeExtractCssProp(self, node)) orelse node;
+
+            const e = working_node.data.extra;
             const tag_name_idx = self.readNodeIdx(e, 0);
             const attrs_start = self.readU32(e, 1);
             const attrs_len = self.readU32(e, 2);
@@ -112,9 +117,9 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const children_len = self.readU32(e, 4);
 
             return switch (self.options.jsx_runtime) {
-                .classic => lowerElementClassic(self, node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len),
-                .automatic => lowerElementAutomatic(self, node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len, false),
-                .automatic_dev => lowerElementAutomatic(self, node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len, true),
+                .classic => lowerElementClassic(self, working_node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len),
+                .automatic => lowerElementAutomatic(self, working_node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len, false),
+                .automatic_dev => lowerElementAutomatic(self, working_node.span, tag_name_idx, attrs_start, attrs_len, children_start, children_len, true),
             };
         }
 
