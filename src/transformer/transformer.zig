@@ -665,6 +665,7 @@ pub const Transformer = struct {
         self.plugins.refresh.signatures.deinit(self.allocator);
         self.plugins.emotion.scope_stack.deinit(self.allocator);
         if (self.plugins.emotion.newline_offsets) |*list| list.deinit(self.allocator);
+        self.plugins.styled_components.css_prop_pending_decls.deinit(self.allocator);
         self.trailing_nodes.deinit(self.allocator);
         self.generator_label_stack.deinit(self.allocator);
         self.generator_temp_var_spans.deinit(self.allocator);
@@ -907,7 +908,31 @@ pub const Transformer = struct {
                         return wrapped;
                     }
                 }
-                return self.visitListNode(idx);
+                const result = try self.visitListNode(idx);
+                // styled-components cssProp transform 으로 추출된 module-level decl 들을
+                // program body 끝에 hoist. trailing_nodes 가 nearest list (declarator list 등)
+                // 에 들어가는 케이스 회피.
+                const pending = &self.plugins.styled_components.css_prop_pending_decls;
+                if (pending.items.len > 0) {
+                    const result_node = self.ast.getNode(result);
+                    const old_list = result_node.data.list;
+                    const top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(top);
+                    for (self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len]) |raw| {
+                        try self.scratch.append(self.allocator, @as(NodeIndex, @enumFromInt(raw)));
+                    }
+                    for (pending.items) |decl_idx| {
+                        try self.scratch.append(self.allocator, decl_idx);
+                    }
+                    const new_list = try self.ast.addNodeList(self.scratch.items[top..]);
+                    pending.clearRetainingCapacity();
+                    return self.ast.addNode(.{
+                        .tag = .program,
+                        .span = result_node.span,
+                        .data = .{ .list = new_list },
+                    });
+                }
+                return result;
             },
             .block_statement,
             .sequence_expression,

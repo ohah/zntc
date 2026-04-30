@@ -1316,7 +1316,9 @@ fn extractCssTemplateIdx(self: *Transformer, css_value_idx: NodeIndex) ?NodeInde
 pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?ast_mod.Node {
     if (!self.options.styled_components or !self.options.styled_components_css_prop) return null;
     if (jsx_node.tag != .jsx_element) return null;
-    const default_binding = self.plugins.styled_components.default_binding orelse return null;
+    // styled binding: 사용자 import 가 있으면 그 이름, 없으면 "styled" 사용 + auto-inject flag.
+    // transpile.zig 가 flag 보고 program 시작에 `import styled from "styled-components"` prepend.
+    const default_binding: []const u8 = self.plugins.styled_components.default_binding orelse "styled";
 
     const e = jsx_node.data.extra;
     const tag_name_idx = self.readNodeIdx(e, 0);
@@ -1372,6 +1374,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         extractCssTemplateIdx(self, css_value_idx) orelse return null;
 
     const state = &self.plugins.styled_components;
+    if (state.default_binding == null) state.css_prop_needs_import = true;
     const counter = state.css_prop_counter;
     state.css_prop_counter += 1;
 
@@ -1445,7 +1448,9 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         decl_list.len,
     });
 
-    try self.trailing_nodes.append(self.allocator, var_decl);
+    // program body 끝에 hoist — `trailing_nodes` 는 nearest list 라 declarator list 같은
+    // 부적절한 위치에 들어갈 수 있음. visitProgram 의 후처리로 drain.
+    try self.plugins.styled_components.css_prop_pending_decls.append(self.allocator, var_decl);
 
     const top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(top);
