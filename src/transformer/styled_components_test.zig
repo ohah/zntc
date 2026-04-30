@@ -1958,3 +1958,317 @@ test "styled (namespace): ssr=false 시 componentId 자체 생략 — namespace 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "myapp__") == null);
 }
+
+// ─── cssProp 복합/edge case 회귀 가드 ───
+// 단일 기능 테스트는 위쪽 cssProp Step 1~6 / A1/A2/B2 섹션에 있음.
+// 여기는 여러 기능이 만나는 케이스 + 흔한 사용 패턴.
+
+test "styled (cssProp 복합): 같은 파일 안 다중 cssProp — counter 증가" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const a = <div css={`color: red;`}>1</div>;
+        \\const b = <span css={`color: blue;`}>2</span>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled.div") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled.span") != null);
+}
+
+test "styled (cssProp 복합): cssProp + 다른 attrs 보존 (id, className 등)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div id="x" css={`color: red;`} className="a">y</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // cssProp transform 진행
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    // 다른 attrs (id, className) 는 jsx props 로 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "id:") != null or std.mem.indexOf(u8, r.output, "id:\"x\"") != null or std.mem.indexOf(u8, r.output, "id: \"x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "className") != null);
+    // css attr 자체는 제거되어 있어야
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "css:") == null);
+}
+
+test "styled (cssProp 복합): cssProp + 기존 styled.X 변수 한 파일에서 함께 사용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Big = styled.h1`font-size: 32px;`;
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 기존 styled 변수: withConfig wrap 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") != null);
+    // cssProp transform 도 진행
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+}
+
+test "styled (cssProp 복합): nested jsx — outer/inner 둘 다 cssProp" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={`color: red;`}><span css={`color: blue;`}>x</span></div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_1") != null);
+}
+
+test "styled (cssProp 복합): jsx_fragment 안의 cssProp — fragment 그대로" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <><div css={`color: red;`}>x</div></>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Fragment") != null);
+}
+
+test "styled (cssProp 복합): jsx_member 깊은 chain `<Foo.Bar.Baz css>`" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Foo = { Bar: { Baz: (p) => null } };
+        \\const el = <Foo.Bar.Baz css={`color: red;`}>x</Foo.Bar.Baz>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled(Foo.Bar.Baz)") != null);
+}
+
+test "styled (cssProp 복합): template forwarding + 기존 styled css helper 동시" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled, { css } from "styled-components";
+        \\const cls = css`color: red;`;
+        \\const el = <div css={`padding: ${size}px;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // template `${size}` 는 prop 으로 forward
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "p._css0") != null);
+    // 기존 css\`\` 변수도 유지
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "styled (cssProp 복합): object form 안 nested object — 안쪽 inner 는 inline 유지 (현재 동작)" {
+    // Step 4 의 Note: nested object 의 inner value 재귀는 미지원 — inner object 는 통째로
+    // primitive 이면 inline, 아니면 forward (현재는 inner object 통째로 forward 안 함).
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={{ color: "red", inner: { x: 1 } }}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // 현 동작: inner object_expression 은 non-primitive 라 prop forward 발생
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "p._css0") != null);
+}
+
+test "styled (cssProp 복합): shorthand `{x}` 는 forward 안 함 (사용자 의도 보존)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={{ color }}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // shorthand 는 inline → arrow wrap 없음 (forwarding 없음)
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "p._css") == null);
+}
+
+// ─── collision detection 추가 케이스 ───
+
+test "styled (cssProp B2): function 으로 collision — `function styled` 도 mangling" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\function styled() {}
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled.div") != null);
+}
+
+test "styled (cssProp B2): class 로 collision — `class styled` 도 mangling" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\class styled {}
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled.div") != null);
+}
+
+test "styled (cssProp B2): user import 으로 styled 가 있으면 mangling 없음" {
+    // 사용자가 `import styled` 한 경우 — auto-inject 도 mangling 도 안 함, 사용자 binding 그대로.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@my-org/styled";
+        \\const el = <div css={`color: red;`}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .styled_components_top_level_import_paths = &.{"@my-org/*"},
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // styled.div (사용자 binding) 사용, _styled 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0 = styled.div") != null);
+}
+
+// ─── glob (topLevelImportPaths) 추가 케이스 ───
+
+test "styled (topLevelImportPaths): bracket class `[a-z]` 매칭" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@a/styled";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_top_level_import_paths = &.{"@[a-z]/styled"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") != null);
+}
+
+test "styled (topLevelImportPaths): 다중 패턴 list" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@my-org/styled-fork";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_top_level_import_paths = &.{ "@other/*", "@my-org/*" },
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") != null);
+}
