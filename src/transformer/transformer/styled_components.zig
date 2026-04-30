@@ -48,6 +48,7 @@ const module_parser = @import("../../parser/module.zig");
 const import_scanner = @import("../../bundler/import_scanner.zig");
 const stmt_info = @import("../../bundler/stmt_info.zig");
 const wyhash = @import("../../util/wyhash.zig");
+const string_list = @import("../../util/string_list.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -59,20 +60,14 @@ pub const STYLED_SOURCES: []const []const u8 = &.{
 };
 
 pub fn isStyledImportSource(source: []const u8) bool {
-    for (STYLED_SOURCES) |s| {
-        if (std.mem.eql(u8, s, source)) return true;
-    }
-    return false;
+    return string_list.contains(STYLED_SOURCES, source);
 }
 
 /// 사용자 옵션 (`styled_components_top_level_import_paths`) 매칭 포함 — vendored fork
 /// 인식. babel-plugin-styled-components 의 `topLevelImportPaths` 단순화 (fixed string).
 fn isStyledImportSourceWithExtras(self: *const Transformer, source: []const u8) bool {
     if (isStyledImportSource(source)) return true;
-    for (self.options.styled_components_top_level_import_paths) |s| {
-        if (std.mem.eql(u8, s, source)) return true;
-    }
-    return false;
+    return string_list.contains(self.options.styled_components_top_level_import_paths, source);
 }
 
 /// styled-components 의 named helper imports — minify 등 transform 에 사용.
@@ -1184,10 +1179,7 @@ fn ensureDisplayNameBlock(self: *Transformer) ?[]const u8 {
 /// `meaninglessFileNames` 옵션의 basename 매칭 — list 에 포함되면 parent dir 로 fallback.
 /// 기본 list 는 `["index"]` (babel parity), 사용자가 빈 array 로 override 하면 비활성.
 fn isMeaninglessBasename(self: *Transformer, basename_no_ext: []const u8) bool {
-    for (self.options.styled_components_meaningless_file_names) |name| {
-        if (std.mem.eql(u8, basename_no_ext, name)) return true;
-    }
-    return false;
+    return string_list.contains(self.options.styled_components_meaningless_file_names, basename_no_ext);
 }
 
 /// componentId 의 따옴표 포함 string literal span 빌드. namespace 옵션 활성 시
