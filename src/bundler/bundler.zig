@@ -144,6 +144,10 @@ pub const BundleOptions = struct {
     emotion_source_map: bool = false,
     /// emotion.labelFormat 옵션 — label 이름 포맷 템플릿 (e.g. `[filename]--[local]`).
     emotion_label_format: []const u8 = "",
+    /// emotion.importMap re-export 케이스 단순화 — vendored emotion css source list.
+    emotion_extra_css_sources: []const []const u8 = &.{},
+    /// emotion.importMap re-export 케이스 단순화 — vendored emotion styled source list.
+    emotion_extra_styled_sources: []const []const u8 = &.{},
     /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
     collect_module_codes: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
@@ -656,6 +660,8 @@ pub const Bundler = struct {
         worker_graph.emotion_auto_label = self.options.emotion_auto_label;
         worker_graph.emotion_source_map = self.options.emotion_source_map;
         worker_graph.emotion_label_format = self.options.emotion_label_format;
+        worker_graph.emotion_extra_css_sources = self.options.emotion_extra_css_sources;
+        worker_graph.emotion_extra_styled_sources = self.options.emotion_extra_styled_sources;
         worker_graph.code_splitting = self.options.code_splitting;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
@@ -824,6 +830,8 @@ pub const Bundler = struct {
         graph.emotion_auto_label = self.options.emotion_auto_label;
         graph.emotion_source_map = self.options.emotion_source_map;
         graph.emotion_label_format = self.options.emotion_label_format;
+        graph.emotion_extra_css_sources = self.options.emotion_extra_css_sources;
+        graph.emotion_extra_styled_sources = self.options.emotion_extra_styled_sources;
         graph.code_splitting = self.options.code_splitting;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();

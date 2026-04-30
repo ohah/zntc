@@ -1270,9 +1270,53 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
       if (typeof em.labelFormat === "string" && em.labelFormat.length > 0) {
         napiOptions.emotionLabelFormat = em.labelFormat;
       }
+      const extras = collectEmotionImportMapExtras(em.importMap);
+      if (extras.css.length > 0) napiOptions.emotionExtraCssSources = extras.css;
+      if (extras.styled.length > 0) napiOptions.emotionExtraStyledSources = extras.styled;
     }
   }
   return napiOptions;
+}
+
+/**
+ * babel-plugin-emotion `importMap.canonicalImport[0]` 의 css 분류 패키지 목록.
+ * Zig 측 `EMOTION_CSS_SOURCES` (`src/transformer/transformer/emotion.zig`) 와 동기화.
+ */
+const EMOTION_CSS_CANONICAL_SOURCES: ReadonlySet<string> = new Set([
+  "@emotion/react",
+  "@emotion/css",
+  "@emotion/core",
+  "@emotion/native",
+  "@emotion/primitives",
+  "@emotion/primitives-core",
+]);
+
+/**
+ * babel-plugin-emotion `importMap` 의 vendored re-export 케이스를 ZTS 의 단순화된
+ * `extraCssSources` / `extraStyledSources` array 로 collapse.
+ *
+ * 같은 source 안에 styled / css canonicalImport 가 섞여 있으면 양쪽에 모두 등록.
+ * import 인식이 source 단위라 alias-by-alias 라우팅은 미지원 — 흔치 않은 케이스라 의도적
+ * 단순화 (babel parity).
+ */
+function collectEmotionImportMapExtras(importMap: EmotionOptions["importMap"]): {
+  css: string[];
+  styled: string[];
+} {
+  const css = new Set<string>();
+  const styled = new Set<string>();
+  if (!importMap) return { css: [], styled: [] };
+  for (const [source, locals] of Object.entries(importMap)) {
+    for (const spec of Object.values(locals)) {
+      const [pkg, exportName] = spec.canonicalImport;
+      if (pkg === "@emotion/styled" && exportName === "default") {
+        styled.add(source);
+      } else if (EMOTION_CSS_CANONICAL_SOURCES.has(pkg)) {
+        css.add(source);
+      }
+    }
+  }
+  return { css: [...css], styled: [...styled] };
 }
 
 /**
@@ -1455,6 +1499,9 @@ function buildCompilerNapiFields(compiler: AppBuildOptions["compiler"]): Record<
     if (typeof em.labelFormat === "string" && em.labelFormat.length > 0) {
       out.emotionLabelFormat = em.labelFormat;
     }
+    const extras = collectEmotionImportMapExtras(em.importMap);
+    if (extras.css.length > 0) out.emotionExtraCssSources = extras.css;
+    if (extras.styled.length > 0) out.emotionExtraStyledSources = extras.styled;
   }
 
   return out;

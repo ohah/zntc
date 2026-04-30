@@ -165,6 +165,17 @@ pub const TransformOptions = struct {
     /// `[local]` 동작 (기본). babel-plugin-emotion 동작과 동일 — invalid CSS char
     /// (`!"#$%&'()*+,./:;<=>?@[]^|}~{`) 는 `-` 로 sanitize.
     emotion_label_format: []const u8 = "",
+    /// emotion.importMap 의 vendored re-export 케이스 단순화 — `@emotion/react|css|core`
+    /// 의 named import (`{ css, keyframes, Global, ClassNames, injectGlobal }`) 를
+    /// re-export 하는 사용자 패키지를 emotion 으로 인식. babel-plugin-emotion 의
+    /// `importMap[source][name].canonicalImport` 가 emotion 의 css source 를 가리키는
+    /// 가장 흔한 케이스를 커버.
+    emotion_extra_css_sources: []const []const u8 = &.{},
+    /// emotion.importMap 의 vendored re-export 케이스 단순화 — `@emotion/styled` 의
+    /// default import (styled) 를 re-export 하는 사용자 패키지. babel-plugin-emotion
+    /// 의 `importMap[source].default.canonicalImport == ["@emotion/styled","default"]`
+    /// 케이스 동등.
+    emotion_extra_styled_sources: []const []const u8 = &.{},
     /// useDefineForClassFields=false: instance field를 constructor의 this.x = value 할당으로 변환.
     /// true(기본값)이면 class field를 그대로 유지 (TC39 [[Define]] semantics).
     /// false이면 TS 4.x 이전 동작 — field를 constructor body로 이동 ([[Set]] semantics).

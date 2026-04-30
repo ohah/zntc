@@ -573,6 +573,17 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
     }
     defer if (define_entries.len > 0) native_alloc.free(define_entries);
 
+    const emotion_extra_css = getObjectStringArray(env, opts_obj, "emotionExtraCssSources", native_alloc);
+    if (emotion_extra_css) |arr| {
+        for (arr) |s| owned_strings.append(native_alloc, s) catch return throwError(env, "OutOfMemory");
+        owned_arrays.append(native_alloc, arr) catch return throwError(env, "OutOfMemory");
+    }
+    const emotion_extra_styled = getObjectStringArray(env, opts_obj, "emotionExtraStyledSources", native_alloc);
+    if (emotion_extra_styled) |arr| {
+        for (arr) |s| owned_strings.append(native_alloc, s) catch return throwError(env, "OutOfMemory");
+        owned_arrays.append(native_alloc, arr) catch return throwError(env, "OutOfMemory");
+    }
+
     const output_count = @import("zts_lib").app.build.buildApp(native_alloc, .{
         .root = root,
         .outdir = outdir,
@@ -596,6 +607,8 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
         .emotion_auto_label = getAutoLabelMode(env, opts_obj, native_alloc),
         .emotion_source_map = getObjectBool(env, opts_obj, "emotionSourceMap", false),
         .emotion_label_format = getObjectString(env, opts_obj, "emotionLabelFormat", native_alloc) orelse "",
+        .emotion_extra_css_sources = emotion_extra_css orelse &.{},
+        .emotion_extra_styled_sources = emotion_extra_styled orelse &.{},
     }) catch |err| {
         return throwError(env, @errorName(err));
     };
@@ -3489,6 +3502,18 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
+    // emotionExtraCssSources / emotionExtraStyledSources: string[]
+    const emotion_extra_css = getObjectStringArray(env, opts_obj, "emotionExtraCssSources", native_alloc);
+    if (emotion_extra_css) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+    const emotion_extra_styled = getObjectStringArray(env, opts_obj, "emotionExtraStyledSources", native_alloc);
+    if (emotion_extra_styled) |arr| {
+        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
+        if (!trackArr(owned_string_arrays, arr)) return null;
+    }
+
     // pure: string[]
     const pure = getObjectStringArray(env, opts_obj, "pure", native_alloc);
     if (pure) |arr| {
@@ -3608,6 +3633,8 @@ fn parseBuildOptions(
         .emotion_auto_label = getAutoLabelMode(env, opts_obj, native_alloc),
         .emotion_source_map = getObjectBool(env, opts_obj, "emotionSourceMap", false),
         .emotion_label_format = getObjectString(env, opts_obj, "emotionLabelFormat", native_alloc) orelse "",
+        .emotion_extra_css_sources = emotion_extra_css orelse &.{},
+        .emotion_extra_styled_sources = emotion_extra_styled orelse &.{},
         .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
         // RN 프리셋(bundler.zig의 RN_BOOL_PRESET 단일 소스): platform=react-native이면
         // 사용자가 명시하지 않아도 CLI와 동일하게 auto-enable. worklet_transform 없이는
