@@ -1359,10 +1359,17 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     if (css_attr_pos == null) return null;
     if (css_value_idx.isNone()) return null;
 
-    // css value 가:
-    //   - template_literal 직접 (`css={\`...\`}`) → 그대로
-    //   - styled-components 의 `css\`...\`` tagged template → quasi (template_literal) 만 추출
-    const css_template_idx = extractCssTemplateIdx(self, css_value_idx) orelse return null;
+    // css value 분기:
+    //   - object_expression (`css={{...}}`) → `styled.div({...})` call
+    //   - template_literal (`css={\`...\`}`) → `styled.div\`...\``
+    //   - styled `css\`...\`` tagged template → quasi 추출 후 tagged template
+    //   - 기타 (identifier 등) → 미지원 (후속 PR)
+    const css_value_node_kind = self.ast.getNode(css_value_idx).tag;
+    const use_object_form = css_value_node_kind == .object_expression;
+    const css_template_idx: NodeIndex = if (use_object_form)
+        .none
+    else
+        extractCssTemplateIdx(self, css_value_idx) orelse return null;
 
     const state = &self.plugins.styled_components;
     const counter = state.css_prop_counter;
@@ -1404,7 +1411,16 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         });
     };
 
-    const tagged_template = try self.addExtraNode(.tagged_template_expression, zero, &.{
+    // styled component init expression — object form 은 call, 그 외는 tagged template
+    const init_expr: NodeIndex = if (use_object_form) blk: {
+        const args_list = try self.ast.addNodeList(&.{css_value_idx});
+        break :blk try self.addExtraNode(.call_expression, zero, &.{
+            @intFromEnum(styled_tag),
+            args_list.start,
+            args_list.len,
+            0,
+        });
+    } else try self.addExtraNode(.tagged_template_expression, zero, &.{
         @intFromEnum(styled_tag),
         @intFromEnum(css_template_idx),
         0,
@@ -1419,7 +1435,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     const declarator = try self.addExtraNode(.variable_declarator, zero, &.{
         @intFromEnum(binding_id),
         none_idx,
-        @intFromEnum(tagged_template),
+        @intFromEnum(init_expr),
     });
 
     const decl_list = try self.ast.addNodeList(&.{declarator});
