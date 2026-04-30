@@ -317,17 +317,23 @@ pub fn ES2022(comptime Transformer: type) type {
                         const key: NodeIndex = @enumFromInt(extras[me + ast_mod.MethodExtra.key]);
                         const flags = extras[me + ast_mod.MethodExtra.flags];
                         const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
-                        if (key.isNone() or is_static) continue;
+                        if (key.isNone()) continue;
+                        if (is_static and class_name_text == null) continue;
                         const key_node = self.ast.getNode(key);
                         if (key_node.tag != .private_identifier) continue;
 
                         const orig_name = self.ast.getText(key_node.span);
-                        const names = try es_helpers.makePrivateMethodNames(self.allocator, orig_name);
+                        const kind = (flags >> 1) & 0x03;
+                        const pm_kind: u8 = if (kind == 1) 1 else if (kind == 2) 2 else 0;
+                        const names = try es_helpers.makePrivateMethodNamesWithKind(self.allocator, orig_name, pm_kind);
                         try method_mappings.append(self.allocator, .{
                             .original_name = orig_name,
                             .weakset_name = names.ws_name,
                             .func_name = names.fn_name,
                             .member_idx = @enumFromInt(raw_idx),
+                            .kind = pm_kind,
+                            .is_static = is_static,
+                            .class_name = if (is_static) class_name_text else null,
                         });
                     } else if (lower_fields and member.tag == .property_definition) {
                         const pe = member.data.extra;
@@ -381,8 +387,15 @@ pub fn ES2022(comptime Transformer: type) type {
                 }
             }
             for (method_mappings.items) |m| {
-                const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span);
-                try pre_stmts.append(self.allocator, ws_decl);
+                if (m.is_static) {
+                    const fn_ref = try es_helpers.makeIdentifierRef(self, m.func_name);
+                    const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.weakset_name, fn_ref, span);
+                    try pre_stmts.append(self.allocator, desc);
+                    self.runtime_helpers.class_static_private_field = true;
+                } else {
+                    const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span);
+                    try pre_stmts.append(self.allocator, ws_decl);
+                }
                 const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, span);
                 try pre_stmts.append(self.allocator, fn_decl);
             }
@@ -408,8 +421,10 @@ pub fn ES2022(comptime Transformer: type) type {
                 {
                     const m = method_mappings.items[method_mapping_idx];
                     method_mapping_idx += 1;
-                    const init_stmt = try es_helpers.buildPrivateMethodInit(self, m.weakset_name, span);
-                    try ctor_init_stmts.append(self.allocator, init_stmt);
+                    if (!m.is_static) {
+                        const init_stmt = try es_helpers.buildPrivateMethodInit(self, m.weakset_name, span);
+                        try ctor_init_stmts.append(self.allocator, init_stmt);
+                    }
                     continue;
                 }
 
@@ -656,6 +671,13 @@ pub fn ES2022(comptime Transformer: type) type {
 
         /// __classPrivateMethodGet(obj, _set, _fn) 호출 노드 생성.
         fn buildMethodGetCall(self: *Transformer, new_obj: NodeIndex, mapping: Transformer.PrivateMethodMapping, span: Span) Transformer.Error!NodeIndex {
+            if (mapping.is_static) {
+                self.runtime_helpers.class_static_private_field = true;
+                const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
+                const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name orelse "undefined");
+                const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.weakset_name);
+                return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, class_ref, desc_ref }, span);
+            }
             self.runtime_helpers.class_private_method_get = true;
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const ws_ref = try es_helpers.makeIdentifierRef(self, mapping.weakset_name);

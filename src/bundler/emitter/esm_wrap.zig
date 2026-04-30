@@ -332,6 +332,9 @@ pub fn emitEsmWrappedModule(
             .source_root = options.sourcemap.source_root orelse "",
             .sources_content = options.sourcemap.sources_content,
             .import_records = module.import_records,
+            .assert_no_raw_private_syntax = options.unsupported.class or
+                options.unsupported.class_private_field or
+                options.unsupported.class_private_method,
         });
         if (options.sourcemap.enable) {
             hoist_cg.line_offsets = module.line_offsets;
@@ -530,6 +533,9 @@ pub fn emitEsmWrappedModule(
         .source_root = options.sourcemap.source_root orelse "",
         .sources_content = options.sourcemap.sources_content,
         .import_records = module.import_records,
+        .assert_no_raw_private_syntax = options.unsupported.class or
+            options.unsupported.class_private_field or
+            options.unsupported.class_private_method,
     });
     // 소스맵: 소스 파일 등록 + line_offsets 설정
     if (options.sourcemap.enable) {
@@ -554,6 +560,9 @@ pub fn emitEsmWrappedModule(
             .source_root = options.sourcemap.source_root orelse "",
             .sources_content = options.sourcemap.sources_content,
             .import_records = module.import_records,
+            .assert_no_raw_private_syntax = options.unsupported.class or
+                options.unsupported.class_private_field or
+                options.unsupported.class_private_method,
         });
         if (options.sourcemap.enable) {
             func_cg.line_offsets = module.line_offsets;

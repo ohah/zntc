@@ -165,7 +165,13 @@ pub fn e2eWithOptions(allocator: std.mem.Allocator, source: []const u8, cg_optio
 // --- ES downlevel helpers ---
 
 pub fn e2eTarget(allocator: std.mem.Allocator, source: []const u8, target: TransformOptions.compat.ESTarget) !TestResult {
-    return e2eFull(allocator, source, .{ .unsupported = TransformOptions.compat.fromESTarget(target) }, .{ .minify_whitespace = true }, ".ts");
+    const unsupported = TransformOptions.compat.fromESTarget(target);
+    return e2eFull(allocator, source, .{ .unsupported = unsupported }, .{
+        .minify_whitespace = true,
+        .assert_no_raw_private_syntax = unsupported.class or
+            unsupported.class_private_field or
+            unsupported.class_private_method,
+    }, ".ts");
 }
 
 pub fn expectAsyncStateMachine(output: []const u8) !void {
