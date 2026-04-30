@@ -147,6 +147,10 @@ pub const StyledComponentsState = struct {
     /// 주의: 컴포넌트 추가/순서 변경 시 이후 ID 가 모두 shift → partial-deploy SSR
     /// mismatch 가능. Babel 의 name-based hash 와 trade-off (SWC fixture 호환 우선).
     component_counter: u32 = 0,
+
+    /// cssProp transform 으로 추출된 styled component 의 0-based counter — generated
+    /// identifier (`_styled_<n>`) 의 unique suffix. 파일별 reset.
+    css_prop_counter: u32 = 0,
 };
 
 pub const PluginState = struct {

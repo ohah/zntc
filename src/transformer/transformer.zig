@@ -2892,7 +2892,10 @@ pub const Transformer = struct {
     /// jsx_element: extra = [tag_name, attrs_start, attrs_len, children_start, children_len]
     /// 항상 5 fields. self-closing은 children_len=0.
     fn visitJSXElement(self: *Transformer, node: Node) Error!NodeIndex {
-        const e = node.data.extra;
+        // cssProp pre-processing — `<X css={...}>` 를 styled component 로 추출 (jsx_transform=false
+        // 경로 — jsx 가 그대로 출력되는 케이스).
+        const working_node = (try styled_components_mod.maybeExtractCssProp(self, node)) orelse node;
+        const e = working_node.data.extra;
         const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
         const new_attrs = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
         const children_len = self.readU32(e, 4);
@@ -2900,7 +2903,7 @@ pub const Transformer = struct {
             try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = children_len })
         else
             NodeList{ .start = 0, .len = 0 };
-        return self.addExtraNode(.jsx_element, node.span, &.{
+        return self.addExtraNode(.jsx_element, working_node.span, &.{
             @intFromEnum(new_tag),
             new_attrs.start,
             new_attrs.len,
