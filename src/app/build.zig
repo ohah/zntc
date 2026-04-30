@@ -28,8 +28,8 @@ pub const AppBuildOptions = struct {
     styled_components_minify: bool = false,
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
-    /// emotion.autoLabel 옵션 — false 면 autoLabel skip.
-    emotion_auto_label: bool = true,
+    /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
+    emotion_auto_label: @import("../transformer/transformer.zig").AutoLabelMode = .always,
     /// emotion.sourceMap 옵션 — true 면 css 템플릿 끝에 inline sourceMap 주석을 append.
     emotion_source_map: bool = false,
     /// emotion.labelFormat 옵션 — label 포맷 템플릿.

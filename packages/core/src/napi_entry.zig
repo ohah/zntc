@@ -224,6 +224,30 @@ fn getObjectString(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc
     return getStringArg(env, val, alloc);
 }
 
+/// `emotionAutoLabel` 옵션을 enum 값으로 파싱. JS 측에서 string ("never"/"always"/
+/// "dev-only") 또는 boolean (legacy: false=never, true=always) 으로 보낼 수 있음.
+/// 누락 시 기본 `.always`.
+fn getAutoLabelMode(env: c.napi_env, obj: c.napi_value, alloc: std.mem.Allocator) @import("zts_lib").transformer.transformer.AutoLabelMode {
+    const val = getNamedProperty(env, obj, "emotionAutoLabel") orelse return .always;
+    var ty: c.napi_valuetype = undefined;
+    if (c.napi_typeof(env, val, &ty) != c.napi_ok) return .always;
+    switch (ty) {
+        c.napi_boolean => {
+            var b: bool = true;
+            _ = c.napi_get_value_bool(env, val, &b);
+            return if (b) .always else .never;
+        },
+        c.napi_string => {
+            const s = getStringArg(env, val, alloc) orelse return .always;
+            if (std.mem.eql(u8, s, "never")) return .never;
+            if (std.mem.eql(u8, s, "always")) return .always;
+            if (std.mem.eql(u8, s, "dev-only")) return .dev_only;
+            return .always;
+        },
+        else => return .always,
+    }
+}
+
 /// plugin onLoad 의 `contents` 가 string 일 수도 있고 Uint8Array/Buffer 일 수도 있음.
 /// 후자는 binary-safe (PNG/JPG 등 raw bytes 가 utf-8 invalid 일 수 있음). (#2157 follow-up)
 /// - string: utf-8 디코드된 byte slice 그대로 (빈 string 도 valid — `loader: 'empty'` 등)
@@ -566,7 +590,7 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
         .styled_components_ssr = getObjectBool(env, opts_obj, "styledComponentsSsr", true),
         .styled_components_minify = getObjectBool(env, opts_obj, "styledComponentsMinify", false),
         .emotion = getObjectBool(env, opts_obj, "emotion", false),
-        .emotion_auto_label = getObjectBool(env, opts_obj, "emotionAutoLabel", true),
+        .emotion_auto_label = getAutoLabelMode(env, opts_obj, native_alloc),
         .emotion_source_map = getObjectBool(env, opts_obj, "emotionSourceMap", false),
         .emotion_label_format = getObjectString(env, opts_obj, "emotionLabelFormat", native_alloc) orelse "",
     }) catch |err| {
@@ -3575,7 +3599,7 @@ fn parseBuildOptions(
         .styled_components_ssr = getObjectBool(env, opts_obj, "styledComponentsSsr", true),
         .styled_components_minify = getObjectBool(env, opts_obj, "styledComponentsMinify", false),
         .emotion = getObjectBool(env, opts_obj, "emotion", false),
-        .emotion_auto_label = getObjectBool(env, opts_obj, "emotionAutoLabel", true),
+        .emotion_auto_label = getAutoLabelMode(env, opts_obj, native_alloc),
         .emotion_source_map = getObjectBool(env, opts_obj, "emotionSourceMap", false),
         .emotion_label_format = getObjectString(env, opts_obj, "emotionLabelFormat", native_alloc) orelse "",
         .collect_module_codes = getObjectBool(env, opts_obj, "collectModuleCodes", false),
