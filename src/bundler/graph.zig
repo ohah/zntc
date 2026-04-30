@@ -1985,12 +1985,10 @@ pub const ModuleGraph = struct {
 
     fn configureParserForModule(parser: *Parser, module: *const Module, ext: []const u8) void {
         if (module.js_parser_kind) |kind| {
-            parser.configureForBundler(switch (kind) {
-                .js => ".js",
-                .jsx => ".jsx",
-                .ts => ".ts",
-                .tsx => ".tsx",
-            });
+            parser.configureForBundlerKind(
+                kind.isTypeScript(),
+                kind == .jsx or kind == .tsx,
+            );
             return;
         }
         parser.configureForBundler(ext);
@@ -2001,16 +1999,16 @@ pub const ModuleGraph = struct {
             .javascript => .javascript,
             .json => .json,
             .css => .css,
-            .file, .dataurl, .base64, .text, .binary, .copy, .empty => .asset,
             .none => default_type,
+            else => if (loader.isAsset()) .asset else default_type,
         };
     }
 
     fn isTypeScriptModule(module: *const Module) bool {
-        if (module.js_parser_kind) |kind| return kind.isTypeScript();
-        const ext = std.fs.path.extension(module.path);
-        return std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-            std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts");
+        const kind = module.js_parser_kind orelse
+            types.JsParserKind.fromExtension(std.fs.path.extension(module.path)) orelse
+            return false;
+        return kind.isTypeScript();
     }
 
     fn isFlowPath(path: []const u8) bool {

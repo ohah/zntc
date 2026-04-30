@@ -262,7 +262,10 @@ pub const LinkingMetadata = struct {
     pub const FinalExportEntry = struct {
         local: []const u8,
         exported: []const u8,
-        is_default: bool,
+
+        pub fn isDefault(self: FinalExportEntry) bool {
+            return std.mem.eql(u8, self.exported, "default");
+        }
     };
 
     pub const NsInlineObjects = struct {
