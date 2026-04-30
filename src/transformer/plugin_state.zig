@@ -75,6 +75,16 @@ pub const EmotionState = struct {
     /// `keyframes\`...\`` 도 첫 quasi 에 label prepend — emotion 런타임이 animation name
     /// 으로 사용.
     keyframes_binding: ?[]const u8 = null,
+
+    /// `import { injectGlobal } from "@emotion/css"` 의 local binding 이름 (alias 포함).
+    /// `const X = injectGlobal\`...\`` 형태에서 첫 quasi 에 `label:X;` prepend.
+    /// 일반적으로 side-effect call 로 쓰이지만 binding 형태도 유효한 사용 패턴.
+    inject_global_binding: ?[]const u8 = null,
+
+    /// `import { Global } from "@emotion/react"` 의 local binding 이름 (alias 포함).
+    /// `<Global styles={css\`...\`} />` JSX element 의 `styles` attr 에 element 이름
+    /// 기반 label prepend (`label:Global;`).
+    global_binding: ?[]const u8 = null,
 };
 
 pub const StyledComponentsState = struct {

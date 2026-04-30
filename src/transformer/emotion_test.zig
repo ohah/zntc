@@ -477,3 +477,148 @@ test "emotion: JSX inline css — classic runtime 에서도 동작" {
     defer r.deinit();
     try expectAutoLabel(r.output, "div");
 }
+
+// ─── Global / injectGlobal ───
+// 글로벌 스타일 API. `injectGlobal\`...\`` 는 tagged template (binding 추적), `<Global
+// styles={...}>` 는 JSX (element 매칭 + styles attr) — 두 시나리오 다 처리.
+
+test "emotion: injectGlobal binding form 도 autoLabel" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { injectGlobal } from "@emotion/css";
+        \\const reset = injectGlobal`* { box-sizing: border-box; }`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "reset");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "box-sizing: border-box") != null);
+}
+
+test "emotion: injectGlobal alias `import { injectGlobal as ig }` 도 추적" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { injectGlobal as ig } from "@emotion/css";
+        \\const reset = ig`body { margin: 0; }`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "reset");
+}
+
+test "emotion: <Global styles={css`...`}> JSX — element 이름 (Global) 으로 label" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { Global, css } from "@emotion/react";
+        \\const el = <Global styles={css`body { color: red; }`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Global");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "emotion: <Global> alias `import { Global as G }` 도 element 매칭" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { Global as G, css } from "@emotion/react";
+        \\const el = <G styles={css`body { margin: 0; }`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // alias 된 이름 "G" 가 label 로 사용 (사용자가 코드에서 보는 이름)
+    try expectAutoLabel(r.output, "G");
+}
+
+test "emotion: 비-Global element 의 styles attr 은 미인식 — false-positive 방지" {
+    // `styles` 는 너무 일반적이라 다른 라이브러리/사용자 컴포넌트와 충돌 위험.
+    // global_binding 매칭 시에만 처리.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <SomeComponent styles={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // Global binding 이 import 되지 않았으므로 SomeComponent.styles 는 처리 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
+}
+
+test "emotion: Global import 없이 <Global> 만 사용 — 미인식 (binding 없음)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <Global styles={css`body { color: red; }`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // emotion 의 Global 을 import 안 했으므로 styles attr 처리 안 됨
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:Global;") == null);
+}
+
+test "emotion: <Global styles={css`color: ${x};`}> 보간 있는 styles 도 처리" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { Global, css } from "@emotion/react";
+        \\const el = <Global styles={css`color: ${color}; padding: 8px;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Global");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "${color}") != null);
+}
+
+test "emotion: bare `injectGlobal`...`` (binding 없음) — no-op 으로 통과" {
+    // 흔한 사용 패턴: side-effect call. binding 이 없으니 autoLabel 적용 안 됨 — 하지만
+    // 변환이 깨지거나 크래시 나면 안 됨.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { injectGlobal } from "@emotion/css";
+        \\injectGlobal`* { box-sizing: border-box; }`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // binding 없으므로 label 없음
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+    // 원본 css 보존
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "box-sizing: border-box") != null);
+}
+
+test "emotion: <Global css={...}> 는 css attr 로 처리 (styles 가 아니라)" {
+    // Global 이라도 css attr 을 쓰면 일반 inline css 경로 — 정상 동작 확인.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { Global, css } from "@emotion/react";
+        \\const el = <Global css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Global");
+}

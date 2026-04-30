@@ -215,6 +215,40 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     expect(r.out).toContain("color: red");
   });
 
+  // ─── Global / injectGlobal (v10) ───
+
+  it("@emotion/css v10 — injectGlobal binding autoLabel", async () => {
+    const r = await runV10Bundle({
+      source: `
+        import { injectGlobal } from "@emotion/css";
+        const reset = injectGlobal\`* { box-sizing: border-box; }\`;
+        console.log(reset);
+      `,
+      config: { compiler: { emotion: true } },
+    });
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.out).toContain("label:reset;");
+    expect(r.out).toContain("box-sizing: border-box");
+  });
+
+  it("@emotion/core v10 — <Global styles={css`...`}> autoLabel", async () => {
+    const r = await runV10Bundle({
+      source: `
+        /** @jsx jsx */
+        import { jsx, css, Global } from "@emotion/core";
+        const el = <Global styles={css\`body { color: red; }\`} />;
+        console.log(el);
+      `,
+      entry: "index.tsx",
+      config: { compiler: { emotion: true } },
+    });
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.out).toContain("label:Global;");
+    expect(r.out).toContain("color: red");
+  });
+
   it("v10 격리 검증 — fixture 의 @emotion/core 가 v10.x 인지", async () => {
     const pkgPath = join(EMOTION_V10_FIXTURE_NODE_MODULES, "@emotion/core/package.json");
     const pkg = JSON.parse(await readFile(pkgPath, "utf-8"));
