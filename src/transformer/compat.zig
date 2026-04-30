@@ -184,6 +184,13 @@ pub const UnsupportedFeatures = packed struct(u32) {
     pub fn merge(self: UnsupportedFeatures, other: UnsupportedFeatures) UnsupportedFeatures {
         return @bitCast(@as(u32, @bitCast(self)) | @as(u32, @bitCast(other)));
     }
+
+    /// class / class_private_field / class_private_method 중 하나라도 unsupported 면 true.
+    /// transformer 가 raw private syntax 를 lowering 할 책임이 있는 경우 — codegen 의 invariant
+    /// assert 와 emitter/transpile 옵션 전파에 사용.
+    pub fn requiresPrivateDownlevel(self: UnsupportedFeatures) bool {
+        return self.class or self.class_private_field or self.class_private_method;
+    }
 };
 
 // ─── 엔진 버전 ───
