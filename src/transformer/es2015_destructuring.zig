@@ -780,28 +780,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 },
                 else => "",
             };
-            // 256 byte 스택 버퍼는 일반 식별자/짧은 string literal 을 커버. 그 이상은 heap 으로 fallback —
-            // base64 encoded key 등 긴 literal 에서 stack overflow 회피.
-            const total = raw.len + 2;
-            const str_span = if (total <= 256) span: {
-                var buf: [256]u8 = undefined;
-                buf[0] = '"';
-                @memcpy(buf[1 .. 1 + raw.len], raw);
-                buf[1 + raw.len] = '"';
-                break :span try self.ast.addString(buf[0..total]);
-            } else span: {
-                const heap_buf = try self.allocator.alloc(u8, total);
-                defer self.allocator.free(heap_buf);
-                heap_buf[0] = '"';
-                @memcpy(heap_buf[1 .. 1 + raw.len], raw);
-                heap_buf[1 + raw.len] = '"';
-                break :span try self.ast.addString(heap_buf);
-            };
-            return self.ast.addNode(.{
-                .tag = .string_literal,
-                .span = str_span,
-                .data = .{ .string_ref = str_span },
-            });
+            return self.wrapInStringLiteral(raw);
         }
 
         /// rest = __rest(_ref, ["key1", key2]) declarator 생성.
