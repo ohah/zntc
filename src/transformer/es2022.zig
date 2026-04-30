@@ -57,6 +57,7 @@ pub fn ES2022(comptime Transformer: type) type {
             self: *Transformer,
             body_idx: NodeIndex,
             new_body_out: *NodeIndex,
+            static_key_memos_out: *std.ArrayList(NodeIndex),
             static_block_iifes: *std.ArrayList(NodeIndex),
             class_name_span: ?Span,
             already_visited: bool,
@@ -88,11 +89,11 @@ pub fn ES2022(comptime Transformer: type) type {
             const pending_top = self.pending_nodes.items.len;
             defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
-            // pre-pass: 공개 static field 의 computed key 를 `var _N = <expr>;` 로 캡쳐해 클래스 평가 직전에 hoist.
+            // pre-pass: class element computed key 를 `var _N = <expr>;` 로 캡쳐해 클래스 평가 직전에 hoist.
             // 메인 루프와 분리한 이유 — TC39 spec 상 모든 computed key 는 class body 평가 전에 한 번만 평가되어야
             // 하므로, 사이에 끼어들 수 있는 static block 보다 먼저 emit 되어야 한다 (test fixture
             // `static-computed-key-order-with-blocks` 참조).
-            // 항목 수 ≤ 클래스 내 공개 static computed-key field 개수(통상 0–3) → linear scan 이 HashMap 보다 저렴.
+            // 항목 수 ≤ 클래스 내 computed-key element 개수(통상 0–3) → linear scan 이 HashMap 보다 저렴.
             const KeyMemo = struct { raw_idx: u32, key_ref: NodeIndex };
             var static_key_memos: std.ArrayList(KeyMemo) = .empty;
             defer static_key_memos.deinit(self.allocator);
@@ -102,14 +103,20 @@ pub fn ES2022(comptime Transformer: type) type {
                 while (key_i < body_len) : (key_i += 1) {
                     const raw_idx = self.ast.extra_data.items[body_start + key_i];
                     const member = self.ast.getNode(@enumFromInt(raw_idx));
-                    if (member.tag != .property_definition or !isPublicStaticField(self, member)) continue;
-                    const pe = member.data.extra;
-                    const key: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
+                    const key: NodeIndex = switch (member.tag) {
+                        .method_definition => self.readNodeIdx(member.data.extra, ast_mod.MethodExtra.key),
+                        .property_definition => if (isPublicStaticField(self, member))
+                            self.readNodeIdx(member.data.extra, ast_mod.PropertyExtra.key)
+                        else
+                            .none,
+                        else => .none,
+                    };
+                    if (key.isNone()) continue;
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag != .computed_property_key) continue;
 
                     const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span);
-                    try static_block_iifes.append(self.allocator, memo.decl);
+                    try static_key_memos_out.append(self.allocator, memo.decl);
                     try static_key_memos.append(self.allocator, .{ .raw_idx = raw_idx, .key_ref = memo.computed_key });
                 }
             }
@@ -126,6 +133,15 @@ pub fn ES2022(comptime Transformer: type) type {
                 } else if (class_name_span != null and member.tag == .property_definition and isPublicStaticField(self, member)) {
                     const static_assign = try buildStaticFieldAssign(self, member, class_name_span.?, lookupKeyMemo(static_key_memos.items, raw_idx));
                     try static_block_iifes.append(self.allocator, static_assign);
+                } else if (member.tag == .method_definition) {
+                    if (lookupKeyMemo(static_key_memos.items, raw_idx)) |memo_key| {
+                        try self.scratch.append(self.allocator, try replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key));
+                    } else if (already_visited) {
+                        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+                    } else {
+                        const new_member = try self.visitNode(@enumFromInt(raw_idx));
+                        if (!new_member.isNone()) try self.scratch.append(self.allocator, new_member);
+                    }
                 } else if (already_visited) {
                     try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
                 } else {
@@ -176,6 +192,24 @@ pub fn ES2022(comptime Transformer: type) type {
                 if (m.raw_idx == raw_idx) return m.key_ref;
             }
             return null;
+        }
+
+        fn replaceMethodDefinitionKey(self: *Transformer, method_idx: NodeIndex, new_key: NodeIndex) Transformer.Error!NodeIndex {
+            const method = self.ast.getNode(method_idx);
+            const me = method.data.extra;
+            const new_extra = try self.ast.addExtras(&.{
+                @intFromEnum(new_key),
+                self.ast.extra_data.items[me + ast_mod.MethodExtra.params],
+                self.ast.extra_data.items[me + ast_mod.MethodExtra.body],
+                self.ast.extra_data.items[me + ast_mod.MethodExtra.flags],
+                self.ast.extra_data.items[me + ast_mod.MethodExtra.deco_start],
+                self.ast.extra_data.items[me + ast_mod.MethodExtra.deco_len],
+            });
+            return self.ast.addNode(.{
+                .tag = .method_definition,
+                .span = method.span,
+                .data = .{ .extra = new_extra },
+            });
         }
 
         /// public static field 의 `Class.key = init;` assignment 를 합성한다.

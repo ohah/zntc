@@ -2263,7 +2263,8 @@ test "ES2015: class with computed method uses bracket notation" {
     // [Symbol.iterator]() → Object.defineProperty(prototype, Symbol.iterator, ...) (dot 없이)
     var r = try e2eTarget(std.testing.allocator, "class F{[Symbol.iterator](){return this;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F.prototype,Symbol.iterator") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F.prototype,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
     // prototype.[Symbol.iterator] (잘못된 dot notation) 금지
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "prototype.["), null);
 }

@@ -1766,16 +1766,21 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         }
                     }
 
+                    const member_idx = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) blk: {
+                        const memo_key = try memoizeStaticComputedFieldKey(self, &cm, self.ast.getNode(key).data.unary.operand, member.span);
+                        break :blk try replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key);
+                    } else @as(NodeIndex, @enumFromInt(raw_idx));
+
                     if (kind == 1 or kind == 2) {
                         try cm.accessors.append(self.allocator, .{
-                            .member_idx = @enumFromInt(raw_idx),
+                            .member_idx = member_idx,
                             .is_static = is_static,
                             .is_getter = kind == 1,
                             .member_span = member.span,
                         });
                     } else {
                         try cm.methods.append(self.allocator, .{
-                            .member_idx = @enumFromInt(raw_idx),
+                            .member_idx = member_idx,
                             .is_static = is_static,
                             .member_span = member.span,
                         });
@@ -2084,6 +2089,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const memo = try es_helpers.memoizeComputedKey(self, key_expr, span);
             try cm.accessor_key_memos.append(self.allocator, memo.decl);
             return memo.computed_key;
+        }
+
+        fn replaceMethodDefinitionKey(self: *Transformer, method_idx: NodeIndex, new_key: NodeIndex) Transformer.Error!NodeIndex {
+            const method = self.ast.getNode(method_idx);
+            const me = method.data.extra;
+            const new_extra = try self.ast.addExtras(&.{
+                @intFromEnum(new_key),
+                self.ast.extra_data.items[me + MethodExtra.params],
+                self.ast.extra_data.items[me + MethodExtra.body],
+                self.ast.extra_data.items[me + MethodExtra.flags],
+                self.ast.extra_data.items[me + MethodExtra.deco_start],
+                self.ast.extra_data.items[me + MethodExtra.deco_len],
+            });
+            return self.ast.addNode(.{
+                .tag = .method_definition,
+                .span = method.span,
+                .data = .{ .extra = new_extra },
+            });
         }
 
         /// computed accessor getter method_definition 생성. `get [_acc_key_N]() { return return_expr; }`.
@@ -2518,32 +2541,110 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     });
                 },
                 .return_statement => {
-                    const scratch_top = self.scratch.items.len;
-                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-                    const ret_span = try es_helpers.makeTempVarSpan(self);
-                    const ret_binding = try es_helpers.makeBindingIdentifier(self, ret_span);
-                    const ret_decl = try es_helpers.makeDeclarator(self, ret_binding, stmt.data.unary.operand, stmt.span);
-                    try self.scratch.append(
-                        self.allocator,
-                        try es_helpers.makeVarDeclaration(self, &.{ret_decl}, .@"var", stmt.span),
-                    );
-                    try appendInstanceFields(self, instance_fields, span);
-                    try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                    return self.ast.addNode(.{
                         .tag = .return_statement,
                         .span = stmt.span,
-                        .data = .{ .unary = .{ .operand = try es_helpers.makeTempVarRef(self, ret_span, stmt.span), .flags = 0 } },
-                    }));
-
-                    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                    return self.ast.addNode(.{
-                        .tag = .block_statement,
-                        .span = stmt.span,
-                        .data = .{ .list = new_list },
+                        .data = .{ .unary = .{
+                            .operand = try injectInstanceFieldsAfterSuperExpr(self, stmt.data.unary.operand, instance_fields, span),
+                            .flags = 0,
+                        } },
                     });
                 },
                 else => return stmt_idx,
             }
+        }
+
+        fn injectInstanceFieldsAfterSuperExpr(self: *Transformer, expr_idx: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            if (expr_idx.isNone() or instance_fields.len == 0) return expr_idx;
+            const node = self.ast.getNode(expr_idx);
+
+            if (isSuperThisAssignment(self, node)) {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+                try self.scratch.append(self.allocator, expr_idx);
+                for (instance_fields) |field_stmt| {
+                    const replaced = try replaceThisWithThisAlias(self, field_stmt, span);
+                    const field_node = self.ast.getNode(replaced);
+                    if (field_node.tag == .expression_statement) {
+                        try self.scratch.append(self.allocator, field_node.data.unary.operand);
+                    } else {
+                        try self.scratch.append(self.allocator, replaced);
+                    }
+                }
+                try self.scratch.append(self.allocator, try es_helpers.makeIdentifierRef(self, "_this"));
+
+                const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                const seq = try self.ast.addNode(.{
+                    .tag = .sequence_expression,
+                    .span = node.span,
+                    .data = .{ .list = list },
+                });
+                return es_helpers.makeParenExpr(self, seq, node.span);
+            }
+
+            switch (node.tag) {
+                .parenthesized_expression => return es_helpers.makeParenExpr(
+                    self,
+                    try injectInstanceFieldsAfterSuperExpr(self, node.data.unary.operand, instance_fields, span),
+                    node.span,
+                ),
+                .sequence_expression, .array_expression => {
+                    const list = node.data.list;
+                    const scratch_top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
+                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, @enumFromInt(raw_idx), instance_fields, span));
+                    }
+                    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .list = new_list } });
+                },
+                .call_expression, .new_expression => {
+                    const e = node.data.extra;
+                    const callee = self.ast.extra_data.items[e];
+                    const args_start = self.ast.extra_data.items[e + 1];
+                    const args_len = self.ast.extra_data.items[e + 2];
+                    const flags = self.ast.extra_data.items[e + 3];
+                    const scratch_top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                    for (self.ast.extra_data.items[args_start .. args_start + args_len]) |raw_idx| {
+                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, @enumFromInt(raw_idx), instance_fields, span));
+                    }
+                    const args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    const new_extra = try self.ast.addExtras(&.{ callee, args.start, args.len, flags });
+                    return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+                },
+                .static_member_expression, .computed_member_expression => {
+                    const e = node.data.extra;
+                    const new_obj = try injectInstanceFieldsAfterSuperExpr(self, @enumFromInt(self.ast.extra_data.items[e]), instance_fields, span);
+                    const new_prop = try injectInstanceFieldsAfterSuperExpr(self, @enumFromInt(self.ast.extra_data.items[e + 1]), instance_fields, span);
+                    const new_extra = try self.ast.addExtras(&.{
+                        @intFromEnum(new_obj),
+                        @intFromEnum(new_prop),
+                        self.ast.extra_data.items[e + 2],
+                    });
+                    return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+                },
+                .conditional_expression => return self.ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = node.span,
+                    .data = .{ .ternary = .{
+                        .a = node.data.ternary.a,
+                        .b = try injectInstanceFieldsAfterSuperExpr(self, node.data.ternary.b, instance_fields, span),
+                        .c = try injectInstanceFieldsAfterSuperExpr(self, node.data.ternary.c, instance_fields, span),
+                    } },
+                }),
+                else => return expr_idx,
+            }
+        }
+
+        fn isSuperThisAssignment(self: *Transformer, node: Node) bool {
+            if (node.tag != .assignment_expression) return false;
+            const left = self.ast.getNode(node.data.binary.left);
+            if (left.tag != .identifier_reference and left.tag != .assignment_target_identifier) return false;
+            if (!std.mem.eql(u8, self.ast.getText(left.data.string_ref), "_this")) return false;
+            const right = self.ast.getNode(node.data.binary.right);
+            return isSuperCallLike(self, right);
         }
 
         fn isSuperCallAssignmentStatement(self: *Transformer, node_idx: NodeIndex) bool {
@@ -2572,7 +2673,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .parenthesized_expression => {
                     return containsSuperCallAssignment(self, node.data.unary.operand);
                 },
-                .sequence_expression => {
+                .sequence_expression, .array_expression => {
                     const list = node.data.list;
                     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
                         if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
@@ -2600,6 +2701,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
                     }
                     return false;
+                },
+                .static_member_expression, .computed_member_expression => {
+                    const e = node.data.extra;
+                    return containsSuperCallAssignment(self, @enumFromInt(self.ast.extra_data.items[e])) or
+                        containsSuperCallAssignment(self, @enumFromInt(self.ast.extra_data.items[e + 1]));
                 },
                 .assignment_expression => {
                     const left = self.ast.getNode(node.data.binary.left);

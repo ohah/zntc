@@ -113,6 +113,8 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
         // private member가 이미 body를 visit한 경우 `already_visited=true`로 재방문을 막는다.
         if (self.options.unsupported.class_static_block) {
             var new_body: NodeIndex = .none;
+            var static_key_memos: std.ArrayList(NodeIndex) = .empty;
+            defer static_key_memos.deinit(self.allocator);
             var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
             defer static_block_iifes.deinit(self.allocator);
 
@@ -124,6 +126,7 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 self,
                 current_body_idx,
                 &new_body,
+                &static_key_memos,
                 &static_block_iifes,
                 class_name_span,
                 already_visited,
@@ -141,9 +144,13 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                 });
 
                 if (node.tag == .class_expression) {
+                    var combined_pre: std.ArrayList(NodeIndex) = .empty;
+                    defer combined_pre.deinit(self.allocator);
+                    try combined_pre.appendSlice(self.allocator, static_key_memos.items);
+                    try combined_pre.appendSlice(self.allocator, pre_stmts.items);
                     return wrapClassExprInIIFE(
                         self,
-                        pre_stmts.items,
+                        combined_pre.items,
                         class_result,
                         static_block_iifes.items,
                         new_name,
@@ -151,7 +158,10 @@ pub fn visitClass(self: *Transformer, node: Node) Error!NodeIndex {
                     );
                 }
 
-                // pre_stmts (WeakMap + WeakSet + function) → class → static block IIFE
+                // computed static keys → pre_stmts (WeakMap + WeakSet + function) → class → static block IIFE
+                for (static_key_memos.items) |stmt| {
+                    try self.pending_nodes.append(self.allocator, stmt);
+                }
                 for (pre_stmts.items) |stmt| {
                     try self.pending_nodes.append(self.allocator, stmt);
                 }
