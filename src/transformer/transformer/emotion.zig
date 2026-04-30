@@ -169,6 +169,39 @@ pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []
     });
 }
 
+/// JSX attribute value autoLabel hook — `lowerJSXAttribute` 에서 호출.
+///
+/// `<X css={css\`...\`}>` 처럼 binding 이 없는 inline 시나리오를 위해 element 이름을
+/// label source 로 사용한다. `<Button css={...}>` → `label:Button;`,
+/// `<div css={...}>` → `label:div;`.
+///
+/// 처리 흐름:
+///   1. attribute 이름이 `css` 가 아니면 통과
+///   2. parser 가 attribute value 에는 jsx_expression_container 를 만들지 않고
+///      내부 expression 을 직접 저장 (parser/jsx.zig:301-325). value 가
+///      tagged_template_expression 이 아니면 통과.
+///   3. element label 추출 후 `maybeApplyAutoLabel` 로 template 변형 (emotion + autoLabel
+///      옵션 검사도 거기서 수행).
+pub fn maybeApplyAutoLabelForJsxAttr(
+    self: *Transformer,
+    attr_name: []const u8,
+    value_idx: NodeIndex,
+    tag_name_idx: NodeIndex,
+) Error!NodeIndex {
+    if (!std.mem.eql(u8, attr_name, "css")) return value_idx;
+    if (value_idx.isNone()) return value_idx;
+    const label = jsxElementLabel(self, tag_name_idx) orelse return value_idx;
+    return try maybeApplyAutoLabel(self, value_idx, label);
+}
+
+/// JSX element label 추출. jsx_identifier 만 — member/namespaced 는 후속 PR.
+fn jsxElementLabel(self: *Transformer, tag_name_idx: NodeIndex) ?[]const u8 {
+    if (tag_name_idx.isNone()) return null;
+    const tag_node = self.ast.getNode(tag_name_idx);
+    if (tag_node.tag != .jsx_identifier) return null;
+    return self.ast.getText(tag_node.span);
+}
+
 /// tag 가 emotion 인식 패턴인지 확인.
 ///   - `css\`...\`` / `keyframes\`...\`` — 직접 identifier 만
 ///   - `styled.X\`...\`` / `styled(X)\`...\`` / `styled.div.withComponent(...)\`...\`` —

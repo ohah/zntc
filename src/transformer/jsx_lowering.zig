@@ -24,6 +24,7 @@ const CallFlags = ast_mod.CallFlags;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const helpers = @import("es_helpers.zig");
+const emotion = @import("transformer/emotion.zig");
 
 /// JSX 런타임 모드 (codegen의 JsxRuntime을 그대로 사용)
 pub const JsxRuntime = @import("../codegen/codegen.zig").JsxRuntime;
@@ -182,7 +183,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const tag_arg = try lowerTagName(self, tag_name_idx);
 
             // 2nd arg: props object or null
-            const props_arg = try buildClassicProps(self, attrs_start, attrs_len, span);
+            const props_arg = try buildClassicProps(self, attrs_start, attrs_len, span, tag_name_idx);
 
             // remaining args: children
             const children = try collectChildren(self, children_start, children_len);
@@ -268,7 +269,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const tag_arg = try lowerTagName(self, tag_name_idx);
 
             // 2nd arg: props object { ...attrs(key제외), children }
-            const props_arg = try buildAutomaticProps(self, attrs_start, attrs_len, children_start, children_len, key_result.key_idx, effective_children, span);
+            const props_arg = try buildAutomaticProps(self, attrs_start, attrs_len, children_start, children_len, key_result.key_idx, effective_children, span, tag_name_idx);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -343,7 +344,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const fragment_ref = try helpers.makeIdentifierRef(self, "_Fragment");
 
             // props: {children: ...} or {}
-            const props_arg = try buildAutomaticProps(self, 0, 0, children_start, children_len, null, effective_children, span);
+            const props_arg = try buildAutomaticProps(self, 0, 0, children_start, children_len, null, effective_children, span, .none);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -395,7 +396,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const tag_arg = try lowerTagName(self, tag_name_idx);
 
             // classic-style props (key 포함)
-            const props_arg = try buildClassicProps(self, attrs_start, attrs_len, span);
+            const props_arg = try buildClassicProps(self, attrs_start, attrs_len, span, tag_name_idx);
 
             const children = try collectChildren(self, children_start, children_len);
 
@@ -509,7 +510,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
         // ================================================================
 
         /// Classic 모드: attrs → {key: val, ...} or null
-        fn buildClassicProps(self: *Transformer, attrs_start: u32, attrs_len: u32, span: Span) Transformer.Error!NodeIndex {
+        fn buildClassicProps(self: *Transformer, attrs_start: u32, attrs_len: u32, span: Span, element_tag_idx: NodeIndex) Transformer.Error!NodeIndex {
             if (attrs_len == 0) return makeNullLiteral(self, span);
 
             const scratch_top = self.scratch.items.len;
@@ -520,7 +521,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             while (j < attrs_len) : (j += 1) {
                 const raw_idx = self.ast.extra_data.items[attrs_start + j];
                 const attr = self.ast.getNode(@enumFromInt(raw_idx));
-                const prop = try lowerAttribute(self, attr, span);
+                const prop = try lowerAttribute(self, attr, span, element_tag_idx);
                 if (!prop.isNone()) {
                     try self.scratch.append(self.allocator, prop);
                 }
@@ -542,6 +543,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             key_idx: ?u32,
             effective_children: u32,
             span: Span,
+            element_tag_idx: NodeIndex,
         ) Transformer.Error!NodeIndex {
             const has_attrs = attrs_len > (if (key_idx != null) @as(u32, 1) else @as(u32, 0));
 
@@ -566,7 +568,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                     if (key_idx != null and j == key_idx.?) continue;
                     const raw_idx = self.ast.extra_data.items[attrs_start + j];
                     const attr = self.ast.getNode(@enumFromInt(raw_idx));
-                    const prop = try lowerAttribute(self, attr, span);
+                    const prop = try lowerAttribute(self, attr, span, element_tag_idx);
                     if (!prop.isNone()) {
                         try self.scratch.append(self.allocator, prop);
                     }
@@ -631,9 +633,9 @@ pub fn JsxLowering(comptime Transformer: type) type {
         // ================================================================
 
         /// JSX attribute → object_property or spread_element
-        fn lowerAttribute(self: *Transformer, attr: Node, span: Span) Transformer.Error!NodeIndex {
+        fn lowerAttribute(self: *Transformer, attr: Node, span: Span, element_tag_idx: NodeIndex) Transformer.Error!NodeIndex {
             if (attr.tag == .jsx_attribute) {
-                return lowerJSXAttribute(self, attr, span);
+                return lowerJSXAttribute(self, attr, span, element_tag_idx);
             } else if (attr.tag == .jsx_spread_attribute) {
                 // {...props} → spread_element
                 const inner = try self.visitNode(attr.data.unary.operand);
@@ -648,7 +650,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// jsx_attribute: binary = {left=name, right=value}
         /// → object_property: binary = {left=key, right=val}
-        fn lowerJSXAttribute(self: *Transformer, attr: Node, span: Span) Transformer.Error!NodeIndex {
+        fn lowerJSXAttribute(self: *Transformer, attr: Node, span: Span, element_tag_idx: NodeIndex) Transformer.Error!NodeIndex {
             _ = span;
             const name_idx = attr.data.binary.left;
             const value_idx = attr.data.binary.right;
@@ -676,15 +678,22 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 });
             };
 
+            // emotion autoLabel hook — visitNode 전에 실행해야 binding 이 없는 inline
+            // tagged_template_expression 의 label source (element 이름) 를 식별 가능.
+            const effective_value_idx = if (self.options.emotion)
+                try emotion.maybeApplyAutoLabelForJsxAttr(self, name_text, value_idx, element_tag_idx)
+            else
+                value_idx;
+
             // value: 없으면 true
-            const val_node = if (value_idx.isNone()) blk: {
+            const val_node = if (effective_value_idx.isNone()) blk: {
                 const true_span = try self.ast.addString("true");
                 break :blk try self.ast.addNode(.{
                     .tag = .boolean_literal,
                     .span = true_span,
                     .data = .{ .none = 0 },
                 });
-            } else try self.visitNode(value_idx);
+            } else try self.visitNode(effective_value_idx);
 
             return self.ast.addNode(.{
                 .tag = .object_property,
