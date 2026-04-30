@@ -212,6 +212,87 @@ test "styled-components: object property string-key { \"My Comp\": ... } 도 인
     try expectDisplayName(r.output, "MyComp");
 }
 
+test "styled-components: IIFE `(() => styled.div\\`\\`)()` 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Lazy = (() => styled.div`color: red;`)();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Lazy");
+    // IIFE 외형 보존 — wrap 이 안쪽에서 일어나야 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "()=>") != null or
+        std.mem.indexOf(u8, r.output, "() =>") != null);
+}
+
+test "styled-components: IIFE 의 arrow params + closure 보존" {
+    // arrow 가 param 받는 경우 — 우리 wrap 은 body 의 tagged_template 만 변환,
+    // 원본 template 노드는 그대로 참조되므로 ${color} 같은 closure binding 유지.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Themed = ((color) => styled.div`color: ${color};`)("red");
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Themed");
+    // closure binding `${color}` 보존 — wrap 이 template 변형 안 함.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color") != null);
+}
+
+test "styled-components: 다중 paren `((() => ...))()` 도 처리" {
+    // formatter 가 보통 collapse 하지만 source 그대로 들어오면 다중 unwrap 필요.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Deep = ((() => styled.div`color: red;`))();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectDisplayName(r.output, "Deep");
+}
+
+test "styled-components: IIFE block body `(() => { return ... })()` 미지원" {
+    // 첫 iteration 은 expression body 만 — return statement walker 는 후속.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Lazy = (() => { return styled.div`color: red;`; })();
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+}
+
+test "styled-components: 일반 함수 호출 `someFn(...)` 은 IIFE 가 아님 (회귀 가드)" {
+    // call_expression 이 isWrappableExpr 에 추가되었지만 callee 가 arrow 가 아니면
+    // 즉시 early-return 해야 함 — 일반 함수 호출에서 false-positive 없어야.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const X = createSomething(styled.div`color: red;`);
+    ,
+        .{ .styled_components = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "withConfig") == null);
+}
+
 test "styled-components: 클래스 정적 필드 `static Child = styled.div\\`\\``" {
     var r = try e2eFull(
         std.testing.allocator,

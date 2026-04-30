@@ -216,6 +216,7 @@ fn isUnaryWrapperTag(tag: ast_mod.Node.Tag) bool {
 ///   - `cond && styled.div\`\`` / `default || styled.div\`\`` / `?? styled.div\`\`` (논리 — 우변만)
 ///   - `styled.div\`\` as T` / `... satisfies T` / `...!` / legacy `<T>...` / Foo<T> 인스턴스화 (TS)
 ///   - `styled.div\`\` as Foo` (Flow)
+///   - `(() => styled.div\`\`)()` IIFE — 단일 expression body 만 (block body `{ return ... }` 미지원)
 ///   - 위 조합
 ///
 /// 미인식 (의도된 한계):
@@ -269,13 +270,93 @@ pub fn wrapStyledTagInExpr(self: *Transformer, expr_idx: NodeIndex, var_name: []
         });
     }
 
+    if (node.tag == .call_expression) {
+        return wrapStyledInIife(self, expr_idx, var_name);
+    }
+
     return expr_idx;
+}
+
+/// IIFE `(() => <body>)()` / `(() => <body>)(...args)` — body 에 styled tagged template 이
+/// 있으면 body 를 wrap 한 새 call_expression 빌드.
+/// 첫 iteration: arrow expression body 만 인식 (block body `{ return X }` 는 후속).
+/// callee 가 arrow function 이 아니면 (일반 함수 호출) early-return — hot path 보호.
+fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
+    const call_node = self.ast.getNode(call_idx);
+    // call extra = [callee, args_start, args_len, flags]
+    if (!self.ast.hasExtra(call_node.data.extra, 2)) return call_idx;
+    const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[call_node.data.extra]);
+    if (callee_idx.isNone()) return call_idx;
+
+    // 다중 paren `((() => X))()` 도 처리 — while 로 unwrap.
+    var arrow_idx = callee_idx;
+    var arrow_node = self.ast.getNode(arrow_idx);
+    while (arrow_node.tag == .parenthesized_expression) {
+        arrow_idx = arrow_node.data.unary.operand;
+        if (arrow_idx.isNone()) return call_idx;
+        arrow_node = self.ast.getNode(arrow_idx);
+    }
+    if (arrow_node.tag != .arrow_function_expression) return call_idx;
+
+    // arrow extra = [params(0), body(1), flags(2)]
+    if (!self.ast.hasExtra(arrow_node.data.extra, 1)) return call_idx;
+    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arrow_node.data.extra + 1]);
+    if (body_idx.isNone()) return call_idx;
+
+    // block body (`() => { return ... }`) 는 후속 PR — return statement walking 필요.
+    const body_node = self.ast.getNode(body_idx);
+    if (body_node.tag == .block_statement) return call_idx;
+
+    const new_body = try wrapStyledTagInExpr(self, body_idx, var_name);
+    if (new_body == body_idx) return call_idx;
+
+    // Rebuild arrow with new body (params / flags 그대로).
+    const params_idx_raw = self.ast.extra_data.items[arrow_node.data.extra];
+    const arrow_flags = if (self.ast.hasExtra(arrow_node.data.extra, 2))
+        self.ast.extra_data.items[arrow_node.data.extra + 2]
+    else
+        0;
+    const new_arrow = try self.addExtraNode(.arrow_function_expression, arrow_node.span, &.{
+        params_idx_raw,
+        @intFromEnum(new_body),
+        arrow_flags,
+    });
+
+    // Re-wrap parens — 원본의 paren chain 깊이만큼 다시 감쌈 (callee 부터 다시 walk).
+    var new_callee = new_arrow;
+    var paren_walk_idx = callee_idx;
+    var paren_walk_node = self.ast.getNode(paren_walk_idx);
+    while (paren_walk_node.tag == .parenthesized_expression) {
+        new_callee = try self.ast.addNode(.{
+            .tag = .parenthesized_expression,
+            .span = paren_walk_node.span,
+            .data = .{ .unary = .{ .operand = new_callee, .flags = paren_walk_node.data.unary.flags } },
+        });
+        paren_walk_idx = paren_walk_node.data.unary.operand;
+        if (paren_walk_idx.isNone()) break;
+        paren_walk_node = self.ast.getNode(paren_walk_idx);
+    }
+
+    // Rebuild call (args / flags 그대로).
+    const args_start = self.ast.extra_data.items[call_node.data.extra + 1];
+    const args_len = self.ast.extra_data.items[call_node.data.extra + 2];
+    const call_flags = if (self.ast.hasExtra(call_node.data.extra, 3))
+        self.ast.extra_data.items[call_node.data.extra + 3]
+    else
+        0;
+    return try self.addExtraNode(.call_expression, call_node.span, &.{
+        @intFromEnum(new_callee),
+        args_start,
+        args_len,
+        call_flags,
+    });
 }
 
 fn isWrappableExpr(tag: ast_mod.Node.Tag) bool {
     return tag == .tagged_template_expression or
         tag == .conditional_expression or
         tag == .logical_expression or
+        tag == .call_expression or // IIFE — wrapStyledInIife 가 non-IIFE 는 fast early-return
         isUnaryWrapperTag(tag);
 }
 
