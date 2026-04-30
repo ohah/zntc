@@ -1504,3 +1504,184 @@ test "emotion: <Global css={...}> 는 css attr 로 처리 (styles 가 아니라)
     defer r.deinit();
     try expectAutoLabel(r.output, "Global");
 }
+
+// ─── emotion edge case 회귀 가드 ───
+
+test "emotion (combo): autoLabel + sourceMap 동시 — 둘 다 적용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const button = css`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_source_map = true,
+            .emotion_auto_label = .always,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "button");
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "sourceMappingURL") != null);
+}
+
+test "emotion (combo): labelFormat + extra css source — vendored fork 도 format 적용" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@my-org/emotion-utils";
+        \\const button = css`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_extra_css_sources = &.{"@my-org/emotion-utils"},
+            .emotion_label_format = "[filename]--[local]",
+            .jsx_filename = "src/Button.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:Button--button;") != null);
+}
+
+test "emotion (label sanitize): non-ASCII 변수명 (한글) 은 통과 — sanitize 는 ASCII 만" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const 버튼 = css`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "버튼");
+}
+
+test "emotion (combo): ClassNames render-prop 안의 destructured css — emotion 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { ClassNames } from "@emotion/react";
+        \\const el = <ClassNames>{({ css }) => <div className={css`color: red;`}/>}</ClassNames>;
+    ,
+        .{
+            .emotion = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // ClassNames render-prop 안의 destructured css 는 인식 — div tag 기반 label 부여
+    try expectAutoLabel(r.output, "div");
+}
+
+test "emotion (combo): 한 파일 안 css + keyframes + Global — 모두 binding 추적" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css, keyframes, Global } from "@emotion/react";
+        \\const c = css`color: red;`;
+        \\const k = keyframes`from { opacity: 0; }`;
+        \\const el = <Global styles={css`body { margin: 0; }`}/>;
+    ,
+        .{
+            .emotion = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "c");
+    try expectAutoLabel(r.output, "k");
+    try expectAutoLabel(r.output, "Global");
+}
+
+test "emotion (sourceMap): 옵션 비활성 + JSX inline css — 둘 다 sourceMap 없음" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const el = <div css={css`color: red;`}/>;
+    ,
+        .{
+            .emotion = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // emotion_source_map 미지정 (default false) — sourceMap 안 들어감
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "sourceMappingURL") == null);
+    // autoLabel 은 default 적용
+    try expectAutoLabel(r.output, "div");
+}
+
+test "emotion (extras): css + styled extra source 동시 등록" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@my-org/emotion-utils";
+        \\import styled from "@my-org/emotion-styled";
+        \\const c = css`color: red;`;
+        \\const Btn = styled.div`padding: 8px;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_extra_css_sources = &.{"@my-org/emotion-utils"},
+            .emotion_extra_styled_sources = &.{"@my-org/emotion-styled"},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "c");
+    try expectAutoLabel(r.output, "Btn");
+}
+
+test "emotion (autoLabel.dev_only): production define → 비활성" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const button = css`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_auto_label = .dev_only,
+            .define = &.{.{ .key = "process.env.NODE_ENV", .value = "\"production\"" }},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // production build → label 미적용
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
+}
+
+test "emotion (autoLabel.dev_only): development define → 활성" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const button = css`color: red;`;
+    ,
+        .{
+            .emotion = true,
+            .emotion_auto_label = .dev_only,
+            .define = &.{.{ .key = "process.env.NODE_ENV", .value = "\"development\"" }},
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "button");
+}
