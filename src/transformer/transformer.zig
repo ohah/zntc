@@ -56,6 +56,7 @@ const es_helpers = @import("es_helpers.zig");
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const worklet_mod = @import("transformer/worklet.zig");
 const styled_components_mod = @import("transformer/styled_components.zig");
+const emotion_mod = @import("transformer/emotion.zig");
 pub const ast_plugin_mod = @import("ast_plugin.zig");
 pub const AstTransformCtx = ast_plugin_mod.AstTransformCtx;
 pub const FunctionInfo = ast_plugin_mod.FunctionInfo;
@@ -119,6 +120,10 @@ pub const TransformOptions = struct {
     /// no-interp 템플릿 (`\`color: red;\``) 만 우선 처리. interp 있는 경우는 후속.
     /// `babel-plugin-styled-components.minify` 와 동일 의도, default 는 false (안전).
     styled_components_minify: bool = false,
+    /// emotion 1st-party transform (compiler.emotion).
+    /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
+    /// `import { css } from "@emotion/react"` 의 named binding 추적.
+    emotion: bool = false,
     /// useDefineForClassFields=false: instance field를 constructor의 this.x = value 할당으로 변환.
     /// true(기본값)이면 class field를 그대로 유지 (TC39 [[Define]] semantics).
     /// false이면 TS 4.x 이전 동작 — field를 constructor body로 이동 ([[Set]] semantics).
@@ -2945,6 +2950,14 @@ pub const Transformer = struct {
                 new_init = try styled_components_mod.wrapStyledTagInExpr(self, new_init, var_name);
             }
         }
+        // emotion autoLabel: const X = css`...` → css`label:X;...`
+        if (self.options.emotion and !new_name.isNone() and !new_init.isNone()) {
+            const new_name_node = self.ast.getNode(new_name);
+            if (new_name_node.tag == .binding_identifier or new_name_node.tag == .identifier_reference) {
+                const var_name = self.ast.getText(new_name_node.data.string_ref);
+                new_init = try emotion_mod.maybeApplyAutoLabel(self, new_init, var_name);
+            }
+        }
         const none = @intFromEnum(NodeIndex.none);
         return self.addExtraNode(.variable_declarator, node.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
     }
@@ -4444,6 +4457,7 @@ pub const Transformer = struct {
 
     fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
         try styled_components_mod.detectStyledImport(self, node);
+        try emotion_mod.detectEmotionImport(self, node);
 
         const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
 

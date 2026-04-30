@@ -26,6 +26,8 @@ pub const AppBuildOptions = struct {
     styled_components_ssr: bool = true,
     /// styled-components.minify 옵션 — CSS template whitespace collapse.
     styled_components_minify: bool = false,
+    /// emotion 1st-party transform (compiler.emotion).
+    emotion: bool = false,
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -120,6 +122,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .styled_components = opts.styled_components,
         .styled_components_ssr = opts.styled_components_ssr,
         .styled_components_minify = opts.styled_components_minify,
+        .emotion = opts.emotion,
     });
     defer bundler.deinit();
 
