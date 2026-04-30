@@ -32,8 +32,14 @@ jobs:
       - name: Lint (oxlint)
         run: bun run lint
 
+      - name: Remove generated core JS wrapper before format check
+        run: rm -rf packages/core/dist
+
       - name: Format check (oxfmt)
         run: bun run fmt:check
+
+      - name: Build core JS wrapper for integration tests
+        run: bun run --cwd packages/core build:js
 
       - name: Run integration tests
         run: bun run test:integration
