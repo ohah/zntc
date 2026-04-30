@@ -1036,7 +1036,7 @@ pub const Transformer = struct {
                 // Parent.prototype.x 직접 접근이 아니라 receiver(this)를 보존하는 get/set
                 // 헬퍼로 먼저 lowering한다. 이후 generic logical/compound lowering으로 넘기면
                 // helper call에 대입하는 잘못된 target이 생성된다.
-                if (self.options.unsupported.class and self.current_super_class != null) {
+                if ((self.options.unsupported.class or self.current_super_is_static) and self.current_super_class != null) {
                     if (es2015_class.ES2015Class(Transformer).lowerSuperPropertyAssignment(self, node)) |result| {
                         return result;
                     }
@@ -1121,7 +1121,7 @@ pub const Transformer = struct {
                     }
                 }
                 // ES2015: super.method → Parent.prototype.method
-                if (self.options.unsupported.class and self.current_super_class != null) {
+                if ((self.options.unsupported.class or self.current_super_is_static) and self.current_super_class != null) {
                     if (es2015_class.ES2015Class(Transformer).isSuperMember(self, node)) {
                         return es2015_class.ES2015Class(Transformer).lowerSuperMember(self, node);
                     }
@@ -1157,7 +1157,7 @@ pub const Transformer = struct {
                     }
                 }
                 // ES2015: super["prop"] → Parent.prototype["prop"]
-                if (self.options.unsupported.class and self.current_super_class != null) {
+                if ((self.options.unsupported.class or self.current_super_is_static) and self.current_super_class != null) {
                     if (es2015_class.ES2015Class(Transformer).isSuperComputedMember(self, node)) {
                         return es2015_class.ES2015Class(Transformer).lowerSuperComputedMember(self, node);
                     }
@@ -1322,7 +1322,7 @@ pub const Transformer = struct {
                 }
                 // ES2015: super(args) → Parent.call(this, args)
                 // ES2015: super.method(args) → Parent.prototype.method.call(this, args)
-                if (self.options.unsupported.class and self.current_super_class != null) {
+                if ((self.options.unsupported.class or self.current_super_is_static) and self.current_super_class != null) {
                     if (es2015_class.ES2015Class(Transformer).isSuperCall(self, node)) {
                         return es2015_class.ES2015Class(Transformer).lowerSuperCall(self, node);
                     }
@@ -1785,7 +1785,7 @@ pub const Transformer = struct {
         // private field update: this.#x++ → _x.set(this, _x.get(this) + 1)
         if (node.tag == .update_expression and (self.options.unsupported.class or self.options.unsupported.class_private_field)) {
             const operand = self.ast.getNode(operand_idx);
-            if (self.options.unsupported.class and self.current_super_class != null) {
+            if ((self.options.unsupported.class or self.current_super_is_static) and self.current_super_class != null) {
                 if (es2015_class.ES2015Class(Transformer).lowerSuperPropertyUpdate(self, operand, op_flags, node.span)) |result| {
                     return try result;
                 }

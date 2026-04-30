@@ -148,6 +148,23 @@ console.log(JSON.stringify(log));
 `,
   },
   {
+    name: "derived-constructor-return-super-in-expression",
+    code: `
+const log = [];
+function wrap(x) { log.push("wrap:" + x.v); return x; }
+class Base { constructor(v) { log.push("base:" + v); this.v = v; } }
+class Child extends Base {
+  field = log.push("field:" + this.v);
+  constructor() {
+    log.push("before");
+    return wrap(super(5));
+  }
+}
+new Child();
+console.log(JSON.stringify(log));
+`,
+  },
+  {
     name: "private-field-brand-and-update",
     code: `
 class Counter {
@@ -197,6 +214,22 @@ class A {
   static [key("b")] = log.push("fieldB");
 }
 console.log(JSON.stringify([Object.keys(A), log]));
+`,
+  },
+  {
+    name: "static-computed-method-field-and-private-order",
+    code: `
+const log = [];
+let i = 0;
+function key(label) { log.push("key:" + label + ":" + ++i); return label + i; }
+class A {
+  [key("m")]() { return 1; }
+  static #x = log.push("priv");
+  static [key("s")] = log.push("field:" + this.#x);
+  static { log.push("block"); }
+  static read() { return [this.#x, Object.getOwnPropertyNames(this.prototype), Object.keys(this), log]; }
+}
+console.log(JSON.stringify(A.read()));
 `,
   },
   {
@@ -259,6 +292,17 @@ const log = [];
 const src = { a: 1, b: 2, c: 3 };
 function k() { log.push("key"); return "b"; }
 const { [k()]: picked, ...rest } = src;
+console.log(JSON.stringify({ picked, rest, log }));
+`,
+  },
+  {
+    name: "assignment-object-rest-computed-eval-order",
+    code: `
+const log = [];
+const src = { a: 1, b: 2, c: 3 };
+let picked, rest;
+function k() { log.push("key"); return "b"; }
+({ [k()]: picked, ...rest } = src);
 console.log(JSON.stringify({ picked, rest, log }));
 `,
   },
