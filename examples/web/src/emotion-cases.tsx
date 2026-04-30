@@ -1,19 +1,18 @@
 /**
- * emotion 패턴 모음.
+ * emotion 패턴 모음 — 현재 지원되는 1st-party transform:
+ * - autoLabel: `const X = css\`...\`` → `css\`label:X;...\``
+ * - autoLabel: `const X = styled.div\`...\`` → `styled.div\`label:X;...\``
+ * - autoLabel: `const X = keyframes\`...\`` → `keyframes\`label:X;...\``
  *
- * 향후 1st-party transform 이 처리해야 하는 케이스:
- * - autoLabel — 변수명 → CSS class label 자동 부여 (devtools 가독성)
- * - sourceMap — CSS-in-JS 위치를 원본 .tsx 로 역추적
- * - cssPropOptimization — `css={...}` prop 정적 hoist
- * - hash 안정화 — SSR hydration mismatch 방지
- *
- * 현재는 transform 없이 emotion 런타임만으로 동작.
+ * 미지원 (후속 PR):
+ * - sourceMap 라벨링 / cssPropOptimization (`<div css={...}>` hoist)
+ * - chain `css.x\`\`` / `styled.div.attrs({})\`\``
  */
 
 /** @jsxImportSource @emotion/react */
 
 import { useState } from "react";
-import { css, Global } from "@emotion/react";
+import { css, keyframes, Global } from "@emotion/react";
 import styled from "@emotion/styled";
 
 // 1. css prop — emotion 의 시그니처 패턴. transform 으로 hoist 대상.
@@ -49,7 +48,20 @@ const focusableInput = (active: boolean) => css`
   transition: border-color 0.15s;
 `;
 
-// 4. Global styles
+// 4. keyframes — emotion autoLabel 이 animation name 을 label 로 부여.
+const fadeIn = keyframes`
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+`;
+
+const FadeBox = styled.div`
+  animation: ${fadeIn} 0.3s ease-out;
+  padding: 12px;
+  border-radius: 4px;
+  background: #f0f9ff;
+`;
+
+// 5. Global styles
 const globalStyles = css`
   body {
     margin: 0;
@@ -88,6 +100,11 @@ export function EmotionShowcase() {
           onBlur={() => setActive(false)}
         />
       </div>
+
+      <FadeBox>
+        <h3>4. keyframes + animation</h3>
+        <p>이 박스 자체가 fadeIn 애니메이션. emotion autoLabel 이 keyframe 이름에도 label 부여.</p>
+      </FadeBox>
     </>
   );
 }

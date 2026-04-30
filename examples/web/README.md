@@ -1,6 +1,6 @@
 # @zts/example-web
 
-ZTS 의 웹 빌드 / dev server 검증용 예제 앱. styled-components 와 emotion 의 주요 패턴을 모아 향후 1st-party transform 의 회귀 테스트 베이스로 사용.
+ZTS 의 웹 빌드 / dev server 검증용 예제 앱. styled-components 와 emotion 의 주요 패턴을 모아 1st-party transform 의 회귀 테스트 베이스.
 
 ## 실행
 
@@ -18,7 +18,34 @@ cd examples/web && bun run build
 cd examples/web && bun run preview
 ```
 
-`zts.config.ts` 에 이미 `compiler.styledComponents: true` / `compiler.emotion: true` 가 선언돼 있지만, **현재는 타입 stub 단계라 런타임 효과는 없습니다**. 두 라이브러리 자체의 런타임으로 모든 기능이 동작.
+`zts.config.ts` 에서 `compiler.styledComponents` / `compiler.emotion` 활성. 두 transform 모두 1st-party 로 ZTS 안에서 동작 (별도 babel/swc plugin 불필요).
+
+## 현재 지원되는 transform
+
+### styled-components
+
+| 기능 | 상태 | 비고 |
+|---|---|---|
+| `displayName` 자동 부여 | ✅ | DevTools 컴포넌트 이름 |
+| `componentId` (hash + counter) | ✅ | SSR hydration 안정화. `ssr: false` 로 끄기 |
+| `withConfig({...})` 래핑 | ✅ | babel/swc 표준 출력 형태 |
+| chain `.attrs()` / `.withConfig()` | ✅ | rewriter 가 chain 중간 swap |
+| 사용자 명시 `.withConfig` MERGE | ✅ | 사용자 key 보존, ZTS 누락만 prepend |
+| ternary / 논리 / TS cast / IIFE / control flow | ✅ | wrappable expression walker |
+| 클래스 정적/인스턴스 필드 | ✅ | field key → displayName |
+| object property | ✅ | property key → displayName |
+| assignment | ✅ | LHS identifier → displayName |
+| CSS minify | ✅ (`minify: true`) | no-interp + interp 모두 |
+
+### emotion
+
+| 기능 | 상태 | 비고 |
+|---|---|---|
+| `import { css }` autoLabel | ✅ | `\`label:X;...\`` prepend |
+| `@emotion/styled` (default) | ✅ | `styled.div\`...\`` / `styled(X)\`...\`` |
+| `import { keyframes }` autoLabel | ✅ | animation name 으로 사용 |
+| 4 source 인식 | ✅ | `@emotion/react|css|core|native` |
+| alias (`{ css as cx }`, `import s from ...`) | ✅ | binding 추적 |
 
 ## 데모 케이스
 
@@ -32,30 +59,22 @@ cd examples/web && bun run preview
 7. `createGlobalStyle`
 
 ### emotion (`src/emotion-cases.tsx`)
-1. `css={...}` prop
-2. `@emotion/styled`
-3. 동적 css 함수 (autoLabel 검증)
-4. `<Global styles={...} />`
+1. `css\`...\`` (cardCss)
+2. `@emotion/styled` (Pill, FadeBox)
+3. 동적 css 함수 (focusableInput)
+4. `keyframes` (fadeIn) + animation
+5. `<Global styles={...} />`
 
-## 향후 1st-party transform 이 추가할 변환
+## 빌드 결과 확인
 
-### styled-components
-- **displayName** — devtools 에 컴포넌트 이름 표시 (`Card`, `Button`, ...)
-- **componentId** — 결정론적 hash 로 SSR hydration mismatch 방지
-- **정적 CSS hoist** — 매 렌더 재할당 방지
-- **CSS minify** — 화이트스페이스 제거
+```bash
+cd examples/web && bun run build
+# 출력의 main-*.js 에서:
+grep -E '\.withConfig' dist/main-*.js  # styled-components 6개
+grep -oE 'label:[a-zA-Z]+;' dist/main-*.js | sort -u  # emotion 5개
+```
 
-레퍼런스: `references/styled-components-babel/`, `references/swc-plugins/packages/styled-components/`
-
-### emotion
-- **autoLabel** — 변수명을 CSS class label 로 자동 부여
-- **sourceMap** — CSS 위치 → 원본 .tsx 역추적
-- **cssPropOptimization** — `css={...}` 정적 hoist
-- **hash 안정화** — SSR hydration
-
-레퍼런스: `references/emotion/packages/babel-plugin/`, `references/swc-plugins/packages/emotion/`
-
-## 옵션 surface (next.config.js 호환)
+## 옵션 surface (`@next/swc` 호환)
 
 ```ts
 defineConfig({
@@ -63,28 +82,23 @@ defineConfig({
     styledComponents: true,
     // 또는 세밀하게:
     // styledComponents: {
-    //   displayName: true,
-    //   ssr: true,
-    //   fileName: true,
-    //   minify: true,
-    //   transpileTemplateLiterals: true,
+    //   ssr: false,    // SSR 안 쓰면 componentId 생략 (bundle size 절감)
+    //   minify: true,  // CSS template whitespace collapse
     // },
     emotion: true,
-    // 또는:
-    // emotion: {
-    //   sourceMap: true,
-    //   autoLabel: "dev-only",  // "always" | "dev-only" | "never"
-    //   labelFormat: "[local]",
-    // },
   },
 });
 ```
 
-`@next/swc` 의 `compiler.styledComponents` / `compiler.emotion` 와 동일한 surface 를 의도. Next.js 사용자가 mental model 그대로 이전 가능.
+## 미지원 (후속 PR)
 
-## 회귀 검증 메모
+- emotion `<div css={...}>` prop hoist
+- emotion sourceMap 라벨링
+- emotion chain `css.x\`...\``
+- styled-components `transpileTemplateLiterals` (ES5 target)
+- CSS-aware minify (`;{}:` 주변 정리)
 
-- **HMR**: styled / css 인터폴레이션 변경 시 모듈만 교체되는지 (전체 새로고침 아님) 확인
-- **sourcemap**: `.tsx` 라인이 devtools 에서 매핑되는지
-- **production minify**: 클래스명/CSS 가 축약되는지
-- **번들 크기**: tree-shake 후 emotion / styled-components 의 dead path 제거 여부
+## 레퍼런스
+
+- styled-components: `references/styled-components-babel/`, `references/swc-plugins/packages/styled-components/`
+- emotion: `references/emotion/packages/babel-plugin/`, `references/swc-plugins/packages/emotion/`
