@@ -1682,6 +1682,51 @@ test "styled (cssProp Step 3): Custom component (PascalCase) 는 styled(Foo) 로
     try std.testing.expect(std.mem.indexOf(u8, r.output, "color: red") != null);
 }
 
+test "styled (cssProp Step 4): object form `<div css={{...}}>` → styled.div({...})" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const el = <div css={{ color: "red" }}>x</div>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    // styled.div({ ... }) call form
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled.div({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "color:") != null);
+}
+
+test "styled (cssProp Step 4): object form 으로 Custom component 도 wrap" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Button = (props) => null;
+        \\const el = <Button css={{ color: "red" }}>x</Button>;
+    ,
+        .{
+            .styled_components = true,
+            .styled_components_css_prop = true,
+            .jsx_transform = true,
+            .jsx_runtime = .automatic,
+            .jsx_filename = "test.tsx",
+        },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_styled_0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "styled(Button)({") != null);
+}
+
 test "styled (cssProp Step 3): jsx_member_expression `<Foo.Bar css>` → styled(Foo.Bar)" {
     var r = try e2eFull(
         std.testing.allocator,
