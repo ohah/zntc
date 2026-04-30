@@ -119,6 +119,34 @@ test "emotion: import 없으면 binding 미감지 → no-op" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
 }
 
+test "emotion: @emotion/primitives source 도 인식 (RN)" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/primitives";
+        \\const card = css`padding: 8px;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "card");
+}
+
+test "emotion: @emotion/styled-base default 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@emotion/styled-base";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Btn");
+}
+
 test "emotion: 다른 라이브러리 source (`stitches`) 는 미감지" {
     var r = try e2eFull(
         std.testing.allocator,
