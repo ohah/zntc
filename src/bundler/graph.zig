@@ -140,6 +140,8 @@ pub const ModuleGraph = struct {
     /// styled-components 1st-party transform — user_code 에 displayName 주입.
     /// react_refresh 와 동일하게 node_modules 는 건드리지 않음 (선언자 이름 수집 무의미).
     styled_components: bool = false,
+    /// styled-components.ssr 옵션 — false 면 componentId 생략 (displayName 만).
+    styled_components_ssr: bool = true,
     /// code splitting 활성화. helper module virtual import (#1961) 는 splitting 모드에서만
     /// 활성 — single-bundle 모드는 helper module 의 declaration 이 statement-level shake
     /// 로 elide 되는 회귀가 있어 기존 preamble 모델 유지.
@@ -1717,6 +1719,7 @@ pub const ModuleGraph = struct {
         var opts = self.transform_options_base;
         opts.react_refresh = self.react_refresh and is_user_code;
         opts.styled_components = self.styled_components and is_user_code;
+        opts.styled_components_ssr = self.styled_components_ssr;
         opts.plugins = merged_plugins;
         opts.jsx_transform = ast_ptr.has_jsx;
         opts.jsx_filename = module.path;

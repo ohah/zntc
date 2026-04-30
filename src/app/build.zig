@@ -22,6 +22,8 @@ pub const AppBuildOptions = struct {
     splitting: bool = true,
     /// styled-components 1st-party transform 활성화 (compiler.styledComponents).
     styled_components: bool = false,
+    /// styled-components.ssr 옵션 — false 면 componentId 생략.
+    styled_components_ssr: bool = true,
 };
 
 pub const AppDevPrepareOptions = struct {
@@ -114,6 +116,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .output_filename = "bundle.js",
         .root_dir = root,
         .styled_components = opts.styled_components,
+        .styled_components_ssr = opts.styled_components_ssr,
     });
     defer bundler.deinit();
 

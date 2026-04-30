@@ -111,6 +111,10 @@ pub const TransformOptions = struct {
     /// 활성 시 `const X = styled.div\`...\`` 같은 선언에 displayName 자동 부여.
     /// componentId / SSR / CSS minify 등 추가 변환은 후속 PR.
     styled_components: bool = false,
+    /// styled-components.ssr 옵션 — false 면 componentId 생략 (displayName 만).
+    /// 비-SSR 프로젝트에서 file-hash + counter 기반 deterministic ID 비용 회피.
+    /// `@next/swc` 의 `compiler.styledComponents.ssr` 와 동일 surface.
+    styled_components_ssr: bool = true,
     /// useDefineForClassFields=false: instance field를 constructor의 this.x = value 할당으로 변환.
     /// true(기본값)이면 class field를 그대로 유지 (TC39 [[Define]] semantics).
     /// false이면 TS 4.x 이전 동작 — field를 constructor body로 이동 ([[Set]] semantics).
