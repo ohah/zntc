@@ -75,6 +75,27 @@ console.log(JSON.stringify({ x: obj.x, log }));
 `,
   },
   {
+    name: "logical-assignment-super-computed-get-set",
+    code: `
+const log = [];
+class Base {
+  get x() { log.push("base.get:" + this.v); return this.v; }
+  set x(v) { log.push("base.set:" + v + ":" + this.name); this.v = v; }
+}
+class Child extends Base {
+  name = "child";
+  v = 0;
+  run(k) {
+    super[k] ||= 5;
+    super[k] &&= 7;
+    super[k] ??= 9;
+    return [this.v, log];
+  }
+}
+console.log(JSON.stringify(new Child().run("x")));
+`,
+  },
+  {
     name: "class-super-receiver",
     code: `
 class Base {
@@ -111,6 +132,22 @@ console.log(JSON.stringify(log));
 `,
   },
   {
+    name: "derived-constructor-return-expression-super-fields",
+    code: `
+const log = [];
+class Base { constructor(v) { log.push("base:" + v); this.v = v; } }
+class Child extends Base {
+  a = log.push("a:" + this.v);
+  constructor(flag) {
+    log.push("before");
+    return flag ? (log.push("ret"), super(3)) : super(4);
+  }
+}
+new Child(true);
+console.log(JSON.stringify(log));
+`,
+  },
+  {
     name: "private-field-brand-and-update",
     code: `
 class Counter {
@@ -132,6 +169,34 @@ class A {
   static b = log.push("b");
 }
 console.log(JSON.stringify([A.a, A.b, log]));
+`,
+  },
+  {
+    name: "static-private-and-public-order",
+    code: `
+const log = [];
+class A {
+  static #x = log.push("priv");
+  static a = log.push("a:" + this.#x);
+  static { log.push("block:" + this.a); }
+  static b = log.push("b:" + this.#x);
+  static read() { return [this.#x, this.a, this.b, log]; }
+}
+console.log(JSON.stringify(A.read()));
+`,
+  },
+  {
+    name: "static-computed-key-order-with-blocks",
+    code: `
+const log = [];
+let i = 0;
+function key(label) { log.push("key:" + label + ":" + ++i); return label + i; }
+class A {
+  static [key("a")] = log.push("fieldA");
+  static { log.push("block:" + Object.keys(this).join(",")); }
+  static [key("b")] = log.push("fieldB");
+}
+console.log(JSON.stringify([Object.keys(A), log]));
 `,
   },
   {
@@ -163,8 +228,38 @@ async function* gen() {
     out.push(v);
     if (v === 2) break;
   }
+console.log(JSON.stringify(out));
+})();
+`,
+  },
+  {
+    name: "async-generator-throw-finally-yield",
+    code: `
+async function* gen() {
+  try {
+    yield 1;
+  } finally {
+    yield 2;
+  }
+}
+(async () => {
+  const it = gen();
+  const out = [];
+  out.push(await it.next());
+  try { out.push(await it.throw(new Error("boom"))); } catch (e) { out.push("caught:" + e.message); }
+  try { out.push(await it.next()); } catch (e) { out.push("next-caught:" + e.message); }
   console.log(JSON.stringify(out));
 })();
+`,
+  },
+  {
+    name: "object-rest-computed-eval-order",
+    code: `
+const log = [];
+const src = { a: 1, b: 2, c: 3 };
+function k() { log.push("key"); return "b"; }
+const { [k()]: picked, ...rest } = src;
+console.log(JSON.stringify({ picked, rest, log }));
 `,
   },
   {

@@ -509,39 +509,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const opd_start = pattern.data.list.start;
             const split = self.ast.nodeListSplitRest(pattern.data.list);
 
-            // 1단계: rest가 아닌 property key 이름을 수집 (__rest의 exclude 배열용)
-            // 이 루프는 visitNode를 호출하지 않으므로 슬라이스 안전
-            var exclude_keys: [64][]const u8 = undefined;
+            var exclude_keys: [64]NodeIndex = undefined;
             var exclude_count: usize = 0;
 
-            {
-                for (split.elements) |raw_idx| {
-                    const prop = self.ast.getNode(@enumFromInt(raw_idx));
-                    if (prop.tag != .binding_property) continue;
-                    // key 이름 수집
-                    const key_idx_inner = prop.data.binary.left;
-                    if (!key_idx_inner.isNone()) {
-                        const key_node_inner = self.ast.getNode(key_idx_inner);
-                        if (exclude_count < exclude_keys.len) {
-                            if (key_node_inner.tag == .identifier_reference or key_node_inner.tag == .binding_identifier) {
-                                exclude_keys[exclude_count] = self.ast.getText(key_node_inner.span);
-                                exclude_count += 1;
-                            } else if (key_node_inner.tag == .string_literal) {
-                                // 'aria-busy' 같은 string literal key — 따옴표를 제외한 내용
-                                const raw = self.ast.getText(key_node_inner.span);
-                                if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"')) {
-                                    exclude_keys[exclude_count] = raw[1 .. raw.len - 1];
-                                } else {
-                                    exclude_keys[exclude_count] = raw;
-                                }
-                                exclude_count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 2단계: 각 property를 declarator로 변환
+            // 각 property를 declarator로 변환하면서 rest exclude key도 같은 평가 결과로 수집한다.
             // visitNode가 AST를 변형하므로 인덱스 루프 사용 (split.elements 슬라이스는 stale 가능)
             const non_rest_len: u32 = @intCast(split.elements.len);
             var i_loop: u32 = 0;
@@ -557,7 +528,24 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
 
-                const member_access = try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
+                const member_access = if (key_node.tag == .computed_property_key) blk: {
+                    const key_span = try es_helpers.makeTempVarSpan(self);
+                    const key_binding = try es_helpers.makeBindingIdentifier(self, key_span);
+                    const key_value = try self.visitNode(key_node.data.unary.operand);
+                    const key_decl = try es_helpers.makeDeclarator(self, key_binding, key_value, span);
+                    try self.scratch.append(self.allocator, key_decl);
+                    if (exclude_count < exclude_keys.len) {
+                        exclude_keys[exclude_count] = try es_helpers.makeTempVarRef(self, key_span, span);
+                        exclude_count += 1;
+                    }
+                    break :blk try es_helpers.makeComputedMember(self, ref, try es_helpers.makeTempVarRef(self, key_span, span), span);
+                } else blk: {
+                    if (exclude_count < exclude_keys.len) {
+                        exclude_keys[exclude_count] = try makeRestExcludeKey(self, key_node);
+                        exclude_count += 1;
+                    }
+                    break :blk try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
+                };
 
                 // value 처리: shorthand vs long-form, default value
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
@@ -782,12 +770,34 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
         }
 
-        /// rest = __rest(_ref, ["key1", "key2"]) declarator 생성.
+        fn makeRestExcludeKey(self: *Transformer, key_node: Node) Transformer.Error!NodeIndex {
+            const raw = switch (key_node.tag) {
+                .identifier_reference, .binding_identifier => self.ast.getText(key_node.span),
+                .string_literal => blk: {
+                    const text = self.ast.getText(key_node.span);
+                    if (text.len >= 2 and (text[0] == '\'' or text[0] == '"')) break :blk text[1 .. text.len - 1];
+                    break :blk text;
+                },
+                else => "",
+            };
+            var buf: [256]u8 = undefined;
+            buf[0] = '"';
+            @memcpy(buf[1 .. 1 + raw.len], raw);
+            buf[1 + raw.len] = '"';
+            const str_span = try self.ast.addString(buf[0 .. raw.len + 2]);
+            return self.ast.addNode(.{
+                .tag = .string_literal,
+                .span = str_span,
+                .data = .{ .string_ref = str_span },
+            });
+        }
+
+        /// rest = __rest(_ref, ["key1", key2]) declarator 생성.
         fn buildRestDeclarator(
             self: *Transformer,
             rest_idx: NodeIndex,
             ref_span: Span,
-            exclude_keys: []const []const u8,
+            exclude_keys: []const NodeIndex,
             span: Span,
         ) Transformer.Error!NodeIndex {
             const binding = try self.visitNode(rest_idx);
@@ -803,18 +813,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             for (exclude_keys) |key| {
-                // 따옴표 포함 문자열 리터럴
-                var buf: [256]u8 = undefined;
-                buf[0] = '"';
-                @memcpy(buf[1 .. 1 + key.len], key);
-                buf[1 + key.len] = '"';
-                const str_span = try self.ast.addString(buf[0 .. key.len + 2]);
-                const str_node = try self.ast.addNode(.{
-                    .tag = .string_literal,
-                    .span = str_span,
-                    .data = .{ .string_ref = str_span },
-                });
-                try self.scratch.append(self.allocator, str_node);
+                try self.scratch.append(self.allocator, key);
             }
 
             const arr_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);

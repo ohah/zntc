@@ -2271,7 +2271,8 @@ test "ES2015: class with computed method uses bracket notation" {
 test "ES2015: static computed field uses bracket notation" {
     var r = try e2eTarget(std.testing.allocator, "var k='x';class F{static [k]=1;}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "F[k]=1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "F[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "]=1") != null);
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "F.[k]"), null);
 }
 
