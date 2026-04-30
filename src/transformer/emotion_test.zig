@@ -74,6 +74,81 @@ test "emotion: @emotion/css source 도 인식" {
     try expectAutoLabel(r.output, "card");
 }
 
+// `@emotion/core` 는 v10 의 메인 entry. v11 에서 `@emotion/react` 로 rename 됨 —
+// 하위호환 유지 차원 (v10 사용자 코드 그대로 동작).
+
+test "emotion: @emotion/core (v10) css 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/core";
+        \\const card = css`padding: 8px;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "card");
+}
+
+test "emotion: @emotion/core (v10) keyframes 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { keyframes } from "@emotion/core";
+        \\const fadeIn = keyframes`from { opacity: 0; }`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "fadeIn");
+}
+
+test "emotion: @emotion/core (v10) css + keyframes 동시 import 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css, keyframes } from "@emotion/core";
+        \\const spin = keyframes`from { rotate: 0; }`;
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "spin");
+    try expectAutoLabel(r.output, "card");
+}
+
+test "emotion: @emotion/core (v10) JSX inline `<div css={css`...`}>` 도 동작" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/core";
+        \\const el = <div css={css`color: red;`} />;
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "div");
+}
+
+test "emotion: @emotion/core (v10) alias `import { css as cx }` 도 추적" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css as cx } from "@emotion/core";
+        \\const button = cx`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "button");
+}
+
 test "emotion: { autoLabel: false } 옵션 — emotion 활성이지만 label skip" {
     var r = try e2eFull(
         std.testing.allocator,

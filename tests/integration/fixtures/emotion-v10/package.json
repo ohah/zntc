@@ -1,0 +1,12 @@
+{
+  "name": "emotion-v10-fixture",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Isolated emotion v10 install for v10 user coverage. v10 packages (@emotion/core 등) 가 v11 (@emotion/react) 와 공존하기 어려운 케이스를 격리.",
+  "dependencies": {
+    "@emotion/core": "^10.3.1",
+    "@emotion/css": "^10.0.27",
+    "@emotion/styled": "^10.3.0",
+    "react": "^16.14.0"
+  }
+}
