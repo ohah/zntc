@@ -430,12 +430,15 @@ pub fn ES2020(comptime Transformer: type) type {
             const new_prop = try self.visitNode(old_prop);
             const new_flags = member_flags & ~ast_mod.MemberFlags.optional_chain;
 
-            if (self.options.unsupported.class) {
+            if (self.options.unsupported.class or self.current_super_is_static) {
                 const super_class_span = self.current_super_class orelse return makeRawSuperMember(self, member_tag, new_prop, new_flags, span);
-                const proto = try makePrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
+                const super_base = if (self.current_super_is_static)
+                    try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx)
+                else
+                    try makePrototypeRef(self, super_class_span, self.current_super_class_old_idx, span);
                 return switch (member_tag) {
-                    .static_member_expression => helpers.makeStaticMember(self, proto, new_prop, span),
-                    .computed_member_expression => helpers.makeComputedMember(self, proto, new_prop, span),
+                    .static_member_expression => helpers.makeStaticMember(self, super_base, new_prop, span),
+                    .computed_member_expression => helpers.makeComputedMember(self, super_base, new_prop, span),
                     else => unreachable,
                 };
             }

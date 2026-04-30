@@ -2610,6 +2610,30 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     });
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                 },
+                .object_expression => {
+                    const list = node.data.list;
+                    const scratch_top = self.scratch.items.len;
+                    defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
+                        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
+                        const prop = self.ast.getNode(prop_idx);
+                        if (prop.tag == .object_property) {
+                            try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                                .tag = .object_property,
+                                .span = prop.span,
+                                .data = .{ .binary = .{
+                                    .left = prop.data.binary.left,
+                                    .right = try injectInstanceFieldsAfterSuperExpr(self, prop.data.binary.right, instance_fields, span),
+                                    .flags = prop.data.binary.flags,
+                                } },
+                            }));
+                        } else {
+                            try self.scratch.append(self.allocator, prop_idx);
+                        }
+                    }
+                    const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                    return self.ast.addNode(.{ .tag = .object_expression, .span = node.span, .data = .{ .list = new_list } });
+                },
                 .conditional_expression => return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
@@ -2691,6 +2715,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const e = node.data.extra;
                     return containsSuperCallAssignment(self, @enumFromInt(self.ast.extra_data.items[e])) or
                         containsSuperCallAssignment(self, @enumFromInt(self.ast.extra_data.items[e + 1]));
+                },
+                .object_expression => {
+                    const list = node.data.list;
+                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
+                        const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                        if (prop.tag == .object_property and containsSuperCallAssignment(self, prop.data.binary.right)) return true;
+                    }
+                    return false;
                 },
                 .assignment_expression => {
                     const left = self.ast.getNode(node.data.binary.left);
