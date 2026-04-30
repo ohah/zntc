@@ -22,6 +22,40 @@ runs:
       run: zig build napi
       shell: bash
 
+    - name: Build core JS wrapper
+      run: bun run --cwd packages/core build:js
+      shell: bash
+
+    - name: Verify JS wrapper uses fresh NAPI
+      run: |
+        bun - <<'EOF'
+        import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+        import { tmpdir } from "node:os";
+        import { join } from "node:path";
+        import { buildSync, init } from "./packages/core/dist/index.js";
+
+        await init();
+        const dir = mkdtempSync(join(tmpdir(), "zts-ci-napi-"));
+        const entry = join(dir, "index.ts");
+        const outfile = join(dir, "out.js");
+        writeFileSync(
+          entry,
+          'import styled from "styled-components"; const Button = styled.button`color:red;`; console.log(typeof Button);',
+        );
+        buildSync({
+          entryPoints: [entry],
+          bundle: true,
+          outfile,
+          external: ["styled-components"],
+          compiler: { styledComponents: { namespace: "ci" } },
+        });
+        const js = readFileSync(outfile, "utf8");
+        if (!js.includes("ci__sc-")) {
+          throw new Error("fresh NAPI sanity check failed: styledComponents.namespace was not applied");
+        }
+        EOF
+      shell: bash
+
     - name: Install dependencies
       run: bun install
       shell: bash
