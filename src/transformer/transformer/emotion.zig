@@ -50,25 +50,41 @@ pub const EMOTION_CSS_SOURCES: []const []const u8 = &.{
     "@emotion/native", // RN
 };
 
-pub fn isEmotionCssSource(source: []const u8) bool {
-    for (EMOTION_CSS_SOURCES) |s| {
+/// emotion `styled` default import source 문자열.
+pub const EMOTION_STYLED_SOURCES: []const []const u8 = &.{
+    "@emotion/styled",
+    "@emotion/native", // @emotion/native 는 default styled 도 export
+};
+
+fn isInList(source: []const u8, list: []const []const u8) bool {
+    for (list) |s| {
         if (std.mem.eql(u8, s, source)) return true;
     }
     return false;
 }
 
-/// `visitImportDeclaration` hook — source 가 emotion 이고 `{ css }` named specifier 가 있으면
-/// local binding 이름을 state.css_binding 에 저장.
+pub fn isEmotionCssSource(source: []const u8) bool {
+    return isInList(source, EMOTION_CSS_SOURCES);
+}
+
+pub fn isEmotionStyledSource(source: []const u8) bool {
+    return isInList(source, EMOTION_STYLED_SOURCES);
+}
+
+/// `visitImportDeclaration` hook — emotion source 의 `{ css }` named specifier 또는
+/// `@emotion/styled` 의 default specifier 를 binding 으로 저장.
 pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
     if (!self.options.emotion) return;
-    if (self.plugins.emotion.css_binding != null) return;
 
     const x = module_parser.readImportDeclExtras(self.ast, node.data.extra);
     if (x.source.isNone()) return;
     const source_node = self.ast.getNode(x.source);
     if (source_node.tag != .string_literal) return;
     const source_text = import_scanner.stripQuotes(self.ast.getText(source_node.span)) orelse return;
-    if (!isEmotionCssSource(source_text)) return;
+
+    const want_css = isEmotionCssSource(source_text) and self.plugins.emotion.css_binding == null;
+    const want_styled = isEmotionStyledSource(source_text) and self.plugins.emotion.styled_binding == null;
+    if (!want_css and !want_styled) return;
 
     var i: u32 = 0;
     while (i < x.specs_len) : (i += 1) {
@@ -76,47 +92,58 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
         const spec_idx: NodeIndex = @enumFromInt(spec_idx_raw);
         if (spec_idx.isNone()) continue;
         const spec_node = self.ast.getNode(spec_idx);
-        if (spec_node.tag != .import_specifier) continue;
-        // import_specifier: binary { left=imported, right=local }
-        const imported_idx = spec_node.data.binary.left;
-        const local_idx = spec_node.data.binary.right;
-        if (imported_idx.isNone() or local_idx.isNone()) continue;
-        const imported_node = self.ast.getNode(imported_idx);
-        if (imported_node.tag != .identifier_reference) continue;
-        if (!std.mem.eql(u8, self.ast.getText(imported_node.data.string_ref), "css")) continue;
-        // local 이름 추출 (alias 있을 수 있음).
-        const local_node = self.ast.getNode(local_idx);
-        if (local_node.tag != .identifier_reference and local_node.tag != .binding_identifier) continue;
-        const local_name = self.ast.getText(local_node.data.string_ref);
-        if (local_name.len == 0) continue;
-        self.plugins.emotion.css_binding = local_name;
-        return;
+        switch (spec_node.tag) {
+            .import_default_specifier => {
+                if (!want_styled) continue;
+                const local_name = self.ast.getText(spec_node.data.string_ref);
+                if (local_name.len == 0) continue;
+                self.plugins.emotion.styled_binding = local_name;
+            },
+            .import_specifier => {
+                if (!want_css) continue;
+                // binary { left=imported, right=local }
+                const imported_idx = spec_node.data.binary.left;
+                const local_idx = spec_node.data.binary.right;
+                if (imported_idx.isNone() or local_idx.isNone()) continue;
+                const imported_node = self.ast.getNode(imported_idx);
+                if (imported_node.tag != .identifier_reference) continue;
+                if (!std.mem.eql(u8, self.ast.getText(imported_node.data.string_ref), "css")) continue;
+                const local_node = self.ast.getNode(local_idx);
+                if (local_node.tag != .identifier_reference and local_node.tag != .binding_identifier) continue;
+                const local_name = self.ast.getText(local_node.data.string_ref);
+                if (local_name.len == 0) continue;
+                self.plugins.emotion.css_binding = local_name;
+            },
+            else => {},
+        }
     }
 }
 
-/// `visitVariableDeclarator` 의 post-visit hook — emotion `css\`...\`` 형태면 첫 quasi 에
+/// `visitVariableDeclarator` 의 post-visit hook. tag 가 emotion binding 이면 첫 quasi 에
 /// `label:<var_name>;` prepend.
+///
+/// 인식 형태:
+///   - `css\`...\`` (css_binding identifier 직접)
+///   - `styled.div\`...\`` (styled_binding 의 static_member 첫 단계)
+///   - `styled(Component)\`...\`` (styled_binding 의 call 첫 단계)
+///
+/// 미인식 (후속 PR):
+///   - `css.x\`...\`` / `styled.div.attrs({})\`...\`` 같은 추가 chain
 pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     if (!self.options.emotion) return init_idx;
-    const binding = self.plugins.emotion.css_binding orelse return init_idx;
     if (var_name.len == 0) return init_idx;
     if (init_idx.isNone()) return init_idx;
 
     const init_node = self.ast.getNode(init_idx);
     if (init_node.tag != .tagged_template_expression) return init_idx;
 
-    // tagged_template extra = [tag, template, flags]
     const e = init_node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return init_idx;
     const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
     const template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
     const flags = self.ast.extra_data.items[e + 2];
 
-    // tag 가 emotion css binding 인지 확인 — `css` 식별자만 (chain `css.something` 은 skip).
-    if (tag_idx.isNone()) return init_idx;
-    const tag_node = self.ast.getNode(tag_idx);
-    if (tag_node.tag != .identifier_reference) return init_idx;
-    if (!std.mem.eql(u8, self.ast.getText(tag_node.data.string_ref), binding)) return init_idx;
+    if (!tagMatchesEmotion(self, tag_idx)) return init_idx;
 
     const new_template = try prependLabelToTemplate(self, template_idx, var_name);
     if (new_template == template_idx) return init_idx;
@@ -131,6 +158,41 @@ pub fn maybeApplyAutoLabel(self: *Transformer, init_idx: NodeIndex, var_name: []
         .span = init_node.span,
         .data = .{ .extra = new_extra },
     });
+}
+
+/// tag 가 emotion 인식 패턴 (css binding, styled.X, styled(X)) 인지 확인.
+fn tagMatchesEmotion(self: *Transformer, tag_idx: NodeIndex) bool {
+    if (tag_idx.isNone()) return false;
+    const state = &self.plugins.emotion;
+    const tag_node = self.ast.getNode(tag_idx);
+    switch (tag_node.tag) {
+        .identifier_reference => {
+            // `css\`...\`` — css_binding 일치만 인식.
+            const binding = state.css_binding orelse return false;
+            return std.mem.eql(u8, self.ast.getText(tag_node.data.string_ref), binding);
+        },
+        .static_member_expression => {
+            // `styled.div\`...\`` — object 가 styled_binding 일치.
+            const binding = state.styled_binding orelse return false;
+            if (!self.ast.hasExtra(tag_node.data.extra, 1)) return false;
+            const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[tag_node.data.extra]);
+            if (obj_idx.isNone()) return false;
+            const obj_node = self.ast.getNode(obj_idx);
+            if (obj_node.tag != .identifier_reference) return false;
+            return std.mem.eql(u8, self.ast.getText(obj_node.data.string_ref), binding);
+        },
+        .call_expression => {
+            // `styled(Component)\`...\`` — callee 가 styled_binding 일치.
+            const binding = state.styled_binding orelse return false;
+            if (!self.ast.hasExtra(tag_node.data.extra, 0)) return false;
+            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[tag_node.data.extra]);
+            if (callee_idx.isNone()) return false;
+            const callee_node = self.ast.getNode(callee_idx);
+            if (callee_node.tag != .identifier_reference) return false;
+            return std.mem.eql(u8, self.ast.getText(callee_node.data.string_ref), binding);
+        },
+        else => return false,
+    }
 }
 
 /// template_literal 의 첫 quasi 시작에 `label:<name>;` prepend. no-interp / interp 둘 다 처리.

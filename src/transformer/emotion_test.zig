@@ -116,6 +116,49 @@ test "emotion: 다른 라이브러리 source (`stitches`) 는 미감지" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "label:") == null);
 }
 
+test "emotion: @emotion/styled default — styled.div`` 도 autoLabel" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@emotion/styled";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Btn");
+}
+
+test "emotion: @emotion/styled — styled(Component)`` 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@emotion/styled";
+        \\import Inner from "./inner";
+        \\const Wrapped = styled(Inner)`color: blue;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Wrapped");
+}
+
+test "emotion: styled alias `import s from \"@emotion/styled\"` 도 추적" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import s from "@emotion/styled";
+        \\const Btn = s.button`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Btn");
+}
+
 test "emotion: tag 가 css.something 같은 chain 이면 미인식" {
     // chain 형태는 후속 PR. 단순 css binding 만 인식.
     var r = try e2eFull(

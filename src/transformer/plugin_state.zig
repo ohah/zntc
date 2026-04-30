@@ -66,8 +66,12 @@ pub const RefreshState = struct {
 
 pub const EmotionState = struct {
     /// `import { css } from "@emotion/react"` 의 local binding 이름 (alias 포함).
-    /// import 가 없으면 null — autoLabel transform 미적용.
+    /// import 가 없으면 null — css autoLabel 미적용.
     css_binding: ?[]const u8 = null,
+
+    /// `import styled from "@emotion/styled"` 의 default binding 이름 (alias 포함).
+    /// `styled.div\`...\`` / `styled(X)\`...\`` 의 첫 quasi 에 label prepend.
+    styled_binding: ?[]const u8 = null,
 };
 
 pub const StyledComponentsState = struct {
