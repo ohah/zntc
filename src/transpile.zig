@@ -394,9 +394,7 @@ pub fn transpileWithCallback(
     }
 
     var parser = Parser.init(arena_alloc, &scanner);
-    const ext = std.fs.path.extension(file_path);
-    parser.configureFromExtension(ext);
-    parser.rejectTypeScriptSyntaxForJavaScriptSource(ext);
+    parser.configureFromExtension(std.fs.path.extension(file_path));
 
     if (!parser.is_ts) {
         if (options.flow) {

@@ -294,7 +294,6 @@ pub const Parser = struct {
     /// 번들러용: .ts/.tsx를 확정 module로 파싱 (await 키워드, strict mode 항상 적용)
     pub fn configureForBundler(self: *Parser, ext: []const u8) void {
         self.applyExtension(ext, false);
-        self.rejectTypeScriptSyntaxForJavaScriptSource(ext);
     }
 
     /// 번들러용: 확장자 매칭을 거치지 않고 TS/JSX 플래그를 직접 적용한다.
@@ -327,11 +326,8 @@ pub const Parser = struct {
         if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
             self.is_jsx = true;
         }
-    }
-
-    /// 명시 JS 계열 source type 은 TS syntax 를 허용하지 않는다.
-    /// `transpile(source)` 기본 filename 은 여전히 input.ts 이므로 기존 permissive 기본값은 유지된다.
-    pub fn rejectTypeScriptSyntaxForJavaScriptSource(self: *Parser, ext: []const u8) void {
+        // 명시 JS 계열 source type 은 TS syntax 를 허용하지 않는다.
+        // `transpile(source)` 기본 filename 은 여전히 input.ts 이므로 기존 permissive 기본값은 유지된다.
         if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx") or
             std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".cjs"))
         {
