@@ -203,6 +203,35 @@ test "emotion: keyframes alias `import { keyframes as kf }` 도 추적" {
     try expectAutoLabel(r.output, "fadeIn");
 }
 
+test "emotion: styled chain `styled.div.withComponent(\"button\")\\`\\`` 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@emotion/styled";
+        \\const Btn = styled.div.withComponent("button")`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Btn");
+}
+
+test "emotion: styled chain `styled(X).attrs({})\\`\\`` 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "@emotion/styled";
+        \\import Inner from "./inner";
+        \\const Wrapped = styled(Inner).attrs({ id: "w" })`color: blue;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Wrapped");
+}
+
 test "emotion: tag 가 css.something 같은 chain 이면 미인식" {
     // chain 형태는 후속 PR. 단순 css binding 만 인식.
     var r = try e2eFull(
