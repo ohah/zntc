@@ -1314,6 +1314,109 @@ fn extractCssTemplateIdx(self: *Transformer, css_value_idx: NodeIndex) ?NodeInde
 /// `_styled`, `_styled2`, ... 로 mangled (`resolveStyledInjectName`).
 const DEFAULT_STYLED_BINDING = "styled";
 
+/// object_expression 의 dynamic value 들을 prop 으로 forward — primitive literal 이
+/// 아닌 value (member expression, call, identifier 등) 를 `_cssN={original}` jsx_attribute
+/// 로 만들고, object 안의 value 는 `p._cssN` 으로 교체. babel-plugin-styled-components
+/// 의 properties reducer 와 동등한 단순화 — shorthand (`{x}`) 와 primitive 값은 inline
+/// 유지, spread/computed key 는 미지원 (후속 PR).
+///
+/// 변환 일어났으면 새 object idx + caller 의 `did_forward` 에 true. 미변환 시 입력 그대로.
+fn forwardObjectInterpolations(
+    self: *Transformer,
+    obj_idx: NodeIndex,
+    forwarded_attrs: *std.ArrayList(NodeIndex),
+    did_forward: *bool,
+) Error!NodeIndex {
+    const obj = self.ast.getNode(obj_idx);
+    if (obj.tag != .object_expression) return obj_idx;
+    const list = obj.data.list;
+    if (list.len == 0) return obj_idx;
+
+    const items = self.ast.extra_data.items[list.start .. list.start + list.len];
+    const top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(top);
+    const zero = Span{ .start = 0, .end = 0 };
+    var changed = false;
+
+    for (items) |raw| {
+        const prop_idx: NodeIndex = @enumFromInt(raw);
+        const prop = self.ast.getNode(prop_idx);
+        if (prop.tag != .object_property) {
+            try self.scratch.append(self.allocator, prop_idx);
+            continue;
+        }
+        const value_idx = prop.data.binary.right;
+        if (value_idx.isNone()) {
+            // shorthand — inline 유지 (사용자 의도)
+            try self.scratch.append(self.allocator, prop_idx);
+            continue;
+        }
+        const value_node = self.ast.getNode(value_idx);
+        const is_primitive = switch (value_node.tag) {
+            .string_literal, .numeric_literal, .bigint_literal, .boolean_literal, .null_literal => true,
+            else => false,
+        };
+        if (is_primitive) {
+            try self.scratch.append(self.allocator, prop_idx);
+            continue;
+        }
+
+        // forward
+        changed = true;
+        var prop_buf: [32]u8 = undefined;
+        const local_id = forwarded_attrs.items.len;
+        const prop_name = std.fmt.bufPrint(&prop_buf, "_css{d}", .{local_id}) catch unreachable;
+        const prop_name_span = try self.ast.addString(prop_name);
+
+        const attr_name = try self.ast.addNode(.{
+            .tag = .jsx_identifier,
+            .span = prop_name_span,
+            .data = .{ .string_ref = prop_name_span },
+        });
+        const attr = try self.ast.addNode(.{
+            .tag = .jsx_attribute,
+            .span = zero,
+            .data = .{ .binary = .{ .left = attr_name, .right = value_idx, .flags = 0 } },
+        });
+        try forwarded_attrs.append(self.allocator, attr);
+
+        // 새 value: `p._cssN`. p_ref + member 만들기.
+        const p_span = try self.ast.addString("p");
+        const p_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = p_span,
+            .data = .{ .string_ref = p_span },
+        });
+        const member_prop_span = try self.ast.addString(prop_name);
+        const member_prop_ref = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = member_prop_span,
+            .data = .{ .string_ref = member_prop_span },
+        });
+        const member = try self.addExtraNode(.static_member_expression, zero, &.{
+            @intFromEnum(p_ref),
+            @intFromEnum(member_prop_ref),
+            0,
+        });
+        const new_prop = try self.ast.addNode(.{
+            .tag = .object_property,
+            .span = zero,
+            .data = .{ .binary = .{ .left = prop.data.binary.left, .right = member, .flags = prop.data.binary.flags } },
+        });
+        try self.scratch.append(self.allocator, new_prop);
+    }
+
+    if (!changed) return obj_idx;
+    did_forward.* = true;
+
+    const new_props = try self.ast.addNodeList(self.scratch.items[top..]);
+    return self.ast.addNode(.{
+        .tag = .object_expression,
+        .span = obj.span,
+        .data = .{ .list = new_props },
+    });
+}
+
 /// template_literal 의 `${expr}` interpolation 을 prop 으로 forward — 각 expression 을
 /// `p => p._cssN` arrow function 으로 교체하고, 원본 expression 을 `_cssN={expr}`
 /// jsx_attribute 로 만들어 caller 의 forwarded_attrs 에 push. babel-plugin-styled-components
@@ -1616,15 +1719,21 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     const generated_span = try self.ast.addString(generated_name);
     const zero = Span{ .start = 0, .end = 0 };
 
-    // template_literal 의 `${expr}` interpolation 을 prop 으로 forward (babel parity).
-    // 각 expression 을 `p => p._<cssN>` arrow function 으로 교체 + jsx_attribute 추가.
-    // 결과 attrs (css 제거 + forwarded props) 는 attrs rebuild 단계에서 합침.
+    // template_literal 의 `${expr}` 또는 object_expression 의 dynamic value 를 prop 으로
+    // forward (babel parity). 각 expression 을 `p => p._cssN` (template) 또는 `p._cssN`
+    // (object) 로 교체 + `_cssN={original}` jsx_attribute 추가. 결과 attrs (css 제거 +
+    // forwarded props) 는 attrs rebuild 단계에서 합침.
     var forwarded_attrs: std.ArrayList(NodeIndex) = .empty;
     defer forwarded_attrs.deinit(self.allocator);
+    var object_did_forward = false;
     const final_template_idx: NodeIndex = if (use_object_form)
         .none
     else
         try forwardTemplateInterpolations(self, css_template_idx, &forwarded_attrs);
+    const final_object_idx: NodeIndex = if (use_object_form)
+        try forwardObjectInterpolations(self, css_value_idx, &forwarded_attrs, &object_did_forward)
+    else
+        .none;
 
     const styled_ref_span = try self.ast.addString(default_binding);
     const styled_ref = try self.ast.addNode(.{
@@ -1657,9 +1766,40 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         });
     };
 
-    // styled component init expression — object form 은 call, 그 외는 tagged template
+    // styled component init expression:
+    //   - object form (forwarding 없음) → `styled.div({...})`
+    //   - object form (forwarding 발생) → `styled.div(p => ({...}))` — arrow with parens
+    //   - tagged template → `styled.div\`...\``
     const init_expr: NodeIndex = if (use_object_form) blk: {
-        const args_list = try self.ast.addNodeList(&.{css_value_idx});
+        const obj_arg: NodeIndex = if (object_did_forward) arrow_blk: {
+            // arrow: `p => ({ ... })`. concise body 가 object literal 이면 codegen 측에서
+            // `() => ({...})` 로 paren wrap 출력 (object/block 모호성 해소).
+            const p_span = try self.ast.addString("p");
+            const p_param = try self.ast.addNode(.{
+                .tag = .binding_identifier,
+                .span = p_span,
+                .data = .{ .string_ref = p_span },
+            });
+            const params_list = try self.ast.addNodeList(&.{p_param});
+            const params = try self.ast.addNode(.{
+                .tag = .formal_parameters,
+                .span = zero,
+                .data = .{ .list = params_list },
+            });
+            // arrow concise body 가 object_expression 일 때 codegen 이 `({...})` 로 wrap 안
+            // 하면 `() => {block}` 으로 오인. parenthesized_expression 으로 명시 wrap.
+            const paren = try self.ast.addNode(.{
+                .tag = .parenthesized_expression,
+                .span = zero,
+                .data = .{ .unary = .{ .operand = final_object_idx, .flags = 0 } },
+            });
+            break :arrow_blk try self.addExtraNode(.arrow_function_expression, zero, &.{
+                @intFromEnum(params),
+                @intFromEnum(paren),
+                0,
+            });
+        } else final_object_idx;
+        const args_list = try self.ast.addNodeList(&.{obj_arg});
         break :blk try self.addExtraNode(.call_expression, zero, &.{
             @intFromEnum(styled_tag),
             args_list.start,
