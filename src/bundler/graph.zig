@@ -150,6 +150,8 @@ pub const ModuleGraph = struct {
     emotion_auto_label: bool = true,
     /// emotion.sourceMap 옵션 — true 면 css 템플릿 끝에 inline sourceMap 주석을 append.
     emotion_source_map: bool = false,
+    /// emotion.labelFormat 옵션 — label 이름 포맷 템플릿 (`[local]`/`[filename]`/`[dirname]`).
+    emotion_label_format: []const u8 = "",
     /// code splitting 활성화. helper module virtual import (#1961) 는 splitting 모드에서만
     /// 활성 — single-bundle 모드는 helper module 의 declaration 이 statement-level shake
     /// 로 elide 되는 회귀가 있어 기존 preamble 모델 유지.
@@ -1732,6 +1734,7 @@ pub const ModuleGraph = struct {
         opts.emotion = self.emotion and is_user_code;
         opts.emotion_auto_label = self.emotion_auto_label;
         opts.emotion_source_map = self.emotion_source_map;
+        opts.emotion_label_format = self.emotion_label_format;
         opts.plugins = merged_plugins;
         opts.jsx_transform = ast_ptr.has_jsx;
         opts.jsx_filename = module.path;

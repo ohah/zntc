@@ -132,6 +132,11 @@ pub const TransformOptions = struct {
     /// `compiler.emotion: { sourceMap: true }`. babel-plugin-emotion 동작과 일치 —
     /// DevTools 에서 CSS 위치 → source 위치 추적 가능.
     emotion_source_map: bool = false,
+    /// emotion.labelFormat 옵션 — label 이름 포맷 템플릿. 토큰: `[local]` (변수명),
+    /// `[filename]` (확장자 제외 basename), `[dirname]` (parent dir). 빈 문자열이면
+    /// `[local]` 동작 (기본). babel-plugin-emotion 동작과 동일 — invalid CSS char
+    /// (`!"#$%&'()*+,./:;<=>?@[]^|}~{`) 는 `-` 로 sanitize.
+    emotion_label_format: []const u8 = "",
     /// useDefineForClassFields=false: instance field를 constructor의 this.x = value 할당으로 변환.
     /// true(기본값)이면 class field를 그대로 유지 (TC39 [[Define]] semantics).
     /// false이면 TS 4.x 이전 동작 — field를 constructor body로 이동 ([[Set]] semantics).

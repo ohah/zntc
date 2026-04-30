@@ -1254,6 +1254,9 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
     if (typeof em === "object") {
       if (em.autoLabel === false) napiOptions.emotionAutoLabel = false;
       if (em.sourceMap === true) napiOptions.emotionSourceMap = true;
+      if (typeof em.labelFormat === "string" && em.labelFormat.length > 0) {
+        napiOptions.emotionLabelFormat = em.labelFormat;
+      }
     }
   }
   return napiOptions;
@@ -1423,6 +1426,11 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
       : {}),
     ...(typeof compiler?.emotion === "object" && compiler.emotion.sourceMap === true
       ? { emotionSourceMap: true }
+      : {}),
+    ...(typeof compiler?.emotion === "object" &&
+    typeof compiler.emotion.labelFormat === "string" &&
+    compiler.emotion.labelFormat.length > 0
+      ? { emotionLabelFormat: compiler.emotion.labelFormat }
       : {}),
   });
 }

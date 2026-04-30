@@ -966,6 +966,143 @@ test "emotion (sourceMap): base64 디코딩 → JSON 구조 정합성 검증" {
     try std.testing.expect(std.mem.indexOf(u8, json_buf, "\"names\":[]") != null);
 }
 
+// ─── labelFormat ───
+// 토큰: `[local]`, `[filename]`, `[dirname]` (case-insensitive).
+// var_name 자체도 sanitize — invalid CSS char (`$` `.` `/` 등) → `-`.
+
+test "emotion (labelFormat): 기본 (빈 문자열) — 기존 [local] 동작 유지" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "src/Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "card");
+}
+
+test "emotion (labelFormat): `[filename]--[local]` — 토큰 치환" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_label_format = "[filename]--[local]", .jsx_filename = "src/Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Button--card");
+}
+
+test "emotion (labelFormat): `[dirname]-[filename]-[local]` 3 토큰 모두" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const btn = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_label_format = "[dirname]-[filename]-[local]", .jsx_filename = "src/components/Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "components-Button-btn");
+}
+
+test "emotion (labelFormat): `index` filename → parent dir 로 fallback" {
+    // src/Button/index.tsx 의 [filename] 은 "Button" (basename "index" → dirname).
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_label_format = "[filename]--[local]", .jsx_filename = "src/Button/index.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Button--card");
+}
+
+test "emotion (labelFormat): 토큰 case-insensitive — `[Local]` 도 인식" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_label_format = "[Filename]--[LOCAL]", .jsx_filename = "src/Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "Button--card");
+}
+
+test "emotion (labelFormat): 알 수 없는 토큰은 그대로 통과" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_label_format = "[unknown]-[local]", .jsx_filename = "src/Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try expectAutoLabel(r.output, "[unknown]-card");
+}
+
+test "emotion (sanitize): var name 의 invalid CSS char → `-`" {
+    // `$` 는 valid identifier char 이지만 invalid CSS class char → `-` 치환.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const $card = css`color: red;`;
+    ,
+        .{ .emotion = true, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // `$card` → `-card` (sanitized)
+    try expectAutoLabel(r.output, "-card");
+}
+
+test "emotion (sanitize): labelFormat 의 [filename] 도 sanitize" {
+    // filename 에 `.` 등이 들어가면 sanitize. 예: `Button.test.tsx` → basename
+    // "Button.test" → 첫 `.` 가 invalid → `Button-test`.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_label_format = "[filename]--[local]", .jsx_filename = "src/Button.test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // basename "Button.test.tsx" → ext=".tsx" → basename_no_ext="Button.test" → sanitize → "Button-test"
+    try expectAutoLabel(r.output, "Button-test--card");
+}
+
+test "emotion (labelFormat): jsx_filename 없으면 [filename]/[dirname] = 빈 문자열" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import { css } from "@emotion/react";
+        \\const card = css`color: red;`;
+    ,
+        .{ .emotion = true, .emotion_label_format = "[filename]--[local]" }, // jsx_filename 미지정
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // [filename] = "" → "--card"
+    try expectAutoLabel(r.output, "--card");
+}
+
 test "emotion (sourceMap): non-emotion tag 는 sourceMap 도 추가 안 됨" {
     var r = try e2eFull(
         std.testing.allocator,
