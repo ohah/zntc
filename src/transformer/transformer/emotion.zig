@@ -250,7 +250,72 @@ pub fn maybeApplyAutoLabelForJsxAttr(
     if (is_styles and !elementMatchesGlobal(self, tag_name_idx)) return value_idx;
 
     const label = jsxElementLabel(self, tag_name_idx) orelse return value_idx;
+
+    // value 형태별 분기:
+    //   - tagged_template_expression — 기존 path (label/sourceMap 적용)
+    //   - object_expression / array_expression — `css(...)` call 로 wrap (PURE + label arg)
+    //   - 그 외 (identifier, call_expression 등) — 통과 (사용자가 이미 변환한 값으로 가정)
+    const value_node = self.ast.getNode(value_idx);
+    const is_obj_or_arr = value_node.tag == .object_expression or value_node.tag == .array_expression;
+    // `<Global styles={obj}>` 도 처리 — is_styles 는 위에서 elementMatchesGlobal 가드 통과.
+    if (is_obj_or_arr and (is_css or is_styles or is_classnames_inline)) {
+        return try wrapCssPropInCssCall(self, value_idx, label);
+    }
     return try maybeTransformEmotionTemplate(self, value_idx, label);
+}
+
+/// `<X css={obj_or_arr}/>` 의 obj/array literal 을 `css(value, "label:X;")` call 로 wrap.
+/// `/* @__PURE__ */` annotation 도 부여 (CallFlags.is_pure) — minifier tree-shaking.
+///
+/// css binding 이 import 안 됐으면 no-op (auto-inject 는 별도 작업, 사용자가 import 가정).
+/// autoLabel 비활성 (.never / dev_only + production define) 이면 label 인자 생략.
+fn wrapCssPropInCssCall(self: *Transformer, value_idx: NodeIndex, label: []const u8) Error!NodeIndex {
+    const css_binding = self.plugins.emotion.css_binding orelse return value_idx;
+    const value_node = self.ast.getNode(value_idx);
+
+    // Callee: `<css_binding>` identifier_reference (alias 도 포함).
+    const callee_span = try self.ast.addString(css_binding);
+    const callee = try self.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = callee_span,
+        .data = .{ .string_ref = callee_span },
+    });
+
+    // Args: [value, optional label string]
+    var args_buf: [2]u32 = undefined;
+    args_buf[0] = @intFromEnum(value_idx);
+    var args_count: u32 = 1;
+
+    if (labelEnabledNow(self) and label.len > 0) {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.append(self.allocator, '"');
+        try writeLabelPrefix(self, &buf, label);
+        try buf.append(self.allocator, '"');
+        const label_span = try self.ast.addString(buf.items);
+        const label_node = try self.ast.addNode(.{
+            .tag = .string_literal,
+            .span = label_span,
+            .data = .{ .string_ref = label_span },
+        });
+        args_buf[1] = @intFromEnum(label_node);
+        args_count = 2;
+    }
+
+    // call_expression extras = [callee, args_start, args_len, flags]
+    const args_start = try self.ast.addExtras(args_buf[0..args_count]);
+    const flags: u32 = ast_mod.CallFlags.is_pure;
+    const call_extra = try self.ast.addExtras(&.{
+        @intFromEnum(callee),
+        args_start,
+        args_count,
+        flags,
+    });
+    return self.ast.addNode(.{
+        .tag = .call_expression,
+        .span = value_node.span,
+        .data = .{ .extra = call_extra },
+    });
 }
 
 /// JSX element 가 import 된 `Global` binding 과 일치하는지 — 단순 identifier 만.
