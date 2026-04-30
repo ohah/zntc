@@ -331,7 +331,6 @@ pub fn ES2022(comptime Transformer: type) type {
                             .func_name = names.fn_name,
                             .member_idx = @enumFromInt(raw_idx),
                             .kind = pm_kind,
-                            .is_static = is_static,
                             .class_name = if (is_static) class_name_text else null,
                         });
                     } else if (lower_fields and member.tag == .property_definition) {
@@ -354,7 +353,6 @@ pub fn ES2022(comptime Transformer: type) type {
                         try field_mappings.append(self.allocator, .{
                             .original_name = orig_name,
                             .var_name = var_name,
-                            .is_static = is_static,
                             .class_name = if (is_static) class_name_text else null,
                         });
                         try field_member_raw.append(self.allocator, raw_idx);
@@ -375,7 +373,7 @@ pub fn ES2022(comptime Transformer: type) type {
             defer self.current_private_fields = saved_private_fields;
 
             for (field_mappings.items, field_init_idx.items) |m, init_val| {
-                if (m.is_static) {
+                if (m.class_name != null) {
                     // static: `var _x = { writable: true, value: init };` — init이 descriptor 내부.
                     const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span);
                     try pre_stmts.append(self.allocator, desc);
@@ -386,7 +384,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 }
             }
             for (method_mappings.items) |m| {
-                if (m.is_static) {
+                if (m.class_name != null) {
                     const fn_ref = try es_helpers.makeIdentifierRef(self, m.func_name);
                     const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.weakset_name, fn_ref, span);
                     try pre_stmts.append(self.allocator, desc);
@@ -420,7 +418,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 {
                     const m = method_mappings.items[method_mapping_idx];
                     method_mapping_idx += 1;
-                    if (!m.is_static) {
+                    if (m.class_name == null) {
                         const init_stmt = try es_helpers.buildPrivateMethodInit(self, m.weakset_name, span);
                         try ctor_init_stmts.append(self.allocator, init_stmt);
                     }
@@ -434,7 +432,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     const fi = field_init_idx.items[field_mapping_idx];
                     field_mapping_idx += 1;
                     // static은 descriptor가 init 값을 이미 담고 있으므로 ctor 주입 없음, body에서 제거만.
-                    if (!fm.is_static) {
+                    if (fm.class_name == null) {
                         const init_stmt = try buildPrivateFieldSetInit(self, fm.var_name, fi, span);
                         try ctor_init_stmts.append(self.allocator, init_stmt);
                     }
@@ -670,10 +668,10 @@ pub fn ES2022(comptime Transformer: type) type {
 
         /// __classPrivateMethodGet(obj, _set, _fn) 호출 노드 생성.
         fn buildMethodGetCall(self: *Transformer, new_obj: NodeIndex, mapping: Transformer.PrivateMethodMapping, span: Span) Transformer.Error!NodeIndex {
-            if (mapping.is_static) {
+            if (mapping.class_name) |class_name| {
                 self.runtime_helpers.class_static_private_field = true;
                 const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
-                const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name.?);
+                const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
                 const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.weakset_name);
                 return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, class_ref, desc_ref }, span);
             }

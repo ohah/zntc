@@ -1086,7 +1086,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if ((flags & ast_mod.MemberFlags.optional_chain) != 0) return null;
             const obj_idx: NodeIndex = self.readNodeIdx(e, 0);
             const mapping = findPrivateFieldMapping(self, self.readNodeIdx(e, 1)) orelse return null;
-            if (mapping.is_static) {
+            if (mapping.class_name != null) {
                 return buildStaticPrivateFieldGet(self, mapping, obj_idx, node.span);
             }
             return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, node.span);
@@ -1115,7 +1115,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// instance/static 분기해서 private field get 호출을 구성.
         fn buildPrivateFieldGetCall(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            if (mapping.is_static) return buildStaticPrivateFieldGet(self, mapping, obj_idx, span);
+            if (mapping.class_name != null) return buildStaticPrivateFieldGet(self, mapping, obj_idx, span);
             return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, span);
         }
 
@@ -1237,10 +1237,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// obj_idx는 old AST 노드로, 내부에서 visit 수행.
         /// instance는 `__classPrivateFieldSet` helper, static은 수정된 spec helper 모두 value를 반환 (#1488).
         fn buildPrivateFieldSetWithComputedValue(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, new_value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            if (mapping.is_static) {
+            if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
                 const new_obj = try self.visitNode(obj_idx);
-                const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name.?);
+                const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
                 const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
@@ -1256,9 +1256,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
         /// optional chain lowering 등 재구성된 private_field_expression 교체용 (#1492).
         pub fn emitPrivateFieldGetWithNewObj(self: *Transformer, prop_old_idx: NodeIndex, obj_new: NodeIndex, span: Span) Transformer.Error!?NodeIndex {
             const mapping = findPrivateFieldMapping(self, prop_old_idx) orelse return null;
-            if (mapping.is_static) {
+            if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
-                const class_ref = try es_helpers.makeIdentifierRef(self, mapping.class_name.?);
+                const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
                 const desc_ref = try es_helpers.makeIdentifierRef(self, mapping.var_name);
                 self.runtime_helpers.class_static_private_field = true;
                 const call = try es_helpers.makeCallExpr(self, helper, &.{ obj_new, class_ref, desc_ref }, span);
@@ -1498,10 +1498,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // instance field / static field 매핑 우선 조회
             for (self.current_private_fields) |pf| {
                 if (!std.mem.eql(u8, pf.original_name, orig)) continue;
-                if (pf.is_static) {
+                if (pf.class_name) |class_name| {
                     // static: obj === ClassName (class identity 비교)
                     const new_obj = try self.visitNode(right_idx);
-                    const class_ref = try es_helpers.makeIdentifierRef(self, pf.class_name.?);
+                    const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
                     return self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = node.span,
@@ -1519,9 +1519,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // private method 매핑 조회
             for (self.current_private_methods) |pm| {
                 if (!std.mem.eql(u8, pm.original_name, orig)) continue;
-                if (pm.is_static) {
+                if (pm.class_name) |class_name| {
                     const new_obj = try self.visitNode(right_idx);
-                    const class_ref = try es_helpers.makeIdentifierRef(self, pm.class_name.?);
+                    const class_ref = try es_helpers.makeIdentifierRef(self, class_name);
                     return self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = node.span,
@@ -1815,7 +1815,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 mappings[cm.private_fields.items.len + i] = .{
                     .original_name = pf.original_name,
                     .var_name = pf.name,
-                    .is_static = true,
                     .class_name = class_name,
                 };
             }
