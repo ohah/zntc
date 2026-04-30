@@ -8,14 +8,32 @@ const CodegenOptions = helpers.CodegenOptions;
 
 const default_cg: CodegenOptions = .{ .minify_whitespace = false };
 
-/// 출력에 `withConfig({ displayName: "<expected>" })` + componentId 패턴이 나타나는지 검증.
-/// componentId 는 `sc-<8hex>-<digit>` 형태만 확인 (정확 hash 는 file path 의존이라 변동 가능).
+/// 출력에 `withConfig({ displayName: ...<expected> })` + componentId 패턴이 나타나는지 검증.
+/// fileName 옵션 (default true) 으로 displayName 에 `<basename>__` prefix 가 붙거나
+/// 안 붙거나 양쪽 다 허용 — 본 테스트의 의도는 wrap 메커니즘 검증이라 형식 디테일은
+/// fileName 전용 테스트가 따로 검증.
 fn expectDisplayName(output: []const u8, expected: []const u8) !void {
-    var quoted_buf: [256]u8 = undefined;
-    const needle = std.fmt.bufPrint(&quoted_buf, "displayName: \"{s}\"", .{expected}) catch return error.OutOfMemory;
-    try std.testing.expect(std.mem.indexOf(u8, output, needle) != null);
+    var direct_buf: [256]u8 = undefined;
+    const direct = std.fmt.bufPrint(&direct_buf, "displayName: \"{s}\"", .{expected}) catch return error.OutOfMemory;
+    var prefixed_buf: [256]u8 = undefined;
+    const prefixed_suffix = std.fmt.bufPrint(&prefixed_buf, "__{s}\"", .{expected}) catch return error.OutOfMemory;
+    const has_direct = std.mem.indexOf(u8, output, direct) != null;
+    const has_prefixed = std.mem.indexOf(u8, output, prefixed_suffix) != null;
+    try std.testing.expect(has_direct or has_prefixed);
     try std.testing.expect(std.mem.indexOf(u8, output, "withConfig") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "componentId: \"sc-") != null);
+}
+
+/// 출력에 `displayName: "<name>"` 또는 prefixed `displayName: "<...>__<name>"` 가
+/// 들어있는지 검사. fileName 옵션 (default true) 으로 prefix 가 붙거나 안 붙거나
+/// 양쪽 다 인정 — 본 헬퍼는 wrap 작동 여부 검증용.
+fn containsDisplayName(output: []const u8, name: []const u8) bool {
+    var direct_buf: [256]u8 = undefined;
+    const direct = std.fmt.bufPrint(&direct_buf, "displayName: \"{s}\"", .{name}) catch return false;
+    if (std.mem.indexOf(u8, output, direct) != null) return true;
+    var suffix_buf: [256]u8 = undefined;
+    const suffix = std.fmt.bufPrint(&suffix_buf, "__{s}\"", .{name}) catch return false;
+    return std.mem.indexOf(u8, output, suffix) != null;
 }
 
 /// 출력의 `withConfig(` 호출 횟수가 expected 인지 검증 — 다중 wrap 케이스 (ternary,
@@ -655,7 +673,7 @@ test "styled-components: 사용자 명시 .withConfig 에 displayName MERGE" {
     // user 의 componentId 그대로 보존.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "user-id") != null);
     // displayName 은 ZTS 가 추가.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"X\"") != null);
+    try std.testing.expect(containsDisplayName(r.output, "X"));
     // 추가 .withConfig 호출 없음 (merge 라 한 번만).
     try expectWithConfigCount(r.output, 1);
 }
@@ -674,9 +692,10 @@ test "styled-components: spread element 도 prepend 전략으로 안전하게 ME
     );
     defer r.deinit();
     // ZTS 자동 displayName 추가됨. spread 보다 앞에 있어야 user 의 spread 가 override 가능.
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Sp\"") != null);
+    try std.testing.expect(containsDisplayName(r.output, "Sp"));
     // displayName 이 spread 보다 먼저 나타나야 함.
-    const display_pos = std.mem.indexOf(u8, r.output, "displayName: \"Sp\"") orelse return error.NotFound;
+    // displayName 위치 확인 — fileName prefix 까지 고려해 substring 검색.
+    const display_pos = std.mem.indexOf(u8, r.output, "Sp\"") orelse return error.NotFound;
     const spread_pos = std.mem.indexOf(u8, r.output, "...userConfig") orelse return error.NotFound;
     try std.testing.expect(display_pos < spread_pos);
 }
@@ -711,7 +730,7 @@ test "styled-components: outer .withConfig — .attrs 가 안에 있어도 MERGE
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "y-id") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Y\"") != null);
+    try std.testing.expect(containsDisplayName(r.output, "Y"));
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".attrs(") != null); // attrs 보존
 }
 
@@ -728,7 +747,7 @@ test "styled-components: chain 중간 .withConfig 도 MERGE — outer 가 .attrs
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "z-id") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Z\"") != null);
+    try std.testing.expect(containsDisplayName(r.output, "Z"));
     // attrs 도 보존
     try std.testing.expect(std.mem.indexOf(u8, r.output, ".attrs(") != null);
 }
@@ -760,9 +779,10 @@ test "styled-components: 조건부 ternary — 양쪽 branch 에 같은 displayN
     );
     defer r.deinit();
     // 두 branch 가 모두 wrap 되어야 함 — Test displayName 이 두 번 등장.
+    // fileName=true (default) 면 prefix 포함 형태 검색.
     var count: usize = 0;
     var i: usize = 0;
-    while (std.mem.indexOfPos(u8, r.output, i, "displayName: \"Test\"")) |pos| : (i = pos + 1) {
+    while (std.mem.indexOfPos(u8, r.output, i, "Test\"")) |pos| : (i = pos + 1) {
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), count);
@@ -954,7 +974,7 @@ test "styled-components: ssr=false 시 componentId 생략, displayName 만" {
         ".tsx",
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Btn\"") != null);
+    try std.testing.expect(containsDisplayName(r.output, "Btn"));
     try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId") == null);
 }
 
@@ -1100,7 +1120,7 @@ test "styled (helper): default `styled` 와 named `css` 동시 import" {
     );
     defer r.deinit();
     // helper 의 css 도 minify, styled.div 도 wrap (displayName 등) + minify
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Btn\"") != null);
+    try std.testing.expect(containsDisplayName(r.output, "Btn"));
     try std.testing.expect(std.mem.indexOf(u8, r.output, "  color:  red;") == null);
 }
 
@@ -1136,4 +1156,99 @@ test "styled (helper): minify 옵션 비활성 — 인식만 하고 변환 안 �
     defer r.deinit();
     // minify 비활성 — 원본 그대로
     try std.testing.expect(std.mem.indexOf(u8, r.output, "  color:  red;") != null);
+}
+
+// ─── fileName 옵션 (default true, babel 동일) ───
+// displayName 에 `<basename>__<var>` prefix 부여. SSR componentId 안정성 + DevTools 가독성.
+
+test "styled (fileName): default true — displayName 에 `<basename>__` prefix" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "src/Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    // basename "Button" ≠ var "Btn" → prefix 추가
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Button__Btn\"") != null);
+}
+
+test "styled (fileName): basename 이 var name 과 같으면 prefix 생략" {
+    // `Button.tsx` 안의 `const Button = ...` → basename == var → 그냥 "Button"
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Button = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "src/Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Button\"") != null);
+    // prefix 없이 단순히 "Button"
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Button__Button") == null);
+}
+
+test "styled (fileName): index.tsx → parent dir 명으로 fallback" {
+    // src/Button/index.tsx → basename "index" 는 의미 없음 → parent "Button" 사용.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Inner = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "src/Button/index.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Button__Inner\"") != null);
+}
+
+test "styled (fileName): false 옵션 — prefix 없이 var 만" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .styled_components_file_name = false, .jsx_filename = "src/Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Btn\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Button__") == null);
+}
+
+test "styled (fileName): jsx_filename 빈 문자열 — prefix 안 붙음" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true }, // jsx_filename 미지정
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"Btn\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "__") == null);
+}
+
+test "styled (fileName): basename 이 digit 으로 시작 → `_` prefix" {
+    // CSS class 첫 글자 digit 금지 → babel 의 prefixLeadingDigit 동작 매칭.
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\import styled from "styled-components";
+        \\const Btn = styled.div`color: red;`;
+    ,
+        .{ .styled_components = true, .jsx_filename = "src/123Button.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "displayName: \"_123Button__Btn\"") != null);
 }

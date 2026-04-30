@@ -983,9 +983,7 @@ fn mergeIntoUserWithConfig(
     defer self.scratch.shrinkRetainingCapacity(props_top);
 
     if (need_display) {
-        var display_buf: [256]u8 = undefined;
-        const display_quoted = std.fmt.bufPrint(&display_buf, "\"{s}\"", .{var_name}) catch return error.OutOfMemory;
-        const display_value_span = try self.ast.addString(display_quoted);
+        const display_value_span = try buildDisplayNameSpan(self, var_name);
         const display_property = try buildKeyStringProperty(self, state.display_name_span.?, display_value_span);
         try self.scratch.append(self.allocator, display_property);
     }
@@ -1081,9 +1079,7 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
         if (state.file_hash_hex == null) state.file_hash_hex = wyhash.hashHex8(self.options.jsx_filename);
     }
 
-    var display_buf: [256]u8 = undefined;
-    const display_quoted = std.fmt.bufPrint(&display_buf, "\"{s}\"", .{var_name}) catch return error.OutOfMemory;
-    const display_value_span = try self.ast.addString(display_quoted);
+    const display_value_span = try buildDisplayNameSpan(self, var_name);
 
     const with_config_ref = try self.ast.addNode(.{
         .tag = .identifier_reference,
@@ -1127,6 +1123,63 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
         args.len,
         0,
     });
+}
+
+/// displayName 의 따옴표 포함 string literal span 을 빌드. fileName 옵션 활성 시
+/// `<basename>__<var_name>` 형식, 비활성 시 `<var_name>` 만.
+///
+/// fileName 활성 + `index.tsx` 같은 의미 없는 basename 은 parent dir 명으로 fallback.
+/// blockName 이 var_name 과 같으면 prefix 생략 (`Button.tsx` 의 `const Button` →
+/// `"Button"`, 중복 회피). blockName 이 digit 으로 시작하면 `_` prefix 부여 (CSS class
+/// 호환성 — 식별자 첫 글자 digit 금지).
+fn buildDisplayNameSpan(self: *Transformer, var_name: []const u8) Error!Span {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(self.allocator);
+    try buf.append(self.allocator, '"');
+    try writeDisplayNameInto(self, &buf, var_name);
+    try buf.append(self.allocator, '"');
+    return self.ast.addString(buf.items);
+}
+
+fn writeDisplayNameInto(self: *Transformer, buf: *std.ArrayList(u8), var_name: []const u8) Error!void {
+    const block = ensureDisplayNameBlock(self) orelse {
+        try buf.appendSlice(self.allocator, var_name);
+        return;
+    };
+    if (std.mem.eql(u8, block, var_name)) {
+        try buf.appendSlice(self.allocator, var_name);
+        return;
+    }
+    if (block.len > 0 and block[0] >= '0' and block[0] <= '9') {
+        try buf.append(self.allocator, '_');
+    }
+    try buf.appendSlice(self.allocator, block);
+    try buf.appendSlice(self.allocator, "__");
+    try buf.appendSlice(self.allocator, var_name);
+}
+
+/// fileName 옵션 활성 시 displayName prefix (basename without ext, `index` 면 dirname
+/// 으로 fallback) 의 lazy cache. 옵션 비활성/jsx_filename 빈 경우 null.
+fn ensureDisplayNameBlock(self: *Transformer) ?[]const u8 {
+    if (!self.options.styled_components_file_name) return null;
+    if (self.options.jsx_filename.len == 0) return null;
+
+    const state = &self.plugins.styled_components;
+    if (state.display_name_block) |b| return b;
+
+    const filename = self.options.jsx_filename;
+    const basename_full = std.fs.path.basename(filename);
+    const ext = std.fs.path.extension(basename_full);
+    const basename_no_ext = basename_full[0 .. basename_full.len - ext.len];
+
+    const block = if (std.mem.eql(u8, basename_no_ext, "index")) blk: {
+        const dir = std.fs.path.dirname(filename) orelse return null;
+        break :blk std.fs.path.basename(dir);
+    } else basename_no_ext;
+
+    if (block.len == 0) return null;
+    state.display_name_block = block;
+    return block;
 }
 
 /// `key: "value"` object_property 노드 빌드. key 는 identifier_reference, value 는

@@ -130,6 +130,8 @@ pub const BundleOptions = struct {
     styled_components_ssr: bool = true,
     /// styled-components.minify 옵션 — CSS template whitespace collapse.
     styled_components_minify: bool = false,
+    /// styled-components.fileName 옵션 — displayName 에 `<basename>__` prefix.
+    styled_components_file_name: bool = true,
     /// emotion 1st-party transform (compiler.emotion). 활성 시 css 템플릿에 autoLabel 적용.
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -643,6 +645,7 @@ pub const Bundler = struct {
         worker_graph.styled_components = self.options.styled_components;
         worker_graph.styled_components_ssr = self.options.styled_components_ssr;
         worker_graph.styled_components_minify = self.options.styled_components_minify;
+        worker_graph.styled_components_file_name = self.options.styled_components_file_name;
         worker_graph.emotion = self.options.emotion;
         worker_graph.emotion_auto_label = self.options.emotion_auto_label;
         worker_graph.emotion_source_map = self.options.emotion_source_map;
@@ -808,6 +811,7 @@ pub const Bundler = struct {
         graph.styled_components = self.options.styled_components;
         graph.styled_components_ssr = self.options.styled_components_ssr;
         graph.styled_components_minify = self.options.styled_components_minify;
+        graph.styled_components_file_name = self.options.styled_components_file_name;
         graph.emotion = self.options.emotion;
         graph.emotion_auto_label = self.options.emotion_auto_label;
         graph.emotion_source_map = self.options.emotion_source_map;

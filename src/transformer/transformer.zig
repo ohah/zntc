@@ -133,6 +133,10 @@ pub const TransformOptions = struct {
     /// no-interp 템플릿 (`\`color: red;\``) 만 우선 처리. interp 있는 경우는 후속.
     /// `babel-plugin-styled-components.minify` 와 동일 의도, default 는 false (안전).
     styled_components_minify: bool = false,
+    /// styled-components.fileName 옵션 (default true, babel 와 동일) — displayName 에
+    /// `<basename>__<var_name>` prefix. `index.tsx` 같은 의미 없는 이름은 parent dir
+    /// 명으로 fallback. false 면 `<var_name>` 만.
+    styled_components_file_name: bool = true,
     /// emotion 1st-party transform (compiler.emotion).
     /// 활성 시 `const X = css\`...\`` 같은 선언에 `label:X;` 자동 prepend (autoLabel).
     /// `import { css } from "@emotion/react"` 의 named binding 추적.

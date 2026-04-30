@@ -26,6 +26,8 @@ pub const AppBuildOptions = struct {
     styled_components_ssr: bool = true,
     /// styled-components.minify 옵션 — CSS template whitespace collapse.
     styled_components_minify: bool = false,
+    /// styled-components.fileName 옵션 — displayName 에 `<basename>__` prefix.
+    styled_components_file_name: bool = true,
     /// emotion 1st-party transform (compiler.emotion).
     emotion: bool = false,
     /// emotion.autoLabel 모드 — `.never` / `.always` (default) / `.dev_only`.
@@ -128,6 +130,7 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
         .styled_components = opts.styled_components,
         .styled_components_ssr = opts.styled_components_ssr,
         .styled_components_minify = opts.styled_components_minify,
+        .styled_components_file_name = opts.styled_components_file_name,
         .emotion = opts.emotion,
         .emotion_auto_label = opts.emotion_auto_label,
         .emotion_source_map = opts.emotion_source_map,
