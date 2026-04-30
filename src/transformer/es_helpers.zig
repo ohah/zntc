@@ -169,6 +169,27 @@ pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span) !Compu
     };
 }
 
+/// 기존 method_definition 의 key 만 새 노드로 교체한 사본을 반환.
+/// 나머지 extra slot (params/body/flags/deco_start/deco_len) 은 그대로 복사.
+/// computed key memoization 결과를 method/accessor 에 끼워넣을 때 호출자 양쪽에서 공유.
+pub fn replaceMethodDefinitionKey(self: anytype, method_idx: NodeIndex, new_key: NodeIndex) !NodeIndex {
+    const method = self.ast.getNode(method_idx);
+    const me = method.data.extra;
+    const new_extra = try self.ast.addExtras(&.{
+        @intFromEnum(new_key),
+        self.ast.extra_data.items[me + ast_mod.MethodExtra.params],
+        self.ast.extra_data.items[me + ast_mod.MethodExtra.body],
+        self.ast.extra_data.items[me + ast_mod.MethodExtra.flags],
+        self.ast.extra_data.items[me + ast_mod.MethodExtra.deco_start],
+        self.ast.extra_data.items[me + ast_mod.MethodExtra.deco_len],
+    });
+    return self.ast.addNode(.{
+        .tag = .method_definition,
+        .span = method.span,
+        .data = .{ .extra = new_extra },
+    });
+}
+
 /// `void 0` 노드를 새 AST에 생성.
 pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
     const zero_span = try self.ast.addString("0");

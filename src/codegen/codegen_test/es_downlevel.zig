@@ -2260,10 +2260,16 @@ test "ES2015: class with computed method" {
 }
 
 test "ES2015: class with computed method uses bracket notation" {
-    // [Symbol.iterator]() → Object.defineProperty(prototype, Symbol.iterator, ...) (dot 없이)
+    // [Symbol.iterator]() → Object.defineProperty(prototype, <key>, ...) (dot 없이).
+    // computed key 는 hoist 된 임시 변수로 캡쳐되거나 직접 emit 될 수 있어 prefix/suffix 사이의
+    // 식별자만 검증한다 (정확한 temp 이름에 결합하지 않음).
     var r = try e2eTarget(std.testing.allocator, "class F{[Symbol.iterator](){return this;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Object.defineProperty(F.prototype,") != null);
+    const prefix = std.mem.indexOf(u8, r.output, "Object.defineProperty(F.prototype,") orelse return error.TestUnexpectedResult;
+    const after_prefix = prefix + "Object.defineProperty(F.prototype,".len;
+    try std.testing.expect(after_prefix < r.output.len);
+    const first = r.output[after_prefix];
+    try std.testing.expect(std.ascii.isAlphabetic(first) or first == '_');
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Symbol.iterator") != null);
     // prototype.[Symbol.iterator] (잘못된 dot notation) 금지
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "prototype.["), null);
