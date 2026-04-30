@@ -1616,12 +1616,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             init: NodeIndex, // 초기값 (none이면 undefined)
         };
 
-        /// 클래스 바디 멤버를 분류: constructor, methods, instance_fields, static_fields, accessors, private_fields, static_private_fields, private_methods.
+        /// 클래스 바디 멤버를 분류: constructor, methods, instance_fields, static_elements, accessors, private_fields, static_private_fields, private_methods.
+        /// `static_elements`: static field/static block 을 소스 순서대로 보존한다 (TC39 spec — class evaluation 시
+        /// 필드와 블록이 선언 순서대로 실행). 별도 array 로 나누면 순서 정보가 사라져 `static a; { use a; } static b;` 같은
+        /// 의존 체인이 깨진다.
         const ClassifiedMembers = struct {
             constructor_idx: ?NodeIndex,
             methods: std.ArrayList(MethodInfo),
             instance_fields: std.ArrayList(NodeIndex),
-            static_fields: std.ArrayList(FieldInfo),
             static_elements: std.ArrayList(StaticElement),
             accessors: std.ArrayList(AccessorInfo),
             private_fields: std.ArrayList(PrivateFieldInfo),
@@ -1629,7 +1631,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             /// instance private fields와 달리 WeakMap이 아닌 { writable: true, value: init } 객체로 변환.
             static_private_fields: std.ArrayList(PrivateFieldInfo),
             private_methods: std.ArrayList(Transformer.PrivateMethodMapping),
-            static_block_stmts: std.ArrayList(NodeIndex),
             /// accessor_property 합성으로 만드는 `#_<name>_acc` 원본 이름.
             /// `PrivateFieldInfo.original_name`은 `findPrivateFieldMapping`의 `std.mem.eql` 키라 안정적 slice가 필요.
             /// string_table slice는 후속 `addString` 호출의 realloc으로 dangling이 되므로 heap-owned 복사본을 유지한다.
@@ -1655,13 +1656,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 for (cm.synthesized_private_names.items) |s| allocator.free(s);
                 cm.methods.deinit(allocator);
                 cm.instance_fields.deinit(allocator);
-                cm.static_fields.deinit(allocator);
                 cm.static_elements.deinit(allocator);
                 cm.accessors.deinit(allocator);
                 cm.private_fields.deinit(allocator);
                 cm.static_private_fields.deinit(allocator);
                 cm.private_methods.deinit(allocator);
-                cm.static_block_stmts.deinit(allocator);
                 cm.synthesized_private_names.deinit(allocator);
             }
         };
@@ -1712,13 +1711,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 .constructor_idx = null,
                 .methods = .empty,
                 .instance_fields = .empty,
-                .static_fields = .empty,
                 .static_elements = .empty,
                 .accessors = .empty,
                 .private_fields = .empty,
                 .static_private_fields = .empty,
                 .private_methods = .empty,
-                .static_block_stmts = .empty,
             };
 
             // visitNode/addNode/buildFieldAssign이 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
@@ -1810,9 +1807,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     }
 
                     if (is_static and !init_val.isNone()) {
-                        const field_info = FieldInfo{ .key = key, .init = init_val };
-                        try cm.static_fields.append(self.allocator, field_info);
-                        try cm.static_elements.append(self.allocator, .{ .field = field_info });
+                        try cm.static_elements.append(self.allocator, .{ .field = .{ .key = key, .init = init_val } });
                     } else if (!is_static and !init_val.isNone()) {
                         const this_node = try self.ast.addNode(.{
                             .tag = .this_expression,
@@ -1868,7 +1863,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                                 const sb_raw = self.ast.extra_data.items[sb_stmts_start + i_loop];
                                 const new_stmt = try self.visitNode(@enumFromInt(sb_raw));
                                 if (!new_stmt.isNone()) {
-                                    try cm.static_block_stmts.append(self.allocator, new_stmt);
                                     try cm.static_elements.append(self.allocator, .{ .stmt = new_stmt });
                                 }
                             }
@@ -2504,7 +2498,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         } },
                     });
                 },
-                else => {
+                // `const result = super(...)` / `let r = super(...)` 같은 declarator-init super 케이스.
+                // 선언문 자체를 살린 뒤 같은 control-flow 위치에 instance field init 을 잇도록 block 으로 감싼다.
+                .variable_declaration => {
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -2518,6 +2514,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         .data = .{ .list = new_list },
                     });
                 },
+                else => return stmt_idx,
             }
         }
 
@@ -2586,27 +2583,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
         }
 
-        fn isCallSuperCall(self: *Transformer, node: Node) bool {
+        /// `super(...)` 또는 lowering 후의 `_this = __callSuper(...)` 같은 super 호출 패턴인지 판별.
+        /// raw super 호출은 lowering 전, helper 호출은 lowering 후 형태.
+        fn isSuperCallLike(self: *Transformer, node: Node) bool {
             if (node.tag != .call_expression) return false;
-            const e = node.data.extra;
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
             if (callee_idx.isNone()) return false;
             const callee = self.ast.getNode(callee_idx);
+            if (callee.tag == .super_expression) return true;
             if (callee.tag != .identifier_reference) return false;
             const name = self.ast.getText(callee.data.string_ref);
             const helper_names = @import("../runtime_helper_names.zig");
             return std.mem.eql(u8, name, "__callSuper") or
                 std.mem.eql(u8, name, helper_names.NAMES.CALL_SUPER_MIN);
-        }
-
-        fn isSuperCallLike(self: *Transformer, node: Node) bool {
-            if (node.tag != .call_expression) return false;
-            const e = node.data.extra;
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            if (callee_idx.isNone()) return false;
-            const callee = self.ast.getNode(callee_idx);
-            if (callee.tag == .super_expression) return true;
-            return isCallSuperCall(self, node);
         }
 
         /// 빈 function declaration (constructor가 없는 경우)

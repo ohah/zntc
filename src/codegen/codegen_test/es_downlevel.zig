@@ -98,7 +98,13 @@ test "ES2021: ??= to es2020" {
 test "ES2021: ??= to es2019 (double lowering)" {
     var r = try e2eTarget(std.testing.allocator, "a ??= b;", .es2019);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;(_a=a)!=null?_a:(a=b);", r.output);
+    try std.testing.expectEqualStrings("a!=null?a:(a=b);", r.output);
+}
+
+test "ES2021: ??= member to es2019 captures to temp" {
+    var r = try e2eTarget(std.testing.allocator, "obj.x ??= b;", .es2019);
+    defer r.deinit();
+    try std.testing.expectEqualStrings("var _a;(_a=obj.x)!=null?_a:(obj.x=b);", r.output);
 }
 
 test "ES2021: ??= no transform on esnext" {

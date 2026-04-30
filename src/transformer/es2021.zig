@@ -28,6 +28,18 @@ pub fn ES2021(comptime Transformer: type) type {
             const paren_assign = try es_helpers.makeParenExpr(self, assign, node.span);
 
             if (self.options.unsupported.nullish_coalescing) {
+                // ternary lowering 은 condition 과 truthy branch 두 자리에 read 표현을 emit 한다.
+                // member access 는 두 자리에 두면 getter 가 두 번 호출되므로 임시 변수에 캡처해야 한다.
+                // 그러나 plain identifier 는 부작용이 없어 캡처가 불필요한 noise 다 (#1287 follow-up).
+                const read_tag = self.ast.getNode(target.read).tag;
+                if (read_tag == .identifier_reference or read_tag == .assignment_target_identifier) {
+                    const neq_null = try es_helpers.makeNeqNull(self, target.read, node.span);
+                    return self.ast.addNode(.{
+                        .tag = .conditional_expression,
+                        .span = node.span,
+                        .data = .{ .ternary = .{ .a = neq_null, .b = target.value, .c = paren_assign } },
+                    });
+                }
                 const captured = try es_helpers.captureToTemp(self, target.read, node.span);
                 const captured_value = try es_helpers.makeTempVarRef(self, captured.span, node.span);
                 const neq_null = try es_helpers.makeNeqNull(self, captured.paren_assign, node.span);
