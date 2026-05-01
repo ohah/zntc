@@ -17,13 +17,16 @@ pub const schema = @import("schema.zig");
 pub const type_index = @import("type_index.zig");
 pub const schema_builder = @import("schema_builder.zig");
 pub const view_config_emitter = @import("view_config_emitter.zig");
+pub const validator = @import("validator.zig");
 
 test {
     _ = schema;
     _ = type_index;
     _ = schema_builder;
     _ = view_config_emitter;
+    _ = validator;
     _ = @import("type_index_test.zig");
     _ = @import("schema_builder_test.zig");
     _ = @import("view_config_emitter_test.zig");
+    _ = @import("validator_test.zig");
 }
