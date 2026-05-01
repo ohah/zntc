@@ -1993,7 +1993,7 @@ async function runWatch(opts, config) {
   for (const dir of restartTriggers.dirs) watchDirs.add(dir);
 
   for (const dir of watchDirs) {
-    watch(dir, { recursive: true }, (_event, filename) => {
+    const watcher = watch(dir, { recursive: true }, (_event, filename) => {
       if (!filename) return;
       // node_modules, .git, 출력 디렉토리 무시
       if (filename.includes("node_modules") || filename.includes(".git")) return;
@@ -2007,6 +2007,7 @@ async function runWatch(opts, config) {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(rebuild, opts.watchDelay);
     });
+    attachWatcherErrorHandler(watcher, dir, opts.logLevel);
   }
 }
 
@@ -2044,6 +2045,30 @@ function computeRestartTriggers(opts) {
       return false;
     },
   };
+}
+
+/**
+ * fs.watch 의 'error' 이벤트는 unhandled 면 process crash 를 일으킨다. macOS Node v24
+ * 의 `recursive: true` 는 빈 디렉토리에서도 즉시 EMFILE 'error' 를 던질 수 있어
+ * (kqueue 기반 한계), watch 가 죽는 건 허용하되 dev server 자체는 살아있도록 한다
+ * — fail-soft. 첫 error 후 watcher 를 닫으므로 `once` 로 충분.
+ */
+function attachWatcherErrorHandler(watcher, dir, logLevel) {
+  watcher.once("error", (err) => {
+    if (logLevel !== "silent") {
+      if (err && (err.code === "EMFILE" || err.code === "ENOSPC")) {
+        console.error(
+          `[watch] ${dir} 파일 감시 비활성화 (${err.code}): 변경 시 재빌드가 동작하지 않습니다. ` +
+            `open-file 한도를 늘리거나 큰 하위 트리를 제거하세요.`,
+        );
+      } else {
+        console.error(`[watch] ${dir} 감시 오류: ${err?.message ?? err}`);
+      }
+    }
+    try {
+      watcher.close();
+    } catch {}
+  });
 }
 
 function emitRestart(opts, reason) {
@@ -2374,7 +2399,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
     for (const dir of restartTriggers.dirs) watchDirs.add(dir);
 
     for (const dir of watchDirs) {
-      fsWatch(dir, { recursive: true }, (_event, filename) => {
+      const watcher = fsWatch(dir, { recursive: true }, (_event, filename) => {
         if (!filename || filename.includes("node_modules") || filename.includes(".git")) return;
         const absPath = resolve(dir, filename);
         if (outdirAbs && (absPath === outdirAbs || absPath.startsWith(outdirPrefix))) return;
@@ -2386,6 +2411,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(drain, opts.watchDelay);
       });
+      attachWatcherErrorHandler(watcher, dir, opts.logLevel);
     }
   }
 
