@@ -327,6 +327,12 @@ pub const RuntimeHelpers = packed struct(u32) {
     /// 호출 emit 시 함께 set 한다.
     legacy_decorator: bool = false,
     _padding: u6 = 0,
+
+    /// 어떤 helper flag 라도 set 됐는지 — emitter 의 prepend 분기에서 빈 helper 시
+    /// no-op 결정에 사용.
+    pub fn hasAny(self: @This()) bool {
+        return @as(u32, @bitCast(self)) != 0;
+    }
 };
 
 /// 단일 AST append-only 변환기.
