@@ -163,6 +163,8 @@ pub const BundleOptions = struct {
     experimental_decorators: bool = false,
     /// emitDecoratorMetadata: __metadata 호출 주입 (NestJS/Angular DI)
     emit_decorator_metadata: bool = false,
+    /// `import { x } from 'mod'` cherry-pick 분해 매핑. babel-plugin-lodash 동등 (#2393).
+    module_specifier_map: []const @import("../transformer/transformer.zig").ModuleSpecifierMapEntry = &.{},
     /// useDefineForClassFields=false (tsconfig)
     use_define_for_class_fields: bool = true,
     /// verbatimModuleSyntax=true (tsconfig/CLI): unused value import를 elide하지 않음.
@@ -550,6 +552,7 @@ pub const Bundler = struct {
             .define = self.options.define,
             .experimental_decorators = self.options.experimental_decorators,
             .emit_decorator_metadata = self.options.emit_decorator_metadata,
+            .module_specifier_map = self.options.module_specifier_map,
             .use_define_for_class_fields = self.options.use_define_for_class_fields,
             .verbatim_module_syntax = self.options.verbatim_module_syntax,
             .unsupported = self.options.unsupported,
