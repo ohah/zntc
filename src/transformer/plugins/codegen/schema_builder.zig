@@ -13,6 +13,12 @@
 //!   - Intersection: `{...} & ViewProps` → ViewProps 부분 무시 (RN 런타임이 등록)
 //!   - Property → PropTypeAnnotation 매핑 (`GenerateViewConfigJs.js:43-108` 참고)
 //!   - Function-typed prop (`(event: T) => void`) → EventTypeShape
+//!   - Identity / default wrapper: `WithDefault<T, D>`, `UnsafeMixed<T>` → inner T
+//!   - Generic array: `Array<T>` / `ReadonlyArray<T>` → ComponentArrayTypeAnnotation
+//!   - Flow nullable: `?T` → inner T (RN runtime 이 nullable semantics 처리)
+//!   - Union: 모든 element 가 string literal 이면 `string_enum`, 아니면 `mixed`
+//!   - Explicit event wrapper: `DirectEventHandler<T>` / `BubblingEventHandler<T>`
+//!     → EventTypeShape (wrapper 이름이 bubble vs direct 결정)
 //!
 //! Cross-file type reference (`import type { ViewProps }`) 는 fail-fast —
 //! `error.UnresolvedTypeReference` 반환. caller 가 JS fallback (`@react-native/codegen`)
@@ -282,10 +288,14 @@ fn eventHandlerBubbling(ast: *const Ast, type_idx: NodeIndex) ?schema.BubblingTy
     const node = ast.getNode(type_idx);
     if (node.tag != .ts_type_reference and node.tag != .flow_type_reference) return null;
     const name = getTypeReferenceName(ast, node) orelse return null;
-    if (std.mem.eql(u8, name, "DirectEventHandler")) return .direct;
-    if (std.mem.eql(u8, name, "BubblingEventHandler")) return .bubble;
-    return null;
+    return event_handler_names.get(name);
 }
+
+/// RN codegen 의 명시적 event wrapper — 이름이 bubble vs direct 결정.
+const event_handler_names = std.StaticStringMap(schema.BubblingType).initComptime(.{
+    .{ "DirectEventHandler", .direct },
+    .{ "BubblingEventHandler", .bubble },
+});
 
 /// 이벤트 prop 이름 → bubble vs direct 분류.
 /// 일반적 RN 컨벤션: `onCapture` 접미사가 있으면 direct, 그 외는 bubble.
@@ -325,21 +335,14 @@ fn mapPropTypeAt(
         // TS 'any' / Flow 'mixed' / 'any' → mixed (codegen 미사용 prop 으로 등록)
         .flow_any_keyword, .flow_mixed_keyword => .mixed,
 
-        // type reference: reserved primitive 또는 alias 펼치기
+        // type reference: reserved primitive / wrapper / numeric / alias 펼치기
         .ts_type_reference, .flow_type_reference => mapTypeReference(ast, type_index, node, depth),
 
-        // Flow nullable (`?T`) — RN core spec 의 ColorValue/ImageSource 등 거의 모든
-        // optional reserved type 이 이 형태로 등장. inner 만 매핑하면 됨 — RN runtime
-        // 이 nullable semantics 자체 (validAttributes 의 prop 자체가 optional) 처리.
+        // RN runtime 이 nullable semantics 자체 처리 — wrapper 만 풀고 inner 매핑.
         .flow_nullable_type => mapPropTypeAt(ast, type_index, node.data.unary.operand, depth + 1),
 
-        // Union (`A | B | C`) — 두 케이스 분기:
-        //   - 모든 element 가 string literal → `string_enum` (RN spec 의 흔한 enum)
-        //   - 그 외 (mixed type union, e.g. `ColorValue | ColorStruct`) → `mixed`
-        // RN codegen 도 동일 정책 (`GenerateViewConfigJs.js` 의 union → folly::dynamic).
         .ts_union_type, .flow_union_type => mapUnion(ast, node),
 
-        // 그 외는 미지원 — 향후 확장 (PR #3b-2: array, object, string_enum, ...)
         else => error.UnsupportedPropType,
     };
 }
@@ -360,10 +363,9 @@ fn mapUnion(ast: *const Ast, node: Node) Error!schema.PropTypeAnnotation {
         if (first != '\'' and first != '"') return .mixed;
     }
 
-    // 모두 string literal — string_enum 으로 dispatch. emitter 가 현재
-    // string_enum 의 options 를 view config 에 직렬화하지 않고 단순 `true` 출력
-    // 하므로 default/options 슬라이스는 빈 값이라도 무방. 향후 emitter 가
-    // attribute 형태로 확장할 때 옵션 추출이 의미를 가짐.
+    // emitter 가 현재 string_enum 을 단순 `true` attribute 로 출력하므로 default/options
+    // 슬라이스는 placeholder. 향후 emitter 확장 시 union element 텍스트를 stripQuote 후
+    // options 로 채우도록 본 함수 확장.
     return .{ .string_enum = .{ .default = "", .options = &.{} } };
 }
 
@@ -377,28 +379,16 @@ fn mapTypeReference(
 ) Error!schema.PropTypeAnnotation {
     const name = getTypeReferenceName(ast, node) orelse return error.UnsupportedPropType;
 
-    // `WithDefault<T, D>` — RN codegen 의 default value wrapper. RN core 0.85 의 40개
-    // spec 중 10개에서 사용 (`disabled?: WithDefault<boolean, false>` 등).
-    // 첫 type 인자 T 만 추출해서 재귀. 두번째 D (default literal) 는 향후 PR 에서
-    // ts_literal_type / flow_*_literal_type 추출해 PropTypeAnnotation.default 채울 예정 —
-    // 현재는 무시 (RN runtime 이 자체 default 사용).
-    //
-    // `UnsafeMixed<T>` — react-native-svg 의 identity wrapper (`UnsafeMixed<T> = T`).
-    // codegen 이 folly::dynamic 생성하도록 trick — 의미상 inner T 그대로.
-    // svg fabric spec 30개 거의 모두 사용 (`fill?: UnsafeMixed<ColorValue | ColorStruct>`).
-    if (std.mem.eql(u8, name, "WithDefault") or std.mem.eql(u8, name, "UnsafeMixed")) {
-        const inner = getFirstTypeArgument(ast, node) orelse return error.UnsupportedPropType;
-        return mapPropTypeAt(ast, type_index, inner, depth + 1);
-    }
-
-    // `Array<T>` / `ReadonlyArray<T>` — RN core spec 의 ~10개에서 사용
-    // (`colors?: ReadonlyArray<ColorValue>`, `data?: Array<ItemShape>` 등).
-    // ZTS 파서의 `ts_array_type` (T[]) 은 element 폐기로 미지원이지만 type_reference
-    // 형태는 type 인자가 보존되므로 처리 가능. (#2348 § 3a 참고)
-    if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+    if (wrapper_ref_names.get(name)) |kind| {
         const inner = getFirstTypeArgument(ast, node) orelse return error.UnsupportedPropType;
         const inner_prop = try mapPropTypeAt(ast, type_index, inner, depth + 1);
-        return .{ .array = try toArrayElement(inner_prop) };
+        return switch (kind) {
+            // WithDefault<T, D>: D (default literal) 는 향후 PR — ts_literal_type 추출해
+            // PropTypeAnnotation.default 채울 예정. 현재는 RN runtime 이 자체 default 사용.
+            // UnsafeMixed<T> = T: react-native-svg 의 identity wrapper (folly::dynamic trick).
+            .identity => inner_prop,
+            .array => .{ .array = try toArrayElement(inner_prop) },
+        };
     }
 
     if (reserved_ref_names.get(name)) |primitive| {
@@ -445,6 +435,17 @@ const reserved_ref_names = std.StaticStringMap(schema.ReservedPropPrimitive).ini
     .{ "ImageRequestPrimitive", .image_request },
     .{ "DimensionValue", .dimension },
     .{ "DimensionPrimitive", .dimension },
+});
+
+/// 1-인자 generic wrapper — 의미상 inner T 의 transform.
+///   - `identity`: T 그대로 (`WithDefault<T, D>`, `UnsafeMixed<T>`).
+///   - `array`: `ComponentArrayTypeAnnotation` 으로 lift (`Array<T>`, `ReadonlyArray<T>`).
+const WrapperKind = enum { identity, array };
+const wrapper_ref_names = std.StaticStringMap(WrapperKind).initComptime(.{
+    .{ "WithDefault", .identity },
+    .{ "UnsafeMixed", .identity },
+    .{ "Array", .array },
+    .{ "ReadonlyArray", .array },
 });
 
 /// codegen 명시적 numeric type alias — RN spec 에서 흔한 wrapper.
