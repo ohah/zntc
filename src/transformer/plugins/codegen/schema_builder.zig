@@ -308,9 +308,38 @@ fn mapPropTypeAt(
         // 이 nullable semantics 자체 (validAttributes 의 prop 자체가 optional) 처리.
         .flow_nullable_type => mapPropTypeAt(ast, type_index, node.data.unary.operand, depth + 1),
 
+        // Union (`A | B | C`) — 두 케이스 분기:
+        //   - 모든 element 가 string literal → `string_enum` (RN spec 의 흔한 enum)
+        //   - 그 외 (mixed type union, e.g. `ColorValue | ColorStruct`) → `mixed`
+        // RN codegen 도 동일 정책 (`GenerateViewConfigJs.js` 의 union → folly::dynamic).
+        .ts_union_type, .flow_union_type => mapUnion(ast, node),
+
         // 그 외는 미지원 — 향후 확장 (PR #3b-2: array, object, string_enum, ...)
         else => error.UnsupportedPropType,
     };
+}
+
+/// Union 의 모든 element 가 string literal 이면 string_enum, 그 외엔 mixed.
+fn mapUnion(ast: *const Ast, node: Node) Error!schema.PropTypeAnnotation {
+    const list = node.data.list;
+    if (list.len == 0) return .mixed;
+
+    var i: u32 = 0;
+    while (i < list.len) : (i += 1) {
+        const elem_idx: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
+        const elem = ast.getNode(elem_idx);
+        if (elem.tag != .ts_literal_type and elem.tag != .flow_literal_type) return .mixed;
+        const text = ast.getText(elem.data.string_ref);
+        if (text.len < 2) return .mixed;
+        const first = text[0];
+        if (first != '\'' and first != '"') return .mixed;
+    }
+
+    // 모두 string literal — string_enum 으로 dispatch. emitter 가 현재
+    // string_enum 의 options 를 view config 에 직렬화하지 않고 단순 `true` 출력
+    // 하므로 default/options 슬라이스는 빈 값이라도 무방. 향후 emitter 가
+    // attribute 형태로 확장할 때 옵션 추출이 의미를 가짐.
+    return .{ .string_enum = .{ .default = "", .options = &.{} } };
 }
 
 /// type reference 이름 → reserved primitive 매핑. 알려진 RN core 타입 이름들.
