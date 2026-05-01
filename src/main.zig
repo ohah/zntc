@@ -812,10 +812,12 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
         } else if (std.mem.eql(u8, arg, "--jsx-in-js")) {
             opts.jsx_in_js = true;
         } else if (std.mem.startsWith(u8, arg, "--jsx=")) {
+            // CLI vocab: automatic / automatic-dev / classic. tsconfig vocab ("react-jsx" /
+            // "react-jsxdev") 는 CLI 가 받지 않음 — tsconfig 파싱 (`tsconfig_merge`) 이 처리.
             const val = arg["--jsx=".len..];
             if (std.mem.eql(u8, val, "automatic")) {
                 opts.jsx_runtime = .automatic;
-            } else if (std.mem.eql(u8, val, "automatic-dev") or std.mem.eql(u8, val, "react-jsxdev")) {
+            } else if (std.mem.eql(u8, val, "automatic-dev")) {
                 opts.jsx_runtime = .automatic_dev;
             } else {
                 opts.jsx_runtime = .classic;
