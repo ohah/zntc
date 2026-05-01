@@ -1739,6 +1739,8 @@ fn freeOptionsTypedSlices(opts: *const BundleOptions) void {
     if (opts.define.len > 0) native_alloc.free(opts.define);
     if (opts.module_specifier_map.len > 0) native_alloc.free(opts.module_specifier_map);
     if (opts.alias.len > 0) native_alloc.free(opts.alias);
+    if (opts.fallback.len > 0) native_alloc.free(opts.fallback);
+    if (opts.loader_overrides.len > 0) native_alloc.free(opts.loader_overrides);
 }
 
 // ─── build() 비동기 (Promise) ───
