@@ -18,6 +18,7 @@ const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const Span = @import("../lexer/token.zig").Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
+const PropertySignatureFlags = @import("ts.zig").PropertySignatureFlags;
 
 /// Flow 타입 키워드 → AST 태그 매핑.
 /// TS와 달리 mixed, empty가 추가되고, unknown/object/undefined/intrinsic는 없다.
@@ -372,9 +373,11 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
         .identifier => return parseTypeReference(self),
         // 괄호 타입: (Type) 또는 함수 타입: (a: Type) => Type
         .l_paren => return parseParenOrFunctionType(self),
-        // exact object type: {| key: Type |} 또는 일반 object type: { key: Type }
+        // exact object type: `{| key: Type |}` (또는 빈 `{||}`) vs 일반 object type: `{ key: Type }`.
+        // 빈 `{||}` 는 lexer 가 `||` 를 `pipe2` 단일 토큰으로 토크나이즈하므로 dispatch 시 pipe2 도 인식.
         .l_curly => {
-            if (try self.peekNextKind() == .pipe) {
+            const next = try self.peekNextKind();
+            if (next == .pipe or next == .pipe2) {
                 return parseExactObjectType(self);
             }
             return parseObjectType(self);
@@ -733,64 +736,192 @@ fn parseObjectType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip '{'
 
-    // balanced brace counting: 중첩된 { } 를 정확히 매칭
-    var depth: u32 = 1;
-    while (depth > 0 and self.current() != .eof) {
-        switch (self.current()) {
-            .l_curly => depth += 1,
-            .r_curly => depth -= 1,
-            else => {},
-        }
-        if (depth > 0) try self.advance();
-    }
-
+    const members = try parseFlowObjectMembers(self, .r_curly);
     try self.expect(.r_curly);
-    return try self.ast.addNode(.{
-        .tag = .flow_literal_type,
-        .span = .{ .start = start, .end = self.currentSpan().start },
-        .data = .{ .none = 0 },
-    });
+
+    return try self.ast.addListNode(
+        .flow_object_type,
+        .{ .start = start, .end = self.currentSpan().start },
+        members,
+    );
 }
 
-/// Exact object type: {| key: Type, ... |}
-/// balanced brace+pipe counting으로 전체를 소비. {| 뒤의 |} 까지.
+/// Exact object type: `{| key: Type, ... |}` (또는 빈 `{||}`).
+///
+/// 토크나이즈 주의:
+///   `{| ... |}` 는 `{`, `|`, ..., `|`, `}` (5+ 토큰) 로 분해
+///   `{||}` (빈) 는 `{`, `||`, `}` (3 토큰) — lexer 가 `||` 를 `pipe2` 단일 토큰으로 처리
+///
+/// 후자 케이스를 별도 분기로 처리.
 fn parseExactObjectType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip '{'
-    try self.advance(); // skip '|'
 
-    // |} 를 찾을 때까지 토큰 소비. 중첩된 {| |} 도 추적.
-    var depth: u32 = 1;
-    while (depth > 0 and self.current() != .eof) {
-        const loop_guard_pos = self.scanner.token.span.start;
-        if (self.current() == .l_curly) {
-            // {| 중첩 감지
-            if (try self.peekNextKind() == .pipe) {
-                depth += 1;
-                try self.advance(); // skip '{'
-                try self.advance(); // skip '|'
-                continue;
-            }
-        }
-        if (self.current() == .pipe) {
-            if (try self.peekNextKind() == .r_curly) {
-                depth -= 1;
-                try self.advance(); // skip '|'
-                try self.advance(); // skip '}'
-                if (depth == 0) break;
-                continue;
-            }
-        }
-        try self.advance();
-        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    // 빈 `{||}` — pipe2 한 토큰만 소비.
+    if (self.current() == .pipe2) {
+        try self.advance(); // skip '||'
+        try self.expect(.r_curly);
+        return try self.ast.addListNode(
+            .flow_exact_object_type,
+            .{ .start = start, .end = self.currentSpan().start },
+            .{ .start = 0, .len = 0 },
+        );
     }
 
-    // strip-only — 내부 멤버는 파싱 후 버리므로 빈 NodeList 저장 (layout=.list).
+    // 일반 케이스: `{|` 다음 멤버 다음 `|}`.
+    try self.expect(.pipe); // skip '|'
+    const members = try parseFlowObjectMembers(self, .pipe);
+    try self.expect(.pipe);
+    try self.expect(.r_curly);
+
     return try self.ast.addListNode(
         .flow_exact_object_type,
         .{ .start = start, .end = self.currentSpan().start },
-        .{ .start = 0, .len = 0 },
+        members,
     );
+}
+
+/// `{...}` / `{|...|}` 양쪽 공통: 멤버를 `,` 또는 `;` 구분으로 반복 파싱하다가
+/// `terminator` 토큰을 만나면 멈춘다 (caller 가 terminator 소비).
+///
+/// 지원되지 않는 멤버 (spread, indexer, method, call signature) 는 `parseFlowTypeMember`
+/// 가 토큰만 소비하고 `.none` 반환 — 여기선 list 에 추가하지 않음. codegen
+/// (#2348 PR #3b) 은 알려진 property 만 처리하면 됨.
+fn parseFlowObjectMembers(self: *Parser, terminator: Kind) ParseError2!ast_mod.NodeList {
+    const scratch_top = self.saveScratch();
+    while (self.current() != terminator and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+        const member = try parseFlowTypeMember(self);
+        if (member != .none) try self.scratch.append(self.allocator, member);
+        // 멤버 구분자: `,` 또는 `;`. 둘 다 없으면 종료 (단, terminator 인 경우 자연 종료).
+        if (!try self.eat(.comma) and !try self.eat(.semicolon)) {
+            if (self.current() != terminator) break;
+        }
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+    const items = self.scratch.items[scratch_top..];
+    const list = try self.ast.addNodeList(items);
+    self.restoreScratch(scratch_top);
+    return list;
+}
+
+/// Flow object type 의 단일 멤버 파싱.
+///
+/// 지원 (`flow_property_signature` 반환):
+///   - `key: Type`
+///   - `key?: Type`        — optional
+///   - `+key: Type`        — covariant (readonly mapping)
+///   - `-key: Type`        — contravariant (변환기/codegen 미사용, 비트 미설정)
+///   - `+key?: Type`       — combined
+///
+/// 미지원 (토큰만 소비, `.none` 반환):
+///   - `...Type`           — spread (PR #3b 에서 별도 처리)
+///   - `[key: T]: U`       — indexer
+///   - `key(args): R`      — method
+///   - `(args): R`         — call signature
+///   - `new (args): R`     — construct signature
+///
+/// 미지원 케이스도 정상 파싱돼야 type alias 전체 파싱이 진행됨 — 그래서 토큰 소비
+/// 후 `.none` 반환 (silent skip). caller 가 list 에서 제외.
+fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+
+    // Variance marker: `+key` covariant (output position) → readonly 등가로 매핑.
+    // `-key` contravariant (input position) → 현재 PropertySignatureFlags 에 별도 비트
+    // 없음, 무시 (codegen view config 미사용 — RN spec 에서 거의 안 쓰임).
+    //
+    // 의미 차이 주의: TS readonly = "재할당 불가", Flow `+` = "covariant" (반환만 가능).
+    // 출력 위치에서는 동등하게 read-only 처럼 동작하므로 동일 비트로 매핑 가능.
+    var is_readonly = false;
+    if (self.current() == .plus) {
+        is_readonly = true;
+        try self.advance();
+    } else if (self.current() == .minus) {
+        try self.advance();
+    }
+
+    // `...` 처리. 두 형태:
+    //   1. inexact marker: `{ name: T, ... }` — `...` 가 단독 (`}`/`|`/`,`/`;` 직전).
+    //   2. spread: `...Type` — `...` 다음에 type reference.
+    //
+    // spread 시 `parsePrimaryType` 사용 (full `parseType` 아님) — `...A` 이후의 `|`
+    // 을 union 으로 잘못 흡수하면 outer object type 의 `|}` 종료를 깨뜨림. spread 에는
+    // 보통 단순 type reference 만 와서 primary 로 충분.
+    if (self.current() == .dot3) {
+        try self.advance();
+        const next = self.current();
+        const is_terminator = next == .r_curly or next == .pipe or
+            next == .comma or next == .semicolon;
+        if (!is_terminator) {
+            _ = try parsePrimaryType(self);
+        }
+        return NodeIndex.none;
+    }
+
+    // Indexer (`[key: T]: U`) 또는 call/construct signature (`(args): R`) — skip.
+    if (self.current() == .l_bracket) {
+        try skipBalanced(self, .l_bracket, .r_bracket);
+        if (try self.eat(.colon)) _ = try parseType(self);
+        return NodeIndex.none;
+    }
+    if (self.current() == .l_paren) {
+        try skipBalancedParens(self);
+        if (try self.eat(.colon)) _ = try parseType(self);
+        return NodeIndex.none;
+    }
+
+    // Property key — identifier, keyword, 또는 quoted (`'aria-label'?: ?string`).
+    // Flow object body 에선 reserved keyword (`delete`, `class`, ...) 도 property
+    // 이름으로 허용되므로 `parseSimpleIdentifier` 의 `checkKeywordBinding` 검사를
+    // 우회 (`binding.zig:309` 가 reserved keyword 에 에러). 직접 노드 생성.
+    //
+    // 그 외 (`[computed]` / spread 등은 위에서 분기) → unknown — fail-safe skip.
+    const c = self.current();
+    const is_ident_like = c == .identifier or c == .escaped_keyword or
+        c == .escaped_strict_reserved or c.isKeyword();
+    const is_string_key = c == .string_literal;
+    if (!is_ident_like and !is_string_key) return NodeIndex.none;
+    const key_span = self.currentSpan();
+    try self.advance();
+    const key = try self.ast.addNode(.{
+        .tag = if (is_string_key) Tag.string_literal else Tag.binding_identifier,
+        .span = key_span,
+        .data = .{ .string_ref = key_span },
+    });
+
+    // method signature: `key(args): R` 또는 `key<T>(args): R` — skip.
+    // 제네릭 type parameter (`<T>`) 가 앞에 올 수 있으므로 angle bracket 도 감지.
+    if (self.isAtOpeningAngleBracket()) {
+        try skipBalanced(self, .l_angle, .r_angle);
+    }
+    if (self.current() == .l_paren) {
+        try skipBalancedParens(self);
+        if (try self.eat(.colon)) _ = try parseType(self);
+        return NodeIndex.none;
+    }
+
+    const is_optional = try self.eat(.question);
+
+    var type_ann: NodeIndex = NodeIndex.none;
+    if (try self.eat(.colon)) {
+        type_ann = try parseType(self);
+    }
+
+    const flags: PropertySignatureFlags = .{
+        .optional = is_optional,
+        .readonly = is_readonly,
+    };
+
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(key),
+        @intFromEnum(type_ann),
+        flags.toU32(),
+    });
+    return try self.ast.addNode(.{
+        .tag = .flow_property_signature,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
+    });
 }
 
 // ================================================================

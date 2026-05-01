@@ -3321,15 +3321,15 @@ test "TS object type: computed key with member access `[ns.k]`" {
 
 const ts_mod = @import("ts.zig");
 
-/// 파싱 결과. Scanner / Parser 를 heap allocator 로 박아 안정된 주소 보장
-/// (`Parser` 가 `*Scanner` 포인터를 들고 있는데 stack 에 두면 함수 반환 시
-/// dangling — `transformer_test.zig:200` 와 동일 패턴).
-const ParsedTs = struct {
+/// 파싱 결과 — TS / Flow 공통. Scanner / Parser 를 heap allocator 로 박아 안정된
+/// 주소 보장 (`Parser` 가 `*Scanner` 포인터를 들고 있는데 stack 에 두면 함수 반환
+/// 시 dangling — `transformer_test.zig:200` 와 동일 패턴).
+const ParsedSource = struct {
     scanner: *Scanner,
     parser: *Parser,
     alloc: std.mem.Allocator,
 
-    fn deinit(self: *ParsedTs) void {
+    fn deinit(self: *ParsedSource) void {
         self.parser.deinit();
         self.alloc.destroy(self.parser);
         self.scanner.deinit();
@@ -3337,7 +3337,9 @@ const ParsedTs = struct {
     }
 };
 
-fn parseTs(alloc: std.mem.Allocator, source: []const u8) !ParsedTs {
+const ParseMode = enum { ts, flow };
+
+fn parseSource(alloc: std.mem.Allocator, source: []const u8, mode: ParseMode) !ParsedSource {
     const scanner = try alloc.create(Scanner);
     errdefer alloc.destroy(scanner);
     scanner.* = try Scanner.init(alloc, source);
@@ -3348,23 +3350,30 @@ fn parseTs(alloc: std.mem.Allocator, source: []const u8) !ParsedTs {
     parser.* = Parser.init(alloc, scanner);
     errdefer parser.deinit();
 
-    parser.configureFromExtension(".ts");
+    switch (mode) {
+        .ts => parser.configureFromExtension(".ts"),
+        .flow => parser.is_flow = true,
+    }
     _ = try parser.parse();
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
     return .{ .scanner = scanner, .parser = parser, .alloc = alloc };
 }
 
-/// 첫 번째 ts_property_signature 의 (key, type_ann, flags) 추출. 6 케이스 공통 setup.
+fn parseTs(alloc: std.mem.Allocator, source: []const u8) !ParsedSource {
+    return parseSource(alloc, source, .ts);
+}
+
+/// 첫 번째 property signature 의 (key, type_ann, flags) 추출. TS / Flow 공통 layout.
 const PropSig = struct {
     key: ast_mod.NodeIndex,
     type_ann: ast_mod.NodeIndex,
     flags: ts_mod.PropertySignatureFlags,
 };
 
-fn extractFirstPropSig(parser: *Parser) PropSig {
+fn extractFirstPropSig(parser: *Parser, tag: Tag) PropSig {
     for (parser.ast.nodes.items) |node| {
-        if (node.tag != .ts_property_signature) continue;
+        if (node.tag != tag) continue;
         const e = node.data.extra;
         return .{
             .key = @enumFromInt(parser.ast.extra_data.items[e]),
@@ -3372,14 +3381,14 @@ fn extractFirstPropSig(parser: *Parser) PropSig {
             .flags = ts_mod.PropertySignatureFlags.fromU32(parser.ast.extra_data.items[e + 2]),
         };
     }
-    @panic("no ts_property_signature found in source");
+    std.debug.panic("BUG: test source has no node with tag {s}", .{@tagName(tag)});
 }
 
 test "TS property signature: preserves key + type + zero flags" {
     var r = try parseTs(std.testing.allocator, "interface A { color: string }");
     defer r.deinit();
 
-    const sig = extractFirstPropSig(r.parser);
+    const sig = extractFirstPropSig(r.parser, .ts_property_signature);
     try std.testing.expect(sig.key != .none);
     try std.testing.expect(sig.type_ann != .none);
     try std.testing.expectEqual(ts_mod.PropertySignatureFlags.NONE, sig.flags);
@@ -3393,7 +3402,7 @@ test "TS property signature: optional `?` sets flags.optional" {
     var r = try parseTs(std.testing.allocator, "interface A { color?: string }");
     defer r.deinit();
 
-    const sig = extractFirstPropSig(r.parser);
+    const sig = extractFirstPropSig(r.parser, .ts_property_signature);
     try std.testing.expect(sig.flags.optional);
     try std.testing.expect(!sig.flags.readonly);
 }
@@ -3402,7 +3411,7 @@ test "TS property signature: readonly sets flags.readonly" {
     var r = try parseTs(std.testing.allocator, "interface A { readonly color: string }");
     defer r.deinit();
 
-    const sig = extractFirstPropSig(r.parser);
+    const sig = extractFirstPropSig(r.parser, .ts_property_signature);
     try std.testing.expect(sig.flags.readonly);
     try std.testing.expect(!sig.flags.optional);
 }
@@ -3411,7 +3420,7 @@ test "TS property signature: readonly + optional both flags set" {
     var r = try parseTs(std.testing.allocator, "interface A { readonly color?: string }");
     defer r.deinit();
 
-    const sig = extractFirstPropSig(r.parser);
+    const sig = extractFirstPropSig(r.parser, .ts_property_signature);
     try std.testing.expect(sig.flags.optional);
     try std.testing.expect(sig.flags.readonly);
 }
@@ -3421,7 +3430,7 @@ test "TS property signature: missing type annotation has type_ann=none" {
     var r = try parseTs(std.testing.allocator, "interface A { color }");
     defer r.deinit();
 
-    const sig = extractFirstPropSig(r.parser);
+    const sig = extractFirstPropSig(r.parser, .ts_property_signature);
     try std.testing.expectEqual(ast_mod.NodeIndex.none, sig.type_ann);
 }
 
@@ -3466,4 +3475,207 @@ test "TS property signature: type alias body preserves all members" {
     try std.testing.expect(seen_color);
     try std.testing.expect(seen_size);
     try std.testing.expect(seen_disabled);
+}
+
+// ============================================================
+// Flow property signature 보존 (#2348 PR #3a-2)
+// ============================================================
+//
+// Flow object body 가 brace-skip 되던 동작을 실제 멤버 파싱으로 교체.
+// flow_property_signature 노드가 [key, type_ann, flags] 보존.
+
+fn parseFlow(alloc: std.mem.Allocator, source: []const u8) !ParsedSource {
+    return parseSource(alloc, source, .flow);
+}
+
+test "Flow property signature: preserves key + type + zero flags" {
+    var r = try parseFlow(std.testing.allocator,
+        \\type Props = { color: string };
+    );
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser, .flow_property_signature);
+    try std.testing.expect(sig.key != .none);
+    try std.testing.expect(sig.type_ann != .none);
+    try std.testing.expectEqual(ts_mod.PropertySignatureFlags.NONE, sig.flags);
+
+    // parseSimpleIdentifier 는 .binding_identifier 반환 (binding.zig).
+    try std.testing.expectEqual(Tag.binding_identifier, r.parser.ast.getNode(sig.key).tag);
+    try std.testing.expectEqual(Tag.flow_string_keyword, r.parser.ast.getNode(sig.type_ann).tag);
+}
+
+test "Flow property signature: optional `?` sets flags.optional" {
+    var r = try parseFlow(std.testing.allocator,
+        \\type Props = { color?: string };
+    );
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser, .flow_property_signature);
+    try std.testing.expect(sig.flags.optional);
+    try std.testing.expect(!sig.flags.readonly);
+}
+
+test "Flow property signature: covariant `+` sets flags.readonly" {
+    var r = try parseFlow(std.testing.allocator,
+        \\type Props = { +color: string };
+    );
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser, .flow_property_signature);
+    try std.testing.expect(sig.flags.readonly);
+    try std.testing.expect(!sig.flags.optional);
+}
+
+test "Flow property signature: contravariant `-` produces no flag" {
+    // 현재 PropertySignatureFlags 에 contravariant 비트 없음 — drop (codegen 미사용).
+    var r = try parseFlow(std.testing.allocator,
+        \\type Props = { -color: string };
+    );
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser, .flow_property_signature);
+    try std.testing.expectEqual(ts_mod.PropertySignatureFlags.NONE, sig.flags);
+}
+
+test "Flow object type: empty inexact `{}` has empty member list" {
+    var r = try parseFlow(std.testing.allocator,
+        \\type Empty = {};
+    );
+    defer r.deinit();
+
+    var found_object_type = false;
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag != .flow_object_type) continue;
+        found_object_type = true;
+        try std.testing.expectEqual(@as(u32, 0), node.data.list.len);
+    }
+    try std.testing.expect(found_object_type);
+}
+
+test "Flow exact object type: empty `{||}` has empty member list" {
+    // pipe2 토큰 처리 정상 확인.
+    var r = try parseFlow(std.testing.allocator,
+        \\type Empty = {||};
+    );
+    defer r.deinit();
+
+    var found_exact = false;
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag != .flow_exact_object_type) continue;
+        found_exact = true;
+        try std.testing.expectEqual(@as(u32, 0), node.data.list.len);
+    }
+    try std.testing.expect(found_exact);
+}
+
+test "Flow object type: multiple members all preserved with flags" {
+    var r = try parseFlow(std.testing.allocator,
+        \\type Props = {|
+        \\  color: string,
+        \\  size?: number,
+        \\  +disabled: boolean,
+        \\|};
+    );
+    defer r.deinit();
+
+    var prop_count: usize = 0;
+    var seen_color = false;
+    var seen_size = false;
+    var seen_disabled = false;
+
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag != .flow_property_signature) continue;
+        prop_count += 1;
+        const e = node.data.extra;
+        const key_idx: ast_mod.NodeIndex = @enumFromInt(r.parser.ast.extra_data.items[e]);
+        const flags = ts_mod.PropertySignatureFlags.fromU32(r.parser.ast.extra_data.items[e + 2]);
+
+        const name = r.parser.ast.getText(r.parser.ast.getNode(key_idx).data.string_ref);
+
+        if (std.mem.eql(u8, name, "color")) {
+            seen_color = true;
+            try std.testing.expectEqual(ts_mod.PropertySignatureFlags.NONE, flags);
+        } else if (std.mem.eql(u8, name, "size")) {
+            seen_size = true;
+            try std.testing.expect(flags.optional);
+        } else if (std.mem.eql(u8, name, "disabled")) {
+            seen_disabled = true;
+            try std.testing.expect(flags.readonly);
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), prop_count);
+    try std.testing.expect(seen_color);
+    try std.testing.expect(seen_size);
+    try std.testing.expect(seen_disabled);
+}
+
+test "Flow object type: contextual keyword as property key (`get`)" {
+    // get/set/class/interface 등은 .kw_* 토큰이라 단순 .identifier 체크로는 누락됨.
+    // 실제 RN spec 에서 흔함 (`{ get: () => T }` — react-native Utilities/defineLazyObjectProperty).
+    var r = try parseFlow(std.testing.allocator,
+        \\type X = { get: T };
+    );
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser, .flow_property_signature);
+    const name = r.parser.ast.getText(r.parser.ast.getNode(sig.key).data.string_ref);
+    try std.testing.expectEqualStrings("get", name);
+}
+
+test "Flow object type: reserved keyword as property key (`delete`)" {
+    // delete/class/if 등 reserved keyword 도 property 이름. parseSimpleIdentifier
+    // 의 checkKeywordBinding 검사를 우회해서 직접 binding_identifier 노드 생성 — 회귀 가드.
+    var r = try parseFlow(std.testing.allocator,
+        \\type X = { delete?: T };
+    );
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser, .flow_property_signature);
+    const name = r.parser.ast.getText(r.parser.ast.getNode(sig.key).data.string_ref);
+    try std.testing.expectEqualStrings("delete", name);
+    try std.testing.expect(sig.flags.optional);
+}
+
+test "Flow object type: string literal as property key (`'aria-label'`)" {
+    // RN Button.js 의 `'aria-label'?: ?string` 형태.
+    var r = try parseFlow(std.testing.allocator,
+        \\type X = { 'aria-label'?: string };
+    );
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser, .flow_property_signature);
+    try std.testing.expectEqual(Tag.string_literal, r.parser.ast.getNode(sig.key).tag);
+    try std.testing.expect(sig.flags.optional);
+}
+
+test "Flow object type: generic method signature skipped (`foo<T>(): R`)" {
+    // RN ReactNativeTypes.js 의 `findHostInstance_DEPRECATED<T: Foo>(arg: T): R` 형태.
+    // 제네릭 type param `<...>` + paren `(...)` 둘 다 method 표시.
+    var r = try parseFlow(std.testing.allocator,
+        \\type X = { foo<T>(arg: T): R };
+    );
+    defer r.deinit();
+
+    var prop_count: usize = 0;
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag == .flow_property_signature) prop_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), prop_count);
+}
+
+test "Flow object type: spread `...Type` is skipped (not in member list)" {
+    // `...ViewProps` 같은 spread 는 PR #3a-2 스코프 밖이라 silent skip.
+    // codegen (#3b) 이 RN ViewProps 등을 자체 처리하므로 의도적.
+    var r = try parseFlow(std.testing.allocator,
+        \\type Props = {| color: string, ...Other |};
+    );
+    defer r.deinit();
+
+    var prop_count: usize = 0;
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag == .flow_property_signature) prop_count += 1;
+    }
+    // spread 는 skip → color 만 남음.
+    try std.testing.expectEqual(@as(usize, 1), prop_count);
 }
