@@ -40,11 +40,11 @@
 | 27. ES2023 | `--target=es2023`, hashbang (#!) 다운레벨, compat_table 엔진 버전 | ✅ |
 | 28. NAPI | C NAPI 바인딩: transpile, buildSync, build (async + plugins) | ✅ |
 | 29. Node.js CLI | Zig CLI → Node.js/Bun CLI 전환 (Rolldown 방식), watch/serve JS 구현 | ✅ |
-| 30. Vite 어댑터 | `vitePlugin()` Rollup→ZTS 플러그인 변환, resolveId/load/transform | ✅ |
+| 30. Vite 어댑터 | `vitePlugin()` Rollup→ZTS 플러그인 변환, resolveId/load/transform + lifecycle | ✅ |
 | 31. define/alias | NAPI BuildOptions에 `define`/`alias` 옵션 노출 | ✅ |
 | 32. tsconfig | CLI에서 tsconfig.json 자동 탐색+로드 (experimentalDecorators, jsx 등) | ✅ |
 | 33. BuildOptions 확장 | loader, conditions, resolveExtensions, mainFields, target, outdir, outfile, write | ✅ |
-| 34. 플러그인 훅 확장 | renderChunk/generateBundle NAPI 노출 + vitePlugin 매핑 | ✅ |
+| 34. 플러그인 훅 확장 | renderChunk/generateBundle + buildStart/buildEnd/closeBundle NAPI 노출, watch lifecycle 매핑 | ✅ |
 | 35. async 플러그인 | 모든 훅 async/Promise 반환 지원 (MaybePromise) | ✅ |
 | 36. import.meta.glob | Vite 호환 `import.meta.glob()`, eager/import 옵션 | ✅ |
 | 37. Stage 3 decorators | TC39 Stage 3 데코레이터 (method/getter/setter/field/accessor/class, MobX 6 호환). ES5 타겟 lowering 포함 완료 — 단 `accessor #x` / `accessor [k]` 는 미구현 (실사용 라이브러리 없음, 필요 시 추가) | ✅ |
@@ -180,7 +180,7 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   - 1단계: ✅ Zig Builtin 플러그인 — 함수 포인터 기반 Plugin struct, 5개 훅 (worklet/refresh 등 내부 전용)
   - ~~2단계: JS 플러그인 subprocess~~ — ❌ D101로 제거. NAPI(3단계)가 기본 경로
   - 3단계: ✅ N-API .node addon — in-process 호출, TSFN 기반 async 브릿지 (기본 JS 플러그인 경로)
-  - 4단계: ✅ Vite/Rollup 어댑터 — vitePlugin() + async 훅 + renderChunk/generateBundle
+  - 4단계: ✅ Vite/Rollup 어댑터 — vitePlugin() + async 훅 + renderChunk/generateBundle + lifecycle/watch
   플러그인 API로 CSS는 사용자가 PostCSS/Lightning CSS 플러그인으로 해결 가능.
 
 - ~~**CSS 번들링**~~ — ✅ Phase 1 완료

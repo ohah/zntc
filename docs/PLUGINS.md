@@ -17,8 +17,8 @@
 │ resolveId    │ 모듈 경로 해석 커스텀 (alias, virtual)    │ 필수      │
 │ load         │ 모듈 내용 로딩 (virtual module, 로더)     │ 필수      │
 │ transform    │ 코드 변환 (Babel, PostCSS 등)            │ 필수      │
-│ moduleParsed │ 모듈 파싱 완료 알림 (moduleInfo)          │ 중간      │
 │ buildEnd     │ 빌드 종료 시점                           │ 필수      │
+│ moduleParsed │ 모듈 파싱 완료 알림 (moduleInfo)          │ 후순위    │
 │ watchChange  │ watch 모드에서 파일 변경 감지             │ 중간      │
 │ onLog        │ 로그/경고 필터링 및 조작                  │ 낮음      │
 └──────────────┴─────────────────────────────────────────┴──────────┘
@@ -34,7 +34,7 @@
 │ generateBundle   │ 번들 생성 완료 (에셋 추가/수정)        │ 필수      │
 │ writeBundle      │ 디스크 쓰기 완료 후 콜백               │ 중간      │
 │ augmentChunkHash │ 청크 해시에 추가 정보                  │ 낮음      │
-│ closeBundle      │ 번들 완전 종료                        │ 낮음      │
+│ closeBundle      │ 출력 파일 write 완료 후 cleanup/알림   │ 필수      │
 └──────────────────┴──────────────────────────────────────┴──────────┘
 ```
 
@@ -64,20 +64,14 @@ Codegen.generate()          AST → JS 문자열
 CJS 래핑 등
   ↓                         ← [renderChunk 훅] emitter.zig:700, 청크 완성 후
 최종 출력                    ← [generateBundle 훅] bundler.zig:273, 번들 완료 시점
+파일 write 완료              ← [closeBundle 훅] JS layer, writeOutputFiles 이후
+watch callback 완료          ← [closeBundle 훅] JS layer, onReady/onRebuild 이후
 ```
 
-**수정 대상 파일:**
-```
-┌──────────────────────┬───────────────────────────────────────┬──────────┐
-│ 파일                  │ 변경 내용                              │ 난이도    │
-├──────────────────────┼───────────────────────────────────────┼──────────┤
-│ bundler.zig          │ BundleOptions에 plugins 배열 추가 + 전파│ 쉬움     │
-│ resolver.zig:69      │ resolve() 시작에 resolveId 훅 호출     │ 쉬움     │
-│ graph.zig:238        │ parseModule()에 load 훅 호출           │ 중간     │
-│ emitter.zig:1148     │ codegen 후 transform 훅 호출           │ 쉬움     │
-│ emitter.zig:700      │ 청크 완성 후 renderChunk 훅 호출       │ 중간     │
-└──────────────────────┴───────────────────────────────────────┴──────────┘
-```
+현재 JS 플러그인은 `packages/core/index.ts` 의 dispatcher가 NAPI hook 요청을 받아 실행한다.
+`buildStart` / `buildEnd` 는 native bundler가 dispatch하고, `closeBundle`은 Rollup 의미
+보존을 위해 JS layer가 출력 write 이후에 dispatch한다. `watch()`도 초기 build와 매 rebuild에서
+같은 lifecycle을 사용하며, `closeBundle`은 `onReady` / `onRebuild` callback 이후에 호출된다.
 
 ## 구현 전략 — 3단계
 
@@ -95,8 +89,8 @@ CJS 래핑 등
 
 ### 3단계: C NAPI 바인딩 ✅ 완료 (기본 경로, #975, #978, #979, #980)
 - `zig build napi` → `.node` 공유 라이브러리 빌드
-- `@zts/core` npm 패키지: `transpile()`, `buildSync()`, `build()` API
-- esbuild 스타일 JS 플러그인: `onResolve`, `onLoad`, `onTransform`
+- `@zts/core` npm 패키지: `transpile()`, `buildSync()`, `build()`, `watch()` API
+- esbuild 스타일 JS 플러그인: `onResolve`, `onLoad`, `onTransform`, lifecycle hook
 - `napi_threadsafe_function` + mutex/condvar로 워커 스레드 ↔ 메인 스레드 동기화
 - Node.js + Bun 모두 지원, 80개 테스트 (1240 expect calls)
 
@@ -115,11 +109,12 @@ const result = await build({
 });
 ```
 
-**제한사항**: `buildSync()`에서는 JS 플러그인 미지원 (메인 스레드 데드락). `build()` (async)에서만 사용 가능.
+**제한사항**: `buildSync()`에서는 JS 플러그인 미지원 (메인 스레드 데드락). `build()` / `watch()`에서 사용 가능.
 
 ### 4단계: Vite/Rollup 호환 어댑터 ✅ 완료 (#992, #1004, #1007)
 - `vitePlugin()` 함수로 Rollup 스타일 플러그인을 ZTS 플러그인으로 변환
-- `resolveId`, `load`, `transform`, `renderChunk`, `generateBundle` 훅 지원
+- `resolveId`, `load`, `transform`, `renderChunk`, `generateBundle`, lifecycle 훅 지원
+- `buildStart`, `buildEnd`, `closeBundle` lifecycle 훅 지원 (`watch()`는 초기 build와 매 rebuild)
 - 모든 훅 async/Promise 반환 지원 (`MaybePromise<T>`)
 - ZTS 네이티브 플러그인과 혼합 사용 가능
 - `onRenderChunk`: 청크 코드 후처리 (체이닝), `onGenerateBundle`: 번들 완료 콜백
@@ -183,6 +178,9 @@ pub const Plugin = struct {
     transform: ?*const fn (code: []const u8, id: []const u8, allocator: Allocator) !?[]const u8 = null,
     renderChunk: ?*const fn (code: []const u8, chunk_name: []const u8, allocator: Allocator) !?[]const u8 = null,
     generateBundle: ?*const fn (output_files: []const OutputFile) void = null,
+    buildStart: ?*const fn (ctx: ?*anyopaque) PluginError!void = null,
+    buildEnd: ?*const fn (ctx: ?*anyopaque, build_error: ?*const BundlerDiagnostic) PluginError!void = null,
+    closeBundle: ?*const fn (ctx: ?*anyopaque) PluginError!void = null,
 };
 ```
 
@@ -190,6 +188,8 @@ pub const Plugin = struct {
 - resolveId/load: 첫 번째 non-null 반환 플러그인이 승리 (Rollup first 모드)
 - transform/renderChunk: 순차 체이닝 — 이전 플러그인 출력이 다음 플러그인 입력
 - generateBundle: 모두 실행 (Rollup parallel 모드)
+- lifecycle: `buildStart → buildEnd → closeBundle` 순서로 모두 실행. `buildEnd` / `closeBundle` 에러는 본 build 결과를 가리지 않도록 swallow
+- watch lifecycle: `buildStart → buildEnd → onReady/onRebuild → closeBundle` 순서로 초기 build와 매 rebuild마다 실행
 
 ## Builtin 플러그인 (Zig 구현)
 ```
@@ -208,6 +208,7 @@ pub const Plugin = struct {
 ## Vite 호환 확장 (4단계)
 - resolveId / load / transform — Rollup 호환 (어댑터로 변환)
 - renderChunk / generateBundle — 출력 단계 훅
+- buildStart / buildEnd / closeBundle — lifecycle 훅
 - config / configResolved — 설정 변환
 - configureServer — 서버 커스텀
 - transformIndexHtml — HTML 변환

@@ -22,10 +22,10 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
 ─────────────────                 ──────────────────          ──────────────
 ✅ 모듈 해석 (Node/TS)            ✅ CJS interop (입력)        플러그인 시스템
   ├ node_modules 탐색              ├ require() 감지/래핑        ├ resolve/load/transform 훅
-  ├ package.json exports           ├ __commonJS/__toESM         ├ renderChunk/generateBundle 훅
+  ├ package.json exports           ├ __commonJS/__toESM         ├ renderChunk/generateBundle/lifecycle 훅
   ├ tsconfig paths/baseUrl         └ ExportsKind 승격           ├ Plugin Context API (emitFile 등)
   └ 조건부 exports                                              ├ Rollup 플러그인 호환
-✅ package.json browser 필드      ✅ Top-level await            └ Vite 플러그인 호환 (후순위)
+✅ package.json browser 필드      ✅ Top-level await            └ Vite/Rollup 어댑터
   └ disabled 파일 → 빈 모듈       ✅ Code splitting            로더 시스템 (esbuild/Rolldown 호환)
 ✅ Node 빌트인 빈 모듈 대체         ├ BitSet 도달 가능성        ├ JSON (named export 지원)
   └ --platform=browser 시           ├ 공통 청크 자동 추출       ├ Text / Base64 / DataURL
