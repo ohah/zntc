@@ -223,6 +223,20 @@ fn classifyMember(
         return;
     }
 
+    // `DirectEventHandler<T>` / `BubblingEventHandler<T>` — RN codegen 의 명시적 event
+    // wrapper. react-native-svg 의 fabric spec 들이 `onSvgLayout?: DirectEventHandler<E>`
+    // 형태로 사용. wrapper 이름이 bubble vs direct 를 결정하므로 prop 이름 휴리스틱
+    // (`onCapture`) 보다 우선.
+    if (eventHandlerBubbling(ast, type_idx)) |bubbling| {
+        try events.append(alloc, .{
+            .name = key_name,
+            .bubbling_type = bubbling,
+            .optional = flags.optional,
+            .argument = null,
+        });
+        return;
+    }
+
     const prop_type = try mapPropType(ast, type_index, type_idx);
     try props.append(alloc, .{
         .name = key_name,
@@ -260,6 +274,17 @@ fn stripQuotes(s: []const u8) []const u8 {
 fn isFunctionType(ast: *const Ast, type_idx: NodeIndex) bool {
     const node = ast.getNode(type_idx);
     return node.tag == .ts_function_type or node.tag == .flow_function_type;
+}
+
+/// type 이 `DirectEventHandler<T>` / `BubblingEventHandler<T>` 면 해당 BubblingType 반환.
+/// 그 외엔 null.
+fn eventHandlerBubbling(ast: *const Ast, type_idx: NodeIndex) ?schema.BubblingType {
+    const node = ast.getNode(type_idx);
+    if (node.tag != .ts_type_reference and node.tag != .flow_type_reference) return null;
+    const name = getTypeReferenceName(ast, node) orelse return null;
+    if (std.mem.eql(u8, name, "DirectEventHandler")) return .direct;
+    if (std.mem.eql(u8, name, "BubblingEventHandler")) return .bubble;
+    return null;
 }
 
 /// 이벤트 prop 이름 → bubble vs direct 분류.
