@@ -19,6 +19,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, resolve as pathResolve } from "node:path";
 
+import { isPlainObject } from "../index";
 import {
   type ConfigEnv,
   defaultConfigEnv,
@@ -156,7 +157,7 @@ export async function loadWorkspace(filePath: string, env?: ConfigEnv): Promise<
       }
       continue;
     }
-    if (e === null || typeof e !== "object" || Array.isArray(e)) {
+    if (!isPlainObject(e)) {
       throw new Error(
         `@zts/core: workspace[${i}] must be a string or object (got ${
           Array.isArray(e) ? "array" : e === null ? "null" : typeof e

@@ -14,7 +14,7 @@ import { dirname, extname, join, resolve as pathResolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { BuildOptions } from "../index";
-import { init, transpile } from "../index";
+import { init, isPlainObject, transpile } from "../index";
 
 /**
  * config 객체 형태 — 모든 BuildOptions 의 부분 집합.
@@ -154,13 +154,13 @@ async function resolveConfigValue(
     return raw;
   }
   const result = await raw(env ?? defaultConfigEnv());
-  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+  if (!isPlainObject(result)) {
     const got = Array.isArray(result) ? "array" : typeof result;
     throw new Error(
       `@zts/core: functional config must return an object (got ${got}) from ${absPath}`,
     );
   }
-  return result;
+  return result as UserConfig;
 }
 
 /**
