@@ -303,6 +303,11 @@ fn mapPropTypeAt(
         // type reference: reserved primitive 또는 alias 펼치기
         .ts_type_reference, .flow_type_reference => mapTypeReference(ast, type_index, node, depth),
 
+        // Flow nullable (`?T`) — RN core spec 의 ColorValue/ImageSource 등 거의 모든
+        // optional reserved type 이 이 형태로 등장. inner 만 매핑하면 됨 — RN runtime
+        // 이 nullable semantics 자체 (validAttributes 의 prop 자체가 optional) 처리.
+        .flow_nullable_type => mapPropTypeAt(ast, type_index, node.data.unary.operand, depth + 1),
+
         // 그 외는 미지원 — 향후 확장 (PR #3b-2: array, object, string_enum, ...)
         else => error.UnsupportedPropType,
     };
