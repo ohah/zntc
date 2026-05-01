@@ -131,7 +131,7 @@ fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
     // TS JSX type arguments: <Foo<T> ... /> or <Foo<<T>(x:T)=>T> ... />
     // 태그 이름 뒤에 '<'가 오면 type arguments로 파싱하여 스트리핑.
     // type args 파싱은 일반 scanner 모드를 쓰므로, 끝난 후 JSX 모드로 재스캔.
-    if (self.is_ts and self.current() == .l_angle) {
+    if (self.source_mode == .ts and self.current() == .l_angle) {
         _ = try self.parseTypeArguments();
         // type args 닫는 > 이후 토큰이 일반 모드로 스캔됨 → JSX 모드로 재스캔
         try self.scanner.nextInsideJSXElement();

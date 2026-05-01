@@ -85,7 +85,7 @@ pub fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseEr
     switch (self.current()) {
         .kw_const => {
             // TS const enum은 완전히 지워지므로 label 위치 허용
-            if (!self.is_ts or try self.peekNextKind() != .kw_enum) {
+            if (self.source_mode != .ts or try self.peekNextKind() != .kw_enum) {
                 try self.addErrorCode(self.currentSpan(), "Lexical declaration is not allowed in statement position", .lexical_in_statement);
             }
         },
@@ -817,7 +817,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!v
         // TS 모드에서는 for-in var initializer를 허용 (esbuild 호환).
         // TS에서 `for (var x = Array<number> in y)` 같은 패턴에서 타입 인자가
         // 스트리핑되어 initializer가 남을 수 있다. codegen에서 hoisting 처리.
-        if (self.is_ts) return;
+        if (self.source_mode == .ts) return;
 
         if (!self.is_strict_mode) {
             // BindingIdentifier인지 확인 — destructuring이면 허용 불가

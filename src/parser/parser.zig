@@ -41,6 +41,19 @@ const BracketInfo = struct {
     span: Span,
 };
 
+/// 파서 입력의 source-type. 과거 `is_ts: bool` 과 `reject_ts_syntax_in_js: bool` 두 필드로
+/// 표현하던 3-state 를 명시적 enum 으로 통합. 두 boolean 의 (true,true) 조합이 의미상
+/// 불가능했던 것이 enum 으로는 자명해진다.
+pub const SourceMode = enum {
+    /// JS 입력이지만 source-type signal 이 없는 legacy 모드 (standalone transpile + unknown
+    /// extension 등). TS 문법은 silent 통과. 새 입력 경로에는 사용하지 말 것.
+    js_lenient,
+    /// .js/.jsx/.mjs/.cjs 또는 loader=js/jsx 로 source-type 이 명시된 JS. TS 문법 거부.
+    js_strict,
+    /// .ts/.tsx/.mts/.cts 또는 loader=ts/tsx 로 source-type 이 명시된 TS.
+    ts,
+};
+
 /// 재귀 하강 파서.
 /// Scanner에서 토큰을 하나씩 읽어 AST를 구축한다.
 pub const Parser = struct {
@@ -124,13 +137,12 @@ pub const Parser = struct {
     /// false이면 <T>()=>{}가 제네릭 arrow로 해석.
     is_jsx: bool = false,
 
-    /// TypeScript 모드 (.ts/.tsx/.mts). TS에서는 function overload, duplicate export 등이 합법.
-    is_ts: bool = false,
-
-    /// JS/JSX source type 으로 파싱 중이면 TypeScript-only syntax 를 거부한다.
-    /// standalone transpile 의 filename 생략 기본값도 JS라서 TypeScript 문법은 filename/loader로
-    /// ts/tsx source type을 명시해야 한다.
-    reject_ts_syntax_in_js: bool = false,
+    /// 파서가 보는 source-type. is_ts/reject_ts_syntax_in_js 두 boolean 으로 표현하던
+    /// 3-state 를 단일 enum 으로 통합한 것. `js_lenient` 는 standalone transpile 의 unknown
+    /// extension 등 source-type signal 이 없는 legacy 입력 (TS 문법 silent 통과). `js_strict`
+    /// 는 .js/.jsx 또는 loader=js/jsx 로 명시된 JS 입력 (TS 문법 거부). `ts` 는 .ts/.tsx
+    /// 또는 loader=ts/tsx 로 명시된 TS 입력 (TS 문법 허용 + module/strict).
+    source_mode: SourceMode = .js_lenient,
 
     /// Flow 모드 (.js/.jsx + @flow pragma, .js.flow, 또는 --flow CLI).
     /// Flow 타입 어노테이션 파싱 및 스트리핑을 활성화한다.
@@ -302,9 +314,8 @@ pub const Parser = struct {
     /// 어긋날 때 사용. parser는 standalone 모듈이라 bundler의 ModuleType 을 직접 참조하지
     /// 않고 호출자가 (is_ts, is_jsx) 로 변환해서 넘긴다.
     pub fn configureForBundlerKind(self: *Parser, is_ts: bool, is_jsx: bool) void {
-        self.is_ts = is_ts;
+        self.source_mode = if (is_ts) .ts else .js_strict;
         self.is_jsx = is_jsx;
-        self.reject_ts_syntax_in_js = !is_ts;
         if (is_ts) {
             self.is_module = true;
             self.scanner.is_module = true;
@@ -324,24 +335,23 @@ pub const Parser = struct {
         if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
             std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts"))
         {
-            self.is_ts = true;
+            self.source_mode = .ts;
+        } else if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx") or
+            std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".cjs"))
+        {
+            self.source_mode = .js_strict;
         }
         if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
             self.is_jsx = true;
-        }
-        if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx") or
-            std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".cjs"))
-        {
-            self.reject_ts_syntax_in_js = true;
         }
     }
 
     /// 파일 경로에서 .js.flow / .jsx.flow 이중 확장자를 감지하여 Flow 모드를 설정한다.
     /// std.fs.path.extension()은 마지막 확장자(.flow)만 반환하므로
     /// 전체 경로를 확인해야 한다.
-    /// is_ts와 is_flow는 상호 배타적이므로, TS 파일에서는 설정하지 않는다.
+    /// TS 와 Flow 는 상호 배타적이므로, TS 파일에서는 설정하지 않는다.
     pub fn configureFlowFromPath(self: *Parser, file_path: []const u8) void {
-        if (self.is_ts) return; // TS와 Flow는 상호 배타
+        if (self.source_mode == .ts) return; // TS와 Flow는 상호 배타
         if (std.mem.endsWith(u8, file_path, ".js.flow")) {
             self.is_flow = true;
             self.scanner.has_flow_pragma = true; // flow comment 활성화
@@ -355,9 +365,9 @@ pub const Parser = struct {
     /// 스캐너가 @flow pragma를 감지했으면 is_flow를 활성화한다.
     /// 내부 전용 — statement.parse()의 advance() 직후에서만 호출.
     /// advance()가 첫 주석을 스캔하므로 이 시점에서 has_flow_pragma가 설정되어 있다.
-    /// is_ts와 is_flow는 상호 배타적이므로, TS 모드에서는 무시한다.
+    /// TS 와 Flow 는 상호 배타적이므로, TS 모드에서는 무시한다.
     pub fn applyFlowPragma(self: *Parser) void {
-        if (self.is_ts) return; // TS와 Flow는 상호 배타
+        if (self.source_mode == .ts) return; // TS와 Flow는 상호 배타
         if (self.scanner.has_flow_pragma) {
             self.is_flow = true;
         }
@@ -2145,7 +2155,7 @@ pub const Parser = struct {
     }
 
     fn rejectTypeScriptSyntaxInJavaScript(self: *Parser, message: []const u8) ParseError2!void {
-        if (!self.reject_ts_syntax_in_js or self.is_ts or self.is_flow) return;
+        if (self.source_mode != .js_strict or self.is_flow) return;
         try self.addErrorCode(self.currentSpan(), message, .ts_syntax_in_js);
     }
 
