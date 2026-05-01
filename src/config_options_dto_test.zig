@@ -202,7 +202,6 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "intro",
     "outro",
     "legalComments",
-    "tsconfigRaw", // CLI raw json 별도 처리
     "logLevel",
     "logLimit",
     "lineLimit",

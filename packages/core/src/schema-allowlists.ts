@@ -39,7 +39,6 @@ export const NAPI_INTERNAL_ONLY_KEYS = [
   "scopeHoist",
   "silentConsoleErrorPatterns",
   "strictExecutionOrder",
-  "tsconfigRaw",
   "watchExclude",
   "watchFolders",
   "watchInclude",

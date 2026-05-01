@@ -173,7 +173,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "useDefineForClassFields",
   "verbatimModuleSyntax",
   "tsconfigPath",
-  "tsconfigRaw",
   // ─── Rollup 호환 ───
   "globalName",
   "globals",

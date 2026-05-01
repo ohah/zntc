@@ -3087,14 +3087,6 @@ describe("배치 E: S급 BuildOptions", () => {
     expect(result.errors.length).toBe(0);
   });
 
-  test("tsconfigRaw: 인라인 tsconfig 오버라이드", () => {
-    const result = buildSync({
-      entryPoints: [join(dir, "entry.ts")],
-      tsconfigRaw: '{"compilerOptions":{"strict":true}}',
-    });
-    expect(result.errors.length).toBe(0);
-  });
-
   test("outbase: 엔트리 공통 기준 경로", () => {
     const result = buildSync({
       entryPoints: [join(dir, "entry.ts")],
