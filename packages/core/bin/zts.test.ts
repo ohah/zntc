@@ -331,23 +331,26 @@ describe("CLI: bundle", () => {
 
   test("번들 + --packages=external 은 bare package만 external 처리", () => {
     const extDir = mkdtempSync(join(tmpdir(), "zts-cli-packages-ext-"));
-    writeFileSync(
-      join(extDir, "app.ts"),
-      'import React from "react";\nimport { local } from "./local";\nconsole.log(React, local);',
-    );
-    writeFileSync(join(extDir, "local.ts"), "export const local = 'LOCAL_INCLUDED';");
-    const { stdout, stderr, exitCode } = runCli([
-      "--bundle",
-      join(extDir, "app.ts"),
-      "--packages=external",
-      "--format=esm",
-    ]);
-    expect(exitCode).toBe(0);
-    expect(stderr).not.toContain("unknown option");
-    expect(stdout).toContain('"react"');
-    expect(stdout).toContain("LOCAL_INCLUDED");
-    expect(stdout).not.toContain('from "./local"');
-    rmSync(extDir, { recursive: true, force: true });
+    try {
+      writeFileSync(
+        join(extDir, "app.ts"),
+        'import React from "react";\nimport { local } from "./local";\nconsole.log(React, local);',
+      );
+      writeFileSync(join(extDir, "local.ts"), "export const local = 'LOCAL_INCLUDED';");
+      const { stdout, stderr, exitCode } = runCli([
+        "--bundle",
+        join(extDir, "app.ts"),
+        "--packages=external",
+        "--format=esm",
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("unknown option");
+      expect(stdout).toContain('"react"');
+      expect(stdout).toContain("LOCAL_INCLUDED");
+      expect(stdout).not.toContain('from "./local"');
+    } finally {
+      rmSync(extDir, { recursive: true, force: true });
+    }
   });
 
   test("번들 + --banner:js + --footer:js (esbuild 호환 alias)", () => {
@@ -1973,22 +1976,25 @@ describe("CLI: zts.config 자동 탐색 + BuildOptions 머지", () => {
 
   test("zts.config.json 의 packagesExternal 이 적용됨", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-config-packages-external-"));
-    writeFileSync(
-      join(dir, "entry.ts"),
-      'import React from "react";\nimport { local } from "./local";\nconsole.log(React, local);',
-    );
-    writeFileSync(join(dir, "local.ts"), "export const local = 'CONFIG_LOCAL_INCLUDED';");
-    writeFileSync(
-      join(dir, "zts.config.json"),
-      JSON.stringify({ entryPoints: ["./entry.ts"], packagesExternal: true, format: "esm" }),
-    );
-    const { stdout, stderr, exitCode } = runCli(["--bundle"], { cwd: dir });
-    expect(exitCode).toBe(0);
-    expect(stderr).not.toContain("error");
-    expect(stdout).toContain('"react"');
-    expect(stdout).toContain("CONFIG_LOCAL_INCLUDED");
-    expect(stdout).not.toContain('from "./local"');
-    rmSync(dir, { recursive: true, force: true });
+    try {
+      writeFileSync(
+        join(dir, "entry.ts"),
+        'import React from "react";\nimport { local } from "./local";\nconsole.log(React, local);',
+      );
+      writeFileSync(join(dir, "local.ts"), "export const local = 'CONFIG_LOCAL_INCLUDED';");
+      writeFileSync(
+        join(dir, "zts.config.json"),
+        JSON.stringify({ entryPoints: ["./entry.ts"], packagesExternal: true, format: "esm" }),
+      );
+      const { stdout, stderr, exitCode } = runCli(["--bundle"], { cwd: dir });
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("error");
+      expect(stdout).toContain('"react"');
+      expect(stdout).toContain("CONFIG_LOCAL_INCLUDED");
+      expect(stdout).not.toContain('from "./local"');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("zts.config.ts 의 plugins 가 적용됨", () => {
