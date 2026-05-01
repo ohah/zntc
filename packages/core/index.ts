@@ -1240,9 +1240,8 @@ function arrayAliasToPlugin(
   };
 }
 
-// Array 형태 alias (#2153) 가 있으면 onResolve plugin 으로 변환해 user plugins 앞에
-// prepend — 다른 plugin 보다 먼저 매칭돼 alias 치환 우선 적용 (Vite 동작). plugin 이
-// 하나도 없으면 null. build() 와 watch() 가 동일한 머지 규칙을 공유.
+// Array 형태 alias (#2153) 는 onResolve plugin 으로 변환해 user plugins 앞에 prepend —
+// 다른 plugin 보다 먼저 매칭돼 alias 치환이 우선 적용된다 (Vite 동작).
 function resolveDispatcher(options: BuildOptions) {
   const arrayAlias = Array.isArray(options.alias) ? options.alias : null;
   const userPlugins = options.plugins ?? [];
@@ -1841,15 +1840,12 @@ export function watch(options: BuildOptions): WatchHandle {
   if (dispatcher) {
     nativeOpts._pluginDispatcher = dispatcher;
 
-    // closeBundle 은 native callback 안에서 fire-and-forget — 호출자가 await 받지 못하므로
-    // rejection 은 swallow (unhandledRejection 노이즈 방지). build() 가 await 하는 것과는
-    // 구조적으로 다른 환경.
+    // native 측은 onReady/onRebuild 결과 promise 를 await 하지 않으므로 모든 rejection 을
+    // swallow — 그렇지 않으면 user callback throw 와 closeBundle dispatch 실패가
+    // unhandledRejection 으로 샌다. build() 는 await 가능해 이 래핑이 필요 없다.
     const dispatchCloseBundle = () => {
       void dispatcher("closeBundle", undefined, null).catch(() => {});
     };
-
-    // user callback throw / rejection 은 swallow — 호출자가 await 못 받으므로
-    // unhandledRejection 으로 새지 않게 `.catch` 로 닫는다. closeBundle 은 항상 1회.
     const wrapWatchCallback =
       <T>(callback?: (event: T) => void | Promise<void>) =>
       (event: T) => {
