@@ -161,6 +161,12 @@ export const FLAG_REGISTRY = [
   { kind: "ns-string", flag: "--out-extension:.js", target: "outExtensionJs" },
 
   // ─── kind=enum-bool — `--key=enumValue` → opts[target] = spec.enum[enumValue] ───
+  {
+    kind: "enum-bool",
+    flag: "--packages",
+    target: "packagesExternal",
+    enum: { external: true },
+  },
   { kind: "enum-bool", flag: "--charset", target: "charsetUtf8", enum: { utf8: true } },
 
   // ─── kind=string-bool — default=true 의 toggle. `--key=false` → false, 그 외 → true ───

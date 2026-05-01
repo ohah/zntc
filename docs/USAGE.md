@@ -111,6 +111,7 @@ esbuild 스타일: `onResolve`, `onLoad`, `onTransform`, `onRenderChunk`, `onGen
 - `--platform=browser` + `--bundle` → IIFE 출력 + `NODE_ENV=production` 자동 define + Node 빌트인 빈 모듈 대체
 - `--platform=node` → Node 빌트인(`node:fs`, `fs`, 서브패스 포함) 자동 external
 - `--platform=react-native` → RN 프리셋: `.ios.*` / `.android.*` / `.native.*` 확장자, `react-native` main-field / exports 조건, `--flow` 자동 활성화
+- `--packages=external` → 모든 bare package import를 external 처리. relative/absolute import는 기존처럼 번들
 
 ### Watch / Serve
 - `--watch` / `--serve` — 증분 빌드 (PersistentModuleStore + ResolveCache 보존, 변경 모듈만 재파싱)

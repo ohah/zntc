@@ -140,6 +140,7 @@ function usageLines(command) {
     "",
     "Options:",
     "  --bundle                   Bundle dependencies",
+    "  --packages=external        Treat all bare package imports as external",
     "  --outdir <dir>             Output directory",
     "  --outfile <file>, -o <file> Output file",
     "  --watch, -w                Rebuild on changes",
@@ -199,6 +200,7 @@ function parseArgs(argv) {
     analyze: false,
     treeShaking: true,
     external: [],
+    packagesExternal: false,
     define: {},
     alias: {},
     banner: undefined,
@@ -1802,6 +1804,7 @@ function mergeConfigIntoOpts(opts, config) {
     "jsxDev",
     "preserveModules",
     "verbatimModuleSyntax",
+    "packagesExternal",
   ];
   for (const key of BOOL_KEYS) {
     if (opts[key] === false && config[key] === true) {
@@ -1866,6 +1869,7 @@ async function runBundle(opts, config) {
     target: opts.target,
     browserslist: opts.browserslist,
     external: opts.external,
+    packagesExternal: opts.packagesExternal,
     // `--alias:K=V` 플래그 (webpack/rollup 스타일) — JS 옵션이 tsconfig paths 보다 우선 적용됨.
     alias: Object.keys(opts.alias).length > 0 ? opts.alias : undefined,
     define: Object.keys(opts.define).length > 0 ? opts.define : undefined,

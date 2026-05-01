@@ -30,6 +30,7 @@ CLI > config > tsconfig > defaults. 같은 옵션이 여러 곳에 정의되면 
 | `jsx` | `--jsx=automatic` | ✅ | `jsx` | preserve/transform/automatic |
 | `jsxFactory` / `jsxFragment` | flag | ✅ | `jsxFactory` 등 | tsconfig fallback |
 | `external` | `--external:lib` | ✅ | ❌ | 배열 — CLI 비어있으면 config |
+| `packagesExternal` | `--packages=external` | ✅ | ❌ | bare package import 전체 external, relative/absolute는 번들 |
 | `alias` | `--alias:K=V` | ✅ | tsconfig `paths` | 객체 머지: 키 단위 CLI override |
 | `define` | `--define:K=V` | ✅ | ❌ | 객체 머지: 키 단위 CLI override |
 | `loader` | `--loader:.ext=type` | ✅ | ❌ | 객체 머지 |
@@ -154,6 +155,8 @@ zts --bundle entry.ts
 zts --bundle entry.ts                              # → ["node:fs", "node:path"] (config)
 zts --bundle --external=react entry.ts             # → ["react"] (CLI 가 비어있지 않으면 CLI 만 사용 — concat 안 함)
 ```
+
+`packagesExternal`은 esbuild 호환 `--packages=external`과 동일하게 모든 bare package import를 external 처리한다. `./local`, `../local`, `/abs/local` 같은 relative/absolute import는 계속 번들 대상이다.
 
 ### 5. `tsconfig` + `zts.config` + CLI 3-way (jsx)
 ```json
