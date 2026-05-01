@@ -3701,10 +3701,10 @@ fn parseBuildOptions(
         .entry_error_guard = getObjectBool(env, opts_obj, "entryErrorGuard", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.entry_error_guard),
         .worklet_transform = getObjectBool(env, opts_obj, "workletTransform", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.worklet_transform),
         .worklet_plugin_version = ownStr(env, opts_obj, "workletPluginVersion", owned_strings),
-        // ZTS native codegen — Bungae 토글이 NAPI 까지 닿지 않으면 RN preset 도 적용 안 됨.
-        // PR #2378 가 BuildOptions/main.zig 만 추가하고 NAPI 진입점 하이드레이션 누락한 것
-        // 수정 — `codegenTransform` 옵션을 받아 RN preset 과 OR.
-        .codegen_transform = getObjectBool(env, opts_obj, "codegenTransform", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.codegen_transform),
+        // ZTS native codegen — default 가 RN preset (platform=react-native 시 true). 사용자가
+        // `codegenTransform: false` 명시하면 그게 우선 (escape hatch 동작 보장). OR 패턴은
+        // false override 가 RN preset 의 true 에 묻혀 무력화되는 버그 있었음.
+        .codegen_transform = getObjectBool(env, opts_obj, "codegenTransform", platform == .react_native and bundler_mod.RN_BOOL_PRESET.codegen_transform),
         .global_identifiers = global_identifiers orelse &.{},
         .polyfills = polyfills orelse &.{},
         .run_before_main = run_before_main orelse &.{},
