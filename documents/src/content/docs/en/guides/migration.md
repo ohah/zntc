@@ -64,7 +64,7 @@ ZTS provides a similar bundling model to esbuild, but the CLI flag surface is st
 | `--log-limit=10` | `--log-limit=10` | Same |
 | `--line-limit=80` | `--line-limit=80` | Same (wraps long output lines at safe token boundaries) |
 | `--ignore-annotations` | Not supported | Uses default annotation handling |
-| `--allow-overwrite` | Not supported | Keep output paths separate from inputs |
+| `--allow-overwrite` | `--allow-overwrite` | Input=output is blocked by default; this flag explicitly permits it |
 | `--watch` | `--watch` or `-w` | Same |
 | `--serve` | `--serve` | Same (`--port` supported) |
 

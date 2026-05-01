@@ -169,6 +169,41 @@ describe("CLI: transpile", () => {
     expect(existsSync(join(outDir, "input.js"))).toBe(true);
   });
 
+  test("--allow-overwrite 미지정 시 입력=출력 차단", () => {
+    const outFile = join(dir, "input.ts");
+    const { exitCode, stderr } = runCli([join(dir, "input.ts"), "-o", outFile]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("would overwrite input file");
+    expect(stderr).toContain("--allow-overwrite");
+  });
+
+  test("--allow-overwrite 지정 시 입력=출력 허용", () => {
+    const overwriteDir = mkdtempSync(join(tmpdir(), "zts-cli-overwrite-"));
+    try {
+      const file = join(overwriteDir, "input.ts");
+      writeFileSync(file, "const x: number = 1;\n");
+      const { exitCode, stderr } = runCli([file, "-o", file, "--allow-overwrite"]);
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(readFileSync(file, "utf8")).toContain("const x = 1");
+    } finally {
+      rmSync(overwriteDir, { recursive: true, force: true });
+    }
+  });
+
+  test("--allow-overwrite 미지정 시 --outdir 의 동일 JS 입력 overwrite 차단", () => {
+    const overwriteDir = mkdtempSync(join(tmpdir(), "zts-cli-overwrite-outdir-"));
+    try {
+      const file = join(overwriteDir, "input.js");
+      writeFileSync(file, "const x = 1;\n");
+      const { exitCode, stderr } = runCli([file, "--outdir", overwriteDir]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("would overwrite input file");
+    } finally {
+      rmSync(overwriteDir, { recursive: true, force: true });
+    }
+  });
+
   test("타입/인터페이스만 있는 파일 → 빈 출력", () => {
     const { stdout, exitCode } = runCli([join(dir, "types.ts")]);
     expect(exitCode).toBe(0);
@@ -272,6 +307,33 @@ describe("CLI: bundle", () => {
     const { exitCode } = runCli(["--bundle", join(dir, "entry.ts"), "--outdir", outDir]);
     expect(exitCode).toBe(0);
     expect(existsSync(outDir)).toBe(true);
+  });
+
+  test("번들 --allow-overwrite 미지정 시 입력=출력 차단", () => {
+    const overwriteDir = mkdtempSync(join(tmpdir(), "zts-cli-bundle-overwrite-"));
+    try {
+      const file = join(overwriteDir, "entry.js");
+      writeFileSync(file, "export const value = 1;\n");
+      const { exitCode, stderr } = runCli(["--bundle", file, "-o", file]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("would overwrite input file");
+    } finally {
+      rmSync(overwriteDir, { recursive: true, force: true });
+    }
+  });
+
+  test("번들 --allow-overwrite 지정 시 입력=출력 허용", () => {
+    const overwriteDir = mkdtempSync(join(tmpdir(), "zts-cli-bundle-overwrite-"));
+    try {
+      const file = join(overwriteDir, "entry.js");
+      writeFileSync(file, "export const value = 1;\n");
+      const { exitCode, stderr } = runCli(["--bundle", file, "-o", file, "--allow-overwrite"]);
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(readFileSync(file, "utf8")).toContain("value");
+    } finally {
+      rmSync(overwriteDir, { recursive: true, force: true });
+    }
   });
 
   test("번들 + --minify", () => {

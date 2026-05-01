@@ -64,7 +64,7 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--log-limit=10` | `--log-limit=10` | 동일 |
 | `--line-limit=80` | `--line-limit=80` | 동일 (긴 출력 라인을 안전한 토큰 경계에서 줄바꿈) |
 | `--ignore-annotations` | 미지원 | 기본 annotation 처리 사용 |
-| `--allow-overwrite` | 미지원 | 출력 경로를 입력과 분리 |
+| `--allow-overwrite` | `--allow-overwrite` | 기본은 입력=출력 차단, 명시 시에만 허용 |
 | `--watch` | `--watch` 또는 `-w` | 동일 |
 | `--serve` | `--serve` | 동일 (`--port` 지원) |
 

@@ -236,6 +236,7 @@ if (result.errors.length > 0) {
 | `entryPoints` | `string[]` | 엔트리 파일 |
 | `outdir` | `string` | 출력 디렉토리 |
 | `outfile` | `string` | 출력 파일 (단일) |
+| `allowOverwrite` | `boolean` | 입력 파일과 같은 출력 경로를 명시적으로 허용 |
 | `bundle` | `boolean` | 번들 모드 |
 | `format` | `"esm" \| "cjs" \| "iife" \| "umd" \| "amd"` | 모듈 포맷 |
 | `platform` | `"browser" \| "node" \| "neutral" \| "react-native"` | 타겟 플랫폼 |

@@ -145,6 +145,7 @@ function usageLines(command) {
     "  --line-limit=<n>           Wrap generated output lines after safe token boundaries",
     "  --outdir <dir>             Output directory",
     "  --outfile <file>, -o <file> Output file",
+    "  --allow-overwrite          Permit output paths to overwrite input files",
     "  --watch, -w                Rebuild on changes",
     "  --serve [dir]              Serve bundled output",
     "  --config <path>            Config file path",
@@ -237,6 +238,7 @@ function parseArgs(argv) {
     logLimit: undefined,
     lineLimit: undefined,
     clean: false,
+    allowOverwrite: false,
     preserveModules: false,
     preserveModulesRoot: undefined,
     inlineDynamicImports: false,
@@ -463,10 +465,24 @@ function loadTsConfig(opts) {
 
 // ─── 파일 출력 ───
 
-function writeOutputFiles(outputFiles, outfile, outdir) {
+function assertCanWriteOutput(outPath, entryPoints, allowOverwrite) {
+  if (allowOverwrite) return;
+  const outResolved = resolve(outPath);
+  for (const entry of entryPoints) {
+    if (resolve(entry) === outResolved) {
+      throw new Error(
+        `zts: output file '${outPath}' would overwrite input file (use --allow-overwrite to permit)`,
+      );
+    }
+  }
+}
+
+function writeOutputFiles(outputFiles, outfile, outdir, entryPoints, allowOverwrite) {
   if (outfile) {
-    mkdirSync(dirname(resolve(outfile)), { recursive: true });
-    writeFileSync(resolve(outfile), outputFiles[0].text);
+    const outPath = resolve(outfile);
+    assertCanWriteOutput(outPath, entryPoints, allowOverwrite);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, outputFiles[0].text);
     if (outputFiles.length > 1) {
       // sourcemap
       writeFileSync(resolve(outfile + ".map"), outputFiles[1].text);
@@ -475,6 +491,7 @@ function writeOutputFiles(outputFiles, outfile, outdir) {
     mkdirSync(resolve(outdir), { recursive: true });
     for (const file of outputFiles) {
       const outPath = join(resolve(outdir), basename(file.path));
+      assertCanWriteOutput(outPath, entryPoints, allowOverwrite);
       writeFileSync(outPath, file.text);
     }
   }
@@ -1660,15 +1677,19 @@ async function runTranspile(opts) {
   });
 
   if (opts.outfile) {
-    mkdirSync(dirname(resolve(opts.outfile)), { recursive: true });
-    writeFileSync(resolve(opts.outfile), result.code);
+    const outPath = resolve(opts.outfile);
+    assertCanWriteOutput(outPath, opts.entryPoints, opts.allowOverwrite);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, result.code);
     if (result.map) {
       writeFileSync(resolve(opts.outfile + ".map"), result.map);
     }
   } else if (opts.outdir) {
     mkdirSync(resolve(opts.outdir), { recursive: true });
     const name = basename(opts.entryPoints[0]).replace(/\.[^.]+$/, ".js");
-    writeFileSync(join(resolve(opts.outdir), name), result.code);
+    const outPath = join(resolve(opts.outdir), name);
+    assertCanWriteOutput(outPath, opts.entryPoints, opts.allowOverwrite);
+    writeFileSync(outPath, result.code);
   } else {
     process.stdout.write(result.code);
   }
@@ -1811,6 +1832,7 @@ function mergeConfigIntoOpts(opts, config) {
     "preserveModules",
     "verbatimModuleSyntax",
     "packagesExternal",
+    "allowOverwrite",
   ];
   for (const key of BOOL_KEYS) {
     if (opts[key] === false && config[key] === true) {
@@ -1919,6 +1941,7 @@ async function runBundle(opts, config) {
     logLevel: opts.logLevel,
     logLimit: opts.logLimit,
     lineLimit: opts.lineLimit,
+    allowOverwrite: opts.allowOverwrite,
     outputExports: opts.outputExports,
     resolveExtensions: opts.resolveExtensions.length > 0 ? opts.resolveExtensions : undefined,
     mainFields: opts.mainFields.length > 0 ? opts.mainFields : undefined,
@@ -1965,7 +1988,13 @@ async function runBundle(opts, config) {
     if (opts.clean && opts.outdir) {
       rmSync(resolve(opts.outdir), { recursive: true, force: true });
     }
-    writeOutputFiles(result.outputFiles, opts.outfile, opts.outdir);
+    writeOutputFiles(
+      result.outputFiles,
+      opts.outfile,
+      opts.outdir,
+      opts.entryPoints,
+      opts.allowOverwrite,
+    );
   } else {
     // stdout
     if (result.outputFiles.length > 0) {

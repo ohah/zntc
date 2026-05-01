@@ -2997,6 +2997,7 @@ fn printUsage(writer: anytype) !void {
         \\Options:
         \\  -o, --out-file <path>            Output file path
         \\  --outdir <path>                  Output directory (for directory input)
+        \\  --allow-overwrite                Permit output paths to overwrite input files
         \\  --minify                         Minify output
         \\  --format=esm|cjs|iife|umd|amd    Module format (default: esm)
         \\  --drop=console                   Remove console.* calls

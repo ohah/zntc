@@ -204,12 +204,13 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 |------|------|
 | `--log-level=<level>` | `silent\|error\|warning\|info\|debug\|verbose` |
 | `--log-limit=<n>` | 표시할 진단 최대 개수 |
+| `--allow-overwrite` | 입력 파일과 같은 출력 경로를 명시적으로 허용합니다. 기본값은 차단입니다. |
 | `-h, --help` | 도움말 |
 
 ## 현재 CLI에 노출되지 않은 내부/계획 옵션
 
 다음 기능은 코드 내부 옵션 또는 roadmap 항목이지만 현재 `zts` CLI flag registry에는 없습니다:
-`allowOverwrite`, `globalIdentifiers`, `pure`, `polyfills`, `jsxSideEffects`,
+`globalIdentifiers`, `pure`, `polyfills`, `jsxSideEffects`,
 `tsconfigRaw`, `ignoreAnnotations`, `packages=external`, `conditions`, `nodePaths`,
 `runBeforeMain`, `timing/profile`, `tokenize`, `test262`.
 

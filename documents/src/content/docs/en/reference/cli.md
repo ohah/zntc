@@ -205,12 +205,13 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 |--------|-------------|
 | `--log-level=<level>` | `silent\|error\|warning\|info\|debug\|verbose` |
 | `--log-limit=<n>` | Max diagnostics shown |
+| `--allow-overwrite` | Explicitly permit an output path to overwrite an input file. Blocked by default. |
 | `-h, --help` | Show help |
 
 ## Internal / Planned Options Not Exposed In The Current CLI
 
 These features exist as internal options or roadmap items, but are not present in the current
-`zts` CLI flag registry: `allowOverwrite`, `globalIdentifiers`, `pure`,
+`zts` CLI flag registry: `globalIdentifiers`, `pure`,
 `polyfills`, `jsxSideEffects`, `tsconfigRaw`, `ignoreAnnotations`, `packages=external`,
 `conditions`, `nodePaths`, `runBeforeMain`, `timing/profile`, `tokenize`, `test262`.
 
