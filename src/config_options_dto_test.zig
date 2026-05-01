@@ -222,6 +222,7 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "scopeHoist", // bundler 옵션 (#1389)
     "workletTransform", // RN reanimated worklet
     "codegenTransform", // RN view config codegen (#2348)
+    "moduleSpecifierMap", // cherry-pick import 분해 (#2393)
     "strictExecutionOrder", // 모듈 실행 순서 보장
     "experimentalCodeCache", // persistent cache 실험
     "watch", // CLI flag, BuildOptions 노출 안 함이 정석이지만 일부 wrapper 가 노출

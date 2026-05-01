@@ -429,6 +429,17 @@ interface BuildOptionsCommon {
   useDefineForClassFields?: boolean;
   experimentalDecorators?: boolean;
   emitDecoratorMetadata?: boolean;
+  /** `import { x } from 'mod'` cherry-pick 분해 매핑. babel-plugin-lodash 등의 ZTS 동등 (#2393).
+   * key = source module 이름 (정확 매칭), value = template (`{name}` placeholder 가
+   * specifier 이름으로 치환).
+   *
+   * 예: `{ lodash: 'lodash/{name}' }` 면 `import { map } from 'lodash'` 가
+   *     `import map from 'lodash/map'` 으로 변환.
+   *
+   * 변환 조건 (모두 만족 시): named specifier 만, alias 없음, type-only 아님. 미충족 시
+   * 원본 import 유지 — 라이브러리가 path import 미지원 시 안전망.
+   */
+  moduleSpecifierMap?: Record<string, string>;
   banner?: string;
   footer?: string;
   globalName?: string;

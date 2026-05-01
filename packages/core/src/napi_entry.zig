@@ -3347,6 +3347,21 @@ fn parseBuildOptions(
         define_entries = defs;
     }
 
+    // moduleSpecifierMap: { 'lodash': 'lodash/{name}' } → []ModuleSpecifierMapEntry (#2393).
+    // babel-plugin-lodash 등 cherry-pick 분해 generic 매핑.
+    const msm_pairs = getObjectKeyValuePairs(env, opts_obj, "moduleSpecifierMap", native_alloc);
+    var module_specifier_map: []const @import("zts_lib").transformer.transformer.ModuleSpecifierMapEntry = &.{};
+    if (msm_pairs) |pairs| {
+        defer native_alloc.free(pairs);
+        const entries = native_alloc.alloc(@import("zts_lib").transformer.transformer.ModuleSpecifierMapEntry, pairs.len) catch return null;
+        for (pairs, 0..) |pair, idx| {
+            if (!trackStr(owned_strings, pair[0])) return null;
+            if (!trackStr(owned_strings, pair[1])) return null;
+            entries[idx] = .{ .module = pair[0], .template = pair[1] };
+        }
+        module_specifier_map = entries;
+    }
+
     // alias: { "from": "to" } → []AliasEntry (tsconfig paths 는 tsconfig 로드 후 아래에서 append).
     const alias_pairs = getObjectKeyValuePairs(env, opts_obj, "alias", native_alloc);
     var alias_list: std.ArrayList(bundler_mod.types.AliasEntry) = .empty;
@@ -3632,6 +3647,7 @@ fn parseBuildOptions(
         .use_define_for_class_fields = use_define_for_class_fields_eff,
         .experimental_decorators = experimental_decorators_eff,
         .emit_decorator_metadata = emit_decorator_metadata_eff,
+        .module_specifier_map = module_specifier_map,
         .verbatim_module_syntax = verbatim_module_syntax_eff,
         .banner_js = banner_js,
         .footer_js = footer_js,
