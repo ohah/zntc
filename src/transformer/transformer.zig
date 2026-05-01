@@ -78,6 +78,25 @@ pub const ModuleSpecifierMapEntry = struct {
     template: []const u8,
 };
 
+/// Standalone transpile fast path에서 named import elision만 판단하기 위한 최소 binding 정보.
+/// full semantic analyzer의 symbols/references를 대체하지 않고 import specifier 보존 여부만
+/// `isImportSpecifierUnused`에서 소비한다.
+pub const BindingLite = struct {
+    named_imports: []NamedImport = &.{},
+
+    pub const NamedImport = struct {
+        local_name: []const u8,
+        used_as_value: bool = false,
+    };
+
+    pub fn namedImportValueUse(self: *const BindingLite, local_name: []const u8) ?bool {
+        for (self.named_imports) |binding| {
+            if (std.mem.eql(u8, binding.local_name, local_name)) return binding.used_as_value;
+        }
+        return null;
+    }
+};
+
 /// emotion.autoLabel 모드. 다른 emotion 도구들 (`@emotion/babel-plugin` 등) 의
 /// `'always' | 'dev-only' | 'never'` 와 동일 의미.
 pub const AutoLabelMode = enum {
@@ -347,12 +366,6 @@ pub const RuntimeHelpers = packed struct(u32) {
     /// 호출 emit 시 함께 set 한다.
     legacy_decorator: bool = false,
     _padding: u6 = 0,
-
-    /// 어떤 helper flag 라도 set 됐는지 — emitter 의 prepend 분기에서 빈 helper 시
-    /// no-op 결정에 사용.
-    pub fn hasAny(self: @This()) bool {
-        return @as(u32, @bitCast(self)) != 0;
-    }
 };
 
 /// 단일 AST append-only 변환기.
@@ -405,6 +418,10 @@ pub const Transformer = struct {
     /// Reference 를 돌며 **value-use 가 하나라도 있는지** 로 판단한다. 비어있으면
     /// elision 비활성 (보수적 보존). caller 가 symbols 와 함께 설정.
     references: []const @import("../semantic/symbol.zig").Reference = &.{},
+
+    /// Full semantic을 건너뛰는 standalone transpile 경로에서 named import elision만
+    /// 판단하기 위한 lightweight binding facts.
+    binding_lite: ?*const BindingLite = null,
 
     /// define value의 string_table Span 캐시. options.define과 동일 인덱스.
     /// transform() 시작 시 한 번 빌드하여, tryDefineReplace에서 addString 중복 호출을 방지.
@@ -4633,7 +4650,7 @@ pub const Transformer = struct {
         // side-effect import는 specifier가 없으면 제거 불가.
         // verbatimModuleSyntax=true면 elision 생략 — 값 import는 그대로 보존.
         if (!self.options.verbatim_module_syntax and
-            self.symbols.len > 0 and self.symbol_ids.items.len > 0 and x.specs_len > 0)
+            self.hasImportElisionFacts() and x.specs_len > 0)
         {
             if (self.areAllSpecifiersUnused(x.specs_start, x.specs_len)) return .none;
         }
@@ -4792,8 +4809,12 @@ pub const Transformer = struct {
     /// default/named/namespace 세 switch arm 이 동일하게 적용하도록 모아둔다.
     fn shouldElideImportSpecifier(self: *const Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
         if (self.options.verbatim_module_syntax) return false;
-        if (self.symbols.len == 0) return false;
+        if (!self.hasImportElisionFacts()) return false;
         return self.isImportSpecifierUnused(spec_idx, spec_node);
+    }
+
+    fn hasImportElisionFacts(self: *const Transformer) bool {
+        return (self.symbols.len > 0 and self.symbol_ids.items.len > 0) or self.binding_lite != null;
     }
 
     /// 단일 import specifier 의 local binding 이 value 로 참조된 적이 있는지 조회.
@@ -4814,6 +4835,13 @@ pub const Transformer = struct {
         if (spec_node.tag != .import_specifier) return false;
         const local_idx = spec_node.data.binary.right;
         const sym_node_idx: u32 = if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
+
+        if (self.binding_lite) |binding_lite| {
+            const local_node = if (!local_idx.isNone()) self.ast.getNode(local_idx) else spec_node;
+            const local_name = self.ast.getText(local_node.span);
+            if (binding_lite.namedImportValueUse(local_name)) |used_as_value| return !used_as_value;
+            return false;
+        }
 
         if (sym_node_idx >= self.symbol_ids.items.len) return false;
         const sym_id = self.symbol_ids.items[sym_node_idx] orelse return false;
@@ -4996,9 +5024,7 @@ pub const Transformer = struct {
             .flow_type_alias_declaration,
             .flow_opaque_type,
             .flow_interface_declaration,
-            .flow_object_type,
             .flow_exact_object_type,
-            .flow_property_signature,
             => true,
             else => false,
         };
