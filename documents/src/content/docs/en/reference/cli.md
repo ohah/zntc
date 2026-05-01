@@ -107,6 +107,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--define:KEY=VALUE` | Global replace (e.g. `process.env.NODE_ENV` → `"production"`) |
 | `--drop=console` | Remove `console.*` calls |
 | `--drop=debugger` | Remove `debugger` statements |
+| `--drop-labels=DEV,TEST` | Remove whole labeled statements for matching labels |
 | `--inject:<path>` | Auto-inject import (shim) |
 
 ## JSX
@@ -208,7 +209,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 ## Internal / Planned Options Not Exposed In The Current CLI
 
 These features exist as internal options or roadmap items, but are not present in the current
-`zts` CLI flag registry: `allowOverwrite`, `globalIdentifiers`, `dropLabels`, `pure`,
+`zts` CLI flag registry: `allowOverwrite`, `globalIdentifiers`, `pure`,
 `polyfills`, `jsxSideEffects`, `tsconfigRaw`, `ignoreAnnotations`, `packages=external`,
 `conditions`, `nodePaths`, `runBeforeMain`, `lineLimit`, `timing/profile`, `tokenize`, `test262`.
 

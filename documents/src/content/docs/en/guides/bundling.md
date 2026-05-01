@@ -111,6 +111,16 @@ zts --bundle entry.ts -o bundle.js --minify-syntax
 zts --bundle entry.ts -o bundle.js --minify-identifiers
 ```
 
+## Code Dropping
+
+```bash
+zts --bundle entry.ts --drop=console --drop=debugger
+zts --bundle entry.ts --drop-labels=DEV,TEST
+```
+
+`--drop-labels` removes the whole labeled statement for matching labels. For example,
+`DEV: { console.log("dev only"); }` is omitted when `--drop-labels=DEV` is set.
+
 ## ES Target
 
 ```bash
