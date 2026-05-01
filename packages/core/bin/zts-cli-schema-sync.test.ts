@@ -359,7 +359,6 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "lineLimit",
     "outExtension", // namespace 객체 — `--out-extension:.js=` 가 일부 cover
     "outbase",
-    "pure",
     "stopAfter", // transpile 단독 — CLI 미노출 (디버그 옵션)
     "treeShaking",
     "watch", // BuildOptions 의 watch 와 CLI --watch 는 의미 다름

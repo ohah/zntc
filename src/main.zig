@@ -3001,6 +3001,7 @@ fn printUsage(writer: anytype) !void {
         \\  --format=esm|cjs|iife|umd|amd    Module format (default: esm)
         \\  --drop=console                   Remove console.* calls
         \\  --drop=debugger                  Remove debugger statements
+        \\  --pure:CALLEE                    Mark matching call/new expressions as removable when unused
         \\  --define:KEY=VALUE               Replace KEY with VALUE globally
         \\  --sourcemap                      Generate source map (.js.map)
         \\  --sourcemap-debug-ids            Add Sentry debugId to JS and source map

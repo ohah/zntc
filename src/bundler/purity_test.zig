@@ -875,6 +875,27 @@ test "pure annotation: /*#__PURE__*/ myFunc() 은 whitelist 무관하게 pure" {
     try expectPure(&ctx, 0, true);
 }
 
+test "user pure hints: exact member and namespace wildcard mark calls pure" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const a = React.createElement("div");
+        \\const b = PropTypes.string.isRequired();
+        \\const c = React.cloneElement(node);
+        \\const d = React["createElement"]("div");
+        \\const e = React.createElement?.("div");
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    purity.markUserPureCalls(&ctx.ast, &.{ "React.createElement", "PropTypes.*" });
+
+    try std.testing.expect(purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 0), null));
+    try std.testing.expect(purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 1), null));
+    try std.testing.expect(!purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 2), null));
+    try std.testing.expect(!purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 3), null));
+    try std.testing.expect(!purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 4), null));
+}
+
 test "known pure call: Object.freeze with pure arg is pure" {
     const alloc = std.testing.allocator;
     const src =
