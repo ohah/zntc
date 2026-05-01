@@ -261,9 +261,11 @@ pub fn applyTranspileSharedFields(
 
 /// JSON payload를 파싱해 `TranspileOptions`로 변환한다.
 /// allocator는 arena 권장 — 반환된 값의 문자열/슬라이스 수명을 책임진다.
+/// `findTsconfigUpward` / `loadFromPath` 가 dup 한 메모리도 같은 arena 가 reap.
 ///
 /// `entry_path` 가 non-null 이고 명시적 `tsconfigPath` 가 없으면, `dirname(entry_path)` 부터
 /// 위로 올라가며 `tsconfig.json` 을 자동 탐색한다 (esbuild/vite 식 zero-config).
+/// `entry_path` 가 디렉토리 부분이 없는 bare filename (예: `"input.ts"`) 이면 cwd 부터 탐색.
 /// 자동 탐색을 원치 않는 caller (예: file 시스템 접근이 없는 WASM) 는 `null` 을 전달.
 ///
 /// 오류: JSON 파싱 실패 / 알 수 없는 enum 문자열 → error 반환.
