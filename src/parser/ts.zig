@@ -1454,7 +1454,7 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
 
     // 6/7. 프로퍼티 이름 파싱 후 메서드 vs 프로퍼티 분기
     const key = try self.parsePropertyKey();
-    _ = try self.eat(.question); // optional
+    const is_optional = try self.eat(.question);
 
     // 6. 메서드 시그니처: 이름 뒤에 ( 또는 < 가 오면 메서드
     if (self.current() == .l_paren or self.isAtOpeningAngleBracket()) {
@@ -1481,21 +1481,55 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
         });
     }
 
-    // 7. 프로퍼티 시그니처: key: Type
+    // 7. 프로퍼티 시그니처: `key: Type` / `key?: Type` / `readonly key: Type` 등.
+    //
+    // extra layout: [key, type_ann, flags]
+    //   key       — property key NodeIndex (binding_identifier / string_literal / ...)
+    //   type_ann  — type annotation NodeIndex. `:` 없는 경우 (interface 의 `foo;`) 는 .none
+    //   flags     — `PropertySignatureFlags.toU32()` 로 직렬화된 비트필드
+    //
+    // transformer 는 ts_property_signature 를 통째로 strip 하므로 child_offsets 는 비워둠
+    // (`ast.zig` 참고). codegen plugin 은 manual indexing 으로 extras 를 읽어 view config
+    // 를 빌드한다 (#2348 § 4 PR #3b).
+    var type_ann: NodeIndex = NodeIndex.none;
     if (try self.eat(.colon)) {
-        _ = try parseType(self);
-        return try self.ast.addEmptyExtraNode(
-            .ts_property_signature,
-            .{ .start = start, .end = self.currentSpan().start },
-        );
+        type_ann = try parseType(self);
     }
 
-    // 타입 어노테이션 없는 프로퍼티 (예: interface에서 `foo;` 또는 `foo?;`)
-    return try self.ast.addEmptyExtraNode(
-        .ts_property_signature,
-        .{ .start = start, .end = self.currentSpan().start },
-    );
+    const flags: PropertySignatureFlags = .{
+        .optional = is_optional,
+        .readonly = is_readonly,
+    };
+
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(key),
+        @intFromEnum(type_ann),
+        flags.toU32(),
+    });
+    return try self.ast.addNode(.{
+        .tag = .ts_property_signature,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
+    });
 }
+
+/// `ts_property_signature.extra[2]` 의 flags 비트필드.
+/// `TsTypeParamModifier` (line 422) 와 동일한 packed struct + toU32/fromU32 컨벤션.
+pub const PropertySignatureFlags = packed struct(u32) {
+    optional: bool = false,
+    readonly: bool = false,
+    _pad: u30 = 0,
+
+    pub const NONE: PropertySignatureFlags = .{};
+
+    pub fn toU32(self: PropertySignatureFlags) u32 {
+        return @bitCast(self);
+    }
+
+    pub fn fromU32(v: u32) PropertySignatureFlags {
+        return @bitCast(v);
+    }
+};
 
 /// 콜/컨스트럭트 시그니처 공통 파싱
 /// 콜: (): Type, <T>(): Type

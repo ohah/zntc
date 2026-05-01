@@ -3309,3 +3309,161 @@ test "TS object type: computed key with member access `[ns.k]`" {
         \\interface A { [ns.k]: string; }
     , ".ts");
 }
+
+// ============================================================
+// TS property signature 의 key/type/flags 보존 (#2348 PR #3a-1)
+// ============================================================
+//
+// transformer 가 ts_property_signature 를 통째로 strip 하지만, codegen plugin
+// (#2348 § 4) 이 view config 빌드를 위해 key/type/flags 가 필요하므로 파서가
+// extras 에 보존한다. 본 테스트는 strip 동작 (transformer_test.zig) 과 별개로
+// 파서 단위에서 layout 이 올바른지 검증.
+
+const ts_mod = @import("ts.zig");
+
+/// 파싱 결과. Scanner / Parser 를 heap allocator 로 박아 안정된 주소 보장
+/// (`Parser` 가 `*Scanner` 포인터를 들고 있는데 stack 에 두면 함수 반환 시
+/// dangling — `transformer_test.zig:200` 와 동일 패턴).
+const ParsedTs = struct {
+    scanner: *Scanner,
+    parser: *Parser,
+    alloc: std.mem.Allocator,
+
+    fn deinit(self: *ParsedTs) void {
+        self.parser.deinit();
+        self.alloc.destroy(self.parser);
+        self.scanner.deinit();
+        self.alloc.destroy(self.scanner);
+    }
+};
+
+fn parseTs(alloc: std.mem.Allocator, source: []const u8) !ParsedTs {
+    const scanner = try alloc.create(Scanner);
+    errdefer alloc.destroy(scanner);
+    scanner.* = try Scanner.init(alloc, source);
+    errdefer scanner.deinit();
+
+    const parser = try alloc.create(Parser);
+    errdefer alloc.destroy(parser);
+    parser.* = Parser.init(alloc, scanner);
+    errdefer parser.deinit();
+
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    return .{ .scanner = scanner, .parser = parser, .alloc = alloc };
+}
+
+/// 첫 번째 ts_property_signature 의 (key, type_ann, flags) 추출. 6 케이스 공통 setup.
+const PropSig = struct {
+    key: ast_mod.NodeIndex,
+    type_ann: ast_mod.NodeIndex,
+    flags: ts_mod.PropertySignatureFlags,
+};
+
+fn extractFirstPropSig(parser: *Parser) PropSig {
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_property_signature) continue;
+        const e = node.data.extra;
+        return .{
+            .key = @enumFromInt(parser.ast.extra_data.items[e]),
+            .type_ann = @enumFromInt(parser.ast.extra_data.items[e + 1]),
+            .flags = ts_mod.PropertySignatureFlags.fromU32(parser.ast.extra_data.items[e + 2]),
+        };
+    }
+    @panic("no ts_property_signature found in source");
+}
+
+test "TS property signature: preserves key + type + zero flags" {
+    var r = try parseTs(std.testing.allocator, "interface A { color: string }");
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser);
+    try std.testing.expect(sig.key != .none);
+    try std.testing.expect(sig.type_ann != .none);
+    try std.testing.expectEqual(ts_mod.PropertySignatureFlags.NONE, sig.flags);
+
+    // parsePropertyKey 는 .identifier_reference 반환 (`expression.zig:1879`). type 은 ts_string_keyword.
+    try std.testing.expectEqual(Tag.identifier_reference, r.parser.ast.getNode(sig.key).tag);
+    try std.testing.expectEqual(Tag.ts_string_keyword, r.parser.ast.getNode(sig.type_ann).tag);
+}
+
+test "TS property signature: optional `?` sets flags.optional" {
+    var r = try parseTs(std.testing.allocator, "interface A { color?: string }");
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser);
+    try std.testing.expect(sig.flags.optional);
+    try std.testing.expect(!sig.flags.readonly);
+}
+
+test "TS property signature: readonly sets flags.readonly" {
+    var r = try parseTs(std.testing.allocator, "interface A { readonly color: string }");
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser);
+    try std.testing.expect(sig.flags.readonly);
+    try std.testing.expect(!sig.flags.optional);
+}
+
+test "TS property signature: readonly + optional both flags set" {
+    var r = try parseTs(std.testing.allocator, "interface A { readonly color?: string }");
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser);
+    try std.testing.expect(sig.flags.optional);
+    try std.testing.expect(sig.flags.readonly);
+}
+
+test "TS property signature: missing type annotation has type_ann=none" {
+    // interface 의 `key;` 또는 `key?;` — 타입 어노테이션 없이도 유효.
+    var r = try parseTs(std.testing.allocator, "interface A { color }");
+    defer r.deinit();
+
+    const sig = extractFirstPropSig(r.parser);
+    try std.testing.expectEqual(ast_mod.NodeIndex.none, sig.type_ann);
+}
+
+test "TS property signature: type alias body preserves all members" {
+    var r = try parseTs(std.testing.allocator,
+        \\type Props = {
+        \\  color: string;
+        \\  size?: number;
+        \\  readonly disabled: boolean;
+        \\};
+    );
+    defer r.deinit();
+
+    var prop_count: usize = 0;
+    var seen_color = false;
+    var seen_size = false;
+    var seen_disabled = false;
+
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag != .ts_property_signature) continue;
+        prop_count += 1;
+        const e = node.data.extra;
+        const key_idx: ast_mod.NodeIndex = @enumFromInt(r.parser.ast.extra_data.items[e]);
+        const flags = ts_mod.PropertySignatureFlags.fromU32(r.parser.ast.extra_data.items[e + 2]);
+
+        const key_node = r.parser.ast.getNode(key_idx);
+        const name = r.parser.ast.getText(key_node.data.string_ref);
+
+        if (std.mem.eql(u8, name, "color")) {
+            seen_color = true;
+            try std.testing.expectEqual(ts_mod.PropertySignatureFlags.NONE, flags);
+        } else if (std.mem.eql(u8, name, "size")) {
+            seen_size = true;
+            try std.testing.expect(flags.optional);
+        } else if (std.mem.eql(u8, name, "disabled")) {
+            seen_disabled = true;
+            try std.testing.expect(flags.readonly);
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), prop_count);
+    try std.testing.expect(seen_color);
+    try std.testing.expect(seen_size);
+    try std.testing.expect(seen_disabled);
+}
