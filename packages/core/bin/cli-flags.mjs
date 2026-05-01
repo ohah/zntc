@@ -117,6 +117,7 @@ export const FLAG_REGISTRY = [
   { kind: "string", flag: "--keyfile", target: "keyfile", forms: ["pair"] },
   // tsc-style alias (`-p`, `--project`) + NAPI naming alias (`--tsconfig-path`).
   { kind: "string", flag: "--project", target: "project", aliases: ["-p", "--tsconfig-path"] },
+  { kind: "string", flag: "--tsconfig-raw", target: "tsconfigRaw", forms: ["equal"] },
   { kind: "string", flag: "--config", target: "configPath" },
   { kind: "string", flag: "--mode", target: "mode" },
   { kind: "string", flag: "--workspace-config", target: "workspaceConfig" },

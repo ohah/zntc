@@ -11,12 +11,14 @@ zts.config.{ts,js,json}    ─┤
                             │
 .env / .env.{mode} 파일    ─┤  (define 자동 주입)
                             │
+--tsconfig-raw JSON        ─┤
+                            │
 tsconfig.json              ─┤
                             │
 ZTS defaults               ─┘  (최후 fallback)
 ```
 
-CLI > config > tsconfig > defaults. 같은 옵션이 여러 곳에 정의되면 위쪽이 이긴다.
+CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여러 곳에 정의되면 위쪽이 이긴다.
 
 ## 옵션별 source 매핑
 
@@ -43,6 +45,7 @@ CLI > config > tsconfig > defaults. 같은 옵션이 여러 곳에 정의되면 
 | `useDefineForClassFields` | flag | ✅ | `useDefineForClassFields` | default=true |
 | `verbatimModuleSyntax` | `--verbatim-module-syntax` | ✅ | `verbatimModuleSyntax` | tsconfig fallback |
 | `tsconfigPath` | `-p path` `--project=path` | ❌ | (자기 자신) | tsconfig 위치 명시 |
+| `tsconfigRaw` | `--tsconfig-raw=<json>` | ✅ | inline JSON | 파일 기반 tsconfig보다 우선 |
 | `plugins` | `--plugin path` (plugins 배열만) | ✅ | ❌ | concat — config plugins + `--plugin` plugins |
 | `banner` / `footer` | `--banner:js=` 등 | ✅ | ❌ | scalar |
 | `entryNames` / `chunkNames` / `assetNames` | flag | ✅ | ❌ | scalar |
@@ -109,6 +112,7 @@ console.log(import.meta.env.BASE_URL);    // --base / publicPath 기반 URL
 
 - `compilerOptions.target/jsx/jsxFactory/jsxFragment/jsxImportSource/experimentalDecorators/useDefineForClassFields/verbatimModuleSyntax/sourceMap` — config 미지정 시 tsconfig 값 사용.
 - `compilerOptions.paths` / `baseUrl` — alias 로 변환되어 resolver 에 주입. CLI `--alias:` 가 같은 키를 override.
+- `--tsconfig-raw=<json>` 이 있으면 파일 기반 `-p path` / `--project=path` 및 자동 탐색보다 우선한다.
 - `-p path` / `--project=path` 로 명시 지정. 미지정 시 entry 부모 디렉토리부터 cwd 까지 탐색.
 
 ## conflict 케이스 (실측 예시)

@@ -234,6 +234,7 @@ function parseArgs(argv) {
     pluginPaths: [],
     stdin: false,
     project: undefined,
+    tsconfigRaw: undefined,
     logLevel: "info",
     jobs: undefined,
     logLimit: undefined,
@@ -365,7 +366,82 @@ function parseArgs(argv) {
 
 // ─── tsconfig.json 로드 ───
 
+function stripJsonComments(raw) {
+  return raw.replace(/"(?:[^"\\]|\\.)*"|\/\/.*$|\/\*[\s\S]*?\*\//gm, (m) =>
+    m.startsWith('"') ? m : "",
+  );
+}
+
+function applyTsConfigCompilerOptions(opts, co) {
+  if (!co || typeof co !== "object" || Array.isArray(co)) return;
+
+  // CLI 옵션이 명시적으로 지정되지 않은 경우에만 tsconfig 값 적용
+  if (co.experimentalDecorators && !opts.experimentalDecorators) {
+    opts.experimentalDecorators = true;
+  }
+  if (co.emitDecoratorMetadata) {
+    opts.emitDecoratorMetadata = true;
+  }
+  if (co.useDefineForClassFields === false) {
+    opts.useDefineForClassFields = false;
+  }
+  // verbatimModuleSyntax (TS 5.0+): 미사용 값 import 보존. CLI 이 설정 안 했으면 tsconfig 반영.
+  if (co.verbatimModuleSyntax === true && opts.verbatimModuleSyntax === undefined) {
+    opts.verbatimModuleSyntax = true;
+  }
+
+  // jsx: "react" → classic, "react-jsx" → automatic, "react-jsxdev" → automatic-dev
+  if (co.jsx && !opts.jsx) {
+    const jsxMap = {
+      react: "classic",
+      "react-jsx": "automatic",
+      "react-jsxdev": "automatic-dev",
+      preserve: undefined, // ZTS가 기본적으로 preserve하지 않으므로 무시
+    };
+    const mapped = jsxMap[co.jsx];
+    if (mapped) opts.jsx = mapped;
+  }
+
+  if (co.jsxFactory && !opts.jsxFactory) opts.jsxFactory = co.jsxFactory;
+  if (co.jsxFragmentFactory && !opts.jsxFragment) opts.jsxFragment = co.jsxFragmentFactory;
+  if (co.jsxImportSource && !opts.jsxImportSource) opts.jsxImportSource = co.jsxImportSource;
+
+  // target → ES 다운레벨 (transpile의 target 옵션)
+  if (co.target && !opts.target) {
+    const targetMap = {
+      es5: "es5",
+      es6: "es2015",
+      es2015: "es2015",
+      es2016: "es2016",
+      es2017: "es2017",
+      es2018: "es2018",
+      es2019: "es2019",
+      es2020: "es2020",
+      es2021: "es2021",
+      es2022: "es2022",
+      es2023: "es2023",
+      es2024: "es2024",
+      esnext: "esnext",
+    };
+    opts.target = targetMap[String(co.target).toLowerCase()] || undefined;
+  }
+}
+
 function loadTsConfig(opts) {
+  if (opts.tsconfigRaw !== undefined) {
+    try {
+      const config = JSON.parse(opts.tsconfigRaw);
+      if (!config || typeof config !== "object" || Array.isArray(config)) {
+        throw new Error("expected a JSON object");
+      }
+      applyTsConfigCompilerOptions(opts, config.compilerOptions);
+      return;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`failed to parse --tsconfig-raw: ${reason}`);
+    }
+  }
+
   // --project/--tsconfig-path 로 지정하거나 자동 탐색
   let tsconfigPath = opts.project;
   // 경로가 디렉토리면 내부의 tsconfig.json 을 대상 파일로 보정 (NAPI `loadFromPath` 와 동일 규칙).
@@ -399,63 +475,9 @@ function loadTsConfig(opts) {
   try {
     // JSON with comments 파싱 — 문자열 리터럴 내의 // 를 보호
     const raw = readFileSync(resolve(tsconfigPath), "utf8");
-    const stripped = raw.replace(/"(?:[^"\\]|\\.)*"|\/\/.*$|\/\*[\s\S]*?\*\//gm, (m) =>
-      m.startsWith('"') ? m : "",
-    );
+    const stripped = stripJsonComments(raw);
     const config = JSON.parse(stripped);
-    const co = config.compilerOptions;
-    if (!co) return;
-
-    // CLI 옵션이 명시적으로 지정되지 않은 경우에만 tsconfig 값 적용
-    if (co.experimentalDecorators && !opts.experimentalDecorators) {
-      opts.experimentalDecorators = true;
-    }
-    if (co.emitDecoratorMetadata) {
-      opts.emitDecoratorMetadata = true;
-    }
-    if (co.useDefineForClassFields === false) {
-      opts.useDefineForClassFields = false;
-    }
-    // verbatimModuleSyntax (TS 5.0+): 미사용 값 import 보존. CLI 이 설정 안 했으면 tsconfig 반영.
-    if (co.verbatimModuleSyntax === true && opts.verbatimModuleSyntax === undefined) {
-      opts.verbatimModuleSyntax = true;
-    }
-
-    // jsx: "react" → classic, "react-jsx" → automatic, "react-jsxdev" → automatic-dev
-    if (co.jsx && !opts.jsx) {
-      const jsxMap = {
-        react: "classic",
-        "react-jsx": "automatic",
-        "react-jsxdev": "automatic-dev",
-        preserve: undefined, // ZTS가 기본적으로 preserve하지 않으므로 무시
-      };
-      const mapped = jsxMap[co.jsx];
-      if (mapped) opts.jsx = mapped;
-    }
-
-    if (co.jsxFactory && !opts.jsxFactory) opts.jsxFactory = co.jsxFactory;
-    if (co.jsxFragmentFactory && !opts.jsxFragment) opts.jsxFragment = co.jsxFragmentFactory;
-    if (co.jsxImportSource && !opts.jsxImportSource) opts.jsxImportSource = co.jsxImportSource;
-
-    // target → ES 다운레벨 (transpile의 target 옵션)
-    if (co.target && !opts.target) {
-      const targetMap = {
-        es5: "es5",
-        es6: "es2015",
-        es2015: "es2015",
-        es2016: "es2016",
-        es2017: "es2017",
-        es2018: "es2018",
-        es2019: "es2019",
-        es2020: "es2020",
-        es2021: "es2021",
-        es2022: "es2022",
-        es2023: "es2023",
-        es2024: "es2024",
-        esnext: "esnext",
-      };
-      opts.target = targetMap[co.target.toLowerCase()] || undefined;
-    }
+    applyTsConfigCompilerOptions(opts, config.compilerOptions);
   } catch {
     // tsconfig 파싱 실패는 무시 (경고만)
     if (opts.logLevel !== "silent") {
@@ -1683,6 +1705,7 @@ async function runTranspile(opts) {
     dropDebugger: opts.drop.includes("debugger"),
     target: opts.target,
     browserslist: opts.browserslist,
+    tsconfigRaw: opts.tsconfigRaw,
   });
 
   if (opts.outfile || opts.outdir) {
@@ -1804,6 +1827,7 @@ function mergeConfigIntoOpts(opts, config) {
     "outdir",
     "outbase",
     "browserslist",
+    "tsconfigRaw",
   ];
   for (const key of SCALAR_KEYS) {
     if (opts[key] === undefined && config[key] !== undefined) {
@@ -1949,6 +1973,7 @@ async function runBundle(opts, config) {
     mainFields: opts.mainFields.length > 0 ? opts.mainFields : undefined,
     // NAPI 가 tsconfig paths / baseUrl 을 alias 로 변환해 resolver 에 주입하도록 전달.
     tsconfigPath: opts.project,
+    tsconfigRaw: opts.tsconfigRaw,
     banner: opts.banner,
     footer: opts.footer,
     globalName: opts.globalName,
@@ -2709,11 +2734,10 @@ async function main() {
     process.exit(1);
   }
 
-  // tsconfig.json 자동 로드 (CLI/config 보다 낮은 우선순위)
-  loadTsConfig(opts);
-  init();
-
   try {
+    // tsconfig.json 자동 로드 (CLI/config 보다 낮은 우선순위)
+    loadTsConfig(opts);
+    init();
     const r = await dispatchBuild(opts, config, configEnv, dotenvVars);
     if (r.errors > 0) process.exit(1);
   } catch (err) {

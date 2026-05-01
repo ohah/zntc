@@ -312,9 +312,12 @@ new Worker(new URL('./worker.ts', import.meta.url))
 - `--line-limit`
 - `--certfile`, `--keyfile`
 
+### CLI에 노출됨
+
+- `--tsconfig-raw` — tsconfig JSON 문자열 오버라이드
+
 ### 아직 CLI에 미노출
 - `--conditions`, `--node-paths` — resolver 조건/추가 탐색 경로
-- `--tsconfig-raw` — tsconfig JSON 문자열 오버라이드
 - `--ignore-annotations`, `--jsx-side-effects`
 - `--mangle-props`, `--mangle-cache`, `--reserve-props`
 - `--log-override`
