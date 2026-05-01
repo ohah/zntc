@@ -1264,8 +1264,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 }
                 try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
             } else if (node.tag == .switch_statement) {
-                // switch.left = discriminant, switch.right = list of switch_case
-                try collectHoistedVarFromNode(self, node.data.binary.right, hoisted);
+                // switch_statement: extra = [discriminant, cases.start, cases.len].
+                // 이전엔 `node.data.binary.right` 로 access 했지만 switch_statement 의 data
+                // kind 는 .extra — binary.right 는 union padding 영역의 undefined 값. main
+                // 에선 우연히 valid index 였지만 새 AST tag 추가 시 padding 변동으로 panic.
+                const extras = self.ast.extra_data.items;
+                const e = node.data.extra;
+                if (e + 2 < extras.len) {
+                    const cases_start = extras[e + 1];
+                    const cases_len = extras[e + 2];
+                    var i: u32 = 0;
+                    while (i < cases_len) : (i += 1) {
+                        try collectHoistedVarFromNode(self, @enumFromInt(extras[cases_start + i]), hoisted);
+                    }
+                }
             } else if (node.tag == .for_await_of_statement) {
                 // (#1901) ternary.a = left (var v 인 경우), c = body. helper var 들 (_iter,
                 // _step, _ret, _errObj, _err) 은 lowerForAwaitOf 가 generator_temp_var_spans
