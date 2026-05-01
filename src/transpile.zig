@@ -128,6 +128,9 @@ pub const ConfigOptionsDto = struct {
     useDefineForClassFields: ?bool = null,
     verbatimModuleSyntax: ?bool = null,
     tsconfigPath: ?[]const u8 = null,
+    /// inline tsconfig JSON 문자열 (esbuild 의 `tsconfigRaw` 와 동일 의미).
+    /// 설정 시 파일 기반 `tsconfigPath` 와 자동 탐색을 모두 무시 — raw 가 단일 진실 원천.
+    tsconfigRaw: ?[]const u8 = null,
     format: ?@import("codegen/codegen.zig").ModuleFormat = null,
     quotes: ?@import("codegen/codegen.zig").QuoteStyle = null,
     platform: ?@import("codegen/codegen.zig").Platform = null,
@@ -269,34 +272,48 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
     if (parsed.define) |d| opts.define = d;
     if (parsed.stopAfter) |v| opts.stop_after = v;
 
-    // tsconfig.json 로드 + merge — JSON에 명시적으로 설정된 값이 tsconfig 값을 덮어쓴다.
-    // `parsed.<field> == null` 인 필드만 tsconfig 값으로 채움. 이로써 JSON > tsconfig > default 우선순위 유지.
-    // WASM 타겟에선 filesystem 접근(path_open 등)이 preopen 없이 불가하므로 링크 단계에서
-    // 해당 import 가 바인딩되지 못해 실패한다. 런타임에서도 호출할 수 없으므로 아예 스킵.
-    const can_load_tsconfig = @import("builtin").os.tag != .wasi and @import("builtin").os.tag != .freestanding;
-    if (can_load_tsconfig) if (opts.tsconfig_path) |path| {
-        const TsConfig = @import("config.zig").TsConfig;
-        const tsconfig_merge = @import("tsconfig_merge.zig");
-        var ts = TsConfig.loadFromPath(allocator, path) catch return opts; // tsconfig 읽기 실패는 조용히 무시 (CLI와 동일)
-        defer ts.deinit();
-
-        const merged = tsconfig_merge.merge(&ts, .{
-            .experimental_decorators = parsed.experimentalDecorators,
-            .emit_decorator_metadata = parsed.emitDecoratorMetadata,
-            .use_define_for_class_fields = parsed.useDefineForClassFields,
-            .verbatim_module_syntax = parsed.verbatimModuleSyntax,
-            .sourcemap = parsed.sourcemap,
-            .es_target = parsed.target,
-            .unsupported = if (parsed.unsupported) |u| @bitCast(u) else null,
-        });
-        opts.experimental_decorators = merged.experimental_decorators;
-        opts.emit_decorator_metadata = merged.emit_decorator_metadata;
-        opts.use_define_for_class_fields = merged.use_define_for_class_fields;
-        opts.verbatim_module_syntax = merged.verbatim_module_syntax;
-        opts.sourcemap = merged.sourcemap;
-        opts.es_target = merged.es_target;
-        opts.unsupported = merged.unsupported;
+    // tsconfig 로드 + merge — JSON 에 명시적으로 설정된 값이 tsconfig 값을 덮어쓴다.
+    // raw 우선 (esbuild 동등): `tsconfigRaw` 가 있으면 file 기반 path 무시.
+    // raw 파싱 실패는 사용자 입력 에러로 명시적 propagate, file 실패는 ambient 라 silent.
+    // WASM 타겟은 file 시스템 접근 불가 — file 분기만 스킵 (raw 는 무관하게 동작).
+    const TsConfig = @import("config.zig").TsConfig;
+    const tsconfig_merge = @import("tsconfig_merge.zig");
+    const can_load_tsconfig_file = @import("builtin").os.tag != .wasi and @import("builtin").os.tag != .freestanding;
+    const ts: TsConfig = blk: {
+        if (parsed.tsconfigRaw) |raw| {
+            break :blk TsConfig.parseFromString(allocator, raw) catch return error.InvalidOptions;
+        }
+        if (can_load_tsconfig_file) if (opts.tsconfig_path) |path| {
+            break :blk TsConfig.loadFromPath(allocator, path) catch TsConfig{};
+        };
+        break :blk TsConfig{};
     };
+    // arena 가 ts._allocated_strings 도 reap — 개별 deinit 금지 (CLAUDE.md memory 가이드).
+
+    const merged = tsconfig_merge.merge(&ts, .{
+        .experimental_decorators = parsed.experimentalDecorators,
+        .emit_decorator_metadata = parsed.emitDecoratorMetadata,
+        .use_define_for_class_fields = parsed.useDefineForClassFields,
+        .verbatim_module_syntax = parsed.verbatimModuleSyntax,
+        .sourcemap = parsed.sourcemap,
+        .es_target = parsed.target,
+        .unsupported = if (parsed.unsupported) |u| @bitCast(u) else null,
+        .jsx_runtime = parsed.jsx,
+        .jsx_factory = parsed.jsxFactory,
+        .jsx_fragment = parsed.jsxFragment,
+        .jsx_import_source = parsed.jsxImportSource,
+    });
+    opts.experimental_decorators = merged.experimental_decorators;
+    opts.emit_decorator_metadata = merged.emit_decorator_metadata;
+    opts.use_define_for_class_fields = merged.use_define_for_class_fields;
+    opts.verbatim_module_syntax = merged.verbatim_module_syntax;
+    opts.sourcemap = merged.sourcemap;
+    opts.es_target = merged.es_target;
+    opts.unsupported = merged.unsupported;
+    opts.jsx_runtime = merged.jsx_runtime;
+    opts.jsx_factory = merged.jsx_factory;
+    opts.jsx_fragment = merged.jsx_fragment;
+    opts.jsx_import_source = merged.jsx_import_source;
 
     return opts;
 }
