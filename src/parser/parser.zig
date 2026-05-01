@@ -41,9 +41,9 @@ const BracketInfo = struct {
     span: Span,
 };
 
-/// 파서 입력의 source-type. 과거 `is_ts: bool` 과 `reject_ts_syntax_in_js: bool` 두 필드로
-/// 표현하던 3-state 를 명시적 enum 으로 통합. 두 boolean 의 (true,true) 조합이 의미상
-/// 불가능했던 것이 enum 으로는 자명해진다.
+/// 파서 입력의 source-type 3-state. "TS 문법을 거부하지 않으면서도 TS 가 아닌" js_lenient 와
+/// "명시 JS 라서 TS 문법을 거부하는" js_strict 가 별개 상태라 두 boolean 으로는 (true,true)
+/// 같은 불가능 조합이 표현 가능했고, 이를 enum 으로 차단한다.
 pub const SourceMode = enum {
     /// JS 입력이지만 source-type signal 이 없는 legacy 모드 (standalone transpile + unknown
     /// extension 등). TS 문법은 silent 통과. 새 입력 경로에는 사용하지 말 것.
@@ -137,11 +137,7 @@ pub const Parser = struct {
     /// false이면 <T>()=>{}가 제네릭 arrow로 해석.
     is_jsx: bool = false,
 
-    /// 파서가 보는 source-type. is_ts/reject_ts_syntax_in_js 두 boolean 으로 표현하던
-    /// 3-state 를 단일 enum 으로 통합한 것. `js_lenient` 는 standalone transpile 의 unknown
-    /// extension 등 source-type signal 이 없는 legacy 입력 (TS 문법 silent 통과). `js_strict`
-    /// 는 .js/.jsx 또는 loader=js/jsx 로 명시된 JS 입력 (TS 문법 거부). `ts` 는 .ts/.tsx
-    /// 또는 loader=ts/tsx 로 명시된 TS 입력 (TS 문법 허용 + module/strict).
+    /// 파서가 보는 source-type. 변형별 의미는 SourceMode 정의 참고.
     source_mode: SourceMode = .js_lenient,
 
     /// Flow 모드 (.js/.jsx + @flow pragma, .js.flow, 또는 --flow CLI).
