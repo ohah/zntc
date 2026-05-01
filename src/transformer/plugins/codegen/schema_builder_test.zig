@@ -305,6 +305,34 @@ test "schema_builder: WithDefault<Float, 0> → float (Flow)" {
     try std.testing.expect(shape.props[0].type_annotation == .float);
 }
 
+test "schema_builder: DirectEventHandler<T> → direct event" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onLayout: DirectEventHandler<LayoutEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqualStrings("onLayout", shape.events[0].name);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: BubblingEventHandler<T> → bubble event" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onChange: BubblingEventHandler<ChangeEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.bubble, shape.events[0].bubbling_type);
+}
+
 test "schema_builder: TS string union → string_enum" {
     var p = try parseAndIndex(std.testing.allocator,
         \\type Props = { rate: 'fast' | 'normal' };
