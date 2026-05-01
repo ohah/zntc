@@ -39,7 +39,7 @@ CLI > config > tsconfig > defaults. 같은 옵션이 여러 곳에 정의되면 
 | `treeShaking` | (없음) | ✅ | ❌ | default=true |
 | `experimentalDecorators` | flag | ✅ | `experimentalDecorators` | tsconfig fallback |
 | `useDefineForClassFields` | flag | ✅ | `useDefineForClassFields` | default=true |
-| `verbatimModuleSyntax` | (없음) | ✅ | `verbatimModuleSyntax` | tsconfig fallback |
+| `verbatimModuleSyntax` | `--verbatim-module-syntax` | ✅ | `verbatimModuleSyntax` | tsconfig fallback |
 | `tsconfigPath` | `-p path` `--project=path` | ❌ | (자기 자신) | tsconfig 위치 명시 |
 | `plugins` | `--plugin path` (plugins 배열만) | ✅ | ❌ | concat — config plugins + `--plugin` plugins |
 | `banner` / `footer` | `--banner:js=` 등 | ✅ | ❌ | scalar |
@@ -59,7 +59,7 @@ CLI > config > tsconfig > defaults. 같은 옵션이 여러 곳에 정의되면 
 | `resolveExtensions` | `--resolve-extensions=` | ✅ | (간접) | tsconfig 의 paths 와 별개 |
 | `mainFields` | `--main-fields=` | ✅ | ❌ | package.json field 우선순위 |
 | `manualChunks` | (없음) | ✅ (record / function) | ❌ | Rollup 호환. function form 은 zts.config.{ts,js} 만 |
-| `inlineDynamicImports` | (없음) | ✅ | ❌ | Rollup 호환 |
+| `inlineDynamicImports` | `--inline-dynamic-imports` | ✅ | ❌ | Rollup 호환 |
 | `import.meta.env.*` | `--define:import.meta.env.X="..."` | (없음 — `.env` 파일 자동 로드) | ❌ | `.env`/`.env.local`/`.env.${mode}`/`.env.${mode}.local` 4단계 머지 |
 
 ## 함수형 config 의 ConfigEnv
@@ -73,7 +73,7 @@ defineConfig(({ command, mode, env }) => ({
 
 | 필드 | 결정 규칙 |
 |---|---|
-| `command` | `--serve` → `"serve"`, `--watch` → `"watch"`, 그 외 → `"bundle"` |
+| `command` | `zts dev` / `zts preview` / `--serve` → `"serve"`, `--watch` → `"watch"`, 그 외(`zts build` 포함) → `"bundle"` |
 | `mode` | `--mode <name>` 명시값. 미지정 시 command 기본 (`serve`/`watch` → `"development"`, 그 외 → `"production"`) |
 | `env` | `process.env` + `.env*` 머지 (shell env 가 `.env` 를 override — Vite/dotenv 16+ 일치) |
 
@@ -96,6 +96,7 @@ console.log(import.meta.env.MODE);        // 자동 주입: "production"/"develo
 console.log(import.meta.env.PROD);        // mode === "production"
 console.log(import.meta.env.DEV);         // mode !== "production"
 console.log(import.meta.env.SSR);         // 항상 false (SSR 미지원)
+console.log(import.meta.env.BASE_URL);    // --base / publicPath 기반 URL
 ```
 
 자세한 내용은 `loadEnv` API (`packages/core/src/load-env.ts`) 참조.
@@ -192,8 +193,8 @@ zts --bundle --config ./configs/prod.config.ts entry.ts
 - ZTS: `defineConfig(fn | obj)` 동일.
 - ZTS: `--mode` / `--config <path>` 동일.
 - ZTS: `.env*` 4단계 우선순위 동일. prefix default 만 차이 (Vite `["VITE_"]`, ZTS `["VITE_", "ZTS_"]`).
-- ZTS: `import.meta.env.MODE/PROD/DEV/SSR` 자동 주입 동일. `BASE_URL` 미지원.
-- ZTS: `defineConfig(({ command }))` 의 command 값이 다름 — Vite 는 `"build"|"serve"`, ZTS 는 `"bundle"|"serve"|"watch"`.
+- ZTS: `import.meta.env.MODE/PROD/DEV/SSR/BASE_URL` 자동 주입 동일.
+- ZTS: `defineConfig(({ command }))` 의 command 값이 다름 — Vite 는 `"build"|"serve"`, ZTS 는 `"bundle"|"serve"|"watch"`. 앱 빌더의 `zts build` 도 config 관점에서는 `"bundle"` 이다.
 
 ### esbuild
 - esbuild: `zts.config.*` 같은 명시 config 파일 미지원 (JS API 만). ZTS 는 양쪽.
@@ -212,7 +213,7 @@ zts --bundle --config ./configs/prod.config.ts entry.ts
 - watch 모드: config / `.env*` 변경 시 자동 process restart (`--watch-json` 의 경우 `{type: "restart", reason: "..."}` 이벤트 emit).
 
 ### typo 감지
-현재는 unknown 키 silent 무시. Levenshtein 기반 "did you mean?" 은 [#2109](https://github.com/ohah/zts/issues/2109) 에서 추가 예정.
+`zts.config.*` 와 workspace inline config 의 unknown key 는 경고로 표시된다. 가까운 known key 가 있으면 Levenshtein 기반 `did you mean?` 제안을 함께 출력한다.
 
 ## 참고 이슈
 - 에픽: [#2099](https://github.com/ohah/zts/issues/2099)
@@ -220,5 +221,5 @@ zts --bundle --config ./configs/prod.config.ts entry.ts
 - Phase 2-1: #2119 (함수형 config + `--config` + `--mode`)
 - Phase 2-4: #2120 (`.env` 자동 로드)
 - Phase 2-5: #2123 (watch hot reload)
-- Phase 3-2: #2109 (typo "did you mean?")
+- Phase 3-2: #2109 (typo "did you mean?" — 완료)
 - Phase 3-5: #2112 (TS BuildOptions ↔ Zig TranspileOptions schema sync)

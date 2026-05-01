@@ -17,7 +17,7 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 }
 ```
 
-> **Note**: This schema describes the **internal JSON payload** that WASM/NAPI forwards to the Zig engine. A user-friendly `zts.config.json` loader will land in a later PR. The current TS API (`TranspileOptions` in `packages/shared`) accepts camelCase + kebab-case enums (`"react-native"`); the schema enums use the Zig-native form (`"react_native"`).
+> **Note**: This schema describes the **internal JSON payload** that WASM/NAPI forwards to the Zig engine. User-facing `zts.config.*` loading and CLI merge logic are implemented separately in `@zts/core` and accept camelCase options. This schema uses Zig-native enum spellings such as `"react_native"`, so it is not always identical to config-file/API syntax.
 
 ## Options
 
@@ -101,7 +101,7 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 
 ## Relation to the TS API
 
-When calling the transpiler programmatically, use the `TranspileOptions` interface from `@zts/core` / `@zts/wasm` — it accepts camelCase + kebab-case enums:
+When calling the transpiler programmatically, use the `TranspileOptions` interface from `@zts/core` / `@zts/wasm` — it accepts camelCase + kebab-case enums. Project configuration is handled by the `zts.config.{ts,mts,cts,mjs,js,cjs,json}` / `zts.workspace.*` loaders:
 
 ```ts
 import { transpile } from "@zts/wasm";

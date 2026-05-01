@@ -255,13 +255,14 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 배치 D ✅ 완료 ──────────────────────────────────────────────────
   metafile + analyze + inject + legal comments + keepNames
 
-배치 E ✅ 완료 ──────────────────────────────────────────────────
-  --outbase, --packages=external, --drop-labels, --pure:fn,
-  --line-limit, --allow-overwrite, --log-limit, --tsconfig-raw,
-  --node-paths, output.intro/outro, output.globals,
-  inlineDynamicImports, cleanDir, --jsx-side-effects,
-  --ignore-annotations, --watch-delay, --servedir,
-  shimMissingExports, extensionAlias, sanitizeFileName
+배치 E 부분 완료 ────────────────────────────────────────────────
+  완료: --outbase, --log-limit, inlineDynamicImports, cleanDir,
+  --watch-delay, --serve <dir>, shimMissingExports, extensionAlias,
+  sanitizeFileName
+  미완료/미노출: --packages=external, --drop-labels, --pure:fn,
+  --line-limit, --allow-overwrite, --tsconfig-raw, --node-paths,
+  output.intro/outro, output.globals, --jsx-side-effects,
+  --ignore-annotations
 
 단독 XL ────────────────────────────────────────────────────────
   CSS 번들링 ✅ Phase 1 완료 — @import 인라이닝 + Lightning CSS minify (CSS Modules 후순위)

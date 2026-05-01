@@ -1,6 +1,9 @@
 # ZTS Decision Records
 
-프로젝트 진행 중 내려야 할 의사결정 목록과 현재 상태.
+프로젝트 진행 중 내려야 할 의사결정 목록과 당시 상태.
+
+> 이 문서는 historical decision log 이다. 최신 구현/노출 상태는 `docs/ROADMAP.md`,
+> `documents/src/content/docs/reference/cli.md`, `docs/CONFIG.md` 를 기준으로 확인한다.
 
 ---
 
