@@ -912,9 +912,9 @@ pub fn emitWithTreeShaking(
         }
     }
 
-    var wrap_breaks: std.ArrayList(WrapBreak) = .empty;
-    defer wrap_breaks.deinit(allocator);
     if (options.line_limit > 0) {
+        var wrap_breaks: std.ArrayList(WrapBreak) = .empty;
+        defer wrap_breaks.deinit(allocator);
         try wrapLineLimit(&output, allocator, options.line_limit, &wrap_breaks);
         if (bundle_sm) |*sm| {
             if (wrap_breaks.items.len > 0) {
@@ -1021,7 +1021,7 @@ pub fn emitWithTreeShaking(
     };
 }
 
-pub const WrapBreak = struct {
+const WrapBreak = struct {
     line: u32,
     column: u32,
 };
@@ -1047,42 +1047,50 @@ fn wrapLineLimit(
 ) !void {
     if (limit == 0 or output.items.len == 0) return;
 
+    // 누적 출력 — 마지막 안전 break char 까지의 confirmed 바이트 + 그 이후의 pending 바이트.
+    // pending 은 다음 안전 break 가 나오면 wrapped 로 flush 되고, limit 을 초과하면
+    // pending 앞에 '\n' 을 삽입해 새 줄을 시작한다. 매 char 가 최대 두 번 (입력→pending,
+    // pending→wrapped) 만 복사되므로 전체 O(N).
     var wrapped: std.ArrayList(u8) = .empty;
     errdefer wrapped.deinit(allocator);
     try wrapped.ensureTotalCapacity(allocator, output.items.len + output.items.len / limit + 1);
+
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(allocator);
 
     var state: WrapScanState = .normal;
     var escaped = false;
     var original_line: u32 = 0;
     var original_col: u32 = 0;
     var wrapped_col: u32 = 0;
-    var last_safe_insert_index: ?usize = null;
     var last_safe_line: u32 = 0;
     var last_safe_col: u32 = 0;
-    var last_safe_wrapped_col: u32 = 0;
-    var i: usize = 0;
+    var have_safe = false;
 
+    var i: usize = 0;
     while (i < output.items.len) : (i += 1) {
         const c = output.items[i];
         const next = if (i + 1 < output.items.len) output.items[i + 1] else 0;
 
-        try wrapped.append(allocator, c);
-
-        const line_before = original_line;
-        const col_before = original_col;
-
         if (c == '\n') {
+            try wrapped.appendSlice(allocator, pending.items);
+            pending.clearRetainingCapacity();
+            try wrapped.append(allocator, '\n');
             original_line += 1;
             original_col = 0;
             wrapped_col = 0;
-            last_safe_insert_index = null;
+            have_safe = false;
             if (state == .line_comment) state = .normal;
             escaped = false;
             continue;
         }
 
+        const line_before = original_line;
+        const col_before = original_col;
         original_col += 1;
         wrapped_col += 1;
+
+        try pending.append(allocator, c);
 
         switch (state) {
             .normal => {
@@ -1100,10 +1108,11 @@ fn wrapLineLimit(
                     state = .template;
                     escaped = false;
                 } else if (isLineLimitBreakChar(c)) {
-                    last_safe_insert_index = wrapped.items.len;
+                    try wrapped.appendSlice(allocator, pending.items);
+                    pending.clearRetainingCapacity();
                     last_safe_line = line_before;
                     last_safe_col = col_before;
-                    last_safe_wrapped_col = wrapped_col;
+                    have_safe = true;
                 }
             },
             .single_quote => {
@@ -1121,19 +1130,19 @@ fn wrapLineLimit(
             },
         }
 
-        if (state == .normal and wrapped_col >= limit) {
-            if (last_safe_insert_index) |insert_index| {
-                try wrapped.insert(allocator, insert_index, '\n');
-                try breaks.append(allocator, .{ .line = last_safe_line, .column = last_safe_col });
-                wrapped_col -= last_safe_wrapped_col;
-                last_safe_insert_index = null;
-            }
+        if (state == .normal and wrapped_col >= limit and have_safe) {
+            try wrapped.append(allocator, '\n');
+            try breaks.append(allocator, .{ .line = last_safe_line, .column = last_safe_col });
+            wrapped_col = @intCast(pending.items.len);
+            have_safe = false;
         }
     }
+    try wrapped.appendSlice(allocator, pending.items);
 
-    output.clearRetainingCapacity();
-    try output.appendSlice(allocator, wrapped.items);
-    wrapped.deinit(allocator);
+    // 기존 output 버퍼는 해제하고 wrapped 가 소유권을 인계 — 추가 memcpy 없이 swap.
+    output.deinit(allocator);
+    output.* = wrapped;
+    wrapped = .empty;
 }
 
 fn adjustMappingsForLineWraps(sm: *SourceMap.SourceMapBuilder, breaks: []const WrapBreak) void {
