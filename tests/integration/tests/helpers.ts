@@ -157,6 +157,24 @@ export async function runZts(
   return runCmd([ZTS_BIN, ...args], options);
 }
 
+/// fixture 생성 → ZTS 실행 → 자동 cleanup 한 번에 묶는 헬퍼. caller 의 try/finally
+/// 보일러플레이트 제거. `entry` 는 `files` 의 key 중 하나여야 하며, 절대경로로
+/// 변환되어 args 의 마지막에 추가된다. 호출자는 result 의 stdout/stderr/exitCode 만
+/// 검증하면 됨 — cleanup 은 throw 경로에서도 보장.
+export async function runFixture(
+  files: Record<string, string>,
+  entry: string = "input.ts",
+  args: string[] = [],
+  options?: RunOptions,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const fixture = await createFixture(files);
+  try {
+    return await runZts([...args, join(fixture.dir, entry)], options);
+  } finally {
+    await fixture.cleanup();
+  }
+}
+
 /// Transpile-only (no `--bundle`) helper. ZTS 의 *transpile* path 단독 동작을
 /// 격리 검증할 때 사용. `bundleAndRun` 은 `--bundle` 을 강제하므로 inner-name
 /// elision 같은 별도 pass 와 섞여 transpile 단독 동작을 잡아내기 어렵다 (#2194,
