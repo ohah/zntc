@@ -356,7 +356,6 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "ignoreAnnotations",
     "inlineDynamicImports",
     "jsxSideEffects",
-    "lineLimit",
     "outExtension", // namespace 객체 — `--out-extension:.js=` 가 일부 cover
     "outbase",
     "stopAfter", // transpile 단독 — CLI 미노출 (디버그 옵션)

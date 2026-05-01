@@ -309,6 +309,7 @@ new Worker(new URL('./worker.ts', import.meta.url))
 - `--pure:Name`, `--pure:Namespace.member`, `--pure:Namespace.*`
 - `--preserve-symlinks`
 - `--watch-delay`
+- `--line-limit`
 - `--certfile`, `--keyfile`
 
 ### 아직 CLI에 미노출
@@ -316,5 +317,5 @@ new Worker(new URL('./worker.ts', import.meta.url))
 - `--tsconfig-raw` — tsconfig JSON 문자열 오버라이드
 - `--ignore-annotations`, `--jsx-side-effects`
 - `--mangle-props`, `--mangle-cache`, `--reserve-props`
-- `--line-limit`, `--log-override`
+- `--log-override`
 - CORS 설정

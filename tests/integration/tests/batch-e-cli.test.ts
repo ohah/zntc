@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { runZts, createFixture } from "./helpers";
+import { runZts, runZtsInDir, createFixture } from "./helpers";
+import { decodeMappings } from "./sourcemap-helpers";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -75,6 +76,57 @@ describe("배치 E: CLI 옵션", () => {
   test("--line-limit: 숫자가 아니면 에러 메시지 출력", async () => {
     const result = await runZts(["--line-limit=xyz", "dummy.ts"]);
     expect(result.stderr).toContain("--line-limit requires a number");
+  });
+
+  test("--line-limit: JS CLI minify 출력의 긴 라인을 wrap", async () => {
+    const fixture = await createFixture({
+      "index.ts": `export const values = [${Array.from({ length: 48 }, (_, i) => i).join(",")}];\nconsole.log(values.length);`,
+    });
+    cleanup = fixture.cleanup;
+    const outFile = join(fixture.dir, "out.js");
+
+    const result = await runZtsInDir(
+      fixture.dir,
+      ["--bundle", "index.ts", "-o", outFile, "--minify", "--line-limit=40"],
+      { bin: "js" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const output = readFileSync(outFile, "utf-8");
+    const maxLineLength = Math.max(
+      ...output
+        .trimEnd()
+        .split("\n")
+        .map((line) => line.length),
+    );
+    expect(maxLineLength).toBeLessThanOrEqual(40);
+  });
+
+  test("--line-limit: JS CLI sourcemap mappings remain decodable after wrapping", async () => {
+    const fixture = await createFixture({
+      "index.ts": `export const values = [${Array.from({ length: 48 }, (_, i) => i).join(",")}];\nconsole.log(values.length);`,
+    });
+    cleanup = fixture.cleanup;
+    const outFile = join(fixture.dir, "out.js");
+
+    const result = await runZtsInDir(
+      fixture.dir,
+      ["--bundle", "index.ts", "-o", outFile, "--minify", "--line-limit=40", "--sourcemap"],
+      { bin: "js" },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const output = readFileSync(outFile, "utf-8");
+    const codeLines = output
+      .trimEnd()
+      .split("\n")
+      .filter((line) => !line.startsWith("//# sourceMappingURL="));
+    expect(Math.max(...codeLines.map((line) => line.length))).toBeLessThanOrEqual(40);
+
+    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const decoded = decodeMappings(map.mappings);
+    expect(decoded.length).toBeGreaterThan(1);
+    expect(decoded.some((line) => line.length > 0)).toBe(true);
   });
 
   test("--jsx-side-effects: 파싱됨", async () => {

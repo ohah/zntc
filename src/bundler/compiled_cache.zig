@@ -90,7 +90,7 @@ pub const InputHasher = struct {
 /// `EmitOptions` 필드 개수. 구조체가 바뀌면 이 값을 갱신하고 hashEmitOptions
 /// 에 새 필드를 반영해야 한다 — comptime 에 필드 누락을 감지하는 fail-stop.
 /// 누락이 invisible bug (stale cache) 로 번지므로 이 barrier 는 load-bearing.
-const expected_emit_options_field_count: usize = 50;
+const expected_emit_options_field_count: usize = 51;
 
 comptime {
     const actual = @typeInfo(EmitOptions).@"struct".fields.len;
@@ -153,6 +153,7 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addStr(options.chunk_names);
     h.addStr(options.asset_names);
     h.addU32(@intFromEnum(options.legal_comments));
+    h.addU32(options.line_limit);
     h.addBool(options.keep_names);
     h.addStrList(options.drop_labels);
     h.addStrList(options.pure);

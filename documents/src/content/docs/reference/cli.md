@@ -85,6 +85,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--charset=utf8\|ascii` | 출력 문자셋 |
 | `--ascii-only` | non-ASCII → `\uXXXX` (= `--charset=ascii`) |
 | `--quotes=double\|single\|preserve` | 문자열 따옴표 스타일 |
+| `--line-limit=<n>` | 안전한 토큰 경계에서 긴 출력 라인 줄바꿈 (`0`은 무제한) |
 
 ## 소스맵
 
@@ -210,7 +211,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 다음 기능은 코드 내부 옵션 또는 roadmap 항목이지만 현재 `zts` CLI flag registry에는 없습니다:
 `allowOverwrite`, `globalIdentifiers`, `pure`, `polyfills`, `jsxSideEffects`,
 `tsconfigRaw`, `ignoreAnnotations`, `packages=external`, `conditions`, `nodePaths`,
-`runBeforeMain`, `lineLimit`, `timing/profile`, `tokenize`, `test262`.
+`runBeforeMain`, `timing/profile`, `tokenize`, `test262`.
 
 ## 참고
 
