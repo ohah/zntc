@@ -1613,3 +1613,100 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
         .data = .{ .extra = extra },
     });
 }
+
+// ===== Flow enum (#2401) =====
+
+pub const FlowEnumBaseType = enum(u32) {
+    none = 0,
+    string = 1,
+    number = 2,
+    boolean = 3,
+    symbol = 4,
+};
+
+pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    try self.advance(); // skip 'enum'
+
+    const name = try self.parseSimpleIdentifier();
+
+    // optional `of <base>` — `of` 는 ZTS 에서 kw_of (`for...of` 와 공유).
+    var base_type: FlowEnumBaseType = .none;
+    if (self.current() == .kw_of) {
+        try self.advance();
+        base_type = try parseFlowEnumBaseType(self);
+    }
+
+    try self.expect(.l_curly);
+
+    const scratch_top = self.saveScratch();
+    while (self.current() != .r_curly and self.current() != .eof) {
+        const loop_guard_pos = self.scanner.token.span.start;
+
+        // `...,` ellipsis (open enum) — 인식만, 멤버 추가 없음.
+        if (self.current() == .dot3) {
+            try self.advance();
+            _ = try self.eat(.comma);
+            if (try self.ensureLoopProgress(loop_guard_pos)) break;
+            continue;
+        }
+
+        const member = try parseFlowEnumMember(self);
+        try self.scratch.append(self.allocator, member);
+        if (!try self.eat(.comma) and !try self.eat(.semicolon)) break;
+
+        if (try self.ensureLoopProgress(loop_guard_pos)) break;
+    }
+
+    const end = self.currentSpan().end;
+    try self.expect(.r_curly);
+
+    const members = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+    self.restoreScratch(scratch_top);
+
+    const extra_start = try self.ast.addExtras(&.{
+        @intFromEnum(name),
+        members.start,
+        members.len,
+        @intFromEnum(base_type),
+    });
+
+    return try self.ast.addNode(.{
+        .tag = .flow_enum_declaration,
+        .span = .{ .start = start, .end = end },
+        .data = .{ .extra = extra_start },
+    });
+}
+
+fn parseFlowEnumBaseType(self: *Parser) ParseError2!FlowEnumBaseType {
+    if (self.current() != .identifier) return .none;
+    const text = self.scanner.tokenText();
+    const kind: FlowEnumBaseType = if (std.mem.eql(u8, text, "string"))
+        .string
+    else if (std.mem.eql(u8, text, "number"))
+        .number
+    else if (std.mem.eql(u8, text, "boolean"))
+        .boolean
+    else if (std.mem.eql(u8, text, "symbol"))
+        .symbol
+    else
+        .none;
+    if (kind != .none) try self.advance();
+    return kind;
+}
+
+fn parseFlowEnumMember(self: *Parser) ParseError2!NodeIndex {
+    const start = self.currentSpan().start;
+    const name = try self.parsePropertyKey();
+
+    var init_val = NodeIndex.none;
+    if (try self.eat(.eq)) {
+        init_val = try self.parseAssignmentExpression();
+    }
+
+    return try self.ast.addNode(.{
+        .tag = .flow_enum_member,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .binary = .{ .left = name, .right = init_val, .flags = 0 } },
+    });
+}
