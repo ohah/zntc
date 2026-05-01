@@ -254,3 +254,84 @@ test "TsConfig.load - partial compilerOptions" {
     try std.testing.expect(config.source_map == false);
     try std.testing.expect(config.strict == false);
 }
+
+// ─── parseFromString ───
+
+test "parseFromString: extracts compilerOptions" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\{
+        \\  "compilerOptions": {
+        \\    "jsx": "react-jsx",
+        \\    "jsxFactory": "h",
+        \\    "jsxFragmentFactory": "Frag",
+        \\    "jsxImportSource": "preact",
+        \\    "target": "es2020",
+        \\    "experimentalDecorators": true
+        \\  }
+        \\}
+    ;
+    var config = try TsConfig.parseFromString(allocator, source);
+    defer config.deinit();
+
+    try std.testing.expectEqualStrings("react-jsx", config.jsx.?);
+    try std.testing.expectEqualStrings("h", config.jsx_factory);
+    try std.testing.expectEqualStrings("Frag", config.jsx_fragment_factory);
+    try std.testing.expectEqualStrings("preact", config.jsx_import_source);
+    try std.testing.expectEqualStrings("es2020", config.target.?);
+    try std.testing.expect(config.experimental_decorators == true);
+}
+
+test "parseFromString: tolerates JSONC comments" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\{
+        \\  // top-level comment
+        \\  "compilerOptions": {
+        \\    /* block comment */
+        \\    "target": "esnext"
+        \\  }
+        \\}
+    ;
+    var config = try TsConfig.parseFromString(allocator, source);
+    defer config.deinit();
+    try std.testing.expectEqualStrings("esnext", config.target.?);
+}
+
+test "parseFromString: ignores extends (raw is inline)" {
+    // extends 가 있어도 base 를 로드하지 않고 자기 자신만 추출 — esbuild 동등.
+    const allocator = std.testing.allocator;
+    const source =
+        \\{
+        \\  "extends": "./this/path/does-not-exist.json",
+        \\  "compilerOptions": {
+        \\    "target": "es2020"
+        \\  }
+        \\}
+    ;
+    var config = try TsConfig.parseFromString(allocator, source);
+    defer config.deinit();
+    try std.testing.expectEqualStrings("es2020", config.target.?);
+}
+
+test "parseFromString: rejects malformed JSON" {
+    const allocator = std.testing.allocator;
+    const result = TsConfig.parseFromString(allocator, "{ invalid json");
+    try std.testing.expectError(error.TsConfigParseError, result);
+}
+
+test "parseFromString: rejects non-object root" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.TsConfigParseError, TsConfig.parseFromString(allocator, "null"));
+    try std.testing.expectError(error.TsConfigParseError, TsConfig.parseFromString(allocator, "[]"));
+    try std.testing.expectError(error.TsConfigParseError, TsConfig.parseFromString(allocator, "42"));
+}
+
+test "parseFromString: empty object yields default TsConfig" {
+    const allocator = std.testing.allocator;
+    var config = try TsConfig.parseFromString(allocator, "{}");
+    defer config.deinit();
+    try std.testing.expect(config.target == null);
+    try std.testing.expect(config.jsx == null);
+    try std.testing.expectEqualStrings("React.createElement", config.jsx_factory);
+}

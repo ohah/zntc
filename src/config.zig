@@ -231,59 +231,90 @@ pub const TsConfig = struct {
             }
         }
 
-        // compilerOptions 추출
-        if (root.object.get("compilerOptions")) |co_val| {
-            if (co_val == .object) {
-                const co = co_val.object;
+        try extractCompilerOptions(&config, root.object, allocator);
 
-                // 문자열 옵션 추출
-                // JSON에서 가져온 문자열은 parsed가 소유하므로,
-                // config가 오래 살기 위해 allocator로 복사(dupe)한다.
-                // 키가 JSON에 있을 때만 덮어씀 — extends로 merge된 값을 보존.
-                if (try dupeJsonString(co, "target", allocator, &config._allocated_strings.?)) |v| config.target = v;
-                if (try dupeJsonString(co, "module", allocator, &config._allocated_strings.?)) |v| config.module = v;
-                if (try dupeJsonString(co, "jsx", allocator, &config._allocated_strings.?)) |v| config.jsx = v;
-                if (try dupeJsonString(co, "jsxFactory", allocator, &config._allocated_strings.?)) |v| config.jsx_factory = v;
-                if (try dupeJsonString(co, "jsxFragmentFactory", allocator, &config._allocated_strings.?)) |v| config.jsx_fragment_factory = v;
-                if (try dupeJsonString(co, "jsxImportSource", allocator, &config._allocated_strings.?)) |v| config.jsx_import_source = v;
-                if (try dupeJsonString(co, "outDir", allocator, &config._allocated_strings.?)) |v| config.out_dir = v;
-                if (try dupeJsonString(co, "rootDir", allocator, &config._allocated_strings.?)) |v| config.root_dir = v;
-                if (try dupeJsonString(co, "baseUrl", allocator, &config._allocated_strings.?)) |v| config.base_url = v;
+        return config;
+    }
 
-                // paths: {"@/*": ["./src/*"], ...} → []PathEntry
-                if (co.get("paths")) |v| {
-                    if (v == .object) {
-                        const entries = try parsePathsObject(v.object, allocator, &config._allocated_strings.?);
-                        config.paths = entries;
-                    }
-                }
+    /// inline JSON 문자열에서 `TsConfig` 를 파싱한다.
+    /// `loadFile` 과 달리 `extends` chain 은 무시 — raw 문자열은 inline 이라 의미가 없다 (esbuild 동등).
+    /// 파싱 실패 / 비-object root → `error.TsConfigParseError`.
+    pub fn parseFromString(allocator: std.mem.Allocator, source: []const u8) !TsConfig {
+        const stripped = try stripJsonComments(allocator, source);
+        defer allocator.free(stripped);
 
-                // bool 옵션 추출
-                if (co.get("sourceMap")) |v| {
-                    if (v == .bool) config.source_map = v.bool;
-                }
-                if (co.get("declaration")) |v| {
-                    if (v == .bool) config.declaration = v.bool;
-                }
-                if (co.get("strict")) |v| {
-                    if (v == .bool) config.strict = v.bool;
-                }
-                if (co.get("experimentalDecorators")) |v| {
-                    if (v == .bool) config.experimental_decorators = v.bool;
-                }
-                if (co.get("emitDecoratorMetadata")) |v| {
-                    if (v == .bool) config.emit_decorator_metadata = v.bool;
-                }
-                if (co.get("useDefineForClassFields")) |v| {
-                    if (v == .bool) config.use_define_for_class_fields = v.bool;
-                }
-                if (co.get("verbatimModuleSyntax")) |v| {
-                    if (v == .bool) config.verbatim_module_syntax = v.bool;
-                }
+        const parsed = std.json.parseFromSlice(
+            std.json.Value,
+            allocator,
+            stripped,
+            .{ .allocate = .alloc_always },
+        ) catch return error.TsConfigParseError;
+        defer parsed.deinit();
+
+        if (parsed.value != .object) return error.TsConfigParseError;
+
+        var config = TsConfig{
+            ._allocator = allocator,
+            ._allocated_strings = .empty,
+        };
+        errdefer config.deinit();
+
+        try extractCompilerOptions(&config, parsed.value.object, allocator);
+        return config;
+    }
+
+    /// `loadFile` 과 `parseFromString` 가 공유하는 compilerOptions 추출 로직.
+    /// 키가 JSON 에 있을 때만 덮어씀 — extends 로 merge 된 값을 보존.
+    fn extractCompilerOptions(
+        config: *TsConfig,
+        root_obj: std.json.ObjectMap,
+        allocator: std.mem.Allocator,
+    ) !void {
+        const co_val = root_obj.get("compilerOptions") orelse return;
+        if (co_val != .object) return;
+        const co = co_val.object;
+
+        // 문자열 옵션 추출. JSON 에서 가져온 문자열은 parsed 가 소유하므로 allocator 로 복사(dupe).
+        if (try dupeJsonString(co, "target", allocator, &config._allocated_strings.?)) |v| config.target = v;
+        if (try dupeJsonString(co, "module", allocator, &config._allocated_strings.?)) |v| config.module = v;
+        if (try dupeJsonString(co, "jsx", allocator, &config._allocated_strings.?)) |v| config.jsx = v;
+        if (try dupeJsonString(co, "jsxFactory", allocator, &config._allocated_strings.?)) |v| config.jsx_factory = v;
+        if (try dupeJsonString(co, "jsxFragmentFactory", allocator, &config._allocated_strings.?)) |v| config.jsx_fragment_factory = v;
+        if (try dupeJsonString(co, "jsxImportSource", allocator, &config._allocated_strings.?)) |v| config.jsx_import_source = v;
+        if (try dupeJsonString(co, "outDir", allocator, &config._allocated_strings.?)) |v| config.out_dir = v;
+        if (try dupeJsonString(co, "rootDir", allocator, &config._allocated_strings.?)) |v| config.root_dir = v;
+        if (try dupeJsonString(co, "baseUrl", allocator, &config._allocated_strings.?)) |v| config.base_url = v;
+
+        // paths: {"@/*": ["./src/*"], ...} → []PathEntry
+        if (co.get("paths")) |v| {
+            if (v == .object) {
+                const entries = try parsePathsObject(v.object, allocator, &config._allocated_strings.?);
+                config.paths = entries;
             }
         }
 
-        return config;
+        // bool 옵션 추출
+        if (co.get("sourceMap")) |v| {
+            if (v == .bool) config.source_map = v.bool;
+        }
+        if (co.get("declaration")) |v| {
+            if (v == .bool) config.declaration = v.bool;
+        }
+        if (co.get("strict")) |v| {
+            if (v == .bool) config.strict = v.bool;
+        }
+        if (co.get("experimentalDecorators")) |v| {
+            if (v == .bool) config.experimental_decorators = v.bool;
+        }
+        if (co.get("emitDecoratorMetadata")) |v| {
+            if (v == .bool) config.emit_decorator_metadata = v.bool;
+        }
+        if (co.get("useDefineForClassFields")) |v| {
+            if (v == .bool) config.use_define_for_class_fields = v.bool;
+        }
+        if (co.get("verbatimModuleSyntax")) |v| {
+            if (v == .bool) config.verbatim_module_syntax = v.bool;
+        }
     }
 
     /// base config의 값을 target config에 merge한다.
