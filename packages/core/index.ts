@@ -867,21 +867,21 @@ export interface PluginBuild {
   onGenerateBundle(callback: (outputs: OutputFile[]) => void | Promise<void>): void;
   /**
    * Bundle 시작 시 1회 호출. esbuild `onStart`, Rollup/Vite/rolldown `buildStart` 동일 (#2156).
-   * watch 모드는 매 rebuild 마다 호출됨 (Rollup 5+ 정책과 동일).
+   * watch 모드는 초기 build 와 매 rebuild 마다 호출됨 (Rollup 5+ 정책과 동일).
    *
    * 인자는 없음 — esbuild `onStart` 와 동일. plugin 자체 setup 시 `BuildOptions` 가 이미 전달됨.
    */
   onBuildStart(callback: () => void | Promise<void>): void;
   /**
    * Bundle 종료 시 1회 호출. 성공/실패 모두 dispatch. 실패 시 fatal diagnostic 의 첫 항목을
-   * `Error` 로 wrap 해서 전달 (#2156). watch 모드는 매 rebuild 마다 호출.
+   * `Error` 로 wrap 해서 전달 (#2156). watch 모드는 초기 build 와 매 rebuild 마다 호출.
    *
    * `onCloseBundle` 보다 먼저 호출됨.
    */
   onBuildEnd(callback: (error?: Error) => void | Promise<void>): void;
   /**
-   * Output 파일 결정 직후 1회 호출 (#2156). Rollup `closeBundle` 와 동일 — temp 파일 cleanup,
-   * 외부 시스템에 빌드 완료 알림 등에 사용. watch 모드는 매 rebuild 마다 호출.
+   * Output 파일 write 완료 후 1회 호출 (#2156). Rollup `closeBundle` 와 동일 — temp 파일 cleanup,
+   * 외부 시스템에 빌드 완료 알림 등에 사용. watch 모드는 초기 build 와 매 rebuild 마다 호출.
    */
   onCloseBundle(callback: () => void | Promise<void>): void;
   onAstFunction(
@@ -1503,7 +1503,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 
 /**
  * 번들링을 동기적으로 실행한다.
- * 주의: JS 플러그인은 build() (async)에서만 지원됨.
+ * 주의: JS 플러그인은 build() (async) / watch()에서만 지원됨.
  */
 export function buildSync(options: BuildOptions): BuildResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
@@ -1830,6 +1830,9 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
 /**
  * Watch 모드로 번들링한다. 파일 변경 시 incremental rebuild + HMR diff.
  * 초기 빌드 완료 시 onReady, 리빌드 시 onRebuild 콜백 호출.
+ *
+ * Plugin lifecycle 호출 순서: buildStart → (NAPI build/rebuild) → buildEnd
+ * → onReady/onRebuild → closeBundle. closeBundle 은 callback 이 없거나 throw 해도 호출된다.
  */
 export function watch(options: BuildOptions): WatchHandle {
   if (!native) throw new Error("call init() first");

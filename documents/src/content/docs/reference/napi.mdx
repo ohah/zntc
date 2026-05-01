@@ -117,6 +117,8 @@ console.log(`Built ${result.outputFiles.length} files`);
 ## `watch(options)`
 
 증분 빌드 watch 모드. 파일 변경 시 자동 rebuild.
+`onReady` / `onRebuild`는 Promise를 반환할 수 있습니다. 플러그인 lifecycle은 초기 build와
+매 rebuild마다 `buildStart → buildEnd → onReady/onRebuild → closeBundle` 순서로 호출됩니다.
 
 ```ts
 import { watch } from "@zts/core";
@@ -150,6 +152,7 @@ await build({
 ```
 
 지원 hook: `resolveId` / `load` / `transform` / `renderChunk` / `generateBundle` / `buildStart` / `buildEnd` / `closeBundle` (#2156).
+`watch()`에서도 lifecycle hook이 초기 build와 매 rebuild마다 forward됩니다.
 
 ## ZTS plugin 직접 작성
 

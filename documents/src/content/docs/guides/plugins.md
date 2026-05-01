@@ -191,7 +191,7 @@ Bundle lifecycle hook. esbuild `onStart` / `onEnd` / `onDispose`, Rollup/Vite/ro
 
 | Hook | 호출 시점 | 인자 |
 |---|---|---|
-| `buildStart` | bundle 시작 직후 1회 (watch 모드는 매 rebuild) | 없음 |
+| `buildStart` | bundle 시작 직후 1회 (watch 모드는 초기 build와 매 rebuild) | 없음 |
 | `buildEnd` | output contents 결정 직후 | `error?: Error` (build 실패 시 fatal diagnostic 의 message) |
 | `closeBundle` | output 파일 write 완료 후 | 없음 |
 
@@ -207,7 +207,9 @@ Bundle lifecycle hook. esbuild `onStart` / `onEnd` / `onDispose`, Rollup/Vite/ro
 }
 ```
 
-호출 순서: `buildStart → onLoad / onTransform → buildEnd → closeBundle`. 다중 plugin 시 모두 순차 실행. `buildEnd` / `closeBundle` 의 plugin 에러는 swallow — 본 build 결과를 가리지 않음.
+`build()` 호출 순서: `buildStart → onLoad / onTransform → buildEnd → write → closeBundle`.
+`watch()` 호출 순서: `buildStart → onLoad / onTransform → buildEnd → onReady/onRebuild → closeBundle`.
+다중 plugin 시 모두 순차 실행. `buildEnd` / `closeBundle` 의 plugin 에러는 swallow — 본 build/rebuild 결과를 가리지 않음.
 
 ## Build API
 
