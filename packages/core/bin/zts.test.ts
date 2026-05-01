@@ -310,6 +310,26 @@ describe("CLI: transpile", () => {
     }
   });
 
+  test("file-based jsx tsconfig (jsxImportSource=preact) is honored via NAPI", () => {
+    // 회귀 가드: 이전엔 JS 측 `applyTsConfigCompilerOptions` 가 풀어 NAPI 에 jsx="automatic" 등을
+    // 직접 set 해 동작했음. JS 매핑을 걷어내고 Zig `tsconfig_merge` 가 jsx 를 처리하도록 옮긴 후에도
+    // 동일한 사용자 동작이 유지되는지 보장한다.
+    const projectDir = mkdtempSync(join(tmpdir(), "zts-cli-tsconfig-jsx-"));
+    try {
+      writeFileSync(
+        join(projectDir, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: { jsx: "react-jsx", jsxImportSource: "preact" },
+        }),
+      );
+      const { stdout, exitCode } = runCli([join(dir, "jsx.tsx"), "--project", projectDir]);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("preact/jsx-runtime");
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   test("--drop=console", () => {
     const { stdout, exitCode } = runCli([join(dir, "input.ts"), "--drop=console"]);
     expect(exitCode).toBe(0);
