@@ -3435,12 +3435,9 @@ fn parseBuildOptions(
     var autodiscovered_dir: ?[]const u8 = null;
     defer if (autodiscovered_dir) |d| native_alloc.free(d);
     const tsconfig_path_opt: ?[]const u8 = if (tsconfig_raw != null) null else tsconfig_path_js orelse blk: {
-        // entry 가 하나라도 있으면 그 디렉토리 기준, 없으면 CWD 기준으로 탐색.
-        const start_dir: []const u8 = if (entries.len > 0)
-            std.fs.path.dirname(entries[0]) orelse "."
-        else
-            ".";
-        autodiscovered_dir = TsConfig.findTsconfigUpward(native_alloc, start_dir) catch null;
+        // entry 가 하나라도 있으면 그 dirname 기준, 없으면 cwd ("." → dirname → ".") 부터 탐색.
+        const start_path: []const u8 = if (entries.len > 0) entries[0] else ".";
+        autodiscovered_dir = TsConfig.autodiscoverFromEntry(native_alloc, start_path);
         break :blk autodiscovered_dir;
     };
     if (tsconfig_raw) |raw| {
