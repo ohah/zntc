@@ -305,6 +305,33 @@ test "schema_builder: WithDefault<Float, 0> → float (Flow)" {
     try std.testing.expect(shape.props[0].type_annotation == .float);
 }
 
+test "schema_builder: TS string union → string_enum" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { rate: 'fast' | 'normal' };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .string_enum);
+}
+
+test "schema_builder: TS mixed union → mixed" {
+    // string literal 아닌 element 가 섞이면 string_enum 안 되고 mixed.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { fill: ColorValue | string };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
 test "schema_builder: UnsafeMixed<T> identity unwrap" {
     // react-native-svg 의 `UnsafeMixed<T> = T` identity wrapper. fabric spec 30개
     // 거의 모두 사용. 의미상 T 그대로 → first type arg 만 추출해 재귀.
