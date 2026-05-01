@@ -103,6 +103,30 @@ describe("@zts/core", () => {
     expect(result.code).toContain("jsx");
   });
 
+  test("tsconfigRaw 의 jsx + jsxImportSource 가 자동 매핑돼 적용", () => {
+    // esbuild 식 인라인 override — file 시스템 접근 없이 JS API 만으로 jsx 동작 변경.
+    // Zig 의 `tsconfig_merge` 가 "react-jsx" → automatic + jsxImportSource="preact" 를 적용.
+    const result = transpile('<div className="app">hello</div>', {
+      filename: "app.tsx",
+      tsconfigRaw: JSON.stringify({
+        compilerOptions: { jsx: "react-jsx", jsxImportSource: "preact" },
+      }),
+    });
+    expect(result.code).toContain("preact/jsx-runtime");
+  });
+
+  test("tsconfigRaw 위에 명시 옵션이 우선", () => {
+    const result = transpile('<div className="app">hello</div>', {
+      filename: "app.tsx",
+      jsx: "classic",
+      tsconfigRaw: JSON.stringify({
+        compilerOptions: { jsx: "react-jsx", jsxImportSource: "preact" },
+      }),
+    });
+    expect(result.code).toContain("React.createElement");
+    expect(result.code).not.toContain("preact/jsx-runtime");
+  });
+
   test("소스맵 생성", () => {
     const result = transpile("const x: number = 1;", { filename: "input.ts", sourcemap: true });
     expect(result.code).toContain("const x = 1;");

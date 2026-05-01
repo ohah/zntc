@@ -364,127 +364,42 @@ function parseArgs(argv) {
   return opts;
 }
 
-// ─── tsconfig.json 로드 ───
-
-function stripJsonComments(raw) {
-  return raw.replace(/"(?:[^"\\]|\\.)*"|\/\/.*$|\/\*[\s\S]*?\*\//gm, (m) =>
-    m.startsWith('"') ? m : "",
-  );
-}
-
-function applyTsConfigCompilerOptions(opts, co) {
-  if (!co || typeof co !== "object" || Array.isArray(co)) return;
-
-  // CLI 옵션이 명시적으로 지정되지 않은 경우에만 tsconfig 값 적용
-  if (co.experimentalDecorators && !opts.experimentalDecorators) {
-    opts.experimentalDecorators = true;
-  }
-  if (co.emitDecoratorMetadata) {
-    opts.emitDecoratorMetadata = true;
-  }
-  if (co.useDefineForClassFields === false) {
-    opts.useDefineForClassFields = false;
-  }
-  // verbatimModuleSyntax (TS 5.0+): 미사용 값 import 보존. CLI 이 설정 안 했으면 tsconfig 반영.
-  if (co.verbatimModuleSyntax === true && opts.verbatimModuleSyntax === undefined) {
-    opts.verbatimModuleSyntax = true;
-  }
-
-  // jsx: "react" → classic, "react-jsx" → automatic, "react-jsxdev" → automatic-dev
-  if (co.jsx && !opts.jsx) {
-    const jsxMap = {
-      react: "classic",
-      "react-jsx": "automatic",
-      "react-jsxdev": "automatic-dev",
-      preserve: undefined, // ZTS가 기본적으로 preserve하지 않으므로 무시
-    };
-    const mapped = jsxMap[co.jsx];
-    if (mapped) opts.jsx = mapped;
-  }
-
-  if (co.jsxFactory && !opts.jsxFactory) opts.jsxFactory = co.jsxFactory;
-  if (co.jsxFragmentFactory && !opts.jsxFragment) opts.jsxFragment = co.jsxFragmentFactory;
-  if (co.jsxImportSource && !opts.jsxImportSource) opts.jsxImportSource = co.jsxImportSource;
-
-  if (co.target && !opts.target && typeof co.target === "string") {
-    const targetMap = {
-      es5: "es5",
-      es6: "es2015",
-      es2015: "es2015",
-      es2016: "es2016",
-      es2017: "es2017",
-      es2018: "es2018",
-      es2019: "es2019",
-      es2020: "es2020",
-      es2021: "es2021",
-      es2022: "es2022",
-      es2023: "es2023",
-      es2024: "es2024",
-      esnext: "esnext",
-    };
-    opts.target = targetMap[co.target.toLowerCase()] || undefined;
-  }
-}
-
-function loadTsConfig(opts) {
-  if (opts.tsconfigRaw !== undefined) {
-    // raw 는 사용자가 방금 친 CLI 입력이므로 silent fallthrough 대신 즉시 실패.
-    // 파일 기반(아래)은 IDE/툴이 만든 ambient tsconfig 가 깨졌다고 빌드를 죽이지 않도록 warn 만 남긴다.
-    let config;
-    try {
-      config = JSON.parse(opts.tsconfigRaw);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new Error(`failed to parse --tsconfig-raw: ${reason}`);
-    }
-    if (!config || typeof config !== "object" || Array.isArray(config)) {
-      throw new Error("failed to parse --tsconfig-raw: expected a JSON object");
-    }
-    applyTsConfigCompilerOptions(opts, config.compilerOptions);
-    return;
-  }
-
-  // --project/--tsconfig-path 로 지정하거나 자동 탐색
-  let tsconfigPath = opts.project;
-  // 경로가 디렉토리면 내부의 tsconfig.json 을 대상 파일로 보정 (NAPI `loadFromPath` 와 동일 규칙).
-  if (tsconfigPath && existsSync(tsconfigPath)) {
-    try {
-      const { statSync } = require("node:fs");
-      if (statSync(tsconfigPath).isDirectory()) {
-        tsconfigPath = join(tsconfigPath, "tsconfig.json");
-      }
-    } catch {}
-  }
-  if (!tsconfigPath) {
-    // 엔트리 파일 기준으로 상위 디렉토리 탐색
-    const startDir =
-      opts.entryPoints.length > 0 ? dirname(resolve(opts.entryPoints[0])) : process.cwd();
-    let dir = startDir;
-    while (true) {
-      const candidate = join(dir, "tsconfig.json");
-      if (existsSync(candidate)) {
-        tsconfigPath = candidate;
-        break;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  }
-
-  if (!tsconfigPath || !existsSync(tsconfigPath)) return;
-
+// ─── tsconfig 검증 + 자동 탐색 ───
+//
+// tsconfig 파싱/머지는 Zig (`src/tsconfig_merge.zig` + `TsConfig.parseFromString`/`loadFromPath`)
+// 가 단일 진실 원천. JS 측 책임은 두 가지:
+//   1) raw 사용자 입력 사전 검증 (NAPI 가 silent fallback 이라 명시 에러로 디버깅 도움).
+//   2) `--project` 미지정 시 entry 디렉토리에서 cwd 까지 자동 탐색해 `opts.project` 에 채움
+//      — bundler 진입점은 NAPI 가 직접 탐색하지만 transpile 진입점은 안 해서, 모드 비대칭을 JS 가 보정.
+function validateTsConfigRaw(raw) {
+  if (raw === undefined) return;
+  let config;
   try {
-    // JSON with comments 파싱 — 문자열 리터럴 내의 // 를 보호
-    const raw = readFileSync(resolve(tsconfigPath), "utf8");
-    const stripped = stripJsonComments(raw);
-    const config = JSON.parse(stripped);
-    applyTsConfigCompilerOptions(opts, config.compilerOptions);
-  } catch {
-    // tsconfig 파싱 실패는 무시 (경고만)
-    if (opts.logLevel !== "silent") {
-      console.error(`warning: failed to parse ${tsconfigPath}`);
+    config = JSON.parse(raw);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`failed to parse --tsconfig-raw: ${reason}`);
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("failed to parse --tsconfig-raw: expected a JSON object");
+  }
+}
+
+function autodiscoverTsConfig(opts) {
+  if (opts.tsconfigRaw !== undefined) return; // raw 가 file 무시 우선.
+  if (opts.project) return; // 사용자 명시.
+  const startDir =
+    opts.entryPoints.length > 0 ? dirname(resolve(opts.entryPoints[0])) : process.cwd();
+  let dir = startDir;
+  while (true) {
+    const candidate = join(dir, "tsconfig.json");
+    if (existsSync(candidate)) {
+      opts.project = candidate;
+      return;
     }
+    const parent = dirname(dir);
+    if (parent === dir) return;
+    dir = parent;
   }
 }
 
@@ -1707,6 +1622,7 @@ async function runTranspile(opts) {
     dropDebugger: opts.drop.includes("debugger"),
     target: opts.target,
     browserslist: opts.browserslist,
+    tsconfigRaw: opts.tsconfigRaw,
   });
 
   if (opts.outfile || opts.outdir) {
@@ -1974,6 +1890,7 @@ async function runBundle(opts, config) {
     mainFields: opts.mainFields.length > 0 ? opts.mainFields : undefined,
     // NAPI 가 tsconfig paths / baseUrl 을 alias 로 변환해 resolver 에 주입하도록 전달.
     tsconfigPath: opts.project,
+    tsconfigRaw: opts.tsconfigRaw,
     banner: opts.banner,
     footer: opts.footer,
     globalName: opts.globalName,
@@ -2735,8 +2652,11 @@ async function main() {
   }
 
   try {
-    // tsconfig.json 자동 로드 (CLI/config 보다 낮은 우선순위)
-    loadTsConfig(opts);
+    // raw tsconfig 입력 사전 검증 — NAPI 가 silent fallback 이라 invalid 라도 진입은 가능,
+    // 사용자 디버깅 편의를 위해 여기서 명시 에러로 실패시킨다.
+    validateTsConfigRaw(opts.tsconfigRaw);
+    // bundler 진입점은 NAPI 가 자동 탐색하지만 transpile 진입점은 안 함 — JS 가 보정.
+    autodiscoverTsConfig(opts);
     init();
     const r = await dispatchBuild(opts, config, configEnv, dotenvVars);
     if (r.errors > 0) process.exit(1);

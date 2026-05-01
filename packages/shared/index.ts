@@ -72,6 +72,12 @@ export interface TranspileOptions {
    * 예) "./tsconfig.json" 또는 "./project-dir"
    */
   tsconfigPath?: string;
+  /**
+   * inline tsconfig JSON 문자열 (esbuild 의 `tsconfigRaw` 와 동일 의미).
+   * 설정 시 `tsconfigPath` 와 자동 탐색을 모두 무시 — raw 가 단일 진실 원천.
+   * Zig 측 `tsconfig_merge` 에서 jsx/target/decorators 등 compilerOptions 를 직접 적용한다.
+   */
+  tsconfigRaw?: string;
   /** 모듈 포맷 */
   format?: "esm" | "cjs";
   /** 문자열 따옴표 스타일 */
@@ -198,6 +204,7 @@ export function buildOptionsJson(
   if (opts.verbatimModuleSyntax !== undefined)
     payload.verbatimModuleSyntax = opts.verbatimModuleSyntax;
   if (opts.tsconfigPath) payload.tsconfigPath = opts.tsconfigPath;
+  if (opts.tsconfigRaw) payload.tsconfigRaw = opts.tsconfigRaw;
   if (opts.format) payload.format = opts.format;
   if (opts.quotes) payload.quotes = opts.quotes;
   if (opts.platform === "react-native") payload.platform = "react_native";

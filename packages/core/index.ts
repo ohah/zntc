@@ -554,6 +554,15 @@ interface BuildOptionsCommon {
    */
   outputExports?: "auto" | "named" | "default" | "none";
   /**
+   * inline tsconfig JSON 문자열 (esbuild 의 `tsconfigRaw` 와 동일 의미).
+   * 설정 시 `tsconfigPath` 와 자동 탐색을 모두 무시 — raw 가 단일 진실 원천.
+   * compilerOptions 의 jsx/target/decorators 등이 Zig 측 `tsconfig_merge` 에서 적용된다.
+   *
+   * @example
+   *   tsconfigRaw: JSON.stringify({ compilerOptions: { jsx: "react-jsx", jsxImportSource: "preact" } })
+   */
+  tsconfigRaw?: string;
+  /**
    * tsconfig.json 경로 (파일 또는 디렉토리). 설정 시 compilerOptions 를 자동 로드해서 머지한다.
    * JS 옵션이 명시적으로 설정된 필드가 우선 — 미지정 필드만 tsconfig 값으로 채워진다.
    * 예) "./tsconfig.json" 또는 "./project-dir"
