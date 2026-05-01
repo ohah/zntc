@@ -314,6 +314,8 @@ pub const Parser = struct {
     }
 
     fn applyExtension(self: *Parser, ext: []const u8, ts_unambiguous: bool) void {
+        // is_module/is_unambiguous 분기는 .mts/.mjs vs .ts/.tsx 차이를 봐야 해서
+        // ModuleType 으로 표현되지 않는다. source type 분류만 ModuleType 에 위임.
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs")) {
             self.is_module = true;
             self.scanner.is_module = true;
@@ -322,18 +324,10 @@ pub const Parser = struct {
             self.scanner.is_module = true;
             self.is_unambiguous = ts_unambiguous;
         }
-        if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-            std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts"))
-        {
-            self.is_ts = true;
-        }
-        if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
-            self.is_jsx = true;
-        }
-        // 명시 JS 계열 source type 은 TS syntax 를 허용하지 않는다.
-        if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx") or
-            std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".cjs"))
-        {
+        const mt = ModuleType.fromExtension(ext);
+        if (mt.isTypeScript()) self.is_ts = true;
+        if (mt.isJsx()) self.is_jsx = true;
+        if (mt.isJavaScriptLike() and !mt.isTypeScript()) {
             self.reject_ts_syntax_in_js = true;
         }
     }

@@ -1832,7 +1832,7 @@ pub const ModuleGraph = struct {
         var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
         analyzer.is_strict_mode = true;
         analyzer.is_module = true;
-        analyzer.is_ts = isTypeScriptModule(module);
+        analyzer.is_ts = module.module_type.isTypeScript();
         analyzer.is_flow = self.flow or isFlowPath(module.path);
         analyzer.enable_stmt_info = true;
         try analyzer.analyze();
@@ -1995,10 +1995,6 @@ pub const ModuleGraph = struct {
             .none => default_type,
             else => if (loader.isAsset()) .asset else default_type,
         };
-    }
-
-    fn isTypeScriptModule(module: *const Module) bool {
-        return module.module_type.isTypeScript();
     }
 
     fn isFlowPath(path: []const u8) bool {
