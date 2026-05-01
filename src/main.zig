@@ -1976,8 +1976,10 @@ pub fn main() !void {
     var resolved_paths: lib.config.ResolvedPaths = .{ .entries = &.{}, .owned_strings = &.{} };
     defer resolved_paths.deinit(allocator);
 
-    // ExplicitFlags 빌드 — CLI 가 명시 set 한 옵션만 non-null 로 전달, default 인 채 두면 null.
-    // jsx_factory/fragment/import_source 의 default ("React.createElement" 등) 는 explicit 미설정 의미.
+    // ExplicitFlags 빌드 — `?bool` 필드는 직접 forward, `bool` 필드 (sourcemap /
+    // emit_decorator_metadata) 는 truthy 일 때만 explicit 으로 전달 (default false 와 explicit false
+    // 구분 불가 — 기존 manual merge 의 한계 그대로 보존). jsx_factory/fragment/import_source 의
+    // default 문자열 ("React.createElement" 등) 도 explicit 미설정으로 간주.
     const merged = lib.tsconfig_merge.merge(&tsconfig, .{
         .experimental_decorators = opts.experimental_decorators,
         .emit_decorator_metadata = if (opts.emit_decorator_metadata) true else null,
