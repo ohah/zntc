@@ -67,6 +67,17 @@ pub const Plugin = plugin_mod.Plugin;
 /// `parser.scan_results.DefineEntry` 와 동일 정의 — parser 의 inline scan 도 같은 entries 사용.
 pub const DefineEntry = @import("../parser/scan_results.zig").DefineEntry;
 
+/// `import { x } from 'mod'` 의 cherry-pick 매핑 — `babel-plugin-lodash` 동등.
+///
+/// `template` 내 `{name}` placeholder 가 specifier 이름으로 치환. 예:
+///   `.{ .module = "lodash", .template = "lodash/{name}" }`
+///   → `import { map, filter } from 'lodash'` 가
+///     `import map from 'lodash/map'; import filter from 'lodash/filter'` 로 분해.
+pub const ModuleSpecifierMapEntry = struct {
+    module: []const u8,
+    template: []const u8,
+};
+
 /// emotion.autoLabel 모드. 다른 emotion 도구들 (`@emotion/babel-plugin` 등) 의
 /// `'always' | 'dev-only' | 'never'` 와 동일 의미.
 pub const AutoLabelMode = enum {
@@ -200,6 +211,15 @@ pub const TransformOptions = struct {
     /// emitDecoratorMetadata: __metadata("design:paramtypes", [...]) 호출 주입.
     /// NestJS, Angular, TypeORM 등 reflect-metadata 기반 DI에 필요.
     emit_decorator_metadata: bool = false,
+    /// `import { x } from 'mod'` → `import x from 'mod/x'` cherry-pick 분해. babel-plugin-lodash
+    /// 등 라이브러리별 babel plugin 의 ZTS 동등 — 사용자가 라이브러리 매핑 제공, ZTS 가
+    /// generic 하게 적용. 매핑 안 된 source 는 unchanged.
+    ///
+    /// 변환 조건 (안전):
+    ///   - source 가 매핑 entry 의 module 과 일치 (정확 매칭)
+    ///   - 모든 specifier 가 named (default/namespace 아님), alias 없음, value (type-only 아님)
+    ///   조건 미충족 시 unchanged — fallback (라이브러리가 path import 미지원 시 안전).
+    module_specifier_map: []const ModuleSpecifierMapEntry = &.{},
     /// verbatimModuleSyntax (TS 5.0+): true면 값 import를 elide하지 않는다.
     /// `import type`만 제거되고 `import { foo } from "./bar"`는 foo가 미사용이라도 보존.
     /// esbuild/vite/swc(isolatedModules) 표준 동작. 기본 false (tsc 기본과 동일).
@@ -4618,6 +4638,16 @@ pub const Transformer = struct {
             if (self.areAllSpecifiersUnused(x.specs_start, x.specs_len)) return .none;
         }
 
+        // module_specifier_map: cherry-pick 분해. 매핑 entry 와 source 일치 + 모든 specifier
+        // 가 named/no-alias/value 면 한 import 를 default + path 형태 N개로 split.
+        if (self.options.module_specifier_map.len > 0 and x.attrs_len == 0 and x.phase == .none) {
+            if (self.findModuleMapTemplate(x.source)) |template| {
+                if (try self.rewriteImportToPathSplits(node, x, template)) |rewritten| {
+                    return rewritten;
+                }
+            }
+        }
+
         const new_specs = try self.visitExtraList(.{ .start = x.specs_start, .len = x.specs_len });
         const new_source = try self.visitNode(x.source);
         // phase / attributes는 metadata — transform 대상 아님, 그대로 통과.
@@ -4625,6 +4655,117 @@ pub const Transformer = struct {
             new_specs.start,       new_specs.len, @intFromEnum(new_source),
             @intFromEnum(x.phase), x.attrs_start, x.attrs_len,
         });
+    }
+
+    /// import source string 이 module_specifier_map 의 entry 와 매칭되면 template 반환.
+    /// `'lodash'` 같은 구체 매칭만 — wildcard 미지원. unmatched 면 null.
+    fn findModuleMapTemplate(self: *Transformer, source_idx: NodeIndex) ?[]const u8 {
+        const source_node = self.ast.getNode(source_idx);
+        if (source_node.tag != .string_literal) return null;
+        const raw = self.ast.getText(source_node.data.string_ref);
+        const stripped = Ast.stripStringQuotes(raw);
+        for (self.options.module_specifier_map) |entry| {
+            if (std.mem.eql(u8, stripped, entry.module)) return entry.template;
+        }
+        return null;
+    }
+
+    /// 매핑 조건 충족 시 분해. 단일 named → 단일 default 노드 반환. 다중 → 첫 specifier 만
+    /// 반환하고 나머지는 trailing_nodes 로 같은 list 에 추가. 조건 미충족 (default/namespace/
+    /// alias/type-only) 이면 null 반환 — caller 가 unchanged path 진행.
+    fn rewriteImportToPathSplits(
+        self: *Transformer,
+        node: Node,
+        x: module_parser.ImportDeclExtras,
+        template: []const u8,
+    ) Error!?NodeIndex {
+        if (x.specs_len == 0) return null;
+
+        // 모든 specifier 검증 — named, no alias, no type-only
+        var i: u32 = 0;
+        while (i < x.specs_len) : (i += 1) {
+            const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[x.specs_start + i]);
+            const spec_node = self.ast.getNode(spec_idx);
+            if (spec_node.tag != .import_specifier) return null;
+            // type-only specifier (flags & 1) — 분해 X (path 에 type 만 export 안 함)
+            if (spec_node.data.binary.flags & 1 != 0) return null;
+            // alias 없는지: imported == local (NodeIndex 동일성)
+            if (spec_node.data.binary.left != spec_node.data.binary.right) return null;
+        }
+
+        var first_result: ?NodeIndex = null;
+        i = 0;
+        while (i < x.specs_len) : (i += 1) {
+            const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[x.specs_start + i]);
+            const spec_node = self.ast.getNode(spec_idx);
+            const name_node = self.ast.getNode(spec_node.data.binary.left);
+            const name_span = name_node.span;
+            const name_text = self.ast.getText(name_span);
+
+            const new_decl = try self.buildDefaultImportFromTemplate(
+                name_span,
+                name_text,
+                template,
+                node.span,
+            );
+
+            if (first_result == null) {
+                first_result = new_decl;
+            } else {
+                try self.trailing_nodes.append(self.allocator, new_decl);
+            }
+        }
+        return first_result;
+    }
+
+    /// `import <name> from '<template:name>'` 의 AST 노드 빌드.
+    fn buildDefaultImportFromTemplate(
+        self: *Transformer,
+        name_span: Span,
+        name_text: []const u8,
+        template: []const u8,
+        decl_span: Span,
+    ) Error!NodeIndex {
+        // path string: template 의 `{name}` 을 name_text 로 치환 + quote
+        const path_text = try self.renderTemplate(template, name_text);
+        defer self.allocator.free(path_text);
+        const quoted = try std.fmt.allocPrint(self.allocator, "'{s}'", .{path_text});
+        defer self.allocator.free(quoted);
+        const path_span = try self.ast.addString(quoted);
+
+        const default_spec = try self.ast.addNode(.{
+            .tag = .import_default_specifier,
+            .span = name_span,
+            .data = .{ .string_ref = name_span },
+        });
+        const source_node = try self.ast.addNode(.{
+            .tag = .string_literal,
+            .span = path_span,
+            .data = .{ .string_ref = path_span },
+        });
+
+        const specs_start = try self.ast.addExtras(&.{@intFromEnum(default_spec)});
+        return self.addExtraNode(.import_declaration, decl_span, &.{
+            specs_start,               1,
+            @intFromEnum(source_node), @intFromEnum(module_parser.ImportPhase.none),
+            0,                         0,
+        });
+    }
+
+    /// `'lodash/{name}'` 의 `{name}` placeholder 치환. 첫 occurrence 만 — 일반적 사용처.
+    /// placeholder 없는 template (e.g. `'lodash'`) 은 _malformed config_ — 모든 specifier
+    /// 가 동일 path 로 합쳐져 사실상 invalid. caller 책임으로 정상 매핑 제공 가정.
+    fn renderTemplate(self: *Transformer, template: []const u8, name: []const u8) ![]u8 {
+        const placeholder = "{name}";
+        if (std.mem.indexOf(u8, template, placeholder)) |idx| {
+            return std.fmt.allocPrint(
+                self.allocator,
+                "{s}{s}{s}",
+                .{ template[0..idx], name, template[idx + placeholder.len ..] },
+            );
+        }
+        // placeholder 없으면 template 그대로 — 거의 의미 없는 매핑이지만 caller 책임.
+        return self.allocator.dupe(u8, template);
     }
 
     /// import의 모든 specifier가 미사용인지 확인한다.

@@ -217,6 +217,32 @@ fn parseAndTransform(allocator: std.mem.Allocator, source: []const u8) !TestResu
     return .{ .ast = t.ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
 }
 
+/// `parseAndTransform` 의 변형 — TransformOptions 명시 가능. parser 는 module mode 강제.
+fn parseAndTransformWithOpts(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    opts: TransformOptions,
+) !TestResult {
+    const scanner_ptr = try allocator.create(Scanner);
+    errdefer allocator.destroy(scanner_ptr);
+    scanner_ptr.* = try Scanner.init(allocator, source);
+    errdefer scanner_ptr.deinit();
+
+    const parser_ptr = try allocator.create(Parser);
+    errdefer allocator.destroy(parser_ptr);
+    parser_ptr.* = Parser.init(allocator, scanner_ptr);
+    parser_ptr.is_module = true;
+    errdefer parser_ptr.deinit();
+
+    _ = try parser_ptr.parse();
+
+    var t = try Transformer.init(allocator, &parser_ptr.ast, opts);
+    const root = try t.transform();
+    t.deinitExceptAst();
+
+    return .{ .ast = t.ast, .root = root, .scanner = scanner_ptr, .parser = parser_ptr, .allocator = allocator };
+}
+
 test "Integration: type alias stripped" {
     var r = try parseAndTransform(std.testing.allocator, "type Foo = string;");
     defer r.deinit();
@@ -1887,4 +1913,111 @@ test "HMR guard: variable declaration with complex initializers" {
         \\const y = (n) => n * 2;
         \\const z = typeof x === "object";
     );
+}
+
+// ===== module_specifier_map: cherry-pick split tests =====
+
+const lodash_map: []const transformer_mod.ModuleSpecifierMapEntry = &.{
+    .{ .module = "lodash", .template = "lodash/{name}" },
+};
+
+fn assertSplitImport(
+    result: *const TestResult,
+    expected_name: []const u8,
+    expected_path: []const u8,
+    stmt_idx: u32,
+) !void {
+    const program = result.ast.getNode(result.root);
+    const list = program.data.list;
+    try std.testing.expect(stmt_idx < list.len);
+    const decl_idx: NodeIndex = @enumFromInt(result.ast.extra_data.items[list.start + stmt_idx]);
+    const decl = result.ast.getNode(decl_idx);
+    try std.testing.expectEqual(Tag.import_declaration, decl.tag);
+
+    const e = decl.data.extra;
+    const specs_start = result.ast.extra_data.items[e];
+    const specs_len = result.ast.extra_data.items[e + 1];
+    const source_idx: NodeIndex = @enumFromInt(result.ast.extra_data.items[e + 2]);
+    try std.testing.expectEqual(@as(u32, 1), specs_len);
+
+    const spec_idx: NodeIndex = @enumFromInt(result.ast.extra_data.items[specs_start]);
+    const spec = result.ast.getNode(spec_idx);
+    try std.testing.expectEqual(Tag.import_default_specifier, spec.tag);
+    try std.testing.expectEqualStrings(expected_name, result.ast.getText(spec.data.string_ref));
+
+    const source = result.ast.getNode(source_idx);
+    try std.testing.expectEqual(Tag.string_literal, source.tag);
+    const source_text = result.ast.getText(source.data.string_ref);
+    // quoted ('lodash/map') — strip
+    try std.testing.expect(source_text.len >= 2);
+    try std.testing.expectEqualStrings(expected_path, source_text[1 .. source_text.len - 1]);
+}
+
+test "module_specifier_map: single named import → default + path" {
+    var r = try parseAndTransformWithOpts(
+        std.testing.allocator,
+        "import { map } from 'lodash';",
+        .{ .module_specifier_map = lodash_map },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+    try assertSplitImport(&r, "map", "lodash/map", 0);
+}
+
+test "module_specifier_map: multi named import → split into N defaults" {
+    var r = try parseAndTransformWithOpts(
+        std.testing.allocator,
+        "import { map, filter, reduce } from 'lodash';",
+        .{ .module_specifier_map = lodash_map },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 3), r.statementCount());
+    try assertSplitImport(&r, "map", "lodash/map", 0);
+    try assertSplitImport(&r, "filter", "lodash/filter", 1);
+    try assertSplitImport(&r, "reduce", "lodash/reduce", 2);
+}
+
+test "module_specifier_map: unmapped source unchanged" {
+    var r = try parseAndTransformWithOpts(
+        std.testing.allocator,
+        "import { foo } from 'react';",
+        .{ .module_specifier_map = lodash_map },
+    );
+    defer r.deinit();
+    // 'react' 는 매핑 안 됨 — 원본 named 형태 유지 (1 statement, 1 named specifier)
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+    const program = r.ast.getNode(r.root);
+    const decl_idx: NodeIndex = @enumFromInt(r.ast.extra_data.items[program.data.list.start]);
+    const decl = r.ast.getNode(decl_idx);
+    const specs_start = r.ast.extra_data.items[decl.data.extra];
+    const spec_idx: NodeIndex = @enumFromInt(r.ast.extra_data.items[specs_start]);
+    try std.testing.expectEqual(Tag.import_specifier, r.ast.getNode(spec_idx).tag);
+}
+
+test "module_specifier_map: aliased specifier left unchanged" {
+    // alias (`{ map as m }`) 는 분해 X — caller 가 path import 후 추가 alias 필요한 케이스 회피.
+    var r = try parseAndTransformWithOpts(
+        std.testing.allocator,
+        "import { map as m } from 'lodash';",
+        .{ .module_specifier_map = lodash_map },
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
+    const program = r.ast.getNode(r.root);
+    const decl_idx: NodeIndex = @enumFromInt(r.ast.extra_data.items[program.data.list.start]);
+    const decl = r.ast.getNode(decl_idx);
+    const specs_start = r.ast.extra_data.items[decl.data.extra];
+    const spec_idx: NodeIndex = @enumFromInt(r.ast.extra_data.items[specs_start]);
+    try std.testing.expectEqual(Tag.import_specifier, r.ast.getNode(spec_idx).tag);
+}
+
+test "module_specifier_map: default + named mix unchanged" {
+    var r = try parseAndTransformWithOpts(
+        std.testing.allocator,
+        "import _, { map } from 'lodash';",
+        .{ .module_specifier_map = lodash_map },
+    );
+    defer r.deinit();
+    // default import 가 섞이면 분해 조건 미충족 — unchanged
+    try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
