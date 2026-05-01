@@ -259,8 +259,8 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
   완료: --outbase, --log-limit, inlineDynamicImports, cleanDir,
   --watch-delay, --serve <dir>, shimMissingExports, extensionAlias,
   --packages=external, --pure:callee, --line-limit,
-  sanitizeFileName
-  미완료/미노출: --allow-overwrite,
+  sanitizeFileName, --allow-overwrite
+  미완료/미노출:
   --tsconfig-raw, --node-paths,
   output.intro/outro, output.globals, --jsx-side-effects,
   --ignore-annotations

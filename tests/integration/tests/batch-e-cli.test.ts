@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { runZts, runZtsInDir, createFixture } from "./helpers";
 import { decodeMappings } from "./sourcemap-helpers";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 describe("배치 E: CLI 옵션", () => {
@@ -66,6 +66,46 @@ describe("배치 E: CLI 옵션", () => {
     const result = await runZts(["--allow-overwrite", "--help"]);
     // --allow-overwrite가 파싱되고 --help가 실행됨
     expect(result.exitCode).toBe(0);
+  });
+
+  test("--allow-overwrite: 기본은 입력=출력 overwrite 차단", async () => {
+    const fixture = await createFixture({
+      "input.ts": "const x: number = 1;\n",
+    });
+    cleanup = fixture.cleanup;
+
+    const input = join(fixture.dir, "input.ts");
+    const result = await runZts([input, "-o", input]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("would overwrite input file");
+    expect(result.stderr).toContain("--allow-overwrite");
+  });
+
+  test("--allow-overwrite: 명시 flag가 있으면 입력=출력 overwrite 허용", async () => {
+    const fixture = await createFixture({
+      "input.ts": "const x: number = 1;\n",
+    });
+    cleanup = fixture.cleanup;
+
+    const input = join(fixture.dir, "input.ts");
+    const result = await runZts([input, "-o", input, "--allow-overwrite"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(input, "utf-8")).toContain("const x = 1");
+  });
+
+  test("--allow-overwrite: 디렉토리 입력과 동일 outdir 조합은 별도 .js 출력으로 성공", async () => {
+    const fixture = await createFixture({
+      "src/input.ts": "const x: number = 1;\n",
+    });
+    cleanup = fixture.cleanup;
+
+    const srcDir = join(fixture.dir, "src");
+    const result = await runZts([srcDir, "--outdir", srcDir]);
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(join(srcDir, "input.js"))).toBe(true);
   });
 
   test("--log-limit: 숫자가 아니면 에러 메시지 출력", async () => {

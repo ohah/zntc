@@ -24,6 +24,7 @@ CLI > config > tsconfig > defaults. 같은 옵션이 여러 곳에 정의되면 
 |---|:---:|:---:|:---:|---|
 | `entryPoints` | positional | ✅ | ❌ | CLI 가 비어있으면 config 사용 |
 | `outdir` / `outfile` | `--outdir` `-o` | ✅ | ❌ | scalar override |
+| `allowOverwrite` | `--allow-overwrite` | ✅ | ❌ | 기본 false; 입력=출력 덮어쓰기 명시 허용 |
 | `format` | `--format=esm` | ✅ | ❌ | esm/cjs/iife/umd/amd |
 | `platform` | `--platform=node` | ✅ | ❌ | node/browser/react-native |
 | `target` | `--target=es2020` | ✅ | `target` | tsconfig fallback |

@@ -198,6 +198,7 @@ if (result.errors.length > 0) {
 | `entryPoints` | `string[]` | Entry files |
 | `outdir` | `string` | Output directory |
 | `outfile` | `string` | Output file (single) |
+| `allowOverwrite` | `boolean` | Explicitly permit output paths to overwrite input files |
 | `bundle` | `boolean` | Bundle mode |
 | `format` | `"esm" \| "cjs" \| "iife" \| "umd" \| "amd"` | Module format |
 | `platform` | `"browser" \| "node" \| "neutral" \| "react-native"` | Target platform |
