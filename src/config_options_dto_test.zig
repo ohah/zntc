@@ -234,6 +234,7 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "analyze", // metafile 분석 출력
     "blockList", // RN resolver block list
     "collectModuleCodes", // NAPI 만 사용 (HMR module codes)
+    "codegenTransform", // BuildOptions 전용 codegen transform hook
     "configurableExports", // RN configurable __toESM
     "devMode", // dev mode flag
     "emitDiskSourcemap", // sourcemap 디스크 emit
