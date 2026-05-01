@@ -1940,23 +1940,35 @@ pub fn main() !void {
         return;
     }
 
-    // tsconfig.json 로드 — 번들/트랜스파일 양쪽에서 사용.
-    // 우선순위: --project/--tsconfig-path 경로 > entry 디렉토리에서 상위로 자동 탐색 > CWD
-    // loadFromPath 는 파일/디렉토리 둘 다 받으므로 `-p ./tsconfig.json` 도 동작.
+    // tsconfig 로드 + 머지 — 번들/트랜스파일 양쪽에서 사용.
+    // 우선순위 (esbuild 동등): --tsconfig-raw inline JSON > --project/--tsconfig-path 경로
+    //                       > entry 디렉토리에서 상위로 자동 탐색.
+    // 머지 규칙은 `lib.tsconfig_merge.merge` 의 공용 helper — NAPI/transpile 진입점과 일관.
     const entry_dir_start: []const u8 = if (opts.input_file) |inp|
         if (!std.mem.eql(u8, inp, "-")) (std.fs.path.dirname(inp) orelse ".") else "."
     else
         ".";
     var autodiscovered_dir: ?[]const u8 = null;
     defer if (autodiscovered_dir) |d| allocator.free(d);
-    const tsconfig_dir_early: []const u8 = if (opts.project_path) |pp|
-        pp
-    else blk: {
-        // esbuild/vite 스타일 zero-config: entry 디렉토리에서 위로 올라가며 tsconfig.json 탐색.
-        autodiscovered_dir = TsConfig.findTsconfigUpward(allocator, entry_dir_start) catch null;
-        break :blk autodiscovered_dir orelse entry_dir_start;
+    // raw 가 있으면 file 기반 path 무시 (paths/baseUrl 도 base 디렉토리 미정이라 skip).
+    const tsconfig_dir_for_paths: ?[]const u8 = blk: {
+        if (opts.tsconfig_raw != null) break :blk null;
+        if (opts.project_path) |pp| break :blk pp;
+        autodiscovered_dir = TsConfig.autodiscoverFromEntry(allocator, entry_dir_start);
+        break :blk autodiscovered_dir;
     };
-    var tsconfig = TsConfig.loadFromPath(allocator, tsconfig_dir_early) catch TsConfig{};
+    var tsconfig: TsConfig = blk: {
+        if (opts.tsconfig_raw) |raw| {
+            break :blk TsConfig.parseFromString(allocator, raw) catch {
+                try stderr.print("zts: failed to parse --tsconfig-raw\n", .{});
+                std.process.exit(1);
+            };
+        }
+        if (tsconfig_dir_for_paths) |p| {
+            break :blk TsConfig.loadFromPath(allocator, p) catch TsConfig{};
+        }
+        break :blk TsConfig{};
+    };
     defer tsconfig.deinit();
 
     // tsconfig `paths` 를 resolver 용 절대 경로 형태로 정규화. main 함수 끝까지 유지해야
@@ -1964,7 +1976,34 @@ pub fn main() !void {
     var resolved_paths: lib.config.ResolvedPaths = .{ .entries = &.{}, .owned_strings = &.{} };
     defer resolved_paths.deinit(allocator);
 
-    // tsconfig 값 적용 — CLI 옵션이 우선, 미지정 옵션만 tsconfig에서 가져옴
+    // ExplicitFlags 빌드 — CLI 가 명시 set 한 옵션만 non-null 로 전달, default 인 채 두면 null.
+    // jsx_factory/fragment/import_source 의 default ("React.createElement" 등) 는 explicit 미설정 의미.
+    const merged = lib.tsconfig_merge.merge(&tsconfig, .{
+        .experimental_decorators = opts.experimental_decorators,
+        .emit_decorator_metadata = if (opts.emit_decorator_metadata) true else null,
+        .use_define_for_class_fields = opts.use_define_for_class_fields,
+        .verbatim_module_syntax = opts.verbatim_module_syntax,
+        .sourcemap = if (opts.sourcemap) true else null,
+        .es_target = opts.es_target,
+        .unsupported = if (@as(u32, @bitCast(opts.unsupported)) != 0) opts.unsupported else null,
+        .jsx_runtime = opts.jsx_runtime,
+        .jsx_factory = if (std.mem.eql(u8, opts.jsx_factory, "React.createElement")) null else opts.jsx_factory,
+        .jsx_fragment = if (std.mem.eql(u8, opts.jsx_fragment, "React.Fragment")) null else opts.jsx_fragment,
+        .jsx_import_source = if (std.mem.eql(u8, opts.jsx_import_source, "react")) null else opts.jsx_import_source,
+    });
+    opts.experimental_decorators = merged.experimental_decorators;
+    opts.emit_decorator_metadata = merged.emit_decorator_metadata;
+    opts.use_define_for_class_fields = merged.use_define_for_class_fields;
+    opts.verbatim_module_syntax = merged.verbatim_module_syntax;
+    opts.sourcemap = merged.sourcemap;
+    opts.es_target = merged.es_target;
+    opts.unsupported = merged.unsupported;
+    opts.jsx_runtime = merged.jsx_runtime;
+    opts.jsx_factory = merged.jsx_factory;
+    opts.jsx_fragment = merged.jsx_fragment;
+    opts.jsx_import_source = merged.jsx_import_source;
+
+    // main.zig 만의 inline 분기 — `tsconfig_merge` 가 처리하지 않는 필드 (module_format, output_dir).
     if (opts.module_format == .esm) {
         if (tsconfig.module) |mod| {
             if (std.ascii.eqlIgnoreCase(mod, "commonjs")) {
@@ -1972,56 +2011,24 @@ pub fn main() !void {
             }
         }
     }
-    if (!opts.sourcemap and tsconfig.source_map) {
-        opts.sourcemap = true;
-    }
     if (opts.output_dir == null) {
         if (tsconfig.out_dir) |od| {
             opts.output_dir = od;
         }
     }
-    if (opts.experimental_decorators == null and tsconfig.experimental_decorators) {
-        opts.experimental_decorators = true;
-    }
-    // emitDecoratorMetadata는 experimentalDecorators가 활성화된 경우에만 유효
-    if (tsconfig.emit_decorator_metadata and (opts.experimental_decorators orelse false)) {
-        opts.emit_decorator_metadata = true;
-    }
-    // verbatimModuleSyntax: CLI가 명시적 override하지 않았으면 tsconfig 값 사용.
-    if (opts.verbatim_module_syntax == null and tsconfig.verbatim_module_syntax) {
-        opts.verbatim_module_syntax = true;
-    }
-    // JSX: CLI/플랫폼 프리셋이 미지정이면 tsconfig에서 가져옴
-    if (opts.jsx_runtime == null) {
-        if (tsconfig.jsx) |jsx_mode| {
-            if (std.mem.eql(u8, jsx_mode, "react-jsx") or std.mem.eql(u8, jsx_mode, "react-jsxdev")) {
-                opts.jsx_runtime = if (std.mem.eql(u8, jsx_mode, "react-jsxdev")) .automatic_dev else .automatic;
-            }
-        }
-    }
-    // JSX 최종 fallback: CLI/플랫폼/tsconfig 어디서도 지정하지 않으면 classic
-    if (opts.jsx_runtime == null) {
-        opts.jsx_runtime = .classic;
-    }
-    if (std.mem.eql(u8, opts.jsx_factory, "React.createElement")) {
-        opts.jsx_factory = tsconfig.jsx_factory;
-    }
-    if (std.mem.eql(u8, opts.jsx_fragment, "React.Fragment")) {
-        opts.jsx_fragment = tsconfig.jsx_fragment_factory;
-    }
-    if (std.mem.eql(u8, opts.jsx_import_source, "react")) {
-        opts.jsx_import_source = tsconfig.jsx_import_source;
-    }
 
     // tsconfig `paths` / `baseUrl` → resolver 의 `ts_paths` 로 전달.
-    // TS 스펙: 다중 candidate + wildcard anywhere + 후보 순차 시도를 resolver 가 수행한다.
+    // raw 분기 (tsconfig_dir_for_paths == null) 는 base 디렉토리 미정이라 skip — esbuild 동등.
+    // TS 스펙: 다중 candidate + wildcard anywhere + 후보 순차 시도를 resolver 가 수행.
     // 사용자 `--alias` 는 alias 경로로 계속 처리 — 둘은 독립이며 paths 가 먼저 매칭된다.
     if (tsconfig.paths.len > 0) {
-        const dir_for_join = lib.config.tsconfigDirFromPath(tsconfig_dir_early);
-        resolved_paths = lib.config.resolveTsPaths(allocator, dir_for_join, &tsconfig) catch |err| blk: {
-            try stderr.print("zts: warning: tsconfig paths resolution failed: {}\n", .{err});
-            break :blk lib.config.ResolvedPaths{ .entries = &.{}, .owned_strings = &.{} };
-        };
+        if (tsconfig_dir_for_paths) |dir_str| {
+            const dir_for_join = lib.config.tsconfigDirFromPath(dir_str);
+            resolved_paths = lib.config.resolveTsPaths(allocator, dir_for_join, &tsconfig) catch |err| blk: {
+                try stderr.print("zts: warning: tsconfig paths resolution failed: {}\n", .{err});
+                break :blk lib.config.ResolvedPaths{ .entries = &.{}, .owned_strings = &.{} };
+            };
+        }
     }
 
     // --bundle
