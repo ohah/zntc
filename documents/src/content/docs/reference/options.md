@@ -17,7 +17,7 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 }
 ```
 
-> **주의**: 본 문서가 가리키는 schema는 WASM/NAPI가 Zig 엔진으로 **내부 전달**하는 JSON payload의 스키마입니다. 사용자 친화적 config 파일(`zts.config.json`) 로더는 별도 PR에서 추가될 예정입니다. 현재 TS API(`packages/shared`의 `TranspileOptions` 인터페이스)는 camelCase + kebab-case enum(`"react-native"`)을 쓰지만, 이 schema의 enum은 Zig native 표현(`"react_native"`)입니다.
+> **주의**: 본 문서가 가리키는 schema는 WASM/NAPI가 Zig 엔진으로 **내부 전달**하는 JSON payload의 스키마입니다. 사용자용 `zts.config.*` 로더와 CLI 머지 계층은 `@zts/core`에서 별도로 제공되며 camelCase 옵션을 받습니다. 이 schema의 enum은 Zig native 표현(`"react_native"`)을 사용하므로 config 파일/API 문법과 1:1로 같지 않을 수 있습니다.
 
 ## 옵션 목록
 
@@ -101,7 +101,7 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 
 ## TS API와의 관계
 
-실제 프로그래머블 사용 시에는 `@zts/core` / `@zts/wasm` 패키지의 `transpile()` 함수에 **camelCase + kebab-case enum**이 허용되는 `TranspileOptions` 인터페이스를 씁니다:
+실제 프로그래머블 사용 시에는 `@zts/core` / `@zts/wasm` 패키지의 `transpile()` 함수에 **camelCase + kebab-case enum**이 허용되는 `TranspileOptions` 인터페이스를 씁니다. 프로젝트 설정은 `zts.config.{ts,mts,cts,mjs,js,cjs,json}` / `zts.workspace.*` 로더가 처리합니다:
 
 ```ts
 import { transpile } from "@zts/wasm";

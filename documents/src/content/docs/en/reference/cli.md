@@ -58,11 +58,10 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 
 | Option | Description |
 |--------|-------------|
-| `-o, --out-file <path>` | Output file path |
+| `-o, --outfile <path>` | Output file path |
 | `--outdir <path>` | Output directory (required for dir input / splitting / preserve-modules) |
 | `--outbase=<dir>` | Base dir for computing output paths |
 | `--out-extension:.js=<ext>` | Change output extension (e.g. `.mjs`) |
-| `--allow-overwrite` | Allow overwriting input path |
 | `--clean` | Clear outdir before building |
 
 ## Format / Platform
@@ -74,7 +73,6 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--rn-platform=ios\|android` | RN sub-platform (`.ios.*`/`.android.*` extensions) |
 | `--target=<spec>` | ES target: `es2015`–`esnext` or engine versions (`chrome80,safari14`) |
 | `--global-name=<name>` | IIFE export name |
-| `--global-identifier=<id>` | Global identifier override |
 
 ## Minify
 
@@ -88,7 +86,6 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--charset=utf8\|ascii` | Output charset |
 | `--ascii-only` | Non-ASCII → `\uXXXX` (= `--charset=ascii`) |
 | `--quotes=double\|single\|preserve` | String quote style |
-| `--line-limit=<n>` | Max line length (wrap when minifying) |
 
 ## Source Maps
 
@@ -110,10 +107,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--define:KEY=VALUE` | Global replace (e.g. `process.env.NODE_ENV` → `"production"`) |
 | `--drop=console` | Remove `console.*` calls |
 | `--drop=debugger` | Remove `debugger` statements |
-| `--drop-labels=<list>` | Remove labeled blocks (e.g. `DEV,TEST`) |
-| `--pure:<name>` | Mark call as pure for DCE |
 | `--inject:<path>` | Auto-inject import (shim) |
-| `--polyfill=<list>` | Runtime polyfill injection |
 
 ## JSX
 
@@ -125,23 +119,22 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--jsx-fragment=<fn>` | Classic Fragment |
 | `--jsx-import-source=<pkg>` | Automatic import source (default: `react`) |
 | `--jsx-in-js` | Allow JSX parsing in `.js` files |
-| `--jsx-side-effects` | Mark JSX elements as having side effects (skip DCE) |
 
 ## TypeScript
 
 | Option | Description |
 |--------|-------------|
-| `-p, --project <path>` | tsconfig.json path/directory |
-| `--tsconfig-raw=<json>` | Inline tsconfig JSON |
+| `-p, --project <path>, --tsconfig-path <path>` | tsconfig.json path/directory |
 | `--experimental-decorators` | Legacy decorator (`__decorateClass`) |
+| `--emit-decorator-metadata` | Emit decorator metadata (requires `experimentalDecorators`) |
 | `--use-define-for-class-fields=false\|true` | Class field semantics |
+| `--verbatim-module-syntax` | Preserve TS `verbatimModuleSyntax` imports/exports |
 
 ## Flow
 
 | Option | Description |
 |--------|-------------|
 | `--flow` | Flow type stripping (auto-detected via `@flow` pragma) |
-| `--ignore-annotations` | Ignore Flow comments/pragmas |
 
 ## Bundle-specific
 
@@ -149,6 +142,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 |--------|-------------|
 | `--bundle` | Enable bundle mode |
 | `--splitting` | Code splitting (requires `--outdir`) |
+| `--no-splitting` | Disable splitting from config at the CLI layer |
 | `--preserve-modules` | Per-module output (library build) |
 | `--preserve-modules-root=<dir>` | Root for output structure |
 | `--inline-dynamic-imports` | Absorb dynamic-import targets into the entry chunk (Rollup `inlineDynamicImports`, #2185) |
@@ -160,8 +154,8 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--metafile` / `--metafile=<path>` | Build meta JSON (stdout or file) |
 | `--analyze` | Bundle analysis report |
 | `--legal-comments=<mode>` | License comments: `none\|inline\|eof\|linked\|external` |
-| `--banner:js=<text>` | Prepend text |
-| `--footer:js=<text>` | Append text |
+| `--banner=<text>` / `--banner:js=<text>` | Prepend text |
+| `--footer=<text>` / `--footer:js=<text>` | Append text |
 | `--public-path=<url>` | Asset URL prefix |
 | `--shim-missing-exports` | Shim missing exports with `undefined` |
 
@@ -169,13 +163,10 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 
 | Option | Description |
 |--------|-------------|
-| `--external <pkg>` / `--external=<pkg,...>` | Exclude from bundle (repeatable) |
-| `--packages=external` | Mark all npm packages external |
+| `--external <pkg>` / `--external=<pkg>` | Exclude from bundle (repeatable) |
 | `--alias:FROM=TO` | Import path alias |
-| `--conditions=<list>` | Custom export conditions (e.g. `production,custom`) |
 | `--resolve-extensions=<exts>` | Extension lookup order (e.g. `.ios.ts,.ts,.js`) |
 | `--main-fields=<fields>` | package.json field order (e.g. `react-native,browser,main`) |
-| `--node-paths=<dirs>` | Additional `NODE_PATH` directories |
 | `--preserve-symlinks` | Don't resolve symlinks |
 
 ## Watch / Dev Server
@@ -188,10 +179,11 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--serve [dir]` | Static file server (default: `.`) |
 | `--port <n>` | Server port |
 | `--host [addr]` | Binding address |
+| `--strict-port` | Fail instead of falling through to the next port when the requested port is busy |
+| `--certfile <path>` | HTTPS certificate file (`preview`/serve) |
+| `--keyfile <path>` | HTTPS private key file (`preview`/serve) |
 | `--open` | Auto-open browser |
 | `--proxy /api=http://host:port` | API proxy |
-| `--dev` | Dev mode (HMR + fast rebuild) |
-| `--run-before-main=<cmd>` | Inject code to run before bundle entry |
 
 **Dev server external interfaces:** `/sse/events` (SSE build events), `/reset-cache` (Control API), `/mcp` (Model Context Protocol — for LLM agents like Claude Code).
 
@@ -201,6 +193,9 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 |--------|-------------|
 | `--plugin <path>` | JS/TS plugin or config file |
 | `--jobs=<n>` | Parallel thread count |
+| `--config <path>` | Use an explicit `zts.config.*` instead of auto-discovery |
+| `--workspace-config <path>` | Use an explicit `zts.workspace.*` instead of auto-discovery |
+| `--workspace <name>` | Select one workspace entry |
 
 ## Diagnostics / Logging
 
@@ -208,10 +203,14 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 |--------|-------------|
 | `--log-level=<level>` | `silent\|error\|warning\|info\|debug\|verbose` |
 | `--log-limit=<n>` | Max diagnostics shown |
-| `--timing` | Per-stage timing output |
-| `--tokenize` | Print tokens instead of transpiling |
-| `--test262 <dir>` | Run Test262 suite |
 | `-h, --help` | Show help |
+
+## Internal / Planned Options Not Exposed In The Current CLI
+
+These features exist as internal options or roadmap items, but are not present in the current
+`zts` CLI flag registry: `allowOverwrite`, `globalIdentifiers`, `dropLabels`, `pure`,
+`polyfills`, `jsxSideEffects`, `tsconfigRaw`, `ignoreAnnotations`, `packages=external`,
+`conditions`, `nodePaths`, `runBeforeMain`, `lineLimit`, `timing/profile`, `tokenize`, `test262`.
 
 ## See Also
 

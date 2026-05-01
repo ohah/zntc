@@ -33,8 +33,8 @@ export type UserConfig = Partial<BuildOptions> & {
  * - `command`: CLI 모드. `bundle` (default), `serve`, `watch`.
  * - `mode`: `--mode <name>` 으로 지정. 미지정 시 command 별 기본값
  *   (`serve`/`watch` → `development`, 그 외 → `production`).
- * - `env`: `import.meta.env` 후보 변수 — 현재는 `process.env` 그대로 노출.
- *   `.env` 자동 로드 + `VITE_*` prefix 필터는 #2106 (Phase 2-4) 에서 추가.
+ * - `env`: `process.env` + `.env*` merge 결과. CLI 경로에서는 `loadEnv()` prefix 필터
+ *   결과를 shell env 위에 합쳐 전달한다.
  */
 export interface ConfigEnv {
   command: "bundle" | "serve" | "watch";

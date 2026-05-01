@@ -5,7 +5,7 @@ description: How to migrate from esbuild, Vite, and webpack to ZTS.
 
 ## Migrating from esbuild
 
-ZTS supports nearly identical CLI options to esbuild. In most cases, replace `esbuild` with `zts`.
+ZTS provides a similar bundling model to esbuild, but the CLI flag surface is still a subset. The table below reflects options actually exposed by the current `zts` CLI.
 
 ### CLI option mapping
 
@@ -20,7 +20,7 @@ ZTS supports nearly identical CLI options to esbuild. In most cases, replace `es
 | `--target=es2020` | `--target=es2020` | Same (engine targets: `chrome80`, `node20`) |
 | `--bundle` | `--bundle` | Same |
 | `--splitting` | `--splitting` | Same (`--outdir` required) |
-| `--packages=external` | `--packages=external` | Same |
+| `--packages=external` | Not supported | Repeat `--external` for individual packages |
 | `--external:react` | `--external react` | Space instead of `:` |
 | `--minify` | `--minify` | Same (`--minify-{whitespace,syntax,identifiers}` granular) |
 | `--sourcemap` | `--sourcemap` | Same |
@@ -29,9 +29,9 @@ ZTS supports nearly identical CLI options to esbuild. In most cases, replace `es
 | `--define:X=Y` | `--define:X=Y` | Same |
 | `--alias:react=preact/compat` | `--alias:react=preact/compat` | Same |
 | `--inject:./shim.js` | `--inject:./shim.js` | Same |
-| `--pure:Pure.*` | `--pure:Pure.*` | Same (DCE hint) |
+| `--pure:Pure.*` | Not supported | Use code annotations such as `/* @__PURE__ */` |
 | `--drop:console` | `--drop=console` | `=` instead of `:` (`console`/`debugger`) |
-| `--drop-labels=DEV` | `--drop-labels=DEV` | Same |
+| `--drop-labels=DEV` | Not supported | Current CLI exposes only `console`/`debugger` drop |
 | `--keep-names` | `--keep-names` | Same |
 | `--banner:js=...` | `--banner:js=...` | Same |
 | `--footer:js=...` | `--footer:js=...` | Same |
@@ -47,14 +47,14 @@ ZTS supports nearly identical CLI options to esbuild. In most cases, replace `es
 | `--jsx-factory=h` | `--jsx-factory=h` | Same |
 | `--jsx-fragment=Fragment` | `--jsx-fragment=Fragment` | Same |
 | `--jsx-import-source=preact` | `--jsx-import-source=preact` | Same |
-| `--jsx-side-effects` | `--jsx-side-effects` | Same |
+| `--jsx-side-effects` | Not supported | Use the default JSX DCE policy |
 | `--tsconfig=tsconfig.json` | `-p tsconfig.json` or `--tsconfig-path=...` | `-p` short form |
-| `--tsconfig-raw='{...}'` | `--tsconfig-raw='{...}'` | Same |
-| `--conditions=prod,foo` | `--conditions=prod,foo` | Same |
+| `--tsconfig-raw='{...}'` | Not supported | Use file-based `-p` / `--project` |
+| `--conditions=prod,foo` | Not supported | Uses the resolver's default conditions |
 | `--main-fields=browser,main` | `--main-fields=browser,main` | Same |
 | `--resolve-extensions=.ts,.js` | `--resolve-extensions=.ts,.js` | Same (RN `.ios.ts` etc.) |
 | `--preserve-symlinks` | `--preserve-symlinks` | Same |
-| `--node-paths=...` | `--node-paths=...` | Same |
+| `--node-paths=...` | Not supported | Use standard node_modules resolution or aliases |
 | `--charset=utf8` | `--charset=utf8` | Same (preserve UTF-8) |
 | `--charset=ascii` | `--ascii-only` | ZTS uses dedicated flag; escapes non-ASCII to `\uXXXX` |
 | `--legal-comments=eof` | `--legal-comments=eof` | Same (`none`/`inline`/`eof`/`linked`/`external`) |
@@ -62,9 +62,9 @@ ZTS supports nearly identical CLI options to esbuild. In most cases, replace `es
 | `--analyze` | `--analyze` | Same (JSON now, tree format planned) |
 | `--log-level=warning` | `--log-level=warning` | Same (`silent`/`error`/`warning`/`info`/`debug`) |
 | `--log-limit=10` | `--log-limit=10` | Same |
-| `--line-limit=80` | `--line-limit=80` | Same |
-| `--ignore-annotations` | `--ignore-annotations` | Same |
-| `--allow-overwrite` | `--allow-overwrite` | Same |
+| `--line-limit=80` | Not supported | Uses formatter/minifier defaults |
+| `--ignore-annotations` | Not supported | Uses default annotation handling |
+| `--allow-overwrite` | Not supported | Keep output paths separate from inputs |
 | `--watch` | `--watch` or `-w` | Same |
 | `--serve` | `--serve` | Same (`--port` supported) |
 
@@ -161,7 +161,7 @@ export default defineConfig({
 | `--servedir=<path>` | `--serve <dir>` (positional arg) |
 | `--bundle=false` (off by default) | Same default. ZTS transpiles only without `--bundle` |
 | `--splitting=false` | Off by default. No flag means default |
-| `--tree-shaking=false` | Not supported. Workaround: `--packages=external` or per-package `--external` |
+| `--tree-shaking=false` | Not supported. Per-package `--external` can reduce bundle scope |
 | `--color=true|false` | Not supported. Auto-detected from terminal |
 | `--log-override:X=Y` | Not supported. Only `--log-level` |
 | `--supported:bigint=false` | Not supported. Use `--target` for global control |
@@ -252,7 +252,7 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | HTML entry (`index.html`) | Supported in app mode (`--entry-html`) |
 | SPA fallback | `zts preview --spa-fallback` |
 | `resolve.alias` | `--alias:name=target` |
-| `resolve.conditions` | `--conditions=...` |
+| `resolve.conditions` | Not supported. Uses the resolver's default conditions |
 | `optimizeDeps` (pre-bundling) | Not needed (handled during bundling) |
 | `ssr` / SSR build | Not supported |
 | `worker.format` | Not supported (general Worker bundle support separate) |

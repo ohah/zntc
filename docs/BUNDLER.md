@@ -42,7 +42,7 @@ Phase B1: 기반 (✅ 완료)          Phase B2: 핵심 (✅ 대부분 완료) P
   └ CJS 호환 래핑                                                ├ --banner/--footer
 ✅ Tree-shaking (모듈 수준)                                      ├ --analyze (번들 사이즈)
   ├ export 사용 추적                                             ├ --minify-{whitespace|ids|syntax}
-  ├ @__PURE__ / @__NO_SIDE_EFFECTS__                             ├ --pure:Name
+  ├ @__PURE__ / @__NO_SIDE_EFFECTS__                             ├ --watch-delay
   ├ sideEffects 필드                                             ├ --log-level
   └ cross-module 전파                                            ├ --legal-comments
                                                                  ├ --inject:file

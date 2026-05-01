@@ -292,35 +292,30 @@ new Worker(new URL('./worker.ts', import.meta.url))
 
 ---
 
-## CLI 옵션 추가 계획 (esbuild/Rolldown 호환)
+## CLI 옵션 상태 (esbuild/Rolldown 호환)
 
-### Tier 1 (높은 우선순위)
-- `--banner:js=...` / `--footer:js=...` — 출력 앞뒤 텍스트 추가
-- `--analyze` — 번들 사이즈 리포트
-- `--minify-whitespace` / `--minify-identifiers` / `--minify-syntax` — 세분화 minify
-- `--pure:Name` — 함수 단위 pure 마킹 (tree-shaking)
-- `--log-level` (verbose|debug|info|warning|error|silent)
-- `--legal-comments` (none|inline|eof|linked|external)
-- `--servedir` — 추가 정적 디렉토리
+### 현재 노출
+- `--banner=...` / `--banner:js=...`, `--footer=...` / `--footer:js=...`
+- `--analyze`, `--metafile`
+- `--minify-whitespace` / `--minify-identifiers` / `--minify-syntax`
+- `--log-level`, `--log-limit`
+- `--legal-comments`
+- `--target`, `--browserslist`
+- `--keep-names`
+- `--out-extension:.js=.mjs`, `--outbase`
+- `--charset=utf8`, `--ascii-only`, `--sources-content=false`, `--source-root`
+- `--public-path`, `--inject:file`
+- `--preserve-symlinks`
+- `--watch-delay`
+- `--certfile`, `--keyfile`
 
-### Tier 2 (중간 우선순위)
-- `--target` 엔진 버전 (chrome58, node10 등) — 현재 ES 타겟만
-- `--keep-names` — minify 시 함수/클래스 이름 보존
-- `--out-extension:.js=.mjs` — 출력 확장자 변경
-- `--outbase` — 엔트리 출력 경로 기준
-- `--charset=utf8` — UTF-8 코드포인트 이스케이프 안 함
-- `--sources-content=false` — 소스맵에서 소스 내용 제외
-- `--source-root` — 소스맵 sourceRoot 필드
-- `--public-path` — 에셋 기본 URL (CDN 배포용)
-- `--inject:file` — 모든 입력에 파일 자동 import
-- HTTPS dev server (--certfile, --keyfile)
-- CORS 설정
-
-### Tier 3 (낮은 우선순위)
-- `--mangle-props` + `--mangle-cache` — 프로퍼티 맹글링
-- `--reserve-props` — 맹글링 예외
-- `--ignore-annotations` — tree-shaking 어노테이션 무시
-- `--preserve-symlinks` — 심링크 해석 비활성화
+### 아직 CLI에 미노출
+- `--pure:Name` — 함수 단위 pure 마킹
+- `--drop-labels` — label block 제거
+- `--packages=external` — 모든 npm package external 처리
+- `--conditions`, `--node-paths` — resolver 조건/추가 탐색 경로
 - `--tsconfig-raw` — tsconfig JSON 문자열 오버라이드
-- `--watch-delay` — 리빌드 디바운스
-- `--log-limit` / `--log-override` — 세분화 로깅
+- `--ignore-annotations`, `--jsx-side-effects`
+- `--mangle-props`, `--mangle-cache`, `--reserve-props`
+- `--line-limit`, `--log-override`
+- CORS 설정

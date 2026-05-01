@@ -57,11 +57,10 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 
 | 옵션 | 설명 |
 |------|------|
-| `-o, --out-file <path>` | 출력 파일 경로 |
+| `-o, --outfile <path>` | 출력 파일 경로 |
 | `--outdir <path>` | 출력 디렉토리 (디렉토리 입력·`--splitting`·`--preserve-modules`) |
 | `--outbase=<dir>` | 출력 기준 디렉토리 (공통 prefix 계산) |
 | `--out-extension:.js=<ext>` | 출력 확장자 변경 (예: `.mjs`) |
-| `--allow-overwrite` | 입력과 같은 경로에 덮어쓰기 허용 |
 | `--clean` | 빌드 전 outdir 비우기 |
 
 ## 모듈 포맷 / 플랫폼
@@ -73,7 +72,6 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--rn-platform=ios\|android` | RN 서브 플랫폼 (`.ios.*`/`.android.*` 확장자) |
 | `--target=<spec>` | ES 타겟: `es2015`~`esnext` 또는 엔진 버전 (`chrome80,safari14` 등) |
 | `--global-name=<name>` | IIFE export 변수명 |
-| `--global-identifier=<id>` | 글로벌 식별자 치환 |
 
 ## 미니파이
 
@@ -87,7 +85,6 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--charset=utf8\|ascii` | 출력 문자셋 |
 | `--ascii-only` | non-ASCII → `\uXXXX` (= `--charset=ascii`) |
 | `--quotes=double\|single\|preserve` | 문자열 따옴표 스타일 |
-| `--line-limit=<n>` | 한 줄 최대 길이 (minify 시 줄바꿈 삽입) |
 
 ## 소스맵
 
@@ -109,10 +106,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--define:KEY=VALUE` | 글로벌 치환 (`process.env.NODE_ENV` → `"production"` 등) |
 | `--drop=console` | `console.*` 호출 제거 |
 | `--drop=debugger` | `debugger` 문 제거 |
-| `--drop-labels=<list>` | 특정 label 블록 제거 (예: `DEV,TEST`) |
-| `--pure:<name>` | 해당 호출을 pure로 표시해 DCE 대상화 |
 | `--inject:<path>` | 자동 import (shim) |
-| `--polyfill=<list>` | 런타임 폴리필 주입 |
 
 ## JSX
 
@@ -124,23 +118,22 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--jsx-fragment=<fn>` | classic Fragment |
 | `--jsx-import-source=<pkg>` | automatic import source (기본: `react`) |
 | `--jsx-in-js` | `.js` 파일에서도 JSX 파싱 허용 |
-| `--jsx-side-effects` | JSX 요소에 부수효과 있다고 표시 (DCE 회피) |
 
 ## TypeScript
 
 | 옵션 | 설명 |
 |------|------|
-| `-p, --project <path>` | tsconfig.json 경로/디렉토리 |
-| `--tsconfig-raw=<json>` | tsconfig 내용 인라인 주입 |
+| `-p, --project <path>, --tsconfig-path <path>` | tsconfig.json 경로/디렉토리 |
 | `--experimental-decorators` | legacy decorator (`__decorateClass`) |
+| `--emit-decorator-metadata` | decorator metadata emit (`experimentalDecorators` 필요) |
 | `--use-define-for-class-fields=false\|true` | 클래스 필드 의미론 |
+| `--verbatim-module-syntax` | TS `verbatimModuleSyntax` import/export 보존 |
 
 ## Flow
 
 | 옵션 | 설명 |
 |------|------|
 | `--flow` | Flow 타입 스트리핑 (`@flow` pragma 자동 감지) |
-| `--ignore-annotations` | Flow 주석/pragma 무시 |
 
 ## 번들 전용
 
@@ -148,6 +141,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 |------|------|
 | `--bundle` | 번들 모드 활성화 |
 | `--splitting` | 코드 스플리팅 (`--outdir` 필요) |
+| `--no-splitting` | config에서 켠 splitting을 CLI에서 비활성화 |
 | `--preserve-modules` | 모듈별 출력 (라이브러리 빌드) |
 | `--preserve-modules-root=<dir>` | 출력 구조 기준 디렉토리 |
 | `--inline-dynamic-imports` | dynamic import target 을 entry chunk 에 흡수 (Rollup `inlineDynamicImports`, #2185) |
@@ -159,8 +153,8 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--metafile` / `--metafile=<path>` | 빌드 메타 JSON (stdout 또는 파일) |
 | `--analyze` | 번들 분석 리포트 |
 | `--legal-comments=<mode>` | 라이선스 주석: `none\|inline\|eof\|linked\|external` |
-| `--banner:js=<text>` | 출력 앞 텍스트 |
-| `--footer:js=<text>` | 출력 뒤 텍스트 |
+| `--banner=<text>` / `--banner:js=<text>` | 출력 앞 텍스트 |
+| `--footer=<text>` / `--footer:js=<text>` | 출력 뒤 텍스트 |
 | `--public-path=<url>` | 에셋 URL prefix |
 | `--shim-missing-exports` | 없는 export에 `undefined` shim |
 
@@ -168,13 +162,10 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 
 | 옵션 | 설명 |
 |------|------|
-| `--external <pkg>` / `--external=<pkg,...>` | 번들에서 제외 (반복 가능) |
-| `--packages=external` | 모든 npm 패키지를 external 처리 |
+| `--external <pkg>` / `--external=<pkg>` | 번들에서 제외 (반복 가능) |
 | `--alias:FROM=TO` | import 경로 별칭 |
-| `--conditions=<list>` | 커스텀 export 조건 (예: `production,custom`) |
 | `--resolve-extensions=<exts>` | 확장자 탐색 순서 (예: `.ios.ts,.ts,.js`) |
 | `--main-fields=<fields>` | package.json 필드 순서 (예: `react-native,browser,main`) |
-| `--node-paths=<dirs>` | `NODE_PATH` 추가 탐색 경로 |
 | `--preserve-symlinks` | 심링크 실제 경로 해석 안 함 |
 
 ## Watch / Dev Server
@@ -187,10 +178,11 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--serve [dir]` | 정적 파일 서버 (기본: `.`) |
 | `--port <n>` | 서버 포트 |
 | `--host [addr]` | 바인딩 주소 |
+| `--strict-port` | 지정한 포트를 사용할 수 없으면 다음 포트로 넘어가지 않고 실패 |
+| `--certfile <path>` | HTTPS 인증서 파일 (`preview`/serve) |
+| `--keyfile <path>` | HTTPS 개인키 파일 (`preview`/serve) |
 | `--open` | 브라우저 자동 열기 |
 | `--proxy /api=http://host:port` | API 프록시 |
-| `--dev` | 개발 모드 (HMR + 빠른 리빌드) |
-| `--run-before-main=<cmd>` | 번들 엔트리 실행 전에 돌릴 코드 주입 |
 
 **Dev Server 외부 인터페이스:** `/sse/events` (SSE 빌드 이벤트), `/reset-cache` (Control API), `/mcp` (Model Context Protocol — Claude Code 등 LLM 에이전트 연동).
 
@@ -200,6 +192,9 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 |------|------|
 | `--plugin <path>` | JS/TS 플러그인 또는 설정 파일 |
 | `--jobs=<n>` | 병렬 스레드 수 |
+| `--config <path>` | `zts.config.*` 자동 탐색 대신 명시 config 사용 |
+| `--workspace-config <path>` | `zts.workspace.*` 자동 탐색 대신 명시 workspace 사용 |
+| `--workspace <name>` | workspace entry 하나만 선택 |
 
 ## 진단 / 로깅
 
@@ -207,10 +202,14 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 |------|------|
 | `--log-level=<level>` | `silent\|error\|warning\|info\|debug\|verbose` |
 | `--log-limit=<n>` | 표시할 진단 최대 개수 |
-| `--timing` | 단계별 실행 시간 출력 |
-| `--tokenize` | 토큰 출력 (트랜스파일 대신) |
-| `--test262 <dir>` | Test262 러너 실행 |
 | `-h, --help` | 도움말 |
+
+## 현재 CLI에 노출되지 않은 내부/계획 옵션
+
+다음 기능은 코드 내부 옵션 또는 roadmap 항목이지만 현재 `zts` CLI flag registry에는 없습니다:
+`allowOverwrite`, `globalIdentifiers`, `dropLabels`, `pure`, `polyfills`, `jsxSideEffects`,
+`tsconfigRaw`, `ignoreAnnotations`, `packages=external`, `conditions`, `nodePaths`,
+`runBeforeMain`, `lineLimit`, `timing/profile`, `tokenize`, `test262`.
 
 ## 참고
 
