@@ -1,5 +1,6 @@
-import { describe, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { expectPass, expectError } from "./helpers";
+import { createFixture, runZts } from "../helpers";
 
 describe("TSC: es6/for-ofStatements", () => {
   test("for-of-excess-declarations", async () => {
@@ -729,6 +730,69 @@ for (v of "hello") { }`,
       [],
     );
   });
-  // for-await-of (ES2018) is not downleveled — matches SWC/esbuild behavior.
-  test.skip("for-await-of downlevel (not implemented; parity with SWC/esbuild)", async () => {});
+  test("for-await-of downlevel to ES2017", async () => {
+    const fixture = await createFixture({
+      "input.ts": `
+async function collect(iter) {
+  const out = [];
+  for await (const value of iter) {
+    out.push(value);
+  }
+  return out;
+}
+`,
+    });
+    try {
+      const result = await runZts(["--target=es2017", `${fixture.dir}/input.ts`]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).not.toContain("for await");
+      expect(result.stdout).toContain("__asyncValues");
+      expect(result.stdout).toContain("await");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+  test("labeled for-await-of downlevel to ES2017", async () => {
+    const fixture = await createFixture({
+      "input.ts": `
+async function collect(iter) {
+  const out = [];
+  outer: for await (const value of iter) {
+    if (value == null) continue outer;
+    out.push(value);
+  }
+  return out;
+}
+`,
+    });
+    try {
+      const result = await runZts(["--target=es2017", `${fixture.dir}/input.ts`]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).not.toContain("for await");
+      expect(result.stdout).toContain("__asyncValues");
+      expect(result.stdout).toContain("outer:");
+      expect(result.stdout).toContain("continue outer");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+  test("for-await-of preserved at ES2018", async () => {
+    const fixture = await createFixture({
+      "input.ts": `
+async function collect(iter) {
+  for await (const value of iter) {
+    console.log(value);
+  }
+}
+`,
+    });
+    try {
+      const result = await runZts(["--target=es2018", `${fixture.dir}/input.ts`]);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("for await");
+      expect(result.stdout).not.toContain("__asyncValues");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });

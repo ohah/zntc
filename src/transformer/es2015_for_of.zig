@@ -48,9 +48,6 @@ const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 pub fn ES2015ForOf(comptime Transformer: type) type {
     return struct {
-        // for_await_of_statement (ES2018) is not downleveled at any target —
-        // matches SWC/esbuild behavior. Full downlevel requires an async
-        // iterator protocol helper (cf. Babel's plugin-proposal-async-generator-functions).
         /// for (const x of iterable) { body }
         /// → iterator protocol (try-catch-finally 포함)
         pub fn lowerForOfStatement(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
