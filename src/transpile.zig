@@ -128,6 +128,7 @@ pub const ConfigOptionsDto = struct {
     useDefineForClassFields: ?bool = null,
     verbatimModuleSyntax: ?bool = null,
     tsconfigPath: ?[]const u8 = null,
+    tsconfigRaw: ?[]const u8 = null,
     format: ?@import("codegen/codegen.zig").ModuleFormat = null,
     quotes: ?@import("codegen/codegen.zig").QuoteStyle = null,
     platform: ?@import("codegen/codegen.zig").Platform = null,
