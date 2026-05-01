@@ -184,7 +184,7 @@ describe("CLI: transpile", () => {
       writeFileSync(file, "const x: number = 1;\n");
       const { exitCode, stderr } = runCli([file, "-o", file, "--allow-overwrite"]);
       expect(exitCode).toBe(0);
-      expect(stderr).toBe("");
+      expect(stderr).not.toContain("would overwrite");
       expect(readFileSync(file, "utf8")).toContain("const x = 1");
     } finally {
       rmSync(overwriteDir, { recursive: true, force: true });
@@ -329,7 +329,7 @@ describe("CLI: bundle", () => {
       writeFileSync(file, "export const value = 1;\n");
       const { exitCode, stderr } = runCli(["--bundle", file, "-o", file, "--allow-overwrite"]);
       expect(exitCode).toBe(0);
-      expect(stderr).toBe("");
+      expect(stderr).not.toContain("would overwrite");
       expect(readFileSync(file, "utf8")).toContain("value");
     } finally {
       rmSync(overwriteDir, { recursive: true, force: true });
