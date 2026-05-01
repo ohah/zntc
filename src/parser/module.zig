@@ -878,11 +878,15 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         try self.parseClassWithDecorators(.class_declaration, decorators)
     else
         try self.parseStatement();
-    // type-only 선언이면 export_named_declaration을 생성하지 않음.
-    // 남으면 import_scanner가 has_esm_syntax=true로 잘못 판별하여
-    // CJS 모듈이 __esm으로 래핑됨.
+    // type-only 선언이면 export_named_declaration wrapper 만 생략하고 decl 자체는
+    // program 자식으로 직접 추가. import_scanner 는 export_named_declaration 노드를
+    // 보고 has_esm_syntax 결정 — type-only 는 wrapper 가 없으므로 영향 없음.
+    //
+    // wrapper 자체를 NodeIndex.none 반환하던 이전 동작은 `export type Foo = ...` 형태가
+    // program 에서 도달 불가능 (orphan) 하게 만들어 codegen 의 type_index 가 NativeProps
+    // 등을 못 찾는 원인이었음 (#2348 Phase 2, react-native-svg 의 Fe* spec 7개 영향).
     if (decl.isNone()) return NodeIndex.none;
-    if (self.ast.getNode(decl).tag.isTypeOnlyDeclaration()) return NodeIndex.none;
+    if (self.ast.getNode(decl).tag.isTypeOnlyDeclaration()) return decl;
 
     // Inline scan: export var/let/const/function/class
     if (self.enable_scan) {
