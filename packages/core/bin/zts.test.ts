@@ -23,7 +23,7 @@ import { join, resolve } from "node:path";
 const CLI = resolve(import.meta.dir, "zts.mjs");
 const RUNTIME = "node";
 
-async function waitForServer(port: number, maxRetries = 20, interval = 100, protocol = "http") {
+async function waitForServer(port: number, maxRetries = 50, interval = 100, protocol = "http") {
   for (let i = 0; i < maxRetries; i++) {
     try {
       await fetch(`${protocol}://localhost:${port}/`, {
@@ -35,6 +35,42 @@ async function waitForServer(port: number, maxRetries = 20, interval = 100, prot
     }
   }
   throw new Error(`Server on port ${port} did not start`);
+}
+
+/**
+ * 같은 process 안에서 unique 한 free port 를 monotonic 으로 발급한다.
+ *
+ * 이슈 #2351: 이전엔 `12NNN + Math.floor(Math.random() * 100)` 식 임의 슬롯 사용 →
+ * Birthday paradox 로 dev server 테스트 collision flake. monotonic counter +
+ * listen 검증으로 같은 process 안 race-free 발급. 외부 process 가 그 포트를 그
+ * microsecond 사이에 가로챌 가능성은 high-port 영역 (50000+) 이라 실용적 무시 가능.
+ *
+ * 단순 `listen(0)` 도 가능하지만 병렬 호출 시 OS 가 여러 caller 에 같은 포트 줄 수
+ * 있어 (close 직후라 다음 caller 가 같은 포트 회수) — counter 가 process-내 race 차단.
+ */
+let nextTestPort = 50000 + Math.floor(Math.random() * 1000);
+async function findFreePort(): Promise<number> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const candidate = nextTestPort++;
+    if (candidate > 65000) {
+      nextTestPort = 50000;
+      continue;
+    }
+    try {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        const server = createNetServer();
+        server.unref();
+        server.once("error", rejectListen);
+        server.listen(candidate, "127.0.0.1", () => {
+          server.close((err) => (err ? rejectListen(err) : resolveListen()));
+        });
+      });
+      return candidate;
+    } catch {
+      // 점유됨 / OS reject → 다음 candidate 시도.
+    }
+  }
+  throw new Error("findFreePort: 50 attempts exhausted");
 }
 
 async function occupyPort(port: number) {
@@ -1384,7 +1420,7 @@ describe("CLI: serve", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-cli-serve-"));
     writeFileSync(join(dir, "index.html"), "<h1>Hello</h1>");
 
-    const port = 12400 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "--serve", dir, `--port=${port}`]);
 
     await waitForServer(port);
@@ -1409,7 +1445,7 @@ describe("CLI: serve", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-cli-cors-"));
     writeFileSync(join(dir, "index.html"), "<h1>Test</h1>");
 
-    const port = 12500 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "--serve", dir, `--port=${port}`]);
     await new Promise((r) => setTimeout(r, 500));
 
@@ -1434,7 +1470,7 @@ describe("CLI: serve", () => {
       `openssl req -x509 -newkey rsa:2048 -keyout ${keyFile} -out ${certFile} -days 1 -nodes -subj "/CN=localhost" 2>/dev/null`,
     );
 
-    const port = 12600 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [
       CLI,
       "--serve",
@@ -1472,7 +1508,7 @@ describe("CLI: serve", () => {
       `openssl req -x509 -newkey rsa:2048 -keyout ${keyFile} -out ${certFile} -days 1 -nodes -subj "/CN=localhost" 2>/dev/null`,
     );
 
-    const port = 12700 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [
       CLI,
       "--serve",
@@ -1508,7 +1544,7 @@ describe("CLI: serve", () => {
       `openssl req -x509 -newkey rsa:2048 -keyout ${keyFile} -out ${certFile} -days 1 -nodes -subj "/CN=localhost" 2>/dev/null`,
     );
 
-    const port = 12800 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [
       CLI,
       "--serve",
@@ -2902,7 +2938,7 @@ describe("CLI: Vite-style app builder", () => {
     writeFileSync(join(dir, ".env.development"), "VITE_TITLE=Dev App\n");
     writeFileSync(join(dir, "public", "favicon.svg"), "<svg></svg>");
 
-    const port = 12600 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`, "--base", "/app/"], {
       cwd: dir,
     });
@@ -2941,7 +2977,7 @@ describe("CLI: Vite-style app builder", () => {
       JSON.stringify({ define: { __APP_LABEL__: JSON.stringify("root-dev-config") } }),
     );
 
-    const port = 12620 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: parent });
     await waitForServer(port);
 
@@ -2960,7 +2996,7 @@ describe("CLI: Vite-style app builder", () => {
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
     writeFileSync(join(dir, "src", "main.ts"), "console.log('server-config');");
-    const port = 12680 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     writeFileSync(join(dir, "zts.config.json"), JSON.stringify({ server: { port, host: true } }));
 
     const proc = spawn(RUNTIME, [CLI, "dev", dir], {
@@ -2988,7 +3024,7 @@ describe("CLI: Vite-style app builder", () => {
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
     writeFileSync(join(dir, "src", "main.ts"), "console.log('cli-port');");
-    const configPort = 12780 + Math.floor(Math.random() * 50);
+    const configPort = await findFreePort();
     const cliPort = configPort + 100;
     writeFileSync(join(dir, "zts.config.json"), JSON.stringify({ server: { port: configPort } }));
 
@@ -3009,7 +3045,7 @@ describe("CLI: Vite-style app builder", () => {
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
     writeFileSync(join(dir, "src", "main.ts"), "console.log('port-retry');");
-    const port = 12880 + Math.floor(Math.random() * 50);
+    const port = await findFreePort();
     const releasePort = await occupyPort(port);
     writeFileSync(
       join(dir, "zts.config.json"),
@@ -3042,7 +3078,7 @@ describe("CLI: Vite-style app builder", () => {
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "index.html"), '<script type="module" src="/src/main.ts"></script>');
     writeFileSync(join(dir, "src", "main.ts"), "console.log('strict-port');");
-    const port = 12940 + Math.floor(Math.random() * 50);
+    const port = await findFreePort();
     const releasePort = await occupyPort(port);
     writeFileSync(
       join(dir, "zts.config.json"),
@@ -3083,7 +3119,7 @@ describe("CLI: Vite-style app builder", () => {
     };
     writeConfig("before");
 
-    const port = 12650 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], {
       cwd: dir,
       detached: true,
@@ -3142,7 +3178,7 @@ describe("CLI: Vite-style app builder", () => {
     });
     expect(buildResult.exitCode).toBe(0);
 
-    const port = 12700 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "preview", outdir, `--port=${port}`, "--base", "/app/"], {
       cwd: dir,
     });
@@ -3176,7 +3212,7 @@ describe("CLI: Vite-style app builder", () => {
     });
     expect(buildResult.exitCode).toBe(0);
 
-    const port = 12750 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(
       RUNTIME,
       [CLI, "preview", outdir, `--port=${port}`, "--base", "/app/", "--spa-fallback"],
@@ -3219,7 +3255,7 @@ describe("CLI: Vite-style app builder", () => {
       `openssl req -x509 -newkey rsa:2048 -keyout ${keyFile} -out ${certFile} -days 1 -nodes -subj "/CN=localhost" 2>/dev/null`,
     );
 
-    const port = 12780 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(
       RUNTIME,
       [
@@ -3387,7 +3423,7 @@ describe("CLI: Vite-style app builder", () => {
     const buildResult = runCli(["build", dir, "--outdir", outdir], { cwd: dir });
     expect(buildResult.exitCode).toBe(0);
 
-    const port = 12860 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     // --spa-fallback 미지정 — route-like 요청도 그대로 404 여야 한다.
     const proc = spawn(RUNTIME, [CLI, "preview", outdir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
@@ -3418,7 +3454,7 @@ describe("CLI: Vite-style app builder", () => {
     // 별도 custom fallback 파일을 outdir 에 직접 추가 — preview 만 검증하면 충분.
     writeFileSync(join(outdir, "custom.html"), "<title>CUSTOM_FALLBACK</title>");
 
-    const port = 12970 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(
       RUNTIME,
       [CLI, "preview", outdir, `--port=${port}`, "--spa-fallback=custom.html"],
@@ -3535,7 +3571,7 @@ describe("CLI: Vite-style app builder", () => {
     const builtScriptPath = scriptPathFromHtml(builtHtml);
     expect(readFileSync(join(outdir, builtScriptPath.slice(1)), "utf8")).toContain('"from-prod"');
 
-    const port = 12800 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
 
@@ -3949,7 +3985,7 @@ describe("CLI: Vite-style app builder", () => {
       ].join("\n"),
     );
 
-    const port = 12800 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     const stderrChunks: string[] = [];
     proc.stderr?.on("data", (chunk) => stderrChunks.push(chunk.toString()));
@@ -3982,7 +4018,7 @@ describe("CLI: Vite-style app builder", () => {
     writeFileSync(join(dir, "src", "style.css"), ".x{color:red}");
     writeFileSync(join(dir, "postcss.config.mjs"), "export default { plugins: [] };\n");
 
-    const port = 12900 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
     try {
@@ -4022,7 +4058,7 @@ describe("CLI: Vite-style app builder", () => {
     writeFileSync(join(dir, "src", "main.ts"), 'import "./style.scss";');
     writeFileSync(join(dir, "src", "style.scss"), ".box { color: rgb(1, 2, 3); }");
 
-    const port = 13150 + Math.floor(Math.random() * 80);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
     async function fetchEmittedCss(): Promise<string> {
@@ -4072,7 +4108,7 @@ describe("CLI: Vite-style app builder", () => {
     );
     writeFileSync(join(dir, "src", "card.module.scss"), ".card { color: rgb(1, 2, 3); }");
 
-    const port = 13230 + Math.floor(Math.random() * 80);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
     try {
@@ -4116,7 +4152,7 @@ describe("CLI: Vite-style app builder", () => {
     writeFileSync(join(dir, "src", "a", "style.css"), ".aaa{color:red}");
     writeFileSync(join(dir, "src", "b", "style.css"), ".bbb{color:blue}");
 
-    const port = 13000 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
     try {
@@ -4159,7 +4195,7 @@ describe("CLI: Vite-style app builder", () => {
       ].join("\n"),
     );
 
-    const port = 13100 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn(RUNTIME, [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     const stderrChunks: string[] = [];
     proc.stderr?.on("data", (chunk) => stderrChunks.push(chunk.toString()));
@@ -4203,7 +4239,7 @@ describe("CLI: Vite-style app builder", () => {
     );
     writeFileSync(join(dir, "src", "main.ts"), 'console.log("ok");');
 
-    const port = 13200 + Math.floor(Math.random() * 100);
+    const port = await findFreePort();
     const proc = spawn("bun", [CLI, "dev", dir, `--port=${port}`], { cwd: dir });
     await waitForServer(port);
     try {
