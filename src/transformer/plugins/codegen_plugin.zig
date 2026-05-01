@@ -64,7 +64,10 @@ fn onTransform(
 ) PluginError!?[]const u8 {
     _ = ctx;
 
-    if (!isSpecFilename(id)) return null;
+    // 확장자 fast-skip — .js/.ts 만 처리 (parser configureFromExtension 의존). spec
+    // 파일 식별은 filename suffix 가 아니라 AST 레벨 검증 (`findComponentName`) 으로 결정 —
+    // export default codegenNativeComponent(...) 패턴이 정확한 식별자.
+    if (!std.mem.endsWith(u8, id, ".js") and !std.mem.endsWith(u8, id, ".ts")) return null;
     if (std.mem.indexOf(u8, code, CODEGEN_MARKER) == null) return null;
 
     const props_type_name = extractTypeArg(code) orelse return null;
@@ -93,18 +96,6 @@ fn onTransform(
     defer alloc.free(view_config);
 
     return assembleFileReplacement(component_name, view_config, alloc) catch return null;
-}
-
-/// `*NativeComponent.{js,ts}` 패턴 매칭. spec 파일 컨벤션.
-fn isSpecFilename(path: []const u8) bool {
-    const is_js = std.mem.endsWith(u8, path, ".js");
-    const is_ts = std.mem.endsWith(u8, path, ".ts");
-    if (!is_js and !is_ts) return false;
-
-    const base = std.fs.path.basename(path);
-    const stem_end = if (is_js) base.len - 3 else base.len - 3;
-    const stem = base[0..stem_end];
-    return std.mem.endsWith(u8, stem, "NativeComponent");
 }
 
 /// `codegenNativeComponent<TYPE_NAME>` 에서 `TYPE_NAME` 추출.
