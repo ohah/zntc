@@ -151,6 +151,15 @@ pub const TsConfig = struct {
         }
     }
 
+    /// `entry_path` (file or dir) 의 dirname 부터 위로 올라가며 첫 `tsconfig.json` 을 찾는다.
+    /// `findTsconfigUpward` 의 entry-path 친화 wrapper — `dirname(entry_path) orelse "."`
+    /// 정규화 + 실패 시 silent null. 디렉토리 부분이 없는 bare filename 이면 cwd 부터 탐색.
+    /// 결과는 directory string (caller 가 `allocator.free`). NAPI / transpile 진입점 공유.
+    pub fn autodiscoverFromEntry(allocator: std.mem.Allocator, entry_path: []const u8) ?[]const u8 {
+        const dir = std.fs.path.dirname(entry_path) orelse ".";
+        return findTsconfigUpward(allocator, dir) catch null;
+    }
+
     /// 특정 파일명으로 tsconfig를 로드한다 (extends 체인에서 사용).
     /// depth: extends 재귀 깊이 (무한 루프 방지, 최대 10단계)
     fn loadFile(

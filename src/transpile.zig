@@ -297,8 +297,7 @@ pub fn optionsFromJson(
             // 명시 path > entry 디렉토리에서 위로 자동 탐색 (esbuild/vite 식 zero-config).
             const resolved_path: ?[]const u8 = opts.tsconfig_path orelse find: {
                 const path = entry_path orelse break :find null;
-                const dir = std.fs.path.dirname(path) orelse ".";
-                break :find TsConfig.findTsconfigUpward(allocator, dir) catch null;
+                break :find TsConfig.autodiscoverFromEntry(allocator, path);
             };
             if (resolved_path) |p| {
                 break :blk TsConfig.loadFromPath(allocator, p) catch TsConfig{};
