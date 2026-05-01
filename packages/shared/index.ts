@@ -217,9 +217,12 @@ export function buildOptionsJson(
     payload.unsupported = unsupportedOverride;
   if (opts.flow) payload.flow = true;
   if (opts.jsxInJs) payload.jsxInJs = true;
-  if (opts.jsx === "automatic") payload.jsx = "automatic";
-  else if (opts.jsx === "automatic-dev") payload.jsx = "automatic_dev";
-  else if (opts.jsx === "classic") payload.jsx = "classic";
+  if (opts.jsx !== undefined) {
+    // CLI vocab → Zig enum tag (kebab-case → snake_case): automatic-dev → automatic_dev.
+    // 그 외 (`react-jsx` 등 tsconfig vocab, typo) 도 그대로 forward — NAPI / `optionsFromJson`
+    // 이 strict 검증해 invalid 면 throw (silent drop 방지).
+    payload.jsx = opts.jsx === "automatic-dev" ? "automatic_dev" : opts.jsx;
+  }
   if (opts.jsxFactory) payload.jsxFactory = opts.jsxFactory;
   if (opts.jsxFragment) payload.jsxFragment = opts.jsxFragment;
   if (opts.jsxImportSource) payload.jsxImportSource = opts.jsxImportSource;
