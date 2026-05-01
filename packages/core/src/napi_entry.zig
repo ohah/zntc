@@ -3353,13 +3353,13 @@ fn parseBuildOptions(
     var module_specifier_map: []const @import("zts_lib").transformer.transformer.ModuleSpecifierMapEntry = &.{};
     if (msm_pairs) |pairs| {
         defer native_alloc.free(pairs);
-        const entries = native_alloc.alloc(@import("zts_lib").transformer.transformer.ModuleSpecifierMapEntry, pairs.len) catch return null;
+        const msm_entries = native_alloc.alloc(@import("zts_lib").transformer.transformer.ModuleSpecifierMapEntry, pairs.len) catch return null;
         for (pairs, 0..) |pair, idx| {
             if (!trackStr(owned_strings, pair[0])) return null;
             if (!trackStr(owned_strings, pair[1])) return null;
-            entries[idx] = .{ .module = pair[0], .template = pair[1] };
+            msm_entries[idx] = .{ .module = pair[0], .template = pair[1] };
         }
-        module_specifier_map = entries;
+        module_specifier_map = msm_entries;
     }
 
     // alias: { "from": "to" } → []AliasEntry (tsconfig paths 는 tsconfig 로드 후 아래에서 append).
