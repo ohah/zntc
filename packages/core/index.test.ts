@@ -104,8 +104,7 @@ describe("@zts/core", () => {
   });
 
   test("tsconfigRaw 의 jsx + jsxImportSource 가 자동 매핑돼 적용", () => {
-    // esbuild 식 인라인 override — file 시스템 접근 없이 JS API 만으로 jsx 동작 변경.
-    // Zig 의 `tsconfig_merge` 가 "react-jsx" → automatic + jsxImportSource="preact" 를 적용.
+    // esbuild 식 인라인 override — file 시스템 접근 없이 JS API 로 jsx 동작 변경.
     const result = transpile('<div className="app">hello</div>', {
       filename: "app.tsx",
       tsconfigRaw: JSON.stringify({

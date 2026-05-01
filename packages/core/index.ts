@@ -20,7 +20,14 @@ import { fileURLToPath } from "url";
 
 export type { Target, Platform, TranspileOptions, TranspileResult } from "../shared/index";
 import type { TranspileOptions, TranspileResult } from "../shared/index";
-import { buildOptionsJson, ES_TARGET_BITS, browserslistToUnsupported } from "../shared/index";
+import {
+  buildOptionsJson,
+  ES_TARGET_BITS,
+  browserslistToUnsupported,
+  validateTsConfigRaw,
+} from "../shared/index";
+
+export { validateTsConfigRaw };
 
 // ─── NAPI Module ───
 
@@ -240,6 +247,7 @@ function resolveUnsupported(options: TranspileOptions): number {
 export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!source) throw new Error("@zts/core: empty source");
+  validateTsConfigRaw(options.tsconfigRaw);
 
   const optionsJson = buildOptionsJson(options, resolveUnsupported(options));
   return native.transpile(source, options.filename ?? "input.js", optionsJson);
@@ -1490,6 +1498,7 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
 export async function build(options: BuildOptions): Promise<BuildResult> {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
+  validateTsConfigRaw(options.tsconfigRaw);
 
   const napiOptions = prepareNapiOptions(options);
   const dispatcher = resolveDispatcher(options);
@@ -1515,6 +1524,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 export function buildSync(options: BuildOptions): BuildResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
+  validateTsConfigRaw(options.tsconfigRaw);
   if (options.plugins?.length) {
     throw new Error(
       "@zts/core: plugins are only supported with build() (async). Use build() instead of buildSync().",

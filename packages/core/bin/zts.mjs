@@ -73,6 +73,7 @@ const {
   loadWorkspace,
   mergeUserConfigs,
   suggestKey,
+  validateTsConfigRaw,
   warnUnknownKeys,
 } = coreModule;
 
@@ -364,27 +365,11 @@ function parseArgs(argv) {
   return opts;
 }
 
-// ─── tsconfig 검증 + 자동 탐색 ───
+// ─── tsconfig 자동 탐색 ───
 //
 // tsconfig 파싱/머지는 Zig (`src/tsconfig_merge.zig` + `TsConfig.parseFromString`/`loadFromPath`)
-// 가 단일 진실 원천. JS 측 책임은 두 가지:
-//   1) raw 사용자 입력 사전 검증 (NAPI 가 silent fallback 이라 명시 에러로 디버깅 도움).
-//   2) `--project` 미지정 시 entry 디렉토리에서 cwd 까지 자동 탐색해 `opts.project` 에 채움
-//      — bundler 진입점은 NAPI 가 직접 탐색하지만 transpile 진입점은 안 해서, 모드 비대칭을 JS 가 보정.
-function validateTsConfigRaw(raw) {
-  if (raw === undefined) return;
-  let config;
-  try {
-    config = JSON.parse(raw);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`failed to parse --tsconfig-raw: ${reason}`);
-  }
-  if (!config || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error("failed to parse --tsconfig-raw: expected a JSON object");
-  }
-}
-
+// 가 단일 진실 원천. raw 입력 검증은 `@zts/core` 의 `validateTsConfigRaw` (JS API/CLI 공유) 가 담당.
+// 자동 탐색은 bundler NAPI 진입점이 자체 처리하지만 transpile 진입점은 안 해서, 모드 비대칭을 JS 가 보정.
 function autodiscoverTsConfig(opts) {
   if (opts.tsconfigRaw !== undefined) return; // raw 가 file 무시 우선.
   if (opts.project) return; // 사용자 명시.

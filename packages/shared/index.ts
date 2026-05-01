@@ -165,6 +165,28 @@ export function targetToUnsupported(target?: Target): number {
   return ES_TARGET_BITS[target] ?? 0;
 }
 
+/**
+ * `tsconfigRaw` 사용자 입력 사전 검증.
+ *
+ * NAPI (`napi_entry.zig` / `transpile.zig`) 는 raw parse 실패 시 silent fallback (빈 TsConfig)
+ * 정책이라, 잘못된 raw 가 그대로 전달되면 사용자 입장에선 옵션이 무시된 것처럼 보인다. CLI 와
+ * JS API 양쪽 진입점에서 호출해 동일한 명시 에러 (`failed to parse --tsconfig-raw: ...`) 를
+ * 던지도록 통일. undefined 면 no-op.
+ */
+export function validateTsConfigRaw(raw: string | undefined): void {
+  if (raw === undefined) return;
+  let config: unknown;
+  try {
+    config = JSON.parse(raw);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`failed to parse --tsconfig-raw: ${reason}`);
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("failed to parse --tsconfig-raw: expected a JSON object");
+  }
+}
+
 // ─── JSON payload 구성 (Zig optionsFromJson과 1:1 매핑) ───
 
 /**
