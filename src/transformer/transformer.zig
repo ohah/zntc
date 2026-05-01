@@ -1679,6 +1679,10 @@ pub const Transformer = struct {
             .ts_enum_declaration => self.visitEnumDeclaration(node),
             .ts_enum_member => self.visitBinaryNode(idx),
             .ts_enum_body => self.visitListNode(idx),
+            // === Flow enum (#2401): codegen 에서 Object.freeze({...}) 출력. members 의
+            // init expression 만 visit 필요 (다른 변환 영향 없음).
+            .flow_enum_declaration => self.visitFlowEnumDeclaration(node),
+            .flow_enum_member => self.visitBinaryNode(idx),
             .ts_module_declaration => self.visitNamespaceDeclaration(node),
             .ts_module_block => self.visitListNode(idx),
 
@@ -2547,6 +2551,19 @@ pub const Transformer = struct {
     // ================================================================
     // TS enum 변환
     // ================================================================
+
+    /// flow_enum_declaration: extra = [name, members_start, members_len, base_type]
+    /// codegen 단계에서 `const Name = Object.freeze({...})` 형태 emit. transformer 는
+    /// members 의 init expression 만 visit (define / global rename 등 일반 변환 적용).
+    fn visitFlowEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
+        const e = node.data.extra;
+        const new_name = try self.visitNode(self.readNodeIdx(e, 0));
+        const new_members = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
+        const base_type = self.readU32(e, 3);
+        return self.addExtraNode(.flow_enum_declaration, node.span, &.{
+            @intFromEnum(new_name), new_members.start, new_members.len, base_type,
+        });
+    }
 
     /// ts_enum_declaration: extra = [name, members_start, members_len, flags]
     /// flags: 0=일반 enum (codegen에서 IIFE), 1=const enum (선언 삭제 + 멤버를 self.const_enums 에 보관 → visitMemberExpression 에서 literal 인라인).

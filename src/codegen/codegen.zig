@@ -1031,6 +1031,9 @@ pub const Codegen = struct {
             // TS enum/namespace → IIFE 출력
             .ts_enum_declaration => try self.emitEnumIIFE(node),
             .ts_module_declaration => try self.emitNamespaceIIFE(node),
+            // Flow enum (#2401) → `const Name = Object.freeze({...})` 출력. members 의
+            // init expression 이 없으면 base_type 에 따라 default value (string/number/...).
+            .flow_enum_declaration => try self.emitFlowEnum(node),
 
             // TS/Flow expression 노드: operand만 출력 (type 부분 스트리핑).
             // pre-visit body를 codegen할 때 (e.g. worklet __initData.code) TS/Flow 노드가 남아있을 수 있음.
@@ -3653,6 +3656,80 @@ pub const Codegen = struct {
         raw: []const u8, // float 등 숫자 원본 텍스트
         str: []const u8, // 문자열 리터럴 원본 텍스트
     };
+
+    // ================================================================
+    // Flow enum → Object.freeze({...}) 출력 (#2401)
+    // ================================================================
+
+    /// Flow enum 의 codegen — `const Name = Object.freeze({ K: V, ... });`.
+    ///
+    /// extra = [name, members_start, members_len, base_type].
+    /// base_type (FlowEnumBaseType: 0=none/symbol-implicit, 1=string, 2=number,
+    /// 3=boolean, 4=symbol). init 가 .none 인 멤버는 base_type 에 따라 기본값:
+    ///   - none / symbol → `Symbol("Name")`
+    ///   - string → `"Name"` (멤버 이름)
+    ///   - number → 인덱스 (0, 1, 2, ...)
+    ///   - boolean → `false` (의미 없는 fallback)
+    ///
+    /// 현재는 `flow-enums-runtime` 패키지의 `Enum()` wrapper 미사용. Object.freeze
+    /// 만으로 _값 비교_ semantic 충족 — \`Status.cast(x)\` / \`.members()\` 같은 enum
+    /// 메서드 미지원 (사용처 적음).
+    fn emitFlowEnum(self: *Codegen, node: Node) Error!void {
+        const e = node.data.extra;
+        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+        const members_start = self.ast.extra_data.items[e + 1];
+        const members_len = self.ast.extra_data.items[e + 2];
+        const base_type = self.ast.extra_data.items[e + 3];
+
+        const name_node = self.ast.getNode(name_idx);
+        const name_text = self.ast.getText(name_node.span);
+
+        try self.write("const ");
+        try self.write(name_text);
+        try self.write("=Object.freeze({");
+
+        const members = self.ast.extra_data.items[members_start .. members_start + members_len];
+        var auto_idx: u32 = 0;
+        for (members, 0..) |raw_idx, i| {
+            if (i > 0) try self.writeByte(',');
+            const member = self.ast.getNode(@enumFromInt(raw_idx));
+            const member_name_node = self.ast.getNode(member.data.binary.left);
+            const member_name = Ast.stripStringQuotes(self.ast.getText(member_name_node.span));
+            try self.write(member_name);
+            try self.writeByte(':');
+
+            const init_idx = member.data.binary.right;
+            if (!init_idx.isNone()) {
+                try self.emitNode(init_idx);
+            } else {
+                try self.emitFlowEnumDefaultValue(base_type, member_name, auto_idx);
+            }
+            auto_idx += 1;
+        }
+        try self.write("});");
+    }
+
+    fn emitFlowEnumDefaultValue(self: *Codegen, base_type: u32, member_name: []const u8, auto_idx: u32) Error!void {
+        switch (base_type) {
+            0, 4 => {
+                try self.write("Symbol(\"");
+                try self.write(member_name);
+                try self.write("\")");
+            },
+            1 => {
+                try self.writeByte('"');
+                try self.write(member_name);
+                try self.writeByte('"');
+            },
+            2 => {
+                var buf: [16]u8 = undefined;
+                const slice = std.fmt.bufPrint(&buf, "{d}", .{auto_idx}) catch unreachable;
+                try self.write(slice);
+            },
+            3 => try self.write("false"),
+            else => try self.write("undefined"),
+        }
+    }
 
     // ================================================================
     // TS namespace → IIFE 출력
