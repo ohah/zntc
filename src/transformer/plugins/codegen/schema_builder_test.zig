@@ -305,6 +305,37 @@ test "schema_builder: WithDefault<Float, 0> → float (Flow)" {
     try std.testing.expect(shape.props[0].type_annotation == .float);
 }
 
+test "schema_builder: Flow nullable ?ColorValue → reserved.color" {
+    // RN core spec 에서 매우 흔한 패턴: `tintColor?: ?ColorValue`. nullable wrapper 풀고
+    // inner 만 매핑 — RN runtime 의 validAttributes 가 nullable semantics 자체 처리.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { tintColor: ?ColorValue };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expectEqualStrings("tintColor", shape.props[0].name);
+    try std.testing.expect(shape.props[0].type_annotation == .reserved);
+    try std.testing.expectEqual(schema.ReservedPropPrimitive.color, shape.props[0].type_annotation.reserved);
+}
+
+test "schema_builder: nullable inside WithDefault — WithDefault<?ColorValue, null>" {
+    // RN spec 흔한 조합 — wrapper 안 nullable.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { color: WithDefault<?ColorValue, null> };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .reserved);
+}
+
 test "schema_builder: ReadonlyArray<ColorValue> → array.reserved.color" {
     // RN core 의 ~10 spec 에서 사용하는 array prop. 예: `colors?: ReadonlyArray<ColorValue>`.
     var p = try parseAndIndex(std.testing.allocator,
