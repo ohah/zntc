@@ -110,6 +110,39 @@ test "TreeShaking: innerGraph prunes unused pure entry locals" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "INNER_GRAPH_UNUSED_FN") == null);
 }
 
+test "TreeShaking: --pure callee hints prune unused exact and wildcard calls" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\const used = makeUsed("PURE_USED_CALL");
+        \\const unused = makeUnused("PURE_UNUSED_CALL");
+        \\const element = React.createElement("div", { title: "PURE_REACT_CALL" });
+        \\const prop = PropTypes.string.isRequired("PURE_WILDCARD_CALL");
+        \\React.cloneElement("PURE_NONMATCHING_MEMBER_CALL");
+        \\console.log(used);
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+        .tree_shaking = true,
+        .pure = &.{ "makeUnused", "React.createElement", "PropTypes.*" },
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PURE_USED_CALL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PURE_UNUSED_CALL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PURE_REACT_CALL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PURE_WILDCARD_CALL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "PURE_NONMATCHING_MEMBER_CALL") != null);
+}
+
 test "TreeShaking: innerGraph preserves entry side-effect initializer" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

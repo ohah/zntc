@@ -153,6 +153,7 @@ export const FLAG_REGISTRY = [
 
   // ─── kind=ns-array — `--key:VALUE` → opts[target].push(VALUE) ───
   { kind: "ns-array", flag: "--inject", target: "inject" },
+  { kind: "ns-array", flag: "--pure", target: "pure" },
 
   // ─── kind=ns-string — `--key:NS=VALUE` 호환 alias (NS 무시, banner=value 와 동일) ───
   // BuildOptions 가 단일 string 인 동안 namespace key 는 무의미하지만 esbuild 사용자 호환.

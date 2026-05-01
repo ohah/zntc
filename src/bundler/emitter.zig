@@ -134,6 +134,8 @@ pub const EmitOptions = struct {
     keep_names: bool = false,
     /// --drop-labels: 특정 라벨의 labeled statement 제거
     drop_labels: []const []const u8 = &.{},
+    /// --pure:CALLEE 목록. transformed AST의 call/new에 기존 pure flag를 부여한다.
+    pure: []const []const u8 = &.{},
     /// CJS / UMD entry export 출력 형식 (#2159). ESM 에서는 무시.
     output_exports: @import("bundler.zig").OutputExports = .auto,
     /// JSX 런타임 모드
@@ -1252,6 +1254,7 @@ pub fn emitModule(
     // jsxDEV source info 계산용 line offsets
     transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
+    purity.markUserPureCalls(transformer.ast, options.pure);
 
     // AST constant folding + dead branch DCE — --minify 여부와 무관하게 항상 실행(#1552).
     // minify.zig는 실제로는 const fold / if DCE / logical short-circuit 전용 — 식별자

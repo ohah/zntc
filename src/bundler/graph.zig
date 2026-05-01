@@ -44,6 +44,7 @@ const semantic_symbol = @import("../semantic/symbol.zig");
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const AliasTable = @import("module.zig").AliasTable;
 const stmt_info_mod = @import("stmt_info.zig");
+const purity = @import("purity.zig");
 const Span = @import("../lexer/token.zig").Span;
 const pkg_json = @import("package_json.zig");
 const mime = @import("../server/mime.zig");
@@ -113,6 +114,8 @@ pub const ModuleGraph = struct {
     project_root: []const u8 = "",
     /// --inject 파일 목록. build()에서 모든 엔트리의 의존성으로 추가.
     inject_files: []const []const u8 = &.{},
+    /// --pure:CALLEE 목록. parser AST의 call/new에 기존 pure flag를 부여한다.
+    pure: []const []const u8 = &.{},
     /// 플러그인 배열. bundler에서 전파.
     plugins: []const plugin_mod.Plugin = &.{},
     /// 최대 워커 스레드 수. 0이면 기본값(CPU 코어 수). 1이면 단일 스레드 (플러그인 IPC 디버깅용).
@@ -1289,6 +1292,7 @@ pub const ModuleGraph = struct {
             module.exports_kind = .esm;
             module.wrap_kind = .none;
             module.side_effects = false;
+            purity.markUserPureCalls(&(module.ast.?), self.pure);
 
             // semantic analysis — export default가 제대로 추적되도록
             var analyzer = SemanticAnalyzer.init(arena_alloc, &(module.ast.?));
@@ -1509,6 +1513,8 @@ pub const ModuleGraph = struct {
         // arena_alloc으로 실행: SemanticAnalyzer의 모든 데이터가 parse_arena에 할당.
         // analyzer.deinit()을 의도적으로 호출하지 않음 — arena가 일괄 해제.
         // 주의: 이후에 defer analyzer.deinit()을 추가하면 double-free 발생.
+        purity.markUserPureCalls(&parser.ast, self.pure);
+
         var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
         analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.is_module = parser.is_module;
@@ -1780,6 +1786,7 @@ pub const ModuleGraph = struct {
         transformer.line_offsets = module.line_offsets;
 
         const root = transformer.transform() catch return;
+        purity.markUserPureCalls(transformer.ast, self.pure);
         if (self.transform_options_base.minify_syntax) {
             const minify_mod = @import("../transformer/minify.zig");
             const ctx: minify_mod.MinifyCtx = if (module.semantic != null)
@@ -1851,6 +1858,8 @@ pub const ModuleGraph = struct {
         if (module.transform_cache) |*cache| {
             cache.symbol_ids = analyzer.symbol_ids.items;
         }
+
+        purity.markUserPureCalls(ast, self.pure);
 
         module.prebuilt_stmt_info = null;
         if (analyzer.stmt_info_count > 0) {

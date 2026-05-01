@@ -141,6 +141,7 @@ function usageLines(command) {
     "Options:",
     "  --bundle                   Bundle dependencies",
     "  --packages=external        Treat all bare package imports as external",
+    "  --pure:CALLEE              Mark matching call/new expressions as removable when unused",
     "  --outdir <dir>             Output directory",
     "  --outfile <file>, -o <file> Output file",
     "  --watch, -w                Rebuild on changes",
@@ -225,6 +226,7 @@ function parseArgs(argv) {
     asciiOnly: false,
     quotes: undefined,
     inject: [],
+    pure: [],
     plugins: [],
     pluginPaths: [],
     stdin: false,
@@ -1826,6 +1828,7 @@ function mergeConfigIntoOpts(opts, config) {
     "inject",
     "drop",
     "dropLabels",
+    "pure",
     "resolveExtensions",
     "mainFields",
   ];
@@ -1898,6 +1901,7 @@ async function runBundle(opts, config) {
     quotes: opts.quotes,
     drop: opts.drop.length > 0 ? opts.drop : undefined,
     dropLabels: opts.dropLabels.length > 0 ? opts.dropLabels : undefined,
+    pure: opts.pure.length > 0 ? opts.pure : undefined,
     // bundle 모드도 transpile 과 동일하게 drop console/debugger 적용 (#2155).
     dropConsole: opts.drop.includes("console"),
     dropDebugger: opts.drop.includes("debugger"),

@@ -582,6 +582,7 @@ pub const Bundler = struct {
             .unsupported = base.unsupported,
             .keep_names = base.keep_names,
             .drop_labels = base.drop_labels,
+            .pure = self.options.pure,
             .output_exports = self.options.output_exports,
             .jsx_runtime = base.jsx_runtime,
             .jsx_factory = base.jsx_factory,
@@ -647,6 +648,7 @@ pub const Bundler = struct {
         worker_graph.loader_overrides = self.options.loader_overrides;
         worker_graph.public_path = self.options.public_path;
         worker_graph.project_root = self.options.project_root;
+        worker_graph.pure = self.options.pure;
         worker_graph.plugins = self.options.plugins;
         worker_graph.max_threads = self.options.max_threads;
         worker_graph.flow = self.options.flow;
@@ -817,6 +819,7 @@ pub const Bundler = struct {
             null;
         defer if (combined_inject) |c| self.allocator.free(c);
         graph.inject_files = combined_inject orelse self.options.inject;
+        graph.pure = self.options.pure;
         graph.plugins = self.options.plugins;
         graph.max_threads = self.options.max_threads;
         graph.flow = self.options.flow;

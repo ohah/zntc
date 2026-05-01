@@ -302,16 +302,16 @@ new Worker(new URL('./worker.ts', import.meta.url))
 - `--legal-comments`
 - `--target`, `--browserslist`
 - `--keep-names`
+- `--packages=external`
 - `--out-extension:.js=.mjs`, `--outbase`
 - `--charset=utf8`, `--ascii-only`, `--sources-content=false`, `--source-root`
 - `--public-path`, `--inject:file`
+- `--pure:Name`, `--pure:Namespace.member`, `--pure:Namespace.*`
 - `--preserve-symlinks`
 - `--watch-delay`
 - `--certfile`, `--keyfile`
 
 ### 아직 CLI에 미노출
-- `--pure:Name` — 함수 단위 pure 마킹
-- `--packages=external` — 모든 npm package external 처리
 - `--conditions`, `--node-paths` — resolver 조건/추가 탐색 경로
 - `--tsconfig-raw` — tsconfig JSON 문자열 오버라이드
 - `--ignore-annotations`, `--jsx-side-effects`

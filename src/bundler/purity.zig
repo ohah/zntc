@@ -30,6 +30,82 @@ const max_depth: u32 = 128;
 /// `new Set()`의 `Set`이 이 집합에 있으면 shadowing 없이 전역 빌트인임이 확정된다.
 pub const GlobalRefSet = std.StringHashMap(void);
 
+/// User-provided pure callee hints (`--pure:<callee>` / BuildOptions.pure).
+///
+/// Supported patterns:
+/// - `fnName` matches `fnName(...)` / `new fnName(...)`
+/// - `Ns.fn` matches static member callees such as `Ns.fn(...)`
+/// - `Ns.*` matches any static member call below that namespace, for example
+///   `Ns.fn(...)` and `Ns.deep.fn(...)`
+/// Computed or optional-chain callees are intentionally not matched.
+pub fn markUserPureCalls(ast: *Ast, pure_patterns: []const []const u8) void {
+    if (pure_patterns.len == 0) return;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .call_expression and node.tag != .new_expression) continue;
+        const e = node.data.extra;
+        if (!ast.hasExtra(e, 3)) continue;
+        if ((ast.readExtra(e, 3) & CallFlags.optional_chain) != 0) continue;
+
+        const callee_idx = ast.readExtraNode(e, 0);
+        if (calleeMatchesUserPure(ast, callee_idx, pure_patterns)) {
+            ast.extra_data.items[e + 3] |= CallFlags.is_pure;
+        }
+    }
+}
+
+fn calleeMatchesUserPure(ast: *const Ast, callee_idx: NodeIndex, pure_patterns: []const []const u8) bool {
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+
+    var buf: [256]u8 = undefined;
+    const callee_name = calleePath(ast, callee_idx, &buf) orelse return false;
+    for (pure_patterns) |pattern| {
+        if (pattern.len == 0) continue;
+        if (std.mem.endsWith(u8, pattern, ".*")) {
+            const prefix = pattern[0 .. pattern.len - 1]; // keep trailing dot
+            if (callee_name.len > prefix.len and std.mem.startsWith(u8, callee_name, prefix)) return true;
+        } else if (std.mem.eql(u8, callee_name, pattern)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn calleePath(ast: *const Ast, idx: NodeIndex, buf: []u8) ?[]const u8 {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[@intFromEnum(idx)];
+    return switch (node.tag) {
+        .identifier_reference => ast.getText(node.span),
+        .static_member_expression => staticMemberPath(ast, node, buf),
+        .parenthesized_expression => calleePath(ast, node.data.unary.operand, buf),
+        else => null,
+    };
+}
+
+fn staticMemberPath(ast: *const Ast, node: Node, buf: []u8) ?[]const u8 {
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 2)) return null;
+    const member_flags = ast.readExtra(e, 2);
+    if ((member_flags & ast_mod.MemberFlags.optional_chain) != 0) return null;
+
+    const object_idx = ast.readExtraNode(e, 0);
+    const property_idx = ast.readExtraNode(e, 1);
+    if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return null;
+    const property = ast.nodes.items[@intFromEnum(property_idx)];
+    if (property.tag != .identifier_reference) return null;
+
+    const object_name = calleePath(ast, object_idx, buf) orelse return null;
+    const property_name = ast.getText(property.span);
+    if (object_name.len == 0 or property_name.len == 0) return null;
+    if (object_name.len + 1 + property_name.len > buf.len) return null;
+
+    if (object_name.ptr != buf.ptr) {
+        @memcpy(buf[0..object_name.len], object_name);
+    }
+    buf[object_name.len] = '.';
+    @memcpy(buf[object_name.len + 1 .. object_name.len + 1 + property_name.len], property_name);
+    return buf[0 .. object_name.len + 1 + property_name.len];
+}
+
 /// NodeIndex를 받아 순수성을 판정한다.
 /// `unresolved_globals`가 주어지면 빌트인 pure 생성자(`new Set()` 등)도 순수로 인식한다.
 /// null이면 기존 보수적 동작 (`@__PURE__` 플래그가 있을 때만 call/new 순수).
