@@ -15,9 +15,12 @@
 
 pub const schema = @import("schema.zig");
 pub const type_index = @import("type_index.zig");
+pub const schema_builder = @import("schema_builder.zig");
 
 test {
     _ = schema;
     _ = type_index;
+    _ = schema_builder;
     _ = @import("type_index_test.zig");
+    _ = @import("schema_builder_test.zig");
 }
