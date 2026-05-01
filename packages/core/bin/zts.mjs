@@ -406,8 +406,7 @@ function applyTsConfigCompilerOptions(opts, co) {
   if (co.jsxFragmentFactory && !opts.jsxFragment) opts.jsxFragment = co.jsxFragmentFactory;
   if (co.jsxImportSource && !opts.jsxImportSource) opts.jsxImportSource = co.jsxImportSource;
 
-  // target → ES 다운레벨 (transpile의 target 옵션)
-  if (co.target && !opts.target) {
+  if (co.target && !opts.target && typeof co.target === "string") {
     const targetMap = {
       es5: "es5",
       es6: "es2015",
@@ -423,23 +422,26 @@ function applyTsConfigCompilerOptions(opts, co) {
       es2024: "es2024",
       esnext: "esnext",
     };
-    opts.target = targetMap[String(co.target).toLowerCase()] || undefined;
+    opts.target = targetMap[co.target.toLowerCase()] || undefined;
   }
 }
 
 function loadTsConfig(opts) {
   if (opts.tsconfigRaw !== undefined) {
+    // raw 는 사용자가 방금 친 CLI 입력이므로 silent fallthrough 대신 즉시 실패.
+    // 파일 기반(아래)은 IDE/툴이 만든 ambient tsconfig 가 깨졌다고 빌드를 죽이지 않도록 warn 만 남긴다.
+    let config;
     try {
-      const config = JSON.parse(opts.tsconfigRaw);
-      if (!config || typeof config !== "object" || Array.isArray(config)) {
-        throw new Error("expected a JSON object");
-      }
-      applyTsConfigCompilerOptions(opts, config.compilerOptions);
-      return;
+      config = JSON.parse(opts.tsconfigRaw);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(`failed to parse --tsconfig-raw: ${reason}`);
     }
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      throw new Error("failed to parse --tsconfig-raw: expected a JSON object");
+    }
+    applyTsConfigCompilerOptions(opts, config.compilerOptions);
+    return;
   }
 
   // --project/--tsconfig-path 로 지정하거나 자동 탐색
