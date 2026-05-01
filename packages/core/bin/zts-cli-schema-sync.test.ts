@@ -323,6 +323,9 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     // charset — CLI 는 `--charset=utf8/ascii` 식 enum, BuildOptions/TranspileOptions 는
     // `charsetUtf8: boolean` (1:N 매핑). zts.mjs 에서 enum→boolean 변환.
     "--charset=",
+    // packages — CLI 는 esbuild 호환 `--packages=external` enum 형태, BuildOptions 는
+    // `packagesExternal: boolean`.
+    "--packages=",
     // banner/footer — `--banner=`/`--footer=` 가 정식 (BuildOptions 와 1:1).
     // `--banner:js=`/`--footer:js=` 는 esbuild 호환 silent alias — 동일 키로 매핑.
     "--banner:js=",
@@ -356,7 +359,6 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "lineLimit",
     "outExtension", // namespace 객체 — `--out-extension:.js=` 가 일부 cover
     "outbase",
-    "packagesExternal",
     "pure",
     "stopAfter", // transpile 단독 — CLI 미노출 (디버그 옵션)
     "treeShaking",

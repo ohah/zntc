@@ -258,8 +258,9 @@ esbuild / rolldown / rspack 기준으로 ZTS에 빠진 기능 목록.
 배치 E 부분 완료 ────────────────────────────────────────────────
   완료: --outbase, --log-limit, inlineDynamicImports, cleanDir,
   --watch-delay, --serve <dir>, shimMissingExports, extensionAlias,
+  --packages=external,
   sanitizeFileName
-  미완료/미노출: --packages=external, --drop-labels, --pure:fn,
+  미완료/미노출: --drop-labels, --pure:fn,
   --line-limit, --allow-overwrite, --tsconfig-raw, --node-paths,
   output.intro/outro, output.globals, --jsx-side-effects,
   --ignore-annotations
