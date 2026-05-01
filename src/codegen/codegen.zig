@@ -18,6 +18,7 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const Span = @import("../lexer/token.zig").Span;
 const module_parser = @import("../parser/module.zig");
+const FlowEnumBaseType = @import("../parser/flow.zig").FlowEnumBaseType;
 const Kind = @import("../lexer/token.zig").Kind;
 const Comment = @import("../lexer/scanner.zig").Comment;
 const rt = @import("../bundler/runtime_helpers.zig");
@@ -3710,24 +3711,24 @@ pub const Codegen = struct {
     }
 
     fn emitFlowEnumDefaultValue(self: *Codegen, base_type: u32, member_name: []const u8, auto_idx: u32) Error!void {
-        switch (base_type) {
-            0, 4 => {
+        const kind: FlowEnumBaseType = @enumFromInt(base_type);
+        switch (kind) {
+            .none, .symbol => {
                 try self.write("Symbol(\"");
                 try self.write(member_name);
                 try self.write("\")");
             },
-            1 => {
+            .string => {
                 try self.writeByte('"');
                 try self.write(member_name);
                 try self.writeByte('"');
             },
-            2 => {
+            .number => {
                 var buf: [16]u8 = undefined;
                 const slice = std.fmt.bufPrint(&buf, "{d}", .{auto_idx}) catch unreachable;
                 try self.write(slice);
             },
-            3 => try self.write("false"),
-            else => try self.write("undefined"),
+            .boolean => try self.write("false"),
         }
     }
 
