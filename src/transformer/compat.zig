@@ -191,6 +191,12 @@ pub const UnsupportedFeatures = packed struct(u32) {
     pub fn requiresPrivateDownlevel(self: UnsupportedFeatures) bool {
         return self.class or self.class_private_field or self.class_private_method;
     }
+
+    /// `for await (... of ...)` is ES2018 syntax. There is no dedicated bit yet,
+    /// so use the ES2018 feature cluster as the target-derived gate.
+    pub fn needsForAwaitOfDownlevel(self: UnsupportedFeatures) bool {
+        return self.async_await or self.object_spread or self.regex_dotall or self.regex_named_groups;
+    }
 };
 
 // ─── 엔진 버전 ───

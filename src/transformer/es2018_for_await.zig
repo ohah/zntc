@@ -1,6 +1,6 @@
 //! ES2018 다운레벨링: for-await-of loop
 //!
-//! --target < es2017 (async_await unsupported) 일 때 활성화.
+//! --target < es2018 일 때 활성화.
 //! Hermes / ES5는 `for await` 키워드 자체를 파싱하지 못하므로, async function body 가
 //! `__async(function*() { ... })` 로 래핑되기 전에 미리 `while` 루프로 변환해야 한다.
 //!
@@ -26,10 +26,7 @@
 //! 내부의 `await` 는 `yield` 로 재변환된다. 즉 이 변환은 for-await 키워드/구조만 제거하고
 //! `await` 자체는 그대로 둠. 후속 ES2017 lowering 이 yield 변환을 처리.
 //!
-//! Flow gate: `options.unsupported.async_await` (= ES2017 미지원 = for-await 도 동시에 미지원).
-//! 별도의 for_await 피쳐 플래그를 두지 않은 이유: for-await 는 async function 안에서만 쓸 수
-//! 있고, 엔진 관점에서 for-await 만 구현/async_await 만 구현 같은 비대칭 조합이 실질적으로
-//! 존재하지 않음.
+//! Flow gate: `options.unsupported.needsForAwaitOfDownlevel()` (= ES2018 미지원).
 //!
 //! 참고:
 //! - TypeScript: src/compiler/transformers/es2018.ts (visitForAwaitOfStatement)
@@ -98,7 +95,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
 
             // await _iter.next()
             const await_next = try self.ast.addNode(.{
-                .tag = .yield_expression,
+                .tag = .await_expression,
                 .span = span,
                 .data = .{ .unary = .{ .operand = iter_next_call, .flags = 0 } },
             });
@@ -265,7 +262,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
 
             // await _ret.call(_iter)
             const await_ret_call = try self.ast.addNode(.{
-                .tag = .yield_expression,
+                .tag = .await_expression,
                 .span = span,
                 .data = .{ .unary = .{ .operand = ret_call, .flags = 0 } },
             });

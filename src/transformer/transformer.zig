@@ -1277,10 +1277,9 @@ pub const Transformer = struct {
             .try_statement,
             => self.visitTernaryNode(node),
             .for_await_of_statement => {
-                // for-await 키워드는 ES2018. async_await 자체를 다운레벨링해야 하는 타겟
-                // (Hermes / ES5 등)은 for-await 파싱도 불가 — async function wrap 전에
-                // 미리 __asyncValues + while 로 변환. (#1381)
-                if (self.options.unsupported.async_await) {
+                // for-await 키워드는 ES2018. ES2018 미만 타겟에서는 async function 자체를
+                // 보존하더라도 for-await 구문만 __asyncValues + while 로 제거해야 한다.
+                if (self.options.unsupported.needsForAwaitOfDownlevel()) {
                     return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOf(self, node);
                 }
                 return self.visitForInOfTernary(node);
@@ -1303,7 +1302,7 @@ pub const Transformer = struct {
                 const child_idx = node.data.binary.right;
                 if (!child_idx.isNone()) {
                     const child = self.ast.getNode(child_idx);
-                    if (self.options.unsupported.async_await and child.tag == .for_await_of_statement) {
+                    if (self.options.unsupported.needsForAwaitOfDownlevel() and child.tag == .for_await_of_statement) {
                         const new_label = try self.visitNode(node.data.binary.left);
                         return es2018_for_await.ES2018ForAwait(Transformer).lowerForAwaitOfLabeled(self, child, new_label);
                     }
