@@ -14,6 +14,7 @@ const Scanner = @import("lexer/mod.zig").Scanner;
 const Parser = @import("parser/parser.zig").Parser;
 const ast_mod = @import("parser/ast.zig");
 const Ast = ast_mod.Ast;
+const ast_walk = @import("parser/ast_walk.zig");
 const SemanticAnalyzer = @import("semantic/mod.zig").SemanticAnalyzer;
 const Transformer = @import("transformer/transformer.zig").Transformer;
 const TransformOptions = @import("transformer/transformer.zig").TransformOptions;
@@ -56,24 +57,16 @@ const TransformPlan = struct {
     strip_types_only: bool = false,
 };
 
+/// `buildTransformPlan` 의 게이팅 입력. 각 플래그는 plan 분기에서 1회씩만 소비되므로,
+/// 카테고리별로 묶어 둔다 (개별 tag 단위 정보가 필요해지면 분리).
 const AstFacts = struct {
+    /// `import_declaration` 노드 존재 여부. binding-lite elision 가능성 판정.
     has_import_declaration: bool = false,
-    has_default_import: bool = false,
-    has_namespace_import: bool = false,
-    has_class: bool = false,
-    has_private: bool = false,
-    has_decorator: bool = false,
-    has_ts_runtime_syntax: bool = false,
-    has_using: bool = false,
-
-    fn requiresRuntimeTransform(self: AstFacts) bool {
-        return self.has_import_declaration or
-            self.has_class or
-            self.has_private or
-            self.has_decorator or
-            self.has_ts_runtime_syntax or
-            self.has_using;
-    }
+    /// default / namespace import — binding-lite 는 named 만 다루므로 모두 full path 로 위임.
+    has_non_named_import: bool = false,
+    /// class / private / decorator / TS 런타임 구문 (`enum`, `namespace`, `import =`,
+    /// `export =`, `namespace export`) / `using` — runtime transform 필요.
+    has_runtime_sensitive_syntax: bool = false,
 };
 
 /// 파이프라인 조기 종료 지점. `--stop-after=<phase>` / `stopAfter` 옵션과 매핑.
@@ -441,11 +434,20 @@ fn prependImportLine(allocator: std.mem.Allocator, prefix: ?[]const u8, body: []
     return combined.items;
 }
 
-fn transpileFastPathDisabledByEnv() bool {
+var fast_path_disabled_once = std.once(computeFastPathDisabledByEnv);
+var fast_path_disabled_value: bool = false;
+
+fn computeFastPathDisabledByEnv() void {
     if (comptime builtin.os.tag == .wasi and !builtin.link_libc) {
-        return false;
+        fast_path_disabled_value = false;
+        return;
     }
-    return std.process.hasEnvVarConstant("ZTS_DISABLE_TRANSPILE_FAST_PATH");
+    fast_path_disabled_value = std.process.hasEnvVarConstant("ZTS_DISABLE_TRANSPILE_FAST_PATH");
+}
+
+fn transpileFastPathDisabledByEnv() bool {
+    fast_path_disabled_once.call();
+    return fast_path_disabled_value;
 }
 
 fn collectAstFacts(ast: *const Ast) AstFacts {
@@ -454,29 +456,25 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
     for (ast.nodes.items) |node| {
         switch (node.tag) {
             .import_declaration => facts.has_import_declaration = true,
-            .import_default_specifier => facts.has_default_import = true,
-            .import_namespace_specifier => facts.has_namespace_import = true,
+            .import_default_specifier,
+            .import_namespace_specifier,
+            => facts.has_non_named_import = true,
 
             .class_declaration,
             .class_expression,
-            => facts.has_class = true,
-
             .private_identifier,
             .private_field_expression,
-            => facts.has_private = true,
-
-            .decorator => facts.has_decorator = true,
-
+            .decorator,
             .ts_enum_declaration,
             .ts_module_declaration,
             .ts_import_equals_declaration,
             .ts_export_assignment,
             .ts_namespace_export_declaration,
-            => facts.has_ts_runtime_syntax = true,
+            => facts.has_runtime_sensitive_syntax = true,
 
             .variable_declaration => {
                 if (ast.variableDeclarationKind(node).isUsing()) {
-                    facts.has_using = true;
+                    facts.has_runtime_sensitive_syntax = true;
                 }
             },
 
@@ -508,8 +506,8 @@ fn buildTransformPlan(
     if (fast_path_disabled) return .{ .semantic = .full, .reason = .disabled_by_env };
     if (options.stop_after == .semantic) return .{ .semantic = .full, .reason = .stop_after_semantic };
 
-    // POC: keep the fast path scoped to TypeScript files. JavaScript files still use
-    // the full semantic diagnostics path until a broader contract is defined.
+    // JS 파일은 보존 의미가 TS 와 달라 (값 import 가 type-only 라도 side-effect 가능 등)
+    // fast path 적용 범위에서 제외 — full semantic 경로에서 진단 손실 없이 처리.
     if (parser.source_mode != .ts) return .{ .semantic = .full, .reason = .non_ts_source };
     if (parser.is_flow) return .{ .semantic = .full, .reason = .flow_source };
     if (ast.has_jsx) return .{ .semantic = .full, .reason = .jsx_source };
@@ -517,27 +515,25 @@ fn buildTransformPlan(
     if (optionsRequireTransformSemantic(options)) {
         return .{ .semantic = .full, .reason = .option_requires_transform_semantic };
     }
-    if (@as(u32, @bitCast(options.unsupported)) != 0 or options.es_target != null) {
+    if (options.unsupported.hasAny() or options.es_target != null) {
         return .{ .semantic = .full, .reason = .target_requires_downlevel };
     }
     if (options.module_format != .esm) {
         return .{ .semantic = .full, .reason = .module_format_requires_semantic };
     }
 
+    // 파서가 `export = expr` 을 NodeIndex.none 으로 drop 하므로 (parser/module.zig) AST tag
+    // 검사로는 잡을 수 없음 — 소스 substring 으로만 감지 가능. 이후 facts 게이트보다 비싼
+    // 스캔이지만, runtime-sensitive 검사보다 먼저 short-circuit 되는 편이 일관됨.
     if (std.mem.indexOf(u8, ast.source, "export =") != null) {
         return .{ .semantic = .full, .reason = .ast_requires_runtime_transform };
     }
 
     const facts = collectAstFacts(ast);
-    if (facts.has_default_import or facts.has_namespace_import) {
+    if (facts.has_non_named_import) {
         return .{ .semantic = .full, .reason = .import_shape_requires_full_semantic };
     }
-    if (facts.has_class or
-        facts.has_private or
-        facts.has_decorator or
-        facts.has_ts_runtime_syntax or
-        facts.has_using)
-    {
+    if (facts.has_runtime_sensitive_syntax) {
         return .{ .semantic = .full, .reason = .ast_requires_runtime_transform };
     }
     if (facts.has_import_declaration) {
@@ -714,34 +710,9 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         else => {},
     }
 
-    switch (node.tag.dataKind()) {
-        .leaf => {},
-        .unary => markBindingLiteValueUses(ast, node.data.unary.operand, lite, value_context),
-        .binary => {
-            markBindingLiteValueUses(ast, node.data.binary.left, lite, value_context);
-            markBindingLiteValueUses(ast, node.data.binary.right, lite, value_context);
-        },
-        .ternary => {
-            markBindingLiteValueUses(ast, node.data.ternary.a, lite, value_context);
-            markBindingLiteValueUses(ast, node.data.ternary.b, lite, value_context);
-            markBindingLiteValueUses(ast, node.data.ternary.c, lite, value_context);
-        },
-        .list => markBindingLiteListValueUses(ast, node.data.list, lite, value_context),
-        .extra => {
-            const e = node.data.extra;
-            for (node.tag.extraChildOffsets()) |offset| {
-                if (e + offset < ast.extra_data.items.len) {
-                    markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + offset]), lite, value_context);
-                }
-            }
-            for (node.tag.extraListOffsets()) |offsets| {
-                if (e + offsets[0] >= ast.extra_data.items.len or e + offsets[1] >= ast.extra_data.items.len) continue;
-                markBindingLiteListValueUses(ast, .{
-                    .start = ast.extra_data.items[e + offsets[0]],
-                    .len = ast.extra_data.items[e + offsets[1]],
-                }, lite, value_context);
-            }
-        },
+    var it = ast_walk.children(ast, node);
+    while (it.next()) |child_idx| {
+        markBindingLiteValueUses(ast, child_idx, lite, value_context);
     }
 }
 
@@ -833,8 +804,6 @@ fn transpileWithCallbackInternal(
     const transform_plan = buildTransformPlan(options, &parser, &parser.ast, fast_path_disabled);
 
     // 2. Semantic analysis
-    // tsc 호환: 시맨틱 에러가 있어도 codegen을 진행한다.
-    // 에러는 콜백으로 stderr에 출력하되, 변환 결과도 함께 반환한다.
     var analyzer_storage: ?SemanticAnalyzer = null;
     var binding_lite_storage: ?BindingLite = null;
     if (transform_plan.semantic == .full) {
@@ -847,9 +816,10 @@ fn transpileWithCallbackInternal(
         analyzer.es_target = options.es_target;
         analyzer.unsupported = options.unsupported;
         analyzer.analyze() catch return error.SemanticError;
+        // tsc 호환: 시맨틱 에러가 있어도 codegen 을 진행한다 — 콜백으로 stderr 통지 후
+        // 변환 결과도 함께 반환.
         if (analyzer.errors.items.len > 0) {
             if (on_error) |cb| cb(source, file_path, &scanner, analyzer.errors.items);
-            // tsc처럼 에러와 함께 output도 생성 — 중단하지 않음
         }
     } else if (transform_plan.semantic == .bindings) {
         binding_lite_storage = try collectBindingLite(arena_alloc, &parser.ast);
@@ -986,7 +956,7 @@ fn transpileWithCallbackInternal(
 
     // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;
-    const has_helpers = @as(u32, @bitCast(rh)) != 0;
+    const has_helpers = rh.hasAny();
     const output = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         rt.appendRuntimeHelpers(&buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch
@@ -1116,9 +1086,14 @@ fn testTransformPlan(source: []const u8, file_path: []const u8, options: Transpi
     return buildTransformPlan(options, &parser, &parser.ast, false);
 }
 
-fn expectFastFullParity(source: []const u8, file_path: []const u8, options: TranspileOptions) !void {
+fn expectFastFullParity(
+    expected: SemanticRequirement,
+    source: []const u8,
+    file_path: []const u8,
+    options: TranspileOptions,
+) !void {
     const plan = try testTransformPlan(source, file_path, options);
-    try std.testing.expectEqual(SemanticRequirement.none, plan.semantic);
+    try std.testing.expectEqual(expected, plan.semantic);
 
     var fast = try transpileWithCallbackInternal(
         std.testing.allocator,
@@ -1142,36 +1117,6 @@ fn expectFastFullParity(source: []const u8, file_path: []const u8, options: Tran
 
     try std.testing.expectEqualStrings(full.code, fast.code);
     try std.testing.expectEqual(full.has_helpers, fast.has_helpers);
-    try std.testing.expectEqual(@as(usize, 0), fast.diagnostics.len);
-    try std.testing.expectEqual(@as(usize, 0), full.diagnostics.len);
-}
-
-fn expectBindingFastFullParity(source: []const u8, file_path: []const u8, options: TranspileOptions) !void {
-    const plan = try testTransformPlan(source, file_path, options);
-    try std.testing.expectEqual(SemanticRequirement.bindings, plan.semantic);
-
-    var fast = try transpileWithCallbackInternal(
-        std.testing.allocator,
-        source,
-        file_path,
-        options,
-        null,
-        false,
-    );
-    defer fast.deinit(std.testing.allocator);
-
-    var full = try transpileWithCallbackInternal(
-        std.testing.allocator,
-        source,
-        file_path,
-        options,
-        null,
-        true,
-    );
-    defer full.deinit(std.testing.allocator);
-
-    try std.testing.expectEqualStrings(full.code, fast.code);
-    try std.testing.expectEqual(fast.has_helpers, full.has_helpers);
     try std.testing.expectEqual(@as(usize, 0), fast.diagnostics.len);
     try std.testing.expectEqual(@as(usize, 0), full.diagnostics.len);
 }
@@ -1313,7 +1258,7 @@ test "TransformPlan parity: fast TS strip matches full semantic output" {
     };
 
     for (cases) |case| {
-        expectFastFullParity(case.source, "input.ts", .{}) catch |err| {
+        expectFastFullParity(.none, case.source, "input.ts", .{}) catch |err| {
             std.debug.print("fast/full parity failed for case '{s}'\n", .{case.name});
             return err;
         };
@@ -1391,7 +1336,7 @@ test "TransformPlan parity: binding-lite named import elision matches full seman
     };
 
     for (cases) |case| {
-        expectBindingFastFullParity(case.source, "input.ts", case.options) catch |err| {
+        expectFastFullParity(.bindings, case.source, "input.ts", case.options) catch |err| {
             std.debug.print("binding-lite parity failed for case '{s}'\n", .{case.name});
             return err;
         };
