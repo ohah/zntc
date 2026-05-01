@@ -103,25 +103,27 @@ test "TypeIndex: Flow opaque type indexed" {
     try std.testing.expect(r.index.get("Props") != null);
 }
 
-test "TypeIndex: export type alias dropped at parse (known limitation)" {
-    // ZTS 파서가 type-only declaration 의 export wrapper 를 parse 시점에
-    // program 에서 제거 (`module.zig:885`). type alias 노드는 orphan 으로 남지만
-    // program 에서 도달 불가 → 인덱싱 안 됨.
+test "TypeIndex: export type alias is indexed" {
+    // #2348 Phase 2 의 root-cause fix (`module.zig:885`) 이후 type-only declaration
+    // 의 export wrapper 만 생략하고 decl 자체는 program 에 직접 추가됨.
+    // import_scanner 는 export_named_declaration wrapper 부재 → has_esm_syntax 영향 X.
     var r = try parseAndIndex(std.testing.allocator,
         \\export type Props = { color: string };
     );
     defer r.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(usize, 0), r.index.count());
+    try std.testing.expectEqual(@as(usize, 1), r.index.count());
+    try std.testing.expect(r.index.get("Props") != null);
 }
 
-test "TypeIndex: export interface dropped at parse (known limitation)" {
+test "TypeIndex: export interface is indexed" {
     var r = try parseAndIndex(std.testing.allocator,
         \\export interface Props { color: string }
     );
     defer r.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(usize, 0), r.index.count());
+    try std.testing.expectEqual(@as(usize, 1), r.index.count());
+    try std.testing.expect(r.index.get("Props") != null);
 }
 
 test "TypeIndex: multiple declarations all indexed" {
