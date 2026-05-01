@@ -328,6 +328,16 @@ fn mapTypeReference(
         return mapPropTypeAt(ast, type_index, inner, depth + 1);
     }
 
+    // `Array<T>` / `ReadonlyArray<T>` — RN core spec 의 ~10개에서 사용
+    // (`colors?: ReadonlyArray<ColorValue>`, `data?: Array<ItemShape>` 등).
+    // ZTS 파서의 `ts_array_type` (T[]) 은 element 폐기로 미지원이지만 type_reference
+    // 형태는 type 인자가 보존되므로 처리 가능. (#2348 § 3a 참고)
+    if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
+        const inner = getFirstTypeArgument(ast, node) orelse return error.UnsupportedPropType;
+        const inner_prop = try mapPropTypeAt(ast, type_index, inner, depth + 1);
+        return .{ .array = try toArrayElement(inner_prop) };
+    }
+
     if (reserved_ref_names.get(name)) |primitive| {
         return .{ .reserved = primitive };
     }
@@ -392,5 +402,24 @@ fn numericKindToAnnotation(kind: NumericKind) schema.PropTypeAnnotation {
         .float => .{ .float = .{ .default = null } },
         .int32 => .{ .int32 = .{ .default = 0 } },
         .double => .{ .double = .{ .default = 0 } },
+    };
+}
+
+/// `PropTypeAnnotation` → `ComponentArrayTypeAnnotation` (배열 element 한정).
+/// codegen 의 ArrayTypeAnnotation 은 default/options 등 prop 메타를 가지지 않으므로
+/// 단순 variant 매핑. `int32_enum` 과 중첩 array 는 RN codegen 에서도 미지원이라 동일.
+fn toArrayElement(prop: schema.PropTypeAnnotation) Error!schema.ComponentArrayTypeAnnotation {
+    return switch (prop) {
+        .boolean => .boolean,
+        .string => .string,
+        .double => .double,
+        .float => .float,
+        .int32 => .int32,
+        .mixed => .mixed,
+        .reserved => |p| .{ .reserved = p },
+        .string_enum => |e| .{ .string_enum = e },
+        .object => |o| .{ .object = o.properties },
+        // int32_enum, array (중첩) 는 RN codegen 도 미지원 — 동일 fail-fast.
+        .int32_enum, .array => error.UnsupportedPropType,
     };
 }
