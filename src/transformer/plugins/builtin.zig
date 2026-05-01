@@ -8,6 +8,10 @@ const Plugin = @import("../../bundler/plugin.zig").Plugin;
 const worklet_plugin = @import("worklet_plugin.zig");
 
 /// 내장 플러그인 수집 옵션.
+///
+/// 여기서 다루는 것은 **AST visitor 가 있는** 내장 플러그인 (transformer pre-pass / emit
+/// 단계에서 visitor 호출). `transform` 훅만 가진 plugin (예: codegen) 은 graph load 시점
+/// 에 적용되므로 `ModuleGraph.ensureBuiltinPlugins` 가 따로 prepend.
 pub const BuiltinOptions = struct {
     worklet: bool = false,
 };
