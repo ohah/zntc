@@ -9,20 +9,72 @@
 //!   - 향후 NAPI 바인딩의 단일 파일 API
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Scanner = @import("lexer/mod.zig").Scanner;
 const Parser = @import("parser/parser.zig").Parser;
+const ast_mod = @import("parser/ast.zig");
+const Ast = ast_mod.Ast;
 const SemanticAnalyzer = @import("semantic/mod.zig").SemanticAnalyzer;
 const Transformer = @import("transformer/transformer.zig").Transformer;
 const TransformOptions = @import("transformer/transformer.zig").TransformOptions;
+const BindingLite = @import("transformer/transformer.zig").BindingLite;
 const DefineEntry = @import("transformer/transformer.zig").DefineEntry;
 const Codegen = @import("codegen/codegen.zig").Codegen;
 const SourceMap = @import("codegen/sourcemap.zig");
 const Mangler = @import("codegen/mod.zig").mangler;
+const module_parser = @import("parser/module.zig");
 const bundler_types = @import("bundler/types.zig");
 const LinkingMetadata = @import("bundler/linker.zig").LinkingMetadata;
 const rt = @import("bundler/runtime_helpers.zig");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
 const OwnedDiagnostic = @import("diagnostic.zig").OwnedDiagnostic;
+
+const SemanticRequirement = enum {
+    none,
+    bindings,
+    full,
+};
+
+const SemanticPlanReason = enum {
+    simple_ts_strip,
+    disabled_by_env,
+    stop_after_semantic,
+    non_ts_source,
+    flow_source,
+    jsx_source,
+    option_requires_transform_semantic,
+    target_requires_downlevel,
+    module_format_requires_semantic,
+    ast_requires_runtime_transform,
+    import_shape_requires_full_semantic,
+    named_import_binding_elision,
+};
+
+const TransformPlan = struct {
+    semantic: SemanticRequirement,
+    reason: SemanticPlanReason,
+    strip_types_only: bool = false,
+};
+
+const AstFacts = struct {
+    has_import_declaration: bool = false,
+    has_default_import: bool = false,
+    has_namespace_import: bool = false,
+    has_class: bool = false,
+    has_private: bool = false,
+    has_decorator: bool = false,
+    has_ts_runtime_syntax: bool = false,
+    has_using: bool = false,
+
+    fn requiresRuntimeTransform(self: AstFacts) bool {
+        return self.has_import_declaration or
+            self.has_class or
+            self.has_private or
+            self.has_decorator or
+            self.has_ts_runtime_syntax or
+            self.has_using;
+    }
+};
 
 /// 파이프라인 조기 종료 지점. `--stop-after=<phase>` / `stopAfter` 옵션과 매핑.
 ///
@@ -389,6 +441,310 @@ fn prependImportLine(allocator: std.mem.Allocator, prefix: ?[]const u8, body: []
     return combined.items;
 }
 
+fn transpileFastPathDisabledByEnv() bool {
+    if (comptime builtin.os.tag == .wasi and !builtin.link_libc) {
+        return false;
+    }
+    return std.process.hasEnvVarConstant("ZTS_DISABLE_TRANSPILE_FAST_PATH");
+}
+
+fn collectAstFacts(ast: *const Ast) AstFacts {
+    var facts: AstFacts = .{};
+
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .import_declaration => facts.has_import_declaration = true,
+            .import_default_specifier => facts.has_default_import = true,
+            .import_namespace_specifier => facts.has_namespace_import = true,
+
+            .class_declaration,
+            .class_expression,
+            => facts.has_class = true,
+
+            .private_identifier,
+            .private_field_expression,
+            => facts.has_private = true,
+
+            .decorator => facts.has_decorator = true,
+
+            .ts_enum_declaration,
+            .ts_module_declaration,
+            .ts_import_equals_declaration,
+            .ts_export_assignment,
+            .ts_namespace_export_declaration,
+            => facts.has_ts_runtime_syntax = true,
+
+            .variable_declaration => {
+                if (ast.variableDeclarationKind(node).isUsing()) {
+                    facts.has_using = true;
+                }
+            },
+
+            else => {},
+        }
+    }
+
+    return facts;
+}
+
+fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
+    return options.minify_identifiers or
+        options.minify_syntax or
+        options.minify_whitespace or
+        options.drop_console or
+        options.drop_debugger or
+        options.define.len > 0 or
+        !options.use_define_for_class_fields or
+        options.experimental_decorators or
+        options.emit_decorator_metadata;
+}
+
+fn buildTransformPlan(
+    options: TranspileOptions,
+    parser: *const Parser,
+    ast: *const Ast,
+    fast_path_disabled: bool,
+) TransformPlan {
+    if (fast_path_disabled) return .{ .semantic = .full, .reason = .disabled_by_env };
+    if (options.stop_after == .semantic) return .{ .semantic = .full, .reason = .stop_after_semantic };
+
+    // POC: keep the fast path scoped to TypeScript files. JavaScript files still use
+    // the full semantic diagnostics path until a broader contract is defined.
+    if (parser.source_mode != .ts) return .{ .semantic = .full, .reason = .non_ts_source };
+    if (parser.is_flow) return .{ .semantic = .full, .reason = .flow_source };
+    if (ast.has_jsx) return .{ .semantic = .full, .reason = .jsx_source };
+
+    if (optionsRequireTransformSemantic(options)) {
+        return .{ .semantic = .full, .reason = .option_requires_transform_semantic };
+    }
+    if (@as(u32, @bitCast(options.unsupported)) != 0 or options.es_target != null) {
+        return .{ .semantic = .full, .reason = .target_requires_downlevel };
+    }
+    if (options.module_format != .esm) {
+        return .{ .semantic = .full, .reason = .module_format_requires_semantic };
+    }
+
+    if (std.mem.indexOf(u8, ast.source, "export =") != null) {
+        return .{ .semantic = .full, .reason = .ast_requires_runtime_transform };
+    }
+
+    const facts = collectAstFacts(ast);
+    if (facts.has_default_import or facts.has_namespace_import) {
+        return .{ .semantic = .full, .reason = .import_shape_requires_full_semantic };
+    }
+    if (facts.has_class or
+        facts.has_private or
+        facts.has_decorator or
+        facts.has_ts_runtime_syntax or
+        facts.has_using)
+    {
+        return .{ .semantic = .full, .reason = .ast_requires_runtime_transform };
+    }
+    if (facts.has_import_declaration) {
+        return .{
+            .semantic = .bindings,
+            .reason = .named_import_binding_elision,
+            .strip_types_only = true,
+        };
+    }
+
+    return .{
+        .semantic = .none,
+        .reason = .simple_ts_strip,
+        .strip_types_only = true,
+    };
+}
+
+fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLite {
+    var bindings: std.ArrayList(BindingLite.NamedImport) = .empty;
+    errdefer bindings.deinit(allocator);
+
+    for (ast.nodes.items) |node| {
+        if (node.tag != .import_declaration) continue;
+        const import_decl = module_parser.readImportDeclExtras(ast, node.data.extra);
+        var i: u32 = 0;
+        while (i < import_decl.specs_len) : (i += 1) {
+            const spec_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[import_decl.specs_start + i]);
+            if (spec_idx.isNone()) continue;
+            const spec = ast.getNode(spec_idx);
+            if (spec.tag != .import_specifier) continue;
+            if (spec.data.binary.flags & 1 != 0) continue;
+
+            const local_idx = spec.data.binary.right;
+            if (local_idx.isNone()) continue;
+            const local = ast.getNode(local_idx);
+            try bindings.append(allocator, .{ .local_name = ast.getText(local.span) });
+        }
+    }
+
+    var lite = BindingLite{ .named_imports = try bindings.toOwnedSlice(allocator) };
+    for (ast.nodes.items, 0..) |node, raw_idx| {
+        if (node.tag != .program) continue;
+        markBindingLiteValueUses(ast, @enumFromInt(raw_idx), &lite, true);
+        break;
+    }
+    return lite;
+}
+
+fn markBindingLiteUse(lite: *BindingLite, name: []const u8) void {
+    for (lite.named_imports) |*binding| {
+        if (std.mem.eql(u8, binding.local_name, name)) {
+            binding.used_as_value = true;
+            return;
+        }
+    }
+}
+
+fn markBindingPatternDefaultValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite) void {
+    if (idx.isNone()) return;
+    const node = ast.getNode(idx);
+    switch (node.tag) {
+        .assignment_pattern,
+        .assignment_target_with_default,
+        => {
+            markBindingPatternDefaultValueUses(ast, node.data.binary.left, lite);
+            markBindingLiteValueUses(ast, node.data.binary.right, lite, true);
+        },
+        .array_pattern,
+        .object_pattern,
+        => markBindingLiteListValueUses(ast, node.data.list, lite, false),
+        .binding_rest_element,
+        .assignment_target_rest,
+        => markBindingPatternDefaultValueUses(ast, node.data.unary.operand, lite),
+        .binding_property,
+        .assignment_target_property_identifier,
+        .assignment_target_property_property,
+        => markBindingPatternDefaultValueUses(ast, node.data.binary.right, lite),
+        else => {},
+    }
+}
+
+fn markBindingLiteListValueUses(ast: *const Ast, list: ast_mod.NodeList, lite: *BindingLite, value_context: bool) void {
+    if (list.start + list.len > ast.extra_data.items.len) return;
+    var i: u32 = 0;
+    while (i < list.len) : (i += 1) {
+        markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[list.start + i]), lite, value_context);
+    }
+}
+
+fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool) void {
+    if (idx.isNone()) return;
+    const node = ast.getNode(idx);
+
+    if (Transformer.isTypeOnlyNode(node.tag) or node.tag.isTypeOnlyDeclaration()) return;
+
+    switch (node.tag) {
+        .identifier_reference,
+        .assignment_target_identifier,
+        => {
+            if (value_context) markBindingLiteUse(lite, ast.getText(node.span));
+            return;
+        },
+        .binding_identifier,
+        .import_declaration,
+        .import_specifier,
+        .import_default_specifier,
+        .import_namespace_specifier,
+        .import_attribute,
+        => return,
+        .export_specifier => {
+            markBindingLiteValueUses(ast, node.data.binary.left, lite, true);
+            return;
+        },
+        .export_named_declaration => {
+            const x = module_parser.readExportNamedExtras(ast, node.data.extra);
+            markBindingLiteValueUses(ast, x.decl, lite, true);
+            markBindingLiteListValueUses(ast, .{ .start = x.specs_start, .len = x.specs_len }, lite, true);
+            return;
+        },
+        .variable_declaration => {
+            const list_start = ast.extra_data.items[node.data.extra + 1];
+            const list_len = ast.extra_data.items[node.data.extra + 2];
+            markBindingLiteListValueUses(ast, .{ .start = list_start, .len = list_len }, lite, true);
+            return;
+        },
+        .variable_declarator => {
+            markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra + 2]), lite, true);
+            return;
+        },
+        .function_declaration,
+        .function_expression,
+        .function,
+        => {
+            const e = node.data.extra;
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 1]), lite, false);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true);
+            return;
+        },
+        .arrow_function_expression => {
+            const e = node.data.extra;
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite, false);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 1]), lite, true);
+            return;
+        },
+        .formal_parameters => {
+            markBindingLiteListValueUses(ast, node.data.list, lite, false);
+            return;
+        },
+        .formal_parameter => {
+            const e = node.data.extra;
+            markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true);
+            return;
+        },
+        .object_property => {
+            const key = node.data.binary.left;
+            const value = node.data.binary.right;
+            if (value.isNone()) {
+                markBindingLiteValueUses(ast, key, lite, true);
+            } else {
+                const key_node = ast.getNode(key);
+                if (key_node.tag == .computed_property_key) markBindingLiteValueUses(ast, key, lite, true);
+                markBindingLiteValueUses(ast, value, lite, true);
+            }
+            return;
+        },
+        .static_member_expression,
+        .private_field_expression,
+        => {
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, true);
+            return;
+        },
+        else => {},
+    }
+
+    switch (node.tag.dataKind()) {
+        .leaf => {},
+        .unary => markBindingLiteValueUses(ast, node.data.unary.operand, lite, value_context),
+        .binary => {
+            markBindingLiteValueUses(ast, node.data.binary.left, lite, value_context);
+            markBindingLiteValueUses(ast, node.data.binary.right, lite, value_context);
+        },
+        .ternary => {
+            markBindingLiteValueUses(ast, node.data.ternary.a, lite, value_context);
+            markBindingLiteValueUses(ast, node.data.ternary.b, lite, value_context);
+            markBindingLiteValueUses(ast, node.data.ternary.c, lite, value_context);
+        },
+        .list => markBindingLiteListValueUses(ast, node.data.list, lite, value_context),
+        .extra => {
+            const e = node.data.extra;
+            for (node.tag.extraChildOffsets()) |offset| {
+                if (e + offset < ast.extra_data.items.len) {
+                    markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + offset]), lite, value_context);
+                }
+            }
+            for (node.tag.extraListOffsets()) |offsets| {
+                if (e + offsets[0] >= ast.extra_data.items.len or e + offsets[1] >= ast.extra_data.items.len) continue;
+                markBindingLiteListValueUses(ast, .{
+                    .start = ast.extra_data.items[e + offsets[0]],
+                    .len = ast.extra_data.items[e + offsets[1]],
+                }, lite, value_context);
+            }
+        },
+    }
+}
+
 /// 소스 문자열을 트랜스파일한다. I/O 없음, 순수 함수.
 ///
 /// file_path는 확장자 감지용으로만 사용 (실제 파일 읽기 안 함).
@@ -409,6 +765,24 @@ pub fn transpileWithCallback(
     file_path: []const u8,
     options: TranspileOptions,
     on_error: ?ErrorCallback,
+) TranspileError!TranspileResult {
+    return transpileWithCallbackInternal(
+        allocator,
+        source,
+        file_path,
+        options,
+        on_error,
+        transpileFastPathDisabledByEnv(),
+    );
+}
+
+fn transpileWithCallbackInternal(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    file_path: []const u8,
+    options: TranspileOptions,
+    on_error: ?ErrorCallback,
+    fast_path_disabled: bool,
 ) TranspileError!TranspileResult {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -456,20 +830,29 @@ pub fn transpileWithCallback(
         return .{ .code = try allocator.dupe(u8, "") };
     }
 
+    const transform_plan = buildTransformPlan(options, &parser, &parser.ast, fast_path_disabled);
+
     // 2. Semantic analysis
     // tsc 호환: 시맨틱 에러가 있어도 codegen을 진행한다.
     // 에러는 콜백으로 stderr에 출력하되, 변환 결과도 함께 반환한다.
-    var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
-    analyzer.is_strict_mode = parser.is_strict_mode;
-    analyzer.is_module = parser.is_module;
-    analyzer.is_ts = parser.source_mode == .ts;
-    analyzer.is_flow = parser.is_flow;
-    analyzer.es_target = options.es_target;
-    analyzer.unsupported = options.unsupported;
-    analyzer.analyze() catch return error.SemanticError;
-    if (analyzer.errors.items.len > 0) {
-        if (on_error) |cb| cb(source, file_path, &scanner, analyzer.errors.items);
-        // tsc처럼 에러와 함께 output도 생성 — 중단하지 않음
+    var analyzer_storage: ?SemanticAnalyzer = null;
+    var binding_lite_storage: ?BindingLite = null;
+    if (transform_plan.semantic == .full) {
+        analyzer_storage = SemanticAnalyzer.init(arena_alloc, &parser.ast);
+        var analyzer = &analyzer_storage.?;
+        analyzer.is_strict_mode = parser.is_strict_mode;
+        analyzer.is_module = parser.is_module;
+        analyzer.is_ts = parser.source_mode == .ts;
+        analyzer.is_flow = parser.is_flow;
+        analyzer.es_target = options.es_target;
+        analyzer.unsupported = options.unsupported;
+        analyzer.analyze() catch return error.SemanticError;
+        if (analyzer.errors.items.len > 0) {
+            if (on_error) |cb| cb(source, file_path, &scanner, analyzer.errors.items);
+            // tsc처럼 에러와 함께 output도 생성 — 중단하지 않음
+        }
+    } else if (transform_plan.semantic == .bindings) {
+        binding_lite_storage = try collectBindingLite(arena_alloc, &parser.ast);
     }
 
     if (options.stop_after == .semantic) {
@@ -481,6 +864,7 @@ pub fn transpileWithCallback(
     defer if (mangle_result) |*mr| mr.deinit();
 
     if (options.minify_identifiers) {
+        const analyzer = &(analyzer_storage.?);
         if (analyzer.symbols.items.len > 0 and analyzer.scope_maps.items.len > 0) {
             mangle_result = Mangler.mangle(arena_alloc, .{
                 .scopes = analyzer.scopes.items,
@@ -512,9 +896,13 @@ pub fn transpileWithCallback(
         // #1621: standalone transpile 경로도 minify 시 runtime helper 축약 이름 사용.
         .minify_whitespace = options.minify_whitespace,
     });
-    transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
-    transformer.symbols = analyzer.symbols.items;
-    transformer.references = analyzer.references.items;
+    if (analyzer_storage) |*analyzer| {
+        transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+    } else if (binding_lite_storage) |*binding_lite| {
+        transformer.binding_lite = binding_lite;
+    }
     transformer.line_offsets = scanner.line_offsets.items;
     const root = transformer.transform() catch return error.TransformError;
 
@@ -523,6 +911,7 @@ pub fn transpileWithCallback(
     }
 
     if (options.minify_syntax) {
+        const analyzer = &(analyzer_storage.?);
         const minify_mod = @import("transformer/minify.zig");
         const ctx: minify_mod.MinifyCtx = .{
             .symbols = analyzer.symbols.items,
@@ -548,8 +937,6 @@ pub fn transpileWithCallback(
             .final_exports = null,
             .symbol_ids = if (transformer.symbol_ids.items.len > 0)
                 transformer.symbol_ids.items
-            else if (analyzer.symbol_ids.items.len > 0)
-                analyzer.symbol_ids.items
             else
                 &.{},
             // 단일 파일 transpile: codegen 의 scope-hoisted 전용 분기를 타지 않도록 false.
@@ -599,7 +986,7 @@ pub fn transpileWithCallback(
 
     // 7. 런타임 헬퍼 prepend
     const rh = transformer.runtime_helpers;
-    const has_helpers = rh.hasAny();
+    const has_helpers = @as(u32, @bitCast(rh)) != 0;
     const output = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         rt.appendRuntimeHelpers(&buf, arena_alloc, rh, options.minify_whitespace, transformer.runtime_es5_compat) catch
@@ -662,7 +1049,10 @@ pub fn transpileWithCallback(
     errdefer allocator.free(result_code);
 
     // 시맨틱 에러 복사: arena → allocator. 실패 시 이미 복사된 항목들 roll back.
-    const semantic_errors = analyzer.errors.items;
+    const semantic_errors: []const Diagnostic = if (analyzer_storage) |*analyzer|
+        analyzer.errors.items
+    else
+        &.{};
     const owned_diagnostics: []const OwnedDiagnostic = if (semantic_errors.len == 0) &.{} else blk: {
         const buf = allocator.alloc(OwnedDiagnostic, semantic_errors.len) catch return error.OutOfMemory;
         var filled: usize = 0;
@@ -694,4 +1084,355 @@ pub fn transpileWithCallback(
         .diagnostics = owned_diagnostics,
         .line_offsets = owned_line_offsets,
     };
+}
+
+fn testTransformPlan(source: []const u8, file_path: []const u8, options: TranspileOptions) !TransformPlan {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(std.fs.path.extension(file_path));
+    if (parser.source_mode != .ts) {
+        if (options.flow) {
+            parser.is_flow = true;
+            scanner.has_flow_pragma = true;
+            if (!parser.is_module) {
+                parser.is_module = true;
+                scanner.is_module = true;
+                parser.is_unambiguous = true;
+            }
+        } else {
+            parser.configureFlowFromPath(file_path);
+        }
+    }
+    if (options.jsx_in_js and parser.source_mode != .ts) {
+        parser.is_jsx = true;
+    }
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    return buildTransformPlan(options, &parser, &parser.ast, false);
+}
+
+fn expectFastFullParity(source: []const u8, file_path: []const u8, options: TranspileOptions) !void {
+    const plan = try testTransformPlan(source, file_path, options);
+    try std.testing.expectEqual(SemanticRequirement.none, plan.semantic);
+
+    var fast = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        source,
+        file_path,
+        options,
+        null,
+        false,
+    );
+    defer fast.deinit(std.testing.allocator);
+
+    var full = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        source,
+        file_path,
+        options,
+        null,
+        true,
+    );
+    defer full.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings(full.code, fast.code);
+    try std.testing.expectEqual(full.has_helpers, fast.has_helpers);
+    try std.testing.expectEqual(@as(usize, 0), fast.diagnostics.len);
+    try std.testing.expectEqual(@as(usize, 0), full.diagnostics.len);
+}
+
+fn expectBindingFastFullParity(source: []const u8, file_path: []const u8, options: TranspileOptions) !void {
+    const plan = try testTransformPlan(source, file_path, options);
+    try std.testing.expectEqual(SemanticRequirement.bindings, plan.semantic);
+
+    var fast = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        source,
+        file_path,
+        options,
+        null,
+        false,
+    );
+    defer fast.deinit(std.testing.allocator);
+
+    var full = try transpileWithCallbackInternal(
+        std.testing.allocator,
+        source,
+        file_path,
+        options,
+        null,
+        true,
+    );
+    defer full.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings(full.code, fast.code);
+    try std.testing.expectEqual(fast.has_helpers, full.has_helpers);
+    try std.testing.expectEqual(@as(usize, 0), fast.diagnostics.len);
+    try std.testing.expectEqual(@as(usize, 0), full.diagnostics.len);
+}
+
+test "TransformPlan: simple TypeScript strip skips semantic" {
+    const plan = try testTransformPlan(
+        "export const x: number = 1;\nexport function f(v: string): string { return v; }\ninterface Foo { x: number }\ntype Bar = string;\n",
+        "input.ts",
+        .{},
+    );
+
+    try std.testing.expectEqual(SemanticRequirement.none, plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.simple_ts_strip, plan.reason);
+    try std.testing.expect(plan.strip_types_only);
+}
+
+test "TransformPlan: runtime-sensitive syntax keeps full semantic" {
+    const cases = [_]struct {
+        source: []const u8,
+        reason: SemanticPlanReason,
+    }{
+        .{ .source = "enum Color { Red }\n", .reason = .ast_requires_runtime_transform },
+        .{ .source = "namespace N { export const x = 1 }\n", .reason = .ast_requires_runtime_transform },
+        .{ .source = "class C { #x = 1 }\n", .reason = .ast_requires_runtime_transform },
+    };
+
+    for (cases) |case| {
+        const plan = try testTransformPlan(case.source, "input.ts", .{});
+        try std.testing.expectEqual(SemanticRequirement.full, plan.semantic);
+        try std.testing.expectEqual(case.reason, plan.reason);
+    }
+}
+
+test "TransformPlan: named import TypeScript strip uses binding-lite semantic" {
+    const plan = try testTransformPlan(
+        "import { type A, B } from './bar';\nexport const x: A = B();\n",
+        "input.ts",
+        .{},
+    );
+
+    try std.testing.expectEqual(SemanticRequirement.bindings, plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.named_import_binding_elision, plan.reason);
+    try std.testing.expect(plan.strip_types_only);
+}
+
+test "TransformPlan: default and namespace imports keep full semantic" {
+    const default_plan = try testTransformPlan("import Foo from './bar';\nexport const x = 1;\n", "input.ts", .{});
+    try std.testing.expectEqual(SemanticRequirement.full, default_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.import_shape_requires_full_semantic, default_plan.reason);
+
+    const namespace_plan = try testTransformPlan("import * as Foo from './bar';\nexport const x = 1;\n", "input.ts", .{});
+    try std.testing.expectEqual(SemanticRequirement.full, namespace_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.import_shape_requires_full_semantic, namespace_plan.reason);
+}
+
+test "TransformPlan: semantic-sensitive options keep full semantic" {
+    const compat = @import("transformer/compat.zig");
+
+    const minify_plan = try testTransformPlan("export const x: number = 1;\n", "input.ts", .{
+        .minify_identifiers = true,
+    });
+    try std.testing.expectEqual(SemanticRequirement.full, minify_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.option_requires_transform_semantic, minify_plan.reason);
+
+    const cjs_plan = try testTransformPlan("export const x: number = 1;\n", "input.ts", .{
+        .module_format = .cjs,
+    });
+    try std.testing.expectEqual(SemanticRequirement.full, cjs_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.module_format_requires_semantic, cjs_plan.reason);
+
+    const downlevel_plan = try testTransformPlan("export const x: number = 1;\n", "input.ts", .{
+        .unsupported = compat.fromESTarget(.es5),
+        .es_target = .es5,
+    });
+    try std.testing.expectEqual(SemanticRequirement.full, downlevel_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.target_requires_downlevel, downlevel_plan.reason);
+}
+
+test "TransformPlan parity: fast TS strip matches full semantic output" {
+    const cases = [_]struct {
+        name: []const u8,
+        source: []const u8,
+    }{
+        .{
+            .name = "exported const with primitive annotation",
+            .source =
+            \\export const value: number = 1;
+            ,
+        },
+        .{
+            .name = "function params and return annotations",
+            .source =
+            \\export function add(a: number, b: number): number {
+            \\  return a + b;
+            \\}
+            ,
+        },
+        .{
+            .name = "interface and type-only declarations",
+            .source =
+            \\interface User { id: string; age?: number }
+            \\type Maybe<T> = T | null;
+            \\export const id: Maybe<string> = "a";
+            ,
+        },
+        .{
+            .name = "generic function and type parameters",
+            .source =
+            \\export function first<T extends { id: string }>(items: T[]): T | undefined {
+            \\  return items[0];
+            \\}
+            ,
+        },
+        .{
+            .name = "TS expression wrappers",
+            .source =
+            \\const raw: unknown = "value";
+            \\export const a = raw as string;
+            \\export const b = raw satisfies unknown;
+            \\export const c = (raw as string)!;
+            ,
+        },
+        .{
+            .name = "default function declaration",
+            .source =
+            \\export default function main(input: string): string {
+            \\  return input;
+            \\}
+            ,
+        },
+        .{
+            .name = "directives and comments",
+            .source =
+            \\"use client";
+            \\// keep the directive at the top
+            \\export const action: () => void = () => {};
+            ,
+        },
+    };
+
+    for (cases) |case| {
+        expectFastFullParity(case.source, "input.ts", .{}) catch |err| {
+            std.debug.print("fast/full parity failed for case '{s}'\n", .{case.name});
+            return err;
+        };
+    }
+}
+
+test "TransformPlan parity: binding-lite named import elision matches full semantic output" {
+    const cases = [_]struct {
+        name: []const u8,
+        source: []const u8,
+        options: TranspileOptions = .{},
+    }{
+        .{
+            .name = "inline type specifier removed and value specifier kept",
+            .source =
+            \\import { type A, B } from "./lib";
+            \\export const value: A = B();
+            ,
+        },
+        .{
+            .name = "named import used only in type annotation is removed",
+            .source =
+            \\import { A } from "./lib";
+            \\export function f(value: A): void {}
+            ,
+        },
+        .{
+            .name = "named import used in value expression is kept",
+            .source =
+            \\import { B } from "./lib";
+            \\export const value = B();
+            ,
+        },
+        .{
+            .name = "aliased named import follows local binding",
+            .source =
+            \\import { Foo as Bar, Used } from "./lib";
+            \\export type T = Bar;
+            \\export const value = Used();
+            ,
+        },
+        .{
+            .name = "string named import follows alias binding",
+            .source =
+            \\import { "x" as x, y } from "./lib";
+            \\export type T = typeof y;
+            \\export const value = x();
+            ,
+        },
+        .{
+            .name = "multiple declarations and side effect import",
+            .source =
+            \\import "./setup";
+            \\import { A, B } from "./a";
+            \\import { C as D } from "./b";
+            \\export type T = A | D;
+            \\export const value = B();
+            ,
+        },
+        .{
+            .name = "export specifier is value use",
+            .source =
+            \\import { A } from "./lib";
+            \\export { A };
+            ,
+        },
+        .{
+            .name = "verbatim keeps value import but removes inline type specifier",
+            .source =
+            \\import { type A, B } from "./lib";
+            \\export function f(value: A): void {}
+            ,
+            .options = .{ .verbatim_module_syntax = true },
+        },
+    };
+
+    for (cases) |case| {
+        expectBindingFastFullParity(case.source, "input.ts", case.options) catch |err| {
+            std.debug.print("binding-lite parity failed for case '{s}'\n", .{case.name});
+            return err;
+        };
+    }
+}
+
+test "TransformPlan: full-route guards for binding-lite follow-up" {
+    const compat = @import("transformer/compat.zig");
+    const cases = [_]struct {
+        name: []const u8,
+        source: []const u8,
+        path: []const u8 = "input.ts",
+        options: TranspileOptions = .{},
+    }{
+        .{ .name = "default import", .source = "import Foo from './x';\nexport const x = 1;\n" },
+        .{ .name = "namespace import", .source = "import * as Foo from './x';\nexport const x = 1;\n" },
+        .{ .name = "jsx", .source = "import { Foo } from './x';\nexport const x = <Foo />;\n", .path = "input.tsx" },
+        .{ .name = "enum", .source = "import { Foo } from './x';\nenum E { A }\n" },
+        .{ .name = "namespace", .source = "import { Foo } from './x';\nnamespace N { export const x = 1 }\n" },
+        .{ .name = "import equals", .source = "import { Foo } from './x';\nimport Bar = require('bar');\n" },
+        .{ .name = "export assignment", .source = "import { Foo } from './x';\nexport = Foo;\n" },
+        .{ .name = "class", .source = "import { Foo } from './x';\nclass C {}\n" },
+        .{ .name = "private", .source = "import { Foo } from './x';\nconst obj = Foo.#x;\n" },
+        .{ .name = "decorator", .source = "import { Foo } from './x';\n@dec class C {}\n" },
+        .{ .name = "using", .source = "import { Foo } from './x';\nusing resource = Foo();\n" },
+        .{ .name = "minify", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .minify_syntax = true } },
+        .{ .name = "define", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .define = &.{.{ .key = "DEBUG", .value = "false" }} } },
+        .{ .name = "drop", .source = "import { Foo } from './x';\nconsole.log(Foo);\n", .options = .{ .drop_console = true } },
+        .{ .name = "cjs", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .module_format = .cjs } },
+        .{ .name = "downlevel", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .unsupported = compat.fromESTarget(.es5), .es_target = .es5 } },
+        .{ .name = "flow", .source = "import { Foo } from './x';\nexport const x: Foo = 1;\n", .path = "input.js", .options = .{ .flow = true } },
+    };
+
+    for (cases) |case| {
+        const plan = testTransformPlan(case.source, case.path, case.options) catch |err| {
+            std.debug.print("full-route guard parse failed for case '{s}'\n", .{case.name});
+            return err;
+        };
+        std.testing.expectEqual(SemanticRequirement.full, plan.semantic) catch |err| {
+            std.debug.print("full-route guard failed for case '{s}', reason={s}\n", .{ case.name, @tagName(plan.reason) });
+            return err;
+        };
+    }
 }
