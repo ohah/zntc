@@ -17,15 +17,39 @@ fn expectContains(haystack: []const u8, needle: []const u8) !void {
     }
 }
 
-test "codegen_plugin: non-spec filename → null" {
-    const code = "type X = { color: string };";
-    const out = try callTransform(std.testing.allocator, code, "/path/to/foo.ts");
+test "codegen_plugin: non-js/ts extension → null (fast skip)" {
+    const code = "export default codegenNativeComponent<X>('Foo');";
+    const out = try callTransform(std.testing.allocator, code, "/path/foo.css");
     try std.testing.expect(out == null);
 }
 
-test "codegen_plugin: spec filename without codegenNativeComponent → null" {
+test "codegen_plugin: file without codegenNativeComponent marker → null" {
     const code = "type X = { color: string };";
     const out = try callTransform(std.testing.allocator, code, "/path/to/FooNativeComponent.ts");
+    try std.testing.expect(out == null);
+}
+
+test "codegen_plugin: filename without NativeComponent suffix is processed" {
+    // filename suffix 제약 제거 — AST 레벨 (findComponentName) 이 spec 파일 정확히 식별.
+    // 사용자 정의 spec (e.g. `MySpec.ts`) 도 codegenNativeComponent 호출 있으면 변환.
+    const code =
+        \\type NativeProps = { color: string };
+        \\export default codegenNativeComponent<NativeProps>('My');
+    ;
+    const out_opt = try callTransform(std.testing.allocator, code, "/path/MySpec.ts");
+    try std.testing.expect(out_opt != null);
+    const out = out_opt.?;
+    defer std.testing.allocator.free(out);
+    try expectContains(out, "uiViewClassName: 'My'");
+}
+
+test "codegen_plugin: marker present but not in export default → null (AST-level reject)" {
+    // 단순 substring 매치는 통과하지만 AST 레벨에서 export default 가 아니므로 거부.
+    const code =
+        \\const codegenNativeComponent = require('rn');
+        \\const x = codegenNativeComponent('Foo');
+    ;
+    const out = try callTransform(std.testing.allocator, code, "/path/Helper.ts");
     try std.testing.expect(out == null);
 }
 
