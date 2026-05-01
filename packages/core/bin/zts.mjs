@@ -1707,7 +1707,6 @@ async function runTranspile(opts) {
     dropDebugger: opts.drop.includes("debugger"),
     target: opts.target,
     browserslist: opts.browserslist,
-    tsconfigRaw: opts.tsconfigRaw,
   });
 
   if (opts.outfile || opts.outdir) {
@@ -1975,7 +1974,6 @@ async function runBundle(opts, config) {
     mainFields: opts.mainFields.length > 0 ? opts.mainFields : undefined,
     // NAPI 가 tsconfig paths / baseUrl 을 alias 로 변환해 resolver 에 주입하도록 전달.
     tsconfigPath: opts.project,
-    tsconfigRaw: opts.tsconfigRaw,
     banner: opts.banner,
     footer: opts.footer,
     globalName: opts.globalName,

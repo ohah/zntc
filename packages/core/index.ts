@@ -553,8 +553,6 @@ interface BuildOptionsCommon {
    *  - `"none"`: export 출력 안 함.
    */
   outputExports?: "auto" | "named" | "default" | "none";
-  /** tsconfig.json 인라인 JSON 오버라이드 */
-  tsconfigRaw?: string;
   /**
    * tsconfig.json 경로 (파일 또는 디렉토리). 설정 시 compilerOptions 를 자동 로드해서 머지한다.
    * JS 옵션이 명시적으로 설정된 필드가 우선 — 미지정 필드만 tsconfig 값으로 채워진다.

@@ -312,6 +312,9 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     // tsconfig — CLI 용 alias (`--project`, `--tsconfig-path` 둘 다 BuildOptions 의 `tsconfigPath` 와 매핑)
     "--project",
     "--project=",
+    // tsconfig raw — CLI 입력 어댑터. `loadTsConfig` 가 풀어 jsx/target/decorators 등 다른
+    // 옵션으로 변환해 NAPI 로 보냄. BuildOptions 표면에는 없음 (Zig 측 jsx tsconfig 통합 후 노출 검토).
+    "--tsconfig-raw=",
     // RN — CLI 만 노출
     "--rn-platform",
     "--rn-platform=",
