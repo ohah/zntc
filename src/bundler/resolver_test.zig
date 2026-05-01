@@ -55,7 +55,7 @@ test "resolve: exact file" {
     defer std.testing.allocator.free(result.path);
 
     try std.testing.expect(pathEndsWith(result.path, "foo.ts"));
-    try std.testing.expectEqual(ModuleType.javascript, result.module_type);
+    try std.testing.expectEqual(ModuleType.ts, result.module_type);
 }
 
 test "resolve: extension search (.ts)" {

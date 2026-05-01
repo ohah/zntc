@@ -709,7 +709,7 @@ pub fn generateChunks(
 
         const m = graph.getModule(ModuleIndex.fromUsize(mi)) orelse continue;
         // JS 모듈만 청크에 할당 (JSON, CSS 등은 별도 처리)
-        if (m.module_type != .javascript) continue;
+        if (!m.module_type.isJavaScriptLike()) continue;
 
         // 비트가 비어있으면 어떤 엔트리에서도 도달 불가 → 스킵
         if (splitting_info[mi].isEmpty()) continue;
@@ -809,7 +809,7 @@ pub fn generatePreserveModulesChunks(
 
         const m = graph.getModule(ModuleIndex.fromUsize(mi)) orelse continue;
         // JS 모듈만 청크에 할당
-        if (m.module_type != .javascript) continue;
+        if (!m.module_type.isJavaScriptLike()) continue;
 
         // 모듈 1개 = 청크 1개
         // BitSet은 비어있는 상태로 생성 (preserve-modules에서는 reachability 불필요)

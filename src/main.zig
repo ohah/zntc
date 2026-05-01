@@ -632,7 +632,7 @@ fn applyZtsConfigJson(opts: *CliOptions, allocator: std.mem.Allocator) !void {
         try opts.loader_list.append(allocator, .{
             .ext = try allocator.dupe(u8, l.ext),
             .loader = parsed_loader.loader,
-            .js_kind = parsed_loader.js_kind,
+            .module_type = parsed_loader.module_type,
         });
     };
     if (dto.conditions) |list| for (list) |s| {
@@ -1181,7 +1181,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                     try opts.loader_list.append(allocator, .{
                         .ext = ext_str,
                         .loader = parsed_loader.loader,
-                        .js_kind = parsed_loader.js_kind,
+                        .module_type = parsed_loader.module_type,
                     });
                 } else {
                     try stderr.print("zts: unknown loader '{s}' (expected: file, dataurl, base64, text, binary, copy, json, css, empty, js, jsx, ts, tsx)\n", .{loader_str});

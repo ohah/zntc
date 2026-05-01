@@ -28,6 +28,7 @@ const diagnostic = @import("../diagnostic.zig");
 pub const Diagnostic = diagnostic.Diagnostic;
 const scan_results_mod = @import("scan_results.zig");
 pub const scan_results = scan_results_mod;
+const ModuleType = @import("../bundler/types.zig").ModuleType;
 
 /// 재귀 함수용 명시적 에러 타입.
 /// Zig는 재귀 함수에서 `!T` (inferred error set)를 사용할 수 없다.
@@ -127,9 +128,9 @@ pub const Parser = struct {
     /// TypeScript 모드 (.ts/.tsx/.mts). TS에서는 function overload, duplicate export 등이 합법.
     is_ts: bool = false,
 
-    /// 명시적으로 JS/JSX source type 으로 파싱 중이면 TypeScript-only syntax 를 거부한다.
-    /// 기본 standalone parser 는 기존 호환성을 위해 permissive 이고, bundler loader 또는
-    /// standalone transpile filename 이 js/jsx 계열로 확정된 경우에만 활성화한다.
+    /// JS/JSX source type 으로 파싱 중이면 TypeScript-only syntax 를 거부한다.
+    /// standalone transpile 의 filename 생략 기본값도 JS라서 TypeScript 문법은 filename/loader로
+    /// ts/tsx source type을 명시해야 한다.
     reject_ts_syntax_in_js: bool = false,
 
     /// Flow 모드 (.js/.jsx + @flow pragma, .js.flow, 또는 --flow CLI).
@@ -296,17 +297,20 @@ pub const Parser = struct {
         self.applyExtension(ext, false);
     }
 
-    /// 번들러용: 확장자 매칭을 거치지 않고 TS/JSX 플래그를 직접 적용한다.
-    /// `--loader:.foo=tsx` 처럼 확장자와 parser 의미가 어긋날 때 사용.
-    pub fn configureForBundlerKind(self: *Parser, is_ts: bool, is_jsx: bool) void {
-        self.reject_ts_syntax_in_js = !is_ts;
-        if (is_ts) {
+    /// 번들러용: ModuleType이 표현하는 JS 계열 source type으로 TS/JSX 플래그를 적용한다.
+    /// 확장자 기반 module/script 판정은 configureForBundler()가 맡고, 이 함수는 source type만
+    /// 덮어쓴다. `--loader:.foo=tsx` 처럼 확장자와 parser 의미가 어긋날 때 사용한다.
+    pub fn configureForModuleType(self: *Parser, module_type: ModuleType) void {
+        if (!module_type.isJavaScriptLike()) return;
+        const flags = module_type.toParserFlags();
+        self.reject_ts_syntax_in_js = !flags.is_ts;
+        self.is_ts = flags.is_ts;
+        self.is_jsx = flags.is_jsx;
+        if (flags.is_ts) {
             self.is_module = true;
             self.scanner.is_module = true;
             self.is_unambiguous = false;
-            self.is_ts = true;
         }
-        if (is_jsx) self.is_jsx = true;
     }
 
     fn applyExtension(self: *Parser, ext: []const u8, ts_unambiguous: bool) void {
@@ -327,7 +331,6 @@ pub const Parser = struct {
             self.is_jsx = true;
         }
         // 명시 JS 계열 source type 은 TS syntax 를 허용하지 않는다.
-        // `transpile(source)` 기본 filename 은 여전히 input.ts 이므로 기존 permissive 기본값은 유지된다.
         if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx") or
             std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".cjs"))
         {

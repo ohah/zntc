@@ -44,7 +44,7 @@ fn testResolveIdHook(_: ?*anyopaque, specifier: []const u8, _: ?[]const u8, allo
     if (std.mem.eql(u8, specifier, "virtual:config")) {
         return .{ .file = .{
             .path = try allocator.dupe(u8, "/virtual/config.js"),
-            .module_type = .javascript,
+            .module_type = .js,
         } };
     }
     return null;
@@ -629,13 +629,13 @@ const ModuleType = @import("types.zig").ModuleType;
 test "ResolvedModule: file variant 보존" {
     const m: ResolvedModule = .{ .file = .{
         .path = "/abs/foo.ts",
-        .module_type = .javascript,
+        .module_type = .ts,
         .is_module_field = true,
     } };
     switch (m) {
         .file => |f| {
             try std.testing.expectEqualStrings("/abs/foo.ts", f.path);
-            try std.testing.expectEqual(ModuleType.javascript, f.module_type);
+            try std.testing.expectEqual(ModuleType.ts, f.module_type);
             try std.testing.expect(f.is_module_field);
         },
         else => return error.TestUnexpectedResult,
@@ -664,11 +664,11 @@ test "ResolvedModule: virtual / dataurl / external / disabled / custom variant" 
         else => return error.TestUnexpectedResult,
     }
 
-    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js", .module_type = .javascript } };
+    const dis: ResolvedModule = .{ .disabled = .{ .path = "/abs/disabled.js", .module_type = .js } };
     switch (dis) {
         .disabled => |x| {
             try std.testing.expectEqualStrings("/abs/disabled.js", x.path);
-            try std.testing.expectEqual(ModuleType.javascript, x.module_type);
+            try std.testing.expectEqual(ModuleType.js, x.module_type);
         },
         else => return error.TestUnexpectedResult,
     }

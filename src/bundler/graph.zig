@@ -344,7 +344,7 @@ pub const ModuleGraph = struct {
     fn resolveLoader(self: *const ModuleGraph, ext: []const u8) types.ParsedLoader {
         for (self.loader_overrides) |override| {
             if (std.mem.eql(u8, override.ext, ext)) {
-                return .{ .loader = override.loader, .js_kind = override.js_kind };
+                return .{ .loader = override.loader, .module_type = override.module_type };
             }
         }
         return types.ParsedLoader.fromExtension(ext);
@@ -757,8 +757,7 @@ pub const ModuleGraph = struct {
         // 로더 결정: --loader 오버라이드 → 확장자 기본값
         const parsed_loader = self.resolveLoader(ext);
         module.loader = parsed_loader.loader;
-        module.js_parser_kind = parsed_loader.js_kind;
-        module.module_type = moduleTypeForLoader(module.module_type, module.loader);
+        module.module_type = parsed_loader.module_type orelse moduleTypeForLoader(module.module_type, module.loader);
         try self.modules.append(self.allocator, module);
         try self.path_to_module.put(path_owned, index);
 
@@ -782,7 +781,7 @@ pub const ModuleGraph = struct {
 
         const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
         var module = Module.init(index, disabled_path);
-        module.module_type = .javascript;
+        module.module_type = .js;
         module.exports_kind = .commonjs;
         module.wrap_kind = .cjs;
         module.is_disabled = true;
@@ -804,7 +803,7 @@ pub const ModuleGraph = struct {
         const path_owned = try self.allocator.dupe(u8, specifier);
         var module = Module.init(index, path_owned);
         module.is_external = true;
-        module.module_type = .javascript;
+        module.module_type = .js;
         module.exports_kind = .esm;
         module.side_effects = true;
         module.state = .ready;
@@ -1247,10 +1246,11 @@ pub const ModuleGraph = struct {
                 const arena_alloc = tmp_arena.allocator();
                 if (plugin_result.loader) |loader_override| {
                     module.loader = loader_override;
-                    module.js_parser_kind = plugin_result.js_kind;
+                    module.module_type = plugin_result.module_type orelse
+                        moduleTypeForLoader(ModuleType.fromExtension(std.fs.path.extension(module.path)), loader_override);
                     if (self.assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path)) |expr| {
                         module.source = expr;
-                        module.module_type = .javascript;
+                        module.module_type = .js;
                         module.exports_kind = .commonjs;
                         module.wrap_kind = .cjs;
                         module.side_effects = false;
@@ -1261,10 +1261,9 @@ pub const ModuleGraph = struct {
                     module.source = plugin_result.contents;
                 } else {
                     module.loader = .javascript;
-                    module.js_parser_kind = types.JsParserKind.fromExtension(std.fs.path.extension(module.path));
+                    module.module_type = .js;
                     module.source = plugin_result.contents;
                 }
-                module.module_type = .javascript;
                 // module_type 분기를 건너뛰고 JS 파싱 경로로 직접 이동
                 // (아래 "모듈별 Arena" 블록은 parse_arena가 이미 설정되어 있으므로 건너뜀)
             } else {
@@ -1369,7 +1368,7 @@ pub const ModuleGraph = struct {
             return;
         }
 
-        if (module.module_type != .javascript) {
+        if (!module.module_type.isJavaScriptLike()) {
             // loader=.none + 알 수 없는 확장자: 빌드 에러 (esbuild 호환)
             if (module.loader == .none and module.module_type != .css) {
                 self.addDiag(.no_loader, .@"error", module.path, Span.EMPTY, .parse, "No loader is configured for this file type", null);
@@ -1984,19 +1983,13 @@ pub const ModuleGraph = struct {
     }
 
     fn configureParserForModule(parser: *Parser, module: *const Module, ext: []const u8) void {
-        if (module.js_parser_kind) |kind| {
-            parser.configureForBundlerKind(
-                kind.isTypeScript(),
-                kind == .jsx or kind == .tsx,
-            );
-            return;
-        }
         parser.configureForBundler(ext);
+        parser.configureForModuleType(module.module_type);
     }
 
     fn moduleTypeForLoader(default_type: ModuleType, loader: types.Loader) ModuleType {
         return switch (loader) {
-            .javascript => .javascript,
+            .javascript => if (default_type.isJavaScriptLike()) default_type else .js,
             .json => .json,
             .css => .css,
             .none => default_type,
@@ -2005,10 +1998,7 @@ pub const ModuleGraph = struct {
     }
 
     fn isTypeScriptModule(module: *const Module) bool {
-        const kind = module.js_parser_kind orelse
-            types.JsParserKind.fromExtension(std.fs.path.extension(module.path)) orelse
-            return false;
-        return kind.isTypeScript();
+        return module.module_type.isTypeScript();
     }
 
     fn isFlowPath(path: []const u8) bool {
@@ -2798,7 +2788,7 @@ pub const ModuleGraph = struct {
 
     /// Asset 로더 모듈을 파싱한다.
     /// 파일을 읽어서 로더 타입에 따라 fake JS 소스를 생성하고,
-    /// module_type을 .javascript로 바꿔서 기존 파이프라인을 그대로 탄다.
+    /// module_type을 .js로 바꿔서 기존 JS 파이프라인을 그대로 탄다.
     ///
     /// asset_registry 모드의 .file/.copy는 loader를 .javascript로 바꿔 fall-through
     /// 신호를 보내고, 호출자가 일반 JS 파이프라인을 이어 실행한다.
@@ -2911,9 +2901,8 @@ pub const ModuleGraph = struct {
                         module.state = .ready;
                         return;
                     };
-                    module.module_type = .javascript;
+                    module.module_type = .js;
                     module.loader = .javascript;
-                    module.js_parser_kind = .js;
                     return;
                 }
 
@@ -2933,7 +2922,7 @@ pub const ModuleGraph = struct {
 
         // JSON 모듈과 동일한 CJS wrap 패턴: linker가 import 바인딩을 자동으로 연결.
         // source에는 값 표현식만 저장되고, emitter가 var/module.exports 형태로 출력.
-        module.module_type = .javascript;
+        module.module_type = .js;
         module.exports_kind = .commonjs;
         module.wrap_kind = .cjs;
         module.side_effects = false;

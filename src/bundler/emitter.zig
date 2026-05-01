@@ -279,7 +279,7 @@ pub fn emitWithTreeShaking(
     for (0..graph.moduleCount()) |i| {
         const m = graph.getModule(ModuleIndex.fromUsize(i)) orelse continue;
         const is_asset = m.loader.isAsset() and m.source.len > 0;
-        const is_js = (m.module_type == .javascript or m.module_type == .json) and (m.ast != null or m.is_disabled or is_asset);
+        const is_js = (m.module_type.isJavaScriptLike() or m.module_type == .json) and (m.ast != null or m.is_disabled or is_asset);
         if (is_js) {
             // tree-shaking: 미포함 모듈 스킵
             if (shaker) |s| {

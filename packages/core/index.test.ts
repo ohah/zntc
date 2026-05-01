@@ -34,10 +34,18 @@ afterAll(() => {
 });
 
 describe("@zts/core", () => {
-  test("기본 TypeScript 트랜스파일", () => {
-    const result = transpile("const x: number = 1;");
+  test("기본 standalone transpile은 JS로 파싱해 TypeScript syntax를 거부", () => {
+    expect(() => transpile("const x: number = 1;")).toThrow("ParseError");
+  });
+
+  test("명시적 TypeScript filename은 TypeScript syntax를 허용", () => {
+    const result = transpile("const x: number = 1;", { filename: "input.ts" });
     expect(result.code).toContain("const x = 1;");
     expect(result.map).toBeUndefined();
+  });
+
+  test("transpile: 명시적 .ts filename은 JSX syntax를 거부", () => {
+    expect(() => transpile("const x = <div />;", { filename: "input.ts" })).toThrow("ParseError");
   });
 
   test("transpile: 명시적 .js/.jsx filename은 TypeScript syntax를 거부", () => {
@@ -59,19 +67,23 @@ describe("@zts/core", () => {
   });
 
   test("인터페이스 스트리핑", () => {
-    const result = transpile("interface Foo { bar: string; }\nconst x = 1;");
+    const result = transpile("interface Foo { bar: string; }\nconst x = 1;", {
+      filename: "input.ts",
+    });
     expect(result.code).not.toContain("interface");
     expect(result.code).toContain("const x = 1;");
   });
 
   test("타입 어노테이션 제거", () => {
-    const result = transpile("function add(a: number, b: number): number { return a + b; }");
+    const result = transpile("function add(a: number, b: number): number { return a + b; }", {
+      filename: "input.ts",
+    });
     expect(result.code).toContain("function add(a,b)");
     expect(result.code).not.toContain(": number");
   });
 
   test("enum 변환", () => {
-    const result = transpile("enum Color { Red, Green, Blue }");
+    const result = transpile("enum Color { Red, Green, Blue }", { filename: "input.ts" });
     expect(result.code).toContain("Color");
   });
 
@@ -92,7 +104,7 @@ describe("@zts/core", () => {
   });
 
   test("소스맵 생성", () => {
-    const result = transpile("const x: number = 1;", { sourcemap: true });
+    const result = transpile("const x: number = 1;", { filename: "input.ts", sourcemap: true });
     expect(result.code).toContain("const x = 1;");
     expect(result.map).toBeDefined();
     const map = JSON.parse(result.map!);
@@ -102,6 +114,7 @@ describe("@zts/core", () => {
 
   test("minify", () => {
     const result = transpile("const   x: number   =   1;", {
+      filename: "input.ts",
       minifyWhitespace: true,
     });
     expect(result.code.length).toBeLessThan("const   x   =   1;".length);
@@ -109,6 +122,7 @@ describe("@zts/core", () => {
 
   test("CJS 포맷", () => {
     const result = transpile('export const x = 1; export default "hello";', {
+      filename: "input.ts",
       format: "cjs",
     });
     expect(result.code).toContain("exports");
@@ -154,6 +168,7 @@ describe("@zts/core", () => {
 
   test("minify 단축 옵션 (whitespace + identifiers + syntax)", () => {
     const result = transpile("const   longVariableName: number   =   1;", {
+      filename: "input.ts",
       minify: true,
     });
     expect(result.code.length).toBeLessThan("const longVariableName = 1;".length);
@@ -196,7 +211,7 @@ describe("@zts/core", () => {
   });
 
   test("platform node", () => {
-    const result = transpile("const x: number = 1;", { platform: "node" });
+    const result = transpile("const x: number = 1;", { filename: "input.ts", platform: "node" });
     expect(result.code).toContain("const x = 1;");
   });
 
@@ -230,7 +245,7 @@ describe("@zts/core", () => {
 
   test("여러 번 호출해도 메모리 누수 없이 동작", () => {
     for (let i = 0; i < 100; i++) {
-      const result = transpile(`const x${i}: number = ${i};`);
+      const result = transpile(`const x${i}: number = ${i};`, { filename: "input.ts" });
       expect(result.code).toContain(`const x${i} = ${i};`);
     }
   });
@@ -858,35 +873,38 @@ describe("@zts/core edge cases", () => {
   // transpile 엣지케이스
   test("매우 긴 소스코드 트랜스파일", () => {
     const lines = Array.from({ length: 10000 }, (_, i) => `export const v${i}: number = ${i};`);
-    const result = transpile(lines.join("\n"));
+    const result = transpile(lines.join("\n"), { filename: "input.ts" });
     expect(result.code).toContain("v9999 = 9999");
   });
 
   test("유니코드 소스코드", () => {
-    const result = transpile('const 이름: string = "한글 테스트";');
+    const result = transpile('const 이름: string = "한글 테스트";', { filename: "input.ts" });
     expect(result.code).toContain("한글 테스트");
   });
 
   test("빈 인터페이스만 있는 파일", () => {
-    const result = transpile("interface Empty {}\n");
+    const result = transpile("interface Empty {}\n", { filename: "input.ts" });
     expect(result.code.trim()).toBe("");
   });
 
   test("타입만 있는 파일", () => {
-    const result = transpile("type Foo = string;\ntype Bar = number;\n");
+    const result = transpile("type Foo = string;\ntype Bar = number;\n", { filename: "input.ts" });
     expect(result.code.trim()).toBe("");
   });
 
   test("복잡한 제네릭 타입", () => {
     const result = transpile(
       "function identity<T extends Record<string, unknown>>(x: T): T { return x; }",
+      { filename: "input.ts" },
     );
     expect(result.code).toContain("function identity(x)");
     expect(result.code).not.toContain("<T");
   });
 
   test("enum + namespace 병합", () => {
-    const result = transpile("enum Direction { Up, Down }\nconst d: Direction = Direction.Up;");
+    const result = transpile("enum Direction { Up, Down }\nconst d: Direction = Direction.Up;", {
+      filename: "input.ts",
+    });
     expect(result.code).toContain("Direction");
   });
 
@@ -898,7 +916,7 @@ describe("@zts/core edge cases", () => {
   test("decorator (experimental)", () => {
     const result = transpile(
       "@sealed\nclass Greeter {\n  greeting: string;\n  constructor(message: string) { this.greeting = message; }\n}",
-      { experimentalDecorators: true },
+      { filename: "input.ts", experimentalDecorators: true },
     );
     expect(result.code).toContain("__decorate");
   });
@@ -907,6 +925,7 @@ describe("@zts/core edge cases", () => {
     const result = transpile(
       "const longVariableName: number = 42;\nconsole.log(longVariableName);",
       {
+        filename: "input.ts",
         sourcemap: true,
         minify: true,
       },
@@ -1446,7 +1465,7 @@ describe("@zts/core ES2023/hashbang", () => {
   });
 
   test("hashbang 없는 파일에서 es2022 타겟 — 정상 동작", () => {
-    const result = transpile("const x: number = 1;", { target: "es2022" });
+    const result = transpile("const x: number = 1;", { filename: "input.ts", target: "es2022" });
     expect(result.code).toContain("const x = 1");
   });
 
@@ -2496,6 +2515,24 @@ describe("BuildOptions: 누락 옵션 노출 (#1005)", () => {
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).not.toContain(": number");
     expect(await runBundleStdout(result.outputFiles[0].text)).toBe("1");
+  });
+
+  test("loader: .foo=ts → JSX syntax를 거부", async () => {
+    writeFileSync(
+      join(dir, "entry-loader-ts-no-jsx.ts"),
+      'import { value } from "./view-ts-no-jsx.foo";\nconsole.log(value);',
+    );
+    writeFileSync(
+      join(dir, "view-ts-no-jsx.foo"),
+      "const h = (tag) => tag;\nexport const value = <div />;",
+    );
+    const result = await build({
+      entryPoints: [join(dir, "entry-loader-ts-no-jsx.ts")],
+      loader: { ".foo": "ts" },
+      jsx: "classic",
+      jsxFactory: "h",
+    });
+    expect(result.errors.length).toBeGreaterThan(0);
   });
 
   test("loader: .foo=tsx → 커스텀 확장자에서 TSX를 파싱", async () => {
@@ -6555,6 +6592,12 @@ describe("@zts/core plugin onLoad loader", () => {
     const tsResult = await runOnLoadCase("ts", "export const value: number = 1;");
     expect(tsResult.errors.length).toBe(0);
     expect(await runBundleStdout(tsResult.outputFiles[0].text)).toBe("1");
+
+    const tsJsxResult = await runOnLoadCase(
+      "ts",
+      "const h = (tag) => tag;\nexport const value = <div />;",
+    );
+    expect(tsJsxResult.errors.length).toBeGreaterThan(0);
 
     const jsxResult = await runOnLoadCase(
       "jsx",

@@ -275,7 +275,7 @@ pub const Resolver = struct {
             }
             // target=null → 빈 모듈 (webpack `false`)
             const path_dup = self.allocator.dupe(u8, specifier) catch return error.OutOfMemory;
-            return .{ .path = path_dup, .module_type = .javascript, .disabled = true };
+            return .{ .path = path_dup, .module_type = .js, .disabled = true };
         }
         return null;
     }

@@ -359,9 +359,9 @@ pub const ResolveCache = struct {
                         defer if (thread_safe) self.cache_mutex.unlock();
                         self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
                             .path = self.allocator.dupe(u8, disabled_path) catch return error.OutOfMemory,
-                            .module_type = .javascript,
+                            .module_type = .js,
                         } } }) catch {};
-                        return disabledResult(disabled_path, .javascript);
+                        return disabledResult(disabled_path, .js);
                     },
                     .remap => |rep| {
                         remap_buf[remap_depth] = effective_spec;

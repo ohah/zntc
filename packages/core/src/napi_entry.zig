@@ -112,7 +112,7 @@ fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
 
     // filename (필수)
     const filename = getStringArg(env, argv[1], native_alloc) orelse
-        native_alloc.dupe(u8, "input.ts") catch {
+        native_alloc.dupe(u8, "input.js") catch {
         return throwError(env, "OutOfMemory");
     };
     defer native_alloc.free(filename);
@@ -927,7 +927,7 @@ const NapiPlugin = struct {
         /// onLoad callback 의 `loader: 'text' | 'binary' | 'tsx' | ...`. (#2157)
         /// ParsedLoader.fromString 으로 변환된 결과. null = override 안 함.
         loader_override: ?bundler_mod.types.Loader = null,
-        loader_js_kind: ?bundler_mod.types.JsParserKind = null,
+        loader_module_type: ?bundler_mod.types.ModuleType = null,
     };
 
     /// Per-call 요청 컨텍스트. 여러 워커 스레드가 동시에 호출해도 안전.
@@ -985,7 +985,7 @@ const NapiPlugin = struct {
                 defer native_alloc.free(loader_str);
                 if (bundler_mod.types.ParsedLoader.fromString(loader_str)) |parsed_loader| {
                     resp.loader_override = parsed_loader.loader;
-                    resp.loader_js_kind = parsed_loader.js_kind;
+                    resp.loader_module_type = parsed_loader.module_type;
                 }
             }
         }
@@ -1169,14 +1169,14 @@ const NapiPlugin = struct {
             const id_path = resp.resolved_path orelse specifier;
             return .{ .disabled = .{
                 .path = alloc.dupe(u8, id_path) catch return error.OutOfMemory,
-                .module_type = .javascript,
+                .module_type = .js,
             } };
         }
 
         if (resp.resolved_path) |path| {
             return .{ .file = .{
                 .path = alloc.dupe(u8, path) catch return error.OutOfMemory,
-                .module_type = .javascript,
+                .module_type = .js,
             } };
         }
         return null;
@@ -1192,7 +1192,7 @@ const NapiPlugin = struct {
             return error.OutOfMemory;
         };
         native_alloc.free(result_code);
-        return .{ .contents = contents, .loader = resp.loader_override, .js_kind = resp.loader_js_kind };
+        return .{ .contents = contents, .loader = resp.loader_override, .module_type = resp.loader_module_type };
     }
 
     fn pluginTransform(ctx: ?*anyopaque, code: []const u8, id: []const u8, alloc: std.mem.Allocator) PluginError!?[]const u8 {
@@ -3377,7 +3377,7 @@ fn parseBuildOptions(
             overrides[valid_count] = .{
                 .ext = pair[0],
                 .loader = parsed_loader.loader,
-                .js_kind = parsed_loader.js_kind,
+                .module_type = parsed_loader.module_type,
             };
             valid_count += 1;
         }
@@ -3768,7 +3768,7 @@ fn napiBenchmark(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     const arena_alloc = arena.allocator();
 
     const filename = getObjectString(env, opts_obj, "filename", arena_alloc) orelse
-        arena_alloc.dupe(u8, "input.ts") catch return throwError(env, "OutOfMemory");
+        arena_alloc.dupe(u8, "input.js") catch return throwError(env, "OutOfMemory");
 
     const source_owned: []const u8 = blk: {
         if (getObjectString(env, opts_obj, "source", arena_alloc)) |s| break :blk s;

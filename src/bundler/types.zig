@@ -338,28 +338,75 @@ pub const ChunkIndex = enum(u32) {
 /// 파일 확장자 또는 설정에 의해 결정되는 모듈 타입.
 /// ParserAndGenerator 패턴(rspack)의 기반.
 pub const ModuleType = enum {
-    javascript,
+    js,
+    jsx,
+    ts,
+    tsx,
     json,
     css,
     asset,
     unknown,
 
+    pub const ParserFlags = struct {
+        is_ts: bool,
+        is_jsx: bool,
+    };
+
     /// 파일 확장자로부터 모듈 타입을 추론한다.
     pub fn fromExtension(ext: []const u8) ModuleType {
-        if (std.mem.eql(u8, ext, ".ts") or
-            std.mem.eql(u8, ext, ".tsx") or
-            std.mem.eql(u8, ext, ".js") or
-            std.mem.eql(u8, ext, ".jsx") or
+        if (std.mem.eql(u8, ext, ".js") or
             std.mem.eql(u8, ext, ".mjs") or
+            std.mem.eql(u8, ext, ".cjs"))
+        {
+            return .js;
+        }
+        if (std.mem.eql(u8, ext, ".jsx")) return .jsx;
+        if (std.mem.eql(u8, ext, ".ts") or
             std.mem.eql(u8, ext, ".mts") or
-            std.mem.eql(u8, ext, ".cjs") or
             std.mem.eql(u8, ext, ".cts"))
         {
-            return .javascript;
+            return .ts;
         }
+        if (std.mem.eql(u8, ext, ".tsx")) return .tsx;
         if (std.mem.eql(u8, ext, ".json")) return .json;
         if (std.mem.eql(u8, ext, ".css")) return .css;
         return .unknown;
+    }
+
+    pub fn fromLoaderString(s: []const u8) ?ModuleType {
+        if (std.mem.eql(u8, s, "js")) return .js;
+        if (std.mem.eql(u8, s, "jsx")) return .jsx;
+        if (std.mem.eql(u8, s, "ts")) return .ts;
+        if (std.mem.eql(u8, s, "tsx")) return .tsx;
+        return null;
+    }
+
+    pub fn isJavaScriptLike(self: ModuleType) bool {
+        return switch (self) {
+            .js, .jsx, .ts, .tsx => true,
+            else => false,
+        };
+    }
+
+    pub fn isTypeScript(self: ModuleType) bool {
+        return switch (self) {
+            .ts, .tsx => true,
+            else => false,
+        };
+    }
+
+    pub fn isJsx(self: ModuleType) bool {
+        return switch (self) {
+            .jsx, .tsx => true,
+            else => false,
+        };
+    }
+
+    pub fn toParserFlags(self: ModuleType) ParserFlags {
+        return .{
+            .is_ts = self.isTypeScript(),
+            .is_jsx = self.isJsx(),
+        };
     }
 };
 
@@ -471,7 +518,7 @@ pub const Loader = enum {
     }
 
     /// 문자열에서 Loader enum으로 변환 (CLI 파싱용).
-    /// esbuild/rolldown 호환 — js/jsx/ts/tsx 4 string 모두 `.javascript` 로 normalize.
+    /// JS 계열 문자열(js/jsx/ts/tsx)은 ParsedLoader가 module_type으로 처리한다.
     pub fn fromString(s: []const u8) ?Loader {
         if (std.mem.eql(u8, s, "file")) return .file;
         if (std.mem.eql(u8, s, "dataurl")) return .dataurl;
@@ -482,10 +529,6 @@ pub const Loader = enum {
         if (std.mem.eql(u8, s, "json")) return .json;
         if (std.mem.eql(u8, s, "css")) return .css;
         if (std.mem.eql(u8, s, "empty")) return .empty;
-        if (std.mem.eql(u8, s, "js")) return .javascript;
-        if (std.mem.eql(u8, s, "jsx")) return .javascript;
-        if (std.mem.eql(u8, s, "ts")) return .javascript;
-        if (std.mem.eql(u8, s, "tsx")) return .javascript;
         return null;
     }
 
@@ -499,68 +542,26 @@ pub const Loader = enum {
     }
 };
 
-/// JS-family loader strings choose parser/transform syntax while still using
-/// the `.javascript` bundler loader.
-pub const JsParserKind = enum {
-    js,
-    jsx,
-    ts,
-    tsx,
-
-    pub fn fromExtension(ext: []const u8) ?JsParserKind {
-        if (std.mem.eql(u8, ext, ".ts") or
-            std.mem.eql(u8, ext, ".mts") or
-            std.mem.eql(u8, ext, ".cts"))
-        {
-            return .ts;
-        }
-        if (std.mem.eql(u8, ext, ".tsx")) return .tsx;
-        if (std.mem.eql(u8, ext, ".jsx")) return .jsx;
-        if (std.mem.eql(u8, ext, ".js") or
-            std.mem.eql(u8, ext, ".mjs") or
-            std.mem.eql(u8, ext, ".cjs"))
-        {
-            return .js;
-        }
-        return null;
-    }
-
-    pub fn fromString(s: []const u8) ?JsParserKind {
-        if (std.mem.eql(u8, s, "js")) return .js;
-        if (std.mem.eql(u8, s, "jsx")) return .jsx;
-        if (std.mem.eql(u8, s, "ts")) return .ts;
-        if (std.mem.eql(u8, s, "tsx")) return .tsx;
-        return null;
-    }
-
-    pub fn isTypeScript(self: JsParserKind) bool {
-        return switch (self) {
-            .ts, .tsx => true,
-            .js, .jsx => false,
-        };
-    }
-};
-
 pub const ParsedLoader = struct {
     loader: Loader,
-    js_kind: ?JsParserKind = null,
+    module_type: ?ModuleType = null,
 
     pub fn fromExtension(ext: []const u8) ParsedLoader {
         const loader = Loader.fromExtension(ext);
         return .{
             .loader = loader,
-            .js_kind = if (loader == .javascript) JsParserKind.fromExtension(ext) else null,
+            .module_type = if (loader == .javascript) ModuleType.fromExtension(ext) else null,
         };
     }
 
     pub fn fromString(s: []const u8) ?ParsedLoader {
-        if (JsParserKind.fromString(s)) |js_kind| {
-            return .{ .loader = .javascript, .js_kind = js_kind };
+        if (ModuleType.fromLoaderString(s)) |module_type| {
+            return .{ .loader = .javascript, .module_type = module_type };
         }
         const loader = Loader.fromString(s) orelse return null;
         return .{
             .loader = loader,
-            .js_kind = if (loader == .javascript) .js else null,
+            .module_type = null,
         };
     }
 };
@@ -571,8 +572,8 @@ pub const LoaderOverride = struct {
     ext: []const u8,
     /// 적용할 로더
     loader: Loader,
-    /// JS 계열 loader 문자열이 선택한 parser kind.
-    js_kind: ?JsParserKind = null,
+    /// JS 계열 loader 문자열이 선택한 source type.
+    module_type: ?ModuleType = null,
 };
 
 // ============================================================
