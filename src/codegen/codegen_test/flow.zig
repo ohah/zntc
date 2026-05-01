@@ -380,3 +380,53 @@ test "Flow: Metro smoke — full module with all Flow features" {
 }
 
 // ============================================================
+
+// ===== Flow enum (#2401) — codegen e2e =====
+
+test "Flow enum: default → Object.freeze with Symbol values" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\enum Status { Active, Inactive }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Status=Object.freeze({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Active:Symbol(\"Active\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Inactive:Symbol(\"Inactive\")") != null);
+}
+
+test "Flow enum: of string → Object.freeze with string values" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\enum Color of string { Red = 'red', Blue = 'blue' }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Color=Object.freeze({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Red:\"red\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Blue:\"blue\"") != null);
+}
+
+test "Flow enum: of number → Object.freeze with number values" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\enum Level of number { Low = 1, High = 10 }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Low:1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "High:10") != null);
+}
+
+test "Flow enum: of boolean" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\enum Toggle of boolean { On = true, Off = false }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "On:true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Off:false") != null);
+}
+
+test "Flow enum: usage 후 frozen object 비교 작동" {
+    // Object.freeze 결과는 일반 object — `Status.Active` 접근, `===` 비교 가능.
+    var r = try e2eFlow(std.testing.allocator,
+        \\enum Color of string { Red = 'red' }
+        \\const x = Color.Red;
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const x=Color.Red") != null);
+}
