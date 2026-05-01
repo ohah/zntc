@@ -1145,24 +1145,47 @@ fn wrapLineLimit(
     wrapped = .empty;
 }
 
+/// breaks 는 wrapLineLimit 가 emit 순서대로 append — `(line, column)` 오름차순.
+/// mappings 도 같은 순서로 정렬하면 두 배열을 한 번씩만 훑는 merge-style 스캔이 가능
+/// (O(M log M) sort + O(M + B)). 정렬 후 line shift 는 monotonic 이므로 결과도 정렬
+/// 상태를 유지하므로 builder 의 `is_sorted` 를 true 로 마킹해 encode 단계의 재정렬을
+/// 생략한다 — vue/effect 같은 큰 번들에서 수백 ms~수 s 절감 (line-limit=40 기준).
 fn adjustMappingsForLineWraps(sm: *SourceMap.SourceMapBuilder, breaks: []const WrapBreak) void {
+    if (breaks.len == 0 or sm.mappings.items.len == 0) return;
+
+    if (!sm.is_sorted) {
+        std.mem.sort(SourceMap.Mapping, sm.mappings.items, {}, SourceMap.Mapping.lessThan);
+        sm.is_sorted = true;
+    }
+
+    var break_idx: usize = 0;
+    var lines_before: u32 = 0;
+    var current_line: u32 = 0;
+    // 같은 generated_line 위의 마지막 break col — 다음 mapping 도 같은 라인이면 그대로
+    // 재사용 (break_idx 가 이미 해당 break 를 통과해도 sticky).
+    var last_break_col_on_line: ?u32 = null;
     for (sm.mappings.items) |*mapping| {
-        var added_lines: u32 = 0;
-        var last_break_col: ?u32 = null;
-        for (breaks) |br| {
-            if (br.line < mapping.generated_line) {
-                added_lines += 1;
-            } else if (br.line == mapping.generated_line and br.column < mapping.generated_column) {
-                added_lines += 1;
-                last_break_col = br.column;
-            } else if (br.line > mapping.generated_line) {
-                break;
-            }
+        if (mapping.generated_line != current_line) {
+            current_line = mapping.generated_line;
+            last_break_col_on_line = null;
         }
-        if (last_break_col) |col| {
+        // mapping 의 (line, col) 직전까지 break 커서 전진. mappings 가 오름차순이므로
+        // break_idx 는 절대 되감기지 않음.
+        while (break_idx < breaks.len) {
+            const br = breaks[break_idx];
+            if (br.line < current_line) {
+                lines_before += 1;
+                break_idx += 1;
+            } else if (br.line == current_line and br.column < mapping.generated_column) {
+                lines_before += 1;
+                last_break_col_on_line = br.column;
+                break_idx += 1;
+            } else break;
+        }
+        if (last_break_col_on_line) |col| {
             mapping.generated_column -= col + 1;
         }
-        mapping.generated_line += added_lines;
+        mapping.generated_line += lines_before;
     }
 }
 
