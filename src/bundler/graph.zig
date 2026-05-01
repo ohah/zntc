@@ -1984,7 +1984,10 @@ pub const ModuleGraph = struct {
 
     fn configureParserForModule(parser: *Parser, module: *const Module, ext: []const u8) void {
         parser.configureForBundler(ext);
-        parser.configureForModuleType(module.module_type);
+        if (module.module_type.isJavaScriptLike()) {
+            const flags = module.module_type.toParserFlags();
+            parser.configureForBundlerKind(flags.is_ts, flags.is_jsx);
+        }
     }
 
     fn moduleTypeForLoader(default_type: ModuleType, loader: types.Loader) ModuleType {

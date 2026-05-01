@@ -28,7 +28,6 @@ const diagnostic = @import("../diagnostic.zig");
 pub const Diagnostic = diagnostic.Diagnostic;
 const scan_results_mod = @import("scan_results.zig");
 pub const scan_results = scan_results_mod;
-const ModuleType = @import("../bundler/types.zig").ModuleType;
 
 /// 재귀 함수용 명시적 에러 타입.
 /// Zig는 재귀 함수에서 `!T` (inferred error set)를 사용할 수 없다.
@@ -297,16 +296,16 @@ pub const Parser = struct {
         self.applyExtension(ext, false);
     }
 
-    /// 번들러용: ModuleType이 표현하는 JS 계열 source type으로 TS/JSX 플래그를 적용한다.
+    /// 번들러용: 확장자 매칭을 거치지 않고 TS/JSX 플래그를 직접 덮어쓴다.
     /// 확장자 기반 module/script 판정은 configureForBundler()가 맡고, 이 함수는 source type만
-    /// 덮어쓴다. `--loader:.foo=tsx` 처럼 확장자와 parser 의미가 어긋날 때 사용한다.
-    pub fn configureForModuleType(self: *Parser, module_type: ModuleType) void {
-        if (!module_type.isJavaScriptLike()) return;
-        const flags = module_type.toParserFlags();
-        self.reject_ts_syntax_in_js = !flags.is_ts;
-        self.is_ts = flags.is_ts;
-        self.is_jsx = flags.is_jsx;
-        if (flags.is_ts) {
+    /// 갱신한다. `--loader:.foo=tsx` 또는 `--loader:.ts=js`처럼 확장자와 parser 의미가
+    /// 어긋날 때 사용. parser는 standalone 모듈이라 bundler의 ModuleType 을 직접 참조하지
+    /// 않고 호출자가 (is_ts, is_jsx) 로 변환해서 넘긴다.
+    pub fn configureForBundlerKind(self: *Parser, is_ts: bool, is_jsx: bool) void {
+        self.is_ts = is_ts;
+        self.is_jsx = is_jsx;
+        self.reject_ts_syntax_in_js = !is_ts;
+        if (is_ts) {
             self.is_module = true;
             self.scanner.is_module = true;
             self.is_unambiguous = false;
@@ -314,8 +313,6 @@ pub const Parser = struct {
     }
 
     fn applyExtension(self: *Parser, ext: []const u8, ts_unambiguous: bool) void {
-        // is_module/is_unambiguous 분기는 .mts/.mjs vs .ts/.tsx 차이를 봐야 해서
-        // ModuleType 으로 표현되지 않는다. source type 분류만 ModuleType 에 위임.
         if (std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".mjs")) {
             self.is_module = true;
             self.scanner.is_module = true;
@@ -324,10 +321,17 @@ pub const Parser = struct {
             self.scanner.is_module = true;
             self.is_unambiguous = ts_unambiguous;
         }
-        const mt = ModuleType.fromExtension(ext);
-        if (mt.isTypeScript()) self.is_ts = true;
-        if (mt.isJsx()) self.is_jsx = true;
-        if (mt.isJavaScriptLike() and !mt.isTypeScript()) {
+        if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
+            std.mem.eql(u8, ext, ".mts") or std.mem.eql(u8, ext, ".cts"))
+        {
+            self.is_ts = true;
+        }
+        if (std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
+            self.is_jsx = true;
+        }
+        if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx") or
+            std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".cjs"))
+        {
             self.reject_ts_syntax_in_js = true;
         }
     }
