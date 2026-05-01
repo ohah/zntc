@@ -117,6 +117,8 @@ console.log(`Built ${result.outputFiles.length} files`);
 ## `watch(options)`
 
 Incremental watch-mode build. Auto rebuild on file change.
+`onReady` / `onRebuild` may return a Promise. Plugin lifecycle hooks run for the initial build and
+every rebuild in this order: `buildStart → buildEnd → onReady/onRebuild → closeBundle`.
 
 ```ts
 import { watch } from "@zts/core";
@@ -150,6 +152,7 @@ await build({
 ```
 
 Forwarded hooks: `resolveId` / `load` / `transform` / `renderChunk` / `generateBundle` / `buildStart` / `buildEnd` / `closeBundle` (#2156).
+Lifecycle hooks are also forwarded in `watch()` for the initial build and every rebuild.
 
 ## Authoring a ZTS plugin
 

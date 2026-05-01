@@ -153,7 +153,7 @@ Bundle lifecycle hooks. Compatible with esbuild's `onStart` / `onEnd` / `onDispo
 
 | Hook | When | Argument |
 |---|---|---|
-| `buildStart` | Once at bundle start (every rebuild in watch mode) | none |
+| `buildStart` | Once at bundle start (initial build and every rebuild in watch mode) | none |
 | `buildEnd` | Right after output contents are determined | `error?: Error` (message of the first fatal diagnostic on failure) |
 | `closeBundle` | After output files are written | none |
 
@@ -169,7 +169,9 @@ Bundle lifecycle hooks. Compatible with esbuild's `onStart` / `onEnd` / `onDispo
 }
 ```
 
-Call order: `buildStart → onLoad / onTransform → buildEnd → closeBundle`. With multiple plugins each hook fires in sequence. Errors thrown from `buildEnd` / `closeBundle` are swallowed so they don't mask the actual build result.
+`build()` call order: `buildStart → onLoad / onTransform → buildEnd → write → closeBundle`.
+`watch()` call order: `buildStart → onLoad / onTransform → buildEnd → onReady/onRebuild → closeBundle`.
+With multiple plugins each hook fires in sequence. Errors thrown from `buildEnd` / `closeBundle` are swallowed so they don't mask the actual build/rebuild result.
 
 ## Build API
 
