@@ -294,27 +294,13 @@ pub const TsConfig = struct {
         }
 
         // bool 옵션 추출
-        if (co.get("sourceMap")) |v| {
-            if (v == .bool) config.source_map = v.bool;
-        }
-        if (co.get("declaration")) |v| {
-            if (v == .bool) config.declaration = v.bool;
-        }
-        if (co.get("strict")) |v| {
-            if (v == .bool) config.strict = v.bool;
-        }
-        if (co.get("experimentalDecorators")) |v| {
-            if (v == .bool) config.experimental_decorators = v.bool;
-        }
-        if (co.get("emitDecoratorMetadata")) |v| {
-            if (v == .bool) config.emit_decorator_metadata = v.bool;
-        }
-        if (co.get("useDefineForClassFields")) |v| {
-            if (v == .bool) config.use_define_for_class_fields = v.bool;
-        }
-        if (co.get("verbatimModuleSyntax")) |v| {
-            if (v == .bool) config.verbatim_module_syntax = v.bool;
-        }
+        applyJsonBool(co, "sourceMap", &config.source_map);
+        applyJsonBool(co, "declaration", &config.declaration);
+        applyJsonBool(co, "strict", &config.strict);
+        applyJsonBool(co, "experimentalDecorators", &config.experimental_decorators);
+        applyJsonBool(co, "emitDecoratorMetadata", &config.emit_decorator_metadata);
+        applyJsonBool(co, "useDefineForClassFields", &config.use_define_for_class_fields);
+        applyJsonBool(co, "verbatimModuleSyntax", &config.verbatim_module_syntax);
     }
 
     /// base config의 값을 target config에 merge한다.
@@ -584,6 +570,14 @@ fn dupeJsonString(
     const v = co.get(key) orelse return null;
     if (v != .string) return null;
     return try dupeAndTrack(allocator, v.string, allocated_strings);
+}
+
+/// JSON 객체의 boolean 을 `target` 에 적용한다 (in-place).
+/// 키가 없거나 boolean 이 아니면 no-op — extends 머지 값을 보존.
+/// `target` 은 `*bool` 또는 `*?bool` (nullable 은 자동 wrap).
+fn applyJsonBool(co: std.json.ObjectMap, key: []const u8, target: anytype) void {
+    const v = co.get(key) orelse return;
+    if (v == .bool) target.* = v.bool;
 }
 
 /// optional 문자열 merge: target이 null이고 base에 값이 있으면 복사.
