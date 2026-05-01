@@ -1297,6 +1297,35 @@ fn printErrors(source: []const u8, file_path: []const u8, scanner: *const Scanne
     }
 }
 
+/// realpath 결과는 owned. 실패 (보통 출력 파일은 미존재) 시 caller-owned 인 raw
+/// 경로로 fallback — 분기해서 owned 만 free 한다. JS 측 (packages/core/bin/zts.mjs)
+/// 도 같은 전략.
+fn checkAllowOverwrite(
+    allocator: std.mem.Allocator,
+    stderr: anytype,
+    allow_overwrite: bool,
+    entry_path: []const u8,
+    out_path: []const u8,
+) !void {
+    if (allow_overwrite) return;
+
+    const in_abs_owned = std.fs.cwd().realpathAlloc(allocator, entry_path) catch null;
+    defer if (in_abs_owned) |p| allocator.free(p);
+    const in_abs = in_abs_owned orelse entry_path;
+
+    const out_abs_owned = std.fs.cwd().realpathAlloc(allocator, out_path) catch null;
+    defer if (out_abs_owned) |p| allocator.free(p);
+    const out_abs = out_abs_owned orelse out_path;
+
+    if (std.mem.eql(u8, in_abs, out_abs)) {
+        try stderr.print(
+            "zts: output file '{s}' would overwrite input file (use --allow-overwrite to permit)\n",
+            .{out_path},
+        );
+        return error.TranspileFailed;
+    }
+}
+
 /// 단일 파일을 트랜스파일한다.
 /// file_path: 입력 파일 경로, output_path: 출력 파일 경로 (null이면 stdout)
 /// source가 null이면 file_path에서 읽고, non-null이면 해당 소스를 사용한다 (stdin 등).
@@ -1356,16 +1385,8 @@ fn transpileFile(
     };
     defer result.deinit(allocator);
 
-    // --allow-overwrite 체크
-    if (!options.allow_overwrite) {
-        if (output_path) |out_path| {
-            const in_abs = std.fs.cwd().realpathAlloc(arena_alloc, file_path) catch file_path;
-            const out_abs = std.fs.cwd().realpathAlloc(arena_alloc, out_path) catch out_path;
-            if (std.mem.eql(u8, in_abs, out_abs)) {
-                try stderr.print("zts: output file '{s}' would overwrite input file (use --allow-overwrite to permit)\n", .{out_path});
-                return error.TranspileFailed;
-            }
-        }
+    if (output_path) |out_path| {
+        try checkAllowOverwrite(arena_alloc, stderr, options.allow_overwrite, file_path, out_path);
     }
 
     // 출력
@@ -2278,20 +2299,8 @@ pub fn main() !void {
             std.process.exit(1);
         }
 
-        // --allow-overwrite 체크: 출력 파일이 입력 파일을 덮어쓰지 않도록
-        if (!opts.allow_overwrite) {
-            const entry_abs = abs_entry;
-            if (opts.output_file) |out_path| {
-                // realpath 결과는 owned. fallback (out_path) 은 caller-owned 이므로
-                // 분기해서 owned 만 free.
-                const out_abs_owned = std.fs.cwd().realpathAlloc(allocator, out_path) catch null;
-                defer if (out_abs_owned) |p| allocator.free(p);
-                const out_abs = out_abs_owned orelse out_path;
-                if (std.mem.eql(u8, entry_abs, out_abs)) {
-                    try stderr.print("zts: output file '{s}' would overwrite input file (use --allow-overwrite to permit)\n", .{out_path});
-                    return error.TranspileFailed;
-                }
-            }
+        if (opts.output_file) |out_path| {
+            try checkAllowOverwrite(allocator, stderr, opts.allow_overwrite, abs_entry, out_path);
         }
 
         // 출력

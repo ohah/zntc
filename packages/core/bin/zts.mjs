@@ -13,6 +13,7 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   mkdtempSync,
   symlinkSync,
@@ -465,33 +466,41 @@ function loadTsConfig(opts) {
 
 // ─── 파일 출력 ───
 
-function assertCanWriteOutput(outPath, entryPoints, allowOverwrite) {
-  if (allowOverwrite) return;
-  const outResolved = resolve(outPath);
-  for (const entry of entryPoints) {
-    if (resolve(entry) === outResolved) {
-      throw new Error(
-        `zts: output file '${outPath}' would overwrite input file (use --allow-overwrite to permit)`,
-      );
-    }
+// realpathSync 가 throw 하면 (출력 파일은 보통 미존재) lexical resolve 로 fallback.
+// Zig 측 (src/main.zig) 도 같은 전략을 쓴다 — 입력은 심볼릭 링크 해석, 출력은 일반적으로 미존재.
+function safeRealpath(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+function assertCanWriteOutput(outPath, resolvedEntries) {
+  if (!resolvedEntries) return;
+  if (resolvedEntries.has(safeRealpath(outPath))) {
+    throw new Error(
+      `zts: output file '${outPath}' would overwrite input file (use --allow-overwrite to permit)`,
+    );
   }
 }
 
 function writeOutputFiles(outputFiles, outfile, outdir, entryPoints, allowOverwrite) {
+  const resolvedEntries = allowOverwrite ? null : new Set(entryPoints.map(safeRealpath));
   if (outfile) {
     const outPath = resolve(outfile);
-    assertCanWriteOutput(outPath, entryPoints, allowOverwrite);
+    assertCanWriteOutput(outPath, resolvedEntries);
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, outputFiles[0].text);
     if (outputFiles.length > 1) {
-      // sourcemap
       writeFileSync(resolve(outfile + ".map"), outputFiles[1].text);
     }
   } else if (outdir) {
-    mkdirSync(resolve(outdir), { recursive: true });
+    const outDirAbs = resolve(outdir);
+    mkdirSync(outDirAbs, { recursive: true });
     for (const file of outputFiles) {
-      const outPath = join(resolve(outdir), basename(file.path));
-      assertCanWriteOutput(outPath, entryPoints, allowOverwrite);
+      const outPath = join(outDirAbs, basename(file.path));
+      assertCanWriteOutput(outPath, resolvedEntries);
       writeFileSync(outPath, file.text);
     }
   }
@@ -1676,20 +1685,13 @@ async function runTranspile(opts) {
     browserslist: opts.browserslist,
   });
 
-  if (opts.outfile) {
-    const outPath = resolve(opts.outfile);
-    assertCanWriteOutput(outPath, opts.entryPoints, opts.allowOverwrite);
-    mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, result.code);
-    if (result.map) {
-      writeFileSync(resolve(opts.outfile + ".map"), result.map);
-    }
-  } else if (opts.outdir) {
-    mkdirSync(resolve(opts.outdir), { recursive: true });
+  if (opts.outfile || opts.outdir) {
     const name = basename(opts.entryPoints[0]).replace(/\.[^.]+$/, ".js");
-    const outPath = join(resolve(opts.outdir), name);
-    assertCanWriteOutput(outPath, opts.entryPoints, opts.allowOverwrite);
-    writeFileSync(outPath, result.code);
+    const outputFiles = [{ path: name, text: result.code }];
+    if (opts.outfile && result.map) {
+      outputFiles.push({ path: name + ".map", text: result.map });
+    }
+    writeOutputFiles(outputFiles, opts.outfile, opts.outdir, opts.entryPoints, opts.allowOverwrite);
   } else {
     process.stdout.write(result.code);
   }
