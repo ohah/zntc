@@ -302,6 +302,14 @@ describe("CLI: transpile", () => {
     expect(stderr).toContain("failed to parse --tsconfig-raw");
   });
 
+  test("--tsconfig-raw rejects non-object top-level JSON", () => {
+    for (const value of ["null", "[]", "42", '"string"']) {
+      const { stderr, exitCode } = runCli([join(dir, "input.ts"), `--tsconfig-raw=${value}`]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("expected a JSON object");
+    }
+  });
+
   test("--drop=console", () => {
     const { stdout, exitCode } = runCli([join(dir, "input.ts"), "--drop=console"]);
     expect(exitCode).toBe(0);
