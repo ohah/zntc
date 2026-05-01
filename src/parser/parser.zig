@@ -2068,6 +2068,10 @@ pub const Parser = struct {
         return ts.parseTsEnumDeclaration(self);
     }
 
+    pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
+        return flow.parseFlowEnumDeclaration(self);
+    }
+
     pub fn parseTsModuleDeclaration(self: *Parser) ParseError2!NodeIndex {
         return ts.parseTsModuleDeclaration(self);
     }

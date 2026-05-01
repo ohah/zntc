@@ -286,7 +286,7 @@ pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
             }
             break :blk_iface self.parseTsInterfaceDeclaration();
         },
-        .kw_enum => self.parseTsEnumDeclaration(),
+        .kw_enum => if (self.is_flow) self.parseFlowEnumDeclaration() else self.parseTsEnumDeclaration(),
         .kw_with => parseWithStatement(self),
         else => parseExpressionOrLabeledStatement(self),
     };

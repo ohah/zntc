@@ -3679,3 +3679,83 @@ test "Flow object type: spread `...Type` is skipped (not in member list)" {
     // spread 는 skip → color 만 남음.
     try std.testing.expectEqual(@as(usize, 1), prop_count);
 }
+
+// ===== Flow enum (#2401) — parser 인식 테스트 =====
+
+fn flowEnumDeclCount(r: *const ParsedSource) usize {
+    var count: usize = 0;
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag == .flow_enum_declaration) count += 1;
+    }
+    return count;
+}
+
+fn flowEnumMemberCount(r: *const ParsedSource) usize {
+    var count: usize = 0;
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag == .flow_enum_member) count += 1;
+    }
+    return count;
+}
+
+test "Flow enum: default (no `of`) — symbol-typed implicit" {
+    var r = try parseFlow(std.testing.allocator,
+        \\enum Status {
+        \\  Active,
+        \\  Inactive,
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), flowEnumDeclCount(&r));
+    try std.testing.expectEqual(@as(usize, 2), flowEnumMemberCount(&r));
+}
+
+test "Flow enum: `of string` with literal initializers" {
+    var r = try parseFlow(std.testing.allocator,
+        \\enum Color of string {
+        \\  Red = 'red',
+        \\  Blue = 'blue',
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), flowEnumDeclCount(&r));
+    try std.testing.expectEqual(@as(usize, 2), flowEnumMemberCount(&r));
+}
+
+test "Flow enum: `of number` / `of boolean`" {
+    var r = try parseFlow(std.testing.allocator,
+        \\enum Level of number { Low = 1, High = 10 }
+        \\enum Toggle of boolean { On = true, Off = false }
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 2), flowEnumDeclCount(&r));
+    try std.testing.expectEqual(@as(usize, 4), flowEnumMemberCount(&r));
+}
+
+test "Flow enum: open enum with `...,` ellipsis (members only — ellipsis skipped)" {
+    var r = try parseFlow(std.testing.allocator,
+        \\enum Status {
+        \\  Active,
+        \\  ...,
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), flowEnumDeclCount(&r));
+    try std.testing.expectEqual(@as(usize, 1), flowEnumMemberCount(&r));
+}
+
+test "Flow enum: TS mode 에서는 일반 ts_enum_declaration" {
+    var r = try parseTs(std.testing.allocator,
+        \\enum Status {
+        \\  Active,
+        \\  Inactive,
+        \\}
+    );
+    defer r.deinit();
+    var ts_count: usize = 0;
+    for (r.parser.ast.nodes.items) |node| {
+        if (node.tag == .ts_enum_declaration) ts_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), ts_count);
+    try std.testing.expectEqual(@as(usize, 0), flowEnumDeclCount(&r));
+}

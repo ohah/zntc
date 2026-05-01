@@ -353,6 +353,11 @@ pub const Node = struct {
         flow_opaque_type,
         /// interface Foo extends Bar { ... } — Flow interface declaration
         flow_interface_declaration,
+        /// enum Status { ... } / enum Status of string { ... } — Flow enum declaration.
+        /// extra = [name, members_start, members_len, base_type] — base_type 는 FlowEnumBaseType.
+        flow_enum_declaration,
+        /// enum 의 단일 member — `Name = init` 또는 `Name`. data.binary = { left=key, right=init }.
+        flow_enum_member,
         /// expr as Type — Flow type cast expression
         flow_as_expression,
         /// (expr: Type) — Flow TypeCast expression
@@ -566,6 +571,7 @@ pub const Node = struct {
                 .ts_qualified_name,
                 .ts_type_predicate,
                 .ts_enum_member,
+                .flow_enum_member,
                 .flow_qualified_name,
                 // ts_module_declaration: binary = { left=name, right=body_or_inner, flags }
                 // codegen::emitNamespaceIIFEInner 가 data.binary.left/right 를 읽는다.
@@ -707,6 +713,7 @@ pub const Node = struct {
                 .ts_getter_signature,
                 .ts_setter_signature,
                 .ts_enum_declaration,
+                .flow_enum_declaration,
                 .ts_external_module_reference,
                 .ts_export_assignment,
                 .ts_namespace_export_declaration,
