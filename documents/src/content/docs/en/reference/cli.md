@@ -86,6 +86,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--charset=utf8\|ascii` | Output charset |
 | `--ascii-only` | Non-ASCII → `\uXXXX` (= `--charset=ascii`) |
 | `--quotes=double\|single\|preserve` | String quote style |
+| `--line-limit=<n>` | Wrap long output lines at safe token boundaries (`0` disables wrapping) |
 
 ## Source Maps
 
@@ -211,7 +212,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 These features exist as internal options or roadmap items, but are not present in the current
 `zts` CLI flag registry: `allowOverwrite`, `globalIdentifiers`, `pure`,
 `polyfills`, `jsxSideEffects`, `tsconfigRaw`, `ignoreAnnotations`, `packages=external`,
-`conditions`, `nodePaths`, `runBeforeMain`, `lineLimit`, `timing/profile`, `tokenize`, `test262`.
+`conditions`, `nodePaths`, `runBeforeMain`, `timing/profile`, `tokenize`, `test262`.
 
 ## See Also
 

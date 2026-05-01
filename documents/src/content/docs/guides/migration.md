@@ -62,7 +62,7 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--analyze` | `--analyze` | 동일 (현재 JSON, 트리 포맷 예정) |
 | `--log-level=warning` | `--log-level=warning` | 동일 (`silent`/`error`/`warning`/`info`/`debug`) |
 | `--log-limit=10` | `--log-limit=10` | 동일 |
-| `--line-limit=80` | 미지원 | formatter/minifier 기본 줄바꿈 사용 |
+| `--line-limit=80` | `--line-limit=80` | 동일 (긴 출력 라인을 안전한 토큰 경계에서 줄바꿈) |
 | `--ignore-annotations` | 미지원 | 기본 annotation 처리 사용 |
 | `--allow-overwrite` | 미지원 | 출력 경로를 입력과 분리 |
 | `--watch` | `--watch` 또는 `-w` | 동일 |

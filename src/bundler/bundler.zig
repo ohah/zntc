@@ -605,6 +605,7 @@ pub const Bundler = struct {
             .chunk_names = self.options.chunk_names,
             .asset_names = self.options.asset_names,
             .legal_comments = self.options.legal_comments,
+            .line_limit = self.options.line_limit,
             .root_dir = self.options.root_dir,
             .plugins = self.options.plugins,
             .polyfills = &.{}, // 호출자가 loadPolyfills()로 설정

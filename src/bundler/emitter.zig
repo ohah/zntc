@@ -130,6 +130,8 @@ pub const EmitOptions = struct {
     asset_names: []const u8 = "[name]-[hash]",
     /// legal comments 처리 모드
     legal_comments: types.LegalComments = .default,
+    /// --line-limit: 출력 줄 길이 제한 (0=무제한)
+    line_limit: u32 = 0,
     /// --keep-names: minify 시 함수/클래스 .name 프로퍼티 보존
     keep_names: bool = false,
     /// --drop-labels: 특정 라벨의 labeled statement 제거
@@ -866,13 +868,6 @@ pub fn emitWithTreeShaking(
         try output.append(allocator, '\n');
     }
 
-    // Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
-    var debug_id_buf: [36]u8 = undefined;
-    const debug_id: ?[]const u8 = if (options.sourcemap.debug_ids) blk: {
-        SourceMap.generateUuidV4(&debug_id_buf);
-        break :blk &debug_id_buf;
-    } else null;
-
     concat_scope.end();
 
     // emit_sourcemap_finalize: 소스맵 V3 JSON 생성 (mapping VLQ 인코딩 + sources
@@ -915,7 +910,27 @@ pub fn emitWithTreeShaking(
                 try addIdentityMappings(sm, src_idx, r.content_start_line, r.content_line_count, 0);
             }
         }
+    }
 
+    var wrap_breaks: std.ArrayList(WrapBreak) = .empty;
+    defer wrap_breaks.deinit(allocator);
+    if (options.line_limit > 0) {
+        try wrapLineLimit(&output, allocator, options.line_limit, &wrap_breaks);
+        if (bundle_sm) |*sm| {
+            if (wrap_breaks.items.len > 0) {
+                adjustMappingsForLineWraps(sm, wrap_breaks.items);
+            }
+        }
+    }
+
+    // Sentry Debug ID (UUID v4) — sourcemap_debug_ids 활성화 시 생성
+    var debug_id_buf: [36]u8 = undefined;
+    const debug_id: ?[]const u8 = if (options.sourcemap.debug_ids) blk: {
+        SourceMap.generateUuidV4(&debug_id_buf);
+        break :blk &debug_id_buf;
+    } else null;
+
+    if (bundle_sm) |*sm| {
         // debugId 설정 — bundle.js 의 `//# debugId=` 주석과 동일 UUID 를 builder 에 보관.
         // lazy 경로에서는 builder 가 emit 밖으로 이관되므로 내부 버퍼에 복사해 저장 (stack
         // `debug_id_buf` 의 수명은 emit 함수 스코프로 제한됨).
@@ -1004,6 +1019,142 @@ pub fn emitWithTreeShaking(
         .sourcemap_builder = builder_to_return,
         .module_codes = module_codes_slice,
     };
+}
+
+pub const WrapBreak = struct {
+    line: u32,
+    column: u32,
+};
+
+const WrapScanState = enum {
+    normal,
+    single_quote,
+    double_quote,
+    template,
+    line_comment,
+    block_comment,
+};
+
+fn isLineLimitBreakChar(c: u8) bool {
+    return c == ';' or c == ',' or c == '{' or c == '}';
+}
+
+fn wrapLineLimit(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    limit: u32,
+    breaks: *std.ArrayList(WrapBreak),
+) !void {
+    if (limit == 0 or output.items.len == 0) return;
+
+    var wrapped: std.ArrayList(u8) = .empty;
+    errdefer wrapped.deinit(allocator);
+    try wrapped.ensureTotalCapacity(allocator, output.items.len + output.items.len / limit + 1);
+
+    var state: WrapScanState = .normal;
+    var escaped = false;
+    var original_line: u32 = 0;
+    var original_col: u32 = 0;
+    var wrapped_col: u32 = 0;
+    var last_safe_insert_index: ?usize = null;
+    var last_safe_line: u32 = 0;
+    var last_safe_col: u32 = 0;
+    var last_safe_wrapped_col: u32 = 0;
+    var i: usize = 0;
+
+    while (i < output.items.len) : (i += 1) {
+        const c = output.items[i];
+        const next = if (i + 1 < output.items.len) output.items[i + 1] else 0;
+
+        try wrapped.append(allocator, c);
+
+        const line_before = original_line;
+        const col_before = original_col;
+
+        if (c == '\n') {
+            original_line += 1;
+            original_col = 0;
+            wrapped_col = 0;
+            last_safe_insert_index = null;
+            if (state == .line_comment) state = .normal;
+            escaped = false;
+            continue;
+        }
+
+        original_col += 1;
+        wrapped_col += 1;
+
+        switch (state) {
+            .normal => {
+                if (c == '/' and next == '/') {
+                    state = .line_comment;
+                } else if (c == '/' and next == '*') {
+                    state = .block_comment;
+                } else if (c == '\'') {
+                    state = .single_quote;
+                    escaped = false;
+                } else if (c == '"') {
+                    state = .double_quote;
+                    escaped = false;
+                } else if (c == '`') {
+                    state = .template;
+                    escaped = false;
+                } else if (isLineLimitBreakChar(c)) {
+                    last_safe_insert_index = wrapped.items.len;
+                    last_safe_line = line_before;
+                    last_safe_col = col_before;
+                    last_safe_wrapped_col = wrapped_col;
+                }
+            },
+            .single_quote => {
+                if (escaped) escaped = false else if (c == '\\') escaped = true else if (c == '\'') state = .normal;
+            },
+            .double_quote => {
+                if (escaped) escaped = false else if (c == '\\') escaped = true else if (c == '"') state = .normal;
+            },
+            .template => {
+                if (escaped) escaped = false else if (c == '\\') escaped = true else if (c == '`') state = .normal;
+            },
+            .line_comment => {},
+            .block_comment => {
+                if (c == '*' and next == '/') state = .normal;
+            },
+        }
+
+        if (state == .normal and wrapped_col >= limit) {
+            if (last_safe_insert_index) |insert_index| {
+                try wrapped.insert(allocator, insert_index, '\n');
+                try breaks.append(allocator, .{ .line = last_safe_line, .column = last_safe_col });
+                wrapped_col -= last_safe_wrapped_col;
+                last_safe_insert_index = null;
+            }
+        }
+    }
+
+    output.clearRetainingCapacity();
+    try output.appendSlice(allocator, wrapped.items);
+    wrapped.deinit(allocator);
+}
+
+fn adjustMappingsForLineWraps(sm: *SourceMap.SourceMapBuilder, breaks: []const WrapBreak) void {
+    for (sm.mappings.items) |*mapping| {
+        var added_lines: u32 = 0;
+        var last_break_col: ?u32 = null;
+        for (breaks) |br| {
+            if (br.line < mapping.generated_line) {
+                added_lines += 1;
+            } else if (br.line == mapping.generated_line and br.column < mapping.generated_column) {
+                added_lines += 1;
+                last_break_col = br.column;
+            } else if (br.line > mapping.generated_line) {
+                break;
+            }
+        }
+        if (last_break_col) |col| {
+            mapping.generated_column -= col + 1;
+        }
+        mapping.generated_line += added_lines;
+    }
 }
 
 // --- Dev mode utilities (emitter/dev.zig) ---

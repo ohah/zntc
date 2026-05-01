@@ -130,6 +130,7 @@ export const FLAG_REGISTRY = [
   { kind: "int", flag: "--jobs", target: "jobs", forms: ["equal"] },
   { kind: "int", flag: "--port", target: "port" },
   { kind: "int", flag: "--log-limit", target: "logLimit", forms: ["equal"] },
+  { kind: "int", flag: "--line-limit", target: "lineLimit", forms: ["equal"] },
 
   // ─── kind=string-default — bool 단독 시 default, `--key=val` 시 val ───
   { kind: "string-default", flag: "--metafile", target: "metafile", default: "meta.json" },
@@ -301,22 +302,28 @@ function tryMatchSpec(spec, arg, args, i) {
 }
 
 function tryMatchValueForms(spec, arg, args, i, allFlags, forms, parseValue, op = "set") {
+  const toAction = (raw, consumed) => {
+    const value = parseValue(raw);
+    if (spec.kind === "int" && Number.isNaN(value)) {
+      return { spec, action: { type: "invalid-int", raw }, consumed };
+    }
+    return { spec, action: { type: op, value }, consumed };
+  };
+
   if (forms.includes("equal")) {
     for (const f of allFlags) {
       // single-letter short flag (`-X`) 는 equal-form 미지원 — esbuild/getopt 관습.
       if (f.length <= 2) continue;
       const prefix = f + "=";
       if (arg.startsWith(prefix)) {
-        const value = parseValue(arg.slice(prefix.length));
-        return { spec, action: { type: op, value }, consumed: 1 };
+        return toAction(arg.slice(prefix.length), 1);
       }
     }
   }
   if (forms.includes("pair") && allFlags.includes(arg)) {
     const raw = args[i + 1];
     if (raw === undefined) return { spec, action: { type: "noop" }, consumed: 1 };
-    const value = parseValue(raw);
-    return { spec, action: { type: op, value }, consumed: 2 };
+    return toAction(raw, 2);
   }
   return null;
 }
@@ -325,7 +332,10 @@ function tryMatchValueForms(spec, arg, args, i, allFlags, forms, parseValue, op 
  * matchFlagFromRegistry 결과를 opts 에 적용. extra 가 있으면 함께 set.
  */
 export function applyFlagAction(opts, spec, action) {
-  if (action.type === "noop") {
+  if (action.type === "invalid-int") {
+    console.error(`zts: ${spec.flag} requires a number: ${action.raw}`);
+    opts.parseError = true;
+  } else if (action.type === "noop") {
     // pass — noop spec 또는 누락된 pair-form value
   } else if (action.type === "set") {
     opts[spec.target] = action.value;
