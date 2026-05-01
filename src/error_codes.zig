@@ -18,6 +18,7 @@
 //!   1100-1199  시맨틱: private member
 //!   1200-1299  시맨틱: export/label
 //!   1300-1399  시맨틱: class/getter/setter/object
+//!   1400-1499  codegen: RN view config 빌드
 
 /// 문서 사이트 에러 레퍼런스 base URL. Code.docsUrl이 여기에 코드를 붙여 전체 URL 생성.
 const docs_url_base = "https://ohah.github.io/zts/reference/errors/";
@@ -216,6 +217,20 @@ pub const Code = enum(u16) {
     getter_no_params = 1302,
     setter_one_param = 1303,
 
+    // ═══════════════════════════════════════════════════════
+    // 1400-1499: codegen — RN view config 빌드 (#2348)
+    // ═══════════════════════════════════════════════════════
+    /// type reference 가 같은 파일에 정의 안 됨 — 보통 cross-file import 상황.
+    /// codegen plugin 이 fail-fast 후 JS fallback (`@react-native/codegen`) 으로 위임.
+    codegen_unresolved_type_reference = 1400,
+    /// codegen 이 인식 못 하는 prop type 형태 (array of object, complex generic 등).
+    /// 향후 PR #3b-2 에서 확장.
+    codegen_unsupported_prop_type = 1401,
+    /// NativeProps declaration 이 object literal 도 wrapper 도 아님.
+    codegen_invalid_native_props_body = 1402,
+    /// 같은 schema 안에 같은 이름 component 가 2 개 이상 — `SchemaValidator.js` 동등.
+    codegen_duplicate_component = 1403,
+
     /// 에러 코드를 "ZTS0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
         @setEvalBranchQuota(100_000);
@@ -257,6 +272,11 @@ pub const Code = enum(u16) {
             // 번들러
             .unresolved_import => "Check the import path spelling and confirm the file exists.",
             .missing_export => "Verify the exported name. Use 'export * from' or named re-exports if needed.",
+            // codegen (#2348)
+            .codegen_unresolved_type_reference => "Define the referenced type in the same file, or codegen will fall back to @react-native/codegen.",
+            .codegen_unsupported_prop_type => "Use a primitive (boolean/string/number), reserved type (ColorValue/PointValue/...), or function type for events. Complex shapes (nested objects, generic arrays) are not yet supported.",
+            .codegen_invalid_native_props_body => "NativeProps must be a `type X = { ... }` or `type X = $ReadOnly<{ ... }>` declaration referencing an object literal.",
+            .codegen_duplicate_component => "Each component name in a NativeComponent spec must be unique within the schema.",
             else => null,
         };
     }
@@ -421,6 +441,11 @@ pub const Code = enum(u16) {
             .proto_duplicate => "Property name __proto__ appears more than once in object literal",
             .getter_no_params => "Getter must not have any formal parameters",
             .setter_one_param => "Setter must have exactly one formal parameter",
+            // codegen (#2348)
+            .codegen_unresolved_type_reference => "Type reference is not defined in the same file",
+            .codegen_unsupported_prop_type => "Prop type is not supported by codegen",
+            .codegen_invalid_native_props_body => "NativeProps body is not an object literal or known wrapper",
+            .codegen_duplicate_component => "Duplicate component name in schema",
         };
     }
 };
