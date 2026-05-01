@@ -328,7 +328,11 @@ fn mapTypeReference(
     // 첫 type 인자 T 만 추출해서 재귀. 두번째 D (default literal) 는 향후 PR 에서
     // ts_literal_type / flow_*_literal_type 추출해 PropTypeAnnotation.default 채울 예정 —
     // 현재는 무시 (RN runtime 이 자체 default 사용).
-    if (std.mem.eql(u8, name, "WithDefault")) {
+    //
+    // `UnsafeMixed<T>` — react-native-svg 의 identity wrapper (`UnsafeMixed<T> = T`).
+    // codegen 이 folly::dynamic 생성하도록 trick — 의미상 inner T 그대로.
+    // svg fabric spec 30개 거의 모두 사용 (`fill?: UnsafeMixed<ColorValue | ColorStruct>`).
+    if (std.mem.eql(u8, name, "WithDefault") or std.mem.eql(u8, name, "UnsafeMixed")) {
         const inner = getFirstTypeArgument(ast, node) orelse return error.UnsupportedPropType;
         return mapPropTypeAt(ast, type_index, inner, depth + 1);
     }
