@@ -4849,7 +4849,9 @@ pub const Transformer = struct {
             .flow_type_alias_declaration,
             .flow_opaque_type,
             .flow_interface_declaration,
+            .flow_object_type,
             .flow_exact_object_type,
+            .flow_property_signature,
             => true,
             else => false,
         };

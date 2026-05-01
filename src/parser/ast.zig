@@ -357,8 +357,18 @@ pub const Node = struct {
         flow_as_expression,
         /// (expr: Type) — Flow TypeCast expression
         flow_type_cast_expression,
-        /// {| key: Type |} — Flow exact object type
+        /// `{ key: Type }` — Flow inexact object type. data = .list (members).
+        /// 각 멤버는 `flow_property_signature` (지원되지 않는 멤버는 skip).
+        /// `parseObjectType` 가 생성. PR #2348 § 4 (codegen) 가 멤버를 읽어 schema 빌드.
+        flow_object_type,
+        /// {| key: Type |} — Flow exact object type. data = .list (members).
         flow_exact_object_type,
+        /// Flow object type 의 단일 property — `[+|-]?key[?]: Type`.
+        /// extra = [key, type_ann, flags] (TS 의 `ts_property_signature` 와 동일 layout).
+        /// flags 는 `parser/ts.zig` 의 `PropertySignatureFlags` 사용 — Flow 의 `+key`
+        /// (covariant) 는 `flags.readonly = true` 로 매핑. `-key` (contravariant) 는
+        /// 현재 별도 비트 없음 (codegen 미사용, drop).
+        flow_property_signature,
         /// match (expr) { ... } — Flow match expression
         flow_match_expression,
         /// match expression 의 개별 arm: `pattern => body`. binary = { left=pattern,
@@ -612,6 +622,7 @@ pub const Node = struct {
                 .flow_union_type,
                 .flow_intersection_type,
                 .flow_tuple_type,
+                .flow_object_type,
                 .flow_exact_object_type,
                 .flow_type_parameter_declaration,
                 .flow_type_parameter_instantiation,
@@ -715,6 +726,7 @@ pub const Node = struct {
                 .flow_opaque_type,
                 .flow_interface_declaration,
                 .flow_match_expression,
+                .flow_property_signature,
                 => .{ .kind = .extra, .child_offsets = &.{} },
             };
         }
