@@ -356,6 +356,12 @@ function parseArgs(argv) {
   // jsx-dev 단축어
   if (opts.jsxDev) opts.jsx = "automatic-dev";
 
+  // esbuild legacy alias normalize: `--jsx=transform` / `--jsx=preserve` → classic.
+  // docs/CONFIG.md 가 명시한 CLI vocab (preserve/transform/automatic) 을 strict NAPI vocab
+  // (classic/automatic/automatic-dev) 로 변환. JS API 는 이 정규화를 받지 않고 strict union
+  // type 만 허용 — CLI argv 의 raw string 만 esbuild 호환을 위해 관대하게 처리.
+  if (opts.jsx === "transform" || opts.jsx === "preserve") opts.jsx = "classic";
+
   // drop 처리
   for (const d of opts.drop) {
     if (d === "console") opts.define["console.log"] = "undefined";

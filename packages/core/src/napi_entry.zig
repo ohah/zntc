@@ -3307,13 +3307,19 @@ fn parseBuildOptions(
 
     // JSX — string→enum 변환만 여기서. 최종 런타임/factory 결정은 tsconfig_merge 에 위임
     // (file/raw tsconfig 의 "jsx"/"jsxFactory" 등을 함께 고려).
-    // 인식 못 하는 jsx 문자열은 `.classic` 으로 fallback (이전 NAPI 동작 보존) — typo 가 silently
-    // tsconfig fallthrough 로 다른 결과를 만들지 않도록.
+    // 유효 vocab: "automatic" / "automatic-dev" / "classic" (`transpile.zig::optionsFromJson`
+    // 의 enum-strict 동작과 일관). tsconfig vocab ("react" / "react-jsx" / "react-jsxdev") 또는
+    // typo 는 throw — 이전 silent classic fallback 은 사용자 디버깅을 어렵게 했음.
     const jsx_str = ownStr(env, opts_obj, "jsx", owned_strings);
     const jsx_runtime_explicit: ?JsxRuntime = if (jsx_str) |s| blk: {
         if (std.mem.eql(u8, s, "automatic")) break :blk .automatic;
         if (std.mem.eql(u8, s, "automatic-dev")) break :blk .automatic_dev;
-        break :blk .classic;
+        if (std.mem.eql(u8, s, "classic")) break :blk .classic;
+        // parseBuildOptions 반환 타입이 ?BundleOptions 라 throwError 의 napi_value 결과를 그대로
+        // return 못 함 — discard 후 null 반환. caller 의 `orelse return throwError(...)` 가
+        // already-pending exception 위에 다시 throw 시도하지만 NAPI spec 상 silent ignore 라 안전.
+        _ = throwError(env, "invalid 'jsx' option (expected automatic / automatic-dev / classic)");
+        return null;
     } else null;
     const jsx_factory = ownStr(env, opts_obj, "jsxFactory", owned_strings);
     const jsx_fragment = ownStr(env, opts_obj, "jsxFragment", owned_strings);
