@@ -137,6 +137,8 @@ pub const ModuleGraph = struct {
     /// `worklet "directive"` plugin 활성 여부 — bundler 가 BundleOptions.worklet_transform 으로 set.
     /// graph 가 직접 사용 (parseModule 의 worklet exclude 휴리스틱).
     worklet_transform: bool = false,
+    /// RN view config codegen plugin 활성 여부 (#2348). codegen_plugin 의 transform 훅 활성화.
+    codegen_transform: bool = false,
     /// React Fast Refresh — dev_mode + user_code 에 transformer 가 등록 코드 주입.
     /// graph 가 직접 사용 (parseModule 의 is_user_code 분기).
     react_refresh: bool = false,
@@ -243,8 +245,8 @@ pub const ModuleGraph = struct {
         if (self.plugins_with_helpers) |p| self.allocator.free(p);
     }
 
-    /// `plugins_with_helpers` lazy 초기화 — `self.plugins` 앞에 ZTS builtin runtime
-    /// helper plugin 을 prepend 한 slice 를 graph allocator 로 만든다 (#1961).
+    /// `plugins_with_helpers` lazy 초기화 — `self.plugins` 앞에 ZTS builtin plugin 들 (runtime
+    /// helper, RN codegen 등) 을 prepend 한 slice 를 graph allocator 로 만든다 (#1961, #2348).
     /// 빌드 옵션 (minify_whitespace 등) 은 이미 graph 에 set 됐다는 전제. `helper_plugin_opts`
     /// 도 같이 hydrate. 단일 thread 진입점 (`build` 등) 에서만 호출.
     fn ensureBuiltinPlugins(self: *ModuleGraph) void {
@@ -258,10 +260,21 @@ pub const ModuleGraph = struct {
             // 후속 PR 에서 BundleOptions.configurable_exports 또는 platform=react-native 기반 결정.
             .configurable_exports = false,
         };
-        const builtin = runtime_helper_modules.makePlugin(&self.helper_plugin_opts);
-        const merged = self.allocator.alloc(plugin_mod.Plugin, self.plugins.len + 1) catch return;
-        merged[0] = builtin;
-        @memcpy(merged[1..], self.plugins);
+        const helper = runtime_helper_modules.makePlugin(&self.helper_plugin_opts);
+
+        var builtin_count: usize = 1; // helper 항상 포함
+        if (self.codegen_transform) builtin_count += 1;
+
+        const merged = self.allocator.alloc(plugin_mod.Plugin, self.plugins.len + builtin_count) catch return;
+        var i: usize = 0;
+        merged[i] = helper;
+        i += 1;
+        if (self.codegen_transform) {
+            const codegen_plugin = @import("../transformer/plugins/codegen_plugin.zig");
+            merged[i] = codegen_plugin.plugin();
+            i += 1;
+        }
+        @memcpy(merged[i..], self.plugins);
         self.plugins_with_helpers = merged;
     }
 

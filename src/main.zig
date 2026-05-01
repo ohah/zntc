@@ -139,6 +139,9 @@ const CliOptions = struct {
     /// Reanimated worklet 변환: "worklet" 디렉티브 함수에 __workletHash/__closure/__initData 주입.
     /// --platform=react-native에서 자동 활성화. --worklet로 수동 제어.
     worklet_transform: bool = false,
+    /// RN view config codegen — `*NativeComponent.{js,ts}` 의 `codegenNativeComponent`
+    /// 호출을 inline view config 로 교체. `@react-native/codegen` 등가 (#2348).
+    codegen_transform: bool = false,
     /// JSX 런타임 모드 (--jsx=classic|automatic|automatic-dev, --jsx-dev)
     /// null이면 사용자 미지정 — 플랫폼 프리셋 또는 tsconfig에서 결정.
     jsx_runtime: ?lib.codegen.codegen.JsxRuntime = null,
@@ -2119,6 +2122,7 @@ pub fn main() !void {
             opts.configurable_exports = rn_preset.configurable_exports;
             opts.strict_execution_order = rn_preset.strict_execution_order;
             opts.worklet_transform = rn_preset.worklet_transform;
+            opts.codegen_transform = rn_preset.codegen_transform;
             // RN: 사용자가 --asset-registry/--no-asset-registry를 명시하지 않았으면 Metro 표준 경로 자동 적용.
             if (opts.asset_registry == null and !opts.asset_registry_explicit_off) {
                 opts.asset_registry = lib.bundler.RN_DEFAULT_ASSET_REGISTRY;
@@ -2231,6 +2235,7 @@ pub fn main() !void {
             .configurable_exports = opts.configurable_exports or opts.dev, // HMR: export 재정의 필요
             .strict_execution_order = opts.strict_execution_order,
             .worklet_transform = opts.worklet_transform,
+            .codegen_transform = opts.codegen_transform,
             .jsx_runtime = opts.jsx_runtime.?,
             .jsx_factory = opts.jsx_factory,
             .jsx_fragment = opts.jsx_fragment,

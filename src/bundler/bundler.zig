@@ -42,6 +42,7 @@ pub const ReactNativeBoolPreset = struct {
     strict_execution_order: bool = true, // Babel worklet 호환: 함수 호이스팅 방지
     worklet_transform: bool = true, // Reanimated worklet 네이티브 변환
     entry_error_guard: bool = true, // Metro guardedLoadModule 호환: entry trigger throw → ErrorUtils
+    codegen_transform: bool = true, // RN view config inline (#2348) — Fabric early-register race 회피
 };
 pub const RN_BOOL_PRESET: ReactNativeBoolPreset = .{};
 
@@ -286,6 +287,9 @@ pub const BundleOptions = struct {
     /// Reanimated dev mode runtime이 jsVersion과 대조하므로 사용자의 react-native-worklets
     /// 패키지 버전을 그대로 전달해야 런타임 mismatch 에러 없음.
     worklet_plugin_version: ?[]const u8 = null,
+    /// RN view config codegen — `*NativeComponent.{js,ts}` 의 codegenNativeComponent
+    /// 호출을 inline view config 로 교체 (#2348). --platform=react-native 에서 자동 활성.
+    codegen_transform: bool = false,
     /// 증분 빌드용 모�� 파싱 캐시. null이면 매번 전체 파싱.
     /// IncrementalBundler가 소유하고 빌드 간 보존한다.
     module_store: ?*@import("module_store.zig").PersistentModuleStore = null,
@@ -615,6 +619,7 @@ pub const Bundler = struct {
             .entry_error_guard = self.options.entry_error_guard,
             .silent_console_error_patterns = self.options.silent_console_error_patterns,
             .worklet_transform = self.options.worklet_transform,
+            // codegen_transform 은 graph 만 사용 (load 시점). emitter 에는 전파 안 함.
             .compiled_cache = self.options.compiled_cache,
         };
     }
@@ -658,6 +663,7 @@ pub const Bundler = struct {
         worker_graph.jsx_import_source = self.options.jsx_import_source;
         // #1961: worker 모듈도 transformer pre-pass 가 동일 옵션 사용 — drift 방지.
         worker_graph.worklet_transform = self.options.worklet_transform;
+        worker_graph.codegen_transform = self.options.codegen_transform;
         worker_graph.react_refresh = self.options.react_refresh;
         worker_graph.styled_components = self.options.styled_components;
         worker_graph.styled_components_ssr = self.options.styled_components_ssr;
@@ -832,6 +838,7 @@ pub const Bundler = struct {
         // (drift hot spot 단일화). graph 가 직접 사용하는 일부 (worklet_transform /
         // react_refresh / code_splitting) 만 별도 mirror.
         graph.worklet_transform = self.options.worklet_transform;
+        graph.codegen_transform = self.options.codegen_transform;
         graph.react_refresh = self.options.react_refresh;
         graph.styled_components = self.options.styled_components;
         graph.styled_components_ssr = self.options.styled_components_ssr;

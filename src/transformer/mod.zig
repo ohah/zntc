@@ -53,4 +53,5 @@ test {
     _ = @import("styled_components_test.zig");
     _ = @import("emotion_test.zig");
     _ = @import("plugins/codegen/mod.zig");
+    _ = @import("plugins/codegen_plugin_test.zig");
 }
