@@ -49,6 +49,7 @@ CLI > config > tsconfig > defaults. 같은 옵션이 여러 곳에 정의되면 
 | `publicPath` | `--public-path=` | ✅ | ❌ | asset URL prefix |
 | `inject` | `--inject=path` | ✅ | ❌ | 배열 |
 | `drop` | `--drop=console` 등 | ✅ | ❌ | 배열 |
+| `dropLabels` | `--drop-labels=DEV,TEST` | ✅ | ❌ | 배열, CLI 값은 쉼표로 분리 |
 | `keepNames` | `--keep-names` | ✅ | ❌ | boolean |
 | `shimMissingExports` | `--shim-missing-exports` | ✅ | ❌ | boolean |
 | `flow` | `--flow` | ✅ | ❌ | Flow 타입 스트리핑 |

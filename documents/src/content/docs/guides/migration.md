@@ -31,7 +31,7 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--inject:./shim.js` | `--inject:./shim.js` | 동일 |
 | `--pure:Pure.*` | 미지원 | 코드 어노테이션 `/* @__PURE__ */` 사용 |
 | `--drop:console` | `--drop=console` | `:` 대신 `=` (`console`/`debugger`) |
-| `--drop-labels=DEV` | 미지원 | 현재 CLI는 `console`/`debugger` drop만 노출 |
+| `--drop-labels=DEV` | `--drop-labels=DEV` | 동일. 쉼표로 여러 label 지정 가능 |
 | `--keep-names` | `--keep-names` | 동일 |
 | `--banner:js=...` | `--banner:js=...` | 동일 |
 | `--footer:js=...` | `--footer:js=...` | 동일 |

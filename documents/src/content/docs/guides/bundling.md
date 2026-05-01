@@ -111,6 +111,16 @@ zts --bundle entry.ts -o bundle.js --minify-syntax
 zts --bundle entry.ts -o bundle.js --minify-identifiers
 ```
 
+## 코드 제거
+
+```bash
+zts --bundle entry.ts --drop=console --drop=debugger
+zts --bundle entry.ts --drop-labels=DEV,TEST
+```
+
+`--drop-labels`는 지정한 labeled statement 전체를 제거한다. 예를 들어
+`DEV: { console.log("dev only"); }`는 `--drop-labels=DEV`에서 번들에 남지 않는다.
+
 ## ES 타겟
 
 ```bash

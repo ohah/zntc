@@ -250,6 +250,7 @@ function parseArgs(argv) {
     browserslist: undefined,
     outbase: undefined,
     drop: [],
+    dropLabels: [],
     certfile: undefined,
     keyfile: undefined,
     configPath: undefined, // --config <path> 명시 시 자동 탐색 우회
@@ -1824,6 +1825,7 @@ function mergeConfigIntoOpts(opts, config) {
     "external",
     "inject",
     "drop",
+    "dropLabels",
     "resolveExtensions",
     "mainFields",
   ];
@@ -1895,6 +1897,7 @@ async function runBundle(opts, config) {
     asciiOnly: opts.asciiOnly,
     quotes: opts.quotes,
     drop: opts.drop.length > 0 ? opts.drop : undefined,
+    dropLabels: opts.dropLabels.length > 0 ? opts.dropLabels : undefined,
     // bundle 모드도 transpile 과 동일하게 drop console/debugger 적용 (#2155).
     dropConsole: opts.drop.includes("console"),
     dropDebugger: opts.drop.includes("debugger"),

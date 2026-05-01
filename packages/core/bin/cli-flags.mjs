@@ -141,6 +141,7 @@ export const FLAG_REGISTRY = [
   { kind: "array", flag: "--plugin", target: "pluginPaths", forms: ["pair"] },
 
   // ─── kind=csv — `,` 분리 → array ───
+  { kind: "csv", flag: "--drop-labels", target: "dropLabels", forms: ["equal"] },
   { kind: "csv", flag: "--env-prefix", target: "envPrefixes" },
   { kind: "csv", flag: "--resolve-extensions", target: "resolveExtensions", forms: ["equal"] },
   { kind: "csv", flag: "--main-fields", target: "mainFields", forms: ["equal"] },

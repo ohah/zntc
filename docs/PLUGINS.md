@@ -311,7 +311,6 @@ new Worker(new URL('./worker.ts', import.meta.url))
 
 ### 아직 CLI에 미노출
 - `--pure:Name` — 함수 단위 pure 마킹
-- `--drop-labels` — label block 제거
 - `--packages=external` — 모든 npm package external 처리
 - `--conditions`, `--node-paths` — resolver 조건/추가 탐색 경로
 - `--tsconfig-raw` — tsconfig JSON 문자열 오버라이드

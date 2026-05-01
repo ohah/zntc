@@ -31,7 +31,7 @@ ZTS provides a similar bundling model to esbuild, but the CLI flag surface is st
 | `--inject:./shim.js` | `--inject:./shim.js` | Same |
 | `--pure:Pure.*` | Not supported | Use code annotations such as `/* @__PURE__ */` |
 | `--drop:console` | `--drop=console` | `=` instead of `:` (`console`/`debugger`) |
-| `--drop-labels=DEV` | Not supported | Current CLI exposes only `console`/`debugger` drop |
+| `--drop-labels=DEV` | `--drop-labels=DEV` | Same. Use commas for multiple labels |
 | `--keep-names` | `--keep-names` | Same |
 | `--banner:js=...` | `--banner:js=...` | Same |
 | `--footer:js=...` | `--footer:js=...` | Same |
