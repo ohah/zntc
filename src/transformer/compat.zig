@@ -192,8 +192,10 @@ pub const UnsupportedFeatures = packed struct(u32) {
         return self.class or self.class_private_field or self.class_private_method;
     }
 
-    /// `for await (... of ...)` is ES2018 syntax. There is no dedicated bit yet,
-    /// so use the ES2018 feature cluster as the target-derived gate.
+    /// `for await (... of ...)` 는 ES2018 문법. 전용 feature 비트가 없어서, ES2018 비트
+    /// (object_spread / regex_dotall / regex_named_groups) 중 하나라도 unsupported 면
+    /// "타겟이 ES2018 미만" 으로 간주. async_await (ES2017) 도 같이 OR — ES2017 미지원 타겟은
+    /// 당연히 ES2018 도 미지원이므로 별도 분기 없이 동일 경로로 처리.
     pub fn needsForAwaitOfDownlevel(self: UnsupportedFeatures) bool {
         return self.async_await or self.object_spread or self.regex_dotall or self.regex_named_groups;
     }
