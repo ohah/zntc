@@ -164,6 +164,12 @@ pub const UnsupportedFeatures = packed struct(u32) {
 
     _: u4 = 0,
 
+    /// 어떤 feature flag 라도 set 됐는지 (= packed struct 가 zero 가 아닌지).
+    /// `.{}` (기본값, 모든 비트 false) 와 명시적으로 어느 비트라도 set 된 상태를 구분할 때 사용.
+    pub fn hasAny(self: @This()) bool {
+        return @as(u32, @bitCast(self)) != 0;
+    }
+
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
     comptime {

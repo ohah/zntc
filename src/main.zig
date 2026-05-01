@@ -1987,7 +1987,7 @@ pub fn main() !void {
         .verbatim_module_syntax = opts.verbatim_module_syntax,
         .sourcemap = if (opts.sourcemap) true else null,
         .es_target = opts.es_target,
-        .unsupported = if (@as(u32, @bitCast(opts.unsupported)) != 0) opts.unsupported else null,
+        .unsupported = if (opts.unsupported.hasAny()) opts.unsupported else null,
         .jsx_runtime = opts.jsx_runtime,
         .jsx_factory = if (std.mem.eql(u8, opts.jsx_factory, "React.createElement")) null else opts.jsx_factory,
         .jsx_fragment = if (std.mem.eql(u8, opts.jsx_fragment, "React.Fragment")) null else opts.jsx_fragment,
