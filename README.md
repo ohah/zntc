@@ -48,6 +48,7 @@ init();
 
 // 단일 파일 트랜스파일
 const { code, map } = transpile(source, {
+  filename: "input.ts", // TS/TSX syntax requires an explicit .ts/.tsx filename
   jsx: "automatic",
   target: "es2022",
   sourcemap: true,

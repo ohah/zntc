@@ -8,7 +8,7 @@
  * ```ts
  * import { init, transpile } from "@zts/core";
  * init();
- * const result = transpile("const x: number = 1;");
+ * const result = transpile("const x: number = 1;", { filename: "input.ts" });
  * console.log(result.code);
  * ```
  */
@@ -242,7 +242,7 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
   if (!source) throw new Error("@zts/core: empty source");
 
   const optionsJson = buildOptionsJson(options, resolveUnsupported(options));
-  return native.transpile(source, options.filename ?? "input.ts", optionsJson);
+  return native.transpile(source, options.filename ?? "input.js", optionsJson);
 }
 
 // ─── Build API ───
@@ -1677,7 +1677,7 @@ export function benchmark(options: BenchmarkOptions): BenchmarkResult {
   return native.benchmark({
     source: options.source,
     file: options.file,
-    filename: options.filename ?? "input.ts",
+    filename: options.filename ?? "input.js",
     phases: options.phases,
     iterations: options.iterations ?? 100,
     warmup: options.warmup ?? 10,

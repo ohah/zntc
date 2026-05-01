@@ -21,18 +21,31 @@ test "ModuleIndex: size is 4 bytes" {
 }
 
 test "ModuleType: fromExtension" {
-    try std.testing.expectEqual(ModuleType.javascript, ModuleType.fromExtension(".ts"));
-    try std.testing.expectEqual(ModuleType.javascript, ModuleType.fromExtension(".tsx"));
-    try std.testing.expectEqual(ModuleType.javascript, ModuleType.fromExtension(".js"));
-    try std.testing.expectEqual(ModuleType.javascript, ModuleType.fromExtension(".jsx"));
-    try std.testing.expectEqual(ModuleType.javascript, ModuleType.fromExtension(".mjs"));
-    try std.testing.expectEqual(ModuleType.javascript, ModuleType.fromExtension(".mts"));
-    try std.testing.expectEqual(ModuleType.javascript, ModuleType.fromExtension(".cjs"));
-    try std.testing.expectEqual(ModuleType.javascript, ModuleType.fromExtension(".cts"));
+    try std.testing.expectEqual(ModuleType.ts, ModuleType.fromExtension(".ts"));
+    try std.testing.expectEqual(ModuleType.tsx, ModuleType.fromExtension(".tsx"));
+    try std.testing.expectEqual(ModuleType.js, ModuleType.fromExtension(".js"));
+    try std.testing.expectEqual(ModuleType.jsx, ModuleType.fromExtension(".jsx"));
+    try std.testing.expectEqual(ModuleType.js, ModuleType.fromExtension(".mjs"));
+    try std.testing.expectEqual(ModuleType.ts, ModuleType.fromExtension(".mts"));
+    try std.testing.expectEqual(ModuleType.js, ModuleType.fromExtension(".cjs"));
+    try std.testing.expectEqual(ModuleType.ts, ModuleType.fromExtension(".cts"));
     try std.testing.expectEqual(ModuleType.json, ModuleType.fromExtension(".json"));
     try std.testing.expectEqual(ModuleType.css, ModuleType.fromExtension(".css"));
     try std.testing.expectEqual(ModuleType.unknown, ModuleType.fromExtension(".png"));
     try std.testing.expectEqual(ModuleType.unknown, ModuleType.fromExtension(".wasm"));
+}
+
+test "ParsedLoader: JS-family loader strings carry module type" {
+    inline for (.{
+        .{ "js", ModuleType.js },
+        .{ "jsx", ModuleType.jsx },
+        .{ "ts", ModuleType.ts },
+        .{ "tsx", ModuleType.tsx },
+    }) |case| {
+        const parsed = types.ParsedLoader.fromString(case[0]) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(types.Loader.javascript, parsed.loader);
+        try std.testing.expectEqual(case[1], parsed.module_type.?);
+    }
 }
 
 test "ImportRecord: default resolved is none" {

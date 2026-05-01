@@ -73,6 +73,8 @@ describe("번들 스모크 테스트", () => {
       "value-js.foo": `export const value: number = 1;`,
       "entry-ts.ts": `import { value } from "./value-ts.foo"; console.log(value);`,
       "value-ts.foo": `export const value: number = 1;`,
+      "entry-ts-jsx.ts": `import { value } from "./value-ts-jsx.foo"; console.log(value);`,
+      "value-ts-jsx.foo": `const h = (tag) => tag; export const value = <div />;`,
       "entry-jsx.ts": `import { value } from "./value-jsx.foo"; console.log(value);`,
       "value-jsx.foo": `const h = (tag) => tag; export const value = <span />;`,
       "entry-jsx-ts.ts": `import { value } from "./value-jsx-ts.foo"; console.log(value);`,
@@ -102,6 +104,18 @@ describe("번들 스모크 테스트", () => {
       "--loader:.foo=ts",
     ]);
     expect(tsResult.exitCode).toBe(0);
+
+    const tsJsxOut = join(dir, "ts-jsx.js");
+    const tsJsxResult = await runZts([
+      "--bundle",
+      join(dir, "entry-ts-jsx.ts"),
+      "-o",
+      tsJsxOut,
+      "--loader:.foo=ts",
+      "--jsx=classic",
+      "--jsx-factory=h",
+    ]);
+    expect(tsJsxResult.exitCode).not.toBe(0);
 
     const jsxOut = join(dir, "jsx.js");
     const jsxResult = await runZts([

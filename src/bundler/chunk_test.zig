@@ -417,10 +417,10 @@ test "ChunkKind: entry_point vs common" {
 // Tests — generateChunks
 // ============================================================
 
-/// 테스트용 Module을 생성한다. javascript 타입, exec_index = index.
+/// 테스트용 Module을 생성한다. JS 타입, exec_index = index.
 fn makeTestModule(alloc: std.mem.Allocator, index: u32, path: []const u8) Module {
     var m = Module.init(@enumFromInt(index), path);
-    m.module_type = .javascript;
+    m.module_type = .js;
     m.exec_index = index;
     m.state = .ready;
     // ArrayList 필드는 .empty으로 초기화됨 — append 시 allocator를 전달
