@@ -824,6 +824,26 @@ pub fn makeUnaryNot(self: anytype, operand: NodeIndex, span: Span) !NodeIndex {
     });
 }
 
+/// `await <operand>` 표현식 노드 생성. flags 는 항상 0 — await 는 yield 와 달리 delegate 형태가
+/// 없음. yield* 같은 변형이 await 측에는 존재하지 않아 시그니처에서 flags 를 노출하지 않는다.
+pub fn makeAwaitExpression(self: anytype, operand: NodeIndex, span: Span) !NodeIndex {
+    return self.ast.addNode(.{
+        .tag = .await_expression,
+        .span = span,
+        .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
+    });
+}
+
+/// `yield <operand>` 표현식 노드 생성 (delegate 아닌 일반 yield). flags bit 0 = yield* delegate
+/// 인데 현 호출자들 모두 flags=0 이라 인자에서 제외. delegate 가 필요해지면 별도 헬퍼 추가.
+pub fn makeYieldExpression(self: anytype, operand: NodeIndex, span: Span) !NodeIndex {
+    return self.ast.addNode(.{
+        .tag = .yield_expression,
+        .span = span,
+        .data = .{ .unary = .{ .operand = operand, .flags = 0 } },
+    });
+}
+
 /// for-of / for-await-of 의 left 를 loop body 에 prepend 할 statement 로 변환.
 ///
 /// - `variable_declaration` (const/let/var) → `var <binding> = elem;` (kind 는 항상 `.var` 로 강등)

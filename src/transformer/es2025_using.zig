@@ -346,13 +346,10 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const call = try es_helpers.makeCallExpr(self, dispose_ref, &.{ stack_ref, error_ref, has_error_ref }, span);
 
             // await __callDispose(...) for await using
-            const expr = if (has_await) blk: {
-                break :blk try self.ast.addNode(.{
-                    .tag = .await_expression,
-                    .span = span,
-                    .data = .{ .unary = .{ .operand = call, .flags = 0 } },
-                });
-            } else call;
+            const expr = if (has_await)
+                try es_helpers.makeAwaitExpression(self, call, span)
+            else
+                call;
 
             const expr_stmt = try es_helpers.makeExprStmt(self, expr, span);
             const body_list = try self.ast.addNodeList(&.{expr_stmt});

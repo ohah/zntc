@@ -94,11 +94,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const iter_next_call = try es_helpers.makeCallExpr(self, iter_next, &.{}, span);
 
             // await _iter.next()
-            const await_next = try self.ast.addNode(.{
-                .tag = .await_expression,
-                .span = span,
-                .data = .{ .unary = .{ .operand = iter_next_call, .flags = 0 } },
-            });
+            const await_next = try es_helpers.makeAwaitExpression(self, iter_next_call, span);
 
             // _step = await _iter.next()
             const step_ref_assign = try es_helpers.makeIdentifierRefFromSpan(self, step_span);
@@ -261,11 +257,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const ret_call = try es_helpers.makeCallExpr(self, ret_call_method, &.{iter_ref_arg}, span);
 
             // await _ret.call(_iter)
-            const await_ret_call = try self.ast.addNode(.{
-                .tag = .await_expression,
-                .span = span,
-                .data = .{ .unary = .{ .operand = ret_call, .flags = 0 } },
-            });
+            const await_ret_call = try es_helpers.makeAwaitExpression(self, ret_call, span);
             const await_stmt = try es_helpers.makeExprStmt(self, await_ret_call, span);
 
             // if (_step && !_step.done && (_ret = _iter.return)) await _ret.call(_iter);
