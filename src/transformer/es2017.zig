@@ -141,12 +141,7 @@ pub fn ES2017(comptime Transformer: type) type {
         /// `await expr` → `(yield expr)`
         pub fn lowerAwaitExpression(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const new_operand = try self.visitNode(node.data.unary.operand);
-            // yield_expression: data.unary = { operand, flags } (flags bit 0 = yield*)
-            const yield_node = try self.ast.addNode(.{
-                .tag = .yield_expression,
-                .span = node.span,
-                .data = .{ .unary = .{ .operand = new_operand, .flags = 0 } },
-            });
+            const yield_node = try es_helpers.makeYieldExpression(self, new_operand, node.span);
             return es_helpers.makeParenExpr(self, yield_node, node.span);
         }
 
