@@ -24,10 +24,11 @@ import {
   buildOptionsJson,
   ES_TARGET_BITS,
   browserslistToUnsupported,
+  isPlainObject,
   validateTsConfigRaw,
 } from "../shared/index";
 
-export { validateTsConfigRaw };
+export { isPlainObject, validateTsConfigRaw };
 
 // ─── NAPI Module ───
 

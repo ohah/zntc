@@ -166,6 +166,15 @@ export function targetToUnsupported(target?: Target): number {
 }
 
 /**
+ * value 가 plain object (non-null, 배열 아님) 인지 narrow.
+ * `JSON.parse` 결과나 동적 config 객체처럼 unknown shape 의 값을 `Record<string, unknown>`
+ * 으로 좁힐 때 사용. 함수형 config / workspace 항목 / tsconfigRaw 검증 등에서 공유.
+ */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
  * `tsconfigRaw` 사용자 입력 사전 검증.
  *
  * NAPI (`napi_entry.zig` / `transpile.zig`) 는 raw parse 실패 시 silent fallback (빈 TsConfig)
@@ -182,7 +191,7 @@ export function validateTsConfigRaw(raw: string | undefined): void {
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`failed to parse --tsconfig-raw: ${reason}`);
   }
-  if (!config || typeof config !== "object" || Array.isArray(config)) {
+  if (!isPlainObject(config)) {
     throw new Error("failed to parse --tsconfig-raw: expected a JSON object");
   }
 }
