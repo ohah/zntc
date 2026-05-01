@@ -3305,12 +3305,15 @@ fn parseBuildOptions(
         break :blk null;
     };
 
-    // JSX
+    // JSX — string→enum 변환만 여기서. 최종 런타임/factory 결정은 tsconfig_merge 에 위임
+    // (file/raw tsconfig 의 "jsx"/"jsxFactory" 등을 함께 고려).
     const jsx_str = ownStr(env, opts_obj, "jsx", owned_strings);
-    const jsx_runtime: JsxRuntime = if (jsx_str) |s|
-        if (std.mem.eql(u8, s, "automatic")) .automatic else if (std.mem.eql(u8, s, "automatic-dev")) .automatic_dev else .classic
-    else
-        .classic;
+    const jsx_runtime_explicit: ?JsxRuntime = if (jsx_str) |s| blk: {
+        if (std.mem.eql(u8, s, "automatic")) break :blk .automatic;
+        if (std.mem.eql(u8, s, "automatic-dev")) break :blk .automatic_dev;
+        if (std.mem.eql(u8, s, "classic")) break :blk .classic;
+        break :blk null;
+    } else null;
     const jsx_factory = ownStr(env, opts_obj, "jsxFactory", owned_strings);
     const jsx_fragment = ownStr(env, opts_obj, "jsxFragment", owned_strings);
     const jsx_import_source = ownStr(env, opts_obj, "jsxImportSource", owned_strings);
@@ -3421,15 +3424,16 @@ fn parseBuildOptions(
     const tsconfig_raw = ownStr(env, opts_obj, "tsconfigRaw", owned_strings);
     const tsconfig_path_js = ownStr(env, opts_obj, "tsconfigPath", owned_strings);
 
-    // tsconfig.json 로드 + 머지 — JS 옵션이 명시적으로 설정된 필드가 있으면 그게 우선.
-    // 머지 규칙은 `src/tsconfig_merge.zig` 의 공용 helper 에 위임 — transpile.zig / main.zig 와 일관.
-    // JS 가 tsconfigPath 를 주지 않았으면 entry 디렉토리에서 상위로 자동 탐색 (esbuild/vite 스타일).
+    // tsconfig 로드 + 머지 — JS 옵션이 명시적으로 설정된 필드가 우선 (ExplicitFlags 경로).
+    // raw 우선 (esbuild 동등): `tsconfigRaw` 가 있으면 file 기반 path / 자동 탐색을 모두 무시.
+    // raw parse 실패는 silent (빈 TsConfig) — JS 측이 NAPI 호출 전 사전 검증해 명시 에러를 던진다.
+    // 머지 규칙은 `src/tsconfig_merge.zig` 의 공용 helper — transpile.zig 와 일관.
     const TsConfig = @import("zts_lib").config.TsConfig;
     const tsconfig_merge = @import("zts_lib").tsconfig_merge;
     var tsconfig_holder: TsConfig = .{};
     var autodiscovered_dir: ?[]const u8 = null;
     defer if (autodiscovered_dir) |d| native_alloc.free(d);
-    const tsconfig_path_opt: ?[]const u8 = tsconfig_path_js orelse blk: {
+    const tsconfig_path_opt: ?[]const u8 = if (tsconfig_raw != null) null else tsconfig_path_js orelse blk: {
         // entry 가 하나라도 있으면 그 디렉토리 기준, 없으면 CWD 기준으로 탐색.
         const start_dir: []const u8 = if (entries.len > 0)
             std.fs.path.dirname(entries[0]) orelse "."
@@ -3438,7 +3442,9 @@ fn parseBuildOptions(
         autodiscovered_dir = TsConfig.findTsconfigUpward(native_alloc, start_dir) catch null;
         break :blk autodiscovered_dir;
     };
-    if (tsconfig_path_opt) |p| {
+    if (tsconfig_raw) |raw| {
+        tsconfig_holder = TsConfig.parseFromString(native_alloc, raw) catch TsConfig{};
+    } else if (tsconfig_path_opt) |p| {
         tsconfig_holder = TsConfig.loadFromPath(native_alloc, p) catch TsConfig{};
     }
     defer tsconfig_holder.deinit();
@@ -3448,11 +3454,19 @@ fn parseBuildOptions(
         .emit_decorator_metadata = getObjectBoolOptional(env, opts_obj, "emitDecoratorMetadata"),
         .use_define_for_class_fields = getObjectBoolOptional(env, opts_obj, "useDefineForClassFields"),
         .verbatim_module_syntax = getObjectBoolOptional(env, opts_obj, "verbatimModuleSyntax"),
+        .jsx_runtime = jsx_runtime_explicit,
+        .jsx_factory = jsx_factory,
+        .jsx_fragment = jsx_fragment,
+        .jsx_import_source = jsx_import_source,
     });
     const experimental_decorators_eff = merged_tsconfig.experimental_decorators;
     const emit_decorator_metadata_eff = merged_tsconfig.emit_decorator_metadata;
     const use_define_for_class_fields_eff = merged_tsconfig.use_define_for_class_fields;
     const verbatim_module_syntax_eff = merged_tsconfig.verbatim_module_syntax;
+    const jsx_runtime_eff = merged_tsconfig.jsx_runtime;
+    const jsx_factory_eff = merged_tsconfig.jsx_factory;
+    const jsx_fragment_eff = merged_tsconfig.jsx_fragment;
+    const jsx_import_source_eff = merged_tsconfig.jsx_import_source;
 
     const alias_entries: []const bundler_mod.types.AliasEntry = alias_list.toOwnedSlice(native_alloc) catch return null;
 
@@ -3623,10 +3637,10 @@ fn parseBuildOptions(
         .chunk_names = chunk_names orelse "[name]-[hash]",
         .asset_names = asset_names orelse "[name]-[hash]",
         .asset_registry = asset_registry,
-        .jsx_runtime = jsx_runtime,
-        .jsx_factory = jsx_factory orelse "React.createElement",
-        .jsx_fragment = jsx_fragment orelse "React.Fragment",
-        .jsx_import_source = jsx_import_source orelse "react",
+        .jsx_runtime = jsx_runtime_eff,
+        .jsx_factory = jsx_factory_eff,
+        .jsx_fragment = jsx_fragment_eff,
+        .jsx_import_source = jsx_import_source_eff,
         .inject = inject orelse &.{},
         .max_threads = getObjectUint32(env, opts_obj, "jobs", 0),
         .loader_overrides = loader_overrides,
