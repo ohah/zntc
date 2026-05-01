@@ -1419,8 +1419,8 @@ pub const ModuleGraph = struct {
         configureParserForModule(&parser, module, ext);
 
         // Flow 모드: --flow CLI 또는 .js.flow/.jsx.flow 확장자 (pragma는 parse() 내부에서 감지)
-        // is_ts와 is_flow는 상호 배타 — TS 파일에서는 Flow 무시
-        if (!parser.is_ts) {
+        // TS 와 Flow 는 상호 배타 — TS 파일에서는 Flow 무시
+        if (parser.source_mode != .ts) {
             if (self.flow) {
                 parser.is_flow = true;
                 scanner.has_flow_pragma = true; // flow comment 활성화
@@ -1431,7 +1431,7 @@ pub const ModuleGraph = struct {
         // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
         // .ts 파일은 이미 configureForBundler에서 JSX 설정됨 (.tsx만 true)
         // .ts에 강제 jsx=true하면 <T> 제네릭이 JSX로 오파싱됨
-        if (self.jsx_in_js and !parser.is_ts) {
+        if (self.jsx_in_js and parser.source_mode != .ts) {
             parser.is_jsx = true;
         }
 
@@ -1512,7 +1512,7 @@ pub const ModuleGraph = struct {
         var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
         analyzer.is_strict_mode = parser.is_strict_mode;
         analyzer.is_module = parser.is_module;
-        analyzer.is_ts = parser.is_ts;
+        analyzer.is_ts = parser.source_mode == .ts;
         analyzer.is_flow = parser.is_flow;
         analyzer.enable_stmt_info = true; // tree_shaker가 AST 재순회 없이 StmtInfo 사용
         const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;

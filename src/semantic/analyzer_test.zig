@@ -850,7 +850,7 @@ fn analyzeModule(source: []const u8) !AnalyzeResult {
     scanner.is_module = true;
     var parser = Parser.init(std.testing.allocator, &scanner);
     errdefer parser.deinit();
-    parser.is_ts = true;
+    parser.source_mode = .ts;
     parser.is_module = true;
     _ = try parser.parse();
 
@@ -1068,7 +1068,7 @@ fn analyzeModuleWithTarget(source: []const u8, target: @import("../transformer/c
     scanner.is_module = true;
     var parser = Parser.init(std.testing.allocator, &scanner);
     errdefer parser.deinit();
-    parser.is_ts = true;
+    parser.source_mode = .ts;
     parser.is_module = true;
     _ = try parser.parse();
 
