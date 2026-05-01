@@ -311,9 +311,7 @@ describe("CLI: transpile", () => {
   });
 
   test("file-based jsx tsconfig (jsxImportSource=preact) is honored via NAPI", () => {
-    // 회귀 가드: 이전엔 JS 측 `applyTsConfigCompilerOptions` 가 풀어 NAPI 에 jsx="automatic" 등을
-    // 직접 set 해 동작했음. JS 매핑을 걷어내고 Zig `tsconfig_merge` 가 jsx 를 처리하도록 옮긴 후에도
-    // 동일한 사용자 동작이 유지되는지 보장한다.
+    // tsconfig 의 jsx/jsxImportSource 가 NAPI(Zig `tsconfig_merge`) 경로로 적용되는지 회귀 가드.
     const projectDir = mkdtempSync(join(tmpdir(), "zts-cli-tsconfig-jsx-"));
     try {
       writeFileSync(
