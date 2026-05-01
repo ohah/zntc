@@ -128,7 +128,8 @@ export fn transpile(
     else
         "{}";
 
-    const options = transpile_mod.optionsFromJson(opts_alloc, opts_json) catch {
+    // WASM 은 file 시스템 접근 불가 — entry_path null 로 자동 탐색 비활성.
+    const options = transpile_mod.optionsFromJson(opts_alloc, opts_json, null) catch {
         setError("invalid options JSON");
         return 0;
     };
