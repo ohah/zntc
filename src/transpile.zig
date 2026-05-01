@@ -262,8 +262,16 @@ pub fn applyTranspileSharedFields(
 /// JSON payload를 파싱해 `TranspileOptions`로 변환한다.
 /// allocator는 arena 권장 — 반환된 값의 문자열/슬라이스 수명을 책임진다.
 ///
+/// `entry_path` 가 non-null 이고 명시적 `tsconfigPath` 가 없으면, `dirname(entry_path)` 부터
+/// 위로 올라가며 `tsconfig.json` 을 자동 탐색한다 (esbuild/vite 식 zero-config).
+/// 자동 탐색을 원치 않는 caller (예: file 시스템 접근이 없는 WASM) 는 `null` 을 전달.
+///
 /// 오류: JSON 파싱 실패 / 알 수 없는 enum 문자열 → error 반환.
-pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !TranspileOptions {
+pub fn optionsFromJson(
+    allocator: std.mem.Allocator,
+    json: []const u8,
+    entry_path: ?[]const u8,
+) !TranspileOptions {
     const parsed = std.json.parseFromSliceLeaky(ConfigOptionsDto, allocator, json, .{ .ignore_unknown_fields = true }) catch return error.InvalidOptions;
 
     var opts: TranspileOptions = .{};
@@ -273,9 +281,9 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
     if (parsed.stopAfter) |v| opts.stop_after = v;
 
     // tsconfig 로드 + merge — JSON 에 명시적으로 설정된 값이 tsconfig 값을 덮어쓴다.
-    // raw 우선 (esbuild 동등): `tsconfigRaw` 가 있으면 file 기반 path 무시.
+    // raw 우선 (esbuild 동등): `tsconfigRaw` 가 있으면 file 기반 path / 자동 탐색 모두 무시.
     // raw 파싱 실패는 사용자 입력 에러로 명시적 propagate, file 실패는 ambient 라 silent.
-    // WASM 타겟은 file 시스템 접근 불가 — file 분기만 스킵 (raw 는 무관하게 동작).
+    // WASM 타겟은 file 시스템 접근 불가 — file/자동 탐색 분기 모두 스킵 (raw 는 무관하게 동작).
     const TsConfig = @import("config.zig").TsConfig;
     const tsconfig_merge = @import("tsconfig_merge.zig");
     const can_load_tsconfig_file = @import("builtin").os.tag != .wasi and @import("builtin").os.tag != .freestanding;
@@ -283,9 +291,17 @@ pub fn optionsFromJson(allocator: std.mem.Allocator, json: []const u8) !Transpil
         if (parsed.tsconfigRaw) |raw| {
             break :blk TsConfig.parseFromString(allocator, raw) catch return error.InvalidOptions;
         }
-        if (can_load_tsconfig_file) if (opts.tsconfig_path) |path| {
-            break :blk TsConfig.loadFromPath(allocator, path) catch TsConfig{};
-        };
+        if (can_load_tsconfig_file) {
+            // 명시 path > entry 디렉토리에서 위로 자동 탐색 (esbuild/vite 식 zero-config).
+            const resolved_path: ?[]const u8 = opts.tsconfig_path orelse find: {
+                const path = entry_path orelse break :find null;
+                const dir = std.fs.path.dirname(path) orelse ".";
+                break :find TsConfig.findTsconfigUpward(allocator, dir) catch null;
+            };
+            if (resolved_path) |p| {
+                break :blk TsConfig.loadFromPath(allocator, p) catch TsConfig{};
+            }
+        }
         break :blk TsConfig{};
     };
     // arena 가 ts._allocated_strings 도 reap — 개별 deinit 금지 (CLAUDE.md memory 가이드).

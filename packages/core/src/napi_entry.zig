@@ -124,7 +124,7 @@ fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
 
     const opts_json: []const u8 = if (argc > 2) (getStringArg(env, argv[2], opts_alloc) orelse "{}") else "{}";
 
-    const options = transpile_mod.optionsFromJson(opts_alloc, opts_json) catch {
+    const options = transpile_mod.optionsFromJson(opts_alloc, opts_json, filename) catch {
         return throwError(env, "invalid options JSON");
     };
 

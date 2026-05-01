@@ -365,29 +365,6 @@ function parseArgs(argv) {
   return opts;
 }
 
-// ─── tsconfig 자동 탐색 ───
-//
-// tsconfig 파싱/머지는 Zig (`src/tsconfig_merge.zig` + `TsConfig.parseFromString`/`loadFromPath`)
-// 가 단일 진실 원천. raw 입력 검증은 `@zts/core` 의 `validateTsConfigRaw` (JS API/CLI 공유) 가 담당.
-// 자동 탐색은 bundler NAPI 진입점이 자체 처리하지만 transpile 진입점은 안 해서, 모드 비대칭을 JS 가 보정.
-function autodiscoverTsConfig(opts) {
-  if (opts.tsconfigRaw !== undefined) return; // raw 가 file 무시 우선.
-  if (opts.project) return; // 사용자 명시.
-  const startDir =
-    opts.entryPoints.length > 0 ? dirname(resolve(opts.entryPoints[0])) : process.cwd();
-  let dir = startDir;
-  while (true) {
-    const candidate = join(dir, "tsconfig.json");
-    if (existsSync(candidate)) {
-      opts.project = candidate;
-      return;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) return;
-    dir = parent;
-  }
-}
-
 // ─── 파일 출력 ───
 
 // realpathSync 가 throw 하면 (출력 파일은 보통 미존재) lexical resolve 로 fallback.
@@ -2640,8 +2617,6 @@ async function main() {
     // raw tsconfig 입력 사전 검증 — NAPI 가 silent fallback 이라 invalid 라도 진입은 가능,
     // 사용자 디버깅 편의를 위해 여기서 명시 에러로 실패시킨다.
     validateTsConfigRaw(opts.tsconfigRaw);
-    // bundler 진입점은 NAPI 가 자동 탐색하지만 transpile 진입점은 안 함 — JS 가 보정.
-    autodiscoverTsConfig(opts);
     init();
     const r = await dispatchBuild(opts, config, configEnv, dotenvVars);
     if (r.errors > 0) process.exit(1);
