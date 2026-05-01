@@ -1780,6 +1780,10 @@ fn buildCompleteTsfn(env: c.napi_env, _: c.napi_value, _: ?*anyopaque, data: ?*a
         // 배열 컨테이너만 해제 (내부 문자열은 owned_strings에서 이미 해제됨)
         for (async_data.owned_string_arrays.items) |arr| native_alloc.free(arr);
         async_data.owned_string_arrays.deinit(native_alloc);
+        // BundleOptions 의 typed entries 배열 — native_alloc 으로 alloc 했으므로 명시 free.
+        // 내부 문자열은 owned_strings 가 소유 (#2396).
+        if (async_data.options.define.len > 0) native_alloc.free(async_data.options.define);
+        if (async_data.options.module_specifier_map.len > 0) native_alloc.free(async_data.options.module_specifier_map);
         // NAPI 플러그인 해제
         for (async_data.napi_plugins.items) |np| np.deinit();
         async_data.napi_plugins.deinit(native_alloc);
@@ -1978,6 +1982,9 @@ const WatchAsyncData = struct {
         // 배열 컨테이너 해제 (내부 문자열은 owned_strings에서 이미 해제됨)
         for (self.owned_string_arrays.items) |arr| native_alloc.free(arr);
         self.owned_string_arrays.deinit(native_alloc);
+        // BundleOptions 의 typed entries 배열 — native_alloc 으로 alloc 했으므로 명시 free (#2396).
+        if (self.options.define.len > 0) native_alloc.free(self.options.define);
+        if (self.options.module_specifier_map.len > 0) native_alloc.free(self.options.module_specifier_map);
         // NAPI 플러그인 해제
         for (self.napi_plugins.items) |np| np.deinit();
         self.napi_plugins.deinit(native_alloc);
