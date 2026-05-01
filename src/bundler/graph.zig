@@ -1292,7 +1292,6 @@ pub const ModuleGraph = struct {
             module.exports_kind = .esm;
             module.wrap_kind = .none;
             module.side_effects = false;
-            purity.markUserPureCalls(&(module.ast.?), self.pure);
 
             // semantic analysis — export default가 제대로 추적되도록
             var analyzer = SemanticAnalyzer.init(arena_alloc, &(module.ast.?));

@@ -896,6 +896,23 @@ test "user pure hints: exact member and namespace wildcard mark calls pure" {
     try std.testing.expect(!purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 4), null));
 }
 
+test "user pure hints: bare identifier and new expression are matched" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\const a = makeUnused("hint");
+        \\const b = new MakeUnused("hint");
+        \\const c = keepMe("hint");
+    ;
+    var ctx = try setup(alloc, src);
+    defer ctx.deinit();
+
+    purity.markUserPureCalls(&ctx.ast, &.{ "makeUnused", "MakeUnused" });
+
+    try std.testing.expect(purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 0), null));
+    try std.testing.expect(purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 1), null));
+    try std.testing.expect(!purity.isExprPure(&ctx.ast, initOfDecl(&ctx, 2), null));
+}
+
 test "known pure call: Object.freeze with pure arg is pure" {
     const alloc = std.testing.allocator;
     const src =

@@ -30,14 +30,14 @@ const max_depth: u32 = 128;
 /// `new Set()`의 `Set`이 이 집합에 있으면 shadowing 없이 전역 빌트인임이 확정된다.
 pub const GlobalRefSet = std.StringHashMap(void);
 
-/// User-provided pure callee hints (`--pure:<callee>` / BuildOptions.pure).
+/// 사용자 지정 pure callee hint (`--pure:<callee>` / BuildOptions.pure).
 ///
-/// Supported patterns:
-/// - `fnName` matches `fnName(...)` / `new fnName(...)`
-/// - `Ns.fn` matches static member callees such as `Ns.fn(...)`
-/// - `Ns.*` matches any static member call below that namespace, for example
-///   `Ns.fn(...)` and `Ns.deep.fn(...)`
-/// Computed or optional-chain callees are intentionally not matched.
+/// 지원 패턴:
+/// - `fnName` — `fnName(...)` / `new fnName(...)` 매칭
+/// - `Ns.fn` — `Ns.fn(...)` 같은 static member callee 매칭
+/// - `Ns.*` — 해당 namespace 하위의 임의 깊이 static member call 매칭
+///   (`Ns.fn(...)`, `Ns.deep.fn(...)`)
+/// Computed callee (`a["b"]()`)와 optional chain callee (`a?.()`/`a.b?.c()`)는 의도적으로 미매칭.
 pub fn markUserPureCalls(ast: *Ast, pure_patterns: []const []const u8) void {
     if (pure_patterns.len == 0) return;
     for (ast.nodes.items) |node| {
