@@ -274,3 +274,50 @@ test "schema_builder: invalid declaration → InvalidNativePropsBody" {
     const result = schema_builder.build(&p.parser.ast, &p.type_index, "X", stmt, std.testing.allocator);
     try std.testing.expectError(error.InvalidNativePropsBody, result);
 }
+
+test "schema_builder: WithDefault<T, D> wrapper — inner T 만 추출 (TS)" {
+    // RN codegen 의 default value wrapper. RN 0.85 코어 spec 40개 중 10개에서 사용.
+    // 첫 type 인자만 추출하여 재귀 매핑 — D (default literal) 는 향후 PR.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { disabled: WithDefault<boolean, false> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expectEqualStrings("disabled", shape.props[0].name);
+    try std.testing.expect(shape.props[0].type_annotation == .boolean);
+}
+
+test "schema_builder: WithDefault<Float, 0> → float (Flow)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { rate: WithDefault<Float, 0> };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expectEqualStrings("rate", shape.props[0].name);
+    try std.testing.expect(shape.props[0].type_annotation == .float);
+}
+
+test "schema_builder: WithDefault<ColorValue, null> → reserved.color" {
+    // RN 의 nullable color: `WithDefault<?ColorValue, null>` 흔한 패턴.
+    // 단순화: nullable 없이 ColorValue 직접 — wrapper 만 검증.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { tint: WithDefault<ColorValue, null> };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expectEqualStrings("tint", shape.props[0].name);
+    try std.testing.expect(shape.props[0].type_annotation == .reserved);
+    try std.testing.expectEqual(schema.ReservedPropPrimitive.color, shape.props[0].type_annotation.reserved);
+}

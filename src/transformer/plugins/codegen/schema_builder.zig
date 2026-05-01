@@ -318,6 +318,16 @@ fn mapTypeReference(
 ) Error!schema.PropTypeAnnotation {
     const name = getTypeReferenceName(ast, node) orelse return error.UnsupportedPropType;
 
+    // `WithDefault<T, D>` — RN codegen 의 default value wrapper. RN core 0.85 의 40개
+    // spec 중 10개에서 사용 (`disabled?: WithDefault<boolean, false>` 등).
+    // 첫 type 인자 T 만 추출해서 재귀. 두번째 D (default literal) 는 향후 PR 에서
+    // ts_literal_type / flow_*_literal_type 추출해 PropTypeAnnotation.default 채울 예정 —
+    // 현재는 무시 (RN runtime 이 자체 default 사용).
+    if (std.mem.eql(u8, name, "WithDefault")) {
+        const inner = getFirstTypeArgument(ast, node) orelse return error.UnsupportedPropType;
+        return mapPropTypeAt(ast, type_index, inner, depth + 1);
+    }
+
     if (reserved_ref_names.get(name)) |primitive| {
         return .{ .reserved = primitive };
     }
