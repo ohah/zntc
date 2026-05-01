@@ -651,6 +651,11 @@ interface BuildOptionsCommon {
   /** worklet의 `__pluginVersion` 값 (Reanimated dev mode jsVersion 대조용).
    * 사용자 환경의 react-native-worklets 패키지 version을 전달해야 런타임 에러 없음. */
   workletPluginVersion?: string;
+  /** RN view config codegen — `*NativeComponent.{js,ts}` 의 `codegenNativeComponent`
+   * 호출을 inline view config 로 교체 (#2348). React Native 플랫폼에서 자동 활성화.
+   * `@react-native/codegen` 의 `GenerateViewConfigJs.generate()` fileTemplate 와 동일.
+   * Fabric early-register race (`View config not found for component 'X'`) 회피. */
+  codegenTransform?: boolean;
   /** scope hoisting 시 예약할 전역 식별자 */
   globalIdentifiers?: string[];
   /** 번들 시작 시 즉시 실행 폴리필 경로 */
