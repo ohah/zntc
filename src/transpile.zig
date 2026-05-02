@@ -487,6 +487,11 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
     return facts;
 }
 
+// 한 함수 / 한 var 리스트 / 한 import 절에서 매칭되는 import 이름 수의 상한.
+// 초과 시 scan 은 over-conservative 로 full route 를 택하고 mark 는 shadow 를 누락해도
+// outer import 가 used 로 마킹되어 import 가 보존된다.
+const binding_lite_max_shadows: usize = 64;
+
 // default/namespace specifier 는 collectAstFacts 에서 has_non_named_import 로 잡혀
 // buildTransformPlan 이 이미 full 로 라우팅하므로 여기서는 named 만 본다.
 // import local 노드는 identifier_reference 로 태깅되므로 binding_identifier 필터에 자연히 빠진다.
@@ -494,7 +499,7 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
 // 처리한다. top-level shadow, `var` shadow, walker buffer overflow 처럼 declaration-order
 // 또는 scope 의미가 애매한 케이스만 full 로 보낸다.
 fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
-    var names_buf: [64][]const u8 = undefined;
+    var names_buf: [binding_lite_max_shadows][]const u8 = undefined;
     var names_len: usize = 0;
 
     for (ast.nodes.items) |import_node| {
@@ -510,7 +515,7 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
 
             const local_idx = spec.data.binary.right;
             if (local_idx.isNone()) continue;
-            // 64 개 초과 named import 는 보수적으로 full 로 우회 — barrel 파일 등 흔치 않은 경우.
+            // barrel 파일 등 비현실적 import 수는 보수적으로 full route.
             if (names_len == names_buf.len) return true;
             names_buf[names_len] = ast.getText(ast.getNode(local_idx).span);
             names_len += 1;
@@ -526,14 +531,17 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
     return false;
 }
 
-fn bindingPatternContainsImportName(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
+// match_count 는 호출자가 누적한다. binding pattern 하나(=formal_parameters/catch param)
+// 안에서는 fresh counter 로도 의미가 같지만, `var a, b, c` 처럼 한 var 리스트의
+// 누적 shadow 수를 봐야 하는 경우엔 호출자가 같은 counter 를 재사용한다.
+fn bindingPatternImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
     var it = ast_walk.bindingIdentifiers(ast, idx, .{ .cover_grammar_assignment = true });
     while (it.next()) |leaf_idx| {
         const leaf = ast.getNode(leaf_idx);
         const name = ast.getText(leaf.span);
         if (string_list.contains(names, name)) {
             match_count.* += 1;
-            if (match_count.* > 64) return true;
+            if (match_count.* > binding_lite_max_shadows) return true;
         }
     }
     return false;
@@ -555,7 +563,7 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
         const decl = ast.getNode(decl_idx);
         if (decl.tag != .variable_declarator) continue;
         const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
-        if (bindingPatternContainsImportName(ast, binding_idx, names, &matching_shadows)) return true;
+        if (bindingPatternImportShadowOverflow(ast, binding_idx, names, &matching_shadows)) return true;
         const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra + 2]);
         if (scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth)) return true;
     }
@@ -563,6 +571,19 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
     if (matching_shadows == 0) return false;
     if (scope_depth == 0) return true;
     return !ast.variableDeclarationKind(node).isLexical();
+}
+
+fn scanChildrenForUnsupportedBindingLiteShadow(
+    ast: *const Ast,
+    node: ast_mod.Node,
+    names: []const []const u8,
+    child_scope_depth: usize,
+) bool {
+    var it = ast_walk.children(ast, node);
+    while (it.next()) |child_idx| {
+        if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, child_scope_depth)) return true;
+    }
+    return false;
 }
 
 fn scanForUnsupportedBindingLiteShadow(
@@ -574,43 +595,24 @@ fn scanForUnsupportedBindingLiteShadow(
     if (idx.isNone()) return false;
     const node = ast.getNode(idx);
     switch (node.tag) {
-        .program => {
-            var it = ast_walk.children(ast, node);
-            while (it.next()) |child_idx| {
-                if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, 0)) return true;
-            }
-            return false;
-        },
+        // program 의 child 는 항상 top-level (scope_depth=0). block/function body 진입은
+        // scope_depth+1. 그 외 노드는 같은 scope_depth 로 children 만 내려간다.
+        .program => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, 0),
         .block_statement,
         .function_body,
-        => {
-            var it = ast_walk.children(ast, node);
-            while (it.next()) |child_idx| {
-                if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, scope_depth + 1)) return true;
-            }
-            return false;
-        },
+        => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1),
         .formal_parameters => {
             var matching_shadows: usize = 0;
-            return bindingPatternContainsImportName(ast, idx, names, &matching_shadows);
+            return bindingPatternImportShadowOverflow(ast, idx, names, &matching_shadows);
         },
         .catch_clause => {
             var matching_shadows: usize = 0;
-            if (bindingPatternContainsImportName(ast, node.data.binary.left, names, &matching_shadows)) return true;
+            if (bindingPatternImportShadowOverflow(ast, node.data.binary.left, names, &matching_shadows)) return true;
             return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1);
         },
         .variable_declaration => return scanVariableDeclarationForUnsupportedBindingLiteShadow(ast, node, names, scope_depth),
-        .binding_identifier => {
-            if (string_list.contains(names, ast.getText(node.span))) return true;
-            return false;
-        },
-        else => {
-            var it = ast_walk.children(ast, node);
-            while (it.next()) |child_idx| {
-                if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, scope_depth)) return true;
-            }
-            return false;
-        },
+        .binding_identifier => return string_list.contains(names, ast.getText(node.span)),
+        else => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth),
     }
 }
 
@@ -728,8 +730,8 @@ fn markBindingLiteUse(lite: *BindingLite, name: []const u8, shadowed_names: []co
 
 fn appendBindingLiteShadowName(buf: [][]const u8, len: *usize, name: []const u8) void {
     if (string_list.contains(buf[0..len.*], name)) return;
-    // 64 개 초과 shadow 는 그대로 두면 outer import 가 used 로 잘못 마킹될 위험이 있다 — over-conservative
-    // 로 동작해 import 유지. 실제로는 한 함수에 64 개 import 이름 동시 shadow 는 비현실적.
+    // 상한 초과 shadow 는 그대로 두면 outer import 가 used 로 잘못 마킹될 위험이 있다 — over-conservative
+    // 로 동작해 import 유지. 실제로는 한 함수에 binding_lite_max_shadows 개 동시 shadow 는 비현실적.
     if (len.* >= buf.len) return;
     buf[len.*] = name;
     len.* += 1;
@@ -779,7 +781,7 @@ fn markBindingLiteBlockScope(
     lite: *BindingLite,
     parent_shadowed: []const []const u8,
 ) void {
-    var shadow_buf: [64][]const u8 = undefined;
+    var shadow_buf: [binding_lite_max_shadows][]const u8 = undefined;
     var shadow_len: usize = 0;
     for (parent_shadowed) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
     collectBindingLiteListLexicalShadows(ast, node.data.list, lite, &shadow_buf, &shadow_len);
@@ -827,7 +829,7 @@ fn markBindingLiteFunctionScope(
     params_idx: ast_mod.NodeIndex,
     body_idx: ast_mod.NodeIndex,
 ) void {
-    var shadow_buf: [64][]const u8 = undefined;
+    var shadow_buf: [binding_lite_max_shadows][]const u8 = undefined;
     var shadow_len: usize = 0;
     for (parent_shadowed) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
     collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
@@ -863,7 +865,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
             return;
         },
         .catch_clause => {
-            var shadow_buf: [64][]const u8 = undefined;
+            var shadow_buf: [binding_lite_max_shadows][]const u8 = undefined;
             var shadow_len: usize = 0;
             for (shadowed_names) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
             collectBindingLitePatternShadows(ast, node.data.binary.left, lite, &shadow_buf, &shadow_len);
