@@ -92,11 +92,34 @@ pub fn build(
         try classifyMember(ast, type_index, sig_idx, &props_buf, &events_buf, alloc);
     }
 
+    // last-wins dedup (#2418): inheritance chain 에서 같은 이름 prop/event 가 등장하면
+    // derived 위치 + 타입이 base 를 가린다 (TS override semantic 정합).
+    dedupByName(schema.NamedShape(schema.PropTypeAnnotation), &props_buf);
+    dedupByName(schema.EventTypeShape, &events_buf);
+
     return .{
         .name = component_name,
         .props = try props_buf.toOwnedSlice(alloc),
         .events = try events_buf.toOwnedSlice(alloc),
     };
+}
+
+/// 같은 `.name` 을 가진 항목을 last-wins 로 dedup. j > i 위치에 같은 이름이 있으면 i 는 drop.
+/// O(n²) — RN spec 의 props 는 보통 ~20개라 비용 무시 가능.
+fn dedupByName(comptime T: type, list: *std.ArrayList(T)) void {
+    var write: usize = 0;
+    for (list.items, 0..) |item, i| {
+        if (!nameInRest(T, list.items[i + 1 ..], item.name)) {
+            list.items[write] = item;
+            write += 1;
+        }
+    }
+    list.shrinkRetainingCapacity(write);
+}
+
+fn nameInRest(comptime T: type, rest: []const T, name: []const u8) bool {
+    for (rest) |item| if (std.mem.eql(u8, item.name, name)) return true;
+    return false;
 }
 
 /// declaration 1 개로부터 _자기 본문 + 인헤리턴스 chain 의 모든 base_ 의 멤버 평탄화 수집.
@@ -219,6 +242,14 @@ fn collectMembersFromTypeRef(
         return;
     }
 
+    // TS utility types `Pick<T, K>` / `Omit<T, K>` (#2417) — T 의 멤버 수집 후 K 의
+    // string union 으로 필터. K 가 cross-file alias (예: `keyof RemoteX`) 면 silent skip.
+    if (std.mem.eql(u8, ref_name, "Pick") or std.mem.eql(u8, ref_name, "Omit")) {
+        const is_pick = std.mem.eql(u8, ref_name, "Pick");
+        try collectPickOmitMembers(ast, type_index, ref_node, is_pick, out, visited, depth + 1, alloc);
+        return;
+    }
+
     // same-file lookup — found 면 declaration body 재귀.
     if (type_index.get(ref_name)) |decl_idx| {
         try collectAllMembers(ast, type_index, decl_idx, out, visited, depth + 1, alloc);
@@ -226,6 +257,80 @@ fn collectMembersFromTypeRef(
     }
 
     // cross-file (e.g. ViewProps from 'react-native') — silent skip per #2348 plan.
+}
+
+/// `Pick<T, K>` / `Omit<T, K>` 처리 (#2417). K 는 single string literal 또는 그 union 만
+/// 지원 — 그 외 (type ref 등) silent skip. Parser 가 union 을 flat NodeList 로 저장
+/// (`ts.zig:649`, `flow.zig:126`) 하므로 단일 레벨만 보면 됨.
+fn collectPickOmitMembers(
+    ast: *const Ast,
+    type_index: *const TypeIndex,
+    ref_node: Node,
+    is_pick: bool,
+    out: *std.ArrayList(NodeIndex),
+    visited: *VisitedSet,
+    depth: u8,
+    alloc: std.mem.Allocator,
+) Error!void {
+    const t_idx = getNthTypeArgument(ast, ref_node, 0) orelse return;
+    const k_idx = getNthTypeArgument(ast, ref_node, 1) orelse return;
+
+    // K 의 string literal 이름들을 stack 에 수집. 미지원 K 면 null → silent skip.
+    var k_names_buf: [32][]const u8 = undefined;
+    const k_names = collectStringLiteralNames(ast, k_idx, &k_names_buf) orelse return;
+
+    var t_members = std.ArrayList(NodeIndex).empty;
+    defer t_members.deinit(alloc);
+    try collectMembersFromValue(ast, type_index, t_idx, &t_members, visited, depth + 1, alloc);
+
+    for (t_members.items) |sig_idx| {
+        const sig = ast.getNode(sig_idx);
+        if (sig.tag != .ts_property_signature and sig.tag != .flow_property_signature) {
+            try out.append(alloc, sig_idx); // spread 등 비-property 는 통과
+            continue;
+        }
+        const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[sig.data.extra]);
+        const name = extractKeyName(ast, key_idx) orelse continue;
+        const in_k = stringInList(name, k_names);
+        if (in_k == is_pick) try out.append(alloc, sig_idx);
+    }
+}
+
+/// K 가 string literal (또는 그 union) 이면 이름들을 buf 에 채우고 슬라이스 반환.
+/// 32 개 초과하거나 미지원 형태 (type ref, non-string literal) 면 null.
+fn collectStringLiteralNames(ast: *const Ast, k_idx: NodeIndex, buf: *[32][]const u8) ?[][]const u8 {
+    const k = ast.getNode(k_idx);
+    switch (k.tag) {
+        .ts_literal_type, .flow_literal_type => {
+            const name = stripStringLiteral(ast, k) orelse return null;
+            buf[0] = name;
+            return buf[0..1];
+        },
+        .ts_union_type, .flow_union_type => {
+            if (k.data.list.len == 0 or k.data.list.len > buf.len) return null;
+            var i: u32 = 0;
+            while (i < k.data.list.len) : (i += 1) {
+                const elem: NodeIndex = @enumFromInt(ast.extra_data.items[k.data.list.start + i]);
+                buf[i] = stripStringLiteral(ast, ast.getNode(elem)) orelse return null;
+            }
+            return buf[0..k.data.list.len];
+        },
+        else => return null,
+    }
+}
+
+/// literal_type 노드가 quoted string 이면 unquoted text 반환, 아니면 null.
+fn stripStringLiteral(ast: *const Ast, node: Node) ?[]const u8 {
+    if (node.tag != .ts_literal_type and node.tag != .flow_literal_type) return null;
+    const text = ast.getText(node.data.string_ref);
+    if (text.len < 2) return null;
+    if (text[0] != '\'' and text[0] != '"') return null;
+    return stripQuotes(text);
+}
+
+fn stringInList(name: []const u8, list: []const []const u8) bool {
+    for (list) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
 }
 
 /// object body NodeIndex 의 property_signature 를 out 에 append. 비-object body 는 silent skip.
@@ -284,6 +389,23 @@ fn unwrapWrapper(ast: *const Ast, type_index: *const TypeIndex, idx: NodeIndex) 
 fn isReadonlyWrapperName(name: []const u8) bool {
     return std.mem.eql(u8, name, "Readonly") or
         std.mem.eql(u8, name, "$ReadOnly");
+}
+
+/// type_reference node 에서 N 번째 type argument 의 NodeIndex 추출.
+/// `Foo<A, B>` 의 nth=0 → A, nth=1 → B.
+fn getNthTypeArgument(ast: *const Ast, node: Node, nth: u32) ?NodeIndex {
+    const e = node.data.extra;
+    if (e + 2 >= ast.extra_data.items.len) return null;
+    const args_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 2]);
+    if (args_idx == .none) return null;
+
+    const args_node = ast.getNode(args_idx);
+    if (args_node.tag != .ts_type_parameter_instantiation and
+        args_node.tag != .flow_type_parameter_instantiation) return null;
+
+    const list = args_node.data.list;
+    if (nth >= list.len) return null;
+    return @enumFromInt(ast.extra_data.items[list.start + nth]);
 }
 
 /// type_reference node 에서 first type argument 의 NodeIndex 추출.
