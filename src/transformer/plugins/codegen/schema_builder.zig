@@ -238,9 +238,10 @@ fn collectMembersFromTypeRef(
     if (ref_node.tag != .ts_type_reference and ref_node.tag != .flow_type_reference) return;
 
     const ref_name = getTypeReferenceName(ast, ref_node) orelse return;
+    const last = lastSegment(ref_name);
 
-    // wrapper (Readonly<T> 등) 이면 inner 로 풀어 재귀.
-    if (isReadonlyWrapperName(ref_name)) {
+    // wrapper (Readonly<T> 등) 이면 inner 로 풀어 재귀. Namespace alias (CT.Readonly) 도 동등 처리.
+    if (isReadonlyWrapperName(last)) {
         const inner = getNthTypeArgument(ast, ref_node, 0) orelse return;
         try collectMembersFromValue(ast, type_index, inner, out, visited, depth + 1, alloc);
         return;
@@ -248,13 +249,14 @@ fn collectMembersFromTypeRef(
 
     // TS utility types `Pick<T, K>` / `Omit<T, K>` (#2417) — T 의 멤버 수집 후 K 의
     // string union 으로 필터. K 가 cross-file alias (예: `keyof RemoteX`) 면 silent skip.
-    if (std.mem.eql(u8, ref_name, "Pick") or std.mem.eql(u8, ref_name, "Omit")) {
-        const is_pick = std.mem.eql(u8, ref_name, "Pick");
+    if (std.mem.eql(u8, last, "Pick") or std.mem.eql(u8, last, "Omit")) {
+        const is_pick = std.mem.eql(u8, last, "Pick");
         try collectPickOmitMembers(ast, type_index, ref_node, is_pick, out, visited, depth + 1, alloc);
         return;
     }
 
-    // same-file lookup — found 면 declaration body 재귀.
+    // same-file lookup — found 면 declaration body 재귀. Namespace 가 있으면 (점 포함)
+    // local type_index 에 없으니 자연스레 cross-file 분기로 떨어짐.
     if (type_index.get(ref_name)) |decl_idx| {
         try collectAllMembers(ast, type_index, decl_idx, out, visited, depth + 1, alloc);
         return;
@@ -381,7 +383,7 @@ fn unwrapWrapper(ast: *const Ast, type_index: *const TypeIndex, idx: NodeIndex) 
         else => return idx,
     };
 
-    if (!isReadonlyWrapperName(ref_name)) return idx;
+    if (!isReadonlyWrapperName(lastSegment(ref_name))) return idx;
 
     // type argument 추출 — Readonly<T> 의 T.
     const inner = getNthTypeArgument(ast, node, 0) orelse return idx;
@@ -412,6 +414,8 @@ fn getNthTypeArgument(ast: *const Ast, node: Node, index: u32) ?NodeIndex {
 }
 
 /// type_reference 의 name 텍스트 추출. extra[0..2] 가 source 의 name span.
+/// Namespace-qualified (`NS.Foo`) 형태도 source 그대로 (점 포함) 반환 — caller 가
+/// well-known map lookup 시 `lastSegment` 로 마지막 segment 만 비교해야 한다.
 fn getTypeReferenceName(ast: *const Ast, node: Node) ?[]const u8 {
     const e = node.data.extra;
     if (e + 1 >= ast.extra_data.items.len) return null;
@@ -419,6 +423,18 @@ fn getTypeReferenceName(ast: *const Ast, node: Node) ?[]const u8 {
     const end = ast.extra_data.items[e + 1];
     if (end <= start or end > ast.source.len) return null;
     return ast.source[start..end];
+}
+
+/// Qualified name 의 마지막 segment 반환 — `import type { X as NS } from '...'` 후
+/// `NS.Foo` 형태의 RN 0.85+ 표준 패턴 (`CodegenTypes as CT` 등) 을 well-known map
+/// (event_handler_names / wrapper_ref_names / reserved_ref_names / numeric_ref_names)
+/// 매칭에 동등 처리하기 위한 helper. 점 없으면 입력 그대로.
+///
+/// 주의: type_index (사용자 정의 alias) lookup 에는 사용 X — `NS.LocalAlias` 가
+/// 우연히 같은 이름의 로컬 alias 와 매칭되어 cross-namespace pollution 일어남.
+fn lastSegment(name: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, name, '.')) |dot| return name[dot + 1 ..];
+    return name;
 }
 
 /// property_signature 1 개를 분류해 props 또는 events 에 append.
@@ -510,7 +526,8 @@ fn eventHandlerBubbling(ast: *const Ast, type_idx: NodeIndex) ?schema.BubblingTy
     const node = ast.getNode(type_idx);
     if (node.tag != .ts_type_reference and node.tag != .flow_type_reference) return null;
     const name = getTypeReferenceName(ast, node) orelse return null;
-    return event_handler_names.get(name);
+    // Namespace alias (CT.DirectEventHandler 등 RN 0.85 표준) 도 last segment 로 매칭.
+    return event_handler_names.get(lastSegment(name));
 }
 
 /// RN codegen 의 명시적 event wrapper — 이름이 bubble vs direct 결정.
@@ -594,8 +611,11 @@ fn mapTypeReference(
     depth: u8,
 ) Error!schema.PropTypeAnnotation {
     const name = getTypeReferenceName(ast, node) orelse return error.UnsupportedPropType;
+    // Namespace alias (CT.X 등 RN 0.85 표준) 의 last segment 로 well-known map 매칭.
+    // type_index lookup 은 full name 유지 — namespaced 면 자연스레 cross-file 처리.
+    const last = lastSegment(name);
 
-    if (wrapper_ref_names.get(name)) |kind| {
+    if (wrapper_ref_names.get(last)) |kind| {
         const inner = getNthTypeArgument(ast, node, 0) orelse return error.UnsupportedPropType;
         const inner_prop = try mapPropTypeAt(ast, type_index, inner, depth + 1);
         return switch (kind) {
@@ -607,10 +627,10 @@ fn mapTypeReference(
         };
     }
 
-    if (reserved_ref_names.get(name)) |primitive| {
+    if (reserved_ref_names.get(last)) |primitive| {
         return .{ .reserved = primitive };
     }
-    if (numeric_ref_names.get(name)) |kind| {
+    if (numeric_ref_names.get(last)) |kind| {
         return numericKindToAnnotation(kind);
     }
 
