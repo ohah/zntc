@@ -381,7 +381,7 @@ var init_class_call_check = __esm({
 //#endregion
 //#region MessageQueue.js
 var exports_react_native_Libraries_BatchedBridge_MessageQueue = {};
-var __toConsumableArray, __classCallCheck, Systrace$1, deepFreezeAndThrowOnMutationInDev$1, stringifySafe$1, warnOnce$1, ErrorUtils, invariant$1, TO_JS, TO_NATIVE, MODULE_IDS, METHOD_IDS, PARAMS, MIN_TIME_BETWEEN_FLUSHES_MS, TRACE_TAG_REACT$1, DEBUG_INFO_LIMIT, MessageQueue;
+var Systrace$1, deepFreezeAndThrowOnMutationInDev$1, stringifySafe$1, warnOnce$1, ErrorUtils, invariant$1, TO_JS, TO_NATIVE, MODULE_IDS, METHOD_IDS, PARAMS, MIN_TIME_BETWEEN_FLUSHES_MS, TRACE_TAG_REACT$1, DEBUG_INFO_LIMIT, MessageQueue;
 __export(exports_react_native_Libraries_BatchedBridge_MessageQueue, {
 	"default": function() { return MessageQueue; },
 });
@@ -389,8 +389,8 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 	"MessageQueue.js"() {
 	init_spread_array();
 	init_class_call_check();
-		({__toConsumableArray}=require(" zts:runtime/spread-array"));
-	({__classCallCheck}=require(" zts:runtime/class-call-check"));
+		
+	
 	"use strict";
 	Systrace$1 = (init_react_native_Libraries_Performance_Systrace(), __toCommonJS(exports_react_native_Libraries_Performance_Systrace));
 	deepFreezeAndThrowOnMutationInDev$1 = (init_react_native_Libraries_Utilities_deepFreezeAndThrowOnMutationInDev(), __toCommonJS(exports_react_native_Libraries_Utilities_deepFreezeAndThrowOnMutationInDev)).default;
@@ -684,7 +684,7 @@ var init_read = __esm({
 //#endregion
 //#region NativeModules.js
 var exports_react_native_Libraries_BatchedBridge_NativeModules = {};
-var __read, BatchedBridge$1, invariant$2, genModule, loadModule, genMethod, arrayContains, updateErrorWithErrorData, NativeModules;
+var BatchedBridge$1, invariant$2, genModule, loadModule, genMethod, arrayContains, updateErrorWithErrorData, NativeModules;
 __export(exports_react_native_Libraries_BatchedBridge_NativeModules, {
 	"default": function() { return NativeModules; },
 });
@@ -763,7 +763,7 @@ var init_react_native_Libraries_BatchedBridge_NativeModules = __esm({
 		return Object.assign(error, errorData || {});
 	};
 		init_read();
-		({__read}=require(" zts:runtime/read"));
+		
 	"use strict";
 	BatchedBridge$1 = (init_react_native_Libraries_BatchedBridge_BatchedBridge(), __toCommonJS(exports_react_native_Libraries_BatchedBridge_BatchedBridge)).default;
 	invariant$2 = require_invariant_browser();
@@ -20745,7 +20745,7 @@ var init_react_native_Libraries_Image_ImageSourceUtils = __esm({
 		if (srcSet != null) {
 			var sourceList = [],srcSetList = srcSet.split(", "),shouldUseSrcForDefaultScale = true;
 			srcSetList.forEach(function(imageSrc) {
-				var _b = __read(imageSrc.split(" "), 2),uri = _b[0],xScale = _b[1] === void 0 ? "1x" : _b[1];
+				var _b = __read$15(imageSrc.split(" "), 2),uri = _b[0],xScale = _b[1] === void 0 ? "1x" : _b[1];
 				if (!xScale.endsWith("x")) {
 					console.warn("The provided format for scale is not supported yet. Please use scales like 1x, 2x, etc.");
 				} else {
@@ -22088,7 +22088,7 @@ var init_react_native_Libraries_Animated_NativeAnimatedTurboModule = __esm({
 //#endregion
 //#region NativeAnimatedHelper.js
 var exports_react_native_src_private_animated_NativeAnimatedHelper = {};
-var __toConsumableArray, _a, _b, _c, ReactNativeFeatureFlags$8, NativeAnimatedModule$1, __nativeAnimatedNodeTagCount, __nativeAnimationIdCount, nativeEventEmitter, waitingForQueuedOperations, queueOperations, queue, singleOpQueue, isSingleOpBatching, flushQueueImmediate, eventListenerGetValueCallbacks, eventListenerAnimationFinishedCallbacks, globalEventEmitterGetValueListener, globalEventEmitterAnimationFinishedListener, shouldSignalBatch, createNativeOperations, NativeOperations, API, ensureGlobalEventEmitterListeners, generateNewNodeTag, generateNewAnimationId, assertNativeAnimatedModule, _warnedMissingNativeAnimated, shouldUseNativeDriver, transformDataType, _default$61, invariant$22, nullthrows$8;
+var _a, _b, _c, ReactNativeFeatureFlags$8, NativeAnimatedModule$1, __nativeAnimatedNodeTagCount, __nativeAnimationIdCount, nativeEventEmitter, waitingForQueuedOperations, queueOperations, queue, singleOpQueue, isSingleOpBatching, flushQueueImmediate, eventListenerGetValueCallbacks, eventListenerAnimationFinishedCallbacks, globalEventEmitterGetValueListener, globalEventEmitterAnimationFinishedListener, shouldSignalBatch, createNativeOperations, NativeOperations, API, ensureGlobalEventEmitterListeners, generateNewNodeTag, generateNewAnimationId, assertNativeAnimatedModule, _warnedMissingNativeAnimated, shouldUseNativeDriver, transformDataType, _default$61, invariant$22, nullthrows$8;
 __export(exports_react_native_src_private_animated_NativeAnimatedHelper, {
 	"default": function() { return _default$61; },
 });
@@ -22227,7 +22227,7 @@ var init_react_native_src_private_animated_NativeAnimatedHelper = __esm({
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	invariant$22 = require_invariant_browser();
 	nullthrows$8 = __toESM(require_nullthrows_nullthrows()).default;
-		({__toConsumableArray}=require(" zts:runtime/spread-array"));
+		
 	
 	
 	
@@ -24317,7 +24317,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 //#endregion
 //#region Animation.js
 var exports_react_native_Libraries_Animated_animations_Animation = {};
-var __toConsumableArray, __classCallCheck, _a, _b, _c, _d, _e, _f, _g, _h, _i, ReactNativeFeatureFlags$11, startNativeAnimationNextId, Animation;
+var _a, _b, _c, _d, _e, _f, _g, _h, _i, ReactNativeFeatureFlags$11, startNativeAnimationNextId, Animation;
 __export(exports_react_native_Libraries_Animated_animations_Animation, {
 	"default": function() { return Animation; },
 });
@@ -24328,8 +24328,8 @@ var init_react_native_Libraries_Animated_animations_Animation = __esm({
 	init_react_native_src_private_animated_NativeAnimatedHelper();
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	init_react_native_Libraries_Animated_nodes_AnimatedProps();
-		({__toConsumableArray}=require(" zts:runtime/spread-array"));
-	({__classCallCheck}=require(" zts:runtime/class-call-check"));
+		
+	
 	
 	
 	ReactNativeFeatureFlags$11=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
@@ -24602,30 +24602,30 @@ var init_react_native_Libraries_Animated_nodes_AnimatedColor = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			{
-				__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
+				__assertThisUninitialized$25(_this),_this = __callSuper(_super, [config], _newTarget);
 				_this._suspendCallbacks = 0;
 			}
 			var value = valueIn != null ? valueIn : defaultColor;
 			if (isRgbaAnimatedValue(value)) {
 				var rgbaAnimatedValue = value;
-				__assertThisInitialized(_this).r = rgbaAnimatedValue.r;
-				__assertThisInitialized(_this).g = rgbaAnimatedValue.g;
-				__assertThisInitialized(_this).b = rgbaAnimatedValue.b;
-				__assertThisInitialized(_this).a = rgbaAnimatedValue.a;
+				__assertThisInitialized$25(_this).r = rgbaAnimatedValue.r;
+				__assertThisInitialized$25(_this).g = rgbaAnimatedValue.g;
+				__assertThisInitialized$25(_this).b = rgbaAnimatedValue.b;
+				__assertThisInitialized$25(_this).a = rgbaAnimatedValue.a;
 			} else {
 				var _a = getRgbaValueAndNativeColor(value),initColor = _a.rgbaValue,nativeColor = _a.nativeColor;
 				if (nativeColor) {
-					__assertThisInitialized(_this).nativeColor = nativeColor;
+					__assertThisInitialized$25(_this).nativeColor = nativeColor;
 				}
-				__assertThisInitialized(_this).r = new AnimatedValue(initColor.r);
-				__assertThisInitialized(_this).g = new AnimatedValue(initColor.g);
-				__assertThisInitialized(_this).b = new AnimatedValue(initColor.b);
-				__assertThisInitialized(_this).a = new AnimatedValue(initColor.a);
+				__assertThisInitialized$25(_this).r = new AnimatedValue(initColor.r);
+				__assertThisInitialized$25(_this).g = new AnimatedValue(initColor.g);
+				__assertThisInitialized$25(_this).b = new AnimatedValue(initColor.b);
+				__assertThisInitialized$25(_this).a = new AnimatedValue(initColor.a);
 			}
 			if ((config == null ? void 0 : config.useNativeDriver)) {
-				__assertThisInitialized(_this).__makeNative();
+				__assertThisInitialized$25(_this).__makeNative();
 			}
-			return __assertThisInitialized(_this);
+			return __assertThisInitialized$25(_this);
 		}
 		__extends(AnimatedColor, _super);
 		Object.defineProperty(AnimatedColor.prototype, "setValue", { configurable: true, writable: true, value: function(value) {
@@ -24834,36 +24834,36 @@ var init_react_native_Libraries_Animated_animations_SpringAnimation = __esm({
 			__classCallCheck$69(this, SpringAnimation);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._overshootClamping = (_a = config.overshootClamping) != null ? _a : false;
-			__assertThisInitialized(_this)._restDisplacementThreshold = (_b = config.restDisplacementThreshold) != null ? _b : 0.001;
-			__assertThisInitialized(_this)._restSpeedThreshold = (_c = config.restSpeedThreshold) != null ? _c : 0.001;
-			__assertThisInitialized(_this)._initialVelocity = (_d = config.velocity) != null ? _d : 0;
-			__assertThisInitialized(_this)._lastVelocity = (_e = config.velocity) != null ? _e : 0;
-			__assertThisInitialized(_this)._toValue = config.toValue;
-			__assertThisInitialized(_this)._delay = (_f = config.delay) != null ? _f : 0;
-			__assertThisInitialized(_this)._platformConfig = config.platformConfig;
+			__assertThisUninitialized$26(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized$26(_this)._overshootClamping = (_a = config.overshootClamping) != null ? _a : false;
+			__assertThisInitialized$26(_this)._restDisplacementThreshold = (_b = config.restDisplacementThreshold) != null ? _b : 0.001;
+			__assertThisInitialized$26(_this)._restSpeedThreshold = (_c = config.restSpeedThreshold) != null ? _c : 0.001;
+			__assertThisInitialized$26(_this)._initialVelocity = (_d = config.velocity) != null ? _d : 0;
+			__assertThisInitialized$26(_this)._lastVelocity = (_e = config.velocity) != null ? _e : 0;
+			__assertThisInitialized$26(_this)._toValue = config.toValue;
+			__assertThisInitialized$26(_this)._delay = (_f = config.delay) != null ? _f : 0;
+			__assertThisInitialized$26(_this)._platformConfig = config.platformConfig;
 			if (config.stiffness !== undefined || config.damping !== undefined || config.mass !== undefined) {
 				invariant$28(config.bounciness === undefined && config.speed === undefined && config.tension === undefined && config.friction === undefined, "You can define one of bounciness/speed, tension/friction, or stiffness/damping/mass, but not more than one");
-				__assertThisInitialized(_this)._stiffness = (_g = config.stiffness) != null ? _g : 100;
-				__assertThisInitialized(_this)._damping = (_h = config.damping) != null ? _h : 10;
-				__assertThisInitialized(_this)._mass = (_i = config.mass) != null ? _i : 1;
+				__assertThisInitialized$26(_this)._stiffness = (_g = config.stiffness) != null ? _g : 100;
+				__assertThisInitialized$26(_this)._damping = (_h = config.damping) != null ? _h : 10;
+				__assertThisInitialized$26(_this)._mass = (_i = config.mass) != null ? _i : 1;
 			} else if (config.bounciness !== undefined || config.speed !== undefined) {
 				invariant$28(config.tension === undefined && config.friction === undefined && config.stiffness === undefined && config.damping === undefined && config.mass === undefined, "You can define one of bounciness/speed, tension/friction, or stiffness/damping/mass, but not more than one");
 				var springConfig = fromBouncinessAndSpeed((_j = config.bounciness) != null ? _j : 8, (_k = config.speed) != null ? _k : 12);
-				__assertThisInitialized(_this)._stiffness = springConfig.stiffness;
-				__assertThisInitialized(_this)._damping = springConfig.damping;
-				__assertThisInitialized(_this)._mass = 1;
+				__assertThisInitialized$26(_this)._stiffness = springConfig.stiffness;
+				__assertThisInitialized$26(_this)._damping = springConfig.damping;
+				__assertThisInitialized$26(_this)._mass = 1;
 			} else {
 				var springConfig = fromOrigamiTensionAndFriction((_l = config.tension) != null ? _l : 40, (_m = config.friction) != null ? _m : 7);
-				__assertThisInitialized(_this)._stiffness = springConfig.stiffness;
-				__assertThisInitialized(_this)._damping = springConfig.damping;
-				__assertThisInitialized(_this)._mass = 1;
+				__assertThisInitialized$26(_this)._stiffness = springConfig.stiffness;
+				__assertThisInitialized$26(_this)._damping = springConfig.damping;
+				__assertThisInitialized$26(_this)._mass = 1;
 			}
-			invariant$28(__assertThisInitialized(_this)._stiffness > 0, "Stiffness value must be greater than 0");
-			invariant$28(__assertThisInitialized(_this)._damping > 0, "Damping value must be greater than 0");
-			invariant$28(__assertThisInitialized(_this)._mass > 0, "Mass value must be greater than 0");
-			return __assertThisInitialized(_this);
+			invariant$28(__assertThisInitialized$26(_this)._stiffness > 0, "Stiffness value must be greater than 0");
+			invariant$28(__assertThisInitialized$26(_this)._damping > 0, "Damping value must be greater than 0");
+			invariant$28(__assertThisInitialized$26(_this)._mass > 0, "Mass value must be greater than 0");
+			return __assertThisInitialized$26(_this);
 		}
 		__extends(SpringAnimation, _super);
 		Object.defineProperty(SpringAnimation.prototype, "__getNativeAnimationConfig", { configurable: true, writable: true, value: function() {
@@ -24995,13 +24995,13 @@ var init_react_native_Libraries_Animated_animations_TimingAnimation = __esm({
 			__classCallCheck$70(this, TimingAnimation);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._toValue = config.toValue;
-			__assertThisInitialized(_this)._easing = (_a = config.easing) != null ? _a : easeInOut();
-			__assertThisInitialized(_this)._duration = (_b = config.duration) != null ? _b : 500;
-			__assertThisInitialized(_this)._delay = (_c = config.delay) != null ? _c : 0;
-			__assertThisInitialized(_this)._platformConfig = config.platformConfig;
-			return __assertThisInitialized(_this);
+			__assertThisUninitialized$27(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized$27(_this)._toValue = config.toValue;
+			__assertThisInitialized$27(_this)._easing = (_a = config.easing) != null ? _a : easeInOut();
+			__assertThisInitialized$27(_this)._duration = (_b = config.duration) != null ? _b : 500;
+			__assertThisInitialized$27(_this)._delay = (_c = config.delay) != null ? _c : 0;
+			__assertThisInitialized$27(_this)._platformConfig = config.platformConfig;
+			return __assertThisInitialized$27(_this);
 		}
 		__extends(TimingAnimation, _super);
 		Object.defineProperty(TimingAnimation.prototype, "__getNativeAnimationConfig", { configurable: true, writable: true, value: function() {
@@ -25734,15 +25734,15 @@ var init_react_native_Libraries_Animated_nodes_AnimatedDivision = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			{
-				__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
+				__assertThisUninitialized$30(_this),_this = __callSuper(_super, [config], _newTarget);
 				_this._warnedAboutDivideByZero = false;
 			}
 			if (b === 0 || (b instanceof AnimatedNode && b.__getValue() === 0)) {
 				console.error("Detected potential division by zero in AnimatedDivision");
 			}
-			__assertThisInitialized(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
-			__assertThisInitialized(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
-			return __assertThisInitialized(_this);
+			__assertThisInitialized$30(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
+			__assertThisInitialized$30(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
+			return __assertThisInitialized$30(_this);
 		}
 		__extends(AnimatedDivision, _super);
 		Object.defineProperty(AnimatedDivision.prototype, "__makeNative", { configurable: true, writable: true, value: function(platformConfig) {
@@ -25811,10 +25811,10 @@ var init_react_native_Libraries_Animated_nodes_AnimatedModulo = __esm({
 			__classCallCheck$74(this, AnimatedModulo);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._a = a;
-			__assertThisInitialized(_this)._modulus = modulus;
-			return __assertThisInitialized(_this);
+			__assertThisUninitialized$31(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized$31(_this)._a = a;
+			__assertThisInitialized$31(_this)._modulus = modulus;
+			return __assertThisInitialized$31(_this);
 		}
 		__extends(AnimatedModulo, _super);
 		Object.defineProperty(AnimatedModulo.prototype, "__makeNative", { configurable: true, writable: true, value: function(platformConfig) {
@@ -28007,7 +28007,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListProps = __esm({
 //#endregion
 //#region VirtualizedList.js
 var exports__react_native_virtualized_lists_Lists_VirtualizedList = {};
-var __extends, __toConsumableArray, __rest, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _a2, _b2, _c2, _d2, _e2, _f2, _g2, _h2, _i2, _j2, _k2, _l2, _m2, _n2, _o2, _p2, _q2, _r2, _s2, _t2, _u2, _v2, _w2, ReactNativeFeatureFlags$15, ON_EDGE_REACHED_EPSILON, _usedIndexForKey, _keylessItemComponentName, getScrollingThreshold, VirtualizedList, styles$11, invariant$36, nullthrows$10, React$37;
+var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _a2, _b2, _c2, _d2, _e2, _f2, _g2, _h2, _i2, _j2, _k2, _l2, _m2, _n2, _o2, _p2, _q2, _r2, _s2, _t2, _u2, _v2, _w2, ReactNativeFeatureFlags$15, ON_EDGE_REACHED_EPSILON, _usedIndexForKey, _keylessItemComponentName, getScrollingThreshold, VirtualizedList, styles$11, invariant$36, nullthrows$10, React$37;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizedList, {
 	"default": function() { return VirtualizedList; },
 });
@@ -28038,12 +28038,12 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 	nullthrows$10 = __toESM(require_nullthrows_nullthrows()).default;
 	React$37 = __toESM(require_react_index());
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
-		({__extends}=require(" zts:runtime/extends"));
-	({__toConsumableArray}=require(" zts:runtime/spread-array"));
-	({__rest}=require(" zts:runtime/rest"));
-	({__classCallCheck}=require(" zts:runtime/class-call-check"));
-	({__callSuper}=require(" zts:runtime/call-super"));
-	({__assertThisInitialized,__assertThisUninitialized,__possibleConstructorReturn}=require(" zts:runtime/derived-constructor"));
+		
+	
+	
+	
+	
+	
 	
 	
 	
@@ -29185,7 +29185,7 @@ var require_memoize_one_dist_memoize_one_cjs = __commonJS({
 //#endregion
 //#region FlatList.js
 var exports_react_native_Libraries_Lists_FlatList = {};
-var __extends, __toConsumableArray, __rest, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, _a, _b, _c, _d, _e, ReactNativeFeatureFlags$16, StyleSheet$12, deepDiffer$2, Platform$30, invariant$38, VirtualizedList$2, defaultKeyExtractor$3, removeClippedSubviewsOrDefault, numColumnsOrDefault, isArrayLike, FlatList, styles$12, memoizeOne, React$39;
+var _a, _b, _c, _d, _e, ReactNativeFeatureFlags$16, StyleSheet$12, deepDiffer$2, Platform$30, invariant$38, VirtualizedList$2, defaultKeyExtractor$3, removeClippedSubviewsOrDefault, numColumnsOrDefault, isArrayLike, FlatList, styles$12, memoizeOne, React$39;
 __export(exports_react_native_Libraries_Lists_FlatList, {
 	"default": function() { return FlatList; },
 });
@@ -29215,12 +29215,12 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 	init__react_native_virtualized_lists_index();
 	memoizeOne = require_memoize_one_dist_memoize_one_cjs();
 	React$39 = __toESM(require_react_index());
-		({__extends}=require(" zts:runtime/extends"));
-	({__toConsumableArray}=require(" zts:runtime/spread-array"));
-	({__rest}=require(" zts:runtime/rest"));
-	({__classCallCheck}=require(" zts:runtime/class-call-check"));
-	({__callSuper}=require(" zts:runtime/call-super"));
-	({__assertThisInitialized,__assertThisUninitialized,__possibleConstructorReturn}=require(" zts:runtime/derived-constructor"));
+		
+	
+	
+	
+	
+	
 	
 	ReactNativeFeatureFlags$16=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
@@ -60994,7 +60994,7 @@ var init_react_native_safe_area_context_src_index = __esm({
 //#endregion
 //#region App.tsx
 var exports_App = {};
-var __read, testIcon, App, AppContent, styles$45;
+var testIcon, App, AppContent, styles$45;
 __export(exports_App, {
 	"default": function() { return App; },
 });
@@ -61107,7 +61107,7 @@ var init_App = __esm({
 		init_read();
 	init__react_native_new_app_screen_src_index();
 	init_react_native_safe_area_context_src_index();
-		({__read}=require(" zts:runtime/read"));
+		
 	
 	
 	
