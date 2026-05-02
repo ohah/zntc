@@ -527,7 +527,7 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
 
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .program) continue;
-        return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(raw_idx), names_buf[0..names_len], 0);
+        return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(raw_idx), names_buf[0..names_len], 0, false);
     }
     return false;
 }
@@ -553,6 +553,7 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
     node: ast_mod.Node,
     names: []const []const u8,
     scope_depth: usize,
+    inside_function: bool,
 ) bool {
     const list_start = ast.extra_data.items[node.data.extra + 1];
     const list_len = ast.extra_data.items[node.data.extra + 2];
@@ -566,12 +567,12 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
         const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
         if (bindingPatternImportShadowOverflow(ast, binding_idx, names, &matching_shadows)) return true;
         const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra + 2]);
-        if (scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth)) return true;
+        if (scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth, inside_function)) return true;
     }
 
     if (matching_shadows == 0) return false;
-    if (scope_depth == 0) return true;
-    return !ast.variableDeclarationKind(node).isLexical();
+    if (ast.variableDeclarationKind(node).isLexical()) return scope_depth == 0;
+    return !inside_function;
 }
 
 fn scanChildrenForUnsupportedBindingLiteShadow(
@@ -579,10 +580,11 @@ fn scanChildrenForUnsupportedBindingLiteShadow(
     node: ast_mod.Node,
     names: []const []const u8,
     child_scope_depth: usize,
+    inside_function: bool,
 ) bool {
     var it = ast_walk.children(ast, node);
     while (it.next()) |child_idx| {
-        if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, child_scope_depth)) return true;
+        if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, child_scope_depth, inside_function)) return true;
     }
     return false;
 }
@@ -592,16 +594,16 @@ fn scanForUnsupportedBindingLiteShadow(
     idx: ast_mod.NodeIndex,
     names: []const []const u8,
     scope_depth: usize,
+    inside_function: bool,
 ) bool {
     if (idx.isNone()) return false;
     const node = ast.getNode(idx);
     switch (node.tag) {
         // program 의 child 는 항상 top-level (scope_depth=0). block/function body 진입은
         // scope_depth+1. 그 외 노드는 같은 scope_depth 로 children 만 내려간다.
-        .program => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, 0),
-        .block_statement,
-        .function_body,
-        => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1),
+        .program => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, 0, false),
+        .block_statement => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, inside_function),
+        .function_body => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, true),
         .formal_parameters => {
             var matching_shadows: usize = 0;
             return bindingPatternImportShadowOverflow(ast, idx, names, &matching_shadows);
@@ -609,11 +611,29 @@ fn scanForUnsupportedBindingLiteShadow(
         .catch_clause => {
             var matching_shadows: usize = 0;
             if (bindingPatternImportShadowOverflow(ast, node.data.binary.left, names, &matching_shadows)) return true;
-            return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1);
+            return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1, inside_function);
         },
-        .variable_declaration => return scanVariableDeclarationForUnsupportedBindingLiteShadow(ast, node, names, scope_depth),
+        .function_declaration,
+        .function_expression,
+        .function,
+        => {
+            const e = node.data.extra;
+            if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
+            if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth, inside_function)) return true;
+            return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, scope_depth + 1, true);
+        },
+        .arrow_function_expression => {
+            const e = node.data.extra;
+            if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
+            return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth + 1, true);
+        },
+        .variable_declaration => return scanVariableDeclarationForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
+        .variable_declarator => {
+            const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + 2]);
+            return scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth, inside_function);
+        },
         .binding_identifier => return string_list.contains(names, ast.getText(node.span)),
-        else => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth),
+        else => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
     }
 }
 
@@ -765,6 +785,39 @@ fn collectBindingLiteVariableDeclarationShadows(ast: *const Ast, node: ast_mod.N
     }
 }
 
+fn collectBindingLiteVarDeclarationShadows(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+    if (ast.variableDeclarationKind(node).isLexical()) return;
+    const list_start = ast.extra_data.items[node.data.extra + 1];
+    const list_len = ast.extra_data.items[node.data.extra + 2];
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
+        if (decl_idx.isNone()) continue;
+        const decl = ast.getNode(decl_idx);
+        if (decl.tag != .variable_declarator) continue;
+        collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[decl.data.extra]), lite, buf, len);
+    }
+}
+
+fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+    if (idx.isNone()) return;
+    const node = ast.getNode(idx);
+    switch (node.tag) {
+        .function_declaration,
+        .function_expression,
+        .function,
+        .arrow_function_expression,
+        => return,
+        .variable_declaration => collectBindingLiteVarDeclarationShadows(ast, node, lite, buf, len),
+        else => {},
+    }
+
+    var it = ast_walk.children(ast, node);
+    while (it.next()) |child_idx| {
+        collectBindingLiteFunctionVarShadows(ast, child_idx, lite, buf, len);
+    }
+}
+
 fn collectBindingLiteListLexicalShadows(ast: *const Ast, list: ast_mod.NodeList, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
     if (list.start + list.len > ast.extra_data.items.len) return;
     var i: u32 = 0;
@@ -836,6 +889,7 @@ fn markBindingLiteFunctionScope(
     var shadow_len: usize = 0;
     for (parent_shadowed) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
     collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
+    collectBindingLiteFunctionVarShadows(ast, body_idx, lite, &shadow_buf, &shadow_len);
     const combined = shadow_buf[0..shadow_len];
     markBindingLiteValueUses(ast, params_idx, lite, false, combined);
     markBindingLiteValueUses(ast, body_idx, lite, true, combined);
@@ -1486,6 +1540,25 @@ test "TransformPlan: scope-local named import shadows stay on binding-lite route
             \\Foo();
             ,
         },
+        .{
+            .name = "function var shadow with outer value use",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\function f() { var Foo = Bar(); return Foo; }
+            \\Foo();
+            ,
+        },
+        .{
+            .name = "function block var shadow stays function scoped",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\function f() {
+            \\  if (ok) { var Foo = Bar(); }
+            \\  return Foo;
+            \\}
+            \\Foo();
+            ,
+        },
     };
 
     for (cases) |case| {
@@ -1506,13 +1579,13 @@ test "TransformPlan: ambiguous or overflowing named import shadows keep full sem
     try std.testing.expectEqual(SemanticRequirement.full, top_level.semantic);
     try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, top_level.reason);
 
-    const var_shadow = try testTransformPlan(
-        "import { Foo } from './x';\nfunction f() { var Foo = 1; return Foo; }\n",
+    const top_level_block_var_shadow = try testTransformPlan(
+        "import { Foo } from './x';\n{ var Foo = 1; }\nFoo();\n",
         "input.ts",
         .{},
     );
-    try std.testing.expectEqual(SemanticRequirement.full, var_shadow.semantic);
-    try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, var_shadow.reason);
+    try std.testing.expectEqual(SemanticRequirement.full, top_level_block_var_shadow.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, top_level_block_var_shadow.reason);
 
     const function_decl_shadow = try testTransformPlan(
         "import { Foo } from './x';\nfunction outer() { function Foo() {} return Foo; }\n",
@@ -1521,6 +1594,14 @@ test "TransformPlan: ambiguous or overflowing named import shadows keep full sem
     );
     try std.testing.expectEqual(SemanticRequirement.full, function_decl_shadow.semantic);
     try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, function_decl_shadow.reason);
+
+    const function_var_shadow = try testTransformPlan(
+        "import { Foo } from './x';\nfunction f() { var Foo = 1; return Foo; }\n",
+        "input.ts",
+        .{},
+    );
+    try std.testing.expectEqual(SemanticRequirement.bindings, function_var_shadow.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.named_import_binding_elision, function_var_shadow.reason);
 
     var overflow_source: std.ArrayList(u8) = .empty;
     defer overflow_source.deinit(std.testing.allocator);
@@ -1864,6 +1945,27 @@ test "TransformPlan parity: binding-lite named import elision matches full seman
             \\  return Foo;
             \\}
             \\export const value = Bar();
+            ,
+        },
+        .{
+            .name = "function var shadow does not keep import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export function f() {
+            \\  var Foo = Bar();
+            \\  return Foo;
+            \\}
+            ,
+        },
+        .{
+            .name = "nested function var shadow does not hide outer value use",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export const before = Foo();
+            \\export function outer() {
+            \\  if (ok) { var Foo = Bar(); }
+            \\  return Foo;
+            \\}
             ,
         },
         .{
