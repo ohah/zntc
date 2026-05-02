@@ -75,12 +75,19 @@ interface NativeWatchHandle {
   getHmrSourceMap(moduleId: string): string | null;
 }
 
+interface NativeTsconfigCacheHandle {
+  clear(): void;
+  size(): number;
+}
+
 interface NativeModule {
   transpile(
     source: string,
     filename: string,
     optionsJson: string,
+    cache?: NativeTsconfigCacheHandle,
   ): { code: string; map?: string; errors?: string };
+  createTsconfigCache(): NativeTsconfigCacheHandle;
   buildSync(options: Record<string, unknown>): NativeBuildResult;
   buildAppSync(options: Record<string, unknown>): NativeBuildResult & { outputCount?: number };
   prepareAppDevSync(options: Record<string, unknown>): { entryPath: string; outputCount?: number };
@@ -245,13 +252,72 @@ function resolveUnsupported(options: TranspileOptions): number {
   return options.target ? (ES_TARGET_BITS[options.target] ?? 0) : 0;
 }
 
-export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
+/**
+ * tsconfig autodiscover walk 결과 캐시 (#2367). 다수 파일을 in-process 반복 transpile 하는
+ * NAPI consumer (Vite/Rollup plugin 등) 가 인스턴스 1 회 생성해 transpile 호출들에 재사용 →
+ * file 당 5–10 fs syscall 절약.
+ *
+ * `transpile()` 의 `cache` 옵션으로 패스. `tsconfigPath` / `tsconfigRaw` 가 명시되면 캐시는
+ * 무시되고 명시 값 사용. 인스턴스는 GC 시 자동 cleanup — 명시 dispose 불필요.
+ *
+ * rolldown `TsconfigCache` 와 정합 (디자인은 1-slot 이 아니라 N-slot HashMap).
+ *
+ * @example
+ *   const cache = new TsconfigCache();
+ *   for (const file of files) {
+ *     transpile(source, { filename: file, cache });
+ *   }
+ */
+export class TsconfigCache {
+  /** @internal native handle — `transpile()` 가 unwrap 해서 사용. 외부 사용 금지. */
+  private readonly _handle: NativeTsconfigCacheHandle;
+
+  constructor() {
+    if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+    this._handle = native.createTsconfigCache();
+  }
+
+  /** 모든 cache entry 와 내부 string 메모리 회수. 인스턴스는 재사용 가능. */
+  clear(): void {
+    this._handle.clear();
+  }
+
+  /** 현재 캐시된 entry 수 (테스트 / 디버깅). */
+  get size(): number {
+    return this._handle.size();
+  }
+
+  /**
+   * Explicit Resource Management (TC39 Stage 4) — `using cache = new TsconfigCache();`
+   * 스코프 종료 시 자동 `clear()`. 메모리 자체는 GC finalizer 가 회수하므로 본 메서드는
+   * "cache 비움" 만 수행 (인스턴스 재사용 가능).
+   */
+  [Symbol.dispose](): void {
+    this._handle.clear();
+  }
+
+  /** transpile() 가 native handle 추출용 — 외부 사용 금지 (private 회피). */
+  /** @internal */
+  static _unwrap(c: TsconfigCache): NativeTsconfigCacheHandle {
+    return c._handle;
+  }
+}
+
+export function transpile(
+  source: string,
+  options: TranspileOptions & { cache?: TsconfigCache } = {},
+): TranspileResult {
   if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!source) throw new Error("@zts/core: empty source");
   validateTsConfigRaw(options.tsconfigRaw);
 
   const optionsJson = buildOptionsJson(options, resolveUnsupported(options));
-  return native.transpile(source, options.filename ?? "input.js", optionsJson);
+  return native.transpile(
+    source,
+    options.filename ?? "input.js",
+    optionsJson,
+    options.cache ? TsconfigCache._unwrap(options.cache) : undefined,
+  );
 }
 
 // ─── Build API ───

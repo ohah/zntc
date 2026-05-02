@@ -15,6 +15,7 @@ const zts_lib = @import("zts_lib");
 /// 죽는다 — 그 전에 ZTS 배너 + 이슈 URL을 찍어 사용자가 신고하기 쉽게 한다.
 pub const panic = zts_lib.crash_handler.panic;
 const transpile_mod = zts_lib.transpile;
+const TsconfigCache = zts_lib.tsconfig_cache.TsconfigCache;
 const rich_diagnostic = zts_lib.rich_diagnostic;
 const diagnostic_renderer = zts_lib.diagnostic_renderer;
 const napi_render_opts: diagnostic_renderer.RenderOptions = .{ .color = false, .unicode = true };
@@ -89,14 +90,105 @@ fn getStringArg(env: c.napi_env, value: c.napi_value, alloc: std.mem.Allocator) 
     return buf[0..actual];
 }
 
+// ─── TsconfigCache (#2367) ───
+
+/// `napi_wrap` finalizer — JS handle GC 시 native cache deinit.
+fn tsconfigCacheFinalize(_: c.napi_env, finalize_data: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    if (finalize_data) |data| {
+        const cache: *TsconfigCache = @ptrCast(@alignCast(data));
+        cache.deinit();
+    }
+}
+
+/// `cache.clear()` — 모든 entry 와 내부 string 메모리 회수.
+fn napiTsconfigCacheClear(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 0;
+    var this: c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, null, &this, null) != c.napi_ok) {
+        return throwError(env, "failed to get this");
+    }
+    var ptr: ?*anyopaque = null;
+    if (c.napi_unwrap(env, this, &ptr) != c.napi_ok or ptr == null) {
+        return throwError(env, "TsconfigCache: unwrap failed");
+    }
+    const cache: *TsconfigCache = @ptrCast(@alignCast(ptr.?));
+    cache.clear();
+    var js_undef: c.napi_value = undefined;
+    _ = c.napi_get_undefined(env, &js_undef);
+    return js_undef;
+}
+
+/// `cache.size()` — 현재 캐시된 entry 수 (number).
+fn napiTsconfigCacheSize(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 0;
+    var this: c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, null, &this, null) != c.napi_ok) {
+        return throwError(env, "failed to get this");
+    }
+    var ptr: ?*anyopaque = null;
+    if (c.napi_unwrap(env, this, &ptr) != c.napi_ok or ptr == null) {
+        return throwError(env, "TsconfigCache: unwrap failed");
+    }
+    const cache: *TsconfigCache = @ptrCast(@alignCast(ptr.?));
+    var js_n: c.napi_value = undefined;
+    _ = c.napi_create_uint32(env, @intCast(cache.size()), &js_n);
+    return js_n;
+}
+
+/// `createTsconfigCache()` → handle 객체 ({ clear, size }).
+/// JS 측 `class TsconfigCache` 가 본 handle 을 wrapping 해서 사용. NAPI 가 finalizer 로
+/// GC 시 자동 cleanup — 사용자가 명시 dispose 안 해도 메모리 안전.
+fn napiCreateTsconfigCache(env: c.napi_env, _: c.napi_callback_info) callconv(.c) c.napi_value {
+    const cache = TsconfigCache.init(native_alloc) catch {
+        return throwError(env, "TsconfigCache: OOM");
+    };
+
+    var js_handle: c.napi_value = undefined;
+    if (c.napi_create_object(env, &js_handle) != c.napi_ok) {
+        cache.deinit();
+        return throwError(env, "failed to create handle object");
+    }
+
+    if (c.napi_wrap(env, js_handle, @ptrCast(cache), tsconfigCacheFinalize, null, null) != c.napi_ok) {
+        cache.deinit();
+        return throwError(env, "failed to wrap TsconfigCache");
+    }
+
+    var clear_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "clear", "clear".len, napiTsconfigCacheClear, null, &clear_fn);
+    _ = c.napi_set_named_property(env, js_handle, "clear", clear_fn);
+
+    var size_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "size", "size".len, napiTsconfigCacheSize, null, &size_fn);
+    _ = c.napi_set_named_property(env, js_handle, "size", size_fn);
+
+    return js_handle;
+}
+
+/// 옵셔널 인자 (transpile 4번째) 가 TsconfigCache handle 이면 internal pointer 반환.
+/// undefined / null / wrap 실패 시 null. caller 가 null-check 으로 fallback (직접 walk).
+///
+/// **Lifetime**: 반환 pointer 는 _현재 sync NAPI 호출_ 동안만 유효. JS handle 이 caller
+/// stack 에 잡혀있어 GC finalizer 가 실행되지 않음을 전제. 호출 종료 후 보관 금지.
+fn unwrapTsconfigCache(env: c.napi_env, value: c.napi_value) ?*TsconfigCache {
+    var value_type: c.napi_valuetype = undefined;
+    if (c.napi_typeof(env, value, &value_type) != c.napi_ok) return null;
+    if (value_type != c.napi_object) return null;
+    var ptr: ?*anyopaque = null;
+    if (c.napi_unwrap(env, value, &ptr) != c.napi_ok or ptr == null) return null;
+    return @ptrCast(@alignCast(ptr.?));
+}
+
 // ─── transpile 함수 ───
 
-/// transpile(source, filename, optionsJson)
+/// transpile(source, filename, optionsJson, cache?)
 /// optionsJson: ConfigOptionsDto JSON payload (camelCase 키)
+/// cache: 옵셔널 TsconfigCache handle (#2367) — autodiscover 결과 재사용 → 다수 파일 in-process
+///         transpile 시 file 당 5–10 fs syscall 절약. options.tsconfigPath 가 명시되면 무시.
 /// → { code: string, map?: string, errors?: string }
 fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
-    var argc: usize = 3;
-    var argv: [3]c.napi_value = undefined;
+    var argc: usize = 4;
+    var argv: [4]c.napi_value = undefined;
     if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
         return throwError(env, "failed to get arguments");
     }
@@ -124,9 +216,24 @@ fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
 
     const opts_json: []const u8 = if (argc > 2) (getStringArg(env, argv[2], opts_alloc) orelse "{}") else "{}";
 
-    const options = transpile_mod.optionsFromJson(opts_alloc, opts_json, filename) catch {
+    var options = transpile_mod.optionsFromJson(opts_alloc, opts_json, filename) catch {
         return throwError(env, "invalid options JSON");
     };
+
+    // 4 번째 cache handle (옵션) — options.tsconfig_path 미설정 시 autodiscover 결과 캐시 활용.
+    // cache 의 string 은 cache 인스턴스 lifetime 동안 유효 — transpile 은 sync 라 안전 공유.
+    // tsconfigRaw 명시 시 transpile.zig 가 file 경로를 무시하므로 cache lookup 자체 스킵 (불필요
+    // walk 회피). raw 는 options struct 에 매핑 안 되고 parsed DTO 에서 직접 사용되므로
+    // JSON 문자열 substring 으로 검사. false-positive (raw 가 다른 string 값에 등장) 시
+    // cache 만 스킵 — 결과는 여전히 정확.
+    const has_raw = std.mem.indexOf(u8, opts_json, "\"tsconfigRaw\"") != null;
+    if (argc > 3 and options.tsconfig_path == null and !has_raw) {
+        if (unwrapTsconfigCache(env, argv[3])) |cache| {
+            if (cache.findTsconfigPath(filename)) |path| {
+                options.tsconfig_path = path;
+            }
+        }
+    }
 
     // 트랜스파일 실행
     var result = transpile_mod.transpile(native_alloc, source, filename, options) catch |err| {
@@ -3766,6 +3873,11 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     var fn_value: c.napi_value = undefined;
     _ = c.napi_create_function(env, "transpile", "transpile".len, napiTranspile, null, &fn_value);
     _ = c.napi_set_named_property(env, exports, "transpile", fn_value);
+
+    // TsconfigCache (#2367)
+    var ctc_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "createTsconfigCache", "createTsconfigCache".len, napiCreateTsconfigCache, null, &ctc_fn);
+    _ = c.napi_set_named_property(env, exports, "createTsconfigCache", ctc_fn);
 
     var build_sync_fn: c.napi_value = undefined;
     _ = c.napi_create_function(env, "buildSync", "buildSync".len, napiBuildSync, null, &build_sync_fn);
