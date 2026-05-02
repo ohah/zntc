@@ -30,6 +30,11 @@ pub const ImportPhase = enum(u4) {
     source = 2,
 };
 
+/// `import_specifier` / `export_specifier` 의 `binary.flags` 비트.
+/// inline `type` modifier (`import { type X }`, `export { type X }`) 마킹용.
+/// 모든 read 사이트는 `(flags & SPEC_FLAG_TYPE_ONLY) != 0` 형태로 검사.
+pub const SPEC_FLAG_TYPE_ONLY: u16 = 1;
+
 /// `import_declaration` extra schema의 단일 source of truth.
 /// codegen / transformer 등 read 사이트가 이 헬퍼를 통해서만 슬롯 의미를 알도록 강제.
 pub const ImportDeclExtras = struct {
@@ -463,7 +468,7 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     if (self.is_flow and self.current() == .kw_typeof) {
         const next = try self.peekNextKind();
         if (next == .identifier or next == .string_literal or (next.isKeyword() and next != .r_curly and next != .comma)) {
-            is_type_only = 1;
+            is_type_only = SPEC_FLAG_TYPE_ONLY;
             try self.advance(); // skip 'typeof'
         }
     }
@@ -489,19 +494,19 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
                 const after_as = try self.peekNextKind();
                 if (after_as == .r_curly or after_as == .comma) {
                     // "import { type as }" — 'as'가 imported name, type modifier 확정
-                    is_type_only = 1;
+                    is_type_only = SPEC_FLAG_TYPE_ONLY;
                 } else if (after_as == .identifier or after_as.isKeyword()) {
                     // 다음 토큰 텍스트를 확인: "type as as foo" vs "type as alias"
                     const saved2 = self.saveState();
                     try self.advance(); // skip 'as'
                     if (try resolveTypeAsAs(self, saved, saved2)) {
-                        is_type_only = 1;
+                        is_type_only = SPEC_FLAG_TYPE_ONLY;
                     }
                 } else {
                     self.restoreState(saved);
                 }
             } else {
-                is_type_only = 1;
+                is_type_only = SPEC_FLAG_TYPE_ONLY;
                 // 'type' modifier 확정 — 이미 advance됨
             }
         }
@@ -790,7 +795,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 const spec_node = self.ast.getNode(spec_idx);
                 if (spec_node.tag != .export_specifier) continue;
                 // skip type-only specifiers
-                if (spec_node.data.binary.flags & 1 != 0) continue;
+                if ((spec_node.data.binary.flags & SPEC_FLAG_TYPE_ONLY) != 0) continue;
 
                 const local_idx = spec_node.data.binary.left;
                 const exported_idx = spec_node.data.binary.right;
@@ -936,18 +941,18 @@ fn parseExportSpecifier(self: *Parser) ParseError2!NodeIndex {
                 const after_as = try self.peekNextKind();
                 if (after_as == .r_curly or after_as == .comma) {
                     // "export { type as }" — 'as'가 local name, type modifier 확정
-                    is_type_only = 1;
+                    is_type_only = SPEC_FLAG_TYPE_ONLY;
                 } else if (after_as == .identifier or after_as == .string_literal or after_as.isKeyword()) {
                     const saved2 = self.saveState();
                     try self.advance(); // skip 'as'
                     if (try resolveTypeAsAs(self, saved, saved2)) {
-                        is_type_only = 1;
+                        is_type_only = SPEC_FLAG_TYPE_ONLY;
                     }
                 } else {
                     self.restoreState(saved);
                 }
             } else {
-                is_type_only = 1;
+                is_type_only = SPEC_FLAG_TYPE_ONLY;
                 // 'type' modifier 확정 — 이미 advance됨
             }
         }
@@ -1180,8 +1185,8 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) void {
                 }) catch {};
             },
             .import_specifier => {
-                // binary: left=imported, right=local, flags (flags&1 = type-only)
-                if (spec_node.data.binary.flags & 1 != 0) continue; // skip type-only
+                // binary: left=imported, right=local, flags (SPEC_FLAG_TYPE_ONLY = type-only)
+                if ((spec_node.data.binary.flags & SPEC_FLAG_TYPE_ONLY) != 0) continue;
                 const imported_idx = spec_node.data.binary.left;
                 const local_idx = spec_node.data.binary.right;
                 if (imported_idx.isNone()) continue;

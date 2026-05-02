@@ -502,7 +502,7 @@ fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
             if (spec_idx.isNone()) continue;
             const spec = ast.getNode(spec_idx);
             if (spec.tag != .import_specifier) continue;
-            if (spec.data.binary.flags & 1 != 0) continue;
+            if ((spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
 
             const local_idx = spec.data.binary.right;
             if (local_idx.isNone()) continue;
@@ -608,7 +608,7 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
             if (spec_idx.isNone()) continue;
             const spec = ast.getNode(spec_idx);
             if (spec.tag != .import_specifier) continue;
-            if (spec.data.binary.flags & 1 != 0) continue;
+            if ((spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
 
             const local_idx = spec.data.binary.right;
             if (local_idx.isNone()) continue;
