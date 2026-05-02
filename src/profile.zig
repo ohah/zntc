@@ -56,8 +56,14 @@ pub const Category = enum {
     graph_worker,
     graph_discover,
     graph_discover_scan_worker,
+    graph_discover_scan_worker_parse,
+    graph_discover_scan_worker_resolve,
     graph_discover_apply,
     graph_discover_pm_setup,
+    graph_discover_pm_setup_read,
+    graph_discover_pm_setup_parser,
+    graph_discover_pm_parse,
+    graph_discover_pm_semantic,
     graph_discover_pm_post,
     graph_discover_pm_is_pkg_type,
     graph_finalize,
@@ -142,6 +148,7 @@ pub const Category = enum {
     pub fn displayName(cat: Category) []const u8 {
         return switch (cat) {
             inline else => |c| comptime blk: {
+                @setEvalBranchQuota(2000);
                 const name = @tagName(c);
                 var buf: [name.len]u8 = undefined;
                 for (name, 0..) |ch, i| {
