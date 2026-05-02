@@ -29,6 +29,7 @@ const LinkingMetadata = @import("bundler/linker.zig").LinkingMetadata;
 const rt = @import("bundler/runtime_helpers.zig");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
 const OwnedDiagnostic = @import("diagnostic.zig").OwnedDiagnostic;
+const string_list = @import("util/string_list.zig");
 
 const SemanticRequirement = enum {
     none,
@@ -486,24 +487,6 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
     return facts;
 }
 
-fn nodeTreeContains(ast: *const Ast, idx: ast_mod.NodeIndex, target: ast_mod.NodeIndex) bool {
-    if (idx.isNone()) return false;
-    if (idx == target) return true;
-    var it = ast_walk.children(ast, ast.getNode(idx));
-    while (it.next()) |child_idx| {
-        if (nodeTreeContains(ast, child_idx, target)) return true;
-    }
-    return false;
-}
-
-fn isInsideFormalParameters(ast: *const Ast, target: ast_mod.NodeIndex) bool {
-    for (ast.nodes.items, 0..) |node, raw_idx| {
-        if (node.tag != .formal_parameters) continue;
-        if (nodeTreeContains(ast, @enumFromInt(raw_idx), target)) return true;
-    }
-    return false;
-}
-
 // default/namespace specifier 는 collectAstFacts 에서 has_non_named_import 로 잡혀
 // buildTransformPlan 이 이미 full 로 라우팅하므로 여기서는 named 만 본다.
 // import local 노드는 identifier_reference 로 태깅되므로 binding_identifier 필터에 자연히 빠진다.
@@ -535,14 +518,33 @@ fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
 
     if (names_len == 0) return false;
 
+    // program 부터 한 번만 내려가며 inside_params 플래그로 formal_parameters 서브트리를 건너뛴다.
+    // 이전 구현은 binding_identifier 마다 모든 formal_parameters 노드를 다시 탐색해 O(N²) 였다.
     for (ast.nodes.items, 0..) |node, raw_idx| {
-        if (node.tag != .binding_identifier) continue;
-        if (isInsideFormalParameters(ast, @enumFromInt(raw_idx))) continue;
+        if (node.tag != .program) continue;
+        return scanForNonParamBindingShadow(ast, @enumFromInt(raw_idx), names_buf[0..names_len], false);
+    }
+    return false;
+}
+
+fn scanForNonParamBindingShadow(
+    ast: *const Ast,
+    idx: ast_mod.NodeIndex,
+    names: []const []const u8,
+    inside_params: bool,
+) bool {
+    if (idx.isNone()) return false;
+    const node = ast.getNode(idx);
+    if (node.tag == .binding_identifier and !inside_params) {
         const bind_name = ast.getText(node.span);
-        var j: usize = 0;
-        while (j < names_len) : (j += 1) {
-            if (std.mem.eql(u8, bind_name, names_buf[j])) return true;
+        for (names) |n| {
+            if (std.mem.eql(u8, bind_name, n)) return true;
         }
+    }
+    const child_inside = inside_params or node.tag == .formal_parameters;
+    var it = ast_walk.children(ast, node);
+    while (it.next()) |child_idx| {
+        if (scanForNonParamBindingShadow(ast, child_idx, names, child_inside)) return true;
     }
     return false;
 }
@@ -639,6 +641,7 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
     }
 
     var lite = BindingLite{ .named_imports = try bindings.toOwnedSlice(allocator) };
+    if (lite.named_imports.len == 0) return lite;
     const no_shadowed_names: []const []const u8 = &.{};
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .program) continue;
@@ -648,19 +651,8 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
     return lite;
 }
 
-fn isBindingLiteImportName(lite: *const BindingLite, name: []const u8) bool {
-    return lite.namedImportValueUse(name) != null;
-}
-
-fn isShadowedBindingLiteName(name: []const u8, shadowed_names: []const []const u8) bool {
-    for (shadowed_names) |shadowed| {
-        if (std.mem.eql(u8, name, shadowed)) return true;
-    }
-    return false;
-}
-
 fn markBindingLiteUse(lite: *BindingLite, name: []const u8, shadowed_names: []const []const u8) void {
-    if (isShadowedBindingLiteName(name, shadowed_names)) return;
+    if (string_list.contains(shadowed_names, name)) return;
     for (lite.named_imports) |*binding| {
         if (std.mem.eql(u8, binding.local_name, name)) {
             binding.used_as_value = true;
@@ -669,22 +661,22 @@ fn markBindingLiteUse(lite: *BindingLite, name: []const u8, shadowed_names: []co
     }
 }
 
-fn appendBindingLiteShadowName(buf: []?[]const u8, len: *usize, name: []const u8) void {
-    for (buf[0..len.*]) |existing| {
-        if (std.mem.eql(u8, existing.?, name)) return;
-    }
+fn appendBindingLiteShadowName(buf: [][]const u8, len: *usize, name: []const u8) void {
+    if (string_list.contains(buf[0..len.*], name)) return;
+    // 64 개 초과 shadow 는 그대로 두면 outer import 가 used 로 잘못 마킹될 위험이 있다 — over-conservative
+    // 로 동작해 import 유지. 실제로는 한 함수에 64 개 import 이름 동시 shadow 는 비현실적.
     if (len.* >= buf.len) return;
     buf[len.*] = name;
     len.* += 1;
 }
 
-fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: []?[]const u8, len: *usize) void {
+fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
     if (idx.isNone()) return;
     const node = ast.getNode(idx);
     switch (node.tag) {
         .binding_identifier => {
             const name = ast.getText(node.span);
-            if (isBindingLiteImportName(lite, name)) appendBindingLiteShadowName(buf, len, name);
+            if (lite.namedImportValueUse(name) != null) appendBindingLiteShadowName(buf, len, name);
         },
         .formal_parameters => {
             if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
@@ -753,6 +745,22 @@ fn markBindingLiteListValueUses(ast: *const Ast, list: ast_mod.NodeList, lite: *
     }
 }
 
+fn markBindingLiteFunctionScope(
+    ast: *const Ast,
+    lite: *BindingLite,
+    parent_shadowed: []const []const u8,
+    params_idx: ast_mod.NodeIndex,
+    body_idx: ast_mod.NodeIndex,
+) void {
+    var shadow_buf: [64][]const u8 = undefined;
+    var shadow_len: usize = 0;
+    for (parent_shadowed) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
+    collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
+    const combined = shadow_buf[0..shadow_len];
+    markBindingLiteValueUses(ast, params_idx, lite, false, combined);
+    markBindingLiteValueUses(ast, body_idx, lite, true, combined);
+}
+
 fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) void {
     if (idx.isNone()) return;
     const node = ast.getNode(idx);
@@ -799,34 +807,24 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         .function,
         => {
             const e = node.data.extra;
-            const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
-            var shadow_buf: [32]?[]const u8 = undefined;
-            @memset(&shadow_buf, null);
-            var shadow_len: usize = 0;
-            for (shadowed_names) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
-            collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
-            var combined_buf: [32][]const u8 = undefined;
-            var i: usize = 0;
-            while (i < shadow_len) : (i += 1) combined_buf[i] = shadow_buf[i].?;
-            const combined_shadowed = combined_buf[0..shadow_len];
-            markBindingLiteValueUses(ast, params_idx, lite, false, combined_shadowed);
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true, combined_shadowed);
+            markBindingLiteFunctionScope(
+                ast,
+                lite,
+                shadowed_names,
+                @enumFromInt(ast.extra_data.items[e + 1]),
+                @enumFromInt(ast.extra_data.items[e + 2]),
+            );
             return;
         },
         .arrow_function_expression => {
             const e = node.data.extra;
-            const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-            var shadow_buf: [32]?[]const u8 = undefined;
-            @memset(&shadow_buf, null);
-            var shadow_len: usize = 0;
-            for (shadowed_names) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
-            collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
-            var combined_buf: [32][]const u8 = undefined;
-            var i: usize = 0;
-            while (i < shadow_len) : (i += 1) combined_buf[i] = shadow_buf[i].?;
-            const combined_shadowed = combined_buf[0..shadow_len];
-            markBindingLiteValueUses(ast, params_idx, lite, false, combined_shadowed);
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 1]), lite, true, combined_shadowed);
+            markBindingLiteFunctionScope(
+                ast,
+                lite,
+                shadowed_names,
+                @enumFromInt(ast.extra_data.items[e]),
+                @enumFromInt(ast.extra_data.items[e + 1]),
+            );
             return;
         },
         .formal_parameters => {
@@ -834,12 +832,22 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
             return;
         },
         .assignment_pattern,
-        .assignment_expression,
         .assignment_target_with_default,
         => {
             markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
             markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
             return;
+        },
+        // `(Foo = Bar()) =>` 같이 cover-grammar 로 패턴 자리에 남은 assignment_expression 은
+        // value_context=false (formal_parameters 진입) 에서만 LHS=binding/RHS=value 로 쪼갠다.
+        // expression context (`Foo = expr;`) 는 LHS 가 assignment_target_identifier 라 default
+        // child walk 로 그대로 value_context=true 가 전파돼야 import 가 use 마킹된다.
+        .assignment_expression => {
+            if (!value_context) {
+                markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
+                markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
+                return;
+            }
         },
         .formal_parameter => {
             const e = node.data.extra;
@@ -1604,6 +1612,15 @@ test "TransformPlan parity: binding-lite named import elision matches full seman
             \\  const inner = (Foo = Bar()) => Foo;
             \\  return Foo() + inner();
             \\};
+            ,
+        },
+        .{
+            // assignment_expression LHS (`Foo = expr`) 가 expression context 에서 walker arm
+            // 에 잡혀 value_context=false 로 강제되면 import 가 잘못 elide 된다 — regression guard.
+            .name = "assignment to imported name in expression keeps import",
+            .source =
+            \\import { Foo } from "./lib";
+            \\Foo = something();
             ,
         },
         .{
