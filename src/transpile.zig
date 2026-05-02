@@ -30,6 +30,7 @@ const rt = @import("bundler/runtime_helpers.zig");
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
 const OwnedDiagnostic = @import("diagnostic.zig").OwnedDiagnostic;
 const string_list = @import("util/string_list.zig");
+const debug_log = @import("debug_log.zig");
 
 const SemanticRequirement = enum {
     none,
@@ -639,8 +640,8 @@ fn buildTransformPlan(
 
     // JS 파일은 보존 의미가 TS 와 달라 (값 import 가 type-only 라도 side-effect 가능 등)
     // fast path 적용 범위에서 제외 — full semantic 경로에서 진단 손실 없이 처리.
-    if (parser.source_mode != .ts) return .{ .semantic = .full, .reason = .non_ts_source };
     if (parser.is_flow) return .{ .semantic = .full, .reason = .flow_source };
+    if (parser.source_mode != .ts) return .{ .semantic = .full, .reason = .non_ts_source };
     if (ast.has_jsx) return .{ .semantic = .full, .reason = .jsx_source };
 
     if (optionsRequireTransformSemantic(options)) {
@@ -1065,6 +1066,11 @@ fn transpileWithCallbackInternal(
     }
 
     const transform_plan = buildTransformPlan(options, &parser, &parser.ast, fast_path_disabled);
+    debug_log.print(
+        .transform_plan,
+        "file={s} semantic={s} reason={s} strip_types_only={}\n",
+        .{ file_path, @tagName(transform_plan.semantic), @tagName(transform_plan.reason), transform_plan.strip_types_only },
+    );
 
     // 2. Semantic analysis
     var analyzer_storage: ?SemanticAnalyzer = null;
@@ -1411,6 +1417,16 @@ test "TransformPlan: runtime-sensitive syntax keeps full semantic" {
         try std.testing.expectEqual(SemanticRequirement.full, plan.semantic);
         try std.testing.expectEqual(case.reason, plan.reason);
     }
+}
+
+test "TransformPlan: Flow source is classified before generic non-TS source" {
+    const flow_plan = try testTransformPlan("// @flow\nconst value: string = 'x';\n", "input.js", .{ .flow = true });
+    try std.testing.expectEqual(SemanticRequirement.full, flow_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.flow_source, flow_plan.reason);
+
+    const js_plan = try testTransformPlan("const value = 1;\n", "input.js", .{});
+    try std.testing.expectEqual(SemanticRequirement.full, js_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.non_ts_source, js_plan.reason);
 }
 
 test "TransformPlan: named import TypeScript strip uses binding-lite semantic" {

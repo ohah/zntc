@@ -14,6 +14,18 @@ const ROOT = resolve(__dirname, "../..");
 const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
 const ITERATIONS = 10;
 
+type PlanSample = {
+  name: string;
+  filename: string;
+  source: string;
+  args?: string[];
+};
+
+type PlanHit = {
+  semantic: string;
+  reason: string;
+};
+
 function findBin(name: string): string | null {
   const local = join(__dirname, "node_modules/.bin", name);
   if (existsSync(local)) return local;
@@ -69,6 +81,127 @@ function measure(bin: string, args: string[], env?: Record<string, string>): num
     times.push(performance.now() - start);
   }
   return median(times);
+}
+
+function tracePlan(sample: PlanSample, dir: string): PlanHit {
+  const inputFile = join(dir, sample.filename);
+  const outFile = join(dir, `${sample.name.replaceAll(/[^a-zA-Z0-9_-]/g, "_")}.js`);
+  writeFileSync(inputFile, sample.source);
+  const result = spawnSync(ZTS_BIN, [inputFile, ...(sample.args ?? []), "-o", outFile], {
+    stdio: "pipe",
+    timeout: 30000,
+    env: { ...process.env, ZTS_DEBUG: "transform_plan" },
+    encoding: "utf8",
+  });
+  const match = result.stderr.match(
+    /\[transform_plan\]\s+file=.*?\s+semantic=([a-z_]+)\s+reason=([a-z_]+)/,
+  );
+  if (!match) {
+    const prefix = result.status === 0 ? "missing" : "failed before";
+    throw new Error(
+      `${prefix} transform_plan trace for ${sample.name}: ${result.stderr.slice(0, 500)}`,
+    );
+  }
+  return { semantic: match[1], reason: match[2] };
+}
+
+function formatPercent(count: number, total: number): string {
+  return `${((count / total) * 100).toFixed(1)}%`;
+}
+
+function printPlanHitRates(dir: string): void {
+  const samples: PlanSample[] = [
+    {
+      name: "simple-ts-strip",
+      filename: "simple.ts",
+      source: generateTS(1000),
+    },
+    {
+      name: "binding-lite-named-import",
+      filename: "binding-lite.ts",
+      source: generateImportBearingTS(1000),
+    },
+    {
+      name: "default-import",
+      filename: "default-import.ts",
+      source: `import Foo from "./lib";\nexport const value = Foo();\n`,
+    },
+    {
+      name: "namespace-import",
+      filename: "namespace-import.ts",
+      source: `import * as Foo from "./lib";\nexport const value = Foo.run();\n`,
+    },
+    {
+      name: "jsx",
+      filename: "component.tsx",
+      source: `import { Foo } from "./lib";\nexport const value = <Foo />;\n`,
+    },
+    {
+      name: "enum-runtime",
+      filename: "enum.ts",
+      source: `import { Foo } from "./lib";\nenum Kind { A }\nexport const value = Foo;\n`,
+    },
+    {
+      name: "minify-option",
+      filename: "minify.ts",
+      source: `import { Foo } from "./lib";\nexport const value = Foo();\n`,
+      args: ["--minify"],
+    },
+    {
+      name: "cjs-format",
+      filename: "cjs.ts",
+      source: `import { Foo } from "./lib";\nexport const value = Foo();\n`,
+      args: ["--format=cjs"],
+    },
+    {
+      name: "downlevel-target",
+      filename: "downlevel.ts",
+      source: `import { Foo } from "./lib";\nexport const value = () => Foo();\n`,
+      args: ["--target=es5"],
+    },
+    {
+      name: "top-level-shadow",
+      filename: "shadow.ts",
+      source: `import { Foo } from "./lib";\nconst Foo = 1;\nexport { Foo };\n`,
+    },
+    {
+      name: "js-source",
+      filename: "plain.js",
+      source: `const value = 1;\n`,
+    },
+    {
+      name: "flow-source",
+      filename: "flow.js",
+      source: `// @flow\nimport { Foo } from "./lib";\nexport const value: Foo = 1;\n`,
+      args: ["--flow"],
+    },
+  ];
+
+  const hits = new Map<string, PlanHit & { count: number }>();
+  for (const sample of samples) {
+    const hit = tracePlan(sample, dir);
+    const key = `${hit.semantic}:${hit.reason}`;
+    const current = hits.get(key);
+    if (current) {
+      current.count += 1;
+    } else {
+      hits.set(key, { ...hit, count: 1 });
+    }
+  }
+
+  console.log("\nZTS TransformPlan Hit Rates — representative route roots");
+  console.log(`| Semantic | Reason | Count | Share |`);
+  console.log(`| --- | --- | --- | --- |`);
+  const rows = [...hits.values()].sort((a, b) =>
+    a.semantic === b.semantic
+      ? a.reason.localeCompare(b.reason)
+      : a.semantic.localeCompare(b.semantic),
+  );
+  for (const row of rows) {
+    console.log(
+      `| ${row.semantic} | ${row.reason} | ${row.count} | ${formatPercent(row.count, samples.length)} |`,
+    );
+  }
 }
 
 const scales = [100, 500, 1000, 2000, 5000, 10000];
@@ -166,6 +299,8 @@ for (const lines of fastScales) {
     `| ${lines} | ${Math.round(source.length / 1024)} | ${fastOn} | ${fastOff} | ${delta} | ${ratio} |`,
   );
 }
+
+printPlanHitRates(dir);
 
 rmSync(dir, { recursive: true, force: true });
 console.log("\n(ms가 파일 크기에 비례하면 O(n), 제곱으로 증가하면 O(n²))");

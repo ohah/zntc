@@ -28,6 +28,9 @@ const std = @import("std");
 /// 로그 카테고리. 추가 시 이 enum 에만 이름 넣으면 됨.
 pub const Category = enum {
     compiled_cache,
+    /// Standalone transpile fast-path routing: `.none` / `.bindings` / `.full`
+    /// and `SemanticPlanReason` hit-rate diagnostics.
+    transform_plan,
     /// AST mutation 추적 — `Ast.addNode` / `addString` / `addNodeList` 시점 로그.
     /// RFC #1672 D1 (Ast mutable + clone 제거) 디버깅용. parse_arena 소유권과
     /// transformer 의 in-place append 상호작용 확인.
