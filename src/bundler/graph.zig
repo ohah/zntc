@@ -1899,66 +1899,95 @@ pub const ModuleGraph = struct {
         module: *Module,
         arena_alloc: std.mem.Allocator,
     ) !void {
+        var resync_scope = profile.begin(.graph_resync);
+        defer resync_scope.end();
+
         const ast = &(module.ast orelse return);
         const previous_import_records = module.import_records;
         const previous_import_bindings = module.import_bindings;
 
         var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
-        analyzer.is_strict_mode = true;
-        analyzer.is_module = true;
-        analyzer.is_ts = module.module_type.isTypeScript();
-        analyzer.is_flow = self.flow or isFlowPath(module.path);
-        analyzer.enable_stmt_info = true;
-        try analyzer.analyze();
+        {
+            var semantic_scope = profile.begin(.graph_resync_semantic);
+            defer semantic_scope.end();
 
-        module.semantic = .{
-            .symbols = analyzer.symbols,
-            .scopes = analyzer.scopes.items,
-            .scope_maps = analyzer.scope_maps.items,
-            .exported_names = analyzer.exported_names,
-            .symbol_ids = analyzer.symbol_ids.items,
-            .unresolved_references = analyzer.unresolved_references,
-            .references = analyzer.references.items,
-        };
-        suppressRuntimeHelperInternalUnresolved(module);
-        module.uses_top_level_await = analyzer.has_top_level_await;
-        if (module.transform_cache) |*cache| {
-            cache.symbol_ids = analyzer.symbol_ids.items;
+            analyzer.is_strict_mode = true;
+            analyzer.is_module = true;
+            analyzer.is_ts = module.module_type.isTypeScript();
+            analyzer.is_flow = self.flow or isFlowPath(module.path);
+            analyzer.enable_stmt_info = true;
+            try analyzer.analyze();
+
+            module.semantic = .{
+                .symbols = analyzer.symbols,
+                .scopes = analyzer.scopes.items,
+                .scope_maps = analyzer.scope_maps.items,
+                .exported_names = analyzer.exported_names,
+                .symbol_ids = analyzer.symbol_ids.items,
+                .unresolved_references = analyzer.unresolved_references,
+                .references = analyzer.references.items,
+            };
+            suppressRuntimeHelperInternalUnresolved(module);
+            module.uses_top_level_await = analyzer.has_top_level_await;
+            if (module.transform_cache) |*cache| {
+                cache.symbol_ids = analyzer.symbol_ids.items;
+            }
         }
 
         purity.markUserPureCalls(ast, self.pure);
 
-        module.prebuilt_stmt_info = null;
-        if (analyzer.stmt_info_count > 0) {
-            module.prebuilt_stmt_info = try stmt_info_mod.buildFromSemantic(
+        {
+            var stmt_info_scope = profile.begin(.graph_resync_stmt_info);
+            defer stmt_info_scope.end();
+
+            module.prebuilt_stmt_info = null;
+            if (analyzer.stmt_info_count > 0) {
+                module.prebuilt_stmt_info = try stmt_info_mod.buildFromSemantic(
+                    arena_alloc,
+                    ast,
+                    analyzer.symbols.items,
+                    analyzer.references.items,
+                    if (module.semantic) |*s| &s.unresolved_references else null,
+                    false,
+                );
+            }
+        }
+
+        var scan_result: import_scanner.ScanResult = undefined;
+        {
+            var import_scan_scope = profile.begin(.graph_resync_import_scan);
+            defer import_scan_scope.end();
+
+            scan_result = try import_scanner.extractImportsWithCjsDetectionAndDefines(arena_alloc, ast, self.defines);
+            module.import_records = try mergeImportRecords(arena_alloc, previous_import_records, scan_result.records);
+            // specifier dupe — arena 로 owned 화 (#raw-require UAF 회피).
+            for (module.import_records) |*r| {
+                if (arena_alloc.dupe(u8, r.specifier)) |owned| r.specifier = owned else |_| {}
+            }
+            try import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, ast, module.import_records);
+        }
+
+        {
+            var import_bindings_scope = profile.begin(.graph_resync_import_bindings);
+            defer import_bindings_scope.end();
+
+            const transformed_import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records);
+            module.import_bindings = try mergeImportBindings(arena_alloc, previous_import_bindings, transformed_import_bindings);
+            try binding_scanner_mod.collectNamespaceAccesses(arena_alloc, ast, module.import_bindings);
+        }
+
+        {
+            var export_bindings_scope = profile.begin(.graph_resync_export_bindings);
+            defer export_bindings_scope.end();
+
+            module.export_bindings = try binding_scanner_mod.extractExportBindings(
                 arena_alloc,
                 ast,
-                analyzer.symbols.items,
-                analyzer.references.items,
-                if (module.semantic) |*s| &s.unresolved_references else null,
-                false,
+                module.import_records,
+                module.import_bindings,
             );
+            module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
         }
-
-        const scan_result = try import_scanner.extractImportsWithCjsDetectionAndDefines(arena_alloc, ast, self.defines);
-        module.import_records = try mergeImportRecords(arena_alloc, previous_import_records, scan_result.records);
-        // specifier dupe — arena 로 owned 화 (#raw-require UAF 회피).
-        for (module.import_records) |*r| {
-            if (arena_alloc.dupe(u8, r.specifier)) |owned| r.specifier = owned else |_| {}
-        }
-        try import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, ast, module.import_records);
-
-        const transformed_import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records);
-        module.import_bindings = try mergeImportBindings(arena_alloc, previous_import_bindings, transformed_import_bindings);
-
-        try binding_scanner_mod.collectNamespaceAccesses(arena_alloc, ast, module.import_bindings);
-        module.export_bindings = try binding_scanner_mod.extractExportBindings(
-            arena_alloc,
-            ast,
-            module.import_records,
-            module.import_bindings,
-        );
-        module.exported_names = projectExportedNames(arena_alloc, module.export_bindings);
 
         const has_refreshed_cjs = scan_result.has_cjs_require or
             scan_result.has_module_exports or
@@ -1977,40 +2006,50 @@ pub const ModuleGraph = struct {
             .has_esmodule_marker = scan_result.has_esmodule_marker,
         };
 
-        try self.injectJsxSyntheticImportsForModule(module, arena_alloc, ast);
+        {
+            var classify_scope = profile.begin(.graph_resync_classify);
+            defer classify_scope.end();
 
-        // 기존 exports_kind 가 ESM 인데 post-transform scan 이 `.none` 으로 떨어지는 경우
-        // (예: TS interface-only 파일의 `export {};` 를 transformer 가 drop) ESM 분류를 유지한다.
-        // `.none` 으로 강등하면 Pass 2 markEsmCjsHybrid 가 node_modules + def_format unknown
-        // 모듈을 implicit CJS 로 승격시켜, `export *` chain 의 빈 source 가 CJS wrapper 로
-        // wrap 되고 `resolveOrCjsFallback` 이 잘못된 모듈을 named import 의 source 로 반환한다
-        // (kysely/cheerio 회귀 #2052/#2051).
-        const refreshed_kind = determineExportsKind(refreshed_scan_result, module.path);
-        const previous_kind = module.exports_kind;
-        const preserve_esm = refreshed_kind == .none and previous_kind.isEsm();
-        module.exports_kind = if (preserve_esm) previous_kind else refreshed_kind;
-        module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
-        module.has_cjs_export_signal = refreshed_scan_result.has_module_exports or refreshed_scan_result.has_exports_dot;
-        module.can_skip_cjs_default_interop = Module.computeCanSkipCjsDefaultInterop(
-            module.wrap_kind == .cjs,
-            refreshed_scan_result.has_module_exports,
-            refreshed_scan_result.has_exports_dot,
-            refreshed_scan_result.has_esmodule_marker,
-        );
+            try self.injectJsxSyntheticImportsForModule(module, arena_alloc, ast);
 
-        if (module.alias_table) |*table| table.deinit();
-        module.alias_table = AliasTable.init(self.allocator);
-        if (module.semantic) |*sem| {
-            const scope0: ?std.StringHashMap(usize) =
-                if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
-            try binding_scanner_mod.populateSyntheticSymbols(
-                &module.alias_table.?,
-                module.index,
-                module.export_bindings,
-                &sem.symbols,
-                arena_alloc,
-                scope0,
+            // 기존 exports_kind 가 ESM 인데 post-transform scan 이 `.none` 으로 떨어지는 경우
+            // (예: TS interface-only 파일의 `export {};` 를 transformer 가 drop) ESM 분류를 유지한다.
+            // `.none` 으로 강등하면 Pass 2 markEsmCjsHybrid 가 node_modules + def_format unknown
+            // 모듈을 implicit CJS 로 승격시켜, `export *` chain 의 빈 source 가 CJS wrapper 로
+            // wrap 되고 `resolveOrCjsFallback` 이 잘못된 모듈을 named import 의 source 로 반환한다
+            // (kysely/cheerio 회귀 #2052/#2051).
+            const refreshed_kind = determineExportsKind(refreshed_scan_result, module.path);
+            const previous_kind = module.exports_kind;
+            const preserve_esm = refreshed_kind == .none and previous_kind.isEsm();
+            module.exports_kind = if (preserve_esm) previous_kind else refreshed_kind;
+            module.wrap_kind = if (module.exports_kind == .commonjs) .cjs else .none;
+            module.has_cjs_export_signal = refreshed_scan_result.has_module_exports or refreshed_scan_result.has_exports_dot;
+            module.can_skip_cjs_default_interop = Module.computeCanSkipCjsDefaultInterop(
+                module.wrap_kind == .cjs,
+                refreshed_scan_result.has_module_exports,
+                refreshed_scan_result.has_exports_dot,
+                refreshed_scan_result.has_esmodule_marker,
             );
+        }
+
+        {
+            var alias_scope = profile.begin(.graph_resync_alias);
+            defer alias_scope.end();
+
+            if (module.alias_table) |*table| table.deinit();
+            module.alias_table = AliasTable.init(self.allocator);
+            if (module.semantic) |*sem| {
+                const scope0: ?std.StringHashMap(usize) =
+                    if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
+                try binding_scanner_mod.populateSyntheticSymbols(
+                    &module.alias_table.?,
+                    module.index,
+                    module.export_bindings,
+                    &sem.symbols,
+                    arena_alloc,
+                    scope0,
+                );
+            }
         }
     }
 

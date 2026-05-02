@@ -61,6 +61,14 @@ pub const Category = enum {
     graph_discover_pm_post,
     graph_discover_pm_is_pkg_type,
     graph_finalize,
+    graph_resync,
+    graph_resync_semantic,
+    graph_resync_stmt_info,
+    graph_resync_import_scan,
+    graph_resync_import_bindings,
+    graph_resync_export_bindings,
+    graph_resync_classify,
+    graph_resync_alias,
 
     // ── Linking / Tree-shaking ──
     link,
