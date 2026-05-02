@@ -548,6 +548,49 @@ fn bindingPatternImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, n
     return false;
 }
 
+fn functionExpressionNameImportShadowOverflow(ast: *const Ast, node: ast_mod.Node, names: []const []const u8, match_count: *usize) bool {
+    if (node.tag != .function_expression and node.tag != .function) return false;
+    const name_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+    if (name_idx.isNone()) return false;
+    const name = ast.getText(ast.getNode(name_idx).span);
+    if (string_list.contains(names, name)) {
+        match_count.* += 1;
+        if (match_count.* > binding_lite_max_shadows) return true;
+    }
+    return false;
+}
+
+fn functionVarImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
+    if (idx.isNone()) return false;
+    const node = ast.getNode(idx);
+    switch (node.tag) {
+        .function_declaration,
+        .function_expression,
+        .function,
+        .arrow_function_expression,
+        => return false,
+        .variable_declaration => if (!ast.variableDeclarationKind(node).isLexical()) {
+            const list_start = ast.extra_data.items[node.data.extra + 1];
+            const list_len = ast.extra_data.items[node.data.extra + 2];
+            var i: u32 = 0;
+            while (i < list_len) : (i += 1) {
+                const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
+                if (decl_idx.isNone()) continue;
+                const decl = ast.getNode(decl_idx);
+                if (decl.tag != .variable_declarator) continue;
+                if (bindingPatternImportShadowOverflow(ast, @enumFromInt(ast.extra_data.items[decl.data.extra]), names, match_count)) return true;
+            }
+        },
+        else => {},
+    }
+
+    var it = ast_walk.children(ast, node);
+    while (it.next()) |child_idx| {
+        if (functionVarImportShadowOverflow(ast, child_idx, names, match_count)) return true;
+    }
+    return false;
+}
+
 fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
     ast: *const Ast,
     node: ast_mod.Node,
@@ -589,6 +632,25 @@ fn scanChildrenForUnsupportedBindingLiteShadow(
     return false;
 }
 
+fn scanFunctionForUnsupportedBindingLiteShadow(
+    ast: *const Ast,
+    node: ast_mod.Node,
+    names: []const []const u8,
+    scope_depth: usize,
+    inside_function: bool,
+    function_expression_self_name: bool,
+) bool {
+    const e = node.data.extra;
+    var matching_shadows: usize = 0;
+    if (function_expression_self_name and functionExpressionNameImportShadowOverflow(ast, node, names, &matching_shadows)) return true;
+    if (bindingPatternImportShadowOverflow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, &matching_shadows)) return true;
+    if (functionVarImportShadowOverflow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, &matching_shadows)) return true;
+
+    if (!function_expression_self_name and scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
+    if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth, inside_function)) return true;
+    return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, scope_depth + 1, true);
+}
+
 fn scanForUnsupportedBindingLiteShadow(
     ast: *const Ast,
     idx: ast_mod.NodeIndex,
@@ -614,15 +676,10 @@ fn scanForUnsupportedBindingLiteShadow(
             if (bindingPatternImportShadowOverflow(ast, node.data.binary.left, names, &matching_shadows)) return true;
             return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1, inside_function);
         },
-        .function_declaration,
+        .function_declaration => return scanFunctionForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function, false),
         .function_expression,
         .function,
-        => {
-            const e = node.data.extra;
-            if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
-            if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth, inside_function)) return true;
-            return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, scope_depth + 1, true);
-        },
+        => return scanFunctionForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function, true),
         .arrow_function_expression => {
             const e = node.data.extra;
             if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
@@ -804,6 +861,14 @@ fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex,
     }
 }
 
+fn collectBindingLiteFunctionExpressionNameShadow(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+    if (node.tag != .function_expression and node.tag != .function) return;
+    const name_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+    if (name_idx.isNone()) return;
+    const name = ast.getText(ast.getNode(name_idx).span);
+    if (lite.namedImportValueUse(name) != null) appendBindingLiteShadowName(buf, len, name);
+}
+
 fn collectBindingLiteListLexicalShadows(ast: *const Ast, list: ast_mod.NodeList, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
     if (list.start + list.len > ast.extra_data.items.len) return;
     var i: u32 = 0;
@@ -868,12 +933,14 @@ fn markBindingLiteFunctionScope(
     ast: *const Ast,
     lite: *BindingLite,
     parent_shadowed: []const []const u8,
+    node: ast_mod.Node,
     params_idx: ast_mod.NodeIndex,
     body_idx: ast_mod.NodeIndex,
 ) void {
     var shadow_buf: [binding_lite_max_shadows][]const u8 = undefined;
     var shadow_len: usize = 0;
     for (parent_shadowed) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
+    collectBindingLiteFunctionExpressionNameShadow(ast, node, lite, &shadow_buf, &shadow_len);
     collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
     collectBindingLiteFunctionVarShadows(ast, body_idx, lite, &shadow_buf, &shadow_len);
     const combined = shadow_buf[0..shadow_len];
@@ -951,6 +1018,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
                 ast,
                 lite,
                 shadowed_names,
+                node,
                 @enumFromInt(ast.extra_data.items[e + 1]),
                 @enumFromInt(ast.extra_data.items[e + 2]),
             );
@@ -962,6 +1030,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
                 ast,
                 lite,
                 shadowed_names,
+                node,
                 @enumFromInt(ast.extra_data.items[e]),
                 @enumFromInt(ast.extra_data.items[e + 1]),
             );
@@ -1545,6 +1614,23 @@ test "TransformPlan: scope-local named import shadows stay on binding-lite route
             \\Foo();
             ,
         },
+        .{
+            .name = "named function expression self-name shadows import locally",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\const fn = function Foo() { return Foo; };
+            \\Foo();
+            \\Bar();
+            ,
+        },
+        .{
+            .name = "named function expression self-name shadows parameter default",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\const fn = function Foo(value = Foo) { return value; };
+            \\Bar();
+            ,
+        },
     };
 
     for (cases) |case| {
@@ -1588,6 +1674,23 @@ test "TransformPlan: ambiguous or overflowing named import shadows keep full sem
     );
     try std.testing.expectEqual(SemanticRequirement.bindings, function_var_shadow.semantic);
     try std.testing.expectEqual(SemanticPlanReason.named_import_binding_elision, function_var_shadow.reason);
+
+    var function_expression_overflow_source: std.ArrayList(u8) = .empty;
+    defer function_expression_overflow_source.deinit(std.testing.allocator);
+    try function_expression_overflow_source.appendSlice(std.testing.allocator, "import { Foo");
+    var j: usize = 0;
+    while (j < 64) : (j += 1) {
+        try function_expression_overflow_source.writer(std.testing.allocator).print(", I{d}", .{j});
+    }
+    try function_expression_overflow_source.appendSlice(std.testing.allocator, " } from './x';\nconst fn = function Foo(");
+    j = 0;
+    while (j < 64) : (j += 1) {
+        try function_expression_overflow_source.writer(std.testing.allocator).print("I{d},", .{j});
+    }
+    try function_expression_overflow_source.appendSlice(std.testing.allocator, ") { return Foo; };\n");
+    const function_expression_overflow_plan = try testTransformPlan(function_expression_overflow_source.items, "input.ts", .{});
+    try std.testing.expectEqual(SemanticRequirement.full, function_expression_overflow_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, function_expression_overflow_plan.reason);
 
     var overflow_source: std.ArrayList(u8) = .empty;
     defer overflow_source.deinit(std.testing.allocator);
@@ -1952,6 +2055,26 @@ test "TransformPlan parity: binding-lite named import elision matches full seman
             \\  if (ok) { var Foo = Bar(); }
             \\  return Foo;
             \\}
+            ,
+        },
+        .{
+            .name = "named function expression self-name does not keep import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export const fn = function Foo() {
+            \\  return Foo;
+            \\};
+            \\export const value = Bar();
+            ,
+        },
+        .{
+            .name = "named function expression self-name does not hide outer value use",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export const fn = function Foo(value = Foo) {
+            \\  return value;
+            \\};
+            \\export const value = Foo() + Bar();
             ,
         },
         .{

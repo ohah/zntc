@@ -170,6 +170,11 @@ function printPlanHitRates(dir: string): void {
       source: `import { Foo, Bar } from "./lib";\nfunction f() { var Foo = Bar(); return Foo; }\nFoo();\n`,
     },
     {
+      name: "function-expression-shadow",
+      filename: "function-expression-shadow.ts",
+      source: `import { Foo, Bar } from "./lib";\nconst fn = function Foo(value = Foo) { return value; };\nBar();\n`,
+    },
+    {
       name: "js-source",
       filename: "plain.js",
       source: `const value = 1;\n`,
