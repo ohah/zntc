@@ -381,7 +381,7 @@ var init_class_call_check = __esm({
 //#endregion
 //#region MessageQueue.js
 var exports_react_native_Libraries_BatchedBridge_MessageQueue = {};
-var __toConsumableArray, __classCallCheck, Systrace$1, deepFreezeAndThrowOnMutationInDev$1, stringifySafe$1, warnOnce$1, ErrorUtils, invariant$1, TO_JS, TO_NATIVE, MODULE_IDS, METHOD_IDS, PARAMS, MIN_TIME_BETWEEN_FLUSHES_MS, TRACE_TAG_REACT$1, DEBUG_INFO_LIMIT, MessageQueue;
+var Systrace$1, deepFreezeAndThrowOnMutationInDev$1, stringifySafe$1, warnOnce$1, ErrorUtils, invariant$1, TO_JS, TO_NATIVE, MODULE_IDS, METHOD_IDS, PARAMS, MIN_TIME_BETWEEN_FLUSHES_MS, TRACE_TAG_REACT$1, DEBUG_INFO_LIMIT, MessageQueue;
 __export(exports_react_native_Libraries_BatchedBridge_MessageQueue, {
 	"default": function() { return MessageQueue; },
 });
@@ -389,8 +389,8 @@ var init_react_native_Libraries_BatchedBridge_MessageQueue = __esm({
 	"MessageQueue.js"() {
 	init_spread_array();
 	init_class_call_check();
-		({__toConsumableArray}=require(" zts:runtime/spread-array"));
-	({__classCallCheck}=require(" zts:runtime/class-call-check"));
+		
+	
 	"use strict";
 	Systrace$1 = (init_react_native_Libraries_Performance_Systrace(), __toCommonJS(exports_react_native_Libraries_Performance_Systrace));
 	deepFreezeAndThrowOnMutationInDev$1 = (init_react_native_Libraries_Utilities_deepFreezeAndThrowOnMutationInDev(), __toCommonJS(exports_react_native_Libraries_Utilities_deepFreezeAndThrowOnMutationInDev)).default;
@@ -684,7 +684,7 @@ var init_read = __esm({
 //#endregion
 //#region NativeModules.js
 var exports_react_native_Libraries_BatchedBridge_NativeModules = {};
-var __read, BatchedBridge$1, invariant$2, genModule, loadModule, genMethod, arrayContains, updateErrorWithErrorData, NativeModules;
+var BatchedBridge$1, invariant$2, genModule, loadModule, genMethod, arrayContains, updateErrorWithErrorData, NativeModules;
 __export(exports_react_native_Libraries_BatchedBridge_NativeModules, {
 	"default": function() { return NativeModules; },
 });
@@ -763,7 +763,7 @@ var init_react_native_Libraries_BatchedBridge_NativeModules = __esm({
 		return Object.assign(error, errorData || {});
 	};
 		init_read();
-		({__read}=require(" zts:runtime/read"));
+		
 	"use strict";
 	BatchedBridge$1 = (init_react_native_Libraries_BatchedBridge_BatchedBridge(), __toCommonJS(exports_react_native_Libraries_BatchedBridge_BatchedBridge)).default;
 	invariant$2 = require_invariant_browser();
@@ -10001,10 +10001,10 @@ var init_react_native_src_private_webapis_dom_nodes_ReactNativeDocument = __esm(
 			__classCallCheck(this, ReactNativeDocument);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized$3(_this),_this = __callSuper(_super, [instanceHandle, null], _newTarget);
-			__assertThisInitialized$3(_this)._rootTag = rootTag;
-			__assertThisInitialized$3(_this)._documentElement = createDocumentElement(rootTag, __assertThisInitialized$3(_this));
-			return __assertThisInitialized$3(_this);
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [instanceHandle, null], _newTarget);
+			__assertThisInitialized(_this)._rootTag = rootTag;
+			__assertThisInitialized(_this)._documentElement = createDocumentElement(rootTag, __assertThisInitialized(_this));
+			return __assertThisInitialized(_this);
 		}
 		__extends(ReactNativeDocument, _super);
 		Object.defineProperty(ReactNativeDocument.prototype, "getElementById", { configurable: true, writable: true, value: function(id) {
@@ -20167,7 +20167,7 @@ __export(exports_react_native_Libraries_Text_Text, {
 var init_react_native_Libraries_Text_Text = __esm({
 	"Text.js"() {
 	useTextPressability = function(_r) {
-		var onLongPress = _r.onLongPress,onPress = _r.onPress,onPressIn = _r.onPressIn,onPressOut = _r.onPressOut,onResponderGrant = _r.onResponderGrant,onResponderMove = _r.onResponderMove,onResponderRelease = _r.onResponderRelease,onResponderTerminate = _r.onResponderTerminate,onResponderTerminationRequest = _r.onResponderTerminationRequest,onStartShouldSetResponder = _r.onStartShouldSetResponder,pressRetentionOffset = _r.pressRetentionOffset,suppressHighlighting = _r.suppressHighlighting,_m = __read$14(require_react_index().useState(false), 2),isHighlighted = _m[0],setHighlighted = _m[1],config = require_react_index().useMemo(function() {
+		var onLongPress = _r.onLongPress,onPress = _r.onPress,onPressIn = _r.onPressIn,onPressOut = _r.onPressOut,onResponderGrant = _r.onResponderGrant,onResponderMove = _r.onResponderMove,onResponderRelease = _r.onResponderRelease,onResponderTerminate = _r.onResponderTerminate,onResponderTerminationRequest = _r.onResponderTerminationRequest,onStartShouldSetResponder = _r.onStartShouldSetResponder,pressRetentionOffset = _r.pressRetentionOffset,suppressHighlighting = _r.suppressHighlighting,_m = __read(require_react_index().useState(false), 2),isHighlighted = _m[0],setHighlighted = _m[1],config = require_react_index().useMemo(function() {
 			var _onPressIn = onPressIn,_onPressOut = onPressOut;
 			if (Platform.OS === "ios") {
 				_onPressIn = function(event) {
@@ -20489,11 +20489,11 @@ var init_react_native_Libraries_Text_Text = __esm({
 	TextImpl = _TextImpl;
 	TextImpl.displayName = "Text";
 	NativePressableVirtualText = function(_s) {
-		var forwardedRef = _s.ref,textProps = _s.textProps,textPressabilityProps = _s.textPressabilityProps,_m = __read$14(useTextPressability(textPressabilityProps), 2),isHighlighted = _m[0],eventHandlersForText = _m[1];
+		var forwardedRef = _s.ref,textProps = _s.textProps,textPressabilityProps = _s.textPressabilityProps,_m = __read(useTextPressability(textPressabilityProps), 2),isHighlighted = _m[0],eventHandlersForText = _m[1];
 		return (/* @__PURE__ */ React$13.createElement(NativeVirtualText, Object.assign({}, textProps, eventHandlersForText, { isHighlighted: isHighlighted, isPressable: true, ref: forwardedRef })));
 	};
 	NativePressableText = function(_t) {
-		var forwardedRef = _t.ref,textProps = _t.textProps,textPressabilityProps = _t.textPressabilityProps,_n = __read$14(useTextPressability(textPressabilityProps), 2),isHighlighted = _n[0],eventHandlersForText = _n[1];
+		var forwardedRef = _t.ref,textProps = _t.textProps,textPressabilityProps = _t.textPressabilityProps,_n = __read(useTextPressability(textPressabilityProps), 2),isHighlighted = _n[0],eventHandlersForText = _n[1];
 		return (/* @__PURE__ */ React$13.createElement(NativeText, Object.assign({}, textProps, eventHandlersForText, { isHighlighted: isHighlighted, isPressable: true, ref: forwardedRef })));
 	};
 	userSelectToSelectableMap = { auto: true, text: true, none: false, contain: true, all: true };
@@ -20745,7 +20745,7 @@ var init_react_native_Libraries_Image_ImageSourceUtils = __esm({
 		if (srcSet != null) {
 			var sourceList = [],srcSetList = srcSet.split(", "),shouldUseSrcForDefaultScale = true;
 			srcSetList.forEach(function(imageSrc) {
-				var _b = __read$15(imageSrc.split(" "), 2),uri = _b[0],xScale = _b[1] === void 0 ? "1x" : _b[1];
+				var _b = __read(imageSrc.split(" "), 2),uri = _b[0],xScale = _b[1] === void 0 ? "1x" : _b[1];
 				if (!xScale.endsWith("x")) {
 					console.warn("The provided format for scale is not supported yet. Please use scales like 1x, 2x, etc.");
 				} else {
@@ -22088,7 +22088,7 @@ var init_react_native_Libraries_Animated_NativeAnimatedTurboModule = __esm({
 //#endregion
 //#region NativeAnimatedHelper.js
 var exports_react_native_src_private_animated_NativeAnimatedHelper = {};
-var __toConsumableArray, _a, _b, _c, ReactNativeFeatureFlags$8, NativeAnimatedModule$1, __nativeAnimatedNodeTagCount, __nativeAnimationIdCount, nativeEventEmitter, waitingForQueuedOperations, queueOperations, queue, singleOpQueue, isSingleOpBatching, flushQueueImmediate, eventListenerGetValueCallbacks, eventListenerAnimationFinishedCallbacks, globalEventEmitterGetValueListener, globalEventEmitterAnimationFinishedListener, shouldSignalBatch, createNativeOperations, NativeOperations, API, ensureGlobalEventEmitterListeners, generateNewNodeTag, generateNewAnimationId, assertNativeAnimatedModule, _warnedMissingNativeAnimated, shouldUseNativeDriver, transformDataType, _default$61, invariant$22, nullthrows$8;
+var _a, _b, _c, ReactNativeFeatureFlags$8, NativeAnimatedModule$1, __nativeAnimatedNodeTagCount, __nativeAnimationIdCount, nativeEventEmitter, waitingForQueuedOperations, queueOperations, queue, singleOpQueue, isSingleOpBatching, flushQueueImmediate, eventListenerGetValueCallbacks, eventListenerAnimationFinishedCallbacks, globalEventEmitterGetValueListener, globalEventEmitterAnimationFinishedListener, shouldSignalBatch, createNativeOperations, NativeOperations, API, ensureGlobalEventEmitterListeners, generateNewNodeTag, generateNewAnimationId, assertNativeAnimatedModule, _warnedMissingNativeAnimated, shouldUseNativeDriver, transformDataType, _default$61, invariant$22, nullthrows$8;
 __export(exports_react_native_src_private_animated_NativeAnimatedHelper, {
 	"default": function() { return _default$61; },
 });
@@ -22227,7 +22227,7 @@ var init_react_native_src_private_animated_NativeAnimatedHelper = __esm({
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	invariant$22 = require_invariant_browser();
 	nullthrows$8 = __toESM(require_nullthrows_nullthrows()).default;
-		({__toConsumableArray}=require(" zts:runtime/spread-array"));
+		
 	
 	
 	
@@ -23155,19 +23155,19 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValue = __esm({
 			__classCallCheck(this, AnimatedValue);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized$18(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
 			if (typeof value !== "number") {
 				throw new Error("AnimatedValue: Attempting to set value to undefined");
 			}
-			__assertThisInitialized$18(_this)._listenerCount = 0;
-			__assertThisInitialized$18(_this)._updateSubscription = null;
-			__assertThisInitialized$18(_this)._startingValue = __assertThisInitialized$18(_this)._value = value;
-			__assertThisInitialized$18(_this)._offset = 0;
-			__assertThisInitialized$18(_this)._animation = null;
+			__assertThisInitialized(_this)._listenerCount = 0;
+			__assertThisInitialized(_this)._updateSubscription = null;
+			__assertThisInitialized(_this)._startingValue = __assertThisInitialized(_this)._value = value;
+			__assertThisInitialized(_this)._offset = 0;
+			__assertThisInitialized(_this)._animation = null;
 			if (config && config.useNativeDriver) {
-				__assertThisInitialized$18(_this).__makeNative();
+				__assertThisInitialized(_this).__makeNative();
 			}
-			return __assertThisInitialized$18(_this);
+			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedValue, _super);
 		Object.defineProperty(AnimatedValue.prototype, "__detach", { configurable: true, writable: true, value: function() {
@@ -23366,21 +23366,21 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValueXY = __esm({
 			__classCallCheck(this, AnimatedValueXY);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized$19(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
 			var value = valueIn || { x: 0, y: 0 };
 			if (typeof value.x === "number" && typeof value.y === "number") {
-				__assertThisInitialized$19(_this).x = new AnimatedValue(value.x);
-				__assertThisInitialized$19(_this).y = new AnimatedValue(value.y);
+				__assertThisInitialized(_this).x = new AnimatedValue(value.x);
+				__assertThisInitialized(_this).y = new AnimatedValue(value.y);
 			} else {
 				invariant$25(value.x instanceof AnimatedValue && value.y instanceof AnimatedValue, "AnimatedValueXY must be initialized with an object of numbers or AnimatedValues.");
-				__assertThisInitialized$19(_this).x = value.x;
-				__assertThisInitialized$19(_this).y = value.y;
+				__assertThisInitialized(_this).x = value.x;
+				__assertThisInitialized(_this).y = value.y;
 			}
-			__assertThisInitialized$19(_this)._listeners = {};
+			__assertThisInitialized(_this)._listeners = {};
 			if (config && config.useNativeDriver) {
-				__assertThisInitialized$19(_this).__makeNative();
+				__assertThisInitialized(_this).__makeNative();
 			}
-			return __assertThisInitialized$19(_this);
+			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedValueXY, _super);
 		Object.defineProperty(AnimatedValueXY.prototype, "setValue", { configurable: true, writable: true, value: function(value) {
@@ -23694,10 +23694,10 @@ var init_react_native_Libraries_Animated_nodes_AnimatedObject = __esm({
 			__classCallCheck(this, AnimatedObject);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized$20(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized$20(_this)._nodes = nodes;
-			__assertThisInitialized$20(_this)._value = value;
-			return __assertThisInitialized$20(_this);
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized(_this)._nodes = nodes;
+			__assertThisInitialized(_this)._value = value;
+			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedObject, _super);
 		Object.defineProperty(AnimatedObject, "from", { configurable: true, writable: true, value: function(value) {
@@ -23827,10 +23827,10 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTransform = __esm({
 			__classCallCheck(this, AnimatedTransform);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized$21(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized$21(_this)._nodes = nodes;
-			__assertThisInitialized$21(_this)._transforms = transforms;
-			return __assertThisInitialized$21(_this);
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized(_this)._nodes = nodes;
+			__assertThisInitialized(_this)._transforms = transforms;
+			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedTransform, _super);
 		Object.defineProperty(AnimatedTransform, "from", { configurable: true, writable: true, value: function(transforms) {
@@ -24317,7 +24317,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 //#endregion
 //#region Animation.js
 var exports_react_native_Libraries_Animated_animations_Animation = {};
-var __toConsumableArray, __classCallCheck, _a, _b, _c, _d, _e, _f, _g, _h, _i, ReactNativeFeatureFlags$11, startNativeAnimationNextId, Animation;
+var _a, _b, _c, _d, _e, _f, _g, _h, _i, ReactNativeFeatureFlags$11, startNativeAnimationNextId, Animation;
 __export(exports_react_native_Libraries_Animated_animations_Animation, {
 	"default": function() { return Animation; },
 });
@@ -24328,8 +24328,8 @@ var init_react_native_Libraries_Animated_animations_Animation = __esm({
 	init_react_native_src_private_animated_NativeAnimatedHelper();
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
 	init_react_native_Libraries_Animated_nodes_AnimatedProps();
-		({__toConsumableArray}=require(" zts:runtime/spread-array"));
-	({__classCallCheck}=require(" zts:runtime/class-call-check"));
+		
+	
 	
 	
 	ReactNativeFeatureFlags$11=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
@@ -28007,7 +28007,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListProps = __esm({
 //#endregion
 //#region VirtualizedList.js
 var exports__react_native_virtualized_lists_Lists_VirtualizedList = {};
-var __extends, __toConsumableArray, __rest, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _a2, _b2, _c2, _d2, _e2, _f2, _g2, _h2, _i2, _j2, _k2, _l2, _m2, _n2, _o2, _p2, _q2, _r2, _s2, _t2, _u2, _v2, _w2, ReactNativeFeatureFlags$15, ON_EDGE_REACHED_EPSILON, _usedIndexForKey, _keylessItemComponentName, getScrollingThreshold, VirtualizedList, styles$11, invariant$36, nullthrows$10, React$37;
+var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _a2, _b2, _c2, _d2, _e2, _f2, _g2, _h2, _i2, _j2, _k2, _l2, _m2, _n2, _o2, _p2, _q2, _r2, _s2, _t2, _u2, _v2, _w2, ReactNativeFeatureFlags$15, ON_EDGE_REACHED_EPSILON, _usedIndexForKey, _keylessItemComponentName, getScrollingThreshold, VirtualizedList, styles$11, invariant$36, nullthrows$10, React$37;
 __export(exports__react_native_virtualized_lists_Lists_VirtualizedList, {
 	"default": function() { return VirtualizedList; },
 });
@@ -28038,12 +28038,12 @@ var init__react_native_virtualized_lists_Lists_VirtualizedList = __esm({
 	nullthrows$10 = __toESM(require_nullthrows_nullthrows()).default;
 	React$37 = __toESM(require_react_index());
 	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
-		({__extends}=require(" zts:runtime/extends"));
-	({__toConsumableArray}=require(" zts:runtime/spread-array"));
-	({__rest}=require(" zts:runtime/rest"));
-	({__classCallCheck}=require(" zts:runtime/class-call-check"));
-	({__callSuper}=require(" zts:runtime/call-super"));
-	({__assertThisInitialized,__assertThisUninitialized,__possibleConstructorReturn}=require(" zts:runtime/derived-constructor"));
+		
+	
+	
+	
+	
+	
 	
 	
 	
@@ -29185,7 +29185,7 @@ var require_memoize_one_dist_memoize_one_cjs = __commonJS({
 //#endregion
 //#region FlatList.js
 var exports_react_native_Libraries_Lists_FlatList = {};
-var __extends, __toConsumableArray, __rest, __classCallCheck, __callSuper, __assertThisInitialized, __assertThisUninitialized, __possibleConstructorReturn, _a, _b, _c, _d, _e, ReactNativeFeatureFlags$16, StyleSheet$12, deepDiffer$2, Platform$30, invariant$38, VirtualizedList$2, defaultKeyExtractor$3, removeClippedSubviewsOrDefault, numColumnsOrDefault, isArrayLike, FlatList, styles$12, memoizeOne, React$39;
+var _a, _b, _c, _d, _e, ReactNativeFeatureFlags$16, StyleSheet$12, deepDiffer$2, Platform$30, invariant$38, VirtualizedList$2, defaultKeyExtractor$3, removeClippedSubviewsOrDefault, numColumnsOrDefault, isArrayLike, FlatList, styles$12, memoizeOne, React$39;
 __export(exports_react_native_Libraries_Lists_FlatList, {
 	"default": function() { return FlatList; },
 });
@@ -29215,12 +29215,12 @@ var init_react_native_Libraries_Lists_FlatList = __esm({
 	init__react_native_virtualized_lists_index();
 	memoizeOne = require_memoize_one_dist_memoize_one_cjs();
 	React$39 = __toESM(require_react_index());
-		({__extends}=require(" zts:runtime/extends"));
-	({__toConsumableArray}=require(" zts:runtime/spread-array"));
-	({__rest}=require(" zts:runtime/rest"));
-	({__classCallCheck}=require(" zts:runtime/class-call-check"));
-	({__callSuper}=require(" zts:runtime/call-super"));
-	({__assertThisInitialized,__assertThisUninitialized,__possibleConstructorReturn}=require(" zts:runtime/derived-constructor"));
+		
+	
+	
+	
+	
+	
 	
 	ReactNativeFeatureFlags$16=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
 	
@@ -29664,7 +29664,7 @@ var init_react_native_Libraries_Animated_components_AnimatedScrollView = __esm({
 		var _b = require_react_index().useMemo(function() {
 			var _a = splitLayoutProps(flattenStyle(props.style)),outer = _a.outer,inner = _a.inner;
 			return { intermediatePropsForRefreshControl: { style: outer }, intermediatePropsForScrollView: Object.assign({}, props, { style: inner }) };
-		}, [props]),intermediatePropsForRefreshControl = _b.intermediatePropsForRefreshControl,intermediatePropsForScrollView = _b.intermediatePropsForScrollView,_c = __read(_default$77(intermediatePropsForRefreshControl), 2),refreshControlAnimatedProps = _c[0],refreshControlRef = _c[1],refreshControl = require_react_index().cloneElement(props.refreshControl, Object.assign({}, refreshControlAnimatedProps, { ref: refreshControlRef })),_d = __read(_default$77(intermediatePropsForScrollView), 2),scrollViewAnimatedProps = _d[0],scrollViewRef = _d[1],ref = useMergeRefs(scrollViewRef, forwardedRef);
+		}, [props]),intermediatePropsForRefreshControl = _b.intermediatePropsForRefreshControl,intermediatePropsForScrollView = _b.intermediatePropsForScrollView,_c = __read$25(_default$77(intermediatePropsForRefreshControl), 2),refreshControlAnimatedProps = _c[0],refreshControlRef = _c[1],refreshControl = require_react_index().cloneElement(props.refreshControl, Object.assign({}, refreshControlAnimatedProps, { ref: refreshControlRef })),_d = __read$25(_default$77(intermediatePropsForScrollView), 2),scrollViewAnimatedProps = _d[0],scrollViewRef = _d[1],ref = useMergeRefs(scrollViewRef, forwardedRef);
 		;
 		;
 		;
@@ -60994,7 +60994,7 @@ var init_react_native_safe_area_context_src_index = __esm({
 //#endregion
 //#region App.tsx
 var exports_App = {};
-var __read, testIcon, App, AppContent, styles$45;
+var testIcon, App, AppContent, styles$45;
 __export(exports_App, {
 	"default": function() { return App; },
 });
@@ -61107,7 +61107,7 @@ var init_App = __esm({
 		init_read();
 	init__react_native_new_app_screen_src_index();
 	init_react_native_safe_area_context_src_index();
-		({__read}=require(" zts:runtime/read"));
+		
 	
 	
 	

@@ -152,6 +152,13 @@ pub fn extractImportsWithCjsDetectionAndDefines(
         }
     }
 
+    // specifier 들이 ast.string_table 또는 ast.source 의 borrowed slice 인데, 후속 transform
+    // 파스에서 string_table 이 grow 하면 dangling → 0xAA UAF (#raw-require leak).
+    // 모든 specifier 를 caller 의 allocator 로 dupe 해 owned 화.
+    for (records.items) |*r| {
+        r.specifier = try allocator.dupe(u8, r.specifier);
+    }
+
     return .{
         .records = try records.toOwnedSlice(allocator),
         .has_esm_syntax = has_esm_syntax,
