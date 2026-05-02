@@ -2935,13 +2935,10 @@ pub fn resolveNodeName(md: ?*const LinkingMetadata, node_idx: u32, fallback: []c
         if (node_idx < m.symbol_ids.len) {
             if (m.symbol_ids[node_idx]) |sid| {
                 if (m.renames.get(sid)) |renamed| {
-                    // 방어 — 알 수 없는 use-after-free 경로 (#2429) 로 rename slice 가
-                    // 0xAA (Zig debug undef-fill) 또는 invalid identifier byte 로 채워질 수
-                    // 있다. 이런 경우 fallback 사용. 정상 ASCII identifier 는 첫 byte 가
-                    // [a-zA-Z_$0-9.&] 범위라 첫 byte 만 검사해도 충분.
-                    if (renamed.len == 0 or renamed[0] >= 0x80 or renamed[0] == 0) {
-                        return fallback;
-                    }
+                    // 방어 — 알 수 없는 UAF 경로 (#2429) 로 rename slice 첫 byte 가
+                    // 0xAA / 0 등 invalid identifier byte 면 fallback. metadata.zig 의
+                    // `isValidIdentStartByte` 와 동일 정책.
+                    if (renamed.len == 0 or renamed[0] < 0x21 or renamed[0] >= 0x80) return fallback;
                     return renamed;
                 }
             }
@@ -2965,16 +2962,14 @@ pub fn collectImportBindingNames(
     const ispecs_start = iextras[0];
     const ispecs_len = iextras[1];
     if (ispecs_len == 0) return;
+    // NOTE: 두 dupe 모두 #2429 dangling 회피 — `getText` 의 string_table slice 와
+    // `resolveNodeName` 의 metadata.renames borrowed slice 가 후속 처리에서 freed 가능.
     const ispecs = esm_ast.extra_data.items[ispecs_start .. ispecs_start + ispecs_len];
     for (ispecs) |spec_raw| {
         const spec_node = esm_ast.nodes.items[spec_raw];
         switch (spec_node.tag) {
             .import_default_specifier, .import_namespace_specifier => {
-                // raw_name 은 string_table slice — 후속 처리에서 grow 시 dangling.
-                // arena dupe 로 안정 메모리에 복사 (#2422 와 동일 클래스 fix).
                 const name = try name_arena.dupe(u8, esm_ast.getText(spec_node.data.string_ref));
-                // resolveNodeName 은 metadata.renames 의 borrowed slice 를 반환할 수 있어
-                // 후속 dangling 가능 — arena dupe.
                 const resolved = try name_arena.dupe(u8, resolveNodeName(md, spec_raw, name));
                 try out.append(allocator, resolved);
             },
