@@ -871,11 +871,17 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         }
     }
 
-    // TS: export = expr — export assignment (타입 전용)
+    // TS: export = expr — CJS interop. transformer 가 `module.exports = expr;` 로
+    // lower (rolldown/oxc/esbuild/swc 동일). data.unary.operand = rhs expression.
     if (try self.eat(.eq)) {
-        _ = try self.parseAssignmentExpression();
+        self.ast.has_ts_export_equals = true;
+        const expr = try self.parseAssignmentExpression();
         _ = try self.eat(.semicolon);
-        return NodeIndex.none;
+        return try self.ast.addNode(.{
+            .tag = .ts_export_assignment,
+            .span = .{ .start = start, .end = self.currentSpan().start },
+            .data = .{ .unary = .{ .operand = expr, .flags = 0 } },
+        });
     }
 
     // export var/let/const/function/class

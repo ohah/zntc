@@ -70,6 +70,39 @@ test "Codegen CJS: export default" {
     try std.testing.expectEqualStrings("module.exports=42;", r.output);
 }
 
+test "Codegen: TS export = primitive → module.exports = primitive" {
+    var r = try e2e(std.testing.allocator, "export = 42;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("module.exports=42;", r.output);
+}
+
+test "Codegen: TS export = identifier → module.exports = identifier" {
+    var r = try e2e(std.testing.allocator,
+        \\const value = 42;
+        \\export = value;
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("const value=42;module.exports=value;", r.output);
+}
+
+test "Codegen: TS export = class expression → module.exports = class" {
+    var r = try e2e(std.testing.allocator, "export = class Foo { greet() { return 'hi'; } };");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("module.exports=class Foo{greet(){return \"hi\";}};", r.output);
+}
+
+test "Codegen: TS export = function expression → module.exports = function" {
+    var r = try e2e(std.testing.allocator, "export = function add(a: number, b: number) { return a + b; };");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("module.exports=function add(a,b){return a + b;};", r.output);
+}
+
+test "Codegen: TS export = require().default cherry-pick" {
+    var r = try e2e(std.testing.allocator, "export = require('foo').default;");
+    defer r.deinit();
+    try std.testing.expectEqualStrings("module.exports=require(\"foo\").default;", r.output);
+}
+
 test "Codegen: drop debugger" {
     var r = try e2eFull(std.testing.allocator, "debugger; const x = 1;", .{ .drop_debugger = true }, .{ .minify_whitespace = true }, ".ts");
     defer r.deinit();

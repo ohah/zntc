@@ -303,10 +303,21 @@ pub const Node = struct {
         ts_enum_body,
         ts_enum_member,
         ts_module_declaration,
+        // 미emit. parseNamespaceBlock 이 .block_statement 로 emit — 일반 block visitor /
+        // dead-code 분석을 special case 없이 재사용. tsc/swc/oxc 는 별도 노드, esbuild/Bun 도
+        // 분리 안 하고 stmt list 직접 보유. 영구 dead 후보지만 enum parity 위해 유지.
         ts_module_block,
         ts_import_equals_declaration,
+        // 미emit. import-equals 의 require("x") 는 일반 .call_expression 으로 파싱되고
+        // expression.zig:888 inline scan 이 CJS import record 등록. tsc/swc/oxc 는 별도
+        // wrapper 노드, esbuild/Bun 은 SLocal flag 패턴. 영구 dead 후보지만 enum parity 위해 유지.
         ts_external_module_reference,
+        // emit 됨 (module.zig). transformer 가 `module.exports = expr;` 로 lowering
+        // (rolldown/oxc/esbuild/swc 동일 패턴). data.unary.operand = rhs expression.
         ts_export_assignment,
+        // 미emit. module.zig:860 가 NodeIndex.none 으로 strip 중. `export as namespace X;`
+        // 는 UMD global 선언 — 순수 declarative, runtime emission 없음. 모든 번들러가 strip
+        // (esbuild 는 STypeScriptShared no-op 노드로 보존). 영구 dead 후보지만 유지.
         ts_namespace_export_declaration,
         ts_type_parameter,
         ts_type_parameter_declaration,
@@ -541,6 +552,7 @@ pub const Node = struct {
                 .ts_rest_type,
                 .ts_type_operator,
                 .ts_non_null_expression,
+                .ts_export_assignment,
                 .flow_nullable_type,
                 // TS/Flow type-cast / assertion expressions — codegen emitter 가
                 // data.unary.operand 만 출력 (type 부분 스트리핑).
@@ -725,7 +737,6 @@ pub const Node = struct {
                 .ts_enum_declaration,
                 .flow_enum_declaration,
                 .ts_external_module_reference,
-                .ts_export_assignment,
                 .ts_namespace_export_declaration,
                 .ts_type_parameter,
                 .ts_this_parameter,
@@ -882,6 +893,10 @@ pub const Ast = struct {
     /// 게이트용 — value-bearing import-equals 는 strip 대상이 아니라 lowering 대상.
     has_ts_import_equals: bool = false,
 
+    /// `export = expr;` (TS CJS interop) 가 있는가. graph pre-pass 게이트용 —
+    /// transformer 가 `module.exports = expr;` 로 lowering 한다 (rolldown/oxc 패턴).
+    has_ts_export_equals: bool = false,
+
     /// D1 (RFC #1672) 디버그 인프라. Transformer.init 시점의 `nodes.items.len` snapshot.
     /// null = 미변환. boundary 이상의 노드는 transformer 가 append 한 것.
     /// D1a 부터 clone 경로 (Transformer.init → cloneForTransformer) 에서 활성.
@@ -933,6 +948,7 @@ pub const Ast = struct {
             .has_decorator = source_ast.has_decorator,
             .has_ts_namespace_or_enum = source_ast.has_ts_namespace_or_enum,
             .has_ts_import_equals = source_ast.has_ts_import_equals,
+            .has_ts_export_equals = source_ast.has_ts_export_equals,
             .allocator = allocator,
             // #1961: source_ast 가 이미 transform 된 상태면 transformed_root + boundary 도
             // 복사. 그렇지 않으면 emit 단계 transformer 가 graph pre-pass 결과를 무시하고

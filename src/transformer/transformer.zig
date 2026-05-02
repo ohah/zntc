@@ -1705,6 +1705,9 @@ pub const Transformer = struct {
             // import x = require('y') → const x = require('y')
             .ts_import_equals_declaration => self.visitImportEqualsDeclaration(node),
 
+            // export = expr → module.exports = expr;
+            .ts_export_assignment => self.visitExportAssignment(node),
+
             // === 나머지: invalid + TS 타입 전용 노드 ===
             // TS 타입 노드는 isTypeOnlyNode 검사(위)에서 이미 .none으로 반환됨.
             // 여기 도달하면 strip_types=false인 경우 → 그대로 복사.
@@ -2970,6 +2973,20 @@ pub const Transformer = struct {
             .span = node.span,
             .data = .{ .extra = var_extra },
         });
+    }
+
+    /// `export = expr;` → `module.exports = expr;` ExpressionStatement.
+    /// ESM output context 에서는 런타임에서 `module is not defined` 으로 실패하지만
+    /// (tsc TS1203 동등), rewrite 는 무조건 — #1961 의 helper-import 패턴과 동일하게
+    /// 정책 (warn/strip/error) 은 호출자/codegen 이 결정.
+    fn visitExportAssignment(self: *Transformer, node: Node) Error!NodeIndex {
+        const new_expr = try self.visitNode(node.data.unary.operand);
+        if (new_expr.isNone()) return .none;
+
+        const module_id = try es_helpers.makeIdentifierRef(self, "module");
+        const exports_id = try es_helpers.makeIdentifierRef(self, "exports");
+        const member = try es_helpers.makeStaticMember(self, module_id, exports_id, node.span);
+        return es_helpers.makeAssignStmt(self, member, new_expr, node.span, 0);
     }
 
     fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
@@ -5027,9 +5044,9 @@ pub const Transformer = struct {
             // ts_namespace_export_declaration은 타입 전용 (export as namespace X)
             .ts_namespace_export_declaration,
             // TS import/export 특수 형태
-            // ts_import_equals_declaration은 런타임 코드 생성 — visitNode에서 별도 처리
+            // ts_import_equals_declaration / ts_export_assignment 는 런타임 코드 생성
+            // — visitNode 에서 별도 처리.
             .ts_external_module_reference,
-            .ts_export_assignment,
             // enum은 타입 전용이 아님 — 런타임 코드 생성이 필요
             // visitNode의 switch에서 별도 처리
             // Flow 타입 (flow.zig에서 생성)
