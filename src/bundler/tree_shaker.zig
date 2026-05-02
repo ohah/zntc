@@ -208,7 +208,7 @@ pub const TreeShaker = struct {
                 // parse_arena 는 parse 단계에서 모든 모듈에 부착된다 (#1323). null 이면
                 // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
                 std.debug.assert(m.parse_arena != null);
-                self.graph.refreshAnalysisAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
+                self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
                     m.prebuilt_stmt_info = null;
                 };
             }
@@ -1611,7 +1611,7 @@ pub const TreeShaker = struct {
             if (!foldNodeBufferCapabilityIfs(self.allocator, ast)) continue;
 
             std.debug.assert(m.parse_arena != null);
-            self.graph.refreshAnalysisAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
+            self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
                 m.prebuilt_stmt_info = null;
             };
         }
