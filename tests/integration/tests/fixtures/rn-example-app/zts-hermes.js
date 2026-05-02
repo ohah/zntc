@@ -10598,7 +10598,7 @@ var init_react_native_src_private_webapis_structuredClone_structuredClone = __es
 				;
 				try {
 					for (var _v = value[Symbol.iterator](),_w; !(_s = (_w = _v.next()).done); _s = true) {
-						var _y = __read(_w.value, 2),innerKey = _y[0],innerValue = _y[1];
+						var _y = ªªªªªª(_w.value, 2),innerKey = _y[0],innerValue = _y[1];
 						result$4.set(structuredCloneInternal(innerKey), structuredCloneInternal(innerValue));
 					}
 				} catch (_x) {

@@ -23827,10 +23827,10 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTransform = __esm({
 			ªªªªªªªªªªªªªªªª(this, AnimatedTransform);
 			var _newTarget = this.constructor,_this;
 			;
-			ªªªªªªªªªªªªªªªªªªªªªªªªª(_this),_this = __callSuper(_super, [config], _newTarget);
-			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._nodes = nodes;
-			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._transforms = transforms;
-			return ªªªªªªªªªªªªªªªªªªªªªªª(_this);
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized(_this)._nodes = nodes;
+			__assertThisInitialized(_this)._transforms = transforms;
+			return __assertThisInitialized(_this);
 		}
 		__extends(AnimatedTransform, _super);
 		Object.defineProperty(AnimatedTransform, "from", { configurable: true, writable: true, value: function(transforms) {
@@ -24177,17 +24177,17 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			{
-				__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
+				ªªªªªªªªªªªªªªªªªªªªªªªªª(_this),_this = __callSuper(_super, [config], _newTarget);
 				_this._target = null;
 				__classPrivateMethodInit(_this, _connectAnimatedView);
 				__classPrivateMethodInit(_this, _disconnectAnimatedView);
 			}
-			var _a = __read(createAnimatedProps(inputProps, allowlist), 3),nodeKeys = _a[0],nodes = _a[1],props = _a[2];
-			__assertThisInitialized(_this)._nodeKeys = nodeKeys;
-			__assertThisInitialized(_this)._nodes = nodes;
-			__assertThisInitialized(_this)._props = props;
-			__assertThisInitialized(_this)._callback = callback;
-			return __assertThisInitialized(_this);
+			var _a = ªªªªªª(createAnimatedProps(inputProps, allowlist), 3),nodeKeys = _a[0],nodes = _a[1],props = _a[2];
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._nodeKeys = nodeKeys;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._nodes = nodes;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._props = props;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._callback = callback;
+			return ªªªªªªªªªªªªªªªªªªªªªªª(_this);
 		}
 		__extends(AnimatedProps, _super);
 		Object.defineProperty(AnimatedProps.prototype, "__getValue", { configurable: true, writable: true, value: function() {
@@ -27648,11 +27648,11 @@ var init__react_native_virtualized_lists_Lists_StateSafePureComponent = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			{
-				__assertThisUninitialized(_this),_this = __callSuper(_super, [props], _newTarget);
+				ªªªªªªªªªªªªªªªªªªªªªªªªª(_this),_this = __callSuper(_super, [props], _newTarget);
 				_this._inAsyncStateUpdate = false;
 			}
-			__assertThisInitialized(_this)._installSetStateHooks();
-			return __assertThisInitialized(_this);
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._installSetStateHooks();
+			return ªªªªªªªªªªªªªªªªªªªªªªª(_this);
 		}
 		__extends(StateSafePureComponent, _super);
 		Object.defineProperty(StateSafePureComponent.prototype, "setState", { configurable: true, writable: true, value: function(partialState,callback) {
@@ -27821,7 +27821,7 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 				;
 				try {
 					for (var _f = nextItems[Symbol.iterator](),_g; !(_c = (_g = _f.next()).done); _c = true) {
-						var _i = __read(_g.value, 2),key = _i[0],viewable = _i[1];
+						var _i = ªªªªªª(_g.value, 2),key = _i[0],viewable = _i[1];
 						if (!prevItems.has(key)) {
 							changed.push(viewable);
 						}
@@ -27847,7 +27847,7 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 				;
 				try {
 					for (var _m = prevItems[Symbol.iterator](),_n; !(_j = (_n = _m.next()).done); _j = true) {
-						var _p = __read(_n.value, 2),key = _p[0],viewable = _p[1];
+						var _p = ªªªªªª(_n.value, 2),key = _p[0],viewable = _p[1];
 						if (!nextItems.has(key)) {
 							changed.push(Object.assign({}, viewable, { isViewable: false }));
 						}
@@ -27904,7 +27904,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer = __e
 			ªªªªªªªªªªªªªªªª(this, CellRenderer);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
-			_this.state = { separatorProps: { highlighted: false, leadingItem: __assertThisInitialized(_this).props.item } };
+			_this.state = { separatorProps: { highlighted: false, leadingItem: ªªªªªªªªªªªªªªªªªªªªªªª(_this).props.item } };
 			_this._separators = { highlight: function() {
 				var _a = _this.props,cellKey = _a.cellKey,prevCellKey = _a.prevCellKey;
 				_this.props.onUpdateSeparators([cellKey, prevCellKey], { highlighted: true });
@@ -58555,7 +58555,7 @@ __export(exports_react_native_Libraries_Components_TextInput_TextInput, {
 var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
 	"TextInput.js"() {
 	useTextInputStateSynchronization = function(_c) {
-		var props = _c.props,mostRecentEventCount = _c.mostRecentEventCount,selection = _c.selection,inputRef = _c.inputRef,text = _c.text,viewCommands = _c.viewCommands,_c,_d,_a = ªªªªªª(require_react_index().useState(props.value), 2),lastNativeText = _a[0],setLastNativeText = _a[1],_b = ªªªªªª(require_react_index().useState({ selection: { start: -1, end: -1 }, mostRecentEventCount: mostRecentEventCount }), 2),lastNativeSelectionState = _b[0],setLastNativeSelection = _b[1],lastNativeSelection = lastNativeSelectionState.selection;
+		var props = _c.props,mostRecentEventCount = _c.mostRecentEventCount,selection = _c.selection,inputRef = _c.inputRef,text = _c.text,viewCommands = _c.viewCommands,_c,_d,_a = __read(require_react_index().useState(props.value), 2),lastNativeText = _a[0],setLastNativeText = _a[1],_b = __read(require_react_index().useState({ selection: { start: -1, end: -1 }, mostRecentEventCount: mostRecentEventCount }), 2),lastNativeSelectionState = _b[0],setLastNativeSelection = _b[1],lastNativeSelection = lastNativeSelectionState.selection;
 		;
 		;
 		;
@@ -58579,7 +58579,7 @@ var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
 		return { setLastNativeText: setLastNativeText, setLastNativeSelection: setLastNativeSelection };
 	};
 	InternalTextInput = function(props) {
-		var _b,_e,_h,_i,_j,_k,_l,_m,_a = props,ariaBusy = _a['aria-busy'],ariaChecked = _a['aria-checked'],ariaDisabled = _a['aria-disabled'],ariaExpanded = _a['aria-expanded'],ariaSelected = _a['aria-selected'],accessibilityState = _a.accessibilityState,id = _a.id,tabIndex = _a.tabIndex,propsSelection = _a.selection,selectionColor = _a.selectionColor,selectionHandleColor = _a.selectionHandleColor,cursorColor = _a.cursorColor,otherProps = __rest(_a, ["aria-busy", "aria-checked", "aria-disabled", "aria-expanded", "aria-selected", "accessibilityState", "id", "tabIndex", "selection", "selectionColor", "selectionHandleColor", "cursorColor"]),inputRef = require_react_index().useRef(null),selection = propsSelection == null ? null : { start: propsSelection.start, end: (_b = propsSelection.end) != null ? _b : propsSelection.start },text = typeof props.value === "string" ? props.value : typeof props.defaultValue === "string" ? props.defaultValue : undefined,viewCommands = AndroidTextInputCommands$1 || (props.multiline === true ? RCTMultilineTextInputNativeCommands : RCTSinglelineTextInputNativeCommands),_c = ªªªªªª(require_react_index().useState(0), 2),mostRecentEventCount = _c[0],setMostRecentEventCount = _c[1],_d = useTextInputStateSynchronization({ props: props, inputRef: inputRef, mostRecentEventCount: mostRecentEventCount, selection: selection, text: text, viewCommands: viewCommands }),setLastNativeText = _d.setLastNativeText,setLastNativeSelection = _d.setLastNativeSelection;
+		var _b,_e,_h,_i,_j,_k,_l,_m,_a = props,ariaBusy = _a['aria-busy'],ariaChecked = _a['aria-checked'],ariaDisabled = _a['aria-disabled'],ariaExpanded = _a['aria-expanded'],ariaSelected = _a['aria-selected'],accessibilityState = _a.accessibilityState,id = _a.id,tabIndex = _a.tabIndex,propsSelection = _a.selection,selectionColor = _a.selectionColor,selectionHandleColor = _a.selectionHandleColor,cursorColor = _a.cursorColor,otherProps = __rest(_a, ["aria-busy", "aria-checked", "aria-disabled", "aria-expanded", "aria-selected", "accessibilityState", "id", "tabIndex", "selection", "selectionColor", "selectionHandleColor", "cursorColor"]),inputRef = require_react_index().useRef(null),selection = propsSelection == null ? null : { start: propsSelection.start, end: (_b = propsSelection.end) != null ? _b : propsSelection.start },text = typeof props.value === "string" ? props.value : typeof props.defaultValue === "string" ? props.defaultValue : undefined,viewCommands = AndroidTextInputCommands$1 || (props.multiline === true ? RCTMultilineTextInputNativeCommands : RCTSinglelineTextInputNativeCommands),_c = __read(require_react_index().useState(0), 2),mostRecentEventCount = _c[0],setMostRecentEventCount = _c[1],_d = useTextInputStateSynchronization({ props: props, inputRef: inputRef, mostRecentEventCount: mostRecentEventCount, selection: selection, text: text, viewCommands: viewCommands }),setLastNativeText = _d.setLastNativeText,setLastNativeSelection = _d.setLastNativeSelection;
 		;
 		;
 		;
