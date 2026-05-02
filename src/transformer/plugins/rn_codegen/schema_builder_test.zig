@@ -1266,3 +1266,94 @@ test "schema_builder: Flow nested exact objects → mixed (#2447)" {
     try std.testing.expectEqual(@as(usize, 1), shape.props.len);
     try std.testing.expect(shape.props[0].type_annotation == .mixed);
 }
+
+// 아래 케이스들은 #2447 fix (`pipeIsExactClose` lookahead) 의 정합성을 다양한 union/
+// intersection / leading-pipe / variance / multi-exact 경로에서 검증. 각 케이스가
+// `parseUnionType` 의 서로 다른 entry point (leading-pipe / post-first / in-loop) 를
+// exercise.
+
+test "schema_builder: Flow exact body 안의 inner union → close 직전 종료 (#2447)" {
+    // inner `count: number | string` union 이 outer exact close `|}` 직전에 멈춰야.
+    // pipeIsExactClose 의 in-loop guard 가 제대로 동작하는지 검증.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| count: number | string |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow union of two exact objects → mixed (#2447)" {
+    // 두 exact object 사이 `|` 는 정상 union operator (peek != `}`).
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| a: number |} | {| b: string |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object as first union member → mixed (#2447)" {
+    // post-first-item return guard — exact close 직후 다른 union 멤버 흡수 안 함.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| count: number |} | string };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow leading pipe + exact object → mixed (#2447)" {
+    // Flow 의 valid leading-pipe 형태 (`type X = | A | B`) 가 exact object 와 결합.
+    // leading-pipe guard 가 valid 케이스를 깨뜨리지 않는지 검증.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: | {| count: number |} | string };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object with variance markers → mixed (#2447)" {
+    // `+key` covariant — Flow object 의 variance marker 가 exact body 안에서도 동작.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| +readOnly: number, name: string |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object with string-literal key → mixed (#2447)" {
+    // string literal key (`'aria-label'`) — exact body 안에서 ident 외 key 도 정상.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| 'aria-label': string, count: number |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
