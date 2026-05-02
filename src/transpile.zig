@@ -48,6 +48,7 @@ const SemanticPlanReason = enum {
     module_format_requires_semantic,
     ast_requires_runtime_transform,
     import_shape_requires_full_semantic,
+    binding_shadow_requires_full_semantic,
     named_import_binding_elision,
 };
 
@@ -485,6 +486,33 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
     return facts;
 }
 
+fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
+    for (ast.nodes.items) |import_node| {
+        if (import_node.tag != .import_declaration) continue;
+        const import_decl = module_parser.readImportDeclExtras(ast, import_node.data.extra);
+        var i: u32 = 0;
+        while (i < import_decl.specs_len) : (i += 1) {
+            const spec_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[import_decl.specs_start + i]);
+            if (spec_idx.isNone()) continue;
+            const spec = ast.getNode(spec_idx);
+            if (spec.tag != .import_specifier) continue;
+            if (spec.data.binary.flags & 1 != 0) continue;
+
+            const local_idx = spec.data.binary.right;
+            if (local_idx.isNone()) continue;
+            const local = ast.getNode(local_idx);
+            const local_name = ast.getText(local.span);
+
+            for (ast.nodes.items, 0..) |node, raw_idx| {
+                if (@as(u32, @intCast(raw_idx)) == @intFromEnum(local_idx)) continue;
+                if (node.tag != .binding_identifier) continue;
+                if (std.mem.eql(u8, local_name, ast.getText(node.span))) return true;
+            }
+        }
+    }
+    return false;
+}
+
 fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
     return options.minify_identifiers or
         options.minify_syntax or
@@ -537,6 +565,9 @@ fn buildTransformPlan(
         return .{ .semantic = .full, .reason = .ast_requires_runtime_transform };
     }
     if (facts.has_import_declaration) {
+        if (hasNamedImportLocalBindingShadow(ast)) {
+            return .{ .semantic = .full, .reason = .binding_shadow_requires_full_semantic };
+        }
         return .{
             .semantic = .bindings,
             .reason = .named_import_binding_elision,
@@ -681,6 +712,13 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         },
         .formal_parameters => {
             markBindingLiteListValueUses(ast, node.data.list, lite, false);
+            return;
+        },
+        .assignment_pattern,
+        .assignment_target_with_default,
+        => {
+            markBindingLiteValueUses(ast, node.data.binary.left, lite, false);
+            markBindingLiteValueUses(ast, node.data.binary.right, lite, true);
             return;
         },
         .formal_parameter => {
@@ -1326,6 +1364,40 @@ test "TransformPlan parity: binding-lite named import elision matches full seman
             ,
         },
         .{
+            .name = "computed property key is value use",
+            .source =
+            \\import { A } from "./lib";
+            \\export const value = { [A]: 1 };
+            ,
+        },
+        .{
+            .name = "shorthand property is value use",
+            .source =
+            \\import { A } from "./lib";
+            \\export const value = { A };
+            ,
+        },
+        .{
+            .name = "default parameter initializer is value use",
+            .source =
+            \\import { A } from "./lib";
+            \\export function f(value = A()) {
+            \\  return value;
+            \\}
+            ,
+        },
+        .{
+            .name = "nested function body reference is value use",
+            .source =
+            \\import { A } from "./lib";
+            \\export function outer() {
+            \\  return function inner() {
+            \\    return A();
+            \\  };
+            \\}
+            ,
+        },
+        .{
             .name = "verbatim keeps value import but removes inline type specifier",
             .source =
             \\import { type A, B } from "./lib";
@@ -1368,6 +1440,8 @@ test "TransformPlan: full-route guards for binding-lite follow-up" {
         .{ .name = "cjs", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .module_format = .cjs } },
         .{ .name = "downlevel", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .unsupported = compat.fromESTarget(.es5), .es_target = .es5 } },
         .{ .name = "flow", .source = "import { Foo } from './x';\nexport const x: Foo = 1;\n", .path = "input.js", .options = .{ .flow = true } },
+        .{ .name = "import local shadowed by parameter", .source = "import { Foo } from './x';\nexport function f(Foo = Foo) { return Foo; }\n" },
+        .{ .name = "import local shadowed by local declaration", .source = "import { Foo } from './x';\nconst Foo = 1;\nexport { Foo };\n" },
     };
 
     for (cases) |case| {
