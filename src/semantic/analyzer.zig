@@ -639,6 +639,10 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
+    fn declareFunctionExprInnerName(self: *SemanticAnalyzer, name_span: Span, flags: u32, node_idx: u32) AllocError!void {
+        try self.declareSymbolWithNode(name_span, functionSymbolKind(flags), name_span, node_idx);
+    }
+
     /// 선언을 `references` 배열에 `flags.declare` 로 기록. #1669.
     /// 현재 `enable_stmt_info` + 유효 stmt_idx 가 있을 때만 기록.
     /// `scope_id` 는 선언 대상 scope — top-level 판별은 buildFromSemantic 에서 수행.
@@ -2259,22 +2263,29 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 3 >= extras.len) return;
+        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
         const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
+        const fn_flags = extras[extra_start + 3];
+
+        const name_saved = if (!name_idx.isNone()) blk: {
+            const saved = try self.enterScope(.block, self.is_strict_mode);
+            const name_node = self.ast.getNode(name_idx);
+            try self.declareFunctionExprInnerName(name_node.span, fn_flags, @intFromEnum(name_idx));
+            break :blk saved;
+        } else ScopeId.none;
+        defer if (!name_saved.isNone()) self.exitScope(name_saved);
 
         const saved = try self.enterScope(.function, self.is_strict_mode);
         const saved_labels = self.saveLabelLen();
 
-        // 함수 표현식의 이름은 자체 스코프에만 등록 (외부에서 접근 불가).
-        // ECMAScript: 함수 표현식 이름은 implicit binding으로, body의 let/const/var로 섀도잉 가능.
-        // 재선언 충돌을 일으키지 않도록 symbol 등록을 생략한다.
-        // (이름의 read-only 접근은 런타임에서 처리)
-        _ = @as(NodeIndex, @enumFromInt(extras[extra_start])); // name_idx (사용하지 않음)
+        // 함수 표현식 이름은 외부 scope 에는 노출되지 않지만 parameter initializer 와
+        // body 안에서는 보이는 별도 inner binding 이다. 한 겹 바깥 block scope 에 둬야
+        // 같은 이름의 parameter / var / let 이 일반 lookup 으로 shadow 할 수 있다.
 
         const params_list = self.ast.functionParamsList(node);
         try self.registerParams(params_list);
 
         // 중복 파라미터 검증: flags에서 async/generator 판별
-        const fn_flags = extras[extra_start + 3];
         const FnFlags = ast_mod.FunctionFlags;
         const fn_is_async = (fn_flags & FnFlags.is_async) != 0;
         const fn_is_generator = (fn_flags & FnFlags.is_generator) != 0;

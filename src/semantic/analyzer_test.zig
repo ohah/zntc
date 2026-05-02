@@ -1268,6 +1268,70 @@ test "ClassExpression: name scoped to class body — not visible outside (#1592)
 }
 
 // ============================================================
+// FunctionExpression name binding
+// ============================================================
+
+test "FunctionExpression: self-reference resolves to inner function name" {
+    var scanner = try Scanner.init(std.testing.allocator,
+        \\const fn = function Foo(value = Foo) {
+        \\  return Foo;
+        \\};
+        \\const outer = Foo;
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+    var function_name_refs: u32 = 0;
+    var found = false;
+    for (ana.symbols.items) |sym| {
+        if (sym.kind.isFunctionLike() and std.mem.eql(u8, sym.nameText(parser.ast.source), "Foo")) {
+            found = true;
+            function_name_refs = sym.reference_count;
+        }
+    }
+    try std.testing.expect(found);
+    try std.testing.expectEqual(@as(u32, 2), function_name_refs);
+}
+
+test "FunctionExpression: parameter shadows inner function name" {
+    var scanner = try Scanner.init(std.testing.allocator,
+        \\const fn = function Foo(Foo = Foo) {
+        \\  return Foo;
+        \\};
+    );
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+    var function_name_refs: u32 = 0;
+    var parameter_refs: u32 = 0;
+    for (ana.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.nameText(parser.ast.source), "Foo")) {
+            if (sym.kind.isFunctionLike()) {
+                function_name_refs = sym.reference_count;
+            } else if (sym.kind == .parameter) {
+                parameter_refs = sym.reference_count;
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 0), function_name_refs);
+    try std.testing.expectEqual(@as(u32, 2), parameter_refs);
+}
+
+// ============================================================
 // per-reference 배열 (references) 테스트
 // ============================================================
 
