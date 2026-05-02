@@ -1742,6 +1742,7 @@ pub const ModuleGraph = struct {
             self.runTransformerPrePass(module, arena_alloc);
         } else {
             module.transform_cache = null;
+            suppressRuntimeHelperInternalUnresolved(module);
         }
 
         module.state = .parsed;
@@ -1773,7 +1774,7 @@ pub const ModuleGraph = struct {
             return true;
         }
 
-        return self.transform_options_base.requiresGraphPrePass();
+        return self.transform_options_base.requiresGraphPrePass(ast);
     }
 
     /// transformer pre-pass — graph 단계에서 1회 실행.
@@ -3702,10 +3703,12 @@ test "graph pre-pass predicate: simple ESM and TS strip modules can skip" {
     try expectPrePassDecision(false, "interface Shape { x: number }\ntype Id<T> = T;\nexport const value: Id<number> = 1;", "types.ts", .{});
     try expectPrePassDecision(false, "import type { User } from './types'; import { value } from './dep'; export type { User }; export { value };", "mixed.ts", .{});
     try expectPrePassDecision(false, "export { value } from './dep'; export * from './other';", "barrel.ts", .{});
+    try expectPrePassDecision(false, "export const value: number = 1;", "target-es5-simple.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
 }
 
 test "graph pre-pass predicate: synthetic no-op graphs skip every eligible module" {
     try expectAllBuiltModulesSkipPrePass(50);
+    try expectAllBuiltModulesSkipPrePass(200);
 }
 
 test "graph pre-pass predicate: syntax and options that mutate graph-visible surface keep pre-pass" {
@@ -3715,6 +3718,11 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
     try expectPrePassDecision(true, "namespace N { export const x = 1 } export const y = N.x;", "namespace.ts", .{});
     try expectPrePassDecision(true, "import Foo = require('foo'); export = Foo;", "import-equals.ts", .{});
     try expectPrePassDecision(true, "export const run = async () => await value;", "downlevel.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "export async function* g() { yield 1; await Promise.resolve(); }", "async-generator.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "export function* ids() { yield 1; }", "generator.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "export const xs = [...items];", "spread.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "for (const item of items) console.log(item);", "for-of.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "export class Child extends Parent {}", "class.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
     try expectPrePassDecision(true, "class Foo { #x = 1; field = this.#x; }", "private.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2021) } });
     try expectPrePassDecision(true, "console.log(__DEV__); debugger;", "minify-define-drop.ts", .{ .transform_options = .{ .minify_syntax = true } });
     try expectPrePassDecision(true, "console.log(__DEV__);", "define.ts", .{ .transform_options = .{ .define = &.{.{ .key = "__DEV__", .value = "false" }} } });
