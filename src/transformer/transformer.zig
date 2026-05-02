@@ -305,6 +305,22 @@ pub const TransformOptions = struct {
     emit_runtime_helper_imports: bool = false,
 
     pub const compat = @import("compat.zig");
+
+    /// graph 단계 transformer pre-pass 가 옵션-side 사유로 필요한지.
+    /// graph-level 플래그 (react_refresh / styled_components / emotion / worklet_transform /
+    /// minify_identifiers) 는 ModuleGraph 가 별도로 결합한다.
+    /// 새 transformer-driven 옵션을 추가하면 여기에도 반영해야 graph 의 게이트가
+    /// silent 하게 fall-through 하지 않는다.
+    pub fn requiresGraphPrePass(self: *const TransformOptions) bool {
+        if (self.unsupported.hasAny()) return true;
+        if (self.drop_console or self.drop_debugger or self.drop_labels.len > 0) return true;
+        if (self.define.len > 0) return true;
+        if (self.module_specifier_map.len > 0) return true;
+        if (self.minify_syntax or self.minify_whitespace) return true;
+        if (!self.use_define_for_class_fields) return true;
+        if (self.experimental_decorators or self.emit_decorator_metadata) return true;
+        return false;
+    }
 };
 
 /// 런타임 헬퍼 사용 추적 비트맵.

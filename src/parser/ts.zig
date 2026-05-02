@@ -128,6 +128,7 @@ pub fn parseTsEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
 /// enum 파싱. flags: 0=일반 enum, 1=const enum.
 /// extra = [name, members_start, members_len, flags]
 fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIndex {
+    self.ast.has_ts_namespace_or_enum = true;
     const start = self.currentSpan().start;
     try self.advance(); // skip 'enum'
 
@@ -191,6 +192,7 @@ fn parseTsEnumMember(self: *Parser) ParseError2!NodeIndex {
 
 /// namespace Foo { ... } / module "name" { ... }
 pub fn parseTsModuleDeclaration(self: *Parser) ParseError2!NodeIndex {
+    self.ast.has_ts_namespace_or_enum = true;
     const start = self.currentSpan().start;
     try self.advance(); // skip 'namespace' or 'module'
     return parseTsModuleBody(self, start);
@@ -342,6 +344,7 @@ pub fn parseDecoratedStatement(self: *Parser) ParseError2!NodeIndex {
 
 /// @expr — 단일 데코레이터 파싱
 pub fn parseDecorator(self: *Parser) ParseError2!NodeIndex {
+    self.ast.has_decorator = true;
     const start = self.currentSpan().start;
     try self.advance(); // skip @
     // decorator expression에서 computed member access ([) 금지

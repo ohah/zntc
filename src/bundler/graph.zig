@@ -1760,22 +1760,18 @@ pub const ModuleGraph = struct {
         if (!module.module_type.isJavaScriptLike()) return false;
         if (plugin_transform_applied) return true;
 
-        const opts = self.transform_options_base;
-        if (opts.unsupported.hasAny()) return true;
-        if (opts.drop_console or opts.drop_debugger or opts.drop_labels.len > 0) return true;
-        if (opts.define.len > 0) return true;
-        if (opts.module_specifier_map.len > 0) return true;
-        if (opts.minify_syntax or opts.minify_whitespace or self.minify_identifiers) return true;
-        if (!opts.use_define_for_class_fields) return true;
-        if (opts.experimental_decorators or opts.emit_decorator_metadata) return true;
-
+        // 싸구려 bool 검사 먼저 (단일 byte load) → 비교적 비싼 옵션 predicate 마지막.
+        if (self.minify_identifiers) return true;
         if (self.react_refresh or self.styled_components or self.emotion or self.worklet_transform) {
             return true;
         }
 
         const ast = &module.ast.?;
-        if (ast.has_jsx) return true;
-        return astNeedsTransformerPrePass(ast);
+        if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or ast.has_ts_import_equals) {
+            return true;
+        }
+
+        return self.transform_options_base.requiresGraphPrePass();
     }
 
     /// transformer pre-pass — graph 단계에서 1회 실행.
@@ -2121,25 +2117,6 @@ pub const ModuleGraph = struct {
                 std.mem.eql(u8, binding.imported_name, needle.imported_name))
             {
                 return true;
-            }
-        }
-        return false;
-    }
-
-    /// 호출 전에 `ast.has_jsx` 가 이미 short-circuit 처리되므로 JSX 태그는 제외.
-    fn astNeedsTransformerPrePass(ast: *const Ast) bool {
-        for (ast.nodes.items) |node| {
-            switch (node.tag) {
-                .decorator,
-                .ts_enum_declaration,
-                .ts_module_declaration,
-                .ts_module_block,
-                .ts_import_equals_declaration,
-                .ts_external_module_reference,
-                .ts_export_assignment,
-                .ts_namespace_export_declaration,
-                => return true,
-                else => {},
             }
         }
         return false;

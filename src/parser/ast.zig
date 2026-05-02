@@ -869,6 +869,19 @@ pub const Ast = struct {
     /// 주입 여부를 이 플래그로 결정.
     has_jsx_key_after_spread: bool = false,
 
+    /// `@decorator` 가 있는가. graph pre-pass 게이트가 O(1) 체크로 사용 — 레거시
+    /// decorator 변환은 graph 단계에서 transformer 결과를 link 단계 helper import
+    /// 등록에 반영해야 한다.
+    has_decorator: bool = false,
+
+    /// TS `enum` 또는 `namespace`/`module` 선언이 있는가. graph pre-pass 게이트용.
+    /// 두 구문 모두 IIFE 로 lowering 되어 graph-visible 변환을 유발한다.
+    has_ts_namespace_or_enum: bool = false,
+
+    /// `import X = require(...)` (또는 `import X = ns.Y`) 가 있는가. graph pre-pass
+    /// 게이트용 — value-bearing import-equals 는 strip 대상이 아니라 lowering 대상.
+    has_ts_import_equals: bool = false,
+
     /// D1 (RFC #1672) 디버그 인프라. Transformer.init 시점의 `nodes.items.len` snapshot.
     /// null = 미변환. boundary 이상의 노드는 transformer 가 append 한 것.
     /// D1a 부터 clone 경로 (Transformer.init → cloneForTransformer) 에서 활성.
@@ -917,6 +930,9 @@ pub const Ast = struct {
             .source = source_ast.source,
             .has_jsx = source_ast.has_jsx,
             .has_jsx_key_after_spread = source_ast.has_jsx_key_after_spread,
+            .has_decorator = source_ast.has_decorator,
+            .has_ts_namespace_or_enum = source_ast.has_ts_namespace_or_enum,
+            .has_ts_import_equals = source_ast.has_ts_import_equals,
             .allocator = allocator,
             // #1961: source_ast 가 이미 transform 된 상태면 transformed_root + boundary 도
             // 복사. 그렇지 않으면 emit 단계 transformer 가 graph pre-pass 결과를 무시하고
