@@ -1410,6 +1410,7 @@ pub const ModuleGraph = struct {
         // Plugin: transform 훅 — 소스 읽기 후, 파싱 전에 호출 (Rolldown 호환).
         // 플러그인이 코드를 변환하면 변환된 소스로 파싱한다.
         // Babel 플러그인(예: react-native-reanimated/plugin)이 유저 코드를 변환할 수 있다.
+        var plugin_transform_applied = false;
         if (plugin_runner) |runner| {
             const transform_result = runner.runTransform(module.source, module.path, arena_alloc) catch |err| switch (err) {
                 error.PluginFailed => null,
@@ -1420,6 +1421,7 @@ pub const ModuleGraph = struct {
             };
             if (transform_result) |result| {
                 module.source = result;
+                plugin_transform_applied = true;
             }
         }
 
@@ -1736,9 +1738,44 @@ pub const ModuleGraph = struct {
         // transformer 를 여기서 1회 실행해 final AST 를 module.ast 에 저장하고, 그 AST
         // 기준으로 semantic/import/export/StmtInfo 를 다시 만든다. emitter 는
         // module.transform_cache hit 시 transform skip.
-        self.runTransformerPrePass(module, arena_alloc);
+        if (self.shouldRunTransformerPrePass(module, &(module.ast.?), plugin_transform_applied)) {
+            self.runTransformerPrePass(module, arena_alloc);
+        } else {
+            module.transform_cache = null;
+        }
 
         module.state = .parsed;
+    }
+
+    /// 보수적 graph pre-pass 게이트.
+    ///
+    /// graph 단계 pre-pass 는 helper/runtime import 를 link 전에 발견해야 하는 모듈에만
+    /// 필요하다. 단순 ESM/TS-strip 모듈은 parser scan + semantic 결과를 그대로 쓰고,
+    /// emit 단계의 legacy transformer/codegen 경로가 최종 출력 변환을 수행한다.
+    fn shouldRunTransformerPrePass(
+        self: *const ModuleGraph,
+        module: *const Module,
+        ast: *const Ast,
+        plugin_transform_applied: bool,
+    ) bool {
+        if (!module.module_type.isJavaScriptLike()) return false;
+        if (plugin_transform_applied) return true;
+
+        const opts = self.transform_options_base;
+        if (opts.unsupported.hasAny()) return true;
+        if (opts.drop_console or opts.drop_debugger or opts.drop_labels.len > 0) return true;
+        if (opts.define.len > 0) return true;
+        if (opts.module_specifier_map.len > 0) return true;
+        if (opts.minify_syntax or opts.minify_whitespace or self.minify_identifiers) return true;
+        if (!opts.use_define_for_class_fields) return true;
+        if (opts.experimental_decorators or opts.emit_decorator_metadata) return true;
+
+        if (self.react_refresh or self.styled_components or self.emotion or self.worklet_transform) {
+            return true;
+        }
+
+        if (ast.has_jsx) return true;
+        return astNeedsTransformerPrePass(ast);
     }
 
     /// transformer pre-pass — graph 단계에서 1회 실행.
@@ -2084,6 +2121,39 @@ pub const ModuleGraph = struct {
                 std.mem.eql(u8, binding.imported_name, needle.imported_name))
             {
                 return true;
+            }
+        }
+        return false;
+    }
+
+    fn astNeedsTransformerPrePass(ast: *const Ast) bool {
+        for (ast.nodes.items) |node| {
+            switch (node.tag) {
+                .decorator,
+                .jsx_element,
+                .jsx_opening_element,
+                .jsx_closing_element,
+                .jsx_fragment,
+                .jsx_opening_fragment,
+                .jsx_closing_fragment,
+                .jsx_attribute,
+                .jsx_spread_attribute,
+                .jsx_expression_container,
+                .jsx_empty_expression,
+                .jsx_text,
+                .jsx_namespaced_name,
+                .jsx_member_expression,
+                .jsx_identifier,
+                .jsx_spread_child,
+                .ts_enum_declaration,
+                .ts_module_declaration,
+                .ts_module_block,
+                .ts_import_equals_declaration,
+                .ts_external_module_reference,
+                .ts_export_assignment,
+                .ts_namespace_export_declaration,
+                => return true,
+                else => {},
             }
         }
         return false;
@@ -3571,6 +3641,126 @@ fn joinContextPath(alloc: std.mem.Allocator, dir: []const u8, match: []const u8)
 const test_helpers = @import("test_helpers.zig");
 const writeFile = test_helpers.writeFile;
 const absPath = test_helpers.absPath;
+
+const PrePassPredicateTestOptions = struct {
+    transform_options: TransformOptions = .{},
+    plugin_transform_applied: bool = false,
+    react_refresh: bool = false,
+    styled_components: bool = false,
+    emotion: bool = false,
+    worklet_transform: bool = false,
+    minify_identifiers: bool = false,
+};
+
+fn shouldRunPrePassForTest(
+    source: []const u8,
+    path: []const u8,
+    opts: PrePassPredicateTestOptions,
+) !bool {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const source_copy = try arena_alloc.dupe(u8, source);
+    var scanner = try Scanner.init(arena_alloc, source_copy);
+    var parser = Parser.init(arena_alloc, &scanner);
+    var module = Module.init(@enumFromInt(0), path);
+    module.module_type = ModuleType.fromExtension(std.fs.path.extension(path));
+    module.loader = .javascript;
+    module.source = source_copy;
+    ModuleGraph.configureParserForModule(&parser, &module, std.fs.path.extension(path));
+    parser.is_module = true;
+    scanner.is_module = true;
+    parser.enable_scan = true;
+    _ = try parser.parse();
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base = opts.transform_options;
+    graph.react_refresh = opts.react_refresh;
+    graph.styled_components = opts.styled_components;
+    graph.emotion = opts.emotion;
+    graph.worklet_transform = opts.worklet_transform;
+    graph.minify_identifiers = opts.minify_identifiers;
+
+    module.ast = parser.ast;
+    return graph.shouldRunTransformerPrePass(&module, &parser.ast, opts.plugin_transform_applied);
+}
+
+fn expectPrePassDecision(
+    expected: bool,
+    source: []const u8,
+    path: []const u8,
+    opts: PrePassPredicateTestOptions,
+) !void {
+    try std.testing.expectEqual(expected, try shouldRunPrePassForTest(source, path, opts));
+}
+
+fn expectAllBuiltModulesSkipPrePass(file_count: usize) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var i: usize = 0;
+    while (i < file_count) : (i += 1) {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "m{d}.ts", .{i});
+        defer std.testing.allocator.free(file_name);
+        const source = if (i + 1 < file_count)
+            try std.fmt.allocPrint(std.testing.allocator, "import {{ v as next }} from './m{d}'; export const v: number = next + 1;", .{i + 1})
+        else
+            try std.fmt.allocPrint(std.testing.allocator, "export const v: number = {d};", .{i});
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, file_name, source);
+    }
+
+    const dp = try absPath(&tmp, ".");
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "m0.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+    try std.testing.expectEqual(file_count, graph.moduleCount());
+    var it = graph.modulesIterator();
+    while (it.next()) |module| {
+        try std.testing.expect(module.transform_cache == null);
+    }
+}
+
+test "graph pre-pass predicate: simple ESM and TS strip modules can skip" {
+    try expectPrePassDecision(false, "import { value } from './dep'; export const answer: number = value + 1;", "entry.ts", .{});
+    try expectPrePassDecision(false, "interface Shape { x: number }\ntype Id<T> = T;\nexport const value: Id<number> = 1;", "types.ts", .{});
+    try expectPrePassDecision(false, "import type { User } from './types'; import { value } from './dep'; export type { User }; export { value };", "mixed.ts", .{});
+    try expectPrePassDecision(false, "export { value } from './dep'; export * from './other';", "barrel.ts", .{});
+}
+
+test "graph pre-pass predicate: synthetic no-op graphs skip every eligible module" {
+    try expectAllBuiltModulesSkipPrePass(50);
+    try expectAllBuiltModulesSkipPrePass(200);
+}
+
+test "graph pre-pass predicate: syntax and options that mutate graph-visible surface keep pre-pass" {
+    try expectPrePassDecision(true, "export const App = () => <div />;", "view.tsx", .{});
+    try expectPrePassDecision(true, "@sealed class Foo {}", "decorator.ts", .{ .transform_options = .{ .experimental_decorators = true } });
+    try expectPrePassDecision(true, "enum Kind { A, B } export const k = Kind.A;", "enum.ts", .{});
+    try expectPrePassDecision(true, "namespace N { export const x = 1 } export const y = N.x;", "namespace.ts", .{});
+    try expectPrePassDecision(true, "import Foo = require('foo'); export = Foo;", "import-equals.ts", .{});
+    try expectPrePassDecision(true, "export const run = async () => await value;", "downlevel.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(true, "class Foo { #x = 1; field = this.#x; }", "private.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2021) } });
+    try expectPrePassDecision(true, "console.log(__DEV__); debugger;", "minify-define-drop.ts", .{ .transform_options = .{ .minify_syntax = true } });
+    try expectPrePassDecision(true, "console.log(__DEV__);", "define.ts", .{ .transform_options = .{ .define = &.{.{ .key = "__DEV__", .value = "false" }} } });
+    try expectPrePassDecision(true, "console.log('x'); debugger;", "drop.ts", .{ .transform_options = .{ .drop_console = true, .drop_debugger = true } });
+    try expectPrePassDecision(true, "export const value = 1;", "plugin.ts", .{ .plugin_transform_applied = true });
+    try expectPrePassDecision(true, "export function App() { return null; }", "refresh.tsx", .{ .react_refresh = true });
+    try expectPrePassDecision(true, "import styled from 'styled-components'; export const Box = styled.div``;", "styled.ts", .{ .styled_components = true });
+    try expectPrePassDecision(true, "import { css } from '@emotion/react'; export const c = css``;", "emotion.ts", .{ .emotion = true });
+    try expectPrePassDecision(true, "export function f() { 'worklet'; return 1; }", "worklet.ts", .{ .worklet_transform = true });
+}
 
 test "findProjectRoot: 일반 npm — src/index.ts → root는 package.json 위치" {
     var tmp = std.testing.tmpDir(.{});
