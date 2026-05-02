@@ -486,7 +486,13 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
     return facts;
 }
 
+// default/namespace specifier 는 collectAstFacts 에서 has_non_named_import 로 잡혀
+// buildTransformPlan 이 이미 full 로 라우팅하므로 여기서는 named 만 본다.
+// import local 노드는 identifier_reference 로 태깅되므로 binding_identifier 필터에 자연히 빠진다.
 fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
+    var names_buf: [64][]const u8 = undefined;
+    var names_len: usize = 0;
+
     for (ast.nodes.items) |import_node| {
         if (import_node.tag != .import_declaration) continue;
         const import_decl = module_parser.readImportDeclExtras(ast, import_node.data.extra);
@@ -500,14 +506,21 @@ fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
 
             const local_idx = spec.data.binary.right;
             if (local_idx.isNone()) continue;
-            const local = ast.getNode(local_idx);
-            const local_name = ast.getText(local.span);
+            // 64 개 초과 named import 는 보수적으로 full 로 우회 — barrel 파일 등 흔치 않은 경우.
+            if (names_len == names_buf.len) return true;
+            names_buf[names_len] = ast.getText(ast.getNode(local_idx).span);
+            names_len += 1;
+        }
+    }
 
-            for (ast.nodes.items, 0..) |node, raw_idx| {
-                if (@as(u32, @intCast(raw_idx)) == @intFromEnum(local_idx)) continue;
-                if (node.tag != .binding_identifier) continue;
-                if (std.mem.eql(u8, local_name, ast.getText(node.span))) return true;
-            }
+    if (names_len == 0) return false;
+
+    for (ast.nodes.items) |node| {
+        if (node.tag != .binding_identifier) continue;
+        const bind_name = ast.getText(node.span);
+        var j: usize = 0;
+        while (j < names_len) : (j += 1) {
+            if (std.mem.eql(u8, bind_name, names_buf[j])) return true;
         }
     }
     return false;
