@@ -14,7 +14,7 @@
  */
 
 import type { Plugin } from "vite";
-import { init, transpile } from "../../core/index";
+import { TsconfigCache, init, transpile } from "../../core/index";
 import type { TranspileOptions } from "../../core/index";
 
 export interface ZtsPluginOptions {
@@ -30,6 +30,13 @@ export interface ZtsPluginOptions {
    * ZTS transpile 옵션 (target, jsx 등)
    */
   transpileOptions?: Omit<TranspileOptions, "filename">;
+  /**
+   * tsconfig autodiscover 결과 캐시 활성화 (기본: true). plugin 인스턴스 lifetime 동안
+   * 같은 워크스페이스 안 파일은 한 번만 walk → file 당 5–10 fs syscall 절약 (#2367).
+   * `transpileOptions.tsconfigPath` / `tsconfigRaw` 명시 시 캐시는 자동으로 무시됨.
+   * Vite dev 세션이 너무 길어 메모리가 우려되면 false 로 비활성화 가능.
+   */
+  tsconfigCache?: boolean;
 }
 
 const DEFAULT_INCLUDE = /\.(tsx?|jsx)$/;
@@ -39,8 +46,12 @@ export function zts(options: ZtsPluginOptions = {}): Plugin {
   const include = options.include ?? DEFAULT_INCLUDE;
   const exclude = options.exclude ?? DEFAULT_EXCLUDE;
   const transpileOpts = options.transpileOptions ?? {};
+  const useTsconfigCache = options.tsconfigCache ?? true;
 
   let initialized = false;
+  // plugin 인스턴스 lifetime 동안 1 회 생성 — buildStart 에서 init() 후 set.
+  // GC 시 native cache 자동 cleanup, 사용자 명시 dispose 불필요.
+  let cache: TsconfigCache | undefined;
 
   return {
     name: "vite-plugin-zts",
@@ -60,6 +71,9 @@ export function zts(options: ZtsPluginOptions = {}): Plugin {
         init();
         initialized = true;
       }
+      if (useTsconfigCache && !cache) {
+        cache = new TsconfigCache();
+      }
     },
 
     transform(code, id) {
@@ -69,6 +83,7 @@ export function zts(options: ZtsPluginOptions = {}): Plugin {
       const result = transpile(code, {
         ...transpileOpts,
         filename: id,
+        cache,
       });
 
       return {

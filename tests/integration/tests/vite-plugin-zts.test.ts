@@ -145,4 +145,54 @@ describe.skipIf(!hasVite)("vite-plugin-zts", () => {
         jsChunk.code.trimStart().startsWith("'use server'"),
     ).toBe(true);
   });
+
+  it("tsconfig 자동 적용 — 다수 파일 빌드 시 cache 활성으로 정상 동작 (#2367)", async () => {
+    // 같은 디렉토리에 여러 .ts 파일 + tsconfig.json. plugin 의 cache 가 활성이면
+    // 각 파일마다 walk 안 하고 cache hit. 결과 정확성 검증 — tsconfig 의 target=es2020
+    // 이 모든 파일에 적용되는지.
+    const fixture = await createFixture({
+      "tsconfig.json": JSON.stringify({ compilerOptions: { target: "es2020" } }),
+      "main.ts": `import { add, mul } from "./util";\nexport const result = add(1, 2) + mul(3, 4);`,
+      "util.ts": `export const add = (a: number, b: number) => a + b;\nexport const mul = (a: number, b: number) => a * b;`,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await viteBuildLib(fixture.dir, join(fixture.dir, "main.ts"));
+    const jsChunk = result.output.find((o: any) => o.type === "chunk");
+    expect(jsChunk).toBeDefined();
+    // 두 파일 모두 transpile 성공 (cache 가 정확성에 영향 없음)
+    expect(jsChunk.code).toContain("add");
+    expect(jsChunk.code).toContain("mul");
+    // type annotation 제거 확인
+    expect(jsChunk.code).not.toContain(": number");
+  });
+
+  it("tsconfigCache: false 옵션 — 캐시 비활성도 정상 빌드", async () => {
+    const fixture = await createFixture({
+      "tsconfig.json": JSON.stringify({ compilerOptions: { target: "es2020" } }),
+      "main.ts": `export const x: number = 42;`,
+    });
+    cleanup = fixture.cleanup;
+
+    const vite = await import("vite");
+    const { zts } = await import(join(PROJECT_ROOT, "packages/vite-plugin-zts/src/index.ts"));
+    const r = await vite.build({
+      root: fixture.dir,
+      plugins: [zts({ tsconfigCache: false })],
+      build: {
+        lib: { entry: join(fixture.dir, "main.ts"), formats: ["es"], fileName: "out" },
+        outDir: "dist",
+        minify: false,
+        write: false,
+      },
+      logLevel: "silent",
+    });
+    const rollupOutput = Array.isArray(r) ? r[0] : r;
+    const result = { output: (rollupOutput as any).output ?? [] };
+
+    const jsChunk = result.output.find((o: any) => o.type === "chunk");
+    expect(jsChunk).toBeDefined();
+    expect(jsChunk.code).toContain("42");
+    expect(jsChunk.code).not.toContain(": number");
+  });
 });
