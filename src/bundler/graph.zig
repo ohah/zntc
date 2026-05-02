@@ -1398,10 +1398,15 @@ pub const ModuleGraph = struct {
             }
         }
 
-        // compiled_cache key 는 mtime 을 요구한다. 일반 파일 source read 경로는 아래
+        // compiled_cache key 는 mtime 을 요구한다. 디스크 source 를 읽는 경로는
         // readModuleSourceWithMtime 가 같은 file handle 에서 source+mtime 을 채운다.
-        // plugin/JSON/CSS/asset 등 별도 read 경로는 기존처럼 여기서 stat 한다.
-        const can_read_mtime_with_source = !plugin_load_applied and module.module_type.isJavaScriptLike();
+        // plugin load 는 플러그인이 생성한 source 일 수 있어 결합할 파일 read 가 없고,
+        // empty/none 처럼 source read 가 없는 loader 는 기존처럼 여기서 stat 한다.
+        const can_read_mtime_with_source = !plugin_load_applied and
+            (module.module_type.isJavaScriptLike() or
+                module.module_type == .json or
+                (module.module_type == .css and module.loader == .css) or
+                moduleReadsSourceForAsset(module.loader));
         if (!can_read_mtime_with_source and module.mtime == 0) {
             module.mtime = getMtime(module.path) catch 0;
         }
@@ -1412,7 +1417,7 @@ pub const ModuleGraph = struct {
         if (module.module_type == .json) {
             module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
             const arena_alloc = module.parse_arena.?.allocator();
-            module.source = if (fs.readFile(arena_alloc, module.path, 10 * 1024 * 1024)) |loaded| loaded.contents else |_| "";
+            module.source = self.readModuleSourceWithMtime(module, arena_alloc, 10 * 1024 * 1024, .parse) orelse return;
 
             module.ast = json_to_esm.convert(arena_alloc, module.source) catch {
                 self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Invalid JSON", null);
@@ -3017,7 +3022,7 @@ pub const ModuleGraph = struct {
 
         // 파일 읽기
         if (module.source.len == 0) {
-            module.source = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+            module.source = self.readModuleSourceWithMtime(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
         }
 
         // @import 규칙 추출 (arena에 할당)
@@ -3094,6 +3099,13 @@ pub const ModuleGraph = struct {
         };
     }
 
+    fn moduleReadsSourceForAsset(loader: types.Loader) bool {
+        return switch (loader) {
+            .text, .dataurl, .base64, .binary, .file, .copy => true,
+            else => false,
+        };
+    }
+
     fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
         module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         const arena_alloc = module.parse_arena.?.allocator();
@@ -3102,7 +3114,7 @@ pub const ModuleGraph = struct {
             .text, .dataurl, .base64, .binary => {
                 // text/dataurl/base64/binary: 모두 raw bytes → JS 표현식 변환. assetSourceFromBytes
                 // 헬퍼가 plugin onLoad 경로와 공유 (#2157).
-                const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+                const raw = self.readModuleSourceWithMtime(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
                 module.source = self.assetSourceFromBytes(arena_alloc, module.loader, raw, module.path) orelse {
                     module.state = .ready;
                     return;
@@ -3110,7 +3122,7 @@ pub const ModuleGraph = struct {
             },
             .file, .copy => {
                 // 파일 읽기 → content hash → 출력 경로 생성 → URL 문자열
-                const raw = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
+                const raw = self.readModuleSourceWithMtime(module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
                 const hash = contentHash(raw);
                 const ext = std.fs.path.extension(module.path);
                 const basename = std.fs.path.basename(module.path);
