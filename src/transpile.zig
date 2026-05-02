@@ -638,9 +638,11 @@ fn buildTransformPlan(
     if (fast_path_disabled) return .{ .semantic = .full, .reason = .disabled_by_env };
     if (options.stop_after == .semantic) return .{ .semantic = .full, .reason = .stop_after_semantic };
 
+    // Flow 는 `non_ts_source` 보다 먼저 분류 — `// @flow` 주석이 붙은 `.js` 입력이
+    // generic JS fallback 으로 잘못 집계되지 않도록 한다.
+    if (parser.is_flow) return .{ .semantic = .full, .reason = .flow_source };
     // JS 파일은 보존 의미가 TS 와 달라 (값 import 가 type-only 라도 side-effect 가능 등)
     // fast path 적용 범위에서 제외 — full semantic 경로에서 진단 손실 없이 처리.
-    if (parser.is_flow) return .{ .semantic = .full, .reason = .flow_source };
     if (parser.source_mode != .ts) return .{ .semantic = .full, .reason = .non_ts_source };
     if (ast.has_jsx) return .{ .semantic = .full, .reason = .jsx_source };
 
@@ -1066,6 +1068,8 @@ fn transpileWithCallbackInternal(
     }
 
     const transform_plan = buildTransformPlan(options, &parser, &parser.ast, fast_path_disabled);
+    // 포맷 문자열을 변경하면 `tests/benchmark/profile.ts` 의 `tracePlan` 정규식도
+    // 함께 갱신해야 한다 — `semantic=...`, `reason=...` 키 이름을 그대로 유지.
     debug_log.print(
         .transform_plan,
         "file={s} semantic={s} reason={s} strip_types_only={}\n",
