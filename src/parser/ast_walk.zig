@@ -145,6 +145,119 @@ pub fn children(ast: *const Ast, node: Node) ChildIterator {
     };
 }
 
+/// 바인딩 패턴 트리에서 leaf identifier 노드를 순회하는 iterator.
+///
+/// 방문 대상 (caller 가 tag 로 필터링):
+///   - `binding_identifier` (정통 binding context)
+///   - `identifier_reference`, `assignment_target_identifier` (cover-grammar 후 변환)
+///
+/// 자동 descend tags:
+///   - 패턴 wrapper: `formal_parameter`, `formal_parameters`, `assignment_pattern`,
+///     `assignment_target_with_default`, `binding_property`,
+///     `assignment_target_property_identifier`, `assignment_target_property_property`
+///   - 컨테이너: `array_pattern`, `object_pattern`, `array_assignment_target`, `object_assignment_target`
+///   - rest: `rest_element`, `binding_rest_element`, `assignment_target_rest`, `spread_element`
+///   - opt-in: `assignment_expression` (cover-grammar arrow param `(Foo = Bar()) =>`)
+///
+/// 이전에는 동일 패턴 walker 가 transformer / semantic / transpile 6 곳에 copy 되어
+/// 있었다. 호출 측의 출력 타입이 다 달라서 (Span list / 이름 list / StringHashMap /
+/// fixed buf) iterator 패턴으로 두고 wrapping 만 caller 가 결정.
+pub const BindingIdentifierWalker = struct {
+    pub const STACK_CAPACITY: usize = 256;
+
+    pub const Options = struct {
+        /// `(Foo = Bar()) =>` 같이 cover-grammar 로 패턴 자리에 남은 assignment_expression
+        /// 의 LHS 를 binding 으로 본다. 일반 expression 컨텍스트의 `Foo = expr` 와 충돌하지
+        /// 않게 caller 가 binding context 진입점에서만 켠다.
+        cover_grammar_assignment: bool = false,
+    };
+
+    ast: *const Ast,
+    options: Options,
+    /// 명시 stack — stack overflow 방지 + bound 명시. 깊이 256 초과 패턴은 비현실적.
+    stack: [STACK_CAPACITY]NodeIndex = undefined,
+    stack_len: usize,
+
+    pub fn next(self: *BindingIdentifierWalker) ?NodeIndex {
+        while (self.stack_len > 0) {
+            self.stack_len -= 1;
+            const idx = self.stack[self.stack_len];
+            if (idx.isNone()) continue;
+            const raw: u32 = @intFromEnum(idx);
+            if (raw >= self.ast.nodes.items.len) continue;
+            const node = self.ast.nodes.items[raw];
+            switch (node.tag) {
+                .binding_identifier,
+                .identifier_reference,
+                .assignment_target_identifier,
+                => return idx,
+                .formal_parameter => {
+                    if (node.data.extra >= self.ast.extra_data.items.len) continue;
+                    self.push(@enumFromInt(self.ast.extra_data.items[node.data.extra]));
+                },
+                .formal_parameters,
+                .array_pattern,
+                .object_pattern,
+                .array_assignment_target,
+                .object_assignment_target,
+                => self.pushList(node.data.list),
+                .assignment_pattern,
+                .assignment_target_with_default,
+                => self.push(node.data.binary.left),
+                .assignment_expression => {
+                    if (self.options.cover_grammar_assignment) self.push(node.data.binary.left);
+                },
+                .rest_element,
+                .binding_rest_element,
+                .assignment_target_rest,
+                .spread_element,
+                => self.push(node.data.unary.operand),
+                .binding_property,
+                .assignment_target_property_identifier,
+                .assignment_target_property_property,
+                => {
+                    const value = node.data.binary.right;
+                    self.push(if (value.isNone()) node.data.binary.left else value);
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn push(self: *BindingIdentifierWalker, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        if (self.stack_len >= STACK_CAPACITY) return;
+        self.stack[self.stack_len] = idx;
+        self.stack_len += 1;
+    }
+
+    fn pushList(self: *BindingIdentifierWalker, list: ast_mod.NodeList) void {
+        if (list.start + list.len > self.ast.extra_data.items.len) return;
+        // 역순으로 push 해서 다음 next() 호출이 list[0] 부터 보도록 한다.
+        var i: u32 = list.len;
+        while (i > 0) {
+            i -= 1;
+            const raw = self.ast.extra_data.items[list.start + i];
+            self.push(@enumFromInt(raw));
+        }
+    }
+};
+
+/// 바인딩 패턴 (포함 cover-grammar 결과) 의 leaf identifier 를 순회하는 iterator.
+pub fn bindingIdentifiers(
+    ast: *const Ast,
+    idx: NodeIndex,
+    options: BindingIdentifierWalker.Options,
+) BindingIdentifierWalker {
+    var w: BindingIdentifierWalker = .{ .ast = ast, .options = options, .stack_len = 0 };
+    if (!idx.isNone() and @intFromEnum(idx) < ast.nodes.items.len) {
+        w.stack[0] = idx;
+        w.stack_len = 1;
+    }
+    return w;
+}
+
 /// `root` 서브트리에 raw `#x` private syntax (`private_field_expression` /
 /// `private_identifier`) 가 남아 있는지 검사. transformer 가 lowering 했어야 할 노드가
 /// codegen 까지 도달했는지 검증하는 debug invariant 용도 — 정상 코드 경로에서는 항상 false.

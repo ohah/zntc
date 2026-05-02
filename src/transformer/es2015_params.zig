@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
@@ -377,30 +378,11 @@ pub fn ES2015Params(comptime Transformer: type) type {
         }
 
         fn collectBindingNames(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(Span)) Transformer.Error!void {
-            if (idx.isNone()) return;
-            const node = self.ast.getNode(idx);
-            switch (node.tag) {
-                .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-                    try out.append(self.allocator, node.data.string_ref);
-                },
-                .formal_parameter => {
-                    try collectBindingNames(self, self.readNodeIdx(node.data.extra, ast_mod.FormalParameterExtra.pattern), out);
-                },
-                .assignment_pattern, .assignment_target_with_default => {
-                    try collectBindingNames(self, node.data.binary.left, out);
-                },
-                .rest_element, .binding_rest_element, .assignment_target_rest => {
-                    try collectBindingNames(self, node.data.unary.operand, out);
-                },
-                .binding_property, .assignment_target_property_identifier, .assignment_target_property_property => {
-                    const value = node.data.binary.right;
-                    try collectBindingNames(self, if (value.isNone()) node.data.binary.left else value, out);
-                },
-                .object_pattern, .array_pattern, .object_assignment_target, .array_assignment_target => {
-                    const items = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-                    for (items) |raw| try collectBindingNames(self, @enumFromInt(raw), out);
-                },
-                else => {},
+            // cover-grammar 결과 (identifier_reference / assignment_target_identifier) 도
+            // 동일하게 spans 로 수집 — caller (param TDZ 검사) 가 그 형태를 기대한다.
+            var it = ast_walk.bindingIdentifiers(self.ast, idx, .{});
+            while (it.next()) |leaf_idx| {
+                try out.append(self.allocator, self.ast.getNode(leaf_idx).data.string_ref);
             }
         }
     };
