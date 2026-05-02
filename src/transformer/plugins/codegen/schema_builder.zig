@@ -204,10 +204,9 @@ fn collectMembersFromValue(
     const node = ast.getNode(unwrapped);
     switch (node.tag) {
         .ts_intersection_type => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const op: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
+            // realloc-safe — collectMembersFromValue 재귀가 addNode/addExtras 가능 (#2422 패턴).
+            var iter = ast.iterateExtraList(node.data.list);
+            while (iter.next()) |op| {
                 try collectMembersFromValue(ast, type_index, op, out, visited, depth + 1, alloc);
             }
         },
@@ -312,13 +311,14 @@ fn collectStringLiteralNames(ast: *const Ast, k_idx: NodeIndex, buf: *[32][]cons
             return buf[0..1];
         },
         .ts_union_type, .flow_union_type => {
-            if (k.data.list.len == 0 or k.data.list.len > buf.len) return null;
+            const len = k.data.list.len;
+            if (len == 0 or len > buf.len) return null;
             var i: u32 = 0;
-            while (i < k.data.list.len) : (i += 1) {
-                const elem: NodeIndex = @enumFromInt(ast.extra_data.items[k.data.list.start + i]);
+            while (i < len) : (i += 1) {
+                const elem = ast.readExtraNodeUnchecked(k.data.list.start, i);
                 buf[i] = stripStringLiteral(ast, ast.getNode(elem)) orelse return null;
             }
-            return buf[0..k.data.list.len];
+            return buf[0..len];
         },
         else => return null,
     }
@@ -357,17 +357,15 @@ fn collectObjectMembersInto(
         else => return,
     };
 
-    var i: u32 = 0;
-    while (i < list.len) : (i += 1) {
-        const raw = ast.extra_data.items[list.start + i];
-        const idx: NodeIndex = @enumFromInt(raw);
+    // realloc-safe — spread argument 재귀가 collectMembersFromValue 통해 extra_data grow 가능.
+    var iter = ast.iterateExtraList(list);
+    while (iter.next()) |idx| {
         const child = ast.getNode(idx);
         switch (child.tag) {
             .ts_property_signature, .flow_property_signature => try out.append(alloc, idx),
             .flow_object_spread_property => {
                 // Flow spread `...A` — argument 의 type ref 로 재귀. cross-file 은 silent skip.
-                const arg_idx = child.data.unary.operand;
-                try collectMembersFromValue(ast, type_index, arg_idx, out, visited, depth + 1, alloc);
+                try collectMembersFromValue(ast, type_index, child.data.unary.operand, out, visited, depth + 1, alloc);
             },
             else => continue,
         }
@@ -387,7 +385,7 @@ fn unwrapWrapper(ast: *const Ast, type_index: *const TypeIndex, idx: NodeIndex) 
 
     // type argument 추출 — Readonly<T> 의 T.
     const inner = getNthTypeArgument(ast, node, 0) orelse return idx;
-    // 재귀 unwrap (이중 wrapper 케이스). 단, 제자리 무한루프 방지 — nth=0 결과만.
+    // 재귀 unwrap (이중 wrapper 케이스). 단, 제자리 무한루프 방지 — index=0 결과만.
     return unwrapWrapper(ast, type_index, inner);
 }
 
@@ -396,10 +394,10 @@ fn isReadonlyWrapperName(name: []const u8) bool {
         std.mem.eql(u8, name, "$ReadOnly");
 }
 
-/// type_reference node 에서 nth type argument 의 NodeIndex 추출. `Foo<A, B>` 의 nth=0 → A.
+/// type_reference node 에서 0-indexed type argument 추출. `Foo<A, B>` 의 index=0 → A.
 /// type_reference layout (`flow.zig:472`, `ts.zig:994`): `extra = [name_start, name_end, type_args]`.
 /// type_args 는 ts_type_parameter_instantiation / flow_type_parameter_instantiation (NodeList layout).
-fn getNthTypeArgument(ast: *const Ast, node: Node, nth: u32) ?NodeIndex {
+fn getNthTypeArgument(ast: *const Ast, node: Node, index: u32) ?NodeIndex {
     const e = node.data.extra;
     if (e + 2 >= ast.extra_data.items.len) return null;
     const args_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 2]);
@@ -409,8 +407,8 @@ fn getNthTypeArgument(ast: *const Ast, node: Node, nth: u32) ?NodeIndex {
     if (args_node.tag != .ts_type_parameter_instantiation and
         args_node.tag != .flow_type_parameter_instantiation) return null;
 
-    if (nth >= args_node.data.list.len) return null;
-    return ast.readExtraNodeUnchecked(args_node.data.list.start, nth);
+    if (index >= args_node.data.list.len) return null;
+    return ast.readExtraNodeUnchecked(args_node.data.list.start, index);
 }
 
 /// type_reference 의 name 텍스트 추출. extra[0..2] 가 source 의 name span.
@@ -576,15 +574,9 @@ fn mapUnion(ast: *const Ast, node: Node) Error!schema.PropTypeAnnotation {
     const list = node.data.list;
     if (list.len == 0) return .mixed;
 
-    var i: u32 = 0;
-    while (i < list.len) : (i += 1) {
-        const elem_idx: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
-        const elem = ast.getNode(elem_idx);
-        if (elem.tag != .ts_literal_type and elem.tag != .flow_literal_type) return .mixed;
-        const text = ast.getText(elem.data.string_ref);
-        if (text.len < 2) return .mixed;
-        const first = text[0];
-        if (first != '\'' and first != '"') return .mixed;
+    var iter = ast.iterateExtraList(list);
+    while (iter.next()) |elem_idx| {
+        if (stripStringLiteral(ast, ast.getNode(elem_idx)) == null) return .mixed;
     }
 
     // emitter 가 현재 string_enum 을 단순 `true` attribute 로 출력하므로 default/options
