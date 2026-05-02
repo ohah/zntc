@@ -1966,7 +1966,7 @@ pub const ModuleGraph = struct {
 
         _ = parser_node_count;
 
-        self.refreshAnalysisAfterAstMutation(module, arena_alloc) catch {
+        self.resyncModuleMetadataAfterAstMutation(module, arena_alloc) catch {
             self.addDiag(
                 .parse_error,
                 .@"error",
@@ -1981,10 +1981,23 @@ pub const ModuleGraph = struct {
         };
     }
 
-    /// AST mutation 이후 module 의 분석 산출물을 final AST 기준으로 재생성한다.
-    /// 이 함수가 성공한 뒤에는 `module.ast`, semantic, import/export bindings,
-    /// prebuilt_stmt_info, alias_table 이 같은 AST 기준이어야 한다 (#1913).
-    pub fn refreshAnalysisAfterAstMutation(
+    /// AST mutation 이후 module 의 graph-facing metadata 를 같은 AST 기준으로 재동기화한다.
+    ///
+    /// 이 함수는 단순 semantic refresh 가 아니다. transformed/minified AST 를 기준으로
+    /// semantic symbol table, StmtInfo, import/require records, import/export bindings,
+    /// namespace access, exported_names, ESM/CJS classification, synthetic JSX imports,
+    /// alias table 을 다시 맞춘다.
+    ///
+    /// 호출 후 invariant:
+    /// - `module.ast`, `module.semantic`, `module.prebuilt_stmt_info`,
+    ///   `module.import_records`, `module.import_bindings`, `module.export_bindings`,
+    ///   `module.exported_names`, `module.alias_table` 은 모두 같은 AST snapshot 기준이다.
+    /// - runtime helper virtual module 내부의 helper 이름은 unresolved global 에 남지 않는다.
+    ///
+    /// 이 중앙 resync 경로를 우회해서 record/binding 만 수동 보정하면 linker, tree-shaker,
+    /// chunking 이 서로 다른 AST/semantic 상태를 보게 되므로 여기서만 metadata 재구축
+    /// 정책을 확장해야 한다 (#1913).
+    pub fn resyncModuleMetadataAfterAstMutation(
         self: *ModuleGraph,
         module: *Module,
         arena_alloc: std.mem.Allocator,
