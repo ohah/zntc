@@ -705,8 +705,10 @@ fn scanForUnsupportedBindingLiteShadow(
     const node = ast.getNode(idx);
     switch (node.tag) {
         // scope_depth: program 은 0, block/body 진입마다 +1. inside_function: function/arrow body
-        // 이하 ancestry. 두 값이 함께 쓰이는 이유는 transpile.zig:573-575 의 truth table 참고 — top-level
-        // var 은 import 를 가리지만 함수 내 var 는 nearest function scope 에만 머물러 outer use 를 안 가린다.
+        // 이하 ancestry. 두 값을 함께 쓰는 이유는 scanVariableDeclarationForUnsupp 의 return 두 줄이
+        // truth table — top-level lexical (lex && depth==0) 또는 모듈-스코프 var (!lex && !inside_function)
+        // 만 import 를 가리는 fallback 조건이고, 함수 내 var 는 nearest function scope 에만 머물러 outer
+        // use 를 안 가린다.
         .program => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, 0, false, null),
         .block_statement => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, inside_function, fn_shadow_count),
         .function_body => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, true, fn_shadow_count),
