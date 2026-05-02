@@ -2490,20 +2490,23 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 },
                 .list => {
                     const list = node.data.list;
-                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-                        try transformDerivedConstructorReturns(self, @enumFromInt(raw_idx));
+                    // 인덱스 기반 접근 — recursion 이 extra_data 를 grow → realloc 가능 (#2422 동일 패턴).
+                    var i: u32 = 0;
+                    while (i < list.len) : (i += 1) {
+                        try transformDerivedConstructorReturns(self, self.ast.readExtraNode(list.start, i));
                     }
                 },
                 .extra => {
                     const e = node.data.extra;
                     for (node.tag.extraChildOffsets()) |offset| {
-                        try transformDerivedConstructorReturns(self, @enumFromInt(self.ast.extra_data.items[e + offset]));
+                        try transformDerivedConstructorReturns(self, self.ast.readExtraNode(e, offset));
                     }
                     for (node.tag.extraListOffsets()) |list_offset| {
-                        const start = self.ast.extra_data.items[e + list_offset[0]];
-                        const len = self.ast.extra_data.items[e + list_offset[1]];
-                        for (self.ast.extra_data.items[start .. start + len]) |raw_idx| {
-                            try transformDerivedConstructorReturns(self, @enumFromInt(raw_idx));
+                        const start = self.ast.readExtra(e, list_offset[0]);
+                        const len = self.ast.readExtra(e, list_offset[1]);
+                        var j: u32 = 0;
+                        while (j < len) : (j += 1) {
+                            try transformDerivedConstructorReturns(self, self.ast.readExtraNode(start, j));
                         }
                     }
                 },
@@ -2615,8 +2618,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-                        const child_idx: NodeIndex = @enumFromInt(raw_idx);
+                    // 인덱스 기반 — appendInstanceFields/insertInstanceFieldsAfterSuper 가 addNode → realloc 가능 (#2422).
+                    var i: u32 = 0;
+                    while (i < list.len) : (i += 1) {
+                        const child_idx = self.ast.readExtraNode(list.start, i);
                         if (isSuperCallAssignmentStatement(self, child_idx)) {
                             try self.scratch.append(self.allocator, child_idx);
                             try appendInstanceFields(self, instance_fields, span);
@@ -2684,6 +2689,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
         }
 
+        // NOTE: 모든 list iteration 은 인덱스 기반 (`while (i < len)`) — 재귀
+        // injectInstanceFieldsAfterSuperExpr 호출이 addNode/addExtras 로 extra_data 를
+        // grow 시킬 수 있어 캡처된 slice 가 realloc 후 invalid 해진다 (#2422).
         fn injectInstanceFieldsAfterSuperExpr(self: *Transformer, expr_idx: NodeIndex, instance_fields: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
             if (expr_idx.isNone() or instance_fields.len == 0) return expr_idx;
             // sub-tree 안에 super-call 이 없으면 AST 재구성 비용을 들일 필요가 없다.
@@ -2726,22 +2734,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const list = node.data.list;
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, @enumFromInt(raw_idx), instance_fields, span));
+                    var i: u32 = 0;
+                    while (i < list.len) : (i += 1) {
+                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, self.ast.readExtraNode(list.start, i), instance_fields, span));
                     }
                     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .list = new_list } });
                 },
                 .call_expression, .new_expression => {
                     const e = node.data.extra;
-                    const callee = self.ast.extra_data.items[e];
-                    const args_start = self.ast.extra_data.items[e + 1];
-                    const args_len = self.ast.extra_data.items[e + 2];
-                    const flags = self.ast.extra_data.items[e + 3];
+                    const callee = self.ast.readExtra(e, 0);
+                    const args_start = self.ast.readExtra(e, 1);
+                    const args_len = self.ast.readExtra(e, 2);
+                    const flags = self.ast.readExtra(e, 3);
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    for (self.ast.extra_data.items[args_start .. args_start + args_len]) |raw_idx| {
-                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, @enumFromInt(raw_idx), instance_fields, span));
+                    var i: u32 = 0;
+                    while (i < args_len) : (i += 1) {
+                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, self.ast.readExtraNode(args_start, i), instance_fields, span));
                     }
                     const args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                     const new_extra = try self.ast.addExtras(&.{ callee, args.start, args.len, flags });
@@ -2749,12 +2759,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 },
                 .static_member_expression, .computed_member_expression => {
                     const e = node.data.extra;
-                    const new_obj = try injectInstanceFieldsAfterSuperExpr(self, @enumFromInt(self.ast.extra_data.items[e]), instance_fields, span);
-                    const new_prop = try injectInstanceFieldsAfterSuperExpr(self, @enumFromInt(self.ast.extra_data.items[e + 1]), instance_fields, span);
+                    const new_obj = try injectInstanceFieldsAfterSuperExpr(self, self.ast.readExtraNode(e, 0), instance_fields, span);
+                    const new_prop = try injectInstanceFieldsAfterSuperExpr(self, self.ast.readExtraNode(e, 1), instance_fields, span);
+                    const member_flags = self.ast.readExtra(e, 2);
                     const new_extra = try self.ast.addExtras(&.{
                         @intFromEnum(new_obj),
                         @intFromEnum(new_prop),
-                        self.ast.extra_data.items[e + 2],
+                        member_flags,
                     });
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                 },
@@ -2762,8 +2773,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const list = node.data.list;
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-                        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
+                    var i: u32 = 0;
+                    while (i < list.len) : (i += 1) {
+                        const prop_idx = self.ast.readExtraNode(list.start, i);
                         // 부작용 없는 prop 은 그대로 통과 — 매번 복제하면 N props 중 1 개만 super 가 있어도
                         // 전체 list 가 새로 만들어지는 낭비가 발생.
                         if (!containsSuperCallAssignment(self, prop_idx)) {

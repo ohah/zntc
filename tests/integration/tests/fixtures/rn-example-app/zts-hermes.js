@@ -15697,11 +15697,11 @@ var init_react_native_src_private_webapis_html_events_MessageEvent = __esm({
 			__classCallCheck(this, MessageEvent);
 			var _newTarget = this.constructor,_this;
 			;
-			ªªªªªªªªªªªªªªªªªªªªªªªªª(_this),_this = __callSuper(_super, [type, options], _newTarget);
-			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._data = (options == null ? void 0 : options.data);
-			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._origin = String((_a = (options == null ? void 0 : options.origin)) != null ? _a : "");
-			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._lastEventId = String((_b = (options == null ? void 0 : options.lastEventId)) != null ? _b : "");
-			return ªªªªªªªªªªªªªªªªªªªªªªª(_this);
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [type, options], _newTarget);
+			__assertThisInitialized(_this)._data = (options == null ? void 0 : options.data);
+			__assertThisInitialized(_this)._origin = String((_a = (options == null ? void 0 : options.origin)) != null ? _a : "");
+			__assertThisInitialized(_this)._lastEventId = String((_b = (options == null ? void 0 : options.lastEventId)) != null ? _b : "");
+			return __assertThisInitialized(_this);
 		}
 		__extends(MessageEvent, _super);
 		Object.defineProperty(MessageEvent.prototype, "data", { configurable: true, get: function() {
@@ -25734,15 +25734,15 @@ var init_react_native_Libraries_Animated_nodes_AnimatedDivision = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			{
-				__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
+				ªªªªªªªªªªªªªªªªªªªªªªªªª(_this),_this = __callSuper(_super, [config], _newTarget);
 				_this._warnedAboutDivideByZero = false;
 			}
 			if (b === 0 || (b instanceof AnimatedNode && b.__getValue() === 0)) {
 				console.error("Detected potential division by zero in AnimatedDivision");
 			}
-			__assertThisInitialized(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
-			__assertThisInitialized(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
-			return __assertThisInitialized(_this);
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
+			return ªªªªªªªªªªªªªªªªªªªªªªª(_this);
 		}
 		__extends(AnimatedDivision, _super);
 		Object.defineProperty(AnimatedDivision.prototype, "__makeNative", { configurable: true, writable: true, value: function(platformConfig) {
@@ -25811,10 +25811,10 @@ var init_react_native_Libraries_Animated_nodes_AnimatedModulo = __esm({
 			__classCallCheck(this, AnimatedModulo);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._a = a;
-			__assertThisInitialized(_this)._modulus = modulus;
-			return __assertThisInitialized(_this);
+			ªªªªªªªªªªªªªªªªªªªªªªªªª(_this),_this = __callSuper(_super, [config], _newTarget);
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._a = a;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._modulus = modulus;
+			return ªªªªªªªªªªªªªªªªªªªªªªª(_this);
 		}
 		__extends(AnimatedModulo, _super);
 		Object.defineProperty(AnimatedModulo.prototype, "__makeNative", { configurable: true, writable: true, value: function(platformConfig) {
@@ -26002,15 +26002,15 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTracking = __esm({
 			__classCallCheck(this, AnimatedTracking);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._value = value;
-			__assertThisInitialized(_this)._parent = parent;
-			__assertThisInitialized(_this)._animationClass = animationClass;
-			__assertThisInitialized(_this)._animationConfig = animationConfig;
-			__assertThisInitialized(_this)._useNativeDriver = _default$61.shouldUseNativeDriver(animationConfig);
-			__assertThisInitialized(_this)._callback = callback;
-			__assertThisInitialized(_this).__attach();
-			return __assertThisInitialized(_this);
+			ªªªªªªªªªªªªªªªªªªªªªªªªª(_this),_this = __callSuper(_super, [config], _newTarget);
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._value = value;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._parent = parent;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._animationClass = animationClass;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._animationConfig = animationConfig;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._useNativeDriver = _default$61.shouldUseNativeDriver(animationConfig);
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this)._callback = callback;
+			ªªªªªªªªªªªªªªªªªªªªªªª(_this).__attach();
+			return ªªªªªªªªªªªªªªªªªªªªªªª(_this);
 		}
 		__extends(AnimatedTracking, _super);
 		Object.defineProperty(AnimatedTracking.prototype, "__makeNative", { configurable: true, writable: true, value: function(platformConfig) {
@@ -29664,7 +29664,7 @@ var init_react_native_Libraries_Animated_components_AnimatedScrollView = __esm({
 		var _b = require_react_index().useMemo(function() {
 			var _a = splitLayoutProps(flattenStyle(props.style)),outer = _a.outer,inner = _a.inner;
 			return { intermediatePropsForRefreshControl: { style: outer }, intermediatePropsForScrollView: Object.assign({}, props, { style: inner }) };
-		}, [props]),intermediatePropsForRefreshControl = _b.intermediatePropsForRefreshControl,intermediatePropsForScrollView = _b.intermediatePropsForScrollView,_c = __read(_default$77(intermediatePropsForRefreshControl), 2),refreshControlAnimatedProps = _c[0],refreshControlRef = _c[1],refreshControl = require_react_index().cloneElement(props.refreshControl, Object.assign({}, refreshControlAnimatedProps, { ref: refreshControlRef })),_d = __read(_default$77(intermediatePropsForScrollView), 2),scrollViewAnimatedProps = _d[0],scrollViewRef = _d[1],ref = useMergeRefs(scrollViewRef, forwardedRef);
+		}, [props]),intermediatePropsForRefreshControl = _b.intermediatePropsForRefreshControl,intermediatePropsForScrollView = _b.intermediatePropsForScrollView,_c = ªªªªªª(_default$77(intermediatePropsForRefreshControl), 2),refreshControlAnimatedProps = _c[0],refreshControlRef = _c[1],refreshControl = require_react_index().cloneElement(props.refreshControl, Object.assign({}, refreshControlAnimatedProps, { ref: refreshControlRef })),_d = ªªªªªª(_default$77(intermediatePropsForScrollView), 2),scrollViewAnimatedProps = _d[0],scrollViewRef = _d[1],ref = useMergeRefs(scrollViewRef, forwardedRef);
 		;
 		;
 		;
@@ -58475,7 +58475,7 @@ var init_react_native_Libraries_Components_Switch_Switch = __esm({
 		return true;
 	};
 	Switch = function(_b) {
-		var forwardedRef = _b.ref,props = __rest(_b, ["ref"]),_c,_d,_e,_f,_g,_a = props,disabled = _a.disabled,ios_backgroundColor = _a.ios_backgroundColor,onChange = _a.onChange,onValueChange = _a.onValueChange,style = _a.style,thumbColor = _a.thumbColor,trackColor = _a.trackColor,value = _a.value,restProps = __rest(_a, ["disabled", "ios_backgroundColor", "onChange", "onValueChange", "style", "thumbColor", "trackColor", "value"]),trackColorForFalse = (trackColor == null ? void 0 : trackColor.false),trackColorForTrue = (trackColor == null ? void 0 : trackColor.true),nativeSwitchRef = require_react_index().useRef(null),ref = useMergeRefs(nativeSwitchRef, forwardedRef),_b = ªªªªªª(require_react_index().useState({ value: null }), 2),native = _b[0],setNative = _b[1],handleChange = function(event) {
+		var forwardedRef = _b.ref,props = __rest(_b, ["ref"]),_c,_d,_e,_f,_g,_a = props,disabled = _a.disabled,ios_backgroundColor = _a.ios_backgroundColor,onChange = _a.onChange,onValueChange = _a.onValueChange,style = _a.style,thumbColor = _a.thumbColor,trackColor = _a.trackColor,value = _a.value,restProps = __rest(_a, ["disabled", "ios_backgroundColor", "onChange", "onValueChange", "style", "thumbColor", "trackColor", "value"]),trackColorForFalse = (trackColor == null ? void 0 : trackColor.false),trackColorForTrue = (trackColor == null ? void 0 : trackColor.true),nativeSwitchRef = require_react_index().useRef(null),ref = useMergeRefs(nativeSwitchRef, forwardedRef),_b = __read(require_react_index().useState({ value: null }), 2),native = _b[0],setNative = _b[1],handleChange = function(event) {
 			onChange == null || onChange(event);
 			onValueChange == null || onValueChange(event.nativeEvent.value);
 			setNative({ value: event.nativeEvent.value });
