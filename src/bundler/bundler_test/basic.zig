@@ -1840,6 +1840,35 @@ test "Async generator: __asyncGenerator + __await runtime emit (#1911)" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__await(") != null);
 }
 
+test "Runtime helper virtual module skip preserves helper-internal names" {
+    // Regression for graph pre-pass skip on runtime helper virtual modules:
+    // the skip path must still suppress helper-internal unresolved refs, otherwise
+    // deconflict can rename the helper declaration to `__await$1` while helper
+    // bodies and call sites expect the public `__await` binding.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\export async function* g() { await Promise.resolve(1); }
+    );
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const compat = @import("../../transformer/compat.zig");
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .unsupported = compat.fromESTarget(.es5),
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __await = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "r.value instanceof __await ?") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__await(Promise.resolve(1))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__await$") == null);
+}
+
 test "Async helper: multi-module with async in one — single emit (edge)" {
     // 여러 모듈 중 한 곳만 async 사용 → helper 1회만 emit
     var tmp = std.testing.tmpDir(.{});
