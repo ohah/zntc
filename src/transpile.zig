@@ -490,9 +490,10 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
 // default/namespace specifier 는 collectAstFacts 에서 has_non_named_import 로 잡혀
 // buildTransformPlan 이 이미 full 로 라우팅하므로 여기서는 named 만 본다.
 // import local 노드는 identifier_reference 로 태깅되므로 binding_identifier 필터에 자연히 빠진다.
-// 함수 파라미터 shadow 는 binding-lite walker 가 scope-aware 로 처리할 수 있으므로 여기서는
-// full fallback 조건에서 제외한다. top-level/local 선언 shadow 는 아직 full 로 둔다.
-fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
+// 함수 파라미터 / catch / block lexical shadow 는 binding-lite walker 가 scope-aware 로
+// 처리한다. top-level shadow, `var` shadow, walker buffer overflow 처럼 declaration-order
+// 또는 scope 의미가 애매한 케이스만 full 로 보낸다.
+fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
     var names_buf: [64][]const u8 = undefined;
     var names_len: usize = 0;
 
@@ -518,35 +519,99 @@ fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
 
     if (names_len == 0) return false;
 
-    // program 부터 한 번만 내려가며 inside_params 플래그로 formal_parameters 서브트리를 건너뛴다.
-    // 이전 구현은 binding_identifier 마다 모든 formal_parameters 노드를 다시 탐색해 O(N²) 였다.
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .program) continue;
-        return scanForNonParamBindingShadow(ast, @enumFromInt(raw_idx), names_buf[0..names_len], false);
+        return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(raw_idx), names_buf[0..names_len], 0);
     }
     return false;
 }
 
-fn scanForNonParamBindingShadow(
+fn bindingPatternContainsImportName(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
+    var it = ast_walk.bindingIdentifiers(ast, idx, .{ .cover_grammar_assignment = true });
+    while (it.next()) |leaf_idx| {
+        const leaf = ast.getNode(leaf_idx);
+        const name = ast.getText(leaf.span);
+        if (string_list.contains(names, name)) {
+            match_count.* += 1;
+            if (match_count.* > 64) return true;
+        }
+    }
+    return false;
+}
+
+fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
+    ast: *const Ast,
+    node: ast_mod.Node,
+    names: []const []const u8,
+    scope_depth: usize,
+) bool {
+    const list_start = ast.extra_data.items[node.data.extra + 1];
+    const list_len = ast.extra_data.items[node.data.extra + 2];
+    var matching_shadows: usize = 0;
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
+        if (decl_idx.isNone()) continue;
+        const decl = ast.getNode(decl_idx);
+        if (decl.tag != .variable_declarator) continue;
+        const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
+        if (bindingPatternContainsImportName(ast, binding_idx, names, &matching_shadows)) return true;
+        const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra + 2]);
+        if (scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth)) return true;
+    }
+
+    if (matching_shadows == 0) return false;
+    if (scope_depth == 0) return true;
+    return !ast.variableDeclarationKind(node).isLexical();
+}
+
+fn scanForUnsupportedBindingLiteShadow(
     ast: *const Ast,
     idx: ast_mod.NodeIndex,
     names: []const []const u8,
-    inside_params: bool,
+    scope_depth: usize,
 ) bool {
     if (idx.isNone()) return false;
     const node = ast.getNode(idx);
-    if (node.tag == .binding_identifier and !inside_params) {
-        const bind_name = ast.getText(node.span);
-        for (names) |n| {
-            if (std.mem.eql(u8, bind_name, n)) return true;
-        }
+    switch (node.tag) {
+        .program => {
+            var it = ast_walk.children(ast, node);
+            while (it.next()) |child_idx| {
+                if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, 0)) return true;
+            }
+            return false;
+        },
+        .block_statement,
+        .function_body,
+        => {
+            var it = ast_walk.children(ast, node);
+            while (it.next()) |child_idx| {
+                if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, scope_depth + 1)) return true;
+            }
+            return false;
+        },
+        .formal_parameters => {
+            var matching_shadows: usize = 0;
+            return bindingPatternContainsImportName(ast, idx, names, &matching_shadows);
+        },
+        .catch_clause => {
+            var matching_shadows: usize = 0;
+            if (bindingPatternContainsImportName(ast, node.data.binary.left, names, &matching_shadows)) return true;
+            return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1);
+        },
+        .variable_declaration => return scanVariableDeclarationForUnsupportedBindingLiteShadow(ast, node, names, scope_depth),
+        .binding_identifier => {
+            if (string_list.contains(names, ast.getText(node.span))) return true;
+            return false;
+        },
+        else => {
+            var it = ast_walk.children(ast, node);
+            while (it.next()) |child_idx| {
+                if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, scope_depth)) return true;
+            }
+            return false;
+        },
     }
-    const child_inside = inside_params or node.tag == .formal_parameters;
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child_idx| {
-        if (scanForNonParamBindingShadow(ast, child_idx, names, child_inside)) return true;
-    }
-    return false;
 }
 
 fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
@@ -601,7 +666,7 @@ fn buildTransformPlan(
         return .{ .semantic = .full, .reason = .ast_requires_runtime_transform };
     }
     if (facts.has_import_declaration) {
-        if (hasNamedImportLocalBindingShadow(ast)) {
+        if (hasUnsupportedNamedImportLocalBindingShadow(ast)) {
             return .{ .semantic = .full, .reason = .binding_shadow_requires_full_semantic };
         }
         return .{
@@ -681,6 +746,46 @@ fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lit
     }
 }
 
+fn collectBindingLiteVariableDeclarationShadows(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+    if (!ast.variableDeclarationKind(node).isLexical()) return;
+    const list_start = ast.extra_data.items[node.data.extra + 1];
+    const list_len = ast.extra_data.items[node.data.extra + 2];
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
+        if (decl_idx.isNone()) continue;
+        const decl = ast.getNode(decl_idx);
+        if (decl.tag != .variable_declarator) continue;
+        collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[decl.data.extra]), lite, buf, len);
+    }
+}
+
+fn collectBindingLiteListLexicalShadows(ast: *const Ast, list: ast_mod.NodeList, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+    if (list.start + list.len > ast.extra_data.items.len) return;
+    var i: u32 = 0;
+    while (i < list.len) : (i += 1) {
+        const child_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
+        if (child_idx.isNone()) continue;
+        const child = ast.getNode(child_idx);
+        if (child.tag == .variable_declaration) {
+            collectBindingLiteVariableDeclarationShadows(ast, child, lite, buf, len);
+        }
+    }
+}
+
+fn markBindingLiteBlockScope(
+    ast: *const Ast,
+    node: ast_mod.Node,
+    lite: *BindingLite,
+    parent_shadowed: []const []const u8,
+) void {
+    var shadow_buf: [64][]const u8 = undefined;
+    var shadow_len: usize = 0;
+    for (parent_shadowed) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
+    collectBindingLiteListLexicalShadows(ast, node.data.list, lite, &shadow_buf, &shadow_len);
+    markBindingLiteListValueUses(ast, node.data.list, lite, true, shadow_buf[0..shadow_len]);
+}
+
 fn markBindingPatternDefaultValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, shadowed_names: []const []const u8) void {
     if (idx.isNone()) return;
     const node = ast.getNode(idx);
@@ -751,6 +856,26 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         .import_namespace_specifier,
         .import_attribute,
         => return,
+        .block_statement,
+        .function_body,
+        => {
+            markBindingLiteBlockScope(ast, node, lite, shadowed_names);
+            return;
+        },
+        .catch_clause => {
+            var shadow_buf: [64][]const u8 = undefined;
+            var shadow_len: usize = 0;
+            for (shadowed_names) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
+            collectBindingLitePatternShadows(ast, node.data.binary.left, lite, &shadow_buf, &shadow_len);
+            markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadow_buf[0..shadow_len]);
+            return;
+        },
+        .try_statement => {
+            markBindingLiteValueUses(ast, node.data.ternary.a, lite, true, shadowed_names);
+            markBindingLiteValueUses(ast, node.data.ternary.b, lite, true, shadowed_names);
+            markBindingLiteValueUses(ast, node.data.ternary.c, lite, true, shadowed_names);
+            return;
+        },
         .export_specifier => {
             markBindingLiteValueUses(ast, node.data.binary.left, lite, true, shadowed_names);
             return;
@@ -1298,6 +1423,101 @@ test "TransformPlan: named import TypeScript strip uses binding-lite semantic" {
     try std.testing.expect(plan.strip_types_only);
 }
 
+test "TransformPlan: scope-local named import shadows stay on binding-lite route" {
+    const cases = [_]struct {
+        name: []const u8,
+        source: []const u8,
+    }{
+        .{
+            .name = "block lexical shadow with outer value use",
+            .source =
+            \\import { Foo } from "./lib";
+            \\{ const Foo = 1; Foo; }
+            \\Foo();
+            ,
+        },
+        .{
+            .name = "catch binding shadow with try body value use",
+            .source =
+            \\import { Foo } from "./lib";
+            \\try { Foo(); } catch (Foo) { Foo; }
+            ,
+        },
+        .{
+            .name = "nested block shadow with outer value use",
+            .source =
+            \\import { Foo } from "./lib";
+            \\{
+            \\  { const Foo = 1; Foo; }
+            \\  Foo();
+            \\}
+            ,
+        },
+        .{
+            .name = "block lexical shadow covers earlier references in the same block",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\{
+            \\  Foo;
+            \\  const Foo = Bar();
+            \\}
+            \\Foo();
+            ,
+        },
+    };
+
+    for (cases) |case| {
+        const plan = try testTransformPlan(case.source, "input.ts", .{});
+        std.testing.expectEqual(SemanticRequirement.bindings, plan.semantic) catch |err| {
+            std.debug.print("scope-local route failed for case '{s}', reason={s}\n", .{ case.name, @tagName(plan.reason) });
+            return err;
+        };
+    }
+}
+
+test "TransformPlan: ambiguous or overflowing named import shadows keep full semantic" {
+    const top_level = try testTransformPlan(
+        "import { Foo } from './x';\nconst Foo = 1;\nexport { Foo };\n",
+        "input.ts",
+        .{},
+    );
+    try std.testing.expectEqual(SemanticRequirement.full, top_level.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, top_level.reason);
+
+    const var_shadow = try testTransformPlan(
+        "import { Foo } from './x';\nfunction f() { var Foo = 1; return Foo; }\n",
+        "input.ts",
+        .{},
+    );
+    try std.testing.expectEqual(SemanticRequirement.full, var_shadow.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, var_shadow.reason);
+
+    const function_decl_shadow = try testTransformPlan(
+        "import { Foo } from './x';\nfunction outer() { function Foo() {} return Foo; }\n",
+        "input.ts",
+        .{},
+    );
+    try std.testing.expectEqual(SemanticRequirement.full, function_decl_shadow.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, function_decl_shadow.reason);
+
+    var overflow_source: std.ArrayList(u8) = .empty;
+    defer overflow_source.deinit(std.testing.allocator);
+    try overflow_source.appendSlice(std.testing.allocator, "import {");
+    var i: usize = 0;
+    while (i < 65) : (i += 1) {
+        try overflow_source.writer(std.testing.allocator).print(" I{d},", .{i});
+    }
+    try overflow_source.appendSlice(std.testing.allocator, " } from './x';\nfunction f(");
+    i = 0;
+    while (i < 65) : (i += 1) {
+        try overflow_source.writer(std.testing.allocator).print("I{d},", .{i});
+    }
+    try overflow_source.appendSlice(std.testing.allocator, ") {}\n");
+    const overflow_plan = try testTransformPlan(overflow_source.items, "input.ts", .{});
+    try std.testing.expectEqual(SemanticRequirement.full, overflow_plan.semantic);
+    try std.testing.expectEqual(SemanticPlanReason.binding_shadow_requires_full_semantic, overflow_plan.reason);
+}
+
 test "TransformPlan: default and namespace imports keep full semantic" {
     const default_plan = try testTransformPlan("import Foo from './bar';\nexport const x = 1;\n", "input.ts", .{});
     try std.testing.expectEqual(SemanticRequirement.full, default_plan.semantic);
@@ -1585,6 +1805,86 @@ test "TransformPlan parity: binding-lite named import elision matches full seman
             ,
         },
         .{
+            .name = "catch binding shadow does not hide try body import use",
+            .source =
+            \\import { Foo } from "./lib";
+            \\try { Foo(); } catch (Foo) { Foo; }
+            ,
+        },
+        .{
+            .name = "block lexical shadow does not hide outer import use",
+            .source =
+            \\import { Foo } from "./lib";
+            \\{ const Foo = 1; Foo; }
+            \\Foo();
+            ,
+        },
+        .{
+            .name = "nested block lexical shadow does not hide outer import use",
+            .source =
+            \\import { Foo } from "./lib";
+            \\{
+            \\  { const Foo = 1; Foo; }
+            \\  Foo();
+            \\}
+            ,
+        },
+        .{
+            .name = "nested function catch and block shadows stay scoped",
+            .source =
+            \\import { Foo, Bar, Baz } from "./lib";
+            \\export function outer(Foo = Bar()) {
+            \\  try {
+            \\    Baz();
+            \\  } catch (Bar) {
+            \\    { const Baz = Bar; Baz; }
+            \\  }
+            \\  return Foo;
+            \\}
+            \\export const value = Bar();
+            ,
+        },
+        .{
+            .name = "local declaration initializer can use another import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\{
+            \\  const Foo = Bar();
+            \\  Foo;
+            \\}
+            ,
+        },
+        .{
+            .name = "type-only import use mixed with value import use",
+            .source =
+            \\import { Foo, Bar, type Baz } from "./lib";
+            \\type T = Foo | Baz;
+            \\{ const Foo = 1; Foo; }
+            \\export const value: T = Bar();
+            ,
+        },
+        .{
+            .name = "block lexical shadow covers declaration initializer order",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\{
+            \\  Foo;
+            \\  const Foo = Bar();
+            \\}
+            \\Foo();
+            ,
+        },
+        .{
+            .name = "destructuring local shadow initializer can use another import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\{
+            \\  const { value: Foo = Bar() } = source;
+            \\  Foo;
+            \\}
+            ,
+        },
+        .{
             // assignment_expression LHS (`Foo = expr`) 가 expression context 에서 walker arm
             // 에 잡혀 value_context=false 로 강제되면 import 가 잘못 elide 된다 — regression guard.
             .name = "assignment to imported name in expression keeps import",
@@ -1636,8 +1936,6 @@ test "TransformPlan: full-route guards for binding-lite follow-up" {
         .{ .name = "cjs", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .module_format = .cjs } },
         .{ .name = "downlevel", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .unsupported = compat.fromESTarget(.es5), .es_target = .es5 } },
         .{ .name = "flow", .source = "import { Foo } from './x';\nexport const x: Foo = 1;\n", .path = "input.js", .options = .{ .flow = true } },
-        .{ .name = "import local shadowed by local declaration", .source = "import { Foo } from './x';\nconst Foo = 1;\nexport { Foo };\n" },
-        .{ .name = "import local shadowed by catch binding", .source = "import { Foo } from './x';\ntry { Foo(); } catch (Foo) { console.log(Foo); }\n" },
     };
 
     for (cases) |case| {
