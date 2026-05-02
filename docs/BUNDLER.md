@@ -169,9 +169,147 @@ const Module = struct {
 - ✅ **2.1단계**: 사용자 pure hint — `--pure:callee` / `BuildOptions.pure`를 기존 pure flag로 반영
 - ✅ **2.5단계**: sideEffects 지원 — package.json `sideEffects: false` + 자동 순수 판별
 - ✅ **2.5b**: sideEffects 글롭 패턴 — `sideEffects: ["*.css"]` 배열 형태 (matchGlob 기반)
+- ✅ **statement-level**: rolldown 방식 symbol graph + BFS 도달성 (`stmt_info.zig` / `statement_shaker.zig`)
 - ⬜ **3단계**: 깊은 사이드 이펙트 분석 — getter/proxy/global 변수 판단 (후순위)
-- **문장 수준 tree-shaking은 구현하지 않음** — esbuild/Bun과 동일하게 모듈 수준만 (Rollup만 문장 수준 지원)
 - ZTS 유리점: semantic analyzer의 스코프/심볼이 이미 있고, `@__PURE__` 렉서 지원, 인덱스 기반 AST로 노드 제거가 태그 변경만으로 가능
+
+## Tree-shaking 구현 (모듈 수준 + statement 수준)
+
+번들러의 트리쉐이킹은 두 패스로 나뉜다. **모듈 수준** 은 어떤 모듈/export 가 도달 가능한지를 fixpoint 로 좁히고, **statement 수준** 은 모듈 안에서 어떤 top-level 문이 살아남는지를 symbol graph BFS 로 결정한다. 별도로 트랜스파일-only 경로 (번들러 미사용) 에는 `BindingLite` 라는 fast-path 가 named import elision 만 좁게 수행한다.
+
+```
+src/bundler/
+  tree_shaker.zig          ← 모듈 수준 fixpoint, used_exports, has_direct_used_export
+  stmt_info.zig            ← statement 단위 symbol graph (declared/referenced)
+  statement_shaker.zig     ← StmtInfo + reachable bitset → skip_nodes 계산
+  binding_scanner.zig      ← import_specifier → BindingRecord 추출 (SPEC_FLAG_TYPE_ONLY skip)
+  purity.zig               ← @__PURE__, builtin pure ctor, sideEffects 자동 판별
+
+src/transformer/transformer.zig
+  shouldElideImportSpecifier  ← named specifier 단위 elision (verbatim 가드)
+  namedImportValueUse          ← BindingLite 결과 조회
+
+src/transpile.zig
+  hasNamedImportLocalBindingShadow / collectBindingLite ← 트랜스파일 fast-path
+```
+
+### 1단계 — 모듈 수준 (`tree_shaker.zig`)
+
+진입점부터 fixpoint 반복으로 도달 가능한 모듈/export 를 좁힌다 (`max_fixpoint_iterations = 100`, 실측 2-3회 수렴). 핵심 자료구조:
+
+| 필드 | 의미 |
+|---|---|
+| `used_exports: HashMap("module_idx:export_name" → bool)` | export 단위 사용 여부 (`ALL_EXPORTS_SENTINEL = "*"` 로 entry/dynamic-import 모듈 마킹) |
+| `has_direct_used_export: []bool` | 모듈 단위 used export 유무 — `hasAnyUsedExport` 가 O(1) (#917) |
+| `re_export_star_targets: ?DynamicBitSet` | `export * from` source 모듈 마스크 — fixpoint 안 `tryMarkReExportNsSubset` O(M·E) 스캔 회피 (#1928) |
+| `module_stmt_infos: []ModuleStmtInfos` | 모듈별 StmtInfo (fixpoint **이전** 에 일괄 구축, BFS 진입 시 O(1) 조회 #1558) |
+
+알고리즘:
+1. 진입점 + dynamic import target → `used_exports[*]` seed (#1260: dynamic import 는 정적 분석 밖이라 entry 취급)
+2. 포함 모듈의 import specifier 스캔 → `(source_module, imported_name)` 키로 마킹
+3. re-export chain 따라 cascade — `buildSymToIbMaps()` 가 fixpoint 각 iteration 마다 lazy 갱신해 같은 iteration 내 `followImport` 가 정상 동작
+4. 모듈 inclusion: `!has_used_export && !is_entry && !has_evaluation_side_effects` → 제거 (bitset)
+
+성능 기록:
+- fixpoint oscillation 수정 (#1558): 100회 → 2회 — 미사용 모듈 제거를 fixpoint **밖** 으로 분리
+- StmtInfo 사전 구축 (#1558 / #920): tree-shake 29.8 → 5.6ms (-81%), 전체 transpile 82.7 → 56.9ms (-31%)
+
+### 2단계 — Statement 수준 (`stmt_info.zig` + `statement_shaker.zig`)
+
+semantic analyzer 가 만든 `symbol_ids` (node_index → symbol_index) 를 재활용해 top-level statement 단위 symbol graph 를 구축한다.
+
+```zig
+// stmt_info.zig
+pub const StmtInfo = struct {
+    node_idx: u32,
+    span: Span,
+    has_side_effects: bool,
+    declared_symbols: []const u32,    // 이 stmt 가 선언하는 top-level 심볼
+    referenced_symbols: []const u32,  // 참조 (declared 제외)
+};
+
+pub const ModuleStmtInfos = struct {
+    stmts: []StmtInfo,
+    cjs_export_facts: []const CjsExportFact,        // exports.foo = ... 정적 증명
+    symbol_to_stmt: []const ?u32,                    // symbol → 선언 stmt (O(1))
+    sym_to_referencing_stmts: []const []const u32,   // symbol → 참조 stmt 들
+    sym_to_writer_stmts: []const []const u32,        // 비선언 write (`var _a; _a = AST;` TS 패턴)
+    sym_to_side_effect_stmts: []const []const u32,   // side-effectful 참조
+    ...
+};
+```
+
+도달성 BFS (`computeReachable`):
+- **Seed**: side-effectful stmt + used export 의 선언 stmt + writer stmt
+- **전파**: `referenced_symbols` 재귀, `symbol_to_stmt`/`sym_to_writer_stmts` 로 의존 stmt enqueue
+- **출력**: stmt 도달성 bitset → emitter 가 skip_nodes 로 변환
+
+`statement_shaker.zig` 는 transformer 의 `newSymbolIds` (linker rename 후) 를 받아 도달성을 재계산해 스코프 호이스팅과 정합성을 맞춘다 (#1558 Phase 4).
+
+### 순수성 분석 (`purity.zig`)
+
+esbuild / rolldown 과 동일 기준. 재귀 깊이 128 제한.
+
+- **순수**: literal, identifier, function/arrow expression, `@__PURE__` 호출
+- **객체/배열**: 원소 모두 순수 (computed key 도 key+value 둘 다)
+- **Builtin pure constructor** (unresolved global 컨텍스트만):
+  - `Set/Map/WeakSet/WeakMap`: `new` 전용, 인자는 무인자/null/undefined/ArrayExpression 만 (iterator protocol side-effect 회피)
+  - `Array/Date/String`: 인자 재귀 pure 검사
+  - `Error` 계열: msg 인자가 Symbol 아님 정적 증명 필요
+  - `Object.freeze`/`Object.assign`: fresh literal 제약 special case
+- **Statement 순수**: function/class declaration, pure variable initialization, side-effect-free export
+- **`@__PURE__` 주석**: 렉서가 다음 call/new 노드의 `is_pure` 플래그 설정 → tree_shaker / statement_shaker 가 무시
+
+`sideEffects` 필드:
+- `false` → 모듈 전체 순수
+- `["*.css"]` → glob 매칭 (단조 적용, 예외 없음, INVARIANTS.md § sideEffects 참고)
+- 자동 순수 판별: entry 가 아닌 모듈의 top-level 이 모두 순수면 `side_effects = false` 자동 설정
+
+### Type-only import elision
+
+두 진입점이 협력한다.
+
+**번들러 경로** (`binding_scanner.zig` + `transformer.zig`):
+1. `extractImportBindings`: `import_specifier.binary.flags & SPEC_FLAG_TYPE_ONLY != 0` 인 specifier 는 BindingRecord 미생성 — 런타임 바인딩 자체가 없으므로 자연 elide
+2. `shouldElideImportSpecifier` (transformer.zig:4833): `verbatim_module_syntax = false` 가드 + named specifier 한정. symbol table 의 `reference_count` 와 `isValueUse()` 로 "값 위치 참조 0" 인 named import 만 제거 (#1791 Phase D)
+
+default/namespace specifier 는 JSX pragma, CSS-in-JS implicit-use 위험으로 elision 미지원 (#1793 revert 사유).
+
+**트랜스파일 fast-path** (`transpile.zig` BindingLite):
+- 번들러가 아닌 단일 파일 트랜스파일 모드에서 full semantic 없이 named import 제거를 노리는 경량 스코프 분석
+- `collectBindingLite` 가 named import local 을 수집, `markBindingLiteValueUses` 가 program 트리를 한 번 훑어 value-use 마킹
+- value-use 가 0 인 local 은 transformer 의 `namedImportValueUse(local_name)` 조회로 제거됨
+- BindingLite 는 scope 를 완전히 모델링하지 않아, **import local 과 같은 이름의 binding 이 다른 곳에서 다시 선언되면** 보수적으로 full semantic 경로로 fallback (`hasNamedImportLocalBindingShadow`, PR #2410)
+
+### CJS export facts (`stmt_info.zig`)
+
+CJS module 도 일부는 정적으로 export 를 증명할 수 있어 트리쉐이킹 가능하다.
+
+```zig
+pub const CjsExportFact = struct {
+    pub const Kind = enum {
+        assignment,             // exports.foo = rhs
+        object_property,        // module.exports = { foo: rhs, ... }
+        define_property_value,  // Object.defineProperty(exports, 'foo', { value: rhs })
+        define_property_getter, // ... { get: () => rhs }
+    };
+    export_name: []u8,
+    statement_index: u32,
+    rhs_symbol: ?u32,
+    kind: Kind,
+    is_safe_to_prune: bool,
+    ...
+};
+```
+
+증명 가능한 패턴만 fact 로 등록되고, dynamic property (`exports[k]`) / runtime branch (`if (cond) exports.foo = ...`) / getter side-effect 는 제외돼 보수적으로 보존된다.
+
+### 한계
+
+- **CJS wrap Asset 모듈**: `require_X()` 호출이 side-effect 로 간주돼 미사용 import 라도 트리쉐이킹 불가. esbuild 의 `NoSideEffects_PureData` 마킹은 미적용 (ROADMAP.md § "CJS wrap Asset"). JSON 모듈은 ESM AST 변환으로 우회 (#589).
+- **Namespace import barrel**: `import * as X; export { X }` 는 symbol 기반 추적 불가 → local export 로 분류, lazyBarrel 정밀화 미완료 (ROADMAP.md § lazyBarrel).
+- **getter/proxy/global side-effect**: 깊은 분석 미구현 (전략 3단계, 후순위).
+- **BindingLite shadow 한계**: 64 개 초과 named import 는 full semantic 으로 보수적 fallback (스택 버퍼 overflow — `transpile.zig` `hasNamedImportLocalBindingShadow`).
 
 ## 스코프 호이스팅 deconflict 개선 (TODO — 구조적 수정 필요)
 현재: well-known global 이름 목록(`isReservedName`)을 상수로 관리. 모듈의 top-level 변수가 글로벌을 shadowing하면 리네임.
