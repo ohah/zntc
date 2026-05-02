@@ -1213,3 +1213,56 @@ test "schema_builder: Flow inline object type → mixed" {
     try std.testing.expectEqual(@as(usize, 1), shape.props.len);
     try std.testing.expect(shape.props[0].type_annotation == .mixed);
 }
+
+test "schema_builder: Flow exact object type {| ... |} prop position → mixed (#2447)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| count: number |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow empty exact object {||} prop position → mixed (#2447)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {||} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object as union member → mixed (#2447)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: string | {| count: number |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    // mixed union (string + object) → mixed.
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow nested exact objects → mixed (#2447)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| inner: {| n: number |} |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}

@@ -123,17 +123,23 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
 
 /// Union 타입: A | B | C
 /// 선행 | 허용: | A | B
+///
+/// Exact object close 보호 (#2447): `{| count: number |}` 같이 prop position 의 inner
+/// exact object 가 union 처리 시 close `|` 까지 흡수되면 outer parser 가 깨짐. `|` 다음
+/// 토큰이 `}` 면 exact object close 로 간주하고 union 종료 (단순 type alias 의 trailing
+/// `|` 는 valid Flow syntax 가 아님 — Babel `flowParseUnionType` 도 동일 정책).
 fn parseUnionType(self: *Parser) ParseError2!NodeIndex {
+    if (try pipeIsExactClose(self)) return parseIntersectionType(self);
     if (self.current() == .pipe) try self.advance();
     const first = try parseIntersectionType(self);
-    if (self.current() != .pipe) return first;
+    if (self.current() != .pipe or try pipeIsExactClose(self)) return first;
 
     // `A | B | C` — flat NodeList 로 저장 (layout=.list).
     const scratch_top = self.saveScratch();
     defer self.restoreScratch(scratch_top);
     try self.scratch.append(self.allocator, first);
     const start = self.ast.getNode(first).span.start;
-    while (self.current() == .pipe) {
+    while (self.current() == .pipe and !try pipeIsExactClose(self)) {
         try self.advance();
         const next = try parseIntersectionType(self);
         try self.scratch.append(self.allocator, next);
@@ -144,6 +150,12 @@ fn parseUnionType(self: *Parser) ParseError2!NodeIndex {
         .{ .start = start, .end = self.currentSpan().start },
         list,
     );
+}
+
+/// 현재 토큰이 `|` 이고 직후가 `}` — exact object (`{| ... |}`) 의 close marker. union
+/// operator 로 흡수하면 안 됨 (#2447).
+fn pipeIsExactClose(self: *Parser) ParseError2!bool {
+    return self.current() == .pipe and try self.peekNextKind() == .r_curly;
 }
 
 /// Intersection 타입: A & B & C
