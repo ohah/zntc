@@ -599,8 +599,9 @@ fn scanForUnsupportedBindingLiteShadow(
     if (idx.isNone()) return false;
     const node = ast.getNode(idx);
     switch (node.tag) {
-        // program 의 child 는 항상 top-level (scope_depth=0). block/function body 진입은
-        // scope_depth+1. 그 외 노드는 같은 scope_depth 로 children 만 내려간다.
+        // scope_depth: program 은 0, block/body 진입마다 +1. inside_function: function/arrow body
+        // 이하 ancestry. 두 값이 함께 쓰이는 이유는 transpile.zig:573-575 의 truth table 참고 — top-level
+        // var 은 import 를 가리지만 함수 내 var 는 nearest function scope 에만 머물러 outer use 를 안 가린다.
         .program => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, 0, false),
         .block_statement => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, inside_function),
         .function_body => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, true),
@@ -628,10 +629,6 @@ fn scanForUnsupportedBindingLiteShadow(
             return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth + 1, true);
         },
         .variable_declaration => return scanVariableDeclarationForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
-        .variable_declarator => {
-            const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + 2]);
-            return scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth, inside_function);
-        },
         .binding_identifier => return string_list.contains(names, ast.getText(node.span)),
         else => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
     }
@@ -761,6 +758,7 @@ fn appendBindingLiteShadowName(buf: [][]const u8, len: *usize, name: []const u8)
 }
 
 fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+    if (len.* >= buf.len) return;
     var it = ast_walk.bindingIdentifiers(ast, idx, .{ .cover_grammar_assignment = true });
     while (it.next()) |leaf_idx| {
         const leaf = ast.getNode(leaf_idx);
@@ -772,21 +770,6 @@ fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lit
 }
 
 fn collectBindingLiteVariableDeclarationShadows(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
-    if (!ast.variableDeclarationKind(node).isLexical()) return;
-    const list_start = ast.extra_data.items[node.data.extra + 1];
-    const list_len = ast.extra_data.items[node.data.extra + 2];
-    var i: u32 = 0;
-    while (i < list_len) : (i += 1) {
-        const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
-        if (decl_idx.isNone()) continue;
-        const decl = ast.getNode(decl_idx);
-        if (decl.tag != .variable_declarator) continue;
-        collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[decl.data.extra]), lite, buf, len);
-    }
-}
-
-fn collectBindingLiteVarDeclarationShadows(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
-    if (ast.variableDeclarationKind(node).isLexical()) return;
     const list_start = ast.extra_data.items[node.data.extra + 1];
     const list_len = ast.extra_data.items[node.data.extra + 2];
     var i: u32 = 0;
@@ -801,6 +784,7 @@ fn collectBindingLiteVarDeclarationShadows(ast: *const Ast, node: ast_mod.Node, 
 
 fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
     if (idx.isNone()) return;
+    if (len.* >= buf.len) return;
     const node = ast.getNode(idx);
     switch (node.tag) {
         .function_declaration,
@@ -808,7 +792,9 @@ fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex,
         .function,
         .arrow_function_expression,
         => return,
-        .variable_declaration => collectBindingLiteVarDeclarationShadows(ast, node, lite, buf, len),
+        .variable_declaration => if (!ast.variableDeclarationKind(node).isLexical()) {
+            collectBindingLiteVariableDeclarationShadows(ast, node, lite, buf, len);
+        },
         else => {},
     }
 
@@ -825,7 +811,7 @@ fn collectBindingLiteListLexicalShadows(ast: *const Ast, list: ast_mod.NodeList,
         const child_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
         if (child_idx.isNone()) continue;
         const child = ast.getNode(child_idx);
-        if (child.tag == .variable_declaration) {
+        if (child.tag == .variable_declaration and ast.variableDeclarationKind(child).isLexical()) {
             collectBindingLiteVariableDeclarationShadows(ast, child, lite, buf, len);
         }
     }
