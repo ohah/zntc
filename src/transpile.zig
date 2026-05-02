@@ -614,7 +614,8 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
     const list_start = ast.extra_data.items[node.data.extra + 1];
     const list_len = ast.extra_data.items[node.data.extra + 2];
     // 함수 scope 안이면 호출자가 누적 카운터를 넘기고, 모듈 scope 면 statement 로컬 카운터로 폴백.
-    // statement-local shadow 수는 before/after 차이로 계산해 lex/non-lex top-level 결정에 쓴다.
+    // before snapshot 은 lex/non-lex top-level fallback 결정에 쓰는 statement-local 카운트를 분리해
+    // 둔다 — 같은 함수의 다른 var statement 가 누적한 값을 자기 것으로 오인하지 않게.
     var local_count: usize = 0;
     const counter = fn_shadow_count orelse &local_count;
     const before = counter.*;
@@ -650,6 +651,20 @@ fn scanChildrenForUnsupportedBindingLiteShadow(
     return false;
 }
 
+// 함수/arrow scope 의 params + body 를 같은 카운터로 한 번씩만 순회. arrow 와 function 양쪽이 공유.
+fn scanFunctionScopeParamsAndBody(
+    ast: *const Ast,
+    params_idx: ast_mod.NodeIndex,
+    body_idx: ast_mod.NodeIndex,
+    names: []const []const u8,
+    scope_depth: usize,
+    inside_function: bool,
+    fn_shadow_count: *usize,
+) bool {
+    if (scanForUnsupportedBindingLiteShadow(ast, params_idx, names, scope_depth, inside_function, fn_shadow_count)) return true;
+    return scanForUnsupportedBindingLiteShadow(ast, body_idx, names, scope_depth + 1, true, fn_shadow_count);
+}
+
 fn scanFunctionForUnsupportedBindingLiteShadow(
     ast: *const Ast,
     node: ast_mod.Node,
@@ -663,14 +678,19 @@ fn scanFunctionForUnsupportedBindingLiteShadow(
     // outer 에 노출되는 binding 이므로 일반 스캔 경로 (fn_shadow_count=null) 를 그대로 탄다.
     const is_function_expression = node.tag != .function_declaration;
     // 한 함수 scope 안에서 누적되는 shadow 수. 함수-식 self-name + params + body 안 var binding 합산.
-    // params/body 일반 scan 에 같은 카운터를 스레딩해 BindingLite 과 동일 set 에 대해 overflow 만 잡고,
-    // params/body 트리는 한 번씩만 순회한다.
+    // BindingLite collector (markBindingLiteFunctionScope) 가 모으는 set 과 동일 — overflow 시 fallback.
     var fn_shadow_count: usize = 0;
     if (is_function_expression and functionExpressionNameImportShadowOverflow(ast, node, names, &fn_shadow_count)) return true;
-
     if (!is_function_expression and scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function, null)) return true;
-    if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth, inside_function, &fn_shadow_count)) return true;
-    return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, scope_depth + 1, true, &fn_shadow_count);
+    return scanFunctionScopeParamsAndBody(
+        ast,
+        @enumFromInt(ast.extra_data.items[e + 1]),
+        @enumFromInt(ast.extra_data.items[e + 2]),
+        names,
+        scope_depth,
+        inside_function,
+        &fn_shadow_count,
+    );
 }
 
 fn scanForUnsupportedBindingLiteShadow(
@@ -708,10 +728,17 @@ fn scanForUnsupportedBindingLiteShadow(
         => return scanFunctionForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
         .arrow_function_expression => {
             const e = node.data.extra;
-            // arrow 도 자기 function scope 를 가지므로 새 카운터를 연다. params 와 body 가 함께 누적.
+            // arrow 도 자기 function scope 를 가지므로 새 카운터를 연다. function 과 같은 헬퍼 공유.
             var arrow_shadow_count: usize = 0;
-            if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function, &arrow_shadow_count)) return true;
-            return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth + 1, true, &arrow_shadow_count);
+            return scanFunctionScopeParamsAndBody(
+                ast,
+                @enumFromInt(ast.extra_data.items[e]),
+                @enumFromInt(ast.extra_data.items[e + 1]),
+                names,
+                scope_depth,
+                inside_function,
+                &arrow_shadow_count,
+            );
         },
         .variable_declaration => return scanVariableDeclarationForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function, fn_shadow_count),
         .binding_identifier => return string_list.contains(names, ast.getText(node.span)),
