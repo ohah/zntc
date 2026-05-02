@@ -20167,7 +20167,7 @@ __export(exports_react_native_Libraries_Text_Text, {
 var init_react_native_Libraries_Text_Text = __esm({
 	"Text.js"() {
 	useTextPressability = function(_r) {
-		var onLongPress = _r.onLongPress,onPress = _r.onPress,onPressIn = _r.onPressIn,onPressOut = _r.onPressOut,onResponderGrant = _r.onResponderGrant,onResponderMove = _r.onResponderMove,onResponderRelease = _r.onResponderRelease,onResponderTerminate = _r.onResponderTerminate,onResponderTerminationRequest = _r.onResponderTerminationRequest,onStartShouldSetResponder = _r.onStartShouldSetResponder,pressRetentionOffset = _r.pressRetentionOffset,suppressHighlighting = _r.suppressHighlighting,_m = __read(require_react_index().useState(false), 2),isHighlighted = _m[0],setHighlighted = _m[1],config = require_react_index().useMemo(function() {
+		var onLongPress = _r.onLongPress,onPress = _r.onPress,onPressIn = _r.onPressIn,onPressOut = _r.onPressOut,onResponderGrant = _r.onResponderGrant,onResponderMove = _r.onResponderMove,onResponderRelease = _r.onResponderRelease,onResponderTerminate = _r.onResponderTerminate,onResponderTerminationRequest = _r.onResponderTerminationRequest,onStartShouldSetResponder = _r.onStartShouldSetResponder,pressRetentionOffset = _r.pressRetentionOffset,suppressHighlighting = _r.suppressHighlighting,_m = ªªªªªª(require_react_index().useState(false), 2),isHighlighted = _m[0],setHighlighted = _m[1],config = require_react_index().useMemo(function() {
 			var _onPressIn = onPressIn,_onPressOut = onPressOut;
 			if (Platform.OS === "ios") {
 				_onPressIn = function(event) {
@@ -20489,11 +20489,11 @@ var init_react_native_Libraries_Text_Text = __esm({
 	TextImpl = _TextImpl;
 	TextImpl.displayName = "Text";
 	NativePressableVirtualText = function(_s) {
-		var forwardedRef = _s.ref,textProps = _s.textProps,textPressabilityProps = _s.textPressabilityProps,_m = __read(useTextPressability(textPressabilityProps), 2),isHighlighted = _m[0],eventHandlersForText = _m[1];
+		var forwardedRef = _s.ref,textProps = _s.textProps,textPressabilityProps = _s.textPressabilityProps,_m = ªªªªªª(useTextPressability(textPressabilityProps), 2),isHighlighted = _m[0],eventHandlersForText = _m[1];
 		return (/* @__PURE__ */ React$13.createElement(NativeVirtualText, Object.assign({}, textProps, eventHandlersForText, { isHighlighted: isHighlighted, isPressable: true, ref: forwardedRef })));
 	};
 	NativePressableText = function(_t) {
-		var forwardedRef = _t.ref,textProps = _t.textProps,textPressabilityProps = _t.textPressabilityProps,_n = __read(useTextPressability(textPressabilityProps), 2),isHighlighted = _n[0],eventHandlersForText = _n[1];
+		var forwardedRef = _t.ref,textProps = _t.textProps,textPressabilityProps = _t.textPressabilityProps,_n = ªªªªªª(useTextPressability(textPressabilityProps), 2),isHighlighted = _n[0],eventHandlersForText = _n[1];
 		return (/* @__PURE__ */ React$13.createElement(NativeText, Object.assign({}, textProps, eventHandlersForText, { isHighlighted: isHighlighted, isPressable: true, ref: forwardedRef })));
 	};
 	userSelectToSelectableMap = { auto: true, text: true, none: false, contain: true, all: true };
@@ -32955,7 +32955,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorBody = __esm({
 	"LogBoxInspectorBody.js"() {
 	LogBoxInspectorBody = function(props) {
 		;
-		var _a = __read(require_react_index().useState(true), 2),collapsed = _a[0],setCollapsed = _a[1];
+		var _a = ªªªªªª(require_react_index().useState(true), 2),collapsed = _a[0],setCollapsed = _a[1];
 		require_react_index().useEffect(function() {
 			setCollapsed(true);
 		}, [props.log]);
@@ -57167,7 +57167,7 @@ __export(exports_react_native_Libraries_Utilities_useWindowDimensions, {
 var init_react_native_Libraries_Utilities_useWindowDimensions = __esm({
 	"useWindowDimensions.js"() {
 	useWindowDimensions = function() {
-		var _a = ªªªªªª(require_react_index().useState(function() {
+		var _a = __read(require_react_index().useState(function() {
 			return Dimensions.get("window");
 		}), 2),dimensions = _a[0],setDimensions = _a[1];
 		require_react_index().useEffect(function() {
@@ -58475,7 +58475,7 @@ var init_react_native_Libraries_Components_Switch_Switch = __esm({
 		return true;
 	};
 	Switch = function(_b) {
-		var forwardedRef = _b.ref,props = __rest(_b, ["ref"]),_c,_d,_e,_f,_g,_a = props,disabled = _a.disabled,ios_backgroundColor = _a.ios_backgroundColor,onChange = _a.onChange,onValueChange = _a.onValueChange,style = _a.style,thumbColor = _a.thumbColor,trackColor = _a.trackColor,value = _a.value,restProps = __rest(_a, ["disabled", "ios_backgroundColor", "onChange", "onValueChange", "style", "thumbColor", "trackColor", "value"]),trackColorForFalse = (trackColor == null ? void 0 : trackColor.false),trackColorForTrue = (trackColor == null ? void 0 : trackColor.true),nativeSwitchRef = require_react_index().useRef(null),ref = useMergeRefs(nativeSwitchRef, forwardedRef),_b = __read(require_react_index().useState({ value: null }), 2),native = _b[0],setNative = _b[1],handleChange = function(event) {
+		var forwardedRef = _b.ref,props = __rest(_b, ["ref"]),_c,_d,_e,_f,_g,_a = props,disabled = _a.disabled,ios_backgroundColor = _a.ios_backgroundColor,onChange = _a.onChange,onValueChange = _a.onValueChange,style = _a.style,thumbColor = _a.thumbColor,trackColor = _a.trackColor,value = _a.value,restProps = __rest(_a, ["disabled", "ios_backgroundColor", "onChange", "onValueChange", "style", "thumbColor", "trackColor", "value"]),trackColorForFalse = (trackColor == null ? void 0 : trackColor.false),trackColorForTrue = (trackColor == null ? void 0 : trackColor.true),nativeSwitchRef = require_react_index().useRef(null),ref = useMergeRefs(nativeSwitchRef, forwardedRef),_b = ªªªªªª(require_react_index().useState({ value: null }), 2),native = _b[0],setNative = _b[1],handleChange = function(event) {
 			onChange == null || onChange(event);
 			onValueChange == null || onValueChange(event.nativeEvent.value);
 			setNative({ value: event.nativeEvent.value });

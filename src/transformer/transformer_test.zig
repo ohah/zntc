@@ -455,6 +455,51 @@ test "derived class with super + private fields (regression #2422)" {
     try std.testing.expect(r.statementCount() >= 1);
 }
 
+test "derived class with constructor returns (regression #2422 — transformDerivedConstructorReturns)" {
+    // Why: transformDerivedConstructorReturns 의 .list/.extra arms 도 동일 realloc 패턴.
+    // constructor 안에 `return X` 가 있으면 buildPossibleConstructorReturn 호출 → addNode →
+    // extra_data grow → 캡처된 slice invalidate. block_statement → if_statement → return
+    // 패턴으로 .list/.extra arms 모두 exercise.
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        \\class Child extends Parent {
+        \\  a = 1; b = 2; c = 3; d = 4; e = 5;
+        \\  constructor(opts) {
+        \\    super(opts);
+        \\    if (opts.fast) {
+        \\      return { x: 1, y: 2 };
+        \\    }
+        \\    if (opts.slow) {
+        \\      return opts;
+        \\    }
+        \\    return this;
+        \\  }
+        \\}
+    ,
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    try std.testing.expect(r.statementCount() >= 1);
+}
+
+test "derived class with super inside expression (regression #2422 — injectInstanceFieldsAfterSuperExpr)" {
+    // Why: injectInstanceFieldsAfterSuperExpr 의 sequence/call/object arms 가 동일 realloc.
+    // super() 가 expression context (sequence comma 안 또는 call 인자 안) 에 있으면 진입.
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        \\class Child extends Parent {
+        \\  a = 1; b = 2; c = 3;
+        \\  constructor(opts) {
+        \\    (super(opts), this.x = 1, this.y = 2);
+        \\  }
+        \\}
+    ,
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    try std.testing.expect(r.statementCount() >= 1);
+}
+
 test "useDefineForClassFields=true: default behavior preserves fields" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,
