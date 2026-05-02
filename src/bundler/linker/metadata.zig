@@ -101,10 +101,14 @@ pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_import
 /// `Linker.unified_result` 에서 현재 모듈의 Phase B (nested) rename 을
 /// `renames` 에 merge. Phase A 심볼 (module_scope_symbols bitset set) 은
 /// 스킵 — self-rename 루프가 canonical_name 경로로 이미 처리했음.
+///
+/// rename 문자열은 dupe 하여 metadata 가 소유 — `unified_result` 가 다른 시점에 deinit
+/// 되거나 allocator pattern fill 로 0xAA 가 되는 use-after-free 회피.
 fn mergeUnifiedPhaseB(
     self: *const Linker,
     module_index: u32,
     renames: *std.AutoHashMap(u32, []const u8),
+    owned: *std.ArrayListUnmanaged([]const u8),
 ) !void {
     const ur = &(self.unified_result orelse return);
     if (module_index >= self.unified_module_scopes.len) return;
@@ -116,7 +120,9 @@ fn mergeUnifiedPhaseB(
         const sid = entry.key_ptr.symbol_id;
         if (sid < module_bits.capacity() and module_bits.isSet(sid)) continue;
         if (renames.contains(sid)) continue;
-        try renames.put(sid, entry.value_ptr.*);
+        const owned_value = try self.allocator.dupe(u8, entry.value_ptr.*);
+        try owned.append(self.allocator, owned_value);
+        try renames.put(sid, owned_value);
     }
 }
 
@@ -390,7 +396,10 @@ pub fn buildMetadataForAst(
                         }
 
                         if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                            try renames.put(sym_idx, preamble_name);
+                            // preamble_name 은 borrowed slice — dupe 로 metadata 가 소유.
+                            const owned_name = try self.allocator.dupe(u8, preamble_name);
+                            try owned_nested_renames.append(self.allocator, owned_name);
+                            try renames.put(sym_idx, owned_name);
                         }
                     }
                 }
@@ -588,9 +597,15 @@ pub fn buildMetadataForAst(
             // scope hoisting 후 import가 제거되므로, 같은 이름이라도
             // 항상 renames에 등록하여 codegen이 target 변수를 참조하도록 함.
             // 중첩 스코프 충돌은 resolveNestedShadowConflicts에서 이미 처리됨.
-            if (!isReservedName(target_name)) {
+            // 방어 — target_name 이 use-after-free 로 0xAA / 0 등 invalid byte 로
+            // 채워졌으면 rename 스킵 (#2429). identifier 첫 byte 는 ASCII (0x21-0x7E).
+            const target_valid = target_name.len > 0 and target_name[0] >= 0x21 and target_name[0] < 0x80;
+            if (!isReservedName(target_name) and target_valid) {
                 if (ib.local_symbol.semanticIndex()) |sym_idx| {
-                    try renames.put(sym_idx, target_name);
+                    // target_name 은 borrowed (Module 이름/canonical_name 등) — dupe.
+                    const owned_target = try self.allocator.dupe(u8, target_name);
+                    try owned_nested_renames.append(self.allocator, owned_target);
+                    try renames.put(sym_idx, owned_target);
                     // __esm → __esm live binding: __export getter override 등록 +
                     // 자체 rename 루프에서 덮어쓰기 방지
                     if (m.wrap_kind == .esm and canonical_m_opt != null and
@@ -665,15 +680,18 @@ pub fn buildMetadataForAst(
             if (self.getCanonicalName(module_index, sym_name)) |renamed| {
                 if (!export_getter_overrides.contains(sym_name)) {
                     const sym_idx = scope_entry.value_ptr.*;
-                    try renames.put(@intCast(sym_idx), renamed);
+                    // renamed 는 linker.canonical_strings borrowed — dupe.
+                    const owned_renamed = try self.allocator.dupe(u8, renamed);
+                    try owned_nested_renames.append(self.allocator, owned_renamed);
+                    try renames.put(@intCast(sym_idx), owned_renamed);
                 }
             }
         }
 
         // nested rename 을 `Linker.unified_result` 에서 조회. Phase A (module
         // scope) 은 위 self-rename 루프에서 canonical_name 경유로 이미 처리됨.
-        // 값은 linker 소유 (borrowed) — metadata 는 참조만.
-        mergeUnifiedPhaseB(self, module_index, &renames) catch {};
+        // metadata 가 dupe 하여 소유 — unified_result 가 deinit 되어도 안전.
+        mergeUnifiedPhaseB(self, module_index, &renames, &owned_nested_renames) catch {};
     }
 
     // CJS import preamble 저장
