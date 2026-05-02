@@ -33,18 +33,39 @@ function generateTS(lines: number): string {
   return parts.join("\n");
 }
 
+function generateImportBearingTS(lines: number): string {
+  const parts: string[] = [
+    `import { Foo, Bar, Baz, Qux, type Shape } from "./lib";`,
+    `type LocalShape = Shape | Foo;`,
+  ];
+  let i = 0;
+  while (parts.length < lines) {
+    parts.push(`export type Item${i} = Foo & Shape & { readonly id${i}: string };`);
+    parts.push(`export interface Box${i} { value: Item${i}; next?: Box${i}; }`);
+    parts.push(`type Mapper${i}<T extends Foo> = (input: T | Shape) => Box${i};`);
+    parts.push(`export type Result${i} = ReturnType<Mapper${i}<Foo>> | LocalShape;`);
+    parts.push(`export const value${i} = Bar(${i});`);
+    parts.push(`{ const Foo = value${i}; Foo; }`);
+    parts.push(`try { Baz(value${i}); } catch (Baz) { Baz; }`);
+    parts.push(`export const fn${i} = (Qux = Foo) => Qux;`);
+    i++;
+  }
+  return parts.slice(0, lines).join("\n");
+}
+
 function median(times: number[]): number {
   const sorted = [...times].sort((a, b) => a - b);
   return Math.round(sorted[Math.floor(sorted.length / 2)]);
 }
 
-function measure(bin: string, args: string[]): number {
+function measure(bin: string, args: string[], env?: Record<string, string>): number {
   const times: number[] = [];
+  const spawnEnv = env ? { ...process.env, ...env } : undefined;
   // warmup
-  spawnSync(bin, args, { stdio: "pipe", timeout: 30000 });
+  spawnSync(bin, args, { stdio: "pipe", timeout: 30000, env: spawnEnv });
   for (let i = 0; i < ITERATIONS; i++) {
     const start = performance.now();
-    spawnSync(bin, args, { stdio: "pipe", timeout: 30000 });
+    spawnSync(bin, args, { stdio: "pipe", timeout: 30000, env: spawnEnv });
     times.push(performance.now() - start);
   }
   return median(times);
@@ -120,6 +141,30 @@ for (const lines of scales) {
   );
 
   console.log(`| ${row.join(" | ")} |`);
+}
+
+console.log("\nZTS Fast Path A/B — import-bearing TS strip");
+const fastScales = [25_000, 50_000, 100_000];
+console.log(`| Lines | Size (KB) | fast on (ms) | fast off (ms) | delta (ms) | ratio |`);
+console.log(`| --- | --- | --- | --- | --- | --- |`);
+
+for (const lines of fastScales) {
+  const source = generateImportBearingTS(lines);
+  const inputFile = join(dir, `binding_lite_${lines}.ts`);
+  const fastOut = join(dir, `out_fast_on_${lines}.js`);
+  const fullOut = join(dir, `out_fast_off_${lines}.js`);
+  writeFileSync(inputFile, source);
+
+  const fastOn = measure(ZTS_BIN, [inputFile, "-o", fastOut]);
+  const fastOff = measure(ZTS_BIN, [inputFile, "-o", fullOut], {
+    ZTS_DISABLE_TRANSPILE_FAST_PATH: "1",
+  });
+  const delta = fastOff - fastOn;
+  const ratio = fastOn === 0 ? "n/a" : `${(fastOff / fastOn).toFixed(2)}x`;
+
+  console.log(
+    `| ${lines} | ${Math.round(source.length / 1024)} | ${fastOn} | ${fastOff} | ${delta} | ${ratio} |`,
+  );
 }
 
 rmSync(dir, { recursive: true, force: true });
