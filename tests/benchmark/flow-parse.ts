@@ -43,14 +43,20 @@ function generateFlowInterfaces(count: number): string {
   const parts: string[] = ["// @flow", ""];
   for (let i = 0; i < count; i++) {
     parts.push(`type T${i} = $ReadOnly<{ id: string, value: number }>;`);
-    parts.push(`export interface Emitter${i}<TMap: $ReadOnly<{[string]: $ReadOnlyArray<mixed>}>> {`);
-    parts.push(`  addListener<E: $Keys<TMap>>(eventType: E, listener: (...args: TMap[E]) => mixed): void;`);
+    parts.push(
+      `export interface Emitter${i}<TMap: $ReadOnly<{[string]: $ReadOnlyArray<mixed>}>> {`,
+    );
+    parts.push(
+      `  addListener<E: $Keys<TMap>>(eventType: E, listener: (...args: TMap[E]) => mixed): void;`,
+    );
     parts.push(`  removeListener<E: $Keys<TMap>>(eventType: E): void;`);
     parts.push(`  emit<E: $Keys<TMap>>(eventType: E, ...args: TMap[E]): void;`);
     parts.push(`  +readOnly: T${i};`);
     parts.push(`  optional?: ?string;`);
     parts.push(`}`);
-    parts.push(`export interface SubEmitter${i}<TMap: $ReadOnly<{[string]: $ReadOnlyArray<mixed>}>>`);
+    parts.push(
+      `export interface SubEmitter${i}<TMap: $ReadOnly<{[string]: $ReadOnlyArray<mixed>}>>`,
+    );
     parts.push(`  extends Emitter${i}<TMap> {`);
     parts.push(`  destroy(): void;`);
     parts.push(`}`);
@@ -102,7 +108,9 @@ function main() {
     for (const [label, source] of scenarios) {
       const { ms, bytes } = bench(label.replace(/\s/g, "-"), source, dir);
       const usPerKb = ((ms * 1000) / (bytes / 1024)).toFixed(1);
-      console.log(`| ${label.padEnd(21)} | ${String(bytes).padStart(6)} | ${ms.toString().padStart(5)} | ${usPerKb.padStart(5)} |`);
+      console.log(
+        `| ${label.padEnd(21)} | ${String(bytes).padStart(6)} | ${ms.toString().padStart(5)} | ${usPerKb.padStart(5)} |`,
+      );
     }
 
     if (useRn) {
