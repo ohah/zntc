@@ -47,6 +47,11 @@ pub const LoadedModule = struct {
     module_type: types.ModuleType = .unknown,
 };
 
+pub const LoadedModuleWithStat = struct {
+    loaded: LoadedModule,
+    stat: FileStat,
+};
+
 pub const DirEntry = struct {
     name: []const u8,
     kind: EntryKind,
@@ -92,6 +97,10 @@ pub fn readFile(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) Fs
     return Implementation.init().readFile(alloc, path, max_bytes);
 }
 
+pub fn readFileWithStat(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) FsError!LoadedModuleWithStat {
+    return Implementation.init().readFileWithStat(alloc, path, max_bytes);
+}
+
 pub fn statFile(path: []const u8) FsError!FileStat {
     return Implementation.init().statFile(path);
 }
@@ -120,6 +129,35 @@ pub const RealFS = struct {
             .contents = bytes,
             .path = path,
             .namespace = .file,
+        };
+    }
+
+    pub fn readFileWithStat(_: RealFS, allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) FsError!LoadedModuleWithStat {
+        const file = std.fs.cwd().openFile(path, .{}) catch |err| return mapFsError(err);
+        defer file.close();
+
+        const stat = file.stat() catch |err| return mapFsError(err);
+        const bytes = file.readToEndAllocOptions(
+            allocator,
+            max_bytes,
+            @intCast(stat.size),
+            .of(u8),
+            null,
+        ) catch |err| return mapFsError(err);
+        const kind = mapFileKind(stat.kind);
+
+        return .{
+            .loaded = .{
+                .contents = bytes,
+                .path = path,
+                .namespace = .file,
+            },
+            .stat = .{
+                .size = stat.size,
+                .is_dir = kind == .directory,
+                .mtime = stat.mtime,
+                .kind = kind,
+            },
         };
     }
 
@@ -226,6 +264,13 @@ pub const VirtualFS = struct {
         };
     }
 
+    pub fn readFileWithStat(self: VirtualFS, allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) FsError!LoadedModuleWithStat {
+        return .{
+            .loaded = try self.readFile(allocator, path, max_bytes),
+            .stat = try self.statFile(path),
+        };
+    }
+
     pub fn statFile(_: VirtualFS, path: []const u8) FsError!FileStat {
         var size: u64 = 0;
         var kind: u8 = 0;
@@ -292,6 +337,15 @@ fn mapFsError(err: anyerror) FsError {
 }
 
 fn mapEntryKind(kind: std.fs.Dir.Entry.Kind) EntryKind {
+    return switch (kind) {
+        .file => .file,
+        .directory => .directory,
+        .sym_link => .symlink,
+        else => .other,
+    };
+}
+
+fn mapFileKind(kind: std.fs.File.Kind) EntryKind {
     return switch (kind) {
         .file => .file,
         .directory => .directory,
