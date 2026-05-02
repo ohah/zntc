@@ -2934,7 +2934,16 @@ pub fn resolveNodeName(md: ?*const LinkingMetadata, node_idx: u32, fallback: []c
     if (md) |m| {
         if (node_idx < m.symbol_ids.len) {
             if (m.symbol_ids[node_idx]) |sid| {
-                if (m.renames.get(sid)) |renamed| return renamed;
+                if (m.renames.get(sid)) |renamed| {
+                    // 방어 — 알 수 없는 use-after-free 경로 (#2429) 로 rename slice 가
+                    // 0xAA (Zig debug undef-fill) 또는 invalid identifier byte 로 채워질 수
+                    // 있다. 이런 경우 fallback 사용. 정상 ASCII identifier 는 첫 byte 가
+                    // [a-zA-Z_$0-9.&] 범위라 첫 byte 만 검사해도 충분.
+                    if (renamed.len == 0 or renamed[0] >= 0x80 or renamed[0] == 0) {
+                        return fallback;
+                    }
+                    return renamed;
+                }
             }
         }
     }
@@ -2947,6 +2956,7 @@ pub fn collectImportBindingNames(
     stmt_node: anytype,
     md: ?*const LinkingMetadata,
     allocator: std.mem.Allocator,
+    name_arena: std.mem.Allocator,
     out: *std.ArrayList([]const u8),
 ) !void {
     const ie = stmt_node.data.extra;
@@ -2960,18 +2970,24 @@ pub fn collectImportBindingNames(
         const spec_node = esm_ast.nodes.items[spec_raw];
         switch (spec_node.tag) {
             .import_default_specifier, .import_namespace_specifier => {
-                const name = esm_ast.getText(spec_node.data.string_ref);
-                try out.append(allocator, resolveNodeName(md, spec_raw, name));
+                // raw_name 은 string_table slice — 후속 처리에서 grow 시 dangling.
+                // arena dupe 로 안정 메모리에 복사 (#2422 와 동일 클래스 fix).
+                const name = try name_arena.dupe(u8, esm_ast.getText(spec_node.data.string_ref));
+                // resolveNodeName 은 metadata.renames 의 borrowed slice 를 반환할 수 있어
+                // 후속 dangling 가능 — arena dupe.
+                const resolved = try name_arena.dupe(u8, resolveNodeName(md, spec_raw, name));
+                try out.append(allocator, resolved);
             },
             .import_specifier => {
                 const local_idx = spec_node.data.binary.right;
                 if (!local_idx.isNone()) {
                     const local_node = esm_ast.nodes.items[@intFromEnum(local_idx)];
-                    const name = esm_ast.getText(local_node.data.string_ref);
-                    const resolved = resolveNodeName(md, @intFromEnum(local_idx), name);
+                    const name = try name_arena.dupe(u8, esm_ast.getText(local_node.data.string_ref));
+                    const resolved_raw = resolveNodeName(md, @intFromEnum(local_idx), name);
                     // namespace 접근 패턴 rename (__ns_N.prop)은 var 선언에 넣을 수 없음.
                     // namespace 변수는 dev_ns_vars로 별도 호이스팅됨.
-                    if (std.mem.indexOfScalar(u8, resolved, '.') != null) continue;
+                    if (std.mem.indexOfScalar(u8, resolved_raw, '.') != null) continue;
+                    const resolved = try name_arena.dupe(u8, resolved_raw);
                     try out.append(allocator, resolved);
                 }
             },

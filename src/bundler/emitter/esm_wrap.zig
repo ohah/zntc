@@ -173,8 +173,14 @@ pub fn emitEsmWrappedModule(
                     if (!fn_name_idx.isNone()) {
                         const fn_name_node = esm_ast.nodes.items[@intFromEnum(fn_name_idx)];
                         if (fn_name_node.tag == .binding_identifier) {
-                            const raw_name = esm_ast.getText(fn_name_node.data.string_ref);
-                            try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(fn_name_idx), raw_name));
+                            // raw_name 은 esm_ast.string_table slice — 후속 처리에서 string_table
+                            // 이 grow 하면 dangling. arena dupe 로 안정적인 메모리에 복사.
+                            const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(fn_name_node.data.string_ref));
+                            // resolveNodeName 결과도 dupe — metadata.renames 의 slice 가 unified_result
+                            // (linker 소유) 의 strings 를 borrow 해서, mangling clearMangling 후
+                            // dangling 가능. arena dupe 로 안정.
+                            const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(fn_name_idx), raw_name));
+                            try hoisted_var_names.append(allocator, resolved);
                         }
                     }
                     // body_func_stmts: factory body 최상단에 배치 → forward reference 보존
@@ -197,8 +203,9 @@ pub fn emitEsmWrappedModule(
                 if (!class_name_idx.isNone()) {
                     const name_node = esm_ast.nodes.items[@intFromEnum(class_name_idx)];
                     if (name_node.tag == .binding_identifier) {
-                        const raw_name = esm_ast.getText(name_node.data.string_ref);
-                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(class_name_idx), raw_name));
+                        const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(name_node.data.string_ref));
+                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(class_name_idx), raw_name));
+                        try hoisted_var_names.append(allocator, resolved);
                     }
                 }
                 try body_stmts.append(allocator, raw_idx);
@@ -207,7 +214,7 @@ pub fn emitEsmWrappedModule(
                 // var 선언만 호이스팅 (할당은 래퍼 안). linker skip된 import는 제외.
                 const import_skipped = if (metadata) |md| md.skip_nodes.isSet(raw_idx) else false;
                 if (!import_skipped) {
-                    try collectImportBindingNames(esm_ast, stmt_node, metadata, allocator, &hoisted_var_names);
+                    try collectImportBindingNames(esm_ast, stmt_node, metadata, allocator, arena_alloc, &hoisted_var_names);
                 }
                 try body_stmts.append(allocator, raw_idx);
             },
@@ -227,8 +234,9 @@ pub fn emitEsmWrappedModule(
                     const name_raw: NodeIndex = @enumFromInt(esm_ast.extra_data.items[de2]);
                     const name_node = esm_ast.nodes.items[@intFromEnum(name_raw)];
                     if (name_node.tag == .binding_identifier) {
-                        const raw_name = esm_ast.getText(name_node.data.string_ref);
-                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(name_raw), raw_name));
+                        const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(name_node.data.string_ref));
+                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(name_raw), raw_name));
+                        try hoisted_var_names.append(allocator, resolved);
                     }
                 }
                 // body에 넣어서 할당문으로 변환
@@ -245,8 +253,9 @@ pub fn emitEsmWrappedModule(
                 if (!enum_name_idx.isNone()) {
                     const ename_node = esm_ast.nodes.items[@intFromEnum(enum_name_idx)];
                     if (ename_node.tag == .binding_identifier) {
-                        const raw_name = esm_ast.getText(ename_node.data.string_ref);
-                        try hoisted_var_names.append(allocator, resolveNodeName(metadata, @intFromEnum(enum_name_idx), raw_name));
+                        const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(ename_node.data.string_ref));
+                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(enum_name_idx), raw_name));
+                        try hoisted_var_names.append(allocator, resolved);
                     }
                 }
                 try body_stmts.append(allocator, raw_idx);
@@ -282,7 +291,7 @@ pub fn emitEsmWrappedModule(
     // init 안에서 _jsxDEV = ... (할당만)으로 처리해야 함.
     for (module.import_bindings) |ib| {
         if (ib.isSynthetic()) {
-            try hoisted_var_names.append(allocator, module.importBindingLocalName(ib));
+            try hoisted_var_names.append(allocator, try arena_alloc.dupe(u8, module.importBindingLocalName(ib)));
         }
     }
 
