@@ -84,7 +84,7 @@ exports[`Round 2 fuzz 27-symbol-asynciter.ts 1`] = `"6"`;
 
 exports[`Round 2 fuzz 28-getter-setter-symbol.ts 1`] = `"8 s:5,g,s:8,g"`;
 
-exports[`Round 2 fuzz 29-export-equals.ts 1`] = `""`;
+exports[`Round 2 fuzz 29-export-equals.ts 1`] = `"{"name":"exp-eq","n":42}"`;
 
 exports[`Round 2 fuzz 30-import-equals.ts 1`] = `"function"`;
 
@@ -100,3 +100,9 @@ exports[`Round 2 fuzz 34-spread-call-rest.ts 1`] = `
 `;
 
 exports[`Round 2 fuzz 35-strict-mode.ts 1`] = `"TypeError"`;
+
+exports[`Round 2 fuzz 36-export-equals-class.ts 1`] = `"hi-from-export-equals-class"`;
+
+exports[`Round 2 fuzz 37-export-equals-function.ts 1`] = `"5"`;
+
+exports[`Round 2 fuzz 38-export-equals-primitive.ts 1`] = `"84"`;

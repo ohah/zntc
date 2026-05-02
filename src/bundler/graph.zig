@@ -1767,7 +1767,9 @@ pub const ModuleGraph = struct {
         }
 
         const ast = &module.ast.?;
-        if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or ast.has_ts_import_equals) {
+        if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
+            ast.has_ts_import_equals or ast.has_ts_export_equals)
+        {
             return true;
         }
 

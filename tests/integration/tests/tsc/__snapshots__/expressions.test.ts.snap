@@ -9492,6 +9492,7 @@ class ErrClass3 extends this {
 var SomeEnum = /* @__PURE__ */ ((SomeEnum) => {SomeEnum[SomeEnum["A"]=this]="A";SomeEnum[SomeEnum["B"]=// Should not be allowed
 this.spaaaace]="B";return SomeEnum;})(SomeEnum || {});
 // Also should not be allowed
+module.exports = this;
 // Should be an error
 "
 `;
