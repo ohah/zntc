@@ -307,6 +307,9 @@ pub const TransformOptions = struct {
     pub const compat = @import("compat.zig");
 
     /// graph 단계 transformer pre-pass 가 필요한지.
+    /// 옵션-side 사유 (drop / define / minify / decorator 등) 를 먼저 cheap 하게 본 뒤,
+    /// `unsupported.*` 가 set 된 경우에 한해 AST 노드 사용을 스캔해 실제로 lowering 대상
+    /// 문법이 있을 때만 pre-pass 를 강제한다 (예: `target=es5` + 단순 TS strip → skip).
     /// graph-level 플래그 (react_refresh / styled_components / emotion / worklet_transform /
     /// minify_identifiers) 는 ModuleGraph 가 별도로 결합한다.
     /// 새 transformer-driven 옵션을 추가하면 여기에도 반영해야 graph 의 게이트가
@@ -342,11 +345,11 @@ pub const TransformOptions = struct {
                 .class_declaration,
                 .class_expression,
                 => {
-                    if (u.class or u.class_private_field or u.class_private_method or u.class_static_block) return true;
+                    if (u.requiresPrivateDownlevel() or u.class_static_block) return true;
                 },
                 .for_of_statement => if (u.for_of) return true,
                 .for_await_of_statement => if (u.needsForAwaitOfDownlevel()) return true,
-                .spread_element => if (u.spread or u.destructuring) return true,
+                .spread_element => if (u.spread) return true,
                 .array_pattern,
                 .object_pattern,
                 .array_assignment_target,
@@ -357,7 +360,7 @@ pub const TransformOptions = struct {
                 => if (u.destructuring) return true,
                 .private_identifier,
                 .private_field_expression,
-                => if (u.class or u.class_private_field or u.class_private_method) return true,
+                => if (u.requiresPrivateDownlevel()) return true,
                 .static_block => if (u.class_static_block) return true,
                 .tagged_template_expression => if (u.template_literal) return true,
                 .variable_declaration => {
