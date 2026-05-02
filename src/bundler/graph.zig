@@ -1151,7 +1151,11 @@ pub const ModuleGraph = struct {
         var scope = profile.begin(.graph_discover_scan_worker);
         defer scope.end();
 
-        self.parseModule(idx);
+        {
+            var parse_scope = profile.begin(.graph_discover_scan_worker_parse);
+            defer parse_scope.end();
+            self.parseModule(idx);
+        }
 
         const mod_idx = @intFromEnum(idx);
         if (mod_idx >= self.modules.count()) {
@@ -1184,39 +1188,44 @@ pub const ModuleGraph = struct {
         };
         for (results) |*r| r.* = .{};
 
-        for (records, 0..) |record, rec_i| {
-            if (record.kind == .glob) continue;
-            if (record.kind == .require_context) continue;
+        {
+            var resolve_scope = profile.begin(.graph_discover_scan_worker_resolve);
+            defer resolve_scope.end();
 
-            if (plugin_runner) |runner| {
-                const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
-                    error.PluginFailed => null,
+            for (records, 0..) |record, rec_i| {
+                if (record.kind == .glob) continue;
+                if (record.kind == .require_context) continue;
+
+                if (plugin_runner) |runner| {
+                    const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
+                        error.PluginFailed => null,
+                        error.OutOfMemory => {
+                            self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
+                            continue;
+                        },
+                    };
+                    if (resolve_result) |plugin_result| {
+                        results[rec_i] = .{ .resolved = plugin_result, .is_error = false };
+                        continue;
+                    }
+                }
+
+                const resolved = self.resolve_cache.resolveThreadSafe(
+                    source_dir,
+                    record.specifier,
+                    record.kind,
+                ) catch |err| switch (err) {
+                    error.ModuleNotFound => {
+                        results[rec_i] = .{ .is_error = true };
+                        continue;
+                    },
                     error.OutOfMemory => {
                         self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
                         continue;
                     },
                 };
-                if (resolve_result) |plugin_result| {
-                    results[rec_i] = .{ .resolved = plugin_result, .is_error = false };
-                    continue;
-                }
+                results[rec_i] = .{ .resolved = resolved };
             }
-
-            const resolved = self.resolve_cache.resolveThreadSafe(
-                source_dir,
-                record.specifier,
-                record.kind,
-            ) catch |err| switch (err) {
-                error.ModuleNotFound => {
-                    results[rec_i] = .{ .is_error = true };
-                    continue;
-                },
-                error.OutOfMemory => {
-                    self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
-                    continue;
-                },
-            };
-            results[rec_i] = .{ .resolved = resolved };
         }
 
         channel.send(.{ .module_idx = idx, .resolve_outputs = results });
@@ -1409,8 +1418,12 @@ pub const ModuleGraph = struct {
         const arena_alloc = module.parse_arena.?.allocator();
 
         // 파일 시스템에서 읽기 (플러그인이 source를 이미 설정한 경우 건너뜀)
-        if (module.source.len == 0) {
-            module.source = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .resolve) orelse return;
+        {
+            var read_scope = profile.begin(.graph_discover_pm_setup_read);
+            defer read_scope.end();
+            if (module.source.len == 0) {
+                module.source = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .resolve) orelse return;
+            }
         }
 
         // Plugin: transform 훅 — 소스 읽기 후, 파싱 전에 호출 (Rolldown 호환).
@@ -1432,66 +1445,78 @@ pub const ModuleGraph = struct {
         }
 
         // Scanner + Parser (arena 할당)
-        var scanner = Scanner.init(arena_alloc, module.source) catch {
-            self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Scanner initialization failed", null);
-            module.state = .ready;
-            return;
-        };
-
-        var parser = Parser.init(arena_alloc, &scanner);
+        var scanner: Scanner = undefined;
+        var parser: Parser = undefined;
         const ext = std.fs.path.extension(module.path);
-        configureParserForModule(&parser, module, ext);
+        {
+            var parser_setup_scope = profile.begin(.graph_discover_pm_setup_parser);
+            defer parser_setup_scope.end();
 
-        // Flow 모드: --flow CLI 또는 .js.flow/.jsx.flow 확장자 (pragma는 parse() 내부에서 감지)
-        // TS 와 Flow 는 상호 배타 — TS 파일에서는 Flow 무시
-        if (parser.source_mode != .ts) {
-            if (self.flow) {
-                parser.is_flow = true;
-                scanner.has_flow_pragma = true; // flow comment 활성화
-            } else {
-                parser.configureFlowFromPath(module.path);
+            scanner = Scanner.init(arena_alloc, module.source) catch {
+                self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Scanner initialization failed", null);
+                module.state = .ready;
+                return;
+            };
+
+            parser = Parser.init(arena_alloc, &scanner);
+            configureParserForModule(&parser, module, ext);
+
+            // Flow 모드: --flow CLI 또는 .js.flow/.jsx.flow 확장자 (pragma는 parse() 내부에서 감지)
+            // TS 와 Flow 는 상호 배타 — TS 파일에서는 Flow 무시
+            if (parser.source_mode != .ts) {
+                if (self.flow) {
+                    parser.is_flow = true;
+                    scanner.has_flow_pragma = true; // flow comment 활성화
+                } else {
+                    parser.configureFlowFromPath(module.path);
+                }
             }
-        }
-        // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
-        // .ts 파일은 이미 configureForBundler에서 JSX 설정됨 (.tsx만 true)
-        // .ts에 강제 jsx=true하면 <T> 제네릭이 JSX로 오파싱됨
-        if (self.jsx_in_js and parser.source_mode != .ts) {
-            parser.is_jsx = true;
-        }
 
-        // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat)
-        module.def_format = if (std.mem.eql(u8, ext, ".mjs"))
-            .esm_mjs
-        else if (std.mem.eql(u8, ext, ".mts"))
-            .esm_mts
-        else if (std.mem.eql(u8, ext, ".cjs"))
-            .cjs
-        else if (std.mem.eql(u8, ext, ".cts"))
-            .cts
-        else if (module.is_module_field or self.isPackageTypeModule(module.path))
-            .esm_package_json
-        else
-            .unknown;
-
-        // .js/.jsx: package.json "type" 또는 Unambiguous 모드로 module/script 결정
-        // .mjs/.mts/.ts/.tsx: 이미 확정 module, 변경 없음
-        if (!parser.is_module) {
-            parser.is_module = true;
-            scanner.is_module = true;
-            if (module.def_format == .unknown) {
-                parser.is_unambiguous = true;
+            // .js 파일에서 JSX 파싱 활성화 (--platform=react-native 프리셋)
+            // .ts 파일은 이미 configureForBundler에서 JSX 설정됨 (.tsx만 true)
+            // .ts에 강제 jsx=true하면 <T> 제네릭이 JSX로 오파싱됨
+            if (self.jsx_in_js and parser.source_mode != .ts) {
+                parser.is_jsx = true;
             }
+
+            // 모듈 정의 형식 결정 (Rolldown ModuleDefFormat)
+            module.def_format = if (std.mem.eql(u8, ext, ".mjs"))
+                .esm_mjs
+            else if (std.mem.eql(u8, ext, ".mts"))
+                .esm_mts
+            else if (std.mem.eql(u8, ext, ".cjs"))
+                .cjs
+            else if (std.mem.eql(u8, ext, ".cts"))
+                .cts
+            else if (module.is_module_field or self.isPackageTypeModule(module.path))
+                .esm_package_json
+            else
+                .unknown;
+
+            // .js/.jsx: package.json "type" 또는 Unambiguous 모드로 module/script 결정
+            // .mjs/.mts/.ts/.tsx: 이미 확정 module, 변경 없음
+            if (!parser.is_module) {
+                parser.is_module = true;
+                scanner.is_module = true;
+                if (module.def_format == .unknown) {
+                    parser.is_unambiguous = true;
+                }
+            }
+            // Inline scanning: 파서가 AST를 구축하면서 import/export 레코드를 동시 수집
+            parser.enable_scan = true;
+            // require.context 등 build-time 정적 평가용 define entries 전달 (#1579 Phase 2.6)
+            parser.scan_defines = self.defines;
         }
-        // Inline scanning: 파서가 AST를 구축하면서 import/export 레코드를 동시 수집
-        parser.enable_scan = true;
-        // require.context 등 build-time 정적 평가용 define entries 전달 (#1579 Phase 2.6)
-        parser.scan_defines = self.defines;
         setup_scope.end();
-        _ = parser.parse() catch {
-            self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Parse failed", null);
-            module.state = .ready;
-            return;
-        };
+        {
+            var parse_scope = profile.begin(.graph_discover_pm_parse);
+            defer parse_scope.end();
+            _ = parser.parse() catch {
+                self.addDiag(.parse_error, .@"error", module.path, Span.EMPTY, .parse, "Parse failed", null);
+                module.state = .ready;
+                return;
+            };
+        }
 
         if (parser.errors.items.len > 0) {
             // 파싱 에러 기록. recoverable validation 에러(use_strict_non_simple 등)는
@@ -1533,41 +1558,46 @@ pub const ModuleGraph = struct {
         // arena_alloc으로 실행: SemanticAnalyzer의 모든 데이터가 parse_arena에 할당.
         // analyzer.deinit()을 의도적으로 호출하지 않음 — arena가 일괄 해제.
         // 주의: 이후에 defer analyzer.deinit()을 추가하면 double-free 발생.
-        purity.markUserPureCalls(&parser.ast, self.pure);
+        {
+            var semantic_scope = profile.begin(.graph_discover_pm_semantic);
+            defer semantic_scope.end();
 
-        var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
-        analyzer.is_strict_mode = parser.is_strict_mode;
-        analyzer.is_module = parser.is_module;
-        analyzer.is_ts = parser.source_mode == .ts;
-        analyzer.is_flow = parser.is_flow;
-        analyzer.enable_stmt_info = true; // tree_shaker가 AST 재순회 없이 StmtInfo 사용
-        const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
+            purity.markUserPureCalls(&parser.ast, self.pure);
 
-        // OOM 시 semantic = null로 유지 (부분 데이터로 linker가 오동작하는 것 방지)
-        if (analyze_ok) {
-            module.semantic = .{
-                .symbols = analyzer.symbols,
-                .scopes = analyzer.scopes.items,
-                .scope_maps = analyzer.scope_maps.items,
-                .exported_names = analyzer.exported_names,
-                .symbol_ids = analyzer.symbol_ids.items,
-                .unresolved_references = analyzer.unresolved_references,
-                .references = analyzer.references.items,
-            };
-            // TLA 감지: semantic analyzer가 스코프 체인을 추적하며 정확히 판별
-            module.uses_top_level_await = analyzer.has_top_level_await;
+            var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
+            analyzer.is_strict_mode = parser.is_strict_mode;
+            analyzer.is_module = parser.is_module;
+            analyzer.is_ts = parser.source_mode == .ts;
+            analyzer.is_flow = parser.is_flow;
+            analyzer.enable_stmt_info = true; // tree_shaker가 AST 재순회 없이 StmtInfo 사용
+            const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
 
-            // Semantic Analyzer에서 사전 수집한 stmt↔symbol 매핑으로 StmtInfo 구축.
-            // tree_shaker가 AST를 다시 순회하지 않아도 된다 (Phase 2 최적화).
-            if (analyzer.stmt_info_count > 0) {
-                module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
-                    arena_alloc,
-                    &parser.ast,
-                    analyzer.symbols.items,
-                    analyzer.references.items,
-                    if (module.semantic) |*s| &s.unresolved_references else null,
-                    false,
-                ) catch null;
+            // OOM 시 semantic = null로 유지 (부분 데이터로 linker가 오동작하는 것 방지)
+            if (analyze_ok) {
+                module.semantic = .{
+                    .symbols = analyzer.symbols,
+                    .scopes = analyzer.scopes.items,
+                    .scope_maps = analyzer.scope_maps.items,
+                    .exported_names = analyzer.exported_names,
+                    .symbol_ids = analyzer.symbol_ids.items,
+                    .unresolved_references = analyzer.unresolved_references,
+                    .references = analyzer.references.items,
+                };
+                // TLA 감지: semantic analyzer가 스코프 체인을 추적하며 정확히 판별
+                module.uses_top_level_await = analyzer.has_top_level_await;
+
+                // Semantic Analyzer에서 사전 수집한 stmt↔symbol 매핑으로 StmtInfo 구축.
+                // tree_shaker가 AST를 다시 순회하지 않아도 된다 (Phase 2 최적화).
+                if (analyzer.stmt_info_count > 0) {
+                    module.prebuilt_stmt_info = stmt_info_mod.buildFromSemantic(
+                        arena_alloc,
+                        &parser.ast,
+                        analyzer.symbols.items,
+                        analyzer.references.items,
+                        if (module.semantic) |*s| &s.unresolved_references else null,
+                        false,
+                    ) catch null;
+                }
             }
         }
 
@@ -1579,9 +1609,11 @@ pub const ModuleGraph = struct {
 
         // import/export 추출: inline scan 결과를 bundler 타입으로 변환
         {
+            var records: []ImportRecord = &.{};
+
             // Parser scan records → bundler ImportRecord
             const scan_records = parser.scan_import_records.items;
-            const records = arena_alloc.alloc(ImportRecord, scan_records.len) catch {
+            records = arena_alloc.alloc(ImportRecord, scan_records.len) catch {
                 module.state = .ready;
                 return;
             };
@@ -1603,6 +1635,7 @@ pub const ModuleGraph = struct {
                 };
             }
             module.import_records = records;
+
             // OOM 시 silent skip 하면 optional require 가 hard error 로 회귀하므로 module 을
             // ready 로 끝내고 graph 진행 중단 (1108줄 extractImports 와 동일 패턴).
             import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, &(module.ast.?), module.import_records) catch {
