@@ -104,15 +104,22 @@ test "codegen_plugin: Readonly<{...}> wrapper unwrap" {
     try expectContains(out, "color: true");
 }
 
-test "codegen_plugin: cross-file type reference → null (fallback)" {
-    // ViewProps 가 type_index 에 없음 — schema_builder 가 UnresolvedTypeReference,
-    // plugin 은 silent skip → 원본 사용.
+test "codegen_plugin: cross-file type reference → mixed (permissive, #2348 후속)" {
+    // ViewProps 가 type_index 에 없음. 종전엔 schema_builder 가 UnresolvedTypeReference 던져
+    // plugin 이 fallback 했지만, 인헤리턴스 지원 도입 시 base 의 prop type 으로 노출되는
+    // cross-file ref (NumberProp 등) 가 spec 통째 거부 야기 → permissive `mixed` 로 변경.
+    // 현재는 변환 성공 (mixed prop 으로 inline). strict 검증 필요 시 사용자가
+    // BUNGAE_CODEGEN_FALLBACK=js 로 JS plugin 위임.
     const code =
         \\type NativeProps = { extra: ViewProps };
         \\export default codegenNativeComponent<NativeProps>('X');
     ;
-    const out = try callTransform(std.testing.allocator, code, "/path/XNativeComponent.ts");
-    try std.testing.expect(out == null);
+    const out_opt = try callTransform(std.testing.allocator, code, "/path/XNativeComponent.ts");
+    try std.testing.expect(out_opt != null);
+    const out = out_opt.?;
+    defer std.testing.allocator.free(out);
+    // mixed prop 은 emitter 에서 단순 attribute 로 처리.
+    try expectContains(out, "uiViewClassName");
 }
 
 test "codegen_plugin: function-typed prop → event in output" {

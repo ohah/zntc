@@ -43,6 +43,7 @@ pub fn schemaBuilderErrorCode(err: schema_builder.Error) Code {
         error.UnresolvedTypeReference => .codegen_unresolved_type_reference,
         error.UnsupportedPropType => .codegen_unsupported_prop_type,
         error.InvalidNativePropsBody => .codegen_invalid_native_props_body,
+        error.InheritanceTooDeep => .codegen_inheritance_too_deep,
         error.OutOfMemory => unreachable, // caller 가 먼저 분기해야 함
     };
 }

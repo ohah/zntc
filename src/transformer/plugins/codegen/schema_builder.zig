@@ -10,7 +10,11 @@
 //! 처리 패턴:
 //!
 //!   - Wrapper 풀기: `Readonly<{...}>`, `$ReadOnly<{...}>` → 안의 object body
-//!   - Intersection: `{...} & ViewProps` → ViewProps 부분 무시 (RN 런타임이 등록)
+//!   - **Inheritance composition** (#2348 후속): TS `interface X extends A, B { ... }` 의
+//!     base 가 같은 파일에 정의돼 있으면 재귀 unwrap 후 멤버 머지. 같은 파일에 없으면
+//!     cross-file (ViewProps 등) — silent skip (RN 런타임이 등록).
+//!   - **Intersection**: TS `A & B & {...}` — 각 operand 재귀 처리. base 가 type ref 면
+//!     인헤리턴스와 동일 정책.
 //!   - Property → PropTypeAnnotation 매핑 (`GenerateViewConfigJs.js:43-108` 참고)
 //!   - Function-typed prop (`(event: T) => void`) → EventTypeShape
 //!   - Identity / default wrapper: `WithDefault<T, D>`, `UnsafeMixed<T>` → inner T
@@ -20,9 +24,9 @@
 //!   - Explicit event wrapper: `DirectEventHandler<T>` / `BubblingEventHandler<T>`
 //!     → EventTypeShape (wrapper 이름이 bubble vs direct 결정)
 //!
-//! Cross-file type reference (`import type { ViewProps }`) 는 fail-fast —
-//! `error.UnresolvedTypeReference` 반환. caller 가 JS fallback (`@react-native/codegen`)
-//! 으로 처리 (#2348 § 5).
+//! Cross-file type reference (`import type { ViewProps }`) 는 silent skip —
+//! 인헤리턴스 base 일 때는 RN 런타임 등록에 위임, prop type 일 때는 `mixed` 처리 또는
+//! `error.UnresolvedTypeReference` (caller 가 JS fallback 으로 처리, #2348 § 5).
 //!
 //! 메모리: caller arena. 모든 슬라이스 / 문자열은 build() 호출 시 alloc 으로 할당.
 
@@ -39,13 +43,28 @@ const PropertySignatureFlags = @import("../../../parser/ts.zig").PropertySignatu
 
 pub const Error = error{
     /// 이름 type reference 가 type_index 에 없음 (cross-file 또는 정의 누락).
+    /// **Reserved for strict mode**: 인헤리턴스 지원 도입 (#2348 후속) 이후 hot path
+    /// 에서는 `mapTypeReference` 가 `.mixed` 로 permissive fallback. 현재 throw 안 됨.
+    /// 추후 `BUNGAE_CODEGEN_FALLBACK=strict` 같은 toggle 도입 시 재활성화 예정.
+    /// public error code (`zts1400`) 호환을 위해 enum 변형 유지.
     UnresolvedTypeReference,
     /// 인식 못 하는 prop type 형태.
     UnsupportedPropType,
     /// NativeProps 가 object literal 도 wrapper 도 아님.
     InvalidNativePropsBody,
+    /// 인헤리턴스 / 인터섹션 chain 깊이 한계 초과 (cycle 또는 이상 구조).
+    InheritanceTooDeep,
     OutOfMemory,
 };
+
+/// 인헤리턴스 / intersection / wrapper / type ref 추적 시 stack overflow / cycle 방어.
+/// RN 실제 spec 패턴은 2-3 레벨 — 10 은 충분히 보수적.
+const max_inheritance_depth: u8 = 10;
+
+/// 인헤리턴스 walk 시 같은 declaration 을 두 번 진입하지 않도록 추적. diamond inheritance
+/// (`Props extends A, B; A extends Common; B extends Common`) 에서 Common 의 멤버가 중복
+/// 출현하는 것 방지. 또한 transitive 그래프에서 shared base 재방문으로 인한 O(n²) 도 차단.
+const VisitedSet = std.AutoHashMapUnmanaged(NodeIndex, void);
 
 /// codegen plugin 진입점. type alias / interface declaration 으로부터 ComponentShape 빌드.
 ///
@@ -58,16 +77,18 @@ pub fn build(
     native_props_idx: NodeIndex,
     alloc: std.mem.Allocator,
 ) Error!schema.ComponentShape {
-    const body_idx = try resolveDeclarationBody(ast, type_index, native_props_idx);
-    const members = try collectObjectMembers(ast, type_index, body_idx, alloc);
-    defer alloc.free(members); // arena 사용 시 무해, 일반 allocator 시 누수 방지
+    var visited: VisitedSet = .{};
+    defer visited.deinit(alloc);
+    var members_buf = std.ArrayList(NodeIndex).empty;
+    defer members_buf.deinit(alloc);
+    try collectAllMembers(ast, type_index, native_props_idx, &members_buf, &visited, 0, alloc);
 
     var props_buf = std.ArrayList(schema.NamedShape(schema.PropTypeAnnotation)).empty;
     defer props_buf.deinit(alloc);
     var events_buf = std.ArrayList(schema.EventTypeShape).empty;
     defer events_buf.deinit(alloc);
 
-    for (members) |sig_idx| {
+    for (members_buf.items) |sig_idx| {
         try classifyMember(ast, type_index, sig_idx, &props_buf, &events_buf, alloc);
     }
 
@@ -78,41 +99,153 @@ pub fn build(
     };
 }
 
-/// declaration NodeIndex 를 받아 object body NodeIndex 반환.
-/// `Readonly<{...}>` / `$ReadOnly<{...}>` wrapper 가 있으면 풀어준다.
+/// declaration 1 개로부터 _자기 본문 + 인헤리턴스 chain 의 모든 base_ 의 멤버 평탄화 수집.
 ///
 /// 지원 declaration tag:
-///   - ts_type_alias_declaration: extra[2] = value
-///   - ts_interface_declaration:  extra[4] = body
-///   - flow_type_alias_declaration: extra[2] = value
-///   - flow_opaque_type:          extra[3] = value
-///   - flow_interface_declaration: 미지원 (브레이스 skip 으로 body 보존 안 됨)
-fn resolveDeclarationBody(
+///   - ts_interface_declaration: extends list 재귀 + 본문 멤버
+///   - ts_type_alias_declaration / flow_type_alias_declaration / flow_opaque_type:
+///     value 가 intersection / type ref / object literal 인지에 따라 분기 (collectMembersFromValue)
+///
+/// 같은 파일 내 base 만 추적, 못 찾으면 silent skip (cross-file ViewProps 등은 RN 런타임 위임).
+fn collectAllMembers(
     ast: *const Ast,
     type_index: *const TypeIndex,
     decl_idx: NodeIndex,
-) Error!NodeIndex {
+    out: *std.ArrayList(NodeIndex),
+    visited: *VisitedSet,
+    depth: u8,
+    alloc: std.mem.Allocator,
+) Error!void {
+    if (depth > max_inheritance_depth) return error.InheritanceTooDeep;
+
+    // diamond / shared-base 중복 방문 차단.
+    const v = try visited.getOrPut(alloc, decl_idx);
+    if (v.found_existing) return;
+
     const node = ast.getNode(decl_idx);
-    const value_idx: NodeIndex = switch (node.tag) {
-        .ts_type_alias_declaration, .flow_type_alias_declaration => v: {
-            const e = node.data.extra;
-            if (e + 2 >= ast.extra_data.items.len) return error.InvalidNativePropsBody;
-            break :v @enumFromInt(ast.extra_data.items[e + 2]);
-        },
-        .ts_interface_declaration => v: {
+    switch (node.tag) {
+        .ts_interface_declaration => {
             const e = node.data.extra;
             if (e + 4 >= ast.extra_data.items.len) return error.InvalidNativePropsBody;
-            break :v @enumFromInt(ast.extra_data.items[e + 4]);
+            // extends list — 본문 머지 _전에_ base 먼저 (override 시 본문이 이김 같지만
+            // codegen 은 모두 합쳐 RN 런타임에 등록하므로 순서 무관).
+            const extends_start = ast.extra_data.items[e + 2];
+            const extends_len = ast.extra_data.items[e + 3];
+            var i: u32 = 0;
+            while (i < extends_len) : (i += 1) {
+                const ref_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extends_start + i]);
+                try collectMembersFromTypeRef(ast, type_index, ref_idx, out, visited, depth + 1, alloc);
+            }
+            // 본문
+            const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 4]);
+            try collectMembersFromValue(ast, type_index, body_idx, out, visited, depth + 1, alloc);
         },
-        .flow_opaque_type => v: {
+        .ts_type_alias_declaration, .flow_type_alias_declaration => {
+            const e = node.data.extra;
+            if (e + 2 >= ast.extra_data.items.len) return error.InvalidNativePropsBody;
+            const value_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 2]);
+            try collectMembersFromValue(ast, type_index, value_idx, out, visited, depth + 1, alloc);
+        },
+        .flow_opaque_type => {
             const e = node.data.extra;
             if (e + 3 >= ast.extra_data.items.len) return error.InvalidNativePropsBody;
-            break :v @enumFromInt(ast.extra_data.items[e + 3]);
+            const value_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 3]);
+            try collectMembersFromValue(ast, type_index, value_idx, out, visited, depth + 1, alloc);
         },
         else => return error.InvalidNativePropsBody,
+    }
+}
+
+/// type 의 value (object literal / intersection / type reference / wrapper) 에서 멤버 추출.
+/// 재귀 — wrapper / intersection operand / type ref 모두 통과시켜 평탄화.
+fn collectMembersFromValue(
+    ast: *const Ast,
+    type_index: *const TypeIndex,
+    value_idx: NodeIndex,
+    out: *std.ArrayList(NodeIndex),
+    visited: *VisitedSet,
+    depth: u8,
+    alloc: std.mem.Allocator,
+) Error!void {
+    if (depth > max_inheritance_depth) return error.InheritanceTooDeep;
+
+    const unwrapped = try unwrapWrapper(ast, type_index, value_idx);
+    const node = ast.getNode(unwrapped);
+    switch (node.tag) {
+        .ts_intersection_type => {
+            const list = node.data.list;
+            var i: u32 = 0;
+            while (i < list.len) : (i += 1) {
+                const op: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
+                try collectMembersFromValue(ast, type_index, op, out, visited, depth + 1, alloc);
+            }
+        },
+        .ts_type_reference, .flow_type_reference => {
+            try collectMembersFromTypeRef(ast, type_index, unwrapped, out, visited, depth + 1, alloc);
+        },
+        .ts_type_literal, .flow_object_type, .flow_exact_object_type => {
+            try collectObjectMembersInto(ast, unwrapped, out, alloc);
+        },
+        // 그 외 (string literal, primitive, function 등) — base 로 부적절. silent skip.
+        else => return,
+    }
+}
+
+/// type reference 1 개를 처리 — name 조회 후 same-file declaration 발견 시 재귀 추적.
+/// cross-file (lookup 실패) 은 silent skip.
+fn collectMembersFromTypeRef(
+    ast: *const Ast,
+    type_index: *const TypeIndex,
+    ref_idx: NodeIndex,
+    out: *std.ArrayList(NodeIndex),
+    visited: *VisitedSet,
+    depth: u8,
+    alloc: std.mem.Allocator,
+) Error!void {
+    if (depth > max_inheritance_depth) return error.InheritanceTooDeep;
+
+    const ref_node = ast.getNode(ref_idx);
+    if (ref_node.tag != .ts_type_reference and ref_node.tag != .flow_type_reference) return;
+
+    const ref_name = getTypeReferenceName(ast, ref_node) orelse return;
+
+    // wrapper (Readonly<T> 등) 이면 inner 로 풀어 재귀.
+    if (isReadonlyWrapperName(ref_name)) {
+        const inner = getFirstTypeArgument(ast, ref_node) orelse return;
+        try collectMembersFromValue(ast, type_index, inner, out, visited, depth + 1, alloc);
+        return;
+    }
+
+    // same-file lookup — found 면 declaration body 재귀.
+    if (type_index.get(ref_name)) |decl_idx| {
+        try collectAllMembers(ast, type_index, decl_idx, out, visited, depth + 1, alloc);
+        return;
+    }
+
+    // cross-file (e.g. ViewProps from 'react-native') — silent skip per #2348 plan.
+}
+
+/// object body NodeIndex 의 property_signature 를 out 에 append. 비-object body 는 silent skip.
+fn collectObjectMembersInto(
+    ast: *const Ast,
+    body_idx: NodeIndex,
+    out: *std.ArrayList(NodeIndex),
+    alloc: std.mem.Allocator,
+) Error!void {
+    const node = ast.getNode(body_idx);
+    const list = switch (node.tag) {
+        .ts_type_literal, .flow_object_type, .flow_exact_object_type => node.data.list,
+        else => return,
     };
 
-    return unwrapWrapper(ast, type_index, value_idx);
+    var i: u32 = 0;
+    while (i < list.len) : (i += 1) {
+        const raw = ast.extra_data.items[list.start + i];
+        const idx: NodeIndex = @enumFromInt(raw);
+        const child = ast.getNode(idx);
+        if (child.tag != .ts_property_signature and child.tag != .flow_property_signature) continue;
+        try out.append(alloc, idx);
+    }
 }
 
 /// `Readonly<T>` / `$ReadOnly<T>` 같은 well-known wrapper 를 풀어 inner object 반환.
@@ -166,37 +299,6 @@ fn getTypeReferenceName(ast: *const Ast, node: Node) ?[]const u8 {
     const end = ast.extra_data.items[e + 1];
     if (end <= start or end > ast.source.len) return null;
     return ast.source[start..end];
-}
-
-/// object body NodeIndex 의 멤버 list 추출.
-/// 지원 tag: ts_type_literal, flow_object_type, flow_exact_object_type.
-/// 그 외면 InvalidNativePropsBody.
-fn collectObjectMembers(
-    ast: *const Ast,
-    type_index: *const TypeIndex,
-    body_idx: NodeIndex,
-    alloc: std.mem.Allocator,
-) Error![]const NodeIndex {
-    _ = type_index; // intersection unwrap 시 사용 예정
-
-    const node = ast.getNode(body_idx);
-    const list = switch (node.tag) {
-        .ts_type_literal, .flow_object_type, .flow_exact_object_type => node.data.list,
-        else => return error.InvalidNativePropsBody,
-    };
-
-    const out = try alloc.alloc(NodeIndex, list.len);
-    var count: usize = 0;
-    var i: u32 = 0;
-    while (i < list.len) : (i += 1) {
-        const raw = ast.extra_data.items[list.start + i];
-        const idx: NodeIndex = @enumFromInt(raw);
-        const child = ast.getNode(idx);
-        if (child.tag != .ts_property_signature and child.tag != .flow_property_signature) continue;
-        out[count] = idx;
-        count += 1;
-    }
-    return out[0..count];
 }
 
 /// property_signature 1 개를 분류해 props 또는 events 에 append.
@@ -412,7 +514,12 @@ fn mapTypeReference(
         return mapPropTypeAt(ast, type_index, value_idx, depth + 1);
     }
 
-    return error.UnresolvedTypeReference;
+    // 동일-파일 정의 없음 + 모든 알려진 wrapper / reserved / numeric 등록에도 없음 →
+    // cross-file user-defined ref. RN runtime 은 mixed 를 accept-any 로 처리하므로
+    // permissive fallback. 특히 react-native-svg 의 `UnsafeMixed<NumberProp>` 같은
+    // wrapper 안에 들어 있으면 `UnsafeMixed` 자체 의도가 "loose typing" 이라 정합.
+    // strict 검증이 필요하면 사용자가 BUNGAE_CODEGEN_FALLBACK=js 로 JS plugin 위임.
+    return .mixed;
 }
 
 /// RN core 의 reserved type reference 이름 → primitive 매핑.
