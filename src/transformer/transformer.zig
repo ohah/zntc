@@ -306,20 +306,73 @@ pub const TransformOptions = struct {
 
     pub const compat = @import("compat.zig");
 
-    /// graph 단계 transformer pre-pass 가 옵션-side 사유로 필요한지.
+    /// graph 단계 transformer pre-pass 가 필요한지.
     /// graph-level 플래그 (react_refresh / styled_components / emotion / worklet_transform /
     /// minify_identifiers) 는 ModuleGraph 가 별도로 결합한다.
     /// 새 transformer-driven 옵션을 추가하면 여기에도 반영해야 graph 의 게이트가
     /// silent 하게 fall-through 하지 않는다.
-    pub fn requiresGraphPrePass(self: *const TransformOptions) bool {
-        if (self.unsupported.hasAny()) return true;
+    pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
         if (self.drop_console or self.drop_debugger or self.drop_labels.len > 0) return true;
         if (self.define.len > 0) return true;
         if (self.module_specifier_map.len > 0) return true;
         if (self.minify_syntax or self.minify_whitespace) return true;
         if (!self.use_define_for_class_fields) return true;
         if (self.experimental_decorators or self.emit_decorator_metadata) return true;
+        if (self.unsupportedGraphPrePassFeatureUsed(ast)) return true;
         return false;
+    }
+
+    fn unsupportedGraphPrePassFeatureUsed(self: *const TransformOptions, ast: *const Ast) bool {
+        const u = self.unsupported;
+        if (!u.hasAny()) return false;
+
+        for (ast.nodes.items) |node| {
+            switch (node.tag) {
+                .arrow_function_expression => {
+                    if (u.arrow) return true;
+                    if (u.async_await and hasArrowFlag(ast, node, ast_mod.ArrowFlags.is_async)) return true;
+                },
+                .function_declaration,
+                .function_expression,
+                => {
+                    const flags = ast.readExtra(node.data.extra, 3);
+                    if (u.async_await and (flags & ast_mod.FunctionFlags.is_async) != 0) return true;
+                    if (u.generator and (flags & ast_mod.FunctionFlags.is_generator) != 0) return true;
+                },
+                .class_declaration,
+                .class_expression,
+                => {
+                    if (u.class or u.class_private_field or u.class_private_method or u.class_static_block) return true;
+                },
+                .for_of_statement => if (u.for_of) return true,
+                .for_await_of_statement => if (u.needsForAwaitOfDownlevel()) return true,
+                .spread_element => if (u.spread or u.destructuring) return true,
+                .array_pattern,
+                .object_pattern,
+                .array_assignment_target,
+                .object_assignment_target,
+                .assignment_target_with_default,
+                .binding_rest_element,
+                .assignment_target_rest,
+                => if (u.destructuring) return true,
+                .private_identifier,
+                .private_field_expression,
+                => if (u.class or u.class_private_field or u.class_private_method) return true,
+                .static_block => if (u.class_static_block) return true,
+                .tagged_template_expression => if (u.template_literal) return true,
+                .variable_declaration => {
+                    if (u.using and ast.variableDeclarationKind(node).isUsing()) return true;
+                },
+                .await_expression => if (u.top_level_await) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn hasArrowFlag(ast: *const Ast, node: Node, flag: u32) bool {
+        const e = node.data.extra;
+        return ast.hasExtra(e, 2) and (ast.readExtra(e, 2) & flag) != 0;
     }
 };
 

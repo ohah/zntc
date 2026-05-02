@@ -443,6 +443,24 @@ describe("@zts/core buildSync", () => {
     rmSync(skipDir, { recursive: true, force: true });
   });
 
+  test("graph pre-pass skip: target downlevel without helper syntax stays stable", () => {
+    const skipDir = mkdtempSync(join(tmpdir(), "zts-prepass-skip-target-"));
+    writeFileSync(
+      join(skipDir, "app.ts"),
+      'export const value: number = 1;\nconsole.log("TARGET_SIMPLE_KEPT", value);',
+    );
+    const result = buildSync({
+      entryPoints: [join(skipDir, "app.ts")],
+      target: "es5",
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("TARGET_SIMPLE_KEPT");
+    expect(result.outputFiles[0].text).not.toContain(": number");
+    expect(result.outputFiles[0].text).not.toContain("__async");
+    expect(result.outputFiles[0].text).not.toContain("__spreadArray");
+    rmSync(skipDir, { recursive: true, force: true });
+  });
+
   test("graph pre-pass skip: type-only imports do not pull runtime modules", () => {
     const skipDir = mkdtempSync(join(tmpdir(), "zts-prepass-skip-type-only-"));
     writeFileSync(
