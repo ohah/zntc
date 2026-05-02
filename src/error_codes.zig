@@ -230,6 +230,8 @@ pub const Code = enum(u16) {
     codegen_invalid_native_props_body = 1402,
     /// 같은 schema 안에 같은 이름 component 가 2 개 이상 — `SchemaValidator.js` 동등.
     codegen_duplicate_component = 1403,
+    /// 인헤리턴스 / intersection chain 깊이 한계 초과 (cycle 또는 이상 구조).
+    codegen_inheritance_too_deep = 1404,
 
     /// 에러 코드를 "ZTS0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
@@ -277,6 +279,7 @@ pub const Code = enum(u16) {
             .codegen_unsupported_prop_type => "Use a primitive (boolean/string/number), reserved type (ColorValue/PointValue/...), or function type for events. Complex shapes (nested objects, generic arrays) are not yet supported.",
             .codegen_invalid_native_props_body => "NativeProps must be a `type X = { ... }` or `type X = $ReadOnly<{ ... }>` declaration referencing an object literal.",
             .codegen_duplicate_component => "Each component name in a NativeComponent spec must be unique within the schema.",
+            .codegen_inheritance_too_deep => "Inheritance / intersection chain exceeds depth limit. Check for cycles (interface A extends B; interface B extends A) or flatten the hierarchy.",
             else => null,
         };
     }
@@ -446,6 +449,7 @@ pub const Code = enum(u16) {
             .codegen_unsupported_prop_type => "Prop type is not supported by codegen",
             .codegen_invalid_native_props_body => "NativeProps body is not an object literal or known wrapper",
             .codegen_duplicate_component => "Duplicate component name in schema",
+            .codegen_inheritance_too_deep => "Inheritance / intersection chain exceeds depth limit",
         };
     }
 };

@@ -234,15 +234,21 @@ test "schema_builder: alias 펼치기 — 같은 파일 type X 를 재귀 매핑
     try std.testing.expectEqual(schema.ReservedPropPrimitive.color, shape.props[0].type_annotation.reserved);
 }
 
-test "schema_builder: cross-file reference → UnresolvedTypeReference" {
+test "schema_builder: cross-file reference → mixed (permissive fallback, #2348 후속)" {
     // ViewProps 가 type_index 에 없음 (실제로는 react-native 에서 import).
+    // 기존엔 UnresolvedTypeReference 던졌지만, 인헤리턴스 지원 도입 시 base 의 prop type 에
+    // 노출되는 cross-file ref (NumberProp 등) 가 spec 통째 거부 야기 → permissive `mixed`.
     var p = try parseAndIndex(std.testing.allocator,
         \\type Props = { extra: ViewProps };
     , .ts);
     defer p.deinit();
 
-    const result = buildShape(&p, "Props", "X");
-    try std.testing.expectError(error.UnresolvedTypeReference, result);
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expectEqualStrings("extra", shape.props[0].name);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
 }
 
 test "schema_builder: alias cycle → UnsupportedPropType (depth limit)" {
@@ -453,4 +459,206 @@ test "schema_builder: WithDefault<ColorValue, null> → reserved.color" {
     try std.testing.expectEqualStrings("tint", shape.props[0].name);
     try std.testing.expect(shape.props[0].type_annotation == .reserved);
     try std.testing.expectEqual(schema.ReservedPropPrimitive.color, shape.props[0].type_annotation.reserved);
+}
+
+// ─── 인헤리턴스 / Intersection (#2348 후속) ───
+
+test "schema_builder: TS interface single same-file extends merges base members" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface Base { color: string; }
+        \\interface NativeProps extends Base { enabled: boolean; }
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "NativeProps", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
+    // base 가 먼저 collect (extends 우선) — 순서 검증.
+    try std.testing.expectEqualStrings("color", shape.props[0].name);
+    try std.testing.expectEqualStrings("enabled", shape.props[1].name);
+}
+
+test "schema_builder: TS interface multi-extends (svg pattern) merges all bases" {
+    // react-native-svg 의 실제 패턴 — 2 개 same-file base + 1 cross-file (silent skip).
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface SvgNodeCommonProps { name: string; opacity: number; }
+        \\interface SvgRenderableCommonProps { color: string; fillOpacity: number; }
+        \\interface NativeProps extends ViewProps, SvgNodeCommonProps, SvgRenderableCommonProps {
+        \\  cx: number;
+        \\  cy: number;
+        \\}
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "NativeProps", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // ViewProps cross-file → silent skip. SvgNode (2) + SvgRenderable (2) + own (2) = 6.
+    try std.testing.expectEqual(@as(usize, 6), shape.props.len);
+    // 머지 순서 — extends 순서대로 base 먼저, 그 다음 본문.
+    try std.testing.expectEqualStrings("name", shape.props[0].name);
+    try std.testing.expectEqualStrings("opacity", shape.props[1].name);
+    try std.testing.expectEqualStrings("color", shape.props[2].name);
+    try std.testing.expectEqualStrings("fillOpacity", shape.props[3].name);
+    try std.testing.expectEqualStrings("cx", shape.props[4].name);
+    try std.testing.expectEqualStrings("cy", shape.props[5].name);
+}
+
+test "schema_builder: TS interface transitive extends (A → B → C)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface Grand { gp: string; }
+        \\interface Parent extends Grand { pp: number; }
+        \\interface NativeProps extends Parent { own: boolean; }
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "NativeProps", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 3), shape.props.len);
+    try std.testing.expectEqualStrings("gp", shape.props[0].name);
+    try std.testing.expectEqualStrings("pp", shape.props[1].name);
+    try std.testing.expectEqualStrings("own", shape.props[2].name);
+}
+
+test "schema_builder: TS interface extends only cross-file → empty (silent skip)" {
+    // ViewProps 만 extends → 본문 없으면 0 props. error 안 나야 함.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface NativeProps extends ViewProps {}
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "NativeProps", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+    try std.testing.expectEqual(@as(usize, 0), shape.events.len);
+}
+
+test "schema_builder: TS intersection type alias (A & B & {...})" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Base1 = { a: string };
+        \\type Base2 = { b: number };
+        \\type Props = Base1 & Base2 & { c: boolean };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 3), shape.props.len);
+    try std.testing.expectEqualStrings("a", shape.props[0].name);
+    try std.testing.expectEqualStrings("b", shape.props[1].name);
+    try std.testing.expectEqualStrings("c", shape.props[2].name);
+}
+
+test "schema_builder: TS intersection with cross-file operand (silent skip)" {
+    // CrossModuleType 은 same-file 미정의 → silent skip, Base 만 머지.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Base = { a: string };
+        \\type Props = CrossModuleType & Base & { c: boolean };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
+    try std.testing.expectEqualStrings("a", shape.props[0].name);
+    try std.testing.expectEqualStrings("c", shape.props[1].name);
+}
+
+test "schema_builder: TS interface extends + Readonly wrapper inner" {
+    // base 가 Readonly<{...}> wrapper — unwrap 후 멤버 머지.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Base = Readonly<{ a: string }>;
+        \\interface Props extends Base { b: number; }
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
+    try std.testing.expectEqualStrings("a", shape.props[0].name);
+    try std.testing.expectEqualStrings("b", shape.props[1].name);
+}
+
+test "schema_builder: TS extends cycle (A→B→A) → visited set 으로 graceful 처리" {
+    // visited set 도입 후 cycle 은 panic / depth 폭주 없이 양쪽 본문만 1 회씩 수집.
+    // InheritanceTooDeep 는 visited 가 차단 못 하는 경로 (intersection 깊이 등) 의 안전판으로
+    // 남음. cycle 자체는 visited 로 충분.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface A extends B { a: string; }
+        \\interface B extends A { b: number; }
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "A", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // a + b = 2. cycle 두번째 진입은 visited 가 차단.
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
+}
+
+test "schema_builder: TS interface diamond inheritance — Common 멤버 1 회만 머지" {
+    // diamond pattern: Props extends A, B; A extends Common; B extends Common.
+    // Common 의 prop 이 두 경로로 reach 되지만 visited set 으로 중복 방지.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface Common { shared: string; }
+        \\interface A extends Common { aOnly: number; }
+        \\interface B extends Common { bOnly: boolean; }
+        \\interface Props extends A, B { own: number; }
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // Common(shared) + A(aOnly) + B(bOnly) + Props(own) = 4. shared 는 1 회만.
+    try std.testing.expectEqual(@as(usize, 4), shape.props.len);
+
+    // 각 prop name 정확성 검증 — order 는 visited 정책 (depth-first first-visit).
+    var names = std.StringHashMap(void).init(std.testing.allocator);
+    defer names.deinit();
+    for (shape.props) |prop| try names.put(prop.name, {});
+    try std.testing.expect(names.contains("shared"));
+    try std.testing.expect(names.contains("aOnly"));
+    try std.testing.expect(names.contains("bOnly"));
+    try std.testing.expect(names.contains("own"));
+}
+
+test "schema_builder: TS interface 같은 prop 이름 base + derived — 둘 다 출현 (codegen 은 dedup 안 함)" {
+    // codegen 은 prop name 기반 dedup 안 함 — RN 런타임이 attribute 등록 시 처리.
+    // 본 테스트는 _현재 동작 명세_: 같은 이름이 base 와 derived 양쪽에 있으면 둘 다 emit.
+    // RN runtime 이 last-wins 처리하므로 현재로선 안전. 향후 codegen 단에서 dedup 정책
+    // 변경 시 본 테스트 갱신.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface Base { color: string; }
+        \\interface Props extends Base { color: string; size: number; }
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // 현재 정책: Base.color + Props.color + Props.size = 3.
+    try std.testing.expectEqual(@as(usize, 3), shape.props.len);
+}
+
+test "schema_builder: TS interface extends with Flow base (Readonly<{...}>) — mixed mode 안전" {
+    // 같은 파일에 TS interface + flow type alias 혼재 시나리오는 실제론 거의 없지만
+    // 본 fix 가 mode-agnostic 으로 동작해야 함. base 가 type ref 면 lookup 만 통하고
+    // 안의 형태는 flow/ts 무관하게 처리.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface Base { x: string; }
+        \\interface Props extends Base { y: number; }
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
 }
