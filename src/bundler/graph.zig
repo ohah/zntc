@@ -1240,15 +1240,13 @@ pub const ModuleGraph = struct {
 
         var module = self.modules.at(mod_idx);
         module.state = .parsing;
-        // compiled_cache key 는 mtime 을 요구한다. first build 경로는 여기서 처음 계산,
-        // rebuild 경로는 cache lookup 시 이미 설정됐으므로 fsStat 재호출 없이 통과.
-        if (module.mtime == 0) module.mtime = getMtime(module.path) catch 0;
 
         // Plugin runner: parseModule 내에서 load + transform 훅에 공용
         const plugin_runner: ?plugin_mod.PluginRunner = self.pluginRunnerWithBuiltins();
 
         // Plugin: load 훅 — 모든 module_type 분기 전에 플러그인에게 기회를 줌.
         // 플러그인이 내용을 반환하면 JS 모듈로 전환 (예: .css → JS export).
+        var plugin_load_applied = false;
         if (plugin_runner) |runner| {
             // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
             var tmp_arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -1261,6 +1259,7 @@ pub const ModuleGraph = struct {
                 },
             };
             if (load_result) |plugin_result| {
+                plugin_load_applied = true;
                 // 플러그인이 내용을 반환. (#2157) `loader` 가 명시되면 raw bytes 를 그 loader 의
                 // 값 표현식으로 변환 (parseAssetModule 와 동일한 assetSourceFromBytes 헬퍼).
                 // asset 변환 성공 시 parseAssetModule 와 동일하게 ast 없이 종료 → emitter 의
@@ -1294,6 +1293,14 @@ pub const ModuleGraph = struct {
             } else {
                 tmp_arena.deinit();
             }
+        }
+
+        // compiled_cache key 는 mtime 을 요구한다. 일반 파일 source read 경로는 아래
+        // readModuleSourceWithMtime 가 같은 file handle 에서 source+mtime 을 채운다.
+        // plugin/JSON/CSS/asset 등 별도 read 경로는 기존처럼 여기서 stat 한다.
+        const can_read_mtime_with_source = !plugin_load_applied and module.module_type.isJavaScriptLike();
+        if (!can_read_mtime_with_source and module.mtime == 0) {
+            module.mtime = getMtime(module.path) catch 0;
         }
 
         // JSON 모듈: ESM AST로 변환 → 일반 JS와 동일한 파이프라인
@@ -1422,7 +1429,7 @@ pub const ModuleGraph = struct {
             var read_scope = profile.begin(.graph_discover_pm_setup_read);
             defer read_scope.end();
             if (module.source.len == 0) {
-                module.source = self.readModuleSource(module, arena_alloc, 100 * 1024 * 1024, .resolve) orelse return;
+                module.source = self.readModuleSourceWithMtime(module, arena_alloc, 100 * 1024 * 1024, .resolve) orelse return;
             }
         }
 
@@ -3095,6 +3102,24 @@ pub const ModuleGraph = struct {
             return null;
         };
         return loaded.contents;
+    }
+
+    fn readModuleSourceWithMtime(
+        self: *ModuleGraph,
+        module: *Module,
+        alloc: std.mem.Allocator,
+        max_bytes: usize,
+        step: BundlerDiagnostic.Step,
+    ) ?[]const u8 {
+        if (module.mtime != 0) return self.readModuleSource(module, alloc, max_bytes, step);
+
+        const loaded = fs.readFileWithStat(alloc, module.path, max_bytes) catch {
+            self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
+            module.state = .ready;
+            return null;
+        };
+        module.mtime = loaded.stat.mtime;
+        return loaded.loaded.contents;
     }
 
     fn addDiag(
