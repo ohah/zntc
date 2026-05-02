@@ -684,7 +684,7 @@ var init_read = __esm({
 //#endregion
 //#region NativeModules.js
 var exports_react_native_Libraries_BatchedBridge_NativeModules = {};
-var ªªªªªª, BatchedBridge$1, invariant$2, genModule, loadModule, genMethod, arrayContains, updateErrorWithErrorData, NativeModules;
+var __read, BatchedBridge$1, invariant$2, genModule, loadModule, genMethod, arrayContains, updateErrorWithErrorData, NativeModules;
 __export(exports_react_native_Libraries_BatchedBridge_NativeModules, {
 	"default": function() { return NativeModules; },
 });
@@ -694,7 +694,7 @@ var init_react_native_Libraries_BatchedBridge_NativeModules = __esm({
 		if (!config) {
 			return null;
 		}
-		var _a = ªªªªªª(config, 5),moduleName = _a[0],constants = _a[1],methods = _a[2],promiseMethods = _a[3],syncMethods = _a[4];
+		var _a = __read(config, 5),moduleName = _a[0],constants = _a[1],methods = _a[2],promiseMethods = _a[3],syncMethods = _a[4];
 		invariant$2(!moduleName.startsWith("RCT") && !moduleName.startsWith("RK"), "Module name prefixes should've been stripped by the native side but wasn't for " + moduleName);
 		if (!constants && !methods) {
 			return { name: moduleName };
@@ -10439,18 +10439,18 @@ var init_react_native_src_private_webapis_errors_DOMException = __esm({
 			var _newTarget = this.constructor,_this;
 			;
 			{
-				ªªªªªªªªªªªªªªªªªªªªªªªªª(_this),_this = __callSuper(_super, [message], _newTarget);
+				__assertThisUninitialized(_this),_this = __callSuper(_super, [message], _newTarget);
 				_name.set(_this, void 0);
 				_code.set(_this, void 0);
 			}
 			if (typeof name === "undefined") {
-				__classPrivateFieldSet(_name, ªªªªªªªªªªªªªªªªªªªªªªª(_this), "Error");
-				__classPrivateFieldSet(_code, ªªªªªªªªªªªªªªªªªªªªªªª(_this), 0);
+				__classPrivateFieldSet(_name, __assertThisInitialized(_this), "Error");
+				__classPrivateFieldSet(_code, __assertThisInitialized(_this), 0);
 			} else {
-				__classPrivateFieldSet(_name, ªªªªªªªªªªªªªªªªªªªªªªª(_this), String(name));
-				__classPrivateFieldSet(_code, ªªªªªªªªªªªªªªªªªªªªªªª(_this), (_a = ERROR_NAME_TO_ERROR_CODE_MAP[ªªªªªªªªªªªªªªªªªªªªªªª(_this).name]) != null ? _a : 0);
+				__classPrivateFieldSet(_name, __assertThisInitialized(_this), String(name));
+				__classPrivateFieldSet(_code, __assertThisInitialized(_this), (_a = ERROR_NAME_TO_ERROR_CODE_MAP[__assertThisInitialized(_this).name]) != null ? _a : 0);
 			}
-			return ªªªªªªªªªªªªªªªªªªªªªªª(_this);
+			return __assertThisInitialized(_this);
 		}
 		__extends(DOMException, _super);
 		Object.defineProperty(DOMException.prototype, "name", { configurable: true, get: function() {
@@ -57167,7 +57167,7 @@ __export(exports_react_native_Libraries_Utilities_useWindowDimensions, {
 var init_react_native_Libraries_Utilities_useWindowDimensions = __esm({
 	"useWindowDimensions.js"() {
 	useWindowDimensions = function() {
-		var _a = __read(require_react_index().useState(function() {
+		var _a = ªªªªªª(require_react_index().useState(function() {
 			return Dimensions.get("window");
 		}), 2),dimensions = _a[0],setDimensions = _a[1];
 		require_react_index().useEffect(function() {
