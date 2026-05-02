@@ -465,8 +465,11 @@ pub fn emitEsmWrappedModule(
                     // tree-shake 로 제거된 re-export source 의 getter 는 dangling reference (#2398).
                     // resolved + non-self-cycle 인 source 가 included=false 면 getter emit 생략.
                     // 비정상 record (resolved=none / self-cycle) 는 일반 경로가 안전 처리하므로 fall-through.
+                    // dev_mode 등 tree-shaker 미동작 환경은 is_included 비트 자체가 신뢰 불가
+                    // (default false) 라 가드 적용 안 함 — metadata.zig:408,438 동일 정책.
                     if (eb.kind == .re_export) skip: {
                         const l = linker orelse break :skip;
+                        if (!l.tree_shaker_active) break :skip;
                         if (resolvedReExportSource(l, module, eb)) |src_mod| {
                             if (!src_mod.is_included) continue;
                         }
@@ -730,7 +733,9 @@ pub fn emitEsmWrappedModule(
             const src_mod_ptr = l.graph.getModule(source_mod_idx) orelse continue;
             if (re_export_inited.contains(src_i)) continue;
             // tree-shake 로 제거된 source 의 init 호출은 dangling reference (#2398).
-            if (!src_mod_ptr.is_included) continue;
+            // dev_mode 등 tree-shaker 미동작 환경은 is_included 비트 신뢰 불가라
+            // tree_shaker_active 게이트 (metadata.zig:408,438 동일 정책).
+            if (l.tree_shaker_active and !src_mod_ptr.is_included) continue;
             re_export_inited.put(src_i, {}) catch {};
 
             try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, options);
