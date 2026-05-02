@@ -104,7 +104,7 @@ pub fn build(
 ///   - `ts_type_alias_declaration`:    extra = [name, type_params, ty]
 ///   - `ts_interface_declaration`:     extra = [name, type_params, extends_start, extends_len, body]
 ///   - `flow_type_alias_declaration`:  extra = [name, type_params, value]
-///   - `flow_interface_declaration`:   extra = [name, type_params, extends_start, extends_len]
+///   - `flow_interface_declaration`:   extra = [name, type_params, extends_start, extends_len, body]
 ///   - `flow_opaque_type`:             extra = [name, type_params, supertype, value]
 ///
 /// `Tag.isTypeOnlyDeclaration()` (`ast.zig:390`) 을 가드로 사용 — ast.zig 에 새

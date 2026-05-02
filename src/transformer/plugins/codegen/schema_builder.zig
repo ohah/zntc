@@ -124,7 +124,9 @@ fn collectAllMembers(
 
     const node = ast.getNode(decl_idx);
     switch (node.tag) {
-        .ts_interface_declaration => {
+        .ts_interface_declaration, .flow_interface_declaration => {
+            // 두 태그 모두 layout: [name, type_params, extends_start, extends_len, body].
+            // TS interface 와 Flow interface 의 schema_builder 처리 동등 (#2348 후속, #2416).
             const e = node.data.extra;
             if (e + 4 >= ast.extra_data.items.len) return error.InvalidNativePropsBody;
             // extends list — 본문 머지 _전에_ base 먼저 (override 시 본문이 이김 같지만
@@ -136,7 +138,6 @@ fn collectAllMembers(
                 const ref_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extends_start + i]);
                 try collectMembersFromTypeRef(ast, type_index, ref_idx, out, visited, depth + 1, alloc);
             }
-            // 본문
             const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 4]);
             try collectMembersFromValue(ast, type_index, body_idx, out, visited, depth + 1, alloc);
         },
@@ -168,6 +169,8 @@ fn collectMembersFromValue(
     alloc: std.mem.Allocator,
 ) Error!void {
     if (depth > max_inheritance_depth) return error.InheritanceTooDeep;
+    // body 가 비어 있는 declaration (예: flow_interface_declaration body=.none) — silent skip.
+    if (value_idx.isNone()) return;
 
     const unwrapped = try unwrapWrapper(ast, type_index, value_idx);
     const node = ast.getNode(unwrapped);
@@ -184,7 +187,7 @@ fn collectMembersFromValue(
             try collectMembersFromTypeRef(ast, type_index, unwrapped, out, visited, depth + 1, alloc);
         },
         .ts_type_literal, .flow_object_type, .flow_exact_object_type => {
-            try collectObjectMembersInto(ast, unwrapped, out, alloc);
+            try collectObjectMembersInto(ast, type_index, unwrapped, out, visited, depth + 1, alloc);
         },
         // 그 외 (string literal, primitive, function 등) — base 로 부적절. silent skip.
         else => return,
@@ -226,12 +229,18 @@ fn collectMembersFromTypeRef(
 }
 
 /// object body NodeIndex 의 property_signature 를 out 에 append. 비-object body 는 silent skip.
+/// `flow_object_spread_property` (`{...A}`) 는 argument 의 type ref 로 재귀 (#2416).
 fn collectObjectMembersInto(
     ast: *const Ast,
+    type_index: *const TypeIndex,
     body_idx: NodeIndex,
     out: *std.ArrayList(NodeIndex),
+    visited: *VisitedSet,
+    depth: u8,
     alloc: std.mem.Allocator,
 ) Error!void {
+    if (depth > max_inheritance_depth) return error.InheritanceTooDeep;
+
     const node = ast.getNode(body_idx);
     const list = switch (node.tag) {
         .ts_type_literal, .flow_object_type, .flow_exact_object_type => node.data.list,
@@ -243,8 +252,15 @@ fn collectObjectMembersInto(
         const raw = ast.extra_data.items[list.start + i];
         const idx: NodeIndex = @enumFromInt(raw);
         const child = ast.getNode(idx);
-        if (child.tag != .ts_property_signature and child.tag != .flow_property_signature) continue;
-        try out.append(alloc, idx);
+        switch (child.tag) {
+            .ts_property_signature, .flow_property_signature => try out.append(alloc, idx),
+            .flow_object_spread_property => {
+                // Flow spread `...A` — argument 의 type ref 로 재귀. cross-file 은 silent skip.
+                const arg_idx = child.data.unary.operand;
+                try collectMembersFromValue(ast, type_index, arg_idx, out, visited, depth + 1, alloc);
+            },
+            else => continue,
+        }
     }
 }
 

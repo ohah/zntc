@@ -374,6 +374,12 @@ pub const Node = struct {
         /// (covariant) 는 `flags.readonly = true` 로 매핑. `-key` (contravariant) 는
         /// 현재 별도 비트 없음 (codegen 미사용, drop).
         flow_property_signature,
+        /// Flow object type 의 spread element — `...Type`. data = .binary (left=type ref).
+        /// `Type.Object.SpreadProperty` (Flow 공식 parser, `reference/flow/src/parser/type_parser.ml:1724`)
+        /// 동등. codegen schema_builder 가 base type ref 를 type_index 로 lookup 후
+        /// 멤버 머지 (#2348 후속, #2416). flow_object_type / flow_exact_object_type 의
+        /// members list 에 flow_property_signature 와 혼합 출현.
+        flow_object_spread_property,
         /// match (expr) { ... } — Flow match expression
         flow_match_expression,
         /// match expression 의 개별 arm: `pattern => body`. binary = { left=pattern,
@@ -689,6 +695,10 @@ pub const Node = struct {
                 .jsx_fragment => .{ .kind = .list },
                 // flow_component_wrapper: extra = [func_decl(0), const_decl(1)]
                 .flow_component_wrapper => .{ .kind = .extra, .child_offsets = &.{ 0, 1 } },
+                // flow_object_spread_property: unary = { operand: argument_type, flags: 0 }
+                // Flow `Type.Object.SpreadProperty` 동등 — argument 가 type ref (보통 단순)
+                // 또는 임의 type expression. codegen schema_builder 가 type ref 만 추적.
+                .flow_object_spread_property => .{ .kind = .unary },
                 // TS declarations — 대부분 타입 전용이므로 런타임 워커에서 무시 가능
                 .ts_type_reference,
                 .ts_array_type,

@@ -39,6 +39,7 @@ const PluginError = @import("../../bundler/plugin.zig").PluginError;
 const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const Parser = @import("../../parser/parser.zig").Parser;
 const ast_mod = @import("../../parser/ast.zig");
+const es_helpers = @import("../es_helpers.zig");
 const NodeIndex = ast_mod.NodeIndex;
 const stripQuotes = @import("../../bundler/import_scanner.zig").stripQuotes;
 
@@ -77,7 +78,13 @@ fn onTransform(
     var parser = Parser.init(alloc, &scanner);
     defer parser.deinit();
     parser.configureFromExtension(std.fs.path.extension(id));
-    if (std.mem.endsWith(u8, id, ".js")) parser.is_flow = true;
+    if (std.mem.endsWith(u8, id, ".js")) {
+        parser.is_flow = true;
+        // RN spec 파일은 import/export 사용 — Flow `.js` 도 모듈 모드 필요. configureFromExtension
+        // 이 .js 를 Script 로 두므로 명시적 module 모드 토글.
+        parser.is_module = true;
+        parser.scanner.is_module = true;
+    }
 
     const program = parser.parse() catch return null;
     if (parser.errors.items.len > 0) return null;
@@ -137,16 +144,16 @@ fn findComponentName(ast: *const ast_mod.Ast, program_idx: NodeIndex) ?[]const u
 }
 
 /// `export default codegenNativeComponent(...)` 형태에서 call_expression 추출.
+/// 실제 RN spec 의 export 가 transparent wrapper (TS as/satisfies/non_null/instantiation,
+/// Flow as/type_cast, parenthesize) 로 감싸 있어도 통과 — `es_helpers.unwrapTransparentWrappers`
+/// 가 8 종 wrapper 다층 처리 (#2030, #2034 의 super-tag check 와 같은 패턴).
 fn unwrapToCallExpression(ast: *const ast_mod.Ast, _: NodeIndex, node: ast_mod.Node) ?NodeIndex {
     if (node.tag != .export_default_declaration) return null;
-    const inner_idx = node.data.unary.operand;
+    const inner_idx = es_helpers.unwrapTransparentWrappersAst(ast, node.data.unary.operand);
     if (inner_idx == .none) return null;
     const inner = ast.getNode(inner_idx);
-
-    return switch (inner.tag) {
-        .call_expression => if (callIsCodegenMarker(ast, inner)) inner_idx else null,
-        else => null,
-    };
+    if (inner.tag != .call_expression) return null;
+    return if (callIsCodegenMarker(ast, inner)) inner_idx else null;
 }
 
 fn callIsCodegenMarker(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {

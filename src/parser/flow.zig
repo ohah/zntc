@@ -842,7 +842,9 @@ fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
 
     // `...` 처리. 두 형태:
     //   1. inexact marker: `{ name: T, ... }` — `...` 가 단독 (`}`/`|`/`,`/`;` 직전).
-    //   2. spread: `...Type` — `...` 다음에 type reference.
+    //      → silent skip (`.none` 반환).
+    //   2. spread: `...Type` — `...` 다음에 type. `flow_object_spread_property` 노드 반환
+    //      (Flow 공식 parser `Type.Object.SpreadProperty` 동등, #2348 후속).
     //
     // spread 시 `parsePrimaryType` 사용 (full `parseType` 아님) — `...A` 이후의 `|`
     // 을 union 으로 잘못 흡수하면 outer object type 의 `|}` 종료를 깨뜨림. spread 에는
@@ -852,10 +854,14 @@ fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
         const next = self.current();
         const is_terminator = next == .r_curly or next == .pipe or
             next == .comma or next == .semicolon;
-        if (!is_terminator) {
-            _ = try parsePrimaryType(self);
-        }
-        return NodeIndex.none;
+        if (is_terminator) return NodeIndex.none;
+        const argument = try parsePrimaryType(self);
+        return try self.ast.addUnaryNode(
+            .flow_object_spread_property,
+            .{ .start = start, .end = self.currentSpan().start },
+            argument,
+            0,
+        );
     }
 
     // Indexer (`[key: T]: U`) 또는 call/construct signature (`(args): R`) — skip.
@@ -1500,8 +1506,16 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
         extends_len = list.len;
     }
 
-    // body: { ... } — balanced brace skip (타입 스트리핑이므로 내부 구조 불필요)
-    const body_start = self.currentSpan().start;
+    // body: { ... } — Flow 공식 parser 와 동일하게 본문 멤버 보존 (#2348 후속).
+    // 종전엔 brace-skip 으로 body 토큰조차 안 봤지만, codegen schema_builder 가
+    // flow_interface_declaration 의 멤버를 직접 참조해야 하므로 `parseObjectType`
+    // 호출 (TS interface body 와 동일 패턴, ts.zig:99). body 가 없으면 .none.
+    // body: { ... } — brace-skip. parseObjectType 사용 시 derived class + private field +
+    // super-call 패턴의 모듈 (예: react-native ResourceTiming.js) 에서 비-deterministic
+    // crash (es2015_class.containsSuperCallAssignment 가 0xAAAAAAAA NodeIndex 읽음).
+    // 정확한 원인 미상 — flow_object_type body 가 추가 노드를 만들면서 어딘가 extra_data
+    // 슬롯이 미초기화로 남는 것으로 추정. 보수적으로 brace-skip 유지.
+    // 별도 issue 로 추적, root-cause fix 후 본문 보존 재시도.
     if (self.current() == .l_curly) {
         try self.advance();
         var depth: u32 = 1;
@@ -1515,13 +1529,14 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
         }
         try self.expect(.r_curly);
     }
-    _ = body_start;
+    const body: NodeIndex = NodeIndex.none;
 
     const extra = try self.ast.addExtras(&.{
         @intFromEnum(name),
         @intFromEnum(type_params),
         extends_start,
         extends_len,
+        @intFromEnum(body),
     });
     return try self.ast.addNode(.{
         .tag = .flow_interface_declaration,
