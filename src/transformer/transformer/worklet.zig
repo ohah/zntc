@@ -225,59 +225,14 @@ pub fn collectClosureVars(
 }
 
 /// 바인딩 패턴에서 이름을 추출한다.
-/// binding_identifier, array_binding_pattern, object_binding_pattern 처리.
+/// arrow params without type annotations 는 expression 으로 파싱된 뒤
+/// coverExpressionToAssignmentTarget 로 변환되므로 cover-grammar 결과 (identifier_reference,
+/// assignment_target_identifier, assignment_expression) 도 binding 으로 본다.
 fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMap(void)) Error!void {
-    if (idx.isNone()) return;
-    const node = self.ast.getNode(idx);
-
-    switch (node.tag) {
-        // arrow params without type annotations are parsed as expressions then
-        // converted via coverExpressionToAssignmentTarget:
-        //   identifier_reference → assignment_target_identifier
-        .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-            const name = self.ast.getText(node.data.string_ref);
-            if (name.len > 0) {
-                locals.put(name, {}) catch return error.OutOfMemory;
-            }
-        },
-        .formal_parameter => {
-            // extra = [pattern, type_ann, default, flags, ...]
-            const pattern_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
-            try collectBindingNames(self, pattern_idx, locals);
-        },
-        .array_pattern => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const elem_raw = self.ast.extra_data.items[list.start + i];
-                try collectBindingNames(self, @enumFromInt(elem_raw), locals);
-            }
-        },
-        .object_pattern => {
-            const list = node.data.list;
-            var i: u32 = 0;
-            while (i < list.len) : (i += 1) {
-                const prop_raw = self.ast.extra_data.items[list.start + i];
-                const prop_idx: NodeIndex = @enumFromInt(prop_raw);
-                if (prop_idx.isNone()) continue;
-                const prop = self.ast.getNode(prop_idx);
-                // binding_property: binary = { left: key, right: value }
-                if (prop.tag == .binding_property) {
-                    try collectBindingNames(self, prop.data.binary.right, locals);
-                } else {
-                    // shorthand 등
-                    try collectBindingNames(self, prop_idx, locals);
-                }
-            }
-        },
-        .rest_element, .spread_element => {
-            try collectBindingNames(self, node.data.unary.operand, locals);
-        },
-        .assignment_pattern, .assignment_expression => {
-            // default value: left = pattern/identifier, right = default
-            try collectBindingNames(self, node.data.binary.left, locals);
-        },
-        else => {},
+    var it = ast_walk.bindingIdentifiers(self.ast, idx, .{ .cover_grammar_assignment = true });
+    while (it.next()) |leaf_idx| {
+        const name = self.ast.getText(self.ast.getNode(leaf_idx).data.string_ref);
+        if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
     }
 }
 

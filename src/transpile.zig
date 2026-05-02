@@ -671,43 +671,13 @@ fn appendBindingLiteShadowName(buf: [][]const u8, len: *usize, name: []const u8)
 }
 
 fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
-    if (idx.isNone()) return;
-    const node = ast.getNode(idx);
-    switch (node.tag) {
-        .binding_identifier => {
-            const name = ast.getText(node.span);
-            if (lite.namedImportValueUse(name) != null) appendBindingLiteShadowName(buf, len, name);
-        },
-        .formal_parameters => {
-            if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
-            var i: u32 = 0;
-            while (i < node.data.list.len) : (i += 1) {
-                collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[node.data.list.start + i]), lite, buf, len);
-            }
-        },
-        .formal_parameter => collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, buf, len),
-        .assignment_pattern,
-        .assignment_expression,
-        .assignment_target_with_default,
-        => collectBindingLitePatternShadows(ast, node.data.binary.left, lite, buf, len),
-        .array_pattern,
-        .object_pattern,
-        => {
-            if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
-            var i: u32 = 0;
-            while (i < node.data.list.len) : (i += 1) {
-                collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[node.data.list.start + i]), lite, buf, len);
-            }
-        },
-        .binding_rest_element,
-        .rest_element,
-        .assignment_target_rest,
-        => collectBindingLitePatternShadows(ast, node.data.unary.operand, lite, buf, len),
-        .binding_property,
-        .assignment_target_property_identifier,
-        .assignment_target_property_property,
-        => collectBindingLitePatternShadows(ast, node.data.binary.right, lite, buf, len),
-        else => {},
+    var it = ast_walk.bindingIdentifiers(ast, idx, .{ .cover_grammar_assignment = true });
+    while (it.next()) |leaf_idx| {
+        const leaf = ast.getNode(leaf_idx);
+        // import 이름과 매칭되는 binding 만 shadow set 에 추가. cover-grammar 결과인
+        // identifier_reference / assignment_target_identifier 도 동일 처리.
+        const name = ast.getText(leaf.span);
+        if (lite.namedImportValueUse(name) != null) appendBindingLiteShadowName(buf, len, name);
     }
 }
 

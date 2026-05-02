@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
@@ -355,6 +356,10 @@ fn recordSeenName(
 }
 
 /// 바인딩 패턴에서 이름을 재귀적으로 추출하여 중복 체크한다.
+/// 형식 파라미터에서 `binding_identifier` 만 의미가 있다 — cover-grammar 의
+/// identifier_reference / assignment_target_identifier 는 호출자 (parser 의 duplicate
+/// param check) 가 패턴 자리에서만 호출하므로 leaf 로 도달해도 안전하지만,
+/// 의미상 정통 바인딩 만 중복 검사한다.
 fn collectBindingNames(
     ast: *const Ast,
     idx: NodeIndex,
@@ -362,31 +367,11 @@ fn collectBindingNames(
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
-    const node = ast.getNode(idx);
-
-    switch (node.tag) {
-        .binding_identifier => {
-            try recordSeenName(ast.getText(node.span), node.span, seen, errors, allocator);
-        },
-        .array_pattern, .object_pattern => {
-            const split = ast.nodeListSplitRest(node.data.list);
-            for (split.elements) |raw_idx| {
-                try collectBindingNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
-            }
-            if (split.rest_operand) |op| {
-                try collectBindingNames(ast, op, seen, errors, allocator);
-            }
-        },
-        .binding_property => {
-            // binary: { left = key, right = value }
-            try collectBindingNames(ast, node.data.binary.right, seen, errors, allocator);
-        },
-        .assignment_pattern => {
-            // binary: { left = binding, right = default_value }
-            try collectBindingNames(ast, node.data.binary.left, seen, errors, allocator);
-        },
-        else => {},
+    var it = ast_walk.bindingIdentifiers(ast, idx, .{});
+    while (it.next()) |leaf_idx| {
+        const leaf = ast.getNode(leaf_idx);
+        if (leaf.tag != .binding_identifier) continue;
+        try recordSeenName(ast.getText(leaf.span), leaf.span, seen, errors, allocator);
     }
 }
 
