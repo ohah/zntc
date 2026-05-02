@@ -564,7 +564,15 @@ fn functionExpressionNameImportShadowOverflow(ast: *const Ast, node: ast_mod.Nod
     return false;
 }
 
-fn functionVarImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
+// 함수 body 안에서 nested function/arrow 를 건너뛰며 non-lexical `var` 선언의 binding pattern 을
+// 모두 방문한다. visitor 가 true 를 반환하면 즉시 abort. overflow 검사 / shadow 수집 두 사용처가
+// 동일 트리 순회를 공유하도록 모은 헬퍼.
+fn walkFunctionVarBindingPatterns(
+    ast: *const Ast,
+    idx: ast_mod.NodeIndex,
+    ctx: anytype,
+    comptime onBindingPattern: fn (@TypeOf(ctx), ast_mod.NodeIndex) bool,
+) bool {
     if (idx.isNone()) return false;
     const node = ast.getNode(idx);
     switch (node.tag) {
@@ -582,7 +590,7 @@ fn functionVarImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, name
                 if (decl_idx.isNone()) continue;
                 const decl = ast.getNode(decl_idx);
                 if (decl.tag != .variable_declarator) continue;
-                if (bindingPatternImportShadowOverflow(ast, @enumFromInt(ast.extra_data.items[decl.data.extra]), names, match_count)) return true;
+                if (onBindingPattern(ctx, @enumFromInt(ast.extra_data.items[decl.data.extra]))) return true;
             }
         },
         else => {},
@@ -590,9 +598,28 @@ fn functionVarImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, name
 
     var it = ast_walk.children(ast, node);
     while (it.next()) |child_idx| {
-        if (functionVarImportShadowOverflow(ast, child_idx, names, match_count)) return true;
+        if (walkFunctionVarBindingPatterns(ast, child_idx, ctx, onBindingPattern)) return true;
     }
     return false;
+}
+
+fn functionVarImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
+    const Ctx = struct {
+        ast: *const Ast,
+        names: []const []const u8,
+        match_count: *usize,
+    };
+    const visit = struct {
+        fn onBindingPattern(c: Ctx, binding_idx: ast_mod.NodeIndex) bool {
+            return bindingPatternImportShadowOverflow(c.ast, binding_idx, c.names, c.match_count);
+        }
+    }.onBindingPattern;
+    return walkFunctionVarBindingPatterns(
+        ast,
+        idx,
+        Ctx{ .ast = ast, .names = names, .match_count = match_count },
+        visit,
+    );
 }
 
 fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
@@ -847,25 +874,25 @@ fn collectBindingLiteVariableDeclarationShadows(ast: *const Ast, node: ast_mod.N
 }
 
 fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
-    if (idx.isNone()) return;
-    if (len.* >= buf.len) return;
-    const node = ast.getNode(idx);
-    switch (node.tag) {
-        .function_declaration,
-        .function_expression,
-        .function,
-        .arrow_function_expression,
-        => return,
-        .variable_declaration => if (!ast.variableDeclarationKind(node).isLexical()) {
-            collectBindingLiteVariableDeclarationShadows(ast, node, lite, buf, len);
-        },
-        else => {},
-    }
-
-    var it = ast_walk.children(ast, node);
-    while (it.next()) |child_idx| {
-        collectBindingLiteFunctionVarShadows(ast, child_idx, lite, buf, len);
-    }
+    const Ctx = struct {
+        ast: *const Ast,
+        lite: *const BindingLite,
+        buf: [][]const u8,
+        len: *usize,
+    };
+    const visit = struct {
+        fn onBindingPattern(c: Ctx, binding_idx: ast_mod.NodeIndex) bool {
+            collectBindingLitePatternShadows(c.ast, binding_idx, c.lite, c.buf, c.len);
+            // buf 가 가득 차면 더 append 해도 silent drop 이라 더 순회할 이유가 없다.
+            return c.len.* >= c.buf.len;
+        }
+    }.onBindingPattern;
+    _ = walkFunctionVarBindingPatterns(
+        ast,
+        idx,
+        Ctx{ .ast = ast, .lite = lite, .buf = buf, .len = len },
+        visit,
+    );
 }
 
 fn collectBindingLiteFunctionExpressionNameShadow(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
