@@ -527,7 +527,7 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
 
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .program) continue;
-        return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(raw_idx), names_buf[0..names_len], 0, false);
+        return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(raw_idx), names_buf[0..names_len], 0, false, null);
     }
     return false;
 }
@@ -603,35 +603,21 @@ fn walkFunctionVarBindingPatterns(
     return false;
 }
 
-fn functionVarImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
-    const Ctx = struct {
-        ast: *const Ast,
-        names: []const []const u8,
-        match_count: *usize,
-    };
-    const visit = struct {
-        fn onBindingPattern(c: Ctx, binding_idx: ast_mod.NodeIndex) bool {
-            return bindingPatternImportShadowOverflow(c.ast, binding_idx, c.names, c.match_count);
-        }
-    }.onBindingPattern;
-    return walkFunctionVarBindingPatterns(
-        ast,
-        idx,
-        Ctx{ .ast = ast, .names = names, .match_count = match_count },
-        visit,
-    );
-}
-
 fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
     ast: *const Ast,
     node: ast_mod.Node,
     names: []const []const u8,
     scope_depth: usize,
     inside_function: bool,
+    fn_shadow_count: ?*usize,
 ) bool {
     const list_start = ast.extra_data.items[node.data.extra + 1];
     const list_len = ast.extra_data.items[node.data.extra + 2];
-    var matching_shadows: usize = 0;
+    // 함수 scope 안이면 호출자가 누적 카운터를 넘기고, 모듈 scope 면 statement 로컬 카운터로 폴백.
+    // statement-local shadow 수는 before/after 차이로 계산해 lex/non-lex top-level 결정에 쓴다.
+    var local_count: usize = 0;
+    const counter = fn_shadow_count orelse &local_count;
+    const before = counter.*;
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
         const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
@@ -639,12 +625,12 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
         const decl = ast.getNode(decl_idx);
         if (decl.tag != .variable_declarator) continue;
         const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
-        if (bindingPatternImportShadowOverflow(ast, binding_idx, names, &matching_shadows)) return true;
+        if (bindingPatternImportShadowOverflow(ast, binding_idx, names, counter)) return true;
         const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra + 2]);
-        if (scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth, inside_function)) return true;
+        if (scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth, inside_function, fn_shadow_count)) return true;
     }
 
-    if (matching_shadows == 0) return false;
+    if (counter.* == before) return false;
     if (ast.variableDeclarationKind(node).isLexical()) return scope_depth == 0;
     return !inside_function;
 }
@@ -655,10 +641,11 @@ fn scanChildrenForUnsupportedBindingLiteShadow(
     names: []const []const u8,
     child_scope_depth: usize,
     inside_function: bool,
+    fn_shadow_count: ?*usize,
 ) bool {
     var it = ast_walk.children(ast, node);
     while (it.next()) |child_idx| {
-        if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, child_scope_depth, inside_function)) return true;
+        if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, child_scope_depth, inside_function, fn_shadow_count)) return true;
     }
     return false;
 }
@@ -672,17 +659,18 @@ fn scanFunctionForUnsupportedBindingLiteShadow(
 ) bool {
     const e = node.data.extra;
     // function_expression / function 의 extras[0] 은 inner-only self-name 이라 outer scope binding
-    // 으로 스캔하면 안 되고 별도 overflow 카운트만 잡는다. function_declaration 은 extras[0] 이
-    // outer 에 노출되는 binding 이므로 일반 스캔 경로를 그대로 탄다.
+    // 으로 스캔하면 안 되고 함수-스코프 카운터에만 누적한다. function_declaration 은 extras[0] 이
+    // outer 에 노출되는 binding 이므로 일반 스캔 경로 (fn_shadow_count=null) 를 그대로 탄다.
     const is_function_expression = node.tag != .function_declaration;
-    var matching_shadows: usize = 0;
-    if (is_function_expression and functionExpressionNameImportShadowOverflow(ast, node, names, &matching_shadows)) return true;
-    if (bindingPatternImportShadowOverflow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, &matching_shadows)) return true;
-    if (functionVarImportShadowOverflow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, &matching_shadows)) return true;
+    // 한 함수 scope 안에서 누적되는 shadow 수. 함수-식 self-name + params + body 안 var binding 합산.
+    // params/body 일반 scan 에 같은 카운터를 스레딩해 BindingLite 과 동일 set 에 대해 overflow 만 잡고,
+    // params/body 트리는 한 번씩만 순회한다.
+    var fn_shadow_count: usize = 0;
+    if (is_function_expression and functionExpressionNameImportShadowOverflow(ast, node, names, &fn_shadow_count)) return true;
 
-    if (!is_function_expression and scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
-    if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth, inside_function)) return true;
-    return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, scope_depth + 1, true);
+    if (!is_function_expression and scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function, null)) return true;
+    if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth, inside_function, &fn_shadow_count)) return true;
+    return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, scope_depth + 1, true, &fn_shadow_count);
 }
 
 fn scanForUnsupportedBindingLiteShadow(
@@ -691,6 +679,7 @@ fn scanForUnsupportedBindingLiteShadow(
     names: []const []const u8,
     scope_depth: usize,
     inside_function: bool,
+    fn_shadow_count: ?*usize,
 ) bool {
     if (idx.isNone()) return false;
     const node = ast.getNode(idx);
@@ -698,17 +687,20 @@ fn scanForUnsupportedBindingLiteShadow(
         // scope_depth: program 은 0, block/body 진입마다 +1. inside_function: function/arrow body
         // 이하 ancestry. 두 값이 함께 쓰이는 이유는 transpile.zig:573-575 의 truth table 참고 — top-level
         // var 은 import 를 가리지만 함수 내 var 는 nearest function scope 에만 머물러 outer use 를 안 가린다.
-        .program => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, 0, false),
-        .block_statement => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, inside_function),
-        .function_body => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, true),
+        .program => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, 0, false, null),
+        .block_statement => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, inside_function, fn_shadow_count),
+        .function_body => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth + 1, true, fn_shadow_count),
         .formal_parameters => {
-            var matching_shadows: usize = 0;
-            return bindingPatternImportShadowOverflow(ast, idx, names, &matching_shadows);
+            var local_count: usize = 0;
+            const counter = fn_shadow_count orelse &local_count;
+            return bindingPatternImportShadowOverflow(ast, idx, names, counter);
         },
         .catch_clause => {
-            var matching_shadows: usize = 0;
-            if (bindingPatternImportShadowOverflow(ast, node.data.binary.left, names, &matching_shadows)) return true;
-            return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1, inside_function);
+            // catch 매개변수는 catch block scope 에만 binding 되어 BindingLite 의 함수-scope shadow set
+            // 에 합산되지 않는다. 단일 catch 안 overflow 만 별도 fresh counter 로 검사한다.
+            var local_count: usize = 0;
+            if (bindingPatternImportShadowOverflow(ast, node.data.binary.left, names, &local_count)) return true;
+            return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1, inside_function, fn_shadow_count);
         },
         .function_declaration,
         .function_expression,
@@ -716,12 +708,14 @@ fn scanForUnsupportedBindingLiteShadow(
         => return scanFunctionForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
         .arrow_function_expression => {
             const e = node.data.extra;
-            if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
-            return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth + 1, true);
+            // arrow 도 자기 function scope 를 가지므로 새 카운터를 연다. params 와 body 가 함께 누적.
+            var arrow_shadow_count: usize = 0;
+            if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function, &arrow_shadow_count)) return true;
+            return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth + 1, true, &arrow_shadow_count);
         },
-        .variable_declaration => return scanVariableDeclarationForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
+        .variable_declaration => return scanVariableDeclarationForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function, fn_shadow_count),
         .binding_identifier => return string_list.contains(names, ast.getText(node.span)),
-        else => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
+        else => return scanChildrenForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function, fn_shadow_count),
     }
 }
 
