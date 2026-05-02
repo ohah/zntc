@@ -328,19 +328,21 @@ fn rewriteTDZReferencesInner(self: anytype, idx: NodeIndex, tdz_names: []const S
             try rewriteTDZReferencesInner(self, node.data.ternary.c, tdz_names);
         },
         .list => {
-            const items = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
-            for (items) |child_raw| try rewriteTDZReferencesInner(self, @enumFromInt(child_raw), tdz_names);
+            // realloc-safe — TDZ name 매칭 시 makeTDZCall → makeStaticMember → addExtras 가
+            // extra_data 를 grow 시켜 캡처된 slice invalid (#2426).
+            var iter = self.ast.iterateExtraList(node.data.list);
+            while (iter.next()) |child| try rewriteTDZReferencesInner(self, child, tdz_names);
         },
         .extra => {
             const e = node.data.extra;
             for (Node.Tag.extraChildOffsets(node.tag)) |offset| {
-                try rewriteTDZReferencesInner(self, @enumFromInt(self.ast.extra_data.items[e + offset]), tdz_names);
+                try rewriteTDZReferencesInner(self, self.ast.readExtraNode(e, offset), tdz_names);
             }
             for (Node.Tag.extraListOffsets(node.tag)) |pair| {
-                const start = self.ast.extra_data.items[e + pair[0]];
-                const len = self.ast.extra_data.items[e + pair[1]];
-                const items = self.ast.extra_data.items[start .. start + len];
-                for (items) |child_raw| try rewriteTDZReferencesInner(self, @enumFromInt(child_raw), tdz_names);
+                const start = self.ast.readExtra(e, pair[0]);
+                const len = self.ast.readExtra(e, pair[1]);
+                var iter = self.ast.iterateExtraList(.{ .start = start, .len = len });
+                while (iter.next()) |child| try rewriteTDZReferencesInner(self, child, tdz_names);
             }
         },
     }

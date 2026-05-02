@@ -410,13 +410,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 return transformStmtFlow(self, body_idx, flow, 0, 0);
             }
 
-            const list = body.data.list;
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
-            for (stmts) |raw| {
-                const transformed = try transformStmtFlow(self, @enumFromInt(raw), flow, 0, 0);
+            // realloc-safe — transformStmtFlow 재귀가 addNode/addNodeList 로 extra_data grow 가능 (#2426).
+            var iter = self.ast.iterateExtraList(body.data.list);
+            while (iter.next()) |stmt| {
+                const transformed = try transformStmtFlow(self, stmt, flow, 0, 0);
                 try self.scratch.append(self.allocator, transformed);
             }
 
@@ -533,12 +533,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
                 // block_statement: 내부 문들을 재귀 변환
                 .block_statement => {
-                    const list = node.data.list;
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
-                    for (stmts) |raw| {
-                        try self.scratch.append(self.allocator, try transformStmtFlow(self, @enumFromInt(raw), flow, loop_depth, switch_depth));
+                    // realloc-safe — transformStmtFlow 재귀가 extra_data grow 가능 (#2426).
+                    var iter = self.ast.iterateExtraList(node.data.list);
+                    while (iter.next()) |stmt| {
+                        try self.scratch.append(self.allocator, try transformStmtFlow(self, stmt, flow, loop_depth, switch_depth));
                     }
                     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                     return self.ast.addNode(.{

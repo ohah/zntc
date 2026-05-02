@@ -1938,8 +1938,10 @@ fn rewriteArrayUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *
     var kept: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer kept.deinit(ast.allocator);
 
-    for (indices) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
+    // realloc-safe 순회 — simplifyUnusedInPlace 재귀가 reduceToSequenceExpr → extra_data grow
+    // → ArrayList realloc → 캡처된 indices slice invalid (#2422 동일 패턴, #2426).
+    var iter = ast.iterateExtraList(list);
+    while (iter.next()) |idx| {
         // array hole — NodeIndex.none — drop
         if (idx.isNone()) continue;
         const child_rem = simplifyUnusedInPlace(ast, ctx, idx, changed, depth + 1);
@@ -1978,8 +1980,9 @@ fn rewriteCallOrNewUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, change
     var kept: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer kept.deinit(ast.allocator);
 
-    for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
+    // realloc-safe 순회 — simplifyUnusedInPlace 재귀가 extra_data grow 가능 (#2426).
+    var iter = ast.iterateExtraList(.{ .start = args_start, .len = args_len });
+    while (iter.next()) |idx| {
         if (idx.isNone()) continue;
         const child_rem = simplifyUnusedInPlace(ast, ctx, idx, changed, depth + 1);
         if (child_rem) continue;
@@ -2030,8 +2033,11 @@ fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
     var kept: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer kept.deinit(ast.allocator);
 
-    for (props) |raw| {
-        const prop = ast.nodes.items[raw];
+    // realloc-safe 순회 — simplifyUnusedInPlace 재귀가 extra_data grow 가능 (#2426).
+    var iter = ast.iterateExtraList(list);
+    while (iter.next()) |prop_idx| {
+        const prop_ni = @intFromEnum(prop_idx);
+        const prop = ast.nodes.items[prop_ni];
 
         switch (prop.tag) {
             .object_property => {
