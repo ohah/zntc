@@ -579,10 +579,27 @@ fn mapPropTypeAt(
         // RN runtime 이 nullable semantics 자체 처리 — wrapper 만 풀고 inner 매핑.
         .flow_nullable_type => mapPropTypeAt(ast, type_index, node.data.unary.operand, depth + 1),
 
+        // postfix `T[]` — parser (ts.zig / flow.zig) 가 element 를 extra[0] 으로 보존.
+        // `Array<T>` (type_reference) 와 동등 결과: array.<element prop>.
+        .ts_array_type, .flow_array_type => mapArrayType(ast, type_index, node, depth),
+
         .ts_union_type, .flow_union_type => mapUnion(ast, node),
 
         else => error.UnsupportedPropType,
     };
+}
+
+/// `T[]` element 를 extra[0] 에서 읽어 array prop 으로 lift.
+fn mapArrayType(
+    ast: *const Ast,
+    type_index: *const TypeIndex,
+    node: Node,
+    depth: u8,
+) Error!schema.PropTypeAnnotation {
+    const elem_idx = ast.readExtraNode(node.data.extra, 0);
+    if (elem_idx == .none) return error.UnsupportedPropType;
+    const inner = try mapPropTypeAt(ast, type_index, elem_idx, depth + 1);
+    return .{ .array = try toArrayElement(inner) };
 }
 
 /// Union 의 모든 element 가 string literal 이면 string_enum, 그 외엔 mixed.
@@ -613,7 +630,9 @@ fn mapTypeReference(
     const last = lastSegment(name);
 
     if (wrapper_ref_names.get(last)) |kind| {
-        const inner = getNthTypeArgument(ast, node, 0) orelse return error.UnsupportedPropType;
+        // type-arg 없는 wrapper (예: `CT.UnsafeMixed[]` 의 element). `@react-native/codegen`
+        // 의 reference 동작 동등 — typeAnnotation lookup 실패 시 mixed fall back.
+        const inner = getNthTypeArgument(ast, node, 0) orelse return .mixed;
         const inner_prop = try mapPropTypeAt(ast, type_index, inner, depth + 1);
         return switch (kind) {
             // WithDefault<T, D>: D (default literal) 는 향후 PR — ts_literal_type 추출해
