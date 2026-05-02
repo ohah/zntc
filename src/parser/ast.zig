@@ -1224,10 +1224,40 @@ pub const Ast = struct {
         return @enumFromInt(self.readExtra(base, offset));
     }
 
+    /// `readExtraNode` 의 bounds-check 생략 버전. caller 가 `base + offset` 이 valid 함을
+    /// 외부 invariant 로 보장할 때 사용 (예: list iteration 에서 \[start, start+len) 가
+    /// 이미 검증된 경우). hot loop 에서 매 iteration 의 추가 branch 회피.
+    pub fn readExtraNodeUnchecked(self: *const Ast, base: u32, offset: u32) NodeIndex {
+        return @enumFromInt(self.extra_data.items[base + offset]);
+    }
+
     /// extra_data가 base+max_offset까지 유효한지 확인.
     pub fn hasExtra(self: *const Ast, base: u32, max_offset: u32) bool {
         return base + max_offset < self.extra_data.items.len;
     }
+
+    /// extra_data 의 \[start, start+len) 구간을 NodeIndex 로 순회. realloc-safe —
+    /// 매 `next()` 호출이 `extra_data.items` 를 다시 읽어 `start + i` 위치의 현재 값을 반환.
+    /// caller 가 iteration 중 `addNode` / `addExtras` 등으로 extra_data 를 grow 시켜도
+    /// 안전 (#2422 의 slice-capture-then-recurse 버그 회피 표준 패턴).
+    /// `start + len` 은 caller 가 list 생성 시점에 검증된 값이므로 unchecked 접근.
+    pub fn iterateExtraList(self: *const Ast, list: NodeList) ExtraListIter {
+        return .{ .ast = self, .start = list.start, .len = list.len };
+    }
+
+    pub const ExtraListIter = struct {
+        ast: *const Ast,
+        start: u32,
+        len: u32,
+        i: u32 = 0,
+
+        pub fn next(self: *ExtraListIter) ?NodeIndex {
+            if (self.i >= self.len) return null;
+            const node = self.ast.readExtraNodeUnchecked(self.start, self.i);
+            self.i += 1;
+            return node;
+        }
+    };
 
     /// span이 가리키는 소스 텍스트를 반환한다.
     /// source와 string_table 모두 지원 (getText에 위임).

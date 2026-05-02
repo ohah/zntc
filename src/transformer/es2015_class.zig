@@ -2489,11 +2489,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     try transformDerivedConstructorReturns(self, node.data.ternary.c);
                 },
                 .list => {
-                    const list = node.data.list;
-                    // 인덱스 기반 접근 — recursion 이 extra_data 를 grow → realloc 가능 (#2422 동일 패턴).
-                    var i: u32 = 0;
-                    while (i < list.len) : (i += 1) {
-                        try transformDerivedConstructorReturns(self, self.ast.readExtraNode(list.start, i));
+                    var iter = self.ast.iterateExtraList(node.data.list);
+                    while (iter.next()) |child| {
+                        try transformDerivedConstructorReturns(self, child);
                     }
                 },
                 .extra => {
@@ -2504,9 +2502,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     for (node.tag.extraListOffsets()) |list_offset| {
                         const start = self.ast.readExtra(e, list_offset[0]);
                         const len = self.ast.readExtra(e, list_offset[1]);
-                        var j: u32 = 0;
-                        while (j < len) : (j += 1) {
-                            try transformDerivedConstructorReturns(self, self.ast.readExtraNode(start, j));
+                        var iter = self.ast.iterateExtraList(.{ .start = start, .len = len });
+                        while (iter.next()) |child| {
+                            try transformDerivedConstructorReturns(self, child);
                         }
                     }
                 },
@@ -2555,13 +2553,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
-            // 주의: insertInstanceFieldsAfterSuper 가 새 노드 build 로 extra_data 를 grow →
-            // ArrayList realloc → 캡처된 slice .ptr 이 freed → 다음 iteration 에서 0xAA
-            // (debug uninit pattern) NodeIndex 로 panic. 위 line 2527 의 "인덱스만 저장,
-            // 사용 시 재접근" 정책을 loop 본문에도 적용 — 매 iteration 마다 재접근.
-            var i: u32 = 0;
-            while (i < stmts_len) : (i += 1) {
-                const stmt_idx = self.ast.readExtraNode(stmts_start, i);
+            // realloc-safe 순회 — 위 line 2527 의 "인덱스만 저장, 사용 시 재접근" 정책 적용 (#2422).
+            var stmts_iter = self.ast.iterateExtraList(.{ .start = stmts_start, .len = stmts_len });
+            while (stmts_iter.next()) |stmt_idx| {
                 if (containsSuperCallAssignment(self, stmt_idx)) {
                     try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt_idx, instance_fields, span));
                 } else {
@@ -2618,10 +2612,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-                    // 인덱스 기반 — appendInstanceFields/insertInstanceFieldsAfterSuper 가 addNode → realloc 가능 (#2422).
-                    var i: u32 = 0;
-                    while (i < list.len) : (i += 1) {
-                        const child_idx = self.ast.readExtraNode(list.start, i);
+                    var iter = self.ast.iterateExtraList(list);
+                    while (iter.next()) |child_idx| {
                         if (isSuperCallAssignmentStatement(self, child_idx)) {
                             try self.scratch.append(self.allocator, child_idx);
                             try appendInstanceFields(self, instance_fields, span);
@@ -2731,12 +2723,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     node.span,
                 ),
                 .sequence_expression, .array_expression => {
-                    const list = node.data.list;
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    var i: u32 = 0;
-                    while (i < list.len) : (i += 1) {
-                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, self.ast.readExtraNode(list.start, i), instance_fields, span));
+                    var iter = self.ast.iterateExtraList(node.data.list);
+                    while (iter.next()) |child| {
+                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, child, instance_fields, span));
                     }
                     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .list = new_list } });
@@ -2749,9 +2740,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const flags = self.ast.readExtra(e, 3);
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    var i: u32 = 0;
-                    while (i < args_len) : (i += 1) {
-                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, self.ast.readExtraNode(args_start, i), instance_fields, span));
+                    var iter = self.ast.iterateExtraList(.{ .start = args_start, .len = args_len });
+                    while (iter.next()) |arg| {
+                        try self.scratch.append(self.allocator, try injectInstanceFieldsAfterSuperExpr(self, arg, instance_fields, span));
                     }
                     const args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                     const new_extra = try self.ast.addExtras(&.{ callee, args.start, args.len, flags });
@@ -2770,12 +2761,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                 },
                 .object_expression => {
-                    const list = node.data.list;
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    var i: u32 = 0;
-                    while (i < list.len) : (i += 1) {
-                        const prop_idx = self.ast.readExtraNode(list.start, i);
+                    var iter = self.ast.iterateExtraList(node.data.list);
+                    while (iter.next()) |prop_idx| {
                         // 부작용 없는 prop 은 그대로 통과 — 매번 복제하면 N props 중 1 개만 super 가 있어도
                         // 전체 list 가 새로 만들어지는 낭비가 발생.
                         if (!containsSuperCallAssignment(self, prop_idx)) {
