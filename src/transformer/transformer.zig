@@ -338,7 +338,7 @@ pub const TransformOptions = struct {
                 .function_declaration,
                 .function_expression,
                 => {
-                    const flags = ast.readExtra(node.data.extra, 3);
+                    const flags = ast.readExtra(node.data.extra, ast_mod.FunctionExtra.flags);
                     if (u.async_await and (flags & ast_mod.FunctionFlags.is_async) != 0) return true;
                     if (u.generator and (flags & ast_mod.FunctionFlags.is_generator) != 0) return true;
                 },
@@ -375,7 +375,7 @@ pub const TransformOptions = struct {
 
     fn hasArrowFlag(ast: *const Ast, node: Node, flag: u32) bool {
         const e = node.data.extra;
-        return ast.hasExtra(e, 2) and (ast.readExtra(e, 2) & flag) != 0;
+        return ast.hasExtra(e, ast_mod.ArrowExtra.flags) and (ast.readExtra(e, ast_mod.ArrowExtra.flags) & flag) != 0;
     }
 };
 
@@ -1442,7 +1442,7 @@ pub const Transformer = struct {
             .function_expression,
             => {
                 const e = node.data.extra;
-                const flags = self.readU32(e, 3);
+                const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
                 if (self.options.unsupported.async_await and (flags & ast_mod.FunctionFlags.is_async) != 0) {
                     // async generator (`async function*`) → __asyncGenerator wrapper. (#1911)
                     if ((flags & ast_mod.FunctionFlags.is_generator) != 0) {

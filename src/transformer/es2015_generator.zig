@@ -89,7 +89,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const params_start = params_list_old.start;
             const params_len = params_list_old.len;
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
-            const flags = self.readU32(e, 3);
+            const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
             const new_name = try self.visitNode(name_idx);
 

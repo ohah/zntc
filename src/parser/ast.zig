@@ -1416,11 +1416,21 @@ fn decodeStringLiteralKey(
 // ============================================================
 
 /// function declaration/expression의 flags 비트.
-/// extra: [name, params.start, params.len, body, flags, return_type]
+/// 실제 extra 레이아웃은 `FunctionExtra` 참고 (params 는 wrapper 노드 1슬롯).
 pub const FunctionFlags = struct {
     pub const is_async: u32 = 0x01;
     pub const is_generator: u32 = 0x02;
     pub const no_side_effects: u32 = 0x04; // @__NO_SIDE_EFFECTS__
+};
+
+/// function_declaration / function_expression extras 레이아웃: [name, params, body, flags, return_type].
+/// 매직 offset 숫자 (`readU32(e, 3)`) 대신 `FunctionExtra.flags` 사용.
+pub const FunctionExtra = struct {
+    pub const name: u32 = 0;
+    pub const params: u32 = 1;
+    pub const body: u32 = 2;
+    pub const flags: u32 = 3;
+    pub const return_type: u32 = 4;
 };
 
 /// method_definition의 flags 비트 (extra[3] u16).
@@ -1521,10 +1531,18 @@ pub const UnaryFlags = struct {
 };
 
 /// arrow_function_expression의 flags (D082).
-/// extra: [params, body, flags]
+/// 실제 extra 레이아웃은 `ArrowExtra` 참고.
 pub const ArrowFlags = struct {
     pub const is_async: u32 = 0x01;
     pub const no_side_effects: u32 = 0x02; // @__NO_SIDE_EFFECTS__
+};
+
+/// arrow_function_expression extras 레이아웃: [params, body, flags].
+/// 매직 offset 숫자 (`readU32(e, 2)`) 대신 `ArrowExtra.flags` 사용.
+pub const ArrowExtra = struct {
+    pub const params: u32 = 0;
+    pub const body: u32 = 1;
+    pub const flags: u32 = 2;
 };
 
 /// tagged_template_expression의 flags (D082).

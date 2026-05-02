@@ -42,7 +42,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
 
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
-            const flags = self.readU32(e, 2);
+            const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
 
             const param_list = try arrowParamsToList(self, params_idx);
 

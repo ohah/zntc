@@ -76,7 +76,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const params_list = self.ast.functionParamsList(node);
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
-            const flags = self.readU32(e, 3);
+            const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
             const new_name = try self.visitNode(name_idx);
             const new_params = try self.visitExtraList(.{ .start = params_list.start, .len = params_list.len });
@@ -153,7 +153,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const params_start = params_list.start;
             const params_len = params_list.len;
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
-            const flags = self.readU32(e, 3);
+            const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
             const new_name = try self.visitNode(name_idx);
             const new_body = try self.visitBodyWorkletAware(body_idx);
@@ -198,7 +198,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const e = node.data.extra;
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
-            const flags = self.readU32(e, 2);
+            const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
 
             const new_params = try self.visitNode(params_idx);
             const new_body = try self.visitBodyWorkletAware(body_idx);
@@ -249,7 +249,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const params_start = params_list.start;
             const params_len = params_list.len;
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
-            const flags = self.readU32(e, 3);
+            const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
             const new_name = try self.visitNode(name_idx);
 
