@@ -486,9 +486,29 @@ fn collectAstFacts(ast: *const Ast) AstFacts {
     return facts;
 }
 
+fn nodeTreeContains(ast: *const Ast, idx: ast_mod.NodeIndex, target: ast_mod.NodeIndex) bool {
+    if (idx.isNone()) return false;
+    if (idx == target) return true;
+    var it = ast_walk.children(ast, ast.getNode(idx));
+    while (it.next()) |child_idx| {
+        if (nodeTreeContains(ast, child_idx, target)) return true;
+    }
+    return false;
+}
+
+fn isInsideFormalParameters(ast: *const Ast, target: ast_mod.NodeIndex) bool {
+    for (ast.nodes.items, 0..) |node, raw_idx| {
+        if (node.tag != .formal_parameters) continue;
+        if (nodeTreeContains(ast, @enumFromInt(raw_idx), target)) return true;
+    }
+    return false;
+}
+
 // default/namespace specifier 는 collectAstFacts 에서 has_non_named_import 로 잡혀
 // buildTransformPlan 이 이미 full 로 라우팅하므로 여기서는 named 만 본다.
 // import local 노드는 identifier_reference 로 태깅되므로 binding_identifier 필터에 자연히 빠진다.
+// 함수 파라미터 shadow 는 binding-lite walker 가 scope-aware 로 처리할 수 있으므로 여기서는
+// full fallback 조건에서 제외한다. top-level/local 선언 shadow 는 아직 full 로 둔다.
 fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
     var names_buf: [64][]const u8 = undefined;
     var names_len: usize = 0;
@@ -515,8 +535,9 @@ fn hasNamedImportLocalBindingShadow(ast: *const Ast) bool {
 
     if (names_len == 0) return false;
 
-    for (ast.nodes.items) |node| {
+    for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .binding_identifier) continue;
+        if (isInsideFormalParameters(ast, @enumFromInt(raw_idx))) continue;
         const bind_name = ast.getText(node.span);
         var j: usize = 0;
         while (j < names_len) : (j += 1) {
@@ -618,15 +639,28 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
     }
 
     var lite = BindingLite{ .named_imports = try bindings.toOwnedSlice(allocator) };
+    const no_shadowed_names: []const []const u8 = &.{};
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .program) continue;
-        markBindingLiteValueUses(ast, @enumFromInt(raw_idx), &lite, true);
+        markBindingLiteValueUses(ast, @enumFromInt(raw_idx), &lite, true, no_shadowed_names);
         break;
     }
     return lite;
 }
 
-fn markBindingLiteUse(lite: *BindingLite, name: []const u8) void {
+fn isBindingLiteImportName(lite: *const BindingLite, name: []const u8) bool {
+    return lite.namedImportValueUse(name) != null;
+}
+
+fn isShadowedBindingLiteName(name: []const u8, shadowed_names: []const []const u8) bool {
+    for (shadowed_names) |shadowed| {
+        if (std.mem.eql(u8, name, shadowed)) return true;
+    }
+    return false;
+}
+
+fn markBindingLiteUse(lite: *BindingLite, name: []const u8, shadowed_names: []const []const u8) void {
+    if (isShadowedBindingLiteName(name, shadowed_names)) return;
     for (lite.named_imports) |*binding| {
         if (std.mem.eql(u8, binding.local_name, name)) {
             binding.used_as_value = true;
@@ -635,39 +669,91 @@ fn markBindingLiteUse(lite: *BindingLite, name: []const u8) void {
     }
 }
 
-fn markBindingPatternDefaultValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite) void {
+fn appendBindingLiteShadowName(buf: []?[]const u8, len: *usize, name: []const u8) void {
+    for (buf[0..len.*]) |existing| {
+        if (std.mem.eql(u8, existing.?, name)) return;
+    }
+    if (len.* >= buf.len) return;
+    buf[len.*] = name;
+    len.* += 1;
+}
+
+fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: []?[]const u8, len: *usize) void {
     if (idx.isNone()) return;
     const node = ast.getNode(idx);
     switch (node.tag) {
-        .assignment_pattern,
-        .assignment_target_with_default,
-        => {
-            markBindingPatternDefaultValueUses(ast, node.data.binary.left, lite);
-            markBindingLiteValueUses(ast, node.data.binary.right, lite, true);
+        .binding_identifier => {
+            const name = ast.getText(node.span);
+            if (isBindingLiteImportName(lite, name)) appendBindingLiteShadowName(buf, len, name);
         },
+        .formal_parameters => {
+            if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
+            var i: u32 = 0;
+            while (i < node.data.list.len) : (i += 1) {
+                collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[node.data.list.start + i]), lite, buf, len);
+            }
+        },
+        .formal_parameter => collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, buf, len),
+        .assignment_pattern,
+        .assignment_expression,
+        .assignment_target_with_default,
+        => collectBindingLitePatternShadows(ast, node.data.binary.left, lite, buf, len),
         .array_pattern,
         .object_pattern,
-        => markBindingLiteListValueUses(ast, node.data.list, lite, false),
+        => {
+            if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
+            var i: u32 = 0;
+            while (i < node.data.list.len) : (i += 1) {
+                collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[node.data.list.start + i]), lite, buf, len);
+            }
+        },
         .binding_rest_element,
+        .rest_element,
         .assignment_target_rest,
-        => markBindingPatternDefaultValueUses(ast, node.data.unary.operand, lite),
+        => collectBindingLitePatternShadows(ast, node.data.unary.operand, lite, buf, len),
         .binding_property,
         .assignment_target_property_identifier,
         .assignment_target_property_property,
-        => markBindingPatternDefaultValueUses(ast, node.data.binary.right, lite),
+        => collectBindingLitePatternShadows(ast, node.data.binary.right, lite, buf, len),
         else => {},
     }
 }
 
-fn markBindingLiteListValueUses(ast: *const Ast, list: ast_mod.NodeList, lite: *BindingLite, value_context: bool) void {
-    if (list.start + list.len > ast.extra_data.items.len) return;
-    var i: u32 = 0;
-    while (i < list.len) : (i += 1) {
-        markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[list.start + i]), lite, value_context);
+fn markBindingPatternDefaultValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, shadowed_names: []const []const u8) void {
+    if (idx.isNone()) return;
+    const node = ast.getNode(idx);
+    switch (node.tag) {
+        .assignment_pattern,
+        .assignment_expression,
+        .assignment_target_with_default,
+        => {
+            markBindingPatternDefaultValueUses(ast, node.data.binary.left, lite, shadowed_names);
+            markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
+        },
+        .array_pattern,
+        .object_pattern,
+        => markBindingLiteListValueUses(ast, node.data.list, lite, false, shadowed_names),
+        .binding_rest_element,
+        .rest_element,
+        .assignment_target_rest,
+        => markBindingPatternDefaultValueUses(ast, node.data.unary.operand, lite, shadowed_names),
+        .binding_property,
+        .assignment_target_property_identifier,
+        .assignment_target_property_property,
+        => markBindingPatternDefaultValueUses(ast, node.data.binary.right, lite, shadowed_names),
+        else => {},
     }
 }
 
-fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool) void {
+fn markBindingLiteListValueUses(ast: *const Ast, list: ast_mod.NodeList, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) void {
+    if (list.start + list.len > ast.extra_data.items.len) return;
+    var i: u32 = 0;
+    while (i < list.len) : (i += 1) {
+        markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[list.start + i]), lite, value_context, shadowed_names);
+    }
+}
+
+fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) void {
     if (idx.isNone()) return;
     const node = ast.getNode(idx);
 
@@ -677,7 +763,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         .identifier_reference,
         .assignment_target_identifier,
         => {
-            if (value_context) markBindingLiteUse(lite, ast.getText(node.span));
+            if (value_context) markBindingLiteUse(lite, ast.getText(node.span), shadowed_names);
             return;
         },
         .binding_identifier,
@@ -688,24 +774,24 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         .import_attribute,
         => return,
         .export_specifier => {
-            markBindingLiteValueUses(ast, node.data.binary.left, lite, true);
+            markBindingLiteValueUses(ast, node.data.binary.left, lite, true, shadowed_names);
             return;
         },
         .export_named_declaration => {
             const x = module_parser.readExportNamedExtras(ast, node.data.extra);
-            markBindingLiteValueUses(ast, x.decl, lite, true);
-            markBindingLiteListValueUses(ast, .{ .start = x.specs_start, .len = x.specs_len }, lite, true);
+            markBindingLiteValueUses(ast, x.decl, lite, true, shadowed_names);
+            markBindingLiteListValueUses(ast, .{ .start = x.specs_start, .len = x.specs_len }, lite, true, shadowed_names);
             return;
         },
         .variable_declaration => {
             const list_start = ast.extra_data.items[node.data.extra + 1];
             const list_len = ast.extra_data.items[node.data.extra + 2];
-            markBindingLiteListValueUses(ast, .{ .start = list_start, .len = list_len }, lite, true);
+            markBindingLiteListValueUses(ast, .{ .start = list_start, .len = list_len }, lite, true, shadowed_names);
             return;
         },
         .variable_declarator => {
-            markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite);
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra + 2]), lite, true);
+            markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, shadowed_names);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra + 2]), lite, true, shadowed_names);
             return;
         },
         .function_declaration,
@@ -713,49 +799,70 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         .function,
         => {
             const e = node.data.extra;
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 1]), lite, false);
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true);
+            const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
+            var shadow_buf: [32]?[]const u8 = undefined;
+            @memset(&shadow_buf, null);
+            var shadow_len: usize = 0;
+            for (shadowed_names) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
+            collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
+            var combined_buf: [32][]const u8 = undefined;
+            var i: usize = 0;
+            while (i < shadow_len) : (i += 1) combined_buf[i] = shadow_buf[i].?;
+            const combined_shadowed = combined_buf[0..shadow_len];
+            markBindingLiteValueUses(ast, params_idx, lite, false, combined_shadowed);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true, combined_shadowed);
             return;
         },
         .arrow_function_expression => {
             const e = node.data.extra;
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite, false);
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 1]), lite, true);
+            const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+            var shadow_buf: [32]?[]const u8 = undefined;
+            @memset(&shadow_buf, null);
+            var shadow_len: usize = 0;
+            for (shadowed_names) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
+            collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
+            var combined_buf: [32][]const u8 = undefined;
+            var i: usize = 0;
+            while (i < shadow_len) : (i += 1) combined_buf[i] = shadow_buf[i].?;
+            const combined_shadowed = combined_buf[0..shadow_len];
+            markBindingLiteValueUses(ast, params_idx, lite, false, combined_shadowed);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 1]), lite, true, combined_shadowed);
             return;
         },
         .formal_parameters => {
-            markBindingLiteListValueUses(ast, node.data.list, lite, false);
+            markBindingLiteListValueUses(ast, node.data.list, lite, false, shadowed_names);
             return;
         },
         .assignment_pattern,
+        .assignment_expression,
         .assignment_target_with_default,
         => {
-            markBindingLiteValueUses(ast, node.data.binary.left, lite, false);
-            markBindingLiteValueUses(ast, node.data.binary.right, lite, true);
+            markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
+            markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
             return;
         },
         .formal_parameter => {
             const e = node.data.extra;
-            markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite);
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true);
+            markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite, shadowed_names);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true, shadowed_names);
             return;
         },
         .object_property => {
             const key = node.data.binary.left;
             const value = node.data.binary.right;
             if (value.isNone()) {
-                markBindingLiteValueUses(ast, key, lite, true);
+                markBindingLiteValueUses(ast, key, lite, true, shadowed_names);
             } else {
                 const key_node = ast.getNode(key);
-                if (key_node.tag == .computed_property_key) markBindingLiteValueUses(ast, key, lite, true);
-                markBindingLiteValueUses(ast, value, lite, true);
+                if (key_node.tag == .computed_property_key) markBindingLiteValueUses(ast, key, lite, true, shadowed_names);
+                markBindingLiteValueUses(ast, value, lite, true, shadowed_names);
             }
             return;
         },
         .static_member_expression,
         .private_field_expression,
         => {
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, true);
+            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, true, shadowed_names);
             return;
         },
         else => {},
@@ -763,7 +870,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
 
     var it = ast_walk.children(ast, node);
     while (it.next()) |child_idx| {
-        markBindingLiteValueUses(ast, child_idx, lite, value_context);
+        markBindingLiteValueUses(ast, child_idx, lite, value_context, shadowed_names);
     }
 }
 
@@ -1411,6 +1518,95 @@ test "TransformPlan parity: binding-lite named import elision matches full seman
             ,
         },
         .{
+            .name = "function parameter shadow does not keep import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export function f(Foo = Foo) {
+            \\  return Foo;
+            \\}
+            \\export const value = Bar();
+            ,
+        },
+        .{
+            .name = "arrow parameter shadow does not hide outer value use",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export const before = Foo();
+            \\export const fn = (Foo) => Foo;
+            \\export const after = Bar();
+            ,
+        },
+        .{
+            .name = "parameter shadow default can still use another import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export function f(Foo = Bar()) {
+            \\  return Foo;
+            \\}
+            ,
+        },
+        .{
+            .name = "object destructuring parameter shadows import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export function f({ Foo }) {
+            \\  return Foo;
+            \\}
+            \\export const value = Bar();
+            ,
+        },
+        .{
+            .name = "object destructuring parameter default uses another import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export function f({ x: Foo = Bar() }) {
+            \\  return Foo;
+            \\}
+            ,
+        },
+        .{
+            .name = "array destructuring parameter default uses another import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export function f([Foo = Bar()]) {
+            \\  return Foo;
+            \\}
+            ,
+        },
+        .{
+            .name = "rest parameter shadows import",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export function f(...Foo) {
+            \\  return Foo.length;
+            \\}
+            \\export const value = Bar();
+            ,
+        },
+        .{
+            .name = "nested function parameter shadow does not hide outer value use",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export function outer() {
+            \\  const first = Foo();
+            \\  function inner(Foo = Bar()) {
+            \\    return Foo;
+            \\  }
+            \\  return first + inner();
+            \\}
+            ,
+        },
+        .{
+            .name = "nested arrow parameter shadow does not hide outer value use",
+            .source =
+            \\import { Foo, Bar } from "./lib";
+            \\export const outer = () => {
+            \\  const inner = (Foo = Bar()) => Foo;
+            \\  return Foo() + inner();
+            \\};
+            ,
+        },
+        .{
             .name = "verbatim keeps value import but removes inline type specifier",
             .source =
             \\import { type A, B } from "./lib";
@@ -1453,8 +1649,8 @@ test "TransformPlan: full-route guards for binding-lite follow-up" {
         .{ .name = "cjs", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .module_format = .cjs } },
         .{ .name = "downlevel", .source = "import { Foo } from './x';\nFoo();\n", .options = .{ .unsupported = compat.fromESTarget(.es5), .es_target = .es5 } },
         .{ .name = "flow", .source = "import { Foo } from './x';\nexport const x: Foo = 1;\n", .path = "input.js", .options = .{ .flow = true } },
-        .{ .name = "import local shadowed by parameter", .source = "import { Foo } from './x';\nexport function f(Foo = Foo) { return Foo; }\n" },
         .{ .name = "import local shadowed by local declaration", .source = "import { Foo } from './x';\nconst Foo = 1;\nexport { Foo };\n" },
+        .{ .name = "import local shadowed by catch binding", .source = "import { Foo } from './x';\ntry { Foo(); } catch (Foo) { console.log(Foo); }\n" },
     };
 
     for (cases) |case| {
