@@ -29,4 +29,5 @@ test {
     _ = @import("schema_builder_test.zig");
     _ = @import("view_config_emitter_test.zig");
     _ = @import("validator_test.zig");
+    _ = @import("snapshot_test.zig");
 }
