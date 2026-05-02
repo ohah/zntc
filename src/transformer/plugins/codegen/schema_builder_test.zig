@@ -647,6 +647,99 @@ test "schema_builder: TS interface 같은 prop 이름 base + derived — 둘 다
     try std.testing.expectEqual(@as(usize, 3), shape.props.len);
 }
 
+// ─── Flow 패턴 (#2416) ───
+
+test "schema_builder: Flow object spread (`{...A}`) — same-file base 머지" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Base = { color: string; opacity: number };
+        \\type Props = $ReadOnly<{
+        \\  ...Base,
+        \\  enabled: boolean,
+        \\}>;
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // Base.color + Base.opacity + Props.enabled = 3.
+    try std.testing.expectEqual(@as(usize, 3), shape.props.len);
+}
+
+test "schema_builder: Flow object spread cross-file (`{...ViewProps}`) — silent skip" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = $ReadOnly<{
+        \\  ...ViewProps,
+        \\  enabled: boolean,
+        \\}>;
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // ViewProps cross-file → skip. enabled 만 남음.
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expectEqualStrings("enabled", shape.props[0].name);
+}
+
+test "schema_builder: Flow object spread 다중 same-file base" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Base1 = { a: string };
+        \\type Base2 = { b: number };
+        \\type Props = $ReadOnly<{
+        \\  ...Base1,
+        \\  ...Base2,
+        \\  c: boolean,
+        \\}>;
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 3), shape.props.len);
+}
+
+test "schema_builder: Flow interface body — 현재 brace-skip 으로 silent skip (#2422 trade-off)" {
+    // Flow parser 가 interface body 를 brace-skip 하므로 schema_builder 가 멤버 못 봄.
+    // parseObjectType 사용 시 derived class crash (#2422) → 보수적으로 skip 유지.
+    // body=.none 이라 0 prop, extends 도 의미 없음. #2422 해결 후 본 테스트 회복 예정.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface Base { color: string }
+        \\interface Props extends Base { enabled: boolean }
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+}
+
+test "schema_builder: Flow VirtualView 패턴 (`Readonly<{...ViewProps, ...}>`)" {
+    // RN core 의 실제 패턴 reproduce (`VirtualViewNativeComponent.js` 의
+    // `type VirtualViewNativeProps = Readonly<{ ...ViewProps, initialHidden?: boolean, ... }>`).
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = $ReadOnly<{
+        \\  ...ViewProps,
+        \\  initialHidden?: boolean,
+        \\  removeClippedSubviews?: boolean,
+        \\}>;
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // ViewProps cross-file silent skip → 자체 2 prop 만.
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
+    try std.testing.expectEqualStrings("initialHidden", shape.props[0].name);
+    try std.testing.expectEqualStrings("removeClippedSubviews", shape.props[1].name);
+    try std.testing.expect(shape.props[0].optional);
+    try std.testing.expect(shape.props[1].optional);
+}
+
 test "schema_builder: TS interface extends with Flow base (Readonly<{...}>) — mixed mode 안전" {
     // 같은 파일에 TS interface + flow type alias 혼재 시나리오는 실제론 거의 없지만
     // 본 fix 가 mode-agnostic 으로 동작해야 함. base 가 type ref 면 lookup 만 통하고

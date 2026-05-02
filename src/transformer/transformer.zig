@@ -5050,6 +5050,7 @@ pub const Transformer = struct {
             .flow_object_type,
             .flow_exact_object_type,
             .flow_property_signature,
+            .flow_object_spread_property,
             => true,
             else => false,
         };

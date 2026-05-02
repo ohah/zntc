@@ -116,10 +116,15 @@ pub fn isSimpleIdentifier(self: anytype, left_idx: NodeIndex) bool {
 /// 위함 (#2030, #2034). 모든 wrapper 는 `data.unary.operand` 로 안쪽 노드를 가짐.
 /// idx 가 wrapper 가 아니면 그대로 반환. NodeIndex.none 도 그대로 반환.
 pub fn unwrapTransparentWrappers(self: anytype, idx: NodeIndex) NodeIndex {
+    return unwrapTransparentWrappersAst(self.ast, idx);
+}
+
+/// `*const Ast` 로 직접 받는 변형 — `self` 컨테이너 없이 호출 가능 (codegen plugin 등 #2420).
+pub fn unwrapTransparentWrappersAst(ast: *const @import("../parser/ast.zig").Ast, idx: NodeIndex) NodeIndex {
     var cur = idx;
     while (true) {
         if (cur.isNone()) return cur;
-        const node = self.ast.getNode(cur);
+        const node = ast.getNode(cur);
         switch (node.tag) {
             .parenthesized_expression,
             .ts_as_expression,
