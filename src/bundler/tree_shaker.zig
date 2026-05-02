@@ -46,10 +46,17 @@ fn isImportDeclarationStmt(m: *const Module, infos: StmtInfos, stmt_idx: u32) bo
 }
 
 /// 모듈을 evaluation 의존으로 끌어와야 하는 부수효과가 있는지.
-/// side_effects, wrapped (cjs/esm wrapper), dynamic-fallback exports kind 셋 중 하나라도
-/// 해당하면 prune 불가 — 평가 순서/시점 유지가 필요.
+/// `.cjs` wrap 은 정적 분석 불가 — 항상 evaluation 의존. `.esm` wrap 은 _emit shape_
+/// (lazy init / circular dep) 일 뿐 semantic side-effect 가 아니지만, 기존 RN/Metro
+/// 호환 동작은 `.esm` 을 보수 처리해 왔다 (#2398). 본 함수는 _user 가 명시적으로_
+/// `sideEffects: false` 를 선언한 모듈에만 그 신호를 신뢰 — 나머지는 conservative
+/// 유지로 RN core 같은 미선언 케이스의 회귀 방지.
 inline fn moduleHasEvaluationEffect(mod: *const Module) bool {
-    return mod.side_effects or mod.wrap_kind.isWrapped() or mod.exports_kind == .esm_with_dynamic_fallback;
+    if (mod.side_effects) return true;
+    if (mod.wrap_kind == .cjs) return true;
+    if (mod.exports_kind == .esm_with_dynamic_fallback) return true;
+    if (mod.wrap_kind == .esm and !mod.side_effects_user_defined) return true;
+    return false;
 }
 
 pub const TreeShaker = struct {
@@ -238,7 +245,7 @@ pub const TreeShaker = struct {
             if (!is_entry) continue;
             for (m.dependencies.items) |dep_idx| {
                 const dep = self.graph.getModule(dep_idx) orelse continue;
-                if (dep.side_effects or dep.wrap_kind.isWrapped()) {
+                if (moduleHasEvaluationEffect(dep)) {
                     self.included.set(@intFromEnum(dep_idx));
                 }
             }
@@ -290,9 +297,15 @@ pub const TreeShaker = struct {
         self.prebuilt_mask = prebuilt_mask;
         for (0..mod_count) |i| {
             const m = self.getModule(@intCast(i)) orelse continue;
-            // CJS wrapper도 원본 top-level statement 경계를 유지하므로 named export fact로
-            // 정밀 DCE가 가능하다. __esm wrapper는 init 함수 단위 의미가 강해 기존 opaque 처리 유지.
-            if (m.wrap_kind == .esm) continue;
+            // .esm wrap 은 emit shape (lazy init) 일 뿐이라 reachability 분석에 의미 영향
+            // 없지만, 기존 opaque 가정에 의존하는 코드 경로 (barrel re-export indirection 의
+            // emit-vs-shake 좌표 등) 가 있어 _명시적으로 pure 표시된_ 모듈에만 StmtInfo
+            // 빌드 (#2398). `sideEffects: false` 가 user 의 "drop 가능" 신호이므로 그 신호가
+            // 있을 때만 정밀 DCE — RN core 처럼 sideEffects 미명시 모듈은 기존 보수 동작 유지.
+            // rolldown 의 `try_extract_lazy_barrel_info` (DeterminedSideEffects::UserDefined(false))
+            // 와 동일 게이트.
+            const is_user_declared_pure = m.side_effects_user_defined and !m.side_effects;
+            if (m.wrap_kind == .esm and !is_user_declared_pure) continue;
 
             if (m.wrap_kind != .cjs) {
                 if (m.prebuilt_stmt_info) |prebuilt| {
@@ -351,13 +364,17 @@ pub const TreeShaker = struct {
                     const preserve = self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
                     const must_include = rec.kind == .require or
                         ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
-                        ((tmod.side_effects or tmod.wrap_kind.isWrapped()) and preserve);
+                        (moduleHasEvaluationEffect(tmod) and preserve);
                     if (!must_include) continue;
                     if (!self.included.isSet(target)) {
                         self.included.set(target);
                         changed = true;
                     }
-                    if (rec.kind == .require and tmod.wrap_kind == .cjs and preserve) {
+                    // require() 는 namespace 접근 → 어떤 export 가 읽힐지 정적 분석 불가.
+                    // 보수적으로 target 의 모든 export 를 used 로 마킹. .cjs 와 .esm wrap 둘 다
+                    // (#2398: 이전엔 .esm 의 StmtInfo 가 안 만들어져 reachability 가 conservative
+                    // true 라 자동 보존됐지만, 본 PR 에서 .esm StmtInfo 를 빌드하면서 명시 마킹 필요).
+                    if (rec.kind == .require and tmod.wrap_kind.isWrapped() and preserve) {
                         try self.markAllExportsUsed(@intCast(target));
                     }
                 }
@@ -372,7 +389,7 @@ pub const TreeShaker = struct {
         for (0..mod_count) |i| {
             if (!self.included.isSet(i)) continue;
             const m = self.getModule(@intCast(i)) orelse continue;
-            if (self.entry_set.isSet(i) or m.side_effects or m.wrap_kind.isWrapped()) continue;
+            if (self.entry_set.isSet(i) or moduleHasEvaluationEffect(m)) continue;
             if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
             if (m.is_context_dep) continue; // require.context match 는 runtime require 대상
             if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
