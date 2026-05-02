@@ -863,3 +863,211 @@ test "schema_builder: Omit + dedup 조합 — derived 가 Omit 결과를 overrid
     // Filtered: color, size. Props extends + own color → dedup → size + Props.color = 2.
     try std.testing.expectEqual(@as(usize, 2), shape.props.len);
 }
+
+// ============================================================
+// Namespace-qualified type references (RN 0.85+ CodegenTypes alias pattern).
+// `import type { CodegenTypes as CT } from 'react-native'` 후 `CT.X` 형태로
+// 노출되는 RN well-known type 이름들. 직접 import 형태(`X`)와 동등 처리.
+// react-native-screens / react-native-svg / react-native-safe-area-context 가
+// RN 0.85 부터 표준 채택 — 미지원 시 view config 누락으로 런타임 에러.
+// ============================================================
+
+test "schema_builder: namespace CT.DirectEventHandler → direct event (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onLayout: CT.DirectEventHandler<LayoutEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqualStrings("onLayout", shape.events[0].name);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: namespace CT.BubblingEventHandler → bubble event (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onChange: CT.BubblingEventHandler<ChangeEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.bubble, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: namespace CT.WithDefault<string, ''> → string with default (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { name?: CT.WithDefault<string, ''> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .string);
+    try std.testing.expect(shape.props[0].optional);
+}
+
+test "schema_builder: namespace CT.UnsafeMixed<T> → identity unwrap (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { p: CT.UnsafeMixed<NumberProp> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // NumberProp 는 cross-file → mixed fallback. UnsafeMixed identity → 결과 mixed.
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: namespace CT.Float → float (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { f: CT.Float };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .float);
+}
+
+test "schema_builder: namespace CT.Int32 → int32 (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { i: CT.Int32 };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .int32);
+}
+
+test "schema_builder: namespace CT.Double → double (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { d: CT.Double };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .double);
+}
+
+test "schema_builder: namespace CT.ColorValue → reserved.color (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { c: CT.ColorValue };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .reserved);
+    try std.testing.expectEqual(schema.ReservedPropPrimitive.color, shape.props[0].type_annotation.reserved);
+}
+
+test "schema_builder: arbitrary namespace alias (Codegen.DirectEventHandler) recognized (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onTap: Codegen.DirectEventHandler<TapEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: multi-segment namespace (A.B.DirectEventHandler) uses last segment (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onPress: A.B.DirectEventHandler<PressEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: namespace CT.DirectEventHandler in interface body extends ViewProps (TS, RN screens 패턴)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface NativeProps extends ViewProps {
+        \\  onFinishTransitioning?: CT.DirectEventHandler<FinishEvent>;
+        \\  iosPreventReattachmentOfDismissedScreens?: CT.WithDefault<boolean, false>;
+        \\}
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "NativeProps", "RNSScreenStack");
+    defer freeShape(std.testing.allocator, shape);
+
+    // ViewProps cross-file silent skip → 본 파일 멤버만.
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len); // iosPreventReattachment
+    try std.testing.expect(shape.props[0].type_annotation == .boolean);
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len); // onFinishTransitioning
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: Flow namespace CT.DirectEventHandler → direct event" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onLayout: CT.DirectEventHandler<LayoutEvent> };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: namespaced unknown last segment → mixed fallback (TS)" {
+    // Foo.Bar 가 알려진 wrapper/event/reserved/numeric 어디에도 없음 → cross-file
+    // 처럼 mixed permissive fallback.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { p: NS.UnknownType };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: namespaced ref does NOT pollute local type_index (TS)" {
+    // 로컬 type_index 에 `DirectEventHandler` 라는 이름의 alias 가 있어도, namespaced
+    // `NS.DirectEventHandler` 는 namespace 의 it 으로 처리되어야지 로컬 alias 와 섞이면 안 됨.
+    // 본 케이스에서 로컬 alias 는 string → 만약 잘못 매칭되면 string prop 이 됨.
+    // 정상 동작: 마지막 segment "DirectEventHandler" 는 event_handler_names 에 매치 → event.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type DirectEventHandler<T> = string;
+        \\type Props = { onTap: NS.DirectEventHandler<TapEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+}
