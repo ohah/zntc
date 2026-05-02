@@ -240,7 +240,7 @@ fn collectMembersFromTypeRef(
     const ref_name = getTypeReferenceName(ast, ref_node) orelse return;
     const last = lastSegment(ref_name);
 
-    // wrapper (Readonly<T> 등) 이면 inner 로 풀어 재귀. Namespace alias (CT.Readonly) 도 동등 처리.
+    // wrapper (Readonly<T> 등) 이면 inner 로 풀어 재귀.
     if (isReadonlyWrapperName(last)) {
         const inner = getNthTypeArgument(ast, ref_node, 0) orelse return;
         try collectMembersFromValue(ast, type_index, inner, out, visited, depth + 1, alloc);
@@ -526,7 +526,6 @@ fn eventHandlerBubbling(ast: *const Ast, type_idx: NodeIndex) ?schema.BubblingTy
     const node = ast.getNode(type_idx);
     if (node.tag != .ts_type_reference and node.tag != .flow_type_reference) return null;
     const name = getTypeReferenceName(ast, node) orelse return null;
-    // Namespace alias (CT.DirectEventHandler 등 RN 0.85 표준) 도 last segment 로 매칭.
     return event_handler_names.get(lastSegment(name));
 }
 
@@ -611,8 +610,6 @@ fn mapTypeReference(
     depth: u8,
 ) Error!schema.PropTypeAnnotation {
     const name = getTypeReferenceName(ast, node) orelse return error.UnsupportedPropType;
-    // Namespace alias (CT.X 등 RN 0.85 표준) 의 last segment 로 well-known map 매칭.
-    // type_index lookup 은 full name 유지 — namespaced 면 자연스레 cross-file 처리.
     const last = lastSegment(name);
 
     if (wrapper_ref_names.get(last)) |kind| {
