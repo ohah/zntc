@@ -2552,8 +2552,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
 
-            for (self.ast.extra_data.items[stmts_start .. stmts_start + stmts_len]) |raw_idx| {
-                const stmt_idx: NodeIndex = @enumFromInt(raw_idx);
+            // 주의: insertInstanceFieldsAfterSuper 가 새 노드 build 로 extra_data 를 grow →
+            // ArrayList realloc → 캡처된 slice .ptr 이 freed → 다음 iteration 에서 0xAA
+            // (debug uninit pattern) NodeIndex 로 panic. 위 line 2527 의 "인덱스만 저장,
+            // 사용 시 재접근" 정책을 loop 본문에도 적용 — 매 iteration 마다 재접근.
+            var i: u32 = 0;
+            while (i < stmts_len) : (i += 1) {
+                const stmt_idx = self.ast.readExtraNode(stmts_start, i);
                 if (containsSuperCallAssignment(self, stmt_idx)) {
                     try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt_idx, instance_fields, span));
                 } else {

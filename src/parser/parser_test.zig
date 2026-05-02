@@ -2844,6 +2844,27 @@ test "Flow: class with generic extends" {
     );
 }
 
+test "Flow: nested generic ending in >> (regression #2420)" {
+    // Why: `<T: $Keys<U>>` 의 닫힘 `>>` 가 lexer 에서 단일 shift_right 토큰. skipBalanced
+    // 가 angle context 에서 multi-char close 를 감지 못 하면 depth 가 0 까지 안 떨어져
+    // EOF 까지 소비 → outer parser 깨짐. rn EventEmitter.js 트리거.
+    // parseObjectType → parseFlowTypeMember → skipBalanced 경로 강제 위해 object type literal.
+    try expectNoParseErrorFlow(
+        \\type MyEmitter<T> = {
+        \\  addListener<TEvent: $Keys<T>>(eventType: TEvent): mixed,
+        \\};
+    );
+}
+
+test "Flow: triple-nested generic ending in >>> (regression #2420)" {
+    // shift_right3 (`>>>`) — 3 close. shift_right 와 동일 메커니즘.
+    try expectNoParseErrorFlow(
+        \\type Outer<A> = {
+        \\  fn<T: Map<Set<List<A>>>>(x: T): void,
+        \\};
+    );
+}
+
 test "Flow: JSX rejected without is_jsx" {
     try expectParseErrorFlow("const x = <div />;");
 }
