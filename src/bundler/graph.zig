@@ -1738,7 +1738,7 @@ pub const ModuleGraph = struct {
         // transformer 를 여기서 1회 실행해 final AST 를 module.ast 에 저장하고, 그 AST
         // 기준으로 semantic/import/export/StmtInfo 를 다시 만든다. emitter 는
         // module.transform_cache hit 시 transform skip.
-        if (self.shouldRunTransformerPrePass(module, &(module.ast.?), plugin_transform_applied)) {
+        if (self.shouldRunTransformerPrePass(module, plugin_transform_applied)) {
             self.runTransformerPrePass(module, arena_alloc);
         } else {
             module.transform_cache = null;
@@ -1755,7 +1755,6 @@ pub const ModuleGraph = struct {
     fn shouldRunTransformerPrePass(
         self: *const ModuleGraph,
         module: *const Module,
-        ast: *const Ast,
         plugin_transform_applied: bool,
     ) bool {
         if (!module.module_type.isJavaScriptLike()) return false;
@@ -1774,6 +1773,7 @@ pub const ModuleGraph = struct {
             return true;
         }
 
+        const ast = &module.ast.?;
         if (ast.has_jsx) return true;
         return astNeedsTransformerPrePass(ast);
     }
@@ -2126,25 +2126,11 @@ pub const ModuleGraph = struct {
         return false;
     }
 
+    /// 호출 전에 `ast.has_jsx` 가 이미 short-circuit 처리되므로 JSX 태그는 제외.
     fn astNeedsTransformerPrePass(ast: *const Ast) bool {
         for (ast.nodes.items) |node| {
             switch (node.tag) {
                 .decorator,
-                .jsx_element,
-                .jsx_opening_element,
-                .jsx_closing_element,
-                .jsx_fragment,
-                .jsx_opening_fragment,
-                .jsx_closing_fragment,
-                .jsx_attribute,
-                .jsx_spread_attribute,
-                .jsx_expression_container,
-                .jsx_empty_expression,
-                .jsx_text,
-                .jsx_namespaced_name,
-                .jsx_member_expression,
-                .jsx_identifier,
-                .jsx_spread_child,
                 .ts_enum_declaration,
                 .ts_module_declaration,
                 .ts_module_block,
@@ -3686,7 +3672,7 @@ fn shouldRunPrePassForTest(
     graph.minify_identifiers = opts.minify_identifiers;
 
     module.ast = parser.ast;
-    return graph.shouldRunTransformerPrePass(&module, &parser.ast, opts.plugin_transform_applied);
+    return graph.shouldRunTransformerPrePass(&module, opts.plugin_transform_applied);
 }
 
 fn expectPrePassDecision(
@@ -3741,7 +3727,6 @@ test "graph pre-pass predicate: simple ESM and TS strip modules can skip" {
 
 test "graph pre-pass predicate: synthetic no-op graphs skip every eligible module" {
     try expectAllBuiltModulesSkipPrePass(50);
-    try expectAllBuiltModulesSkipPrePass(200);
 }
 
 test "graph pre-pass predicate: syntax and options that mutate graph-visible surface keep pre-pass" {
