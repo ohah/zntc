@@ -1165,3 +1165,51 @@ test "schema_builder: TS namespace CT.UnsafeMixed[] → array.mixed (rn-screens 
     try std.testing.expect(shape.props[0].type_annotation == .array);
     try std.testing.expect(shape.props[0].type_annotation.array == .mixed);
 }
+
+// ============================================================
+// Inline / nested object literal prop type — `prop?: { ... }` 형태.
+// `@react-native/codegen` reference 가 view config 에서 단순 `prop: true` 로 emit
+// (validAttributes 는 attribute 이름만 등록 — nested shape 는 native side 책임).
+// 따라서 ZTS 도 `.mixed` 로 매핑하면 byte-diff 0. 미지원 시 fail-fast.
+//
+// 영향: react-native-screens 4.23 의 BottomTabsScreenNativeComponent (`specialEffects?: {...}`).
+// ============================================================
+
+test "schema_builder: TS inline object literal prop type → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { specialEffects?: { popToRoot?: boolean } };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS deeply nested inline object literal → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { effects?: { repeatedTabSelection?: { popToRoot?: boolean; scrollToTop?: boolean } } };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow inline object type → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: { count: number } };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}

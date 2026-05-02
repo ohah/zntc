@@ -583,6 +583,14 @@ fn mapPropTypeAt(
         // `Array<T>` (type_reference) 와 동등 결과: array.<element prop>.
         .ts_array_type, .flow_array_type => mapArrayType(ast, type_index, node, depth),
 
+        // inline / nested object literal. `@react-native/codegen` reference 의 schema 단계는
+        // `ObjectTypeAnnotation { properties }` 로 nested shape 풀지만, view config emitter
+        // (`GenerateViewConfigJs.js`) 가 attribute name 만 등록 (`prop: true`). ZTS 의 scope 가
+        // view config emit 한정이라 `.mixed` 가 동등 결과 — schema.zig 의 `.object: ObjectProp`
+        // variant 는 의도적으로 미사용. C++ component descriptor / props.h 등 native side 가
+        // 필요해지면 `.object` 로 보강 필요.
+        .ts_type_literal, .flow_object_type, .flow_exact_object_type => .mixed,
+
         .ts_union_type, .flow_union_type => mapUnion(ast, node),
 
         else => error.UnsupportedPropType,
