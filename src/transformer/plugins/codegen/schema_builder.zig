@@ -92,10 +92,10 @@ pub fn build(
         try classifyMember(ast, type_index, sig_idx, &props_buf, &events_buf, alloc);
     }
 
-    // last-wins dedup (#2418): inheritance chain 에서 같은 이름 prop/event 가 등장하면
-    // derived 위치 + 타입이 base 를 가린다 (TS override semantic 정합).
-    dedupByName(schema.NamedShape(schema.PropTypeAnnotation), &props_buf);
-    dedupByName(schema.EventTypeShape, &events_buf);
+    // TS/Flow override 시멘틱 정합 (#2418): 같은 이름 prop/event 가 base + derived 양쪽에
+    // 있으면 position 은 base (첫 occurrence 유지), type 은 derived (마지막 occurrence) 가 이김.
+    try dedupByName(schema.NamedShape(schema.PropTypeAnnotation), &props_buf, alloc);
+    try dedupByName(schema.EventTypeShape, &events_buf, alloc);
 
     return .{
         .name = component_name,
@@ -104,22 +104,27 @@ pub fn build(
     };
 }
 
-/// 같은 `.name` 을 가진 항목을 last-wins 로 dedup. j > i 위치에 같은 이름이 있으면 i 는 drop.
-/// O(n²) — RN spec 의 props 는 보통 ~20개라 비용 무시 가능.
-fn dedupByName(comptime T: type, list: *std.ArrayList(T)) void {
+/// 같은 `.name` 을 가진 항목을 dedup. **TS/Flow override 시멘틱 정합**:
+///   - position: 첫 occurrence (`keyof T` / IDE 자동완성과 동일한 declaration order)
+///   - type: 마지막 occurrence (derived 가 base 의 타입을 override)
+///
+/// O(n) — name → write_index HashMap 으로 단일 패스. 첫 등장이면 append, 재등장이면
+/// 이전 슬롯 덮어쓰기 (last-type wins, position 보존).
+fn dedupByName(comptime T: type, list: *std.ArrayList(T), alloc: std.mem.Allocator) !void {
+    var first_idx: std.StringHashMapUnmanaged(usize) = .{};
+    defer first_idx.deinit(alloc);
+
     var write: usize = 0;
-    for (list.items, 0..) |item, i| {
-        if (!nameInRest(T, list.items[i + 1 ..], item.name)) {
+    for (list.items) |item| {
+        if (first_idx.get(item.name)) |slot| {
+            list.items[slot] = item; // last-type override
+        } else {
             list.items[write] = item;
+            try first_idx.put(alloc, item.name, write);
             write += 1;
         }
     }
     list.shrinkRetainingCapacity(write);
-}
-
-fn nameInRest(comptime T: type, rest: []const T, name: []const u8) bool {
-    for (rest) |item| if (std.mem.eql(u8, item.name, name)) return true;
-    return false;
 }
 
 /// declaration 1 개로부터 _자기 본문 + 인헤리턴스 chain 의 모든 base_ 의 멤버 평탄화 수집.
@@ -237,7 +242,7 @@ fn collectMembersFromTypeRef(
 
     // wrapper (Readonly<T> 등) 이면 inner 로 풀어 재귀.
     if (isReadonlyWrapperName(ref_name)) {
-        const inner = getFirstTypeArgument(ast, ref_node) orelse return;
+        const inner = getNthTypeArgument(ast, ref_node, 0) orelse return;
         try collectMembersFromValue(ast, type_index, inner, out, visited, depth + 1, alloc);
         return;
     }
@@ -381,8 +386,8 @@ fn unwrapWrapper(ast: *const Ast, type_index: *const TypeIndex, idx: NodeIndex) 
     if (!isReadonlyWrapperName(ref_name)) return idx;
 
     // type argument 추출 — Readonly<T> 의 T.
-    const inner = getFirstTypeArgument(ast, node) orelse return idx;
-    // 재귀 unwrap (이중 wrapper 케이스). 단, 제자리 무한루프 방지 — getFirstTypeArgument 결과만.
+    const inner = getNthTypeArgument(ast, node, 0) orelse return idx;
+    // 재귀 unwrap (이중 wrapper 케이스). 단, 제자리 무한루프 방지 — nth=0 결과만.
     return unwrapWrapper(ast, type_index, inner);
 }
 
@@ -391,8 +396,9 @@ fn isReadonlyWrapperName(name: []const u8) bool {
         std.mem.eql(u8, name, "$ReadOnly");
 }
 
-/// type_reference node 에서 N 번째 type argument 의 NodeIndex 추출.
-/// `Foo<A, B>` 의 nth=0 → A, nth=1 → B.
+/// type_reference node 에서 nth type argument 의 NodeIndex 추출. `Foo<A, B>` 의 nth=0 → A.
+/// type_reference layout (`flow.zig:472`, `ts.zig:994`): `extra = [name_start, name_end, type_args]`.
+/// type_args 는 ts_type_parameter_instantiation / flow_type_parameter_instantiation (NodeList layout).
 fn getNthTypeArgument(ast: *const Ast, node: Node, nth: u32) ?NodeIndex {
     const e = node.data.extra;
     if (e + 2 >= ast.extra_data.items.len) return null;
@@ -403,30 +409,8 @@ fn getNthTypeArgument(ast: *const Ast, node: Node, nth: u32) ?NodeIndex {
     if (args_node.tag != .ts_type_parameter_instantiation and
         args_node.tag != .flow_type_parameter_instantiation) return null;
 
-    const list = args_node.data.list;
-    if (nth >= list.len) return null;
-    return @enumFromInt(ast.extra_data.items[list.start + nth]);
-}
-
-/// type_reference node 에서 first type argument 의 NodeIndex 추출.
-/// `Foo<A, B>` → A.
-///
-/// type_reference layout (`flow.zig:472`, `ts.zig:994`): `extra = [name_start, name_end, type_args]`.
-/// type_args 는 ts_type_parameter_instantiation / flow_type_parameter_instantiation
-/// 의 NodeIndex (NodeList layout = .list).
-fn getFirstTypeArgument(ast: *const Ast, node: Node) ?NodeIndex {
-    const e = node.data.extra;
-    if (e + 2 >= ast.extra_data.items.len) return null;
-    const args_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 2]);
-    if (args_idx == .none) return null;
-
-    const args_node = ast.getNode(args_idx);
-    if (args_node.tag != .ts_type_parameter_instantiation and
-        args_node.tag != .flow_type_parameter_instantiation) return null;
-
-    const list = args_node.data.list;
-    if (list.len == 0) return null;
-    return @enumFromInt(ast.extra_data.items[list.start]);
+    if (nth >= args_node.data.list.len) return null;
+    return ast.readExtraNodeUnchecked(args_node.data.list.start, nth);
 }
 
 /// type_reference 의 name 텍스트 추출. extra[0..2] 가 source 의 name span.
@@ -620,7 +604,7 @@ fn mapTypeReference(
     const name = getTypeReferenceName(ast, node) orelse return error.UnsupportedPropType;
 
     if (wrapper_ref_names.get(name)) |kind| {
-        const inner = getFirstTypeArgument(ast, node) orelse return error.UnsupportedPropType;
+        const inner = getNthTypeArgument(ast, node, 0) orelse return error.UnsupportedPropType;
         const inner_prop = try mapPropTypeAt(ast, type_index, inner, depth + 1);
         return switch (kind) {
             // WithDefault<T, D>: D (default literal) 는 향후 PR — ts_literal_type 추출해
