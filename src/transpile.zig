@@ -548,11 +548,15 @@ fn bindingPatternImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, n
     return false;
 }
 
-fn functionExpressionNameImportShadowOverflow(ast: *const Ast, node: ast_mod.Node, names: []const []const u8, match_count: *usize) bool {
-    if (node.tag != .function_expression and node.tag != .function) return false;
+fn functionExpressionInnerName(ast: *const Ast, node: ast_mod.Node) ?[]const u8 {
+    if (node.tag != .function_expression and node.tag != .function) return null;
     const name_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
-    if (name_idx.isNone()) return false;
-    const name = ast.getText(ast.getNode(name_idx).span);
+    if (name_idx.isNone()) return null;
+    return ast.getText(ast.getNode(name_idx).span);
+}
+
+fn functionExpressionNameImportShadowOverflow(ast: *const Ast, node: ast_mod.Node, names: []const []const u8, match_count: *usize) bool {
+    const name = functionExpressionInnerName(ast, node) orelse return false;
     if (string_list.contains(names, name)) {
         match_count.* += 1;
         if (match_count.* > binding_lite_max_shadows) return true;
@@ -638,15 +642,18 @@ fn scanFunctionForUnsupportedBindingLiteShadow(
     names: []const []const u8,
     scope_depth: usize,
     inside_function: bool,
-    function_expression_self_name: bool,
 ) bool {
     const e = node.data.extra;
+    // function_expression / function 의 extras[0] 은 inner-only self-name 이라 outer scope binding
+    // 으로 스캔하면 안 되고 별도 overflow 카운트만 잡는다. function_declaration 은 extras[0] 이
+    // outer 에 노출되는 binding 이므로 일반 스캔 경로를 그대로 탄다.
+    const is_function_expression = node.tag != .function_declaration;
     var matching_shadows: usize = 0;
-    if (function_expression_self_name and functionExpressionNameImportShadowOverflow(ast, node, names, &matching_shadows)) return true;
+    if (is_function_expression and functionExpressionNameImportShadowOverflow(ast, node, names, &matching_shadows)) return true;
     if (bindingPatternImportShadowOverflow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, &matching_shadows)) return true;
     if (functionVarImportShadowOverflow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, &matching_shadows)) return true;
 
-    if (!function_expression_self_name and scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
+    if (!is_function_expression and scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
     if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 1]), names, scope_depth, inside_function)) return true;
     return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e + 2]), names, scope_depth + 1, true);
 }
@@ -676,10 +683,10 @@ fn scanForUnsupportedBindingLiteShadow(
             if (bindingPatternImportShadowOverflow(ast, node.data.binary.left, names, &matching_shadows)) return true;
             return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1, inside_function);
         },
-        .function_declaration => return scanFunctionForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function, false),
+        .function_declaration,
         .function_expression,
         .function,
-        => return scanFunctionForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function, true),
+        => return scanFunctionForUnsupportedBindingLiteShadow(ast, node, names, scope_depth, inside_function),
         .arrow_function_expression => {
             const e = node.data.extra;
             if (scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function)) return true;
@@ -862,10 +869,7 @@ fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex,
 }
 
 fn collectBindingLiteFunctionExpressionNameShadow(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
-    if (node.tag != .function_expression and node.tag != .function) return;
-    const name_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
-    if (name_idx.isNone()) return;
-    const name = ast.getText(ast.getNode(name_idx).span);
+    const name = functionExpressionInnerName(ast, node) orelse return;
     if (lite.namedImportValueUse(name) != null) appendBindingLiteShadowName(buf, len, name);
 }
 

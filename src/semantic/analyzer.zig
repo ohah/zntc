@@ -639,10 +639,6 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    fn declareFunctionExprInnerName(self: *SemanticAnalyzer, name_span: Span, flags: u32, node_idx: u32) AllocError!void {
-        try self.declareSymbolWithNode(name_span, functionSymbolKind(flags), name_span, node_idx);
-    }
-
     /// 선언을 `references` 배열에 `flags.declare` 로 기록. #1669.
     /// 현재 `enable_stmt_info` + 유효 stmt_idx 가 있을 때만 기록.
     /// `scope_id` 는 선언 대상 scope — top-level 판별은 buildFromSemantic 에서 수행.
@@ -2267,20 +2263,19 @@ pub const SemanticAnalyzer = struct {
         const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
         const fn_flags = extras[extra_start + 3];
 
+        // 함수 표현식 이름은 외부 scope 에는 노출되지 않지만 parameter initializer 와
+        // body 안에서는 보이는 별도 inner binding 이다. 한 겹 바깥 block scope 에 둬야
+        // 같은 이름의 parameter / var / let 이 일반 lookup 으로 shadow 할 수 있다.
         const name_saved = if (!name_idx.isNone()) blk: {
             const saved = try self.enterScope(.block, self.is_strict_mode);
             const name_node = self.ast.getNode(name_idx);
-            try self.declareFunctionExprInnerName(name_node.span, fn_flags, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, functionSymbolKind(fn_flags), name_node.span, @intFromEnum(name_idx));
             break :blk saved;
         } else ScopeId.none;
         defer if (!name_saved.isNone()) self.exitScope(name_saved);
 
         const saved = try self.enterScope(.function, self.is_strict_mode);
         const saved_labels = self.saveLabelLen();
-
-        // 함수 표현식 이름은 외부 scope 에는 노출되지 않지만 parameter initializer 와
-        // body 안에서는 보이는 별도 inner binding 이다. 한 겹 바깥 block scope 에 둬야
-        // 같은 이름의 parameter / var / let 이 일반 lookup 으로 shadow 할 수 있다.
 
         const params_list = self.ast.functionParamsList(node);
         try self.registerParams(params_list);
