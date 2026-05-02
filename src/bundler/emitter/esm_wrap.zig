@@ -61,6 +61,19 @@ fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
 
 /// re_export_alias에 linker가 주입한 canonical_name을 반환. null이면
 /// alias 심볼이 아니거나 linker가 resolve하지 못한 경우.
+/// re-export 의 source 모듈을 resolve. resolved + non-self-cycle 인 정상 record 만 반환,
+/// 그 외 (record_idx 누락 / out-of-range / resolved=none / self-cycle) 는 null.
+/// 두 site (getter emit, init-call emit) 에서 공통 사용 (#2398). caller 는 반환 모듈의
+/// `is_included` 를 검사해 tree-shake 제거 시 emit 생략.
+inline fn resolvedReExportSource(l: *const Linker, m: *const Module, eb: ExportBinding) ?*const Module {
+    const rec_idx = eb.import_record_index orelse return null;
+    if (rec_idx >= m.import_records.len) return null;
+    const src_idx = m.import_records[rec_idx].resolved;
+    if (src_idx.isNone()) return null;
+    if (src_idx == m.index) return null;
+    return l.graph.getModule(src_idx);
+}
+
 fn reExportAliasCanonicalName(ref: SymbolRef, mod: *const Module) ?[]const u8 {
     const id = localAliasId(ref, mod) orelse return null;
     const table = mod.alias_table orelse return null;
@@ -449,6 +462,15 @@ pub fn emitEsmWrappedModule(
 
             for (module.export_bindings) |eb| {
                 if (eb.kind == .local or eb.kind == .re_export) {
+                    // tree-shake 로 제거된 re-export source 의 getter 는 dangling reference (#2398).
+                    // resolved + non-self-cycle 인 source 가 included=false 면 getter emit 생략.
+                    // 비정상 record (resolved=none / self-cycle) 는 일반 경로가 안전 처리하므로 fall-through.
+                    if (eb.kind == .re_export) skip: {
+                        const l = linker orelse break :skip;
+                        if (resolvedReExportSource(l, module, eb)) |src_mod| {
+                            if (!src_mod.is_included) continue;
+                        }
+                    }
                     try appendExportGetter(&wrapped, allocator, eb.exported_name, blk: {
                         // Symbol table이 단축 경로의 source of truth.
                         // binding_scanner가 `_default = <expr>`가 실제로 emit되는 default만
@@ -707,6 +729,8 @@ pub fn emitEsmWrappedModule(
             const src_i = @intFromEnum(source_mod_idx);
             const src_mod_ptr = l.graph.getModule(source_mod_idx) orelse continue;
             if (re_export_inited.contains(src_i)) continue;
+            // tree-shake 로 제거된 source 의 init 호출은 dangling reference (#2398).
+            if (!src_mod_ptr.is_included) continue;
             re_export_inited.put(src_i, {}) catch {};
 
             try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, options);

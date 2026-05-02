@@ -431,6 +431,11 @@ pub fn buildMetadataForAst(
             // init 호출은 모듈당 1회만 (중복 방지는 esm_init_set으로).
             // `entry_error_guard` 활성 시 wrap. TLA 는 await 가 lambda 안에 못 들어가서 제외.
             if (canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm) {
+                // CJS path 와 동일하게 tree-shake 결과 반영 (#2398). `sideEffects: false`
+                // 인 .esm wrap 모듈이 unused 로 drop 되면 `init_xxx is not defined` 가
+                // 나므로 preamble 도 함께 생략. `tree_shaker_active=false` 인 단위 테스트
+                // 환경에서는 is_included bit 가 신뢰 불가라 가드 미적용 (line 408 동일 정책).
+                if (self.tree_shaker_active and !canonical_m_opt.?.is_included) continue;
                 if (!esm_init_set.contains(@intCast(canonical_mod))) {
                     try esm_init_set.put(@intCast(canonical_mod), {});
                     const target_mod = canonical_m_opt.?;
