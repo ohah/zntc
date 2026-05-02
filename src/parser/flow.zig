@@ -1049,13 +1049,36 @@ fn skipBalanced(self: *Parser, open: Kind, close: Kind) !void {
     if (self.current() != open) return;
     try self.advance();
     var depth: u32 = 1;
+    // angle bracket 컨텍스트에선 lexer 가 `<<`/`>>`/`>>>` 를 단일 멀티 char 토큰으로 묶지만,
+    // nested generic (`<T<U>>` 등) 의 닫힘에 해당. 단일 close 로만 카운트하면 depth 가
+    // 0 까지 안 떨어져 EOF 까지 소비 → outer parser 깨짐 (rn EventEmitter.js #2420).
+    const is_angle = open == .l_angle and close == .r_angle;
     while (depth > 0 and self.current() != .eof) {
-        if (self.current() == open) {
+        const cur = self.current();
+        if (cur == open) {
             depth += 1;
-        } else if (self.current() == close) {
+            try self.advance();
+        } else if (cur == close) {
             depth -= 1;
+            if (depth > 0) try self.advance();
+        } else if (is_angle and cur == .shift_left) {
+            depth += 2;
+            try self.advance();
+        } else if (is_angle and (cur == .shift_right or cur == .shift_right3)) {
+            // `>>` = 2 close, `>>>` = 3 close. depth >= n_close 면 토큰 통째 소비.
+            // 미달 (defensive — 정상 syntax 에선 발생 X) 은 depth = 0 + 토큰 미소비 →
+            // 외부 expect(close) 에서 에러 통일. 비대칭 동작 회피.
+            const n_close: u32 = if (cur == .shift_right) 2 else 3;
+            if (depth >= n_close) {
+                depth -= n_close;
+                try self.advance();
+                if (depth == 0) return;
+            } else {
+                depth = 0;
+            }
+        } else {
+            try self.advance();
         }
-        if (depth > 0) try self.advance();
     }
     try self.expect(close);
 }
@@ -1507,29 +1530,12 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // body: { ... } — Flow 공식 parser 와 동일하게 본문 멤버 보존 (#2348 후속).
-    // 종전엔 brace-skip 으로 body 토큰조차 안 봤지만, codegen schema_builder 가
-    // flow_interface_declaration 의 멤버를 직접 참조해야 하므로 `parseObjectType`
-    // 호출 (TS interface body 와 동일 패턴, ts.zig:99). body 가 없으면 .none.
-    // body: { ... } — brace-skip. parseObjectType 사용 시 derived class + private field +
-    // super-call 패턴의 모듈 (예: react-native ResourceTiming.js) 에서 비-deterministic
-    // crash (es2015_class.containsSuperCallAssignment 가 0xAAAAAAAA NodeIndex 읽음).
-    // 정확한 원인 미상 — flow_object_type body 가 추가 노드를 만들면서 어딘가 extra_data
-    // 슬롯이 미초기화로 남는 것으로 추정. 보수적으로 brace-skip 유지.
-    // 별도 issue 로 추적, root-cause fix 후 본문 보존 재시도.
-    if (self.current() == .l_curly) {
-        try self.advance();
-        var depth: u32 = 1;
-        while (depth > 0 and self.current() != .eof) {
-            switch (self.current()) {
-                .l_curly => depth += 1,
-                .r_curly => depth -= 1,
-                else => {},
-            }
-            if (depth > 0) try self.advance();
-        }
-        try self.expect(.r_curly);
-    }
-    const body: NodeIndex = NodeIndex.none;
+    // codegen schema_builder 가 flow_interface_declaration 멤버를 직접 참조 (TS interface
+    // body 와 동일 패턴, ts.zig:99). body 가 없으면 .none.
+    const body: NodeIndex = if (self.current() == .l_curly)
+        try parseObjectType(self)
+    else
+        NodeIndex.none;
 
     const extra = try self.ast.addExtras(&.{
         @intFromEnum(name),

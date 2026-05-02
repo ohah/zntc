@@ -423,6 +423,38 @@ test "useDefineForClassFields=false: extends with instance and static" {
     try std.testing.expectEqual(@as(u32, 3), r.statementCount());
 }
 
+test "derived class with super + private fields (regression #2422)" {
+    // Why: postProcessDerivedConstructorBody 의 for-loop 가 extra_data slice 를 캡처한 채
+    // insertInstanceFieldsAfterSuper 호출 → 새 노드 build 가 extra_data 를 grow → ArrayList
+    // realloc → 캡처된 .ptr 이 freed → 다음 iteration 에서 0xAA (debug uninit) NodeIndex
+    // 로 panic. 본 unit test 는 path coverage; 결정적 트리거는 capacity boundary 의존.
+    // 결정적 regression 은 es5-rn integration (rn-example-app/ResourceTiming.js).
+    var r = try parseAndTransformWithOptions(
+        std.testing.allocator,
+        \\class Foo extends Bar {
+        \\  #a; #b; #c; #d; #e; #f; #g; #h; #i; #j;
+        \\  constructor(init) {
+        \\    super(init);
+        \\    this.#a = init.a;
+        \\    this.#b = init.b;
+        \\    this.#c = init.c;
+        \\    this.#d = init.d;
+        \\    this.#e = init.e;
+        \\    this.#f = init.f;
+        \\    this.#g = init.g;
+        \\    this.#h = init.h;
+        \\    this.#i = init.i;
+        \\    this.#j = init.j;
+        \\  }
+        \\}
+    ,
+        .{ .use_define_for_class_fields = false },
+    );
+    defer r.deinit();
+    // 핵심: crash 없이 통과해야 함. transformed class 가 statement 로 emit.
+    try std.testing.expect(r.statementCount() >= 1);
+}
+
 test "useDefineForClassFields=true: default behavior preserves fields" {
     var r = try parseAndTransformWithOptions(
         std.testing.allocator,

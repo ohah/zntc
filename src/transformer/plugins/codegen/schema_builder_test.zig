@@ -701,10 +701,7 @@ test "schema_builder: Flow object spread 다중 same-file base" {
     try std.testing.expectEqual(@as(usize, 3), shape.props.len);
 }
 
-test "schema_builder: Flow interface body — 현재 brace-skip 으로 silent skip (#2422 trade-off)" {
-    // Flow parser 가 interface body 를 brace-skip 하므로 schema_builder 가 멤버 못 봄.
-    // parseObjectType 사용 시 derived class crash (#2422) → 보수적으로 skip 유지.
-    // body=.none 이라 0 prop, extends 도 의미 없음. #2422 해결 후 본 테스트 회복 예정.
+test "schema_builder: Flow interface body + extends — TS interface 와 동일 처리" {
     var p = try parseAndIndex(std.testing.allocator,
         \\interface Base { color: string }
         \\interface Props extends Base { enabled: boolean }
@@ -714,7 +711,9 @@ test "schema_builder: Flow interface body — 현재 brace-skip 으로 silent sk
     const shape = try buildShape(&p, "Props", "X");
     defer freeShape(std.testing.allocator, shape);
 
-    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
+    try std.testing.expectEqualStrings("color", shape.props[0].name);
+    try std.testing.expectEqualStrings("enabled", shape.props[1].name);
 }
 
 test "schema_builder: Flow VirtualView 패턴 (`Readonly<{...ViewProps, ...}>`)" {
