@@ -1071,3 +1071,97 @@ test "schema_builder: namespaced ref does NOT pollute local type_index (TS)" {
     try std.testing.expectEqual(@as(usize, 0), shape.props.len);
     try std.testing.expectEqual(@as(usize, 1), shape.events.len);
 }
+
+// ============================================================
+// `T[]` postfix array type — RN spec 의 흔한 형태
+//   - `sheetAllowedDetents?: number[]` (react-native-screens)
+//   - `headerLeftBarButtonItems?: CT.UnsafeMixed[]` (동)
+// `Array<T>` 는 type_reference 라 wrapper_ref_names 로 이미 처리. postfix 만 누락.
+// ============================================================
+
+test "schema_builder: TS number[] → array.float" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { items: number[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .float);
+}
+
+test "schema_builder: TS string[] → array.string" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { tags: string[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .string);
+}
+
+test "schema_builder: TS boolean[] → array.boolean" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { flags: boolean[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .boolean);
+}
+
+test "schema_builder: TS ColorValue[] → array.reserved.color" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { palette: ColorValue[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .reserved);
+    try std.testing.expectEqual(schema.ReservedPropPrimitive.color, shape.props[0].type_annotation.array.reserved);
+}
+
+test "schema_builder: Flow number[] → array.float" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { items: number[] };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .float);
+}
+
+test "schema_builder: TS namespace CT.UnsafeMixed[] → array.mixed (rn-screens 패턴)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { items: CT.UnsafeMixed[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // CT.UnsafeMixed 는 type-arg 없는 form — `@react-native/codegen` reference 동작
+    // 동등하게 element 가 mixed 로 falls back, array wrapper 는 정상 lift.
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .mixed);
+}
