@@ -1,9 +1,9 @@
-//! codegen_plugin.zig 단위 테스트.
+//! rn_codegen_plugin.zig 단위 테스트.
 //!
 //! plugin.transform 훅을 직접 호출해 입력 → 변환 결과 검증.
 
 const std = @import("std");
-const codegen_plugin = @import("codegen_plugin.zig");
+const codegen_plugin = @import("rn_codegen_plugin.zig");
 
 fn callTransform(alloc: std.mem.Allocator, code: []const u8, id: []const u8) !?[]const u8 {
     const plugin = codegen_plugin.plugin();

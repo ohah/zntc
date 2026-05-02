@@ -52,6 +52,6 @@ test {
     _ = @import("worklet_babel_parity_test.zig");
     _ = @import("styled_components_test.zig");
     _ = @import("emotion_test.zig");
-    _ = @import("plugins/codegen/mod.zig");
-    _ = @import("plugins/codegen_plugin_test.zig");
+    _ = @import("plugins/rn_codegen/mod.zig");
+    _ = @import("plugins/rn_codegen_plugin_test.zig");
 }

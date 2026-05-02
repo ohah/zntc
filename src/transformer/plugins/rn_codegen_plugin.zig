@@ -43,7 +43,7 @@ const es_helpers = @import("../es_helpers.zig");
 const NodeIndex = ast_mod.NodeIndex;
 const stripQuotes = @import("../../bundler/import_scanner.zig").stripQuotes;
 
-const codegen = @import("codegen/mod.zig");
+const codegen = @import("rn_codegen/mod.zig");
 const type_index_mod = codegen.type_index;
 const schema_builder = codegen.schema_builder;
 const view_config_emitter = codegen.view_config_emitter;
