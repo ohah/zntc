@@ -300,6 +300,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
     {
         const next = try self.peekNextKind();
         if (next == .eq) {
+            self.ast.has_ts_import_equals = true;
             // import-equals는 TS CJS 호환 구문 → module syntax로 취급하지 않음.
             //
             // ts_import_equals_declaration 은 strip target 이 *아님* —
