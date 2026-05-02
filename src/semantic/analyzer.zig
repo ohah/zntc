@@ -1212,6 +1212,7 @@ pub const SemanticAnalyzer = struct {
             .export_named_declaration => try self.visitExportNamedDeclaration(node),
             .export_default_declaration => try self.visitExportDefaultDeclaration(node, idx),
             .export_all_declaration => try self.visitExportAllDeclaration(node),
+            .ts_export_assignment => try self.visitTsExportAssignment(node),
 
             // Flow component syntax: extra = [func_decl, const_decl]
             // func_decl의 이름/params가 합성 span이라 visitFunctionDeclaration을
@@ -3122,6 +3123,20 @@ pub const SemanticAnalyzer = struct {
                 },
                 else => {},
             }
+        }
+    }
+
+    /// `export = expr;` (TS CJS interop) — transformer 가 `module.exports = expr;` 로 lower.
+    /// inner identifier reference 의 symbol 에 `is_exported` 플래그를 set 해서 mangler 가
+    /// rename 하지 않도록 보호한다 (`export default someVar` 와 동일 패턴).
+    fn visitTsExportAssignment(self: *SemanticAnalyzer, node: Node) AllocError!void {
+        const inner_idx = node.data.unary.operand;
+        try self.visitNode(inner_idx);
+
+        if (inner_idx.isNone() or @intFromEnum(inner_idx) >= self.ast.nodes.items.len) return;
+        const inner = self.ast.getNode(inner_idx);
+        if (inner.tag == .identifier_reference) {
+            self.markSymbolExported(self.ast.getText(inner.span), false);
         }
     }
 
