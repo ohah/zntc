@@ -1643,16 +1643,16 @@ pub const Transformer = struct {
             },
 
             // === import/export specifiers ===
-            // #1791 Phase D: inline `type` modifier (flags&1) 또는 named specifier 의
+            // #1791 Phase D: inline `type` modifier (SPEC_FLAG_TYPE_ONLY) 또는 named specifier 의
             // value-ref 0 (type 위치에서만 사용) 이면 elide. visitExtraList 가 `.none` 을
             // 필터링. default/namespace 는 JSX pragma 등 implicit value use 위험이 커
             // `shouldElideImportSpecifier` 에서 이미 false 를 반환하므로 elision 비활성.
             .import_specifier => blk: {
-                if (node.data.binary.flags & 1 != 0) break :blk NodeIndex.none;
+                if ((node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) break :blk NodeIndex.none;
                 if (self.shouldElideImportSpecifier(idx, node)) break :blk NodeIndex.none;
                 break :blk self.visitBinaryNode(idx);
             },
-            .export_specifier => if (node.data.binary.flags & 1 != 0) .none else self.visitBinaryNode(idx),
+            .export_specifier => if ((node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) .none else self.visitBinaryNode(idx),
             // default/namespace specifier는 string_ref(span) 복사 — 자식 노드 없음
             .import_default_specifier,
             .import_namespace_specifier,
@@ -4727,8 +4727,8 @@ pub const Transformer = struct {
             const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[x.specs_start + i]);
             const spec_node = self.ast.getNode(spec_idx);
             if (spec_node.tag != .import_specifier) return null;
-            // type-only specifier (flags & 1) — 분해 X (path 에 type 만 export 안 함)
-            if (spec_node.data.binary.flags & 1 != 0) return null;
+            // type-only specifier — 분해 X (path 에 type 만 export 안 함)
+            if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) return null;
             // alias 없는지: imported == local (NodeIndex 동일성)
             if (spec_node.data.binary.left != spec_node.data.binary.right) return null;
         }
@@ -4818,8 +4818,8 @@ pub const Transformer = struct {
             if (spec_idx.isNone()) continue;
             const spec_node = self.ast.getNode(spec_idx);
 
-            // type-only specifier (flags & 1 != 0) → 이미 스트리핑됨, 무시
-            if (spec_node.tag == .import_specifier and spec_node.data.binary.flags & 1 != 0) continue;
+            // type-only specifier → 이미 스트리핑됨, 무시
+            if (spec_node.tag == .import_specifier and (spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
             if (spec_node.tag == .export_specifier) continue; // 방어적: export specifier는 여기 없지만
 
             if (!self.isImportSpecifierUnused(spec_idx, spec_node)) return false;
