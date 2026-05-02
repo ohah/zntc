@@ -88,6 +88,10 @@ pub const EsmEmitResult = struct {
     entry_chain: ?[]const u8 = null,
 };
 
+// NOTE: 본 함수의 hoisted_var_names 수집 사이트 들은 모두 `arena_alloc.dupe` 로
+// `getText` (string_table slice) 와 `resolveNodeName` (metadata.renames borrowed slice)
+// 을 owned 화. 둘 다 후속 처리에서 dangling 가능 (#2429: per-chunk recompute 가
+// canonical_strings free).
 pub fn emitEsmWrappedModule(
     allocator: std.mem.Allocator,
     arena_alloc: std.mem.Allocator,
@@ -173,12 +177,7 @@ pub fn emitEsmWrappedModule(
                     if (!fn_name_idx.isNone()) {
                         const fn_name_node = esm_ast.nodes.items[@intFromEnum(fn_name_idx)];
                         if (fn_name_node.tag == .binding_identifier) {
-                            // raw_name 은 esm_ast.string_table slice — 후속 처리에서 string_table
-                            // 이 grow 하면 dangling. arena dupe 로 안정적인 메모리에 복사.
                             const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(fn_name_node.data.string_ref));
-                            // resolveNodeName 결과도 dupe — metadata.renames 의 slice 가 unified_result
-                            // (linker 소유) 의 strings 를 borrow 해서, mangling clearMangling 후
-                            // dangling 가능. arena dupe 로 안정.
                             const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(fn_name_idx), raw_name));
                             try hoisted_var_names.append(allocator, resolved);
                         }

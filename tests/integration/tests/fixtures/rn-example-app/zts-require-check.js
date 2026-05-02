@@ -3610,7 +3610,7 @@ var init_react_native_Libraries_vendor_emitter_EventEmitter = __esm({
 	EventEmitter = (function() {
 		var _registry = new WeakMap();
 		function EventEmitter() {
-			__classCallCheck$2(this, EventEmitter);
+			__classCallCheck(this, EventEmitter);
 			_registry.set(this, void 0);
 			__classPrivateFieldSet(_registry, this, {});
 		}
@@ -3733,7 +3733,7 @@ var init_react_native_Libraries_EventEmitter_RCTDeviceEventEmitter = __esm({
 	
 	RCTDeviceEventEmitterImpl = (function(_super) {
 		function RCTDeviceEventEmitterImpl() {
-			__classCallCheck$3(this, RCTDeviceEventEmitterImpl);
+			__classCallCheck(this, RCTDeviceEventEmitterImpl);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -3817,7 +3817,7 @@ var init_react_native_Libraries_Utilities_Dimensions = __esm({
 	dimensions = void 0;
 	Dimensions = (function() {
 		function Dimensions() {
-			__classCallCheck$4(this, Dimensions);
+			__classCallCheck(this, Dimensions);
 		}
 		Object.defineProperty(Dimensions, "get", { configurable: true, writable: true, value: function(dim) {
 			invariant$7(dimensions[dim], "No dimension set for key " + dim);
@@ -3878,7 +3878,7 @@ var init_react_native_Libraries_Utilities_PixelRatio = __esm({
 	Dimensions$1 = (init_react_native_Libraries_Utilities_Dimensions(), __toCommonJS(exports_react_native_Libraries_Utilities_Dimensions)).default;
 	PixelRatio = (function() {
 		function PixelRatio() {
-			__classCallCheck$5(this, PixelRatio);
+			__classCallCheck(this, PixelRatio);
 		}
 		Object.defineProperty(PixelRatio, "get", { configurable: true, writable: true, value: function() {
 			return Dimensions$1.get("window").scale;
@@ -4419,7 +4419,7 @@ var init_react_native_Libraries_Image_AssetSourceResolver = __esm({
 	;
 	AssetSourceResolver = (function() {
 		function AssetSourceResolver(serverUrl,jsbundleUrl,asset) {
-			__classCallCheck$6(this, AssetSourceResolver);
+			__classCallCheck(this, AssetSourceResolver);
 			this.serverUrl = serverUrl;
 			this.jsbundleUrl = jsbundleUrl;
 			this.asset = asset;
@@ -5914,7 +5914,7 @@ var init_react_native_src_private_devsupport_rndevtools_FuseboxSessionObserver =
 	FuseboxSessionObserver = (function() {
 		var _hasNativeSupport = new WeakMap();
 		function FuseboxSessionObserver() {
-			__classCallCheck$7(this, FuseboxSessionObserver);
+			__classCallCheck(this, FuseboxSessionObserver);
 			_hasNativeSupport.set(this, void 0);
 			__classPrivateFieldSet(_hasNativeSupport, this, global.hasOwnProperty("__DEBUGGER_SESSION_OBSERVER__"));
 		}
@@ -6790,7 +6790,7 @@ var init_react_native_Libraries_LogBox_Data_LogBoxLog = __esm({
 	LogBoxSymbolication=__toESM((init_react_native_Libraries_LogBox_Data_LogBoxSymbolication(), __toCommonJS(exports_react_native_Libraries_LogBox_Data_LogBoxSymbolication)));
 	LogBoxLog = (function() {
 		function LogBoxLog(data) {
-			__classCallCheck$8(this, LogBoxLog);
+			__classCallCheck(this, LogBoxLog);
 			this.symbolicated = { error: null, stack: null, status: "NONE" };
 			this.symbolicatedComponentStack = { error: null, componentStack: null, status: "NONE" };
 			this.level = data.level;
@@ -7531,7 +7531,7 @@ var init_react_native_Libraries_LogBox_Data_LogBoxData = __esm({
 	withSubscription = function(WrappedComponent) {
 		var LogBoxStateSubscription = (function(_super) {
 			function LogBoxStateSubscription() {
-				__classCallCheck$9(this, LogBoxStateSubscription);
+				__classCallCheck(this, LogBoxStateSubscription);
 				var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 				;
 				_this.state = { logs: new Set(), isDisabled: false, hasError: false, selectedLogIndex: -1 };
@@ -7789,7 +7789,7 @@ var init_react_native_Libraries_Core_ExceptionsManager = __esm({
 	"use strict";
 	SyntheticError = (function(_super) {
 		function SyntheticError() {
-			__classCallCheck$10(this, SyntheticError);
+			__classCallCheck(this, SyntheticError);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this.name = "";
@@ -8394,7 +8394,7 @@ var init_react_native_src_private_webapis_dom_events_Event = __esm({
 	
 	Event = (function() {
 		function Event(type,options) {
-			__classCallCheck$11(this, Event);
+			__classCallCheck(this, Event);
 			this._defaultPrevented = false;
 			this._timeStamp = performance.now();
 			this[COMPOSED_PATH_KEY] = [];
@@ -8530,7 +8530,7 @@ var init_react_native_src_private_webapis_dom_events_CustomEvent = __esm({
 	
 	CustomEvent = (function(_super) {
 		function CustomEvent(type,options) {
-			__classCallCheck$12(this, CustomEvent);
+			__classCallCheck(this, CustomEvent);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$1(_this),_this = __callSuper(_super, [type, options], _newTarget);
@@ -8912,7 +8912,7 @@ var init_react_native_src_private_webapis_dom_oldstylecollections_HTMLCollection
 	HTMLCollection = (function() {
 		var _a = Symbol.iterator;
 		function HTMLCollection(elements) {
-			__classCallCheck$13(this, HTMLCollection);
+			__classCallCheck(this, HTMLCollection);
 			for (var i = 0; i < elements.length; i++) {
 				REUSABLE_PROPERTY_DESCRIPTOR.value = elements[i];
 				Object.defineProperty(this, i, REUSABLE_PROPERTY_DESCRIPTOR);
@@ -8982,7 +8982,7 @@ var init_react_native_src_private_webapis_dom_nodes_internals_ReactNativeDocumen
 		
 	ReactNativeDocumentElementInstanceHandleImpl = (function() {
 		function ReactNativeDocumentElementInstanceHandleImpl() {
-			__classCallCheck$14(this, ReactNativeDocumentElementInstanceHandleImpl);
+			__classCallCheck(this, ReactNativeDocumentElementInstanceHandleImpl);
 		}
 		return ReactNativeDocumentElementInstanceHandleImpl;
 	})();
@@ -9142,7 +9142,7 @@ var init_react_native_src_private_webapis_geometry_DOMRectReadOnly = __esm({
 	DOMRectReadOnly = (function() {
 		var _x = new WeakMap(),_y = new WeakMap(),_width = new WeakMap(),_height = new WeakMap();
 		function DOMRectReadOnly(x,y,width,height) {
-			__classCallCheck$15(this, DOMRectReadOnly);
+			__classCallCheck(this, DOMRectReadOnly);
 			_x.set(this, void 0);
 			_y.set(this, void 0);
 			_width.set(this, void 0);
@@ -9256,7 +9256,7 @@ var init_react_native_src_private_webapis_geometry_DOMRect = __esm({
 	
 	DOMRect = (function(_super) {
 		function DOMRect() {
-			__classCallCheck$16(this, DOMRect);
+			__classCallCheck(this, DOMRect);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -9317,7 +9317,7 @@ var init_react_native_src_private_webapis_dom_oldstylecollections_NodeList = __e
 	NodeList = (function() {
 		var _a = Symbol.iterator;
 		function NodeList(elements) {
-			__classCallCheck$17(this, NodeList);
+			__classCallCheck(this, NodeList);
 			for (var i = 0; i < elements.length; i++) {
 				REUSABLE_PROPERTY_DESCRIPTOR$1.value = elements[i];
 				Object.defineProperty(this, i, REUSABLE_PROPERTY_DESCRIPTOR$1);
@@ -9448,7 +9448,7 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyNode = __esm({
 	
 	ReadOnlyNode = (function() {
 		function ReadOnlyNode(instanceHandle,ownerDocument) {
-			__classCallCheck$18(this, ReadOnlyNode);
+			__classCallCheck(this, ReadOnlyNode);
 			setOwnerDocument(this, ownerDocument);
 			setInstanceHandle(this, instanceHandle);
 		}
@@ -9653,7 +9653,7 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyElement = __esm({
 	
 	ReadOnlyElement = (function(_super) {
 		function ReadOnlyElement() {
-			__classCallCheck$19(this, ReadOnlyElement);
+			__classCallCheck(this, ReadOnlyElement);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -9859,7 +9859,7 @@ var init_react_native_src_private_webapis_dom_nodes_ReactNativeElement = __esm({
 	};
 	ReactNativeElement = (function(_super) {
 		function ReactNativeElement(tag,viewConfig,instanceHandle,ownerDocument) {
-			__classCallCheck$20(this, ReactNativeElement);
+			__classCallCheck(this, ReactNativeElement);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$2(_this),_this = __callSuper(_super, [instanceHandle, ownerDocument], _newTarget);
@@ -9998,7 +9998,7 @@ var init_react_native_src_private_webapis_dom_nodes_ReactNativeDocument = __esm(
 	
 	ReactNativeDocument = (function(_super) {
 		function ReactNativeDocument(rootTag,instanceHandle) {
-			__classCallCheck$21(this, ReactNativeDocument);
+			__classCallCheck(this, ReactNativeDocument);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$3(_this),_this = __callSuper(_super, [instanceHandle, null], _newTarget);
@@ -10073,7 +10073,7 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyCharacterData = __es
 	
 	ReadOnlyCharacterData = (function(_super) {
 		function ReadOnlyCharacterData() {
-			__classCallCheck$22(this, ReadOnlyCharacterData);
+			__classCallCheck(this, ReadOnlyCharacterData);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -10138,7 +10138,7 @@ var init_react_native_src_private_webapis_dom_nodes_ReadOnlyText = __esm({
 	
 	ReadOnlyText = (function(_super) {
 		function ReadOnlyText() {
-			__classCallCheck$23(this, ReadOnlyText);
+			__classCallCheck(this, ReadOnlyText);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -10326,7 +10326,7 @@ var init_react_native_src_private_webapis_geometry_DOMRectList = __esm({
 	DOMRectList = (function() {
 		var _a = Symbol.iterator,_length = new WeakMap();
 		function DOMRectList(elements) {
-			__classCallCheck$24(this, DOMRectList);
+			__classCallCheck(this, DOMRectList);
 			_length.set(this, void 0);
 			for (var i = 0; i < elements.length; i++) {
 				Object.defineProperty(this, i, { value: elements[i], enumerable: true, configurable: false, writable: false });
@@ -10435,7 +10435,7 @@ var init_react_native_src_private_webapis_errors_DOMException = __esm({
 	DOMException = (function(_super) {
 		var _name = new WeakMap(),_code = new WeakMap();
 		function DOMException(message,name) {
-			__classCallCheck$25(this, DOMException);
+			__classCallCheck(this, DOMException);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -10749,7 +10749,7 @@ var init_react_native_src_private_webapis_performance_PerformanceEntry = __esm({
 	
 	PerformanceEntry = (function() {
 		function PerformanceEntry(entryType,init) {
-			__classCallCheck$26(this, PerformanceEntry);
+			__classCallCheck(this, PerformanceEntry);
 			this.__entryType = entryType;
 			this.__name = init.name;
 			this.__startTime = init.startTime;
@@ -10837,7 +10837,7 @@ var init_react_native_src_private_webapis_performance_EventTiming = __esm({
 	PerformanceEventTiming = (function(_super) {
 		var _processingStart = new WeakMap(),_processingEnd = new WeakMap(),_interactionId = new WeakMap();
 		function PerformanceEventTiming(init) {
-			__classCallCheck$27(this, PerformanceEventTiming);
+			__classCallCheck(this, PerformanceEventTiming);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -10879,7 +10879,7 @@ var init_react_native_src_private_webapis_performance_EventTiming = __esm({
 	cachedEventCounts = void 0;
 	EventCounts = (function() {
 		function EventCounts() {
-			__classCallCheck$27(this, EventCounts);
+			__classCallCheck(this, EventCounts);
 		}
 		Object.defineProperty(EventCounts.prototype, "entries", { configurable: true, writable: true, value: function() {
 			return getCachedEventCounts().entries();
@@ -10936,7 +10936,7 @@ var init_react_native_src_private_webapis_performance_LongTasks = __esm({
 	
 	TaskAttributionTiming = (function(_super) {
 		function TaskAttributionTiming() {
-			__classCallCheck$28(this, TaskAttributionTiming);
+			__classCallCheck(this, TaskAttributionTiming);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -10951,7 +10951,7 @@ var init_react_native_src_private_webapis_performance_LongTasks = __esm({
 	EMPTY_ATTRIBUTION = Object.preventExtensions([]);
 	PerformanceLongTaskTiming = (function(_super) {
 		function PerformanceLongTaskTiming(init) {
-			__classCallCheck$28(this, PerformanceLongTaskTiming);
+			__classCallCheck(this, PerformanceLongTaskTiming);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$6(_this),_this = __callSuper(_super, ["longtask", init], _newTarget);
@@ -11000,7 +11000,7 @@ var init_react_native_src_private_webapis_performance_ResourceTiming = __esm({
 	PerformanceResourceTiming = (function(_super) {
 		var _fetchStart = new WeakMap(),_requestStart = new WeakMap(),_connectStart = new WeakMap(),_connectEnd = new WeakMap(),_responseStart = new WeakMap(),_responseEnd = new WeakMap(),_responseStatus = new WeakMap(),_contentType = new WeakMap(),_encodedBodySize = new WeakMap(),_decodedBodySize = new WeakMap();
 		function PerformanceResourceTiming(init) {
-			__classCallCheck$29(this, PerformanceResourceTiming);
+			__classCallCheck(this, PerformanceResourceTiming);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -11119,7 +11119,7 @@ var init_react_native_src_private_webapis_performance_UserTiming = __esm({
 	
 	PerformanceMarkTemplate = (function(_super) {
 		function PerformanceMarkTemplate(markName,markOptions) {
-			__classCallCheck$30(this, PerformanceMarkTemplate);
+			__classCallCheck(this, PerformanceMarkTemplate);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$8(_this),_this = __callSuper(_super, ["mark", { name: markName, startTime: (_a = (markOptions == null ? void 0 : markOptions.startTime)) != null ? _a : getCurrentTimeStamp(), duration: 0 }], _newTarget);
@@ -11146,7 +11146,7 @@ var init_react_native_src_private_webapis_performance_UserTiming = __esm({
 	PerformanceMark.prototype = PerformanceMarkTemplate.prototype;
 	PerformanceMeasureTemplate = (function(_super) {
 		function PerformanceMeasureTemplate(init) {
-			__classCallCheck$30(this, PerformanceMeasureTemplate);
+			__classCallCheck(this, PerformanceMeasureTemplate);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$8(_this),_this = __callSuper(_super, ["measure", init], _newTarget);
@@ -11269,7 +11269,7 @@ var init_react_native_src_private_webapis_performance_MemoryInfo = __esm({
 	MemoryInfo = (function() {
 		var _jsHeapSizeLimit = new WeakMap(),_totalJSHeapSize = new WeakMap(),_usedJSHeapSize = new WeakMap();
 		function MemoryInfo(memoryInfo) {
-			__classCallCheck$31(this, MemoryInfo);
+			__classCallCheck(this, MemoryInfo);
 			_jsHeapSizeLimit.set(this, void 0);
 			_totalJSHeapSize.set(this, void 0);
 			_usedJSHeapSize.set(this, void 0);
@@ -11313,7 +11313,7 @@ var init_react_native_src_private_webapis_performance_ReactNativeStartupTiming =
 	ReactNativeStartupTiming = (function() {
 		var _startTime = new WeakMap(),_initializeRuntimeStart = new WeakMap(),_executeJavaScriptBundleEntryPointStart = new WeakMap(),_endTime = new WeakMap();
 		function ReactNativeStartupTiming(startUpTiming) {
-			__classCallCheck$32(this, ReactNativeStartupTiming);
+			__classCallCheck(this, ReactNativeStartupTiming);
 			_startTime.set(this, void 0);
 			_initializeRuntimeStart.set(this, void 0);
 			_executeJavaScriptBundleEntryPointStart.set(this, void 0);
@@ -11387,7 +11387,7 @@ var init_react_native_src_private_webapis_performance_Performance = __esm({
 	Performance = (function() {
 		var _eventCounts = new WeakMap();
 		function Performance() {
-			__classCallCheck$33(this, Performance);
+			__classCallCheck(this, Performance);
 			_eventCounts.set(this, new EventCounts());
 			this.now = getCurrentTimeStamp;
 		}
@@ -11699,7 +11699,7 @@ var init_react_native_src_private_webapis_performance_PerformanceObserver = __es
 	PerformanceObserverEntryList = (function() {
 		var _entries = new WeakMap();
 		function PerformanceObserverEntryList(entries) {
-			__classCallCheck$34(this, PerformanceObserverEntryList);
+			__classCallCheck(this, PerformanceObserverEntryList);
 			_entries.set(this, void 0);
 			__classPrivateFieldSet(_entries, this, entries);
 		}
@@ -11774,7 +11774,7 @@ var init_react_native_src_private_webapis_performance_PerformanceObserver = __es
 			}
 		}
 		function PerformanceObserver(callback) {
-			__classCallCheck$34(this, PerformanceObserver);
+			__classCallCheck(this, PerformanceObserver);
 			_nativeObserverHandle.set(this, null);
 			_callback.set(this, void 0);
 			_type.set(this, void 0);
@@ -12281,14 +12281,14 @@ var init_ansi_styles_index = __esm({
 			;
 			try {
 				for (var _d = Object.entries(styles)[Symbol.iterator](),_e; !(_a = (_e = _d.next()).done); _a = true) {
-					var _n = __read(_e.value, 2),groupName = _n[0],group = _n[1];
+					var _n = __read$8(_e.value, 2),groupName = _n[0],group = _n[1];
 					{
 						;
 						;
 						;
 						try {
 							for (var _j = Object.entries(group)[Symbol.iterator](),_k; !(_g = (_k = _j.next()).done); _g = true) {
-								var _m = __read(_k.value, 2),styleName = _m[0],style = _m[1];
+								var _m = __read$8(_k.value, 2),styleName = _m[0],style = _m[1];
 								styles[styleName] = { open: "\u001B[" + style[0] + "m", close: "\u001B[" + style[1] + "m" };
 								group[styleName] = styles[styleName];
 								codes.set(style[0], style[1]);
@@ -14321,7 +14321,7 @@ var init_react_native_src_private_webapis_dom_events_EventTarget = __esm({
 	EventTarget = (function() {
 		var _a = EVENT_TARGET_GET_THE_PARENT_KEY,_b = INTERNAL_DISPATCH_METHOD_KEY;
 		function EventTarget() {
-			__classCallCheck$35(this, EventTarget);
+			__classCallCheck(this, EventTarget);
 		}
 		Object.defineProperty(EventTarget.prototype, "addEventListener", { configurable: true, writable: true, value: function(type,callback,optionsOrUseCapture) {
 			optionsOrUseCapture = optionsOrUseCapture === void 0 ? {} : optionsOrUseCapture;
@@ -14454,7 +14454,7 @@ var init_react_native_src_private_webapis_xhr_events_ProgressEvent = __esm({
 	
 	ProgressEvent = (function(_super) {
 		function ProgressEvent(type,options) {
-			__classCallCheck$36(this, ProgressEvent);
+			__classCallCheck(this, ProgressEvent);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$9(_this),_this = __callSuper(_super, [type, options], _newTarget);
@@ -14550,7 +14550,7 @@ var init_react_native_Libraries_Blob_Blob = __esm({
 	"use strict";
 	Blob$1 = (function() {
 		function Blob(parts,options) {
-			__classCallCheck$37(this, Blob);
+			__classCallCheck(this, Blob);
 			parts = parts === void 0 ? [] : parts;
 			var BlobManager = (init_react_native_Libraries_Blob_BlobManager(), __toCommonJS(exports_react_native_Libraries_Blob_BlobManager)).default;
 			this.data = BlobManager.createFromParts(parts, options).data;
@@ -14671,7 +14671,7 @@ var init_react_native_Libraries_Blob_BlobManager = __esm({
 	;
 	BlobManager = (function() {
 		function BlobManager() {
-			__classCallCheck$38(this, BlobManager);
+			__classCallCheck(this, BlobManager);
 		}
 		Object.defineProperty(BlobManager, "createFromParts", { configurable: true, writable: true, value: function(parts,options) {
 			invariant$13(NativeBlobModule, "NativeBlobModule is available.");
@@ -14751,7 +14751,7 @@ var init_react_native_Libraries_Utilities_createPerformanceLogger = __esm({
 	});
 	PerformanceLogger = (function() {
 		function PerformanceLogger() {
-			__classCallCheck$39(this, PerformanceLogger);
+			__classCallCheck(this, PerformanceLogger);
 			this._timespans = {};
 			this._extras = {};
 			this._points = {};
@@ -15008,7 +15008,7 @@ var init_react_native_Libraries_Network_FormData = __esm({
 	"use strict";
 	FormData$1 = (function() {
 		function FormData() {
-			__classCallCheck$40(this, FormData);
+			__classCallCheck(this, FormData);
 			this._parts = [];
 		}
 		Object.defineProperty(FormData.prototype, "append", { configurable: true, writable: true, value: function(key,value) {
@@ -15203,7 +15203,7 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 	SUPPORTED_RESPONSE_TYPES = { arraybuffer: typeof global.ArrayBuffer === "function", blob: typeof global.Blob === "function", document: false, json: true, text: true, "": true };
 	XMLHttpRequestEventTarget = (function(_super) {
 		function XMLHttpRequestEventTarget() {
-			__classCallCheck$41(this, XMLHttpRequestEventTarget);
+			__classCallCheck(this, XMLHttpRequestEventTarget);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -15247,7 +15247,7 @@ var init_react_native_Libraries_Network_XMLHttpRequest = __esm({
 	})(EventTarget);
 	XMLHttpRequest$1 = (function(_super) {
 		function XMLHttpRequest() {
-			__classCallCheck$41(this, XMLHttpRequest);
+			__classCallCheck(this, XMLHttpRequest);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -15694,7 +15694,7 @@ var init_react_native_src_private_webapis_html_events_MessageEvent = __esm({
 	
 	MessageEvent = (function(_super) {
 		function MessageEvent(type,options) {
-			__classCallCheck$42(this, MessageEvent);
+			__classCallCheck(this, MessageEvent);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$11(_this),_this = __callSuper(_super, [type, options], _newTarget);
@@ -15742,7 +15742,7 @@ var init_react_native_src_private_webapis_websockets_events_CloseEvent = __esm({
 	
 	CloseEvent = (function(_super) {
 		function CloseEvent(type,options) {
-			__classCallCheck$43(this, CloseEvent);
+			__classCallCheck(this, CloseEvent);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$12(_this),_this = __callSuper(_super, [type, options], _newTarget);
@@ -15790,7 +15790,7 @@ var init_react_native_Libraries_EventEmitter_NativeEventEmitter = __esm({
 	
 	NativeEventEmitter = (function() {
 		function NativeEventEmitter(nativeModule) {
-			__classCallCheck$44(this, NativeEventEmitter);
+			__classCallCheck(this, NativeEventEmitter);
 			if (Platform.OS === "ios") {
 				invariant$15(nativeModule != null, "`new NativeEventEmitter()` requires a non-null argument.");
 			}
@@ -15931,18 +15931,18 @@ var init_react_native_Libraries_WebSocket_WebSocket = __esm({
 	nextWebSocketId = 0;
 	WebSocket = (function(_super) {
 		function WebSocket(url,protocols,options) {
-			__classCallCheck$45(this, WebSocket);
+			__classCallCheck(this, WebSocket);
 			var _newTarget = this.constructor,_this;
 			;
 			{
-				__assertThisUninitialized(_this),_this = __callSuper(_super, [], _newTarget);
+				__assertThisUninitialized$13(_this),_this = __callSuper(_super, [], _newTarget);
 				_this.CONNECTING = CONNECTING;
 				_this.OPEN = OPEN;
 				_this.CLOSING = CLOSING;
 				_this.CLOSED = CLOSED;
 				_this.readyState = CONNECTING;
 			}
-			__assertThisInitialized(_this).url = url;
+			__assertThisInitialized$13(_this).url = url;
 			if (typeof protocols === "string") {
 				protocols = [protocols];
 			}
@@ -15958,11 +15958,11 @@ var init_react_native_Libraries_WebSocket_WebSocket = __esm({
 			if (!Array.isArray(protocols)) {
 				protocols = null;
 			}
-			__assertThisInitialized(_this)._eventEmitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$26);
-			__assertThisInitialized(_this)._socketId = nextWebSocketId++;
-			__assertThisInitialized(_this)._registerEvents();
-			_default$26.connect(url, protocols, { headers: headers }, __assertThisInitialized(_this)._socketId);
-			return __assertThisInitialized(_this);
+			__assertThisInitialized$13(_this)._eventEmitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$26);
+			__assertThisInitialized$13(_this)._socketId = nextWebSocketId++;
+			__assertThisInitialized$13(_this)._registerEvents();
+			_default$26.connect(url, protocols, { headers: headers }, __assertThisInitialized$13(_this)._socketId);
+			return __assertThisInitialized$13(_this);
 		}
 		__extends(WebSocket, _super);
 		Object.defineProperty(WebSocket.prototype, "close", { configurable: true, writable: true, value: function(code,reason) {
@@ -16142,7 +16142,7 @@ var init_react_native_Libraries_Blob_File = __esm({
 	invariant$17 = require_invariant_browser();
 	File = (function(_super) {
 		function File(parts,name,options) {
-			__classCallCheck$46(this, File);
+			__classCallCheck(this, File);
 			var _newTarget = this.constructor,_this;
 			;
 			invariant$17(parts != null && name != null, "Failed to construct `File`: Must pass both `parts` and `name` arguments.");
@@ -16229,7 +16229,7 @@ var init_react_native_Libraries_Blob_FileReader = __esm({
 	DONE$1 = 2;
 	FileReader$1 = (function(_super) {
 		function FileReader() {
-			__classCallCheck$47(this, FileReader);
+			__classCallCheck(this, FileReader);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -16403,7 +16403,7 @@ var init_react_native_Libraries_Blob_URLSearchParams = __esm({
 	URLSearchParams$1 = (function() {
 		var _a = Symbol.iterator;
 		function URLSearchParams(params) {
-			__classCallCheck$48(this, URLSearchParams);
+			__classCallCheck(this, URLSearchParams);
 			this._searchParams = new Map();
 			var _this = this;
 			if (params === null) {
@@ -16690,7 +16690,7 @@ var init_react_native_Libraries_Blob_URL = __esm({
 	
 	URL$1 = (function() {
 		function URL(url,base) {
-			__classCallCheck$49(this, URL);
+			__classCallCheck(this, URL);
 			this._searchParamsInstance = null;
 			var baseUrl = null;
 			if (!base || validateBaseUrl(url)) {
@@ -17380,7 +17380,7 @@ var init_react_native_Libraries_Alert_Alert = __esm({
 	
 	Alert = (function() {
 		function Alert() {
-			__classCallCheck$50(this, Alert);
+			__classCallCheck(this, Alert);
 		}
 		Object.defineProperty(Alert, "alert", { configurable: true, writable: true, value: function(title,message,buttons,options) {
 			if (Platform.OS === "ios") {
@@ -18444,7 +18444,7 @@ var init_react_native_Libraries_ReactNative_HeadlessJsTaskError = __esm({
 	
 	HeadlessJsTaskError = (function(_super) {
 		function HeadlessJsTaskError() {
-			__classCallCheck$51(this, HeadlessJsTaskError);
+			__classCallCheck(this, HeadlessJsTaskError);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -19012,7 +19012,7 @@ var init_react_native_Libraries_Debugging_DebuggingOverlayRegistry = __esm({
 			}
 		}
 		function DebuggingOverlayRegistry() {
-			__classCallCheck$52(this, DebuggingOverlayRegistry);
+			__classCallCheck(this, DebuggingOverlayRegistry);
 			var _this = this;
 			_registry.set(this, new Set());
 			_reactDevToolsAgent.set(this, null);
@@ -19443,7 +19443,7 @@ var init_react_native_Libraries_Pressability_PressabilityPerformanceEventEmitter
 		
 	PressabilityPerformanceEventEmitter = (function() {
 		function PressabilityPerformanceEventEmitter() {
-			__classCallCheck$53(this, PressabilityPerformanceEventEmitter);
+			__classCallCheck(this, PressabilityPerformanceEventEmitter);
 			this._listeners = [];
 		}
 		Object.defineProperty(PressabilityPerformanceEventEmitter.prototype, "addListener", { configurable: true, writable: true, value: function(listener) {
@@ -19529,7 +19529,7 @@ var init_react_native_Libraries_Pressability_Pressability = __esm({
 	longPressDeactivationDistance = DEFAULT_LONG_PRESS_DEACTIVATION_DISTANCE;
 	Pressability = (function() {
 		function Pressability(config) {
-			__classCallCheck$54(this, Pressability);
+			__classCallCheck(this, Pressability);
 			var _this = this;
 			this._eventHandlers = null;
 			this._hoverInDelayTimeout = null;
@@ -21139,7 +21139,7 @@ var init_react_native_Libraries_Linking_Linking = __esm({
 	
 	LinkingImpl = (function(_super) {
 		function LinkingImpl() {
-			__classCallCheck$55(this, LinkingImpl);
+			__classCallCheck(this, LinkingImpl);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$16(_this),_this = __callSuper(_super, [Platform.OS === "ios" ? nullthrows$7(_default$51) : undefined], _newTarget);
@@ -22671,7 +22671,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedNode = __esm({
 	};
 	AnimatedNode = (function() {
 		function AnimatedNode(config) {
-			__classCallCheck$56(this, AnimatedNode);
+			__classCallCheck(this, AnimatedNode);
 			this._platformConfig = undefined;
 			this.__isNative = false;
 			this.__nativeTag = undefined;
@@ -22796,7 +22796,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedWithChildren = __esm({
 	disconnectAnimatedNodes = _a$45.disconnectAnimatedNodes;
 	AnimatedWithChildren = (function(_super) {
 		function AnimatedWithChildren() {
-			__classCallCheck$57(this, AnimatedWithChildren);
+			__classCallCheck(this, AnimatedWithChildren);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._children = [];
@@ -23042,7 +23042,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedInterpolation = __esm({
 	numericComponentRegex = /[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g;
 	AnimatedInterpolation = (function(_super) {
 		function AnimatedInterpolation(parent,config) {
-			__classCallCheck$58(this, AnimatedInterpolation);
+			__classCallCheck(this, AnimatedInterpolation);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$17(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -23152,7 +23152,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValue = __esm({
 	;
 	AnimatedValue = (function(_super) {
 		function AnimatedValue(value,config) {
-			__classCallCheck$59(this, AnimatedValue);
+			__classCallCheck(this, AnimatedValue);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$18(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -23363,7 +23363,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedValueXY = __esm({
 	_uniqueId$1 = 1;
 	AnimatedValueXY = (function(_super) {
 		function AnimatedValueXY(valueIn,config) {
-			__classCallCheck$60(this, AnimatedValueXY);
+			__classCallCheck(this, AnimatedValueXY);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$19(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -23541,7 +23541,7 @@ var init_react_native_Libraries_Animated_AnimatedEvent = __esm({
 	
 	AnimatedEvent = (function() {
 		function AnimatedEvent(argMapping,config) {
-			__classCallCheck$61(this, AnimatedEvent);
+			__classCallCheck(this, AnimatedEvent);
 			var _this = this;
 			this._listeners = [];
 			this._callListeners = function() {
@@ -23691,13 +23691,13 @@ var init_react_native_Libraries_Animated_nodes_AnimatedObject = __esm({
 	MAX_DEPTH = 5;
 	AnimatedObject = (function(_super) {
 		function AnimatedObject(nodes,value,config) {
-			__classCallCheck$62(this, AnimatedObject);
+			__classCallCheck(this, AnimatedObject);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._nodes = nodes;
-			__assertThisInitialized(_this)._value = value;
-			return __assertThisInitialized(_this);
+			__assertThisUninitialized$20(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized$20(_this)._nodes = nodes;
+			__assertThisInitialized$20(_this)._value = value;
+			return __assertThisInitialized$20(_this);
 		}
 		__extends(AnimatedObject, _super);
 		Object.defineProperty(AnimatedObject, "from", { configurable: true, writable: true, value: function(value) {
@@ -23824,13 +23824,13 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTransform = __esm({
 	
 	AnimatedTransform = (function(_super) {
 		function AnimatedTransform(nodes,transforms,config) {
-			__classCallCheck$63(this, AnimatedTransform);
+			__classCallCheck(this, AnimatedTransform);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._nodes = nodes;
-			__assertThisInitialized(_this)._transforms = transforms;
-			return __assertThisInitialized(_this);
+			__assertThisUninitialized$21(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized$21(_this)._nodes = nodes;
+			__assertThisInitialized$21(_this)._transforms = transforms;
+			return __assertThisInitialized$21(_this);
 		}
 		__extends(AnimatedTransform, _super);
 		Object.defineProperty(AnimatedTransform, "from", { configurable: true, writable: true, value: function(transforms) {
@@ -23972,7 +23972,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedStyle = __esm({
 	
 	AnimatedStyle = (function(_super) {
 		function AnimatedStyle(nodeKeys,nodes,style,originalStyleForWeb,config) {
-			__classCallCheck$64(this, AnimatedStyle);
+			__classCallCheck(this, AnimatedStyle);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$22(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -24173,7 +24173,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedProps = __esm({
 			target.connectedViewTag = null;
 		}
 		function AnimatedProps(inputProps,callback,allowlist,config) {
-			__classCallCheck$65(this, AnimatedProps);
+			__classCallCheck(this, AnimatedProps);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -24472,7 +24472,7 @@ var init_react_native_Libraries_Animated_animations_DecayAnimation = __esm({
 	
 	DecayAnimation = (function(_super) {
 		function DecayAnimation(config) {
-			__classCallCheck$67(this, DecayAnimation);
+			__classCallCheck(this, DecayAnimation);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$24(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -24598,7 +24598,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedColor = __esm({
 	;
 	AnimatedColor = (function(_super) {
 		function AnimatedColor(valueIn,config) {
-			__classCallCheck$68(this, AnimatedColor);
+			__classCallCheck(this, AnimatedColor);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -24831,7 +24831,7 @@ var init_react_native_Libraries_Animated_animations_SpringAnimation = __esm({
 	
 	SpringAnimation = (function(_super) {
 		function SpringAnimation(config) {
-			__classCallCheck$69(this, SpringAnimation);
+			__classCallCheck(this, SpringAnimation);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$26(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -24992,7 +24992,7 @@ var init_react_native_Libraries_Animated_animations_TimingAnimation = __esm({
 	;
 	TimingAnimation = (function(_super) {
 		function TimingAnimation(config) {
-			__classCallCheck$70(this, TimingAnimation);
+			__classCallCheck(this, TimingAnimation);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$27(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -25542,7 +25542,7 @@ var init_react_native_Libraries_Animated_createAnimatedComponent = __esm({
 	};
 	unstable_createAnimatedComponentWithAllowlist = function(Component,allowlist) {
 		var _a,_b,useAnimatedProps = createAnimatedPropsHook(allowlist),AnimatedComponent = function(_a) {
-			var forwardedRef = _a.ref,props = __rest(_a, ["ref"]),_a = __read(useAnimatedProps(props), 2),reducedProps = _a[0],callbackRef = _a[1],ref = useMergeRefs(callbackRef, forwardedRef),_b = reducedProps,passthroughAnimatedPropExplicitValues = _b.passthroughAnimatedPropExplicitValues,style = _b.style,passthroughStyle = (passthroughAnimatedPropExplicitValues == null ? void 0 : passthroughAnimatedPropExplicitValues.style),mergedStyle = require_react_index().useMemo(function() {
+			var forwardedRef = _a.ref,props = __rest(_a, ["ref"]),_a = __read$20(useAnimatedProps(props), 2),reducedProps = _a[0],callbackRef = _a[1],ref = useMergeRefs(callbackRef, forwardedRef),_b = reducedProps,passthroughAnimatedPropExplicitValues = _b.passthroughAnimatedPropExplicitValues,style = _b.style,passthroughStyle = (passthroughAnimatedPropExplicitValues == null ? void 0 : passthroughAnimatedPropExplicitValues.style),mergedStyle = require_react_index().useMemo(function() {
 				return composeStyles(style, passthroughStyle);
 			}, [passthroughStyle, style]);
 			;
@@ -25598,13 +25598,13 @@ var init_react_native_Libraries_Animated_nodes_AnimatedAddition = __esm({
 	
 	AnimatedAddition = (function(_super) {
 		function AnimatedAddition(a,b,config) {
-			__classCallCheck$71(this, AnimatedAddition);
+			__classCallCheck(this, AnimatedAddition);
 			var _newTarget = this.constructor,_this;
 			;
-			__assertThisUninitialized(_this),_this = __callSuper(_super, [config], _newTarget);
-			__assertThisInitialized(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
-			__assertThisInitialized(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
-			return __assertThisInitialized(_this);
+			__assertThisUninitialized$28(_this),_this = __callSuper(_super, [config], _newTarget);
+			__assertThisInitialized$28(_this)._a = typeof a === "number" ? new AnimatedValue(a) : a;
+			__assertThisInitialized$28(_this)._b = typeof b === "number" ? new AnimatedValue(b) : b;
+			return __assertThisInitialized$28(_this);
 		}
 		__extends(AnimatedAddition, _super);
 		Object.defineProperty(AnimatedAddition.prototype, "__makeNative", { configurable: true, writable: true, value: function(platformConfig) {
@@ -25661,7 +25661,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedDiffClamp = __esm({
 	
 	AnimatedDiffClamp = (function(_super) {
 		function AnimatedDiffClamp(a,min,max,config) {
-			__classCallCheck$72(this, AnimatedDiffClamp);
+			__classCallCheck(this, AnimatedDiffClamp);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$29(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -25730,7 +25730,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedDivision = __esm({
 	
 	AnimatedDivision = (function(_super) {
 		function AnimatedDivision(a,b,config) {
-			__classCallCheck$73(this, AnimatedDivision);
+			__classCallCheck(this, AnimatedDivision);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -25808,7 +25808,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedModulo = __esm({
 	
 	AnimatedModulo = (function(_super) {
 		function AnimatedModulo(a,modulus,config) {
-			__classCallCheck$74(this, AnimatedModulo);
+			__classCallCheck(this, AnimatedModulo);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$31(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -25870,7 +25870,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedMultiplication = __esm({
 	
 	AnimatedMultiplication = (function(_super) {
 		function AnimatedMultiplication(a,b,config) {
-			__classCallCheck$75(this, AnimatedMultiplication);
+			__classCallCheck(this, AnimatedMultiplication);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$32(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -25935,7 +25935,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedSubtraction = __esm({
 	
 	AnimatedSubtraction = (function(_super) {
 		function AnimatedSubtraction(a,b,config) {
-			__classCallCheck$76(this, AnimatedSubtraction);
+			__classCallCheck(this, AnimatedSubtraction);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$33(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -25999,7 +25999,7 @@ var init_react_native_Libraries_Animated_nodes_AnimatedTracking = __esm({
 	
 	AnimatedTracking = (function(_super) {
 		function AnimatedTracking(value,parent,animationClass,animationConfig,callback,config) {
-			__classCallCheck$77(this, AnimatedTracking);
+			__classCallCheck(this, AnimatedTracking);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized$34(_this),_this = __callSuper(_super, [config], _newTarget);
@@ -26662,7 +26662,7 @@ var init_react_native_Libraries_Components_Keyboard_Keyboard = __esm({
 		
 	KeyboardImpl = (function() {
 		function KeyboardImpl() {
-			__classCallCheck$78(this, KeyboardImpl);
+			__classCallCheck(this, KeyboardImpl);
 			this._emitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$66);
 			var _this = this;
 			this.addListener("keyboardDidShow", function(ev) {
@@ -27079,7 +27079,7 @@ var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 	
 	CellRenderMask = (function() {
 		function CellRenderMask(numCells) {
-			__classCallCheck$79(this, CellRenderMask);
+			__classCallCheck(this, CellRenderMask);
 			invariant$30(numCells >= 0, "CellRenderMask must contain a non-negative number os cells");
 			this._numCells = numCells;
 			if (numCells === 0) {
@@ -27162,7 +27162,7 @@ var init__react_native_virtualized_lists_Lists_ChildListCollection = __esm({
 		
 	ChildListCollection = (function() {
 		function ChildListCollection() {
-			__classCallCheck$80(this, ChildListCollection);
+			__classCallCheck(this, ChildListCollection);
 			this._cellKeyToChildren = new Map();
 			this._childrenToCellKey = new Map();
 		}
@@ -27316,7 +27316,7 @@ var init__react_native_virtualized_lists_Lists_ListMetricsAggregator = __esm({
 		
 	ListMetricsAggregator = (function() {
 		function ListMetricsAggregator() {
-			__classCallCheck$81(this, ListMetricsAggregator);
+			__classCallCheck(this, ListMetricsAggregator);
 			this._averageCellLength = 0;
 			this._cellMetrics = new Map();
 			this._highestMeasuredCellIndex = 0;
@@ -27475,7 +27475,7 @@ var init__react_native_virtualized_lists_Lists_FillRateHelper = __esm({
 	
 	Info = (function() {
 		function Info() {
-			__classCallCheck$82(this, Info);
+			__classCallCheck(this, Info);
 			this.any_blank_count = 0;
 			this.any_blank_ms = 0;
 			this.any_blank_speed_sum = 0;
@@ -27495,7 +27495,7 @@ var init__react_native_virtualized_lists_Lists_FillRateHelper = __esm({
 	_sampleRate = DEBUG ? 1 : null;
 	FillRateHelper = (function() {
 		function FillRateHelper(listMetrics) {
-			__classCallCheck$82(this, FillRateHelper);
+			__classCallCheck(this, FillRateHelper);
 			this._anyBlankStartTime = null;
 			this._enabled = false;
 			this._info = new Info();
@@ -27644,7 +27644,7 @@ var init__react_native_virtualized_lists_Lists_StateSafePureComponent = __esm({
 	
 	StateSafePureComponent = (function(_super) {
 		function StateSafePureComponent(props) {
-			__classCallCheck$83(this, StateSafePureComponent);
+			__classCallCheck(this, StateSafePureComponent);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -27733,7 +27733,7 @@ var init__react_native_virtualized_lists_Lists_ViewabilityHelper = __esm({
 	invariant$34 = require_invariant_browser();
 	ViewabilityHelper = (function() {
 		function ViewabilityHelper(config) {
-			__classCallCheck$84(this, ViewabilityHelper);
+			__classCallCheck(this, ViewabilityHelper);
 			this._hasInteracted = false;
 			this._timers = new Set();
 			this._viewableIndices = [];
@@ -27901,7 +27901,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedListCellRenderer = __e
 	
 	CellRenderer = (function(_super) {
 		function CellRenderer() {
-			__classCallCheck$85(this, CellRenderer);
+			__classCallCheck(this, CellRenderer);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this.state = { separatorProps: { highlighted: false, leadingItem: __assertThisInitialized$36(_this).props.item } };
@@ -28948,7 +28948,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizedSectionList = __esm({
 	
 	VirtualizedSectionList = (function(_super) {
 		function VirtualizedSectionList() {
-			__classCallCheck$87(this, VirtualizedSectionList);
+			__classCallCheck(this, VirtualizedSectionList);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._keyExtractor = function(item,index) {
@@ -29562,7 +29562,7 @@ var init_react_native_Libraries_Components_RefreshControl_RefreshControl = __esm
 	Platform$31 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
 	RefreshControl = (function(_super) {
 		function RefreshControl() {
-			__classCallCheck$89(this, RefreshControl);
+			__classCallCheck(this, RefreshControl);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._lastNativeRefreshing = false;
@@ -29664,7 +29664,7 @@ var init_react_native_Libraries_Animated_components_AnimatedScrollView = __esm({
 		var _b = require_react_index().useMemo(function() {
 			var _a = splitLayoutProps(flattenStyle(props.style)),outer = _a.outer,inner = _a.inner;
 			return { intermediatePropsForRefreshControl: { style: outer }, intermediatePropsForScrollView: Object.assign({}, props, { style: inner }) };
-		}, [props]),intermediatePropsForRefreshControl = _b.intermediatePropsForRefreshControl,intermediatePropsForScrollView = _b.intermediatePropsForScrollView,_c = __read$25(_default$77(intermediatePropsForRefreshControl), 2),refreshControlAnimatedProps = _c[0],refreshControlRef = _c[1],refreshControl = require_react_index().cloneElement(props.refreshControl, Object.assign({}, refreshControlAnimatedProps, { ref: refreshControlRef })),_d = __read$25(_default$77(intermediatePropsForScrollView), 2),scrollViewAnimatedProps = _d[0],scrollViewRef = _d[1],ref = useMergeRefs(scrollViewRef, forwardedRef);
+		}, [props]),intermediatePropsForRefreshControl = _b.intermediatePropsForRefreshControl,intermediatePropsForScrollView = _b.intermediatePropsForScrollView,_c = __read(_default$77(intermediatePropsForRefreshControl), 2),refreshControlAnimatedProps = _c[0],refreshControlRef = _c[1],refreshControl = require_react_index().cloneElement(props.refreshControl, Object.assign({}, refreshControlAnimatedProps, { ref: refreshControlRef })),_d = __read(_default$77(intermediatePropsForScrollView), 2),scrollViewAnimatedProps = _d[0],scrollViewRef = _d[1],ref = useMergeRefs(scrollViewRef, forwardedRef);
 		;
 		;
 		;
@@ -29718,7 +29718,7 @@ var init_react_native_Libraries_Lists_SectionList = __esm({
 	VirtualizedSectionList$1 = _default$70.VirtualizedSectionList;
 	SectionList = (function(_super) {
 		function SectionList() {
-			__classCallCheck$90(this, SectionList);
+			__classCallCheck(this, SectionList);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._captureRef = function(ref) {
@@ -30107,7 +30107,7 @@ var init_react_native_Libraries_Components_ScrollView_ScrollView = __esm({
 	IS_ANIMATING_TOUCH_START_THRESHOLD_MS = 16;
 	ScrollView$1 = (function(_super) {
 		function ScrollView(props) {
-			__classCallCheck$91(this, ScrollView);
+			__classCallCheck(this, ScrollView);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -30551,7 +30551,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableHighlight = __esm(
 	
 	TouchableHighlightImpl = (function(_super) {
 		function TouchableHighlightImpl() {
-			__classCallCheck$92(this, TouchableHighlightImpl);
+			__classCallCheck(this, TouchableHighlightImpl);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._isMounted = false;
@@ -30699,7 +30699,7 @@ var init_react_native_src_private_devsupport_devmenu_perfmonitor_PerformanceOver
 	PerformanceLogger$1 = (init_react_native_Libraries_Utilities_GlobalPerformanceLogger(), __toCommonJS(exports_react_native_Libraries_Utilities_GlobalPerformanceLogger)).default;
 	PerformanceOverlay = (function(_super) {
 		function PerformanceOverlay() {
-			__classCallCheck$93(this, PerformanceOverlay);
+			__classCallCheck(this, PerformanceOverlay);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -30851,7 +30851,7 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_ElementPro
 	StyleInspector$1 = (init_react_native_src_private_devsupport_devmenu_elementinspector_StyleInspector(), __toCommonJS(exports_react_native_src_private_devsupport_devmenu_elementinspector_StyleInspector)).default;
 	ElementProperties = (function(_super) {
 		function ElementProperties() {
-			__classCallCheck$94(this, ElementProperties);
+			__classCallCheck(this, ElementProperties);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -31188,7 +31188,7 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOve
 	XHR_ID_KEY = Symbol("XHR_ID");
 	NetworkOverlay = (function(_super) {
 		function NetworkOverlay() {
-			__classCallCheck$95(this, NetworkOverlay);
+			__classCallCheck(this, NetworkOverlay);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._requestsListViewScrollMetrics = { offset: 0, visibleLength: 0, contentLength: 0 };
@@ -31452,7 +31452,7 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_InspectorP
 	NetworkOverlay$1 = (init_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOverlay(), __toCommonJS(exports_react_native_src_private_devsupport_devmenu_elementinspector_NetworkOverlay)).default;
 	InspectorPanel = (function(_super) {
 		function InspectorPanel() {
-			__classCallCheck$96(this, InspectorPanel);
+			__classCallCheck(this, InspectorPanel);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -31480,7 +31480,7 @@ var init_react_native_src_private_devsupport_devmenu_elementinspector_InspectorP
 	})(React$56.Component);
 	InspectorPanelButton = (function(_super) {
 		function InspectorPanelButton() {
-			__classCallCheck$96(this, InspectorPanelButton);
+			__classCallCheck(this, InspectorPanelButton);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -32668,7 +32668,7 @@ var init_react_native_Libraries_LogBox_UI_LogBoxInspectorReactFrames = __esm({
 		return fileName;
 	};
 	LogBoxInspectorReactFrames = function(props) {
-		var _b,_c,_a = __read(require_react_index().useState(true), 2),collapsed = _a[0],setCollapsed = _a[1];
+		var _b,_c,_a = __read$30(require_react_index().useState(true), 2),collapsed = _a[0],setCollapsed = _a[1];
 		if (props.log.getAvailableComponentStack() == null || props.log.getAvailableComponentStack().length < 1) {
 			return null;
 		}
@@ -33230,7 +33230,7 @@ var init_react_native_Libraries_LogBox_LogBoxInspectorContainer = __esm({
 	
 	_LogBoxInspectorContainer = (function(_super) {
 		function _LogBoxInspectorContainer() {
-			__classCallCheck$97(this, _LogBoxInspectorContainer);
+			__classCallCheck(this, _LogBoxInspectorContainer);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._handleDismiss = function() {
@@ -33311,7 +33311,7 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 	
 	IntersectionObserverEntry = (function() {
 		function IntersectionObserverEntry(nativeEntry,target) {
-			__classCallCheck$98(this, IntersectionObserverEntry);
+			__classCallCheck(this, IntersectionObserverEntry);
 			this._nativeEntry = nativeEntry;
 			this._target = target;
 		}
@@ -33700,7 +33700,7 @@ var init_react_native_src_private_webapis_intersectionobserver_IntersectionObser
 	IntersectionObserverManager=__toESM((init_react_native_src_private_webapis_intersectionobserver_internals_IntersectionObserverManager(), __toCommonJS(exports_react_native_src_private_webapis_intersectionobserver_internals_IntersectionObserverManager)));
 	IntersectionObserver = (function() {
 		function IntersectionObserver(callback,options) {
-			__classCallCheck$99(this, IntersectionObserver);
+			__classCallCheck(this, IntersectionObserver);
 			this._observationTargets = new Set();
 			if (callback == null) {
 				throw new TypeError("Failed to construct 'IntersectionObserver': 1 argument required, but only 0 present.");
@@ -33880,7 +33880,7 @@ var init_react_native_src_private_devsupport_rndevtools_setUpFuseboxReactDevTool
 	EventScope = (function() {
 		var _listeners = new WeakMap();
 		function EventScope() {
-			__classCallCheck$100(this, EventScope);
+			__classCallCheck(this, EventScope);
 			_listeners.set(this, new Set());
 		}
 		Object.defineProperty(EventScope.prototype, "addEventListener", { configurable: true, writable: true, value: function(listener) {
@@ -33919,7 +33919,7 @@ var init_react_native_src_private_devsupport_rndevtools_setUpFuseboxReactDevTool
 	})();
 	Domain = (function() {
 		function Domain(name) {
-			__classCallCheck$100(this, Domain);
+			__classCallCheck(this, Domain);
 			if (global[FuseboxReactDevToolsDispatcher.BINDING_NAME] == null) {
 				throw new Error("Could not create domain " + name + ": receiving end doesn't exist");
 			}
@@ -33935,7 +33935,7 @@ var init_react_native_src_private_devsupport_rndevtools_setUpFuseboxReactDevTool
 	FuseboxReactDevToolsDispatcher = (function() {
 		var _domainNameToDomainMap = { writable: true, value: new Map() };
 		function FuseboxReactDevToolsDispatcher() {
-			__classCallCheck$100(this, FuseboxReactDevToolsDispatcher);
+			__classCallCheck(this, FuseboxReactDevToolsDispatcher);
 		}
 		Object.defineProperty(FuseboxReactDevToolsDispatcher, "initializeDomain", { configurable: true, writable: true, value: function(domainName) {
 			var domain = new Domain(domainName);
@@ -45196,7 +45196,7 @@ var init_react_native_Libraries_AppState_AppState = __esm({
 	
 	AppStateImpl = (function() {
 		function AppStateImpl() {
-			__classCallCheck$101(this, AppStateImpl);
+			__classCallCheck(this, AppStateImpl);
 			this.currentState = null;
 			var _this = this;
 			if (_default$89 == null) {
@@ -45300,7 +45300,7 @@ var init_react_native_Libraries_Core_ReactNativeVersion = __esm({
 		
 	ReactNativeVersion = (function() {
 		function ReactNativeVersion() {
-			__classCallCheck$102(this, ReactNativeVersion);
+			__classCallCheck(this, ReactNativeVersion);
 		}
 		Object.defineProperty(ReactNativeVersion, "getVersionString", { configurable: true, writable: true, value: function() {
 			return "" + this.major + "." + this.minor + "." + this.patch + (this.prerelease != null ? "-" + this.prerelease : "");
@@ -45394,13 +45394,13 @@ var init_react_native_Libraries_Core_Devtools_loadBundleFromServer = __esm({
 		var id = null,responseText = null,headers = null,dataListener = void 0,completeListener = void 0,responseListener = void 0,incrementalDataListener = void 0;
 		return new Promise(function(resolve,reject) {
 			dataListener = RCTNetworking.addListener("didReceiveNetworkData", function(_a) {
-				var _b = __read(_a, 2),requestId = _b[0],response = _b[1];
+				var _b = __read$35(_a, 2),requestId = _b[0],response = _b[1];
 				if (requestId === id) {
 					responseText = response;
 				}
 			});
 			incrementalDataListener = RCTNetworking.addListener("didReceiveNetworkIncrementalData", function(_c) {
-				var _d = __read(_c, 2),requestId = _d[0],data = _d[1];
+				var _d = __read$35(_c, 2),requestId = _d[0],data = _d[1];
 				if (requestId === id) {
 					if (responseText != null) {
 						responseText += data;
@@ -45410,13 +45410,13 @@ var init_react_native_Libraries_Core_Devtools_loadBundleFromServer = __esm({
 				}
 			});
 			responseListener = RCTNetworking.addListener("didReceiveNetworkResponse", function(_e) {
-				var _f = __read(_e, 3),requestId = _f[0],status = _f[1],responseHeaders = _f[2];
+				var _f = __read$35(_e, 3),requestId = _f[0],status = _f[1],responseHeaders = _f[2];
 				if (requestId === id) {
 					headers = responseHeaders;
 				}
 			});
 			completeListener = RCTNetworking.addListener("didCompleteNetworkResponse", function(_g) {
-				var _h = __read(_g, 3),requestId = _h[0],errorMessage = _h[1],isTimeout = _h[2];
+				var _h = __read$35(_g, 3),requestId = _h[0],errorMessage = _h[1],isTimeout = _h[2];
 				if (requestId === id) {
 					if (errorMessage) {
 						reject(new LoadBundleFromServerRequestError("Could not load bundle", url, isTimeout, { cause: errorMessage }));
@@ -45486,7 +45486,7 @@ var init_react_native_Libraries_Core_Devtools_loadBundleFromServer = __esm({
 	cachedPromisesByUrl = new Map();
 	LoadBundleFromServerError = (function(_super) {
 		function LoadBundleFromServerError(message,url,isTimeout,options) {
-			__classCallCheck$103(this, LoadBundleFromServerError);
+			__classCallCheck(this, LoadBundleFromServerError);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized(_this),_this = __callSuper(_super, [message, options], _newTarget);
@@ -45500,7 +45500,7 @@ var init_react_native_Libraries_Core_Devtools_loadBundleFromServer = __esm({
 	})(Error);
 	LoadBundleFromServerRequestError = (function(_super) {
 		function LoadBundleFromServerRequestError(message,url,isTimeout,options) {
-			__classCallCheck$103(this, LoadBundleFromServerRequestError);
+			__classCallCheck(this, LoadBundleFromServerRequestError);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized(_this),_this = __callSuper(_super, [message, url, isTimeout, options], _newTarget);
@@ -56587,7 +56587,7 @@ var init_react_native_Libraries_Components_UnimplementedViews_UnimplementedView 
 	
 	UnimplementedView = (function(_super) {
 		function UnimplementedView() {
-			__classCallCheck$104(this, UnimplementedView);
+			__classCallCheck(this, UnimplementedView);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -56743,7 +56743,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = _
 	
 	TouchableNativeFeedback = (function(_super) {
 		function TouchableNativeFeedback() {
-			__classCallCheck$105(this, TouchableNativeFeedback);
+			__classCallCheck(this, TouchableNativeFeedback);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this.state = { pressability: new Pressability(__assertThisInitialized(_this)._createPressabilityConfig()) };
@@ -56876,7 +56876,7 @@ var init_react_native_Libraries_Components_Touchable_TouchableOpacity = __esm({
 	
 	TouchableOpacity = (function(_super) {
 		function TouchableOpacity() {
-			__classCallCheck$106(this, TouchableOpacity);
+			__classCallCheck(this, TouchableOpacity);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this.state = { anim: new Animated$1.Value(__assertThisInitialized(_this)._getChildStyleOpacityWithDefault()), pressability: new Pressability(__assertThisInitialized(_this)._createPressabilityConfig()) };
@@ -57045,7 +57045,7 @@ var init_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFall
 	
 	DrawerLayoutAndroid = (function(_super) {
 		function DrawerLayoutAndroid() {
-			__classCallCheck$107(this, DrawerLayoutAndroid);
+			__classCallCheck(this, DrawerLayoutAndroid);
 			var _newTarget = this.constructor;
 			return __callSuper(_super, arguments, _newTarget);
 		}
@@ -57125,7 +57125,7 @@ var init_react_native_Libraries_Image_ImageBackground = __esm({
 	
 	ImageBackground = (function(_super) {
 		function ImageBackground() {
-			__classCallCheck$108(this, ImageBackground);
+			__classCallCheck(this, ImageBackground);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._viewRef = null;
@@ -57536,7 +57536,7 @@ var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm
 	
 	KeyboardAvoidingView = (function(_super) {
 		function KeyboardAvoidingView(props) {
-			__classCallCheck$109(this, KeyboardAvoidingView);
+			__classCallCheck(this, KeyboardAvoidingView);
 			var _newTarget = this.constructor,_this;
 			;
 			{
@@ -57885,7 +57885,7 @@ var init_react_native_Libraries_Modal_Modal = __esm({
 	;
 	Modal = (function(_super) {
 		function Modal(props) {
-			__classCallCheck$110(this, Modal);
+			__classCallCheck(this, Modal);
 			var _newTarget = this.constructor,_this;
 			;
 			__assertThisUninitialized(_this),_this = __callSuper(_super, [props], _newTarget);
@@ -58244,7 +58244,7 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 	
 	StatusBar = (function(_super) {
 		function StatusBar() {
-			__classCallCheck$111(this, StatusBar);
+			__classCallCheck(this, StatusBar);
 			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
 			;
 			_this._stackEntry = null;
@@ -59859,7 +59859,7 @@ var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
 	PERMISSIONS = Object.freeze({ READ_CALENDAR: "android.permission.READ_CALENDAR", WRITE_CALENDAR: "android.permission.WRITE_CALENDAR", CAMERA: "android.permission.CAMERA", READ_CONTACTS: "android.permission.READ_CONTACTS", WRITE_CONTACTS: "android.permission.WRITE_CONTACTS", GET_ACCOUNTS: "android.permission.GET_ACCOUNTS", ACCESS_FINE_LOCATION: "android.permission.ACCESS_FINE_LOCATION", ACCESS_COARSE_LOCATION: "android.permission.ACCESS_COARSE_LOCATION", ACCESS_BACKGROUND_LOCATION: "android.permission.ACCESS_BACKGROUND_LOCATION", RECORD_AUDIO: "android.permission.RECORD_AUDIO", READ_PHONE_STATE: "android.permission.READ_PHONE_STATE", CALL_PHONE: "android.permission.CALL_PHONE", READ_CALL_LOG: "android.permission.READ_CALL_LOG", WRITE_CALL_LOG: "android.permission.WRITE_CALL_LOG", ADD_VOICEMAIL: "com.android.voicemail.permission.ADD_VOICEMAIL", READ_VOICEMAIL: "com.android.voicemail.permission.READ_VOICEMAIL", WRITE_VOICEMAIL: "com.android.voicemail.permission.WRITE_VOICEMAIL", USE_SIP: "android.permission.USE_SIP", PROCESS_OUTGOING_CALLS: "android.permission.PROCESS_OUTGOING_CALLS", BODY_SENSORS: "android.permission.BODY_SENSORS", BODY_SENSORS_BACKGROUND: "android.permission.BODY_SENSORS_BACKGROUND", SEND_SMS: "android.permission.SEND_SMS", RECEIVE_SMS: "android.permission.RECEIVE_SMS", READ_SMS: "android.permission.READ_SMS", RECEIVE_WAP_PUSH: "android.permission.RECEIVE_WAP_PUSH", RECEIVE_MMS: "android.permission.RECEIVE_MMS", READ_EXTERNAL_STORAGE: "android.permission.READ_EXTERNAL_STORAGE", READ_MEDIA_IMAGES: "android.permission.READ_MEDIA_IMAGES", READ_MEDIA_VIDEO: "android.permission.READ_MEDIA_VIDEO", READ_MEDIA_AUDIO: "android.permission.READ_MEDIA_AUDIO", READ_MEDIA_VISUAL_USER_SELECTED: "android.permission.READ_MEDIA_VISUAL_USER_SELECTED", WRITE_EXTERNAL_STORAGE: "android.permission.WRITE_EXTERNAL_STORAGE", BLUETOOTH_CONNECT: "android.permission.BLUETOOTH_CONNECT", BLUETOOTH_SCAN: "android.permission.BLUETOOTH_SCAN", BLUETOOTH_ADVERTISE: "android.permission.BLUETOOTH_ADVERTISE", ACCESS_MEDIA_LOCATION: "android.permission.ACCESS_MEDIA_LOCATION", ACCEPT_HANDOVER: "android.permission.ACCEPT_HANDOVER", ACTIVITY_RECOGNITION: "android.permission.ACTIVITY_RECOGNITION", ANSWER_PHONE_CALLS: "android.permission.ANSWER_PHONE_CALLS", READ_PHONE_NUMBERS: "android.permission.READ_PHONE_NUMBERS", UWB_RANGING: "android.permission.UWB_RANGING", POST_NOTIFICATIONS: "android.permission.POST_NOTIFICATIONS", NEARBY_WIFI_DEVICES: "android.permission.NEARBY_WIFI_DEVICES" });
 	PermissionsAndroidImpl = (function() {
 		function PermissionsAndroidImpl() {
-			__classCallCheck$112(this, PermissionsAndroidImpl);
+			__classCallCheck(this, PermissionsAndroidImpl);
 			this.PERMISSIONS = PERMISSIONS;
 			this.RESULTS = PERMISSION_REQUEST_RESULT;
 		}
@@ -60018,7 +60018,7 @@ var init_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = __esm(
 	DEVICE_LOCAL_NOTIF_EVENT = "localNotificationReceived";
 	PushNotificationIOS = (function() {
 		function PushNotificationIOS(nativeNotif) {
-			__classCallCheck$113(this, PushNotificationIOS);
+			__classCallCheck(this, PushNotificationIOS);
 			var _this = this;
 			this._data = {};
 			this._remoteNotificationCompleteCallbackCalled = false;
@@ -60244,7 +60244,7 @@ var init_react_native_Libraries_Share_Share = __esm({
 	invariant$53 = require_invariant_browser();
 	Share = (function() {
 		function Share() {
-			__classCallCheck$114(this, Share);
+			__classCallCheck(this, Share);
 		}
 		Object.defineProperty(Share, "share", { configurable: true, writable: true, value: function(content,options) {
 			options = options === void 0 ? {} : options;
