@@ -1021,8 +1021,8 @@ pub const SemanticAnalyzer = struct {
     fn isFunctionWithNoSideEffects(self: *const SemanticAnalyzer, node: Node) bool {
         const e = node.data.extra;
         return switch (node.tag) {
-            .function_expression, .function_declaration => self.ast.hasExtra(e, 3) and (self.ast.readExtra(e, 3) & ast_mod.FunctionFlags.no_side_effects) != 0,
-            .arrow_function_expression => self.ast.hasExtra(e, 2) and (self.ast.readExtra(e, 2) & ast_mod.ArrowFlags.no_side_effects) != 0,
+            .function_expression, .function_declaration => self.ast.hasExtra(e, ast_mod.FunctionExtra.flags) and (self.ast.readExtra(e, ast_mod.FunctionExtra.flags) & ast_mod.FunctionFlags.no_side_effects) != 0,
+            .arrow_function_expression => self.ast.hasExtra(e, ast_mod.ArrowExtra.flags) and (self.ast.readExtra(e, ast_mod.ArrowExtra.flags) & ast_mod.ArrowFlags.no_side_effects) != 0,
             else => false,
         };
     }
