@@ -1338,6 +1338,12 @@ pub const ModuleGraph = struct {
                 return;
             };
             module.import_records = scan_result.records;
+            // specifier 들이 ast.string_table 또는 ast.source 의 borrowed slice 인데, 후속 transform
+            // 파스가 string_table 을 grow 시키면 dangling → 0xAA UAF (raw require leak, #raw-require).
+            // arena_alloc 은 모듈 lifetime 동안 살아있어 module.import_records 와 동일 lifetime 보장.
+            for (module.import_records) |*r| {
+                if (arena_alloc.dupe(u8, r.specifier)) |owned| r.specifier = owned else |_| {}
+            }
             // OOM 시 silent skip 하면 axios/follow-redirects 같은 optional require 가 hard
             // error 로 회귀해 build 자체가 깨진다. 1108줄 extractImports 와 동일하게 fallback.
             import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, &(module.ast.?), module.import_records) catch {
@@ -1922,6 +1928,10 @@ pub const ModuleGraph = struct {
 
         const scan_result = try import_scanner.extractImportsWithCjsDetectionAndDefines(arena_alloc, ast, self.defines);
         module.import_records = try mergeImportRecords(arena_alloc, previous_import_records, scan_result.records);
+        // specifier dupe — arena 로 owned 화 (#raw-require UAF 회피).
+        for (module.import_records) |*r| {
+            if (arena_alloc.dupe(u8, r.specifier)) |owned| r.specifier = owned else |_| {}
+        }
         try import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, ast, module.import_records);
 
         const transformed_import_bindings = try binding_scanner_mod.extractImportBindings(arena_alloc, ast, module.import_records);
