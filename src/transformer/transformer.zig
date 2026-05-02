@@ -332,7 +332,6 @@ pub const TransformOptions = struct {
         for (ast.nodes.items) |node| {
             switch (node.tag) {
                 .arrow_function_expression => {
-                    if (u.arrow) return true;
                     if (u.async_await and hasArrowFlag(ast, node, ast_mod.ArrowFlags.is_async)) return true;
                 },
                 .function_declaration,

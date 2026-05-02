@@ -3817,6 +3817,7 @@ test "graph pre-pass predicate: simple ESM and TS strip modules can skip" {
     try expectPrePassDecision(false, "import type { User } from './types'; import { value } from './dep'; export type { User }; export { value };", "mixed.ts", .{});
     try expectPrePassDecision(false, "export { value } from './dep'; export * from './other';", "barrel.ts", .{});
     try expectPrePassDecision(false, "export const value: number = 1;", "target-es5-simple.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
+    try expectPrePassDecision(false, "export const double = (value: number) => value * 2;", "target-es5-arrow.ts", .{ .transform_options = .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) } });
 }
 
 test "graph pre-pass predicate: synthetic no-op graphs skip every eligible module" {
