@@ -13,7 +13,6 @@
 //! - references/swc/crates/swc_ecma_ast/src/
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Span = @import("../lexer/token.zig").Span;
 const string_escape = @import("../string_escape.zig");
 
@@ -879,8 +878,7 @@ pub const Ast = struct {
     /// ctx 를 저장하지 않음 — Ast 가 옮겨져도 stale 문제 없음).
     string_interns: StringInternMap,
 
-    /// addString intern map 의 hit/miss 통계. 측정 전용.
-    /// `ZTS_STRING_INTERN_STATS=1` 시 stderr 로 dump.
+    /// addString intern map 의 hit/miss 통계. `ZTS_DEBUG=string_intern` 시 dump.
     /// transpile 경로에서 Ast 가 arena 안에 살아 `Ast.deinit` 이 호출되지 않으므로
     /// `transpile.zig` 가 arena 해제 직전 `dumpStringInternStatsIfEnabled` 를 직접 호출.
     /// 4 × u32 = 16B 추가, hot path 비용은 increment 4 회뿐.
@@ -990,15 +988,15 @@ pub const Ast = struct {
     }
 
     pub fn dumpStringInternStatsIfEnabled(self: *const Ast) void {
-        // WASI without libc 는 hasEnvVarConstant 가 @compileError. wasm 타겟 측정은 N/A.
-        if (comptime builtin.os.tag == .wasi and !builtin.link_libc) return;
-        if (!std.process.hasEnvVarConstant("ZTS_STRING_INTERN_STATS")) return;
+        const debug_log = @import("../debug_log.zig");
+        if (!debug_log.enabled(.string_intern)) return;
         const total = self.string_intern_hits + self.string_intern_misses;
         if (total == 0) return;
         const hit_pct: f32 = @as(f32, @floatFromInt(self.string_intern_hits)) * 100.0 /
             @as(f32, @floatFromInt(total));
-        std.debug.print(
-            "[ast-intern] hits={d} misses={d} hit%={d:.1} saved={d}B overhead={d}B entries={d}\n",
+        debug_log.print(
+            .string_intern,
+            "hits={d} misses={d} hit%={d:.1} saved={d}B overhead={d}B entries={d}\n",
             .{
                 self.string_intern_hits,
                 self.string_intern_misses,
