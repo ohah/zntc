@@ -2124,6 +2124,12 @@ pub const Codegen = struct {
         return meta.require_rewrites.get(specifier);
     }
 
+    fn resolveRequireRewriteSpecifier(self: *Codegen, specifier: []const u8) ?[]const u8 {
+        const meta = self.options.linking_metadata orelse return null;
+        if (meta.require_rewrites.count() == 0) return null;
+        return meta.require_rewrites.get(specifier);
+    }
+
     /// rewrite 값을 출력한다. 값이 완전한 표현식('('로 시작)이면 그대로,
     /// 변수명이면 "()"를 붙여 호출한다.
     fn emitRewriteValue(self: *Codegen, req_var: []const u8) !void {
@@ -3659,10 +3665,13 @@ pub const Codegen = struct {
     };
 
     // ================================================================
-    // Flow enum → Object.freeze({...}) 출력 (#2401)
+    // Flow enum → flow-enums-runtime helper 출력 (#2401)
     // ================================================================
 
-    /// Flow enum 의 codegen — `const Name = Object.freeze({ K: V, ... });`.
+    /// Flow enum 출력 — `babel-plugin-transform-flow-enums` 와 동작 동등 (런타임 helper
+    /// API: \`X.cast(v)\` / \`X.members()\` / \`X.getName(v)\` 등). \`flow-enums-runtime\`
+    /// package 의 callable 결과를 사용. 예전 \`Object.freeze({...})\` 형태는 helper API
+    /// 미지원이라 RN core 의 `VirtualViewMode.cast(value)` 같은 호출에서 TypeError.
     ///
     /// extra = [name, members_start, members_len, base_type].
     /// base_type (FlowEnumBaseType: 0=none/symbol-implicit, 1=string, 2=number,
@@ -3671,14 +3680,6 @@ pub const Codegen = struct {
     ///   - string → `"Name"` (멤버 이름)
     ///   - number → 인덱스 (0, 1, 2, ...)
     ///   - boolean → `false` (의미 없는 fallback)
-    ///
-    /// 현재는 `flow-enums-runtime` 패키지의 `Enum()` wrapper 미사용. Object.freeze
-    /// 만으로 _값 비교_ semantic 충족 — \`Status.cast(x)\` / \`.members()\` 같은 enum
-    /// 메서드 미지원 (사용처 적음).
-    /// Flow enum 출력 — `babel-plugin-transform-flow-enums` 와 동작 동등 (런타임 helper
-    /// API: \`X.cast(v)\` / \`X.members()\` / \`X.getName(v)\` 등). \`flow-enums-runtime\`
-    /// package 의 callable 결과를 사용. 예전 \`Object.freeze({...})\` 형태는 helper API
-    /// 미지원이라 RN core 의 `VirtualViewMode.cast(value)` 같은 호출에서 TypeError.
     ///
     /// emit 형태 (reference 와 동일):
     ///   - string body + all defaulted (mirrored): \`require('flow-enums-runtime').Mirrored(['A', 'B'])\`
@@ -3704,7 +3705,12 @@ pub const Codegen = struct {
 
         try self.write("const ");
         try self.write(name_text);
-        try self.write("=require(\"flow-enums-runtime\")");
+        try self.writeByte('=');
+        if (self.resolveRequireRewriteSpecifier("flow-enums-runtime")) |req_var| {
+            try self.emitRewriteValue(req_var);
+        } else {
+            try self.write("require(\"flow-enums-runtime\")");
+        }
 
         if (is_mirrored) {
             try self.write(".Mirrored([");
