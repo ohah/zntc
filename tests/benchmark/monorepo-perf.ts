@@ -80,22 +80,23 @@ function parseArgs(argv: string[]): CliArgs {
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--packages") args.packages = parsePositiveInt(a, argv[++i]);
-    else if (a.startsWith("--packages="))
-      args.packages = parsePositiveInt("--packages", a.slice(11));
-    else if (a === "--modules-per-package") args.modulesPerPackage = parsePositiveInt(a, argv[++i]);
-    else if (a.startsWith("--modules-per-package=")) {
-      args.modulesPerPackage = parsePositiveInt("--modules-per-package", a.slice(22));
-    } else if (a === "--warmup") args.warmup = parseNonNegativeInt(a, argv[++i]);
-    else if (a.startsWith("--warmup=")) args.warmup = parseNonNegativeInt("--warmup", a.slice(9));
-    else if (a === "--iterations") args.iterations = parsePositiveInt(a, argv[++i]);
-    else if (a.startsWith("--iterations="))
-      args.iterations = parsePositiveInt("--iterations", a.slice(13));
-    else if (a === "--output") args.output = argv[++i] ?? null;
-    else if (a.startsWith("--output=")) args.output = a.slice(9);
+    const take = (name: string): string | undefined => {
+      if (a === name) return argv[++i];
+      const prefix = `${name}=`;
+      return a.startsWith(prefix) ? a.slice(prefix.length) : undefined;
+    };
+
+    let v: string | undefined;
+    if ((v = take("--packages")) !== undefined) args.packages = parsePositiveInt("--packages", v);
+    else if ((v = take("--modules-per-package")) !== undefined)
+      args.modulesPerPackage = parsePositiveInt("--modules-per-package", v);
+    else if ((v = take("--warmup")) !== undefined)
+      args.warmup = parseNonNegativeInt("--warmup", v);
+    else if ((v = take("--iterations")) !== undefined)
+      args.iterations = parsePositiveInt("--iterations", v);
+    else if ((v = take("--output")) !== undefined) args.output = v;
+    else if ((v = take("--keep-fixture")) !== undefined) args.keepFixture = v;
     else if (a === "--compare") args.compare = true;
-    else if (a === "--keep-fixture") args.keepFixture = argv[++i] ?? null;
-    else if (a.startsWith("--keep-fixture=")) args.keepFixture = a.slice(15);
     else throw new Error(`unknown arg: ${a}`);
   }
 
@@ -158,19 +159,19 @@ function runTool(tool: "zts" | "esbuild" | "rolldown", entry: string, outDir: st
   const bin = tool === "zts" ? ZTS_BIN : findBin(tool);
   if (!bin) throw new Error(`${tool} binary not found`);
 
+  const args: string[] = (() => {
+    switch (tool) {
+      case "zts":
+        return ["--bundle", "--format=esm", "--splitting", entry, "--outdir", outDir];
+      case "esbuild":
+        return [entry, "--bundle", "--format=esm", "--splitting", `--outdir=${outDir}`];
+      case "rolldown":
+        return [entry, "--dir", outDir];
+    }
+  })();
+
   const start = performance.now();
-  const r =
-    tool === "zts"
-      ? spawnSync(bin, ["--bundle", "--format=esm", "--splitting", entry, "--outdir", outDir], {
-          stdio: "pipe",
-          timeout: 120000,
-        })
-      : tool === "esbuild"
-        ? spawnSync(bin, [entry, "--bundle", "--format=esm", "--splitting", `--outdir=${outDir}`], {
-            stdio: "pipe",
-            timeout: 120000,
-          })
-        : spawnSync(bin, [entry, "--dir", outDir], { stdio: "pipe", timeout: 120000 });
+  const r = spawnSync(bin, args, { stdio: "pipe", timeout: 120000 });
   if (r.status !== 0) {
     throw new Error(`${tool} failed: ${r.stderr.toString().slice(0, 500)}`);
   }
@@ -294,10 +295,14 @@ async function main(cli: CliArgs) {
 
     const wallStats = computeMetricStats(wallTotals);
 
-    const profileRun = runZts(fixture.entry, join(tmp, "dist-profile"), true);
-    profileTotals.push(profileRun.totalMs);
-    for (const [phase, ms] of Object.entries(profileRun.phases)) {
-      (phaseSeries[phase] ??= []).push(ms);
+    // profile mode 는 instrumentation 오버헤드가 있어 wall 측정과 분리해 별도로 N회 돌린다.
+    // wall stats 는 위의 비-profile 측정으로 고정, phase 통계는 여기서만 산출.
+    for (let i = 0; i < cli.iterations; i++) {
+      const profileRun = runZts(fixture.entry, join(tmp, "dist-profile"), true);
+      profileTotals.push(profileRun.totalMs);
+      for (const [phase, ms] of Object.entries(profileRun.phases)) {
+        (phaseSeries[phase] ??= []).push(ms);
+      }
     }
     const profileTotalStats = computeMetricStats(profileTotals);
     const phaseMedianMs: Record<string, number> = {};
