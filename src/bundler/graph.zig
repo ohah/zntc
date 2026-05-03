@@ -1001,12 +1001,6 @@ pub const ModuleGraph = struct {
         }
     }
 
-    /// 단일 import declaration 의 named binding 갯수와 자기 참조 NodeIndex 갯수에 대한
-    /// stack-buffer 한계. 한계 초과 시 보수적으로 elide 안 함 (resolver 는 hard error 유지).
-    /// Star/scratch import 는 보통 1-10 개 binding 이라 16 이면 실용적 충분.
-    const max_named_bindings = 16;
-    const max_spec_self_nodes = max_named_bindings * 2; // imported + local (with `as`)
-
     /// import_records[rec_i] 가 가리키는 source 의 import_declaration 노드를 source span
     /// 일치로 찾고, 그 안의 모든 named binding 이름이 AST 어디에서도 `identifier_reference`
     /// 로 등장하지 않으면 true (자기 참조 제외).
@@ -1018,15 +1012,18 @@ pub const ModuleGraph = struct {
     /// 텍스트 매칭이라 semantic analyzer 의 type-position 추적 한계와 무관. 보수적 — default
     /// / namespace specifier 가 하나라도 있으면 false, 동명 binding 이 다른 import 에서 value
     /// 로 쓰여도 false.
-    fn isImportAllBindingsUnused(module: *const Module, record: types.ImportRecord) bool {
+    ///
+    /// allocation 실패 시 false (= keep) — resolver 는 기존 hard error 경로 유지.
+    fn isImportAllBindingsUnused(self: *ModuleGraph, module: *const Module, record: types.ImportRecord) bool {
         const ast_ptr = if (module.ast) |*a| a else return false;
 
-        var binding_names: [max_named_bindings][]const u8 = undefined;
-        var name_count: usize = 0;
+        var binding_names: std.ArrayList([]const u8) = .empty;
+        defer binding_names.deinit(self.allocator);
         // import_specifier 가 자체적으로 imported/local 식별자를 `identifier_reference` 로
         // 보유 (parseIdentifierName) — 이들 NodeIndex 를 따로 수집해서 self-reference 제외.
-        var spec_self_nodes: [max_spec_self_nodes]NodeIndex = undefined;
-        var spec_self_count: usize = 0;
+        var spec_self_nodes: std.ArrayList(NodeIndex) = .empty;
+        defer spec_self_nodes.deinit(self.allocator);
+
         var found_decl = false;
         for (ast_ptr.nodes.items) |n| {
             if (n.tag != .import_declaration) continue;
@@ -1049,34 +1046,28 @@ pub const ModuleGraph = struct {
                 const spec_node = ast_ptr.getNode(spec_idx);
                 // default / namespace 는 보수적으로 keep — JSX pragma 등 implicit value use.
                 if (spec_node.tag != .import_specifier) return false;
-                if (name_count >= binding_names.len) return false; // 한계 초과 — keep
                 const left_idx = spec_node.data.binary.left;
                 const local_idx = spec_node.data.binary.right;
                 const local_node = if (!local_idx.isNone()) ast_ptr.getNode(local_idx) else spec_node;
-                binding_names[name_count] = ast_ptr.getText(local_node.span);
-                name_count += 1;
+                binding_names.append(self.allocator, ast_ptr.getText(local_node.span)) catch return false;
 
                 // `import { A as B }` 면 left/right 둘 다 다른 NodeIndex — 모두 self.
                 if (!left_idx.isNone()) {
-                    if (spec_self_count >= spec_self_nodes.len) return false;
-                    spec_self_nodes[spec_self_count] = left_idx;
-                    spec_self_count += 1;
+                    spec_self_nodes.append(self.allocator, left_idx) catch return false;
                 }
                 if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(left_idx)) {
-                    if (spec_self_count >= spec_self_nodes.len) return false;
-                    spec_self_nodes[spec_self_count] = local_idx;
-                    spec_self_count += 1;
+                    spec_self_nodes.append(self.allocator, local_idx) catch return false;
                 }
             }
             break;
         }
-        if (!found_decl or name_count == 0) return false;
+        if (!found_decl or binding_names.items.len == 0) return false;
 
         for (ast_ptr.nodes.items, 0..) |n, ni| {
             if (n.tag != .identifier_reference) continue;
             const this_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(ni)));
             var is_spec_self = false;
-            for (spec_self_nodes[0..spec_self_count]) |s| {
+            for (spec_self_nodes.items) |s| {
                 if (@intFromEnum(this_idx) == @intFromEnum(s)) {
                     is_spec_self = true;
                     break;
@@ -1084,7 +1075,7 @@ pub const ModuleGraph = struct {
             }
             if (is_spec_self) continue;
             const text = ast_ptr.getText(n.span);
-            for (binding_names[0..name_count]) |name| {
+            for (binding_names.items) |name| {
                 if (std.mem.eql(u8, text, name)) return false;
             }
         }
@@ -1141,7 +1132,7 @@ pub const ModuleGraph = struct {
             // value position 참조가 0 이면 (truly unused 이거나 type-only) 어느 경우든
             // bundle 에서 빠져도 동작 동등. resolve 실패 + binding 전부 value-use 없음 →
             // soft fail (warning + stub).
-            if (record.kind == .static_import and isImportAllBindingsUnused(self.modules.at(mod_idx), record)) {
+            if (record.kind == .static_import and self.isImportAllBindingsUnused(self.modules.at(mod_idx), record)) {
                 self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Type-only import elided (no value usage)", record.specifier);
                 const dep_idx = try self.addDisabledModule(record.specifier);
                 try self.appendResolvedDep(mod_idx, .{

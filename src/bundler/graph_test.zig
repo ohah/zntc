@@ -320,6 +320,40 @@ test "graph: unresolved import with value usage — hard error (regression guard
     try std.testing.expect(has_error);
 }
 
+test "graph: unresolved type-only import — many bindings (no hard cap)" {
+    // 큰 type-only import (40 binding) 도 soft-fail 처리. esbuild/swc 처럼 한계 없음.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import {
+        \\  T01, T02, T03, T04, T05, T06, T07, T08, T09, T10,
+        \\  T11, T12, T13, T14, T15, T16, T17, T18, T19, T20,
+        \\  T21, T22, T23, T24, T25, T26, T27, T28, T29, T30,
+        \\  T31, T32, T33, T34, T35, T36, T37, T38, T39, T40,
+        \\} from './nonexistent';
+        \\type Use = T01 | T02 | T20 | T40;
+    );
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    var error_count: usize = 0;
+    for (graph.diagnostics.items) |d| {
+        if (d.code != .unresolved_import) continue;
+        if (d.severity == .@"error") error_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), error_count);
+}
+
 test "graph: bidirectional edges (D078)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
