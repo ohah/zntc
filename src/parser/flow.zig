@@ -1294,17 +1294,13 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
 
         const span: Span = .{ .start = start, .end = self.currentSpan().start };
 
-        // Name_withRef 합성 이름 생성 (string_table 통합으로 codegen에서 접근 가능)
+        // Name_withRef 합성 이름 → addString 으로 통합 (intern map 등록 + STRING_TABLE_BIT 자동).
+        // addString 이 byte 본문을 string_table 로 복사한 후 임시 buffer 는 free.
         const name_node = self.ast.getNode(name);
         const name_text = self.ast.source[name_node.span.start..name_node.span.end];
-        const st_start: u32 = @intCast(self.ast.string_table.items.len);
-        try self.ast.string_table.appendSlice(self.ast.allocator, name_text);
-        try self.ast.string_table.appendSlice(self.ast.allocator, "_withRef");
-        const st_end: u32 = @intCast(self.ast.string_table.items.len);
-        const with_ref_full: Span = .{
-            .start = st_start | ast_mod.Ast.STRING_TABLE_BIT,
-            .end = st_end | ast_mod.Ast.STRING_TABLE_BIT,
-        };
+        const combined = try std.fmt.allocPrint(self.ast.allocator, "{s}_withRef", .{name_text});
+        defer self.ast.allocator.free(combined);
+        const with_ref_full = try self.ast.addString(combined);
 
         const with_ref_name = try self.ast.addNode(.{
             .tag = .binding_identifier,
