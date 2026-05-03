@@ -63,6 +63,10 @@ interface ZtsRun extends ProfileRun {
   wallMs: number;
 }
 
+interface WallRun {
+  wallMs: number;
+}
+
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     packages: 50,
@@ -130,41 +134,47 @@ function getCommit(): string {
   return r.stdout.toString().trim() || "unknown";
 }
 
-function runZts(entry: string, outDir: string): ZtsRun {
+function runZts(entry: string, outDir: string, profile: boolean): ZtsRun {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
+  const args = ["--bundle", "--format=esm", "--splitting", entry, "--outdir", outDir];
+  if (profile) args.push("--profile=all");
   const start = performance.now();
-  const r = spawnSync(
-    ZTS_BIN,
-    ["--bundle", "--format=esm", "--splitting", entry, "--outdir", outDir, "--profile=all"],
-    { stdio: "pipe", timeout: 120000 },
-  );
+  const r = spawnSync(ZTS_BIN, args, { stdio: "pipe", timeout: 120000 });
   const wallMs = performance.now() - start;
   if (r.status !== 0) {
     throw new Error(`zts failed: ${r.stderr.toString().slice(0, 800)}`);
   }
-  return { ...parseProfileOutput(`${r.stdout.toString()}\n${r.stderr.toString()}`), wallMs };
+  const parsed = profile
+    ? parseProfileOutput(`${r.stdout.toString()}\n${r.stderr.toString()}`)
+    : { totalMs: 0, phases: {} };
+  return { ...parsed, wallMs };
 }
 
-function runTool(tool: "esbuild" | "rolldown", entry: string, outDir: string): number {
+function runTool(tool: "zts" | "esbuild" | "rolldown", entry: string, outDir: string): WallRun {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
 
-  const bin = findBin(tool);
+  const bin = tool === "zts" ? ZTS_BIN : findBin(tool);
   if (!bin) throw new Error(`${tool} binary not found`);
 
   const start = performance.now();
   const r =
-    tool === "esbuild"
-      ? spawnSync(bin, [entry, "--bundle", "--format=esm", "--splitting", `--outdir=${outDir}`], {
+    tool === "zts"
+      ? spawnSync(bin, ["--bundle", "--format=esm", "--splitting", entry, "--outdir", outDir], {
           stdio: "pipe",
           timeout: 120000,
         })
-      : spawnSync(bin, [entry, "--dir", outDir], { stdio: "pipe", timeout: 120000 });
+      : tool === "esbuild"
+        ? spawnSync(bin, [entry, "--bundle", "--format=esm", "--splitting", `--outdir=${outDir}`], {
+            stdio: "pipe",
+            timeout: 120000,
+          })
+        : spawnSync(bin, [entry, "--dir", outDir], { stdio: "pipe", timeout: 120000 });
   if (r.status !== 0) {
     throw new Error(`${tool} failed: ${r.stderr.toString().slice(0, 500)}`);
   }
-  return performance.now() - start;
+  return { wallMs: performance.now() - start };
 }
 
 function toJsonStats(stats: MetricStats): JsonStats {
@@ -228,7 +238,7 @@ function printMarkdown(report: RunReport) {
 }
 
 function measureComparisonTool(
-  tool: "esbuild" | "rolldown",
+  tool: "zts" | "esbuild" | "rolldown",
   entry: string,
   outDir: string,
   warmup: number,
@@ -239,7 +249,7 @@ function measureComparisonTool(
     for (let i = 0; i < warmup; i++) runTool(tool, entry, outDir);
     const times: number[] = [];
     for (let i = 0; i < iterations; i++) {
-      times.push(runTool(tool, entry, outDir));
+      times.push(runTool(tool, entry, outDir).wallMs);
     }
     const stats = computeMetricStats(times);
     return {
@@ -271,24 +281,24 @@ async function main(cli: CliArgs) {
       `[monorepo-perf] zts ${getCommit()} | packages=${cli.packages} modules/pkg=${cli.modulesPerPackage} total_modules=${fixture.moduleCount} warmup=${cli.warmup} iter=${cli.iterations}`,
     );
 
-    for (let i = 0; i < cli.warmup; i++) runZts(fixture.entry, outDir);
+    for (let i = 0; i < cli.warmup; i++) runZts(fixture.entry, outDir, false);
 
     const wallTotals: number[] = [];
     const profileTotals: number[] = [];
     const phaseSeries: Record<string, number[]> = {};
     for (let i = 0; i < cli.iterations; i++) {
-      const r = runZts(fixture.entry, outDir);
+      const r = runZts(fixture.entry, outDir, false);
       wallTotals.push(r.wallMs);
-      profileTotals.push(r.totalMs);
-      for (const [phase, ms] of Object.entries(r.phases)) {
-        (phaseSeries[phase] ??= []).push(ms);
-      }
-      console.log(
-        `  run ${i + 1}/${cli.iterations}: wall=${formatMetric(r.wallMs)} profile_total=${formatMetric(r.totalMs)}`,
-      );
+      console.log(`  run ${i + 1}/${cli.iterations}: wall=${formatMetric(r.wallMs)}`);
     }
 
     const wallStats = computeMetricStats(wallTotals);
+
+    const profileRun = runZts(fixture.entry, join(tmp, "dist-profile"), true);
+    profileTotals.push(profileRun.totalMs);
+    for (const [phase, ms] of Object.entries(profileRun.phases)) {
+      (phaseSeries[phase] ??= []).push(ms);
+    }
     const profileTotalStats = computeMetricStats(profileTotals);
     const phaseMedianMs: Record<string, number> = {};
     for (const [phase, series] of Object.entries(phaseSeries)) {
@@ -312,11 +322,14 @@ async function main(cli: CliArgs) {
 
     if (cli.compare) {
       report.tool_comparison = [
-        {
-          tool: "zts",
-          wall_ms_stats: toJsonStats(wallStats),
-          ratio_vs_zts: 1,
-        },
+        measureComparisonTool(
+          "zts",
+          fixture.entry,
+          join(tmp, "dist-zts-compare"),
+          cli.warmup,
+          cli.iterations,
+          wallStats.median,
+        ),
         measureComparisonTool(
           "esbuild",
           fixture.entry,

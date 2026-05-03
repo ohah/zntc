@@ -73,6 +73,37 @@ test "resolve: extension search (.ts)" {
     try std.testing.expect(pathEndsWith(result.path, "bar.ts"));
 }
 
+test "resolve: simple nested dot-relative path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try createFile(tmp.dir, "nested/util.ts");
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var resolver = Resolver.init(std.testing.allocator);
+    const result = try resolver.resolve(dir_path, "./nested/util");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "nested/util.ts"));
+}
+
+test "resolve: normalized dot-relative path still supports parent segment" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try createFile(tmp.dir, "bar.ts");
+    try createFile(tmp.dir, "nested/entry.ts");
+
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+
+    var resolver = Resolver.init(std.testing.allocator);
+    const result = try resolver.resolve(dir_path, "./nested/../bar");
+    defer std.testing.allocator.free(result.path);
+
+    try std.testing.expect(pathEndsWith(result.path, "bar.ts"));
+}
+
 test "resolve: extension search (.tsx before .js)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

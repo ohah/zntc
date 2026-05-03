@@ -197,6 +197,12 @@ pub const ModuleGraph = struct {
     /// `graph.allocator` 소유. `ensureBuiltinPlugins` 에서 lazy 초기화 후 PluginRunner.init
     /// 호출 site 들이 이걸 참조.
     plugins_with_helpers: ?[]plugin_mod.Plugin = null,
+    /// 사용자 plugin 중 resolveId hook 보유 여부. false이면 helper virtual id 외 resolveId 호출을 생략.
+    has_user_resolve_id_plugins: bool = false,
+    /// 사용자 plugin 중 load hook 보유 여부. false이면 helper virtual id 외 load 호출을 생략.
+    has_user_load_plugins: bool = false,
+    /// 사용자 plugin 또는 builtin RN codegen transform 보유 여부. false이면 transform hook 호출을 생략.
+    has_transform_plugins: bool = false,
 
     pub const PkgInfo = struct {
         is_module: bool,
@@ -253,6 +259,15 @@ pub const ModuleGraph = struct {
     /// 도 같이 hydrate. 단일 thread 진입점 (`build` 등) 에서만 호출.
     fn ensureBuiltinPlugins(self: *ModuleGraph) void {
         if (self.plugins_with_helpers != null) return;
+        self.has_user_resolve_id_plugins = false;
+        self.has_user_load_plugins = false;
+        self.has_transform_plugins = self.codegen_transform;
+        for (self.plugins) |p| {
+            if (p.resolveId != null) self.has_user_resolve_id_plugins = true;
+            if (p.load != null) self.has_user_load_plugins = true;
+            if (p.transform != null) self.has_transform_plugins = true;
+        }
+
         // SourceOptions 는 빌드 옵션 기반으로 1회 결정.
         const u = self.transform_options_base.unsupported;
         self.helper_plugin_opts = .{
@@ -287,6 +302,14 @@ pub const ModuleGraph = struct {
         const list = self.plugins_with_helpers orelse self.plugins;
         if (list.len == 0) return null;
         return plugin_mod.PluginRunner.init(list);
+    }
+
+    fn shouldRunResolveId(self: *const ModuleGraph, specifier: []const u8) bool {
+        return self.has_user_resolve_id_plugins or runtime_helper_modules.isVirtualId(specifier);
+    }
+
+    fn shouldRunLoad(self: *const ModuleGraph, path: []const u8) bool {
+        return self.has_user_load_plugins or runtime_helper_modules.isVirtualId(path);
     }
 
     // ============================================================
@@ -1299,7 +1322,8 @@ pub const ModuleGraph = struct {
                 if (record.kind == .glob) continue;
                 if (record.kind == .require_context) continue;
 
-                if (plugin_runner) |runner| {
+                if (plugin_runner != null and self.shouldRunResolveId(record.specifier)) {
+                    const runner = plugin_runner.?;
                     const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
                         error.PluginFailed => null,
                         error.OutOfMemory => {
@@ -1350,7 +1374,8 @@ pub const ModuleGraph = struct {
         // Plugin: load 훅 — 모든 module_type 분기 전에 플러그인에게 기회를 줌.
         // 플러그인이 내용을 반환하면 JS 모듈로 전환 (예: .css → JS export).
         var plugin_load_applied = false;
-        if (plugin_runner) |runner| {
+        if (plugin_runner != null and self.shouldRunLoad(module.path)) {
+            const runner = plugin_runner.?;
             // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
             var tmp_arena = std.heap.ArenaAllocator.init(self.allocator);
             const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
@@ -1547,7 +1572,8 @@ pub const ModuleGraph = struct {
         // 플러그인이 코드를 변환하면 변환된 소스로 파싱한다.
         // Babel 플러그인(예: react-native-reanimated/plugin)이 유저 코드를 변환할 수 있다.
         var plugin_transform_applied = false;
-        if (plugin_runner) |runner| {
+        if (plugin_runner != null and self.has_transform_plugins) {
+            const runner = plugin_runner.?;
             const transform_result = runner.runTransform(module.source, module.path, arena_alloc) catch |err| switch (err) {
                 error.PluginFailed => null,
                 error.OutOfMemory => {
@@ -2508,7 +2534,8 @@ pub const ModuleGraph = struct {
             if (record.kind == .require_context) continue;
 
             // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌
-            if (plugin_runner) |runner| {
+            if (plugin_runner != null and self.shouldRunResolveId(record.specifier)) {
+                const runner = plugin_runner.?;
                 const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
                     error.PluginFailed => null,
                     error.OutOfMemory => return error.OutOfMemory,
