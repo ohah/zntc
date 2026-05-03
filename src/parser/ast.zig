@@ -13,6 +13,7 @@
 //! - references/swc/crates/swc_ecma_ast/src/
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Span = @import("../lexer/token.zig").Span;
 const string_escape = @import("../string_escape.zig");
 
@@ -878,7 +879,9 @@ pub const Ast = struct {
     string_interns: std.StringHashMapUnmanaged(Span),
 
     /// addString intern map 의 hit/miss 통계. 측정 전용.
-    /// `ZTS_STRING_INTERN_STATS=1` 시 `Ast.deinit` 이 stderr 로 dump.
+    /// `ZTS_STRING_INTERN_STATS=1` 시 stderr 로 dump.
+    /// transpile 경로에서 Ast 가 arena 안에 살아 `Ast.deinit` 이 호출되지 않으므로
+    /// `transpile.zig` 가 arena 해제 직전 `dumpStringInternStatsIfEnabled` 를 직접 호출.
     /// 4 × u32 = 16B 추가, hot path 비용은 increment 4 회뿐.
     string_intern_hits: u32 = 0,
     string_intern_misses: u32 = 0,
@@ -953,6 +956,8 @@ pub const Ast = struct {
     }
 
     pub fn dumpStringInternStatsIfEnabled(self: *const Ast) void {
+        // WASI without libc 는 hasEnvVarConstant 가 @compileError. wasm 타겟 측정은 N/A.
+        if (comptime builtin.os.tag == .wasi and !builtin.link_libc) return;
         if (!std.process.hasEnvVarConstant("ZTS_STRING_INTERN_STATS")) return;
         const total = self.string_intern_hits + self.string_intern_misses;
         if (total == 0) return;

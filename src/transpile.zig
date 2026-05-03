@@ -1307,6 +1307,7 @@ fn transpileWithCallbackInternal(
         // #1621: standalone transpile 경로도 minify 시 runtime helper 축약 이름 사용.
         .minify_whitespace = options.minify_whitespace,
     });
+    // transformer.ast 도 arena owned (cloneForTransformer 결과). parser.ast 와 동일 이유.
     defer transformer.ast.dumpStringInternStatsIfEnabled();
     if (analyzer_storage) |*analyzer| {
         transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
