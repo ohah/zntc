@@ -90,8 +90,7 @@ function parseArgs(argv: string[]): CliArgs {
     if ((v = take("--packages")) !== undefined) args.packages = parsePositiveInt("--packages", v);
     else if ((v = take("--modules-per-package")) !== undefined)
       args.modulesPerPackage = parsePositiveInt("--modules-per-package", v);
-    else if ((v = take("--warmup")) !== undefined)
-      args.warmup = parseNonNegativeInt("--warmup", v);
+    else if ((v = take("--warmup")) !== undefined) args.warmup = parseNonNegativeInt("--warmup", v);
     else if ((v = take("--iterations")) !== undefined)
       args.iterations = parsePositiveInt("--iterations", v);
     else if ((v = take("--output")) !== undefined) args.output = v;
