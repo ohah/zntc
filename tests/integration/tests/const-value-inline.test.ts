@@ -397,6 +397,31 @@ describe("const_value cross-module 인라인 correctness", () => {
     expect(run.trim()).toBe("2 99");
   });
 
+  test("dynamic import 가 섞여도 numeric chain 이 static importer 까지 전파된다", async () => {
+    // #2506 회귀 방지: numeric BFS 가 reverse_deps 를 import_records 로부터 재구성하던
+    // 시절엔 dynamic_importers 까지 큐에 들어갔다 (헛일이지만 무해). Module.importers
+    // 직접 사용으로 바꾸면 dynamic 은 제외되는데, static chain 전파는 그대로 동작해야.
+    const r = await bundleAndRun(
+      {
+        "seed.ts": `export const N = 7;`,
+        "static.ts": `
+          import { N } from "./seed";
+          export const X = N + 1;
+        `,
+        "index.ts": `
+          import { X } from "./static";
+          // dynamic import 자체는 평가만 시도 (시드 모듈에 side-effect 없음).
+          import("./seed").then((m) => console.log(X, m.N));
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("8 7");
+  });
+
   // ========================================================================
   // Edge cases: local let (not exported) / 같은 모듈 내 참조
   // ========================================================================
