@@ -137,6 +137,36 @@ fn matchDefineKey(text: []const u8, key: []const u8) bool {
     return false;
 }
 
+fn getDefineCandidateText(ast: *const Ast, node: Node) ?[]const u8 {
+    return switch (node.tag) {
+        .identifier_reference,
+        .static_member_expression,
+        .chain_expression,
+        => ast.getText(node.span),
+        else => null,
+    };
+}
+
+fn astUsesDefine(ast: *const Ast, defines: []const DefineEntry) bool {
+    if (defines.len == 0) return false;
+
+    for (ast.nodes.items) |node| {
+        const raw_text = getDefineCandidateText(ast, node) orelse continue;
+
+        // tryDefineReplace와 동일하게 optional chain을 정규화한 뒤 define key와 매칭한다.
+        var norm_buf: [DEFINE_KEY_NORM_BUF]u8 = undefined;
+        const text = if (std.mem.indexOfScalar(u8, raw_text, '?') != null)
+            normalizeOptionalChain(raw_text, &norm_buf) orelse continue
+        else
+            raw_text;
+
+        for (defines) |entry| {
+            if (matchDefineKey(text, entry.key)) return true;
+        }
+    }
+    return false;
+}
+
 /// Transformer 설정.
 pub const TransformOptions = struct {
     /// TS 타입 스트리핑 활성화 (기본: true)
@@ -316,7 +346,7 @@ pub const TransformOptions = struct {
     /// silent 하게 fall-through 하지 않는다.
     pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
         if (self.drop_console or self.drop_debugger or self.drop_labels.len > 0) return true;
-        if (self.define.len > 0) return true;
+        if (astUsesDefine(ast, self.define)) return true;
         if (self.module_specifier_map.len > 0) return true;
         if (self.minify_syntax or self.minify_whitespace) return true;
         if (!self.use_define_for_class_fields) return true;
@@ -2613,13 +2643,7 @@ pub const Transformer = struct {
 
     /// 노드의 소스 텍스트를 반환. define 치환 대상 노드만 지원.
     fn getNodeText(self: *const Transformer, node: Node) ?[]const u8 {
-        return switch (node.tag) {
-            .identifier_reference,
-            .static_member_expression,
-            .chain_expression,
-            => self.ast.getText(node.span),
-            else => null,
-        };
+        return getDefineCandidateText(self.ast, node);
     }
 
     // ================================================================
