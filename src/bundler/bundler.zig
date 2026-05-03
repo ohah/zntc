@@ -693,6 +693,7 @@ pub const Bundler = struct {
         worker_graph.emotion_extra_css_sources = self.options.emotion_extra_css_sources;
         worker_graph.emotion_extra_styled_sources = self.options.emotion_extra_styled_sources;
         worker_graph.code_splitting = self.options.code_splitting;
+        worker_graph.preserve_modules = self.options.preserve_modules;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         worker_graph.transform_options_base = self.buildTransformOptionsBase();
         defer worker_graph.deinit();
@@ -869,6 +870,7 @@ pub const Bundler = struct {
         graph.emotion_extra_css_sources = self.options.emotion_extra_css_sources;
         graph.emotion_extra_styled_sources = self.options.emotion_extra_styled_sources;
         graph.code_splitting = self.options.code_splitting;
+        graph.preserve_modules = self.options.preserve_modules;
         graph.minify_identifiers = self.options.minify_identifiers;
         graph.transform_options_base = self.buildTransformOptionsBase();
         defer graph.deinit();
@@ -1001,13 +1003,16 @@ pub const Bundler = struct {
         var shaker: ?TreeShaker = if (!self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking) blk: {
             var s = try TreeShaker.init(self.allocator, &graph, &(linker.?));
             try s.analyze(self.options.entry_points);
-            if (self.options.minify_syntax and !self.options.code_splitting) {
-                // tree-shaker 가 module.semantic 을 재생성한 뒤이므로 stale rename/mangling
-                // 을 비우고 다시 계산해야 emit 단계에서 새 symbol id 를 따라가는 산출물이 된다.
+            if (s.ast_mutated_after_link and !self.options.code_splitting) {
+                // tree-shaker 가 link 이후 module.semantic 을 재생성한 뒤이므로 stale
+                // rename/mangling 을 비우고 다시 계산해야 emit 단계에서 새 symbol id 를
+                // 따라가는 산출물이 된다. numeric post-pass 는 --minify 없이도 AST 를
+                // mutation 할 수 있으므로 minify_syntax 여부에 묶지 않는다.
                 try (&(linker.?)).finalize(.{
                     .compute_renames = true,
                     .compute_mangling = self.options.minify_identifiers,
                     .clear_first = true,
+                    .populate_namespace_accesses = false,
                 });
             }
             // metadata builder 가 `Module.is_included` 비트를 신뢰해 tree-shake 된 target 의

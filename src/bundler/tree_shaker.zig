@@ -17,7 +17,9 @@
 const std = @import("std");
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
-const Module = @import("module.zig").Module;
+const module_mod = @import("module.zig");
+const Module = module_mod.Module;
+const ModuleSemanticData = module_mod.ModuleSemanticData;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const ImportBinding = @import("binding_scanner.zig").ImportBinding;
@@ -26,11 +28,13 @@ const ast_mod = @import("../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const ast_walk = @import("../parser/ast_walk.zig");
 const Kind = @import("../lexer/token.zig").Kind;
 const purity = @import("purity.zig");
 const stmt_info_mod = @import("stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 const constant_facts = @import("constant_facts.zig");
+const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 
 /// `used_exports`의 all-exports-used sentinel. 모듈의 전체 export가 사용됨을 표시.
@@ -59,12 +63,26 @@ inline fn moduleHasEvaluationEffect(mod: *const Module) bool {
     return false;
 }
 
+fn constValuesContainNumber(const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue)) bool {
+    var it = const_values.valueIterator();
+    while (it.next()) |cv| {
+        if (cv.kind == .number) return true;
+    }
+    return false;
+}
+
+const ConstMaterializeFilter = enum {
+    all,
+    numeric,
+    numeric_export_chain,
+};
+
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
     /// 필드를 대체. `analyze` 내부에서 `module.side_effects` 를 mutate 하므로 non-const.
     graph: *ModuleGraph,
-    linker: *const Linker,
+    linker: *Linker,
     included: std.DynamicBitSet,
     used_exports: std.StringHashMap(void),
     entry_set: std.DynamicBitSet,
@@ -86,10 +104,18 @@ pub const TreeShaker = struct {
     /// 모듈 인덱스가 다른 모듈의 `export * from` source 인지 표시. tryMarkReExportNsSubset
     /// 에서 chain 추적 시 O(M·E) scan 대신 O(1) 조회 (#1928).
     re_export_star_targets: ?std.DynamicBitSet = null,
+    /// numeric const fact propagation 의 DFS 스크래치. propagateNumericExportConstFacts /
+    /// nodeContainsNumericConstRef / nodeIsNumericLiteralFoldSeed 가 매 호출마다
+    /// ArrayList 를 새로 만들지 않도록 재사용. clearRetainingCapacity 로만 비운다.
+    numeric_dfs_stack: std.ArrayList(NodeIndex) = .empty,
+    /// Linker finalize 이후 AST mutation + semantic resync가 발생했는지.
+    /// true면 old symbol id 기준 rename/mangle metadata를 재계산해야 한다.
+    ast_mutated_after_link: bool = false,
 
     const max_fixpoint_iterations: u32 = 100;
+    const max_numeric_const_post_passes: u32 = 2;
 
-    pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *const Linker) !TreeShaker {
+    pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *Linker) !TreeShaker {
         const mod_count = graph.moduleCount();
         var included = try std.DynamicBitSet.initEmpty(allocator, mod_count);
         errdefer included.deinit();
@@ -141,6 +167,7 @@ pub const TreeShaker = struct {
         if (self.has_direct_used_export.len > 0) {
             self.allocator.free(self.has_direct_used_export);
         }
+        self.numeric_dfs_stack.deinit(self.allocator);
     }
 
     /// 내부 단축 helper. `self.graph.getModule(ModuleIndex.fromUsize(idx))` 의 반복 방지.
@@ -151,6 +178,302 @@ pub const TreeShaker = struct {
     /// mutate 필요한 경로용.
     inline fn moduleAtMut(self: *const TreeShaker, idx: u32) ?*Module {
         return self.graph.moduleAtMut(ModuleIndex.fromUsize(idx));
+    }
+
+    /// `root` 에서 도달 가능한 노드를 DFS 로 순회하며 `visit_fn` 을 호출한다.
+    /// `visit_fn` 이 true 를 반환하면 즉시 short-circuit. scratch stack 은 TreeShaker
+    /// 가 보유한 것을 재사용 — 중첩 호출 금지.
+    fn anyReachableNode(
+        self: *TreeShaker,
+        ast: *const Ast,
+        root: NodeIndex,
+        ctx: anytype,
+        comptime visit_fn: fn (ctx: @TypeOf(ctx), ast: *const Ast, raw: u32, node: Node) bool,
+    ) bool {
+        if (root.isNone()) return false;
+        self.numeric_dfs_stack.clearRetainingCapacity();
+        self.numeric_dfs_stack.append(self.allocator, root) catch return false;
+        while (self.numeric_dfs_stack.pop()) |idx| {
+            if (idx.isNone()) continue;
+            const raw: u32 = @intFromEnum(idx);
+            if (raw >= ast.nodes.items.len) continue;
+            const node = ast.nodes.items[raw];
+            if (visit_fn(ctx, ast, raw, node)) return true;
+            var it = ast_walk.children(ast, node);
+            while (it.next()) |child| {
+                if (!child.isNone()) self.numeric_dfs_stack.append(self.allocator, child) catch return false;
+            }
+        }
+        return false;
+    }
+
+    /// top-level `export const` 의 initializer 노드 인덱스를 순회한다 (write_count == 0).
+    /// `visit_fn` 이 true 를 반환하면 즉시 short-circuit.
+    fn anyExportedConstInit(
+        self: *TreeShaker,
+        ast: *const Ast,
+        sem: ModuleSemanticData,
+        ctx: anytype,
+        comptime visit_fn: fn (self: *TreeShaker, ctx: @TypeOf(ctx), ast: *const Ast, init_idx: NodeIndex) bool,
+    ) bool {
+        for (ast.nodes.items) |node| {
+            if (node.tag != .variable_declarator) continue;
+            const extra = node.data.extra;
+            if (extra + 2 >= ast.extra_data.items.len) continue;
+            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+            const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
+            if (name_idx.isNone() or init_idx.isNone()) continue;
+            const name_raw: u32 = @intFromEnum(name_idx);
+            if (name_raw >= sem.symbol_ids.len) continue;
+            const sym_id = sem.symbol_ids[name_raw] orelse continue;
+            if (sym_id >= sem.symbols.items.len) continue;
+            const sym = sem.symbols.items[sym_id];
+            if (!sym.decl_flags.is_exported and !sym.decl_flags.is_default_export) continue;
+            if (sym.write_count != 0) continue;
+            if (visit_fn(self, ctx, ast, init_idx)) return true;
+        }
+        return false;
+    }
+
+    const NumericConstRefCtx = struct {
+        symbol_ids: []const ?u32,
+        const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
+    };
+
+    fn visitNumericConstRef(ctx: NumericConstRefCtx, _: *const Ast, raw: u32, node: Node) bool {
+        if (node.tag != .identifier_reference or raw >= ctx.symbol_ids.len) return false;
+        const sid = ctx.symbol_ids[raw] orelse return false;
+        const cv = ctx.const_values.get(sid) orelse return false;
+        return cv.kind == .number;
+    }
+
+    fn nodeContainsNumericConstRef(
+        self: *TreeShaker,
+        ast: *const Ast,
+        symbol_ids: []const ?u32,
+        root: NodeIndex,
+        const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
+    ) bool {
+        return self.anyReachableNode(ast, root, NumericConstRefCtx{
+            .symbol_ids = symbol_ids,
+            .const_values = const_values,
+        }, visitNumericConstRef);
+    }
+
+    /// numeric literal + binary/paren 만으로 구성된 fold-able 표현인지 판정.
+    /// 도달 트리에 binary 가 1개라도 있어야 fold 가 의미 있으므로 그 신호도 함께 체크.
+    /// `accept_idx` 가 .none 으로 끝나면 `saw_binary` 를 봐서 결과를 결정.
+    const FoldSeedCtx = struct {
+        saw_binary: *bool,
+        rejected: *bool,
+    };
+
+    fn visitFoldSeed(ctx: FoldSeedCtx, _: *const Ast, _: u32, node: Node) bool {
+        switch (node.tag) {
+            .numeric_literal, .parenthesized_expression => return false,
+            .binary_expression => {
+                ctx.saw_binary.* = true;
+                return false;
+            },
+            else => {
+                ctx.rejected.* = true;
+                return true;
+            },
+        }
+    }
+
+    fn nodeIsNumericLiteralFoldSeed(self: *TreeShaker, ast: *const Ast, root: NodeIndex) bool {
+        if (root.isNone()) return false;
+        var saw_binary = false;
+        var rejected = false;
+        _ = self.anyReachableNode(ast, root, FoldSeedCtx{
+            .saw_binary = &saw_binary,
+            .rejected = &rejected,
+        }, visitFoldSeed);
+        return saw_binary and !rejected;
+    }
+
+    fn visitChainExportInit(self: *TreeShaker, ctx: NumericConstRefCtx, ast: *const Ast, init_idx: NodeIndex) bool {
+        return self.nodeContainsNumericConstRef(ast, ctx.symbol_ids, init_idx, ctx.const_values);
+    }
+
+    fn moduleHasNumericExportConstChain(
+        self: *TreeShaker,
+        ast: *const Ast,
+        sem: ModuleSemanticData,
+        const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
+    ) bool {
+        if (!constValuesContainNumber(const_values)) return false;
+        return self.anyExportedConstInit(ast, sem, NumericConstRefCtx{
+            .symbol_ids = sem.symbol_ids,
+            .const_values = const_values,
+        }, visitChainExportInit);
+    }
+
+    fn visitSeedExportInit(self: *TreeShaker, _: void, ast: *const Ast, init_idx: NodeIndex) bool {
+        return self.nodeIsNumericLiteralFoldSeed(ast, init_idx);
+    }
+
+    fn moduleHasNumericExportSeed(self: *TreeShaker, ast: *const Ast, sem: ModuleSemanticData) bool {
+        return self.anyExportedConstInit(ast, sem, {}, visitSeedExportInit);
+    }
+
+    fn moduleHasExportedNumberConstValue(_: *TreeShaker, sem: ModuleSemanticData) bool {
+        for (sem.symbols.items) |sym| {
+            if (!sym.decl_flags.is_exported and !sym.decl_flags.is_default_export) continue;
+            if (sym.write_count != 0) continue;
+            if (sym.const_value.kind == .number) return true;
+        }
+        return false;
+    }
+
+    fn anyModuleHasExportedNumberConst(self: *TreeShaker, mod_count: usize) bool {
+        for (0..mod_count) |i| {
+            const m = self.getModule(@intCast(i)) orelse continue;
+            const sem = m.semantic orelse continue;
+            if (self.moduleHasExportedNumberConstValue(sem)) return true;
+        }
+        return false;
+    }
+
+    fn minifyAndResyncModule(self: *TreeShaker, m: *Module, sem: ModuleSemanticData, ast: *Ast) void {
+        const minify_mod = @import("../transformer/minify.zig");
+        const root = ast.transformed_root orelse NodeIndex.none;
+        const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, self.graph.transform_options_base.minify_syntax);
+        minify_mod.minify(ast, ctx, self.allocator, root);
+        // parse_arena 는 parse 단계에서 모든 모듈에 부착된다 (#1323). null 이면
+        // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
+        std.debug.assert(m.parse_arena != null);
+        self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
+            m.prebuilt_stmt_info = null;
+        };
+        self.ast_mutated_after_link = true;
+    }
+
+    fn refreshLinkMetadataAfterPreShakeMutation(self: *TreeShaker) !void {
+        if (!self.ast_mutated_after_link) return;
+        if (self.graph.code_splitting) return;
+        try self.linker.finalize(.{
+            .compute_renames = true,
+            .compute_mangling = self.graph.minify_identifiers,
+            .clear_first = true,
+        });
+        self.ast_mutated_after_link = false;
+    }
+
+    fn shouldMaterializeConstFacts(
+        self: *TreeShaker,
+        ast: *const Ast,
+        sem: ModuleSemanticData,
+        const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
+        filter: ConstMaterializeFilter,
+    ) bool {
+        return switch (filter) {
+            .all => const_values.count() > 0,
+            .numeric => constValuesContainNumber(const_values),
+            .numeric_export_chain => self.moduleHasNumericExportConstChain(ast, sem, const_values),
+        };
+    }
+
+    fn materializeCrossModuleConstFactsForIndex(
+        self: *TreeShaker,
+        module_index: usize,
+        filter: ConstMaterializeFilter,
+    ) !bool {
+        const m = self.moduleAtMut(@intCast(module_index)) orelse return false;
+        const sem = m.semantic orelse return false;
+        const ast = &(m.ast orelse return false);
+        var const_values = try self.linker.buildCrossModuleConstValues(m, sem);
+        if (!self.shouldMaterializeConstFacts(ast, sem, &const_values, filter)) {
+            const_values.deinit(self.allocator);
+            return false;
+        }
+
+        const changed = constant_facts.materialize(self.allocator, ast, sem.symbol_ids, &const_values);
+        const_values.deinit(self.allocator);
+        if (!changed) return false;
+
+        self.minifyAndResyncModule(m, sem, ast);
+        return true;
+    }
+
+    fn materializeCrossModuleConstFacts(
+        self: *TreeShaker,
+        mod_count: usize,
+        filter: ConstMaterializeFilter,
+        reverse: bool,
+    ) !bool {
+        var any_changed = false;
+        if (reverse) {
+            var i = mod_count;
+            while (i > 0) {
+                i -= 1;
+                if (try self.materializeCrossModuleConstFactsForIndex(i, filter)) any_changed = true;
+            }
+        } else {
+            for (0..mod_count) |i| {
+                if (try self.materializeCrossModuleConstFactsForIndex(i, filter)) any_changed = true;
+            }
+        }
+        return any_changed;
+    }
+
+    fn propagateNumericExportConstFacts(self: *TreeShaker, mod_count: usize) !void {
+        var reverse_deps = try self.allocator.alloc(std.ArrayList(u32), mod_count);
+        defer {
+            for (reverse_deps) |*deps| deps.deinit(self.allocator);
+            self.allocator.free(reverse_deps);
+        }
+        for (reverse_deps) |*deps| deps.* = .empty;
+
+        for (0..mod_count) |i| {
+            const m = self.getModule(@intCast(i)) orelse continue;
+            for (m.import_records) |rec| {
+                if (rec.resolved.isNone()) continue;
+                const target = @intFromEnum(rec.resolved);
+                if (target >= mod_count) continue;
+                try reverse_deps[target].append(self.allocator, @intCast(i));
+            }
+        }
+
+        var queue: std.ArrayList(u32) = .empty;
+        defer queue.deinit(self.allocator);
+        var forwarded_re_exports = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
+        defer forwarded_re_exports.deinit();
+        for (0..mod_count) |i| {
+            const m = self.moduleAtMut(@intCast(i)) orelse continue;
+            const sem = m.semantic orelse continue;
+            const ast = &(m.ast orelse continue);
+            if (self.moduleHasNumericExportSeed(ast, sem)) {
+                self.minifyAndResyncModule(m, sem, ast);
+                for (reverse_deps[i].items) |importer| try queue.append(self.allocator, importer);
+                continue;
+            }
+            if (self.moduleHasExportedNumberConstValue(sem)) {
+                for (reverse_deps[i].items) |importer| try queue.append(self.allocator, importer);
+            }
+        }
+
+        while (queue.pop()) |idx| {
+            if (idx >= mod_count) continue;
+            if (try self.materializeCrossModuleConstFactsForIndex(idx, .numeric_export_chain)) {
+                for (reverse_deps[idx].items) |importer| try queue.append(self.allocator, importer);
+                continue;
+            }
+
+            if (forwarded_re_exports.isSet(idx)) continue;
+            const m = self.getModule(idx) orelse continue;
+            var has_re_export = false;
+            for (m.export_bindings) |eb| {
+                if (eb.kind.isAnyReExport()) {
+                    has_re_export = true;
+                    break;
+                }
+            }
+            if (!has_re_export) continue;
+            forwarded_re_exports.set(idx);
+            for (reverse_deps[idx].items) |importer| try queue.append(self.allocator, importer);
+        }
     }
 
     /// Tree-shaking 분석 (fixpoint 방식).
@@ -189,34 +512,22 @@ pub const TreeShaker = struct {
             }
         }
 
-        if (self.graph.transform_options_base.minify_syntax) {
-            // Linker가 증명한 cross-module constant를 tree-shaking 전 AST에 먼저 반영한다.
-            // 그래야 `if (DEV) heavy()` 같은 dead branch 안 import가 BFS seed로 번지지 않는다.
-            for (0..mod_count) |i| {
-                const m = self.moduleAtMut(@intCast(i)) orelse continue;
-                const sem = m.semantic orelse continue;
-                const ast = &(m.ast orelse continue);
-                var const_values = try self.linker.buildCrossModuleConstValues(m, sem);
-                const changed = constant_facts.materialize(self.allocator, ast, sem.symbol_ids, &const_values);
-                const_values.deinit(self.allocator);
-                if (!changed) continue;
-
-                const minify_mod = @import("../transformer/minify.zig");
-                const root = ast.transformed_root orelse NodeIndex.none;
-                const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, true);
-                minify_mod.minify(ast, ctx, self.allocator, root);
-                // parse_arena 는 parse 단계에서 모든 모듈에 부착된다 (#1323). null 이면
-                // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
-                std.debug.assert(m.parse_arena != null);
-                self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
-                    m.prebuilt_stmt_info = null;
-                };
+        // Linker가 증명한 cross-module constant를 tree-shaking 전 AST에 먼저 반영한다.
+        // 그래야 `if (DEV) heavy()` 같은 dead branch 안 import가 BFS seed로 번지지 않는다.
+        // preserve-modules는 원본 모듈 경계가 출력 계약이므로, import edge를 제거할 수
+        // 있는 materialize는 reachability 확정 뒤 numeric post-pass에서만 수행한다.
+        if (!self.graph.preserve_modules) {
+            if (self.graph.transform_options_base.minify_syntax) {
+                _ = try self.materializeCrossModuleConstFacts(mod_count, .all, false);
+            } else {
+                try self.propagateNumericExportConstFacts(mod_count);
             }
         }
 
         if (self.graph.resolve_cache.platform == .node) {
             try self.applyNodeBufferCapabilityFacts();
         }
+        try self.refreshLinkMetadataAfterPreShakeMutation();
 
         // 자동 순수 판별: 진입점이 아닌 모듈의 top-level이 모두 순수하면 side_effects=false
         // (rolldown/esbuild 동작: package.json sideEffects 없어도 자동 감지)
@@ -394,6 +705,18 @@ pub const TreeShaker = struct {
             if (m.is_context_dep) continue; // require.context match 는 runtime require 대상
             if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
                 self.included.unset(i);
+            }
+        }
+
+        // Numeric chain 축약은 번들 크기/그래프 성능에 직접 영향을 주므로 `--minify` 없이도
+        // 실행한다. used_exports/reachability 판정이 끝난 뒤로 미루는 건 디버그용 tree-shaker
+        // 기대값 보존. 어떤 모듈도 numeric export 가 없으면 build/scan 비용 자체를 회피.
+        if ((self.graph.preserve_modules or !self.graph.transform_options_base.minify_syntax) and self.anyModuleHasExportedNumberConst(mod_count)) {
+            var pass: u32 = 0;
+            while (pass < max_numeric_const_post_passes) : (pass += 1) {
+                const forward_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, false);
+                const reverse_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, true);
+                if (!forward_changed and !reverse_changed) break;
             }
         }
 
@@ -1614,6 +1937,7 @@ pub const TreeShaker = struct {
             self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
                 m.prebuilt_stmt_info = null;
             };
+            self.ast_mutated_after_link = true;
         }
     }
 

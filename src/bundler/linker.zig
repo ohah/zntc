@@ -2660,6 +2660,7 @@ pub const Linker = struct {
         compute_renames: bool,
         compute_mangling: bool,
         clear_first: bool = false,
+        populate_namespace_accesses: bool = true,
     }) !void {
         if (opts.clear_first) {
             self.clearCanonicalNames();
@@ -2671,7 +2672,7 @@ pub const Linker = struct {
         }
         self.populateReExportAliases();
         self.populateImportSymbols();
-        self.populateNamespaceAccesses();
+        if (opts.populate_namespace_accesses) self.populateNamespaceAccesses();
         self.populateSymbolRefCounts();
     }
 

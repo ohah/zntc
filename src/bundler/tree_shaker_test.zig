@@ -176,7 +176,7 @@ test "tree-shaking: circular dependency modules included" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "a.ts", "import { x } from './b'; export const a = x + 1;");
-    try writeFile(tmp.dir, "b.ts", "import { a } from './a'; export const x = 1;");
+    try writeFile(tmp.dir, "b.ts", "import { a } from './a'; export const x = getX(); function getX() { return 1; }");
 
     var r = try buildAndShake(std.testing.allocator, &tmp, "a.ts");
     defer r.deinit();
@@ -193,7 +193,7 @@ test "tree-shaking: included module's dependencies are propagated" {
     // a → b → c 체인. a가 b를 import하고, b가 c를 import.
     try writeFile(tmp.dir, "a.ts", "import { x } from './b'; console.log(x);");
     try writeFile(tmp.dir, "b.ts", "import { y } from './c'; export const x = y + 1;");
-    try writeFile(tmp.dir, "c.ts", "export const y = 42;");
+    try writeFile(tmp.dir, "c.ts", "export const y = getY(); function getY() { return 42; }");
 
     var r = try buildAndShake(std.testing.allocator, &tmp, "a.ts");
     defer r.deinit();
@@ -230,7 +230,7 @@ test "tree-shaking: diamond dependency — shared module included once" {
     try writeFile(tmp.dir, "a.ts", "import { x } from './b'; import { y } from './c'; console.log(x, y);");
     try writeFile(tmp.dir, "b.ts", "import { shared } from './d'; export const x = shared + 1;");
     try writeFile(tmp.dir, "c.ts", "import { shared } from './d'; export const y = shared + 2;");
-    try writeFile(tmp.dir, "d.ts", "export const shared = 100;");
+    try writeFile(tmp.dir, "d.ts", "export const shared = getShared(); function getShared() { return 100; }");
 
     var r = try buildAndShake(std.testing.allocator, &tmp, "a.ts");
     defer r.deinit();
@@ -494,7 +494,7 @@ test "rollup: diamond with sideEffects=false leaf — leaf included if used" {
     try writeFile(tmp.dir, "a.ts", "import { x } from './b'; import { y } from './c'; console.log(x, y);");
     try writeFile(tmp.dir, "b.ts", "import { shared } from './leaf'; export const x = shared + 1;");
     try writeFile(tmp.dir, "c.ts", "export const y = 99;");
-    try writeFile(tmp.dir, "leaf.ts", "export const shared = 42; export const dead = 'unused';");
+    try writeFile(tmp.dir, "leaf.ts", "export const shared = getShared(); function getShared() { return 42; } export const dead = 'unused';");
 
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "a.ts", &.{"leaf.ts"});
     defer r.deinit();
@@ -509,7 +509,7 @@ test "rollup: entry exports all marked, dependency only used ones" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import { x } from './dep'; export const result = x;");
-    try writeFile(tmp.dir, "dep.ts", "export const x = 1; export const y = 2; export const z = 3;");
+    try writeFile(tmp.dir, "dep.ts", "export const x = getX(); function getX() { return 1; } export const y = 2; export const z = 3;");
 
     var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
     defer r.deinit();
@@ -594,7 +594,7 @@ test "complex: circular dependency with sideEffects=false" {
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import { a } from './ca'; console.log(a);");
     try writeFile(tmp.dir, "ca.ts", "import { b } from './cb'; export const a = b + 1;");
-    try writeFile(tmp.dir, "cb.ts", "import { a } from './ca'; export const b = 10;");
+    try writeFile(tmp.dir, "cb.ts", "import { a } from './ca'; export const b = getB(); function getB() { return 10; }");
 
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{ "ca.ts", "cb.ts" });
     defer r.deinit();
@@ -1092,7 +1092,7 @@ test "edge: 3-module cycle all sideEffects=false — used one pulls in cycle" {
     try writeFile(tmp.dir, "entry.ts", "import { a } from './cyc-a'; console.log(a);");
     try writeFile(tmp.dir, "cyc-a.ts", "import { b } from './cyc-b'; export const a = b + 1;");
     try writeFile(tmp.dir, "cyc-b.ts", "import { c } from './cyc-c'; export const b = c + 1;");
-    try writeFile(tmp.dir, "cyc-c.ts", "import { a } from './cyc-a'; export const c = 10;");
+    try writeFile(tmp.dir, "cyc-c.ts", "import { a } from './cyc-a'; export const c = getC(); function getC() { return 10; }");
 
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{ "cyc-a.ts", "cyc-b.ts", "cyc-c.ts" });
     defer r.deinit();
@@ -1144,7 +1144,7 @@ test "edge: same module imported by multiple — union of used exports" {
     try writeFile(tmp.dir, "entry.ts", "import { a } from './consumer1'; import { b } from './consumer2'; console.log(a, b);");
     try writeFile(tmp.dir, "consumer1.ts", "import { x } from './shared'; export const a = x;");
     try writeFile(tmp.dir, "consumer2.ts", "import { y } from './shared'; export const b = y;");
-    try writeFile(tmp.dir, "shared.ts", "export const x = 1; export const y = 2; export const z = 3;");
+    try writeFile(tmp.dir, "shared.ts", "export const x = getX(); function getX() { return 1; } export const y = getY(); function getY() { return 2; } export const z = 3;");
 
     var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
     defer r.deinit();

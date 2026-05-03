@@ -704,7 +704,7 @@ test "CodeSplitting: CRITICAL — rename collision between import binding and lo
         \\import { val } from './shared';
         \\console.log(val);
     );
-    try writeFile(tmp.dir, "shared.ts", "export const val = 42;");
+    try writeFile(tmp.dir, "shared.ts", "export const val = getVal();\nfunction getVal() { return 42; }");
 
     const a_path = try absPath(&tmp, "a.ts");
     defer std.testing.allocator.free(a_path);
@@ -728,8 +728,8 @@ test "CodeSplitting: CRITICAL — rename collision between import binding and lo
     // shared 청크에 export { val } 있어야 함
     var shared_has_export = false;
     for (outputs) |o| {
-        if (std.mem.indexOf(u8, o.contents, "const val = 42") != null or
-            std.mem.indexOf(u8, o.contents, "const val=42") != null)
+        if (std.mem.indexOf(u8, o.contents, "const val = getVal()") != null or
+            std.mem.indexOf(u8, o.contents, "const val=getVal()") != null)
         {
             shared_has_export = std.mem.indexOf(u8, o.contents, "export") != null;
         }

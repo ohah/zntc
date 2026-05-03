@@ -762,7 +762,7 @@ test "Scope hoisting: import used in expression" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "WIDTH * 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const area = 200;") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "const WIDTH = 100;") != null);
 }
 

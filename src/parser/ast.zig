@@ -1567,6 +1567,24 @@ pub const MethodFlags = struct {
     pub const is_declare: u32 = 0x40;
 };
 
+/// JS numeric literal 텍스트 → f64. `0x` / `0o` / `0b` prefix 와 십진/지수 모두 처리.
+/// minify (binary fold) 와 codegen (truthy 판정) 모두에서 사용 — 한 곳에서 정의해
+/// prefix 처리 drift 를 막는다.
+pub fn parseNumericText(text: []const u8) ?f64 {
+    if (text.len == 0) return null;
+    if (text.len >= 2 and text[0] == '0') {
+        const digits = text[2..];
+        const v: u64 = switch (text[1]) {
+            'x', 'X' => std.fmt.parseInt(u64, digits, 16) catch return null,
+            'o', 'O' => std.fmt.parseInt(u64, digits, 8) catch return null,
+            'b', 'B' => std.fmt.parseInt(u64, digits, 2) catch return null,
+            else => return std.fmt.parseFloat(f64, text) catch null,
+        };
+        return @floatFromInt(v);
+    }
+    return std.fmt.parseFloat(f64, text) catch null;
+}
+
 /// method_definition → function_declaration/expression으로 추출할 때
 /// async/generator 비트를 FunctionFlags 위치로 옮긴다.
 /// 두 공간의 비트 위치가 달라 복사할 때마다 같은 매핑이 반복되던 것을 한 곳에 모았다.

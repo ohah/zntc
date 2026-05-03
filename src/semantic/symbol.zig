@@ -218,6 +218,9 @@ pub const SyntheticKind = enum(u8) {
 /// `const x = false` → ConstValue{ .kind = .false_ }
 pub const ConstValue = struct {
     kind: Kind = .none,
+    /// `.number`일 때 원본 numeric_literal 텍스트.
+    /// target module source를 가리키며, consumer AST materialize 시 string table로 복사한다.
+    number_text: []const u8 = "",
 
     pub const Kind = enum(u8) {
         none,
@@ -225,10 +228,15 @@ pub const ConstValue = struct {
         false_,
         null_,
         undefined_,
+        number,
     };
 
     pub fn isSafeToInline(self: *const ConstValue) bool {
-        return self.kind != .none;
+        return switch (self.kind) {
+            .none => false,
+            .number => self.number_text.len > 0,
+            else => true,
+        };
     }
 };
 

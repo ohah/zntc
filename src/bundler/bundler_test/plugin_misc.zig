@@ -1068,7 +1068,8 @@ test "ESM live binding: init only contains dependency init calls" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "dep.js",
-        \\export const value = 42;
+        \\export const value = getValue();
+        \\function getValue() { return 42; }
     );
     try writeFile(tmp.dir, "mod.js",
         \\import { value } from './dep.js';
@@ -2581,9 +2582,9 @@ test "entry_error_guard #5: 다중 chain entry — 각 import 의 init 호출이
     // 각 모듈 init 호출이 별 top-level `__zts_guarded(...)` statement 가 됨.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.js", "export const a = 1;\n");
-    try writeFile(tmp.dir, "b.js", "export const b = 2;\n");
-    try writeFile(tmp.dir, "c.js", "export const c = 3;\n");
+    try writeFile(tmp.dir, "a.js", "globalThis.__guardA = 1; export const a = globalThis.__guardA;\n");
+    try writeFile(tmp.dir, "b.js", "globalThis.__guardB = 2; export const b = globalThis.__guardB;\n");
+    try writeFile(tmp.dir, "c.js", "globalThis.__guardC = 3; export const c = globalThis.__guardC;\n");
     try writeFile(tmp.dir, "entry.js",
         \\import { a } from './a.js';
         \\import { b } from './b.js';
@@ -2798,7 +2799,7 @@ test "entry_error_guard #14: 비-entry 모듈의 chain 도 wrap (preamble + side
     // 패턴으로 emit (linker preamble + esm_wrap side-effect 양쪽).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "leaf.js", "export const v = 1;\n");
+    try writeFile(tmp.dir, "leaf.js", "export const v = getV();\nfunction getV() { return 1; }\n");
     try writeFile(tmp.dir, "mid.js",
         \\import { v } from './leaf.js';
         \\export const m = v + 1;
@@ -2854,7 +2855,7 @@ test "entry_error_guard #16: GUARD_LAMBDA 매크로 형식 — esm_wrap / metada
     // 가 깨짐 (`__zts_guarded(function(){return X;})` 만 helper 가 받음).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "leaf.js", "export const v = 1;\n");
+    try writeFile(tmp.dir, "leaf.js", "export const v = getV();\nfunction getV() { return 1; }\n");
     try writeFile(tmp.dir, "entry.js",
         \\import './leaf.js';
         \\import { v } from './leaf.js';

@@ -476,7 +476,7 @@ test "Default: default export used in expression" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "* 10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const result = 50;") != null);
 }
 
 // ============================================================

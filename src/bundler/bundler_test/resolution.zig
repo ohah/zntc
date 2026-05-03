@@ -365,7 +365,7 @@ test "Format: IIFE scope_hoist entry exports" {
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.startsWith(u8, result.output, "(() => {\n"));
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "value * 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const doubled = 42;") != null);
 }
 
 // ============================================================

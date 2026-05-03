@@ -637,6 +637,7 @@ pub const Codegen = struct {
             .false_ => try self.write("false"),
             .null_ => try self.write("null"),
             .undefined_ => try self.write("void 0"),
+            .number => try self.write(cv.number_text),
             .none => {},
         }
     }
@@ -1252,13 +1253,14 @@ pub const Codegen = struct {
                 return switch (cv.kind) {
                     .true_ => true,
                     .false_ => false,
+                    .number => (ast_mod.parseNumericText(cv.number_text) orelse return null) != 0,
                     else => null,
                 };
             },
             .null_literal => false,
             .numeric_literal => {
                 const text = self.ast.getText(cond.span);
-                const n = std.fmt.parseFloat(f64, text) catch return null;
+                const n = ast_mod.parseNumericText(text) orelse return null;
                 return n != 0;
             },
             .logical_expression => {
@@ -1714,7 +1716,7 @@ pub const Codegen = struct {
             // shorthand: { x } — key만 출력.
             // 단, scope hoisting으로 식별자가 리네임된 경우 shorthand를 풀어야 함:
             // { x } → { x: x$1 }  (프로퍼티 이름은 원본, 값은 리네임된 이름)
-            if (self.identifierHasRename(key)) {
+            if (self.identifierHasRename(key) or self.identifierHasConstValue(key)) {
                 const key_node = self.ast.getNode(key);
                 try self.writeSpan(key_node.data.string_ref);
                 if (self.options.minify_whitespace) {
@@ -1773,6 +1775,16 @@ pub const Codegen = struct {
                 if (self.ns_exports) |exports| {
                     if (exports.contains(name)) return true;
                 }
+            }
+        }
+        return false;
+    }
+
+    fn identifierHasConstValue(self: *Codegen, idx: NodeIndex) bool {
+        if (idx.isNone()) return false;
+        if (self.options.linking_metadata) |meta| {
+            if (self.resolveSymbolId(idx, meta)) |sym_id| {
+                if (meta.const_values.get(sym_id)) |cv| return cv.isSafeToInline();
             }
         }
         return false;

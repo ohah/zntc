@@ -218,12 +218,10 @@ test "Deep chain: diamond dependency (A→B,C; B→D; C→D)" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // d가 b, c보다 먼저 (공유 leaf)
-    const d_pos = std.mem.indexOf(u8, result.output, "const d = 100;") orelse return error.TestUnexpectedResult;
-    const b_pos = std.mem.indexOf(u8, result.output, "d + 1") orelse return error.TestUnexpectedResult;
-    const c_pos = std.mem.indexOf(u8, result.output, "d + 2") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(d_pos < b_pos);
-    try std.testing.expect(d_pos < c_pos);
+    // numeric const chain이 접혀 b, c에 직접 반영된다.
+    const b_pos = std.mem.indexOf(u8, result.output, "const b = 101;") orelse return error.TestUnexpectedResult;
+    const c_pos = std.mem.indexOf(u8, result.output, "const c = 102;") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(b_pos < c_pos);
 }
 
 // ============================================================
@@ -828,12 +826,8 @@ test "Complex: transitive import chain with values" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // base, config 가 compute보다 먼저
-    const base_pos = std.mem.indexOf(u8, result.output, "base = 10") orelse return error.TestUnexpectedResult;
-    const mult_pos = std.mem.indexOf(u8, result.output, "multiplier = 5") orelse return error.TestUnexpectedResult;
-    const result_pos = std.mem.indexOf(u8, result.output, "base * multiplier") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(base_pos < result_pos);
-    try std.testing.expect(mult_pos < result_pos);
+    // base/config numeric const chain이 result에 직접 fold된다.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "result = 50") != null);
 }
 
 test "Complex: multiple entry points sharing a module" {
@@ -965,8 +959,8 @@ test "Complex: destructuring imports used in complex expressions" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "width * height") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "width + height") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const area = 200") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "2 * (30)") != null);
 }
 
 // ============================================================
