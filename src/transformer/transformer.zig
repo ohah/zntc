@@ -534,10 +534,6 @@ pub const Transformer = struct {
     /// 판단하기 위한 lightweight binding facts.
     binding_lite: ?*const BindingLite = null,
 
-    /// define value의 string_table Span 캐시. options.define과 동일 인덱스.
-    /// transform() 시작 시 한 번 빌드하여, tryDefineReplace에서 addString 중복 호출을 방지.
-    define_spans: []Span = &.{},
-
     /// ES 다운레벨링 임시 변수 카운터.
     /// `foo() ?? bar` → `(_a = foo()) != null ? _a : bar`에서 _a, _b, _c, ... 생성에 사용.
     temp_var_counter: u32 = 0,
@@ -817,7 +813,6 @@ pub const Transformer = struct {
         self.scratch.deinit(self.allocator);
         self.pending_nodes.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
-        if (self.define_spans.len > 0) self.allocator.free(self.define_spans);
         self.plugins.refresh.registrations.deinit(self.allocator);
         for (self.plugins.refresh.signatures.items) |s| self.allocator.free(s.signature);
         self.plugins.refresh.signatures.deinit(self.allocator);
@@ -877,14 +872,6 @@ pub const Transformer = struct {
             return cached;
         }
         self.ast.assertInvariants();
-
-        // define value를 미리 string_table에 저장하여 tryDefineReplace에서 중복 addString 방지
-        if (self.options.define.len > 0) {
-            self.define_spans = self.allocator.alloc(Span, self.options.define.len) catch return Error.OutOfMemory;
-            for (self.options.define, 0..) |entry, i| {
-                self.define_spans[i] = self.ast.addString(entry.value) catch return Error.OutOfMemory;
-            }
-        }
 
         // worklet __pluginVersion 문자열 리터럴 span 사전 계산 (매 worklet당 할당 방지)
         if (self.options.worklet_plugin_version) |v| {
@@ -2630,9 +2617,10 @@ pub const Transformer = struct {
         else
             raw_text;
 
-        for (self.options.define, 0..) |entry, i| {
+        for (self.options.define) |entry| {
             if (!matchDefineKey(text, entry.key)) continue;
-            const value_span = self.define_spans[i];
+            // intern map 이 같은 entry.value 의 두 번째 호출부터 hit → 캐시 효과 흡수.
+            const value_span = self.ast.addString(entry.value) catch return Error.OutOfMemory;
             // 값이 따옴표로 시작하면 string_literal, 아니면 identifier_reference.
             // "production" → string_literal, false/true/숫자 → identifier_reference.
             const is_string = entry.value.len >= 2 and (entry.value[0] == '"' or entry.value[0] == '\'');
