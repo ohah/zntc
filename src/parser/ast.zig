@@ -873,10 +873,11 @@ pub const Ast = struct {
     /// getText(span)으로 투명하게 접근.
     string_table: std.ArrayList(u8),
 
-    /// addString 전용 intern map.
-    /// key 는 string_table slice 가 아니라 별도 owned copy 다. string_table 은 addString 중
-    /// realloc 될 수 있으므로 내부 slice 를 key 로 쓰면 dangling 이 된다.
-    string_interns: std.StringHashMapUnmanaged(Span),
+    /// addString 전용 intern map. K=Span (8B), V=void.
+    /// stored Span 의 byte 본문은 string_table 안에 있으므로 별도 owned key 불필요.
+    /// hash/eql 은 매 호출 시 caller 가 `SpanCtx` 를 즉석 생성해 전달 (HashMap 자체는
+    /// ctx 를 저장하지 않음 — Ast 가 옮겨져도 stale 문제 없음).
+    string_interns: StringInternMap,
 
     /// addString intern map 의 hit/miss 통계. 측정 전용.
     /// `ZTS_STRING_INTERN_STATS=1` 시 stderr 로 dump.
@@ -936,6 +937,39 @@ pub const Ast = struct {
     /// string_table 마커. Span.start의 bit 31이 1이면 string_table 참조.
     pub const STRING_TABLE_BIT: u32 = 0x80000000;
 
+    /// stored Span 의 byte 본문을 string_table 에서 디코드해 hash/eql 수행.
+    /// intern 의 동치 invariant: addString 이 유일 진입점이므로 같은 byte 는 항상
+    /// 같은 offset 으로 등록 → start+end 쌍이 곧 identity. 디코드 비교 불필요.
+    const SpanCtx = struct {
+        table: *const std.ArrayList(u8),
+        pub fn hash(self: @This(), span: Span) u64 {
+            std.debug.assert(span.start & STRING_TABLE_BIT != 0);
+            const start = span.start & ~STRING_TABLE_BIT;
+            const end = span.end & ~STRING_TABLE_BIT;
+            return std.hash_map.hashString(self.table.items[start..end]);
+        }
+        pub fn eql(self: @This(), a: Span, b: Span) bool {
+            _ = self;
+            return a.start == b.start and a.end == b.end;
+        }
+    };
+
+    /// raw `[]const u8` query 로 stored Span 을 lookup. eql 시 stored Span 디코드 후 비교.
+    const SpanLookupAdapter = struct {
+        table: *const std.ArrayList(u8),
+        pub fn hash(self: @This(), key: []const u8) u64 {
+            _ = self;
+            return std.hash_map.hashString(key);
+        }
+        pub fn eql(self: @This(), key: []const u8, stored: Span) bool {
+            const start = stored.start & ~STRING_TABLE_BIT;
+            const end = stored.end & ~STRING_TABLE_BIT;
+            return std.mem.eql(u8, key, self.table.items[start..end]);
+        }
+    };
+
+    const StringInternMap = std.HashMapUnmanaged(Span, void, SpanCtx, std.hash_map.default_max_load_percentage);
+
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Ast {
         return .{
             .nodes = .empty,
@@ -977,10 +1011,7 @@ pub const Ast = struct {
     }
 
     fn deinitStringInterns(self: *Ast) void {
-        var it = self.string_interns.keyIterator();
-        while (it.next()) |key| {
-            self.allocator.free(key.*);
-        }
+        // K=Span 8B, V=void. owned heap 없음 — 단순 deinit.
         self.string_interns.deinit(self.allocator);
     }
 
@@ -1009,27 +1040,24 @@ pub const Ast = struct {
             // 두 번째 transform 을 시작 → ast.transformed_root 의 cache hit 분기를 놓침.
             .transformed_root = source_ast.transformed_root,
             .transform_boundary = source_ast.transform_boundary,
+            // counter 도 carry — clone 후 측정에서 `count() == misses` invariant 유지.
+            .string_intern_hits = source_ast.string_intern_hits,
+            .string_intern_misses = source_ast.string_intern_misses,
+            .string_intern_bytes_saved = source_ast.string_intern_bytes_saved,
+            .string_intern_bytes_overhead = source_ast.string_intern_bytes_overhead,
         };
         // 세 appendSlice 중 하나라도 실패하면 이미 할당된 ArrayList 버퍼를 정리해야 한다.
         errdefer cloned.deinit();
         try cloned.nodes.appendSlice(allocator, source_ast.nodes.items);
         try cloned.extra_data.appendSlice(allocator, source_ast.extra_data.items);
         try cloned.string_table.appendSlice(allocator, source_ast.string_table.items);
-        try cloned.cloneStringInternsFrom(source_ast);
+        // intern map 은 stored Span 만 복사 (owned key dupe 불필요). 새 ctx 는 cloned 의
+        // string_table 을 가리키므로, 같은 offset 에서 같은 byte content 디코드 → hash 동일.
+        cloned.string_interns = try source_ast.string_interns.cloneContext(
+            allocator,
+            SpanCtx{ .table = &cloned.string_table },
+        );
         return cloned;
-    }
-
-    /// 호출자(`cloneForTransformer`)의 `errdefer cloned.deinit()` 가 부분 채워진 map 의
-    /// 누적 owned key 를 정리한다. 이 함수의 inner `errdefer free(key)` 는 직전 dupe 만
-    /// 보호하므로, 다른 caller 에서 쓰려면 동등한 cleanup 을 직접 보장해야 한다.
-    fn cloneStringInternsFrom(self: *Ast, source_ast: *const Ast) !void {
-        try self.string_interns.ensureTotalCapacity(self.allocator, source_ast.string_interns.count());
-        var it = source_ast.string_interns.iterator();
-        while (it.next()) |entry| {
-            const key = try self.allocator.dupe(u8, entry.key_ptr.*);
-            errdefer self.allocator.free(key);
-            try self.string_interns.put(self.allocator, key, entry.value_ptr.*);
-        }
     }
 
     /// 노드를 추가하고 인덱스를 반환한다.
@@ -1372,32 +1400,29 @@ pub const Ast = struct {
     ///   const span = try ast.addString("React");
     ///   // 나중에 ast.getText(span)으로 "React" 반환
     pub fn addString(self: *Ast, text: []const u8) !Span {
-        if (self.string_interns.get(text)) |span| {
+        const adapter = SpanLookupAdapter{ .table = &self.string_table };
+        const ctx = SpanCtx{ .table = &self.string_table };
+
+        // hit path: string_table / map 둘 다 read-only.
+        if (self.string_interns.getKeyAdapted(text, adapter)) |span| {
             self.string_intern_hits +|= 1;
             self.string_intern_bytes_saved +|= @intCast(text.len);
             return span;
         }
 
-        // string_table은 bit 31 미만이어야 함 (bit 31은 마커로 사용)
+        // miss path 의 fail-atomicity:
+        //   1. intern map 의 capacity 부터 reserve (실패 → string_table 무상태)
+        //   2. string_table append (실패 → reserved capacity 만 남음, 무해)
+        //   3. assumeCapacity 로 intern put (alloc 없음 → 실패 불가)
+        // 어느 단계가 OOM 으로 실패해도 두 자료구조는 일관 상태 유지.
+        try self.string_interns.ensureUnusedCapacityContext(self.allocator, 1, ctx);
+
         std.debug.assert(self.string_table.items.len + text.len < STRING_TABLE_BIT);
         const start: u32 = @intCast(self.string_table.items.len);
-        const end: u32 = @intCast(start + text.len);
-        const span = Span{
-            .start = start | STRING_TABLE_BIT,
-            .end = end | STRING_TABLE_BIT,
-        };
 
-        // string_table append 전에 dupe — text 가 self-slice 인 경우 append 의 realloc 으로
-        // text.ptr 이 dangling 이 되어 이후 hash/eql 이 use-after-free 됨.
-        const owned_key = try self.allocator.dupe(u8, text);
-        errdefer self.allocator.free(owned_key);
-
-        // text가 string_table 자기 자신의 슬라이스일 수 있다.
-        // appendSlice는 ensureUnusedCapacity에서 realloc을 일으키면서
-        // 원본 버퍼를 freed로 만들고 text.ptr을 dangling으로 만든다.
-        // 또한 같은 allocation 내의 memcpy는 debug 모드에서 alias panic을 낸다.
-        // offset을 먼저 저장한 뒤 realloc을 유도하고, 새 버퍼의 동일 offset에서
-        // 바이트 단위로 복사하면 두 문제 모두 안전하게 처리된다.
+        // text 가 string_table 자기 자신의 슬라이스일 수 있다. appendSlice 가 realloc 을
+        // 일으키면 text.ptr 이 dangling 이 되고, 같은 allocation 내 memcpy 는 debug 모드에서
+        // alias panic. offset 을 먼저 저장한 뒤 realloc 후 같은 offset 에서 byte 단위 복사.
         const table_base = self.string_table.items.ptr;
         const base_addr = @intFromPtr(table_base);
         const items_end = base_addr + self.string_table.items.len;
@@ -1416,7 +1441,21 @@ pub const Ast = struct {
         } else {
             try self.string_table.appendSlice(self.allocator, text);
         }
-        try self.string_interns.put(self.allocator, owned_key, span);
+
+        const end: u32 = @intCast(self.string_table.items.len);
+        const span = Span{
+            .start = start | STRING_TABLE_BIT,
+            .end = end | STRING_TABLE_BIT,
+        };
+
+        // text.ptr 이 self-slice 였을 경우 위 ensureUnusedCapacity 가 realloc 을 일으켜
+        // dangling 됐을 수 있다. 방금 append 한 영역의 stable slice 로 lookup 한다 — byte
+        // 본문은 동일하므로 hash/eql 결과 같음.
+        const lookup_text = self.string_table.items[start .. start + text.len];
+        const gop = self.string_interns.getOrPutAssumeCapacityAdapted(lookup_text, adapter);
+        std.debug.assert(!gop.found_existing);
+        gop.key_ptr.* = span;
+
         self.string_intern_misses +|= 1;
         self.string_intern_bytes_overhead +|= @intCast(text.len);
         return span;
