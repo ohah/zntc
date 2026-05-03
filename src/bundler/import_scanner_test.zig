@@ -20,7 +20,12 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 /// 테스트용 헬퍼. Arena로 파싱 후 import 추출.
 /// 반환된 records는 testing.allocator 소유 (caller가 free).
 /// Arena는 파싱 완료 후 해제되므로 specifier는 source를 직접 참조해야 동작.
+/// `ext` 가 주어지면 `configureFromExtension` 으로 source mode 지정 (예: ".ts").
 fn parseAndExtract(allocator: std.mem.Allocator, source: []const u8) ![]ImportRecord {
+    return parseAndExtractExt(allocator, source, null);
+}
+
+fn parseAndExtractExt(allocator: std.mem.Allocator, source: []const u8, ext: ?[]const u8) ![]ImportRecord {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -29,6 +34,7 @@ fn parseAndExtract(allocator: std.mem.Allocator, source: []const u8) ![]ImportRe
     var parser = Parser.init(arena_alloc, &scanner);
     parser.is_module = true;
     scanner.is_module = true;
+    if (ext) |e| parser.configureFromExtension(e);
     _ = try parser.parse();
 
     // records는 caller의 allocator로 할당 (arena 해제 후에도 유효).
@@ -65,6 +71,38 @@ fn parseAndExtractFullWithDefines(
     _ = try parser.parse();
 
     return extractImportsWithCjsDetectionAndDefines(allocator, &parser.ast, defines);
+}
+
+test "explicit `import type { X } from ...` → no record (parser already elides)" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractExt(alloc, "import type { X } from './foo';", ".ts");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 0), records.len);
+}
+
+test "explicit `import type X from ...` (default) → no record" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractExt(alloc, "import type X from './foo';", ".ts");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 0), records.len);
+}
+
+test "all individual type modifiers → no record (#2466)" {
+    // 모든 spec 이 `type` modifier 면 import 자체도 elide 되어야 함.
+    // babel-plugin-transform-typescript 가 statement 통째 제거하는 것과 동등.
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractExt(alloc, "import { type A, type B } from './foo';", ".ts");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 0), records.len);
+}
+
+test "type modifier mixed with value spec → record kept" {
+    // 한 spec 만 `type` modifier, 다른 spec 은 value → import 유지.
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractExt(alloc, "import { type A, B } from './foo';", ".ts");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("./foo", records[0].specifier);
 }
 
 test "side-effect import" {
