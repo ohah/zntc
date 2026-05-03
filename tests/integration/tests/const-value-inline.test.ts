@@ -396,6 +396,37 @@ describe("const_value cross-module 인라인 correctness", () => {
     expect(run.trim()).toBe("2 99");
   });
 
+  test("--minify 에서 pre-shake materialize 이후 numeric post-pass 미발화 경로도 emit 정상", async () => {
+    // #2502 회귀 방지. inner refreshLinkMetadataAfterPreShakeMutation 가 좁은 populate*
+    // 만 실행하고 ast_mutated_after_link 를 sticky 유지해 outer finalize 가 항상 발화해야
+    // resynced symbol id 가 emit 단계에 반영된다. 시드는 boolean 만 — numeric post-pass gate
+    // (`anyModuleHasExportedNumberConst`) 가 닫혀 inner 의 mutation 이 outer 발화를 일으키는
+    // 유일한 경로가 된다. helper 의 mangle 결과가 valid JS 로 실행되는 것으로 확인.
+    const r = await bundleAndRun(
+      {
+        "lib.ts": `
+          export const FLAG = true;
+          export const FALLBACK = false;
+        `,
+        "index.ts": `
+          import { FLAG, FALLBACK } from "./lib";
+          function helperFunctionThatGetsMangled() { return 84; }
+          function unusedFunctionThatGetsMangled() { return 99; }
+          if (FLAG && !FALLBACK) {
+            console.log(helperFunctionThatGetsMangled());
+          } else {
+            console.log(unusedFunctionThatGetsMangled());
+          }
+        `,
+      },
+      "index.ts",
+      ["--platform=node", "--minify"],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("84");
+  });
+
   test("dynamic import 가 섞여도 numeric chain 이 static importer 까지 전파된다", async () => {
     // #2506 회귀 방지: numeric BFS 가 reverse_deps 를 import_records 로부터 재구성하던
     // 시절엔 dynamic_importers 까지 큐에 들어갔다 (헛일이지만 무해). Module.importers

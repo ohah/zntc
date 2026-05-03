@@ -82,7 +82,7 @@ pub const TreeShaker = struct {
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
     /// 필드를 대체. `analyze` 내부에서 `module.side_effects` 를 mutate 하므로 non-const.
     graph: *ModuleGraph,
-    linker: *Linker,
+    linker: *const Linker,
     included: std.DynamicBitSet,
     used_exports: std.StringHashMap(void),
     entry_set: std.DynamicBitSet,
@@ -115,7 +115,7 @@ pub const TreeShaker = struct {
     const max_fixpoint_iterations: u32 = 100;
     const max_numeric_const_post_passes: u32 = 2;
 
-    pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *Linker) !TreeShaker {
+    pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *const Linker) !TreeShaker {
         const mod_count = graph.moduleCount();
         var included = try std.DynamicBitSet.initEmpty(allocator, mod_count);
         errdefer included.deinit();
@@ -366,15 +366,14 @@ pub const TreeShaker = struct {
         self.ast_mutated_after_link = true;
     }
 
-    fn refreshLinkMetadataAfterPreShakeMutation(self: *TreeShaker) !void {
+    /// pre-shake materialize 직후 후속 BFS 가 읽는 linker populate* 만 좁게 재실행.
+    /// rename/mangling 은 numeric post-pass 가 또 mutation 할 수 있어 모든 mutation 이
+    /// settle 된 뒤 bundler 의 outer finalize 에서 한 번에 (#2502). `ast_mutated_after_link`
+    /// 는 sticky 유지 — outer 가 항상 발화해야 새 symbol id 의 rename 이 emit 단계에 반영됨.
+    fn refreshLinkMetadataAfterPreShakeMutation(self: *TreeShaker) void {
         if (!self.ast_mutated_after_link) return;
         if (self.graph.code_splitting) return;
-        try self.linker.finalize(.{
-            .compute_renames = true,
-            .compute_mangling = self.graph.minify_identifiers,
-            .clear_first = true,
-        });
-        self.ast_mutated_after_link = false;
+        self.linker.refreshAfterAstMutation();
     }
 
     fn shouldMaterializeConstFacts(
@@ -545,7 +544,7 @@ pub const TreeShaker = struct {
         if (self.graph.resolve_cache.platform == .node) {
             try self.applyNodeBufferCapabilityFacts();
         }
-        try self.refreshLinkMetadataAfterPreShakeMutation();
+        self.refreshLinkMetadataAfterPreShakeMutation();
 
         // 자동 순수 판별: 진입점이 아닌 모듈의 top-level이 모두 순수하면 side_effects=false
         // (rolldown/esbuild 동작: package.json sideEffects 없어도 자동 감지)
