@@ -53,6 +53,8 @@ pub const IndentChar = enum {
 const linker_mod = @import("../bundler/linker.zig");
 pub const LinkingMetadata = linker_mod.LinkingMetadata;
 
+const dev = @import("../bundler/emitter/dev.zig");
+
 pub const QuoteStyle = enum {
     double, // " (기본, esbuild/oxc/SWC 호환)
     single, // '
@@ -2014,22 +2016,6 @@ pub const Codegen = struct {
         return false;
     }
 
-    /// `dev.makeModuleId` 와 동일 의미 — codegen 에서 emitter 모듈 import 회피용 inline.
-    /// abs path → root_dir 기준 상대 경로, root 밖이면 node_modules fallback, 둘 다 안 맞으면 abs.
-    fn makeRequireContextModuleId(abs: []const u8, root_dir: ?[]const u8) []const u8 {
-        const root = root_dir orelse return abs;
-        if (root.len == 0) return abs;
-        if (std.mem.startsWith(u8, abs, root)) {
-            var rel = abs[root.len..];
-            if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
-            if (rel.len > 0) return rel;
-        }
-        if (std.mem.indexOf(u8, abs, "/node_modules/")) |nm_pos| {
-            return abs[nm_pos + 1 ..];
-        }
-        return abs;
-    }
-
     /// `require.context(...)` 호출을 webpackContext IIFE 로 emit.
     /// Metro `contextModuleTemplates.js` 의 sync mode 패턴 mirror.
     /// 매칭은 record.span (= call_expression span) 으로 — `tryExtractRequireContextFromCallee`
@@ -2068,7 +2054,7 @@ pub const Codegen = struct {
                     // 다른 require 호출과 동일한 `(fn(), __toCommonJS(.exports))` 패턴으로 emit.
                     // `__zts_modules` 의 key 는 모듈 등록 ID — emitter 가 `dev.makeModuleId`
                     // 로 normalize 해서 등록하므로 lookup 도 동일 normalize 적용 (#2466 follow-up).
-                    const id = makeRequireContextModuleId(abs, self.options.require_context_module_id_root);
+                    const id = dev.makeModuleId(abs, self.options.require_context_module_id_root);
                     try self.write("(__zts_modules[\"");
                     try self.writeJsStringContent(id);
                     try self.write("\"].fn(),__toCommonJS(__zts_modules[\"");
