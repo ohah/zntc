@@ -1750,6 +1750,7 @@ pub fn emitModule(
         // codegen은 jsx_element/jsx_fragment를 만나지 않으므로 JSX 옵션 불필요.
         // dev mode: import.meta.hot → __zts_make_hot("dev_id")
         .dev_module_id = if (options.dev_mode and module.dev_id.len > 0) module.dev_id else null,
+        .require_context_module_id_root = options.root_dir,
         .import_records = module.import_records,
         .worker_map = if (options.worker_map_per_module) |outer| outer.getPtr(module.path) else null,
         .assert_no_raw_private_syntax = options.unsupported.requiresPrivateDownlevel(),

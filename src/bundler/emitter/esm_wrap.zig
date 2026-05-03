@@ -353,6 +353,7 @@ pub fn emitEsmWrappedModule(
             .source_root = options.sourcemap.source_root orelse "",
             .sources_content = options.sourcemap.sources_content,
             .import_records = module.import_records,
+            .require_context_module_id_root = options.root_dir,
             .assert_no_raw_private_syntax = options.unsupported.requiresPrivateDownlevel(),
         });
         if (options.sourcemap.enable) {
@@ -564,6 +565,7 @@ pub fn emitEsmWrappedModule(
         .source_root = options.sourcemap.source_root orelse "",
         .sources_content = options.sourcemap.sources_content,
         .import_records = module.import_records,
+        .require_context_module_id_root = options.root_dir,
         .assert_no_raw_private_syntax = options.unsupported.requiresPrivateDownlevel(),
     });
     // 소스맵: 소스 파일 등록 + line_offsets 설정
@@ -589,6 +591,7 @@ pub fn emitEsmWrappedModule(
             .source_root = options.sourcemap.source_root orelse "",
             .sources_content = options.sourcemap.sources_content,
             .import_records = module.import_records,
+            .require_context_module_id_root = options.root_dir,
             .assert_no_raw_private_syntax = options.unsupported.requiresPrivateDownlevel(),
         });
         if (options.sourcemap.enable) {

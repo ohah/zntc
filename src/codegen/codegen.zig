@@ -128,6 +128,10 @@ pub const CodegenOptions = struct {
     force_var_for_cycle: bool = false,
     /// dev mode 모듈 ID. 설정 시 import.meta.hot → __zts_make_hot("id") 변환.
     dev_module_id: ?[]const u8 = null,
+    /// require.context match 의 abs path → module ID 변환 base.
+    /// `__zts_modules[<id>]` lookup 이 모듈 등록 ID 와 일치해야 하므로 emitter 가 동일
+    /// `root_dir` 을 전달. null 이면 변환 없음 (legacy 절대 경로).
+    require_context_module_id_root: ?[]const u8 = null,
     /// import.meta.glob 레코드. codegen이 glob 호출을 객체 리터럴로 직접 출력.
     import_records: []const @import("../bundler/types.zig").ImportRecord = &.{},
     /// Metro x_facebook_sources function map emit 활성화.
@@ -2010,6 +2014,22 @@ pub const Codegen = struct {
         return false;
     }
 
+    /// `dev.makeModuleId` 와 동일 의미 — codegen 에서 emitter 모듈 import 회피용 inline.
+    /// abs path → root_dir 기준 상대 경로, root 밖이면 node_modules fallback, 둘 다 안 맞으면 abs.
+    fn makeRequireContextModuleId(abs: []const u8, root_dir: ?[]const u8) []const u8 {
+        const root = root_dir orelse return abs;
+        if (root.len == 0) return abs;
+        if (std.mem.startsWith(u8, abs, root)) {
+            var rel = abs[root.len..];
+            if (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+            if (rel.len > 0) return rel;
+        }
+        if (std.mem.indexOf(u8, abs, "/node_modules/")) |nm_pos| {
+            return abs[nm_pos + 1 ..];
+        }
+        return abs;
+    }
+
     /// `require.context(...)` 호출을 webpackContext IIFE 로 emit.
     /// Metro `contextModuleTemplates.js` 의 sync mode 패턴 mirror.
     /// 매칭은 record.span (= call_expression span) 으로 — `tryExtractRequireContextFromCallee`
@@ -2046,10 +2066,13 @@ pub const Codegen = struct {
                     // 는 undefined — expo-router 가 `ctx(req)` 반환값을 route module 로 사용해
                     // tree 구성이 실패하고 "Unmatched Route" 로 fallback.
                     // 다른 require 호출과 동일한 `(fn(), __toCommonJS(.exports))` 패턴으로 emit.
+                    // `__zts_modules` 의 key 는 모듈 등록 ID — emitter 가 `dev.makeModuleId`
+                    // 로 normalize 해서 등록하므로 lookup 도 동일 normalize 적용 (#2466 follow-up).
+                    const id = makeRequireContextModuleId(abs, self.options.require_context_module_id_root);
                     try self.write("(__zts_modules[\"");
-                    try self.writeJsStringContent(abs);
+                    try self.writeJsStringContent(id);
                     try self.write("\"].fn(),__toCommonJS(__zts_modules[\"");
-                    try self.writeJsStringContent(abs);
+                    try self.writeJsStringContent(id);
                     try self.write("\"].exports))");
                 } else {
                     try self.write("(function(){throw new Error(\"require.context match unresolved: \"+");
