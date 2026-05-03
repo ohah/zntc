@@ -1856,6 +1856,37 @@ test "#2474 regression: catch destructure duplicate at index 17+ — diagnostic 
     try std.testing.expect(found);
 }
 
+test "#2483 regression: catch ({a, a}) — duplicate diagnostic emitted" {
+    // collectAndCheckCatchBindings 가 object_pattern 의 binding_property 분기를 처리해야 함.
+    // 이전: object_property / assignment_target_property_identifier 만 인식 → binding_property 는 else 로 빠져
+    // 재귀해도 switch 의 binding_property case 가 없어 silent skip → duplicate 진단 누락.
+    var r = try analyzeModule("try {} catch ({a, a}) {}");
+    defer r.deinit();
+    var found = false;
+    for (r.analyzer.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, "Identifier 'a' has already been declared") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "#2483 regression: catch ({a}) { let a = 1; } — body conflict diagnostic emitted" {
+    // checkCatchBodyConflicts 가 동작하려면 catch_names 가 채워져야 한다.
+    // binding_property 가 silent skip 되면 catch_names 비어 conflict 검사 불가.
+    var r = try analyzeModule("try {} catch ({a}) { let a = 1; }");
+    defer r.deinit();
+    var found = false;
+    for (r.analyzer.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, "Identifier 'a' has already been declared") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
 test "#2474 regression: 20-element catch destructure conflicts with body let — diagnostic emitted" {
     // checkCatchBodyConflicts 가 16 초과 binding 도 검사하는지 확인.
     // 17번째 binding 인 `k16` 이 body 의 let `k16` 와 conflict. 16-stack 이면 k16 이 catch_names 에 없음.

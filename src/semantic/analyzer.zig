@@ -2719,55 +2719,30 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Collect binding names from destructuring pattern and check for duplicate catch bindings.
+    /// `BindingIdentifierWalker` 에 위임 — pattern tag 매트릭스를 단일 walker (single source of truth)
+    /// 로 통일해 \`binding_property\` 같은 tag 누락 회귀를 구조적으로 차단한다 (#2483).
     fn collectAndCheckCatchBindings(self: *SemanticAnalyzer, idx: NodeIndex, names: *std.ArrayList(Span)) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
-        const node = self.ast.getNode(idx);
-        switch (node.tag) {
-            .binding_identifier => {
-                // Check for duplicate
-                const name_text = self.ast.getText(node.span);
-                for (names.items) |existing_span| {
-                    const existing_text = self.ast.getText(existing_span);
-                    if (std.mem.eql(u8, name_text, existing_text)) {
-                        try self.addRedeclarationError(node.span, name_text, existing_span);
-                        return;
-                    }
+        var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{});
+        defer it.deinit();
+        while (try it.next()) |leaf_idx| {
+            const leaf = self.ast.getNode(leaf_idx);
+            // catch destructure 는 binding context 라 cover-grammar 결과 (identifier_reference /
+            // assignment_target_identifier) 가 없다. binding_identifier 만 의미 있음.
+            if (leaf.tag != .binding_identifier) continue;
+            const name_text = self.ast.getText(leaf.span);
+            var dup_span: ?Span = null;
+            for (names.items) |existing| {
+                if (std.mem.eql(u8, name_text, self.ast.getText(existing))) {
+                    dup_span = existing;
+                    break;
                 }
-                try self.declareSymbolWithNode(node.span, .catch_binding, node.span, @intFromEnum(idx));
-                try names.append(self.allocator, node.span);
-            },
-            .array_pattern => {
-                const split = self.ast.nodeListSplitRest(node.data.list);
-                for (split.elements) |raw_idx| {
-                    try self.collectAndCheckCatchBindings(@enumFromInt(raw_idx), names);
-                }
-                if (split.rest_operand) |op| {
-                    try self.collectAndCheckCatchBindings(op, names);
-                }
-            },
-            .object_pattern => {
-                const split = self.ast.nodeListSplitRest(node.data.list);
-                for (split.elements) |raw_idx| {
-                    const prop_idx: NodeIndex = @enumFromInt(raw_idx);
-                    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) continue;
-                    const prop = self.ast.getNode(prop_idx);
-                    if (prop.tag == .object_property or
-                        prop.tag == .assignment_target_property_identifier)
-                    {
-                        try self.collectAndCheckCatchBindings(prop.data.binary.right, names);
-                    } else {
-                        try self.collectAndCheckCatchBindings(prop_idx, names);
-                    }
-                }
-                if (split.rest_operand) |op| {
-                    try self.collectAndCheckCatchBindings(op, names);
-                }
-            },
-            .assignment_pattern, .assignment_target_with_default => {
-                // binary: { left = pattern, right = default }
-                try self.collectAndCheckCatchBindings(node.data.binary.left, names);
-            },
-            else => {},
+            }
+            if (dup_span) |existing| {
+                try self.addRedeclarationError(leaf.span, name_text, existing);
+                continue;
+            }
+            try self.declareSymbolWithNode(leaf.span, .catch_binding, leaf.span, @intFromEnum(leaf_idx));
+            try names.append(self.allocator, leaf.span);
         }
     }
 
