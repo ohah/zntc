@@ -89,12 +89,11 @@ fn rewritePattern(
     pattern: []const u8,
     opts: PatternOpts,
 ) !void {
-    // 일반 패턴에서 named group은 1-3개 수준. 32 한도를 초과하면 backref 변환이
-    // 누락되어 정합성이 깨지므로 silent skip 대신 assert 로 즉시 fail.
-    const max_named_groups = 32;
+    // ECMAScript named capture group 은 한도가 없다 (V8/SpiderMonkey 모두 unbounded).
+    // 자동 생성된 lexer/regex 등에서 32+ 도 합법이라 dynamic ArrayList 로 처리한다.
     const NamedEntry = struct { name: []const u8, idx: u32 };
-    var named: [max_named_groups]NamedEntry = undefined;
-    var named_count: usize = 0;
+    var named: std.ArrayList(NamedEntry) = .empty;
+    defer named.deinit(allocator);
     var group_idx: u32 = 0;
 
     var i: usize = 0;
@@ -120,7 +119,7 @@ fn rewritePattern(
                 if (std.mem.indexOfScalarPos(u8, pattern, i + 3, '>')) |gt| {
                     const name = pattern[i + 3 .. gt];
                     var found_idx: ?u32 = null;
-                    for (named[0..named_count]) |e| {
+                    for (named.items) |e| {
                         if (std.mem.eql(u8, e.name, name)) {
                             found_idx = e.idx;
                             break;
@@ -188,9 +187,7 @@ fn rewritePattern(
                         }
                         group_idx += 1;
                         if (std.mem.indexOfScalarPos(u8, pattern, i + 3, '>')) |gt| {
-                            std.debug.assert(named_count < max_named_groups);
-                            named[named_count] = .{ .name = pattern[i + 3 .. gt], .idx = group_idx };
-                            named_count += 1;
+                            try named.append(allocator, .{ .name = pattern[i + 3 .. gt], .idx = group_idx });
                             if (opts.strip_named) {
                                 try out.append(allocator, '(');
                                 i = gt + 1;
@@ -462,4 +459,24 @@ test "regex: named backref — character class 안의 \\k는 그대로" {
     const out = (try runLower("/(?<n>a)[\\k<n>]/", .{ .regex_named_groups = true })).?;
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("/(a)[\\k<n>]/", out);
+}
+
+// #2472 회귀 가드: 32개 stack-cap 시 33번째부터 std.debug.assert 가 ReleaseFast 에서
+// 비활성화되어 OOB 쓰기 (UB) 가 발생했음. dynamic ArrayList 로 전환 후 50개도 정상 동작.
+test "#2472 regression: 50 named groups + last backref — no truncation" {
+    var pat: std.ArrayList(u8) = .empty;
+    defer pat.deinit(testing.allocator);
+    try pat.append(testing.allocator, '/');
+    var i: u32 = 0;
+    while (i < 50) : (i += 1) {
+        try pat.writer(testing.allocator).print("(?<n{d}>a)", .{i});
+    }
+    // 마지막 named group 의 backref — 50번째 capture 이므로 \50 으로 변환되어야 한다.
+    try pat.appendSlice(testing.allocator, "\\k<n49>/");
+
+    const out = (try runLower(pat.items, .{ .regex_named_groups = true })).?;
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "\\50") != null);
+    // 32-stack 회귀 시 named[32..] 가 누락되어 backref 변환 실패 → "\\k<n49>" 잔존했음.
+    try testing.expect(std.mem.indexOf(u8, out, "\\k<n") == null);
 }

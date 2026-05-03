@@ -2369,6 +2369,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // TS parameter property(`constructor(public x)`)는 modifier 만 strip 되어 일반 형태로 visit 되지만,
             // 이 경로는 visitMethodDefinition 을 거치지 않으므로 `this.x = x` 삽입을 직접 수행해야 함 (#1471).
             var pp = try self.visitParamsCollectProperties(params_list_old);
+            defer pp.prop_names.deinit(self.allocator);
             var param_lowering: ?es2015_params.ES2015Params(Transformer).LowerResult = null;
             if (es2015_params.ES2015Params(Transformer).hasDefaultOrRest(self, pp.new_params)) {
                 param_lowering = try es2015_params.ES2015Params(Transformer).lowerParamsPass2(self, pp.new_params, span);
@@ -2392,8 +2393,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 // super() 가 Reflect.construct 로 생성한 새 객체가 인스턴스이고, `this` 는 호출
                 // receiver 라 super() 전 할당은 새 인스턴스에 반영되지 않는다.
                 // instance_fields 와 합쳐 postProcessDerivedConstructorBody 에서 _this 별칭으로 emit.
-                if (pp.prop_count > 0 and !new_body.isNone()) {
-                    const pp_stmts_list = try self.buildParameterPropertyStatements(pp.prop_names[0..pp.prop_count]);
+                if (pp.prop_names.items.len > 0 and !new_body.isNone()) {
+                    const pp_stmts_list = try self.buildParameterPropertyStatements(pp.prop_names.items);
                     const pp_stmts = self.ast.extra_data.items[pp_stmts_list.start .. pp_stmts_list.start + pp_stmts_list.len];
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -2405,12 +2406,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     try transformDerivedConstructorReturns(self, new_body);
                     new_body = try postProcessDerivedConstructorBody(self, new_body, param_stmts, instance_fields, span);
                 }
-            } else if ((param_stmts.len > 0 or pp.prop_count > 0) and !new_body.isNone()) {
+            } else if ((param_stmts.len > 0 or pp.prop_names.items.len > 0) and !new_body.isNone()) {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
                 for (param_stmts) |stmt| try self.scratch.append(self.allocator, stmt);
-                if (pp.prop_count > 0) {
-                    const pp_stmts_list = try self.buildParameterPropertyStatements(pp.prop_names[0..pp.prop_count]);
+                if (pp.prop_names.items.len > 0) {
+                    const pp_stmts_list = try self.buildParameterPropertyStatements(pp.prop_names.items);
                     const pp_stmts = self.ast.extra_data.items[pp_stmts_list.start .. pp_stmts_list.start + pp_stmts_list.len];
                     for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
                 }

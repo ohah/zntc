@@ -2098,3 +2098,65 @@ test "module_specifier_map: default + named mix unchanged" {
     // default import 가 섞이면 분해 조건 미충족 — unchanged
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
 }
+
+// ============================================================
+// #2475 audit — stack-bounded buffer 회귀 가드
+// ============================================================
+
+test "#2470 regression: 50 TS parameter properties — all this.aN assignments emitted" {
+    // 이전 32-stack-cap 시 33번째부터 silently drop → this.a32 ~ this.a49 누락.
+    // dynamic ArrayList 로 전환 후 50개 모두 emit 되는지 확인.
+    const allocator = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(allocator);
+    try src.appendSlice(allocator, "class Service { constructor(");
+    var i: u32 = 0;
+    while (i < 50) : (i += 1) {
+        if (i > 0) try src.appendSlice(allocator, ", ");
+        try src.writer(allocator).print("public a{d}", .{i});
+    }
+    try src.appendSlice(allocator, ") {} }");
+
+    var r = try parseAndTransform(allocator, src.items);
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer allocator.free(code);
+
+    var idx: u32 = 0;
+    while (idx < 50) : (idx += 1) {
+        var needle_buf: [32]u8 = undefined;
+        const needle = try std.fmt.bufPrint(&needle_buf, "this.a{d}", .{idx});
+        try std.testing.expect(std.mem.indexOf(u8, code, needle) != null);
+    }
+}
+
+test "#2471 regression: 100-key object destructuring + rest — all keys excluded" {
+    // 이전 64-stack-cap 시 65번째부터 silently drop → __rest exclude list 가 짧아져
+    // rest 안에 누락돼야 할 키가 들어감. dynamic ArrayList 로 전환 후 100 키 모두 등록.
+    const allocator = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(allocator);
+    try src.appendSlice(allocator, "var { ");
+    var i: u32 = 0;
+    while (i < 100) : (i += 1) {
+        if (i > 0) try src.appendSlice(allocator, ", ");
+        try src.writer(allocator).print("k{d}", .{i});
+    }
+    try src.appendSlice(allocator, ", ...rest } = obj;");
+
+    // ES2018 object rest 는 target<es2018 에서 __rest 로 lowering. es5 target 사용.
+    var r = try parseAndTransformWithOptions(allocator, src.items, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer allocator.free(code);
+
+    // exclude list 의 모든 "kN" 문자열 리터럴이 출력에 등장해야 한다.
+    var idx: u32 = 0;
+    while (idx < 100) : (idx += 1) {
+        var needle_buf: [32]u8 = undefined;
+        const needle = try std.fmt.bufPrint(&needle_buf, "\"k{d}\"", .{idx});
+        try std.testing.expect(std.mem.indexOf(u8, code, needle) != null);
+    }
+}
