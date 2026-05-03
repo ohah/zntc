@@ -240,16 +240,20 @@ pub const TreeShaker = struct {
         return false;
     }
 
+    /// DFS hot path 의 `const_values.get(sid)` HashMap lookup 을 피하려고 caller 가 미리
+    /// 빌드한 numeric-symbol bitset 을 쓴다 (#2505 sub-item #2). bitset 은
+    /// `moduleHasNumericExportConstChain` 가 한 번만 build → 같은 모듈 내 여러 init 을
+    /// 도는 동안 재사용.
     const NumericConstRefCtx = struct {
         symbol_ids: []const ?u32,
-        const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
+        numeric_bitset: *const std.DynamicBitSet,
     };
 
     fn visitNumericConstRef(ctx: NumericConstRefCtx, _: *const Ast, raw: u32, node: Node) bool {
         if (node.tag != .identifier_reference or raw >= ctx.symbol_ids.len) return false;
         const sid = ctx.symbol_ids[raw] orelse return false;
-        const cv = ctx.const_values.get(sid) orelse return false;
-        return cv.kind == .number;
+        if (sid >= ctx.numeric_bitset.capacity()) return false;
+        return ctx.numeric_bitset.isSet(sid);
     }
 
     fn nodeContainsNumericConstRef(
@@ -257,11 +261,11 @@ pub const TreeShaker = struct {
         ast: *const Ast,
         symbol_ids: []const ?u32,
         root: NodeIndex,
-        const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
+        numeric_bitset: *const std.DynamicBitSet,
     ) bool {
         return self.anyReachableNode(ast, root, NumericConstRefCtx{
             .symbol_ids = symbol_ids,
-            .const_values = const_values,
+            .numeric_bitset = numeric_bitset,
         }, visitNumericConstRef);
     }
 
@@ -299,7 +303,7 @@ pub const TreeShaker = struct {
     }
 
     fn visitChainExportInit(self: *TreeShaker, ctx: NumericConstRefCtx, ast: *const Ast, init_idx: NodeIndex) bool {
-        return self.nodeContainsNumericConstRef(ast, ctx.symbol_ids, init_idx, ctx.const_values);
+        return self.nodeContainsNumericConstRef(ast, ctx.symbol_ids, init_idx, ctx.numeric_bitset);
     }
 
     fn moduleHasNumericExportConstChain(
@@ -309,9 +313,21 @@ pub const TreeShaker = struct {
         const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
     ) bool {
         if (!constValuesContainNumber(const_values)) return false;
+        // numeric symbol_id 만 미리 bitset 으로 — DFS 안에서 매 identifier_reference 마다
+        // HashMap.get 하지 않도록 (#2505 sub-item #2). 모듈 안 export const 가 여러 개라도
+        // 같은 bitset 을 재사용. alloc 실패면 보수적으로 false (이번 모듈 chain 후보 없다고 처리).
+        var numeric_bitset = std.DynamicBitSet.initEmpty(self.allocator, sem.symbols.items.len) catch return false;
+        defer numeric_bitset.deinit();
+        var it = const_values.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.kind != .number) continue;
+            const sid = entry.key_ptr.*;
+            if (sid >= sem.symbols.items.len) continue;
+            numeric_bitset.set(sid);
+        }
         return self.anyExportedConstInit(ast, sem, NumericConstRefCtx{
             .symbol_ids = sem.symbol_ids,
-            .const_values = const_values,
+            .numeric_bitset = &numeric_bitset,
         }, visitChainExportInit);
     }
 
