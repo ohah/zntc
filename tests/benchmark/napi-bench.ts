@@ -15,6 +15,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 
 const ROOT = resolve(import.meta.dir, "../..");
 const WARMUP = 3;
@@ -73,11 +74,7 @@ for (let i = 0; i < ITERATIONS; i++) {
   times.push((Bun.nanoseconds() - start) / 1000);
 }
 times.sort((a, b) => a - b);
-console.log(JSON.stringify({
-  medianUs: Math.round(times[Math.floor(times.length / 2)]),
-  minUs: Math.round(times[0]),
-  maxUs: Math.round(times[times.length - 1]),
-}));
+console.log(JSON.stringify({ samplesUs: times }));
 `;
     const path = resolve(dir, "worker.ts");
     writeFileSync(path, script);
@@ -140,11 +137,7 @@ for (let i = 0; i < ITERATIONS; i++) {
   times.push((Bun.nanoseconds() - start) / 1000);
 }
 times.sort((a, b) => a - b);
-console.log(JSON.stringify({
-  medianUs: Math.round(times[Math.floor(times.length / 2)]),
-  minUs: Math.round(times[0]),
-  maxUs: Math.round(times[times.length - 1]),
-}));
+console.log(JSON.stringify({ samplesUs: times }));
 `;
     const path = resolve(dir, "worker.ts");
     writeFileSync(path, script);
@@ -173,11 +166,7 @@ for (let i = 0; i < ITERATIONS; i++) {
   times.push((Bun.nanoseconds() - start) / 1000);
 }
 times.sort((a, b) => a - b);
-console.log(JSON.stringify({
-  medianUs: Math.round(times[Math.floor(times.length / 2)]),
-  minUs: Math.round(times[0]),
-  maxUs: Math.round(times[times.length - 1]),
-}));
+console.log(JSON.stringify({ samplesUs: times }));
 `;
   const path = resolve(dir, "worker.ts");
   writeFileSync(path, script);
@@ -189,9 +178,7 @@ console.log(JSON.stringify({
 interface BenchResult {
   method: string;
   scale: string;
-  medianUs: number;
-  minUs: number;
-  maxUs: number;
+  stats: MetricStats | null;
 }
 
 function runWorker(
@@ -214,23 +201,26 @@ function runWorker(
     console.error(`  ${label}: FAILED`);
     if (result.stderr.length > 0)
       console.error(`  stderr: ${result.stderr.toString().slice(0, 200)}`);
-    return { method: label, scale, medianUs: -1, minUs: -1, maxUs: -1 };
+    return { method: label, scale, stats: null };
   }
 
   const stdout = result.stdout.toString().trim();
   try {
     const data = JSON.parse(stdout);
-    return { method: label, scale, ...data };
+    if (!Array.isArray(data.samplesUs)) {
+      throw new Error("missing samplesUs");
+    }
+    return { method: label, scale, stats: computeMetricStats(data.samplesUs) };
   } catch {
     console.error(`  ${label}: parse error: ${stdout.slice(0, 200)}`);
-    return { method: label, scale, medianUs: -1, minUs: -1, maxUs: -1 };
+    return { method: label, scale, stats: null };
   }
 }
 
 // ─── Main ───
 
 console.log("ZTS NAPI vs WASM vs CLI Benchmark");
-console.log(`  Warmup: ${WARMUP}, Iterations: ${ITERATIONS} (median)`);
+console.log(`  Warmup: ${WARMUP}, Iterations: ${ITERATIONS} (median, trimmed mean)`);
 console.log(`  Platform: ${process.platform} ${process.arch}\n`);
 
 const scales = [
@@ -256,8 +246,10 @@ for (const scale of scales) {
     const label = method === "napi" ? "NAPI" : method === "wasm" ? "WASM" : "CLI";
     process.stdout.write(`  ${label}... `);
     const r = runWorker(method, scale.name, sourceFile);
-    if (r.medianUs > 0) {
-      console.log(`${r.medianUs} us (min: ${r.minUs}, max: ${r.maxUs})`);
+    if (r.stats !== null) {
+      console.log(
+        `${formatMetric(r.stats.median, "us")} (min: ${formatMetric(r.stats.min, "us")}, max: ${formatMetric(r.stats.max, "us")})`,
+      );
     }
     results.push(r);
   }
@@ -273,23 +265,24 @@ for (const scale of scales) {
   const group = results
     .filter((r) => r.scale === scale.name)
     .sort((a, b) => {
-      if (a.medianUs === -1) return 1;
-      if (b.medianUs === -1) return -1;
-      return a.medianUs - b.medianUs;
+      if (a.stats === null) return 1;
+      if (b.stats === null) return -1;
+      return a.stats.median - b.stats.median;
     });
 
-  const fastest = group.find((r) => r.medianUs > 0)?.medianUs ?? 1;
+  const fastest = group.find((r) => r.stats !== null)?.stats?.median ?? 1;
 
   console.log(`### ${scale.name}`);
-  console.log("| Method          | Median (us) | Min (us) | Max (us) | vs fastest |");
-  console.log("|-----------------|-------------|----------|----------|------------|");
+  console.log("| Method          | Median | Trimmed mean | Min | Max | p95 | vs fastest |");
+  console.log("|-----------------|--------|--------------|-----|-----|-----|------------|");
   for (const r of group) {
-    const median = r.medianUs === -1 ? "FAIL" : String(r.medianUs);
-    const min = r.minUs === -1 ? "-" : String(r.minUs);
-    const max = r.maxUs === -1 ? "-" : String(r.maxUs);
-    const ratio = r.medianUs > 0 ? `${(r.medianUs / fastest).toFixed(1)}x` : "-";
+    if (r.stats === null) {
+      console.log(`| ${r.method.padEnd(15)} | FAIL | - | - | - | - | - |`);
+      continue;
+    }
+    const ratio = `${(r.stats.median / fastest).toFixed(1)}x`;
     console.log(
-      `| ${r.method.padEnd(15)} | ${median.padStart(11)} | ${min.padStart(8)} | ${max.padStart(8)} | ${ratio.padStart(10)} |`,
+      `| ${r.method.padEnd(15)} | ${formatMetric(r.stats.median, "us")} | ${formatMetric(r.stats.trimmedMean, "us")} | ${formatMetric(r.stats.min, "us")} | ${formatMetric(r.stats.max, "us")} | ${formatMetric(r.stats.p95, "us")} | ${ratio.padStart(10)} |`,
     );
   }
   console.log();

@@ -27,6 +27,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 
 const ROOT = resolve(__dirname, "../..");
 const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
@@ -113,19 +114,19 @@ interface Stats {
 }
 
 function computeStats(samples: number[]): Stats {
-  const sorted = [...samples].sort((a, b) => a - b);
-  const n = sorted.length;
-  const median = n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
-  const mean = samples.reduce((a, b) => a + b, 0) / n;
-  const trimmed = sorted.slice(1, -1);
-  const trimmed_mean = trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
-  // 선형 보간 percentile — `Math.floor(n*0.95)` 는 n=20 에서 19=max 가 돼 p95==max 가 됨.
-  // (n-1)*p 인덱스 + 보간으로 보편적 의미 회복.
-  const idx = (n - 1) * 0.95;
-  const lo = Math.floor(idx);
-  const hi = Math.ceil(idx);
-  const p95 = lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
-  return { median, mean, min: sorted[0], max: sorted[n - 1], p95, trimmed_mean };
+  const stats = computeMetricStats(samples);
+  return toBaselineStats(stats);
+}
+
+function toBaselineStats(stats: MetricStats): Stats {
+  return {
+    median: stats.median,
+    mean: stats.mean,
+    min: stats.min,
+    max: stats.max,
+    p95: stats.p95,
+    trimmed_mean: stats.trimmedMean,
+  };
 }
 
 // ─── Fixture spec ───
@@ -216,6 +217,10 @@ function fmtMs(n: number): string {
   return n.toFixed(2) + "ms";
 }
 
+function fmtMarkdownMs(n: number): string {
+  return formatMetric(n, "ms");
+}
+
 interface CliArgs {
   write: boolean;
   noFail: boolean;
@@ -276,11 +281,18 @@ async function main(cli: CliArgs) {
   const baseline = JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as BaselineFile;
   console.log();
   console.log(`Compared against baseline (${baseline.zts_commit} @ ${baseline.generated_at}):`);
+  console.log();
+  console.log("### bundle-perf — baseline comparison");
+  console.log("| Fixture | Median | Baseline | Delta | Trimmed mean | p95 | Status |");
+  console.log("|---------|--------|----------|-------|--------------|-----|--------|");
   let regressed = 0;
   for (const r of results) {
     const base = baseline.fixtures.find((f) => f.name === r.name);
     if (!base) {
       console.log(`  ${r.name}: NEW (no baseline)`);
+      console.log(
+        `| ${r.name} | ${fmtMarkdownMs(r.total_ms_stats.median)} | - | - | ${fmtMarkdownMs(r.total_ms_stats.trimmed_mean)} | ${fmtMarkdownMs(r.total_ms_stats.p95)} | NEW |`,
+      );
       continue;
     }
     const baseMs = base.total_ms_stats.median;
@@ -292,6 +304,9 @@ async function main(cli: CliArgs) {
     const tag = within ? "OK" : pct > 0 ? "REGRESS" : "IMPROVE";
     console.log(
       `  ${r.name}: ${fmtMs(curMs)} vs ${fmtMs(baseMs)} (${sign}${pct.toFixed(1)}%) [${tag}]`,
+    );
+    console.log(
+      `| ${r.name} | ${fmtMarkdownMs(curMs)} | ${fmtMarkdownMs(baseMs)} | ${sign}${pct.toFixed(1)}% | ${fmtMarkdownMs(r.total_ms_stats.trimmed_mean)} | ${fmtMarkdownMs(r.total_ms_stats.p95)} | ${tag} |`,
     );
     if (!within && pct > 0) regressed++;
   }
