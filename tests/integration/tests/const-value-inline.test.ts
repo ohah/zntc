@@ -242,6 +242,161 @@ describe("const_value cross-module 인라인 correctness", () => {
     expect(r.runOutput).toBe("undefined");
   });
 
+  test("const number는 cross-module에서 materialize되고 산술 fold된다", async () => {
+    const fx = await createFixture({
+      "lib.ts": `export const n = 1;`,
+      "index.ts": `
+        import { n } from "./lib";
+        console.log(n + 2);
+      `,
+    });
+    cleanup = fx.cleanup;
+    const out = join(fx.dir, "out.js");
+    const r = await runZts(["--bundle", join(fx.dir, "index.ts"), "-o", out, "--platform=node"]);
+    expect(r.exitCode).toBe(0);
+    const src = readFileSync(out, "utf8");
+    expect(src).toMatch(/console\.log\(3\)/);
+    expect(src).not.toContain("n + 2");
+  });
+
+  test("const number는 exponent와 hex literal도 원본 숫자 literal로 전파한다", async () => {
+    const r = await bundleAndRun(
+      {
+        "lib.ts": `
+          export const exp = 1e3;
+          export const hex = 0x10;
+        `,
+        "index.ts": `
+          import { exp, hex } from "./lib";
+          console.log(exp + 2, hex + 2);
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("1002 18");
+  });
+
+  test("numeric const chain은 deep cross-module export에서도 대량 축소된다", async () => {
+    const files: Record<string, string> = {
+      "mod-0.ts": `export const v0 = 1;`,
+    };
+    for (let i = 1; i < 40; i++) {
+      files[`mod-${i}.ts`] = `
+        import { v${i - 1} } from "./mod-${i - 1}";
+        export const v${i} = v${i - 1} + 1;
+      `;
+    }
+    files["index.ts"] = `
+      import { v39 } from "./mod-39";
+      console.log(v39);
+    `;
+
+    const fx = await createFixture(files);
+    cleanup = fx.cleanup;
+    const out = join(fx.dir, "out.js");
+    const r = await runZts(["--bundle", join(fx.dir, "index.ts"), "-o", out, "--platform=node"]);
+    expect(r.exitCode).toBe(0);
+    const src = readFileSync(out, "utf8");
+    expect(src).toMatch(/console\.log\(40\)/);
+    expect((src.match(/const v\d+/g) ?? []).length).toBeLessThanOrEqual(2);
+  });
+
+  test("numeric const는 object shorthand를 구문 깨지는 literal로 materialize하지 않는다", async () => {
+    const r = await bundleAndRun(
+      {
+        "lib.ts": `export const n = 1;`,
+        "index.ts": `
+          import { n } from "./lib";
+          console.log(JSON.stringify({ n }));
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe('{"n":1}');
+  });
+
+  test("numeric post-pass 이후 top-level rename metadata가 stale하지 않다", async () => {
+    const r = await bundleAndRun(
+      {
+        "seed.ts": `export const base = 1;`,
+        "left.ts": `
+          import { base } from "./seed";
+          export const _empty = base + 1;
+          export const left = _empty;
+        `,
+        "right.ts": `
+          export const _empty = 10;
+          export const right = _empty;
+        `,
+        "index.ts": `
+          import { left } from "./left";
+          import { right } from "./right";
+          console.log(left, right);
+        `,
+      },
+      "index.ts",
+      ["--platform=node"],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe("2 10");
+  });
+
+  test("numeric post-pass는 기존 namespace reachability를 뒤늦게 바꾸지 않는다", async () => {
+    const fx = await createFixture({
+      "seed.ts": `export const base = 1;`,
+      "node.ts": `
+        export class EmptyNode {
+          tag = "EmptyNode";
+        }
+        export function isEmptyNode(value: unknown) {
+          return value instanceof EmptyNode;
+        }
+        export const unused = "drop";
+      `,
+      "map.ts": `
+        import * as Node from "./node";
+        import { base } from "./seed";
+        const _empty = new Node.EmptyNode();
+        export const value = Node.isEmptyNode(_empty) ? base + 1 : 0;
+      `,
+      "other.ts": `
+        export const _empty = 99;
+        export const other = _empty;
+      `,
+      "index.ts": `
+        import { value } from "./map";
+        import { other } from "./other";
+        console.log(value, other);
+      `,
+    });
+    cleanup = fx.cleanup;
+    const out = join(fx.dir, "out.js");
+    const build = await runZts([
+      "--bundle",
+      join(fx.dir, "index.ts"),
+      "-o",
+      out,
+      "--platform=node",
+    ]);
+    expect(build.exitCode).toBe(0);
+
+    const src = readFileSync(out, "utf8");
+    expect(src).toContain("class EmptyNode");
+    expect(src).not.toContain("unused");
+    expect(src).not.toContain(",_empty =");
+    expect(src.match(/\b(?:const|let|var)\s+_empty(?![$\w])/g) ?? []).toHaveLength(1);
+
+    const run = await Bun.$`node ${out}`.text();
+    expect(run.trim()).toBe("2 99");
+  });
+
   // ========================================================================
   // Edge cases: local let (not exported) / 같은 모듈 내 참조
   // ========================================================================

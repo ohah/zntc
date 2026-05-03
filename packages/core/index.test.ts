@@ -428,7 +428,7 @@ describe("@zts/core buildSync", () => {
     rmSync(keepDir, { recursive: true, force: true });
   });
 
-  test("graph pre-pass skip: no-op ESM/TS bundle output stays stable", () => {
+  test("graph pre-pass skip: no-op ESM/TS bundle still folds numeric const imports", () => {
     const skipDir = mkdtempSync(join(tmpdir(), "zts-prepass-skip-esm-"));
     writeFileSync(join(skipDir, "dep.ts"), "export const value: number = 41;");
     writeFileSync(
@@ -438,7 +438,8 @@ describe("@zts/core buildSync", () => {
     const result = buildSync({ entryPoints: [join(skipDir, "app.ts")] });
     expect(result.errors.length).toBe(0);
     expect(result.outputFiles[0].text).toContain("answer");
-    expect(result.outputFiles[0].text).toContain("value");
+    expect(result.outputFiles[0].text).toContain("42");
+    expect(result.outputFiles[0].text).not.toContain("value");
     expect(result.outputFiles[0].text).not.toContain(": number");
     rmSync(skipDir, { recursive: true, force: true });
   });

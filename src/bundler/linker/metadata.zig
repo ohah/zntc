@@ -887,6 +887,7 @@ pub fn buildCrossModuleConstValues(
         if (rec.resolved.isNone()) continue;
         const canon = self.resolveExportChain(rec.resolved, ib.imported_name, 0) orelse continue;
         const target_module = self.graph.getModule(canon.module_index) orelse continue;
+        if (target_module.cycle_group != 0) continue;
         const target_sem = target_module.semantic orelse continue;
         if (target_sem.scope_maps.len == 0) continue;
         // export_name → local_name 매핑

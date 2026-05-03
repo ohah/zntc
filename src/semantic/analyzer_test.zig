@@ -744,6 +744,59 @@ test "SemanticAnalyzer: valid code has no semantic errors" {
     }
 }
 
+test "SemanticAnalyzer: numeric literal const_value stores raw literal text" {
+    const src =
+        \\const dec = 123;
+        \\const exp = 1e3;
+        \\const hex = 0x10;
+        \\const neg = -1;
+        \\const big = 1n;
+        \\const expr = 1 + 2;
+    ;
+    var scanner = try Scanner.init(std.testing.allocator, src);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+
+    var saw_dec = false;
+    var saw_exp = false;
+    var saw_hex = false;
+    var saw_neg = false;
+    var saw_big = false;
+    var saw_expr = false;
+    for (ana.symbols.items) |sym| {
+        const name = sym.nameText(parser.ast.source);
+        if (std.mem.eql(u8, name, "dec")) {
+            saw_dec = true;
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_value.kind);
+            try std.testing.expectEqualStrings("123", sym.const_value.number_text);
+        } else if (std.mem.eql(u8, name, "exp")) {
+            saw_exp = true;
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_value.kind);
+            try std.testing.expectEqualStrings("1e3", sym.const_value.number_text);
+        } else if (std.mem.eql(u8, name, "hex")) {
+            saw_hex = true;
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_value.kind);
+            try std.testing.expectEqualStrings("0x10", sym.const_value.number_text);
+        } else if (std.mem.eql(u8, name, "neg")) {
+            saw_neg = true;
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_value.kind);
+        } else if (std.mem.eql(u8, name, "big")) {
+            saw_big = true;
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_value.kind);
+        } else if (std.mem.eql(u8, name, "expr")) {
+            saw_expr = true;
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_value.kind);
+        }
+    }
+    try std.testing.expect(saw_dec and saw_exp and saw_hex and saw_neg and saw_big and saw_expr);
+}
+
 // ============================================================
 // Reference Tracking 테스트
 // ============================================================

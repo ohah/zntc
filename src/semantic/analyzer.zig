@@ -998,6 +998,7 @@ pub const SemanticAnalyzer = struct {
                 break :blk .{ .kind = if (std.mem.eql(u8, text, "true")) .true_ else .false_ };
             },
             .null_literal => .{ .kind = .null_ },
+            .numeric_literal => .{ .kind = .number, .number_text = self.ast.getText(node.span) },
             .identifier_reference => blk: {
                 const text = self.ast.getText(node.span);
                 if (std.mem.eql(u8, text, "undefined")) break :blk ConstValue{ .kind = .undefined_ };

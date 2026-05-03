@@ -108,30 +108,7 @@ fn toF64Bitwise(val: i32) f64 {
 /// 숫자 리터럴의 값을 파싱한다. codegen은 span 텍스트를 직접 출력하므로
 /// number_bytes가 아닌 소스 텍스트에서 파싱해야 한다.
 fn parseNumericLiteral(ast: *const Ast, node: Node) ?f64 {
-    const text = ast.getText(node.span);
-    if (text.len == 0) return null;
-    // 0x, 0o, 0b prefix
-    if (text.len >= 2 and text[0] == '0') {
-        if (text[1] == 'x' or text[1] == 'X') return parseHex(text[2..]);
-        if (text[1] == 'o' or text[1] == 'O') return parseOct(text[2..]);
-        if (text[1] == 'b' or text[1] == 'B') return parseBin(text[2..]);
-    }
-    return std.fmt.parseFloat(f64, text) catch null;
-}
-
-fn parseHex(text: []const u8) ?f64 {
-    const v = std.fmt.parseInt(u64, text, 16) catch return null;
-    return @floatFromInt(v);
-}
-
-fn parseOct(text: []const u8) ?f64 {
-    const v = std.fmt.parseInt(u64, text, 8) catch return null;
-    return @floatFromInt(v);
-}
-
-fn parseBin(text: []const u8) ?f64 {
-    const v = std.fmt.parseInt(u64, text, 2) catch return null;
-    return @floatFromInt(v);
+    return ast_mod.parseNumericText(ast.getText(node.span));
 }
 
 /// 따옴표를 포함한 문자열 리터럴을 string_table에 추가한다.
@@ -352,11 +329,9 @@ fn runOnce(
         }
     }
     if (ctx.hasSemantic()) {
-        // single-use inline 이 먼저 — declaration 까지 정리하므로 single-use 케이스를
-        // 통째로 끝낸다. multi-use primitive inline 은 그 후에 돌아 read 만 swap.
-        // 순서를 뒤집으면 (#1631) `inlineTopLevelPrimitiveConstants` 가 ref_count 를
-        // 0 으로 떨궈 single-use case 의 declaration 이 안 지워지고 살아남음
-        // (예: `const kn="["; const out=`<!--${kn}-->`;` → `const e="["` 가 잔존).
+        // 순서 고정 (#1631): inlineSingleUse → inlineTopLevelPrimitiveConstants.
+        // 뒤집으면 multi-use inline 이 ref_count 를 0 으로 떨궈 single-use declaration 이
+        // 잔존 (e.g. `const kn="["; const out=\`<!--${kn}-->\`;` → `const e="["` 잔존).
         inlineSingleUse(ast, ctx, skip_for_binding, live_nodes, &changed, scratch);
         inlineTopLevelPrimitiveConstants(ast, ctx, live_nodes, &changed, scratch);
         removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed);

@@ -181,6 +181,9 @@ pub const ModuleGraph = struct {
     /// 활성 — single-bundle 모드는 helper module 의 declaration 이 statement-level shake
     /// 로 elide 되는 회귀가 있어 기존 preamble 모델 유지.
     code_splitting: bool = false,
+    /// preserve-modules 활성화. 원본 모듈별 출력 파일 보존이 계약이므로 tree-shaker의
+    /// cross-module 축약이 모듈 경계를 제거하지 않도록 한다.
+    preserve_modules: bool = false,
     /// identifier mangling 활성화. transformer pre-pass 이후 생성된 임시 binding도
     /// mangler 입력에 포함하려고 transformed AST semantic을 재구축할 때 사용.
     minify_identifiers: bool = false,

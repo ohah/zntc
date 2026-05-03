@@ -19,8 +19,8 @@
     "build:zts": "zig build -Doptimize=ReleaseFast",
     "lint": "oxlint --ignore-pattern '**/fixtures/**' --ignore-pattern '**/dist/**' packages/ tests/integration tests/e2e tests/benchmark",
     "lint:fix": "oxlint --fix --ignore-pattern '**/fixtures/**' --ignore-pattern '**/dist/**' packages/ tests/integration tests/e2e tests/benchmark",
-    "fmt": "oxfmt format packages/ tests/integration tests/e2e tests/benchmark '!**/dist/**'",
-    "fmt:check": "oxfmt format --check packages/ tests/integration tests/e2e tests/benchmark '!**/dist/**'",
+    "fmt": "oxfmt format packages/ tests/integration tests/e2e tests/benchmark '!**/dist/**' '!**/test-results/**'",
+    "fmt:check": "oxfmt format --check packages/ tests/integration tests/e2e tests/benchmark '!**/dist/**' '!**/test-results/**'",
     "playwright:install": "cd tests/e2e && bunx playwright install --with-deps chromium"
   },
   "devDependencies": {
