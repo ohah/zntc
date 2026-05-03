@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 
 const ROOT = resolve(__dirname, "../..");
 const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
@@ -87,9 +88,7 @@ interface BenchResult {
   tool: string;
   task: string;
   scale: string;
-  avgMs: number;
-  minMs: number;
-  maxMs: number;
+  stats: MetricStats | null;
 }
 
 function runBench(name: string, task: string, scale: string, fn: () => void): BenchResult {
@@ -98,7 +97,7 @@ function runBench(name: string, task: string, scale: string, fn: () => void): Be
   try {
     fn();
   } catch {
-    return { tool: name, task, scale, avgMs: -1, minMs: -1, maxMs: -1 };
+    return { tool: name, task, scale, stats: null };
   }
 
   for (let i = 0; i < ITERATIONS; i++) {
@@ -106,7 +105,7 @@ function runBench(name: string, task: string, scale: string, fn: () => void): Be
     try {
       fn();
     } catch {
-      return { tool: name, task, scale, avgMs: -1, minMs: -1, maxMs: -1 };
+      return { tool: name, task, scale, stats: null };
     }
     times.push(performance.now() - start);
   }
@@ -115,9 +114,7 @@ function runBench(name: string, task: string, scale: string, fn: () => void): Be
     tool: name,
     task,
     scale,
-    avgMs: Math.round(times.reduce((a, b) => a + b) / times.length),
-    minMs: Math.round(Math.min(...times)),
-    maxMs: Math.round(Math.max(...times)),
+    stats: computeMetricStats(times),
   };
 }
 
@@ -315,21 +312,24 @@ function printResults(results: BenchResult[]) {
       const group = results
         .filter((r) => r.task === task && r.scale === scale)
         .sort((a, b) => {
-          if (a.avgMs === -1) return 1;
-          if (b.avgMs === -1) return -1;
-          return a.avgMs - b.avgMs;
+          if (a.stats === null) return 1;
+          if (b.stats === null) return -1;
+          return a.stats.median - b.stats.median;
         });
 
       console.log(`\n### ${task} — ${scale}`);
-      console.log("| Tool | Avg (ms) | Min (ms) | Max (ms) | vs fastest |");
-      console.log("|------|----------|----------|----------|------------|");
-      const fastest = group.find((r) => r.avgMs > 0)?.avgMs ?? 1;
+      console.log("| Tool | Median | Trimmed mean | Min | Max | p95 | vs fastest |");
+      console.log("|------|--------|--------------|-----|-----|-----|------------|");
+      const fastest = group.find((r) => r.stats !== null)?.stats?.median ?? 1;
       for (const r of group) {
-        const avg = r.avgMs === -1 ? "FAIL" : String(r.avgMs);
-        const min = r.minMs === -1 ? "-" : String(r.minMs);
-        const max = r.maxMs === -1 ? "-" : String(r.maxMs);
-        const ratio = r.avgMs > 0 ? `${(r.avgMs / fastest).toFixed(1)}x` : "-";
-        console.log(`| ${r.tool} | ${avg} | ${min} | ${max} | ${ratio} |`);
+        if (r.stats === null) {
+          console.log(`| ${r.tool} | FAIL | - | - | - | - | - |`);
+          continue;
+        }
+        const ratio = `${(r.stats.median / fastest).toFixed(1)}x`;
+        console.log(
+          `| ${r.tool} | ${formatMetric(r.stats.median)} | ${formatMetric(r.stats.trimmedMean)} | ${formatMetric(r.stats.min)} | ${formatMetric(r.stats.max)} | ${formatMetric(r.stats.p95)} | ${ratio} |`,
+        );
       }
     }
   }
@@ -344,7 +344,7 @@ const doTranspile = args.includes("--transpile") || args.includes("--all") || ar
 const doBundle = args.includes("--bundle") || args.includes("--all") || args.length === 0;
 
 console.log("ZTS Benchmark Suite");
-console.log(`  Iterations: ${ITERATIONS}`);
+console.log(`  Iterations: ${ITERATIONS} (median, trimmed mean)`);
 console.log("  Method: CLI binary direct execution (no npx overhead)");
 console.log(`  Platform: ${process.platform} ${process.arch}`);
 
