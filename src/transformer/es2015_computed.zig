@@ -114,8 +114,6 @@ pub fn ES2015Computed(comptime Transformer: type) type {
 
             // Phase 2: computed 이후 property/method를 assignment / defineProperty로 변환.
             // visitNode가 AST를 변형하므로 인덱스 루프 사용.
-            // accessor용 공통 span은 최초 getter/setter 만났을 때 한 번 생성 (addString이 dedup 안 함).
-            var accessor_ctx: ?AccessorSpans = null;
             var i_post: u32 = @intCast(first_computed);
             while (i_post < members_len) : (i_post += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + i_post];
@@ -134,8 +132,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // 일반/async/generator 메서드는 es2015_object_methods가 먼저 object_property로 변환한다.
                     // getter/setter 외의 메서드가 여기 도달하면 pass 순서가 깨진 것.
                     std.debug.assert(is_getter or is_setter);
-                    if (accessor_ctx == null) accessor_ctx = try makeAccessorSpans(self);
-                    const define_call = try emitDefineAccessor(self, member, is_getter, temp_span, span, accessor_ctx.?);
+                    const define_call = try emitDefineAccessor(self, member, is_getter, temp_span, span);
                     try self.scratch.append(self.allocator, define_call);
                     continue;
                 }
@@ -215,30 +212,6 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             };
         }
 
-        /// emitDefineAccessor / makeTrueProp가 재사용하는 span 캐시.
-        /// addString은 interning을 안 하므로 lowerComputedProperties 한 호출당 한 번만 만든다.
-        const AccessorSpans = struct {
-            object: Span,
-            define_property: Span,
-            enumerable: Span,
-            configurable: Span,
-            truev: Span,
-            get: Span,
-            set: Span,
-        };
-
-        fn makeAccessorSpans(self: *Transformer) Transformer.Error!AccessorSpans {
-            return .{
-                .object = try self.ast.addString("Object"),
-                .define_property = try self.ast.addString("defineProperty"),
-                .enumerable = try self.ast.addString("enumerable"),
-                .configurable = try self.ast.addString("configurable"),
-                .truev = try self.ast.addString("true"),
-                .get = try self.ast.addString("get"),
-                .set = try self.ast.addString("set"),
-            };
-        }
-
         /// getter/setter method_definition → `Object.defineProperty(_a, key, { get/set: fn, enumerable: true, configurable: true })`.
         /// 짝 맞추기는 하지 않음 — 인접하지 않아도 각 accessor마다 개별 defineProperty 호출.
         /// 후속 호출이 이전 descriptor의 get/set 필드를 보존하므로 동작은 정확하다 (ECMAScript ValidateAndApplyPropertyDescriptor).
@@ -248,21 +221,21 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             is_getter: bool,
             temp_span: Span,
             span: Span,
-            ctx: AccessorSpans,
         ) Transformer.Error!NodeIndex {
             const me = member.data.extra;
             const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
 
             const func_expr = try buildAccessorFunction(self, member, span);
 
-            const accessor_kind = try es_helpers.makeIdentifierRefFromSpan(self, if (is_getter) ctx.get else ctx.set);
+            const accessor_kind_span = try self.ast.addString(if (is_getter) "get" else "set");
+            const accessor_kind = try es_helpers.makeIdentifierRefFromSpan(self, accessor_kind_span);
             const accessor_prop = try self.ast.addNode(.{
                 .tag = .object_property,
                 .span = span,
                 .data = .{ .binary = .{ .left = accessor_kind, .right = func_expr, .flags = 0 } },
             });
-            const enum_prop = try makeTrueProp(self, ctx.enumerable, ctx.truev, span);
-            const config_prop = try makeTrueProp(self, ctx.configurable, ctx.truev, span);
+            const enum_prop = try makeTrueProp(self, "enumerable", span);
+            const config_prop = try makeTrueProp(self, "configurable", span);
             const desc_list = try self.ast.addNodeList(&.{ accessor_prop, enum_prop, config_prop });
             const desc_obj = try self.ast.addNode(.{
                 .tag = .object_expression,
@@ -273,7 +246,9 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
 
             const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
-            return es_helpers.buildObjectDefinePropertyCall(self, ctx.object, ctx.define_property, temp_ref, key_arg, desc_obj, span);
+            const object_span = try self.ast.addString("Object");
+            const define_property_span = try self.ast.addString("defineProperty");
+            return es_helpers.buildObjectDefinePropertyCall(self, object_span, define_property_span, temp_ref, key_arg, desc_obj, span);
         }
 
         /// method_definition의 params/body를 방문해 function_expression을 만든다.
@@ -299,8 +274,10 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             });
         }
 
-        /// `{ name: true }` object_property 생성 — span은 모두 pre-cached.
-        fn makeTrueProp(self: *Transformer, name_span: Span, true_span: Span, span: Span) Transformer.Error!NodeIndex {
+        /// `{ name: true }` object_property 생성. name/true 는 intern map 으로 dedup.
+        fn makeTrueProp(self: *Transformer, name: []const u8, span: Span) Transformer.Error!NodeIndex {
+            const name_span = try self.ast.addString(name);
+            const true_span = try self.ast.addString("true");
             const key = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
             const val = try self.ast.addNode(.{
                 .tag = .boolean_literal,
