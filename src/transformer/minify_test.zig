@@ -989,6 +989,71 @@ test "dead store: top-level const 는 tree-shaker 영역 — 유지" {
     try std.testing.expect(std.mem.indexOf(u8, result, "const x = 1") != null);
 }
 
+/// `allow_top_level_inline = true` + `minify_whitespace = true` 로 `--minify` CLI
+/// 시나리오를 그대로 재현. emitter/transpile 양쪽 다 같은 ctx 로 호출하는 경로다.
+fn expectMinifyTopLevelInline(input: []const u8, expected: []const u8) !void {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var scanner = try Scanner.init(a, input);
+    var parser = Parser.init(a, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(a, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(a, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    const root = try transformer.transform();
+    const ctx: minify_mod.MinifyCtx = .{
+        .symbols = analyzer.symbols.items,
+        .symbol_ids = transformer.symbol_ids.items,
+        .scopes = analyzer.scopes.items,
+        .unresolved_globals = null,
+        .allow_top_level_inline = true,
+    };
+    minify_mod.minify(transformer.ast, ctx, a, root);
+    minify_mod.mergeDecls(transformer.ast, null);
+
+    var cg = Codegen.initWithOptions(a, transformer.ast, .{ .minify_whitespace = true });
+    const result = try cg.generate(root);
+    const trimmed = std.mem.trimRight(u8, result, "\n");
+    try std.testing.expectEqualStrings(expected, trimmed);
+}
+
+// ---- top-level inline (#1631 ordering 회귀 가드) ----
+
+// `inlineTopLevelPrimitiveConstants` 가 먼저 돌면 single-use 케이스의 ref_count 를
+// 0 으로 떨궈 `inlineSingleUse` 가 declaration 정리할 기회를 빼앗았다 (#1631).
+// 두 pass 의 ordering 이 뒤집히면 아래 케이스의 declaration 이 살아남아 회귀.
+
+test "inline (top-level): single-use primitive const 의 declaration 도 제거 (#1631)" {
+    // 핵심 회귀 가드: kn = "[" 가 한 번만 읽혀 single-use → inline + declaration 정리.
+    // out 자신은 init 이 template_literal (substituted) 이라 isConstantExpr=false →
+    // single-use inline 대상 아님 — declaration 보존됨. mangle 는 helper 가 호출 안 함.
+    try expectMinifyTopLevelInline(
+        "const kn = \"[\"; const out = `<!--${kn}-->`; console.log(out);",
+        "const out=`<!--${\"[\"}-->`;console.log(out);",
+    );
+}
+
+test "inline (top-level): single-use 직접 사용 — declaration 정리 (#1631)" {
+    try expectMinifyTopLevelInline(
+        "const x = 42; console.log(x);",
+        "console.log(42);",
+    );
+}
+
+test "inline (top-level): multi-use primitive const — read swap, declaration 잔존" {
+    // 두 번 이상 사용되면 single-use 게이트 미충족 → inlineTopLevelPrimitiveConstants 만
+    // 동작. read 는 swap 되지만 declaration 은 보존 (read 외 site 가 더 있을 가능성 대비).
+    try expectMinifyTopLevelInline(
+        "const x = 1; console.log(x); console.log(x);",
+        "const x=1;console.log(1);console.log(1);",
+    );
+}
+
 // ---- reference_count decrement 검증 ----
 
 test "dead store: cascading — y dead 여부는 x 제거의 감산으로 결정" {

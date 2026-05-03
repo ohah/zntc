@@ -352,12 +352,13 @@ fn runOnce(
         }
     }
     if (ctx.hasSemantic()) {
-        inlineTopLevelPrimitiveConstants(ast, ctx, live_nodes, &changed, scratch);
-        // single-use inline 을 dead-store 보다 먼저 실행 — inline 이 삭제하는 선언은
-        // ref_count==1 (dead-store 는 0 대상) 이므로 간섭 없음. inline 이 먼저 돌면
-        // 연쇄된 새 dead expression 을 같은 iter 의 fold pass 들이 다음 runOnce 에서
-        // 포착하기 쉬움.
+        // single-use inline 이 먼저 — declaration 까지 정리하므로 single-use 케이스를
+        // 통째로 끝낸다. multi-use primitive inline 은 그 후에 돌아 read 만 swap.
+        // 순서를 뒤집으면 (#1631) `inlineTopLevelPrimitiveConstants` 가 ref_count 를
+        // 0 으로 떨궈 single-use case 의 declaration 이 안 지워지고 살아남음
+        // (예: `const kn="["; const out=`<!--${kn}-->`;` → `const e="["` 가 잔존).
         inlineSingleUse(ast, ctx, skip_for_binding, live_nodes, &changed, scratch);
+        inlineTopLevelPrimitiveConstants(ast, ctx, live_nodes, &changed, scratch);
         removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed);
     }
     return changed;
