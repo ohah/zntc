@@ -1223,6 +1223,9 @@ fn transpileWithCallbackInternal(
         parser.is_jsx = true;
     }
     _ = parser.parse() catch return error.ParseError;
+    // Ast 가 arena 안에 살아 Ast.deinit() 가 호출되지 않으므로, intern stats dump 를
+    // arena 해제 직전(LIFO) 에 명시 호출. ZTS_STRING_INTERN_STATS=1 일 때만 출력.
+    defer parser.ast.dumpStringInternStatsIfEnabled();
     if (parser.errors.items.len > 0) {
         if (on_error) |cb| cb(source, file_path, &scanner, parser.errors.items);
         return error.ParseError;
@@ -1304,6 +1307,7 @@ fn transpileWithCallbackInternal(
         // #1621: standalone transpile 경로도 minify 시 runtime helper 축약 이름 사용.
         .minify_whitespace = options.minify_whitespace,
     });
+    defer transformer.ast.dumpStringInternStatsIfEnabled();
     if (analyzer_storage) |*analyzer| {
         transformer.initSymbolIds(analyzer.symbol_ids.items) catch return error.TransformError;
         transformer.symbols = analyzer.symbols.items;
