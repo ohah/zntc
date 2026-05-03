@@ -380,8 +380,9 @@ pub fn ES2015Params(comptime Transformer: type) type {
         fn collectBindingNames(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(Span)) Transformer.Error!void {
             // cover-grammar 결과 (identifier_reference / assignment_target_identifier) 도
             // 동일하게 spans 로 수집 — caller (param TDZ 검사) 가 그 형태를 기대한다.
-            var it = ast_walk.bindingIdentifiers(self.ast, idx, .{});
-            while (it.next()) |leaf_idx| {
+            var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{});
+            defer it.deinit();
+            while (try it.next()) |leaf_idx| {
                 try out.append(self.allocator, self.ast.getNode(leaf_idx).data.string_ref);
             }
         }

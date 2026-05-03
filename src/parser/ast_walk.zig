@@ -163,8 +163,6 @@ pub fn children(ast: *const Ast, node: Node) ChildIterator {
 /// 있었다. 호출 측의 출력 타입이 다 달라서 (Span list / 이름 list / StringHashMap /
 /// fixed buf) iterator 패턴으로 두고 wrapping 만 caller 가 결정.
 pub const BindingIdentifierWalker = struct {
-    pub const STACK_CAPACITY: usize = 256;
-
     pub const Options = struct {
         /// `(Foo = Bar()) =>` 같이 cover-grammar 로 패턴 자리에 남은 assignment_expression
         /// 의 LHS 를 binding 으로 본다. 일반 expression 컨텍스트의 `Foo = expr` 와 충돌하지
@@ -173,15 +171,19 @@ pub const BindingIdentifierWalker = struct {
     };
 
     ast: *const Ast,
+    allocator: std.mem.Allocator,
     options: Options,
-    /// 명시 stack — stack overflow 방지 + bound 명시. 깊이 256 초과 패턴은 비현실적.
-    stack: [STACK_CAPACITY]NodeIndex = undefined,
-    stack_len: usize,
+    /// caller 가 만들어 주입한 stack. 첫 append 까지 alloc 안 함. 한도 없이 dynamic.
+    /// caller 는 walker 사용 후 `stack.deinit(allocator)` 호출 책임.
+    stack: std.ArrayList(NodeIndex),
 
-    pub fn next(self: *BindingIdentifierWalker) ?NodeIndex {
-        while (self.stack_len > 0) {
-            self.stack_len -= 1;
-            const idx = self.stack[self.stack_len];
+    pub fn deinit(self: *BindingIdentifierWalker) void {
+        self.stack.deinit(self.allocator);
+    }
+
+    pub fn next(self: *BindingIdentifierWalker) error{OutOfMemory}!?NodeIndex {
+        while (self.stack.items.len > 0) {
+            const idx = self.stack.pop().?;
             if (idx.isNone()) continue;
             const raw: u32 = @intFromEnum(idx);
             if (raw >= self.ast.nodes.items.len) continue;
@@ -193,31 +195,31 @@ pub const BindingIdentifierWalker = struct {
                 => return idx,
                 .formal_parameter => {
                     if (node.data.extra >= self.ast.extra_data.items.len) continue;
-                    self.push(@enumFromInt(self.ast.extra_data.items[node.data.extra]));
+                    try self.push(@enumFromInt(self.ast.extra_data.items[node.data.extra]));
                 },
                 .formal_parameters,
                 .array_pattern,
                 .object_pattern,
                 .array_assignment_target,
                 .object_assignment_target,
-                => self.pushList(node.data.list),
+                => try self.pushList(node.data.list),
                 .assignment_pattern,
                 .assignment_target_with_default,
-                => self.push(node.data.binary.left),
+                => try self.push(node.data.binary.left),
                 .assignment_expression => {
-                    if (self.options.cover_grammar_assignment) self.push(node.data.binary.left);
+                    if (self.options.cover_grammar_assignment) try self.push(node.data.binary.left);
                 },
                 .rest_element,
                 .binding_rest_element,
                 .assignment_target_rest,
                 .spread_element,
-                => self.push(node.data.unary.operand),
+                => try self.push(node.data.unary.operand),
                 .binding_property,
                 .assignment_target_property_identifier,
                 .assignment_target_property_property,
                 => {
                     const value = node.data.binary.right;
-                    self.push(if (value.isNone()) node.data.binary.left else value);
+                    try self.push(if (value.isNone()) node.data.binary.left else value);
                 },
                 else => {},
             }
@@ -225,35 +227,40 @@ pub const BindingIdentifierWalker = struct {
         return null;
     }
 
-    fn push(self: *BindingIdentifierWalker, idx: NodeIndex) void {
+    fn push(self: *BindingIdentifierWalker, idx: NodeIndex) error{OutOfMemory}!void {
         if (idx.isNone()) return;
-        if (self.stack_len >= STACK_CAPACITY) return;
-        self.stack[self.stack_len] = idx;
-        self.stack_len += 1;
+        try self.stack.append(self.allocator, idx);
     }
 
-    fn pushList(self: *BindingIdentifierWalker, list: ast_mod.NodeList) void {
+    fn pushList(self: *BindingIdentifierWalker, list: ast_mod.NodeList) error{OutOfMemory}!void {
         if (list.start + list.len > self.ast.extra_data.items.len) return;
         // 역순으로 push 해서 다음 next() 호출이 list[0] 부터 보도록 한다.
         var i: u32 = list.len;
         while (i > 0) {
             i -= 1;
             const raw = self.ast.extra_data.items[list.start + i];
-            self.push(@enumFromInt(raw));
+            try self.push(@enumFromInt(raw));
         }
     }
 };
 
 /// 바인딩 패턴 (포함 cover-grammar 결과) 의 leaf identifier 를 순회하는 iterator.
+/// caller 는 반환된 walker 를 `defer w.deinit()` 해야 함.
 pub fn bindingIdentifiers(
+    allocator: std.mem.Allocator,
     ast: *const Ast,
     idx: NodeIndex,
     options: BindingIdentifierWalker.Options,
-) BindingIdentifierWalker {
-    var w: BindingIdentifierWalker = .{ .ast = ast, .options = options, .stack_len = 0 };
+) error{OutOfMemory}!BindingIdentifierWalker {
+    var w: BindingIdentifierWalker = .{
+        .ast = ast,
+        .allocator = allocator,
+        .options = options,
+        .stack = .empty,
+    };
+    errdefer w.stack.deinit(allocator);
     if (!idx.isNone() and @intFromEnum(idx) < ast.nodes.items.len) {
-        w.stack[0] = idx;
-        w.stack_len = 1;
+        try w.stack.append(allocator, idx);
     }
     return w;
 }

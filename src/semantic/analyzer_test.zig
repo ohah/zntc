@@ -1821,3 +1821,63 @@ test "JSX: bare lowercase tag <div/> is intrinsic, not a variable ref" {
 
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
+
+// ============================================================
+// #2474 catch_names dynamic — 회귀 가드
+// ============================================================
+
+test "#2474 regression: catch destructure duplicate at index 17+ — diagnostic emitted" {
+    // 이전 16-stack-cap 시 17번째 binding 부터 names 배열에 push 안 됨. 두 개의 동일
+    // 이름 (예: k16, k16) 이 모두 17+ 위치라면 둘 다 names 에 못 들어가 redeclaration 검사
+    // 자체가 비교 base 를 못 가져 silent 누락. dynamic ArrayList 로 전환 후 정상 검출.
+    //
+    // array_pattern 사용 (object pattern 의 binding_property 분기는 본 PR 범위 외).
+    const a = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(a);
+    try src.appendSlice(a, "try {} catch ([");
+    var i: u32 = 0;
+    while (i < 16) : (i += 1) {
+        if (i > 0) try src.appendSlice(a, ", ");
+        try src.writer(a).print("k{d}", .{i});
+    }
+    // 17번째와 18번째에 동일 이름 k16. 16-stack 이면 둘 다 names 에 못 들어감 → 진단 누락.
+    try src.appendSlice(a, ", k16, k16]) {}");
+
+    var r = try analyzeModule(src.items);
+    defer r.deinit();
+    var found = false;
+    for (r.analyzer.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, "Identifier 'k16' has already been declared") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "#2474 regression: 20-element catch destructure conflicts with body let — diagnostic emitted" {
+    // checkCatchBodyConflicts 가 16 초과 binding 도 검사하는지 확인.
+    // 17번째 binding 인 `k16` 이 body 의 let `k16` 와 conflict. 16-stack 이면 k16 이 catch_names 에 없음.
+    const a = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(a);
+    try src.appendSlice(a, "try {} catch ([");
+    var i: u32 = 0;
+    while (i < 17) : (i += 1) {
+        if (i > 0) try src.appendSlice(a, ", ");
+        try src.writer(a).print("k{d}", .{i});
+    }
+    try src.appendSlice(a, "]) { let k16 = 1; }");
+
+    var r = try analyzeModule(src.items);
+    defer r.deinit();
+    var found = false;
+    for (r.analyzer.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, "Identifier 'k16' has already been declared") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
