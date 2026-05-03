@@ -648,15 +648,17 @@ pub const ResolveCache = struct {
     /// specifier가 external인지 판별.
     /// exact match + `*` 글롭 매칭 (D069).
     pub fn isExternal(self: *const ResolveCache, specifier: []const u8) bool {
-        // node: 프리픽스 또는 platform=node에서 node 빌트인 자동 external
-        // isNodeBuiltin이 "node:" 프리픽스와 서브패스("fs/promises" 등)를 모두 처리
-        if (self.platform == .node and isNodeBuiltin(specifier)) return true;
-
         // node: 프리픽스는 platform과 무관하게 항상 external
         if (std.mem.startsWith(u8, specifier, "node:")) return true;
 
+        const is_path = resolver_mod.isRelativeOrAbsolute(specifier);
+
+        // platform=node 에서 bare builtin 만 자동 external. 상대/절대 경로는 Node builtin 이
+        // 될 수 없으므로 builtin 목록 선형 탐색을 피한다.
+        if (self.platform == .node and !is_path and isNodeBuiltin(specifier)) return true;
+
         // --packages=external: 모든 bare import를 external 처리
-        if (self.packages_external and !resolver_mod.isRelativeOrAbsolute(specifier)) return true;
+        if (self.packages_external and !is_path) return true;
 
         // 사용자 지정 external 패턴
         for (self.external_patterns) |pattern| {
