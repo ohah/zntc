@@ -986,7 +986,11 @@ pub const Ast = struct {
         return cloned;
     }
 
+    /// 호출자(`cloneForTransformer`)의 `errdefer cloned.deinit()` 가 부분 채워진 map 의
+    /// 누적 owned key 를 정리한다. 이 함수의 inner `errdefer free(key)` 는 직전 dupe 만
+    /// 보호하므로, 다른 caller 에서 쓰려면 동등한 cleanup 을 직접 보장해야 한다.
     fn cloneStringInternsFrom(self: *Ast, source_ast: *const Ast) !void {
+        try self.string_interns.ensureTotalCapacity(self.allocator, source_ast.string_interns.count());
         var it = source_ast.string_interns.iterator();
         while (it.next()) |entry| {
             const key = try self.allocator.dupe(u8, entry.key_ptr.*);
@@ -1346,8 +1350,8 @@ pub const Ast = struct {
             .end = end | STRING_TABLE_BIT,
         };
 
-        // HashMap key는 append/realloc 전에 별도 소유권으로 복사한다.
-        // text가 string_table 내부 slice인 경우에도 이 복사본 덕분에 안전하다.
+        // string_table append 전에 dupe — text 가 self-slice 인 경우 append 의 realloc 으로
+        // text.ptr 이 dangling 이 되어 이후 hash/eql 이 use-after-free 됨.
         const owned_key = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(owned_key);
 
