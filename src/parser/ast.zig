@@ -872,6 +872,11 @@ pub const Ast = struct {
     /// getText(span)으로 투명하게 접근.
     string_table: std.ArrayList(u8),
 
+    /// addString 전용 intern map.
+    /// key 는 string_table slice 가 아니라 별도 owned copy 다. string_table 은 addString 중
+    /// realloc 될 수 있으므로 내부 slice 를 key 로 쓰면 dangling 이 된다.
+    string_interns: std.StringHashMapUnmanaged(Span),
+
     /// 파싱 중 JSX element/fragment가 발견되었는지 (automatic JSX import 주입용)
     has_jsx: bool = false,
 
@@ -925,6 +930,7 @@ pub const Ast = struct {
             .nodes = .empty,
             .extra_data = .empty,
             .string_table = .empty,
+            .string_interns = .empty,
             .allocator = allocator,
             .source = source,
         };
@@ -934,6 +940,15 @@ pub const Ast = struct {
         self.nodes.deinit(self.allocator);
         self.extra_data.deinit(self.allocator);
         self.string_table.deinit(self.allocator);
+        self.deinitStringInterns();
+    }
+
+    fn deinitStringInterns(self: *Ast) void {
+        var it = self.string_interns.keyIterator();
+        while (it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.string_interns.deinit(self.allocator);
     }
 
     /// 트랜스포머용 AST 복제본을 생성한다.
@@ -946,6 +961,7 @@ pub const Ast = struct {
             .nodes = .empty,
             .extra_data = .empty,
             .string_table = .empty,
+            .string_interns = .empty,
             .source = source_ast.source,
             .has_jsx = source_ast.has_jsx,
             .has_jsx_key_after_spread = source_ast.has_jsx_key_after_spread,
@@ -966,7 +982,17 @@ pub const Ast = struct {
         try cloned.nodes.appendSlice(allocator, source_ast.nodes.items);
         try cloned.extra_data.appendSlice(allocator, source_ast.extra_data.items);
         try cloned.string_table.appendSlice(allocator, source_ast.string_table.items);
+        try cloned.cloneStringInternsFrom(source_ast);
         return cloned;
+    }
+
+    fn cloneStringInternsFrom(self: *Ast, source_ast: *const Ast) !void {
+        var it = source_ast.string_interns.iterator();
+        while (it.next()) |entry| {
+            const key = try self.allocator.dupe(u8, entry.key_ptr.*);
+            errdefer self.allocator.free(key);
+            try self.string_interns.put(self.allocator, key, entry.value_ptr.*);
+        }
     }
 
     /// 노드를 추가하고 인덱스를 반환한다.
@@ -1309,9 +1335,21 @@ pub const Ast = struct {
     ///   const span = try ast.addString("React");
     ///   // 나중에 ast.getText(span)으로 "React" 반환
     pub fn addString(self: *Ast, text: []const u8) !Span {
+        if (self.string_interns.get(text)) |span| return span;
+
         // string_table은 bit 31 미만이어야 함 (bit 31은 마커로 사용)
         std.debug.assert(self.string_table.items.len + text.len < STRING_TABLE_BIT);
         const start: u32 = @intCast(self.string_table.items.len);
+        const end: u32 = @intCast(start + text.len);
+        const span = Span{
+            .start = start | STRING_TABLE_BIT,
+            .end = end | STRING_TABLE_BIT,
+        };
+
+        // HashMap key는 append/realloc 전에 별도 소유권으로 복사한다.
+        // text가 string_table 내부 slice인 경우에도 이 복사본 덕분에 안전하다.
+        const owned_key = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(owned_key);
 
         // text가 string_table 자기 자신의 슬라이스일 수 있다.
         // appendSlice는 ensureUnusedCapacity에서 realloc을 일으키면서
@@ -1337,11 +1375,8 @@ pub const Ast = struct {
         } else {
             try self.string_table.appendSlice(self.allocator, text);
         }
-        const end: u32 = @intCast(self.string_table.items.len);
-        return .{
-            .start = start | STRING_TABLE_BIT,
-            .end = end | STRING_TABLE_BIT,
-        };
+        try self.string_interns.put(self.allocator, owned_key, span);
+        return span;
     }
 
     /// Span이 가리키는 텍스트를 반환한다.
