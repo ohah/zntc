@@ -725,6 +725,7 @@ fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     const bundle_opts = parseBuildOptions(env, argv[0], &owned_strings, &owned_string_arrays) orelse {
         return throwError(env, "invalid build options (entryPoints required)");
     };
+    defer freeOptionsTypedSlices(&bundle_opts);
 
     var bundler = Bundler.init(native_alloc, bundle_opts);
     var result = bundler.bundle() catch |err| {
@@ -1955,13 +1956,20 @@ fn serializeFunctionInfo(
 }
 
 /// BundleOptions 의 native_alloc-owned typed slices 일괄 free (#2396).
-/// 내부 문자열은 owned_strings 가 소유 — 본 함수는 entry 배열 자체만 free.
+/// 내부 문자열은 owned_strings 가 소유 — 본 함수는 entry/target 배열 자체만 free.
 /// 새 typed slice 옵션 추가 시 본 함수에 한 줄만 추가.
 fn freeOptionsTypedSlices(opts: *const BundleOptions) void {
     if (opts.define.len > 0) native_alloc.free(opts.define);
     if (opts.module_specifier_map.len > 0) native_alloc.free(opts.module_specifier_map);
     if (opts.alias.len > 0) native_alloc.free(opts.alias);
+    if (opts.ts_paths.len > 0) {
+        for (opts.ts_paths) |entry| {
+            if (entry.targets.len > 0) native_alloc.free(entry.targets);
+        }
+        native_alloc.free(opts.ts_paths);
+    }
     if (opts.fallback.len > 0) native_alloc.free(opts.fallback);
+    if (opts.globals.len > 0) native_alloc.free(opts.globals);
     if (opts.loader_overrides.len > 0) native_alloc.free(opts.loader_overrides);
 }
 
@@ -3755,9 +3763,7 @@ fn parseBuildOptions(
                 if (!trackArr(owned_string_arrays, resolved.owned_strings)) return null;
             }
             ts_path_entries = resolved.entries;
-            // entries 슬라이스와 각 entry.targets 슬라이스도 tracker 에 등록할 수 없으므로
-            // 직접 추적. (TsConfig.PathEntry slice 들은 native_alloc 소유이며 NAPI cleanup 에서 해제되지 않음)
-            // 메모리 leak 방지를 위해 process lifetime 동안 유지 — NAPI 진입점은 single-shot 이라 허용.
+            // entries 슬라이스와 각 entry.targets 슬라이스는 BundleOptions typed slice 정리 경로에서 해제.
         } else |_| {}
     }
 
