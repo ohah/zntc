@@ -3706,10 +3706,10 @@ pub const Codegen = struct {
         try self.write("const ");
         try self.write(name_text);
         try self.writeByte('=');
-        if (self.resolveRequireRewriteSpecifier("flow-enums-runtime")) |req_var| {
+        if (self.resolveRequireRewriteSpecifier(rt.FLOW_ENUMS_RUNTIME_SPECIFIER)) |req_var| {
             try self.emitRewriteValue(req_var);
         } else {
-            try self.write("require(\"flow-enums-runtime\")");
+            try self.write("require(\"" ++ rt.FLOW_ENUMS_RUNTIME_SPECIFIER ++ "\")");
         }
 
         if (is_mirrored) {

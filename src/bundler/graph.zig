@@ -1802,7 +1802,7 @@ pub const ModuleGraph = struct {
                 } else |_| {}
             }
 
-            if (hasFlowEnumDeclaration(&parser.ast)) {
+            if (parser.ast.has_flow_enum_declaration) {
                 module.import_records = injectFlowEnumRuntimeImport(
                     arena_alloc,
                     module.import_records,
@@ -1843,6 +1843,7 @@ pub const ModuleGraph = struct {
             // `createElement 미노출` 회귀 테스트를 깬다.
             var jsx_injected = false;
             var react_injected = false;
+            var jsx_inject_base: u32 = 0;
             if (self.jsx_runtime != .classic and parser.ast.has_jsx) {
                 if (self.jsx_specifier_cache == null) {
                     const is_dev = self.jsx_runtime == .automatic_dev;
@@ -1860,13 +1861,13 @@ pub const ModuleGraph = struct {
                         specs_buf[n] = self.jsx_import_source;
                         n += 1;
                     }
-                    const base_record_count: u32 = @intCast(module.import_records.len);
+                    jsx_inject_base = @intCast(module.import_records.len);
                     module.import_records = injectJsxRuntimeImports(
                         specs_buf[0..n],
                         arena_alloc,
                         module.import_records,
                     ) catch module.import_records;
-                    jsx_injected = (module.import_records.len > base_record_count);
+                    jsx_injected = (module.import_records.len > jsx_inject_base);
                     react_injected = (n == 2) and jsx_injected;
                 }
             }
@@ -1883,7 +1884,7 @@ pub const ModuleGraph = struct {
 
             // JSX synthetic import bindings 추가
             if (jsx_injected) {
-                const jsx_record_idx: u32 = @intCast(module.import_records.len - (if (react_injected) @as(usize, 2) else 1));
+                const jsx_record_idx: u32 = jsx_inject_base;
                 const react_record_idx: ?u32 = if (react_injected) jsx_record_idx + 1 else null;
                 module.import_bindings = createJsxImportBindings(
                     self.jsx_runtime,
@@ -3568,18 +3569,11 @@ fn injectJsxRuntimeImports(
     return new_records;
 }
 
-fn hasFlowEnumDeclaration(ast: *const Ast) bool {
-    for (ast.nodes.items) |node| {
-        if (node.tag == .flow_enum_declaration) return true;
-    }
-    return false;
-}
-
 fn injectFlowEnumRuntimeImport(
     arena_alloc: std.mem.Allocator,
     existing_records: []ImportRecord,
 ) ![]ImportRecord {
-    const specifier = "flow-enums-runtime";
+    const specifier = runtime_helpers.FLOW_ENUMS_RUNTIME_SPECIFIER;
     for (existing_records) |record| {
         if (std.mem.eql(u8, record.specifier, specifier)) return existing_records;
     }

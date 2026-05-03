@@ -897,6 +897,10 @@ pub const Ast = struct {
     /// transformer 가 `module.exports = expr;` 로 lowering 한다 (rolldown/oxc 패턴).
     has_ts_export_equals: bool = false,
 
+    /// Flow `enum X { ... }` 이 있는가. graph 단계에서 `flow-enums-runtime` synthetic
+    /// require 주입 여부를 O(1) 로 결정 (linear AST walk 회피).
+    has_flow_enum_declaration: bool = false,
+
     /// D1 (RFC #1672) 디버그 인프라. Transformer.init 시점의 `nodes.items.len` snapshot.
     /// null = 미변환. boundary 이상의 노드는 transformer 가 append 한 것.
     /// D1a 부터 clone 경로 (Transformer.init → cloneForTransformer) 에서 활성.
@@ -949,6 +953,7 @@ pub const Ast = struct {
             .has_ts_namespace_or_enum = source_ast.has_ts_namespace_or_enum,
             .has_ts_import_equals = source_ast.has_ts_import_equals,
             .has_ts_export_equals = source_ast.has_ts_export_equals,
+            .has_flow_enum_declaration = source_ast.has_flow_enum_declaration,
             .allocator = allocator,
             // #1961: source_ast 가 이미 transform 된 상태면 transformed_root + boundary 도
             // 복사. 그렇지 않으면 emit 단계 transformer 가 graph pre-pass 결과를 무시하고

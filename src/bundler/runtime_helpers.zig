@@ -9,6 +9,15 @@ const std = @import("std");
 const RuntimeHelpers = @import("../transformer/transformer.zig").RuntimeHelpers;
 
 // ============================================================
+// External runtime package specifiers
+// ============================================================
+
+/// `babel-plugin-transform-flow-enums` 호환 runtime helper. Flow enum codegen 과
+/// graph 의 synthetic require 주입이 같은 specifier 를 공유해야 require_rewrites
+/// 매핑이 hit 한다 (#2401).
+pub const FLOW_ENUMS_RUNTIME_SPECIFIER = "flow-enums-runtime";
+
+// ============================================================
 // CJS Interop
 // ============================================================
 
