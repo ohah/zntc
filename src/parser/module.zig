@@ -21,6 +21,7 @@ const ParseError2 = @import("parser.zig").ParseError2;
 const binding_mod = @import("binding.zig");
 const scan_results_mod = @import("scan_results.zig");
 const import_scanner = @import("../bundler/import_scanner.zig");
+const profile = @import("../profile.zig");
 
 /// `import_declaration` extra slot 3에 저장되는 phase modifier.
 /// Stage 3 proposals: `import defer` / `import source`.
@@ -166,6 +167,9 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
 }
 
 pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
+    var scope = profile.begin(.parse_module_import);
+    defer scope.end();
+
     const start = self.currentSpan().start;
     // Unambiguous 모드: has_module_syntax 설정은 ESM import 확정 후 (아래 참조)
     // TS import-equals (import x = require('y'))는 module syntax가 아님
@@ -544,6 +548,9 @@ pub fn parseExportDeclaration(self: *Parser) ParseError2!NodeIndex {
 /// `@dec export [default] class`: decorators를 class_declaration으로 전파한다.
 /// parseDecoratedStatement가 이 경로로 위임하며, 일반 `parseExportDeclaration`은 빈 list로 호출.
 pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.NodeList) ParseError2!NodeIndex {
+    var scope = profile.begin(.parse_module_export);
+    defer scope.end();
+
     const start = self.currentSpan().start;
     // @__NO_SIDE_EFFECTS__ 주석이 export 키워드 앞에 있으면 캡처.
     // export function f() {} 형태에서 주석은 export 토큰에 붙지만,

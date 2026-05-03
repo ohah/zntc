@@ -19,9 +19,13 @@ const Span = token_mod.Span;
 const Parser = @import("parser.zig").Parser;
 const ParseError2 = @import("parser.zig").ParseError2;
 const import_scanner = @import("../bundler/import_scanner.zig");
+const profile = @import("../profile.zig");
 
 /// 소스 전체를 파싱하여 AST를 반환한다.
 pub fn parse(self: *Parser) !NodeIndex {
+    var program_scope = profile.begin(.parse_program);
+    defer program_scope.end();
+
     try self.advance(); // 첫 토큰 로드
 
     // Flow pragma 감지: 첫 토큰 스캔 시 파일 상단 주석이 처리되므로
@@ -136,6 +140,9 @@ pub fn parseStatementChecked(self: *Parser, comptime is_loop_body: bool) ParseEr
 }
 
 pub fn parseStatement(self: *Parser) ParseError2!NodeIndex {
+    var scope = profile.begin(.parse_statement);
+    defer scope.end();
+
     return switch (self.current()) {
         .l_curly => parseBlockStatement(self),
         .semicolon => parseEmptyStatement(self),
