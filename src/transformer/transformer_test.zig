@@ -1893,12 +1893,14 @@ const AstSnapshot = struct {
     nodes: []Node,
     extra_data: []u32,
     string_table: []u8,
+    string_interns_count: u32,
 
     fn take(allocator: std.mem.Allocator, ast: *const Ast) !AstSnapshot {
         return .{
             .nodes = try allocator.dupe(Node, ast.nodes.items),
             .extra_data = try allocator.dupe(u32, ast.extra_data.items),
             .string_table = try allocator.dupe(u8, ast.string_table.items),
+            .string_interns_count = ast.string_interns.count(),
         };
     }
 
@@ -1911,6 +1913,7 @@ const AstSnapshot = struct {
     fn assertMatches(self: AstSnapshot, ast: *const Ast) !void {
         try std.testing.expectEqual(self.extra_data.len, ast.extra_data.items.len);
         try std.testing.expectEqual(self.string_table.len, ast.string_table.items.len);
+        try std.testing.expectEqual(self.string_interns_count, ast.string_interns.count());
         try std.testing.expectEqualSlices(u32, self.extra_data, ast.extra_data.items);
         try std.testing.expectEqualSlices(u8, self.string_table, ast.string_table.items);
         // Node 는 extern struct 라 padding 없는 bit-identical 비교 가능.
