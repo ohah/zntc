@@ -135,6 +135,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "server",
   "loader",
   "conditions",
+  "nodePaths",
+  "moduleSpecifierMap",
   "resolveExtensions",
   "mainFields",
   "packagesExternal",
@@ -190,9 +192,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "logLevel",
   "logLimit",
   "lineLimit",
+  "profile",
+  "profileFormat",
+  "profileLevel",
   "ignoreAnnotations",
   "watchDelay",
   "jobs",
+  "codegenTransform",
   // ─── config-only ───
   "extends",
 ];

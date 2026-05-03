@@ -300,6 +300,14 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "--spa-fallback=",
     "--plugin",
     "--log-level=",
+    "--tokenize",
+    "--tokenize=",
+    "--tokenize-format=",
+    "--test262",
+    "--test262=",
+    // registry target=globals 로 노출되는 namespace flag. flag 이름 자체는 단수형이라
+    // 단순 kebab→camel 추론으로는 BuildOptions.globals 와 1:1 매칭되지 않는다.
+    "--global:*",
     // dev server
     "--port",
     "--port=",
@@ -344,21 +352,19 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     "compiler", // compiler.styledComponents / compiler.emotion — 중첩 객체, CLI 미노출
     "manualChunks",
     "plugins",
+    "moduleSpecifierMap",
+    "codegenTransform",
     "server", // server.port / server.host 는 개별 CLI flag 와 config-only nested 객체 양쪽 지원
     // entry — positional argument (flag 아님)
     "entryPoints",
     "filename", // transpile 의 filename — stdin 모드일 때 의미, CLI 가 자동 결정
     // 1:N 매핑으로 CLI 가 cover (cliOnlyFlags 의 namespace 형 flag 가 받음)
-    "conditions",
     "dropConsole", // --drop=console 로 cover
     "dropDebugger", // --drop=debugger 로 cover
     "dropLabels",
-    "ignoreAnnotations",
     "inlineDynamicImports",
-    "jsxSideEffects",
     "outExtension", // namespace 객체 — `--out-extension:.js=` 가 일부 cover
     "outbase",
-    "stopAfter", // transpile 단독 — CLI 미노출 (디버그 옵션)
     "treeShaking",
     "watch", // BuildOptions 의 watch 와 CLI --watch 는 의미 다름
     // CLI 가 enum→boolean 변환 (`--charset=utf8` → charsetUtf8: true)

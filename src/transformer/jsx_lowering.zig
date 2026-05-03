@@ -1163,7 +1163,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
         /// call_expression 생성: extra = [callee, args_start, args_len, flags]
         fn makeCallExpr(self: *Transformer, callee: NodeIndex, args: []const NodeIndex, span: Span, pure: bool) Transformer.Error!NodeIndex {
             const args_list = try self.ast.addNodeList(args);
-            const flags: u32 = if (pure) CallFlags.is_pure else 0;
+            const flags: u32 = if (pure and !self.options.jsx_side_effects) CallFlags.is_pure else 0;
             return self.addExtraNode(.call_expression, span, &.{
                 @intFromEnum(callee),
                 args_list.start,

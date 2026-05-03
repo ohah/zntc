@@ -90,7 +90,7 @@ pub const InputHasher = struct {
 /// `EmitOptions` 필드 개수. 구조체가 바뀌면 이 값을 갱신하고 hashEmitOptions
 /// 에 새 필드를 반영해야 한다 — comptime 에 필드 누락을 감지하는 fail-stop.
 /// 누락이 invisible bug (stale cache) 로 번지므로 이 barrier 는 load-bearing.
-const expected_emit_options_field_count: usize = 51;
+const expected_emit_options_field_count: usize = 53;
 
 comptime {
     const actual = @typeInfo(EmitOptions).@"struct".fields.len;
@@ -140,8 +140,11 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addStr(options.public_path);
     h.addOptStr(options.banner_js);
     h.addOptStr(options.footer_js);
+    h.addOptStr(options.intro_js);
+    h.addOptStr(options.outro_js);
     h.addOptStr(options.global_name);
     // #1824 IIFE external globals 매핑 — spec/global 둘 다 hash 에 포함해 cache 분리.
+    h.addU64(options.globals.len);
     for (options.globals) |g| {
         h.addStr(g.specifier);
         h.addStr(g.global_name);

@@ -44,6 +44,7 @@
 | 31. define/alias | NAPI BuildOptions에 `define`/`alias` 옵션 노출 | ✅ |
 | 32. tsconfig | CLI에서 tsconfig.json 자동 탐색+로드 (experimentalDecorators, jsx 등) | ✅ |
 | 33. BuildOptions 확장 | loader, conditions, resolveExtensions, mainFields, target, outdir, outfile, write | ✅ |
+| 33a. CLI debug/resolve 노출 | `--conditions`, `--profile*`, `--tokenize` JS CLI 노출 및 문서 동기화 | ✅ |
 | 34. 플러그인 훅 확장 | renderChunk/generateBundle + buildStart/buildEnd/closeBundle NAPI 노출, watch lifecycle 매핑 | ✅ |
 | 35. async 플러그인 | 모든 훅 async/Promise 반환 지원 (MaybePromise) | ✅ |
 | 36. import.meta.glob | Vite 호환 `import.meta.glob()`, eager/import 옵션 | ✅ |

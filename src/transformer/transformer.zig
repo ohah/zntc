@@ -280,6 +280,10 @@ pub const TransformOptions = struct {
     // --- JSX lowering (Phase 1: 트랜스파일 모드) ---
     /// JSX AST → call_expression 변환 활성화
     jsx_transform: bool = false,
+    /// JSX lowering 결과 call_expression 에 pure flag 를 붙이지 않음.
+    jsx_side_effects: bool = false,
+    /// @__PURE__ / package sideEffects 등 annotation 기반 DCE 신호 무시.
+    ignore_annotations: bool = false,
     /// JSX 런타임 모드 (codegen.JsxRuntime과 동일 enum 사용)
     jsx_runtime: @import("../codegen/codegen.zig").JsxRuntime = .classic,
     /// classic 모드 factory (기본: "React.createElement")

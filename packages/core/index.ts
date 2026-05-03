@@ -80,6 +80,20 @@ interface NativeTsconfigCacheHandle {
   size(): number;
 }
 
+export interface TokenizeToken {
+  kind: string;
+  text: string;
+  start: number;
+  end: number;
+  line: number;
+  column: number;
+  hasNewlineBefore: boolean;
+}
+
+export interface TokenizeOptions {
+  filename?: string;
+}
+
 interface NativeModule {
   transpile(
     source: string,
@@ -87,6 +101,9 @@ interface NativeModule {
     optionsJson: string,
     cache?: NativeTsconfigCacheHandle,
   ): { code: string; map?: string; errors?: string };
+  tokenize(source: string, filename: string): TokenizeToken[];
+  configureProfile(profile: string[], level?: "summary" | "detailed" | "per-module" | "per-pass"): void;
+  profileReport(format?: "table" | "tree" | "json" | "csv"): string;
   createTsconfigCache(): NativeTsconfigCacheHandle;
   buildSync(options: Record<string, unknown>): NativeBuildResult;
   buildAppSync(options: Record<string, unknown>): NativeBuildResult & { outputCount?: number };
@@ -320,6 +337,25 @@ export function transpile(
   );
 }
 
+export function tokenize(source: string, options: TokenizeOptions = {}): TokenizeToken[] {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  if (!source) throw new Error("@zts/core: empty source");
+  return native.tokenize(source, options.filename ?? "input.js");
+}
+
+export function configureProfile(
+  profile: string[],
+  level?: "summary" | "detailed" | "per-module" | "per-pass",
+): void {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  native.configureProfile(profile, level);
+}
+
+export function profileReport(format: "table" | "tree" | "json" | "csv" = "table"): string {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  return native.profileReport(format);
+}
+
 // ─── Build API ───
 
 export type { OutputFile, Diagnostic };
@@ -508,7 +544,13 @@ interface BuildOptionsCommon {
   moduleSpecifierMap?: Record<string, string>;
   banner?: string;
   footer?: string;
+  /** Rollup `output.intro`: format wrapper 내부 코드 앞에 삽입할 텍스트 */
+  intro?: string;
+  /** Rollup `output.outro`: format wrapper 내부 코드 뒤에 삽입할 텍스트 */
+  outro?: string;
   globalName?: string;
+  /** Rollup `output.globals`: IIFE/UMD external specifier → global variable mapping */
+  globals?: Record<string, string>;
   publicPath?: string;
   entryNames?: string;
   chunkNames?: string;

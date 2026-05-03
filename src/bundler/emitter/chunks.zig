@@ -94,6 +94,10 @@ pub fn emitChunks(
             try chunk_output.appendSlice(allocator, banner);
             try chunk_output.append(allocator, '\n');
         }
+        if (options.intro_js) |intro| {
+            try chunk_output.appendSlice(allocator, intro);
+            try chunk_output.append(allocator, '\n');
+        }
 
         // 청크별 런타임 헬퍼 주입
         try emitChunkRuntimeHelpers(&chunk_output, allocator, chunk, graph, linker, options, null);
@@ -376,6 +380,11 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, result);
                 allocator.free(result);
             }
+        }
+
+        if (options.outro_js) |outro| {
+            try chunk_output.appendSlice(allocator, outro);
+            try chunk_output.append(allocator, '\n');
         }
 
         // footer 삽입 (각 청크 출력 뒤)

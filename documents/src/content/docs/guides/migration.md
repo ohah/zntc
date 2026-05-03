@@ -35,7 +35,10 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--keep-names` | `--keep-names` | 동일 |
 | `--banner:js=...` | `--banner:js=...` | 동일 |
 | `--footer:js=...` | `--footer:js=...` | 동일 |
+| `--intro=...` | `--intro=...` | wrapper 내부 bundle 앞에 삽입 |
+| `--outro=...` | `--outro=...` | wrapper 내부 bundle 뒤에 삽입 |
 | `--global-name=foo` | `--global-name=foo` | IIFE/UMD 전역 이름 |
+| `--global:react=React` | `--global:react=React` | external specifier → IIFE/UMD global |
 | `--public-path=/static/` | `--public-path=/static/` | 동일 |
 | `--out-extension:.js=.mjs` | `--out-extension:.js=.mjs` | 동일 |
 | `--entry-names=[name]-[hash]` | `--entry-names=[name]-[hash]` | 동일 |
@@ -47,14 +50,14 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--jsx-factory=h` | `--jsx-factory=h` | 동일 |
 | `--jsx-fragment=Fragment` | `--jsx-fragment=Fragment` | 동일 |
 | `--jsx-import-source=preact` | `--jsx-import-source=preact` | 동일 |
-| `--jsx-side-effects` | 미지원 | JSX DCE 정책은 기본 동작 사용 |
+| `--jsx-side-effects` | `--jsx-side-effects` | unused JSX expression 보존 |
 | `--tsconfig=tsconfig.json` | `-p tsconfig.json` 또는 `--tsconfig-path=...` | 축약 `-p` 지원 |
 | `--tsconfig-raw='{...}'` | 미지원 | 파일 기반 `-p` / `--project` 사용 |
-| `--conditions=prod,foo` | 미지원 | 현재 resolver 기본 conditions 사용 |
+| `--conditions=prod,foo` | `--conditions=prod,foo` | 기본 conditions 유지 + 사용자 condition 추가 |
 | `--main-fields=browser,main` | `--main-fields=browser,main` | 동일 |
 | `--resolve-extensions=.ts,.js` | `--resolve-extensions=.ts,.js` | 동일 (RN `.ios.ts` 등 지원) |
 | `--preserve-symlinks` | `--preserve-symlinks` | 동일 |
-| `--node-paths=...` | 미지원 | 표준 node_modules 해석 또는 alias 사용 |
+| `--node-paths=...` | `--node-paths=...` | bare specifier 추가 탐색 경로 |
 | `--charset=utf8` | `--charset=utf8` | 동일 (UTF-8 보존) |
 | `--charset=ascii` | `--ascii-only` | ZTS 는 전용 플래그. 비-ASCII를 `\uXXXX` 이스케이프 |
 | `--legal-comments=eof` | `--legal-comments=eof` | 동일 (`none`/`inline`/`eof`/`linked`/`external`) |
@@ -63,7 +66,7 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--log-level=warning` | `--log-level=warning` | 동일 (`silent`/`error`/`warning`/`info`/`debug`) |
 | `--log-limit=10` | `--log-limit=10` | 동일 |
 | `--line-limit=80` | `--line-limit=80` | 동일 (긴 출력 라인을 안전한 토큰 경계에서 줄바꿈) |
-| `--ignore-annotations` | 미지원 | 기본 annotation 처리 사용 |
+| `--ignore-annotations` | `--ignore-annotations` | pure/sideEffects annotation 무시 |
 | `--allow-overwrite` | `--allow-overwrite` | 기본은 입력=출력 차단, 명시 시에만 허용 |
 | `--watch` | `--watch` 또는 `-w` | 동일 |
 | `--serve` | `--serve` | 동일 (`--port` 지원) |
@@ -252,7 +255,7 @@ export default defineConfig({
 | HTML 엔트리 (`index.html`) | 앱 모드에서 지원 (`--entry-html`) |
 | SPA fallback | `zts preview --spa-fallback` |
 | `resolve.alias` | `--alias:name=target` |
-| `resolve.conditions` | 미지원. 현재 resolver 기본 conditions 사용 |
+| `resolve.conditions` | `conditions: ["prod", "foo"]` 또는 `--conditions=prod,foo` |
 | `optimizeDeps` (pre-bundling) | 불필요 (번들 시 직접 처리) |
 | `ssr` / SSR 빌드 | 미지원 |
 | `worker.format` | 미지원 (Worker 번들 일반 지원은 별도) |

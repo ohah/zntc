@@ -118,6 +118,8 @@ pub const ModuleGraph = struct {
     inject_files: []const []const u8 = &.{},
     /// --pure:CALLEE 목록. parser AST의 call/new에 기존 pure flag를 부여한다.
     pure: []const []const u8 = &.{},
+    /// package.json sideEffects / pure annotation 신호를 무시하고 보수적으로 포함.
+    ignore_annotations: bool = false,
     /// 플러그인 배열. bundler에서 전파.
     plugins: []const plugin_mod.Plugin = &.{},
     /// 최대 워커 스레드 수. 0이면 기본값(CPU 코어 수). 1이면 단일 스레드 (플러그인 IPC 디버깅용).
@@ -1679,7 +1681,11 @@ pub const ModuleGraph = struct {
             var semantic_scope = profile.begin(.graph_discover_pm_semantic);
             defer semantic_scope.end();
 
-            purity.markUserPureCalls(&parser.ast, self.pure);
+            if (self.ignore_annotations) {
+                purity.clearPureCallFlags(&parser.ast);
+            } else {
+                purity.markUserPureCalls(&parser.ast, self.pure);
+            }
 
             var analyzer = SemanticAnalyzer.init(arena_alloc, &parser.ast);
             analyzer.is_strict_mode = parser.is_strict_mode;
@@ -2018,7 +2024,11 @@ pub const ModuleGraph = struct {
         transformer.line_offsets = module.line_offsets;
 
         const root = transformer.transform() catch return;
-        purity.markUserPureCalls(transformer.ast, self.pure);
+        if (self.ignore_annotations) {
+            purity.clearPureCallFlags(transformer.ast);
+        } else {
+            purity.markUserPureCalls(transformer.ast, self.pure);
+        }
         if (self.transform_options_base.minify_syntax) {
             const minify_mod = @import("../transformer/minify.zig");
             const ctx: minify_mod.MinifyCtx = if (module.semantic != null)
@@ -2112,7 +2122,11 @@ pub const ModuleGraph = struct {
             }
         }
 
-        purity.markUserPureCalls(ast, self.pure);
+        if (self.ignore_annotations) {
+            purity.clearPureCallFlags(ast);
+        } else {
+            purity.markUserPureCalls(ast, self.pure);
+        }
 
         {
             var stmt_info_scope = profile.begin(.graph_resync_stmt_info);
@@ -2406,6 +2420,7 @@ pub const ModuleGraph = struct {
 
     /// node_modules 패키지의 package.json sideEffects 필드를 module.side_effects에 반영.
     fn applySideEffectsFromPackageJson(self: *ModuleGraph, module: *Module) void {
+        if (self.ignore_annotations) return;
         const pkg_dir_path = findPackageDirPath(module.path) orelse return;
         const info = self.lookupPkgInfo(pkg_dir_path);
         applyCachedSideEffects(module, pkg_dir_path, info.side_effects);

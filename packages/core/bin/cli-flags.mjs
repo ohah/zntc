@@ -78,6 +78,8 @@ export const FLAG_REGISTRY = [
   { kind: "bool", flag: "--clean", target: "clean" },
   { kind: "bool", flag: "--strict-port", target: "strictPort" },
   { kind: "bool", flag: "--allow-overwrite", target: "allowOverwrite" },
+  { kind: "bool", flag: "--jsx-side-effects", target: "jsxSideEffects" },
+  { kind: "bool", flag: "--ignore-annotations", target: "ignoreAnnotations" },
 
   // ─── kind=string — string scalar (`--key=value` 단방향) ───
   { kind: "string", flag: "--format", target: "format", forms: ["equal"] },
@@ -106,6 +108,12 @@ export const FLAG_REGISTRY = [
   { kind: "string", flag: "--output-exports", target: "outputExports", forms: ["equal"] },
   { kind: "string", flag: "--banner", target: "banner", forms: ["equal"] },
   { kind: "string", flag: "--footer", target: "footer", forms: ["equal"] },
+  { kind: "string", flag: "--intro", target: "intro", forms: ["equal"] },
+  { kind: "string", flag: "--outro", target: "outro", forms: ["equal"] },
+  { kind: "string", flag: "--profile-level", target: "profileLevel", forms: ["equal"] },
+  { kind: "string", flag: "--profile-format", target: "profileFormat", forms: ["equal"] },
+  { kind: "string", flag: "--stop-after", target: "stopAfter", forms: ["equal"] },
+  { kind: "string", flag: "--tokenize-format", target: "tokenizeFormat", forms: ["equal"] },
 
   // ─── kind=string — `--key value` 또는 `--key=value` 둘 다 ───
   { kind: "string", flag: "--target", target: "target" },
@@ -126,6 +134,7 @@ export const FLAG_REGISTRY = [
   { kind: "string", flag: "--entry-html", target: "entryHtml" },
   { kind: "string", flag: "--public-dir", target: "publicDir" },
   { kind: "string", flag: "--base", target: "base" },
+  { kind: "string", flag: "--test262", target: "test262" },
 
   // ─── kind=int — parseInt ───
   { kind: "int", flag: "--watch-delay", target: "watchDelay", forms: ["equal"] },
@@ -148,11 +157,15 @@ export const FLAG_REGISTRY = [
   { kind: "csv", flag: "--env-prefix", target: "envPrefixes" },
   { kind: "csv", flag: "--resolve-extensions", target: "resolveExtensions", forms: ["equal"] },
   { kind: "csv", flag: "--main-fields", target: "mainFields", forms: ["equal"] },
+  { kind: "csv", flag: "--conditions", target: "conditions", forms: ["equal"] },
+  { kind: "csv", flag: "--node-paths", target: "nodePaths", forms: ["equal"] },
+  { kind: "csv", flag: "--profile", target: "profile", forms: ["equal"] },
 
   // ─── kind=key-value — `--key:K=V` → opts[target][K]=V ───
   { kind: "key-value", flag: "--define", target: "define" },
   { kind: "key-value", flag: "--alias", target: "alias" },
   { kind: "key-value", flag: "--loader", target: "loader" },
+  { kind: "key-value", flag: "--global", target: "globals" },
 
   // ─── kind=ns-array — `--key:VALUE` → opts[target].push(VALUE) ───
   { kind: "ns-array", flag: "--inject", target: "inject" },
@@ -177,6 +190,7 @@ export const FLAG_REGISTRY = [
   // ─── kind=string-bool — default=true 의 toggle. `--key=false` → false, 그 외 → true ───
   { kind: "string-bool", flag: "--sources-content", target: "sourcesContent" },
   { kind: "string-bool", flag: "--use-define-for-class-fields", target: "useDefineForClassFields" },
+  { kind: "string-bool", flag: "--tokenize", target: "tokenize" },
 ];
 
 /** spec 의 canonical + alias 를 한 array 로. spec.flag (canonical) 항상 첫번째. */
@@ -290,6 +304,9 @@ function tryMatchSpec(spec, arg, args, i) {
 
     case "string-bool": {
       // default=true 의 toggle. `--sources-content=false` → false, 그 외 → true.
+      if (allFlags.includes(arg)) {
+        return { spec, action: { type: "set", value: true }, consumed: 1 };
+      }
       const prefix = spec.flag + "=";
       if (arg.startsWith(prefix)) {
         const raw = arg.slice(prefix.length);

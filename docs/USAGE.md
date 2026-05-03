@@ -207,3 +207,23 @@ benchmark({ file: "./App.tsx", phases: ["parse"], iterations: 100 });
 ```
 
 상세: [docs/DEBUG.md](./DEBUG.md) § Profile & Benchmark.
+
+### Resolver Conditions
+
+`package.json` `exports` 조건에 사용자 조건을 추가한다. 플랫폼 기본 조건은 유지되고,
+사용자 조건은 기본 조건 뒤에 병합된다. 실제 선택 순서는 Node/esbuild처럼 `exports` 객체의
+키 순서를 따른다.
+
+```bash
+zts --bundle src/index.ts --conditions=development,react-native
+```
+
+### Tokenizer Debug Output
+
+네이티브 scanner의 토큰 스트림을 출력한다. 기본은 사람이 읽는 text, `json`은 snapshot이나
+도구 연동용이다.
+
+```bash
+zts src/input.ts --tokenize
+zts src/input.ts --tokenize --tokenize-format=json
+```
