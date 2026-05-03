@@ -13,20 +13,20 @@
  * ```
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { createRequire } from 'module';
-import { join, dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { createRequire } from "module";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { join, dirname, resolve } from "path";
+import { fileURLToPath } from "url";
 
-export type { Target, Platform, TranspileOptions, TranspileResult } from '../shared/index';
-import type { TranspileOptions, TranspileResult } from '../shared/index';
+export type { Target, Platform, TranspileOptions, TranspileResult } from "../shared/index";
+import type { TranspileOptions, TranspileResult } from "../shared/index";
 import {
   buildOptionsJson,
   ES_TARGET_BITS,
   browserslistToUnsupported,
   isPlainObject,
   validateTsConfigRaw,
-} from '../shared/index';
+} from "../shared/index";
 
 export { isPlainObject, validateTsConfigRaw };
 
@@ -104,9 +104,9 @@ interface NativeModule {
   tokenize(source: string, filename: string): TokenizeToken[];
   configureProfile(
     profile: string[],
-    level?: 'summary' | 'detailed' | 'per-module' | 'per-pass',
+    level?: "summary" | "detailed" | "per-module" | "per-pass",
   ): void;
-  profileReport(format?: 'table' | 'tree' | 'json' | 'csv'): string;
+  profileReport(format?: "table" | "tree" | "json" | "csv"): string;
   createTsconfigCache(): NativeTsconfigCacheHandle;
   buildSync(options: Record<string, unknown>): NativeBuildResult;
   buildAppSync(options: Record<string, unknown>): NativeBuildResult & { outputCount?: number };
@@ -138,22 +138,22 @@ function findAddon(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
 
   // 1. zig-out 빌드 산출물 우선 (개발 시 항상 최신 바이너리 사용)
-  const zigOut = join(__dirname, '../../zig-out/lib/zts.node');
+  const zigOut = join(__dirname, "../../zig-out/lib/zts.node");
   if (existsSync(zigOut)) return zigOut;
 
   // 2. dist에서 3단계 위 (packages/core/dist/ → zig-out/lib/)
-  const zigOut2 = join(__dirname, '../../../zig-out/lib/zts.node');
+  const zigOut2 = join(__dirname, "../../../zig-out/lib/zts.node");
   if (existsSync(zigOut2)) return zigOut2;
 
   // 3. 같은 디렉토리 (npm 배포 패키지)
-  const local = join(__dirname, 'zts.node');
+  const local = join(__dirname, "zts.node");
   if (existsSync(local)) return local;
 
   // 4. 한 단계 위 (dist/index.js에서 사용 시)
-  const parent = join(__dirname, '../zts.node');
+  const parent = join(__dirname, "../zts.node");
   if (existsSync(parent)) return parent;
 
-  throw new Error('@zts/core: zts.node not found. Run `zig build napi` first.');
+  throw new Error("@zts/core: zts.node not found. Run `zig build napi` first.");
 }
 
 // ─── Public API ───
@@ -182,16 +182,16 @@ export {
   loadConfig,
   loadModuleDefault,
   mergeUserConfigs,
-} from './src/config-loader.ts';
+} from "./src/config-loader.ts";
 export type {
   ConfigEnv,
   ModuleKind,
   UserConfig,
   UserConfigFn,
   UserConfigInput,
-} from './src/config-loader.ts';
-export { envToDefine, loadEnv } from './src/load-env.ts';
-export { KNOWN_CONFIG_KEYS, suggestKey, warnUnknownKeys } from './src/typo-suggest.ts';
+} from "./src/config-loader.ts";
+export { envToDefine, loadEnv } from "./src/load-env.ts";
+export { KNOWN_CONFIG_KEYS, suggestKey, warnUnknownKeys } from "./src/typo-suggest.ts";
 export {
   defineWorkspace,
   filterWorkspaces,
@@ -200,7 +200,7 @@ export {
   loadIdentifiedConfig,
   loadWorkspace,
   WORKSPACE_EXT_PRIORITY,
-} from './src/workspace.ts';
+} from "./src/workspace.ts";
 export type {
   IdentifiedWorkspace,
   Workspace,
@@ -209,9 +209,9 @@ export type {
   WorkspaceEntryPath,
   WorkspaceFn,
   WorkspaceInput,
-} from './src/workspace.ts';
+} from "./src/workspace.ts";
 
-import type { UserConfigInput } from './src/config-loader.ts';
+import type { UserConfigInput } from "./src/config-loader.ts";
 
 /**
  * NAPI 모듈을 로드한다.
@@ -247,7 +247,7 @@ function loadBrowserslist(): ((q: string | string[]) => string[]) | null {
     // 동적 문자열 key를 넘겨 Bun 번들러의 정적 분석을 회피 → browserslist
     // 미설치여도 zts 자체는 로드 가능 (optional dep).
     const req = createRequire(import.meta.url);
-    const name = 'browserslist';
+    const name = "browserslist";
     _browserslist = req(name) as (q: string | string[]) => string[];
   } catch {
     _browserslist = null;
@@ -293,7 +293,7 @@ export class TsconfigCache {
   private readonly _handle: NativeTsconfigCacheHandle;
 
   constructor() {
-    if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+    if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
     this._handle = native.createTsconfigCache();
   }
 
@@ -327,35 +327,35 @@ export function transpile(
   source: string,
   options: TranspileOptions & { cache?: TsconfigCache } = {},
 ): TranspileResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
-  if (!source) throw new Error('@zts/core: empty source');
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  if (!source) throw new Error("@zts/core: empty source");
   validateTsConfigRaw(options.tsconfigRaw);
 
   const optionsJson = buildOptionsJson(options, resolveUnsupported(options));
   return native.transpile(
     source,
-    options.filename ?? 'input.js',
+    options.filename ?? "input.js",
     optionsJson,
     options.cache ? TsconfigCache._unwrap(options.cache) : undefined,
   );
 }
 
 export function tokenize(source: string, options: TokenizeOptions = {}): TokenizeToken[] {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
-  if (!source) throw new Error('@zts/core: empty source');
-  return native.tokenize(source, options.filename ?? 'input.js');
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  if (!source) throw new Error("@zts/core: empty source");
+  return native.tokenize(source, options.filename ?? "input.js");
 }
 
 export function configureProfile(
   profile: string[],
-  level?: 'summary' | 'detailed' | 'per-module' | 'per-pass',
+  level?: "summary" | "detailed" | "per-module" | "per-pass",
 ): void {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   native.configureProfile(profile, level);
 }
 
-export function profileReport(format: 'table' | 'tree' | 'json' | 'csv' = 'table'): string {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+export function profileReport(format: "table" | "tree" | "json" | "csv" = "table"): string {
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   return native.profileReport(format);
 }
 
@@ -470,7 +470,7 @@ export interface EmotionOptions {
   /** sourceMap 생성 (default: true) */
   sourceMap?: boolean;
   /** 변수명을 CSS class label 로 자동 부여 (default: "dev-only"). `false` 는 autoLabel 을 끈다. */
-  autoLabel?: 'always' | 'dev-only' | 'never' | boolean;
+  autoLabel?: "always" | "dev-only" | "never" | boolean;
   /** label format string. tokens: `[local]`, `[filename]`, `[dirname]` (default: "[local]") */
   labelFormat?: string;
   /** import 경로 alias — fork 또는 vendored emotion 사용 시 */
@@ -495,7 +495,7 @@ export interface DevServerOptions {
  */
 interface BuildOptionsCommon {
   entryPoints: string[];
-  format?: 'esm' | 'cjs' | 'iife' | 'umd' | 'amd';
+  format?: "esm" | "cjs" | "iife" | "umd" | "amd";
   external?: string[];
   minify?: boolean;
   minifyWhitespace?: boolean;
@@ -521,7 +521,7 @@ interface BuildOptionsCommon {
    *
    * watch / dev server 환경에서는 강제로 `linked` 적용 (HMR + DevTools 통합 보장).
    */
-  sourcemapMode?: 'linked' | 'external' | 'inline';
+  sourcemapMode?: "linked" | "external" | "inline";
   sourcemapDebugIds?: boolean;
   sourcesContent?: boolean;
   treeShaking?: boolean;
@@ -564,7 +564,7 @@ interface BuildOptionsCommon {
    * - `false`: 비활성화 (웹과 동일한 URL 문자열 export)
    * 기본 경로: `"react-native/Libraries/Image/AssetRegistry"` */
   assetRegistry?: string | false;
-  jsx?: 'classic' | 'automatic' | 'automatic-dev';
+  jsx?: "classic" | "automatic" | "automatic-dev";
   jsxFactory?: string;
   jsxFragment?: string;
   jsxImportSource?: string;
@@ -667,7 +667,7 @@ interface BuildOptionsCommon {
    *  - `"warning"` (default): errors + warnings 둘 다 그대로
    *  - `"info"` / `"debug"` / `"verbose"`: warning 과 동일 (info-level 진단은 현재 emit 안 함)
    */
-  logLevel?: 'silent' | 'error' | 'warning' | 'info' | 'debug' | 'verbose';
+  logLevel?: "silent" | "error" | "warning" | "info" | "debug" | "verbose";
   /**
    * 진단 갯수 제한 (esbuild `logLimit`, #2158). 0 이면 무제한 (default).
    * errors / warnings 각 배열에 동일 limit 적용 — 초과 항목은 자동 truncate.
@@ -683,7 +683,7 @@ interface BuildOptionsCommon {
    *  - `"default"`: `module.exports = X` 단일 — default-only 일 때만. named 섞이면 warning + 빈 출력.
    *  - `"none"`: export 출력 안 함.
    */
-  outputExports?: 'auto' | 'named' | 'default' | 'none';
+  outputExports?: "auto" | "named" | "default" | "none";
   /**
    * inline tsconfig JSON 문자열 (esbuild 의 `tsconfigRaw` 와 동일 의미).
    * 설정 시 `tsconfigPath` 와 자동 탐색을 모두 무시 — raw 가 단일 진실 원천.
@@ -708,7 +708,7 @@ interface BuildOptionsCommon {
   /** 소스맵 sourceRoot 필드 */
   sourceRoot?: string;
   /** 라이센스 주석 처리 ("none" | "inline" | "eof" | "linked") */
-  legalComments?: 'none' | 'inline' | 'eof' | 'linked';
+  legalComments?: "none" | "inline" | "eof" | "linked";
   /** 모듈별 개별 파일 출력 (라이브러리 빌드) */
   preserveModules?: boolean;
   /** preserve-modules 출력 디렉토리 구조 기준 경로 */
@@ -727,7 +727,7 @@ interface BuildOptionsCommon {
    * - "per-module": 모듈별 breakdown
    * - "per-pass": transformer visit 수준
    */
-  profileLevel?: 'summary' | 'detailed' | 'per-module' | 'per-pass';
+  profileLevel?: "summary" | "detailed" | "per-module" | "per-pass";
   /**
    * Profile 리포트 출력 포맷.
    * - "table": 사람 가독 (기본)
@@ -735,7 +735,7 @@ interface BuildOptionsCommon {
    * - "json": 기계 판독
    * - "csv": 스프레드시트
    */
-  profileFormat?: 'table' | 'tree' | 'json' | 'csv';
+  profileFormat?: "table" | "tree" | "json" | "csv";
   /** dev mode: 모듈을 __zts_register() 팩토리로 래핑 + HMR 런타임 주입 */
   devMode?: boolean;
   /** dev mode 모듈 ID 기준 경로 */
@@ -832,14 +832,14 @@ interface BuildOptionsCommon {
 export type BuildOptions =
   | (BuildOptionsCommon & {
       /** React Native (Hermes) 프리셋. target은 Hermes 매트릭스로 강제됨. */
-      platform: Extract<import('../shared/index').Platform, 'react-native'>;
+      platform: Extract<import("../shared/index").Platform, "react-native">;
       target?: never;
       browserslist?: never;
     })
   | (BuildOptionsCommon & {
-      platform?: Exclude<import('../shared/index').Platform, 'react-native'>;
+      platform?: Exclude<import("../shared/index").Platform, "react-native">;
       /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
-      target?: import('../shared/index').Target;
+      target?: import("../shared/index").Target;
       /** browserslist 쿼리 (string 또는 string[]). 지정 시 target보다 우선. */
       browserslist?: string | string[];
     });
@@ -1221,12 +1221,12 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
   const argBuilders: Record<string, (arg1: string, arg2: string | null) => [string, unknown]> = {
     resolveId: (arg1, arg2) => [arg1, { path: arg1, importer: arg2 }],
     load: (arg1, _) => [arg1, { path: arg1 }],
-    renderChunk: (arg1, arg2) => [arg2 ?? '', { code: arg1, chunk: arg2 }],
+    renderChunk: (arg1, arg2) => [arg2 ?? "", { code: arg1, chunk: arg2 }],
   };
 
   return async function dispatcher(hookName: string, arg1: unknown, arg2: string | null) {
     // astFunction: arg1이 JSON 직렬화된 FunctionInfo
-    if (hookName === 'astFunction') {
+    if (hookName === "astFunction") {
       if (astFunctionHooks.length === 0) return null;
       try {
         const info = JSON.parse(arg1 as string) as AstFunctionInfo;
@@ -1249,7 +1249,7 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     // resolveContext: arg1 = JSON({ dir, recursive, filter, flags, importer }), arg2 = null. (#1579 Phase 2.5)
     // 결과 형식: { context: string[] } — 매칭 파일 경로 배열. null/undefined 반환 시 graph 가
     // require_context_no_handler diagnostic emit.
-    if (hookName === 'resolveContext') {
+    if (hookName === "resolveContext") {
       if (hooks.resolveContext.length === 0) return null;
       try {
         const args = JSON.parse(arg1 as string) as {
@@ -1277,22 +1277,22 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
 
     // filter 없이 모든 callback 순차 호출 (Rollup sequential 명세). 한 plugin 실패가
     // 다른 plugin 차단 안 되도록 try/catch swallow.
-    if (hookName === 'generateBundle') {
+    if (hookName === "generateBundle") {
       await runFireAndForget(generateBundleCallbacks, arg1 as OutputFile[]);
       return null;
     }
-    if (hookName === 'buildStart') {
+    if (hookName === "buildStart") {
       await runFireAndForget(buildStartCallbacks, undefined);
       return null;
     }
-    if (hookName === 'buildEnd') {
+    if (hookName === "buildEnd") {
       // native 측이 fatal diagnostic message 를 string 으로 forward — 빈 문자열은 정상 build.
       const msg = arg1 as string;
       const err = msg && msg.length > 0 ? new Error(msg) : undefined;
       await runFireAndForget(buildEndCallbacks, err);
       return null;
     }
-    if (hookName === 'closeBundle') {
+    if (hookName === "closeBundle") {
       await runFireAndForget(closeBundleCallbacks, undefined);
       return null;
     }
@@ -1301,19 +1301,19 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
     if (!hookList) return null;
 
     // transform/renderChunk: 체이닝 (이전 결과의 code가 다음 입력)
-    if (hookName === 'transform' || hookName === 'renderChunk') {
+    if (hookName === "transform" || hookName === "renderChunk") {
       let currentCode = arg1 as string;
       let changed = false;
       for (const h of hookList) {
-        if (h.filter.test(arg2 ?? '')) {
+        if (h.filter.test(arg2 ?? "")) {
           try {
             const cbArgs =
-              hookName === 'transform'
+              hookName === "transform"
                 ? { code: currentCode, path: arg2 }
                 : { code: currentCode, chunk: arg2 };
             const result = await h.callback(cbArgs);
             if (result != null) {
-              const newCode = typeof result === 'string' ? result : result.code;
+              const newCode = typeof result === "string" ? result : result.code;
               if (newCode != null) {
                 currentCode = newCode;
                 changed = true;
@@ -1363,7 +1363,7 @@ function arrayAliasToPlugin(
   aliasArray: ReadonlyArray<{ find: string | RegExp; replacement: string }>,
 ): ZtsPlugin {
   return {
-    name: 'zts:array-alias',
+    name: "zts:array-alias",
     setup(build) {
       build.onResolve({ filter: /.*/ }, (args) => {
         for (const { find, replacement } of aliasArray) {
@@ -1373,7 +1373,7 @@ function arrayAliasToPlugin(
             if (args.path.search(find) !== -1) {
               return { path: args.path.replace(find, replacement) };
             }
-          } else if (args.path === find || args.path.startsWith(find + '/')) {
+          } else if (args.path === find || args.path.startsWith(find + "/")) {
             return { path: args.path.replace(find, replacement) };
           }
         }
@@ -1392,19 +1392,19 @@ function resolveDispatcher(options: BuildOptions) {
   return allPlugins.length ? createPluginDispatcher(allPlugins) : null;
 }
 
-function isBrowserLikeBuildPlatform(platform: BuildOptions['platform'] | undefined): boolean {
-  return platform === undefined || platform === 'browser' || platform === 'react-native';
+function isBrowserLikeBuildPlatform(platform: BuildOptions["platform"] | undefined): boolean {
+  return platform === undefined || platform === "browser" || platform === "react-native";
 }
 
 function withDefaultBuildDefines(options: BuildOptions): Record<string, string> | undefined {
   const define = { ...options.define };
   const browserLike = isBrowserLikeBuildPlatform(options.platform) || options.minifySyntax === true;
 
-  if (browserLike && define['process.env.NODE_ENV'] === undefined) {
-    define['process.env.NODE_ENV'] = options.devMode ? '"development"' : '"production"';
+  if (browserLike && define["process.env.NODE_ENV"] === undefined) {
+    define["process.env.NODE_ENV"] = options.devMode ? '"development"' : '"production"';
   }
-  if (options.platform === 'react-native' && define.__DEV__ === undefined) {
-    define.__DEV__ = options.devMode ? 'true' : 'false';
+  if (options.platform === "react-native" && define.__DEV__ === undefined) {
+    define.__DEV__ = options.devMode ? "true" : "false";
   }
 
   return Object.keys(define).length > 0 ? define : undefined;
@@ -1412,9 +1412,9 @@ function withDefaultBuildDefines(options: BuildOptions): Record<string, string> 
 
 function withDefaultAppBuildDefines(options: AppBuildOptions): Record<string, string> | undefined {
   const define = { ...options.define };
-  if (define['process.env.NODE_ENV'] === undefined) {
-    define['process.env.NODE_ENV'] =
-      (options.mode ?? 'production') === 'production' ? '"production"' : '"development"';
+  if (define["process.env.NODE_ENV"] === undefined) {
+    define["process.env.NODE_ENV"] =
+      (options.mode ?? "production") === "production" ? '"production"' : '"development"';
   }
   return define;
 }
@@ -1440,7 +1440,7 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   if (options.blockList) {
     napiOptions.blockList = options.blockList.map((p) => {
       if (p instanceof RegExp) return p.source;
-      if (typeof p === 'string') return p;
+      if (typeof p === "string") return p;
       throw new TypeError(`blockList entries must be RegExp or string, got ${typeof p}`);
     });
   }
@@ -1455,12 +1455,12 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   const sc = options.compiler?.styledComponents;
   if (sc !== undefined && sc !== false) {
     napiOptions.styledComponents = true;
-    if (typeof sc === 'object') {
+    if (typeof sc === "object") {
       if (sc.ssr === false) napiOptions.styledComponentsSsr = false;
       if (sc.minify === true) napiOptions.styledComponentsMinify = true;
       if (sc.fileName === false) napiOptions.styledComponentsFileName = false;
       if (sc.pure === true) napiOptions.styledComponentsPure = true;
-      if (typeof sc.namespace === 'string' && sc.namespace.length > 0) {
+      if (typeof sc.namespace === "string" && sc.namespace.length > 0) {
         napiOptions.styledComponentsNamespace = sc.namespace;
       }
       if (Array.isArray(sc.meaninglessFileNames)) {
@@ -1475,18 +1475,18 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   const em = options.compiler?.emotion;
   if (em !== undefined && em !== false) {
     napiOptions.emotion = true;
-    if (typeof em === 'object') {
+    if (typeof em === "object") {
       // autoLabel: string ("never"|"always"|"dev-only") 또는 boolean (legacy false=never).
       // 누락 시 NAPI 측 default `.always`.
       if (em.autoLabel === false) {
-        napiOptions.emotionAutoLabel = 'never';
+        napiOptions.emotionAutoLabel = "never";
       } else if (em.autoLabel === true) {
-        napiOptions.emotionAutoLabel = 'always';
-      } else if (typeof em.autoLabel === 'string') {
+        napiOptions.emotionAutoLabel = "always";
+      } else if (typeof em.autoLabel === "string") {
         napiOptions.emotionAutoLabel = em.autoLabel;
       }
       if (em.sourceMap === true) napiOptions.emotionSourceMap = true;
-      if (typeof em.labelFormat === 'string' && em.labelFormat.length > 0) {
+      if (typeof em.labelFormat === "string" && em.labelFormat.length > 0) {
         napiOptions.emotionLabelFormat = em.labelFormat;
       }
       const extras = collectEmotionImportMapExtras(em.importMap);
@@ -1502,12 +1502,12 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
  * Zig 측 `EMOTION_CSS_SOURCES` (`src/transformer/transformer/emotion.zig`) 와 동기화.
  */
 const EMOTION_CSS_CANONICAL_SOURCES: ReadonlySet<string> = new Set([
-  '@emotion/react',
-  '@emotion/css',
-  '@emotion/core',
-  '@emotion/native',
-  '@emotion/primitives',
-  '@emotion/primitives-core',
+  "@emotion/react",
+  "@emotion/css",
+  "@emotion/core",
+  "@emotion/native",
+  "@emotion/primitives",
+  "@emotion/primitives-core",
 ]);
 
 /**
@@ -1518,7 +1518,7 @@ const EMOTION_CSS_CANONICAL_SOURCES: ReadonlySet<string> = new Set([
  * import 인식이 source 단위라 alias-by-alias 라우팅은 미지원 — 흔치 않은 케이스라 의도적
  * 단순화 (babel parity).
  */
-function collectEmotionImportMapExtras(importMap: EmotionOptions['importMap']): {
+function collectEmotionImportMapExtras(importMap: EmotionOptions["importMap"]): {
   css: string[];
   styled: string[];
 } {
@@ -1528,7 +1528,7 @@ function collectEmotionImportMapExtras(importMap: EmotionOptions['importMap']): 
   for (const [source, locals] of Object.entries(importMap)) {
     for (const spec of Object.values(locals)) {
       const [pkg, exportName] = spec.canonicalImport;
-      if (pkg === '@emotion/styled' && exportName === 'default') {
+      if (pkg === "@emotion/styled" && exportName === "default") {
         styled.add(source);
       } else if (EMOTION_CSS_CANONICAL_SOURCES.has(pkg)) {
         css.add(source);
@@ -1551,13 +1551,13 @@ function postProcessCssOutputs(result: BuildResult, options: BuildOptions): void
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let lcss: any;
   try {
-    lcss = require('lightningcss');
+    lcss = require("lightningcss");
   } catch {
     return; // lightningcss 미설치 — raw CSS 그대로 반환
   }
 
   for (const file of result.outputFiles) {
-    if (!file.path.endsWith('.css')) continue;
+    if (!file.path.endsWith(".css")) continue;
     try {
       const transformed = lcss.transform({
         code: Buffer.from(file.text),
@@ -1595,12 +1595,12 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
 
   for (const file of result.outputFiles) {
     let outPath: string;
-    if (outfileResolved && file.path === 'bundle.js') {
+    if (outfileResolved && file.path === "bundle.js") {
       // 메인 번들 → outfile 경로로 출력
       outPath = outfileResolved;
-    } else if (outfileResolved && file.path.endsWith('.map')) {
+    } else if (outfileResolved && file.path.endsWith(".map")) {
       // 소스맵 → outfile 옆에 .map으로 출력
-      outPath = outfileResolved + '.map';
+      outPath = outfileResolved + ".map";
     } else if (options.outdir) {
       outPath = join(resolve(options.outdir), file.path);
     } else {
@@ -1611,7 +1611,7 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
       mkdirSync(dir, { recursive: true });
       createdDirs.add(dir);
     }
-    writeFileSync(outPath, file.text, 'utf-8');
+    writeFileSync(outPath, file.text, "utf-8");
   }
 }
 
@@ -1624,8 +1624,8 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
  * `closeBundle` 은 write 성공 시에만 호출.
  */
 export async function build(options: BuildOptions): Promise<BuildResult> {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
-  if (!options.entryPoints?.length) throw new Error('@zts/core: entryPoints is required');
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
   validateTsConfigRaw(options.tsconfigRaw);
 
   const napiOptions = prepareNapiOptions(options);
@@ -1641,7 +1641,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   postProcessCssOutputs(result, options);
   writeOutputFiles(result, options);
 
-  if (dispatcher) await dispatcher('closeBundle', undefined, null);
+  if (dispatcher) await dispatcher("closeBundle", undefined, null);
   return result;
 }
 
@@ -1650,18 +1650,18 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
  * 주의: JS 플러그인은 build() (async) / watch()에서만 지원됨.
  */
 export function buildSync(options: BuildOptions): BuildResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
-  if (!options.entryPoints?.length) throw new Error('@zts/core: entryPoints is required');
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
+  if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
   validateTsConfigRaw(options.tsconfigRaw);
   if (options.plugins?.length) {
     throw new Error(
-      '@zts/core: plugins are only supported with build() (async). Use build() instead of buildSync().',
+      "@zts/core: plugins are only supported with build() (async). Use build() instead of buildSync().",
     );
   }
   // Array 형태 alias 는 host RegExp 위임이 plugin hook 기반이라 buildSync 미지원.
   if (Array.isArray(options.alias)) {
     throw new Error(
-      '@zts/core: array-form alias (with RegExp / Vite-style) requires async build(). Use Record<string, string> form for buildSync, or call build() instead.',
+      "@zts/core: array-form alias (with RegExp / Vite-style) requires async build(). Use Record<string, string> form for buildSync, or call build() instead.",
     );
   }
 
@@ -1673,7 +1673,7 @@ export function buildSync(options: BuildOptions): BuildResult {
 }
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   const { publicDir, compiler, ...rest } = options;
   return native.buildAppSync({
     ...rest,
@@ -1690,17 +1690,17 @@ export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
 
 /// `compiler.styledComponents` / `compiler.emotion` (boolean / 객체 form) 를 평면 NAPI
 /// 필드로 변환. `prepareNapiOptions` (buildSync) 와 `buildAppSync` 양쪽이 공유.
-function buildCompilerNapiFields(compiler: AppBuildOptions['compiler']): Record<string, unknown> {
+function buildCompilerNapiFields(compiler: AppBuildOptions["compiler"]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
 
   const sc = compiler?.styledComponents;
   if (sc !== undefined && sc !== false) out.styledComponents = true;
-  if (typeof sc === 'object') {
+  if (typeof sc === "object") {
     if (sc.ssr === false) out.styledComponentsSsr = false;
     if (sc.minify === true) out.styledComponentsMinify = true;
     if (sc.fileName === false) out.styledComponentsFileName = false;
     if (sc.pure === true) out.styledComponentsPure = true;
-    if (typeof sc.namespace === 'string' && sc.namespace.length > 0) {
+    if (typeof sc.namespace === "string" && sc.namespace.length > 0) {
       out.styledComponentsNamespace = sc.namespace;
     }
     if (Array.isArray(sc.meaninglessFileNames)) {
@@ -1714,12 +1714,12 @@ function buildCompilerNapiFields(compiler: AppBuildOptions['compiler']): Record<
 
   const em = compiler?.emotion;
   if (em !== undefined && em !== false) out.emotion = true;
-  if (typeof em === 'object') {
-    if (em.autoLabel === false) out.emotionAutoLabel = 'never';
-    else if (em.autoLabel === true) out.emotionAutoLabel = 'always';
-    else if (typeof em.autoLabel === 'string') out.emotionAutoLabel = em.autoLabel;
+  if (typeof em === "object") {
+    if (em.autoLabel === false) out.emotionAutoLabel = "never";
+    else if (em.autoLabel === true) out.emotionAutoLabel = "always";
+    else if (typeof em.autoLabel === "string") out.emotionAutoLabel = em.autoLabel;
     if (em.sourceMap === true) out.emotionSourceMap = true;
-    if (typeof em.labelFormat === 'string' && em.labelFormat.length > 0) {
+    if (typeof em.labelFormat === "string" && em.labelFormat.length > 0) {
       out.emotionLabelFormat = em.labelFormat;
     }
     const extras = collectEmotionImportMapExtras(em.importMap);
@@ -1731,7 +1731,7 @@ function buildCompilerNapiFields(compiler: AppBuildOptions['compiler']): Record<
 }
 
 export function prepareAppDevSync(options: AppDevPrepareOptions = {}): AppDevPrepareResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   const { publicDir, ...rest } = options;
   return native.prepareAppDevSync({
     ...rest,
@@ -1815,7 +1815,7 @@ export interface BenchmarkResult {
  * ```
  */
 export function benchmark(options: BenchmarkOptions): BenchmarkResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error("@zts/core: not initialized. Call init() first.");
   if (!options.source && !options.file) {
     throw new Error("@zts/core.benchmark: 'source' or 'file' is required");
   }
@@ -1825,7 +1825,7 @@ export function benchmark(options: BenchmarkOptions): BenchmarkResult {
   return native.benchmark({
     source: options.source,
     file: options.file,
-    filename: options.filename ?? 'input.js',
+    filename: options.filename ?? "input.js",
     phases: options.phases,
     iterations: options.iterations ?? 100,
     warmup: options.warmup ?? 10,
@@ -1894,8 +1894,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
         build.onResolve({ filter: /.*/ }, async (args) => {
           const result = await hook(args.path, args.importer);
           if (result == null) return null;
-          if (typeof result === 'string') return { path: result };
-          if (typeof result === 'object' && 'id' in result) {
+          if (typeof result === "string") return { path: result };
+          if (typeof result === "object" && "id" in result) {
             return { path: result.id, external: result.external };
           }
           return null;
@@ -1907,8 +1907,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
         build.onLoad({ filter: /.*/ }, async (args) => {
           const result = await hook(args.path);
           if (result == null) return null;
-          if (typeof result === 'string') return { contents: result };
-          if (typeof result === 'object' && 'code' in result) {
+          if (typeof result === "string") return { contents: result };
+          if (typeof result === "object" && "code" in result) {
             return { contents: result.code };
           }
           return null;
@@ -1920,8 +1920,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
         build.onTransform({ filter: /.*/ }, async (args) => {
           const result = await hook(args.code, args.path);
           if (result == null) return null;
-          if (typeof result === 'string') return { code: result };
-          if (typeof result === 'object' && 'code' in result) {
+          if (typeof result === "string") return { code: result };
+          if (typeof result === "object" && "code" in result) {
             return { code: result.code };
           }
           return null;
@@ -1933,8 +1933,8 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
         build.onRenderChunk({ filter: /.*/ }, async (args) => {
           const result = await hook(args.code, args.chunk);
           if (result == null) return null;
-          if (typeof result === 'string') return { code: result };
-          if (typeof result === 'object' && 'code' in result) {
+          if (typeof result === "string") return { code: result };
+          if (typeof result === "object" && "code" in result) {
             return { code: result.code };
           }
           return null;
@@ -1980,7 +1980,7 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
  * → onReady/onRebuild → closeBundle. closeBundle 은 callback 이 없거나 throw 해도 호출된다.
  */
 export function watch(options: BuildOptions): WatchHandle {
-  if (!native) throw new Error('call init() first');
+  if (!native) throw new Error("call init() first");
 
   const nativeOpts = prepareNapiOptions(options);
   const dispatcher = resolveDispatcher(options);
@@ -1992,7 +1992,7 @@ export function watch(options: BuildOptions): WatchHandle {
     // swallow — 그렇지 않으면 user callback throw 와 closeBundle dispatch 실패가
     // unhandledRejection 으로 샌다. build() 는 await 가능해 이 래핑이 필요 없다.
     const dispatchCloseBundle = () => {
-      void dispatcher('closeBundle', undefined, null).catch(() => {});
+      void dispatcher("closeBundle", undefined, null).catch(() => {});
     };
     const wrapWatchCallback =
       <T>(callback?: (event: T) => void | Promise<void>) =>

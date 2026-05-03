@@ -311,7 +311,12 @@ fn napiTokenize(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi
 
     var scanner = Scanner.init(native_alloc, source) catch return throwError(env, "OutOfMemory");
     defer scanner.deinit();
-    if (std.mem.eql(u8, std.fs.path.extension(filename), ".mjs")) scanner.is_module = true;
+    const ext = std.fs.path.extension(filename);
+    if (std.mem.eql(u8, ext, ".mjs") or std.mem.eql(u8, ext, ".mts") or
+        std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx"))
+    {
+        scanner.is_module = true;
+    }
 
     var js_tokens: c.napi_value = undefined;
     if (c.napi_create_array(env, &js_tokens) != c.napi_ok) return throwError(env, "failed to create token array");
