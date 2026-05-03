@@ -1004,10 +1004,7 @@ pub const Bundler = struct {
             var s = try TreeShaker.init(self.allocator, &graph, &(linker.?));
             try s.analyze(self.options.entry_points);
             if (s.ast_mutated_after_link and !self.options.code_splitting) {
-                // tree-shaker 가 link 이후 module.semantic 을 재생성한 뒤이므로 stale
-                // rename/mangling 을 비우고 다시 계산해야 emit 단계에서 새 symbol id 를
-                // 따라가는 산출물이 된다. numeric post-pass 는 --minify 없이도 AST 를
-                // mutation 할 수 있으므로 minify_syntax 여부에 묶지 않는다.
+                // resync 로 새 symbol id 가 생긴 모듈이 있으니 rename/mangling 재계산.
                 try (&(linker.?)).finalize(.{
                     .compute_renames = true,
                     .compute_mangling = self.options.minify_identifiers,
