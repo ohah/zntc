@@ -591,7 +591,51 @@ fn mapPropTypeAt(
         // 필요해지면 `.object` 로 보강 필요.
         .ts_type_literal, .flow_object_type, .flow_exact_object_type => .mixed,
 
+        // intersection (`A & B`) — view config 단계에서 nested shape 풀 필요 없음 (.object
+        // variant 미사용 정책과 동일). reference 도 view config attribute 이름만 등록.
+        .ts_intersection_type, .flow_intersection_type => .mixed,
+
         .ts_union_type, .flow_union_type => mapUnion(ast, node),
+
+        // 그 외 type 노드들 — prop position 에 거의 안 등장하지만 RN spec 에서 발견 시
+        // reference 가 view config 에 attribute name 만 등록하는 동작과 동등. tuple /
+        // function (event 외) / typeof / literal / template-literal / parenthesized /
+        // conditional / mapped / indexed-access / type-predicate / import / operator /
+        // void / null / undefined / unknown / never / object / symbol / bigint 등.
+        .ts_void_keyword,
+        .ts_undefined_keyword,
+        .ts_null_keyword,
+        .ts_unknown_keyword,
+        .ts_never_keyword,
+        .ts_object_keyword,
+        .ts_symbol_keyword,
+        .ts_bigint_keyword,
+        .ts_function_type,
+        .ts_constructor_type,
+        .ts_tuple_type,
+        .ts_named_tuple_member,
+        .ts_literal_type,
+        .ts_template_literal_type,
+        .ts_indexed_access_type,
+        .ts_conditional_type,
+        .ts_mapped_type,
+        .ts_type_query,
+        .ts_parenthesized_type,
+        .ts_infer_type,
+        .ts_optional_type,
+        .ts_rest_type,
+        .ts_type_predicate,
+        .ts_import_type,
+        .ts_type_operator,
+        .flow_void_keyword,
+        .flow_null_keyword,
+        .flow_this_type,
+        .flow_function_type,
+        .flow_parenthesized_type,
+        .flow_type_query,
+        .flow_tuple_type,
+        .flow_literal_type,
+        => .mixed,
 
         else => error.UnsupportedPropType,
     };

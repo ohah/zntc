@@ -1357,3 +1357,137 @@ test "schema_builder: Flow exact object with string-literal key → mixed (#2447
     try std.testing.expectEqual(@as(usize, 1), shape.props.len);
     try std.testing.expect(shape.props[0].type_annotation == .mixed);
 }
+
+// ============================================================
+// Intersection type at prop position (`T & U`).
+// reference 가 view config 에서 attribute name 만 등록하므로 `.mixed` 매핑이 동등.
+// ============================================================
+
+test "schema_builder: TS intersection type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Other = { tag: string };
+        \\type Props = { meta: { count: number } & Other };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow intersection of exact objects → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Other = {| tag: string |};
+        \\type Props = { meta: {| count: number |} & Other };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+// ============================================================
+// 그 외 미지원 type 노드들 — view config 단계에서 .mixed 로 매핑 (reference 동등).
+// prop position 에 거의 안 등장하지만 RN spec 발견 시 fail-fast 안 하도록.
+// ============================================================
+
+test "schema_builder: TS tuple type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { coords: [number, number] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS literal type prop → mixed" {
+    // 단독 literal type (`'on'`) — union 안이 아니라 prop value 자체가 literal.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { kind: 'on' };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS template literal type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { id: `prefix-${string}` };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS typeof query prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\const Foo = { x: 1 };
+        \\type Props = { v: typeof Foo };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS parenthesized type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { v: (number) };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    // parenthesized 자체는 .mixed (inner unwrap 안 함) — view config 단계에선 동등.
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow tuple type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { coords: [number, number] };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow void / null keyword prop → mixed" {
+    // 거의 등장 안 하지만 RN spec 일관성 — fail-fast 안 함.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { v: void, n: null };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+    try std.testing.expect(shape.props[1].type_annotation == .mixed);
+}
