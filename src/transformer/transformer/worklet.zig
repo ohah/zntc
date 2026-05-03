@@ -229,8 +229,9 @@ pub fn collectClosureVars(
 /// coverExpressionToAssignmentTarget 로 변환되므로 cover-grammar 결과 (identifier_reference,
 /// assignment_target_identifier, assignment_expression) 도 binding 으로 본다.
 fn collectBindingNames(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMap(void)) Error!void {
-    var it = ast_walk.bindingIdentifiers(self.ast, idx, .{ .cover_grammar_assignment = true });
-    while (it.next()) |leaf_idx| {
+    var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{ .cover_grammar_assignment = true });
+    defer it.deinit();
+    while (try it.next()) |leaf_idx| {
         const name = self.ast.getText(self.ast.getNode(leaf_idx).data.string_ref);
         if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
     }

@@ -734,8 +734,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         fn collectBindingNames(self: *Transformer, idx: NodeIndex, out: *std.ArrayList(Span)) Transformer.Error!void {
-            var it = ast_walk.bindingIdentifiers(self.ast, idx, .{});
-            while (it.next()) |leaf_idx| {
+            var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{});
+            defer it.deinit();
+            while (try it.next()) |leaf_idx| {
                 try out.append(self.allocator, self.ast.getNode(leaf_idx).data.string_ref);
             }
         }

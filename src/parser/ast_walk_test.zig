@@ -159,8 +159,9 @@ fn collectBindingNames(
 ) !std.ArrayList([]const u8) {
     var out: std.ArrayList([]const u8) = .empty;
     errdefer out.deinit(allocator);
-    var it = ast_walk.bindingIdentifiers(ast, idx, options);
-    while (it.next()) |leaf_idx| {
+    var it = try ast_walk.bindingIdentifiers(allocator, ast, idx, options);
+    defer it.deinit();
+    while (try it.next()) |leaf_idx| {
         try out.append(allocator, ast.getText(ast.getNode(leaf_idx).span));
     }
     return out;
@@ -226,6 +227,33 @@ test "bindingIdentifiers: formal_parameters 와 nested default" {
     try std.testing.expectEqualStrings("d", names.items[3]);
     try std.testing.expectEqualStrings("e", names.items[4]);
     try std.testing.expectEqualStrings("g", names.items[5]);
+}
+
+test "#2473 regression: 500-element array pattern — walker 가 모든 leaf 반환" {
+    // 이전 256-stack-cap 시 257번째부터 silently push 무시 → walker leaf 누락.
+    // dynamic ArrayList 로 전환 후 500개 모두 yield.
+    const a = std.testing.allocator;
+
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(a);
+    try src.appendSlice(a, "var [");
+    var i: u32 = 0;
+    while (i < 500) : (i += 1) {
+        if (i > 0) try src.appendSlice(a, ", ");
+        try src.writer(a).print("a{d}", .{i});
+    }
+    try src.appendSlice(a, "] = arr;");
+
+    var ctx = try parseSource(a, src.items);
+    defer ctx.parser.deinit();
+    defer ctx.scanner.deinit();
+
+    const arr_idx = findFirstTag(&ctx.parser.ast, .array_pattern) orelse return error.NotFound;
+    var names = try collectBindingNames(a, &ctx.parser.ast, arr_idx, .{});
+    defer names.deinit(a);
+    try std.testing.expectEqual(@as(usize, 500), names.items.len);
+    try std.testing.expectEqualStrings("a0", names.items[0]);
+    try std.testing.expectEqualStrings("a499", names.items[499]);
 }
 
 test "bindingIdentifiers: cover_grammar_assignment 옵션이 arrow param 의 assignment_expression 을 처리" {

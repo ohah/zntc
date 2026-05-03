@@ -84,8 +84,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             idx: NodeIndex,
             names: *std.ArrayList([]const u8),
         ) !void {
-            var it = ast_walk.bindingIdentifiers(self.ast, idx, .{});
-            while (it.next()) |leaf_idx| {
+            var it = try ast_walk.bindingIdentifiers(self.allocator, self.ast, idx, .{});
+            defer it.deinit();
+            while (try it.next()) |leaf_idx| {
                 const leaf = self.ast.getNode(leaf_idx);
                 if (leaf.tag != .binding_identifier) continue;
                 try names.append(self.allocator, self.ast.getText(leaf.span));

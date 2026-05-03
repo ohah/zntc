@@ -536,8 +536,11 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
 // 안에서는 fresh counter 로도 의미가 같지만, `var a, b, c` 처럼 한 var 리스트의
 // 누적 shadow 수를 봐야 하는 경우엔 호출자가 같은 counter 를 재사용한다.
 fn bindingPatternImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
-    var it = ast_walk.bindingIdentifiers(ast, idx, .{ .cover_grammar_assignment = true });
-    while (it.next()) |leaf_idx| {
+    // walker 의 alloc 실패는 의미상 "scan 불완전" 이라 conservative-keep (overflow 로 간주) 로 fallback.
+    // 정상 path 는 ast.allocator 가 transpile arena 라 사실상 bump-allocator → 실패 거의 없음.
+    var it = ast_walk.bindingIdentifiers(ast.allocator, ast, idx, .{ .cover_grammar_assignment = true }) catch return true;
+    defer it.deinit();
+    while (it.next() catch return true) |leaf_idx| {
         const leaf = ast.getNode(leaf_idx);
         const name = ast.getText(leaf.span);
         if (string_list.contains(names, name)) {
@@ -873,8 +876,10 @@ fn appendBindingLiteShadowName(buf: [][]const u8, len: *usize, name: []const u8)
 
 fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
     if (len.* >= buf.len) return;
-    var it = ast_walk.bindingIdentifiers(ast, idx, .{ .cover_grammar_assignment = true });
-    while (it.next()) |leaf_idx| {
+    // walker alloc 실패 시 그냥 중단 — 호출자는 buf 가 빈 상태면 기존대로 conservative path 가 잡는다.
+    var it = ast_walk.bindingIdentifiers(ast.allocator, ast, idx, .{ .cover_grammar_assignment = true }) catch return;
+    defer it.deinit();
+    while (it.next() catch return) |leaf_idx| {
         const leaf = ast.getNode(leaf_idx);
         // import 이름과 매칭되는 binding 만 shadow set 에 추가. cover-grammar 결과인
         // identifier_reference / assignment_target_identifier 도 동일 처리.

@@ -367,8 +367,9 @@ fn collectBindingNames(
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
-    var it = ast_walk.bindingIdentifiers(ast, idx, .{});
-    while (it.next()) |leaf_idx| {
+    var it = try ast_walk.bindingIdentifiers(allocator, ast, idx, .{});
+    defer it.deinit();
+    while (try it.next()) |leaf_idx| {
         const leaf = ast.getNode(leaf_idx);
         if (leaf.tag != .binding_identifier) continue;
         try recordSeenName(ast.getText(leaf.span), leaf.span, seen, errors, allocator);

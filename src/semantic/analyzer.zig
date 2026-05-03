@@ -2683,21 +2683,19 @@ pub const SemanticAnalyzer = struct {
         const saved = try self.enterScope(.catch_clause, self.is_strict_mode);
         const param_idx = node.data.binary.left;
 
-        // catch param 이름 수집 (중복 바인딩 검사 + block body 충돌 검사용)
-        var catch_names: [16]Span = undefined;
-        var catch_name_count: usize = 0;
+        // catch param 이름 수집 (중복 바인딩 검사 + block body 충돌 검사용).
+        // dynamic — 16+ binding 도 진단 누락 없이 처리 (#2474).
+        var catch_names: std.ArrayList(Span) = .empty;
+        defer catch_names.deinit(self.allocator);
 
         if (!param_idx.isNone()) {
             const param_node = self.ast.getNode(param_idx);
             if (param_node.tag == .binding_identifier) {
                 try self.declareSymbolWithNode(param_node.span, .catch_binding, param_node.span, @intFromEnum(param_idx));
-                if (catch_name_count < 16) {
-                    catch_names[catch_name_count] = param_node.span;
-                    catch_name_count += 1;
-                }
+                try catch_names.append(self.allocator, param_node.span);
             } else {
                 // Destructuring pattern — collect all binding names and check duplicates
-                try self.collectAndCheckCatchBindings(param_idx, &catch_names, &catch_name_count);
+                try self.collectAndCheckCatchBindings(param_idx, &catch_names);
             }
         }
 
@@ -2705,13 +2703,13 @@ pub const SemanticAnalyzer = struct {
         const body_idx = node.data.binary.right;
         if (!body_idx.isNone()) {
             const body_node = self.ast.getNode(body_idx);
-            if (body_node.tag == .block_statement and catch_name_count > 0) {
+            if (body_node.tag == .block_statement and catch_names.items.len > 0) {
                 // Enter block scope for the body
                 const block_saved = try self.enterScope(.block, self.is_strict_mode);
                 // Visit block body statements
                 try self.visitNodeList(body_node.data.list);
                 // Check for catch param conflicts with lexically-declared names in the block
-                try self.checkCatchBodyConflicts(catch_names[0..catch_name_count]);
+                try self.checkCatchBodyConflicts(catch_names.items);
                 self.exitScope(block_saved);
             } else {
                 try self.visitNode(body_idx);
@@ -2721,14 +2719,14 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Collect binding names from destructuring pattern and check for duplicate catch bindings.
-    fn collectAndCheckCatchBindings(self: *SemanticAnalyzer, idx: NodeIndex, names: *[16]Span, count: *usize) AllocError!void {
+    fn collectAndCheckCatchBindings(self: *SemanticAnalyzer, idx: NodeIndex, names: *std.ArrayList(Span)) AllocError!void {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier => {
                 // Check for duplicate
                 const name_text = self.ast.getText(node.span);
-                for (names.*[0..count.*]) |existing_span| {
+                for (names.items) |existing_span| {
                     const existing_text = self.ast.getText(existing_span);
                     if (std.mem.eql(u8, name_text, existing_text)) {
                         try self.addRedeclarationError(node.span, name_text, existing_span);
@@ -2736,18 +2734,15 @@ pub const SemanticAnalyzer = struct {
                     }
                 }
                 try self.declareSymbolWithNode(node.span, .catch_binding, node.span, @intFromEnum(idx));
-                if (count.* < 16) {
-                    names.*[count.*] = node.span;
-                    count.* += 1;
-                }
+                try names.append(self.allocator, node.span);
             },
             .array_pattern => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
                 for (split.elements) |raw_idx| {
-                    try self.collectAndCheckCatchBindings(@enumFromInt(raw_idx), names, count);
+                    try self.collectAndCheckCatchBindings(@enumFromInt(raw_idx), names);
                 }
                 if (split.rest_operand) |op| {
-                    try self.collectAndCheckCatchBindings(op, names, count);
+                    try self.collectAndCheckCatchBindings(op, names);
                 }
             },
             .object_pattern => {
@@ -2759,18 +2754,18 @@ pub const SemanticAnalyzer = struct {
                     if (prop.tag == .object_property or
                         prop.tag == .assignment_target_property_identifier)
                     {
-                        try self.collectAndCheckCatchBindings(prop.data.binary.right, names, count);
+                        try self.collectAndCheckCatchBindings(prop.data.binary.right, names);
                     } else {
-                        try self.collectAndCheckCatchBindings(prop_idx, names, count);
+                        try self.collectAndCheckCatchBindings(prop_idx, names);
                     }
                 }
                 if (split.rest_operand) |op| {
-                    try self.collectAndCheckCatchBindings(op, names, count);
+                    try self.collectAndCheckCatchBindings(op, names);
                 }
             },
             .assignment_pattern, .assignment_target_with_default => {
                 // binary: { left = pattern, right = default }
-                try self.collectAndCheckCatchBindings(node.data.binary.left, names, count);
+                try self.collectAndCheckCatchBindings(node.data.binary.left, names);
             },
             else => {},
         }
