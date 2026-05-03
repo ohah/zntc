@@ -3,13 +3,14 @@ const import_scanner = @import("import_scanner.zig");
 const extractImports = import_scanner.extractImports;
 const extractImportsWithCjsDetection = import_scanner.extractImportsWithCjsDetection;
 const extractImportsWithCjsDetectionAndDefines = import_scanner.extractImportsWithCjsDetectionAndDefines;
-const extractWorkerRecords = import_scanner.extractWorkerRecords;
 const ScanResult = import_scanner.ScanResult;
 const stripQuotes = import_scanner.stripQuotes;
 const types = @import("types.zig");
 const ImportRecord = types.ImportRecord;
 const ImportKind = types.ImportKind;
 const RequireContextMode = types.RequireContextMode;
+const scan_results = @import("../parser/scan_results.zig");
+const ScanImportRecord = scan_results.ScanImportRecord;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
@@ -74,7 +75,7 @@ fn parseAndExtractFullWithDefines(
     return extractImportsWithCjsDetectionAndDefines(allocator, &parser.ast, defines);
 }
 
-fn parseAndExtractWorkers(allocator: std.mem.Allocator, source: []const u8) ![]ImportRecord {
+fn parseInlineScanRecords(allocator: std.mem.Allocator, source: []const u8) ![]ScanImportRecord {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -83,9 +84,12 @@ fn parseAndExtractWorkers(allocator: std.mem.Allocator, source: []const u8) ![]I
     var parser = Parser.init(arena_alloc, &scanner);
     parser.is_module = true;
     scanner.is_module = true;
+    parser.enable_scan = true;
     _ = try parser.parse();
 
-    return extractWorkerRecords(allocator, &parser.ast);
+    const records = try allocator.alloc(ScanImportRecord, parser.scan_import_records.items.len);
+    @memcpy(records, parser.scan_import_records.items);
+    return records;
 }
 
 test "explicit `import type { X } from ...` → no record (parser already elides)" {
@@ -307,22 +311,36 @@ test "stripQuotes" {
     try std.testing.expect(stripQuotes("") == null);
 }
 
-test "worker records: supported Worker URL pattern is extracted" {
+test "inline scan: supported Worker URL pattern is extracted" {
     const alloc = std.testing.allocator;
-    const records = try parseAndExtractWorkers(
+    const records = try parseInlineScanRecords(
         alloc,
         "const worker = new Worker(new URL('./worker.ts', import.meta.url));",
     );
     defer alloc.free(records);
 
     try std.testing.expectEqual(@as(usize, 1), records.len);
-    try std.testing.expectEqual(ImportKind.worker, records[0].kind);
+    try std.testing.expectEqual(scan_results.ImportKind.worker, records[0].kind);
     try std.testing.expectEqualStrings("./worker.ts", records[0].specifier);
+    try std.testing.expect(records[0].url_span != null);
 }
 
-test "worker records: modules without worker URL markers skip extraction" {
+test "inline scan: supported SharedWorker URL pattern is extracted" {
     const alloc = std.testing.allocator;
-    const records = try parseAndExtractWorkers(
+    const records = try parseInlineScanRecords(
+        alloc,
+        "const worker = new SharedWorker(new URL('./shared.ts', import.meta.url));",
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqual(scan_results.ImportKind.worker, records[0].kind);
+    try std.testing.expectEqualStrings("./shared.ts", records[0].specifier);
+}
+
+test "inline scan: non-worker new URL is ignored" {
+    const alloc = std.testing.allocator;
+    const records = try parseInlineScanRecords(
         alloc,
         "const value = new URL('./asset.png', location.href); export { value };",
     );

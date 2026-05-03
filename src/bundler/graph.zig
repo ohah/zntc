@@ -1727,7 +1727,7 @@ pub const ModuleGraph = struct {
         // import/export 추출: inline scan 결과를 bundler 타입으로 변환
         {
             // Parser scan records → bundler ImportRecord
-            const records: []ImportRecord = blk: {
+            {
                 var records_scope = profile.begin(.graph_discover_pm_post_records);
                 defer records_scope.end();
 
@@ -1787,9 +1787,7 @@ pub const ModuleGraph = struct {
                     module.export_bindings = ebindings;
                     module.exported_names = projectExportedNames(arena_alloc, ebindings);
                 } else |_| {}
-
-                break :blk records;
-            };
+            }
 
             // OOM 시 silent skip 하면 optional require 가 hard error 로 회귀하므로 module 을
             // ready 로 끝내고 graph 진행 중단 (1108줄 extractImports 와 동일 패턴).
@@ -1800,21 +1798,6 @@ pub const ModuleGraph = struct {
                     module.state = .ready;
                     return;
                 };
-            }
-
-            // Worker 패턴 보완: new Worker(new URL(...)) 는 inline scan에서 감지하지 않으므로
-            // 별도의 AST walk로 worker records를 추출하여 병합한다.
-            {
-                var worker_scope = profile.begin(.graph_discover_pm_post_worker_records);
-                defer worker_scope.end();
-                const worker_records = import_scanner.extractWorkerRecords(arena_alloc, &parser.ast) catch &[_]ImportRecord{};
-                if (worker_records.len > 0) {
-                    if (arena_alloc.alloc(ImportRecord, records.len + worker_records.len)) |merged| {
-                        @memcpy(merged[0..records.len], records);
-                        @memcpy(merged[records.len..], worker_records);
-                        module.import_records = merged;
-                    } else |_| {}
-                }
             }
 
             if (parser.ast.has_flow_enum_declaration) {
