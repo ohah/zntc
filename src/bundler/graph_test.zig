@@ -254,6 +254,72 @@ test "graph: unresolved import — error diagnostic" {
     try std.testing.expect(has_unresolved);
 }
 
+test "graph: unresolved type-only import — soft fail with warning (#2466)" {
+    // react-native-screens/types 패턴: subpath 가 .d.ts 만 export 하므로 resolve 실패하지만
+    // X 가 type position 에서만 쓰이면 babel typescript preset 처럼 statement 통째 elide
+    // 되어야 함. ZTS 는 hard fail 대신 warning + disabled stub.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import { X } from './nonexistent';
+        \\const fn = (x: X) => x;
+    );
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    // error 가 아니라 warning 이어야 함.
+    var error_count: usize = 0;
+    var warning_count: usize = 0;
+    for (graph.diagnostics.items) |d| {
+        if (d.code != .unresolved_import) continue;
+        switch (d.severity) {
+            .@"error" => error_count += 1,
+            .warning => warning_count += 1,
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), error_count);
+    try std.testing.expect(warning_count >= 1);
+}
+
+test "graph: unresolved import with value usage — hard error (regression guard)" {
+    // 한 binding 이라도 value 로 쓰이면 hard error. type-only soft fail 의 회귀 가드.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts",
+        \\import { X } from './nonexistent';
+        \\console.log(X);
+    );
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+
+    try graph.build(&.{entry});
+
+    var has_error = false;
+    for (graph.diagnostics.items) |d| {
+        if (d.code == .unresolved_import and d.severity == .@"error") has_error = true;
+    }
+    try std.testing.expect(has_error);
+}
+
 test "graph: bidirectional edges (D078)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

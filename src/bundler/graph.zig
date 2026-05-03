@@ -56,6 +56,8 @@ const TransformOptions = transformer_mod.TransformOptions;
 const TransformCache = @import("module.zig").TransformCache;
 const builtin_plugins = @import("../transformer/plugins/builtin.zig");
 const Ast = @import("../parser/ast.zig").Ast;
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const module_parser = @import("../parser/module.zig");
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 pub const module_store = @import("module_store.zig");
 const phase_mod = @import("phase.zig");
@@ -999,6 +1001,96 @@ pub const ModuleGraph = struct {
         }
     }
 
+    /// 단일 import declaration 의 named binding 갯수와 자기 참조 NodeIndex 갯수에 대한
+    /// stack-buffer 한계. 한계 초과 시 보수적으로 elide 안 함 (resolver 는 hard error 유지).
+    /// Star/scratch import 는 보통 1-10 개 binding 이라 16 이면 실용적 충분.
+    const max_named_bindings = 16;
+    const max_spec_self_nodes = max_named_bindings * 2; // imported + local (with `as`)
+
+    /// import_records[rec_i] 가 가리키는 source 의 import_declaration 노드를 source span
+    /// 일치로 찾고, 그 안의 모든 named binding 이름이 AST 어디에서도 `identifier_reference`
+    /// 로 등장하지 않으면 true (자기 참조 제외).
+    ///
+    /// implicit type-only — TS type annotation 안에서만 쓰이는 binding — 은 parser 가 type
+    /// 노드를 폐기하거나 child_offsets 가 비어있어서 value position 의 identifier_reference
+    /// 가 AST 어디에도 안 나타남. babel typescript preset 의 statement elision 과 동등.
+    ///
+    /// 텍스트 매칭이라 semantic analyzer 의 type-position 추적 한계와 무관. 보수적 — default
+    /// / namespace specifier 가 하나라도 있으면 false, 동명 binding 이 다른 import 에서 value
+    /// 로 쓰여도 false.
+    fn isImportAllBindingsUnused(module: *const Module, record: types.ImportRecord) bool {
+        const ast_ptr = if (module.ast) |*a| a else return false;
+
+        var binding_names: [max_named_bindings][]const u8 = undefined;
+        var name_count: usize = 0;
+        // import_specifier 가 자체적으로 imported/local 식별자를 `identifier_reference` 로
+        // 보유 (parseIdentifierName) — 이들 NodeIndex 를 따로 수집해서 self-reference 제외.
+        var spec_self_nodes: [max_spec_self_nodes]NodeIndex = undefined;
+        var spec_self_count: usize = 0;
+        var found_decl = false;
+        for (ast_ptr.nodes.items) |n| {
+            if (n.tag != .import_declaration) continue;
+            const e = n.data.extra;
+            if (e + 2 >= ast_ptr.extra_data.items.len) continue;
+            const x = module_parser.readImportDeclExtras(ast_ptr, e);
+            if (x.source.isNone()) continue;
+            const source_node = ast_ptr.getNode(x.source);
+            // record.span 이 정확히 source string literal span 이라 start 비교로 unique
+            // (`import_scanner.tryExtractImportDecl` 가 동일 span 사용).
+            if (source_node.span.start != record.span.start) continue;
+            found_decl = true;
+
+            if (x.specs_len == 0) return false; // side-effect import
+            if (x.specs_start + x.specs_len > ast_ptr.extra_data.items.len) return false;
+            const spec_indices = ast_ptr.extra_data.items[x.specs_start .. x.specs_start + x.specs_len];
+            for (spec_indices) |raw_idx| {
+                const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+                if (spec_idx.isNone()) return false;
+                const spec_node = ast_ptr.getNode(spec_idx);
+                // default / namespace 는 보수적으로 keep — JSX pragma 등 implicit value use.
+                if (spec_node.tag != .import_specifier) return false;
+                if (name_count >= binding_names.len) return false; // 한계 초과 — keep
+                const left_idx = spec_node.data.binary.left;
+                const local_idx = spec_node.data.binary.right;
+                const local_node = if (!local_idx.isNone()) ast_ptr.getNode(local_idx) else spec_node;
+                binding_names[name_count] = ast_ptr.getText(local_node.span);
+                name_count += 1;
+
+                // `import { A as B }` 면 left/right 둘 다 다른 NodeIndex — 모두 self.
+                if (!left_idx.isNone()) {
+                    if (spec_self_count >= spec_self_nodes.len) return false;
+                    spec_self_nodes[spec_self_count] = left_idx;
+                    spec_self_count += 1;
+                }
+                if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(left_idx)) {
+                    if (spec_self_count >= spec_self_nodes.len) return false;
+                    spec_self_nodes[spec_self_count] = local_idx;
+                    spec_self_count += 1;
+                }
+            }
+            break;
+        }
+        if (!found_decl or name_count == 0) return false;
+
+        for (ast_ptr.nodes.items, 0..) |n, ni| {
+            if (n.tag != .identifier_reference) continue;
+            const this_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(ni)));
+            var is_spec_self = false;
+            for (spec_self_nodes[0..spec_self_count]) |s| {
+                if (@intFromEnum(this_idx) == @intFromEnum(s)) {
+                    is_spec_self = true;
+                    break;
+                }
+            }
+            if (is_spec_self) continue;
+            const text = ast_ptr.getText(n.span);
+            for (binding_names[0..name_count]) |name| {
+                if (std.mem.eql(u8, text, name)) return false;
+            }
+        }
+        return true;
+    }
+
     fn applyResolveResult(
         self: *ModuleGraph,
         mod_idx: usize,
@@ -1031,6 +1123,26 @@ pub const ModuleGraph = struct {
             // runtime 에 catch 되는 의도된 케이스를 build hard-fail 시키지 않는다.
             if (record.is_optional) {
                 self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Optional dependency not resolved (will throw at runtime if reached)", record.specifier);
+                const dep_idx = try self.addDisabledModule(record.specifier);
+                try self.appendResolvedDep(mod_idx, .{
+                    .record_index = @intCast(rec_i),
+                    .kind = record.kind,
+                    .target = .disabled,
+                    .path = record.specifier,
+                });
+                try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
+                return;
+            }
+            // #2466 implicit type-only import — `react-native-screens/types` 처럼 .d.ts 만
+            // 있는 subpath 를 `import { X } from '...'` 로 가져와 X 를 type position 에서만
+            // 쓰는 패턴. babel typescript preset 은 transform 시 statement 통째 제거하므로
+            // Metro 는 resolve 시도조차 안 함. ZTS 는 parser 가 type annotation 을 폐기
+            // 해서 analyzer 가 type-position reference 를 못 보지만, 그게 오히려 도움 —
+            // value position 참조가 0 이면 (truly unused 이거나 type-only) 어느 경우든
+            // bundle 에서 빠져도 동작 동등. resolve 실패 + binding 전부 value-use 없음 →
+            // soft fail (warning + stub).
+            if (record.kind == .static_import and isImportAllBindingsUnused(self.modules.at(mod_idx), record)) {
+                self.addDiag(.unresolved_import, .warning, self.modules.at(mod_idx).path, record.span, .resolve, "Type-only import elided (no value usage)", record.specifier);
                 const dep_idx = try self.addDisabledModule(record.specifier);
                 try self.appendResolvedDep(mod_idx, .{
                     .record_index = @intCast(rec_i),
