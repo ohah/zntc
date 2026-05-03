@@ -195,6 +195,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'profile',
   'profileFormat',
   'profileLevel',
+  'tokenizeFormat',
+  'stopAfter',
   'ignoreAnnotations',
   'watchDelay',
   'jobs',
