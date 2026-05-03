@@ -769,29 +769,30 @@ test "SemanticAnalyzer: numeric literal const_value stores raw literal text" {
     var saw_neg = false;
     var saw_big = false;
     var saw_expr = false;
-    for (ana.symbols.items) |sym| {
+    for (ana.symbols.items, 0..) |sym, sym_idx| {
         const name = sym.nameText(parser.ast.source);
+        const text = ana.numeric_const_texts.get(@intCast(sym_idx)) orelse "";
         if (std.mem.eql(u8, name, "dec")) {
             saw_dec = true;
-            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_value.kind);
-            try std.testing.expectEqualStrings("123", sym.const_value.number_text);
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_kind);
+            try std.testing.expectEqualStrings("123", text);
         } else if (std.mem.eql(u8, name, "exp")) {
             saw_exp = true;
-            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_value.kind);
-            try std.testing.expectEqualStrings("1e3", sym.const_value.number_text);
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_kind);
+            try std.testing.expectEqualStrings("1e3", text);
         } else if (std.mem.eql(u8, name, "hex")) {
             saw_hex = true;
-            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_value.kind);
-            try std.testing.expectEqualStrings("0x10", sym.const_value.number_text);
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.number, sym.const_kind);
+            try std.testing.expectEqualStrings("0x10", text);
         } else if (std.mem.eql(u8, name, "neg")) {
             saw_neg = true;
-            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_value.kind);
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_kind);
         } else if (std.mem.eql(u8, name, "big")) {
             saw_big = true;
-            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_value.kind);
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_kind);
         } else if (std.mem.eql(u8, name, "expr")) {
             saw_expr = true;
-            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_value.kind);
+            try std.testing.expectEqual(symbol_mod.ConstValue.Kind.none, sym.const_kind);
         }
     }
     try std.testing.expect(saw_dec and saw_exp and saw_hex and saw_neg and saw_big and saw_expr);

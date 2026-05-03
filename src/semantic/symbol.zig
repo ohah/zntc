@@ -214,8 +214,10 @@ pub const SyntheticKind = enum(u8) {
     esm_init,
 };
 
-/// 컴파일 타임 상수 값. 번들러에서 크로스-모듈 인라인에 사용.
-/// `const x = false` → ConstValue{ .kind = .false_ }
+/// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
+/// 의 value 타입으로 사용된다. Symbol 에 직접 임베드하지 않는다 — Symbol 은 `const_kind`
+/// 만 들고 number_text 는 `ModuleSemanticData.numeric_const_texts` 사이드테이블에 (#2505).
+/// 모든 Symbol 이 16B slice 를 들지 않게 함이 목적.
 pub const ConstValue = struct {
     kind: Kind = .none,
     /// `.number`일 때 원본 numeric_literal 텍스트.
@@ -272,9 +274,11 @@ pub const Symbol = struct {
     /// 크로스-모듈 인라인 대상. oxc/rolldown과 동일한 접근.
     write_count: u32 = 0,
 
-    /// 컴파일 타임 상수 값 (번들러 크로스-모듈 인라인용).
-    /// const/let 선언의 초기화 값이 리터럴이면 설정 (단 let은 `write_count == 0`일 때만 인라인).
-    const_value: ConstValue = .{},
+    /// 컴파일 타임 상수 종류 (번들러 cross-module 인라인용).
+    /// const/let 선언의 초기화 값이 리터럴이면 set. `.number` 일 때만 추가로
+    /// `ModuleSemanticData.numeric_const_texts` 에 텍스트가 같이 등록된다 — 16B slice 를
+    /// 모든 Symbol 에 박지 않으려는 분리 (#2505).
+    const_kind: ConstValue.Kind = .none,
 
     /// Bundler가 추가한 합성 심볼 종류. null = AST 선언에서 온 정규 심볼.
     /// #1328 Phase 4e-2: `extendSymbol`로 추가된 심볼만 non-null.

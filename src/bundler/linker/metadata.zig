@@ -902,7 +902,15 @@ pub fn buildCrossModuleConstValues(
         const target_sym_idx = target_sem.scope_maps[0].get(local_name) orelse continue;
         if (target_sym_idx >= target_sem.symbols.items.len) continue;
         const target_sym = target_sem.symbols.items[target_sym_idx];
-        const cv = target_sym.const_value;
+        // Symbol 은 kind 만 들고 numeric text 는 사이드테이블에서 lookup (#2505).
+        const cv = blk: {
+            if (target_sym.const_kind == .none) break :blk @import("../../semantic/symbol.zig").ConstValue{};
+            const text = if (target_sym.const_kind == .number)
+                target_sem.numericConstText(@intCast(target_sym_idx))
+            else
+                "";
+            break :blk @import("../../semantic/symbol.zig").ConstValue{ .kind = target_sym.const_kind, .number_text = text };
+        };
         if (cv.kind == .none or !cv.isSafeToInline()) continue;
         // const promotion: `let` 선언에 const_value가 설정되어 있어도 재할당이 있다면 skip.
         // `const`는 재할당 불가라 write_count가 무조건 0. `let` + write_count>0는 inline 금지.

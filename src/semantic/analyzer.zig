@@ -94,6 +94,11 @@ pub const SemanticAnalyzer = struct {
     /// key: 내보낸 이름 (default 포함), value: 첫 선언의 span.
     exported_names: std.StringHashMap(Span),
 
+    /// numeric const symbol 의 원본 텍스트 사이드테이블 (#2505).
+    /// Symbol 에 16B slice 를 박지 않으려고 분리. 보통 numeric const 는 전체 심볼의 극소수.
+    /// `setSymbolConstValue` / default-export 경로에서 kind == .number 일 때만 fill.
+    numeric_const_texts: std.AutoHashMapUnmanaged(u32, []const u8) = .{},
+
     /// class private name 스택 (중첩 class 지원, oxc 방식).
     /// 각 항목은 해당 class body에서 선언된 private name 집합.
     class_private_declared: std.ArrayList(std.StringHashMap(PrivateNameInfo)),
@@ -242,6 +247,7 @@ pub const SemanticAnalyzer = struct {
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
         self.references.deinit(self.allocator);
+        self.numeric_const_texts.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit();
         self.class_private_declared.deinit(self.allocator);
         for (self.class_private_refs.items) |*list| list.deinit(self.allocator);
@@ -1015,7 +1021,10 @@ pub const SemanticAnalyzer = struct {
 
     fn setSymbolConstValue(self: *SemanticAnalyzer, name_span: Span, cv: ConstValue) void {
         const sym_idx = self.findSymbolInCurrentScope(name_span) orelse return;
-        self.symbols.items[sym_idx].const_value = cv;
+        self.symbols.items[sym_idx].const_kind = cv.kind;
+        if (cv.kind == .number and cv.number_text.len > 0) {
+            self.numeric_const_texts.put(self.allocator, @intCast(sym_idx), cv.number_text) catch {};
+        }
     }
 
     /// 노드가 @__NO_SIDE_EFFECTS__ 함수/arrow인지 확인.
@@ -3061,11 +3070,14 @@ pub const SemanticAnalyzer = struct {
                 try self.scope_maps.items[module_scope.toIndex()].put("_default", sym_index);
                 // StmtInfo 사전 수집: facade 심볼을 declared 로 기록 (#1669: scope 무관).
                 self.recordDeclareRef(@intCast(sym_index), module_scope);
-                // export default <literal> → facade 심볼에 const_value 설정
+                // export default <literal> → facade 심볼에 const_kind + 사이드테이블 텍스트 설정
                 if (!inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
                     const cv = self.extractConstValue(self.ast.getNode(inner_idx));
                     if (cv.kind != .none) {
-                        self.symbols.items[sym_index].const_value = cv;
+                        self.symbols.items[sym_index].const_kind = cv.kind;
+                        if (cv.kind == .number and cv.number_text.len > 0) {
+                            self.numeric_const_texts.put(self.allocator, @intCast(sym_index), cv.number_text) catch {};
+                        }
                     }
                 }
             }

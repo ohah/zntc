@@ -70,11 +70,20 @@ pub const ModuleSemanticData = struct {
     unresolved_references: std.StringHashMap(void),
     /// per-reference 배열. 현재 consumer: mangler liveness.
     references: []const Reference = &.{},
+    /// `Symbol.const_kind == .number` 인 심볼의 원본 numeric_literal 텍스트 사이드테이블 (#2505).
+    /// Symbol 에 16B slice 를 박지 않으려고 분리 — 보통 numeric const 는 전체 심볼의 극소수.
+    /// parse_arena 가 backing — value slice 는 source 또는 string_table 참조.
+    numeric_const_texts: std.AutoHashMapUnmanaged(u32, []const u8) = .{},
 
     /// 심볼 id에 해당하는 이름을 반환. `Symbol.nameText` 래퍼.
     pub fn symbolName(self: *const ModuleSemanticData, id: u32, source: []const u8) []const u8 {
         if (id >= self.symbols.items.len) return "";
         return self.symbols.items[id].nameText(source);
+    }
+
+    /// `sym_id` 가 numeric const 면 원본 텍스트를, 아니면 빈 슬라이스를 반환.
+    pub fn numericConstText(self: *const ModuleSemanticData, sym_id: u32) []const u8 {
+        return self.numeric_const_texts.get(sym_id) orelse "";
     }
 };
 
