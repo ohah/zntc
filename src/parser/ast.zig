@@ -877,6 +877,14 @@ pub const Ast = struct {
     /// realloc 될 수 있으므로 내부 slice 를 key 로 쓰면 dangling 이 된다.
     string_interns: std.StringHashMapUnmanaged(Span),
 
+    /// addString intern map 의 hit/miss 통계. 측정 전용.
+    /// `ZTS_STRING_INTERN_STATS=1` 시 `Ast.deinit` 이 stderr 로 dump.
+    /// 4 × u32 = 16B 추가, hot path 비용은 increment 4 회뿐.
+    string_intern_hits: u32 = 0,
+    string_intern_misses: u32 = 0,
+    string_intern_bytes_saved: u32 = 0,
+    string_intern_bytes_overhead: u32 = 0,
+
     /// 파싱 중 JSX element/fragment가 발견되었는지 (automatic JSX import 주입용)
     has_jsx: bool = false,
 
@@ -937,10 +945,30 @@ pub const Ast = struct {
     }
 
     pub fn deinit(self: *Ast) void {
+        self.dumpStringInternStatsIfEnabled();
         self.nodes.deinit(self.allocator);
         self.extra_data.deinit(self.allocator);
         self.string_table.deinit(self.allocator);
         self.deinitStringInterns();
+    }
+
+    pub fn dumpStringInternStatsIfEnabled(self: *const Ast) void {
+        if (!std.process.hasEnvVarConstant("ZTS_STRING_INTERN_STATS")) return;
+        const total = self.string_intern_hits + self.string_intern_misses;
+        if (total == 0) return;
+        const hit_pct: f32 = @as(f32, @floatFromInt(self.string_intern_hits)) * 100.0 /
+            @as(f32, @floatFromInt(total));
+        std.debug.print(
+            "[ast-intern] hits={d} misses={d} hit%={d:.1} saved={d}B overhead={d}B entries={d}\n",
+            .{
+                self.string_intern_hits,
+                self.string_intern_misses,
+                hit_pct,
+                self.string_intern_bytes_saved,
+                self.string_intern_bytes_overhead,
+                self.string_interns.count(),
+            },
+        );
     }
 
     fn deinitStringInterns(self: *Ast) void {
@@ -1339,7 +1367,11 @@ pub const Ast = struct {
     ///   const span = try ast.addString("React");
     ///   // 나중에 ast.getText(span)으로 "React" 반환
     pub fn addString(self: *Ast, text: []const u8) !Span {
-        if (self.string_interns.get(text)) |span| return span;
+        if (self.string_interns.get(text)) |span| {
+            self.string_intern_hits +|= 1;
+            self.string_intern_bytes_saved +|= @intCast(text.len);
+            return span;
+        }
 
         // string_table은 bit 31 미만이어야 함 (bit 31은 마커로 사용)
         std.debug.assert(self.string_table.items.len + text.len < STRING_TABLE_BIT);
@@ -1380,6 +1412,8 @@ pub const Ast = struct {
             try self.string_table.appendSlice(self.allocator, text);
         }
         try self.string_interns.put(self.allocator, owned_key, span);
+        self.string_intern_misses +|= 1;
+        self.string_intern_bytes_overhead +|= @intCast(text.len);
         return span;
     }
 
