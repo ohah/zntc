@@ -38,6 +38,59 @@ fn constValueNode(ast: *Ast, cv: ConstValue) ?Node {
     };
 }
 
+/// `materialize` 가 모듈마다 forbidden bitset + reachable 리스트를 매번 새로 만들지
+/// 않도록 outer driver (tree_shaker post-pass) 가 보유하는 per-module 캐시.
+///
+/// 같은 모듈에 대해 numeric post-pass 가 forward/reverse × 최대 2 회 호출하면 inner
+/// 가 4 번 도는데 — `forbidden` 은 AST shape 만 의존, `reachable` 도 마찬가지라
+/// AST mutation (`tree_shaker.markAstMutatedAndResync`) 직전까지는 안전하게 재사용.
+///
+/// `materialize` 가 leaf identifier 노드를 leaf literal 로 바꾸는 in-place mutation 만
+/// 하므로 `nodes.items.len` 도 변화 없음 → 같은 bitset 크기 그대로.
+pub const Scratch = struct {
+    allocator: std.mem.Allocator,
+    /// per-module forbidden bitset. null = 아직 빌드 안 했거나 invalidate 직후.
+    forbidden: []?std.DynamicBitSet,
+    /// per-module reachable node 인덱스 리스트.
+    reachable: []?[]u32,
+
+    pub fn init(allocator: std.mem.Allocator, mod_count: usize) !Scratch {
+        const forbidden = try allocator.alloc(?std.DynamicBitSet, mod_count);
+        errdefer allocator.free(forbidden);
+        for (forbidden) |*f| f.* = null;
+        const reachable = try allocator.alloc(?[]u32, mod_count);
+        errdefer allocator.free(reachable);
+        for (reachable) |*r| r.* = null;
+        return .{
+            .allocator = allocator,
+            .forbidden = forbidden,
+            .reachable = reachable,
+        };
+    }
+
+    pub fn deinit(self: *Scratch) void {
+        for (self.forbidden) |*f| if (f.*) |*bs| bs.deinit();
+        self.allocator.free(self.forbidden);
+        for (self.reachable) |r| if (r) |slice| self.allocator.free(slice);
+        self.allocator.free(self.reachable);
+    }
+
+    /// 모듈의 캐시를 다음 호출에서 재빌드하도록 해제. tree_shaker 가 AST mutation
+    /// 후 호출 — `minifyAndResyncModule` / `applyNodeBufferCapabilityFacts` 양쪽
+    /// 경로 공통 진입점인 `markAstMutatedAndResync` 한 곳에서.
+    pub fn invalidate(self: *Scratch, mod_idx: usize) void {
+        if (mod_idx >= self.forbidden.len) return;
+        if (self.forbidden[mod_idx]) |*bs| {
+            bs.deinit();
+            self.forbidden[mod_idx] = null;
+        }
+        if (self.reachable[mod_idx]) |slice| {
+            self.allocator.free(slice);
+            self.reachable[mod_idx] = null;
+        }
+    }
+};
+
 /// Linker가 증명한 primitive constants를 AST read-site에 반영한다.
 /// codegen-only 치환은 branch body refs를 줄이지 못하므로, minify/DCE 전 literal로
 /// materialize해야 dead branch와 그 안의 imports가 다음 pass에서 사라질 수 있다.
@@ -47,15 +100,50 @@ pub fn materialize(
     symbol_ids: []const ?u32,
     const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
 ) bool {
+    return materializeWithScratch(allocator, ast, symbol_ids, const_values, null, 0);
+}
+
+/// `materialize` + outer driver 가 forbidden/reachable 캐시 재사용. `scratch == null`
+/// 이면 `materialize` 와 동일 (매 호출 빌드).
+pub fn materializeWithScratch(
+    allocator: std.mem.Allocator,
+    ast: *Ast,
+    symbol_ids: []const ?u32,
+    const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
+    scratch: ?*Scratch,
+    mod_idx: usize,
+) bool {
     if (const_values.count() == 0) return false;
 
-    var forbidden = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
-    defer forbidden.deinit();
-    minify_mod.markForbiddenInlineSites(ast, &forbidden);
+    // forbidden 확보: 캐시 hit 면 재사용, miss 면 빌드 후 캐시 또는 단발성 사용.
+    var owned_forbidden: ?std.DynamicBitSet = null;
+    defer if (owned_forbidden) |*bs| bs.deinit();
+    const forbidden_ptr: *const std.DynamicBitSet = blk: {
+        if (scratch) |s| if (mod_idx < s.forbidden.len) {
+            if (s.forbidden[mod_idx]) |*cached| break :blk cached;
+            var bs = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
+            minify_mod.markForbiddenInlineSites(ast, &bs);
+            s.forbidden[mod_idx] = bs;
+            break :blk &s.forbidden[mod_idx].?;
+        };
+        owned_forbidden = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
+        minify_mod.markForbiddenInlineSites(ast, &owned_forbidden.?);
+        break :blk &owned_forbidden.?;
+    };
 
     // transformer 가 만든 orphan 노드까지 스캔하지 않도록 reachable 만 순회 (#1797 패턴).
-    const reachable = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
-    defer allocator.free(reachable);
+    var owned_reachable: ?[]u32 = null;
+    defer if (owned_reachable) |slice| allocator.free(slice);
+    const reachable: []const u32 = blk: {
+        if (scratch) |s| if (mod_idx < s.reachable.len) {
+            if (s.reachable[mod_idx]) |cached| break :blk cached;
+            const built = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
+            s.reachable[mod_idx] = built;
+            break :blk built;
+        };
+        owned_reachable = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
+        break :blk owned_reachable.?;
+    };
 
     var changed = false;
     for (reachable) |ni| {
@@ -63,7 +151,7 @@ pub fn materialize(
         const node = ast.nodes.items[i];
         if (node.tag != .identifier_reference) continue;
         if (i >= symbol_ids.len) continue;
-        if (forbidden.isSet(i)) continue;
+        if (forbidden_ptr.isSet(i)) continue;
         const sym_id = symbol_ids[i] orelse continue;
         const cv = const_values.get(sym_id) orelse continue;
         const replacement = constValueNode(ast, cv) orelse continue;
