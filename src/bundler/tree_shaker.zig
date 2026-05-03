@@ -327,7 +327,7 @@ pub const TreeShaker = struct {
         for (sem.symbols.items) |sym| {
             if (!sym.isExported()) continue;
             if (sym.write_count != 0) continue;
-            if (sym.const_value.kind == .number) return true;
+            if (sym.const_kind == .number) return true;
         }
         return false;
     }
