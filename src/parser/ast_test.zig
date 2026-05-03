@@ -236,3 +236,28 @@ test "Ast string_table: cloned intern table is independent from source AST" {
     try std.testing.expectEqualStrings("clone-only", cloned.getText(cloned_new));
     try std.testing.expectEqual(@as(usize, "shared".len + "clone-only".len), cloned.string_table.items.len);
 }
+
+test "Ast string_table: addString self-slice + miss survives realloc" {
+    // 회귀 가드: text 가 string_table 내부 slice 이고 intern miss 인 케이스에서
+    // ensureUnusedCapacity 가 realloc 을 일으키면 text.ptr 이 dangling 된다.
+    // append 후 stable slice 로 lookup 해야 use-after-free 회피.
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+
+    // intern 우회 — string_table 에 직접 byte 만 채움 (flow.zig:1300 같은 패턴 시뮬레이션)
+    try ast.string_table.appendSlice(ast.allocator, "untracked_string");
+    // capacity 를 빡빡하게 만들어 다음 addString append 가 realloc 트리거
+    ast.string_table.shrinkAndFree(ast.allocator, ast.string_table.items.len);
+
+    // self-slice + miss 호출
+    const text_in_table = ast.string_table.items[0..16];
+    const span = try ast.addString(text_in_table);
+
+    try std.testing.expectEqualStrings("untracked_string", ast.getText(span));
+    try std.testing.expectEqual(@as(u32, 1), ast.string_interns.count());
+
+    // 같은 byte 로 다시 호출 → hit
+    const span2 = try ast.addString("untracked_string");
+    try std.testing.expectEqual(span.start, span2.start);
+    try std.testing.expectEqual(span.end, span2.end);
+}
