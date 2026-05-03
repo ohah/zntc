@@ -47,6 +47,11 @@ pub const Category = enum {
     scan,
     parse,
     parse_ast_build,
+    parse_program,
+    parse_statement,
+    parse_module_import,
+    parse_module_export,
+    parse_expression_assignment,
 
     // ── Analysis ──
     semantic,

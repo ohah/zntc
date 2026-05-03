@@ -24,6 +24,7 @@ const ParseError2 = @import("parser.zig").ParseError2;
 const flow = @import("flow.zig");
 const scan_results_mod = @import("scan_results.zig");
 const import_scanner = @import("../bundler/import_scanner.zig");
+const profile = @import("../profile.zig");
 
 /// TypeScript의 canFollowTypeArgumentsInExpression 대응 (esbuild tsCanFollowTypeArgumentsInExpression).
 /// `f<Type>` 다음에 올 수 있는 토큰인지 판별한다.
@@ -212,6 +213,9 @@ pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) Parse
 }
 
 pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
+    var scope = profile.begin(.parse_expression_assignment);
+    defer scope.end();
+
     // TS 제네릭 arrow function: <T>() => body, <const T>() => body
     // TSX 모드에서는 trailing comma(<T,>), constraint(<T extends X>), default(<T = X>)가
     // 있을 때만 제네릭 arrow로 시도 (oxc arrow.rs:166-197 참고)
