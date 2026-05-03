@@ -46,6 +46,9 @@ test "isExternal: node builtins when platform=node" {
     try std.testing.expect(cache.isExternal("path"));
     try std.testing.expect(cache.isExternal("crypto"));
     try std.testing.expect(!cache.isExternal("react"));
+    try std.testing.expect(!cache.isExternal("./fs"));
+    try std.testing.expect(!cache.isExternal("../path"));
+    try std.testing.expect(!cache.isExternal("/project/fs"));
 }
 
 test "isNodeBuiltin" {
