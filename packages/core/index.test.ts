@@ -369,7 +369,7 @@ describe("@zts/core buildSync", () => {
 
   test("에러 반환", () => {
     const badDir = mkdtempSync(join(tmpdir(), "zts-napi-err-"));
-    writeFileSync(join(badDir, "bad.ts"), 'import { x } from "./nonexistent";');
+    writeFileSync(join(badDir, "bad.ts"), 'import { x } from "./nonexistent";\nconsole.log(x);');
     const result = buildSync({ entryPoints: [join(badDir, "bad.ts")] });
     expect(result.errors.length).toBeGreaterThan(0);
     rmSync(badDir, { recursive: true, force: true });
