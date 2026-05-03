@@ -1077,6 +1077,19 @@ pub const Codegen = struct {
         return node_idx < meta.skip_nodes.capacity() and meta.skip_nodes.isSet(node_idx);
     }
 
+    /// program/block 안 statement 가 출력 단계에서 elide 되는지. mangle skip_nodes 외에
+    /// `minify_whitespace` 모드에서는 `empty_statement` 도 elide — minify pass 가
+    /// dead declaration 을 empty_statement 로 변환한 결과 (`;;;` 누적) 가 그대로 출력
+    /// 되던 cosmetic 갭 정리. esbuild/oxc 도 동일 동작.
+    inline fn isElidedStmt(self: *const Codegen, idx: NodeIndex) bool {
+        if (self.isSkipped(idx)) return true;
+        if (!self.options.minify_whitespace) return false;
+        // `NodeIndex.none` 은 sentinel max — bound check 가 자연 차단.
+        const ni = @intFromEnum(idx);
+        if (ni >= self.ast.nodes.items.len) return false;
+        return self.ast.nodes.items[ni].tag == .empty_statement;
+    }
+
     fn emitProgram(self: *Codegen, node: Node) !void {
         const list = node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
@@ -1086,7 +1099,7 @@ pub const Codegen = struct {
             if (node_idx.isNone()) continue;
             // skip_nodes된 statement는 emitNode가 early-return하지만 newline은 이미 찍혀
             // 빈 줄이 남는다 (#1602). 사전 체크로 해당 slot 전체를 건너뛴다.
-            if (self.isSkipped(node_idx)) continue;
+            if (self.isElidedStmt(node_idx)) continue;
             if (emitted) try self.writeNewline();
             try self.emitNode(node_idx);
             emitted = true;
@@ -1116,7 +1129,7 @@ pub const Codegen = struct {
             self.indent_level += 1;
             for (indices) |raw_idx| {
                 const idx: NodeIndex = @enumFromInt(raw_idx);
-                if (self.isSkipped(idx)) continue;
+                if (self.isElidedStmt(idx)) continue;
                 try self.writeNewline();
                 try self.writeIndent();
                 try self.emitNode(idx);
