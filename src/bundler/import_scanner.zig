@@ -906,6 +906,8 @@ fn isImportMetaUrl(ast: *const Ast, idx: NodeIndex) bool {
 /// inline scan 모드에서 Worker 감지를 보완하기 위해 사용.
 /// new Worker(new URL('./worker.ts', import.meta.url)) 패턴만 감지.
 pub fn extractWorkerRecords(allocator: std.mem.Allocator, ast: *const Ast) ![]ImportRecord {
+    if (!sourceMayContainWorkerUrlPattern(ast.source)) return &.{};
+
     var records = std.ArrayListUnmanaged(ImportRecord).empty;
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, ast);
     defer allocator.free(reachable);
@@ -919,6 +921,14 @@ pub fn extractWorkerRecords(allocator: std.mem.Allocator, ast: *const Ast) ![]Im
         }
     }
     return records.toOwnedSlice(allocator);
+}
+
+fn sourceMayContainWorkerUrlPattern(source: []const u8) bool {
+    // Worker 보완 스캔은 전체 AST walk라서 대부분의 모듈에서 비용만 발생한다.
+    // 실제 지원 패턴은 Worker/SharedWorker + URL + import.meta 세 토큰이 모두 필요하다.
+    return std.mem.indexOf(u8, source, "Worker") != null and
+        std.mem.indexOf(u8, source, "URL") != null and
+        std.mem.indexOf(u8, source, "import.meta") != null;
 }
 
 /// 따옴표(`'`, `"`)를 벗긴다. 최소 2글자 이상이어야 함.

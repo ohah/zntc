@@ -3,6 +3,7 @@ const import_scanner = @import("import_scanner.zig");
 const extractImports = import_scanner.extractImports;
 const extractImportsWithCjsDetection = import_scanner.extractImportsWithCjsDetection;
 const extractImportsWithCjsDetectionAndDefines = import_scanner.extractImportsWithCjsDetectionAndDefines;
+const extractWorkerRecords = import_scanner.extractWorkerRecords;
 const ScanResult = import_scanner.ScanResult;
 const stripQuotes = import_scanner.stripQuotes;
 const types = @import("types.zig");
@@ -71,6 +72,20 @@ fn parseAndExtractFullWithDefines(
     _ = try parser.parse();
 
     return extractImportsWithCjsDetectionAndDefines(allocator, &parser.ast, defines);
+}
+
+fn parseAndExtractWorkers(allocator: std.mem.Allocator, source: []const u8) ![]ImportRecord {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, source);
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+
+    return extractWorkerRecords(allocator, &parser.ast);
 }
 
 test "explicit `import type { X } from ...` → no record (parser already elides)" {
@@ -290,6 +305,30 @@ test "stripQuotes" {
     try std.testing.expectEqualStrings("bar", stripQuotes("\"bar\"").?);
     try std.testing.expect(stripQuotes("x") == null);
     try std.testing.expect(stripQuotes("") == null);
+}
+
+test "worker records: supported Worker URL pattern is extracted" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWorkers(
+        alloc,
+        "const worker = new Worker(new URL('./worker.ts', import.meta.url));",
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqual(ImportKind.worker, records[0].kind);
+    try std.testing.expectEqualStrings("./worker.ts", records[0].specifier);
+}
+
+test "worker records: modules without worker URL markers skip extraction" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWorkers(
+        alloc,
+        "const value = new URL('./asset.png', location.href); export { value };",
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 0), records.len);
 }
 
 // ============================================================
