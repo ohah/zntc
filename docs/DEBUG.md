@@ -146,6 +146,8 @@ zts bundle entry.ts --profile=all --profile-format=json > profile.json
 - `--profile=<CSV>`: `all` / `none` / 구체 카테고리 CSV (dot notation 지원: `parse.ast_build`, `transform.jsx`)
 - `--profile-level=<L>`: `summary` | `detailed` | `per-module` | `per-pass` (default `summary`)
 - `--profile-format=<F>`: `table` | `tree` | `json` | `csv` (default `table`)
+- `--tokenize`: 코드 생성 대신 scanner token stream 출력
+- `--tokenize-format=<F>`: `text` | `json` (default `text`)
 - `--stop-after=<P>`: `scan` | `parse` | `semantic` | `transform` | `codegen` — 지정 phase 이후 skip
 
 ### NAPI

@@ -48,8 +48,10 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `tsconfigRaw` | `--tsconfig-raw=<json>` | ✅ | inline JSON | 파일 기반 tsconfig보다 우선 |
 | `plugins` | `--plugin path` (plugins 배열만) | ✅ | ❌ | concat — config plugins + `--plugin` plugins |
 | `banner` / `footer` | `--banner:js=` 등 | ✅ | ❌ | scalar |
+| `intro` / `outro` | `--intro=` / `--outro=` | ✅ | ❌ | 포맷 wrapper 내부 코드 삽입 |
 | `entryNames` / `chunkNames` / `assetNames` | flag | ✅ | ❌ | scalar |
 | `globalName` | `--global-name=` | ✅ | ❌ | iife/umd 시 사용 |
+| `globals` | `--global:SPEC=NAME` | ✅ | ❌ | external specifier → IIFE/UMD global |
 | `publicPath` | `--public-path=` | ✅ | ❌ | asset URL prefix |
 | `inject` | `--inject=path` | ✅ | ❌ | 배열 |
 | `drop` | `--drop=console` 등 | ✅ | ❌ | 배열 |
@@ -65,6 +67,11 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `metafile` | `--metafile` | ✅ | ❌ | esbuild 호환 |
 | `resolveExtensions` | `--resolve-extensions=` | ✅ | (간접) | tsconfig 의 paths 와 별개 |
 | `mainFields` | `--main-fields=` | ✅ | ❌ | package.json field 우선순위 |
+| `conditions` | `--conditions=` | ✅ | ❌ | package exports 사용자 조건 |
+| `nodePaths` | `--node-paths=` | ✅ | ❌ | bare specifier 추가 탐색 경로 |
+| `profile` / `profileLevel` / `profileFormat` | `--profile*` | ✅ | ❌ | 디버그/성능 측정 |
+| `ignoreAnnotations` | `--ignore-annotations` | ✅ | ❌ | pure/sideEffects annotation 무시 |
+| `jsxSideEffects` | `--jsx-side-effects` | ✅ | ❌ | unused JSX expression 보존 |
 | `manualChunks` | (없음) | ✅ (record / function) | ❌ | Rollup 호환. function form 은 zts.config.{ts,js} 만 |
 | `inlineDynamicImports` | `--inline-dynamic-imports` | ✅ | ❌ | Rollup 호환 |
 | `import.meta.env.*` | `--define:import.meta.env.X="..."` | (없음 — `.env` 파일 자동 로드) | ❌ | `.env`/`.env.local`/`.env.${mode}`/`.env.${mode}.local` 4단계 머지 |

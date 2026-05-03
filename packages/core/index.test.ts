@@ -3379,11 +3379,36 @@ describe("배치 E: S급 BuildOptions", () => {
   });
 
   test("ignoreAnnotations: 옵션 파싱 확인", () => {
+    writeFileSync(
+      join(dir, "ignore-annotations.ts"),
+      "function side(){ console.log('PURE_CALL'); }\n/* @__PURE__ */ side();\nconsole.log('live');",
+    );
     const result = buildSync({
-      entryPoints: [join(dir, "entry.ts")],
+      entryPoints: [join(dir, "ignore-annotations.ts")],
       ignoreAnnotations: true,
+      minifySyntax: true,
     });
     expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("side()");
+    expect(result.outputFiles[0].text).toContain("PURE_CALL");
+  });
+
+  test("jsxSideEffects: unused JSX expression 보존", () => {
+    writeFileSync(
+      join(dir, "jsx-side-effects.tsx"),
+      [
+        "const React = { createElement(type) { console.log(type); } };",
+        "<div />;",
+        "console.log('live');",
+      ].join("\n"),
+    );
+    const result = buildSync({
+      entryPoints: [join(dir, "jsx-side-effects.tsx")],
+      jsxSideEffects: true,
+      minifySyntax: true,
+    });
+    expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("React.createElement");
   });
 
   test("analyze: metafile 강제 활성화", () => {
@@ -3396,11 +3421,35 @@ describe("배치 E: S급 BuildOptions", () => {
   });
 
   test("nodePaths: 추가 탐색 경로", () => {
+    const vendor = join(dir, "vendor");
+    mkdirSync(join(vendor, "pkg"), { recursive: true });
+    writeFileSync(join(vendor, "pkg", "package.json"), JSON.stringify({ main: "index.js" }));
+    writeFileSync(join(vendor, "pkg", "index.js"), "export const value = 'NODE_PATH_VALUE';");
+    writeFileSync(join(dir, "node-paths.ts"), "import { value } from 'pkg'; console.log(value);");
     const result = buildSync({
-      entryPoints: [join(dir, "entry.ts")],
-      nodePaths: ["/tmp/nonexistent-path"],
+      entryPoints: [join(dir, "node-paths.ts")],
+      nodePaths: [vendor],
     });
     expect(result.errors.length).toBe(0);
+    expect(result.outputFiles[0].text).toContain("NODE_PATH_VALUE");
+  });
+
+  test("intro/outro/globals: output wrapper 옵션 적용", () => {
+    writeFileSync(join(dir, "globals.ts"), "import { useState } from 'react'; console.log(useState);");
+    const result = buildSync({
+      entryPoints: [join(dir, "globals.ts")],
+      format: "iife",
+      globalName: "Lib",
+      external: ["react"],
+      globals: { react: "React" },
+      intro: "console.log('intro');",
+      outro: "console.log('outro');",
+    });
+    expect(result.errors.length).toBe(0);
+    const text = result.outputFiles[0].text;
+    expect(text).toContain("console.log('intro');");
+    expect(text).toContain("console.log('outro');");
+    expect(text).toContain("})(React);");
   });
 
   test("outbase: 엔트리 공통 기준 경로", () => {

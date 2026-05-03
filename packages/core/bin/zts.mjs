@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
@@ -55,6 +56,9 @@ const coreModule = await loadCoreModule();
 const {
   init,
   transpile,
+  tokenize,
+  configureProfile,
+  profileReport,
   build,
   buildAppSync,
   buildSync,
@@ -145,12 +149,24 @@ function usageLines(command) {
     "  --packages=external        Treat all bare package imports as external",
     "  --pure:CALLEE              Mark matching call/new expressions as removable when unused",
     "  --line-limit=<n>           Wrap generated output lines after safe token boundaries",
+    "  --conditions=<csv>         Add custom package exports conditions",
+    "  --node-paths=<csv>         Add bare specifier lookup directories",
+    "  --global:SPEC=NAME         Map external specifier to IIFE/UMD global",
+    "  --intro=<text>             Insert wrapper-internal text before bundle code",
+    "  --outro=<text>             Insert wrapper-internal text after bundle code",
+    "  --ignore-annotations       Ignore pure/sideEffects annotations",
+    "  --jsx-side-effects         Preserve unused JSX expressions",
+    "  --profile=<csv>            Collect profile categories (all, parse, transform, ...)",
+    "  --profile-format=<format>  Profile output: table, tree, json, csv",
+    "  --tokenize[=false]         Print scanner tokens instead of generated code",
+    "  --tokenize-format=<format> Token output: text or json",
     "  --outdir <dir>             Output directory",
     "  --outfile <file>, -o <file> Output file",
     "  --allow-overwrite          Permit output paths to overwrite input files",
     "  --watch, -w                Rebuild on changes",
     "  --serve [dir]              Serve bundled output",
     "  --config <path>            Config file path",
+    "  --test262 <dir>            Run Zig Test262 runner via zig build test262-run",
     "  --help, -h                 Show this help message",
   ];
 }
@@ -210,7 +226,10 @@ function parseArgs(argv) {
     alias: {},
     banner: undefined,
     footer: undefined,
+    intro: undefined,
+    outro: undefined,
     globalName: undefined,
+    globals: {},
     publicPath: undefined,
     entryNames: undefined,
     chunkNames: undefined,
@@ -240,8 +259,18 @@ function parseArgs(argv) {
     jobs: undefined,
     logLimit: undefined,
     lineLimit: undefined,
+    conditions: [],
+    nodePaths: [],
+    profile: [],
+    profileLevel: undefined,
+    profileFormat: undefined,
+    stopAfter: undefined,
+    tokenize: false,
+    tokenizeFormat: "text",
     clean: false,
     allowOverwrite: false,
+    jsxSideEffects: false,
+    ignoreAnnotations: false,
     preserveModules: false,
     preserveModulesRoot: undefined,
     inlineDynamicImports: false,
@@ -272,6 +301,7 @@ function parseArgs(argv) {
     publicDir: undefined,
     base: undefined,
     spaFallback: undefined,
+    test262: undefined,
   };
 
   if (appCommand === "dev") {
@@ -341,6 +371,16 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (arg === "--globals" || arg.startsWith("--globals=")) {
+      const raw = arg === "--globals" ? args[++i] : arg.slice("--globals=".length);
+      for (const part of String(raw ?? "").split(",")) {
+        const eq = part.indexOf("=");
+        if (eq <= 0) continue;
+        opts.globals[part.slice(0, eq)] = part.slice(eq + 1);
+      }
+      continue;
+    }
+
     // unknown — typo 시 가장 가까운 known flag 제안 (Levenshtein, threshold 2).
     if (opts.logLevel !== "silent") {
       const suggestion = suggestKey(arg, KNOWN_FLAGS);
@@ -369,6 +409,21 @@ function parseArgs(argv) {
   }
 
   return opts;
+}
+
+function formatTokenizeOutput(tokens, format) {
+  if (format === "json") {
+    return `${JSON.stringify(tokens, null, 2)}\n`;
+  }
+  return tokens
+    .map((token) => {
+      const loc = `${token.line + 1}:${token.column + 1}`;
+      const span = `${token.start}-${token.end}`;
+      const text = token.text.length > 0 ? ` ${JSON.stringify(token.text)}` : "";
+      return `${loc} ${span} ${token.kind}${text}`;
+    })
+    .join("\n")
+    .concat("\n");
 }
 
 // ─── 파일 출력 ───
@@ -1563,8 +1618,20 @@ async function runTranspile(opts) {
     source = readFileSync(resolve(opts.entryPoints[0]), "utf8");
   }
 
+  const filename = opts.stdin ? "stdin.ts" : opts.entryPoints[0];
+
+  if (opts.tokenize) {
+    const tokens = tokenize(source, { filename });
+    process.stdout.write(formatTokenizeOutput(tokens, opts.tokenizeFormat));
+    return;
+  }
+
+  if (opts.profile.length > 0) {
+    configureProfile(opts.profile, opts.profileLevel);
+  }
+
   const result = transpile(source, {
-    filename: opts.stdin ? "stdin.ts" : opts.entryPoints[0],
+    filename,
     sourcemap: opts.sourcemap,
     minify: opts.minify,
     minifyWhitespace: opts.minifyWhitespace,
@@ -1591,6 +1658,7 @@ async function runTranspile(opts) {
     target: opts.target,
     browserslist: opts.browserslist,
     tsconfigRaw: opts.tsconfigRaw,
+    stopAfter: opts.stopAfter,
   });
 
   if (opts.outfile || opts.outdir) {
@@ -1602,6 +1670,9 @@ async function runTranspile(opts) {
     writeOutputFiles(outputFiles, opts.outfile, opts.outdir, opts.entryPoints, opts.allowOverwrite);
   } else {
     process.stdout.write(result.code);
+  }
+  if (opts.profile.length > 0 && opts.logLevel !== "silent") {
+    process.stderr.write(profileReport(opts.profileFormat ?? "table"));
   }
 }
 
@@ -1686,6 +1757,8 @@ function mergeConfigIntoOpts(opts, config) {
     "target",
     "banner",
     "footer",
+    "intro",
+    "outro",
     "globalName",
     "publicPath",
     "entryNames",
@@ -1713,6 +1786,10 @@ function mergeConfigIntoOpts(opts, config) {
     "outbase",
     "browserslist",
     "tsconfigRaw",
+    "profileLevel",
+    "profileFormat",
+    "tokenizeFormat",
+    "test262",
   ];
   for (const key of SCALAR_KEYS) {
     if (opts[key] === undefined && config[key] !== undefined) {
@@ -1744,6 +1821,8 @@ function mergeConfigIntoOpts(opts, config) {
     "verbatimModuleSyntax",
     "packagesExternal",
     "allowOverwrite",
+    "jsxSideEffects",
+    "ignoreAnnotations",
   ];
   for (const key of BOOL_KEYS) {
     if (opts[key] === false && config[key] === true) {
@@ -1767,6 +1846,9 @@ function mergeConfigIntoOpts(opts, config) {
     "pure",
     "resolveExtensions",
     "mainFields",
+    "conditions",
+    "nodePaths",
+    "profile",
   ];
   for (const key of ARRAY_KEYS) {
     if (opts[key].length === 0 && Array.isArray(config[key]) && config[key].length > 0) {
@@ -1774,7 +1856,7 @@ function mergeConfigIntoOpts(opts, config) {
     }
   }
 
-  for (const key of ["define", "alias", "loader"]) {
+  for (const key of ["define", "alias", "loader", "globals"]) {
     if (config[key] && typeof config[key] === "object") {
       opts[key] = { ...config[key], ...opts[key] };
     }
@@ -1856,12 +1938,20 @@ async function runBundle(opts, config) {
     outputExports: opts.outputExports,
     resolveExtensions: opts.resolveExtensions.length > 0 ? opts.resolveExtensions : undefined,
     mainFields: opts.mainFields.length > 0 ? opts.mainFields : undefined,
+    conditions: opts.conditions.length > 0 ? opts.conditions : undefined,
+    nodePaths: opts.nodePaths.length > 0 ? opts.nodePaths : undefined,
+    profile: opts.profile.length > 0 ? opts.profile : undefined,
+    profileLevel: opts.profileLevel,
+    profileFormat: opts.profileFormat,
     // NAPI 가 tsconfig paths / baseUrl 을 alias 로 변환해 resolver 에 주입하도록 전달.
     tsconfigPath: opts.project,
     tsconfigRaw: opts.tsconfigRaw,
     banner: opts.banner,
     footer: opts.footer,
+    intro: opts.intro,
+    outro: opts.outro,
     globalName: opts.globalName,
+    globals: Object.keys(opts.globals).length > 0 ? opts.globals : undefined,
     publicPath: opts.publicPath,
     entryNames: opts.entryNames,
     chunkNames: opts.chunkNames,
@@ -1875,6 +1965,8 @@ async function runBundle(opts, config) {
     jobs: opts.jobs,
     outbase: opts.outbase,
     plugins: plugins.length > 0 ? plugins : undefined,
+    ignoreAnnotations: opts.ignoreAnnotations,
+    jsxSideEffects: opts.jsxSideEffects,
     // compiler.styledComponents / compiler.emotion 도 bundle 모드에서 forward.
     // 누락 시 `zts.config.json` 의 `compiler` 설정이 silently drop 돼 1st-party transform
     // (autoLabel 등) 이 활성화 안 됨.
@@ -1921,6 +2013,10 @@ async function runBundle(opts, config) {
     } else {
       writeFileSync(resolve(opts.metafile), result.metafile);
     }
+  }
+
+  if (opts.profile.length > 0 && opts.logLevel !== "silent") {
+    process.stderr.write(profileReport(opts.profileFormat ?? "table"));
   }
 
   return result;
@@ -2427,6 +2523,19 @@ async function runServe(opts, config, { appDev = null } = {}) {
 
 // ─── Build dispatch ───
 
+function runTest262(opts) {
+  const dir = opts.test262;
+  if (!dir) throw new Error("--test262 requires a directory path");
+  const result = spawnSync("zig", ["build", "test262-run", "--", resolve(dir)], {
+    cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
+    stdio: "inherit",
+  });
+  if (result.error) {
+    throw new Error(`failed to run Test262 runner: ${result.error.message}`);
+  }
+  return { errors: result.status === 0 ? 0 : 1 };
+}
+
 /**
  * 단일/워크스페이스 흐름 공통 dispatch — 모드별 (`runServe`/`runWatch`/`runBundle`/`runTranspile`)
  * 진입점 호출 + bundle 의 user error 카운트 반환. caller (main / runWorkspace) 가 exit 처리.
@@ -2434,6 +2543,9 @@ async function runServe(opts, config, { appDev = null } = {}) {
  * 반환 형태가 다른 두 호출 사이트의 drift 를 차단 — 모드 분기/추가가 1곳에서 끝남.
  */
 async function dispatchBuild(opts, config, configEnv, dotenvVars) {
+  if (opts.test262) {
+    return runTest262(opts);
+  }
   if (opts.appCommand === "build") {
     const result = await runAppBuild(opts, config, configEnv, dotenvVars);
     return { errors: result.errors.length };
@@ -2640,7 +2752,7 @@ async function main() {
   }
   injectDefaultNodeEnvDefine(opts);
 
-  if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve && !opts.appCommand) {
+  if (opts.entryPoints.length === 0 && !opts.stdin && !opts.serve && !opts.appCommand && !opts.test262) {
     printUsage(undefined, console.error);
     process.exit(1);
   }

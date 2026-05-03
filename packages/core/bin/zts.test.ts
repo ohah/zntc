@@ -139,6 +139,13 @@ describe("CLI: bootstrap", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("--test262 without path reports usage instead of running a normal build", () => {
+    const result = runCli(["--test262"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Usage");
+    expect(result.stderr).not.toContain("unknown option");
+  });
 });
 
 // ─── Transpile 모드 ───
@@ -352,6 +359,38 @@ describe("CLI: transpile", () => {
     expect(stdout).not.toContain("console.log");
   });
 
+  test("--tokenize prints scanner tokens", () => {
+    const { stdout, stderr, exitCode } = runCli([join(dir, "input.ts"), "--tokenize"]);
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("unknown option");
+    expect(stdout).toContain("const");
+    expect(stdout).toContain("<identifier>");
+    expect(stdout).toContain("<eof>");
+    expect(stdout).not.toContain("const x = 1");
+  });
+
+  test("--tokenize-format=json prints machine-readable tokens", () => {
+    const { stdout, exitCode } = runCli([
+      join(dir, "input.ts"),
+      "--tokenize",
+      "--tokenize-format=json",
+    ]);
+    expect(exitCode).toBe(0);
+    const tokens = JSON.parse(stdout);
+    expect(tokens.some((token: any) => token.kind === "const")).toBe(true);
+    expect(tokens.some((token: any) => token.kind === "<eof>")).toBe(true);
+  });
+
+  test("--profile emits profile report in transpile mode", () => {
+    const { stderr, exitCode } = runCli([
+      join(dir, "input.ts"),
+      "--profile=all",
+      "--profile-format=table",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("Profile");
+  });
+
   test("존재하지 않는 파일 → 에러", () => {
     const { exitCode, stderr } = runCli(["/nonexistent/file.ts"]);
     expect(exitCode).toBe(1);
@@ -557,6 +596,164 @@ describe("CLI: bundle", () => {
     const { stdout, exitCode } = runCli(["--bundle", join(dir, "entry.ts"), "--format=cjs"]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("use strict");
+  });
+
+  test("번들 + --intro/--outro wrapper 내부 텍스트 삽입", () => {
+    const { stdout, stderr, exitCode } = runCli([
+      "--bundle",
+      join(dir, "entry.ts"),
+      "--intro=console.log('intro');",
+      "--outro=console.log('outro');",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("unknown option");
+    expect(stdout).toContain("console.log('intro');");
+    expect(stdout).toContain("console.log('outro');");
+    expect(stdout.indexOf("console.log('intro');")).toBeLessThan(stdout.indexOf("Hello"));
+    expect(stdout.indexOf("Hello")).toBeLessThan(stdout.indexOf("console.log('outro');"));
+  });
+
+  test("번들 + --node-paths=<csv> 추가 lookup directory에서 bare specifier resolve", () => {
+    const npDir = mkdtempSync(join(tmpdir(), "zts-cli-node-paths-"));
+    try {
+      const vendor = join(npDir, "vendor");
+      mkdirSync(join(vendor, "pkg"), { recursive: true });
+      writeFileSync(join(vendor, "pkg", "package.json"), JSON.stringify({ main: "index.js" }));
+      writeFileSync(join(vendor, "pkg", "index.js"), "export const value = 'NODE_PATH_VALUE';");
+      writeFileSync(join(npDir, "entry.ts"), "import { value } from 'pkg'; console.log(value);");
+      const { stdout, stderr, exitCode } = runCli([
+        "--bundle",
+        join(npDir, "entry.ts"),
+        `--node-paths=${vendor}`,
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("unknown option");
+      expect(stdout).toContain("NODE_PATH_VALUE");
+    } finally {
+      rmSync(npDir, { recursive: true, force: true });
+    }
+  });
+
+  test("번들 + --global:SPEC=NAME maps IIFE external globals", () => {
+    const globalDir = mkdtempSync(join(tmpdir(), "zts-cli-globals-"));
+    try {
+      writeFileSync(
+        join(globalDir, "entry.ts"),
+        "import { useState } from 'react'; console.log(useState);",
+      );
+      const { stdout, stderr, exitCode } = runCli([
+        "--bundle",
+        join(globalDir, "entry.ts"),
+        "--format=iife",
+        "--global-name=Lib",
+        "--external",
+        "react",
+        "--global:react=React",
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("unknown option");
+      expect(stdout).toContain("})(React);");
+      expect(stdout).toContain("React.useState");
+    } finally {
+      rmSync(globalDir, { recursive: true, force: true });
+    }
+  });
+
+  test("번들 + --jsx-side-effects preserves unused JSX expression", () => {
+    const jsxDir = mkdtempSync(join(tmpdir(), "zts-cli-jsx-side-effects-"));
+    try {
+      writeFileSync(
+        join(jsxDir, "entry.tsx"),
+        [
+          "const React = { createElement(type) { console.log(type); } };",
+          "<div />;",
+          "console.log('live');",
+        ].join("\n"),
+      );
+      const { stdout, stderr, exitCode } = runCli([
+        "--bundle",
+        join(jsxDir, "entry.tsx"),
+        "--minify-syntax",
+        "--jsx-side-effects",
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("unknown option");
+      expect(stdout).toContain("React.createElement");
+    } finally {
+      rmSync(jsxDir, { recursive: true, force: true });
+    }
+  });
+
+  test("번들 + --ignore-annotations preserves @__PURE__ call", () => {
+    const annDir = mkdtempSync(join(tmpdir(), "zts-cli-ignore-annotations-"));
+    try {
+      writeFileSync(
+        join(annDir, "entry.ts"),
+        "function side(){ console.log('PURE_CALL'); }\n/* @__PURE__ */ side();\nconsole.log('live');",
+      );
+      const { stdout, stderr, exitCode } = runCli([
+        "--bundle",
+        join(annDir, "entry.ts"),
+        "--minify-syntax",
+        "--ignore-annotations",
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("unknown option");
+      expect(stdout).toContain("side()");
+      expect(stdout).toContain("PURE_CALL");
+    } finally {
+      rmSync(annDir, { recursive: true, force: true });
+    }
+  });
+
+  test("번들 + --conditions=<csv> custom exports condition 적용", () => {
+    const condDir = mkdtempSync(join(tmpdir(), "zts-cli-conditions-"));
+    try {
+      mkdirSync(join(condDir, "node_modules", "pkg"), { recursive: true });
+      writeFileSync(
+        join(condDir, "node_modules", "pkg", "package.json"),
+        JSON.stringify({
+          name: "pkg",
+          exports: {
+            ".": {
+              custom: "./custom.js",
+              default: "./default.js",
+            },
+          },
+        }),
+      );
+      writeFileSync(join(condDir, "node_modules", "pkg", "custom.js"), "export const value = 'custom';");
+      writeFileSync(
+        join(condDir, "node_modules", "pkg", "default.js"),
+        "export const value = 'default';",
+      );
+      writeFileSync(join(condDir, "entry.ts"), "import { value } from 'pkg'; console.log(value);");
+      const { stdout, stderr, exitCode } = runCli([
+        "--bundle",
+        join(condDir, "entry.ts"),
+        "--conditions=custom",
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("unknown option");
+      expect(stdout).toContain("custom");
+      expect(stdout).not.toContain("default");
+    } finally {
+      rmSync(condDir, { recursive: true, force: true });
+    }
+  });
+
+  test("번들 + --profile emits profile report", () => {
+    const { stderr, exitCode } = runCli([
+      "--bundle",
+      join(dir, "entry.ts"),
+      "--profile=all",
+      "--profile-format=table",
+      "-o",
+      join(dir, "profile-bundle.js"),
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("unknown option");
+    expect(stderr).toContain("=== ZTS Profile ===");
   });
 
   test("번들 + --format=iife", () => {

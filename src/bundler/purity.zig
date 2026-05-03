@@ -53,6 +53,15 @@ pub fn markUserPureCalls(ast: *Ast, pure_patterns: []const []const u8) void {
     }
 }
 
+pub fn clearPureCallFlags(ast: *Ast) void {
+    for (ast.nodes.items) |node| {
+        if (node.tag != .call_expression and node.tag != .new_expression) continue;
+        const e = node.data.extra;
+        if (!ast.hasExtra(e, 3)) continue;
+        ast.extra_data.items[e + 3] &= ~@as(u32, CallFlags.is_pure);
+    }
+}
+
 fn calleeMatchesUserPure(ast: *const Ast, callee_idx: NodeIndex, pure_patterns: []const []const u8) bool {
     if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
 

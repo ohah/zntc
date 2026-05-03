@@ -15,6 +15,7 @@ const zts_lib = @import("zts_lib");
 /// 죽는다 — 그 전에 ZTS 배너 + 이슈 URL을 찍어 사용자가 신고하기 쉽게 한다.
 pub const panic = zts_lib.crash_handler.panic;
 const transpile_mod = zts_lib.transpile;
+const Scanner = zts_lib.lexer.Scanner;
 const TsconfigCache = zts_lib.tsconfig_cache.TsconfigCache;
 const rich_diagnostic = zts_lib.rich_diagnostic;
 const diagnostic_renderer = zts_lib.diagnostic_renderer;
@@ -289,6 +290,115 @@ fn napiTranspile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
     }
 
     return js_result;
+}
+
+/// tokenize(source, filename) → [{ kind, text, start, end, line, column, hasNewlineBefore }]
+fn napiTokenize(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 2;
+    var argv: [2]c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
+        return throwError(env, "failed to get arguments");
+    }
+    if (argc < 1) return throwError(env, "tokenize requires source");
+
+    const source = getStringArg(env, argv[0], native_alloc) orelse {
+        return throwError(env, "invalid or empty source");
+    };
+    defer native_alloc.free(source);
+
+    const filename = if (argc > 1) (getStringArg(env, argv[1], native_alloc) orelse "") else "";
+    defer if (filename.len > 0) native_alloc.free(filename);
+
+    var scanner = Scanner.init(native_alloc, source) catch return throwError(env, "OutOfMemory");
+    defer scanner.deinit();
+    if (std.mem.eql(u8, std.fs.path.extension(filename), ".mjs")) scanner.is_module = true;
+
+    var js_tokens: c.napi_value = undefined;
+    if (c.napi_create_array(env, &js_tokens) != c.napi_ok) return throwError(env, "failed to create token array");
+
+    var index: u32 = 0;
+    while (true) : (index += 1) {
+        scanner.next() catch return throwError(env, "tokenize failed");
+        const tok = scanner.token;
+        const loc = scanner.getLineColumn(tok.span.start);
+        const text = scanner.tokenText();
+
+        var js_tok: c.napi_value = undefined;
+        _ = c.napi_create_object(env, &js_tok);
+
+        setStringProp(env, js_tok, "kind", tok.kind.symbol());
+        setStringProp(env, js_tok, "text", text);
+        setUint32Prop(env, js_tok, "start", tok.span.start);
+        setUint32Prop(env, js_tok, "end", tok.span.end);
+        setUint32Prop(env, js_tok, "line", loc.line);
+        setUint32Prop(env, js_tok, "column", loc.column);
+
+        var js_newline: c.napi_value = undefined;
+        _ = c.napi_get_boolean(env, tok.has_newline_before, &js_newline);
+        _ = c.napi_set_named_property(env, js_tok, "hasNewlineBefore", js_newline);
+
+        _ = c.napi_set_element(env, js_tokens, index, js_tok);
+        if (tok.kind == .eof) break;
+    }
+
+    return js_tokens;
+}
+
+/// configureProfile(categories, level?) → void
+fn napiConfigureProfile(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 2;
+    var argv: [2]c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
+        return throwError(env, "failed to get arguments");
+    }
+
+    var arena = std.heap.ArenaAllocator.init(native_alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    if (argc > 0) {
+        const cats = parseStringArray(env, argv[0], arena_alloc) orelse &.{};
+        profile_mod.resetCounters();
+        profile_mod.addCategories(cats);
+    }
+    if (argc > 1) {
+        if (getStringArg(env, argv[1], arena_alloc)) |level| {
+            if (profile_mod.Level.fromString(level)) |parsed| {
+                profile_mod.setLevel(parsed);
+            }
+        }
+    }
+
+    var out: c.napi_value = undefined;
+    _ = c.napi_get_undefined(env, &out);
+    return out;
+}
+
+/// profileReport(format?) → string
+fn napiProfileReport(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
+    var argc: usize = 1;
+    var argv: [1]c.napi_value = undefined;
+    if (c.napi_get_cb_info(env, info, &argc, &argv, null, null) != c.napi_ok) {
+        return throwError(env, "failed to get arguments");
+    }
+
+    var format: profile_mod.Format = .table;
+    if (argc > 0) {
+        if (getStringArg(env, argv[0], native_alloc)) |s| {
+            defer native_alloc.free(s);
+            format = profile_mod.Format.fromString(s) orelse .table;
+        }
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(native_alloc);
+    profile_mod.report(buf.writer(native_alloc), format) catch return throwError(env, "failed to render profile report");
+
+    var js_report: c.napi_value = undefined;
+    if (c.napi_create_string_utf8(env, buf.items.ptr, buf.items.len, &js_report) != c.napi_ok) {
+        return throwError(env, "failed to create profile report");
+    }
+    return js_report;
 }
 
 // ─── 객체 프로퍼티 헬퍼 ───
@@ -3375,6 +3485,7 @@ fn parseBuildOptions(
     if (getObjectStringArray(env, opts_obj, "profile", native_alloc)) |cats| {
         for (cats) |s| if (!trackStr(owned_strings, s)) return null;
         if (!trackArr(owned_string_arrays, cats)) return null;
+        profile_mod.resetCounters();
         profile_mod.addCategories(cats);
     }
     if (getObjectString(env, opts_obj, "profileLevel", native_alloc)) |lvl| {
@@ -3399,6 +3510,8 @@ fn parseBuildOptions(
 
     const banner_js = ownStr(env, opts_obj, "banner", owned_strings);
     const footer_js = ownStr(env, opts_obj, "footer", owned_strings);
+    const intro_js = ownStr(env, opts_obj, "intro", owned_strings);
+    const outro_js = ownStr(env, opts_obj, "outro", owned_strings);
     const global_name = ownStr(env, opts_obj, "globalName", owned_strings);
     const public_path = ownStr(env, opts_obj, "publicPath", owned_strings);
     const entry_names = ownStr(env, opts_obj, "entryNames", owned_strings);
@@ -3509,6 +3622,19 @@ fn parseBuildOptions(
         }
         native_alloc.free(pairs);
         fallback_entries = fbs;
+    }
+
+    const global_pairs = getObjectKeyValuePairs(env, opts_obj, "globals", native_alloc);
+    var globals: []const bundler_mod.types.GlobalEntry = &.{};
+    if (global_pairs) |pairs| {
+        const entries_buf = native_alloc.alloc(bundler_mod.types.GlobalEntry, pairs.len) catch return null;
+        for (pairs, 0..) |pair, idx| {
+            if (!trackStr(owned_strings, pair[0])) return null;
+            if (!trackStr(owned_strings, pair[1])) return null;
+            entries_buf[idx] = .{ .specifier = pair[0], .global_name = pair[1] };
+        }
+        native_alloc.free(pairs);
+        globals = entries_buf;
     }
 
     // loader: { ".png": "file", ".svg": "text" } → []LoaderOverride
@@ -3773,7 +3899,10 @@ fn parseBuildOptions(
         .verbatim_module_syntax = verbatim_module_syntax_eff,
         .banner_js = banner_js,
         .footer_js = footer_js,
+        .intro_js = intro_js,
+        .outro_js = outro_js,
         .global_name = global_name,
+        .globals = globals,
         .public_path = public_path orelse "",
         .entry_names = entry_names orelse "[name]",
         .chunk_names = chunk_names orelse "[name]-[hash]",
@@ -3873,6 +4002,18 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     var fn_value: c.napi_value = undefined;
     _ = c.napi_create_function(env, "transpile", "transpile".len, napiTranspile, null, &fn_value);
     _ = c.napi_set_named_property(env, exports, "transpile", fn_value);
+
+    var tokenize_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "tokenize", "tokenize".len, napiTokenize, null, &tokenize_fn);
+    _ = c.napi_set_named_property(env, exports, "tokenize", tokenize_fn);
+
+    var configure_profile_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "configureProfile", "configureProfile".len, napiConfigureProfile, null, &configure_profile_fn);
+    _ = c.napi_set_named_property(env, exports, "configureProfile", configure_profile_fn);
+
+    var profile_report_fn: c.napi_value = undefined;
+    _ = c.napi_create_function(env, "profileReport", "profileReport".len, napiProfileReport, null, &profile_report_fn);
+    _ = c.napi_set_named_property(env, exports, "profileReport", profile_report_fn);
 
     // TsconfigCache (#2367)
     var ctc_fn: c.napi_value = undefined;
@@ -4017,5 +4158,17 @@ fn napiBenchmark(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.nap
 fn setDoubleProp(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, value: f64) void {
     var v: c.napi_value = undefined;
     _ = c.napi_create_double(env, value, &v);
+    _ = c.napi_set_named_property(env, obj, key, v);
+}
+
+fn setUint32Prop(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, value: u32) void {
+    var v: c.napi_value = undefined;
+    _ = c.napi_create_uint32(env, value, &v);
+    _ = c.napi_set_named_property(env, obj, key, v);
+}
+
+fn setStringProp(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, value: []const u8) void {
+    var v: c.napi_value = undefined;
+    _ = c.napi_create_string_utf8(env, value.ptr, value.len, &v);
     _ = c.napi_set_named_property(env, obj, key, v);
 }

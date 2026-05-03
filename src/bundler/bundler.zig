@@ -198,6 +198,10 @@ pub const BundleOptions = struct {
     banner_js: ?[]const u8 = null,
     /// 번들 출력 뒤에 삽입할 텍스트 (--footer:js)
     footer_js: ?[]const u8 = null,
+    /// 포맷 wrapper 내부 코드 앞에 삽입할 텍스트 (Rollup output.intro)
+    intro_js: ?[]const u8 = null,
+    /// 포맷 wrapper 내부 코드 뒤에 삽입할 텍스트 (Rollup output.outro)
+    outro_js: ?[]const u8 = null,
     /// IIFE 포맷에서 export를 바인딩할 글로벌 변수명 (--global-name)
     global_name: ?[]const u8 = null,
     /// IIFE external → 전역 식별자 매핑 (--globals, rollup `output.globals` 호환, #1824).
@@ -559,6 +563,8 @@ pub const Bundler = struct {
             .drop_labels = self.options.drop_labels,
             .drop_console = self.options.drop_console,
             .drop_debugger = self.options.drop_debugger,
+            .jsx_side_effects = self.options.jsx_side_effects,
+            .ignore_annotations = self.options.ignore_annotations,
             .jsx_runtime = self.options.jsx_runtime,
             .jsx_factory = self.options.jsx_factory,
             .jsx_fragment = self.options.jsx_fragment,
@@ -602,6 +608,8 @@ pub const Bundler = struct {
             .public_path = self.options.public_path,
             .banner_js = self.options.banner_js,
             .footer_js = self.options.footer_js,
+            .intro_js = self.options.intro_js,
+            .outro_js = self.options.outro_js,
             .global_name = self.options.global_name,
             .globals = self.options.globals,
             .out_extension_js = self.options.out_extension_js,
@@ -658,6 +666,7 @@ pub const Bundler = struct {
         worker_graph.public_path = self.options.public_path;
         worker_graph.project_root = self.options.project_root;
         worker_graph.pure = self.options.pure;
+        worker_graph.ignore_annotations = self.options.ignore_annotations;
         worker_graph.plugins = self.options.plugins;
         worker_graph.max_threads = self.options.max_threads;
         worker_graph.flow = self.options.flow;
@@ -830,6 +839,7 @@ pub const Bundler = struct {
         defer if (combined_inject) |c| self.allocator.free(c);
         graph.inject_files = combined_inject orelse self.options.inject;
         graph.pure = self.options.pure;
+        graph.ignore_annotations = self.options.ignore_annotations;
         graph.plugins = self.options.plugins;
         graph.max_threads = self.options.max_threads;
         graph.flow = self.options.flow;

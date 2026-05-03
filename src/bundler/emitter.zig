@@ -110,6 +110,10 @@ pub const EmitOptions = struct {
     banner_js: ?[]const u8 = null,
     /// 번들 출력 뒤에 삽입할 텍스트
     footer_js: ?[]const u8 = null,
+    /// 포맷 wrapper 내부 코드 앞에 삽입할 텍스트
+    intro_js: ?[]const u8 = null,
+    /// 포맷 wrapper 내부 코드 뒤에 삽입할 텍스트
+    outro_js: ?[]const u8 = null,
     /// IIFE 포맷에서 export를 바인딩할 글로벌 변수명
     global_name: ?[]const u8 = null,
     /// IIFE external → 전역 식별자 매핑 (rollup `output.globals` 호환, #1824).
@@ -394,6 +398,11 @@ pub fn emitWithTreeShaking(
 
     // 포맷별 prologue
     try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_param_names.items);
+
+    if (options.intro_js) |intro| {
+        try output.appendSlice(allocator, intro);
+        if (intro.len > 0 and intro[intro.len - 1] != '\n') try output.append(allocator, '\n');
+    }
 
     // 폴리필 주입 (--polyfill): IIFE로 감싸서 즉시 실행.
     // Metro/롤다운과 동일하게 모듈 그래프 밖에서 런타임 헬퍼보다 먼저 실행.
@@ -854,6 +863,11 @@ pub fn emitWithTreeShaking(
     }
 
     // 포맷별 epilogue
+    if (options.outro_js) |outro| {
+        try output.appendSlice(allocator, outro);
+        if (outro.len > 0 and outro[outro.len - 1] != '\n') try output.append(allocator, '\n');
+    }
+
     try emitFormatEpilogue(&output, allocator, options.format, iife_ext_globals.items);
 
     // legal comments (eof 모드): 모든 모듈의 legal comment를 파일 끝에 모아서 출력
@@ -1437,7 +1451,11 @@ pub fn emitModule(
     // jsxDEV source info 계산용 line offsets
     transformer.line_offsets = module.line_offsets;
     const root = try transformer.transform();
-    purity.markUserPureCalls(transformer.ast, options.pure);
+    if (options.transform_options_base.ignore_annotations) {
+        purity.clearPureCallFlags(transformer.ast);
+    } else {
+        purity.markUserPureCalls(transformer.ast, options.pure);
+    }
 
     // AST constant folding + dead branch DCE — --minify 여부와 무관하게 항상 실행(#1552).
     // minify.zig는 실제로는 const fold / if DCE / logical short-circuit 전용 — 식별자
