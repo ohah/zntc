@@ -36,15 +36,15 @@ HTML asset URL, `%ENV%` 토큰을 rewrite하며 static split chunk는 `modulepre
 주입합니다. `zts dev`는 같은 HTML/env/public prepare 단계를 사용하고 CSS 변경은 페이지
 전체 reload 없이 stylesheet만 갱신합니다.
 
-| 옵션 | 설명 |
-|------|------|
-| `--entry-html <file>` | HTML entry 파일 (기본: `index.html`) |
-| `--public-dir <dir\|false>` | public 파일 복사 디렉토리 또는 비활성화 |
-| `--base <path>` | HTML/CSS asset URL prefix |
-| `--mode <name>` | env/config mode (`dev`: `development`, `build`: `production`) |
-| `--env-prefix <list>` | 노출할 env prefix CSV (기본: `VITE_,ZTS_`) |
-| `--env-dir <dir>` | `.env*` 파일 탐색 디렉토리 |
-| `--spa-fallback[=file]` | `preview`에서 route-like 404 요청을 `index.html` 또는 지정 파일로 fallback |
+| 옵션                        | 설명                                                                       |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `--entry-html <file>`       | HTML entry 파일 (기본: `index.html`)                                       |
+| `--public-dir <dir\|false>` | public 파일 복사 디렉토리 또는 비활성화                                    |
+| `--base <path>`             | HTML/CSS asset URL prefix                                                  |
+| `--mode <name>`             | env/config mode (`dev`: `development`, `build`: `production`)              |
+| `--env-prefix <list>`       | 노출할 env prefix CSV (기본: `VITE_,ZTS_`)                                 |
+| `--env-dir <dir>`           | `.env*` 파일 탐색 디렉토리                                                 |
+| `--spa-fallback[=file]`     | `preview`에서 route-like 404 요청을 `index.html` 또는 지정 파일로 fallback |
 
 앱 root에 `postcss.config.{js,mjs,cjs,json}` 또는 `.postcssrc*`가 있으면 CSS에 자동
 적용됩니다. `zts dev`는 원본 CSS와 PostCSS `dependency` / `dir-dependency` 메시지를
@@ -55,164 +55,179 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 
 ## 입출력
 
-| 옵션 | 설명 |
-|------|------|
-| `-o, --outfile <path>` | 출력 파일 경로 |
-| `--outdir <path>` | 출력 디렉토리 (디렉토리 입력·`--splitting`·`--preserve-modules`) |
-| `--outbase=<dir>` | 출력 기준 디렉토리 (공통 prefix 계산) |
-| `--out-extension:.js=<ext>` | 출력 확장자 변경 (예: `.mjs`) |
-| `--clean` | 빌드 전 outdir 비우기 |
+| 옵션                        | 설명                                                             |
+| --------------------------- | ---------------------------------------------------------------- |
+| `-o, --outfile <path>`      | 출력 파일 경로                                                   |
+| `--outdir <path>`           | 출력 디렉토리 (디렉토리 입력·`--splitting`·`--preserve-modules`) |
+| `--outbase=<dir>`           | 출력 기준 디렉토리 (공통 prefix 계산)                            |
+| `--out-extension:.js=<ext>` | 출력 확장자 변경 (예: `.mjs`)                                    |
+| `--clean`                   | 빌드 전 outdir 비우기                                            |
 
 ## 모듈 포맷 / 플랫폼
 
-| 옵션 | 설명 |
-|------|------|
-| `--format=esm\|cjs\|iife\|umd\|amd` | 모듈 포맷 (기본: `esm`) |
-| `--platform=browser\|node\|neutral\|react-native` | 타겟 플랫폼 |
-| `--rn-platform=ios\|android` | RN 서브 플랫폼 (`.ios.*`/`.android.*` 확장자) |
-| `--target=<spec>` | ES 타겟: `es2015`~`esnext` 또는 엔진 버전 (`chrome80,safari14` 등) |
-| `--global-name=<name>` | IIFE export 변수명 |
+| 옵션                                              | 설명                                                               |
+| ------------------------------------------------- | ------------------------------------------------------------------ |
+| `--format=esm\|cjs\|iife\|umd\|amd`               | 모듈 포맷 (기본: `esm`)                                            |
+| `--platform=browser\|node\|neutral\|react-native` | 타겟 플랫폼                                                        |
+| `--rn-platform=ios\|android`                      | RN 서브 플랫폼 (`.ios.*`/`.android.*` 확장자)                      |
+| `--target=<spec>`                                 | ES 타겟: `es2015`~`esnext` 또는 엔진 버전 (`chrome80,safari14` 등) |
+| `--global-name=<name>`                            | IIFE export 변수명                                                 |
 
 ## 미니파이
 
-| 옵션 | 설명 |
-|------|------|
-| `--minify` | 세 가지 모두 켜기 (shortcut) |
-| `--minify-whitespace` | 공백/세미콜론/줄바꿈만 축약 (디버깅 가능) |
-| `--minify-syntax` | `true`→`!0`, 괄호 제거, constant folding |
-| `--minify-identifiers` | 지역 변수명 단축 |
-| `--keep-names` | 함수/클래스 `.name` 보존 |
-| `--charset=utf8\|ascii` | 출력 문자셋 |
-| `--ascii-only` | non-ASCII → `\uXXXX` (= `--charset=ascii`) |
-| `--quotes=double\|single\|preserve` | 문자열 따옴표 스타일 |
-| `--line-limit=<n>` | 안전한 토큰 경계에서 긴 출력 라인 줄바꿈 (`0`은 무제한) |
+| 옵션                                | 설명                                                    |
+| ----------------------------------- | ------------------------------------------------------- |
+| `--minify`                          | 세 가지 모두 켜기 (shortcut)                            |
+| `--minify-whitespace`               | 공백/세미콜론/줄바꿈만 축약 (디버깅 가능)               |
+| `--minify-syntax`                   | `true`→`!0`, 괄호 제거, constant folding                |
+| `--minify-identifiers`              | 지역 변수명 단축                                        |
+| `--keep-names`                      | 함수/클래스 `.name` 보존                                |
+| `--charset=utf8\|ascii`             | 출력 문자셋                                             |
+| `--ascii-only`                      | non-ASCII → `\uXXXX` (= `--charset=ascii`)              |
+| `--quotes=double\|single\|preserve` | 문자열 따옴표 스타일                                    |
+| `--line-limit=<n>`                  | 안전한 토큰 경계에서 긴 출력 라인 줄바꿈 (`0`은 무제한) |
 
 ## 소스맵
 
-| 옵션 | 설명 |
-|------|------|
-| `--sourcemap` | `.js.map` 외부 파일 + `sourceMappingURL` 주석 (linked, 기본) |
-| `--sourcemap=linked` | linked 명시 (#2152) — 동일 |
-| `--sourcemap=inline` | data URL 인라인 |
-| `--sourcemap=external` | sourceMappingURL 주석 없이 외부만 |
-| `--sourcemap=hidden` | 외부 파일 생성만 (주석 생략) |
-| `--sourcemap-debug-ids` | Sentry debugId 삽입 |
-| `--sources-content=false` | `sourcesContent` 필드 생략 |
-| `--source-root=<path>` | sourceRoot 필드 |
+| 옵션                      | 설명                                                         |
+| ------------------------- | ------------------------------------------------------------ |
+| `--sourcemap`             | `.js.map` 외부 파일 + `sourceMappingURL` 주석 (linked, 기본) |
+| `--sourcemap=linked`      | linked 명시 (#2152) — 동일                                   |
+| `--sourcemap=inline`      | data URL 인라인                                              |
+| `--sourcemap=external`    | sourceMappingURL 주석 없이 외부만                            |
+| `--sourcemap=hidden`      | 외부 파일 생성만 (주석 생략)                                 |
+| `--sourcemap-debug-ids`   | Sentry debugId 삽입                                          |
+| `--sources-content=false` | `sourcesContent` 필드 생략                                   |
+| `--source-root=<path>`    | sourceRoot 필드                                              |
 
 ## 변환 / 치환
 
-| 옵션 | 설명 |
-|------|------|
-| `--define:KEY=VALUE` | 글로벌 치환 (`process.env.NODE_ENV` → `"production"` 등) |
-| `--drop=console` | `console.*` 호출 제거 |
-| `--drop=debugger` | `debugger` 문 제거 |
-| `--drop-labels=DEV,TEST` | 지정한 labeled statement 전체 제거 |
-| `--inject:<path>` | 자동 import (shim) |
+| 옵션                     | 설명                                                             |
+| ------------------------ | ---------------------------------------------------------------- |
+| `--define:KEY=VALUE`     | 글로벌 치환 (`process.env.NODE_ENV` → `"production"` 등)         |
+| `--drop=console`         | `console.*` 호출 제거                                            |
+| `--drop=debugger`        | `debugger` 문 제거                                               |
+| `--drop-labels=DEV,TEST` | 지정한 labeled statement 전체 제거                               |
+| `--inject:<path>`        | 자동 import (shim)                                               |
+| `--pure:CALL`            | 순수 호출 패턴 등록 (예: `--pure:React.createElement`)           |
+| `--ignore-annotations`   | `/* @__PURE__ */`, `sideEffects` 등 tree-shaking annotation 무시 |
 
 ## JSX
 
-| 옵션 | 설명 |
-|------|------|
-| `--jsx=classic\|automatic\|automatic-dev` | JSX 런타임 |
-| `--jsx-dev` | `--jsx=automatic-dev` shortcut |
-| `--jsx-factory=<fn>` | classic factory (기본: `React.createElement`) |
-| `--jsx-fragment=<fn>` | classic Fragment |
-| `--jsx-import-source=<pkg>` | automatic import source (기본: `react`) |
-| `--jsx-in-js` | `.js` 파일에서도 JSX 파싱 허용 |
+| 옵션                                      | 설명                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| `--jsx=classic\|automatic\|automatic-dev` | JSX 런타임                                                         |
+| `--jsx-dev`                               | `--jsx=automatic-dev` shortcut                                     |
+| `--jsx-factory=<fn>`                      | classic factory (기본: `React.createElement`)                      |
+| `--jsx-fragment=<fn>`                     | classic Fragment                                                   |
+| `--jsx-import-source=<pkg>`               | automatic import source (기본: `react`)                            |
+| `--jsx-in-js`                             | `.js` 파일에서도 JSX 파싱 허용                                     |
+| `--jsx-side-effects`                      | 사용되지 않은 JSX expression을 side-effect가 있는 것으로 보고 보존 |
 
 ## TypeScript
 
-| 옵션 | 설명 |
-|------|------|
-| `-p, --project <path>, --tsconfig-path <path>` | tsconfig.json 경로/디렉토리 |
-| `--experimental-decorators` | legacy decorator (`__decorateClass`) |
-| `--emit-decorator-metadata` | decorator metadata emit (`experimentalDecorators` 필요) |
-| `--use-define-for-class-fields=false\|true` | 클래스 필드 의미론 |
-| `--verbatim-module-syntax` | TS `verbatimModuleSyntax` import/export 보존 |
+| 옵션                                           | 설명                                                     |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| `-p, --project <path>, --tsconfig-path <path>` | tsconfig.json 경로/디렉토리                              |
+| `--experimental-decorators`                    | legacy decorator (`__decorateClass`)                     |
+| `--emit-decorator-metadata`                    | decorator metadata emit (`experimentalDecorators` 필요)  |
+| `--use-define-for-class-fields=false\|true`    | 클래스 필드 의미론                                       |
+| `--verbatim-module-syntax`                     | TS `verbatimModuleSyntax` import/export 보존             |
+| `--tsconfig-raw=<json>`                        | inline tsconfig JSON 문자열 (esbuild `tsconfigRaw` 호환) |
 
 ## Flow
 
-| 옵션 | 설명 |
-|------|------|
+| 옵션     | 설명                                          |
+| -------- | --------------------------------------------- |
 | `--flow` | Flow 타입 스트리핑 (`@flow` pragma 자동 감지) |
 
 ## 번들 전용
 
-| 옵션 | 설명 |
-|------|------|
-| `--bundle` | 번들 모드 활성화 |
-| `--splitting` | 코드 스플리팅 (`--outdir` 필요) |
-| `--no-splitting` | config에서 켠 splitting을 CLI에서 비활성화 |
-| `--preserve-modules` | 모듈별 출력 (라이브러리 빌드) |
-| `--preserve-modules-root=<dir>` | 출력 구조 기준 디렉토리 |
-| `--inline-dynamic-imports` | dynamic import target 을 entry chunk 에 흡수 (Rollup `inlineDynamicImports`, #2185) |
-| `--output-exports=<mode>` | CJS/UMD entry export 형식 — `auto\|named\|default\|none` (Rollup `output.exports`, #2159) |
-| `--entry-names=<pattern>` | 엔트리 파일명 패턴 (`[name]`, `[hash]`) |
-| `--chunk-names=<pattern>` | 청크 파일명 패턴 |
-| `--asset-names=<pattern>` | 에셋 파일명 패턴 |
-| `--loader:.ext=type` | 확장자별 로더 (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
-| `--metafile` / `--metafile=<path>` | 빌드 메타 JSON (stdout 또는 파일) |
-| `--analyze` | 번들 분석 리포트 |
-| `--legal-comments=<mode>` | 라이선스 주석: `none\|inline\|eof\|linked\|external` |
-| `--banner=<text>` / `--banner:js=<text>` | 출력 앞 텍스트 |
-| `--footer=<text>` / `--footer:js=<text>` | 출력 뒤 텍스트 |
-| `--public-path=<url>` | 에셋 URL prefix |
-| `--shim-missing-exports` | 없는 export에 `undefined` shim |
+| 옵션                                     | 설명                                                                                            |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `--bundle`                               | 번들 모드 활성화                                                                                |
+| `--splitting`                            | 코드 스플리팅 (`--outdir` 필요)                                                                 |
+| `--no-splitting`                         | config에서 켠 splitting을 CLI에서 비활성화                                                      |
+| `--preserve-modules`                     | 모듈별 출력 (라이브러리 빌드)                                                                   |
+| `--preserve-modules-root=<dir>`          | 출력 구조 기준 디렉토리                                                                         |
+| `--inline-dynamic-imports`               | dynamic import target 을 entry chunk 에 흡수 (Rollup `inlineDynamicImports`, #2185)             |
+| `--output-exports=<mode>`                | CJS/UMD entry export 형식 — `auto\|named\|default\|none` (Rollup `output.exports`, #2159)       |
+| `--entry-names=<pattern>`                | 엔트리 파일명 패턴 (`[name]`, `[hash]`)                                                         |
+| `--chunk-names=<pattern>`                | 청크 파일명 패턴                                                                                |
+| `--asset-names=<pattern>`                | 에셋 파일명 패턴                                                                                |
+| `--loader:.ext=type`                     | 확장자별 로더 (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
+| `--metafile` / `--metafile=<path>`       | 빌드 메타 JSON (stdout 또는 파일)                                                               |
+| `--analyze`                              | 번들 분석 리포트                                                                                |
+| `--legal-comments=<mode>`                | 라이선스 주석: `none\|inline\|eof\|linked\|external`                                            |
+| `--packages=external`                    | bare package import를 모두 external 처리                                                        |
+| `--banner=<text>` / `--banner:js=<text>` | 출력 앞 텍스트                                                                                  |
+| `--footer=<text>` / `--footer:js=<text>` | 출력 뒤 텍스트                                                                                  |
+| `--intro=<text>`                         | format wrapper 내부 bundle 앞 텍스트                                                            |
+| `--outro=<text>`                         | format wrapper 내부 bundle 뒤 텍스트                                                            |
+| `--global:FROM=TO`                       | IIFE/UMD external specifier를 global 변수명에 매핑                                              |
+| `--public-path=<url>`                    | 에셋 URL prefix                                                                                 |
+| `--shim-missing-exports`                 | 없는 export에 `undefined` shim                                                                  |
 
 ## Resolve
 
-| 옵션 | 설명 |
-|------|------|
-| `--external <pkg>` / `--external=<pkg>` | 번들에서 제외 (반복 가능) |
-| `--alias:FROM=TO` | import 경로 별칭 |
-| `--resolve-extensions=<exts>` | 확장자 탐색 순서 (예: `.ios.ts,.ts,.js`) |
-| `--main-fields=<fields>` | package.json 필드 순서 (예: `react-native,browser,main`) |
-| `--preserve-symlinks` | 심링크 실제 경로 해석 안 함 |
+| 옵션                                    | 설명                                                     |
+| --------------------------------------- | -------------------------------------------------------- |
+| `--external <pkg>` / `--external=<pkg>` | 번들에서 제외 (반복 가능)                                |
+| `--alias:FROM=TO`                       | import 경로 별칭                                         |
+| `--resolve-extensions=<exts>`           | 확장자 탐색 순서 (예: `.ios.ts,.ts,.js`)                 |
+| `--main-fields=<fields>`                | package.json 필드 순서 (예: `react-native,browser,main`) |
+| `--conditions=<list>`                   | package exports 조건 CSV 추가 (예: `prod,react-native`)  |
+| `--node-paths=<list>`                   | bare specifier 추가 탐색 경로 CSV                        |
+| `--preserve-symlinks`                   | 심링크 실제 경로 해석 안 함                              |
 
 ## Watch / Dev Server
 
-| 옵션 | 설명 |
-|------|------|
-| `-w, --watch` | 파일 변경 감시 (증분 리빌드) |
-| `--watch-json` | NDJSON 이벤트 출력 (외부 HMR 연동) |
-| `--watch-delay=<ms>` | 디바운스 지연 |
-| `--serve [dir]` | 정적 파일 서버 (기본: `.`) |
-| `--port <n>` | 서버 포트 |
-| `--host [addr]` | 바인딩 주소 |
-| `--strict-port` | 지정한 포트를 사용할 수 없으면 다음 포트로 넘어가지 않고 실패 |
-| `--certfile <path>` | HTTPS 인증서 파일 (`preview`/serve) |
-| `--keyfile <path>` | HTTPS 개인키 파일 (`preview`/serve) |
-| `--open` | 브라우저 자동 열기 |
-| `--proxy /api=http://host:port` | API 프록시 |
+| 옵션                            | 설명                                                          |
+| ------------------------------- | ------------------------------------------------------------- |
+| `-w, --watch`                   | 파일 변경 감시 (증분 리빌드)                                  |
+| `--watch-json`                  | NDJSON 이벤트 출력 (외부 HMR 연동)                            |
+| `--watch-delay=<ms>`            | 디바운스 지연                                                 |
+| `--serve [dir]`                 | 정적 파일 서버 (기본: `.`)                                    |
+| `--port <n>`                    | 서버 포트                                                     |
+| `--host [addr]`                 | 바인딩 주소                                                   |
+| `--strict-port`                 | 지정한 포트를 사용할 수 없으면 다음 포트로 넘어가지 않고 실패 |
+| `--certfile <path>`             | HTTPS 인증서 파일 (`preview`/serve)                           |
+| `--keyfile <path>`              | HTTPS 개인키 파일 (`preview`/serve)                           |
+| `--open`                        | 브라우저 자동 열기                                            |
+| `--proxy /api=http://host:port` | API 프록시                                                    |
 
 **Dev Server 외부 인터페이스:** `/sse/events` (SSE 빌드 이벤트), `/reset-cache` (Control API), `/mcp` (Model Context Protocol — Claude Code 등 LLM 에이전트 연동).
 
 ## 플러그인 / 실행
 
-| 옵션 | 설명 |
-|------|------|
-| `--plugin <path>` | JS/TS 플러그인 또는 설정 파일 |
-| `--jobs=<n>` | 병렬 스레드 수 |
-| `--config <path>` | `zts.config.*` 자동 탐색 대신 명시 config 사용 |
+| 옵션                        | 설명                                                 |
+| --------------------------- | ---------------------------------------------------- |
+| `--plugin <path>`           | JS/TS 플러그인 또는 설정 파일                        |
+| `--jobs=<n>`                | 병렬 스레드 수                                       |
+| `--config <path>`           | `zts.config.*` 자동 탐색 대신 명시 config 사용       |
 | `--workspace-config <path>` | `zts.workspace.*` 자동 탐색 대신 명시 workspace 사용 |
-| `--workspace <name>` | workspace entry 하나만 선택 |
+| `--workspace <name>`        | workspace entry 하나만 선택                          |
 
 ## 진단 / 로깅
 
-| 옵션 | 설명 |
-|------|------|
-| `--log-level=<level>` | `silent\|error\|warning\|info\|debug\|verbose` |
-| `--log-limit=<n>` | 표시할 진단 최대 개수 |
-| `--allow-overwrite` | 입력 파일과 같은 출력 경로를 명시적으로 허용합니다. 기본값은 차단입니다. |
-| `-h, --help` | 도움말 |
+| 옵션                         | 설명                                                                     |
+| ---------------------------- | ------------------------------------------------------------------------ |
+| `--log-level=<level>`        | `silent\|error\|warning\|info\|debug\|verbose`                           |
+| `--log-limit=<n>`            | 표시할 진단 최대 개수                                                    |
+| `--profile=<list>`           | profile category CSV 수집 (`all`, `parse`, `transform` 등)               |
+| `--profile-level=<level>`    | profile 상세 수준: `summary\|detailed\|per-module\|per-pass`             |
+| `--profile-format=<format>`  | profile 출력: `table\|tree\|json\|csv`                                   |
+| `--tokenize[=false]`         | 코드 생성 대신 scanner token 출력                                        |
+| `--tokenize-format=<format>` | token 출력 형식: `text\|json`                                            |
+| `--stop-after=<phase>`       | 지정 phase 이후 중단하는 디버그 옵션                                     |
+| `--test262 <dir>`            | Zig Test262 runner 실행                                                  |
+| `--allow-overwrite`          | 입력 파일과 같은 출력 경로를 명시적으로 허용합니다. 기본값은 차단입니다. |
+| `-h, --help`                 | 도움말                                                                   |
 
 ## 현재 CLI에 노출되지 않은 내부/계획 옵션
 
 다음 기능은 코드 내부 옵션 또는 roadmap 항목이지만 현재 `zts` CLI flag registry에는 없습니다:
-`globalIdentifiers`, `pure`, `polyfills`, `jsxSideEffects`,
-`tsconfigRaw`, `ignoreAnnotations`, `packages=external`, `conditions`, `nodePaths`,
-`runBeforeMain`, `timing/profile`, `tokenize`, `test262`.
+`globalIdentifiers`, `polyfills`, `runBeforeMain`.
 
 ## 참고
 

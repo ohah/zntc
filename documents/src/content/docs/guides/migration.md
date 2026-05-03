@@ -20,7 +20,7 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--target=es2020`               | `--target=es2020`                             | 동일 (engine 타겟: `chrome80`, `node20` 등)                   |
 | `--bundle`                      | `--bundle`                                    | 동일                                                          |
 | `--splitting`                   | `--splitting`                                 | 동일 (`--outdir` 필수)                                        |
-| `--packages=external`           | 미지원                                        | 개별 패키지는 `--external` 반복 지정                          |
+| `--packages=external`           | `--packages=external`                         | bare package import를 모두 external 처리                      |
 | `--external:react`              | `--external react`                            | `:` 대신 공백                                                 |
 | `--minify`                      | `--minify`                                    | 동일 (`--minify-{whitespace,syntax,identifiers}` 세분화 지원) |
 | `--sourcemap`                   | `--sourcemap`                                 | 동일                                                          |
@@ -29,7 +29,7 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--define:X=Y`                  | `--define:X=Y`                                | 동일                                                          |
 | `--alias:react=preact/compat`   | `--alias:react=preact/compat`                 | 동일                                                          |
 | `--inject:./shim.js`            | `--inject:./shim.js`                          | 동일                                                          |
-| `--pure:Pure.*`                 | 미지원                                        | 코드 어노테이션 `/* @__PURE__ */` 사용                        |
+| `--pure:Pure.*`                 | `--pure:Pure.*`                               | pure call pattern 등록                                        |
 | `--drop:console`                | `--drop=console`                              | `:` 대신 `=` (`console`/`debugger`)                           |
 | `--drop-labels=DEV`             | `--drop-labels=DEV`                           | 동일. 쉼표로 여러 label 지정 가능                             |
 | `--keep-names`                  | `--keep-names`                                | 동일                                                          |
@@ -52,7 +52,7 @@ ZTS는 esbuild와 유사한 번들링 모델을 제공하지만 CLI flag surface
 | `--jsx-import-source=preact`    | `--jsx-import-source=preact`                  | 동일                                                          |
 | `--jsx-side-effects`            | `--jsx-side-effects`                          | unused JSX expression 보존                                    |
 | `--tsconfig=tsconfig.json`      | `-p tsconfig.json` 또는 `--tsconfig-path=...` | 축약 `-p` 지원                                                |
-| `--tsconfig-raw='{...}'`        | 미지원                                        | 파일 기반 `-p` / `--project` 사용                             |
+| `--tsconfig-raw='{...}'`        | `--tsconfig-raw='{...}'`                      | inline tsconfig JSON                                          |
 | `--conditions=prod,foo`         | `--conditions=prod,foo`                       | 기본 conditions 유지 + 사용자 condition 추가                  |
 | `--main-fields=browser,main`    | `--main-fields=browser,main`                  | 동일                                                          |
 | `--resolve-extensions=.ts,.js`  | `--resolve-extensions=.ts,.js`                | 동일 (RN `.ios.ts` 등 지원)                                   |
