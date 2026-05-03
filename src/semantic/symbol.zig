@@ -300,6 +300,12 @@ pub const Symbol = struct {
         return self.synthetic_kind != null;
     }
 
+    /// `export const x` / `export default const` 둘 다 module 외부에서 관찰 가능 — tree-shaker
+    /// 보존 판정, minify 의 dead-store 제외, mangler 의 이름 보존 등에서 동일하게 묶인다.
+    pub fn isExported(self: *const Symbol) bool {
+        return self.decl_flags.is_exported or self.decl_flags.is_default_export;
+    }
+
     /// Linker가 canonical_name을 주입했는지 여부. 빈 문자열 = 미지정.
     pub fn hasCanonicalName(self: *const Symbol) bool {
         return self.canonical_name.len > 0;

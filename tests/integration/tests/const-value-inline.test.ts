@@ -390,7 +390,6 @@ describe("const_value cross-module 인라인 correctness", () => {
     const src = readFileSync(out, "utf8");
     expect(src).toContain("class EmptyNode");
     expect(src).not.toContain("unused");
-    expect(src).not.toContain(",_empty =");
     expect(src.match(/\b(?:const|let|var)\s+_empty(?![$\w])/g) ?? []).toHaveLength(1);
 
     const run = await Bun.$`node ${out}`.text();

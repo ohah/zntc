@@ -500,7 +500,7 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     if (scope_idx < ctx.scopes.len and ctx.scopes[scope_idx].blocksMangling()) return;
 
     // exported binding 보호 — transpile 단독 경로는 tree-shaker 가 없어 직접 지키는 외엔 없다
-    if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) return;
+    if (sym.isExported()) return;
 
     // reference 가 있거나 다른 곳에서 쓰이면 dead 아님.
     // ref_deltas 가 이번 emit 에서 감산된 양을 반영.
@@ -629,7 +629,7 @@ fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*con
             const sym = ctx.symbols[sym_id];
             if (@intFromEnum(sym.scope_id) != 0) continue;
             if (ctx.scopes.len > 0 and ctx.scopes[0].blocksMangling()) continue;
-            if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) continue;
+            if (sym.isExported()) continue;
             if (sym.write_count != 0) continue;
 
             const init_idx: NodeIndex = @enumFromInt(init_raw);
@@ -745,7 +745,7 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     const scope_idx = @intFromEnum(sym.scope_id);
     if (scope_idx < ctx.scopes.len and ctx.scopes[scope_idx].blocksMangling()) return;
     if (scope_idx == 0 and !ctx.allow_top_level_inline) return;
-    if (sym.decl_flags.is_exported or sym.decl_flags.is_default_export) return;
+    if (sym.isExported()) return;
 
     if (ctx.effectiveRefCount(sym_id) != 1 or sym.write_count != 0) return;
 

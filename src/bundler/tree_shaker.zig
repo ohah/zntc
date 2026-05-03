@@ -228,7 +228,7 @@ pub const TreeShaker = struct {
             const sym_id = sem.symbol_ids[name_raw] orelse continue;
             if (sym_id >= sem.symbols.items.len) continue;
             const sym = sem.symbols.items[sym_id];
-            if (!sym.decl_flags.is_exported and !sym.decl_flags.is_default_export) continue;
+            if (!sym.isExported()) continue;
             if (sym.write_count != 0) continue;
             if (visit_fn(self, ctx, ast, init_idx)) return true;
         }
@@ -320,7 +320,7 @@ pub const TreeShaker = struct {
 
     fn moduleHasExportedNumberConstValue(_: *TreeShaker, sem: ModuleSemanticData) bool {
         for (sem.symbols.items) |sym| {
-            if (!sym.decl_flags.is_exported and !sym.decl_flags.is_default_export) continue;
+            if (!sym.isExported()) continue;
             if (sym.write_count != 0) continue;
             if (sym.const_value.kind == .number) return true;
         }
@@ -336,11 +336,27 @@ pub const TreeShaker = struct {
         return false;
     }
 
+    /// numeric chain fold 를 reachability 확정 후 post-pass 에서 돌릴지.
+    /// `minify_syntax` 모드는 pre-shake 의 `.all` materialize 가 이미 처리. 그 외 두 경로는
+    /// pre-shake 만으로 부족: preserve_modules 는 pre-shake 자체를 건너뛰고, non-minify 는
+    /// `propagateNumericExportConstFacts` 가 import edge 까지만 정리해 chain fold 는 후처리.
+    fn shouldRunNumericPostPass(self: *const TreeShaker) bool {
+        return self.graph.preserve_modules or !self.graph.transform_options_base.minify_syntax;
+    }
+
     fn minifyAndResyncModule(self: *TreeShaker, m: *Module, sem: ModuleSemanticData, ast: *Ast) void {
         const minify_mod = @import("../transformer/minify.zig");
         const root = ast.transformed_root orelse NodeIndex.none;
         const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, self.graph.transform_options_base.minify_syntax);
         minify_mod.minify(ast, ctx, self.allocator, root);
+        self.markAstMutatedAndResync(m);
+    }
+
+    /// AST mutation 후 모듈 metadata 재동기화 + linker rename/mangling 재계산 신호 set.
+    /// `resyncModuleMetadataAfterAstMutation` 만 호출하고 `ast_mutated_after_link` 를
+    /// 빠뜨리면 `bundler.zig` 의 post-shake finalize gate 가 발화 안 해 stale rename
+    /// 으로 emit 되는 회귀가 난다 — 두 동작은 항상 짝.
+    fn markAstMutatedAndResync(self: *TreeShaker, m: *Module) void {
         // parse_arena 는 parse 단계에서 모든 모듈에 부착된다 (#1323). null 이면
         // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
         std.debug.assert(m.parse_arena != null);
@@ -438,6 +454,8 @@ pub const TreeShaker = struct {
 
         var queue: std.ArrayList(u32) = .empty;
         defer queue.deinit(self.allocator);
+        // re-export-only 모듈은 importer 가 큐를 비울 때마다 한 번만 forwarding 하면 충분 —
+        // 다시 들어오면 같은 importer 들을 무한히 enqueue 해 BFS 가 폭발한다.
         var forwarded_re_exports = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
         defer forwarded_re_exports.deinit();
         for (0..mod_count) |i| {
@@ -711,7 +729,7 @@ pub const TreeShaker = struct {
         // Numeric chain 축약은 번들 크기/그래프 성능에 직접 영향을 주므로 `--minify` 없이도
         // 실행한다. used_exports/reachability 판정이 끝난 뒤로 미루는 건 디버그용 tree-shaker
         // 기대값 보존. 어떤 모듈도 numeric export 가 없으면 build/scan 비용 자체를 회피.
-        if ((self.graph.preserve_modules or !self.graph.transform_options_base.minify_syntax) and self.anyModuleHasExportedNumberConst(mod_count)) {
+        if (self.shouldRunNumericPostPass() and self.anyModuleHasExportedNumberConst(mod_count)) {
             var pass: u32 = 0;
             while (pass < max_numeric_const_post_passes) : (pass += 1) {
                 const forward_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, false);
@@ -1932,12 +1950,7 @@ pub const TreeShaker = struct {
             if (m.wrap_kind != .cjs) continue;
             const ast = &(m.ast orelse continue);
             if (!foldNodeBufferCapabilityIfs(self.allocator, ast)) continue;
-
-            std.debug.assert(m.parse_arena != null);
-            self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
-                m.prebuilt_stmt_info = null;
-            };
-            self.ast_mutated_after_link = true;
+            self.markAstMutatedAndResync(m);
         }
     }
 
