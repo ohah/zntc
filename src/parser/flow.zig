@@ -1707,6 +1707,7 @@ pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
         @intFromEnum(base_type),
     });
 
+    self.ast.has_flow_enum_declaration = true;
     return try self.ast.addNode(.{
         .tag = .flow_enum_declaration,
         .span = .{ .start = start, .end = end },
