@@ -3332,15 +3332,16 @@ pub const Transformer = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        const pp = try self.visitParamsCollectProperties(params_list_old);
+        var pp = try self.visitParamsCollectProperties(params_list_old);
+        defer pp.prop_names.deinit(self.allocator);
 
         // 바디 방문
         const old_body_idx = self.readNodeIdx(e, 2);
         var new_body = try self.visitBodyWorkletAware(old_body_idx);
 
         // parameter property가 있으면 바디 앞에 this.x = x 문 삽입
-        if (pp.prop_count > 0 and !new_body.isNone()) {
-            new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+        if (pp.prop_names.items.len > 0 and !new_body.isNone()) {
+            new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names.items);
         }
 
         // ES2015 arrow this/arguments 캡처: 이 함수 안의 arrow가 this/arguments를 사용했으면
@@ -3424,10 +3425,10 @@ pub const Transformer = struct {
 
     /// 파라미터 목록을 방문하면서 parameter property (public x 등)를 감지.
     /// modifier를 제거하고 this.x = x 삽입용 이름을 수집한다.
+    /// caller 는 반환된 result.prop_names 를 `deinit(self.allocator)` 해야 함.
     const ParamPropertyResult = struct {
         new_params: NodeList,
-        prop_names: [32]NodeIndex,
-        prop_count: usize,
+        prop_names: std.ArrayList(NodeIndex),
     };
 
     pub fn visitParamsCollectProperties(self: *Transformer, vp: NodeList) Error!ParamPropertyResult {
@@ -3436,9 +3437,9 @@ pub const Transformer = struct {
 
         var result = ParamPropertyResult{
             .new_params = NodeList{ .start = 0, .len = 0 },
-            .prop_names = undefined,
-            .prop_count = 0,
+            .prop_names = .empty,
         };
+        errdefer result.prop_names.deinit(self.allocator);
 
         // visitNode가 AST를 변형하므로 인덱스 루프 사용
         var i_loop: u32 = 0;
@@ -3452,10 +3453,7 @@ pub const Transformer = struct {
             if (param_node.tag == .formal_parameter and self.ast.extra_data.items[param_node.data.extra + 3] != 0) {
                 const inner = try self.visitNode(@enumFromInt(self.ast.extra_data.items[param_node.data.extra]));
                 try self.scratch.append(self.allocator, inner);
-                if (result.prop_count < result.prop_names.len) {
-                    result.prop_names[result.prop_count] = inner;
-                    result.prop_count += 1;
-                }
+                try result.prop_names.append(self.allocator, inner);
             } else {
                 const new_param = try self.visitNode(@enumFromInt(raw_idx));
                 if (!new_param.isNone()) {
@@ -4522,7 +4520,8 @@ pub const Transformer = struct {
                 params_span = pnode.span;
             }
         }
-        const pp = try self.visitParamsCollectProperties(params_list_old);
+        var pp = try self.visitParamsCollectProperties(params_list_old);
+        defer pp.prop_names.deinit(self.allocator);
 
         // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
         const saved_arrow_depth = self.arrow_this_depth;
@@ -4551,11 +4550,11 @@ pub const Transformer = struct {
 
         // parameter property: derived class constructor 는 super() 후에, 그 외에는 body 앞에 prepend.
         // 전자에서 prepend 하면 `this` 가 super() 전 접근되어 ReferenceError.
-        if (pp.prop_count > 0 and !new_body.isNone()) {
+        if (pp.prop_names.items.len > 0 and !new_body.isNone()) {
             if (is_ctor and self.current_super_class != null) {
-                new_body = try self.insertParameterPropertyAssignmentsAfterSuper(new_body, pp.prop_names[0..pp.prop_count]);
+                new_body = try self.insertParameterPropertyAssignmentsAfterSuper(new_body, pp.prop_names.items);
             } else {
-                new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names[0..pp.prop_count]);
+                new_body = try self.insertParameterPropertyAssignments(new_body, pp.prop_names.items);
             }
         }
 

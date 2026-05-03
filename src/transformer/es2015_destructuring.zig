@@ -357,8 +357,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const oa_start = target.data.list.start;
             const split = self.ast.nodeListSplitRest(target.data.list);
             const non_rest_len: u32 = @intCast(split.elements.len);
-            var exclude_keys: [64]NodeIndex = undefined;
-            var exclude_count: usize = 0;
+            var exclude_keys: std.ArrayList(NodeIndex) = .empty;
+            defer exclude_keys.deinit(self.allocator);
             // visitNode가 AST를 변형하므로 인덱스 루프 사용
             var i_loop: u32 = 0;
             while (i_loop < non_rest_len) : (i_loop += 1) {
@@ -370,7 +370,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
-                const access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, &exclude_count, .assign, span);
+                const access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .assign, span);
 
                 if (prop.tag == .assignment_target_property_identifier) {
                     const target_node = try self.ast.addNode(.{
@@ -409,7 +409,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
 
             if (split.rest_operand) |rest_inner| {
-                const rest_assign = try buildRestAssignment(self, rest_inner, ref_span, exclude_keys[0..exclude_count], span);
+                const rest_assign = try buildRestAssignment(self, rest_inner, ref_span, exclude_keys.items, span);
                 try self.scratch.append(self.allocator, rest_assign);
                 self.runtime_helpers.rest = true;
             }
@@ -514,8 +514,8 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const opd_start = pattern.data.list.start;
             const split = self.ast.nodeListSplitRest(pattern.data.list);
 
-            var exclude_keys: [64]NodeIndex = undefined;
-            var exclude_count: usize = 0;
+            var exclude_keys: std.ArrayList(NodeIndex) = .empty;
+            defer exclude_keys.deinit(self.allocator);
 
             // 각 property를 declarator로 변환하면서 rest exclude key도 같은 평가 결과로 수집한다.
             // visitNode가 AST를 변형하므로 인덱스 루프 사용 (split.elements 슬라이스는 stale 가능)
@@ -533,7 +533,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const ref = try es_helpers.makeTempVarRef(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
 
-                const member_access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, &exclude_count, .decl, span);
+                const member_access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .decl, span);
 
                 // value 처리: shorthand vs long-form, default value
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
@@ -589,7 +589,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             // rest: var rest = __rest(_ref, ["a", "b"])
             if (split.rest_operand) |rest_inner| {
-                const rest_decl = try buildRestDeclarator(self, rest_inner, ref_span, exclude_keys[0..exclude_count], span);
+                const rest_decl = try buildRestDeclarator(self, rest_inner, ref_span, exclude_keys.items, span);
                 try self.scratch.append(self.allocator, rest_decl);
                 self.runtime_helpers.rest = true;
             }
@@ -756,8 +756,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             ref: NodeIndex,
             key_node: Node,
             key_idx: NodeIndex,
-            exclude_keys: []NodeIndex,
-            exclude_count: *usize,
+            exclude_keys: *std.ArrayList(NodeIndex),
             mode: ComputedKeyMode,
             span: Span,
         ) Transformer.Error!NodeIndex {
@@ -780,16 +779,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     }),
                 };
                 try self.scratch.append(self.allocator, capture);
-                if (exclude_count.* < exclude_keys.len) {
-                    exclude_keys[exclude_count.*] = try es_helpers.makeTempVarRef(self, key_span, span);
-                    exclude_count.* += 1;
-                }
+                try exclude_keys.append(self.allocator, try es_helpers.makeTempVarRef(self, key_span, span));
                 return es_helpers.makeComputedMember(self, ref, try es_helpers.makeTempVarRef(self, key_span, span), span);
             }
-            if (exclude_count.* < exclude_keys.len) {
-                exclude_keys[exclude_count.*] = try makeRestExcludeKey(self, key_node);
-                exclude_count.* += 1;
-            }
+            try exclude_keys.append(self.allocator, try makeRestExcludeKey(self, key_node));
             return es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
         }
 
