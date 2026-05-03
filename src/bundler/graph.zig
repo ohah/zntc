@@ -197,11 +197,11 @@ pub const ModuleGraph = struct {
     /// `graph.allocator` 소유. `ensureBuiltinPlugins` 에서 lazy 초기화 후 PluginRunner.init
     /// 호출 site 들이 이걸 참조.
     plugins_with_helpers: ?[]plugin_mod.Plugin = null,
-    /// 사용자 plugin 중 resolveId hook 보유 여부. false이면 helper virtual id 외 resolveId 호출을 생략.
+    /// Hook fast-path gate: 사용자 plugin 이 해당 hook 을 등록하지 않았고 helper virtual id
+    /// 도 아니면 PluginRunner 호출 자체를 생략한다. `ensureBuiltinPlugins` 에서 1회 채움.
     has_user_resolve_id_plugins: bool = false,
-    /// 사용자 plugin 중 load hook 보유 여부. false이면 helper virtual id 외 load 호출을 생략.
     has_user_load_plugins: bool = false,
-    /// 사용자 plugin 또는 builtin RN codegen transform 보유 여부. false이면 transform hook 호출을 생략.
+    /// transform 은 user plugin 또는 builtin RN codegen 이 활성이면 실행 — 둘을 합친 게이트.
     has_transform_plugins: bool = false,
 
     pub const PkgInfo = struct {
@@ -1322,18 +1322,19 @@ pub const ModuleGraph = struct {
                 if (record.kind == .glob) continue;
                 if (record.kind == .require_context) continue;
 
-                if (plugin_runner != null and self.shouldRunResolveId(record.specifier)) {
-                    const runner = plugin_runner.?;
-                    const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
-                        error.PluginFailed => null,
-                        error.OutOfMemory => {
-                            self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
+                if (plugin_runner) |runner| {
+                    if (self.shouldRunResolveId(record.specifier)) {
+                        const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
+                            error.PluginFailed => null,
+                            error.OutOfMemory => {
+                                self.addDiag(.resolve_error, .@"error", module_path, record.span, .resolve, "Out of memory during resolve", record.specifier);
+                                continue;
+                            },
+                        };
+                        if (resolve_result) |plugin_result| {
+                            results[rec_i] = .{ .resolved = plugin_result, .is_error = false };
                             continue;
-                        },
-                    };
-                    if (resolve_result) |plugin_result| {
-                        results[rec_i] = .{ .resolved = plugin_result, .is_error = false };
-                        continue;
+                        }
                     }
                 }
 
@@ -1374,52 +1375,53 @@ pub const ModuleGraph = struct {
         // Plugin: load 훅 — 모든 module_type 분기 전에 플러그인에게 기회를 줌.
         // 플러그인이 내용을 반환하면 JS 모듈로 전환 (예: .css → JS export).
         var plugin_load_applied = false;
-        if (plugin_runner != null and self.shouldRunLoad(module.path)) {
-            const runner = plugin_runner.?;
-            // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
-            var tmp_arena = std.heap.ArenaAllocator.init(self.allocator);
-            const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
-                error.PluginFailed => null,
-                error.OutOfMemory => {
-                    tmp_arena.deinit();
-                    module.state = .ready;
-                    return;
-                },
-            };
-            if (load_result) |plugin_result| {
-                plugin_load_applied = true;
-                // 플러그인이 내용을 반환. (#2157) `loader` 가 명시되면 raw bytes 를 그 loader 의
-                // 값 표현식으로 변환 (parseAssetModule 와 동일한 assetSourceFromBytes 헬퍼).
-                // asset 변환 성공 시 parseAssetModule 와 동일하게 ast 없이 종료 → emitter 의
-                // emitAssetModule 가 `module.exports = <source>` 로 wrap. JS 파이프라인 진입 시
-                // source 가 단순 표현식 ("text") 이라 default export 없는 빈 모듈로 emit 되어
-                // import binding 이 깨진다.
-                module.parse_arena = tmp_arena;
-                const arena_alloc = tmp_arena.allocator();
-                if (plugin_result.loader) |loader_override| {
-                    module.loader = loader_override;
-                    module.module_type = plugin_result.module_type orelse
-                        moduleTypeForLoader(ModuleType.fromExtension(std.fs.path.extension(module.path)), loader_override);
-                    if (self.assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path)) |expr| {
-                        module.source = expr;
-                        module.module_type = .js;
-                        module.exports_kind = .commonjs;
-                        module.wrap_kind = .cjs;
-                        module.side_effects = false;
+        if (plugin_runner) |runner| {
+            if (self.shouldRunLoad(module.path)) {
+                // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
+                var tmp_arena = std.heap.ArenaAllocator.init(self.allocator);
+                const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
+                    error.PluginFailed => null,
+                    error.OutOfMemory => {
+                        tmp_arena.deinit();
                         module.state = .ready;
                         return;
+                    },
+                };
+                if (load_result) |plugin_result| {
+                    plugin_load_applied = true;
+                    // 플러그인이 내용을 반환. (#2157) `loader` 가 명시되면 raw bytes 를 그 loader 의
+                    // 값 표현식으로 변환 (parseAssetModule 와 동일한 assetSourceFromBytes 헬퍼).
+                    // asset 변환 성공 시 parseAssetModule 와 동일하게 ast 없이 종료 → emitter 의
+                    // emitAssetModule 가 `module.exports = <source>` 로 wrap. JS 파이프라인 진입 시
+                    // source 가 단순 표현식 ("text") 이라 default export 없는 빈 모듈로 emit 되어
+                    // import binding 이 깨진다.
+                    module.parse_arena = tmp_arena;
+                    const arena_alloc = tmp_arena.allocator();
+                    if (plugin_result.loader) |loader_override| {
+                        module.loader = loader_override;
+                        module.module_type = plugin_result.module_type orelse
+                            moduleTypeForLoader(ModuleType.fromExtension(std.fs.path.extension(module.path)), loader_override);
+                        if (self.assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path)) |expr| {
+                            module.source = expr;
+                            module.module_type = .js;
+                            module.exports_kind = .commonjs;
+                            module.wrap_kind = .cjs;
+                            module.side_effects = false;
+                            module.state = .ready;
+                            return;
+                        }
+                        // asset 변환 미지원 loader (file/copy/javascript/json/css/none): raw 그대로 JS 파이프라인.
+                        module.source = plugin_result.contents;
+                    } else {
+                        module.loader = .javascript;
+                        module.module_type = .js;
+                        module.source = plugin_result.contents;
                     }
-                    // asset 변환 미지원 loader (file/copy/javascript/json/css/none): raw 그대로 JS 파이프라인.
-                    module.source = plugin_result.contents;
+                    // module_type 분기를 건너뛰고 JS 파싱 경로로 직접 이동
+                    // (아래 "모듈별 Arena" 블록은 parse_arena가 이미 설정되어 있으므로 건너뜀)
                 } else {
-                    module.loader = .javascript;
-                    module.module_type = .js;
-                    module.source = plugin_result.contents;
+                    tmp_arena.deinit();
                 }
-                // module_type 분기를 건너뛰고 JS 파싱 경로로 직접 이동
-                // (아래 "모듈별 Arena" 블록은 parse_arena가 이미 설정되어 있으므로 건너뜀)
-            } else {
-                tmp_arena.deinit();
             }
         }
 
@@ -1572,18 +1574,19 @@ pub const ModuleGraph = struct {
         // 플러그인이 코드를 변환하면 변환된 소스로 파싱한다.
         // Babel 플러그인(예: react-native-reanimated/plugin)이 유저 코드를 변환할 수 있다.
         var plugin_transform_applied = false;
-        if (plugin_runner != null and self.has_transform_plugins) {
-            const runner = plugin_runner.?;
-            const transform_result = runner.runTransform(module.source, module.path, arena_alloc) catch |err| switch (err) {
-                error.PluginFailed => null,
-                error.OutOfMemory => {
-                    module.state = .ready;
-                    return;
-                },
-            };
-            if (transform_result) |result| {
-                module.source = result;
-                plugin_transform_applied = true;
+        if (plugin_runner) |runner| {
+            if (self.has_transform_plugins) {
+                const transform_result = runner.runTransform(module.source, module.path, arena_alloc) catch |err| switch (err) {
+                    error.PluginFailed => null,
+                    error.OutOfMemory => {
+                        module.state = .ready;
+                        return;
+                    },
+                };
+                if (transform_result) |result| {
+                    module.source = result;
+                    plugin_transform_applied = true;
+                }
             }
         }
 
@@ -2534,18 +2537,19 @@ pub const ModuleGraph = struct {
             if (record.kind == .require_context) continue;
 
             // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌
-            if (plugin_runner != null and self.shouldRunResolveId(record.specifier)) {
-                const runner = plugin_runner.?;
-                const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
-                    error.PluginFailed => null,
-                    error.OutOfMemory => return error.OutOfMemory,
-                };
-                // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀
-                if (resolve_result) |plugin_result| {
-                    try self.applyResolveResult(mod_idx, rec_i, record, plugin_result, false);
-                    continue;
+            if (plugin_runner) |runner| {
+                if (self.shouldRunResolveId(record.specifier)) {
+                    const resolve_result = runner.runResolveId(record.specifier, module_path, self.allocator) catch |err| switch (err) {
+                        error.PluginFailed => null,
+                        error.OutOfMemory => return error.OutOfMemory,
+                    };
+                    // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀
+                    if (resolve_result) |plugin_result| {
+                        try self.applyResolveResult(mod_idx, rec_i, record, plugin_result, false);
+                        continue;
+                    }
+                    // null이면 기본 resolver로 fall through
                 }
-                // null이면 기본 resolver로 fall through
             }
 
             const resolved = self.resolve_cache.resolve(

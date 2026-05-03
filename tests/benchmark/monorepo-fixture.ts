@@ -91,7 +91,11 @@ export function makeSyntheticMonorepo(
     const linkPath = join(root, "node_modules", "@zts-fixture", `pkg-${p}`);
     try {
       symlinkSync(relative(join(root, "node_modules", "@zts-fixture"), pkgDir), linkPath, "dir");
-    } catch {
+    } catch (err) {
+      // Windows 는 비-Admin 에서 dir symlink 가 EPERM, 같은 경로 재실행이면 EEXIST.
+      // 그 외 에러는 fixture 셋업 자체의 버그라 surface 시킨다.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EEXIST") throw err;
       const proxySrcDir = join(linkPath, "src");
       mkdirSync(proxySrcDir, { recursive: true });
       writeFileSync(
