@@ -65,6 +65,15 @@ pub const Category = enum {
     graph_discover_pm_parse,
     graph_discover_pm_semantic,
     graph_discover_pm_post,
+    graph_discover_pm_post_records,
+    graph_discover_pm_post_optional_requires,
+    graph_discover_pm_post_worker_records,
+    graph_discover_pm_post_namespace_access,
+    graph_discover_pm_post_synthetic_symbols,
+    graph_discover_pm_post_jsx_imports,
+    graph_discover_pm_prepass,
+    graph_discover_pm_prepass_decision,
+    graph_discover_pm_prepass_run,
     graph_discover_pm_is_pkg_type,
     graph_finalize,
     graph_resync,
@@ -207,19 +216,19 @@ pub const Format = enum {
 // State (process-global)
 // ============================================================================
 
-/// Category 수. u64 bitmask 안에 맞아야 함 (64 미만).
+/// Category 수. u128 bitmask 안에 맞아야 함 (128 미만).
 pub const num_categories = @typeInfo(Category).@"enum".fields.len;
 
 comptime {
-    if (num_categories > 64) {
-        @compileError("Category count exceeded u64 bitmask. Switch to u128 or ArrayBitSet.");
+    if (num_categories > 128) {
+        @compileError("Category count exceeded u128 bitmask. Switch to ArrayBitSet.");
     }
 }
 
 /// 활성 카테고리 비트마스크. hot path 에서는 `enabled()` 의 single AND 로 검사.
 /// 프로세스 전역 — 초기화 후 read-only 로 다뤄 thread-safe. 수집 data array 는 현재
 /// single-thread 가정 (PR 7 에서 per-thread merge 로 확장 예정).
-var enabled_mask: u64 = 0;
+var enabled_mask: u128 = 0;
 
 /// 현재 level. Reporter 가 어떤 수준까지 노출할지 결정.
 var current_level: Level = .summary;
@@ -236,7 +245,7 @@ var counts: [num_categories]u32 = [_]u32{0} ** num_categories;
 
 /// 활성 여부 조회 (inline + single AND — hot path 용).
 pub inline fn enabled(cat: Category) bool {
-    const bit = @as(u64, 1) << @intFromEnum(cat);
+    const bit = @as(u128, 1) << @intFromEnum(cat);
     return (enabled_mask & bit) != 0;
 }
 
@@ -265,7 +274,7 @@ pub fn addFromCsv(csv: []const u8) void {
         if (name.len == 0) continue;
 
         if (std.ascii.eqlIgnoreCase(name, "all")) {
-            enabled_mask = comptime (@as(u64, 1) << num_categories) - 1;
+            enabled_mask = comptime (@as(u128, 1) << num_categories) - 1;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "none")) {
@@ -282,7 +291,7 @@ pub fn addFromCsv(csv: []const u8) void {
 pub fn addCategories(names: []const []const u8) void {
     for (names) |name| {
         if (std.ascii.eqlIgnoreCase(name, "all")) {
-            enabled_mask = comptime (@as(u64, 1) << num_categories) - 1;
+            enabled_mask = comptime (@as(u128, 1) << num_categories) - 1;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "none")) {
@@ -344,7 +353,7 @@ fn enableCategoryAndChildren(parent: Category) void {
             child_name[parent_name.len] == '_';
         if (is_self or is_child) {
             const child = @field(Category, child_name);
-            enabled_mask |= @as(u64, 1) << @intFromEnum(child);
+            enabled_mask |= @as(u128, 1) << @intFromEnum(child);
         }
     }
 }

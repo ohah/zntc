@@ -1727,79 +1727,94 @@ pub const ModuleGraph = struct {
         // import/export 추출: inline scan 결과를 bundler 타입으로 변환
         {
             // Parser scan records → bundler ImportRecord
-            const scan_records = parser.scan_import_records.items;
-            const records = arena_alloc.alloc(ImportRecord, scan_records.len) catch {
-                module.state = .ready;
-                return;
-            };
-            for (scan_records, 0..) |sr, i| {
-                const ik: ImportKind = @enumFromInt(@intFromEnum(sr.kind));
-                const ctx_mode: types.RequireContextMode = @enumFromInt(@intFromEnum(sr.context_mode));
-                records[i] = .{
-                    .specifier = sr.specifier,
-                    .kind = ik,
-                    .span = sr.span,
-                    .url_span = sr.url_span,
-                    .glob_eager = sr.glob_eager,
-                    .glob_import_name = sr.glob_import_name,
-                    .context_recursive = sr.context_recursive,
-                    .context_filter = sr.context_filter,
-                    .context_filter_flags = sr.context_filter_flags,
-                    .context_mode = ctx_mode,
-                    .context_invalid_reason = sr.context_invalid_reason,
+            const records: []ImportRecord = blk: {
+                var records_scope = profile.begin(.graph_discover_pm_post_records);
+                defer records_scope.end();
+
+                const scan_records = parser.scan_import_records.items;
+                const records = arena_alloc.alloc(ImportRecord, scan_records.len) catch {
+                    module.state = .ready;
+                    return;
                 };
-            }
-            module.import_records = records;
+                for (scan_records, 0..) |sr, i| {
+                    const ik: ImportKind = @enumFromInt(@intFromEnum(sr.kind));
+                    const ctx_mode: types.RequireContextMode = @enumFromInt(@intFromEnum(sr.context_mode));
+                    records[i] = .{
+                        .specifier = sr.specifier,
+                        .kind = ik,
+                        .span = sr.span,
+                        .url_span = sr.url_span,
+                        .glob_eager = sr.glob_eager,
+                        .glob_import_name = sr.glob_import_name,
+                        .context_recursive = sr.context_recursive,
+                        .context_filter = sr.context_filter,
+                        .context_filter_flags = sr.context_filter_flags,
+                        .context_mode = ctx_mode,
+                        .context_invalid_reason = sr.context_invalid_reason,
+                    };
+                }
+                module.import_records = records;
+
+                // Parser scan import bindings → bundler ImportBinding
+                const scan_ibindings = parser.scan_import_bindings.items;
+                if (arena_alloc.alloc(binding_scanner_mod.ImportBinding, scan_ibindings.len)) |ibindings| {
+                    for (scan_ibindings, 0..) |sb, i| {
+                        const ib_kind: binding_scanner_mod.ImportBinding.Kind = @enumFromInt(@intFromEnum(sb.kind));
+                        ibindings[i] = .{
+                            .kind = ib_kind,
+                            .local_name = sb.local_name,
+                            .imported_name = sb.imported_name,
+                            .local_span = sb.local_span,
+                            .import_record_index = sb.import_record_index,
+                        };
+                    }
+                    module.import_bindings = ibindings;
+                } else |_| {}
+
+                // Parser scan export bindings → bundler ExportBinding
+                const scan_ebindings = parser.scan_export_bindings.items;
+                if (arena_alloc.alloc(binding_scanner_mod.ExportBinding, scan_ebindings.len)) |ebindings| {
+                    for (scan_ebindings, 0..) |sb, i| {
+                        const eb_kind: binding_scanner_mod.ExportBinding.Kind = @enumFromInt(@intFromEnum(sb.kind));
+                        ebindings[i] = .{
+                            .exported_name = sb.exported_name,
+                            .local_name = sb.local_name,
+                            .local_span = sb.local_span,
+                            .kind = eb_kind,
+                            .import_record_index = sb.import_record_index,
+                        };
+                    }
+                    module.export_bindings = ebindings;
+                    module.exported_names = projectExportedNames(arena_alloc, ebindings);
+                } else |_| {}
+
+                break :blk records;
+            };
 
             // OOM 시 silent skip 하면 optional require 가 hard error 로 회귀하므로 module 을
             // ready 로 끝내고 graph 진행 중단 (1108줄 extractImports 와 동일 패턴).
-            import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, &(module.ast.?), module.import_records) catch {
-                module.state = .ready;
-                return;
-            };
-
-            // Parser scan import bindings → bundler ImportBinding
-            const scan_ibindings = parser.scan_import_bindings.items;
-            if (arena_alloc.alloc(binding_scanner_mod.ImportBinding, scan_ibindings.len)) |ibindings| {
-                for (scan_ibindings, 0..) |sb, i| {
-                    const ib_kind: binding_scanner_mod.ImportBinding.Kind = @enumFromInt(@intFromEnum(sb.kind));
-                    ibindings[i] = .{
-                        .kind = ib_kind,
-                        .local_name = sb.local_name,
-                        .imported_name = sb.imported_name,
-                        .local_span = sb.local_span,
-                        .import_record_index = sb.import_record_index,
-                    };
-                }
-                module.import_bindings = ibindings;
-            } else |_| {}
-
-            // Parser scan export bindings → bundler ExportBinding
-            const scan_ebindings = parser.scan_export_bindings.items;
-            if (arena_alloc.alloc(binding_scanner_mod.ExportBinding, scan_ebindings.len)) |ebindings| {
-                for (scan_ebindings, 0..) |sb, i| {
-                    const eb_kind: binding_scanner_mod.ExportBinding.Kind = @enumFromInt(@intFromEnum(sb.kind));
-                    ebindings[i] = .{
-                        .exported_name = sb.exported_name,
-                        .local_name = sb.local_name,
-                        .local_span = sb.local_span,
-                        .kind = eb_kind,
-                        .import_record_index = sb.import_record_index,
-                    };
-                }
-                module.export_bindings = ebindings;
-                module.exported_names = projectExportedNames(arena_alloc, ebindings);
-            } else |_| {}
+            {
+                var optional_scope = profile.begin(.graph_discover_pm_post_optional_requires);
+                defer optional_scope.end();
+                import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, &(module.ast.?), module.import_records) catch {
+                    module.state = .ready;
+                    return;
+                };
+            }
 
             // Worker 패턴 보완: new Worker(new URL(...)) 는 inline scan에서 감지하지 않으므로
             // 별도의 AST walk로 worker records를 추출하여 병합한다.
-            const worker_records = import_scanner.extractWorkerRecords(arena_alloc, &parser.ast) catch &[_]ImportRecord{};
-            if (worker_records.len > 0) {
-                if (arena_alloc.alloc(ImportRecord, records.len + worker_records.len)) |merged| {
-                    @memcpy(merged[0..records.len], records);
-                    @memcpy(merged[records.len..], worker_records);
-                    module.import_records = merged;
-                } else |_| {}
+            {
+                var worker_scope = profile.begin(.graph_discover_pm_post_worker_records);
+                defer worker_scope.end();
+                const worker_records = import_scanner.extractWorkerRecords(arena_alloc, &parser.ast) catch &[_]ImportRecord{};
+                if (worker_records.len > 0) {
+                    if (arena_alloc.alloc(ImportRecord, records.len + worker_records.len)) |merged| {
+                        @memcpy(merged[0..records.len], records);
+                        @memcpy(merged[records.len..], worker_records);
+                        module.import_records = merged;
+                    } else |_| {}
+                }
             }
 
             if (parser.ast.has_flow_enum_declaration) {
@@ -1810,22 +1825,30 @@ pub const ModuleGraph = struct {
             }
 
             // namespace access 수집은 별도 AST walk 필요
-            binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
+            {
+                var namespace_scope = profile.begin(.graph_discover_pm_post_namespace_access);
+                defer namespace_scope.end();
+                binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
+            }
 
             // Phase 1-3b (#1328): 합성 심볼 테이블 초기화 + re_export_alias 등록
             // + semantic 공간에 synthetic_default 등록.
-            module.ensureAliasTable(self.allocator);
-            if (module.semantic) |*sem| {
-                const scope0: ?std.StringHashMap(usize) =
-                    if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
-                binding_scanner_mod.populateSyntheticSymbols(
-                    &module.alias_table.?,
-                    module.index,
-                    module.export_bindings,
-                    &sem.symbols,
-                    arena_alloc,
-                    scope0,
-                ) catch {};
+            {
+                var synthetic_scope = profile.begin(.graph_discover_pm_post_synthetic_symbols);
+                defer synthetic_scope.end();
+                module.ensureAliasTable(self.allocator);
+                if (module.semantic) |*sem| {
+                    const scope0: ?std.StringHashMap(usize) =
+                        if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
+                    binding_scanner_mod.populateSyntheticSymbols(
+                        &module.alias_table.?,
+                        module.index,
+                        module.export_bindings,
+                        &sem.symbols,
+                        arena_alloc,
+                        scope0,
+                    ) catch {};
+                }
             }
 
             // CJS/ESM 감지 — inline scan 결과로 ScanResult 생성
@@ -1844,31 +1867,35 @@ pub const ModuleGraph = struct {
             var jsx_injected = false;
             var react_injected = false;
             var jsx_inject_base: u32 = 0;
-            if (self.jsx_runtime != .classic and parser.ast.has_jsx) {
-                if (self.jsx_specifier_cache == null) {
-                    const is_dev = self.jsx_runtime == .automatic_dev;
-                    self.jsx_specifier_cache = std.fmt.allocPrint(
-                        self.allocator,
-                        "{s}/{s}",
-                        .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
-                    ) catch null;
-                }
-                if (self.jsx_specifier_cache) |specifier| {
-                    var specs_buf: [2][]const u8 = undefined;
-                    specs_buf[0] = specifier;
-                    var n: usize = 1;
-                    if (parser.ast.has_jsx_key_after_spread) {
-                        specs_buf[n] = self.jsx_import_source;
-                        n += 1;
+            {
+                var jsx_scope = profile.begin(.graph_discover_pm_post_jsx_imports);
+                defer jsx_scope.end();
+                if (self.jsx_runtime != .classic and parser.ast.has_jsx) {
+                    if (self.jsx_specifier_cache == null) {
+                        const is_dev = self.jsx_runtime == .automatic_dev;
+                        self.jsx_specifier_cache = std.fmt.allocPrint(
+                            self.allocator,
+                            "{s}/{s}",
+                            .{ self.jsx_import_source, if (is_dev) "jsx-dev-runtime" else "jsx-runtime" },
+                        ) catch null;
                     }
-                    jsx_inject_base = @intCast(module.import_records.len);
-                    module.import_records = injectJsxRuntimeImports(
-                        specs_buf[0..n],
-                        arena_alloc,
-                        module.import_records,
-                    ) catch module.import_records;
-                    jsx_injected = (module.import_records.len > jsx_inject_base);
-                    react_injected = (n == 2) and jsx_injected;
+                    if (self.jsx_specifier_cache) |specifier| {
+                        var specs_buf: [2][]const u8 = undefined;
+                        specs_buf[0] = specifier;
+                        var n: usize = 1;
+                        if (parser.ast.has_jsx_key_after_spread) {
+                            specs_buf[n] = self.jsx_import_source;
+                            n += 1;
+                        }
+                        jsx_inject_base = @intCast(module.import_records.len);
+                        module.import_records = injectJsxRuntimeImports(
+                            specs_buf[0..n],
+                            arena_alloc,
+                            module.import_records,
+                        ) catch module.import_records;
+                        jsx_injected = (module.import_records.len > jsx_inject_base);
+                        react_injected = (n == 2) and jsx_injected;
+                    }
                 }
             }
 
@@ -1901,11 +1928,22 @@ pub const ModuleGraph = struct {
         // transformer 를 여기서 1회 실행해 final AST 를 module.ast 에 저장하고, 그 AST
         // 기준으로 semantic/import/export/StmtInfo 를 다시 만든다. emitter 는
         // module.transform_cache hit 시 transform skip.
-        if (self.shouldRunTransformerPrePass(module, plugin_transform_applied)) {
-            self.runTransformerPrePass(module, arena_alloc);
-        } else {
-            module.transform_cache = null;
-            suppressRuntimeHelperInternalUnresolved(module);
+        {
+            var prepass_scope = profile.begin(.graph_discover_pm_prepass);
+            defer prepass_scope.end();
+            const run_prepass = blk: {
+                var decision_scope = profile.begin(.graph_discover_pm_prepass_decision);
+                defer decision_scope.end();
+                break :blk self.shouldRunTransformerPrePass(module, plugin_transform_applied);
+            };
+            if (run_prepass) {
+                var run_scope = profile.begin(.graph_discover_pm_prepass_run);
+                defer run_scope.end();
+                self.runTransformerPrePass(module, arena_alloc);
+            } else {
+                module.transform_cache = null;
+                suppressRuntimeHelperInternalUnresolved(module);
+            }
         }
 
         module.state = .parsed;
