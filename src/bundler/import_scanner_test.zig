@@ -105,6 +105,17 @@ test "type modifier mixed with value spec → record kept" {
     try std.testing.expectEqualStrings("./foo", records[0].specifier);
 }
 
+test "default + namespace import → record kept (#2466 regression)" {
+    // `import_default_specifier` / `import_namespace_specifier` 는 binary 레이아웃이 아니라
+    // `data.string_ref` 라서, allSpecsAreTypeOnly 가 binary.flags 로 union punning 하면
+    // ReleaseFast 에서 garbage bits 가 우연히 SPEC_FLAG_TYPE_ONLY 로 읽혀 record 가 누락됐었다.
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractExt(alloc, "import dflt, * as ns from './foo';", ".ts");
+    defer alloc.free(records);
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("./foo", records[0].specifier);
+}
+
 test "side-effect import" {
     const alloc = std.testing.allocator;
     const records = try parseAndExtract(alloc, "import './styles.css';");

@@ -320,7 +320,12 @@ fn allSpecsAreTypeOnly(ast: *const Ast, specs_start: u32, specs_len: u32) bool {
         const spec_idx: NodeIndex = @enumFromInt(raw_idx);
         if (spec_idx.isNone()) return false;
         const spec_node = ast.getNode(spec_idx);
-        // import_specifier / import_default_specifier / import_namespace_specifier 모두 binary.flags 사용.
+        // spec-level `type` modifier 는 named `import_specifier` 만 가짐 (module.zig:33-36
+        // SPEC_FLAG_TYPE_ONLY 정의). `import_default_specifier` / `import_namespace_specifier`
+        // 는 `data = .string_ref` 레이아웃이라 `data.binary.flags` 를 읽으면 union punning
+        // 으로 garbage 를 읽고, ReleaseFast 에서 비결정적으로 type-only 로 오판되어
+        // namespace/default import 의 record 가 누락됐었다.
+        if (spec_node.tag != .import_specifier) return false;
         if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) == 0) return false;
     }
     return true;
