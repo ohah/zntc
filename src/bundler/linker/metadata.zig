@@ -699,6 +699,47 @@ pub fn buildMetadataForAst(
         mergeUnifiedPhaseB(self, module_index, &renames, &owned_nested_renames) catch {};
     }
 
+    // Side-effect-only import has no ImportBinding, so scope-hoisted modules that
+    // skip raw import declarations still need an explicit evaluation preamble for
+    // wrapped targets.
+    if (!m.wrap_kind.isWrapped()) {
+        for (m.import_records) |rec| {
+            if (rec.kind != .side_effect) continue;
+            if (rec.resolved.isNone()) continue;
+            const target_mod = self.graph.getModule(rec.resolved) orelse continue;
+            if (self.tree_shaker_active and !target_mod.is_included) continue;
+
+            switch (target_mod.wrap_kind) {
+                .none => {},
+                .cjs => {
+                    const req_var = try getOrCreateRequireVar(self, &cjs_var_cache, @intCast(@intFromEnum(rec.resolved)));
+                    try preamble.write(req_var);
+                    try preamble.write("();\n");
+                },
+                .esm => {
+                    const target = @intFromEnum(rec.resolved);
+                    if (esm_init_set.contains(@intCast(target))) continue;
+                    try esm_init_set.put(@intCast(target), {});
+                    const is_tla = target_mod.uses_top_level_await;
+                    const guard = target_mod.shouldGuard(self.entry_error_guard);
+                    if (is_tla) try preamble.write("await ");
+                    if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
+                    if (self.dev_mode) {
+                        try preamble.write("__zts_modules[\"");
+                        try preamble.write(target_mod.dev_id);
+                        try preamble.write("\"].fn()");
+                    } else {
+                        const init_name = try target_mod.allocInitName(self.allocator);
+                        defer self.allocator.free(init_name);
+                        try preamble.write(init_name);
+                        try preamble.write("()");
+                    }
+                    try preamble.write(if (guard) rt.GUARD_LAMBDA_CLOSE else rt.INIT_CALL_END);
+                },
+            }
+        }
+    }
+
     // CJS import preamble 저장
     const cjs_import_preamble = try preamble.toOwned();
 

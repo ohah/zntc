@@ -334,6 +334,9 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     // packages — CLI 는 esbuild 호환 `--packages=external` enum 형태, BuildOptions 는
     // `packagesExternal: boolean`.
     "--packages=",
+    // runtimeTargets — CLI 는 단수 반복형, BuildOptions 는 배열/객체/문자열 통합 field.
+    "--runtime-target",
+    "--runtime-target=",
     // banner/footer — `--banner=`/`--footer=` 가 정식 (BuildOptions 와 1:1).
     // `--banner:js=`/`--footer:js=` 는 esbuild 호환 silent alias — 동일 키로 매핑.
     "--banner:js=",

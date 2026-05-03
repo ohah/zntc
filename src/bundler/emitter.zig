@@ -1290,6 +1290,7 @@ pub fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator,
 /// 모듈의 wrap_kind에 따라 require_xxx() 또는 init_xxx() 호출 코드를 생성한다.
 /// run-before-main, 엔트리 자동 호출, star export init 등에서 공용.
 pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator, mod: anytype) !void {
+    if (!mod.wrap_kind.isWrapped()) return;
     const call_name = if (mod.wrap_kind == .cjs)
         try mod.allocRequireName(allocator)
     else

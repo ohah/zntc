@@ -114,6 +114,8 @@ export const FLAG_REGISTRY = [
   { kind: "string", flag: "--profile-format", target: "profileFormat", forms: ["equal"] },
   { kind: "string", flag: "--stop-after", target: "stopAfter", forms: ["equal"] },
   { kind: "string", flag: "--tokenize-format", target: "tokenizeFormat", forms: ["equal"] },
+  { kind: "string", flag: "--runtime-polyfills", target: "runtimePolyfills", forms: ["equal"] },
+  { kind: "string", flag: "--core-js", target: "coreJs", forms: ["equal"] },
 
   // ─── kind=string — `--key value` 또는 `--key=value` 둘 다 ───
   { kind: "string", flag: "--target", target: "target" },
@@ -151,6 +153,7 @@ export const FLAG_REGISTRY = [
   { kind: "array", flag: "--external", target: "external" },
   { kind: "array", flag: "--drop", target: "drop", forms: ["equal"] },
   { kind: "array", flag: "--plugin", target: "pluginPaths", forms: ["pair"] },
+  { kind: "array", flag: "--runtime-target", target: "runtimeTargets" },
 
   // ─── kind=csv — `,` 분리 → array ───
   { kind: "csv", flag: "--drop-labels", target: "dropLabels", forms: ["equal"] },

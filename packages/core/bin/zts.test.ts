@@ -479,6 +479,53 @@ describe("CLI: bundle", () => {
     expect(minified.stdout.length).toBeLessThan(normal.stdout.length);
   });
 
+  test("번들 + --runtime-polyfills=auto + --runtime-target", () => {
+    const polyfillDir = mkdtempSync(join(tmpdir(), "zts-cli-runtime-polyfills-"));
+    try {
+      writeFileSync(
+        join(polyfillDir, "entry.ts"),
+        `globalThis.__VALUE__ = "a".replaceAll("a", "b");`,
+      );
+
+      const { stdout, stderr, exitCode } = runCli([
+        "--bundle",
+        join(polyfillDir, "entry.ts"),
+        "--runtime-polyfills=auto",
+        "--runtime-target=ios12",
+      ]);
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout).toContain("es.string.replace-all");
+    } finally {
+      rmSync(polyfillDir, { recursive: true, force: true });
+    }
+  });
+
+  test("번들 + --runtime-target device name은 actionable error", () => {
+    const polyfillDir = mkdtempSync(join(tmpdir(), "zts-cli-runtime-device-"));
+    try {
+      writeFileSync(
+        join(polyfillDir, "entry.ts"),
+        `globalThis.__VALUE__ = "a".replaceAll("a", "b");`,
+      );
+
+      const { stderr, exitCode } = runCli([
+        "--bundle",
+        join(polyfillDir, "entry.ts"),
+        "--runtime-polyfills=auto",
+        "--runtime-target",
+        "iPhone 8",
+      ]);
+
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain("Physical device names are not supported");
+      expect(stderr).toContain("ios12");
+    } finally {
+      rmSync(polyfillDir, { recursive: true, force: true });
+    }
+  });
+
   test("번들 + --drop-labels=DEV,TEST 라벨 블록 제거", () => {
     const labelDir = mkdtempSync(join(tmpdir(), "zts-cli-drop-labels-"));
     try {

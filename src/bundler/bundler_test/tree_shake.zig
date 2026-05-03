@@ -1180,6 +1180,50 @@ test "TreeShaking: side-effect-only import preserved" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "myPolyfill") != null);
 }
 
+test "TreeShaking: side-effect-only CJS import emits require call" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import './cjs.js';\nconsole.log('entry');");
+    try writeFile(tmp.dir, "cjs.js", "module.exports = {}; globalThis.cjsSideEffectImport = true;");
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry} });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "cjsSideEffectImport") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "require_cjs();") != null);
+}
+
+test "TreeShaking: runBeforeMain import-only root preserves side-effect dependency" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "console.log('entry');");
+    try writeFile(tmp.dir, "prelude.ts", "import './polyfill';");
+    try writeFile(tmp.dir, "polyfill.ts", "globalThis.runBeforeMainPolyfill = true;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    const prelude = try absPath(&tmp, "prelude.ts");
+    defer std.testing.allocator.free(prelude);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .run_before_main = &.{prelude},
+    });
+    defer b.deinit();
+    const result = try b.bundle();
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "runBeforeMainPolyfill") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_prelude") == null);
+}
+
 test "TreeShaking CJS: named import prunes unused exports dot assignment" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

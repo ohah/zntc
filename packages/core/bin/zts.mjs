@@ -158,6 +158,9 @@ function usageLines(command) {
     "  --profile=<csv>            Collect profile categories (all, parse, transform, ...)",
     "  --profile-level=<level>    Profile level: summary, detailed, per-module, per-pass",
     "  --profile-format=<format>  Profile output: table, tree, json, csv",
+    "  --runtime-polyfills=<mode> Inject core-js runtime polyfills: auto, usage, entry, off",
+    "  --runtime-target=<query>   Runtime polyfill target (repeatable: ios12, chrome>=85, node18)",
+    "  --core-js=<version>        core-js version used for runtime polyfill compatibility",
     "  --stop-after=<phase>       Stop transpile after a given phase (debug)",
     "  --tokenize[=false]         Print scanner tokens instead of generated code",
     "  --tokenize-format=<format> Token output: text or json",
@@ -297,6 +300,9 @@ function parseArgs(argv) {
     profile: [],
     profileLevel: undefined,
     profileFormat: undefined,
+    runtimePolyfills: undefined,
+    coreJs: undefined,
+    runtimeTargets: [],
     ignoreAnnotations: false,
     jsxSideEffects: false,
     stopAfter: undefined,
@@ -1780,6 +1786,8 @@ function mergeConfigIntoOpts(opts, config) {
     "stopAfter",
     "profileLevel",
     "profileFormat",
+    "runtimePolyfills",
+    "coreJs",
     "tokenizeFormat",
   ];
   for (const key of SCALAR_KEYS) {
@@ -1840,6 +1848,7 @@ function mergeConfigIntoOpts(opts, config) {
     "conditions",
     "nodePaths",
     "profile",
+    "runtimeTargets",
   ];
   for (const key of ARRAY_KEYS) {
     if (opts[key].length === 0 && Array.isArray(config[key]) && config[key].length > 0) {
@@ -1934,6 +1943,9 @@ async function runBundle(opts, config) {
     profile: opts.profile.length > 0 ? opts.profile : undefined,
     profileLevel: opts.profileLevel,
     profileFormat: opts.profileFormat,
+    runtimePolyfills: opts.runtimePolyfills,
+    coreJs: opts.coreJs,
+    runtimeTargets: opts.runtimeTargets.length > 0 ? opts.runtimeTargets : undefined,
     ignoreAnnotations: opts.ignoreAnnotations,
     jsxSideEffects: opts.jsxSideEffects,
     // NAPI 가 tsconfig paths / baseUrl 을 alias 로 변환해 resolver 에 주입하도록 전달.

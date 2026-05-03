@@ -213,6 +213,9 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "platform", // discriminated union 으로 처리됨
     "target",
     "browserslist",
+    "runtimePolyfills", // JS wrapper가 core-js prelude 로 변환 후 runBeforeMain 으로 전달
+    "runtimeTargets", // runtimePolyfills 전용 core-js-compat 타겟
+    "coreJs", // runtimePolyfills 전용 core-js 버전 힌트
     "plugins",
     "compiler", // 1st-party transform 네임스페이스 (compiler.styledComponents/emotion).
     // 현재 stub — Zig transformer 가 아직 인식하지 않음. 후속 PR 에서 styled-components /

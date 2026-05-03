@@ -30,6 +30,8 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `format`                                     |           `--format=esm`           |               ✅               |            ❌             | esm/cjs/iife/umd/amd                                               |
 | `platform`                                   |         `--platform=node`          |               ✅               |            ❌             | node/browser/react-native                                          |
 | `target`                                     |         `--target=es2020`          |               ✅               |         `target`          | tsconfig fallback                                                  |
+| `runtimePolyfills` / `runtimeTargets`        |   `--runtime-polyfills` / target   |               ✅               |            ❌             | core-js 런타임 API 폴리필. 기본 off, auto/usage/entry 명시 필요    |
+| `coreJs`                                     |          `--core-js=3.49`          |               ✅               |            ❌             | core-js-compat 계산에 사용할 core-js 버전                          |
 | `jsx`                                        |         `--jsx=automatic`          |               ✅               |           `jsx`           | preserve/transform/automatic                                       |
 | `jsxFactory` / `jsxFragment`                 |                flag                |               ✅               |      `jsxFactory` 등      | tsconfig fallback                                                  |
 | `external`                                   |          `--external:lib`          |               ✅               |            ❌             | 배열 — CLI 비어있으면 config                                       |

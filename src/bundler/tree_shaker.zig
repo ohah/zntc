@@ -544,11 +544,21 @@ pub const TreeShaker = struct {
         }
         self.re_export_star_targets = re_star_targets;
 
-        // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용)
+        // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용).
+        // `graph.inject_files` includes both user `inject` and `runBeforeMain`.
+        // They are not output entries, but they are execution roots and may be
+        // import-only prelude modules.
         for (0..mod_count) |i| {
             const m = self.getModule(@intCast(i)) orelse continue;
             for (entry_points) |ep| {
                 if (std.mem.eql(u8, m.path, ep)) {
+                    self.entry_set.set(i);
+                    break;
+                }
+            }
+            if (self.entry_set.isSet(i)) continue;
+            for (self.graph.inject_files) |inject_path| {
+                if (std.mem.eql(u8, m.path, inject_path)) {
                     self.entry_set.set(i);
                     break;
                 }

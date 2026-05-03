@@ -27,8 +27,17 @@ import {
   isPlainObject,
   validateTsConfigRaw,
 } from "../shared/index";
+import {
+  applyRuntimePolyfillsToNapiOptions,
+  isEsTarget,
+  type RuntimePolyfillOptions,
+  type RuntimePolyfillsOption,
+  type RuntimeTarget,
+  type RuntimeTargetObject,
+} from "./src/runtime-polyfills.ts";
 
 export { isPlainObject, validateTsConfigRaw };
+export type { RuntimePolyfillOptions, RuntimePolyfillsOption, RuntimeTarget, RuntimeTargetObject };
 
 // ─── NAPI Module ───
 
@@ -489,6 +498,8 @@ export interface DevServerOptions {
   open?: boolean;
 }
 
+type BuildTarget = import("../shared/index").Target | RuntimeTarget;
+
 /**
  * Common build options shared by all platforms.
  * `platform` + `target` 조합은 `BuildOptions` 에서 discriminated union으로 제한됨.
@@ -782,6 +793,21 @@ interface BuildOptionsCommon {
   globalIdentifiers?: string[];
   /** 번들 시작 시 즉시 실행 폴리필 경로 */
   polyfills?: string[];
+  /**
+   * core-js 기반 런타임 API 폴리필 자동 주입.
+   *
+   * - `"off"` (default): 자동 런타임 폴리필 없음.
+   * - `"auto"` / `"usage"`: 엔트리와 로컬 의존성의 실제 사용 API만 스캔해 타겟 미지원 모듈 주입.
+   * - `"entry"`: 타겟 기준 필요한 core-js ES/Web 모듈을 엔트리 prelude에 포괄 주입.
+   */
+  runtimePolyfills?: RuntimePolyfillsOption;
+  /** core-js-compat 계산에 사용할 core-js 버전 (예: `"3.49"`). */
+  coreJs?: string;
+  /**
+   * core-js-compat 런타임 엔진 타겟.
+   * 예: `"ios12"`, `"chrome >= 85"`, `"hermes0.7"`, `"react-native 0.70"`, `{ node: "18" }`.
+   */
+  runtimeTargets?: RuntimeTarget | RuntimeTarget[] | RuntimeTargetObject;
   /** 엔트리 모듈 직전에 실행할 모듈 경로 */
   runBeforeMain?: string[];
   /** 번들 그래프 밖의 디렉토리를 감시 루트에 추가 (Metro watchFolders 호환).
@@ -833,13 +859,13 @@ export type BuildOptions =
   | (BuildOptionsCommon & {
       /** React Native (Hermes) 프리셋. target은 Hermes 매트릭스로 강제됨. */
       platform: Extract<import("../shared/index").Platform, "react-native">;
-      target?: never;
+      target?: RuntimeTarget;
       browserslist?: never;
     })
   | (BuildOptionsCommon & {
       platform?: Exclude<import("../shared/index").Platform, "react-native">;
-      /** ES 다운레벨 타겟 ("es5" ~ "esnext") */
-      target?: import("../shared/index").Target;
+      /** ES 다운레벨 타겟 또는 runtime polyfill engine target. */
+      target?: BuildTarget;
       /** browserslist 쿼리 (string 또는 string[]). 지정 시 target보다 우선. */
       browserslist?: string | string[];
     });
@@ -1419,7 +1445,10 @@ function withDefaultAppBuildDefines(options: AppBuildOptions): Record<string, st
   return define;
 }
 
-function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
+function prepareNapiOptions(options: BuildOptions): {
+  napiOptions: Record<string, unknown>;
+  cleanup: () => void;
+} {
   const napiOptions: Record<string, unknown> = { ...options };
   const define = withDefaultBuildDefines(options);
   if (define) napiOptions.define = define;
@@ -1448,6 +1477,9 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
   if (options.browserslist) {
     napiOptions.unsupported = resolveUnsupported({ browserslist: options.browserslist });
     delete napiOptions.browserslist;
+  }
+  if (options.target && !isEsTarget(options.target)) {
+    delete napiOptions.target;
   }
   // compiler.styledComponents / compiler.emotion → flat NAPI fields.
   // boolean 또는 객체 (세밀 제어 옵션). 현재 인식 객체 옵션: ssr.
@@ -1494,7 +1526,18 @@ function prepareNapiOptions(options: BuildOptions): Record<string, unknown> {
       if (extras.styled.length > 0) napiOptions.emotionExtraStyledSources = extras.styled;
     }
   }
-  return napiOptions;
+  const runtimePolyfills = applyRuntimePolyfillsToNapiOptions(napiOptions, {
+    entryPoints: options.entryPoints,
+    platform: options.platform,
+    target: options.target,
+    browserslist: options.browserslist,
+    runtimeTargets: options.runtimeTargets,
+    runtimePolyfills: options.runtimePolyfills,
+    coreJs: options.coreJs,
+    runBeforeMain: options.runBeforeMain,
+    resolveExtensions: options.resolveExtensions,
+  });
+  return { napiOptions, cleanup: runtimePolyfills.cleanup };
 }
 
 /**
@@ -1628,7 +1671,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   if (!options.entryPoints?.length) throw new Error("@zts/core: entryPoints is required");
   validateTsConfigRaw(options.tsconfigRaw);
 
-  const napiOptions = prepareNapiOptions(options);
+  const { napiOptions, cleanup } = prepareNapiOptions(options);
   const dispatcher = resolveDispatcher(options);
   if (dispatcher) napiOptions._pluginDispatcher = dispatcher;
 
@@ -1636,13 +1679,17 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   // JS 측에서 별도 호출 시 이중 발화. 단 closeBundle 은 Rollup 의미 ("write 완료 후") 보존을
   // 위해 writeOutputFiles 다음에 JS layer 가 직접 호출 — native bundle() 끝 시점은 contents
   // 결정 직후라 disk write *전* 이므로 closeBundle 자리 부적합.
-  const result: BuildResult = await native.build(napiOptions);
+  try {
+    const result: BuildResult = await native.build(napiOptions);
 
-  postProcessCssOutputs(result, options);
-  writeOutputFiles(result, options);
+    postProcessCssOutputs(result, options);
+    writeOutputFiles(result, options);
 
-  if (dispatcher) await dispatcher("closeBundle", undefined, null);
-  return result;
+    if (dispatcher) await dispatcher("closeBundle", undefined, null);
+    return result;
+  } finally {
+    cleanup();
+  }
 }
 
 /**
@@ -1665,11 +1712,15 @@ export function buildSync(options: BuildOptions): BuildResult {
     );
   }
 
-  const napiOptions = prepareNapiOptions(options);
-  const result: BuildResult = native.buildSync(napiOptions);
-  postProcessCssOutputs(result, options);
-  writeOutputFiles(result, options);
-  return result;
+  const { napiOptions, cleanup } = prepareNapiOptions(options);
+  try {
+    const result: BuildResult = native.buildSync(napiOptions);
+    postProcessCssOutputs(result, options);
+    writeOutputFiles(result, options);
+    return result;
+  } finally {
+    cleanup();
+  }
 }
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
@@ -1982,7 +2033,7 @@ export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
 export function watch(options: BuildOptions): WatchHandle {
   if (!native) throw new Error("call init() first");
 
-  const nativeOpts = prepareNapiOptions(options);
+  const { napiOptions: nativeOpts, cleanup } = prepareNapiOptions(options);
   const dispatcher = resolveDispatcher(options);
 
   if (dispatcher) {
@@ -2007,5 +2058,26 @@ export function watch(options: BuildOptions): WatchHandle {
     nativeOpts.onRebuild = wrapWatchCallback(options.onRebuild);
   }
 
-  return native.watch(nativeOpts);
+  let handle: WatchHandle;
+  try {
+    handle = native.watch(nativeOpts);
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+  return {
+    stop() {
+      try {
+        handle.stop();
+      } finally {
+        cleanup();
+      }
+    },
+    getBundleSourceMap() {
+      return handle.getBundleSourceMap();
+    },
+    getHmrSourceMap(moduleId: string) {
+      return handle.getHmrSourceMap(moduleId);
+    },
+  };
 }
