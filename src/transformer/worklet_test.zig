@@ -1027,3 +1027,77 @@ test "Worklet: __initData does NOT emit sourceMap when none generated" {
     defer std.testing.allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "sourceMap") == null);
 }
+
+// ============================================================
+// #2484 worklet walker depth 한계 회귀 가드
+// ============================================================
+
+test "#2484 regression: 100-deep nested expression — outer ref captured in closure" {
+    // walkBodyForClosureAnalysis 의 depth>64 silent return 으로 65+ 깊이 ref 누락.
+    // 명시 stack 으로 전환 후 100 depth 에서도 outerVar 가 closure 에 잡혀야 한다.
+    const a = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(a);
+    try src.appendSlice(a, "function w() {\n  \"worklet\";\n  return ");
+    var i: u32 = 0;
+    while (i < 100) : (i += 1) try src.appendSlice(a, "(");
+    try src.appendSlice(a, "outerVar");
+    while (i > 0) : (i -= 1) try src.appendSlice(a, ")");
+    try src.appendSlice(a, ";\n}\n");
+
+    var r = try transformWorklet(a, src.items);
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer a.free(code);
+
+    // closure 객체에 outerVar 가 포함되어야 한다 (worklet hoisted destructure 형태).
+    try std.testing.expect(std.mem.indexOf(u8, code, "{outerVar}=this.__closure") != null);
+}
+
+test "#2484 regression: 35-deep nested object pattern param — leaf binding registered as local" {
+    // collectAllIdentifiers 의 depth>32 silent return 으로 33+ 깊이의 param leaf 가
+    // fn_locals 에 등록 안 됨 → body 의 그 이름 reference 가 outer ref 로 오분류 →
+    // closure 에 잘못 포함. 명시 stack 으로 전환 후 35 깊이 leaf 도 정상 등록되어
+    // closure 가 비어 있음을 확인 (정확 매칭).
+    const a = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(a);
+    try src.appendSlice(a, "function w(");
+    var i: u32 = 0;
+    while (i < 35) : (i += 1) try src.appendSlice(a, "{a:");
+    try src.appendSlice(a, "x");
+    while (i > 0) : (i -= 1) try src.appendSlice(a, "}");
+    try src.appendSlice(a, ") {\n  \"worklet\";\n  return x;\n}\n");
+
+    var r = try transformWorklet(a, src.items);
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer a.free(code);
+
+    // x 가 deep nested param leaf 로 정상 잡히면 outer ref 가 없어 closure 가 비어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, code, "__closure = {}") != null);
+}
+
+test "#2484 regression: deeply nested new expression — class factory captured" {
+    // collectNewExpressionCallees 의 depth>128 silent return 으로 129+ 깊이의
+    // new X() callee 가 new_classes 에 등록 안 됨 → factory 자동 import 누락.
+    // 명시 stack 으로 전환 후 150 depth 도 정상 등록.
+    const a = std.testing.allocator;
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(a);
+    try src.appendSlice(a, "function w() {\n  \"worklet\";\n  return ");
+    var i: u32 = 0;
+    while (i < 150) : (i += 1) try src.appendSlice(a, "(");
+    try src.appendSlice(a, "new DeepClass()");
+    while (i > 0) : (i -= 1) try src.appendSlice(a, ")");
+    try src.appendSlice(a, ";\n}\n");
+
+    var r = try transformWorklet(a, src.items);
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer a.free(code);
+
+    // worklet class factory: `new X()` 발견 시 closure 에 `X` 와 `X__classFactory` 함께 등록.
+    // 깊이 한도가 살아있으면 두 키 모두 누락되므로 정확 매칭으로 검증.
+    try std.testing.expect(std.mem.indexOf(u8, code, "{DeepClass,DeepClass__classFactory}=this.__closure") != null);
+}

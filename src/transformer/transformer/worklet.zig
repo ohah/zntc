@@ -178,9 +178,9 @@ pub fn collectClosureVars(
     //      동시에 `new X()` 형태의 callee identifier를 new_classes에 수집
     //      (disable_worklet_classes 옵션이면 수집 안 함).
     if (self.options.disable_worklet_classes) {
-        try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs, 0);
+        try walkBodyForClosureAnalysis(self, body_idx, &locals, &refs);
     } else {
-        try walkBodyForClosureAnalysisWithNew(self, body_idx, &locals, &refs, &new_classes, 0);
+        try walkBodyForClosureAnalysisWithNew(self, body_idx, &locals, &refs, &new_classes);
     }
 
     // 4. refs - locals - globals = closure vars
@@ -246,18 +246,17 @@ fn walkScopedBody(
     param_nodes: []const u32,
     outer_locals: *std.StringHashMap(void),
     outer_refs: *std.StringHashMap(NodeIndex),
-    depth: u32,
 ) Error!void {
     var inner_locals = std.StringHashMap(void).init(self.allocator);
     defer inner_locals.deinit();
 
     for (param_nodes) |raw| {
-        try collectAllIdentifiers(self, @enumFromInt(raw), &inner_locals, 0);
+        try collectAllIdentifiers(self, @enumFromInt(raw), &inner_locals);
     }
 
     var inner_refs = std.StringHashMap(NodeIndex).init(self.allocator);
     defer inner_refs.deinit();
-    try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs, depth + 1);
+    try walkBodyForClosureAnalysis(self, body_idx, &inner_locals, &inner_refs);
 
     var iter = inner_refs.iterator();
     while (iter.next()) |entry| {
@@ -268,26 +267,31 @@ fn walkScopedBody(
 }
 
 /// 노드 트리에서 모든 identifier (identifier_reference, binding_identifier 등)를 수집.
-/// params에서 binding names를 추출하는 용도. generic 순회.
-fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMap(void), depth: u32) Error!void {
-    if (idx.isNone()) return;
-    if (depth > 32) return;
-    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
-
-    const node = self.ast.getNode(idx);
-    switch (node.tag) {
-        .identifier_reference, .binding_identifier, .assignment_target_identifier => {
-            const name = self.ast.getText(node.data.string_ref);
-            if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
-            return;
-        },
-        else => {},
+/// params에서 binding names를 추출하는 용도. generic pre-order 순회 — 명시 stack 사용으로
+/// 깊이 한도 없음 (#2484: 이전 depth>32 silent return 이 깊은 패턴에서 leaf 누락).
+fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMap(void)) Error!void {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    if (!idx.isNone() and @intFromEnum(idx) < self.ast.nodes.items.len) {
+        try stack.append(self.allocator, idx);
     }
-    // generic 재귀 순회 — 공통 ChildIterator 사용
-    var it = ast_walk.children(self.ast, node);
-    while (it.next()) |child| {
-        if (child.isNone()) continue;
-        try collectAllIdentifiers(self, child, locals, depth + 1);
+    while (stack.pop()) |cur| {
+        if (cur.isNone()) continue;
+        if (@intFromEnum(cur) >= self.ast.nodes.items.len) continue;
+        const node = self.ast.getNode(cur);
+        switch (node.tag) {
+            .identifier_reference, .binding_identifier, .assignment_target_identifier => {
+                const name = self.ast.getText(node.data.string_ref);
+                if (name.len > 0) locals.put(name, {}) catch return error.OutOfMemory;
+                continue;
+            },
+            else => {},
+        }
+        var it = ast_walk.children(self.ast, node);
+        while (it.next()) |child| {
+            if (child.isNone()) continue;
+            try stack.append(self.allocator, child);
+        }
     }
 }
 
@@ -304,198 +308,203 @@ fn walkBodyForClosureAnalysisWithNew(
     locals: *std.StringHashMap(void),
     refs: *std.StringHashMap(NodeIndex),
     new_classes: *std.StringHashMap(NodeIndex),
-    depth: u32,
 ) Error!void {
-    try collectNewExpressionCallees(self, idx, new_classes, 0);
-    try walkBodyForClosureAnalysis(self, idx, locals, refs, depth);
+    try collectNewExpressionCallees(self, idx, new_classes);
+    try walkBodyForClosureAnalysis(self, idx, locals, refs);
 }
 
 /// AST를 순회하며 `new <Identifier>(...)` 형태의 callee identifier를 수집.
+/// 명시 stack pre-order — 깊이 한도 없음 (#2484: 이전 depth>128 silent return).
 fn collectNewExpressionCallees(
     self: *Transformer,
     idx: NodeIndex,
     new_classes: *std.StringHashMap(NodeIndex),
-    depth: u32,
 ) Error!void {
-    if (idx.isNone()) return;
-    if (depth > 128) return;
-    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
-    const node = self.ast.getNode(idx);
-    if (node.tag == .new_expression) {
-        const e = node.data.extra;
-        if (e < self.ast.extra_data.items.len) {
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            if (!callee_idx.isNone()) {
-                const callee = self.ast.getNode(callee_idx);
-                if (callee.tag == .identifier_reference) {
-                    const name = self.ast.getText(callee.data.string_ref);
-                    if (name.len > 0) {
-                        new_classes.put(name, callee_idx) catch return error.OutOfMemory;
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    if (!idx.isNone() and @intFromEnum(idx) < self.ast.nodes.items.len) {
+        try stack.append(self.allocator, idx);
+    }
+    while (stack.pop()) |cur| {
+        if (cur.isNone()) continue;
+        if (@intFromEnum(cur) >= self.ast.nodes.items.len) continue;
+        const node = self.ast.getNode(cur);
+        if (node.tag == .new_expression) {
+            const e = node.data.extra;
+            if (e < self.ast.extra_data.items.len) {
+                const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                if (!callee_idx.isNone()) {
+                    const callee = self.ast.getNode(callee_idx);
+                    if (callee.tag == .identifier_reference) {
+                        const name = self.ast.getText(callee.data.string_ref);
+                        if (name.len > 0) {
+                            new_classes.put(name, callee_idx) catch return error.OutOfMemory;
+                        }
                     }
                 }
             }
         }
-    }
-    // 자식 재귀 — 공통 ChildIterator 로 generic 순회
-    var it = ast_walk.children(self.ast, node);
-    while (it.next()) |child| {
-        if (child.isNone()) continue;
-        try collectNewExpressionCallees(self, child, new_classes, depth + 1);
+        var it = ast_walk.children(self.ast, node);
+        while (it.next()) |child| {
+            if (child.isNone()) continue;
+            try stack.append(self.allocator, child);
+        }
     }
 }
 
+/// 같은 스코프 내 generic descent 는 명시 stack 으로 처리해 표현 깊이 한도를 없앤다 (#2484).
+/// nested function/arrow/method 처럼 별도 스코프 진입은 그대로 자체 재귀 — 호출 깊이는
+/// 사용자 코드의 nested function 깊이만큼이라 stack overflow 위험 없음.
 fn walkBodyForClosureAnalysis(
     self: *Transformer,
     idx: NodeIndex,
     locals: *std.StringHashMap(void),
     refs: *std.StringHashMap(NodeIndex),
-    depth: u32,
 ) Error!void {
-    if (idx.isNone()) return;
-    if (depth > 64) return;
-    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
-
-    const node = self.ast.getNode(idx);
-    const tag = node.tag;
-
-    // --- 특수 처리 노드 ---
-    switch (tag) {
-        // 식별자 참조 수집
-        .identifier_reference => {
-            const name = self.ast.getText(node.data.string_ref);
-            if (name.len > 0) {
-                refs.put(name, idx) catch return error.OutOfMemory;
-            }
-            return;
-        },
-
-        // 중첩 함수/arrow/method: 별도 스코프로 body를 순회하여 외부 참조를 수집.
-        // __initData.code에 body가 포함되므로, 그 안의 free variable을
-        // worklet closure에 전파해야 함 (Babel scope chain과 동일).
-        .function_declaration, .function_expression, .function => {
-            const e = node.data.extra;
-            if (tag == .function_declaration) {
-                try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
-            }
-            if (!self.ast.hasExtra(e, 3)) return;
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
-            if (body_idx.isNone()) return;
-            // name + params → param_nodes (extra_data 슬라이스 + name 앞에 추가)
-            const plist = self.ast.functionParamsList(node);
-            const p_start = plist.start;
-            const p_len = plist.len;
-            // name(e[0])은 항상 포함, params는 extra_data 슬라이스
-            // 두 소스를 합치기 위해 단일 배열 사용은 불가 → 두 번 호출 대신 inline 처리
-            var fn_locals = std.StringHashMap(void).init(self.allocator);
-            defer fn_locals.deinit();
-            try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[e]), &fn_locals, 0); // name
-            var fpi: u32 = 0;
-            while (fpi < p_len) : (fpi += 1) {
-                if (p_start + fpi < self.ast.extra_data.items.len)
-                    try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[p_start + fpi]), &fn_locals, 0);
-            }
-            var fn_refs = std.StringHashMap(NodeIndex).init(self.allocator);
-            defer fn_refs.deinit();
-            try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs, depth + 1);
-            var fr_iter = fn_refs.iterator();
-            while (fr_iter.next()) |entry| {
-                if (!fn_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
-                    refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
-                }
-            }
-            return;
-        },
-        .arrow_function_expression => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 2)) return;
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
-            if (body_idx.isNone()) return;
-            // arrow params: formal_parameters 노드를 param_node로 전달
-            try walkScopedBody(self, body_idx, &.{self.ast.extra_data.items[e]}, locals, refs, depth);
-            return;
-        },
-        .method_definition => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
-            if (body_idx.isNone()) return;
-            const plist = self.ast.functionParamsList(node);
-            const p_start = plist.start;
-            const p_len = plist.len;
-            if (p_start + p_len <= self.ast.extra_data.items.len) {
-                try walkScopedBody(self, body_idx, self.ast.extra_data.items[p_start .. p_start + p_len], locals, refs, depth);
-            }
-            return;
-        },
-
-        // 변수 선언: binding name → locals, init → generic 순회
-        .variable_declarator => {
-            const e = node.data.extra;
-            if (!self.ast.hasExtra(e, 3)) return;
-            try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
-            // init(offset 2)만 순회 (name은 binding, type_ann은 TS 타입)
-            try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[e + 2]), locals, refs, depth + 1);
-            return;
-        },
-
-        // catch: param → locals, body만 순회
-        .catch_clause => {
-            try collectBindingNames(self, node.data.binary.left, locals);
-            try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
-            return;
-        },
-
-        // object_property: binary = [key, value]
-        // shorthand { x } → key는 참조 (value=none)
-        // long-form { key: value } → value 순회 + computed key도 순회 ([expr]: value)
-        .object_property => {
-            if (node.data.binary.right.isNone()) {
-                try walkBodyForClosureAnalysis(self, node.data.binary.left, locals, refs, depth + 1);
-            } else {
-                // computed key [expr] → expr 안의 identifier도 순회
-                const key_idx = node.data.binary.left;
-                if (!key_idx.isNone()) {
-                    const key_node = self.ast.getNode(key_idx);
-                    if (key_node.tag == .computed_property_key) {
-                        try walkBodyForClosureAnalysis(self, key_idx, locals, refs, depth + 1);
-                    }
-                }
-                try walkBodyForClosureAnalysis(self, node.data.binary.right, locals, refs, depth + 1);
-            }
-            return;
-        },
-
-        // TS/Flow type expression: 값(left)만 순회, 타입(right) 무시.
-        // parser가 binary(left=expr, right=type)로 저장하지만 layout은 extra로 정의되어
-        // generic walker가 자식을 찾지 못하므로 명시적 처리 필요.
-        .ts_as_expression,
-        .ts_satisfies_expression,
-        .ts_type_assertion,
-        .ts_instantiation_expression,
-        .flow_as_expression,
-        .flow_type_cast_expression,
-        => {
-            try walkBodyForClosureAnalysis(self, node.data.binary.left, locals, refs, depth + 1);
-            return;
-        },
-
-        // static member: object만 순회 (property는 외부 참조가 아님)
-        .static_member_expression, .private_field_expression => {
-            const me = node.data.extra;
-            if (self.ast.hasExtra(me, 2)) {
-                try walkBodyForClosureAnalysis(self, @enumFromInt(self.ast.extra_data.items[me]), locals, refs, depth + 1);
-            }
-            return;
-        },
-
-        else => {},
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    if (!idx.isNone() and @intFromEnum(idx) < self.ast.nodes.items.len) {
+        try stack.append(self.allocator, idx);
     }
 
-    // --- Generic 순회: 공통 ChildIterator ---
-    var it = ast_walk.children(self.ast, node);
-    while (it.next()) |child| {
-        if (child.isNone()) continue;
-        try walkBodyForClosureAnalysis(self, child, locals, refs, depth + 1);
+    while (stack.pop()) |cur| {
+        if (cur.isNone()) continue;
+        if (@intFromEnum(cur) >= self.ast.nodes.items.len) continue;
+        const node = self.ast.getNode(cur);
+        const tag = node.tag;
+
+        switch (tag) {
+            // 식별자 참조 수집
+            .identifier_reference => {
+                const name = self.ast.getText(node.data.string_ref);
+                if (name.len > 0) {
+                    refs.put(name, cur) catch return error.OutOfMemory;
+                }
+                continue;
+            },
+
+            // 중첩 함수/arrow/method: 별도 스코프로 body를 순회하여 외부 참조를 수집.
+            // __initData.code에 body가 포함되므로, 그 안의 free variable을
+            // worklet closure에 전파해야 함 (Babel scope chain과 동일).
+            .function_declaration, .function_expression, .function => {
+                const e = node.data.extra;
+                if (tag == .function_declaration) {
+                    try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
+                }
+                if (!self.ast.hasExtra(e, 3)) continue;
+                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+                if (body_idx.isNone()) continue;
+                const plist = self.ast.functionParamsList(node);
+                const p_start = plist.start;
+                const p_len = plist.len;
+                var fn_locals = std.StringHashMap(void).init(self.allocator);
+                defer fn_locals.deinit();
+                // name + params → param_nodes (extra_data 슬라이스 + name 앞에 추가)
+                try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[e]), &fn_locals);
+                var fpi: u32 = 0;
+                while (fpi < p_len) : (fpi += 1) {
+                    if (p_start + fpi < self.ast.extra_data.items.len)
+                        try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[p_start + fpi]), &fn_locals);
+                }
+                var fn_refs = std.StringHashMap(NodeIndex).init(self.allocator);
+                defer fn_refs.deinit();
+                try walkBodyForClosureAnalysis(self, body_idx, &fn_locals, &fn_refs);
+                var fr_iter = fn_refs.iterator();
+                while (fr_iter.next()) |entry| {
+                    if (!fn_locals.contains(entry.key_ptr.*) and !locals.contains(entry.key_ptr.*)) {
+                        refs.put(entry.key_ptr.*, entry.value_ptr.*) catch return error.OutOfMemory;
+                    }
+                }
+                continue;
+            },
+            .arrow_function_expression => {
+                const e = node.data.extra;
+                if (!self.ast.hasExtra(e, 2)) continue;
+                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+                if (body_idx.isNone()) continue;
+                try walkScopedBody(self, body_idx, &.{self.ast.extra_data.items[e]}, locals, refs);
+                continue;
+            },
+            .method_definition => {
+                const e = node.data.extra;
+                if (!self.ast.hasExtra(e, 3)) continue;
+                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+                if (body_idx.isNone()) continue;
+                const plist = self.ast.functionParamsList(node);
+                const p_start = plist.start;
+                const p_len = plist.len;
+                if (p_start + p_len <= self.ast.extra_data.items.len) {
+                    try walkScopedBody(self, body_idx, self.ast.extra_data.items[p_start .. p_start + p_len], locals, refs);
+                }
+                continue;
+            },
+
+            // 변수 선언: binding name → locals, init 만 stack 에 push (name 은 binding, type_ann 은 TS).
+            .variable_declarator => {
+                const e = node.data.extra;
+                if (!self.ast.hasExtra(e, 3)) continue;
+                try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
+                try stack.append(self.allocator, @enumFromInt(self.ast.extra_data.items[e + 2]));
+                continue;
+            },
+
+            // catch: param → locals, body 만 stack 에 push.
+            .catch_clause => {
+                try collectBindingNames(self, node.data.binary.left, locals);
+                try stack.append(self.allocator, node.data.binary.right);
+                continue;
+            },
+
+            // object_property: shorthand `{x}` 는 key 가 참조, long-form `{key: value}` 는 value
+            // (computed key 면 key 도 함께) stack 에 push.
+            .object_property => {
+                if (node.data.binary.right.isNone()) {
+                    try stack.append(self.allocator, node.data.binary.left);
+                } else {
+                    const key_idx = node.data.binary.left;
+                    if (!key_idx.isNone()) {
+                        const key_node = self.ast.getNode(key_idx);
+                        if (key_node.tag == .computed_property_key) {
+                            try stack.append(self.allocator, key_idx);
+                        }
+                    }
+                    try stack.append(self.allocator, node.data.binary.right);
+                }
+                continue;
+            },
+
+            // TS/Flow type expression: 값(left)만 순회, 타입(right) 무시.
+            // parser 가 binary(left=expr, right=type) 로 저장하지만 layout 이 extra 라
+            // generic walker 가 자식을 못 찾아 명시 처리 필요.
+            .ts_as_expression,
+            .ts_satisfies_expression,
+            .ts_type_assertion,
+            .ts_instantiation_expression,
+            .flow_as_expression,
+            .flow_type_cast_expression,
+            => {
+                try stack.append(self.allocator, node.data.binary.left);
+                continue;
+            },
+
+            // static member: object 만 stack 에 push (property 는 외부 참조 아님).
+            .static_member_expression, .private_field_expression => {
+                const me = node.data.extra;
+                if (self.ast.hasExtra(me, 2)) {
+                    try stack.append(self.allocator, @enumFromInt(self.ast.extra_data.items[me]));
+                }
+                continue;
+            },
+
+            else => {},
+        }
+
+        // generic descent — 공통 ChildIterator
+        var it = ast_walk.children(self.ast, node);
+        while (it.next()) |child| {
+            if (child.isNone()) continue;
+            try stack.append(self.allocator, child);
+        }
     }
 }
 
