@@ -111,6 +111,10 @@ pub const TreeShaker = struct {
     /// Linker finalize 이후 AST mutation + semantic resync가 발생했는지.
     /// true면 old symbol id 기준 rename/mangle metadata를 재계산해야 한다.
     ast_mutated_after_link: bool = false,
+    /// constant_facts.materialize 의 per-module forbidden/reachable 캐시. lazy-init —
+    /// numeric pre-shake / post-pass 가 같은 모듈을 forward+reverse × 최대 2 회 호출하면
+    /// 매번 bitset + reachable 빌드를 재사용. AST mutation 시 해당 모듈만 invalidate.
+    materialize_scratch: ?constant_facts.Scratch = null,
 
     const max_fixpoint_iterations: u32 = 100;
     const max_numeric_const_post_passes: u32 = 2;
@@ -168,6 +172,7 @@ pub const TreeShaker = struct {
             self.allocator.free(self.has_direct_used_export);
         }
         self.numeric_dfs_stack.deinit(self.allocator);
+        if (self.materialize_scratch) |*s| s.deinit();
     }
 
     /// 내부 단축 helper. `self.graph.getModule(ModuleIndex.fromUsize(idx))` 의 반복 방지.
@@ -364,6 +369,7 @@ pub const TreeShaker = struct {
             m.prebuilt_stmt_info = null;
         };
         self.ast_mutated_after_link = true;
+        if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
     }
 
     /// pre-shake materialize 직후 후속 BFS 가 읽는 linker populate* 만 좁게 재실행.
@@ -404,7 +410,11 @@ pub const TreeShaker = struct {
             return false;
         }
 
-        const changed = constant_facts.materialize(self.allocator, ast, sem.symbol_ids, &const_values);
+        if (self.materialize_scratch == null) {
+            self.materialize_scratch = constant_facts.Scratch.init(self.allocator, self.graph.moduleCount()) catch null;
+        }
+        const scratch_ptr: ?*constant_facts.Scratch = if (self.materialize_scratch) |*s| s else null;
+        const changed = constant_facts.materializeWithScratch(self.allocator, ast, sem.symbol_ids, &const_values, scratch_ptr, module_index);
         const_values.deinit(self.allocator);
         if (!changed) return false;
 
