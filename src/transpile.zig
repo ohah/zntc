@@ -499,7 +499,7 @@ const binding_lite_max_shadows: usize = 64;
 // 함수 파라미터 / catch / block lexical shadow 는 binding-lite walker 가 scope-aware 로
 // 처리한다. top-level shadow, `var` shadow, walker buffer overflow 처럼 declaration-order
 // 또는 scope 의미가 애매한 케이스만 full 로 보낸다.
-fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
+fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) error{OutOfMemory}!bool {
     var names_buf: [binding_lite_max_shadows][]const u8 = undefined;
     var names_len: usize = 0;
 
@@ -535,12 +535,10 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) bool {
 // match_count 는 호출자가 누적한다. binding pattern 하나(=formal_parameters/catch param)
 // 안에서는 fresh counter 로도 의미가 같지만, `var a, b, c` 처럼 한 var 리스트의
 // 누적 shadow 수를 봐야 하는 경우엔 호출자가 같은 counter 를 재사용한다.
-fn bindingPatternImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) bool {
-    // walker 의 alloc 실패는 의미상 "scan 불완전" 이라 conservative-keep (overflow 로 간주) 로 fallback.
-    // 정상 path 는 ast.allocator 가 transpile arena 라 사실상 bump-allocator → 실패 거의 없음.
-    var it = ast_walk.bindingIdentifiers(ast.allocator, ast, idx, .{ .cover_grammar_assignment = true }) catch return true;
+fn bindingPatternImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, names: []const []const u8, match_count: *usize) error{OutOfMemory}!bool {
+    var it = try ast_walk.bindingIdentifiers(ast.allocator, ast, idx, .{ .cover_grammar_assignment = true });
     defer it.deinit();
-    while (it.next() catch return true) |leaf_idx| {
+    while (try it.next()) |leaf_idx| {
         const leaf = ast.getNode(leaf_idx);
         const name = ast.getText(leaf.span);
         if (string_list.contains(names, name)) {
@@ -574,8 +572,8 @@ fn walkFunctionVarBindingPatterns(
     ast: *const Ast,
     idx: ast_mod.NodeIndex,
     ctx: anytype,
-    comptime onBindingPattern: fn (@TypeOf(ctx), ast_mod.NodeIndex) bool,
-) bool {
+    comptime onBindingPattern: fn (@TypeOf(ctx), ast_mod.NodeIndex) error{OutOfMemory}!bool,
+) error{OutOfMemory}!bool {
     if (idx.isNone()) return false;
     const node = ast.getNode(idx);
     switch (node.tag) {
@@ -593,7 +591,7 @@ fn walkFunctionVarBindingPatterns(
                 if (decl_idx.isNone()) continue;
                 const decl = ast.getNode(decl_idx);
                 if (decl.tag != .variable_declarator) continue;
-                if (onBindingPattern(ctx, @enumFromInt(ast.extra_data.items[decl.data.extra]))) return true;
+                if (try onBindingPattern(ctx, @enumFromInt(ast.extra_data.items[decl.data.extra]))) return true;
             }
         },
         else => {},
@@ -601,7 +599,7 @@ fn walkFunctionVarBindingPatterns(
 
     var it = ast_walk.children(ast, node);
     while (it.next()) |child_idx| {
-        if (walkFunctionVarBindingPatterns(ast, child_idx, ctx, onBindingPattern)) return true;
+        if (try walkFunctionVarBindingPatterns(ast, child_idx, ctx, onBindingPattern)) return true;
     }
     return false;
 }
@@ -613,7 +611,7 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
     scope_depth: usize,
     inside_function: bool,
     fn_shadow_count: ?*usize,
-) bool {
+) error{OutOfMemory}!bool {
     const list_start = ast.extra_data.items[node.data.extra + 1];
     const list_len = ast.extra_data.items[node.data.extra + 2];
     // 함수 scope 안이면 호출자가 누적 카운터를 넘기고, 모듈 scope 면 statement 로컬 카운터로 폴백.
@@ -629,9 +627,9 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
         const decl = ast.getNode(decl_idx);
         if (decl.tag != .variable_declarator) continue;
         const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
-        if (bindingPatternImportShadowOverflow(ast, binding_idx, names, counter)) return true;
+        if (try bindingPatternImportShadowOverflow(ast, binding_idx, names, counter)) return true;
         const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra + 2]);
-        if (scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth, inside_function, fn_shadow_count)) return true;
+        if (try scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth, inside_function, fn_shadow_count)) return true;
     }
 
     if (counter.* == before) return false;
@@ -646,10 +644,10 @@ fn scanChildrenForUnsupportedBindingLiteShadow(
     child_scope_depth: usize,
     inside_function: bool,
     fn_shadow_count: ?*usize,
-) bool {
+) error{OutOfMemory}!bool {
     var it = ast_walk.children(ast, node);
     while (it.next()) |child_idx| {
-        if (scanForUnsupportedBindingLiteShadow(ast, child_idx, names, child_scope_depth, inside_function, fn_shadow_count)) return true;
+        if (try scanForUnsupportedBindingLiteShadow(ast, child_idx, names, child_scope_depth, inside_function, fn_shadow_count)) return true;
     }
     return false;
 }
@@ -663,8 +661,8 @@ fn scanFunctionScopeParamsAndBody(
     scope_depth: usize,
     inside_function: bool,
     fn_shadow_count: *usize,
-) bool {
-    if (scanForUnsupportedBindingLiteShadow(ast, params_idx, names, scope_depth, inside_function, fn_shadow_count)) return true;
+) error{OutOfMemory}!bool {
+    if (try scanForUnsupportedBindingLiteShadow(ast, params_idx, names, scope_depth, inside_function, fn_shadow_count)) return true;
     return scanForUnsupportedBindingLiteShadow(ast, body_idx, names, scope_depth + 1, true, fn_shadow_count);
 }
 
@@ -674,7 +672,7 @@ fn scanFunctionForUnsupportedBindingLiteShadow(
     names: []const []const u8,
     scope_depth: usize,
     inside_function: bool,
-) bool {
+) error{OutOfMemory}!bool {
     const e = node.data.extra;
     // function_expression / function 의 extras[0] 은 inner-only self-name 이라 outer scope binding
     // 으로 스캔하면 안 되고 함수-스코프 카운터에만 누적한다. function_declaration 은 extras[0] 이
@@ -684,7 +682,7 @@ fn scanFunctionForUnsupportedBindingLiteShadow(
     // BindingLite collector (markBindingLiteFunctionScope) 가 모으는 set 과 동일 — overflow 시 fallback.
     var fn_shadow_count: usize = 0;
     if (is_function_expression and functionExpressionNameImportShadowOverflow(ast, node, names, &fn_shadow_count)) return true;
-    if (!is_function_expression and scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function, null)) return true;
+    if (!is_function_expression and try scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function, null)) return true;
     return scanFunctionScopeParamsAndBody(
         ast,
         @enumFromInt(ast.extra_data.items[e + 1]),
@@ -703,7 +701,7 @@ fn scanForUnsupportedBindingLiteShadow(
     scope_depth: usize,
     inside_function: bool,
     fn_shadow_count: ?*usize,
-) bool {
+) error{OutOfMemory}!bool {
     if (idx.isNone()) return false;
     const node = ast.getNode(idx);
     switch (node.tag) {
@@ -724,7 +722,7 @@ fn scanForUnsupportedBindingLiteShadow(
             // catch 매개변수는 catch block scope 에만 binding 되어 BindingLite 의 함수-scope shadow set
             // 에 합산되지 않는다. 단일 catch 안 overflow 만 별도 fresh counter 로 검사한다.
             var local_count: usize = 0;
-            if (bindingPatternImportShadowOverflow(ast, node.data.binary.left, names, &local_count)) return true;
+            if (try bindingPatternImportShadowOverflow(ast, node.data.binary.left, names, &local_count)) return true;
             return scanForUnsupportedBindingLiteShadow(ast, node.data.binary.right, names, scope_depth + 1, inside_function, fn_shadow_count);
         },
         .function_declaration,
@@ -768,7 +766,7 @@ fn buildTransformPlan(
     parser: *const Parser,
     ast: *const Ast,
     fast_path_disabled: bool,
-) TransformPlan {
+) error{OutOfMemory}!TransformPlan {
     if (fast_path_disabled) return .{ .semantic = .full, .reason = .disabled_by_env };
     if (options.stop_after == .semantic) return .{ .semantic = .full, .reason = .stop_after_semantic };
 
@@ -805,7 +803,7 @@ fn buildTransformPlan(
         return .{ .semantic = .full, .reason = .ast_requires_runtime_transform };
     }
     if (facts.has_import_declaration) {
-        if (hasUnsupportedNamedImportLocalBindingShadow(ast)) {
+        if (try hasUnsupportedNamedImportLocalBindingShadow(ast)) {
             return .{ .semantic = .full, .reason = .binding_shadow_requires_full_semantic };
         }
         return .{
@@ -849,7 +847,7 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
     const no_shadowed_names: []const []const u8 = &.{};
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .program) continue;
-        markBindingLiteValueUses(ast, @enumFromInt(raw_idx), &lite, true, no_shadowed_names);
+        try markBindingLiteValueUses(ast, @enumFromInt(raw_idx), &lite, true, no_shadowed_names);
         break;
     }
     return lite;
@@ -874,12 +872,11 @@ fn appendBindingLiteShadowName(buf: [][]const u8, len: *usize, name: []const u8)
     len.* += 1;
 }
 
-fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) error{OutOfMemory}!void {
     if (len.* >= buf.len) return;
-    // walker alloc 실패 시 그냥 중단 — 호출자는 buf 가 빈 상태면 기존대로 conservative path 가 잡는다.
-    var it = ast_walk.bindingIdentifiers(ast.allocator, ast, idx, .{ .cover_grammar_assignment = true }) catch return;
+    var it = try ast_walk.bindingIdentifiers(ast.allocator, ast, idx, .{ .cover_grammar_assignment = true });
     defer it.deinit();
-    while (it.next() catch return) |leaf_idx| {
+    while (try it.next()) |leaf_idx| {
         const leaf = ast.getNode(leaf_idx);
         // import 이름과 매칭되는 binding 만 shadow set 에 추가. cover-grammar 결과인
         // identifier_reference / assignment_target_identifier 도 동일 처리.
@@ -888,7 +885,7 @@ fn collectBindingLitePatternShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lit
     }
 }
 
-fn collectBindingLiteVariableDeclarationShadows(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+fn collectBindingLiteVariableDeclarationShadows(ast: *const Ast, node: ast_mod.Node, lite: *const BindingLite, buf: [][]const u8, len: *usize) error{OutOfMemory}!void {
     const list_start = ast.extra_data.items[node.data.extra + 1];
     const list_len = ast.extra_data.items[node.data.extra + 2];
     var i: u32 = 0;
@@ -897,11 +894,11 @@ fn collectBindingLiteVariableDeclarationShadows(ast: *const Ast, node: ast_mod.N
         if (decl_idx.isNone()) continue;
         const decl = ast.getNode(decl_idx);
         if (decl.tag != .variable_declarator) continue;
-        collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[decl.data.extra]), lite, buf, len);
+        try collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[decl.data.extra]), lite, buf, len);
     }
 }
 
-fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *const BindingLite, buf: [][]const u8, len: *usize) error{OutOfMemory}!void {
     const Ctx = struct {
         ast: *const Ast,
         lite: *const BindingLite,
@@ -909,13 +906,13 @@ fn collectBindingLiteFunctionVarShadows(ast: *const Ast, idx: ast_mod.NodeIndex,
         len: *usize,
     };
     const visit = struct {
-        fn onBindingPattern(c: Ctx, binding_idx: ast_mod.NodeIndex) bool {
-            collectBindingLitePatternShadows(c.ast, binding_idx, c.lite, c.buf, c.len);
+        fn onBindingPattern(c: Ctx, binding_idx: ast_mod.NodeIndex) error{OutOfMemory}!bool {
+            try collectBindingLitePatternShadows(c.ast, binding_idx, c.lite, c.buf, c.len);
             // buf 가 가득 차면 더 append 해도 silent drop 이라 더 순회할 이유가 없다.
             return c.len.* >= c.buf.len;
         }
     }.onBindingPattern;
-    _ = walkFunctionVarBindingPatterns(
+    _ = try walkFunctionVarBindingPatterns(
         ast,
         idx,
         Ctx{ .ast = ast, .lite = lite, .buf = buf, .len = len },
@@ -928,7 +925,7 @@ fn collectBindingLiteFunctionExpressionNameShadow(ast: *const Ast, node: ast_mod
     if (lite.namedImportValueUse(name) != null) appendBindingLiteShadowName(buf, len, name);
 }
 
-fn collectBindingLiteListLexicalShadows(ast: *const Ast, list: ast_mod.NodeList, lite: *const BindingLite, buf: [][]const u8, len: *usize) void {
+fn collectBindingLiteListLexicalShadows(ast: *const Ast, list: ast_mod.NodeList, lite: *const BindingLite, buf: [][]const u8, len: *usize) error{OutOfMemory}!void {
     if (list.start + list.len > ast.extra_data.items.len) return;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
@@ -936,7 +933,7 @@ fn collectBindingLiteListLexicalShadows(ast: *const Ast, list: ast_mod.NodeList,
         if (child_idx.isNone()) continue;
         const child = ast.getNode(child_idx);
         if (child.tag == .variable_declaration and ast.variableDeclarationKind(child).isLexical()) {
-            collectBindingLiteVariableDeclarationShadows(ast, child, lite, buf, len);
+            try collectBindingLiteVariableDeclarationShadows(ast, child, lite, buf, len);
         }
     }
 }
@@ -946,15 +943,15 @@ fn markBindingLiteBlockScope(
     node: ast_mod.Node,
     lite: *BindingLite,
     parent_shadowed: []const []const u8,
-) void {
+) error{OutOfMemory}!void {
     var shadow_buf: [binding_lite_max_shadows][]const u8 = undefined;
     var shadow_len: usize = 0;
     for (parent_shadowed) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
-    collectBindingLiteListLexicalShadows(ast, node.data.list, lite, &shadow_buf, &shadow_len);
-    markBindingLiteListValueUses(ast, node.data.list, lite, true, shadow_buf[0..shadow_len]);
+    try collectBindingLiteListLexicalShadows(ast, node.data.list, lite, &shadow_buf, &shadow_len);
+    try markBindingLiteListValueUses(ast, node.data.list, lite, true, shadow_buf[0..shadow_len]);
 }
 
-fn markBindingPatternDefaultValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, shadowed_names: []const []const u8) void {
+fn markBindingPatternDefaultValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, shadowed_names: []const []const u8) error{OutOfMemory}!void {
     if (idx.isNone()) return;
     const node = ast.getNode(idx);
     switch (node.tag) {
@@ -962,29 +959,29 @@ fn markBindingPatternDefaultValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, l
         .assignment_expression,
         .assignment_target_with_default,
         => {
-            markBindingPatternDefaultValueUses(ast, node.data.binary.left, lite, shadowed_names);
-            markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
+            try markBindingPatternDefaultValueUses(ast, node.data.binary.left, lite, shadowed_names);
+            try markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
         },
         .array_pattern,
         .object_pattern,
-        => markBindingLiteListValueUses(ast, node.data.list, lite, false, shadowed_names),
+        => try markBindingLiteListValueUses(ast, node.data.list, lite, false, shadowed_names),
         .binding_rest_element,
         .rest_element,
         .assignment_target_rest,
-        => markBindingPatternDefaultValueUses(ast, node.data.unary.operand, lite, shadowed_names),
+        => try markBindingPatternDefaultValueUses(ast, node.data.unary.operand, lite, shadowed_names),
         .binding_property,
         .assignment_target_property_identifier,
         .assignment_target_property_property,
-        => markBindingPatternDefaultValueUses(ast, node.data.binary.right, lite, shadowed_names),
+        => try markBindingPatternDefaultValueUses(ast, node.data.binary.right, lite, shadowed_names),
         else => {},
     }
 }
 
-fn markBindingLiteListValueUses(ast: *const Ast, list: ast_mod.NodeList, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) void {
+fn markBindingLiteListValueUses(ast: *const Ast, list: ast_mod.NodeList, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) error{OutOfMemory}!void {
     if (list.start + list.len > ast.extra_data.items.len) return;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[list.start + i]), lite, value_context, shadowed_names);
+        try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[list.start + i]), lite, value_context, shadowed_names);
     }
 }
 
@@ -995,19 +992,19 @@ fn markBindingLiteFunctionScope(
     node: ast_mod.Node,
     params_idx: ast_mod.NodeIndex,
     body_idx: ast_mod.NodeIndex,
-) void {
+) error{OutOfMemory}!void {
     var shadow_buf: [binding_lite_max_shadows][]const u8 = undefined;
     var shadow_len: usize = 0;
     for (parent_shadowed) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
     collectBindingLiteFunctionExpressionNameShadow(ast, node, lite, &shadow_buf, &shadow_len);
-    collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
-    collectBindingLiteFunctionVarShadows(ast, body_idx, lite, &shadow_buf, &shadow_len);
+    try collectBindingLitePatternShadows(ast, params_idx, lite, &shadow_buf, &shadow_len);
+    try collectBindingLiteFunctionVarShadows(ast, body_idx, lite, &shadow_buf, &shadow_len);
     const combined = shadow_buf[0..shadow_len];
-    markBindingLiteValueUses(ast, params_idx, lite, false, combined);
-    markBindingLiteValueUses(ast, body_idx, lite, true, combined);
+    try markBindingLiteValueUses(ast, params_idx, lite, false, combined);
+    try markBindingLiteValueUses(ast, body_idx, lite, true, combined);
 }
 
-fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) void {
+fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) error{OutOfMemory}!void {
     if (idx.isNone()) return;
     const node = ast.getNode(idx);
 
@@ -1030,42 +1027,42 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         .block_statement,
         .function_body,
         => {
-            markBindingLiteBlockScope(ast, node, lite, shadowed_names);
+            try markBindingLiteBlockScope(ast, node, lite, shadowed_names);
             return;
         },
         .catch_clause => {
             var shadow_buf: [binding_lite_max_shadows][]const u8 = undefined;
             var shadow_len: usize = 0;
             for (shadowed_names) |name| appendBindingLiteShadowName(&shadow_buf, &shadow_len, name);
-            collectBindingLitePatternShadows(ast, node.data.binary.left, lite, &shadow_buf, &shadow_len);
-            markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadow_buf[0..shadow_len]);
+            try collectBindingLitePatternShadows(ast, node.data.binary.left, lite, &shadow_buf, &shadow_len);
+            try markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadow_buf[0..shadow_len]);
             return;
         },
         .try_statement => {
-            markBindingLiteValueUses(ast, node.data.ternary.a, lite, true, shadowed_names);
-            markBindingLiteValueUses(ast, node.data.ternary.b, lite, true, shadowed_names);
-            markBindingLiteValueUses(ast, node.data.ternary.c, lite, true, shadowed_names);
+            try markBindingLiteValueUses(ast, node.data.ternary.a, lite, true, shadowed_names);
+            try markBindingLiteValueUses(ast, node.data.ternary.b, lite, true, shadowed_names);
+            try markBindingLiteValueUses(ast, node.data.ternary.c, lite, true, shadowed_names);
             return;
         },
         .export_specifier => {
-            markBindingLiteValueUses(ast, node.data.binary.left, lite, true, shadowed_names);
+            try markBindingLiteValueUses(ast, node.data.binary.left, lite, true, shadowed_names);
             return;
         },
         .export_named_declaration => {
             const x = module_parser.readExportNamedExtras(ast, node.data.extra);
-            markBindingLiteValueUses(ast, x.decl, lite, true, shadowed_names);
-            markBindingLiteListValueUses(ast, .{ .start = x.specs_start, .len = x.specs_len }, lite, true, shadowed_names);
+            try markBindingLiteValueUses(ast, x.decl, lite, true, shadowed_names);
+            try markBindingLiteListValueUses(ast, .{ .start = x.specs_start, .len = x.specs_len }, lite, true, shadowed_names);
             return;
         },
         .variable_declaration => {
             const list_start = ast.extra_data.items[node.data.extra + 1];
             const list_len = ast.extra_data.items[node.data.extra + 2];
-            markBindingLiteListValueUses(ast, .{ .start = list_start, .len = list_len }, lite, true, shadowed_names);
+            try markBindingLiteListValueUses(ast, .{ .start = list_start, .len = list_len }, lite, true, shadowed_names);
             return;
         },
         .variable_declarator => {
-            markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, shadowed_names);
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra + 2]), lite, true, shadowed_names);
+            try markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, shadowed_names);
+            try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra + 2]), lite, true, shadowed_names);
             return;
         },
         .function_declaration,
@@ -1073,7 +1070,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         .function,
         => {
             const e = node.data.extra;
-            markBindingLiteFunctionScope(
+            try markBindingLiteFunctionScope(
                 ast,
                 lite,
                 shadowed_names,
@@ -1085,7 +1082,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         },
         .arrow_function_expression => {
             const e = node.data.extra;
-            markBindingLiteFunctionScope(
+            try markBindingLiteFunctionScope(
                 ast,
                 lite,
                 shadowed_names,
@@ -1096,14 +1093,14 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
             return;
         },
         .formal_parameters => {
-            markBindingLiteListValueUses(ast, node.data.list, lite, false, shadowed_names);
+            try markBindingLiteListValueUses(ast, node.data.list, lite, false, shadowed_names);
             return;
         },
         .assignment_pattern,
         .assignment_target_with_default,
         => {
-            markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
-            markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
+            try markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
+            try markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
             return;
         },
         // `(Foo = Bar()) =>` 같이 cover-grammar 로 패턴 자리에 남은 assignment_expression 은
@@ -1112,33 +1109,33 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
         // child walk 로 그대로 value_context=true 가 전파돼야 import 가 use 마킹된다.
         .assignment_expression => {
             if (!value_context) {
-                markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
-                markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
+                try markBindingLiteValueUses(ast, node.data.binary.left, lite, false, shadowed_names);
+                try markBindingLiteValueUses(ast, node.data.binary.right, lite, true, shadowed_names);
                 return;
             }
         },
         .formal_parameter => {
             const e = node.data.extra;
-            markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite, shadowed_names);
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true, shadowed_names);
+            try markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite, shadowed_names);
+            try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true, shadowed_names);
             return;
         },
         .object_property => {
             const key = node.data.binary.left;
             const value = node.data.binary.right;
             if (value.isNone()) {
-                markBindingLiteValueUses(ast, key, lite, true, shadowed_names);
+                try markBindingLiteValueUses(ast, key, lite, true, shadowed_names);
             } else {
                 const key_node = ast.getNode(key);
-                if (key_node.tag == .computed_property_key) markBindingLiteValueUses(ast, key, lite, true, shadowed_names);
-                markBindingLiteValueUses(ast, value, lite, true, shadowed_names);
+                if (key_node.tag == .computed_property_key) try markBindingLiteValueUses(ast, key, lite, true, shadowed_names);
+                try markBindingLiteValueUses(ast, value, lite, true, shadowed_names);
             }
             return;
         },
         .static_member_expression,
         .private_field_expression,
         => {
-            markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, true, shadowed_names);
+            try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, true, shadowed_names);
             return;
         },
         else => {},
@@ -1146,7 +1143,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
 
     var it = ast_walk.children(ast, node);
     while (it.next()) |child_idx| {
-        markBindingLiteValueUses(ast, child_idx, lite, value_context, shadowed_names);
+        try markBindingLiteValueUses(ast, child_idx, lite, value_context, shadowed_names);
     }
 }
 
@@ -1235,7 +1232,7 @@ fn transpileWithCallbackInternal(
         return .{ .code = try allocator.dupe(u8, "") };
     }
 
-    const transform_plan = buildTransformPlan(options, &parser, &parser.ast, fast_path_disabled);
+    const transform_plan = try buildTransformPlan(options, &parser, &parser.ast, fast_path_disabled);
     // 포맷 문자열을 변경하면 `tests/benchmark/profile.ts` 의 `tracePlan` 정규식도
     // 함께 갱신해야 한다 — `semantic=...`, `reason=...` 키 이름을 그대로 유지.
     debug_log.print(
