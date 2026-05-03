@@ -1146,11 +1146,15 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
             const ne = try self.ast.addExtras(&.{
                 @intFromEnum(callee), arg_list.start, arg_list.len, 0,
             });
-            return try self.ast.addNode(.{
+            const new_expr = try self.ast.addNode(.{
                 .tag = .new_expression,
                 .span = .{ .start = span.start, .end = self.currentSpan().start },
                 .data = .{ .extra = ne },
             });
+            if (self.enable_scan and self.scan_dead_depth == 0) {
+                scanWorkerNewExpression(self, callee, arg_list);
+            }
+            return new_expr;
         }
         const ne_no_args = try self.ast.addExtras(&.{
             @intFromEnum(callee), 0, 0, 0,
@@ -1346,11 +1350,15 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
                 const ne2 = try self.ast.addExtras(&.{
                     @intFromEnum(callee), arg_list.start, arg_list.len, 0,
                 });
-                return try self.ast.addNode(.{
+                const new_expr = try self.ast.addNode(.{
                     .tag = .new_expression,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
                     .data = .{ .extra = ne2 },
                 });
+                if (self.enable_scan and self.scan_dead_depth == 0) {
+                    scanWorkerNewExpression(self, callee, arg_list);
+                }
+                return new_expr;
             }
 
             // 인자 없는 new: new Foo
@@ -2330,6 +2338,77 @@ fn scanObjectDefinePropertyCjs(self: *Parser, callee: NodeIndex, arg_list: NodeL
             self.scan_result.has_esmodule_marker = true;
         }
     }
+}
+
+/// new Worker(new URL("./worker.ts", import.meta.url)) 패턴을 inline scan으로 수집한다.
+/// graph 후처리 AST walk를 피하기 위해 new_expression 생성 시점의 callee/args를 사용한다.
+fn scanWorkerNewExpression(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
+    if (!isIdentifierText(self, callee, "Worker") and !isIdentifierText(self, callee, "SharedWorker")) return;
+    if (arg_list.len < 1 or arg_list.start >= self.ast.extra_data.items.len) return;
+
+    const url_new_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arg_list.start]);
+    if (url_new_idx.isNone() or @intFromEnum(url_new_idx) >= self.ast.nodes.items.len) return;
+    const url_new = self.ast.nodes.items[@intFromEnum(url_new_idx)];
+    if (url_new.tag != .new_expression) return;
+
+    const ue = url_new.data.extra;
+    if (!self.ast.hasExtra(ue, 2)) return;
+    const url_callee_idx = self.ast.readExtraNode(ue, 0);
+    if (!isIdentifierText(self, url_callee_idx, "URL")) return;
+
+    const url_args_len = self.ast.readExtra(ue, 2);
+    if (url_args_len < 2) return;
+
+    const url_args_start = self.ast.readExtra(ue, 1);
+    if (url_args_start + 1 >= self.ast.extra_data.items.len) return;
+
+    const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[url_args_start]);
+    const specifier = getStringLiteralText(self, spec_idx) orelse return;
+    const spec_node = self.ast.getNode(spec_idx);
+
+    const meta_url_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[url_args_start + 1]);
+    if (!isImportMetaUrlNode(self, meta_url_idx)) return;
+
+    self.scan_import_records.append(self.allocator, .{
+        .specifier = specifier,
+        .kind = .worker,
+        .span = spec_node.span,
+        .url_span = url_new.span,
+    }) catch {};
+}
+
+fn isIdentifierText(self: *Parser, idx: NodeIndex, expected: []const u8) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const node = self.ast.nodes.items[@intFromEnum(idx)];
+    if (node.tag != .identifier_reference) return false;
+    return std.mem.eql(u8, self.ast.source[node.span.start..node.span.end], expected);
+}
+
+fn getStringLiteralText(self: *Parser, idx: NodeIndex) ?[]const u8 {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return null;
+    const node = self.ast.nodes.items[@intFromEnum(idx)];
+    if (node.tag != .string_literal) return null;
+    const raw = self.ast.source[node.span.start..node.span.end];
+    return import_scanner.stripQuotes(raw) orelse raw;
+}
+
+fn isImportMetaUrlNode(self: *Parser, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    const node = self.ast.nodes.items[@intFromEnum(idx)];
+    if (node.tag != .static_member_expression) return false;
+
+    const me = node.data.extra;
+    if (!self.ast.hasExtra(me, 1)) return false;
+
+    const obj_idx = self.ast.readExtraNode(me, 0);
+    if (obj_idx.isNone() or @intFromEnum(obj_idx) >= self.ast.nodes.items.len) return false;
+    const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
+    if (obj.tag != .meta_property or obj.data.none != 0) return false;
+
+    const prop_idx = self.ast.readExtraNode(me, 1);
+    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
+    const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    return std.mem.eql(u8, self.ast.source[prop.span.start..prop.span.end], "url");
 }
 
 /// assignment_expression의 left에서 module.exports = ... / exports.x = ... 패턴을 감지한다.
