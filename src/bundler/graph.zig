@@ -1402,13 +1402,15 @@ pub const ModuleGraph = struct {
         // readModuleSourceWithMtime 가 같은 file handle 에서 source+mtime 을 채운다.
         // plugin load 는 플러그인이 생성한 source 일 수 있어 결합할 파일 read 가 없고,
         // empty/none 처럼 source read 가 없는 loader 는 기존처럼 여기서 stat 한다.
-        const can_read_mtime_with_source = !plugin_load_applied and
-            (module.module_type.isJavaScriptLike() or
-                module.module_type == .json or
-                (module.module_type == .css and module.loader == .css) or
-                moduleReadsSourceForAsset(module.loader));
-        if (!can_read_mtime_with_source and module.mtime == 0) {
-            module.mtime = getMtime(module.path) catch 0;
+        if (module.mtime == 0) {
+            const can_read_mtime_with_source = !plugin_load_applied and
+                (module.module_type.isJavaScriptLike() or
+                    module.module_type == .json or
+                    (module.module_type == .css and module.loader == .css) or
+                    moduleReadsSourceForAsset(module.loader));
+            if (!can_read_mtime_with_source) {
+                module.mtime = getMtime(module.path) catch 0;
+            }
         }
 
         // JSON 모듈: ESM AST로 변환 → 일반 JS와 동일한 파이프라인
@@ -1724,11 +1726,9 @@ pub const ModuleGraph = struct {
 
         // import/export 추출: inline scan 결과를 bundler 타입으로 변환
         {
-            var records: []ImportRecord = &.{};
-
             // Parser scan records → bundler ImportRecord
             const scan_records = parser.scan_import_records.items;
-            records = arena_alloc.alloc(ImportRecord, scan_records.len) catch {
+            const records = arena_alloc.alloc(ImportRecord, scan_records.len) catch {
                 module.state = .ready;
                 return;
             };

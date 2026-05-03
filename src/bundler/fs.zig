@@ -144,7 +144,7 @@ pub const RealFS = struct {
             .of(u8),
             null,
         ) catch |err| return mapFsError(err);
-        const kind = mapFileKind(stat.kind);
+        const kind = mapEntryKind(stat.kind);
 
         return .{
             .loaded = .{
@@ -337,15 +337,6 @@ fn mapFsError(err: anyerror) FsError {
 }
 
 fn mapEntryKind(kind: std.fs.Dir.Entry.Kind) EntryKind {
-    return switch (kind) {
-        .file => .file,
-        .directory => .directory,
-        .sym_link => .symlink,
-        else => .other,
-    };
-}
-
-fn mapFileKind(kind: std.fs.File.Kind) EntryKind {
     return switch (kind) {
         .file => .file,
         .directory => .directory,
