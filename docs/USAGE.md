@@ -179,6 +179,18 @@ esbuild 스타일: `onResolve`, `onLoad`, `onTransform`, `onRenderChunk`, `onGen
 - ES2023: hashbang(`#!`) strip
 - ES2025: `using` / `await using` 다운레벨
 
+### 런타임 API 폴리필
+
+- 기본값은 `runtimePolyfills: "off"` — 자동 core-js 주입은 명시해야 켜진다.
+- CLI: `--runtime-polyfills=auto|usage|entry|off`, `--runtime-target=<query>` 반복, `--core-js=3.49`.
+- JS API/config: `runtimePolyfills`, `runtimeTargets`, `coreJs`.
+- `auto`/`usage`는 엔트리와 로컬 의존성에서 `replaceAll`, `Map`, `Set`, `Promise`,
+  `Array.prototype.at`, `Object.hasOwn`, `structuredClone` 사용을 스캔해 타겟 미지원 core-js 모듈만 주입한다.
+- `entry`는 타겟 기준 필요한 `core-js/modules/es.*` / `web.*`를 엔트리 prelude에 포괄 주입한다.
+- 타겟 예: `ios12`, `ios_saf 12`, `iOS >= 12`, `chrome >= 85`, `android >= 5`,
+  `samsung >= 14`, `hermes0.7`, `react-native 0.70`, `node18`. `iPhone 8`, `Galaxy S10`
+  같은 피지컬 디바이스 이름은 지원하지 않는다.
+
 ### CSS 번들링
 
 - `import './x.css'` → 별도 CSS 파일 자동 생성

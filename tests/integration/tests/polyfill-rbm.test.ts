@@ -131,7 +131,7 @@ describe("--run-before-main", () => {
     expect(initPos).toBeLessThan(entryPos);
   });
 
-  test("run-before-main 모듈의 require/init 호출이 엔트리 직전에 삽입된다", async () => {
+  test("run-before-main 모듈 실행 코드가 엔트리 직전에 배치된다", async () => {
     fixture = await createFixture(fixtures);
     const outFile = join(fixture.dir, "out.js");
 
@@ -147,16 +147,18 @@ describe("--run-before-main", () => {
     const bundle = readFileSync(outFile, "utf-8");
     const lines = bundle.split("\n");
 
-    // 엔트리 코드(__ENTRY_RAN__) 직전에 require_init_core() 또는 init_init_core() 호출이 있어야 함
+    // 엔트리 코드(__ENTRY_RAN__) 직전에 run-before-main 실행 코드가 있어야 함.
+    // 래핑 모듈이면 require_xxx()/init_xxx() 호출, scope-hoisted 모듈이면 본문 코드가 직접 배치된다.
     const entryLineIdx = lines.findLastIndex((l) => l.includes("__ENTRY_RAN__"));
     expect(entryLineIdx).toBeGreaterThan(0);
 
-    // 엔트리 이전 20줄 이내에 init-core 모듈의 호출(require_xxx() 또는 init_xxx())이 있어야 함
+    // 엔트리 이전 20줄 이내에 init-core 모듈의 호출 또는 본문이 있어야 함.
     const precedingLines = lines.slice(Math.max(0, entryLineIdx - 20), entryLineIdx).join("\n");
     const hasCall = /(?:require|init)_[a-zA-Z0-9_]*init[_-]core[a-zA-Z0-9_]*\(\)/.test(
       precedingLines,
     );
-    expect(hasCall).toBe(true);
+    const hasScopeHoistedBody = precedingLines.includes("__INIT_CORE_RAN__");
+    expect(hasCall || hasScopeHoistedBody).toBe(true);
   });
 
   test("존재하지 않는 run-before-main 경로는 에러 메시지를 출력한다", async () => {

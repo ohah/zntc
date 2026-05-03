@@ -27,6 +27,9 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 |---|---|---|---|
 | `target` | `es5`, `es2015`–`es2025`, `esnext` | `esnext` | ES 다운레벨 타겟. 설정 시 해당 버전 이후 도입된 기능이 자동 downlowering됨 |
 | `unsupported` | `integer` (u32) | `0` | `UnsupportedFeatures` 비트마스크 직접 지정. browserslist 해석 결과를 주입할 때 사용 — `target`보다 우선 |
+| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | core-js 런타임 API 폴리필 주입. `auto`/`usage`는 사용 API만, `entry`는 타겟 기준 포괄 주입 |
+| `runtimeTargets` | `string \| string[] \| object` | `defaults` | core-js-compat 런타임 타겟 (`ios12`, `chrome >= 85`, `hermes0.7`, `node18` 등). 디바이스 이름은 미지원 |
+| `coreJs` | `string` | installed version | core-js-compat 계산에 사용할 core-js 버전 |
 
 ### 파싱
 
