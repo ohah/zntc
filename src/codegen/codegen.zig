@@ -3675,21 +3675,53 @@ pub const Codegen = struct {
     /// 현재는 `flow-enums-runtime` 패키지의 `Enum()` wrapper 미사용. Object.freeze
     /// 만으로 _값 비교_ semantic 충족 — \`Status.cast(x)\` / \`.members()\` 같은 enum
     /// 메서드 미지원 (사용처 적음).
+    /// Flow enum 출력 — `babel-plugin-transform-flow-enums` 와 동작 동등 (런타임 helper
+    /// API: \`X.cast(v)\` / \`X.members()\` / \`X.getName(v)\` 등). \`flow-enums-runtime\`
+    /// package 의 callable 결과를 사용. 예전 \`Object.freeze({...})\` 형태는 helper API
+    /// 미지원이라 RN core 의 `VirtualViewMode.cast(value)` 같은 호출에서 TypeError.
+    ///
+    /// emit 형태 (reference 와 동일):
+    ///   - string body + all defaulted (mirrored): \`require('flow-enums-runtime').Mirrored(['A', 'B'])\`
+    ///   - 그 외 (Symbol/number/boolean/string-with-init): \`require('flow-enums-runtime')({A:<v>, B:<v>})\`
+    ///   - Symbol body: 각 member 의 init 으로 \`Symbol('name')\` 자동 emit
+    ///   - number/boolean body + defaulted: ZTS 가 default value (auto-increment / false) 채움
     fn emitFlowEnum(self: *Codegen, node: Node) Error!void {
         const e = node.data.extra;
         const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
         const members_start = self.ast.extra_data.items[e + 1];
         const members_len = self.ast.extra_data.items[e + 2];
-        const base_type = self.ast.extra_data.items[e + 3];
+        const base_type_raw = self.ast.extra_data.items[e + 3];
+        const base_type: FlowEnumBaseType = @enumFromInt(base_type_raw);
 
         const name_node = self.ast.getNode(name_idx);
         const name_text = self.ast.getText(name_node.span);
 
+        const members = self.ast.extra_data.items[members_start .. members_start + members_len];
+
+        // Mirrored 케이스: string body + 첫 멤버 init 없음 (= all defaulted 가정 — reference 동일).
+        const is_mirrored = base_type == .string and (members.len == 0 or
+            self.ast.getNode(@enumFromInt(members[0])).data.binary.right == .none);
+
         try self.write("const ");
         try self.write(name_text);
-        try self.write("=Object.freeze({");
+        try self.write("=require(\"flow-enums-runtime\")");
 
-        const members = self.ast.extra_data.items[members_start .. members_start + members_len];
+        if (is_mirrored) {
+            try self.write(".Mirrored([");
+            for (members, 0..) |raw_idx, i| {
+                if (i > 0) try self.writeByte(',');
+                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member_name_node = self.ast.getNode(member.data.binary.left);
+                const member_name = Ast.stripStringQuotes(self.ast.getText(member_name_node.span));
+                try self.writeByte('"');
+                try self.write(member_name);
+                try self.writeByte('"');
+            }
+            try self.write("]);");
+            return;
+        }
+
+        try self.write("({");
         var auto_idx: u32 = 0;
         for (members, 0..) |raw_idx, i| {
             if (i > 0) try self.writeByte(',');
@@ -3703,7 +3735,7 @@ pub const Codegen = struct {
             if (!init_idx.isNone()) {
                 try self.emitNode(init_idx);
             } else {
-                try self.emitFlowEnumDefaultValue(base_type, member_name, auto_idx);
+                try self.emitFlowEnumDefaultValue(base_type_raw, member_name, auto_idx);
             }
             auto_idx += 1;
         }

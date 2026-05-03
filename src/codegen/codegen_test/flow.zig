@@ -382,51 +382,67 @@ test "Flow: Metro smoke — full module with all Flow features" {
 // ============================================================
 
 // ===== Flow enum (#2401) — codegen e2e =====
+// `babel-plugin-transform-flow-enums` 동작 동등: `flow-enums-runtime` package
+// 의 callable / Mirrored helper 사용 — 결과 object 가 cast / members / getName
+// 같은 helper API 보유 (RN core 의 `X.cast(value)` 호출 호환).
 
-test "Flow enum: default → Object.freeze with Symbol values" {
+test "Flow enum: default (symbol) → flow-enums-runtime callable with Symbol values" {
     var r = try e2eFlow(std.testing.allocator,
         \\enum Status { Active, Inactive }
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Status=Object.freeze({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Status=require(\"flow-enums-runtime\")({") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Active:Symbol(\"Active\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Inactive:Symbol(\"Inactive\")") != null);
 }
 
-test "Flow enum: of string → Object.freeze with string values" {
+test "Flow enum: of string + all defaulted → Mirrored" {
+    var r = try e2eFlow(std.testing.allocator,
+        \\enum Color of string { Red, Blue }
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Color=require(\"flow-enums-runtime\").Mirrored([\"Red\",\"Blue\"]);") != null);
+}
+
+test "Flow enum: of string with explicit init → callable with string values" {
     var r = try e2eFlow(std.testing.allocator,
         \\enum Color of string { Red = 'red', Blue = 'blue' }
     );
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Color=Object.freeze({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Color=require(\"flow-enums-runtime\")({") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Red:\"red\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Blue:\"blue\"") != null);
 }
 
-test "Flow enum: of number → Object.freeze with number values" {
+test "Flow enum: of number → callable with number values" {
     var r = try e2eFlow(std.testing.allocator,
         \\enum Level of number { Low = 1, High = 10 }
     );
     defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Level=require(\"flow-enums-runtime\")({") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Low:1") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "High:10") != null);
 }
 
-test "Flow enum: of boolean" {
+test "Flow enum: of boolean → callable" {
     var r = try e2eFlow(std.testing.allocator,
         \\enum Toggle of boolean { On = true, Off = false }
     );
     defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const Toggle=require(\"flow-enums-runtime\")({") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "On:true") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Off:false") != null);
 }
 
-test "Flow enum: usage 후 frozen object 비교 작동" {
-    // Object.freeze 결과는 일반 object — `Status.Active` 접근, `===` 비교 가능.
+test "Flow enum: usage — member access / cast helper 호출 정합" {
+    // `flow-enums-runtime` callable 결과는 RN core 의 `X.cast(value)` 호출 호환.
+    // 본 테스트는 codegen 단계만 — 실제 cast 호출 동작은 flow-enums-runtime 의 책임.
     var r = try e2eFlow(std.testing.allocator,
         \\enum Color of string { Red = 'red' }
         \\const x = Color.Red;
+        \\const y = Color.cast('red');
     );
     defer r.deinit();
     try std.testing.expect(std.mem.indexOf(u8, r.output, "const x=Color.Red") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "const y=Color.cast(\"red\")") != null);
 }

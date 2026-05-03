@@ -238,9 +238,10 @@ fn collectMembersFromTypeRef(
     if (ref_node.tag != .ts_type_reference and ref_node.tag != .flow_type_reference) return;
 
     const ref_name = getTypeReferenceName(ast, ref_node) orelse return;
+    const last = lastSegment(ref_name);
 
     // wrapper (Readonly<T> 등) 이면 inner 로 풀어 재귀.
-    if (isReadonlyWrapperName(ref_name)) {
+    if (isReadonlyWrapperName(last)) {
         const inner = getNthTypeArgument(ast, ref_node, 0) orelse return;
         try collectMembersFromValue(ast, type_index, inner, out, visited, depth + 1, alloc);
         return;
@@ -248,13 +249,14 @@ fn collectMembersFromTypeRef(
 
     // TS utility types `Pick<T, K>` / `Omit<T, K>` (#2417) — T 의 멤버 수집 후 K 의
     // string union 으로 필터. K 가 cross-file alias (예: `keyof RemoteX`) 면 silent skip.
-    if (std.mem.eql(u8, ref_name, "Pick") or std.mem.eql(u8, ref_name, "Omit")) {
-        const is_pick = std.mem.eql(u8, ref_name, "Pick");
+    if (std.mem.eql(u8, last, "Pick") or std.mem.eql(u8, last, "Omit")) {
+        const is_pick = std.mem.eql(u8, last, "Pick");
         try collectPickOmitMembers(ast, type_index, ref_node, is_pick, out, visited, depth + 1, alloc);
         return;
     }
 
-    // same-file lookup — found 면 declaration body 재귀.
+    // same-file lookup — found 면 declaration body 재귀. Namespace 가 있으면 (점 포함)
+    // local type_index 에 없으니 자연스레 cross-file 분기로 떨어짐.
     if (type_index.get(ref_name)) |decl_idx| {
         try collectAllMembers(ast, type_index, decl_idx, out, visited, depth + 1, alloc);
         return;
@@ -381,7 +383,7 @@ fn unwrapWrapper(ast: *const Ast, type_index: *const TypeIndex, idx: NodeIndex) 
         else => return idx,
     };
 
-    if (!isReadonlyWrapperName(ref_name)) return idx;
+    if (!isReadonlyWrapperName(lastSegment(ref_name))) return idx;
 
     // type argument 추출 — Readonly<T> 의 T.
     const inner = getNthTypeArgument(ast, node, 0) orelse return idx;
@@ -412,6 +414,8 @@ fn getNthTypeArgument(ast: *const Ast, node: Node, index: u32) ?NodeIndex {
 }
 
 /// type_reference 의 name 텍스트 추출. extra[0..2] 가 source 의 name span.
+/// Namespace-qualified (`NS.Foo`) 형태도 source 그대로 (점 포함) 반환 — caller 가
+/// well-known map lookup 시 `lastSegment` 로 마지막 segment 만 비교해야 한다.
 fn getTypeReferenceName(ast: *const Ast, node: Node) ?[]const u8 {
     const e = node.data.extra;
     if (e + 1 >= ast.extra_data.items.len) return null;
@@ -419,6 +423,18 @@ fn getTypeReferenceName(ast: *const Ast, node: Node) ?[]const u8 {
     const end = ast.extra_data.items[e + 1];
     if (end <= start or end > ast.source.len) return null;
     return ast.source[start..end];
+}
+
+/// Qualified name 의 마지막 segment 반환 — `import type { X as NS } from '...'` 후
+/// `NS.Foo` 형태의 RN 0.85+ 표준 패턴 (`CodegenTypes as CT` 등) 을 well-known map
+/// (event_handler_names / wrapper_ref_names / reserved_ref_names / numeric_ref_names)
+/// 매칭에 동등 처리하기 위한 helper. 점 없으면 입력 그대로.
+///
+/// 주의: type_index (사용자 정의 alias) lookup 에는 사용 X — `NS.LocalAlias` 가
+/// 우연히 같은 이름의 로컬 alias 와 매칭되어 cross-namespace pollution 일어남.
+fn lastSegment(name: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, name, '.')) |dot| return name[dot + 1 ..];
+    return name;
 }
 
 /// property_signature 1 개를 분류해 props 또는 events 에 append.
@@ -510,7 +526,7 @@ fn eventHandlerBubbling(ast: *const Ast, type_idx: NodeIndex) ?schema.BubblingTy
     const node = ast.getNode(type_idx);
     if (node.tag != .ts_type_reference and node.tag != .flow_type_reference) return null;
     const name = getTypeReferenceName(ast, node) orelse return null;
-    return event_handler_names.get(name);
+    return event_handler_names.get(lastSegment(name));
 }
 
 /// RN codegen 의 명시적 event wrapper — 이름이 bubble vs direct 결정.
@@ -563,10 +579,79 @@ fn mapPropTypeAt(
         // RN runtime 이 nullable semantics 자체 처리 — wrapper 만 풀고 inner 매핑.
         .flow_nullable_type => mapPropTypeAt(ast, type_index, node.data.unary.operand, depth + 1),
 
+        // postfix `T[]` — parser (ts.zig / flow.zig) 가 element 를 extra[0] 으로 보존.
+        // `Array<T>` (type_reference) 와 동등 결과: array.<element prop>.
+        .ts_array_type, .flow_array_type => mapArrayType(ast, type_index, node, depth),
+
+        // inline / nested object literal. `@react-native/codegen` reference 의 schema 단계는
+        // `ObjectTypeAnnotation { properties }` 로 nested shape 풀지만, view config emitter
+        // (`GenerateViewConfigJs.js`) 가 attribute name 만 등록 (`prop: true`). ZTS 의 scope 가
+        // view config emit 한정이라 `.mixed` 가 동등 결과 — schema.zig 의 `.object: ObjectProp`
+        // variant 는 의도적으로 미사용. C++ component descriptor / props.h 등 native side 가
+        // 필요해지면 `.object` 로 보강 필요.
+        .ts_type_literal, .flow_object_type, .flow_exact_object_type => .mixed,
+
+        // intersection (`A & B`) — view config 단계에서 nested shape 풀 필요 없음 (.object
+        // variant 미사용 정책과 동일). reference 도 view config attribute 이름만 등록.
+        .ts_intersection_type, .flow_intersection_type => .mixed,
+
         .ts_union_type, .flow_union_type => mapUnion(ast, node),
+
+        // 그 외 type 노드들 — prop position 에 거의 안 등장하지만 RN spec 에서 발견 시
+        // reference 가 view config 에 attribute name 만 등록하는 동작과 동등. tuple /
+        // function (event 외) / typeof / literal / template-literal / parenthesized /
+        // conditional / mapped / indexed-access / type-predicate / import / operator /
+        // void / null / undefined / unknown / never / object / symbol / bigint 등.
+        .ts_void_keyword,
+        .ts_undefined_keyword,
+        .ts_null_keyword,
+        .ts_unknown_keyword,
+        .ts_never_keyword,
+        .ts_object_keyword,
+        .ts_symbol_keyword,
+        .ts_bigint_keyword,
+        .ts_function_type,
+        .ts_constructor_type,
+        .ts_tuple_type,
+        .ts_named_tuple_member,
+        .ts_literal_type,
+        .ts_template_literal_type,
+        .ts_indexed_access_type,
+        .ts_conditional_type,
+        .ts_mapped_type,
+        .ts_type_query,
+        .ts_parenthesized_type,
+        .ts_infer_type,
+        .ts_optional_type,
+        .ts_rest_type,
+        .ts_type_predicate,
+        .ts_import_type,
+        .ts_type_operator,
+        .flow_void_keyword,
+        .flow_null_keyword,
+        .flow_this_type,
+        .flow_function_type,
+        .flow_parenthesized_type,
+        .flow_type_query,
+        .flow_tuple_type,
+        .flow_literal_type,
+        => .mixed,
 
         else => error.UnsupportedPropType,
     };
+}
+
+/// `T[]` element 를 extra[0] 에서 읽어 array prop 으로 lift.
+fn mapArrayType(
+    ast: *const Ast,
+    type_index: *const TypeIndex,
+    node: Node,
+    depth: u8,
+) Error!schema.PropTypeAnnotation {
+    const elem_idx = ast.readExtraNode(node.data.extra, 0);
+    if (elem_idx == .none) return error.UnsupportedPropType;
+    const inner = try mapPropTypeAt(ast, type_index, elem_idx, depth + 1);
+    return .{ .array = try toArrayElement(inner) };
 }
 
 /// Union 의 모든 element 가 string literal 이면 string_enum, 그 외엔 mixed.
@@ -594,9 +679,12 @@ fn mapTypeReference(
     depth: u8,
 ) Error!schema.PropTypeAnnotation {
     const name = getTypeReferenceName(ast, node) orelse return error.UnsupportedPropType;
+    const last = lastSegment(name);
 
-    if (wrapper_ref_names.get(name)) |kind| {
-        const inner = getNthTypeArgument(ast, node, 0) orelse return error.UnsupportedPropType;
+    if (wrapper_ref_names.get(last)) |kind| {
+        // type-arg 없는 wrapper (예: `CT.UnsafeMixed[]` 의 element). `@react-native/codegen`
+        // 의 reference 동작 동등 — typeAnnotation lookup 실패 시 mixed fall back.
+        const inner = getNthTypeArgument(ast, node, 0) orelse return .mixed;
         const inner_prop = try mapPropTypeAt(ast, type_index, inner, depth + 1);
         return switch (kind) {
             // WithDefault<T, D>: D (default literal) 는 향후 PR — ts_literal_type 추출해
@@ -607,10 +695,10 @@ fn mapTypeReference(
         };
     }
 
-    if (reserved_ref_names.get(name)) |primitive| {
+    if (reserved_ref_names.get(last)) |primitive| {
         return .{ .reserved = primitive };
     }
-    if (numeric_ref_names.get(name)) |kind| {
+    if (numeric_ref_names.get(last)) |kind| {
         return numericKindToAnnotation(kind);
     }
 

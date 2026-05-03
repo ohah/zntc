@@ -863,3 +863,631 @@ test "schema_builder: Omit + dedup 조합 — derived 가 Omit 결과를 overrid
     // Filtered: color, size. Props extends + own color → dedup → size + Props.color = 2.
     try std.testing.expectEqual(@as(usize, 2), shape.props.len);
 }
+
+// ============================================================
+// Namespace-qualified type references (RN 0.85+ CodegenTypes alias pattern).
+// `import type { CodegenTypes as CT } from 'react-native'` 후 `CT.X` 형태로
+// 노출되는 RN well-known type 이름들. 직접 import 형태(`X`)와 동등 처리.
+// react-native-screens / react-native-svg / react-native-safe-area-context 가
+// RN 0.85 부터 표준 채택 — 미지원 시 view config 누락으로 런타임 에러.
+// ============================================================
+
+test "schema_builder: namespace CT.DirectEventHandler → direct event (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onLayout: CT.DirectEventHandler<LayoutEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqualStrings("onLayout", shape.events[0].name);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: namespace CT.BubblingEventHandler → bubble event (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onChange: CT.BubblingEventHandler<ChangeEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.bubble, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: namespace CT.WithDefault<string, ''> → string with default (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { name?: CT.WithDefault<string, ''> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .string);
+    try std.testing.expect(shape.props[0].optional);
+}
+
+test "schema_builder: namespace CT.UnsafeMixed<T> → identity unwrap (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { p: CT.UnsafeMixed<NumberProp> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // NumberProp 는 cross-file → mixed fallback. UnsafeMixed identity → 결과 mixed.
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: namespace CT.Float → float (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { f: CT.Float };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .float);
+}
+
+test "schema_builder: namespace CT.Int32 → int32 (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { i: CT.Int32 };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .int32);
+}
+
+test "schema_builder: namespace CT.Double → double (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { d: CT.Double };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .double);
+}
+
+test "schema_builder: namespace CT.ColorValue → reserved.color (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { c: CT.ColorValue };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .reserved);
+    try std.testing.expectEqual(schema.ReservedPropPrimitive.color, shape.props[0].type_annotation.reserved);
+}
+
+test "schema_builder: arbitrary namespace alias (Codegen.DirectEventHandler) recognized (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onTap: Codegen.DirectEventHandler<TapEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: multi-segment namespace (A.B.DirectEventHandler) uses last segment (TS)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onPress: A.B.DirectEventHandler<PressEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: namespace CT.DirectEventHandler in interface body extends ViewProps (TS, RN screens 패턴)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\interface NativeProps extends ViewProps {
+        \\  onFinishTransitioning?: CT.DirectEventHandler<FinishEvent>;
+        \\  iosPreventReattachmentOfDismissedScreens?: CT.WithDefault<boolean, false>;
+        \\}
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "NativeProps", "RNSScreenStack");
+    defer freeShape(std.testing.allocator, shape);
+
+    // ViewProps cross-file silent skip → 본 파일 멤버만.
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len); // iosPreventReattachment
+    try std.testing.expect(shape.props[0].type_annotation == .boolean);
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len); // onFinishTransitioning
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: Flow namespace CT.DirectEventHandler → direct event" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { onLayout: CT.DirectEventHandler<LayoutEvent> };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+    try std.testing.expectEqual(schema.BubblingType.direct, shape.events[0].bubbling_type);
+}
+
+test "schema_builder: namespaced unknown last segment → mixed fallback (TS)" {
+    // Foo.Bar 가 알려진 wrapper/event/reserved/numeric 어디에도 없음 → cross-file
+    // 처럼 mixed permissive fallback.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { p: NS.UnknownType };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: namespaced ref does NOT pollute local type_index (TS)" {
+    // 로컬 type_index 에 `DirectEventHandler` 라는 이름의 alias 가 있어도, namespaced
+    // `NS.DirectEventHandler` 는 namespace 의 it 으로 처리되어야지 로컬 alias 와 섞이면 안 됨.
+    // 본 케이스에서 로컬 alias 는 string → 만약 잘못 매칭되면 string prop 이 됨.
+    // 정상 동작: 마지막 segment "DirectEventHandler" 는 event_handler_names 에 매치 → event.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type DirectEventHandler<T> = string;
+        \\type Props = { onTap: NS.DirectEventHandler<TapEvent> };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 0), shape.props.len);
+    try std.testing.expectEqual(@as(usize, 1), shape.events.len);
+}
+
+// ============================================================
+// `T[]` postfix array type — RN spec 의 흔한 형태
+//   - `sheetAllowedDetents?: number[]` (react-native-screens)
+//   - `headerLeftBarButtonItems?: CT.UnsafeMixed[]` (동)
+// `Array<T>` 는 type_reference 라 wrapper_ref_names 로 이미 처리. postfix 만 누락.
+// ============================================================
+
+test "schema_builder: TS number[] → array.float" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { items: number[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .float);
+}
+
+test "schema_builder: TS string[] → array.string" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { tags: string[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .string);
+}
+
+test "schema_builder: TS boolean[] → array.boolean" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { flags: boolean[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .boolean);
+}
+
+test "schema_builder: TS ColorValue[] → array.reserved.color" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { palette: ColorValue[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .reserved);
+    try std.testing.expectEqual(schema.ReservedPropPrimitive.color, shape.props[0].type_annotation.array.reserved);
+}
+
+test "schema_builder: Flow number[] → array.float" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { items: number[] };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .float);
+}
+
+test "schema_builder: TS namespace CT.UnsafeMixed[] → array.mixed (rn-screens 패턴)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { items: CT.UnsafeMixed[] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    // CT.UnsafeMixed 는 type-arg 없는 form — `@react-native/codegen` reference 동작
+    // 동등하게 element 가 mixed 로 falls back, array wrapper 는 정상 lift.
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .array);
+    try std.testing.expect(shape.props[0].type_annotation.array == .mixed);
+}
+
+// ============================================================
+// Inline / nested object literal prop type — `prop?: { ... }` 형태.
+// `@react-native/codegen` reference 가 view config 에서 단순 `prop: true` 로 emit
+// (validAttributes 는 attribute 이름만 등록 — nested shape 는 native side 책임).
+// 따라서 ZTS 도 `.mixed` 로 매핑하면 byte-diff 0. 미지원 시 fail-fast.
+//
+// 영향: react-native-screens 4.23 의 BottomTabsScreenNativeComponent (`specialEffects?: {...}`).
+// ============================================================
+
+test "schema_builder: TS inline object literal prop type → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { specialEffects?: { popToRoot?: boolean } };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS deeply nested inline object literal → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { effects?: { repeatedTabSelection?: { popToRoot?: boolean; scrollToTop?: boolean } } };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow inline object type → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: { count: number } };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object type {| ... |} prop position → mixed (#2447)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| count: number |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow empty exact object {||} prop position → mixed (#2447)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {||} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object as union member → mixed (#2447)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: string | {| count: number |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    // mixed union (string + object) → mixed.
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow nested exact objects → mixed (#2447)" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| inner: {| n: number |} |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+// 아래 케이스들은 #2447 fix (`pipeIsExactClose` lookahead) 의 정합성을 다양한 union/
+// intersection / leading-pipe / variance / multi-exact 경로에서 검증. 각 케이스가
+// `parseUnionType` 의 서로 다른 entry point (leading-pipe / post-first / in-loop) 를
+// exercise.
+
+test "schema_builder: Flow exact body 안의 inner union → close 직전 종료 (#2447)" {
+    // inner `count: number | string` union 이 outer exact close `|}` 직전에 멈춰야.
+    // pipeIsExactClose 의 in-loop guard 가 제대로 동작하는지 검증.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| count: number | string |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow union of two exact objects → mixed (#2447)" {
+    // 두 exact object 사이 `|` 는 정상 union operator (peek != `}`).
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| a: number |} | {| b: string |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object as first union member → mixed (#2447)" {
+    // post-first-item return guard — exact close 직후 다른 union 멤버 흡수 안 함.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| count: number |} | string };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow leading pipe + exact object → mixed (#2447)" {
+    // Flow 의 valid leading-pipe 형태 (`type X = | A | B`) 가 exact object 와 결합.
+    // leading-pipe guard 가 valid 케이스를 깨뜨리지 않는지 검증.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: | {| count: number |} | string };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object with variance markers → mixed (#2447)" {
+    // `+key` covariant — Flow object 의 variance marker 가 exact body 안에서도 동작.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| +readOnly: number, name: string |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow exact object with string-literal key → mixed (#2447)" {
+    // string literal key (`'aria-label'`) — exact body 안에서 ident 외 key 도 정상.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { meta: {| 'aria-label': string, count: number |} };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+// ============================================================
+// Intersection type at prop position (`T & U`).
+// reference 가 view config 에서 attribute name 만 등록하므로 `.mixed` 매핑이 동등.
+// ============================================================
+
+test "schema_builder: TS intersection type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Other = { tag: string };
+        \\type Props = { meta: { count: number } & Other };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow intersection of exact objects → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Other = {| tag: string |};
+        \\type Props = { meta: {| count: number |} & Other };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+// ============================================================
+// 그 외 미지원 type 노드들 — view config 단계에서 .mixed 로 매핑 (reference 동등).
+// prop position 에 거의 안 등장하지만 RN spec 발견 시 fail-fast 안 하도록.
+// ============================================================
+
+test "schema_builder: TS tuple type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { coords: [number, number] };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS literal type prop → mixed" {
+    // 단독 literal type (`'on'`) — union 안이 아니라 prop value 자체가 literal.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { kind: 'on' };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS template literal type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { id: `prefix-${string}` };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS typeof query prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\const Foo = { x: 1 };
+        \\type Props = { v: typeof Foo };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: TS parenthesized type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { v: (number) };
+    , .ts);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    // parenthesized 자체는 .mixed (inner unwrap 안 함) — view config 단계에선 동등.
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow tuple type prop → mixed" {
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { coords: [number, number] };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 1), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+}
+
+test "schema_builder: Flow void / null keyword prop → mixed" {
+    // 거의 등장 안 하지만 RN spec 일관성 — fail-fast 안 함.
+    var p = try parseAndIndex(std.testing.allocator,
+        \\type Props = { v: void, n: null };
+    , .flow);
+    defer p.deinit();
+
+    const shape = try buildShape(&p, "Props", "X");
+    defer freeShape(std.testing.allocator, shape);
+
+    try std.testing.expectEqual(@as(usize, 2), shape.props.len);
+    try std.testing.expect(shape.props[0].type_annotation == .mixed);
+    try std.testing.expect(shape.props[1].type_annotation == .mixed);
+}

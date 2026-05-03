@@ -270,7 +270,7 @@ pub const ModuleGraph = struct {
         merged[i] = helper;
         i += 1;
         if (self.codegen_transform) {
-            const codegen_plugin = @import("../transformer/plugins/codegen_plugin.zig");
+            const codegen_plugin = @import("../transformer/plugins/rn_codegen_plugin.zig");
             merged[i] = codegen_plugin.plugin();
             i += 1;
         }

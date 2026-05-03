@@ -772,13 +772,16 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
             if (self.scanner.token.has_newline_before) break;
             const start = self.ast.getNode(base).span.start;
             if (try self.peekNextKind() == .r_bracket) {
-                // 배열 타입: T[]
+                // 배열 타입: T[]. element 를 extra[0] 으로 보존 — dataKind 는 그대로
+                // .extra (child_offsets = &.{} 라 ast_walk 미접근).
                 try self.advance(); // [
                 try self.advance(); // ]
-                base = try self.ast.addEmptyExtraNode(
-                    .ts_array_type,
-                    .{ .start = start, .end = self.currentSpan().start },
-                );
+                const extra_idx = try self.ast.addExtras(&.{@intFromEnum(base)});
+                base = try self.ast.addNode(.{
+                    .tag = .ts_array_type,
+                    .span = .{ .start = start, .end = self.currentSpan().start },
+                    .data = .{ .extra = extra_idx },
+                });
             } else {
                 // 인덱스 접근 타입: T[K]
                 try self.advance(); // [
