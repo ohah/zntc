@@ -1114,6 +1114,21 @@ fn followedByParenOnly(self: *const Parser) bool {
     return self.current() == .l_paren;
 }
 
+fn finishNewExpressionWithArgs(self: *Parser, start: u32, callee: NodeIndex, arg_list: NodeList) !NodeIndex {
+    const ne = try self.ast.addExtras(&.{
+        @intFromEnum(callee), arg_list.start, arg_list.len, 0,
+    });
+    const new_expr = try self.ast.addNode(.{
+        .tag = .new_expression,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = ne },
+    });
+    if (self.enable_scan and self.scan_dead_depth == 0) {
+        scanWorkerNewExpression(self, callee, arg_list);
+    }
+    return new_expr;
+}
+
 /// new 표현식의 callee를 파싱한다.
 /// new는 중첩 가능하므로 new를 만나면 재귀한다.
 /// member access (.prop, [expr])만 허용하고 호출 ()은 상위에서 처리.
@@ -1143,18 +1158,7 @@ fn parseNewCallee(self: *Parser) ParseError2!NodeIndex {
         if (self.current() == .l_paren) {
             try self.advance();
             const arg_list = try parseArgumentList(self);
-            const ne = try self.ast.addExtras(&.{
-                @intFromEnum(callee), arg_list.start, arg_list.len, 0,
-            });
-            const new_expr = try self.ast.addNode(.{
-                .tag = .new_expression,
-                .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .extra = ne },
-            });
-            if (self.enable_scan and self.scan_dead_depth == 0) {
-                scanWorkerNewExpression(self, callee, arg_list);
-            }
-            return new_expr;
+            return try finishNewExpressionWithArgs(self, span.start, callee, arg_list);
         }
         const ne_no_args = try self.ast.addExtras(&.{
             @intFromEnum(callee), 0, 0, 0,
@@ -1347,18 +1351,7 @@ fn parsePrimaryExpression(self: *Parser) ParseError2!NodeIndex {
             if (self.current() == .l_paren) {
                 try self.advance(); // skip (
                 const arg_list = try parseArgumentList(self);
-                const ne2 = try self.ast.addExtras(&.{
-                    @intFromEnum(callee), arg_list.start, arg_list.len, 0,
-                });
-                const new_expr = try self.ast.addNode(.{
-                    .tag = .new_expression,
-                    .span = .{ .start = span.start, .end = self.currentSpan().start },
-                    .data = .{ .extra = ne2 },
-                });
-                if (self.enable_scan and self.scan_dead_depth == 0) {
-                    scanWorkerNewExpression(self, callee, arg_list);
-                }
-                return new_expr;
+                return try finishNewExpressionWithArgs(self, span.start, callee, arg_list);
             }
 
             // 인자 없는 new: new Foo
