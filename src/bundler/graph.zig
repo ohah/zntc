@@ -1699,6 +1699,13 @@ pub const ModuleGraph = struct {
                 } else |_| {}
             }
 
+            if (hasFlowEnumDeclaration(&parser.ast)) {
+                module.import_records = injectFlowEnumRuntimeImport(
+                    arena_alloc,
+                    module.import_records,
+                ) catch module.import_records;
+            }
+
             // namespace access 수집은 별도 AST walk 필요
             binding_scanner_mod.collectNamespaceAccesses(arena_alloc, &parser.ast, module.import_bindings) catch {};
 
@@ -1750,12 +1757,13 @@ pub const ModuleGraph = struct {
                         specs_buf[n] = self.jsx_import_source;
                         n += 1;
                     }
+                    const base_record_count: u32 = @intCast(module.import_records.len);
                     module.import_records = injectJsxRuntimeImports(
                         specs_buf[0..n],
                         arena_alloc,
-                        records,
-                    ) catch records;
-                    jsx_injected = (module.import_records.len > records.len);
+                        module.import_records,
+                    ) catch module.import_records;
+                    jsx_injected = (module.import_records.len > base_record_count);
                     react_injected = (n == 2) and jsx_injected;
                 }
             }
@@ -1772,7 +1780,7 @@ pub const ModuleGraph = struct {
 
             // JSX synthetic import bindings 추가
             if (jsx_injected) {
-                const jsx_record_idx: u32 = @intCast(records.len);
+                const jsx_record_idx: u32 = @intCast(module.import_records.len - (if (react_injected) @as(usize, 2) else 1));
                 const react_record_idx: ?u32 = if (react_injected) jsx_record_idx + 1 else null;
                 module.import_bindings = createJsxImportBindings(
                     self.jsx_runtime,
@@ -3454,6 +3462,32 @@ fn injectJsxRuntimeImports(
             .span = Span.EMPTY,
         };
     }
+    return new_records;
+}
+
+fn hasFlowEnumDeclaration(ast: *const Ast) bool {
+    for (ast.nodes.items) |node| {
+        if (node.tag == .flow_enum_declaration) return true;
+    }
+    return false;
+}
+
+fn injectFlowEnumRuntimeImport(
+    arena_alloc: std.mem.Allocator,
+    existing_records: []ImportRecord,
+) ![]ImportRecord {
+    const specifier = "flow-enums-runtime";
+    for (existing_records) |record| {
+        if (std.mem.eql(u8, record.specifier, specifier)) return existing_records;
+    }
+
+    const new_records = try arena_alloc.alloc(ImportRecord, existing_records.len + 1);
+    @memcpy(new_records[0..existing_records.len], existing_records);
+    new_records[existing_records.len] = .{
+        .specifier = specifier,
+        .kind = .require,
+        .span = Span.EMPTY,
+    };
     return new_records;
 }
 
