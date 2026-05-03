@@ -653,8 +653,7 @@ pub const ResolveCache = struct {
 
         const is_path = resolver_mod.isRelativeOrAbsolute(specifier);
 
-        // platform=node 에서 bare builtin 만 자동 external. 상대/절대 경로는 Node builtin 이
-        // 될 수 없으므로 builtin 목록 선형 탐색을 피한다.
+        // 상대/절대 경로는 Node builtin 이 될 수 없으므로 builtin 목록 선형 탐색을 피한다.
         if (self.platform == .node and !is_path and isNodeBuiltin(specifier)) return true;
 
         // --packages=external: 모든 bare import를 external 처리
