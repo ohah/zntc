@@ -127,12 +127,6 @@ pub const StyledComponentsState = struct {
     /// `import { injectGlobal } from "styled-components"` named import.
     inject_global_binding: ?[]const u8 = null,
 
-    /// `.withConfig({...})` 래핑 시 매 컴포넌트마다 동일 문자열을 string_table 에 추가하는
-    /// 비용을 피하기 위한 lazy 캐시. 첫 wrap 시점에 채워짐.
-    with_config_span: ?Span = null,
-    display_name_span: ?Span = null,
-    component_id_span: ?Span = null,
-
     /// componentId hash 의 file 부분 — `options.jsx_filename` 의 wyhash 32-bit truncated 8-hex.
     /// SSR hydration 안정화: 같은 파일에서 같은 hash 보장 (counter 와 결합).
     /// 32-bit truncation 은 일반 monorepo (수만 파일) 에서도 collision 무시 가능.

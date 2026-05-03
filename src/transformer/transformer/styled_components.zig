@@ -967,13 +967,11 @@ fn mergeIntoUserWithConfig(
     const args_obj_idx = withConfigCallArgsObj(self, target_call_idx) orelse return init_idx;
 
     const state = &self.plugins.styled_components;
-    if (state.display_name_span == null) state.display_name_span = try self.ast.addString("displayName");
 
     const scan = scanObjectKeys(self, args_obj_idx);
     const want_component_id = self.options.styled_components_ssr and self.options.jsx_filename.len > 0;
-    if (want_component_id and state.component_id_span == null) {
-        state.component_id_span = try self.ast.addString("componentId");
-        if (state.file_hash_hex == null) state.file_hash_hex = wyhash.hashHex8(self.options.jsx_filename);
+    if (want_component_id and state.file_hash_hex == null) {
+        state.file_hash_hex = wyhash.hashHex8(self.options.jsx_filename);
     }
 
     const need_display = !scan.has_display;
@@ -990,15 +988,17 @@ fn mergeIntoUserWithConfig(
     defer self.scratch.shrinkRetainingCapacity(props_top);
 
     if (need_display) {
+        const display_name_key = try self.ast.addString("displayName");
         const display_value_span = try buildDisplayNameSpan(self, var_name);
-        const display_property = try buildKeyStringProperty(self, state.display_name_span.?, display_value_span);
+        const display_property = try buildKeyStringProperty(self, display_name_key, display_value_span);
         try self.scratch.append(self.allocator, display_property);
     }
     if (need_component_id) {
+        const component_id_key = try self.ast.addString("componentId");
         const component_index = state.component_counter;
         state.component_counter += 1;
         const component_id_value_span = try buildComponentIdSpan(self, state.file_hash_hex.?, component_index);
-        const component_id_property = try buildKeyStringProperty(self, state.component_id_span.?, component_id_value_span);
+        const component_id_property = try buildKeyStringProperty(self, component_id_key, component_id_value_span);
         try self.scratch.append(self.allocator, component_id_property);
     }
     for (old_props) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
@@ -1066,18 +1066,14 @@ fn mergeIntoUserWithConfig(
 fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const u8) Error!NodeIndex {
     const zero = Span{ .start = 0, .end = 0 };
     const state = &self.plugins.styled_components;
-    if (state.with_config_span == null) state.with_config_span = try self.ast.addString("withConfig");
-    if (state.display_name_span == null) state.display_name_span = try self.ast.addString("displayName");
-
-    const with_config_span = state.with_config_span.?;
-    const display_name_key_span = state.display_name_span.?;
+    const with_config_span = try self.ast.addString("withConfig");
+    const display_name_key_span = try self.ast.addString("displayName");
     // componentId 는 두 조건 모두 만족 시 emit:
     //  1. ssr 옵션 활성 (default true) — 사용자가 명시적으로 끄지 않음
     //  2. jsx_filename 존재 — file 부분 hash 의 입력
     const emit_component_id = self.options.styled_components_ssr and self.options.jsx_filename.len > 0;
-    if (emit_component_id) {
-        if (state.component_id_span == null) state.component_id_span = try self.ast.addString("componentId");
-        if (state.file_hash_hex == null) state.file_hash_hex = wyhash.hashHex8(self.options.jsx_filename);
+    if (emit_component_id and state.file_hash_hex == null) {
+        state.file_hash_hex = wyhash.hashHex8(self.options.jsx_filename);
     }
 
     const display_value_span = try buildDisplayNameSpan(self, var_name);
@@ -1097,10 +1093,11 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
     const display_property = try buildKeyStringProperty(self, display_name_key_span, display_value_span);
 
     const obj_list = if (emit_component_id) blk: {
+        const component_id_key = try self.ast.addString("componentId");
         const component_index = state.component_counter;
         state.component_counter += 1;
         const component_id_value_span = try buildComponentIdSpan(self, state.file_hash_hex.?, component_index);
-        const component_id_property = try buildKeyStringProperty(self, state.component_id_span.?, component_id_value_span);
+        const component_id_property = try buildKeyStringProperty(self, component_id_key, component_id_value_span);
         break :blk try self.ast.addNodeList(&.{ display_property, component_id_property });
     } else try self.ast.addNodeList(&.{display_property});
 
