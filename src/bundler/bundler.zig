@@ -879,7 +879,15 @@ pub const Bundler = struct {
                 if (inc_result.reparsed_indices.len > 0) {
                     const list = try self.allocator.alloc([]const u8, inc_result.reparsed_indices.len);
                     for (inc_result.reparsed_indices, 0..) |mod_idx, i| {
-                        const src = if (graph.getModule(mod_idx)) |m| m.path else "";
+                        // HMR diff 의 source-of-truth — emit 의 `ModuleDevCode.id` (=
+                        // `makeModuleId(m.path, root_dir)`) 와 동일 형식으로 채워야 napi_entry
+                        // 의 `reparsed_set.contains(dc.id)` 필터가 매칭된다. root_dir 옵션이
+                        // 적용된 후엔 절대 경로 (`m.path`) 와 module ID (`dc.id`) 가 달라져
+                        // 모든 update 가 silent drop → "no code change" (#bungae 실측).
+                        const src = if (graph.getModule(mod_idx)) |m|
+                            emitter.makeModuleId(m.path, self.options.root_dir)
+                        else
+                            "";
                         list[i] = try self.allocator.dupe(u8, src);
                     }
                     reparsed_paths_out = list;
