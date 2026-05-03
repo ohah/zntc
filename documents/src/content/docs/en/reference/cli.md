@@ -36,15 +36,15 @@ The default app layout is `index.html`, `public/`, `src/main.ts(x)`, and `.env*`
 for static split chunks. `zts dev` uses the same HTML/env/public prepare step and
 updates stylesheets for CSS edits without a full page reload.
 
-| Option | Description |
-|--------|-------------|
-| `--entry-html <file>` | HTML entry file (default: `index.html`) |
-| `--public-dir <dir\|false>` | public copy directory or disabled |
-| `--base <path>` | HTML/CSS asset URL prefix |
-| `--mode <name>` | env/config mode (`dev`: `development`, `build`: `production`) |
-| `--env-prefix <list>` | exposed env prefix CSV (default: `VITE_,ZTS_`) |
-| `--env-dir <dir>` | directory for `.env*` files |
-| `--spa-fallback[=file]` | in `preview`, fall back route-like 404 requests to `index.html` or the given file |
+| Option                      | Description                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------- |
+| `--entry-html <file>`       | HTML entry file (default: `index.html`)                                           |
+| `--public-dir <dir\|false>` | public copy directory or disabled                                                 |
+| `--base <path>`             | HTML/CSS asset URL prefix                                                         |
+| `--mode <name>`             | env/config mode (`dev`: `development`, `build`: `production`)                     |
+| `--env-prefix <list>`       | exposed env prefix CSV (default: `VITE_,ZTS_`)                                    |
+| `--env-dir <dir>`           | directory for `.env*` files                                                       |
+| `--spa-fallback[=file]`     | in `preview`, fall back route-like 404 requests to `index.html` or the given file |
 
 If the app root contains `postcss.config.{js,mjs,cjs,json}` or `.postcssrc*`,
 ZTS automatically applies it to CSS. In `zts dev`, original CSS files and PostCSS
@@ -56,164 +56,179 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 
 ## I/O
 
-| Option | Description |
-|--------|-------------|
-| `-o, --outfile <path>` | Output file path |
-| `--outdir <path>` | Output directory (required for dir input / splitting / preserve-modules) |
-| `--outbase=<dir>` | Base dir for computing output paths |
-| `--out-extension:.js=<ext>` | Change output extension (e.g. `.mjs`) |
-| `--clean` | Clear outdir before building |
+| Option                      | Description                                                              |
+| --------------------------- | ------------------------------------------------------------------------ |
+| `-o, --outfile <path>`      | Output file path                                                         |
+| `--outdir <path>`           | Output directory (required for dir input / splitting / preserve-modules) |
+| `--outbase=<dir>`           | Base dir for computing output paths                                      |
+| `--out-extension:.js=<ext>` | Change output extension (e.g. `.mjs`)                                    |
+| `--clean`                   | Clear outdir before building                                             |
 
 ## Format / Platform
 
-| Option | Description |
-|--------|-------------|
-| `--format=esm\|cjs\|iife\|umd\|amd` | Module format (default: `esm`) |
-| `--platform=browser\|node\|neutral\|react-native` | Target platform |
-| `--rn-platform=ios\|android` | RN sub-platform (`.ios.*`/`.android.*` extensions) |
-| `--target=<spec>` | ES target: `es2015`–`esnext` or engine versions (`chrome80,safari14`) |
-| `--global-name=<name>` | IIFE export name |
+| Option                                            | Description                                                           |
+| ------------------------------------------------- | --------------------------------------------------------------------- |
+| `--format=esm\|cjs\|iife\|umd\|amd`               | Module format (default: `esm`)                                        |
+| `--platform=browser\|node\|neutral\|react-native` | Target platform                                                       |
+| `--rn-platform=ios\|android`                      | RN sub-platform (`.ios.*`/`.android.*` extensions)                    |
+| `--target=<spec>`                                 | ES target: `es2015`–`esnext` or engine versions (`chrome80,safari14`) |
+| `--global-name=<name>`                            | IIFE export name                                                      |
 
 ## Minify
 
-| Option | Description |
-|--------|-------------|
-| `--minify` | Enable all three (shortcut) |
-| `--minify-whitespace` | Whitespace/semicolons/newlines only (debuggable) |
-| `--minify-syntax` | `true`→`!0`, paren removal, constant folding |
-| `--minify-identifiers` | Shorten local identifiers |
-| `--keep-names` | Preserve function/class `.name` |
-| `--charset=utf8\|ascii` | Output charset |
-| `--ascii-only` | Non-ASCII → `\uXXXX` (= `--charset=ascii`) |
-| `--quotes=double\|single\|preserve` | String quote style |
-| `--line-limit=<n>` | Wrap long output lines at safe token boundaries (`0` disables wrapping) |
+| Option                              | Description                                                             |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| `--minify`                          | Enable all three (shortcut)                                             |
+| `--minify-whitespace`               | Whitespace/semicolons/newlines only (debuggable)                        |
+| `--minify-syntax`                   | `true`→`!0`, paren removal, constant folding                            |
+| `--minify-identifiers`              | Shorten local identifiers                                               |
+| `--keep-names`                      | Preserve function/class `.name`                                         |
+| `--charset=utf8\|ascii`             | Output charset                                                          |
+| `--ascii-only`                      | Non-ASCII → `\uXXXX` (= `--charset=ascii`)                              |
+| `--quotes=double\|single\|preserve` | String quote style                                                      |
+| `--line-limit=<n>`                  | Wrap long output lines at safe token boundaries (`0` disables wrapping) |
 
 ## Source Maps
 
-| Option | Description |
-|--------|-------------|
-| `--sourcemap` | External `.js.map` with `sourceMappingURL` comment (linked, default) |
-| `--sourcemap=linked` | Explicit linked mode (#2152) — same as above |
-| `--sourcemap=inline` | Inline data URL |
-| `--sourcemap=external` | External file, no comment |
-| `--sourcemap=hidden` | External only (omit comment) |
-| `--sourcemap-debug-ids` | Sentry debugId support |
-| `--sources-content=false` | Omit `sourcesContent` |
-| `--source-root=<path>` | `sourceRoot` field |
+| Option                    | Description                                                          |
+| ------------------------- | -------------------------------------------------------------------- |
+| `--sourcemap`             | External `.js.map` with `sourceMappingURL` comment (linked, default) |
+| `--sourcemap=linked`      | Explicit linked mode (#2152) — same as above                         |
+| `--sourcemap=inline`      | Inline data URL                                                      |
+| `--sourcemap=external`    | External file, no comment                                            |
+| `--sourcemap=hidden`      | External only (omit comment)                                         |
+| `--sourcemap-debug-ids`   | Sentry debugId support                                               |
+| `--sources-content=false` | Omit `sourcesContent`                                                |
+| `--source-root=<path>`    | `sourceRoot` field                                                   |
 
 ## Transform / Replace
 
-| Option | Description |
-|--------|-------------|
-| `--define:KEY=VALUE` | Global replace (e.g. `process.env.NODE_ENV` → `"production"`) |
-| `--drop=console` | Remove `console.*` calls |
-| `--drop=debugger` | Remove `debugger` statements |
-| `--drop-labels=DEV,TEST` | Remove whole labeled statements for matching labels |
-| `--inject:<path>` | Auto-inject import (shim) |
+| Option                   | Description                                                                 |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `--define:KEY=VALUE`     | Global replace (e.g. `process.env.NODE_ENV` → `"production"`)               |
+| `--drop=console`         | Remove `console.*` calls                                                    |
+| `--drop=debugger`        | Remove `debugger` statements                                                |
+| `--drop-labels=DEV,TEST` | Remove whole labeled statements for matching labels                         |
+| `--inject:<path>`        | Auto-inject import (shim)                                                   |
+| `--pure:CALL`            | Register a pure call pattern (for example `--pure:React.createElement`)     |
+| `--ignore-annotations`   | Ignore tree-shaking annotations such as `/* @__PURE__ */` and `sideEffects` |
 
 ## JSX
 
-| Option | Description |
-|--------|-------------|
-| `--jsx=classic\|automatic\|automatic-dev` | JSX runtime |
-| `--jsx-dev` | `--jsx=automatic-dev` shortcut |
-| `--jsx-factory=<fn>` | Classic factory (default: `React.createElement`) |
-| `--jsx-fragment=<fn>` | Classic Fragment |
-| `--jsx-import-source=<pkg>` | Automatic import source (default: `react`) |
-| `--jsx-in-js` | Allow JSX parsing in `.js` files |
+| Option                                    | Description                                       |
+| ----------------------------------------- | ------------------------------------------------- |
+| `--jsx=classic\|automatic\|automatic-dev` | JSX runtime                                       |
+| `--jsx-dev`                               | `--jsx=automatic-dev` shortcut                    |
+| `--jsx-factory=<fn>`                      | Classic factory (default: `React.createElement`)  |
+| `--jsx-fragment=<fn>`                     | Classic Fragment                                  |
+| `--jsx-import-source=<pkg>`               | Automatic import source (default: `react`)        |
+| `--jsx-in-js`                             | Allow JSX parsing in `.js` files                  |
+| `--jsx-side-effects`                      | Preserve unused JSX expressions as side-effectful |
 
 ## TypeScript
 
-| Option | Description |
-|--------|-------------|
-| `-p, --project <path>, --tsconfig-path <path>` | tsconfig.json path/directory |
-| `--experimental-decorators` | Legacy decorator (`__decorateClass`) |
-| `--emit-decorator-metadata` | Emit decorator metadata (requires `experimentalDecorators`) |
-| `--use-define-for-class-fields=false\|true` | Class field semantics |
-| `--verbatim-module-syntax` | Preserve TS `verbatimModuleSyntax` imports/exports |
+| Option                                         | Description                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------ |
+| `-p, --project <path>, --tsconfig-path <path>` | tsconfig.json path/directory                                       |
+| `--experimental-decorators`                    | Legacy decorator (`__decorateClass`)                               |
+| `--emit-decorator-metadata`                    | Emit decorator metadata (requires `experimentalDecorators`)        |
+| `--use-define-for-class-fields=false\|true`    | Class field semantics                                              |
+| `--verbatim-module-syntax`                     | Preserve TS `verbatimModuleSyntax` imports/exports                 |
+| `--tsconfig-raw=<json>`                        | Inline tsconfig JSON string, compatible with esbuild `tsconfigRaw` |
 
 ## Flow
 
-| Option | Description |
-|--------|-------------|
+| Option   | Description                                            |
+| -------- | ------------------------------------------------------ |
 | `--flow` | Flow type stripping (auto-detected via `@flow` pragma) |
 
 ## Bundle-specific
 
-| Option | Description |
-|--------|-------------|
-| `--bundle` | Enable bundle mode |
-| `--splitting` | Code splitting (requires `--outdir`) |
-| `--no-splitting` | Disable splitting from config at the CLI layer |
-| `--preserve-modules` | Per-module output (library build) |
-| `--preserve-modules-root=<dir>` | Root for output structure |
-| `--inline-dynamic-imports` | Absorb dynamic-import targets into the entry chunk (Rollup `inlineDynamicImports`, #2185) |
-| `--output-exports=<mode>` | CJS/UMD entry export shape — `auto\|named\|default\|none` (Rollup `output.exports`, #2159) |
-| `--entry-names=<pattern>` | Entry name pattern (`[name]`, `[hash]`) |
-| `--chunk-names=<pattern>` | Chunk name pattern |
-| `--asset-names=<pattern>` | Asset name pattern |
-| `--loader:.ext=type` | Loader by extension (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
-| `--metafile` / `--metafile=<path>` | Build meta JSON (stdout or file) |
-| `--analyze` | Bundle analysis report |
-| `--legal-comments=<mode>` | License comments: `none\|inline\|eof\|linked\|external` |
-| `--banner=<text>` / `--banner:js=<text>` | Prepend text |
-| `--footer=<text>` / `--footer:js=<text>` | Append text |
-| `--public-path=<url>` | Asset URL prefix |
-| `--shim-missing-exports` | Shim missing exports with `undefined` |
+| Option                                   | Description                                                                                           |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `--bundle`                               | Enable bundle mode                                                                                    |
+| `--splitting`                            | Code splitting (requires `--outdir`)                                                                  |
+| `--no-splitting`                         | Disable splitting from config at the CLI layer                                                        |
+| `--preserve-modules`                     | Per-module output (library build)                                                                     |
+| `--preserve-modules-root=<dir>`          | Root for output structure                                                                             |
+| `--inline-dynamic-imports`               | Absorb dynamic-import targets into the entry chunk (Rollup `inlineDynamicImports`, #2185)             |
+| `--output-exports=<mode>`                | CJS/UMD entry export shape — `auto\|named\|default\|none` (Rollup `output.exports`, #2159)            |
+| `--entry-names=<pattern>`                | Entry name pattern (`[name]`, `[hash]`)                                                               |
+| `--chunk-names=<pattern>`                | Chunk name pattern                                                                                    |
+| `--asset-names=<pattern>`                | Asset name pattern                                                                                    |
+| `--loader:.ext=type`                     | Loader by extension (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
+| `--metafile` / `--metafile=<path>`       | Build meta JSON (stdout or file)                                                                      |
+| `--analyze`                              | Bundle analysis report                                                                                |
+| `--legal-comments=<mode>`                | License comments: `none\|inline\|eof\|linked\|external`                                               |
+| `--packages=external`                    | Treat all bare package imports as external                                                            |
+| `--banner=<text>` / `--banner:js=<text>` | Prepend text                                                                                          |
+| `--footer=<text>` / `--footer:js=<text>` | Append text                                                                                           |
+| `--intro=<text>`                         | Prepend wrapper-internal bundle text                                                                  |
+| `--outro=<text>`                         | Append wrapper-internal bundle text                                                                   |
+| `--global:FROM=TO`                       | Map an IIFE/UMD external specifier to a global variable name                                          |
+| `--public-path=<url>`                    | Asset URL prefix                                                                                      |
+| `--shim-missing-exports`                 | Shim missing exports with `undefined`                                                                 |
 
 ## Resolve
 
-| Option | Description |
-|--------|-------------|
-| `--external <pkg>` / `--external=<pkg>` | Exclude from bundle (repeatable) |
-| `--alias:FROM=TO` | Import path alias |
-| `--resolve-extensions=<exts>` | Extension lookup order (e.g. `.ios.ts,.ts,.js`) |
-| `--main-fields=<fields>` | package.json field order (e.g. `react-native,browser,main`) |
-| `--preserve-symlinks` | Don't resolve symlinks |
+| Option                                  | Description                                                                      |
+| --------------------------------------- | -------------------------------------------------------------------------------- |
+| `--external <pkg>` / `--external=<pkg>` | Exclude from bundle (repeatable)                                                 |
+| `--alias:FROM=TO`                       | Import path alias                                                                |
+| `--resolve-extensions=<exts>`           | Extension lookup order (e.g. `.ios.ts,.ts,.js`)                                  |
+| `--main-fields=<fields>`                | package.json field order (e.g. `react-native,browser,main`)                      |
+| `--conditions=<list>`                   | Add package exports conditions from a CSV list (for example `prod,react-native`) |
+| `--node-paths=<list>`                   | Additional bare-specifier lookup paths from a CSV list                           |
+| `--preserve-symlinks`                   | Don't resolve symlinks                                                           |
 
 ## Watch / Dev Server
 
-| Option | Description |
-|--------|-------------|
-| `-w, --watch` | Watch for file changes (incremental rebuild) |
-| `--watch-json` | NDJSON event output (for external HMR integration) |
-| `--watch-delay=<ms>` | Debounce delay |
-| `--serve [dir]` | Static file server (default: `.`) |
-| `--port <n>` | Server port |
-| `--host [addr]` | Binding address |
-| `--strict-port` | Fail instead of falling through to the next port when the requested port is busy |
-| `--certfile <path>` | HTTPS certificate file (`preview`/serve) |
-| `--keyfile <path>` | HTTPS private key file (`preview`/serve) |
-| `--open` | Auto-open browser |
-| `--proxy /api=http://host:port` | API proxy |
+| Option                          | Description                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------- |
+| `-w, --watch`                   | Watch for file changes (incremental rebuild)                                     |
+| `--watch-json`                  | NDJSON event output (for external HMR integration)                               |
+| `--watch-delay=<ms>`            | Debounce delay                                                                   |
+| `--serve [dir]`                 | Static file server (default: `.`)                                                |
+| `--port <n>`                    | Server port                                                                      |
+| `--host [addr]`                 | Binding address                                                                  |
+| `--strict-port`                 | Fail instead of falling through to the next port when the requested port is busy |
+| `--certfile <path>`             | HTTPS certificate file (`preview`/serve)                                         |
+| `--keyfile <path>`              | HTTPS private key file (`preview`/serve)                                         |
+| `--open`                        | Auto-open browser                                                                |
+| `--proxy /api=http://host:port` | API proxy                                                                        |
 
 **Dev server external interfaces:** `/sse/events` (SSE build events), `/reset-cache` (Control API), `/mcp` (Model Context Protocol — for LLM agents like Claude Code).
 
 ## Plugins / Execution
 
-| Option | Description |
-|--------|-------------|
-| `--plugin <path>` | JS/TS plugin or config file |
-| `--jobs=<n>` | Parallel thread count |
-| `--config <path>` | Use an explicit `zts.config.*` instead of auto-discovery |
+| Option                      | Description                                                 |
+| --------------------------- | ----------------------------------------------------------- |
+| `--plugin <path>`           | JS/TS plugin or config file                                 |
+| `--jobs=<n>`                | Parallel thread count                                       |
+| `--config <path>`           | Use an explicit `zts.config.*` instead of auto-discovery    |
 | `--workspace-config <path>` | Use an explicit `zts.workspace.*` instead of auto-discovery |
-| `--workspace <name>` | Select one workspace entry |
+| `--workspace <name>`        | Select one workspace entry                                  |
 
 ## Diagnostics / Logging
 
-| Option | Description |
-|--------|-------------|
-| `--log-level=<level>` | `silent\|error\|warning\|info\|debug\|verbose` |
-| `--log-limit=<n>` | Max diagnostics shown |
-| `--allow-overwrite` | Explicitly permit an output path to overwrite an input file. Blocked by default. |
-| `-h, --help` | Show help |
+| Option                       | Description                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| `--log-level=<level>`        | `silent\|error\|warning\|info\|debug\|verbose`                                   |
+| `--log-limit=<n>`            | Max diagnostics shown                                                            |
+| `--profile=<list>`           | Collect profile categories from a CSV list (`all`, `parse`, `transform`, etc.)   |
+| `--profile-level=<level>`    | Profile detail level: `summary\|detailed\|per-module\|per-pass`                  |
+| `--profile-format=<format>`  | Profile output: `table\|tree\|json\|csv`                                         |
+| `--tokenize[=false]`         | Print scanner tokens instead of generated code                                   |
+| `--tokenize-format=<format>` | Token output format: `text\|json`                                                |
+| `--stop-after=<phase>`       | Debug option to stop after a compiler phase                                      |
+| `--test262 <dir>`            | Run the Zig Test262 runner                                                       |
+| `--allow-overwrite`          | Explicitly permit an output path to overwrite an input file. Blocked by default. |
+| `-h, --help`                 | Show help                                                                        |
 
 ## Internal / Planned Options Not Exposed In The Current CLI
 
 These features exist as internal options or roadmap items, but are not present in the current
-`zts` CLI flag registry: `globalIdentifiers`, `pure`,
-`polyfills`, `jsxSideEffects`, `tsconfigRaw`, `ignoreAnnotations`, `packages=external`,
-`conditions`, `nodePaths`, `runBeforeMain`, `timing/profile`, `tokenize`, `test262`.
+`zts` CLI flag registry: `globalIdentifiers`, `polyfills`, `runBeforeMain`.
 
 ## See Also
 
