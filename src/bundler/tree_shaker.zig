@@ -434,24 +434,24 @@ pub const TreeShaker = struct {
         return any_changed;
     }
 
+    /// `Module.importers` (graph.linkDependency 가 채우는 양방향 인접 리스트) 의 항목을
+    /// numeric BFS 큐에 넣는다. dynamic_importers 는 별도 리스트라 자동 제외 — dynamic
+    /// import 는 runtime property 접근이라 numeric materialize 가 손댈 AST binding 이 없다.
+    fn enqueueStaticImporters(
+        self: *TreeShaker,
+        queue: *std.ArrayList(u32),
+        idx: u32,
+        mod_count: usize,
+    ) !void {
+        const m = self.getModule(idx) orelse return;
+        for (m.importers.items) |imp| {
+            const ii = @intFromEnum(imp);
+            if (ii >= mod_count) continue;
+            try queue.append(self.allocator, @intCast(ii));
+        }
+    }
+
     fn propagateNumericExportConstFacts(self: *TreeShaker, mod_count: usize) !void {
-        var reverse_deps = try self.allocator.alloc(std.ArrayList(u32), mod_count);
-        defer {
-            for (reverse_deps) |*deps| deps.deinit(self.allocator);
-            self.allocator.free(reverse_deps);
-        }
-        for (reverse_deps) |*deps| deps.* = .empty;
-
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            for (m.import_records) |rec| {
-                if (rec.resolved.isNone()) continue;
-                const target = @intFromEnum(rec.resolved);
-                if (target >= mod_count) continue;
-                try reverse_deps[target].append(self.allocator, @intCast(i));
-            }
-        }
-
         var queue: std.ArrayList(u32) = .empty;
         defer queue.deinit(self.allocator);
         // re-export-only 모듈은 importer 가 큐를 비울 때마다 한 번만 forwarding 하면 충분 —
@@ -464,18 +464,18 @@ pub const TreeShaker = struct {
             const ast = &(m.ast orelse continue);
             if (self.moduleHasNumericExportSeed(ast, sem)) {
                 self.minifyAndResyncModule(m, sem, ast);
-                for (reverse_deps[i].items) |importer| try queue.append(self.allocator, importer);
+                try self.enqueueStaticImporters(&queue, @intCast(i), mod_count);
                 continue;
             }
             if (self.moduleHasExportedNumberConstValue(sem)) {
-                for (reverse_deps[i].items) |importer| try queue.append(self.allocator, importer);
+                try self.enqueueStaticImporters(&queue, @intCast(i), mod_count);
             }
         }
 
         while (queue.pop()) |idx| {
             if (idx >= mod_count) continue;
             if (try self.materializeCrossModuleConstFactsForIndex(idx, .numeric_export_chain)) {
-                for (reverse_deps[idx].items) |importer| try queue.append(self.allocator, importer);
+                try self.enqueueStaticImporters(&queue, idx, mod_count);
                 continue;
             }
 
@@ -490,7 +490,7 @@ pub const TreeShaker = struct {
             }
             if (!has_re_export) continue;
             forwarded_re_exports.set(idx);
-            for (reverse_deps[idx].items) |importer| try queue.append(self.allocator, importer);
+            try self.enqueueStaticImporters(&queue, idx, mod_count);
         }
     }
 
