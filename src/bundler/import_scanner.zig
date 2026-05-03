@@ -293,8 +293,15 @@ fn tryExtractImportDecl(ast: *const Ast, node: Node) ?ImportRecord {
     if (e + 2 >= ast.extra_data.items.len) return null;
 
     const extras = ast.extra_data.items[e .. e + 3];
+    const specs_start = extras[0];
     const specs_len = extras[1];
     const source_idx: NodeIndex = @enumFromInt(extras[2]);
+
+    // 모든 spec 이 individual `type` modifier 면 import 자체 elide — `import { type A, type B }
+    // from './foo'` 가 babel typescript preset 이 statement 통째 제거하는 것과 동등.
+    // `import type { ... }` (declaration-level type-only) 는 parser 가 이미 NodeIndex.none
+    // 반환 (`module.zig:430`).
+    if (specs_len > 0 and allSpecsAreTypeOnly(ast, specs_start, specs_len)) return null;
 
     const specifier = getStringLiteralText(ast, source_idx) orelse return null;
     const source_node = ast.getNode(source_idx);
@@ -304,6 +311,19 @@ fn tryExtractImportDecl(ast: *const Ast, node: Node) ?ImportRecord {
         .kind = if (specs_len == 0) .side_effect else .static_import,
         .span = source_node.span,
     };
+}
+
+fn allSpecsAreTypeOnly(ast: *const Ast, specs_start: u32, specs_len: u32) bool {
+    if (specs_start + specs_len > ast.extra_data.items.len) return false;
+    const spec_indices = ast.extra_data.items[specs_start .. specs_start + specs_len];
+    for (spec_indices) |raw_idx| {
+        const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+        if (spec_idx.isNone()) return false;
+        const spec_node = ast.getNode(spec_idx);
+        // import_specifier / import_default_specifier / import_namespace_specifier 모두 binary.flags 사용.
+        if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) == 0) return false;
+    }
+    return true;
 }
 
 /// export * from "./foo": binary { left=exported_name, right=source_node }
