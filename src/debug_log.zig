@@ -35,6 +35,9 @@ pub const Category = enum {
     /// RFC #1672 D1 (Ast mutable + clone 제거) 디버깅용. parse_arena 소유권과
     /// transformer 의 in-place append 상호작용 확인.
     ast_mutation,
+    /// `Ast.addString` intern map 의 hit/miss 통계. PR #2496 의 dedupe 효과
+    /// 측정용. 모듈별 (parser/transformer 두 ast 합산) dump.
+    string_intern,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
