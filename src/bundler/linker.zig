@@ -2676,6 +2676,22 @@ pub const Linker = struct {
         self.populateSymbolRefCounts();
     }
 
+    /// pre-shake AST mutation (cross-module const materialize) 직후, 후속 BFS 가
+    /// 읽는 populate* 만 좁게 재실행한다. rename/mangling/symbol_ref_counts 는
+    /// 의도적으로 제외:
+    ///   - rename/mangling: emit 단계 입력. 직후 numeric post-pass 가 또 mutation 할
+    ///     수 있어 bundler 가 모든 mutation 이 settle 된 뒤 한 번만 계산해야 한다
+    ///     (#2502: 두 번 호출되면 inner 결과가 outer `clear_first` 로 폐기 → 낭비).
+    ///   - populateSymbolRefCounts: 증분 (`+= 1`) 이라 멱등하지 않음 — 두 번 부르면
+    ///     2× 누적. mangler 가 rank-comparison 으로만 쓰니 결과는 같지만, 새 inner
+    ///     에서 빼고 outer 의 한 번만 신뢰하는 편이 명확.
+    /// `*const Linker` 시그니처 — populate* 모두 const-self interior mutation 만 함.
+    pub fn refreshAfterAstMutation(self: *const Linker) void {
+        self.populateReExportAliases();
+        self.populateImportSymbols();
+        self.populateNamespaceAccesses();
+    }
+
     /// 특정 모듈들만 대상으로 이름 충돌을 감지하고 리네임을 계산한다.
     /// code splitting에서 사용 — 각 청크는 독립된 네임스페이스이므로
     /// 같은 이름이 다른 청크에 있어도 충돌하지 않는다.
