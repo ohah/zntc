@@ -1355,13 +1355,8 @@ pub fn appendGuardedModuleCall(
 /// `__r(N);` (= guardedLoadModule outer 호출) 을 emit 하는 것과 동등.
 pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8, options: *const EmitOptions) !void {
     for (run_before_main) |rbm_path| {
-        var it = graph.modulesIterator();
-        while (it.next()) |rbm| {
-            if (std.mem.eql(u8, rbm.path, rbm_path)) {
-                try appendGuardedModuleCall(output, allocator, rbm, options);
-                break;
-            }
-        }
+        const rbm = graph.findModuleByPath(rbm_path) orelse continue;
+        try appendGuardedModuleCall(output, allocator, rbm, options);
     }
 }
 
@@ -1373,14 +1368,14 @@ fn findLastRunBeforeMainPosition(sorted: []const *const Module, run_before_main:
     return last;
 }
 
-fn isRunBeforeMainPath(path: []const u8, run_before_main: []const []const u8) bool {
+pub fn isRunBeforeMainPath(path: []const u8, run_before_main: []const []const u8) bool {
     for (run_before_main) |rbm_path| {
         if (std.mem.eql(u8, path, rbm_path)) return true;
     }
     return false;
 }
 
-fn shouldInsertRunBeforeMainBefore(position: usize, insert_after_pos: ?usize) bool {
+pub fn shouldInsertRunBeforeMainBefore(position: usize, insert_after_pos: ?usize) bool {
     return if (insert_after_pos) |last| position > last else true;
 }
 

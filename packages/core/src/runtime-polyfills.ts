@@ -614,9 +614,8 @@ function uniqueSorted(values: Iterable<string>): string[] {
 
 function resolveRuntimeModules(
   modules: Iterable<string>,
-  options: RuntimePolyfillBuildOptions,
+  resolveCoreJs: (moduleName: string) => string,
 ): ResolvedRuntimeModule[] {
-  const resolveCoreJs = buildCoreJsResolver(options.entryPoints);
   return uniqueSorted(modules).map((moduleName) => ({
     module: moduleName,
     path: resolveCoreJs(moduleName),
@@ -646,14 +645,15 @@ export function applyRuntimePolyfillsToNapiOptions(
 
   const exclude = new Set(runtime.exclude);
   const includeModules = runtime.include.filter((moduleName) => !exclude.has(moduleName));
-  const includeResolved = resolveRuntimeModules(includeModules, options);
+  const resolveCoreJs = buildCoreJsResolver(options.entryPoints);
+  const includeResolved = resolveRuntimeModules(includeModules, resolveCoreJs);
 
   if (runtime.mode === "entry") {
     const entryModules = computeCoreJsCompatModules(runtime.targets, /^(?:es|web)\./, {
       version: runtime.coreJsVersion,
       proposals: runtime.proposals,
     }).filter((moduleName) => !exclude.has(moduleName));
-    const entryResolved = resolveRuntimeModules(entryModules, options);
+    const entryResolved = resolveRuntimeModules(entryModules, resolveCoreJs);
     if (entryResolved.length === 0 && includeResolved.length === 0) {
       return { cleanup: () => {}, modules: [] };
     }
@@ -674,7 +674,6 @@ export function applyRuntimePolyfillsToNapiOptions(
     }).filter((moduleName) => !exclude.has(moduleName)),
   );
   const candidates: ResolvedRuntimeCandidate[] = [];
-  const resolveCoreJs = buildCoreJsResolver(options.entryPoints);
   for (const item of RUNTIME_POLYFILL_FEATURE_MODULES) {
     if (!targetCandidateSet.has(item.module)) continue;
     candidates.push({

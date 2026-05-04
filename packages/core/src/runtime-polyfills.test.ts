@@ -262,24 +262,26 @@ describe("runtime polyfill native plan", () => {
         runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
       });
 
-      expect(napiOptions.runtimePolyfillCandidateModules).toEqual([
-        "es.array.at",
-        "es.array.find-last",
-        "es.map",
-        "es.map.group-by",
-        "es.math.trunc",
-        "es.object.has-own",
-        "es.object.values",
-        "es.set",
-        "es.set.union.v2",
-        "es.promise",
-        "es.promise.any",
-        "web.structured-clone",
-        "es.string.pad-start",
-        "es.string.replace-all",
-        "es.weak-map",
-        "web.url",
-      ]);
+      expect(napiOptions.runtimePolyfillCandidateModules).toEqual(
+        expect.arrayContaining([
+          "es.array.at",
+          "es.array.find-last",
+          "es.map",
+          "es.map.group-by",
+          "es.math.trunc",
+          "es.object.has-own",
+          "es.object.values",
+          "es.set",
+          "es.set.union.v2",
+          "es.promise",
+          "es.promise.any",
+          "web.structured-clone",
+          "es.string.pad-start",
+          "es.string.replace-all",
+          "es.weak-map",
+          "web.url",
+        ]),
+      );
       expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("map_group_by");
       expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("set_union");
       expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("promise_any");

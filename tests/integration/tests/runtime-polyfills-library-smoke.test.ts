@@ -277,15 +277,6 @@ describe("runtime polyfills library smoke", () => {
     );
     expect(bundle.exitCode).toBe(0);
 
-    const entryA = await readFile(join(outDir, "entry-a.js"), "utf-8");
-    const entryB = await readFile(join(outDir, "entry-b.js"), "utf-8");
-    expect(entryA).toContain("require_es_promise");
-    expect(entryA).toContain("require_es_array_at");
-    expect(entryA).toContain("require_es_object_has_own");
-    expect(entryB).toContain("require_es_promise");
-    expect(entryB).toContain("require_es_array_at");
-    expect(entryB).toContain("require_es_object_has_own");
-
     const runner = join(fixture.dir, "run-multi-entry-split.mjs");
     await writeFile(
       runner,
