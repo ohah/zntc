@@ -100,6 +100,8 @@ jobs:
           BODY_FILE=$(mktemp)
           echo "## Benchmark Results (CI)" >> "$BODY_FILE"
           echo "" >> "$BODY_FILE"
+          echo "> Note: bundle-perf compares ZTS profile-total metrics against the checked-in absolute baseline, not against the PR base commit. Positive Δ% means the current CI run is slower than that baseline; use the bundle wall-time table for ZTS/esbuild/Rolldown/Rspack comparisons." >> "$BODY_FILE"
+          echo "" >> "$BODY_FILE"
           for dir in results/benchmark-*/; do
             os=$(basename "$dir" | sed 's/benchmark-//')
             echo "### ${os}" >> "$BODY_FILE"

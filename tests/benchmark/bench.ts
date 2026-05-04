@@ -255,7 +255,7 @@ function benchBundle(): BenchResult[] {
       );
     }
 
-    // webpack/rspack은 large에서만 (느려서)
+    // webpack/rspack은 large 제외 (느려서)
     if (scale.files <= 50) {
       if (webpackBin) {
         const config = join(dir, "webpack.config.js");

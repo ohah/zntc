@@ -221,6 +221,16 @@ function fmtMarkdownMs(n: number): string {
   return formatMetric(n, "ms");
 }
 
+function fmtSignedMs(n: number): string {
+  const sign = n > 0 ? "+" : "";
+  return sign + formatMetric(n, "ms");
+}
+
+function fmtCurrentVsBaseline(curMs: number, baseMs: number): string {
+  if (baseMs === 0) return "-";
+  return `${(curMs / baseMs).toFixed(2)}x`;
+}
+
 interface CliArgs {
   write: boolean;
   noFail: boolean;
@@ -280,18 +290,36 @@ async function main(cli: CliArgs) {
 
   const baseline = JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as BaselineFile;
   console.log();
-  console.log(`Compared against baseline (${baseline.zts_commit} @ ${baseline.generated_at}):`);
+  console.log("### bundle-perf — checked-in baseline context");
+  console.log("| Field | Value |");
+  console.log("| --- | --- |");
+  console.log(`| Current run commit | ${runReport.zts_commit} |`);
+  console.log(`| Baseline source | \`tests/benchmark/baselines/bundle-perf.json\` |`);
+  console.log(`| Baseline snapshot | ${baseline.zts_commit} @ ${baseline.generated_at} |`);
+  console.log(`| Metric | ZTS \`--profile=all\` total, not CLI wall time |`);
+  console.log(`| Comparison mode | Checked-in absolute baseline, not PR-base A/B |`);
+  console.log(
+    `| Sign convention | positive Δ means current is slower than baseline; negative Δ means faster |`,
+  );
+  console.log(
+    `| CI failure mode | Informational when run with \`--no-fail\`; status still shows REGRESS/IMPROVE |`,
+  );
+  console.log(`| Regression threshold | median outside ±${(TOLERANCE * 100).toFixed(0)}% |`);
   console.log();
-  console.log("### bundle-perf — baseline comparison");
-  console.log("| Fixture | Median | Baseline | Delta | Trimmed mean | p95 | Status |");
-  console.log("|---------|--------|----------|-------|--------------|-----|--------|");
+  console.log("### bundle-perf — checked-in baseline comparison");
+  console.log(
+    "| Fixture | Current median | Baseline median | Δ ms | Current / baseline | Δ % | Trimmed mean | p95 | Status |",
+  );
+  console.log(
+    "|---------|----------------|-----------------|------|----------|-----|--------------|-----|--------|",
+  );
   let regressed = 0;
   for (const r of results) {
     const base = baseline.fixtures.find((f) => f.name === r.name);
     if (!base) {
       console.log(`  ${r.name}: NEW (no baseline)`);
       console.log(
-        `| ${r.name} | ${fmtMarkdownMs(r.total_ms_stats.median)} | - | - | ${fmtMarkdownMs(r.total_ms_stats.trimmed_mean)} | ${fmtMarkdownMs(r.total_ms_stats.p95)} | NEW |`,
+        `| ${r.name} | ${fmtMarkdownMs(r.total_ms_stats.median)} | - | - | - | - | ${fmtMarkdownMs(r.total_ms_stats.trimmed_mean)} | ${fmtMarkdownMs(r.total_ms_stats.p95)} | NEW |`,
       );
       continue;
     }
@@ -306,7 +334,7 @@ async function main(cli: CliArgs) {
       `  ${r.name}: ${fmtMs(curMs)} vs ${fmtMs(baseMs)} (${sign}${pct.toFixed(1)}%) [${tag}]`,
     );
     console.log(
-      `| ${r.name} | ${fmtMarkdownMs(curMs)} | ${fmtMarkdownMs(baseMs)} | ${sign}${pct.toFixed(1)}% | ${fmtMarkdownMs(r.total_ms_stats.trimmed_mean)} | ${fmtMarkdownMs(r.total_ms_stats.p95)} | ${tag} |`,
+      `| ${r.name} | ${fmtMarkdownMs(curMs)} | ${fmtMarkdownMs(baseMs)} | ${fmtSignedMs(delta)} | ${fmtCurrentVsBaseline(curMs, baseMs)} | ${sign}${pct.toFixed(1)}% | ${fmtMarkdownMs(r.total_ms_stats.trimmed_mean)} | ${fmtMarkdownMs(r.total_ms_stats.p95)} | ${tag} |`,
     );
     if (!within && pct > 0) regressed++;
   }
