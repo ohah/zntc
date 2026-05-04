@@ -1,18 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import {
   __runtimePolyfillTestHooks,
   applyRuntimePolyfillsToNapiOptions,
-  collectRuntimePolyfillUsageFromFiles,
   computeCoreJsCompatModules,
-  createRuntimePolyfillPrelude,
   isEsTarget,
   normalizeRuntimePolyfillOptions,
   normalizeRuntimeTargets,
-  scanRuntimePolyfillUsage,
 } from "./runtime-polyfills.ts";
 
 function withRuntimeRequire<T>(runtimeRequire: any, fn: () => T): T {
@@ -22,6 +16,25 @@ function withRuntimeRequire<T>(runtimeRequire: any, fn: () => T): T {
   } finally {
     __runtimePolyfillTestHooks.reset();
   }
+}
+
+function makeRuntimeRequire(listForModules: (modules: string[] | RegExp | undefined) => string[]) {
+  const compat = (options: { modules?: string[] | RegExp }) => ({
+    list: listForModules(options.modules),
+  });
+  return Object.assign(
+    (id: string) => {
+      if (id === "core-js-compat") return compat;
+      throw new Error(`unexpected require: ${id}`);
+    },
+    {
+      resolve(specifier: string) {
+        if (specifier.startsWith("core-js/modules/")) return `/virtual/${specifier}`;
+        if (specifier === "core-js/package.json") throw new Error("no package version");
+        throw new Error(`unexpected resolve: ${specifier}`);
+      },
+    },
+  );
 }
 
 describe("runtime polyfill target normalization", () => {
@@ -182,11 +195,6 @@ describe("core-js-compat adapter", () => {
     });
 
     withRuntimeRequire(missingRequire, () => {
-      expect(() => scanRuntimePolyfillUsage(`new Promise(() => {});`)).toThrow("@babel/parser");
-      expect(() => scanRuntimePolyfillUsage(`new Promise(() => {});`)).toThrow("@babel/parser");
-    });
-
-    withRuntimeRequire(missingRequire, () => {
       expect(
         (
           normalizeRuntimePolyfillOptions({
@@ -199,201 +207,153 @@ describe("core-js-compat adapter", () => {
   });
 });
 
-describe("runtime polyfill usage scanner", () => {
-  test("finds supported v1 built-in usage", () => {
-    const modules = scanRuntimePolyfillUsage(`
-      const a = "a".replaceAll("a", "b");
-      const b = values.at(0);
-      const c = Object.hasOwn({ a: 1 }, "a");
-      const d = structuredClone(c);
-      const e = new Map();
-      const f = new Set();
-      const g = Promise.resolve(d);
-      void [a, b, e, f, g];
-    `);
-    expect(modules).toEqual([
-      "es.array.at",
+describe("runtime polyfill native plan", () => {
+  test("auto/usage no longer requires @babel/parser and passes graph candidates", () => {
+    const runtimeRequire = makeRuntimeRequire((modules) =>
+      Array.isArray(modules) ? modules.filter((name) => name !== "es.set") : [],
+    );
+
+    withRuntimeRequire(runtimeRequire, () => {
+      const napiOptions: Record<string, unknown> = { runtimePolyfills: "auto" };
+      const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
+        entryPoints: ["/app/src/entry.ts"],
+        runtimePolyfills: "auto",
+        target: "ios_saf 12",
+      });
+
+      expect(applied.modules).toContain("es.string.replace-all");
+      expect(applied.modules).not.toContain("es.set");
+      expect(napiOptions.runtimePolyfillModeNative).toBe("usage");
+      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("string_replace_all");
+      expect(napiOptions.runtimePolyfillCandidateModules).toContain("es.string.replace-all");
+      expect((napiOptions.runtimePolyfillCandidatePaths as string[])[0]).toStartWith(
+        "/virtual/core-js/modules/",
+      );
+      expect(napiOptions.runBeforeMain).toBeUndefined();
+      applied.cleanup();
+    });
+  });
+
+  test("auto native candidates include broad core-js feature modules and ignore unmodeled results", () => {
+    const runtimeRequire = makeRuntimeRequire(() => [
       "es.map",
-      "es.object.has-own",
-      "es.promise",
+      "es.map.constructor",
+      "es.map.group-by",
       "es.set",
-      "es.string.replace-all",
-      "web.structured-clone",
-    ]);
-  });
-
-  test("ignores dynamic computed member access", () => {
-    expect(scanRuntimePolyfillUsage(`value[methodName]("x");`)).toEqual([]);
-  });
-
-  test("falls back to Flow parsing when TypeScript parsing fails", () => {
-    expect(scanRuntimePolyfillUsage(`opaque type ID = string;\nnew Promise(() => {});`)).toEqual([
+      "es.set.union.v2",
       "es.promise",
+      "es.promise.any",
+      "es.object.values",
+      "es.array.find-last",
+      "es.string.pad-start",
+      "es.weak-map",
+      "es.math.trunc",
+      "web.url",
+      "web.structured-clone",
+      "es.string.replace-all",
+      "es.array.at",
+      "es.object.has-own",
     ]);
+
+    withRuntimeRequire(runtimeRequire, () => {
+      const napiOptions: Record<string, unknown> = {};
+      const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
+        entryPoints: ["/app/src/entry.ts"],
+        runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
+      });
+
+      expect(napiOptions.runtimePolyfillCandidateModules).toEqual([
+        "es.array.at",
+        "es.array.find-last",
+        "es.map",
+        "es.map.group-by",
+        "es.math.trunc",
+        "es.object.has-own",
+        "es.object.values",
+        "es.set",
+        "es.set.union.v2",
+        "es.promise",
+        "es.promise.any",
+        "web.structured-clone",
+        "es.string.pad-start",
+        "es.string.replace-all",
+        "es.weak-map",
+        "web.url",
+      ]);
+      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("map_group_by");
+      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("set_union");
+      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("promise_any");
+      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("object_values");
+      expect(napiOptions.runtimePolyfillCandidateModules).not.toContain("es.map.constructor");
+      applied.cleanup();
+    });
   });
 
-  test("retries with Flow parser options after a parser failure", () => {
-    const parser = {
-      calls: 0,
-      parse() {
-        this.calls += 1;
-        if (this.calls === 1) throw new Error("typescript parse failed");
-        return {
-          type: "File",
-          program: {
-            type: "Program",
-            body: [
-              {
-                type: "ExpressionStatement",
-                expression: {
-                  type: "CallExpression",
-                  callee: { type: "Identifier", name: "Promise" },
-                  arguments: [],
-                },
-              },
-            ],
-          },
-        };
-      },
-    };
-    const runtimeRequire = Object.assign(
-      (id: string) => {
-        if (id === "@babel/parser") return parser;
-        throw new Error("unexpected require");
+  test("usage alias and normalized core-js include/exclude use the same native path", () => {
+    const runtimeRequire = makeRuntimeRequire(() => []);
+
+    withRuntimeRequire(runtimeRequire, () => {
+      const napiOptions: Record<string, unknown> = {};
+      const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
+        entryPoints: ["/app/src/entry.ts"],
+        runtimePolyfills: {
+          mode: "usage",
+          targets: ["safari 5"],
+          include: ["core-js/modules/es.array.at.js", "es.promise"],
+          exclude: ["es.array.at"],
+        },
+      });
+
+      expect(applied.modules).toEqual(["es.promise"]);
+      expect(napiOptions.runtimePolyfillModeNative).toBe("usage");
+      expect(napiOptions.runtimePolyfillIncludeModules).toEqual(["es.promise"]);
+      expect(napiOptions.runtimePolyfillExcludeModules).toEqual(["es.array.at"]);
+      expect(napiOptions.runBeforeMain).toBeUndefined();
+      applied.cleanup();
+    });
+  });
+
+  test("off mode does not load core-js-compat or mutate runtime fields", () => {
+    const throwingRequire = Object.assign(
+      () => {
+        throw new Error("core-js-compat should not load");
       },
       {
         resolve() {
-          throw new Error("unexpected resolve");
+          throw new Error("core-js should not resolve");
         },
       },
     );
 
-    withRuntimeRequire(runtimeRequire, () => {
-      expect(scanRuntimePolyfillUsage(`ignored`)).toEqual(["es.promise"]);
-      expect(parser.calls).toBe(2);
+    withRuntimeRequire(throwingRequire, () => {
+      const napiOptions: Record<string, unknown> = {
+        runtimePolyfills: "off",
+        coreJs: "3.49",
+      };
+      const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
+        entryPoints: ["/app/src/entry.ts"],
+        runtimePolyfills: "off",
+        coreJs: "3.49",
+      });
+
+      expect(applied.modules).toEqual([]);
+      expect(napiOptions.runtimePolyfills).toBeUndefined();
+      expect(napiOptions.coreJs).toBeUndefined();
+      expect(napiOptions.runtimePolyfillModeNative).toBeUndefined();
+      applied.cleanup();
     });
   });
 
-  test("scans local dependency files", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-scan-"));
-    try {
-      writeFileSync(join(dir, "entry.ts"), `import { run } from "./dep"; run();`);
-      writeFileSync(join(dir, "dep.ts"), `export const run = () => "a".replaceAll("a", "b");`);
-      expect(
-        collectRuntimePolyfillUsageFromFiles([join(dir, "entry.ts")], {
-          resolveExtensions: [".ts", ".custom"],
-        }),
-      ).toEqual(["es.string.replace-all"]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  test("applies include/exclude without mutating runBeforeMain", () => {
+    const runtimeRequire = makeRuntimeRequire((modules) =>
+      Array.isArray(modules) ? modules : ["es.promise", "web.structured-clone"],
+    );
 
-  test("ignores entry files whose contents fail to read", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-scan-"));
-    try {
-      const missing = join(dir, "vanished.ts");
-      expect(collectRuntimePolyfillUsageFromFiles([missing])).toEqual([]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("scans require dependencies and directory index modules", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-scan-"));
-    try {
-      writeFileSync(
-        join(dir, "entry.ts"),
-        `require("./dep"); import "./folder"; import "./empty"; import "./missing"; import "./style.css";`,
-      );
-      writeFileSync(join(dir, "dep.js"), `new Set();`);
-      mkdirSync(join(dir, "folder"));
-      writeFileSync(join(dir, "folder", "index.ts"), `[1].at(0);`);
-      mkdirSync(join(dir, "empty"));
-      writeFileSync(join(dir, "style.css"), `.x { color: red; }`);
-      expect(collectRuntimePolyfillUsageFromFiles([join(dir, "entry.ts")])).toEqual([
-        "es.array.at",
-        "es.set",
-      ]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("runtime polyfill prelude", () => {
-  test("creates a removable side-effect import prelude", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-prelude-"));
-    try {
-      const entry = join(dir, "entry.ts");
-      writeFileSync(entry, `console.log("entry");`);
-      const prelude = createRuntimePolyfillPrelude(["es.string.replace-all"], {
-        entryPoints: [entry],
-      });
-      expect(prelude).not.toBeNull();
-      const path = prelude!.path;
-      expect(readFileSync(path, "utf8")).toContain("core-js/modules/es.string.replace-all.js");
-      prelude!.cleanup();
-      expect(existsSync(path)).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("uses the test-hook runtime require when overridden", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-prelude-"));
-    try {
-      const entry = join(dir, "entry.ts");
-      writeFileSync(entry, `console.log("entry");`);
-      const stub = {
-        resolve(specifier: string) {
-          return `/virtual/${specifier}`;
-        },
-      };
-      withRuntimeRequire(stub, () => {
-        const prelude = createRuntimePolyfillPrelude(["es.string.replace-all"], {
-          entryPoints: [entry],
-        });
-        expect(prelude).not.toBeNull();
-        try {
-          expect(readFileSync(prelude!.path, "utf8")).toContain(
-            "/virtual/core-js/modules/es.string.replace-all.js",
-          );
-        } finally {
-          prelude!.cleanup();
-        }
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("throws when a requested core-js module cannot be resolved", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-prelude-"));
-    try {
-      const entry = join(dir, "entry.ts");
-      writeFileSync(entry, `console.log("entry");`);
-      expect(() =>
-        createRuntimePolyfillPrelude(["es.not-real"], {
-          entryPoints: [entry],
-        }),
-      ).toThrow("could not resolve");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("applies include/exclude and prepends runtime prelude before runBeforeMain", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-apply-"));
-    try {
-      const entry = join(dir, "entry.ts");
-      const init = join(dir, "init.ts");
-      writeFileSync(entry, `"a".replaceAll("a", "b");`);
-      writeFileSync(init, `globalThis.__INIT__ = true;`);
-
+    withRuntimeRequire(runtimeRequire, () => {
+      const init = "/app/src/init.ts";
       const napiOptions: Record<string, unknown> = {};
       const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
-        entryPoints: [entry],
+        entryPoints: ["/app/src/entry.ts"],
         runtimePolyfills: {
           mode: "auto",
           targets: ["ios_saf 12"],
@@ -402,63 +362,112 @@ describe("runtime polyfill prelude", () => {
         },
         runBeforeMain: [init],
       });
-      try {
-        expect(applied.modules).toEqual(["es.array.at"]);
-        const runBeforeMain = napiOptions.runBeforeMain as string[];
-        expect(typeof runBeforeMain[0]).toBe("string");
-        expect(runBeforeMain[1]).toBe(init);
-        expect(readFileSync(runBeforeMain[0], "utf8")).toContain("core-js/modules/es.array.at.js");
-      } finally {
-        applied.cleanup();
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+
+      expect(applied.modules).toContain("es.array.at");
+      expect(applied.modules).not.toContain("es.string.replace-all");
+      expect(napiOptions.runtimePolyfillModeNative).toBe("usage");
+      expect(napiOptions.runtimePolyfillIncludeModules).toEqual(["es.array.at"]);
+      expect(napiOptions.runtimePolyfillExcludeModules).toEqual(["es.string.replace-all"]);
+      expect(napiOptions.runBeforeMain).toBeUndefined();
+      applied.cleanup();
+    });
   });
 
-  test("entry mode injects the target-wide compat prelude", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-entry-"));
-    try {
-      const entry = join(dir, "entry.ts");
-      writeFileSync(entry, `console.log("entry");`);
+  test("entry mode passes target-wide modules as native entry roots", () => {
+    const runtimeRequire = makeRuntimeRequire((modules) =>
+      modules instanceof RegExp ? ["es.promise", "web.structured-clone"] : [],
+    );
+
+    withRuntimeRequire(runtimeRequire, () => {
       const napiOptions: Record<string, unknown> = {};
       const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
-        entryPoints: [entry],
-        runtimePolyfills: { mode: "entry", targets: ["ie 11"] },
+        entryPoints: ["/app/src/entry.ts"],
+        runtimePolyfills: { mode: "entry", targets: ["ie 11"], include: ["es.array.at"] },
       });
-      try {
-        expect(applied.modules.length).toBeGreaterThan(0);
-        const runBeforeMain = napiOptions.runBeforeMain as string[];
-        expect(readFileSync(runBeforeMain[0], "utf8")).toContain("core-js/modules/");
-      } finally {
-        applied.cleanup();
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+
+      expect(applied.modules).toEqual(["es.array.at", "es.promise", "web.structured-clone"]);
+      expect(napiOptions.runtimePolyfillModeNative).toBe("entry");
+      expect(napiOptions.runtimePolyfillEntryModules).toEqual([
+        "es.promise",
+        "web.structured-clone",
+      ]);
+      expect(napiOptions.runtimePolyfillIncludeModules).toEqual(["es.array.at"]);
+      applied.cleanup();
+    });
   });
 
-  test("off mode and empty module results return callable cleanup functions", () => {
-    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-empty-"));
-    try {
-      const entry = join(dir, "entry.ts");
-      writeFileSync(entry, `console.log("entry");`);
+  test("entry mode skips native plan when target-wide result is empty", () => {
+    const runtimeRequire = makeRuntimeRequire(() => []);
 
-      const off = applyRuntimePolyfillsToNapiOptions({}, { entryPoints: [entry] });
-      expect(off.modules).toEqual([]);
-      off.cleanup();
+    withRuntimeRequire(runtimeRequire, () => {
+      const napiOptions: Record<string, unknown> = {};
+      const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
+        entryPoints: ["/app/src/entry.ts"],
+        runtimePolyfills: { mode: "entry", targets: ["node 18"] },
+      });
 
-      const empty = applyRuntimePolyfillsToNapiOptions(
-        {},
-        {
-          entryPoints: [entry],
-          runtimePolyfills: { mode: "auto", targets: ["node 18"] },
+      expect(applied.modules).toEqual([]);
+      expect(napiOptions.runtimePolyfillModeNative).toBeUndefined();
+      applied.cleanup();
+    });
+  });
+
+  test("resolves core-js with package-relative fallback when no test require is installed", () => {
+    __runtimePolyfillTestHooks.reset();
+    const napiOptions: Record<string, unknown> = {};
+    const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
+      entryPoints: ["/app/src/entry.ts"],
+      runtimePolyfills: { mode: "auto", include: ["es.array.at"] },
+    });
+
+    expect(applied.modules).toContain("es.array.at");
+    expect((napiOptions.runtimePolyfillIncludePaths as string[])[0]).toContain(
+      "core-js/modules/es.array.at.js",
+    );
+    applied.cleanup();
+  });
+
+  test("throws when a requested core-js module cannot be resolved", () => {
+    const runtimeRequire = Object.assign(
+      (id: string) => {
+        if (id === "core-js-compat") return () => ({ list: [] });
+        throw new Error(`unexpected require: ${id}`);
+      },
+      {
+        resolve() {
+          throw new Error("missing core-js");
         },
-      );
+      },
+    );
+
+    withRuntimeRequire(runtimeRequire, () => {
+      expect(() =>
+        applyRuntimePolyfillsToNapiOptions(
+          {},
+          {
+            entryPoints: ["/app/src/entry.ts"],
+            runtimePolyfills: { mode: "auto", include: ["es.array.at"] },
+          },
+        ),
+      ).toThrow("could not resolve");
+    });
+  });
+
+  test("off mode and empty target results return callable cleanup functions", () => {
+    const off = applyRuntimePolyfillsToNapiOptions({}, { entryPoints: ["/app/src/entry.ts"] });
+    expect(off.modules).toEqual([]);
+    off.cleanup();
+
+    const runtimeRequire = makeRuntimeRequire(() => []);
+    withRuntimeRequire(runtimeRequire, () => {
+      const napiOptions: Record<string, unknown> = {};
+      const empty = applyRuntimePolyfillsToNapiOptions(napiOptions, {
+        entryPoints: ["/app/src/entry.ts"],
+        runtimePolyfills: { mode: "auto", targets: ["node 18"] },
+      });
       expect(empty.modules).toEqual([]);
+      expect(napiOptions.runtimePolyfillModeNative).toBeUndefined();
       empty.cleanup();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   });
 });

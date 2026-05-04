@@ -675,21 +675,36 @@ pub fn emitWithTreeShaking(
         module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
     };
 
+    const entry_is_esm_wrapped = if (entry_idx) |ei| blk: {
+        for (sorted.items) |m| {
+            if (m.index.toU32() == ei) break :blk m.wrap_kind == .esm;
+        }
+        break :blk false;
+    } else false;
+    const emit_top_level_rbm = options.run_before_main.len > 0 and !entry_is_esm_wrapped;
+    const rbm_insert_after_pos = if (emit_top_level_rbm)
+        findLastRunBeforeMainPosition(sorted.items, options.run_before_main)
+    else
+        null;
+    var rbm_calls_emitted = false;
+
     for (sorted.items, 0..) |m, i| {
         // helpers 합산 (bitwise OR)
         collected_helpers = @bitCast(@as(u32, @bitCast(collected_helpers)) | @as(u32, @bitCast(results[i].helpers)));
 
         const code = results[i].code orelse continue;
 
-        // --run-before-main: 엔트리 모듈 직전에 해당 모듈의 require/init 호출 삽입.
+        // --run-before-main/runtime-prelude: dependency 본문도 polyfill/setup 이후
+        // 실행되어야 하므로 rbm 모듈 정의가 끝난 직후, 첫 user module 전에 호출한다.
         // __esm 래핑된 엔트리(RN)는 emitEsmWrappedModule에서 body 안에 삽입.
-        const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
-        if (is_entry and options.run_before_main.len > 0 and m.wrap_kind != .esm) {
+        if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(i, rbm_insert_after_pos)) {
             const before_len = module_output.items.len;
             try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options);
             module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
+            rbm_calls_emitted = true;
         }
 
+        const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
         if (!options.minify_whitespace) {
             try module_output.appendSlice(allocator, "//#region ");
             try module_output.appendSlice(allocator, std.fs.path.basename(m.path));
@@ -813,6 +828,11 @@ pub fn emitWithTreeShaking(
                 .sm_builder = module_sm_builder,
             });
         }
+    }
+    if (emit_top_level_rbm and !rbm_calls_emitted) {
+        const before_len = module_output.items.len;
+        try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options);
+        module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
     }
 
     // #1961 PR 1h: RuntimeHelpers 비트맵 기반 ES2015 런타임 헬퍼는 transformer 가 graph
@@ -1343,6 +1363,25 @@ pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.A
             }
         }
     }
+}
+
+fn findLastRunBeforeMainPosition(sorted: []const *const Module, run_before_main: []const []const u8) ?usize {
+    var last: ?usize = null;
+    for (sorted, 0..) |m, i| {
+        if (isRunBeforeMainPath(m.path, run_before_main)) last = i;
+    }
+    return last;
+}
+
+fn isRunBeforeMainPath(path: []const u8, run_before_main: []const []const u8) bool {
+    for (run_before_main) |rbm_path| {
+        if (std.mem.eql(u8, path, rbm_path)) return true;
+    }
+    return false;
+}
+
+fn shouldInsertRunBeforeMainBefore(position: usize, insert_after_pos: ?usize) bool {
+    return if (insert_after_pos) |last| position > last else true;
 }
 
 fn emitModuleThread(

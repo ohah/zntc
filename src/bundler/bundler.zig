@@ -29,6 +29,7 @@ const Linker = linker_mod.Linker;
 const MangleReportCollector = linker_mod.MangleReportCollector;
 const TreeShaker = @import("tree_shaker.zig").TreeShaker;
 const module_store = @import("module_store.zig");
+const runtime_polyfills = @import("runtime_polyfills.zig");
 const transpile_mod = @import("../transpile.zig");
 const compat = @import("../transformer/transformer.zig").TransformOptions.compat;
 
@@ -241,6 +242,9 @@ pub const BundleOptions = struct {
     /// Metro의 runBeforeMainModule과 동일 역할. inject와 같은 메커니즘으로
     /// 엔트리 의존성에 추가되어 먼저 실행된다.
     run_before_main: []const []const u8 = &.{},
+    /// core-js runtime polyfill graph plan. JS wrapper computes target candidates,
+    /// native graph selects usage-mode roots after parse/semantic.
+    runtime_polyfills: ?runtime_polyfills.Plan = null,
     /// 번들 시작 시 즉시 실행 폴리필 (--polyfill). 절대 경로 목록.
     /// 파일 내용을 IIFE로 감싸서 런타임 헬퍼 앞에 인라인. 모듈 그래프에 미포함.
     polyfills: []const []const u8 = &.{},
@@ -832,13 +836,9 @@ pub const Bundler = struct {
         graph.project_root = self.options.project_root;
         graph.asset_names = self.options.asset_names;
         graph.asset_registry = self.options.asset_registry;
-        // --inject와 --run-before-main을 합쳐서 엔트리 의존성으로 추가 (실행 순서: inject → run-before-main → entry)
-        const combined_inject = if (self.options.run_before_main.len > 0)
-            try std.mem.concat(self.allocator, []const u8, &.{ self.options.inject, self.options.run_before_main })
-        else
-            null;
-        defer if (combined_inject) |c| self.allocator.free(c);
-        graph.inject_files = combined_inject orelse self.options.inject;
+        graph.inject_files = self.options.inject;
+        graph.run_before_main_files = self.options.run_before_main;
+        graph.runtime_polyfills = self.options.runtime_polyfills;
         graph.pure = self.options.pure;
         graph.ignore_annotations = self.options.ignore_annotations;
         graph.plugins = self.options.plugins;
@@ -908,6 +908,17 @@ pub const Bundler = struct {
             } else {
                 try graph.build(self.options.entry_points);
             }
+        }
+
+        if (graph.runtime_polyfill_roots.items.len > 0) {
+            const current_rbm = self.options.run_before_main;
+            const merged = try self.allocator.alloc([]const u8, graph.runtime_polyfill_roots.items.len + current_rbm.len);
+            @memcpy(merged[0..graph.runtime_polyfill_roots.items.len], graph.runtime_polyfill_roots.items);
+            @memcpy(merged[graph.runtime_polyfill_roots.items.len..], current_rbm);
+            if (current_rbm.len > 0 and current_rbm.ptr != original_rbm.ptr) {
+                self.allocator.free(current_rbm);
+            }
+            self.options.run_before_main = merged;
         }
 
         // Worker 별도 빌드: new Worker(new URL(...)) 패턴에서 수집된 worker 경로를 독립 IIFE로 빌드

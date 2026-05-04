@@ -391,13 +391,15 @@ fn markReachableNodes(ast: *const Ast, root: NodeIndex, live: *std.DynamicBitSet
 //   - symbol 의 `scope_id != 0` (함수/블록 local 만) — top-level 은 tree-shaker 영역
 //   - `reference_count == 0` and `write_count == 0`
 //   - `is_exported` / `is_default_export` 둘 다 false
-//   - init 이 없거나 `purity.isExprPure` 가 true
+//   - source-authored init 이 없거나 `purity.isExprPure` 가 true
 //
 // 제외:
 //   - top-level (module scope) 선언     — tree-shaker 가 커버, 중복 제거는 fixture 회귀
 //   - `using` / `await using`           — `[Symbol.dispose]` 호출이 side-effect
 //   - destructuring / non-identifier    — pattern 은 간접 getter 호출 가능
 //   - declarator 2개 이상               — 부분 제거는 PR 범위 밖 (복잡도)
+//   - synthetic no-init temp 선언       — transformer 가 나중에 만든 assignment ref 는
+//                                        원본 semantic refcount 와 어긋날 수 있음
 //   - init 이 불순                      — "강등" (→ expression_statement) 은 PR1.5
 //
 // 제거 시 init expression 내 모든 identifier_reference 의 `reference_count` 를
@@ -484,6 +486,13 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     // 단일 binding_identifier 만 — destructuring/array/object pattern 제외
     if (name_node.tag != .binding_identifier) return;
 
+    const init_idx: NodeIndex = @enumFromInt(init_raw);
+    // Transformer-generated temp declarations (`var _a;`) use interned string-table
+    // spans and are paired with assignment reads that may be introduced after the
+    // original semantic pass. Dropping the declaration can turn valid downlevel
+    // output into `_a = ...` ReferenceError in strict-mode wrappers.
+    if (init_idx.isNone() and (name_node.data.string_ref.start & Ast.STRING_TABLE_BIT) != 0) return;
+
     // symbol_ids[name_node_idx] → symbol index
     if (name_raw >= ctx.symbol_ids.len) return;
     const sym_id = ctx.symbol_ids[name_raw] orelse return;
@@ -507,7 +516,6 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     if (ctx.effectiveRefCount(sym_id) != 0 or sym.write_count != 0) return;
 
     // init 이 있으면 purity 검사 — 불순하면 RHS 보존을 위해 (아직) 제거 불가
-    const init_idx: NodeIndex = @enumFromInt(init_raw);
     if (!init_idx.isNone()) {
         if (!purity.isExprPure(ast, init_idx, ctx.unresolved_globals)) return;
         // init 내부의 pure identifier_reference 들의 reference_count 를 감산

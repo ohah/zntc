@@ -795,7 +795,7 @@ interface BuildOptionsCommon {
    * core-js 기반 런타임 API 폴리필 자동 주입.
    *
    * - `"off"` (default): 자동 런타임 폴리필 없음.
-   * - `"auto"` / `"usage"`: 엔트리와 로컬 의존성의 실제 사용 API만 스캔해 타겟 미지원 모듈 주입.
+   * - `"auto"` / `"usage"`: resolve/load/transform 이후 실제 번들 그래프 사용 API를 감지해 타겟 미지원 모듈 주입.
    * - `"entry"`: 타겟 기준 필요한 core-js ES/Web 모듈을 엔트리 prelude에 포괄 주입.
    * - 타겟 지정은 Rspack/SWC `env.targets`와 같은 Browserslist query 배열을 사용한다.
    */

@@ -34,6 +34,12 @@ const EmitOptions = parent.EmitOptions;
 const OutputFile = parent.OutputFile;
 const emitChunkRuntimeHelpers = parent.emitChunkRuntimeHelpers;
 const emitModule = parent.emitModule;
+const appendRunBeforeMainCalls = parent.appendRunBeforeMainCalls;
+
+const RunBeforeMainCrossImport = struct {
+    source_chunk: ChunkIndex,
+    name: []const u8,
+};
 
 pub fn emitChunks(
     allocator: std.mem.Allocator,
@@ -88,6 +94,10 @@ pub fn emitChunks(
 
         // 출력 확장자 (cross-chunk import 경로 + 파일명에 공용)
         const ext = options.out_extension_js orelse ".js";
+        const chunk_is_user_entry = switch (chunk.kind) {
+            .entry_point => |info| !info.is_dynamic,
+            .common, .manual => false,
+        };
 
         // banner 삽입 (각 청크 출력 앞)
         if (options.banner_js) |banner| {
@@ -117,6 +127,31 @@ pub fn emitChunks(
                 chunk_mods.items,
                 linker,
                 options.minify_whitespace,
+            );
+        }
+
+        var rbm_cross_imports: std.ArrayList(RunBeforeMainCrossImport) = .empty;
+        defer {
+            for (rbm_cross_imports.items) |imp| allocator.free(imp.name);
+            rbm_cross_imports.deinit(allocator);
+        }
+        if (chunk_is_user_entry and options.run_before_main.len > 0) {
+            try collectRunBeforeMainCrossImports(
+                allocator,
+                &rbm_cross_imports,
+                graph,
+                chunk_graph,
+                chunk,
+                options.run_before_main,
+            );
+            try emitRunBeforeMainCrossImports(
+                &chunk_output,
+                allocator,
+                rbm_cross_imports.items,
+                chunk,
+                chunk_graph,
+                options,
+                ext,
             );
         }
 
@@ -251,6 +286,9 @@ pub fn emitChunks(
             for (alias_strs.items) |alias| {
                 try occupied.append(allocator, alias);
             }
+            for (rbm_cross_imports.items) |imp| {
+                try occupied.append(allocator, imp.name);
+            }
         }
 
         // per-chunk 리네임 계산: 각 청크는 독립된 네임스페이스이므로
@@ -264,8 +302,18 @@ pub fn emitChunks(
             .entry_point => |info| @intFromEnum(info.module),
             .common, .manual => null,
         };
+        const entry_is_esm_wrapped = if (entry_mod_idx) |ei| blk: {
+            const entry_mod = graph.getModule(ModuleIndex.fromUsize(@intCast(ei))) orelse break :blk false;
+            break :blk entry_mod.wrap_kind == .esm;
+        } else false;
+        const emit_top_level_rbm = chunk_is_user_entry and options.run_before_main.len > 0 and !entry_is_esm_wrapped;
+        const rbm_insert_after_pos = if (emit_top_level_rbm)
+            findLastRunBeforeMainPosition(graph, sorted_mods, options.run_before_main)
+        else
+            null;
+        var rbm_calls_emitted = false;
 
-        for (sorted_mods) |mod_idx| {
+        for (sorted_mods, 0..) |mod_idx, sorted_pos| {
             const mi = @intFromEnum(mod_idx);
             if (mi >= module_count) continue;
             const m = graph.getModule(mod_idx) orelse continue;
@@ -286,6 +334,14 @@ pub fn emitChunks(
             else
                 code;
 
+            // Match the single-file emitter: dependency bodies must also run
+            // after runtime prelude/setup, so insert after rbm definitions and
+            // before the first user module in this entry chunk.
+            if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(sorted_pos, rbm_insert_after_pos)) {
+                try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options);
+                rbm_calls_emitted = true;
+            }
+
             if (!options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, "//#region ");
                 try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
@@ -296,21 +352,43 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, "//#endregion\n");
             }
         }
+        if (emit_top_level_rbm and !rbm_calls_emitted) {
+            try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options);
+        }
 
         // RSC 디렉티브 충돌 검증 (Next.js 스펙).
         warnRscDirectiveConflict(hoisted_directives.items, chunk.rel_dir orelse "<chunk>");
+
+        var rbm_export_names: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (rbm_export_names.items) |name| allocator.free(name);
+            rbm_export_names.deinit(allocator);
+        }
+        if (options.run_before_main.len > 0) {
+            try collectRunBeforeMainExportNames(
+                allocator,
+                &rbm_export_names,
+                graph,
+                chunk_graph,
+                chunk,
+                options.run_before_main,
+            );
+        }
 
         // 크로스 청크 export: exports_to에 심볼이 있으면 export 문 생성.
         // 다른 청크가 이 청크에서 심볼을 가져가는 경우에만 출력.
         // preserve-modules에서는 모듈 자체의 export가 유지되므로 cross-chunk export 불필요.
         // linker가 심볼을 rename한 경우 export { local_name as export_name } 형태로 출력.
-        if (chunk.exports_to.count() > 0 and !options.preserve_modules) {
+        if ((chunk.exports_to.count() > 0 or rbm_export_names.items.len > 0) and !options.preserve_modules) {
             // 결정론적 출력을 위해 이름을 정렬
             var export_names: std.ArrayList([]const u8) = .empty;
             defer export_names.deinit(allocator);
             var eit = chunk.exports_to.iterator();
             while (eit.next()) |entry| {
-                try export_names.append(allocator, entry.key_ptr.*);
+                try appendUniqueName(&export_names, allocator, entry.key_ptr.*);
+            }
+            for (rbm_export_names.items) |name| {
+                try appendUniqueName(&export_names, allocator, name);
             }
             std.mem.sort([]const u8, export_names.items, {}, types.stringLessThan);
 
@@ -434,6 +512,12 @@ pub fn emitChunks(
             while (eit.next()) |entry| {
                 try names.append(allocator, try allocator.dupe(u8, entry.key_ptr.*));
             }
+            if (!options.preserve_modules) {
+                for (rbm_export_names.items) |name| {
+                    if (containsName(names.items, name)) continue;
+                    try names.append(allocator, try allocator.dupe(u8, name));
+                }
+            }
             break :blk try names.toOwnedSlice(allocator);
         };
 
@@ -451,6 +535,145 @@ pub fn emitChunks(
     try resolveContentHashes(allocator, outputs.items, sorted_indices, chunk_graph);
 
     return outputs.toOwnedSlice(allocator);
+}
+
+fn findLastRunBeforeMainPosition(
+    graph: *const ModuleGraph,
+    sorted_mods: []const ModuleIndex,
+    run_before_main: []const []const u8,
+) ?usize {
+    var last: ?usize = null;
+    for (sorted_mods, 0..) |mod_idx, i| {
+        const m = graph.getModule(mod_idx) orelse continue;
+        if (isRunBeforeMainPath(m.path, run_before_main)) last = i;
+    }
+    return last;
+}
+
+fn isRunBeforeMainPath(path: []const u8, run_before_main: []const []const u8) bool {
+    for (run_before_main) |rbm_path| {
+        if (std.mem.eql(u8, path, rbm_path)) return true;
+    }
+    return false;
+}
+
+fn shouldInsertRunBeforeMainBefore(position: usize, insert_after_pos: ?usize) bool {
+    return if (insert_after_pos) |last| position > last else true;
+}
+
+fn collectRunBeforeMainCrossImports(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(RunBeforeMainCrossImport),
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    current_chunk: *const Chunk,
+    run_before_main: []const []const u8,
+) !void {
+    for (run_before_main) |rbm_path| {
+        const rbm = findRunBeforeMainModule(graph, rbm_path) orelse continue;
+        const source_chunk = chunk_graph.getModuleChunk(rbm.index);
+        if (source_chunk == .none or source_chunk == current_chunk.index) continue;
+        const name = try runBeforeMainCallName(allocator, rbm) orelse continue;
+
+        var duplicate = false;
+        for (out.items) |existing| {
+            if (existing.source_chunk == source_chunk and std.mem.eql(u8, existing.name, name)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            allocator.free(name);
+            continue;
+        }
+        try out.append(allocator, .{ .source_chunk = source_chunk, .name = name });
+    }
+}
+
+fn emitRunBeforeMainCrossImports(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    imports: []const RunBeforeMainCrossImport,
+    current_chunk: *const Chunk,
+    chunk_graph: *const ChunkGraph,
+    options: *const EmitOptions,
+    ext: []const u8,
+) !void {
+    for (imports) |imp| {
+        const dep_chunk = chunk_graph.getChunk(imp.source_chunk);
+        var dep_buf: [128]u8 = undefined;
+        const dep_stem = chunkPlaceholderStem(dep_chunk, &dep_buf, options);
+        const resolved_path = if (options.preserve_modules) blk: {
+            const src_path = current_chunk.rel_dir orelse "./";
+            const dep_path = dep_chunk.rel_dir orelse "./";
+            break :blk try computeRelativeImportPath(allocator, src_path, dep_path, ext, options.preserve_modules_root);
+        } else try std.fmt.allocPrint(allocator, "./{s}{s}", .{ dep_stem, ext });
+        defer allocator.free(resolved_path);
+
+        if (!options.minify_whitespace) {
+            try output.appendSlice(allocator, "import { ");
+            try output.appendSlice(allocator, imp.name);
+            try output.appendSlice(allocator, " } from \"");
+            try output.appendSlice(allocator, resolved_path);
+            try output.appendSlice(allocator, "\";\n");
+        } else {
+            try output.appendSlice(allocator, "import{");
+            try output.appendSlice(allocator, imp.name);
+            try output.appendSlice(allocator, "}from\"");
+            try output.appendSlice(allocator, resolved_path);
+            try output.appendSlice(allocator, "\";");
+        }
+    }
+}
+
+fn collectRunBeforeMainExportNames(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList([]const u8),
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    current_chunk: *const Chunk,
+    run_before_main: []const []const u8,
+) !void {
+    for (run_before_main) |rbm_path| {
+        const rbm = findRunBeforeMainModule(graph, rbm_path) orelse continue;
+        const source_chunk = chunk_graph.getModuleChunk(rbm.index);
+        if (source_chunk == .none or source_chunk != current_chunk.index) continue;
+        const name = try runBeforeMainCallName(allocator, rbm) orelse continue;
+        errdefer allocator.free(name);
+        if (containsName(out.items, name)) {
+            allocator.free(name);
+            continue;
+        }
+        try out.append(allocator, name);
+    }
+}
+
+fn findRunBeforeMainModule(graph: *const ModuleGraph, rbm_path: []const u8) ?*const Module {
+    var it = graph.modulesIterator();
+    while (it.next()) |rbm| {
+        if (std.mem.eql(u8, rbm.path, rbm_path)) return rbm;
+    }
+    return null;
+}
+
+fn runBeforeMainCallName(allocator: std.mem.Allocator, module: *const Module) !?[]const u8 {
+    if (!module.wrap_kind.isWrapped()) return null;
+    return if (module.wrap_kind == .cjs)
+        try module.allocRequireName(allocator)
+    else
+        try module.allocInitName(allocator);
+}
+
+fn appendUniqueName(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, name: []const u8) !void {
+    if (containsName(list.items, name)) return;
+    try list.append(allocator, name);
+}
+
+fn containsName(names: []const []const u8, name: []const u8) bool {
+    for (names) |existing| {
+        if (std.mem.eql(u8, existing, name)) return true;
+    }
+    return false;
 }
 
 /// 모듈 코드 선두에서 directive prologue (`"use strict"`, `"use client"`,
