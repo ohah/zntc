@@ -27,8 +27,62 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 |---|---|---|---|
 | `target` | `es5`, `es2015`–`es2025`, `esnext` | `esnext` | ES downlevel target. When set, features introduced after the target version are auto-lowered |
 | `unsupported` | `integer` (u32) | `0` | Direct `UnsupportedFeatures` bitmask. Used to inject browserslist-derived feature sets — takes precedence over `target` |
-| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | Inject core-js runtime API polyfills. Set targets as Rspack/SWC `env.targets`-style Browserslist query arrays |
-| `coreJs` | `string` | installed version | core-js version used by core-js-compat |
+| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | Inject core-js runtime API polyfills. `"auto"`/`"usage"` select from actual bundle graph usage; `"entry"` injects every target-required module |
+| `coreJs` | `string` | installed version | Version hint for core-js-compat; same role as `runtimePolyfills.coreJs` |
+
+#### Runtime Polyfills / core-js
+
+`target` handles syntax downleveling. `runtimePolyfills` handles runtime APIs such as `Promise`, `Map`, `Object.values`, `String.prototype.replaceAll`, `Array.prototype.at`, and `structuredClone` by adding a `core-js` prelude.
+
+```ts
+import { defineConfig } from "@zts/core";
+
+export default defineConfig({
+  entryPoints: ["src/index.ts"],
+  bundle: true,
+  target: "es5",
+  runtimePolyfills: {
+    mode: "auto",
+    targets: ["ios_saf 12", "safari 12"],
+    coreJs: "3.49",
+    include: ["es.array.at"],
+    exclude: ["web.url"],
+  },
+});
+```
+
+The `runtimePolyfills` object accepts these fields.
+
+| Field | Type | Description |
+|---|---|---|
+| `mode` | `"auto" \| "usage" \| "entry"` | `"auto"` and `"usage"` both select target-compatible modules from graph-detected usage. `"entry"` injects every ES/Web module that `core-js-compat` reports as required by the target |
+| `provider` | `"core-js"` | Only `core-js` is currently supported |
+| `targets` | `string \| string[]` | Browserslist queries passed to `core-js-compat`, using the same shape as Rspack/SWC `env.targets` |
+| `coreJs` | `string` | core-js version used by `core-js-compat`. When omitted, ZTS reads the installed `core-js/package.json` version |
+| `include` | `string[]` | `core-js` modules to always inject. Both `es.array.at` and `core-js/modules/es.array.at.js` are accepted |
+| `exclude` | `string[]` | `core-js` modules to remove after target and usage calculation |
+| `proposals` | `boolean` | Include proposal polyfills when querying `core-js-compat` |
+
+`runtimePolyfills: "off"` is the default. In this mode, ZTS does not load `core-js-compat`, run the graph collector, or enter the profile/debug paths. With `"auto"` or `"usage"`, the JS wrapper computes target-compatible `core-js` candidates and absolute paths, then the native bundler reads the real graph AST after resolve/load/plugin transforms and injects only the modules that were actually used.
+
+`core-js-compat` and `core-js` are optional dependencies. Install them in projects that enable runtime polyfills.
+
+```bash
+bun add core-js core-js-compat
+```
+
+Targets use Browserslist syntax.
+
+```ts
+runtimePolyfills: {
+  mode: "auto",
+  targets: ["chrome >= 87", "edge >= 88", "firefox >= 78", "safari >= 14"],
+}
+```
+
+Explicit queries such as `ios_saf 12`, `safari 12`, and `node 18` are supported. Compact shorthand such as `ios12` or `node18`, and physical device names such as `"iPhone 8"`, are not supported. Use `platform: "react-native"` for the default Hermes runtime target. ZTS does not expose a top-level `runtimeTargets` option.
+
+Detection is based on the static graph AST. Local bindings/imports that shadow `Map`, `Object`, `Promise`, and similar globals are not treated as global API usage, and dynamic computed access such as `obj["replaceAll"]()` is not inferred. Use `include` or `"entry"` for those cases.
 
 ### Parsing
 

@@ -72,8 +72,8 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--platform=browser\|node\|neutral\|react-native` | Target platform                                                       |
 | `--rn-platform=ios\|android`                      | RN sub-platform (`.ios.*`/`.android.*` extensions)                    |
 | `--target=<spec>`                                 | ES target: `es2015`–`esnext` or engine versions (`chrome80,safari14`) |
-| `--runtime-polyfills=auto\|usage\|entry\|off`     | Inject core-js runtime API polyfills                                  |
-| `--runtime-target=<query>`                        | core-js polyfill Browserslist target. Repeatable (`chrome >= 87`)     |
+| `--runtime-polyfills=auto\|usage\|entry\|off`     | Inject core-js runtime API polyfills. `auto`/`usage` use graph usage  |
+| `--runtime-target=<query>`                        | core-js polyfill Browserslist target. Repeatable (`ios_saf 12`)       |
 | `--core-js=<version>`                             | core-js version used by core-js-compat                                |
 | `--global-name=<name>`                            | IIFE export name                                                      |
 

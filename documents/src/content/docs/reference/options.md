@@ -27,8 +27,62 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 |---|---|---|---|
 | `target` | `es5`, `es2015`–`es2025`, `esnext` | `esnext` | ES 다운레벨 타겟. 설정 시 해당 버전 이후 도입된 기능이 자동 downlowering됨 |
 | `unsupported` | `integer` (u32) | `0` | `UnsupportedFeatures` 비트마스크 직접 지정. browserslist 해석 결과를 주입할 때 사용 — `target`보다 우선 |
-| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | core-js 런타임 API 폴리필 주입. 타겟은 Rspack/SWC `env.targets`와 같은 Browserslist query 배열로 지정 |
-| `coreJs` | `string` | installed version | core-js-compat 계산에 사용할 core-js 버전 |
+| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | core-js 런타임 API 폴리필 주입. `"auto"`/`"usage"`는 실제 번들 그래프 사용량 기반, `"entry"`는 타겟 기준 전체 필요 모듈 주입 |
+| `coreJs` | `string` | installed version | `runtimePolyfills.coreJs`와 같은 core-js-compat 계산 버전 힌트 |
+
+#### Runtime Polyfills / core-js
+
+`target`은 문법 다운레벨링을 담당하고, `runtimePolyfills`는 `Promise`, `Map`, `Object.values`, `String.prototype.replaceAll`, `Array.prototype.at`, `structuredClone` 같은 런타임 API를 `core-js` prelude로 보강합니다.
+
+```ts
+import { defineConfig } from "@zts/core";
+
+export default defineConfig({
+  entryPoints: ["src/index.ts"],
+  bundle: true,
+  target: "es5",
+  runtimePolyfills: {
+    mode: "auto",
+    targets: ["ios_saf 12", "safari 12"],
+    coreJs: "3.49",
+    include: ["es.array.at"],
+    exclude: ["web.url"],
+  },
+});
+```
+
+`runtimePolyfills` object는 다음 필드를 받습니다.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `mode` | `"auto" \| "usage" \| "entry"` | `"auto"`와 `"usage"`는 동일하게 그래프에서 감지된 사용 API만 후보에서 선택합니다. `"entry"`는 `core-js-compat`가 타겟에 필요하다고 판단한 ES/Web 모듈 전체를 주입합니다 |
+| `provider` | `"core-js"` | 현재는 `core-js`만 지원 |
+| `targets` | `string \| string[]` | `core-js-compat`에 전달할 Browserslist query. Rspack/SWC `env.targets`와 같은 형식 사용 |
+| `coreJs` | `string` | `core-js-compat` 계산에 사용할 core-js 버전. 생략 시 설치된 `core-js/package.json` 버전을 읽음 |
+| `include` | `string[]` | 항상 주입할 `core-js` 모듈. `es.array.at` 또는 `core-js/modules/es.array.at.js` 형식 허용 |
+| `exclude` | `string[]` | 타겟/usage 계산 뒤 최종 제거할 `core-js` 모듈 |
+| `proposals` | `boolean` | `core-js-compat` 조회 시 proposals 포함 |
+
+`runtimePolyfills: "off"`가 기본값이며, 이 경우 `core-js-compat` 로드, graph collector, profile/debug 경로를 실행하지 않습니다. `runtimePolyfills: "auto"` 또는 `"usage"`를 켜면 JS wrapper가 target 기준 주입 가능한 `core-js` 후보와 절대 경로를 계산하고, native bundler가 resolve/load/plugin transform 이후 실제 graph AST에서 사용 API를 집계해 필요한 모듈만 prelude에 넣습니다.
+
+`core-js-compat`와 `core-js`는 optional dependency입니다. 런타임 폴리필을 켤 프로젝트에서는 설치가 필요합니다.
+
+```bash
+bun add core-js core-js-compat
+```
+
+타겟 query는 Browserslist 문법을 사용합니다.
+
+```ts
+runtimePolyfills: {
+  mode: "auto",
+  targets: ["chrome >= 87", "edge >= 88", "firefox >= 78", "safari >= 14"],
+}
+```
+
+`ios_saf 12`, `safari 12`, `node 18`처럼 명시적인 query는 지원하지만 `ios12`, `node18` 같은 compact shorthand와 `"iPhone 8"` 같은 physical device name은 지원하지 않습니다. React Native 기본 Hermes 타겟은 `platform: "react-native"`에서 선택하고, top-level `runtimeTargets` 옵션은 제공하지 않습니다.
+
+감지는 정적 graph AST 기준입니다. 로컬 binding/import로 가려진 `Map`, `Object`, `Promise` 등은 전역 API 사용으로 보지 않고, `obj["replaceAll"]()` 같은 동적 computed access는 추론하지 않습니다. 그런 경우 `include`로 명시하거나 `"entry"` 모드를 사용합니다.
 
 ### 파싱
 
