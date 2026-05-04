@@ -485,6 +485,12 @@ pub inline fn begin(cat: Category) Scope {
     };
 }
 
+/// sub-phase profile category 가 optional 일 때 (off → null) 사용.
+pub inline fn beginMaybe(cat: ?Category) Scope {
+    if (cat) |c| return begin(c);
+    return .{};
+}
+
 fn recordTiming(cat: Category, ns: u64, self_ns: u64) void {
     const idx = @intFromEnum(cat);
     totals_ns[idx] += ns;

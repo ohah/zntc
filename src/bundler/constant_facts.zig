@@ -98,11 +98,6 @@ pub const MaterializeProfile = struct {
     replace: ?profile.Category = null,
 };
 
-inline fn beginMaybe(cat: ?profile.Category) profile.Scope {
-    if (cat) |c| return profile.begin(c);
-    return .{};
-}
-
 /// Linker가 증명한 primitive constants를 AST read-site에 반영한다.
 /// codegen-only 치환은 branch body refs를 줄이지 못하므로, minify/DCE 전 literal로
 /// materialize해야 dead branch와 그 안의 imports가 다음 pass에서 사라질 수 있다.
@@ -135,14 +130,14 @@ pub fn materializeWithScratch(
         if (scratch) |s| if (mod_idx < s.forbidden.len) {
             if (s.forbidden[mod_idx]) |*cached| break :blk cached;
             var bs = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
-            var forbidden_scope = beginMaybe(profile_cats.forbidden);
+            var forbidden_scope = profile.beginMaybe(profile_cats.forbidden);
             defer forbidden_scope.end();
             minify_mod.markForbiddenInlineSites(ast, &bs);
             s.forbidden[mod_idx] = bs;
             break :blk &s.forbidden[mod_idx].?;
         };
         owned_forbidden = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
-        var forbidden_scope = beginMaybe(profile_cats.forbidden);
+        var forbidden_scope = profile.beginMaybe(profile_cats.forbidden);
         defer forbidden_scope.end();
         minify_mod.markForbiddenInlineSites(ast, &owned_forbidden.?);
         break :blk &owned_forbidden.?;
@@ -154,13 +149,13 @@ pub fn materializeWithScratch(
     const reachable: []const u32 = blk: {
         if (scratch) |s| if (mod_idx < s.reachable.len) {
             if (s.reachable[mod_idx]) |cached| break :blk cached;
-            var reachable_scope = beginMaybe(profile_cats.reachable);
+            var reachable_scope = profile.beginMaybe(profile_cats.reachable);
             defer reachable_scope.end();
             const built = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
             s.reachable[mod_idx] = built;
             break :blk built;
         };
-        var reachable_scope = beginMaybe(profile_cats.reachable);
+        var reachable_scope = profile.beginMaybe(profile_cats.reachable);
         defer reachable_scope.end();
         owned_reachable = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
         break :blk owned_reachable.?;
@@ -168,7 +163,7 @@ pub fn materializeWithScratch(
 
     var changed = false;
     {
-        var replace_scope = beginMaybe(profile_cats.replace);
+        var replace_scope = profile.beginMaybe(profile_cats.replace);
         defer replace_scope.end();
 
         for (reachable) |ni| {

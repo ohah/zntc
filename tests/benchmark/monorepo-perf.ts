@@ -9,12 +9,17 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import {
+  ROOT,
+  ZTS_BIN,
+  buildBin as buildBinShared,
+  getCommit,
+  parsePositiveInt,
+} from "./_runner";
 import { makeSyntheticMonorepo, parseProfileOutput, type ProfileRun } from "./monorepo-fixture";
 import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 
-const ROOT = resolve(__dirname, "../..");
-const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
 const WARMUP = 2;
 const ITERATIONS = 5;
 
@@ -110,12 +115,6 @@ function findBin(name: string): string | null {
   return null;
 }
 
-function parsePositiveInt(name: string, raw: string | undefined): number {
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1) throw new Error(`${name} must be a positive integer`);
-  return n;
-}
-
 function parseNonNegativeInt(name: string, raw: string | undefined): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a non-negative integer`);
@@ -123,15 +122,7 @@ function parseNonNegativeInt(name: string, raw: string | undefined): number {
 }
 
 function buildBin() {
-  if (existsSync(ZTS_BIN)) return;
-  console.log("[monorepo-perf] zts binary not found, building Release...");
-  const r = spawnSync("zig", ["build", "-Doptimize=ReleaseFast"], { cwd: ROOT, stdio: "inherit" });
-  if (r.status !== 0) throw new Error("zig build failed");
-}
-
-function getCommit(): string {
-  const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: ROOT, stdio: "pipe" });
-  return r.stdout.toString().trim() || "unknown";
+  buildBinShared("monorepo-perf");
 }
 
 function runZts(entry: string, outDir: string, profile: boolean): ZtsRun {
