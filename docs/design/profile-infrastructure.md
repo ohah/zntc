@@ -80,6 +80,19 @@ ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
 | `shake` | Tree shaker | `src/bundler/tree_shaker.zig` |
 | `shake.setup` | Tree shaker setup and initial seeds | `src/bundler/tree_shaker.zig` |
 | `shake.const_prepass` | Cross-module const materialize / numeric propagation before shake | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass.full_materialize` | Minify-mode full const materialize pass | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass.numeric_propagate` | Non-minify numeric const propagation driver | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass.numeric_seed_scan` | Numeric export seed scan and initial importer queue | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass.numeric_queue` | Numeric importer queue processing | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass.build_facts` | Imported binding to inlineable const fact map build | `src/bundler/linker/metadata.zig` |
+| `shake.const_prepass.candidate_gate` | Per-module materialize eligibility checks | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass.materialize` | Const fact materialization into AST | `src/bundler/constant_facts.zig` |
+| `shake.const_prepass.forbidden` | Forbidden inline-site bitset build | `src/bundler/constant_facts.zig` |
+| `shake.const_prepass.reachable` | Reachable AST node collection for materialize | `src/bundler/constant_facts.zig` |
+| `shake.const_prepass.replace` | Identifier-to-literal replacement scan | `src/bundler/constant_facts.zig` |
+| `shake.const_prepass.minify_resync` | Minify plus graph metadata resync after mutation | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass.node_buffer` | Node Buffer capability fact application | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass.link_refresh` | Linker metadata refresh after pre-shake AST mutation | `src/bundler/tree_shaker.zig` |
 | `shake.purity` | Automatic side-effect purity classification | `src/bundler/tree_shaker.zig` |
 | `shake.stmt_info` | Statement reachability info build | `src/bundler/tree_shaker.zig` |
 | `shake.fixpoint` | Tree shaker fixpoint loop total | `src/bundler/tree_shaker.zig` |

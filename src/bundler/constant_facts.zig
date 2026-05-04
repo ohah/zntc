@@ -5,6 +5,7 @@ const Node = ast_mod.Node;
 const ast_walk = @import("../parser/ast_walk.zig");
 const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 const minify_mod = @import("../transformer/minify.zig");
+const profile = @import("../profile.zig");
 
 fn constValueNode(ast: *Ast, cv: ConstValue) ?Node {
     return switch (cv.kind) {
@@ -91,6 +92,17 @@ pub const Scratch = struct {
     }
 };
 
+pub const MaterializeProfile = struct {
+    forbidden: ?profile.Category = null,
+    reachable: ?profile.Category = null,
+    replace: ?profile.Category = null,
+};
+
+inline fn beginMaybe(cat: ?profile.Category) profile.Scope {
+    if (cat) |c| return profile.begin(c);
+    return .{};
+}
+
 /// Linker가 증명한 primitive constants를 AST read-site에 반영한다.
 /// codegen-only 치환은 branch body refs를 줄이지 못하므로, minify/DCE 전 literal로
 /// materialize해야 dead branch와 그 안의 imports가 다음 pass에서 사라질 수 있다.
@@ -100,7 +112,7 @@ pub fn materialize(
     symbol_ids: []const ?u32,
     const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
 ) bool {
-    return materializeWithScratch(allocator, ast, symbol_ids, const_values, null, 0);
+    return materializeWithScratch(allocator, ast, symbol_ids, const_values, null, 0, .{});
 }
 
 /// `materialize` + outer driver 가 forbidden/reachable 캐시 재사용. `scratch == null`
@@ -112,6 +124,7 @@ pub fn materializeWithScratch(
     const_values: *const std.AutoHashMapUnmanaged(u32, ConstValue),
     scratch: ?*Scratch,
     mod_idx: usize,
+    profile_cats: MaterializeProfile,
 ) bool {
     if (const_values.count() == 0) return false;
 
@@ -122,11 +135,15 @@ pub fn materializeWithScratch(
         if (scratch) |s| if (mod_idx < s.forbidden.len) {
             if (s.forbidden[mod_idx]) |*cached| break :blk cached;
             var bs = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
+            var forbidden_scope = beginMaybe(profile_cats.forbidden);
+            defer forbidden_scope.end();
             minify_mod.markForbiddenInlineSites(ast, &bs);
             s.forbidden[mod_idx] = bs;
             break :blk &s.forbidden[mod_idx].?;
         };
         owned_forbidden = std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len) catch return false;
+        var forbidden_scope = beginMaybe(profile_cats.forbidden);
+        defer forbidden_scope.end();
         minify_mod.markForbiddenInlineSites(ast, &owned_forbidden.?);
         break :blk &owned_forbidden.?;
     };
@@ -137,26 +154,35 @@ pub fn materializeWithScratch(
     const reachable: []const u32 = blk: {
         if (scratch) |s| if (mod_idx < s.reachable.len) {
             if (s.reachable[mod_idx]) |cached| break :blk cached;
+            var reachable_scope = beginMaybe(profile_cats.reachable);
+            defer reachable_scope.end();
             const built = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
             s.reachable[mod_idx] = built;
             break :blk built;
         };
+        var reachable_scope = beginMaybe(profile_cats.reachable);
+        defer reachable_scope.end();
         owned_reachable = ast_walk.collectReachableNodeIndices(allocator, ast) catch return false;
         break :blk owned_reachable.?;
     };
 
     var changed = false;
-    for (reachable) |ni| {
-        const i: usize = @intCast(ni);
-        const node = ast.nodes.items[i];
-        if (node.tag != .identifier_reference) continue;
-        if (i >= symbol_ids.len) continue;
-        if (forbidden_ptr.isSet(i)) continue;
-        const sym_id = symbol_ids[i] orelse continue;
-        const cv = const_values.get(sym_id) orelse continue;
-        const replacement = constValueNode(ast, cv) orelse continue;
-        ast.nodes.items[i] = replacement;
-        changed = true;
+    {
+        var replace_scope = beginMaybe(profile_cats.replace);
+        defer replace_scope.end();
+
+        for (reachable) |ni| {
+            const i: usize = @intCast(ni);
+            const node = ast.nodes.items[i];
+            if (node.tag != .identifier_reference) continue;
+            if (i >= symbol_ids.len) continue;
+            if (forbidden_ptr.isSet(i)) continue;
+            const sym_id = symbol_ids[i] orelse continue;
+            const cv = const_values.get(sym_id) orelse continue;
+            const replacement = constValueNode(ast, cv) orelse continue;
+            ast.nodes.items[i] = replacement;
+            changed = true;
+        }
     }
     return changed;
 }

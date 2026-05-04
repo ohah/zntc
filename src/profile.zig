@@ -106,6 +106,19 @@ pub const Category = enum {
     shake,
     shake_setup,
     shake_const_prepass,
+    shake_const_prepass_full_materialize,
+    shake_const_prepass_numeric_propagate,
+    shake_const_prepass_numeric_seed_scan,
+    shake_const_prepass_numeric_queue,
+    shake_const_prepass_build_facts,
+    shake_const_prepass_candidate_gate,
+    shake_const_prepass_materialize,
+    shake_const_prepass_forbidden,
+    shake_const_prepass_reachable,
+    shake_const_prepass_replace,
+    shake_const_prepass_minify_resync,
+    shake_const_prepass_node_buffer,
+    shake_const_prepass_link_refresh,
     shake_purity,
     shake_stmt_info,
     shake_fixpoint,
@@ -179,7 +192,7 @@ pub const Category = enum {
     pub fn displayName(cat: Category) []const u8 {
         return switch (cat) {
             inline else => |c| comptime blk: {
-                @setEvalBranchQuota(2000);
+                @setEvalBranchQuota(5000);
                 const name = @tagName(c);
                 var buf: [name.len]u8 = undefined;
                 for (name, 0..) |ch, i| {
@@ -615,6 +628,7 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("Transform.JSX") == .transform_jsx);
     try testing.expect(Category.fromString("hmr.detect") == .hmr_detect);
     try testing.expect(Category.fromString("shake.fixpoint.bfs") == .shake_fixpoint_bfs);
+    try testing.expect(Category.fromString("shake.const.prepass.build.facts") == .shake_const_prepass_build_facts);
 }
 
 test "Category.displayName: underscore → dot 역변환" {
@@ -623,6 +637,7 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("transform.ts.strip", Category.displayName(.transform_ts_strip));
     try testing.expectEqualStrings("hmr.detect", Category.displayName(.hmr_detect));
     try testing.expectEqualStrings("shake.fixpoint.bfs", Category.displayName(.shake_fixpoint_bfs));
+    try testing.expectEqualStrings("shake.const.prepass.build.facts", Category.displayName(.shake_const_prepass_build_facts));
 }
 
 test "Level.fromString" {
@@ -696,6 +711,7 @@ test "addFromCsv: shake parent → 모든 sub-phase 활성" {
     addFromCsv("shake");
     try testing.expect(enabled(.shake));
     try testing.expect(enabled(.shake_const_prepass));
+    try testing.expect(enabled(.shake_const_prepass_build_facts));
     try testing.expect(enabled(.shake_fixpoint));
     try testing.expect(enabled(.shake_fixpoint_bfs));
     try testing.expect(enabled(.shake_numeric_postpass));

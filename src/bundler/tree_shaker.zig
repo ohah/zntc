@@ -78,6 +78,19 @@ const ConstMaterializeFilter = enum {
     numeric_export_chain,
 };
 
+const ConstMaterializeProfile = struct {
+    build_facts: ?profile.Category = null,
+    candidate_gate: ?profile.Category = null,
+    materialize: ?profile.Category = null,
+    minify_resync: ?profile.Category = null,
+    inner: constant_facts.MaterializeProfile = .{},
+};
+
+inline fn beginProfileMaybe(cat: ?profile.Category) profile.Scope {
+    if (cat) |c| return profile.begin(c);
+    return .{};
+}
+
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
@@ -366,7 +379,16 @@ pub const TreeShaker = struct {
         return self.graph.preserve_modules or !self.graph.transform_options_base.minify_syntax;
     }
 
-    fn minifyAndResyncModule(self: *TreeShaker, m: *Module, sem: ModuleSemanticData, ast: *Ast) void {
+    fn minifyAndResyncModule(
+        self: *TreeShaker,
+        m: *Module,
+        sem: ModuleSemanticData,
+        ast: *Ast,
+        profile_cat: ?profile.Category,
+    ) void {
+        var scope = beginProfileMaybe(profile_cat);
+        defer scope.end();
+
         const minify_mod = @import("../transformer/minify.zig");
         const root = ast.transformed_root orelse NodeIndex.none;
         const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, self.graph.transform_options_base.minify_syntax);
@@ -417,12 +439,22 @@ pub const TreeShaker = struct {
         self: *TreeShaker,
         module_index: usize,
         filter: ConstMaterializeFilter,
+        const_profile: ConstMaterializeProfile,
     ) !bool {
         const m = self.moduleAtMut(@intCast(module_index)) orelse return false;
         const sem = m.semantic orelse return false;
         const ast = &(m.ast orelse return false);
-        var const_values = try self.linker.buildCrossModuleConstValues(m, sem);
-        if (!self.shouldMaterializeConstFacts(ast, sem, &const_values, filter)) {
+        var const_values = blk: {
+            var build_scope = beginProfileMaybe(const_profile.build_facts);
+            defer build_scope.end();
+            break :blk try self.linker.buildCrossModuleConstValues(m, sem);
+        };
+        const should_materialize = blk: {
+            var gate_scope = beginProfileMaybe(const_profile.candidate_gate);
+            defer gate_scope.end();
+            break :blk self.shouldMaterializeConstFacts(ast, sem, &const_values, filter);
+        };
+        if (!should_materialize) {
             const_values.deinit(self.allocator);
             return false;
         }
@@ -431,11 +463,15 @@ pub const TreeShaker = struct {
             self.materialize_scratch = constant_facts.Scratch.init(self.allocator, self.graph.moduleCount()) catch null;
         }
         const scratch_ptr: ?*constant_facts.Scratch = if (self.materialize_scratch) |*s| s else null;
-        const changed = constant_facts.materializeWithScratch(self.allocator, ast, sem.symbol_ids, &const_values, scratch_ptr, module_index);
+        const changed = blk: {
+            var materialize_scope = beginProfileMaybe(const_profile.materialize);
+            defer materialize_scope.end();
+            break :blk constant_facts.materializeWithScratch(self.allocator, ast, sem.symbol_ids, &const_values, scratch_ptr, module_index, const_profile.inner);
+        };
         const_values.deinit(self.allocator);
         if (!changed) return false;
 
-        self.minifyAndResyncModule(m, sem, ast);
+        self.minifyAndResyncModule(m, sem, ast, const_profile.minify_resync);
         return true;
     }
 
@@ -444,17 +480,18 @@ pub const TreeShaker = struct {
         mod_count: usize,
         filter: ConstMaterializeFilter,
         reverse: bool,
+        const_profile: ConstMaterializeProfile,
     ) !bool {
         var any_changed = false;
         if (reverse) {
             var i = mod_count;
             while (i > 0) {
                 i -= 1;
-                if (try self.materializeCrossModuleConstFactsForIndex(i, filter)) any_changed = true;
+                if (try self.materializeCrossModuleConstFactsForIndex(i, filter, const_profile)) any_changed = true;
             }
         } else {
             for (0..mod_count) |i| {
-                if (try self.materializeCrossModuleConstFactsForIndex(i, filter)) any_changed = true;
+                if (try self.materializeCrossModuleConstFactsForIndex(i, filter, const_profile)) any_changed = true;
             }
         }
         return any_changed;
@@ -477,46 +514,60 @@ pub const TreeShaker = struct {
         }
     }
 
-    fn propagateNumericExportConstFacts(self: *TreeShaker, mod_count: usize) !void {
+    fn propagateNumericExportConstFacts(
+        self: *TreeShaker,
+        mod_count: usize,
+        const_profile: ConstMaterializeProfile,
+    ) !void {
         var queue: std.ArrayList(u32) = .empty;
         defer queue.deinit(self.allocator);
         // re-export-only 모듈은 importer 가 큐를 비울 때마다 한 번만 forwarding 하면 충분 —
         // 다시 들어오면 같은 importer 들을 무한히 enqueue 해 BFS 가 폭발한다.
         var forwarded_re_exports = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
         defer forwarded_re_exports.deinit();
-        for (0..mod_count) |i| {
-            const m = self.moduleAtMut(@intCast(i)) orelse continue;
-            const sem = m.semantic orelse continue;
-            const ast = &(m.ast orelse continue);
-            if (self.moduleHasNumericExportSeed(ast, sem)) {
-                self.minifyAndResyncModule(m, sem, ast);
-                try self.enqueueStaticImporters(&queue, @intCast(i), mod_count);
-                continue;
-            }
-            if (self.moduleHasExportedNumberConstValue(sem)) {
-                try self.enqueueStaticImporters(&queue, @intCast(i), mod_count);
+        {
+            var seed_scope = profile.begin(.shake_const_prepass_numeric_seed_scan);
+            defer seed_scope.end();
+
+            for (0..mod_count) |i| {
+                const m = self.moduleAtMut(@intCast(i)) orelse continue;
+                const sem = m.semantic orelse continue;
+                const ast = &(m.ast orelse continue);
+                if (self.moduleHasNumericExportSeed(ast, sem)) {
+                    self.minifyAndResyncModule(m, sem, ast, const_profile.minify_resync);
+                    try self.enqueueStaticImporters(&queue, @intCast(i), mod_count);
+                    continue;
+                }
+                if (self.moduleHasExportedNumberConstValue(sem)) {
+                    try self.enqueueStaticImporters(&queue, @intCast(i), mod_count);
+                }
             }
         }
 
-        while (queue.pop()) |idx| {
-            if (idx >= mod_count) continue;
-            if (try self.materializeCrossModuleConstFactsForIndex(idx, .numeric_export_chain)) {
-                try self.enqueueStaticImporters(&queue, idx, mod_count);
-                continue;
-            }
+        {
+            var queue_scope = profile.begin(.shake_const_prepass_numeric_queue);
+            defer queue_scope.end();
 
-            if (forwarded_re_exports.isSet(idx)) continue;
-            const m = self.getModule(idx) orelse continue;
-            var has_re_export = false;
-            for (m.export_bindings) |eb| {
-                if (eb.kind.isAnyReExport()) {
-                    has_re_export = true;
-                    break;
+            while (queue.pop()) |idx| {
+                if (idx >= mod_count) continue;
+                if (try self.materializeCrossModuleConstFactsForIndex(idx, .numeric_export_chain, const_profile)) {
+                    try self.enqueueStaticImporters(&queue, idx, mod_count);
+                    continue;
                 }
+
+                if (forwarded_re_exports.isSet(idx)) continue;
+                const m = self.getModule(idx) orelse continue;
+                var has_re_export = false;
+                for (m.export_bindings) |eb| {
+                    if (eb.kind.isAnyReExport()) {
+                        has_re_export = true;
+                        break;
+                    }
+                }
+                if (!has_re_export) continue;
+                forwarded_re_exports.set(idx);
+                try self.enqueueStaticImporters(&queue, idx, mod_count);
             }
-            if (!has_re_export) continue;
-            forwarded_re_exports.set(idx);
-            try self.enqueueStaticImporters(&queue, idx, mod_count);
         }
     }
 
@@ -585,18 +636,42 @@ pub const TreeShaker = struct {
             var const_scope = profile.begin(.shake_const_prepass);
             defer const_scope.end();
 
+            const prepass_const_profile = ConstMaterializeProfile{
+                .build_facts = .shake_const_prepass_build_facts,
+                .candidate_gate = .shake_const_prepass_candidate_gate,
+                .materialize = .shake_const_prepass_materialize,
+                .minify_resync = .shake_const_prepass_minify_resync,
+                .inner = .{
+                    .forbidden = .shake_const_prepass_forbidden,
+                    .reachable = .shake_const_prepass_reachable,
+                    .replace = .shake_const_prepass_replace,
+                },
+            };
+
             if (!self.graph.preserve_modules) {
                 if (self.graph.transform_options_base.minify_syntax) {
-                    _ = try self.materializeCrossModuleConstFacts(mod_count, .all, false);
+                    var full_scope = profile.begin(.shake_const_prepass_full_materialize);
+                    defer full_scope.end();
+                    _ = try self.materializeCrossModuleConstFacts(mod_count, .all, false, prepass_const_profile);
                 } else {
-                    try self.propagateNumericExportConstFacts(mod_count);
+                    var numeric_scope = profile.begin(.shake_const_prepass_numeric_propagate);
+                    defer numeric_scope.end();
+                    try self.propagateNumericExportConstFacts(mod_count, prepass_const_profile);
                 }
             }
 
-            if (self.graph.resolve_cache.platform == .node) {
-                try self.applyNodeBufferCapabilityFacts();
+            {
+                var node_buffer_scope = profile.begin(.shake_const_prepass_node_buffer);
+                defer node_buffer_scope.end();
+                if (self.graph.resolve_cache.platform == .node) {
+                    try self.applyNodeBufferCapabilityFacts();
+                }
             }
-            self.refreshLinkMetadataAfterPreShakeMutation();
+            {
+                var link_refresh_scope = profile.begin(.shake_const_prepass_link_refresh);
+                defer link_refresh_scope.end();
+                self.refreshLinkMetadataAfterPreShakeMutation();
+            }
         }
 
         // 자동 순수 판별: 진입점이 아닌 모듈의 top-level이 모두 순수하면 side_effects=false
@@ -823,8 +898,8 @@ pub const TreeShaker = struct {
             if (self.shouldRunNumericPostPass() and self.anyModuleHasExportedNumberConst(mod_count)) {
                 var pass: u32 = 0;
                 while (pass < max_numeric_const_post_passes) : (pass += 1) {
-                    const forward_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, false);
-                    const reverse_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, true);
+                    const forward_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, false, .{});
+                    const reverse_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, true, .{});
                     if (!forward_changed and !reverse_changed) break;
                 }
             }
