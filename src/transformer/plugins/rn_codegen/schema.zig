@@ -220,6 +220,12 @@ pub const ComponentShape = struct {
     pub fn nativeName(self: ComponentShape) []const u8 {
         return self.paper_component_name orelse self.name;
     }
+
+    /// imperative commands (`codegenNativeCommands`) 가 있는지. emitter / wrapper /
+    /// plugin 의 free 분기에서 같은 식 (`commands.len > 0`) 반복하지 않게 한 곳에 모음.
+    pub fn hasCommands(self: ComponentShape) bool {
+        return self.commands.len > 0;
+    }
 };
 
 /// 한 spec 파일에 들어있는 모든 ComponentShape (보통 1 개, 가끔 여러 개).

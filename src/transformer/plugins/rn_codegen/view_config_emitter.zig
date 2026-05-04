@@ -74,7 +74,44 @@ pub fn emit(shape: schema.ComponentShape, alloc: std.mem.Allocator) ![]u8 {
     }
 
     try buf.appendSlice(alloc, "};\n");
+
+    // commands 가 있으면 view config 다음에 `export const Commands = { ... };` block 추가.
+    // dispatchCommand import 는 plugin wrapper 측에서 prepend (NativeComponentRegistry import 옆).
+    // reference (`@react-native/codegen` 0.78~0.85+) 의 emit 형태와 동일 — method shorthand
+    // + dispatchCommand call. 0.78 (jscodeshift) ↔ 0.85 (babel/types) 사이 internal builder
+    // 만 다르고 emit output 100% 동일 (#2462 검증).
+    if (shape.hasCommands()) {
+        try emitCommandsExport(&buf, shape.commands, alloc);
+    }
+
     return buf.toOwnedSlice(alloc);
+}
+
+fn emitCommandsExport(
+    buf: *std.ArrayList(u8),
+    commands: []const schema.NamedShape(schema.CommandTypeAnnotation),
+    alloc: std.mem.Allocator,
+) !void {
+    try buf.appendSlice(alloc, "\nexport const Commands = {\n");
+    for (commands) |cmd| {
+        // method shorthand: `name(ref, p1, p2) { dispatchCommand(ref, "name", [p1, p2]); }`
+        try buf.appendSlice(alloc, "  ");
+        try buf.appendSlice(alloc, cmd.name);
+        try buf.appendSlice(alloc, "(ref");
+        for (cmd.type_annotation.params) |p| {
+            try buf.appendSlice(alloc, ", ");
+            try buf.appendSlice(alloc, p.name);
+        }
+        try buf.appendSlice(alloc, ") { dispatchCommand(ref, \"");
+        try buf.appendSlice(alloc, cmd.name);
+        try buf.appendSlice(alloc, "\", [");
+        for (cmd.type_annotation.params, 0..) |p, i| {
+            if (i > 0) try buf.appendSlice(alloc, ", ");
+            try buf.appendSlice(alloc, p.name);
+        }
+        try buf.appendSlice(alloc, "]); },\n");
+    }
+    try buf.appendSlice(alloc, "};\n");
 }
 
 fn countByBubbling(events: []const schema.EventTypeShape, kind: schema.BubblingType) usize {
