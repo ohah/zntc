@@ -64,10 +64,7 @@ const ErrorState = struct {
     json: ?[]const u8 = null,
 
     fn deinit(self: *ErrorState, allocator: std.mem.Allocator) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (self.json) |json| allocator.free(json);
-        self.json = null;
+        self.clear(allocator);
     }
 
     fn setOwned(self: *ErrorState, allocator: std.mem.Allocator, json: []const u8) void {
@@ -287,7 +284,7 @@ fn writeJsonEscaped(w: anytype, s: []const u8) !void {
 
 fn buildErrorJsonFromDiagnostics(allocator: std.mem.Allocator, diags: anytype) ![]const u8 {
     var msg: std.ArrayList(u8) = .empty;
-    defer msg.deinit(allocator);
+    errdefer msg.deinit(allocator);
     const w = msg.writer(allocator);
 
     try w.writeAll("{\"type\":\"error\",\"errors\":[");
@@ -300,7 +297,7 @@ fn buildErrorJsonFromDiagnostics(allocator: std.mem.Allocator, diags: anytype) !
         try w.writeAll("\"}");
     }
     try w.writeAll("]}");
-    return try allocator.dupe(u8, msg.items);
+    return try msg.toOwnedSlice(allocator);
 }
 
 /// 임의의 std.json.Value를 JSON으로 직렬화 (MCP `id` 필드용 — string/integer/null만).
@@ -497,29 +494,25 @@ pub const DevServer = struct {
         \\  const generatedUrl = new URL(url, location.href).href;
         \\  if (sourceMapCache.has(generatedUrl)) return sourceMapCache.get(generatedUrl);
         \\  const promise = (async function() {
-        \\    let mapUrl = generatedUrl + ".map";
+        \\    const direct = await fetch(generatedUrl + ".map", { cache: "no-store" }).catch(function() { return null; });
+        \\    if (direct && direct.ok) return direct.json();
         \\    const jsResponse = await fetch(generatedUrl, { cache: "no-store" }).catch(function() { return null; });
-        \\    if (jsResponse && jsResponse.ok) {
-        \\      const code = await jsResponse.text();
-        \\      const match =
-        \\        code.match(/\/\/[#@]\s*sourceMappingURL=([^\n\r]+)/) ||
-        \\        code.match(/\/\*[#@]\s*sourceMappingURL=([^*]+)\*\//);
-        \\      if (match) {
-        \\        const ref = match[1].trim();
-        \\        if (ref.startsWith("data:")) {
-        \\          const comma = ref.indexOf(",");
-        \\          if (comma >= 0) {
-        \\            const meta = ref.slice(0, comma);
-        \\            const data = ref.slice(comma + 1);
-        \\            const json = meta.includes(";base64") ? atob(data) : decodeURIComponent(data);
-        \\            return JSON.parse(json);
-        \\          }
-        \\        } else {
-        \\          mapUrl = new URL(ref, generatedUrl).href;
-        \\        }
-        \\      }
+        \\    if (!jsResponse || !jsResponse.ok) return null;
+        \\    const code = await jsResponse.text();
+        \\    const match =
+        \\      code.match(/\/\/[#@]\s*sourceMappingURL=([^\n\r]+)/) ||
+        \\      code.match(/\/\*[#@]\s*sourceMappingURL=([^*]+)\*\//);
+        \\    if (!match) return null;
+        \\    const ref = match[1].trim();
+        \\    if (ref.startsWith("data:")) {
+        \\      const comma = ref.indexOf(",");
+        \\      if (comma < 0) return null;
+        \\      const meta = ref.slice(0, comma);
+        \\      const data = ref.slice(comma + 1);
+        \\      const json = meta.includes(";base64") ? atob(data) : decodeURIComponent(data);
+        \\      return JSON.parse(json);
         \\    }
-        \\    const mapResponse = await fetch(mapUrl, { cache: "no-store" }).catch(function() { return null; });
+        \\    const mapResponse = await fetch(new URL(ref, generatedUrl).href, { cache: "no-store" }).catch(function() { return null; });
         \\    return mapResponse && mapResponse.ok ? mapResponse.json() : null;
         \\  })();
         \\  sourceMapCache.set(generatedUrl, promise);
@@ -539,10 +532,7 @@ pub const DevServer = struct {
         \\}
         \\async function mapStackTrace(stack) {
         \\  if (typeof stack !== "string") return stack;
-        \\  const lines = [];
-        \\  for (const line of stack.split("\n")) {
-        \\    lines.push(await mapLocationText(line));
-        \\  }
+        \\  const lines = await Promise.all(stack.split("\n").map(mapLocationText));
         \\  return lines.join("\n");
         \\}
         \\async function normalizeRuntimeErrorWithSourceMap(error, file) {
@@ -565,10 +555,10 @@ pub const DevServer = struct {
         \\  const items = normalizeErrors(errors);
         \\  overlay = document.createElement("div");
         \\  overlay.id = "zts-error-overlay";
-        \\  overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:block;";
         \\  const root = overlay.attachShadow ? overlay.attachShadow({ mode: "open" }) : overlay;
+        \\  if (root === overlay) overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:block;";
         \\  const style = document.createElement("style");
-        \\  style.textContent = ":host{position:fixed;inset:0;z-index:2147483647;display:block;--font:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--red:#fb7185;--text:#f8fafc;--muted:#cbd5e1;--blue:#93c5fd;--window:#181818;}" +
+        \\  style.textContent = ":host{position:fixed;inset:0;z-index:2147483647;display:block;--font:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--red:#fb7185;--text:#f8fafc;--blue:#93c5fd;--window:#181818;}" +
         \\    ".backdrop{position:fixed;inset:0;overflow:auto;padding:32px;box-sizing:border-box;background:rgba(0,0,0,.66);font:14px/1.5 var(--font);color:var(--text);}" +
         \\    ".window{max-width:980px;margin:0 auto;background:var(--window);border-top:8px solid var(--red);border-radius:6px 6px 8px 8px;box-shadow:0 19px 38px rgba(0,0,0,.30),0 15px 12px rgba(0,0,0,.22);overflow:hidden;}" +
         \\    ".header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(255,255,255,.12);}" +
@@ -622,13 +612,16 @@ pub const DevServer = struct {
         \\}
         \\globalThis.__zts_show_error_overlay = showOverlay;
         \\globalThis.__zts_clear_error_overlay = hideOverlay;
-        \\window.addEventListener("error", function(event) {
-        \\  const file = event.filename ? event.filename + ":" + event.lineno + ":" + event.colno : "";
-        \\  showRuntimeOverlay(event.error || event.message, file);
-        \\});
-        \\window.addEventListener("unhandledrejection", function(event) {
-        \\  showRuntimeOverlay(event.reason, "");
-        \\});
+        \\if (!globalThis.__zts_runtime_listeners_attached) {
+        \\  globalThis.__zts_runtime_listeners_attached = true;
+        \\  window.addEventListener("error", function(event) {
+        \\    const file = event.filename ? event.filename + ":" + event.lineno + ":" + event.colno : "";
+        \\    showRuntimeOverlay(event.error || event.message, file);
+        \\  });
+        \\  window.addEventListener("unhandledrejection", function(event) {
+        \\    showRuntimeOverlay(event.reason, "");
+        \\  });
+        \\}
         \\const socket = new WebSocket(socketProtocol + "//" + location.host + "/__hmr");
         \\socket.addEventListener("message", function(event) {
         \\  const msg = JSON.parse(event.data);
