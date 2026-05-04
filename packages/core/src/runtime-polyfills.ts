@@ -1,7 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 export type RuntimePolyfillMode = "auto" | "usage" | "entry";
 export type RuntimePolyfillProvider = "core-js";
@@ -10,7 +9,7 @@ export interface RuntimePolyfillOptions {
   /**
    * Runtime polyfill injection strategy.
    *
-   * `auto` and `usage` scan statically detectable API usage, while `entry`
+   * `auto` and `usage` select from graph-detected API usage, while `entry`
    * injects all target-required core-js ES/Web modules.
    */
   mode?: RuntimePolyfillMode;
@@ -26,7 +25,7 @@ export interface RuntimePolyfillOptions {
   targets?: string | string[];
   /** core-js version used for compatibility calculation, matching Rspack/SWC `env.coreJs`. */
   coreJs?: string;
-  /** Additional core-js modules to force into the synthetic prelude. */
+  /** Additional core-js modules to force into the runtime prelude. */
   include?: string[];
   /** core-js modules to remove after target and usage calculation. */
   exclude?: string[];
@@ -69,9 +68,16 @@ type CoreJsCompat = (options: {
   proposals?: boolean;
 }) => { list: string[] };
 
-type BabelParser = {
-  parse(source: string, options: Record<string, unknown>): unknown;
-};
+type RuntimePolyfillFeature = string;
+
+interface ResolvedRuntimeModule {
+  module: string;
+  path: string;
+}
+
+interface ResolvedRuntimeCandidate extends ResolvedRuntimeModule {
+  feature: RuntimePolyfillFeature;
+}
 
 let runtimeRequireOverride: RuntimeRequire | null = null;
 
@@ -83,13 +89,11 @@ function getRuntimeRequire(): RuntimeRequire {
 export const __runtimePolyfillTestHooks = {
   reset() {
     coreJsCompatCache = undefined;
-    babelParserCache = undefined;
     coreJsVersionCache = undefined;
     runtimeRequireOverride = null;
   },
   setRuntimeRequire(runtimeRequire: RuntimeRequire | null) {
     coreJsCompatCache = undefined;
-    babelParserCache = undefined;
     coreJsVersionCache = undefined;
     runtimeRequireOverride = runtimeRequire;
   },
@@ -114,10 +118,310 @@ const ES_TARGETS = new Set([
 const DEVICE_TARGET_RE =
   /\b(?:iphone|ipad|ipod|galaxy|pixel|nexus|oneplus|xiaomi|redmi|huawei|motorola|moto)\b/i;
 
-const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
+const RUNTIME_POLYFILL_FEATURE_MODULES: readonly {
+  feature: RuntimePolyfillFeature;
+  module: string;
+}[] = [
+  { feature: "aggregate_error", module: "es.aggregate-error" },
+  { feature: "aggregate_error", module: "es.aggregate-error.cause" },
+  { feature: "array_buffer", module: "es.array-buffer.constructor" },
+  { feature: "array_buffer_detached", module: "es.array-buffer.detached" },
+  { feature: "array_buffer_is_view", module: "es.array-buffer.is-view" },
+  { feature: "array_buffer_slice", module: "es.array-buffer.slice" },
+  { feature: "array_buffer_transfer", module: "es.array-buffer.transfer" },
+  {
+    feature: "array_buffer_transfer_to_fixed_length",
+    module: "es.array-buffer.transfer-to-fixed-length",
+  },
+  { feature: "array_at", module: "es.array.at" },
+  { feature: "array_concat", module: "es.array.concat" },
+  { feature: "array_copy_within", module: "es.array.copy-within" },
+  { feature: "array_every", module: "es.array.every" },
+  { feature: "array_fill", module: "es.array.fill" },
+  { feature: "array_filter", module: "es.array.filter" },
+  { feature: "array_find", module: "es.array.find" },
+  { feature: "array_find_index", module: "es.array.find-index" },
+  { feature: "array_find_last", module: "es.array.find-last" },
+  { feature: "array_find_last_index", module: "es.array.find-last-index" },
+  { feature: "array_flat", module: "es.array.flat" },
+  { feature: "array_flat_map", module: "es.array.flat-map" },
+  { feature: "array_for_each", module: "es.array.for-each" },
+  { feature: "array_from", module: "es.array.from" },
+  { feature: "array_from_async", module: "es.array.from-async" },
+  { feature: "array_includes", module: "es.array.includes" },
+  { feature: "array_index_of", module: "es.array.index-of" },
+  { feature: "array_is_array", module: "es.array.is-array" },
+  { feature: "array_join", module: "es.array.join" },
+  { feature: "array_last_index_of", module: "es.array.last-index-of" },
+  { feature: "array_map", module: "es.array.map" },
+  { feature: "array_of", module: "es.array.of" },
+  { feature: "array_push", module: "es.array.push" },
+  { feature: "array_reduce", module: "es.array.reduce" },
+  { feature: "array_reduce_right", module: "es.array.reduce-right" },
+  { feature: "array_reverse", module: "es.array.reverse" },
+  { feature: "array_slice", module: "es.array.slice" },
+  { feature: "array_some", module: "es.array.some" },
+  { feature: "array_sort", module: "es.array.sort" },
+  { feature: "array_splice", module: "es.array.splice" },
+  { feature: "array_to_reversed", module: "es.array.to-reversed" },
+  { feature: "array_to_sorted", module: "es.array.to-sorted" },
+  { feature: "array_to_spliced", module: "es.array.to-spliced" },
+  { feature: "array_unshift", module: "es.array.unshift" },
+  { feature: "array_with", module: "es.array.with" },
+  { feature: "async_disposable_stack", module: "es.async-disposable-stack.constructor" },
+  { feature: "data_view", module: "es.data-view" },
+  { feature: "data_view_get_float16", module: "es.data-view.get-float16" },
+  { feature: "data_view_set_float16", module: "es.data-view.set-float16" },
+  { feature: "date_now", module: "es.date.now" },
+  { feature: "date_to_iso_string", module: "es.date.to-iso-string" },
+  { feature: "disposable_stack", module: "es.disposable-stack.constructor" },
+  { feature: "error_is_error", module: "es.error.is-error" },
+  { feature: "escape", module: "es.escape" },
+  { feature: "function_bind", module: "es.function.bind" },
+  { feature: "global_this", module: "es.global-this" },
+  { feature: "iterator", module: "es.iterator.constructor" },
+  { feature: "iterator_drop", module: "es.iterator.drop" },
+  { feature: "iterator_every", module: "es.iterator.every" },
+  { feature: "iterator_filter", module: "es.iterator.filter" },
+  { feature: "iterator_find", module: "es.iterator.find" },
+  { feature: "iterator_flat_map", module: "es.iterator.flat-map" },
+  { feature: "iterator_for_each", module: "es.iterator.for-each" },
+  { feature: "iterator_from", module: "es.iterator.from" },
+  { feature: "iterator_map", module: "es.iterator.map" },
+  { feature: "iterator_reduce", module: "es.iterator.reduce" },
+  { feature: "iterator_some", module: "es.iterator.some" },
+  { feature: "iterator_take", module: "es.iterator.take" },
+  { feature: "iterator_to_array", module: "es.iterator.to-array" },
+  { feature: "json_is_raw_json", module: "es.json.is-raw-json" },
+  { feature: "json_parse", module: "es.json.parse" },
+  { feature: "json_raw_json", module: "es.json.raw-json" },
+  { feature: "json_stringify", module: "es.json.stringify" },
+  { feature: "map", module: "es.map" },
+  { feature: "map_get_or_insert", module: "es.map.get-or-insert" },
+  { feature: "map_get_or_insert_computed", module: "es.map.get-or-insert-computed" },
+  { feature: "map_group_by", module: "es.map.group-by" },
+  { feature: "math_acosh", module: "es.math.acosh" },
+  { feature: "math_asinh", module: "es.math.asinh" },
+  { feature: "math_atanh", module: "es.math.atanh" },
+  { feature: "math_cbrt", module: "es.math.cbrt" },
+  { feature: "math_clz32", module: "es.math.clz32" },
+  { feature: "math_cosh", module: "es.math.cosh" },
+  { feature: "math_expm1", module: "es.math.expm1" },
+  { feature: "math_f16round", module: "es.math.f16round" },
+  { feature: "math_fround", module: "es.math.fround" },
+  { feature: "math_hypot", module: "es.math.hypot" },
+  { feature: "math_imul", module: "es.math.imul" },
+  { feature: "math_log10", module: "es.math.log10" },
+  { feature: "math_log1p", module: "es.math.log1p" },
+  { feature: "math_log2", module: "es.math.log2" },
+  { feature: "math_sign", module: "es.math.sign" },
+  { feature: "math_sinh", module: "es.math.sinh" },
+  { feature: "math_sum_precise", module: "es.math.sum-precise" },
+  { feature: "math_tanh", module: "es.math.tanh" },
+  { feature: "math_trunc", module: "es.math.trunc" },
+  { feature: "number_constructor", module: "es.number.constructor" },
+  { feature: "number_epsilon", module: "es.number.epsilon" },
+  { feature: "number_is_finite", module: "es.number.is-finite" },
+  { feature: "number_is_integer", module: "es.number.is-integer" },
+  { feature: "number_is_nan", module: "es.number.is-nan" },
+  { feature: "number_is_safe_integer", module: "es.number.is-safe-integer" },
+  { feature: "number_max_safe_integer", module: "es.number.max-safe-integer" },
+  { feature: "number_min_safe_integer", module: "es.number.min-safe-integer" },
+  { feature: "number_parse_float", module: "es.number.parse-float" },
+  { feature: "number_parse_int", module: "es.number.parse-int" },
+  { feature: "number_to_exponential", module: "es.number.to-exponential" },
+  { feature: "number_to_fixed", module: "es.number.to-fixed" },
+  { feature: "number_to_precision", module: "es.number.to-precision" },
+  { feature: "object_assign", module: "es.object.assign" },
+  { feature: "object_create", module: "es.object.create" },
+  { feature: "object_define_getter", module: "es.object.define-getter" },
+  { feature: "object_define_properties", module: "es.object.define-properties" },
+  { feature: "object_define_property", module: "es.object.define-property" },
+  { feature: "object_define_setter", module: "es.object.define-setter" },
+  { feature: "object_entries", module: "es.object.entries" },
+  { feature: "object_freeze", module: "es.object.freeze" },
+  { feature: "object_from_entries", module: "es.object.from-entries" },
+  {
+    feature: "object_get_own_property_descriptor",
+    module: "es.object.get-own-property-descriptor",
+  },
+  {
+    feature: "object_get_own_property_descriptors",
+    module: "es.object.get-own-property-descriptors",
+  },
+  { feature: "object_get_own_property_names", module: "es.object.get-own-property-names" },
+  { feature: "object_get_prototype_of", module: "es.object.get-prototype-of" },
+  { feature: "object_group_by", module: "es.object.group-by" },
+  { feature: "object_has_own", module: "es.object.has-own" },
+  { feature: "object_is", module: "es.object.is" },
+  { feature: "object_is_extensible", module: "es.object.is-extensible" },
+  { feature: "object_is_frozen", module: "es.object.is-frozen" },
+  { feature: "object_is_sealed", module: "es.object.is-sealed" },
+  { feature: "object_keys", module: "es.object.keys" },
+  { feature: "object_lookup_getter", module: "es.object.lookup-getter" },
+  { feature: "object_lookup_setter", module: "es.object.lookup-setter" },
+  { feature: "object_prevent_extensions", module: "es.object.prevent-extensions" },
+  { feature: "object_proto", module: "es.object.proto" },
+  { feature: "object_seal", module: "es.object.seal" },
+  { feature: "object_set_prototype_of", module: "es.object.set-prototype-of" },
+  { feature: "object_values", module: "es.object.values" },
+  { feature: "parse_float", module: "es.parse-float" },
+  { feature: "parse_int", module: "es.parse-int" },
+  { feature: "set", module: "es.set" },
+  { feature: "set_difference", module: "es.set.difference.v2" },
+  { feature: "set_intersection", module: "es.set.intersection.v2" },
+  { feature: "set_is_disjoint_from", module: "es.set.is-disjoint-from.v2" },
+  { feature: "set_is_subset_of", module: "es.set.is-subset-of.v2" },
+  { feature: "set_is_superset_of", module: "es.set.is-superset-of.v2" },
+  { feature: "set_symmetric_difference", module: "es.set.symmetric-difference.v2" },
+  { feature: "set_union", module: "es.set.union.v2" },
+  { feature: "promise", module: "es.promise" },
+  { feature: "promise_all_settled", module: "es.promise.all-settled" },
+  { feature: "promise_any", module: "es.promise.any" },
+  { feature: "promise_finally", module: "es.promise.finally" },
+  { feature: "promise_try", module: "es.promise.try" },
+  { feature: "promise_with_resolvers", module: "es.promise.with-resolvers" },
+  { feature: "reflect_apply", module: "es.reflect.apply" },
+  { feature: "reflect_construct", module: "es.reflect.construct" },
+  { feature: "reflect_define_property", module: "es.reflect.define-property" },
+  { feature: "reflect_delete_property", module: "es.reflect.delete-property" },
+  { feature: "reflect_get", module: "es.reflect.get" },
+  {
+    feature: "reflect_get_own_property_descriptor",
+    module: "es.reflect.get-own-property-descriptor",
+  },
+  { feature: "reflect_get_prototype_of", module: "es.reflect.get-prototype-of" },
+  { feature: "reflect_has", module: "es.reflect.has" },
+  { feature: "reflect_is_extensible", module: "es.reflect.is-extensible" },
+  { feature: "reflect_own_keys", module: "es.reflect.own-keys" },
+  { feature: "reflect_prevent_extensions", module: "es.reflect.prevent-extensions" },
+  { feature: "reflect_set", module: "es.reflect.set" },
+  { feature: "reflect_set_prototype_of", module: "es.reflect.set-prototype-of" },
+  { feature: "regexp_escape", module: "es.regexp.escape" },
+  { feature: "regexp_flags", module: "es.regexp.flags" },
+  { feature: "regexp_sticky", module: "es.regexp.sticky" },
+  { feature: "regexp_dot_all", module: "es.regexp.dot-all" },
+  { feature: "structured_clone", module: "web.structured-clone" },
+  { feature: "string_anchor", module: "es.string.anchor" },
+  { feature: "string_big", module: "es.string.big" },
+  { feature: "string_blink", module: "es.string.blink" },
+  { feature: "string_bold", module: "es.string.bold" },
+  { feature: "string_code_point_at", module: "es.string.code-point-at" },
+  { feature: "string_ends_with", module: "es.string.ends-with" },
+  { feature: "string_fixed", module: "es.string.fixed" },
+  { feature: "string_fontcolor", module: "es.string.fontcolor" },
+  { feature: "string_fontsize", module: "es.string.fontsize" },
+  { feature: "string_from_code_point", module: "es.string.from-code-point" },
+  { feature: "string_includes", module: "es.string.includes" },
+  { feature: "string_is_well_formed", module: "es.string.is-well-formed" },
+  { feature: "string_italics", module: "es.string.italics" },
+  { feature: "string_link", module: "es.string.link" },
+  { feature: "string_match_all", module: "es.string.match-all" },
+  { feature: "string_pad_end", module: "es.string.pad-end" },
+  { feature: "string_pad_start", module: "es.string.pad-start" },
+  { feature: "string_raw", module: "es.string.raw" },
+  { feature: "string_repeat", module: "es.string.repeat" },
+  { feature: "string_replace_all", module: "es.string.replace-all" },
+  { feature: "string_small", module: "es.string.small" },
+  { feature: "string_starts_with", module: "es.string.starts-with" },
+  { feature: "string_strike", module: "es.string.strike" },
+  { feature: "string_sub", module: "es.string.sub" },
+  { feature: "string_substr", module: "es.string.substr" },
+  { feature: "string_sup", module: "es.string.sup" },
+  { feature: "string_to_well_formed", module: "es.string.to-well-formed" },
+  { feature: "string_trim", module: "es.string.trim" },
+  { feature: "string_trim_end", module: "es.string.trim-end" },
+  { feature: "string_trim_start", module: "es.string.trim-start" },
+  { feature: "suppressed_error", module: "es.suppressed-error.constructor" },
+  { feature: "symbol", module: "es.symbol" },
+  { feature: "symbol_async_dispose", module: "es.symbol.async-dispose" },
+  { feature: "symbol_async_iterator", module: "es.symbol.async-iterator" },
+  { feature: "symbol_description", module: "es.symbol.description" },
+  { feature: "symbol_dispose", module: "es.symbol.dispose" },
+  { feature: "symbol_has_instance", module: "es.symbol.has-instance" },
+  { feature: "symbol_is_concat_spreadable", module: "es.symbol.is-concat-spreadable" },
+  { feature: "symbol_iterator", module: "es.symbol.iterator" },
+  { feature: "symbol_match", module: "es.symbol.match" },
+  { feature: "symbol_match_all", module: "es.symbol.match-all" },
+  { feature: "symbol_replace", module: "es.symbol.replace" },
+  { feature: "symbol_search", module: "es.symbol.search" },
+  { feature: "symbol_species", module: "es.symbol.species" },
+  { feature: "symbol_split", module: "es.symbol.split" },
+  { feature: "symbol_to_primitive", module: "es.symbol.to-primitive" },
+  { feature: "symbol_to_string_tag", module: "es.symbol.to-string-tag" },
+  { feature: "symbol_unscopables", module: "es.symbol.unscopables" },
+  { feature: "typed_array_float32", module: "es.typed-array.float32-array" },
+  { feature: "typed_array_float64", module: "es.typed-array.float64-array" },
+  { feature: "typed_array_int8", module: "es.typed-array.int8-array" },
+  { feature: "typed_array_int16", module: "es.typed-array.int16-array" },
+  { feature: "typed_array_int32", module: "es.typed-array.int32-array" },
+  { feature: "typed_array_uint8", module: "es.typed-array.uint8-array" },
+  { feature: "typed_array_uint8_clamped", module: "es.typed-array.uint8-clamped-array" },
+  { feature: "typed_array_uint16", module: "es.typed-array.uint16-array" },
+  { feature: "typed_array_uint32", module: "es.typed-array.uint32-array" },
+  { feature: "typed_array_at", module: "es.typed-array.at" },
+  { feature: "typed_array_copy_within", module: "es.typed-array.copy-within" },
+  { feature: "typed_array_every", module: "es.typed-array.every" },
+  { feature: "typed_array_fill", module: "es.typed-array.fill" },
+  { feature: "typed_array_filter", module: "es.typed-array.filter" },
+  { feature: "typed_array_find", module: "es.typed-array.find" },
+  { feature: "typed_array_find_index", module: "es.typed-array.find-index" },
+  { feature: "typed_array_find_last", module: "es.typed-array.find-last" },
+  { feature: "typed_array_find_last_index", module: "es.typed-array.find-last-index" },
+  { feature: "typed_array_for_each", module: "es.typed-array.for-each" },
+  { feature: "typed_array_from", module: "es.typed-array.from" },
+  { feature: "typed_array_includes", module: "es.typed-array.includes" },
+  { feature: "typed_array_index_of", module: "es.typed-array.index-of" },
+  { feature: "typed_array_join", module: "es.typed-array.join" },
+  { feature: "typed_array_last_index_of", module: "es.typed-array.last-index-of" },
+  { feature: "typed_array_map", module: "es.typed-array.map" },
+  { feature: "typed_array_of", module: "es.typed-array.of" },
+  { feature: "typed_array_reduce", module: "es.typed-array.reduce" },
+  { feature: "typed_array_reduce_right", module: "es.typed-array.reduce-right" },
+  { feature: "typed_array_reverse", module: "es.typed-array.reverse" },
+  { feature: "typed_array_set", module: "es.typed-array.set" },
+  { feature: "typed_array_slice", module: "es.typed-array.slice" },
+  { feature: "typed_array_some", module: "es.typed-array.some" },
+  { feature: "typed_array_sort", module: "es.typed-array.sort" },
+  { feature: "typed_array_subarray", module: "es.typed-array.subarray" },
+  { feature: "typed_array_to_reversed", module: "es.typed-array.to-reversed" },
+  { feature: "typed_array_to_sorted", module: "es.typed-array.to-sorted" },
+  { feature: "typed_array_with", module: "es.typed-array.with" },
+  { feature: "uint8_array_from_base64", module: "es.uint8-array.from-base64" },
+  { feature: "uint8_array_from_hex", module: "es.uint8-array.from-hex" },
+  { feature: "uint8_array_set_from_base64", module: "es.uint8-array.set-from-base64" },
+  { feature: "uint8_array_set_from_hex", module: "es.uint8-array.set-from-hex" },
+  { feature: "uint8_array_to_base64", module: "es.uint8-array.to-base64" },
+  { feature: "uint8_array_to_hex", module: "es.uint8-array.to-hex" },
+  { feature: "unescape", module: "es.unescape" },
+  { feature: "weak_map", module: "es.weak-map" },
+  { feature: "weak_map_get_or_insert", module: "es.weak-map.get-or-insert" },
+  { feature: "weak_map_get_or_insert_computed", module: "es.weak-map.get-or-insert-computed" },
+  { feature: "weak_set", module: "es.weak-set" },
+  { feature: "web_atob", module: "web.atob" },
+  { feature: "web_btoa", module: "web.btoa" },
+  { feature: "web_dom_collections_for_each", module: "web.dom-collections.for-each" },
+  { feature: "web_dom_collections_iterator", module: "web.dom-collections.iterator" },
+  { feature: "web_dom_exception", module: "web.dom-exception.constructor" },
+  { feature: "web_immediate", module: "web.immediate" },
+  { feature: "web_queue_microtask", module: "web.queue-microtask" },
+  { feature: "web_self", module: "web.self" },
+  { feature: "web_timers", module: "web.timers" },
+  { feature: "web_url", module: "web.url" },
+  { feature: "web_url_can_parse", module: "web.url.can-parse" },
+  { feature: "web_url_parse", module: "web.url.parse" },
+  { feature: "web_url_to_json", module: "web.url.to-json" },
+  { feature: "web_url_search_params", module: "web.url-search-params" },
+  { feature: "web_url_search_params_delete", module: "web.url-search-params.delete" },
+  { feature: "web_url_search_params_has", module: "web.url-search-params.has" },
+  { feature: "web_url_search_params_size", module: "web.url-search-params.size" },
+];
+
+const RUNTIME_POLYFILL_CANDIDATE_MODULES = RUNTIME_POLYFILL_FEATURE_MODULES.map(
+  (item) => item.module,
+);
 
 let coreJsCompatCache: CoreJsCompat | null | undefined;
-let babelParserCache: BabelParser | null | undefined;
 let coreJsVersionCache: string | null | undefined;
 
 export function isEsTarget(target: string | undefined): boolean {
@@ -142,27 +446,6 @@ function loadCoreJsCompat(): CoreJsCompat {
 function throwCoreJsCompatMissing(): never {
   throw new Error(
     "@zts/core: runtimePolyfills requires the optional 'core-js-compat' package. Install it with `bun add core-js core-js-compat`.",
-  );
-}
-
-function loadBabelParser(): BabelParser {
-  if (babelParserCache !== undefined) {
-    if (babelParserCache) return babelParserCache;
-    throwBabelParserMissing();
-  }
-  try {
-    const req = getRuntimeRequire();
-    babelParserCache = req("@babel/parser") as BabelParser;
-    return babelParserCache;
-  } catch {
-    babelParserCache = null;
-    throwBabelParserMissing();
-  }
-}
-
-function throwBabelParserMissing(): never {
-  throw new Error(
-    "@zts/core: runtimePolyfills auto/usage mode requires the optional '@babel/parser' package. Install it with `bun add @babel/parser`.",
   );
 }
 
@@ -299,289 +582,6 @@ export function computeCoreJsCompatModules(
   return result.list.map(normalizeCoreJsModuleName).sort();
 }
 
-function parseSource(source: string, filename: string): unknown {
-  const parser = loadBabelParser();
-  const baseOptions = {
-    sourceType: "unambiguous",
-    sourceFilename: filename,
-    errorRecovery: true,
-  };
-  try {
-    return parser.parse(source, {
-      ...baseOptions,
-      plugins: [
-        "typescript",
-        "jsx",
-        "classProperties",
-        "classPrivateProperties",
-        "classPrivateMethods",
-        "decorators-legacy",
-        "dynamicImport",
-        "importAttributes",
-        "topLevelAwait",
-      ],
-    });
-  } catch {
-    return parser.parse(source, {
-      ...baseOptions,
-      plugins: [
-        "flow",
-        "jsx",
-        "classProperties",
-        "classPrivateProperties",
-        "classPrivateMethods",
-        "decorators-legacy",
-        "dynamicImport",
-        "importAttributes",
-        "topLevelAwait",
-      ],
-    });
-  }
-}
-
-function isNode(value: unknown): value is Record<string, unknown> {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as { type?: unknown }).type === "string"
-  );
-}
-
-function stringLiteralValue(value: unknown): string | null {
-  if (!isNode(value)) return null;
-  if (value.type === "StringLiteral" || value.type === "Literal") {
-    const raw = value.value;
-    return typeof raw === "string" ? raw : null;
-  }
-  return null;
-}
-
-function memberName(member: Record<string, unknown>): string | null {
-  const property = member.property;
-  if (!isNode(property)) return null;
-  if (property.type === "Identifier" && member.computed !== true) {
-    return typeof property.name === "string" ? property.name : null;
-  }
-  return stringLiteralValue(property);
-}
-
-function identifierName(node: unknown): string | null {
-  return isNode(node) && node.type === "Identifier" && typeof node.name === "string"
-    ? node.name
-    : null;
-}
-
-function recordIdentifierUsage(name: string, out: Set<string>): void {
-  if (name === "Map") out.add("es.map");
-  else if (name === "Set") out.add("es.set");
-  else if (name === "Promise") out.add("es.promise");
-  else if (name === "structuredClone") out.add("web.structured-clone");
-}
-
-function recordMemberUsage(member: Record<string, unknown>, out: Set<string>): void {
-  const prop = memberName(member);
-  if (prop === "replaceAll") out.add("es.string.replace-all");
-  else if (prop === "at") out.add("es.array.at");
-  else if (prop === "hasOwn" && identifierName(member.object) === "Object") {
-    out.add("es.object.has-own");
-  }
-
-  const objName = identifierName(member.object);
-  if (objName) recordIdentifierUsage(objName, out);
-}
-
-function shouldSkipIdentifier(
-  node: Record<string, unknown>,
-  parent: Record<string, unknown> | null,
-): boolean {
-  if (!parent) return false;
-  if (parent.type === "MemberExpression" && parent.property === node && parent.computed !== true)
-    return true;
-  if (parent.type === "ObjectProperty" && parent.key === node && parent.computed !== true)
-    return true;
-  if (parent.type === "ObjectMethod" && parent.key === node && parent.computed !== true)
-    return true;
-  if (parent.type === "VariableDeclarator" && parent.id === node) return true;
-  if (parent.type === "FunctionDeclaration" && parent.id === node) return true;
-  if (parent.type === "FunctionExpression" && parent.id === node) return true;
-  if (parent.type === "ClassDeclaration" && parent.id === node) return true;
-  if (parent.type === "ClassExpression" && parent.id === node) return true;
-  if (parent.type === "ImportSpecifier" || parent.type === "ImportDefaultSpecifier") return true;
-  if (parent.type === "ImportNamespaceSpecifier") return true;
-  return false;
-}
-
-function visitAst(
-  node: unknown,
-  parent: Record<string, unknown> | null,
-  cb: (node: Record<string, unknown>, parent: Record<string, unknown> | null) => void,
-): void {
-  if (!isNode(node)) return;
-  cb(node, parent);
-  for (const [key, value] of Object.entries(node)) {
-    if (
-      key === "loc" ||
-      key === "start" ||
-      key === "end" ||
-      key === "range" ||
-      key === "leadingComments" ||
-      key === "trailingComments" ||
-      key === "innerComments"
-    ) {
-      continue;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) visitAst(item, node, cb);
-    } else {
-      visitAst(value, node, cb);
-    }
-  }
-}
-
-function scanAst(ast: unknown): { used: Set<string>; specifiers: string[] } {
-  const used = new Set<string>();
-  const specifiers: string[] = [];
-  visitAst(ast, null, (node, parent) => {
-    if (node.type === "MemberExpression") {
-      recordMemberUsage(node, used);
-      return;
-    }
-    if (node.type === "NewExpression" || node.type === "CallExpression") {
-      const name = identifierName(node.callee);
-      if (name) recordIdentifierUsage(name, used);
-      if (node.type === "CallExpression" && name === "require") {
-        const args = Array.isArray(node.arguments) ? node.arguments : [];
-        const spec = stringLiteralValue(args[0]);
-        if (spec) specifiers.push(spec);
-      }
-      return;
-    }
-    if (node.type === "Identifier" && !shouldSkipIdentifier(node, parent)) {
-      const name = identifierName(node);
-      if (name) recordIdentifierUsage(name, used);
-      return;
-    }
-    if (
-      (node.type === "ImportDeclaration" ||
-        node.type === "ExportNamedDeclaration" ||
-        node.type === "ExportAllDeclaration") &&
-      node.source
-    ) {
-      const spec = stringLiteralValue(node.source);
-      if (spec) specifiers.push(spec);
-    }
-  });
-  return { used, specifiers };
-}
-
-export function scanRuntimePolyfillUsage(source: string, filename = "input.js"): string[] {
-  const { used } = scanAst(parseSource(source, filename));
-  return [...used].sort();
-}
-
-function isRelativeSpecifier(specifier: string): boolean {
-  return specifier.startsWith("./") || specifier.startsWith("../") || isAbsolute(specifier);
-}
-
-function isSourceFile(path: string): boolean {
-  return SOURCE_EXTENSIONS.includes(extname(path));
-}
-
-function tryFile(path: string): string | null {
-  try {
-    if (statSync(path).isFile() && isSourceFile(path)) return path;
-  } catch {}
-  return null;
-}
-
-function resolveSourceImport(
-  importer: string,
-  specifier: string,
-  resolveExtensions: readonly string[] | undefined,
-): string | null {
-  if (!isRelativeSpecifier(specifier)) return null;
-  const base = isAbsolute(specifier) ? specifier : resolve(dirname(importer), specifier);
-  const explicit = tryFile(base);
-  if (explicit) return explicit;
-
-  const extensions = [
-    ...(resolveExtensions?.filter((ext) => SOURCE_EXTENSIONS.includes(ext)) ?? []),
-    ...SOURCE_EXTENSIONS,
-  ];
-  for (const ext of extensions) {
-    const found = tryFile(base + ext);
-    if (found) return found;
-  }
-
-  try {
-    if (statSync(base).isDirectory()) {
-      for (const ext of extensions) {
-        const found = tryFile(join(base, "index" + ext));
-        if (found) return found;
-      }
-    }
-  } catch {}
-  return null;
-}
-
-export function collectRuntimePolyfillUsageFromFiles(
-  entryPoints: readonly string[],
-  options: { resolveExtensions?: readonly string[] } = {},
-): string[] {
-  const queue = entryPoints.map((entry) => resolve(entry));
-  const seen = new Set<string>();
-  const used = new Set<string>();
-
-  for (let head = 0; head < queue.length; head++) {
-    const file = queue[head]!;
-    if (seen.has(file) || !isSourceFile(file)) continue;
-    let source: string;
-    try {
-      source = readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
-    seen.add(file);
-    const { used: fileUsed, specifiers } = scanAst(parseSource(source, file));
-    for (const moduleName of fileUsed) used.add(moduleName);
-    for (const specifier of specifiers) {
-      const resolved = resolveSourceImport(file, specifier, options.resolveExtensions);
-      if (resolved && !seen.has(resolved)) queue.push(resolved);
-    }
-  }
-
-  return [...used].sort();
-}
-
-function computeRuntimePolyfillModules(
-  options: RuntimePolyfillBuildOptions,
-  runtime: NormalizedRuntimePolyfills,
-): string[] {
-  const include = new Set(runtime.include);
-  const exclude = new Set(runtime.exclude);
-  let modules: string[];
-
-  if (runtime.mode === "entry") {
-    modules = computeCoreJsCompatModules(runtime.targets, /^(?:es|web)\./, {
-      version: runtime.coreJsVersion,
-      proposals: runtime.proposals,
-    });
-  } else {
-    const used = collectRuntimePolyfillUsageFromFiles(options.entryPoints, {
-      resolveExtensions: options.resolveExtensions,
-    });
-    modules = computeCoreJsCompatModules(runtime.targets, used, {
-      version: runtime.coreJsVersion,
-      proposals: runtime.proposals,
-    });
-  }
-
-  const out = new Set(modules);
-  for (const moduleName of include) out.add(moduleName);
-  for (const moduleName of exclude) out.delete(moduleName);
-  return [...out].sort();
-}
-
 function buildCoreJsResolver(entryPoints: readonly string[]): (moduleName: string) => string {
   const override = runtimeRequireOverride;
   const requires: RuntimeRequire[] = [];
@@ -608,24 +608,28 @@ function buildCoreJsResolver(entryPoints: readonly string[]): (moduleName: strin
   };
 }
 
-export function createRuntimePolyfillPrelude(
-  modules: readonly string[],
+function uniqueSorted(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort();
+}
+
+function resolveRuntimeModules(
+  modules: Iterable<string>,
   options: RuntimePolyfillBuildOptions,
-): { path: string; cleanup: () => void } | null {
-  if (modules.length === 0) return null;
+): ResolvedRuntimeModule[] {
   const resolveCoreJs = buildCoreJsResolver(options.entryPoints);
-  const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-"));
-  const path = join(dir, "prelude.mjs");
-  const imports = modules
-    .map((moduleName) => `import ${JSON.stringify(resolveCoreJs(moduleName))};`)
-    .join("\n");
-  writeFileSync(path, `${imports}\n`, "utf8");
-  return {
-    path,
-    cleanup() {
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
+  return uniqueSorted(modules).map((moduleName) => ({
+    module: moduleName,
+    path: resolveCoreJs(moduleName),
+  }));
+}
+
+function assignResolvedModuleArrays(
+  napiOptions: Record<string, unknown>,
+  prefix: string,
+  modules: readonly ResolvedRuntimeModule[],
+): void {
+  napiOptions[`${prefix}Modules`] = modules.map((item) => item.module);
+  napiOptions[`${prefix}Paths`] = modules.map((item) => item.path);
 }
 
 export function applyRuntimePolyfillsToNapiOptions(
@@ -640,11 +644,59 @@ export function applyRuntimePolyfillsToNapiOptions(
   const runtime = normalizeRuntimePolyfillOptions(options);
   if (!runtime) return { cleanup: () => {}, modules: [] };
 
-  const modules = computeRuntimePolyfillModules(options, runtime);
-  const prelude = createRuntimePolyfillPrelude(modules, options);
-  if (!prelude) return { cleanup: () => {}, modules };
+  const exclude = new Set(runtime.exclude);
+  const includeModules = runtime.include.filter((moduleName) => !exclude.has(moduleName));
+  const includeResolved = resolveRuntimeModules(includeModules, options);
 
-  const existing = Array.isArray(options.runBeforeMain) ? options.runBeforeMain : [];
-  napiOptions.runBeforeMain = [prelude.path, ...existing];
-  return { cleanup: prelude.cleanup, modules };
+  if (runtime.mode === "entry") {
+    const entryModules = computeCoreJsCompatModules(runtime.targets, /^(?:es|web)\./, {
+      version: runtime.coreJsVersion,
+      proposals: runtime.proposals,
+    }).filter((moduleName) => !exclude.has(moduleName));
+    const entryResolved = resolveRuntimeModules(entryModules, options);
+    if (entryResolved.length === 0 && includeResolved.length === 0) {
+      return { cleanup: () => {}, modules: [] };
+    }
+    napiOptions.runtimePolyfillModeNative = "entry";
+    assignResolvedModuleArrays(napiOptions, "runtimePolyfillEntry", entryResolved);
+    assignResolvedModuleArrays(napiOptions, "runtimePolyfillInclude", includeResolved);
+    napiOptions.runtimePolyfillExcludeModules = runtime.exclude;
+    return {
+      cleanup: () => {},
+      modules: uniqueSorted([...entryResolved, ...includeResolved].map((item) => item.module)),
+    };
+  }
+
+  const targetCandidateSet = new Set(
+    computeCoreJsCompatModules(runtime.targets, RUNTIME_POLYFILL_CANDIDATE_MODULES, {
+      version: runtime.coreJsVersion,
+      proposals: runtime.proposals,
+    }).filter((moduleName) => !exclude.has(moduleName)),
+  );
+  const candidates: ResolvedRuntimeCandidate[] = [];
+  const resolveCoreJs = buildCoreJsResolver(options.entryPoints);
+  for (const item of RUNTIME_POLYFILL_FEATURE_MODULES) {
+    if (!targetCandidateSet.has(item.module)) continue;
+    candidates.push({
+      feature: item.feature,
+      module: item.module,
+      path: resolveCoreJs(item.module),
+    });
+  }
+
+  if (candidates.length === 0 && includeResolved.length === 0) {
+    return { cleanup: () => {}, modules: [] };
+  }
+
+  napiOptions.runtimePolyfillModeNative = "usage";
+  napiOptions.runtimePolyfillCandidateFeatures = candidates.map((item) => item.feature);
+  napiOptions.runtimePolyfillCandidateModules = candidates.map((item) => item.module);
+  napiOptions.runtimePolyfillCandidatePaths = candidates.map((item) => item.path);
+  assignResolvedModuleArrays(napiOptions, "runtimePolyfillInclude", includeResolved);
+  napiOptions.runtimePolyfillExcludeModules = runtime.exclude;
+
+  return {
+    cleanup: () => {},
+    modules: uniqueSorted([...candidates, ...includeResolved].map((item) => item.module)),
+  };
 }

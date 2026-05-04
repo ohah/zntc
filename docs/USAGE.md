@@ -185,8 +185,8 @@ esbuild 스타일: `onResolve`, `onLoad`, `onTransform`, `onRenderChunk`, `onGen
 - CLI: `--runtime-polyfills=auto|usage|entry|off`, `--runtime-target=<query>` 반복, `--core-js=3.49`.
 - JS API/config: `runtimePolyfills`, `coreJs`. 타겟은 Rspack/SWC `env.targets`와 같은 Browserslist query 배열로
   `runtimePolyfills: { targets: ["chrome >= 87", "safari >= 14"] }`처럼 지정한다.
-- `auto`/`usage`는 엔트리와 로컬 의존성에서 `replaceAll`, `Map`, `Set`, `Promise`,
-  `Array.prototype.at`, `Object.hasOwn`, `structuredClone` 사용을 스캔해 타겟 미지원 core-js 모듈만 주입한다.
+- `auto`/`usage`는 resolve/load/transform 이후 실제 번들 그래프에서 `replaceAll`, `Map`, `Set`, `Promise`,
+  `Array.prototype.at`, `Object.hasOwn`, `structuredClone` 사용을 감지해 타겟 미지원 core-js 모듈만 주입한다.
 - `entry`는 타겟 기준 필요한 `core-js/modules/es.*` / `web.*`를 엔트리 prelude에 포괄 주입한다.
 - 타겟 예: `ios_saf 12`, `iOS >= 12`, `chrome >= 85`, `android >= 5`,
   `samsung >= 14`, `node 18`. `ios12`, `node18`, `iPhone 8`, `Galaxy S10`

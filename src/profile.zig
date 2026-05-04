@@ -89,6 +89,10 @@ pub const Category = enum {
     graph_resync_export_bindings,
     graph_resync_classify,
     graph_resync_alias,
+    graph_runtime_polyfills,
+    graph_runtime_polyfills_collect,
+    graph_runtime_polyfills_aggregate,
+    graph_runtime_polyfills_inject,
 
     // ── Linking / Tree-shaking ──
     link,

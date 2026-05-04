@@ -90,7 +90,6 @@
         "@types/node": "^25.5.2",
       },
       "optionalDependencies": {
-        "@babel/parser": "^7.29.0",
         "browserslist": "^4.24.0",
         "core-js": "^3.49.0",
         "core-js-compat": "^3.49.0",

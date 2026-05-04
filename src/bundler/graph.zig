@@ -28,6 +28,7 @@ const module_mod = @import("module.zig");
 const Module = module_mod.Module;
 const CachedResolvedDep = module_mod.CachedResolvedDep;
 const runtime_helpers = @import("runtime_helpers.zig");
+const runtime_polyfills = @import("runtime_polyfills.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const ResolveCache = resolve_cache_mod.ResolveCache;
 const resolver_mod = @import("resolver.zig");
@@ -40,6 +41,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const profile = @import("../profile.zig");
+const debug_log = @import("../debug_log.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const AliasTable = @import("module.zig").AliasTable;
@@ -116,6 +118,12 @@ pub const ModuleGraph = struct {
     project_root: []const u8 = "",
     /// --inject 파일 목록. build()에서 모든 엔트리의 의존성으로 추가.
     inject_files: []const []const u8 = &.{},
+    /// --run-before-main 파일 목록. inject 뒤, 사용자 엔트리 앞에 실행된다.
+    run_before_main_files: []const []const u8 = &.{},
+    /// JS wrapper가 core-js-compat로 계산한 runtime-polyfill 후보 계획.
+    runtime_polyfills: ?runtime_polyfills.Plan = null,
+    /// graph usage aggregation 후 실제로 선택된 core-js root paths.
+    runtime_polyfill_roots: std.ArrayListUnmanaged([]const u8) = .empty,
     /// --pure:CALLEE 목록. parser AST의 call/new에 기존 pure flag를 부여한다.
     pure: []const []const u8 = &.{},
     /// package.json sideEffects / pure annotation 신호를 무시하고 보수적으로 포함.
@@ -256,6 +264,7 @@ pub const ModuleGraph = struct {
         self.worker_entries.deinit(self.allocator);
         if (self.jsx_specifier_cache) |s| self.allocator.free(s);
         if (self.plugins_with_helpers) |p| self.allocator.free(p);
+        self.runtime_polyfill_roots.deinit(self.allocator);
     }
 
     /// `plugins_with_helpers` lazy 초기화 — `self.plugins` 앞에 ZTS builtin plugin 들 (runtime
@@ -421,6 +430,15 @@ pub const ModuleGraph = struct {
             try inject_indices.append(self.allocator, idx);
         }
 
+        // --run-before-main 파일도 graph root 로 먼저 등록하되, 엔트리 연결은
+        // runtime-polyfill root 선별 이후에 수행한다.
+        var run_before_main_indices: std.ArrayList(types.ModuleIndex) = .empty;
+        defer run_before_main_indices.deinit(self.allocator);
+        for (self.run_before_main_files) |rbm_path| {
+            const idx = try self.addModule(rbm_path);
+            try run_before_main_indices.append(self.allocator, idx);
+        }
+
         // Phase 1: 이벤트 큐 기반 스캔 (esbuild 스타일).
         // 워커: parseModule + resolve → 채널 send (그래프 변형 없음)
         // 메인: 채널 recv → 결과 적용 + addModule → 즉시 새 워커 스폰
@@ -445,7 +463,7 @@ pub const ModuleGraph = struct {
             var inflight: usize = 0;
             var spawned_up_to: usize = 0;
 
-            // 초기 모듈(엔트리 + inject) 스폰
+            // 초기 모듈(엔트리 + inject + runBeforeMain) 스폰
             while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
                 const m = self.modules.at(spawned_up_to);
                 if (m.state == .ready) continue; // disabled 모듈은 스킵
@@ -519,23 +537,195 @@ pub const ModuleGraph = struct {
             }
         }
 
-        // --inject: inject 파일을 각 엔트리 모듈의 의존성으로 추가.
-        // DFS에서 inject 모듈이 먼저 방문되어 exec_index가 낮아지고, 번들 상단에 출력.
-        if (inject_indices.items.len > 0) {
-            for (entry_points) |entry_path| {
-                if (self.path_to_module.get(entry_path)) |entry_idx| {
-                    const ei = @intFromEnum(entry_idx);
-                    if (ei < self.modules.count()) {
-                        for (inject_indices.items) |inject_idx| {
-                            try self.linkDependency(entry_idx, inject_idx);
-                        }
-                    }
-                }
-            }
-        }
+        var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;
+        defer runtime_indices.deinit(self.allocator);
+        try self.applyRuntimePolyfills(&runtime_indices);
+        try self.linkExecutionRoots(entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
         discover_scope.end();
 
         try self.finalizeGraph(entry_points);
+    }
+
+    fn applyRuntimePolyfills(self: *ModuleGraph, runtime_indices: *std.ArrayList(ModuleIndex)) !void {
+        const plan = self.runtime_polyfills orelse return;
+
+        var scope = profile.begin(.graph_runtime_polyfills);
+        defer scope.end();
+
+        var selected: std.ArrayList(runtime_polyfills.ResolvedModule) = .empty;
+        defer selected.deinit(self.allocator);
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+
+        switch (plan.mode) {
+            .entry => {
+                var aggregate_scope = profile.begin(.graph_runtime_polyfills_aggregate);
+                defer aggregate_scope.end();
+                for (plan.entry_modules) |module| {
+                    try self.selectRuntimePolyfillModule(&selected, &seen, plan, module, "entry");
+                }
+            },
+            .usage => {
+                var used: runtime_polyfills.FeatureSet = .{};
+                defer used.deinit(self.allocator);
+                {
+                    var aggregate_scope = profile.begin(.graph_runtime_polyfills_aggregate);
+                    defer aggregate_scope.end();
+                    const count = self.modules.count();
+                    for (0..count) |i| {
+                        const m = self.modules.at(i);
+                        var collect_scope = profile.begin(.graph_runtime_polyfills_collect);
+                        var module_usage = try runtime_polyfills.collectModuleUsage(self.allocator, m);
+                        defer module_usage.deinit(self.allocator);
+                        collect_scope.end();
+                        if (!module_usage.isEmpty()) self.debugRuntimePolyfillUsage(m.path, module_usage);
+                        try used.merge(self.allocator, module_usage);
+                    }
+                }
+                for (plan.candidates) |candidate| {
+                    const module: runtime_polyfills.ResolvedModule = .{
+                        .module = candidate.module,
+                        .path = candidate.path,
+                    };
+                    if (used.has(candidate.feature)) {
+                        try self.selectRuntimePolyfillModule(&selected, &seen, plan, module, candidate.feature);
+                    } else if (debug_log.enabled(.runtime_polyfills)) {
+                        debug_log.print(
+                            .runtime_polyfills,
+                            "mode=usage feature={s} corejs_module={s} decision=unused\n",
+                            .{ candidate.feature, candidate.module },
+                        );
+                    }
+                }
+            },
+        }
+
+        for (plan.include) |module| {
+            try self.selectRuntimePolyfillModule(&selected, &seen, plan, module, "include");
+        }
+
+        if (selected.items.len == 0) return;
+
+        var inject_scope = profile.begin(.graph_runtime_polyfills_inject);
+        defer inject_scope.end();
+        const discover_start = self.modules.count();
+        for (selected.items) |module| {
+            const idx = try self.addModule(module.path);
+            if (self.moduleAtMut(idx)) |m| {
+                m.is_context_dep = true;
+            }
+            try runtime_indices.append(self.allocator, idx);
+            try self.runtime_polyfill_roots.append(self.allocator, module.path);
+            if (debug_log.enabled(.runtime_polyfills)) {
+                debug_log.print(
+                    .runtime_polyfills,
+                    "mode={s} corejs_module={s} module={s} decision=prelude\n",
+                    .{ @tagName(plan.mode), module.module, module.path },
+                );
+            }
+        }
+        try self.discoverPendingModulesSequential(discover_start);
+    }
+
+    fn selectRuntimePolyfillModule(
+        self: *ModuleGraph,
+        selected: *std.ArrayList(runtime_polyfills.ResolvedModule),
+        seen: *std.StringHashMap(void),
+        plan: runtime_polyfills.Plan,
+        module: runtime_polyfills.ResolvedModule,
+        reason: []const u8,
+    ) !void {
+        if (isRuntimePolyfillExcluded(plan, module.module)) {
+            if (debug_log.enabled(.runtime_polyfills)) {
+                debug_log.print(
+                    .runtime_polyfills,
+                    "mode={s} feature={s} corejs_module={s} decision=excluded\n",
+                    .{ @tagName(plan.mode), reason, module.module },
+                );
+            }
+            return;
+        }
+        if (seen.contains(module.module)) return;
+        try seen.put(module.module, {});
+        try selected.append(self.allocator, module);
+        if (debug_log.enabled(.runtime_polyfills)) {
+            debug_log.print(
+                .runtime_polyfills,
+                "mode={s} feature={s} corejs_module={s} module={s} decision=included\n",
+                .{ @tagName(plan.mode), reason, module.module, module.path },
+            );
+        }
+    }
+
+    fn isRuntimePolyfillExcluded(plan: runtime_polyfills.Plan, module_name: []const u8) bool {
+        for (plan.exclude) |excluded| {
+            if (std.mem.eql(u8, excluded, module_name)) return true;
+        }
+        return false;
+    }
+
+    fn debugRuntimePolyfillUsage(self: *ModuleGraph, module_path: []const u8, usage: runtime_polyfills.FeatureSet) void {
+        _ = self;
+        if (!debug_log.enabled(.runtime_polyfills)) return;
+        for (usage.items[0..usage.len]) |feature| {
+            debug_log.print(
+                .runtime_polyfills,
+                "mode=usage module={s} feature={s} decision=detected\n",
+                .{ module_path, feature },
+            );
+        }
+    }
+
+    fn discoverPendingModulesSequential(self: *ModuleGraph, start_index: usize) !void {
+        var parse_start = start_index;
+        while (parse_start < self.modules.count()) {
+            const parse_end = self.modules.count();
+            for (parse_start..parse_end) |j| {
+                const m = self.modules.at(j);
+                if (m.state == .ready) continue;
+                self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
+            }
+            for (parse_start..parse_end) |i| {
+                const m_ptr = self.modules.at(i);
+                if (m_ptr.state == .ready) continue;
+                self.applySideEffectsFromPackageJson(m_ptr);
+                m_ptr.state = .ready;
+            }
+            for (parse_start..parse_end) |i| {
+                const m_ptr = self.modules.at(i);
+                if (m_ptr.is_disabled or m_ptr.is_external) continue;
+                try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
+                try self.applyContextDepResults(i);
+            }
+            parse_start = parse_end;
+        }
+    }
+
+    fn linkExecutionRoots(
+        self: *ModuleGraph,
+        entry_points: []const []const u8,
+        inject_indices: []const ModuleIndex,
+        runtime_indices: []const ModuleIndex,
+        run_before_main_indices: []const ModuleIndex,
+    ) !void {
+        if (inject_indices.len == 0 and runtime_indices.len == 0 and run_before_main_indices.len == 0) return;
+        for (entry_points) |entry_path| {
+            const entry_idx = self.path_to_module.get(entry_path) orelse continue;
+            const ei = @intFromEnum(entry_idx);
+            if (ei >= self.modules.count()) continue;
+            for (inject_indices) |inject_idx| try self.linkDependencyUnique(entry_idx, inject_idx);
+            for (runtime_indices) |runtime_idx| try self.linkDependencyUnique(entry_idx, runtime_idx);
+            for (run_before_main_indices) |rbm_idx| try self.linkDependencyUnique(entry_idx, rbm_idx);
+        }
+    }
+
+    fn linkDependencyUnique(self: *ModuleGraph, from: ModuleIndex, to: ModuleIndex) !void {
+        if (to.isNone()) return;
+        const from_mod = self.getModule(from) orelse return;
+        for (from_mod.dependencies.items) |existing| {
+            if (existing == to) return;
+        }
+        try self.linkDependency(from, to);
     }
 
     /// Phase 2-4: DFS exec_index + ExportsKind 승격 + TLA 전파.
@@ -570,6 +760,7 @@ pub const ModuleGraph = struct {
         try self.markCyclesViaDynamic(entry_indices.items);
 
         self.promoteExportsKinds();
+        self.promoteRunBeforeMainModules();
         self.registerWrapperSymbols();
         self.propagateTopLevelAwait();
         self.checkSelfReExport();
@@ -641,6 +832,13 @@ pub const ModuleGraph = struct {
         for (self.inject_files) |inject_path| {
             const idx = try self.addModule(inject_path);
             try inject_indices.append(self.allocator, idx);
+        }
+
+        var run_before_main_indices: std.ArrayList(types.ModuleIndex) = .empty;
+        defer run_before_main_indices.deinit(self.allocator);
+        for (self.run_before_main_files) |rbm_path| {
+            const idx = try self.addModule(rbm_path);
+            try run_before_main_indices.append(self.allocator, idx);
         }
 
         for (entry_points) |entry_path| {
@@ -745,19 +943,12 @@ pub const ModuleGraph = struct {
             parse_start = parse_end;
         }
 
-        // --inject: inject 파일을 각 엔트리 모듈의 의존성으로 추가
-        if (inject_indices.items.len > 0) {
-            for (entry_points) |entry_path| {
-                if (self.path_to_module.get(entry_path)) |entry_idx| {
-                    const ei = @intFromEnum(entry_idx);
-                    if (ei < self.modules.count()) {
-                        for (inject_indices.items) |inject_idx| {
-                            try self.linkDependency(entry_idx, inject_idx);
-                        }
-                    }
-                }
-            }
-        }
+        var runtime_indices: std.ArrayList(types.ModuleIndex) = .empty;
+        defer runtime_indices.deinit(self.allocator);
+        const before_runtime_count = self.modules.count();
+        try self.applyRuntimePolyfills(&runtime_indices);
+        if (self.modules.count() > before_runtime_count) graph_changed = true;
+        try self.linkExecutionRoots(entry_points, inject_indices.items, runtime_indices.items, run_before_main_indices.items);
 
         discover_scope.end();
 
@@ -2862,6 +3053,18 @@ pub const ModuleGraph = struct {
                 if (m.exports_kind == .none) m.exports_kind = .esm;
                 m.wrap_kind = .esm;
             }
+        }
+    }
+
+    fn promoteRunBeforeMainModules(self: *ModuleGraph) void {
+        for (self.run_before_main_files) |rbm_path| {
+            const idx = self.path_to_module.get(rbm_path) orelse continue;
+            const i = @intFromEnum(idx);
+            if (i >= self.modules.count()) continue;
+            var m = self.modules.at(i);
+            if (!m.module_type.isJavaScriptLike() or m.wrap_kind != .none) continue;
+            if (m.exports_kind == .none) m.exports_kind = .esm;
+            if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
         }
     }
 

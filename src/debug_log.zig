@@ -38,6 +38,8 @@ pub const Category = enum {
     /// `Ast.addString` intern map 의 hit/miss 통계. PR #2496 의 dedupe 효과
     /// 측정용. 모듈별 (parser/transformer 두 ast 합산) dump.
     string_intern,
+    /// Runtime core-js usage detection and graph prelude decisions.
+    runtime_polyfills,
 
     /// 카테고리 이름으로 enum 조회 (공백 제거 + 대소문자 무시).
     pub fn fromString(s: []const u8) ?Category {
@@ -110,6 +112,7 @@ pub fn print(comptime cat: Category, comptime fmt: []const u8, args: anytype) vo
 test "Category.fromString 매칭" {
     try std.testing.expect(Category.fromString("compiled_cache") == .compiled_cache);
     try std.testing.expect(Category.fromString("COMPILED_CACHE") == .compiled_cache);
+    try std.testing.expect(Category.fromString("runtime_polyfills") == .runtime_polyfills);
     try std.testing.expect(Category.fromString("  compiled_cache  ") == .compiled_cache);
     try std.testing.expect(Category.fromString("nonexistent") == null);
     try std.testing.expect(Category.fromString("") == null);

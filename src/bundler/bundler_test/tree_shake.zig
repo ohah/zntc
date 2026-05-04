@@ -1221,7 +1221,7 @@ test "TreeShaking: runBeforeMain import-only root preserves side-effect dependen
 
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "runBeforeMainPolyfill") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_prelude") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "init_prelude") != null);
 }
 
 test "TreeShaking CJS: named import prunes unused exports dot assignment" {

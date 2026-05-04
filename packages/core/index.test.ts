@@ -1183,6 +1183,51 @@ describe("@zts/core edge cases", () => {
     expect(result.code).toContain("??");
   });
 
+  test("build target es5 keeps optional chaining temp declarations in nested functions", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-es5-optional-temp-"));
+    try {
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `
+          function createProxy(state: any) {
+            state.callbacks.push(function rootDraftCleanup(rootScope: any) {
+              rootScope.mapSetPlugin_?.fixSetContents(state);
+              const { patchPlugin_ } = rootScope;
+              if (state.modified_ && patchPlugin_) {
+                patchPlugin_.generatePatches_(state, [], rootScope);
+              }
+            });
+          }
+
+          const calls: string[] = [];
+          const state = { callbacks: [] as Function[], modified_: true };
+          createProxy(state);
+          state.callbacks[0]({
+            mapSetPlugin_: { fixSetContents() { calls.push("map"); } },
+            patchPlugin_: { generatePatches_() { calls.push("patch"); } },
+          });
+          globalThis.__VALUE__ = calls.join(",");
+        `,
+      );
+
+      const result = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        target: "es5",
+      });
+      expect(result.errors.length).toBe(0);
+      const code = result.outputFiles[0].text;
+      expect(code).not.toContain("?.");
+
+      const vm = require("node:vm") as typeof import("node:vm");
+      const sandbox: { __VALUE__?: string } = {};
+      vm.runInNewContext(code, sandbox);
+      expect(sandbox.__VALUE__).toBe("map,patch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("decorator (experimental)", () => {
     const result = transpile(
       "@sealed\nclass Greeter {\n  greeting: string;\n  constructor(message: string) { this.greeting = message; }\n}",
@@ -6732,6 +6777,430 @@ describe("@zts/core browserslist", () => {
         runtimePolyfills: { mode: "auto", targets: ["node 18"] },
       }).outputFiles[0].text;
       expect(modernTarget).not.toContain("es.string.replace-all");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills auto scans package exports resolved modules", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-pkg-exports-"));
+    try {
+      const pkgDir = join(dir, "node_modules", "runtime-exports-pkg", "dist");
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(
+        join(dir, "node_modules", "runtime-exports-pkg", "package.json"),
+        JSON.stringify({
+          name: "runtime-exports-pkg",
+          type: "module",
+          exports: {
+            ".": {
+              import: "./dist/index.js",
+              default: "./dist/index.js",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(pkgDir, "index.js"),
+        `
+          const cloned = structuredClone({ label: "clone" });
+          export const value = [
+            ["a", "b"].at(-1),
+            Object.hasOwn({ ok: true }, "ok") ? "own" : "missing",
+            cloned.label,
+          ].join("|");
+        `,
+      );
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `import { value } from "runtime-exports-pkg"; globalThis.__VALUE__ = value;`,
+      );
+
+      const code = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        platform: "node",
+        runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
+      }).outputFiles[0].text;
+
+      expect(code).toContain("es.array.at");
+      expect(code).toContain("es.object.has-own");
+      expect(code).toContain("web.structured-clone");
+
+      const vm = require("node:vm") as typeof import("node:vm");
+      const sandbox: { __VALUE__?: string } = {};
+      vm.runInNewContext(
+        `
+          Array.prototype.at = undefined;
+          Object.hasOwn = undefined;
+          globalThis.structuredClone = undefined;
+          ${code}
+        `,
+        sandbox,
+      );
+      expect(sandbox.__VALUE__).toBe("b|own|clone");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills auto ignores shadowed globals and dynamic computed access", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-negative-"));
+    try {
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `
+          const Map = class LocalMap {};
+          const Object = { hasOwn() { return true; } };
+          const globalThis = { Set: class LocalSet {} };
+          const promiseMethod = "resolve";
+          const stringMethod = "replaceAll";
+          new Map();
+          new globalThis.Set();
+          Object.hasOwn({}, "x");
+          Promise[promiseMethod](1);
+          "a-a"[stringMethod]("a", "b");
+        `,
+      );
+
+      const code = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
+      }).outputFiles[0].text;
+
+      expect(code).not.toContain("es.map");
+      expect(code).not.toContain("es.set");
+      expect(code).not.toContain("es.promise");
+      expect(code).not.toContain("es.object.has-own");
+      expect(code).not.toContain("es.string.replace-all");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills auto ignores imported runtime global names", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-import-shadow-"));
+    try {
+      writeFileSync(
+        join(dir, "locals.ts"),
+        `
+          export class Map {
+            kind = "local-map";
+          }
+          export const Promise = {
+            resolve(value: string) {
+              return "local-" + value;
+            },
+          };
+          export const Object = {
+            hasOwn() {
+              return "local-has-own";
+            },
+          };
+        `,
+      );
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `
+          import { Map, Promise, Object } from "./locals";
+          const structuredClone = (value: string) => "local-" + value;
+          globalThis.__VALUE__ = [
+            new Map().kind,
+            Promise.resolve("promise"),
+            Object.hasOwn({}, "x"),
+            structuredClone("clone"),
+          ].join("|");
+        `,
+      );
+
+      const code = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
+      }).outputFiles[0].text;
+
+      expect(code).not.toContain("es.map");
+      expect(code).not.toContain("es.promise");
+      expect(code).not.toContain("es.object.has-own");
+      expect(code).not.toContain("web.structured-clone");
+
+      const vm = require("node:vm") as typeof import("node:vm");
+      const sandbox: { __VALUE__?: string } = {};
+      vm.runInNewContext(
+        `
+          globalThis.Map = undefined;
+          globalThis.Promise = undefined;
+          globalThis.structuredClone = undefined;
+          ${code}
+        `,
+        sandbox,
+      );
+      expect(sandbox.__VALUE__).toBe("local-map|local-promise|local-has-own|local-clone");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills include covers intentional dynamic computed access", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-computed-include-"));
+    try {
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `
+          const method = "at";
+          globalThis.__VALUE__ = ["x", "y"][method](-1);
+        `,
+      );
+
+      const autoOnly = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
+      }).outputFiles[0].text;
+      expect(autoOnly).not.toContain("es.array.at");
+
+      const included = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: {
+          mode: "auto",
+          targets: ["node 18"],
+          include: ["es.array.at"],
+        },
+      }).outputFiles[0].text;
+      expect(included).toContain("es.array.at");
+
+      const vm = require("node:vm") as typeof import("node:vm");
+      const sandbox: { __VALUE__?: string } = {};
+      vm.runInNewContext(`Array.prototype.at = undefined;\n${included}`, sandbox);
+      expect(sandbox.__VALUE__).toBe("y");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills auto detects explicit globalThis runtime API usage", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-globalthis-"));
+    try {
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `
+          globalThis.__RESULT__ = [
+            typeof globalThis.Map,
+            typeof globalThis.Set,
+            typeof globalThis.Promise.resolve,
+            typeof globalThis.structuredClone,
+            globalThis.Object.hasOwn({ ok: true }, "ok"),
+          ].join("|");
+        `,
+      );
+
+      const code = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
+      }).outputFiles[0].text;
+
+      expect(code).toContain("es.map");
+      expect(code).toContain("es.set");
+      expect(code).toContain("es.promise");
+      expect(code).toContain("web.structured-clone");
+      expect(code).toContain("es.object.has-own");
+
+      const vm = require("node:vm") as typeof import("node:vm");
+      const sandbox: { __RESULT__?: string } = {};
+      vm.runInNewContext(
+        `
+          globalThis.Map = undefined;
+          globalThis.Set = undefined;
+          globalThis.Promise = undefined;
+          globalThis.structuredClone = undefined;
+          globalThis.Object.hasOwn = undefined;
+          ${code}
+        `,
+        sandbox,
+      );
+      expect(sandbox.__RESULT__).toBe("function|function|function|function|true");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills auto injects expanded core-js built-ins", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-expanded-"));
+    try {
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `
+          const key = {};
+          const weak = new WeakMap();
+          weak.set(key, 7);
+          globalThis.__VALUE__ = [
+            Object.values({ label: "value" })[0],
+            "7".padStart(2, "0"),
+            Math.trunc(1.8),
+            Reflect.ownKeys({ own: true })[0],
+            [1, 2, 3].findLast((value) => value < 3),
+            typeof Symbol === "function",
+            weak.get(key),
+          ].join("|");
+        `,
+      );
+
+      const code = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
+      }).outputFiles[0].text;
+
+      expect(code).toContain("es.object.values");
+      expect(code).toContain("es.string.pad-start");
+      expect(code).toContain("es.math.trunc");
+      expect(code).toContain("es.reflect.own-keys");
+      expect(code).toContain("es.array.find-last");
+      expect(code).toContain("es.weak-map");
+      expect(code).toContain("es.symbol");
+
+      const vm = require("node:vm") as typeof import("node:vm");
+      const sandbox: { __VALUE__?: string } = {};
+      vm.runInNewContext(
+        `
+          Object.values = undefined;
+          String.prototype.padStart = undefined;
+          Math.trunc = undefined;
+          Reflect.ownKeys = undefined;
+          Array.prototype.findLast = undefined;
+          globalThis.WeakMap = undefined;
+          globalThis.Symbol = undefined;
+          ${code}
+        `,
+        sandbox,
+      );
+      expect(sandbox.__VALUE__).toBe("value|07|1|own|2|true|7");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills auto detects usage added by transform plugins", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-transform-"));
+    try {
+      writeFileSync(join(dir, "entry.ts"), `globalThis.__VALUE__ = "__ORIGINAL__";`);
+      const transformPlugin: ZtsPlugin = {
+        name: "runtime-polyfill-transform",
+        setup(build) {
+          build.onTransform({ filter: /entry\.ts$/ }, () => ({
+            code: `globalThis.__VALUE__ = "a-a".replaceAll("a", "b");`,
+          }));
+        },
+      };
+
+      const result = await build({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: { mode: "auto", targets: ["ios_saf 12"] },
+        plugins: [transformPlugin],
+      });
+
+      expect(result.errors.length).toBe(0);
+      const code = result.outputFiles[0].text;
+      expect(code).toContain("es.string.replace-all");
+      expect(code).not.toContain("__ORIGINAL__");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills include is forced and exclude removes final selected modules", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-include-exclude-"));
+    try {
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `
+          const value = ["a"].at(0);
+          globalThis.__VALUE__ = "a-a".replaceAll("a", value ?? "b");
+        `,
+      );
+
+      const code = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: {
+          mode: "auto",
+          targets: ["ios_saf 12"],
+          include: ["es.promise"],
+          exclude: ["es.string.replace-all"],
+        },
+      }).outputFiles[0].text;
+
+      expect(code).toContain("es.array.at");
+      expect(code).toContain("es.promise");
+      expect(code).not.toContain("es.string.replace-all");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills entry and off modes stay separate from usage collection", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-modes-"));
+    try {
+      writeFileSync(join(dir, "entry.ts"), `globalThis.__VALUE__ = "a".replaceAll("a", "b");`);
+
+      const entryMode = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: { mode: "entry", targets: ["safari 5"] },
+      }).outputFiles[0].text;
+      expect(entryMode).toContain("es.map");
+      expect(entryMode).toContain("es.promise");
+      expect(entryMode).toContain("es.string.replace-all");
+
+      const offMode = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        runtimePolyfills: "off",
+      }).outputFiles[0].text;
+      expect(offMode).not.toContain("es.string.replace-all");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtimePolyfills prelude runs after manual polyfills and before runBeforeMain", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-order-"));
+    try {
+      const polyfillFile = join(dir, "manual-polyfill.js");
+      const initFile = join(dir, "init.ts");
+      writeFileSync(
+        polyfillFile,
+        `
+          globalThis.__ORDER__ = ["polyfill"];
+          String.prototype.replaceAll = undefined;
+        `,
+      );
+      writeFileSync(
+        initFile,
+        `globalThis.__ORDER__.push("runBeforeMain:" + "a".replaceAll("a", "b"));`,
+      );
+      writeFileSync(
+        join(dir, "entry.ts"),
+        `globalThis.__ORDER__.push("entry:" + "a".replaceAll("a", "c"));`,
+      );
+
+      const code = buildSync({
+        entryPoints: [join(dir, "entry.ts")],
+        format: "iife",
+        polyfills: [polyfillFile],
+        runBeforeMain: [initFile],
+        runtimePolyfills: { mode: "auto", targets: ["ios_saf 12"] },
+      }).outputFiles[0].text;
+
+      expect(code).toContain("es.string.replace-all");
+      const vm = require("node:vm") as typeof import("node:vm");
+      const sandbox: { __ORDER__?: string[] } = {};
+      vm.runInNewContext(code, sandbox);
+      expect(sandbox.__ORDER__).toEqual(["polyfill", "runBeforeMain:b", "entry:c"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
