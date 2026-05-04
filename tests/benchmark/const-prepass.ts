@@ -93,6 +93,19 @@ const TARGET_PHASES = [
   "shake.numeric.postpass.reachable",
   "shake.numeric.postpass.replace",
   "shake.numeric.postpass.minify.resync",
+  "shake.numeric.postpass.minify",
+  "shake.numeric.postpass.resync",
+  "shake.numeric.postpass.minify.skip",
+  "graph.resync",
+  "graph.resync.const",
+  "graph.resync.semantic",
+  "graph.resync.stmt.info",
+  "graph.resync.import.scan",
+  "graph.resync.import.bindings",
+  "graph.resync.export.bindings",
+  "graph.resync.classify",
+  "graph.resync.alias",
+  "graph.resync.binding.refs",
   "shake.mirror",
 ] as const;
 
@@ -204,7 +217,7 @@ function runOne(entry: string, outDir: string): ProfileJson {
       "--format=esm",
       "-o",
       join(outDir, "out.js"),
-      "--profile=shake",
+      "--profile=shake,graph.resync",
       "--profile-level=detailed",
       "--profile-format=json",
     ],
@@ -428,10 +441,10 @@ async function main(cli: CliArgs): Promise<void> {
   console.log();
   console.log("### numeric postpass profile");
   console.log(
-    "| Fixture | Queue seed | Queue | Build facts | Resolve | Lookup | Candidate | Materialize | Forbidden | Reachable | Replace | Minify resync |",
+    "| Fixture | Queue seed | Queue | Build facts | Resolve | Lookup | Candidate | Materialize | Forbidden | Reachable | Replace | Minify resync | Minify | Resync | Skip count |",
   );
   console.log(
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   );
   for (const result of results) {
     console.log(
@@ -445,7 +458,31 @@ async function main(cli: CliArgs): Promise<void> {
         `${fmtMs(phaseMedian(result, "shake.numeric.postpass.forbidden"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.numeric.postpass.reachable"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.numeric.postpass.replace"))} | ` +
-        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.minify.resync"))} |`,
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.minify.resync"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.minify"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.resync"))} | ` +
+        `${phaseCount(result, "shake.numeric.postpass.minify.skip")} |`,
+    );
+  }
+
+  console.log();
+  console.log("### numeric resync graph profile");
+  console.log(
+    "| Fixture | Graph resync | Const path | Semantic | Stmt info | Binding refs | Import scan | Import bindings | Export bindings | Classify | Alias |",
+  );
+  console.log("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+  for (const result of results) {
+    console.log(
+      `| ${result.name} | ${fmtMs(phaseMedian(result, "graph.resync"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.const"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.semantic"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.stmt.info"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.binding.refs"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.import.scan"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.import.bindings"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.export.bindings"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.classify"))} | ` +
+        `${fmtMs(phaseMedian(result, "graph.resync.alias"))} |`,
     );
   }
 
