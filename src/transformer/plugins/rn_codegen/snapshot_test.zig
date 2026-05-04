@@ -1,4 +1,4 @@
-//! react-native-screens 4.23.0 의 4 spec 에 대해 ZTS rn_codegen_plugin 의 출력이
+//! RN 버전별 spec snapshot 에 대해 ZTS rn_codegen_plugin 의 출력이
 //! `@react-native/codegen` reference 와 **의미적으로** 동등한지 검증.
 //!
 //! 비교 단위: view config 객체에 등록되는 키 set (= RN runtime contract).
@@ -11,14 +11,22 @@
 //! 등록하면 RN runtime 동작 동등.
 //!
 //! 본 PR 시점에는 모든 spec 의 key set 이 일치해야 통과 — ZTS 가 attribute 누락하면 fail.
+//!
+//! 디렉토리 구조: `tests/codegen-snapshots/rn-<version>/{fixtures,golden}/`. 새 RN
+//! 버전 추가는 디렉토리 생성 + golden 재생성 + 본 파일에 test block 추가.
 
 const std = @import("std");
 const codegen_plugin = @import("../rn_codegen_plugin.zig");
 
-const SNAPSHOT_DIR = "tests/codegen-snapshots/rn-screens-4";
+const SNAPSHOTS_ROOT = "tests/codegen-snapshots";
 
-fn loadFile(alloc: std.mem.Allocator, sub: []const u8, name: []const u8) ![]u8 {
-    const path = try std.fs.path.join(alloc, &.{ SNAPSHOT_DIR, sub, name });
+fn loadFile(
+    alloc: std.mem.Allocator,
+    suite: []const u8,
+    sub: []const u8,
+    name: []const u8,
+) ![]u8 {
+    const path = try std.fs.path.join(alloc, &.{ SNAPSHOTS_ROOT, suite, sub, name });
     defer alloc.free(path);
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
@@ -387,12 +395,12 @@ fn compareKeySets(
     return error.TestKeySetMismatch;
 }
 
-fn compareCase(fixture_name: []const u8, golden_name: []const u8) !void {
+fn compareCase(suite: []const u8, fixture_name: []const u8, golden_name: []const u8) !void {
     const alloc = std.testing.allocator;
 
-    const fixture = try loadFile(alloc, "fixtures", fixture_name);
+    const fixture = try loadFile(alloc, suite, "fixtures", fixture_name);
     defer alloc.free(fixture);
-    const golden = try loadFile(alloc, "golden", golden_name);
+    const golden = try loadFile(alloc, suite, "golden", golden_name);
     defer alloc.free(golden);
 
     const plugin = codegen_plugin.plugin();
@@ -442,18 +450,18 @@ fn compareSectionKeySets(
     try compareKeySets(alloc, section, ref_sec.?, zts_sec.?);
 }
 
-test "snapshot: ScreenNativeComponent semantic-eq @react-native/codegen" {
-    try compareCase("ScreenNativeComponent.ts", "ScreenNativeComponent.golden.js");
+test "snapshot rn-0.85: ScreenNativeComponent semantic-eq @react-native/codegen" {
+    try compareCase("rn-0.85", "ScreenNativeComponent.ts", "ScreenNativeComponent.golden.js");
 }
 
-test "snapshot: ModalScreenNativeComponent semantic-eq @react-native/codegen" {
-    try compareCase("ModalScreenNativeComponent.ts", "ModalScreenNativeComponent.golden.js");
+test "snapshot rn-0.85: ModalScreenNativeComponent semantic-eq @react-native/codegen" {
+    try compareCase("rn-0.85", "ModalScreenNativeComponent.ts", "ModalScreenNativeComponent.golden.js");
 }
 
-test "snapshot: ScreenStackHeaderConfigNativeComponent semantic-eq @react-native/codegen" {
-    try compareCase("ScreenStackHeaderConfigNativeComponent.ts", "ScreenStackHeaderConfigNativeComponent.golden.js");
+test "snapshot rn-0.85: ScreenStackHeaderConfigNativeComponent semantic-eq @react-native/codegen" {
+    try compareCase("rn-0.85", "ScreenStackHeaderConfigNativeComponent.ts", "ScreenStackHeaderConfigNativeComponent.golden.js");
 }
 
-test "snapshot: BottomTabsScreenNativeComponent semantic-eq @react-native/codegen" {
-    try compareCase("BottomTabsScreenNativeComponent.ts", "BottomTabsScreenNativeComponent.golden.js");
+test "snapshot rn-0.85: BottomTabsScreenNativeComponent semantic-eq @react-native/codegen" {
+    try compareCase("rn-0.85", "BottomTabsScreenNativeComponent.ts", "BottomTabsScreenNativeComponent.golden.js");
 }
