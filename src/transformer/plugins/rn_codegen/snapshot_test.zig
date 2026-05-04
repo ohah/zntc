@@ -575,3 +575,15 @@ test "snapshot rn-0.82: ActivityIndicatorViewNativeComponent semantic-eq @react-
 test "snapshot rn-0.82: RCTSafeAreaViewNativeComponent semantic-eq @react-native/codegen" {
     try compareCase("rn-0.82", "RCTSafeAreaViewNativeComponent.js", "RCTSafeAreaViewNativeComponent.golden.js");
 }
+
+test "snapshot rn-0.83: DebuggingOverlayNativeComponent semantic-eq @react-native/codegen" {
+    try compareCase("rn-0.83", "DebuggingOverlayNativeComponent.js", "DebuggingOverlayNativeComponent.golden.js");
+}
+
+test "snapshot rn-0.83: ActivityIndicatorViewNativeComponent semantic-eq @react-native/codegen" {
+    try compareCase("rn-0.83", "ActivityIndicatorViewNativeComponent.js", "ActivityIndicatorViewNativeComponent.golden.js");
+}
+
+test "snapshot rn-0.83: RCTSafeAreaViewNativeComponent semantic-eq @react-native/codegen" {
+    try compareCase("rn-0.83", "RCTSafeAreaViewNativeComponent.js", "RCTSafeAreaViewNativeComponent.golden.js");
+}
