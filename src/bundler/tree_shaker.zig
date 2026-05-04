@@ -1156,148 +1156,166 @@ pub const TreeShaker = struct {
         self.opaque_visited = ov;
 
         // 시드 1: entry module의 export 선언 statement + side-effect statement
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            const infos = module_stmt_infos[i] orelse {
-                // StmtInfo 없는 포함 모듈 (entry, CJS): import를 직접 시드
-                if (self.included.isSet(i) and (self.entry_set.isSet(i) or m.wrap_kind.isWrapped())) {
+        {
+            var seed_scope = profile.begin(.shake_fixpoint_bfs_seed);
+            defer seed_scope.end();
+
+            for (0..mod_count) |i| {
+                const m = self.getModule(@intCast(i)) orelse continue;
+                const infos = module_stmt_infos[i] orelse {
+                    // StmtInfo 없는 포함 모듈 (entry, CJS): import를 직접 시드
+                    if (self.included.isSet(i) and (self.entry_set.isSet(i) or m.wrap_kind.isWrapped())) {
+                        try self.seedOpaqueModule(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
+                    }
+                    continue;
+                };
+                if (!self.included.isSet(i)) continue;
+
+                // reachable bitset 초기화
+                if (reachable_stmts[i] == null) {
+                    reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
+                }
+
+                // entry는 번들 진입점이지만 pure local declaration은 실행 의미가 없다.
+                // side-effect statement와 entry export seed만 살리고, local-only pure statement는
+                // BFS dependency로 필요할 때만 도달시킨다.
+                // side_effects=true 모듈은 side-effect stmt만 시드.
+                // side_effects=false 모듈은 enqueue의 lazy 시드로 처리 (사용 시에만).
+                if (self.entry_set.isSet(i)) {
+                    var has_entry_side_effect_stmt = false;
+                    for (infos.stmts) |stmt| {
+                        if (stmt.has_side_effects) {
+                            has_entry_side_effect_stmt = true;
+                            break;
+                        }
+                    }
+                    const prune_pure_entry_locals = self.graph.transform_options_base.minify_syntax and
+                        (has_entry_side_effect_stmt or m.export_bindings.len > 0);
+                    for (infos.stmts, 0..) |stmt, si| {
+                        if (!prune_pure_entry_locals or stmt.has_side_effects) {
+                            try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                        }
+                    }
+                } else if (m.side_effects and m.side_effects_user_defined) {
+                    for (infos.stmts, 0..) |_, si| {
+                        try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                    }
+                } else if (m.side_effects) {
+                    for (infos.stmts, 0..) |stmt, si| {
+                        if (stmt.has_side_effects) {
+                            try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
+                        }
+                    }
+                }
+
+                // used export 선언 statement 시드. 시드 대상:
+                //   (1) entry: 번들 외부 사용자가 접근 가능 — 모든 export live.
+                //   (2) ALL_EXPORTS_SENTINEL 마킹된 모듈: dynamic import target(#1260) 또는 export * 전파 대상.
+                // non-entry·sentinel 없음: followImport만으로 도달해야 가짜 used 확산을 막는다.
+                const is_bfs_seed = self.entry_set.isSet(i) or self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL);
+                if (is_bfs_seed) {
+                    const sem = m.semantic orelse continue;
+                    if (sem.scope_maps.len == 0) continue;
+                    for (m.export_bindings) |eb| {
+                        if (eb.kind.isReExportAll()) continue;
+                        const sym_idx = eb.symbol.semanticIndex() orelse continue;
+                        try self.enqueueSymbolLiveStatements(@intCast(i), infos, sym_idx, reachable_stmts, &queue);
+                    }
+                    // dynamic import target도 re-export 체인 따라 transitive 모듈까지
+                    // 전파해야 함(#1260). seedOpaqueModule은 opaque_visited로 중복 방지.
                     try self.seedOpaqueModule(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
                 }
-                continue;
-            };
-            if (!self.included.isSet(i)) continue;
-
-            // reachable bitset 초기화
-            if (reachable_stmts[i] == null) {
-                reachable_stmts[i] = try std.DynamicBitSet.initEmpty(self.allocator, infos.stmts.len);
-            }
-
-            // entry는 번들 진입점이지만 pure local declaration은 실행 의미가 없다.
-            // side-effect statement와 entry export seed만 살리고, local-only pure statement는
-            // BFS dependency로 필요할 때만 도달시킨다.
-            // side_effects=true 모듈은 side-effect stmt만 시드.
-            // side_effects=false 모듈은 enqueue의 lazy 시드로 처리 (사용 시에만).
-            if (self.entry_set.isSet(i)) {
-                var has_entry_side_effect_stmt = false;
-                for (infos.stmts) |stmt| {
-                    if (stmt.has_side_effects) {
-                        has_entry_side_effect_stmt = true;
-                        break;
-                    }
-                }
-                const prune_pure_entry_locals = self.graph.transform_options_base.minify_syntax and
-                    (has_entry_side_effect_stmt or m.export_bindings.len > 0);
-                for (infos.stmts, 0..) |stmt, si| {
-                    if (!prune_pure_entry_locals or stmt.has_side_effects) {
-                        try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
-                    }
-                }
-            } else if (m.side_effects and m.side_effects_user_defined) {
-                for (infos.stmts, 0..) |_, si| {
-                    try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
-                }
-            } else if (m.side_effects) {
-                for (infos.stmts, 0..) |stmt, si| {
-                    if (stmt.has_side_effects) {
-                        try self.enqueue(@intCast(i), @intCast(si), reachable_stmts, &queue);
-                    }
-                }
-            }
-
-            // used export 선언 statement 시드. 시드 대상:
-            //   (1) entry: 번들 외부 사용자가 접근 가능 — 모든 export live.
-            //   (2) ALL_EXPORTS_SENTINEL 마킹된 모듈: dynamic import target(#1260) 또는 export * 전파 대상.
-            // non-entry·sentinel 없음: followImport만으로 도달해야 가짜 used 확산을 막는다.
-            const is_bfs_seed = self.entry_set.isSet(i) or self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL);
-            if (is_bfs_seed) {
-                const sem = m.semantic orelse continue;
-                if (sem.scope_maps.len == 0) continue;
-                for (m.export_bindings) |eb| {
-                    if (eb.kind.isReExportAll()) continue;
-                    const sym_idx = eb.symbol.semanticIndex() orelse continue;
-                    try self.enqueueSymbolLiveStatements(@intCast(i), infos, sym_idx, reachable_stmts, &queue);
-                }
-                // dynamic import target도 re-export 체인 따라 transitive 모듈까지
-                // 전파해야 함(#1260). seedOpaqueModule은 opaque_visited로 중복 방지.
-                try self.seedOpaqueModule(@intCast(i), &queue, module_stmt_infos, reachable_stmts);
             }
         }
 
         // BFS 루프
-        var head: u32 = 0;
-        while (head < queue.items.len) : (head += 1) {
-            const item = queue.items[head];
-            const infos = module_stmt_infos[item.mod] orelse continue;
-            if (item.stmt >= infos.stmts.len) continue;
+        {
+            var queue_scope = profile.begin(.shake_fixpoint_bfs_queue);
+            defer queue_scope.end();
 
-            // item 단위 invariant — referenced_symbols 루프 밖으로 한 번만 계산.
-            const owner = self.getModule(item.mod);
-            const skip_import_followup = if (owner) |o| isImportDeclarationStmt(o, infos, item.stmt) else true;
+            var head: u32 = 0;
+            while (head < queue.items.len) : (head += 1) {
+                const item = queue.items[head];
+                const infos = module_stmt_infos[item.mod] orelse continue;
+                if (item.stmt >= infos.stmts.len) continue;
 
-            for (infos.stmts[item.stmt].referenced_symbols) |ref_sym| {
-                // (1) 로컬 심볼: 같은 모듈의 종속 statement
-                if (infos.declaredStmtBySymbol(ref_sym)) |dep_stmt| {
-                    try self.enqueue(item.mod, dep_stmt, reachable_stmts, &queue);
-                }
+                // item 단위 invariant — referenced_symbols 루프 밖으로 한 번만 계산.
+                const owner = self.getModule(item.mod);
+                const skip_import_followup = if (owner) |o| isImportDeclarationStmt(o, infos, item.stmt) else true;
 
-                // (1b) 같은 심볼에 대한 비선언 writer (예: TS 가 emit 하는 `var _a; ... _a = AST;`).
-                // declare 경로로는 var-only 선언만 살아남고 실제 값을 채우는 후속 할당이 누락되어
-                // `_a is not a constructor` 류 회귀가 발생한다.
-                for (infos.writerStmts(ref_sym)) |writer_stmt| {
-                    try self.enqueue(item.mod, writer_stmt, reachable_stmts, &queue);
-                }
+                for (infos.stmts[item.stmt].referenced_symbols) |ref_sym| {
+                    // (1) 로컬 심볼: 같은 모듈의 종속 statement
+                    if (infos.declaredStmtBySymbol(ref_sym)) |dep_stmt| {
+                        try self.enqueue(item.mod, dep_stmt, reachable_stmts, &queue);
+                    }
 
-                // (2) import binding: 타겟 모듈로 점프
-                if (skip_import_followup) continue;
-                if (item.mod < self.sym_to_ib.len) {
-                    if (self.sym_to_ib[item.mod]) |sym_map| {
-                        if (ref_sym < sym_map.len) {
-                            if (sym_map[ref_sym]) |ib_idx| {
-                                try self.followImport(item.mod, ib_idx, item.stmt, &queue, module_stmt_infos, reachable_stmts);
+                    // (1b) 같은 심볼에 대한 비선언 writer (예: TS 가 emit 하는 `var _a; ... _a = AST;`).
+                    // declare 경로로는 var-only 선언만 살아남고 실제 값을 채우는 후속 할당이 누락되어
+                    // `_a is not a constructor` 류 회귀가 발생한다.
+                    for (infos.writerStmts(ref_sym)) |writer_stmt| {
+                        try self.enqueue(item.mod, writer_stmt, reachable_stmts, &queue);
+                    }
+
+                    // (2) import binding: 타겟 모듈로 점프
+                    if (skip_import_followup) continue;
+                    if (item.mod < self.sym_to_ib.len) {
+                        if (self.sym_to_ib[item.mod]) |sym_map| {
+                            if (ref_sym < sym_map.len) {
+                                if (sym_map[ref_sym]) |ib_idx| {
+                                    try self.followImport(item.mod, ib_idx, item.stmt, &queue, module_stmt_infos, reachable_stmts);
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if (owner) |o| {
-                for (o.import_records, 0..) |rec, rec_i| {
-                    if (rec.kind != .require) continue;
-                    if (rec.resolved.isNone()) continue;
-                    if (!self.importRecordBelongsToStmt(infos, @intCast(item.stmt), @intCast(rec_i), o)) continue;
-                    const target_mod_idx = @intFromEnum(rec.resolved);
-                    const target_module = self.graph.getModule(rec.resolved) orelse continue;
-                    if (target_module.wrap_kind != .cjs) continue;
-                    if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
-                        !self.isExportUsed(@intCast(target_mod_idx), ALL_EXPORTS_SENTINEL) and
-                        self.hasAnyUsedExportDirect(@intCast(target_mod_idx)) and
-                        moduleExportsRequireProxyMatches(o, infos, @intCast(item.stmt), rec.resolved))
-                    {
-                        const target_infos = module_stmt_infos[target_mod_idx] orelse {
-                            try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                if (owner) |o| {
+                    var require_scope = profile.begin(.shake_fixpoint_bfs_require_scan);
+                    defer require_scope.end();
+
+                    for (o.import_records, 0..) |rec, rec_i| {
+                        if (rec.kind != .require) continue;
+                        if (rec.resolved.isNone()) continue;
+                        if (!self.importRecordBelongsToStmt(infos, @intCast(item.stmt), @intCast(rec_i), o)) continue;
+                        const target_mod_idx = @intFromEnum(rec.resolved);
+                        const target_module = self.graph.getModule(rec.resolved) orelse continue;
+                        if (target_module.wrap_kind != .cjs) continue;
+                        if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
+                            !self.isExportUsed(@intCast(target_mod_idx), ALL_EXPORTS_SENTINEL) and
+                            self.hasAnyUsedExportDirect(@intCast(target_mod_idx)) and
+                            moduleExportsRequireProxyMatches(o, infos, @intCast(item.stmt), rec.resolved))
+                        {
+                            const target_infos = module_stmt_infos[target_mod_idx] orelse {
+                                try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                                continue;
+                            };
+                            try self.seedSideEffectStmts(@intCast(target_mod_idx), target_infos, &queue, reachable_stmts);
                             continue;
-                        };
-                        try self.seedSideEffectStmts(@intCast(target_mod_idx), target_infos, &queue, reachable_stmts);
-                        continue;
+                        }
+                        try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
                     }
-                    try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
                 }
             }
         }
 
         // BFS 후: reachable statement 기반 used_exports 추가 마킹
         // BFS 중 markExportUsed로 마킹된 것은 유지 (clearUsedExports 하지 않음)
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            const infos = module_stmt_infos[i] orelse continue;
-            const sem = m.semantic orelse continue;
-            if (sem.scope_maps.len == 0) continue;
-            for (m.export_bindings) |eb| {
-                if (eb.kind.isReExportAll()) continue;
-                const sym_idx = eb.symbol.semanticIndex() orelse continue;
-                if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
-                    if (reachable_stmts[i] != null and reachable_stmts[i].?.isSet(stmt_idx)) {
-                        try self.markExportUsed(@intCast(i), eb.exported_name);
+        {
+            var final_scope = profile.begin(.shake_fixpoint_bfs_final_mark_exports);
+            defer final_scope.end();
+
+            for (0..mod_count) |i| {
+                const m = self.getModule(@intCast(i)) orelse continue;
+                const infos = module_stmt_infos[i] orelse continue;
+                const sem = m.semantic orelse continue;
+                if (sem.scope_maps.len == 0) continue;
+                for (m.export_bindings) |eb| {
+                    if (eb.kind.isReExportAll()) continue;
+                    const sym_idx = eb.symbol.semanticIndex() orelse continue;
+                    if (infos.declaredStmtBySymbol(sym_idx)) |stmt_idx| {
+                        if (reachable_stmts[i] != null and reachable_stmts[i].?.isSet(stmt_idx)) {
+                            try self.markExportUsed(@intCast(i), eb.exported_name);
+                        }
                     }
                 }
             }
@@ -1322,6 +1340,9 @@ pub const TreeShaker = struct {
         // 예: Object3D가 reachable → Object3D.DEFAULT_UP = ... 도 시드
         // 역인덱스 활용: O(D×K) where K = avg side-effect refs per symbol
         if (mod < self.module_stmt_infos.len) {
+            var side_effect_scope = profile.begin(.shake_fixpoint_bfs_enqueue_side_effects);
+            defer side_effect_scope.end();
+
             if (self.module_stmt_infos[mod]) |infos| {
                 if (stmt < infos.stmts.len) {
                     for (infos.stmts[stmt].declared_symbols) |declared_sym| {
@@ -1401,6 +1422,9 @@ pub const TreeShaker = struct {
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
+        var follow_scope = profile.begin(.shake_fixpoint_bfs_follow_import);
+        defer follow_scope.end();
+
         const m = self.getModule(mod_idx) orelse return;
         if (ib_idx >= m.import_bindings.len) return;
         const ib = m.import_bindings[ib_idx];
@@ -1487,6 +1511,9 @@ pub const TreeShaker = struct {
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
+        var seed_scope = profile.begin(.shake_fixpoint_bfs_seed_export);
+        defer seed_scope.end();
+
         const mod_count = self.graph.moduleCount();
         const canonical = self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse return;
         const canon_mod = canonical.module_index.toU32();
