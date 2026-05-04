@@ -539,7 +539,14 @@ pub const TreeShaker = struct {
         var const_values = blk: {
             var build_scope = profile.beginMaybe(const_profile.build_facts);
             defer build_scope.end();
-            break :blk try self.linker.buildCrossModuleConstValues(m, sem);
+            const build_profile = if (const_profile.build_facts != null)
+                Linker.ConstValuesProfile{
+                    .resolve = .shake_const_prepass_build_facts_resolve,
+                    .lookup = .shake_const_prepass_build_facts_lookup,
+                }
+            else
+                Linker.ConstValuesProfile{};
+            break :blk try self.linker.buildCrossModuleConstValuesProfiled(m, sem, build_profile);
         };
         const should_materialize = blk: {
             var gate_scope = profile.beginMaybe(const_profile.candidate_gate);
