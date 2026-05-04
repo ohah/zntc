@@ -133,6 +133,52 @@ pub const TreeShaker = struct {
     const max_fixpoint_iterations: u32 = 100;
     const max_numeric_const_post_passes: u32 = 2;
 
+    const ReExportNsConsumerUsage = struct {
+        opaque_all: bool = false,
+        entries: std.StringHashMapUnmanaged(Entry) = .{},
+
+        const Entry = struct {
+            is_opaque: bool = false,
+            props: std.StringHashMapUnmanaged(void) = .{},
+        };
+
+        fn deinit(self: *ReExportNsConsumerUsage, allocator: std.mem.Allocator) void {
+            var vit = self.entries.valueIterator();
+            while (vit.next()) |entry| entry.props.deinit(allocator);
+            self.entries.deinit(allocator);
+        }
+
+        fn getOrPutEntry(
+            self: *ReExportNsConsumerUsage,
+            allocator: std.mem.Allocator,
+            name: []const u8,
+        ) std.mem.Allocator.Error!*Entry {
+            const gop = try self.entries.getOrPut(allocator, name);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            return gop.value_ptr;
+        }
+
+        fn markOpaque(
+            self: *ReExportNsConsumerUsage,
+            allocator: std.mem.Allocator,
+            name: []const u8,
+        ) std.mem.Allocator.Error!void {
+            const entry = try self.getOrPutEntry(allocator, name);
+            entry.is_opaque = true;
+        }
+
+        fn addProps(
+            self: *ReExportNsConsumerUsage,
+            allocator: std.mem.Allocator,
+            name: []const u8,
+            props: []const []const u8,
+        ) std.mem.Allocator.Error!void {
+            const entry = try self.getOrPutEntry(allocator, name);
+            if (entry.is_opaque) return;
+            for (props) |prop| try entry.props.put(allocator, prop, {});
+        }
+    };
+
     pub fn init(allocator: std.mem.Allocator, graph: *ModuleGraph, linker: *const Linker) !TreeShaker {
         const mod_count = graph.moduleCount();
         var included = try std.DynamicBitSet.initEmpty(allocator, mod_count);
@@ -1869,6 +1915,9 @@ pub const TreeShaker = struct {
         for (0..self.graph.moduleCount()) |i| {
             if (!self.included.isSet(i)) continue;
             const m = self.getModule(@intCast(i)) orelse continue;
+            var ns_usage: ReExportNsConsumerUsage = .{};
+            var ns_usage_built = false;
+            defer ns_usage.deinit(self.allocator);
             for (m.export_bindings) |eb| {
                 if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
                 const rec_idx = eb.import_record_index orelse continue;
@@ -1893,7 +1942,11 @@ pub const TreeShaker = struct {
                     // #1603 Phase 1b: 모든 소비자의 `namespace_used_properties`를
                     // 집계해 subset이 결정 가능하면 해당 member만 used로 마킹.
                     // 하나라도 opaque(null)이면 전체 사용 fallback.
-                    if (try self.tryMarkReExportNsSubset(@intCast(i), eb.exported_name, @intCast(src))) continue;
+                    if (!ns_usage_built) {
+                        try self.collectReExportNsConsumerUsage(@intCast(i), &ns_usage);
+                        ns_usage_built = true;
+                    }
+                    if (try self.tryMarkReExportNsSubset(@intCast(i), eb.exported_name, @intCast(src), &ns_usage)) continue;
                     try self.markAllExportsUsed(@intCast(src));
                 } else if (!check_used) {
                     try self.markAllExportsUsed(@intCast(src));
@@ -1975,11 +2028,49 @@ pub const TreeShaker = struct {
     /// #1603 Phase 1b: `export * as X from './src'` 재export에 대해 모든 소비자의 member 접근
     /// 집합을 집계. 반환값 `true`: precision 성공(또는 소비자 0명 — markAll 불필요).
     /// `false`: 적어도 한 소비자가 opaque → 호출자가 전체 fallback 적용.
+    fn collectReExportNsConsumerUsage(
+        self: *TreeShaker,
+        reexport_mod: u32,
+        usage: *ReExportNsConsumerUsage,
+    ) !void {
+        const reexporter = self.getModule(reexport_mod) orelse return;
+        for (reexporter.importers.items) |consumer_idx| {
+            const consumer = self.getModule(@intFromEnum(consumer_idx)) orelse continue;
+            for (consumer.import_bindings) |ib| {
+                if (ib.import_record_index >= consumer.import_records.len) continue;
+                const resolved = consumer.import_records[ib.import_record_index].resolved;
+                if (resolved == .none or @intFromEnum(resolved) != reexport_mod) continue;
+
+                switch (ib.kind) {
+                    .named => {
+                        const props = ib.namespace_used_properties orelse {
+                            try usage.markOpaque(self.allocator, ib.imported_name);
+                            continue;
+                        };
+                        try usage.addProps(self.allocator, ib.imported_name, props);
+                    },
+                    .namespace => {
+                        const props = ib.namespace_used_properties orelse {
+                            usage.opaque_all = true;
+                            continue;
+                        };
+                        // `import * as Lib from './barrel'; Lib.NsA` only proves that
+                        // NsA itself is used. Member depth inside NsA is opaque, so the
+                        // matching re-export namespace must fall back to markAll.
+                        for (props) |prop| try usage.markOpaque(self.allocator, prop);
+                    },
+                    .default => {},
+                }
+            }
+        }
+    }
+
     fn tryMarkReExportNsSubset(
         self: *TreeShaker,
         reexport_mod: u32,
         reexport_name: []const u8,
         src_mod: u32,
+        usage: *ReExportNsConsumerUsage,
     ) !bool {
         // Chain check: reexport_mod 가 다른 모듈의 `export * from` source 면 transitive
         // consumer 가 reexport_name 을 사용할 수 있다. chain 너머의 namespace_used_properties
@@ -1988,43 +2079,13 @@ pub const TreeShaker = struct {
             if (mask.isSet(reexport_mod)) return false;
         }
 
-        var union_set: std.StringHashMapUnmanaged(void) = .{};
-        defer union_set.deinit(self.allocator);
-
-        // 소비자 검색: 모든 모듈의 import_bindings 에서 이 re-export 소비자 찾기.
-        var cit = self.graph.modulesIterator();
-        while (cit.next()) |consumer_ptr| {
-            const consumer = consumer_ptr.*;
-            for (consumer.import_bindings) |ib| {
-                // Case 1: named — `import { NsA } from './barrel'`. consumer 의 used props
-                // 가 곧 NsA 의 사용된 멤버.
-                if (Linker.isReExportNsConsumer(consumer, ib, reexport_mod, reexport_name)) {
-                    const props = ib.namespace_used_properties orelse return false;
-                    for (props) |p| try union_set.put(self.allocator, p, {});
-                    continue;
-                }
-                // Case 2: namespace — `import * as Lib from './barrel'; Lib.NsA.a01(...)`.
-                // 현재 namespace_used_properties 는 1-depth (`["NsA"]`) 만 추적하므로
-                // NsA 가 사용됐다면 그 안의 어느 멤버가 쓰였는지는 opaque → fallback (#1928).
-                if (ib.kind != .namespace) continue;
-                if (ib.import_record_index >= consumer.import_records.len) continue;
-                const resolved = consumer.import_records[ib.import_record_index].resolved;
-                if (resolved == .none or @intFromEnum(resolved) != reexport_mod) continue;
-                const props = ib.namespace_used_properties orelse return false;
-                var uses_reexport_name = false;
-                for (props) |p| {
-                    if (std.mem.eql(u8, p, reexport_name)) {
-                        uses_reexport_name = true;
-                        break;
-                    }
-                }
-                if (uses_reexport_name) return false; // markAllExportsUsed fallback
-            }
-        }
+        if (usage.opaque_all) return false;
+        const entry = usage.entries.getPtr(reexport_name) orelse return true;
+        if (entry.is_opaque) return false;
 
         // union에 포함된 member만 source 모듈에서 used로 마킹.
-        // 소비자 0명이면 union_set이 비어 아무것도 마킹 안 함 — precision 성공으로 취급(markAll 불필요).
-        var kit = union_set.keyIterator();
+        // 소비자 0명이면 entry가 없어 아무것도 마킹 안 함 — precision 성공으로 취급(markAll 불필요).
+        var kit = entry.props.keyIterator();
         while (kit.next()) |key| {
             try self.markExportUsed(src_mod, key.*);
         }
