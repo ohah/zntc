@@ -57,8 +57,11 @@ pub fn emit(shape: schema.ComponentShape, alloc: std.mem.Allocator) ![]u8 {
 
     try buf.appendSlice(alloc, "const __INTERNAL_VIEW_CONFIG = {\n");
 
+    // RN runtime 의 `uiViewClassName` 은 Paper(legacy) 호환을 위해 `paperComponentName`
+    // 우선 사용 — `shape.nativeName()`. RN native 측이 RCT-prefix 형태로 등록한 클래스를
+    // 못 찾으면 컴포넌트 렌더링 자체가 깨짐 (#2462).
     try buf.appendSlice(alloc, "  uiViewClassName: '");
-    try buf.appendSlice(alloc, shape.name);
+    try buf.appendSlice(alloc, shape.nativeName());
     try buf.appendSlice(alloc, "',\n");
 
     try emitValidAttributes(&buf, shape, alloc);

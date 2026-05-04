@@ -70,10 +70,13 @@ const VisitedSet = std.AutoHashMapUnmanaged(NodeIndex, void);
 ///
 /// `component_name` 은 `codegenNativeComponent('Name')` 의 `'Name'` 인자 — 빌더가
 /// 외부에서 받음 (declaration 자체엔 이름 없음).
+/// `paper_component_name` 은 `codegenNativeComponent('Name', { paperComponentName: 'X' })`
+/// 의 옵션. 없으면 null. RN runtime 의 `uiViewClassName` 은 이 값을 우선 (#2462).
 pub fn build(
     ast: *const Ast,
     type_index: *const TypeIndex,
     component_name: []const u8,
+    paper_component_name: ?[]const u8,
     native_props_idx: NodeIndex,
     alloc: std.mem.Allocator,
 ) Error!schema.ComponentShape {
@@ -99,6 +102,7 @@ pub fn build(
 
     return .{
         .name = component_name,
+        .paper_component_name = paper_component_name,
         .props = try props_buf.toOwnedSlice(alloc),
         .events = try events_buf.toOwnedSlice(alloc),
     };

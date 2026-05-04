@@ -139,3 +139,36 @@ test "codegen_plugin: function-typed prop → event in output" {
     try expectContains(out, "topChange:");
     try expectContains(out, "phasedRegistrationNames");
 }
+
+test "codegen_plugin: paperComponentName option → uiViewClassName / nativeComponentName 둘 다 paper 이름" {
+    const code =
+        \\type NativeProps = { color: string };
+        \\export default codegenNativeComponent<NativeProps>('SafeAreaView', {
+        \\  paperComponentName: 'RCTSafeAreaView',
+        \\  interfaceOnly: true,
+        \\});
+    ;
+    const out_opt = try callTransform(std.testing.allocator, code, "/path/RCTSafeAreaViewNativeComponent.ts");
+    try std.testing.expect(out_opt != null);
+    const out = out_opt.?;
+    defer std.testing.allocator.free(out);
+
+    try expectContains(out, "let nativeComponentName = 'RCTSafeAreaView'");
+    try expectContains(out, "uiViewClassName: 'RCTSafeAreaView'");
+    // 첫 인자 'SafeAreaView' 는 자취 없어야 — full word 검사로 substring 함정 회피.
+    try std.testing.expect(std.mem.indexOf(u8, out, "'SafeAreaView'") == null);
+}
+
+test "codegen_plugin: 옵션 object 있지만 paperComponentName 키 없으면 첫 인자 그대로" {
+    const code =
+        \\type NativeProps = { color: string };
+        \\export default codegenNativeComponent<NativeProps>('Plain', { interfaceOnly: true });
+    ;
+    const out_opt = try callTransform(std.testing.allocator, code, "/path/PlainNativeComponent.ts");
+    try std.testing.expect(out_opt != null);
+    const out = out_opt.?;
+    defer std.testing.allocator.free(out);
+
+    try expectContains(out, "let nativeComponentName = 'Plain'");
+    try expectContains(out, "uiViewClassName: 'Plain'");
+}
