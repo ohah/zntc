@@ -304,6 +304,36 @@ describe("const_value cross-module 인라인 correctness", () => {
     expect((src.match(/const v\d+/g) ?? []).length).toBeLessThanOrEqual(2);
   });
 
+  test("numeric expression seed도 cross-module chain에 같은 값으로 전파된다", async () => {
+    const fx = await createFixture({
+      "seed.ts": `export const base = (20 + 2) * 2;`,
+      "middle.ts": `
+        import { base } from "./seed";
+        export const value = base + 1;
+      `,
+      "index.ts": `
+        import { value } from "./middle";
+        console.log(value);
+      `,
+    });
+    cleanup = fx.cleanup;
+    const out = join(fx.dir, "out.js");
+    const build = await runZts([
+      "--bundle",
+      join(fx.dir, "index.ts"),
+      "-o",
+      out,
+      "--platform=node",
+    ]);
+    expect(build.exitCode).toBe(0);
+    const src = readFileSync(out, "utf8");
+    expect(src).toMatch(/console\.log\(45\)/);
+    expect(src).not.toContain("20 + 2");
+
+    const run = await Bun.$`node ${out}`.text();
+    expect(run.trim()).toBe("45");
+  });
+
   test("numeric const는 object shorthand를 구문 깨지는 literal로 materialize하지 않는다", async () => {
     const r = await bundleAndRun(
       {

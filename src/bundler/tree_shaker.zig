@@ -122,19 +122,18 @@ pub const TreeShaker = struct {
     /// 키 문자열은 모듈/바인딩 storage가 소유하므로 별도 복사하지 않는다.
     seeded_exports: std.HashMapUnmanaged(SeededExportKey, void, SeededExportKeyContext, 80) = .empty,
     /// numeric const fact propagation 의 DFS 스크래치. propagateNumericExportConstFacts /
-    /// nodeContainsNumericConstRef / nodeIsNumericLiteralFoldSeed 가 매 호출마다
-    /// ArrayList 를 새로 만들지 않도록 재사용. clearRetainingCapacity 로만 비운다.
+    /// nodeContainsNumericConstRef 가 매 호출마다 ArrayList 를 새로 만들지 않도록 재사용.
+    /// clearRetainingCapacity 로만 비운다.
     numeric_dfs_stack: std.ArrayList(NodeIndex) = .empty,
     /// Linker finalize 이후 AST mutation + semantic resync가 발생했는지.
     /// true면 old symbol id 기준 rename/mangle metadata를 재계산해야 한다.
     ast_mutated_after_link: bool = false,
     /// constant_facts.materialize 의 per-module forbidden/reachable 캐시. lazy-init —
-    /// numeric pre-shake / post-pass 가 같은 모듈을 forward+reverse × 최대 2 회 호출하면
-    /// 매번 bitset + reachable 빌드를 재사용. AST mutation 시 해당 모듈만 invalidate.
+    /// numeric pre-shake / post-pass worklist 가 같은 모듈을 다시 방문하면 매번 bitset +
+    /// reachable 빌드를 재사용. AST mutation 시 해당 모듈만 invalidate.
     materialize_scratch: ?constant_facts.Scratch = null,
 
     const max_fixpoint_iterations: u32 = 100;
-    const max_numeric_const_post_passes: u32 = 2;
 
     const SeededExportKey = struct {
         module_index: u32,
@@ -357,39 +356,6 @@ pub const TreeShaker = struct {
         }, visitNumericConstRef);
     }
 
-    /// numeric literal + binary/paren 만으로 구성된 fold-able 표현인지 판정.
-    /// 도달 트리에 binary 가 1개라도 있어야 fold 가 의미 있으므로 그 신호도 함께 체크.
-    /// `accept_idx` 가 .none 으로 끝나면 `saw_binary` 를 봐서 결과를 결정.
-    const FoldSeedCtx = struct {
-        saw_binary: *bool,
-        rejected: *bool,
-    };
-
-    fn visitFoldSeed(ctx: FoldSeedCtx, _: *const Ast, _: u32, node: Node) bool {
-        switch (node.tag) {
-            .numeric_literal, .parenthesized_expression => return false,
-            .binary_expression => {
-                ctx.saw_binary.* = true;
-                return false;
-            },
-            else => {
-                ctx.rejected.* = true;
-                return true;
-            },
-        }
-    }
-
-    fn nodeIsNumericLiteralFoldSeed(self: *TreeShaker, ast: *const Ast, root: NodeIndex) bool {
-        if (root.isNone()) return false;
-        var saw_binary = false;
-        var rejected = false;
-        _ = self.anyReachableNode(ast, root, FoldSeedCtx{
-            .saw_binary = &saw_binary,
-            .rejected = &rejected,
-        }, visitFoldSeed);
-        return saw_binary and !rejected;
-    }
-
     fn visitChainExportInit(self: *TreeShaker, ctx: NumericConstRefCtx, ast: *const Ast, init_idx: NodeIndex) bool {
         return self.nodeContainsNumericConstRef(ast, ctx.symbol_ids, init_idx, ctx.numeric_bitset);
     }
@@ -419,12 +385,45 @@ pub const TreeShaker = struct {
         }, visitChainExportInit);
     }
 
-    fn visitSeedExportInit(self: *TreeShaker, _: void, ast: *const Ast, init_idx: NodeIndex) bool {
-        return self.nodeIsNumericLiteralFoldSeed(ast, init_idx);
-    }
+    fn foldNumericExportSeeds(self: *TreeShaker, m: *Module, ast: *Ast) !bool {
+        const minify_mod = @import("../transformer/minify.zig");
+        const sem = if (m.semantic) |*sem| sem else return false;
+        const arena_alloc = if (m.parse_arena) |*arena| arena.allocator() else return false;
+        var has_exported_number = false;
+        var folded = false;
 
-    fn moduleHasNumericExportSeed(self: *TreeShaker, ast: *const Ast, sem: ModuleSemanticData) bool {
-        return self.anyExportedConstInit(ast, sem, {}, visitSeedExportInit);
+        for (ast.nodes.items) |node| {
+            if (node.tag != .variable_declarator) continue;
+            const extra = node.data.extra;
+            if (extra + 2 >= ast.extra_data.items.len) continue;
+            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+            const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
+            if (name_idx.isNone() or init_idx.isNone()) continue;
+            const name_raw: u32 = @intFromEnum(name_idx);
+            if (name_raw >= sem.symbol_ids.len) continue;
+            const sym_id = sem.symbol_ids[name_raw] orelse continue;
+            if (sym_id >= sem.symbols.items.len) continue;
+            const sym = sem.symbols.items[sym_id];
+            if (!sym.isExported()) continue;
+            if (sym.write_count != 0) continue;
+
+            if (sym.const_kind == .number and sem.numericConstText(@intCast(sym_id)).len > 0) {
+                has_exported_number = true;
+                continue;
+            }
+
+            const folded_span = minify_mod.foldNumericLiteralExpression(ast, init_idx) orelse continue;
+            const number_text = try arena_alloc.dupe(u8, ast.getText(folded_span));
+            try sem.numeric_const_texts.put(arena_alloc, @intCast(sym_id), number_text);
+            sem.symbols.items[sym_id].const_kind = .number;
+            has_exported_number = true;
+            folded = true;
+        }
+
+        if (folded) {
+            if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
+        }
+        return has_exported_number;
     }
 
     fn moduleHasExportedNumberConstValue(_: *TreeShaker, sem: ModuleSemanticData) bool {
@@ -516,6 +515,7 @@ pub const TreeShaker = struct {
         const_profile: ConstMaterializeProfile,
     ) !bool {
         const m = self.moduleAtMut(@intCast(module_index)) orelse return false;
+        if (m.import_bindings.len == 0) return false;
         const sem = m.semantic orelse return false;
         const ast = &(m.ast orelse return false);
         var const_values = blk: {
@@ -571,6 +571,47 @@ pub const TreeShaker = struct {
         return any_changed;
     }
 
+    fn shouldVisitNumericPostPassModule(self: *const TreeShaker, idx: u32) bool {
+        if (self.graph.preserve_modules) return true;
+        if (idx >= self.included.capacity()) return false;
+        return self.included.isSet(idx);
+    }
+
+    fn enqueueNumericPostPassModule(
+        self: *TreeShaker,
+        queue: *std.ArrayList(u32),
+        queued: *std.DynamicBitSet,
+        idx: u32,
+        mod_count: usize,
+    ) !void {
+        if (idx >= mod_count) return;
+        if (!self.shouldVisitNumericPostPassModule(idx)) return;
+        const m = self.getModule(idx) orelse return;
+        if (m.import_bindings.len == 0) return;
+        if (queued.isSet(idx)) return;
+        try queue.append(self.allocator, idx);
+        queued.set(idx);
+    }
+
+    fn materializeNumericConstFactsWorklist(self: *TreeShaker, mod_count: usize) !void {
+        var queue: std.ArrayList(u32) = .empty;
+        defer queue.deinit(self.allocator);
+        var queued = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
+        defer queued.deinit();
+
+        for (0..mod_count) |i| {
+            try self.enqueueNumericPostPassModule(&queue, &queued, @intCast(i), mod_count);
+        }
+
+        while (queue.pop()) |idx| {
+            if (idx < mod_count) queued.unset(idx);
+            if (idx >= mod_count) continue;
+            if (!self.shouldVisitNumericPostPassModule(idx)) continue;
+            if (!try self.materializeCrossModuleConstFactsForIndex(idx, .numeric, .{})) continue;
+            try self.enqueueStaticImporters(&queue, &queued, idx, mod_count);
+        }
+    }
+
     /// `Module.importers` (graph.linkDependency 가 채우는 양방향 인접 리스트) 의 항목을
     /// numeric BFS 큐에 넣는다. dynamic_importers 는 별도 리스트라 자동 제외 — dynamic
     /// import 는 runtime property 접근이라 numeric materialize 가 손댈 AST binding 이 없다.
@@ -613,14 +654,8 @@ pub const TreeShaker = struct {
 
             for (0..mod_count) |i| {
                 const m = self.moduleAtMut(@intCast(i)) orelse continue;
-                const sem = m.semantic orelse continue;
                 const ast = &(m.ast orelse continue);
-                if (self.moduleHasNumericExportSeed(ast, sem)) {
-                    self.minifyAndResyncModule(m, sem, ast, const_profile.minify_resync);
-                    try self.enqueueStaticImporters(&queue, &queued, @intCast(i), mod_count);
-                    continue;
-                }
-                if (self.moduleHasExportedNumberConstValue(sem)) {
+                if (try self.foldNumericExportSeeds(m, ast)) {
                     try self.enqueueStaticImporters(&queue, &queued, @intCast(i), mod_count);
                 }
             }
@@ -979,12 +1014,7 @@ pub const TreeShaker = struct {
             defer numeric_scope.end();
 
             if (self.shouldRunNumericPostPass() and self.anyModuleHasExportedNumberConst(mod_count)) {
-                var pass: u32 = 0;
-                while (pass < max_numeric_const_post_passes) : (pass += 1) {
-                    const forward_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, false, .{});
-                    const reverse_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, true, .{});
-                    if (!forward_changed and !reverse_changed) break;
-                }
+                try self.materializeNumericConstFactsWorklist(mod_count);
             }
         }
 
