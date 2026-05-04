@@ -27,39 +27,33 @@ pub const Mode = enum {
 pub const Feature = []const u8;
 
 pub const FeatureSet = struct {
-    const max_features = 512;
+    const Map = std.StringHashMapUnmanaged(void);
 
-    items: [max_features]Feature = undefined,
-    len: usize = 0,
+    set: Map = .{},
 
     pub fn deinit(self: *FeatureSet, allocator: std.mem.Allocator) void {
-        _ = self;
-        _ = allocator;
+        self.set.deinit(allocator);
     }
 
     pub fn insert(self: *FeatureSet, allocator: std.mem.Allocator, feature: Feature) !void {
-        _ = allocator;
-        if (self.has(feature)) return;
-        if (self.len >= max_features) return error.OutOfMemory;
-        self.items[self.len] = feature;
-        self.len += 1;
+        try self.set.put(allocator, feature, {});
     }
 
     pub fn has(self: FeatureSet, feature: Feature) bool {
-        for (self.items[0..self.len]) |existing| {
-            if (std.mem.eql(u8, existing, feature)) return true;
-        }
-        return false;
+        return self.set.contains(feature);
     }
 
     pub fn merge(self: *FeatureSet, allocator: std.mem.Allocator, other: FeatureSet) !void {
-        for (other.items[0..other.len]) |feature| {
-            try self.insert(allocator, feature);
-        }
+        var it = other.set.keyIterator();
+        while (it.next()) |key| try self.set.put(allocator, key.*, {});
     }
 
     pub fn isEmpty(self: FeatureSet) bool {
-        return self.len == 0;
+        return self.set.count() == 0;
+    }
+
+    pub fn keyIterator(self: *const FeatureSet) Map.KeyIterator {
+        return self.set.keyIterator();
     }
 };
 
@@ -87,7 +81,32 @@ const NameFeature = struct {
     feature: []const u8,
 };
 
-const global_features = [_]NameFeature{
+fn lessByName(_: void, a: NameFeature, b: NameFeature) bool {
+    return std.mem.lessThan(u8, a.name, b.name);
+}
+
+fn comptimeSortByName(comptime entries: anytype) [entries.len]NameFeature {
+    @setEvalBranchQuota(50000);
+    var sorted: [entries.len]NameFeature = entries;
+    std.mem.sort(NameFeature, &sorted, {}, lessByName);
+    return sorted;
+}
+
+fn lowerBoundByName(haystack: []const NameFeature, name: []const u8) usize {
+    var lo: usize = 0;
+    var hi: usize = haystack.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (std.mem.lessThan(u8, haystack[mid].name, name)) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+const global_features_unsorted = [_]NameFeature{
     .{ .name = "AggregateError", .feature = "aggregate_error" },
     .{ .name = "ArrayBuffer", .feature = "array_buffer" },
     .{ .name = "AsyncDisposableStack", .feature = "async_disposable_stack" },
@@ -129,7 +148,7 @@ const global_features = [_]NameFeature{
     .{ .name = "unescape", .feature = "unescape" },
 };
 
-const prototype_member_features = [_]NameFeature{
+const prototype_member_features_unsorted = [_]NameFeature{
     .{ .name = "anchor", .feature = "string_anchor" },
     .{ .name = "at", .feature = "array_at" },
     .{ .name = "at", .feature = "typed_array_at" },
@@ -268,7 +287,7 @@ const prototype_member_features = [_]NameFeature{
     .{ .name = "__proto__", .feature = "object_proto" },
 };
 
-const static_member_features = [_]NameFeature{
+const static_member_features_unsorted = [_]NameFeature{
     .{ .name = "Array.from", .feature = "array_from" },
     .{ .name = "Array.fromAsync", .feature = "array_from_async" },
     .{ .name = "Array.isArray", .feature = "array_is_array" },
@@ -373,6 +392,10 @@ const static_member_features = [_]NameFeature{
     .{ .name = "Uint8Array.fromBase64", .feature = "uint8_array_from_base64" },
     .{ .name = "Uint8Array.fromHex", .feature = "uint8_array_from_hex" },
 };
+
+const global_features = comptimeSortByName(global_features_unsorted);
+const prototype_member_features = comptimeSortByName(prototype_member_features_unsorted);
+const static_member_features = comptimeSortByName(static_member_features_unsorted);
 
 pub fn collectModuleUsage(allocator: std.mem.Allocator, module: *const Module) !FeatureSet {
     if (!module.module_type.isJavaScriptLike()) return .{};
@@ -522,10 +545,9 @@ fn insertFeaturesForName(
     name: []const u8,
     mappings: []const NameFeature,
 ) !void {
-    for (mappings) |mapping| {
-        if (std.mem.eql(u8, name, mapping.name)) {
-            try out.insert(allocator, mapping.feature);
-        }
+    var i = lowerBoundByName(mappings, name);
+    while (i < mappings.len and std.mem.eql(u8, mappings[i].name, name)) : (i += 1) {
+        try out.insert(allocator, mappings[i].feature);
     }
 }
 
@@ -613,7 +635,7 @@ fn isGlobalIdentifierNamed(
 }
 
 test "runtime polyfill collector detects v1 global and member usage" {
-    const usage = try testCollect(
+    var usage = try testCollect(
         \\const a = "a".replaceAll("a", "b");
         \\const b = values.at(0);
         \\const c = Object.hasOwn({ a: 1 }, "a");
@@ -623,6 +645,7 @@ test "runtime polyfill collector detects v1 global and member usage" {
         \\const g = Promise.resolve(d);
         \\void [a, b, c, d, e, f, g];
     );
+    defer usage.deinit(std.testing.allocator);
     try std.testing.expect(usage.has("string_replace_all"));
     try std.testing.expect(usage.has("array_at"));
     try std.testing.expect(usage.has("object_has_own"));
@@ -633,7 +656,7 @@ test "runtime polyfill collector detects v1 global and member usage" {
 }
 
 test "runtime polyfill collector detects explicit globalThis references" {
-    const usage = try testCollect(
+    var usage = try testCollect(
         \\const a = new globalThis.Map();
         \\const b = new globalThis.Set();
         \\const c = globalThis.Promise.resolve(a);
@@ -641,6 +664,7 @@ test "runtime polyfill collector detects explicit globalThis references" {
         \\const e = globalThis.Object.hasOwn({ a: 1 }, "a");
         \\void [a, b, c, d, e];
     );
+    defer usage.deinit(std.testing.allocator);
     try std.testing.expect(usage.has("map"));
     try std.testing.expect(usage.has("set"));
     try std.testing.expect(usage.has("promise"));
@@ -649,7 +673,7 @@ test "runtime polyfill collector detects explicit globalThis references" {
 }
 
 test "runtime polyfill collector detects expanded core-js built-ins" {
-    const usage = try testCollect(
+    var usage = try testCollect(
         \\const a = Object.values({ a: 1 });
         \\const b = [1, 2, 3].findLast((value) => value < 3);
         \\const c = "7".padStart(2, "0");
@@ -665,6 +689,7 @@ test "runtime polyfill collector detects expanded core-js built-ins" {
         \\const m = queueMicrotask(() => {});
         \\void [a, b, c, d, e, f, g, h, i, k, l, m];
     );
+    defer usage.deinit(std.testing.allocator);
     try std.testing.expect(usage.has("object_values"));
     try std.testing.expect(usage.has("array_find_last"));
     try std.testing.expect(usage.has("string_pad_start"));
@@ -684,7 +709,7 @@ test "runtime polyfill collector detects expanded core-js built-ins" {
 }
 
 test "runtime polyfill collector ignores shadowed and imported globals" {
-    const usage = try testCollect(
+    var usage = try testCollect(
         \\import { Map, Object as ImportedObject } from "pkg";
         \\const Promise = { resolve() {} };
         \\function run(structuredClone) {
@@ -697,6 +722,7 @@ test "runtime polyfill collector ignores shadowed and imported globals" {
         \\}
         \\run();
     );
+    defer usage.deinit(std.testing.allocator);
     try std.testing.expect(!usage.has("map"));
     try std.testing.expect(!usage.has("set"));
     try std.testing.expect(!usage.has("promise"));
@@ -705,7 +731,7 @@ test "runtime polyfill collector ignores shadowed and imported globals" {
 }
 
 test "runtime polyfill collector ignores type-only references and shadowed globalThis" {
-    const usage = try testCollectTyped(
+    var usage = try testCollectTyped(
         \\type Cache = Map<string, Set<number>>;
         \\interface Work {
         \\  done: Promise<void>;
@@ -719,6 +745,7 @@ test "runtime polyfill collector ignores type-only references and shadowed globa
         \\globalThis.Promise.resolve();
         \\globalThis.Object.hasOwn({}, "x");
     );
+    defer usage.deinit(std.testing.allocator);
     try std.testing.expect(!usage.has("map"));
     try std.testing.expect(!usage.has("set"));
     try std.testing.expect(!usage.has("promise"));
@@ -726,13 +753,14 @@ test "runtime polyfill collector ignores type-only references and shadowed globa
 }
 
 test "runtime polyfill collector ignores dynamic computed member access" {
-    const usage = try testCollect(
+    var usage = try testCollect(
         \\const method = "resolve";
         \\Promise[method]();
         \\value[method]("x");
         \\globalThis["Map"];
         \\globalThis.Object["hasOwn"]({}, "x");
     );
+    defer usage.deinit(std.testing.allocator);
     try std.testing.expect(!usage.has("promise"));
     try std.testing.expect(!usage.has("map"));
     try std.testing.expect(!usage.has("object_has_own"));
@@ -779,5 +807,7 @@ fn testCollectWithModuleType(source: []const u8, module_type: ModuleType) !Featu
         .references = analyzer.references.items,
         .numeric_const_texts = analyzer.numeric_const_texts,
     };
-    return collectModuleUsage(allocator, &module);
+    // arena 는 helper 종료 시 deinit 되므로, FeatureSet 은 호출자가 직접 deinit 할 수
+    // 있도록 std.testing.allocator 로 분리해 빌드한다.
+    return collectModuleUsage(std.testing.allocator, &module);
 }
