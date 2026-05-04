@@ -70,13 +70,22 @@ type CoreJsCompat = (options: {
 
 type RuntimePolyfillFeature = string;
 
-interface ResolvedRuntimeModule {
+export interface ResolvedRuntimeModule {
   module: string;
   path: string;
 }
 
-interface ResolvedRuntimeCandidate extends ResolvedRuntimeModule {
+export interface ResolvedRuntimeCandidate extends ResolvedRuntimeModule {
   feature: RuntimePolyfillFeature;
+}
+
+/** NAPI 로 전달되는 단일 plan 객체. usage 모드는 candidates, entry 모드는 entry 를 채운다. */
+export interface RuntimePolyfillNativePlan {
+  mode: "usage" | "entry";
+  candidates?: readonly ResolvedRuntimeCandidate[];
+  entry?: readonly ResolvedRuntimeModule[];
+  include?: readonly ResolvedRuntimeModule[];
+  exclude?: readonly string[];
 }
 
 let runtimeRequireOverride: RuntimeRequire | null = null;
@@ -96,6 +105,13 @@ export const __runtimePolyfillTestHooks = {
     coreJsCompatCache = undefined;
     coreJsVersionCache = undefined;
     runtimeRequireOverride = runtimeRequire;
+  },
+};
+
+/** @internal — Zig 매핑 테이블과의 sync 검증용. 외부 사용자는 사용 금지. */
+export const __runtimePolyfillTestInternals = {
+  get featureModules() {
+    return RUNTIME_POLYFILL_FEATURE_MODULES;
   },
 };
 
@@ -622,15 +638,6 @@ function resolveRuntimeModules(
   }));
 }
 
-function assignResolvedModuleArrays(
-  napiOptions: Record<string, unknown>,
-  prefix: string,
-  modules: readonly ResolvedRuntimeModule[],
-): void {
-  napiOptions[`${prefix}Modules`] = modules.map((item) => item.module);
-  napiOptions[`${prefix}Paths`] = modules.map((item) => item.path);
-}
-
 export function applyRuntimePolyfillsToNapiOptions(
   napiOptions: Record<string, unknown>,
   options: RuntimePolyfillBuildOptions,
@@ -657,10 +664,12 @@ export function applyRuntimePolyfillsToNapiOptions(
     if (entryResolved.length === 0 && includeResolved.length === 0) {
       return { cleanup: () => {}, modules: [] };
     }
-    napiOptions.runtimePolyfillModeNative = "entry";
-    assignResolvedModuleArrays(napiOptions, "runtimePolyfillEntry", entryResolved);
-    assignResolvedModuleArrays(napiOptions, "runtimePolyfillInclude", includeResolved);
-    napiOptions.runtimePolyfillExcludeModules = runtime.exclude;
+    napiOptions.runtimePolyfillPlan = {
+      mode: "entry",
+      entry: entryResolved,
+      include: includeResolved,
+      exclude: runtime.exclude,
+    };
     return {
       cleanup: () => {},
       modules: uniqueSorted([...entryResolved, ...includeResolved].map((item) => item.module)),
@@ -687,12 +696,12 @@ export function applyRuntimePolyfillsToNapiOptions(
     return { cleanup: () => {}, modules: [] };
   }
 
-  napiOptions.runtimePolyfillModeNative = "usage";
-  napiOptions.runtimePolyfillCandidateFeatures = candidates.map((item) => item.feature);
-  napiOptions.runtimePolyfillCandidateModules = candidates.map((item) => item.module);
-  napiOptions.runtimePolyfillCandidatePaths = candidates.map((item) => item.path);
-  assignResolvedModuleArrays(napiOptions, "runtimePolyfillInclude", includeResolved);
-  napiOptions.runtimePolyfillExcludeModules = runtime.exclude;
+  napiOptions.runtimePolyfillPlan = {
+    mode: "usage",
+    candidates,
+    include: includeResolved,
+    exclude: runtime.exclude,
+  };
 
   return {
     cleanup: () => {},
