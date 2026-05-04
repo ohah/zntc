@@ -69,6 +69,7 @@ describe.skipIf(!hasReactQuery)("React Query v5 smoke", () => {
     expect(js).toContain("es.string.replace-all");
     expect(js).not.toContain("@tanstack/react-query");
     expect(js).not.toContain("?.");
+    expect(js.replace(/^\/\/#.*$/gm, "")).not.toMatch(/(^|[^\w$])#[A-Za-z_$][\w$]*/);
 
     const runner = join(fixture.dir, "run-without-native-replaceall.cjs");
     await writeFile(
