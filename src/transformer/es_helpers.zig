@@ -1085,6 +1085,63 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
     return self.buildVarDecl(var_name, new_expr, span);
 }
 
+/// 함수 경계를 진입할 때 arrow this/arguments 캡처 상태를 저장하고 0/false 로 초기화.
+/// `visitFunction` 을 거치지 않는 lowering 경로(async state-machine, class method 직접 lowering,
+/// standalone func 추출 등)가 같은 함수 스코프 의미를 갖도록 하기 위함.
+pub const ArrowEnvSnapshot = struct {
+    arrow_this_depth: u32,
+    needs_this_var: bool,
+    needs_arguments_var: bool,
+    super_call_this_alias: bool,
+};
+
+pub fn pushArrowEnv(self: anytype) ArrowEnvSnapshot {
+    const snap = ArrowEnvSnapshot{
+        .arrow_this_depth = self.arrow_this_depth,
+        .needs_this_var = self.needs_this_var,
+        .needs_arguments_var = self.needs_arguments_var,
+        .super_call_this_alias = self.super_call_this_alias,
+    };
+    self.arrow_this_depth = 0;
+    self.needs_this_var = false;
+    self.needs_arguments_var = false;
+    self.super_call_this_alias = false;
+    return snap;
+}
+
+pub fn popArrowEnv(self: anytype, snap: ArrowEnvSnapshot) void {
+    self.arrow_this_depth = snap.arrow_this_depth;
+    self.needs_this_var = snap.needs_this_var;
+    self.needs_arguments_var = snap.needs_arguments_var;
+    self.super_call_this_alias = snap.super_call_this_alias;
+}
+
+/// `_this = this`, `_arguments = arguments` capture var-decl 을 buf 에 채운다.
+/// 호출자는 `self.needs_this_var` / `self.needs_arguments_var` 가 lowering 결과를 반영한 뒤 호출.
+pub fn fillThisArgumentsCaptures(self: anytype, buf: *[2]NodeIndex, span: Span) !usize {
+    var count: usize = 0;
+    if (self.needs_this_var) {
+        const this_init = try self.ast.addNode(.{
+            .tag = .this_expression,
+            .span = span,
+            .data = .{ .none = 0 },
+        });
+        buf[count] = try self.buildVarDecl("_this", this_init, span);
+        count += 1;
+    }
+    if (self.needs_arguments_var) {
+        const args_span = try self.ast.addString("arguments");
+        const args_init = try self.ast.addNode(.{
+            .tag = .identifier_reference,
+            .span = args_span,
+            .data = .{ .string_ref = args_span },
+        });
+        buf[count] = try self.buildVarDecl("_arguments", args_init, span);
+        count += 1;
+    }
+    return count;
+}
+
 /// method_definition → standalone function declaration으로 추출.
 /// private generator method (`*#name`) / async method 를 `_name_fn` 으로 꺼낼 때
 /// method flags(is_async, is_generator)를 function flags로 옮겨 호이스팅한다.
@@ -1097,20 +1154,8 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const body_idx: NodeIndex = @enumFromInt(self.readU32(method_node.data.extra, ast_mod.MethodExtra.body));
     const method_flags = self.readU32(method_node.data.extra, ast_mod.MethodExtra.flags);
 
-    const saved_arrow_depth = self.arrow_this_depth;
-    const saved_needs_this = self.needs_this_var;
-    const saved_needs_args = self.needs_arguments_var;
-    const saved_super_alias = self.super_call_this_alias;
-    self.arrow_this_depth = 0;
-    self.needs_this_var = false;
-    self.needs_arguments_var = false;
-    self.super_call_this_alias = false;
-    defer {
-        self.arrow_this_depth = saved_arrow_depth;
-        self.needs_this_var = saved_needs_this;
-        self.needs_arguments_var = saved_needs_args;
-        self.super_call_this_alias = saved_super_alias;
-    }
+    const arrow_env = pushArrowEnv(self);
+    defer popArrowEnv(self, arrow_env);
 
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
@@ -1119,28 +1164,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         (self.needs_this_var or self.needs_arguments_var))
     {
         var capture_stmts: [2]NodeIndex = undefined;
-        var capture_count: usize = 0;
-
-        if (self.needs_this_var) {
-            const this_init = try self.ast.addNode(.{
-                .tag = .this_expression,
-                .span = span,
-                .data = .{ .none = 0 },
-            });
-            capture_stmts[capture_count] = try self.buildVarDecl("_this", this_init, span);
-            capture_count += 1;
-        }
-        if (self.needs_arguments_var) {
-            const args_span = try self.ast.addString("arguments");
-            const args_init = try self.ast.addNode(.{
-                .tag = .identifier_reference,
-                .span = args_span,
-                .data = .{ .string_ref = args_span },
-            });
-            capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, span);
-            capture_count += 1;
-        }
-
+        const capture_count = try fillThisArgumentsCaptures(self, &capture_stmts, span);
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
 

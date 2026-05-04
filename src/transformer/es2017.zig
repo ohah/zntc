@@ -251,22 +251,8 @@ pub fn ES2017(comptime Transformer: type) type {
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
 
-            // This path bypasses visitFunction(), so it must provide the same
-            // function-level lexical environment for arrows inside params/body.
-            const saved_arrow_depth = self.arrow_this_depth;
-            const saved_needs_this = self.needs_this_var;
-            const saved_needs_args = self.needs_arguments_var;
-            const saved_super_alias = self.super_call_this_alias;
-            self.arrow_this_depth = 0;
-            self.needs_this_var = false;
-            self.needs_arguments_var = false;
-            self.super_call_this_alias = false;
-            defer {
-                self.arrow_this_depth = saved_arrow_depth;
-                self.needs_this_var = saved_needs_this;
-                self.needs_arguments_var = saved_needs_args;
-                self.super_call_this_alias = saved_super_alias;
-            }
+            const arrow_env = es_helpers.pushArrowEnv(self);
+            defer es_helpers.popArrowEnv(self, arrow_env);
 
             const new_name = try self.visitNode(name_idx);
 
@@ -297,27 +283,10 @@ pub fn ES2017(comptime Transformer: type) type {
             const body_list = blk: {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                const needs_this_capture = self.options.unsupported.arrow and self.needs_this_var;
-                const needs_arguments_capture = self.options.unsupported.arrow and self.needs_arguments_var;
-
-                if (needs_this_capture or needs_arguments_capture) {
-                    if (needs_this_capture) {
-                        const this_init = try self.ast.addNode(.{
-                            .tag = .this_expression,
-                            .span = span,
-                            .data = .{ .none = 0 },
-                        });
-                        try self.scratch.append(self.allocator, try self.buildVarDecl("_this", this_init, span));
-                    }
-                    if (needs_arguments_capture) {
-                        const args_span = try self.ast.addString("arguments");
-                        const args_init = try self.ast.addNode(.{
-                            .tag = .identifier_reference,
-                            .span = args_span,
-                            .data = .{ .string_ref = args_span },
-                        });
-                        try self.scratch.append(self.allocator, try self.buildVarDecl("_arguments", args_init, span));
-                    }
+                if (self.options.unsupported.arrow) {
+                    var capture_stmts: [2]NodeIndex = undefined;
+                    const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
+                    try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
                 }
                 if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
                 try self.scratch.append(self.allocator, return_stmt);
