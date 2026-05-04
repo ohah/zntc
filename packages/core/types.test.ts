@@ -35,18 +35,17 @@ describe("@zts/core TypeScript declaration", () => {
     }
   });
 
-  test("runtime polyfill 타입은 nested targets 자동완성을 제공하고 top-level runtimeTargets는 노출하지 않음", () => {
+  test("runtime polyfill 타입은 Rspack/SWC targets 형태를 제공하고 top-level runtimeTargets는 노출하지 않음", () => {
     const dts = readFileSync(join(DIST, "core/index.d.ts"), "utf8");
     const runtimeDts = readFileSync(join(DIST, "core/src/runtime-polyfills.d.ts"), "utf8");
     expect(dts).toContain("runtimePolyfills?: RuntimePolyfillsOption");
     expect(dts).toContain("coreJs?: string");
     expect(dts).not.toContain("runtimeTargets?:");
     expect(runtimeDts).toContain("export interface RuntimePolyfillOptions");
-    expect(runtimeDts).toContain("export type RuntimeTarget =");
-    expect(runtimeDts).toContain('"hermes"');
-    expect(runtimeDts).toContain('"react-native"');
-    expect(runtimeDts).toContain("`${RuntimeTargetCompactName}${RuntimeTargetVersion}`");
-    expect(runtimeDts).toContain("targets?: RuntimeTarget | RuntimeTarget[] | RuntimeTargetObject");
+    expect(runtimeDts).not.toContain("export type RuntimeTarget =");
+    expect(runtimeDts).not.toContain("RuntimeTargetObject");
+    expect(runtimeDts).toContain("targets?: string | string[]");
+    expect(runtimeDts).toContain("coreJs?: string");
   });
 
   test("TranspileOptions가 browserslist 필드 포함", () => {

@@ -6696,7 +6696,7 @@ describe("@zts/core browserslist", () => {
       const r = buildSync({
         entryPoints: [join(dir, "entry.ts")],
         format: "iife",
-        runtimePolyfills: { mode: "auto", targets: "ios12" },
+        runtimePolyfills: { mode: "auto", targets: ["ios_saf 12"] },
       });
       const code = r.outputFiles[0].text;
       expect(code).toContain("es.string.replace-all");
@@ -6722,14 +6722,14 @@ describe("@zts/core browserslist", () => {
       const oldTarget = buildSync({
         entryPoints: [join(dir, "entry.ts")],
         format: "iife",
-        runtimePolyfills: { mode: "auto", targets: "ios12" },
+        runtimePolyfills: { mode: "auto", targets: ["ios_saf 12"] },
       }).outputFiles[0].text;
       expect(oldTarget).toContain("es.string.replace-all");
 
       const modernTarget = buildSync({
         entryPoints: [join(dir, "entry.ts")],
         format: "iife",
-        runtimePolyfills: { mode: "auto", targets: "node18" },
+        runtimePolyfills: { mode: "auto", targets: ["node 18"] },
       }).outputFiles[0].text;
       expect(modernTarget).not.toContain("es.string.replace-all");
     } finally {

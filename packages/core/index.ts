@@ -32,12 +32,10 @@ import {
   isEsTarget,
   type RuntimePolyfillOptions,
   type RuntimePolyfillsOption,
-  type RuntimeTarget,
-  type RuntimeTargetObject,
 } from "./src/runtime-polyfills.ts";
 
 export { isPlainObject, validateTsConfigRaw };
-export type { RuntimePolyfillOptions, RuntimePolyfillsOption, RuntimeTarget, RuntimeTargetObject };
+export type { RuntimePolyfillOptions, RuntimePolyfillsOption };
 
 // ─── NAPI Module ───
 
@@ -498,7 +496,7 @@ export interface DevServerOptions {
   open?: boolean;
 }
 
-type BuildTarget = import("../shared/index").Target | RuntimeTarget;
+type BuildTarget = import("../shared/index").Target | (string & {});
 
 /**
  * Common build options shared by all platforms.
@@ -799,10 +797,10 @@ interface BuildOptionsCommon {
    * - `"off"` (default): 자동 런타임 폴리필 없음.
    * - `"auto"` / `"usage"`: 엔트리와 로컬 의존성의 실제 사용 API만 스캔해 타겟 미지원 모듈 주입.
    * - `"entry"`: 타겟 기준 필요한 core-js ES/Web 모듈을 엔트리 prelude에 포괄 주입.
-   * - 타겟 지정은 객체 form의 `targets` 필드를 사용한다.
+   * - 타겟 지정은 Rspack/SWC `env.targets`와 같은 Browserslist query 배열을 사용한다.
    */
   runtimePolyfills?: RuntimePolyfillsOption;
-  /** core-js-compat 계산에 사용할 core-js 버전 (예: `"3.49"`). */
+  /** core-js-compat 계산에 사용할 core-js 버전 (예: `"3.49"`). `runtimePolyfills.coreJs`와 동일한 역할. */
   coreJs?: string;
   /** 엔트리 모듈 직전에 실행할 모듈 경로 */
   runBeforeMain?: string[];
@@ -855,12 +853,12 @@ export type BuildOptions =
   | (BuildOptionsCommon & {
       /** React Native (Hermes) 프리셋. target은 Hermes 매트릭스로 강제됨. */
       platform: Extract<import("../shared/index").Platform, "react-native">;
-      target?: RuntimeTarget;
+      target?: BuildTarget;
       browserslist?: never;
     })
   | (BuildOptionsCommon & {
       platform?: Exclude<import("../shared/index").Platform, "react-native">;
-      /** ES 다운레벨 타겟 또는 runtime polyfill engine target. */
+      /** ES 다운레벨 타겟. Rspack-style node/hermes target strings are accepted by the JS wrapper. */
       target?: BuildTarget;
       /** browserslist 쿼리 (string 또는 string[]). 지정 시 target보다 우선. */
       browserslist?: string | string[];

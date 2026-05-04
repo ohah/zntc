@@ -27,7 +27,7 @@ ZTS의 트랜스파일 옵션은 **Zig `TranspileOptionsDto` struct에서 compti
 |---|---|---|---|
 | `target` | `es5`, `es2015`–`es2025`, `esnext` | `esnext` | ES 다운레벨 타겟. 설정 시 해당 버전 이후 도입된 기능이 자동 downlowering됨 |
 | `unsupported` | `integer` (u32) | `0` | `UnsupportedFeatures` 비트마스크 직접 지정. browserslist 해석 결과를 주입할 때 사용 — `target`보다 우선 |
-| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | core-js 런타임 API 폴리필 주입. 타겟은 object form의 `targets` 필드로 지정 |
+| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | core-js 런타임 API 폴리필 주입. 타겟은 Rspack/SWC `env.targets`와 같은 Browserslist query 배열로 지정 |
 | `coreJs` | `string` | installed version | core-js-compat 계산에 사용할 core-js 버전 |
 
 ### 파싱

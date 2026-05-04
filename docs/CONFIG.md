@@ -30,7 +30,7 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `format`                                     |           `--format=esm`           |               ✅               |            ❌             | esm/cjs/iife/umd/amd                                               |
 | `platform`                                   |         `--platform=node`          |               ✅               |            ❌             | node/browser/react-native                                          |
 | `target`                                     |         `--target=es2020`          |               ✅               |         `target`          | tsconfig fallback                                                  |
-| `runtimePolyfills`                           |        `--runtime-polyfills`       |               ✅               |            ❌             | core-js 런타임 API 폴리필. 타겟은 `runtimePolyfills.targets` 사용  |
+| `runtimePolyfills`                           |        `--runtime-polyfills`       |               ✅               |            ❌             | core-js 런타임 API 폴리필. 타겟은 Rspack/SWC식 Browserslist query  |
 | `coreJs`                                     |          `--core-js=3.49`          |               ✅               |            ❌             | core-js-compat 계산에 사용할 core-js 버전                          |
 | `jsx`                                        |         `--jsx=automatic`          |               ✅               |           `jsx`           | preserve/transform/automatic                                       |
 | `jsxFactory` / `jsxFragment`                 |                flag                |               ✅               |      `jsxFactory` 등      | tsconfig fallback                                                  |
