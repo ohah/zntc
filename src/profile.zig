@@ -131,6 +131,14 @@ pub const Category = enum {
     shake_fixpoint_bfs_require_scan,
     shake_fixpoint_bfs_final_mark_exports,
     shake_fixpoint_bfs_enqueue_side_effects,
+    shake_fixpoint_bfs_seed_export_resolve,
+    shake_fixpoint_bfs_seed_export_mark,
+    shake_fixpoint_bfs_seed_export_cjs,
+    shake_fixpoint_bfs_seed_export_namespace_scan,
+    shake_fixpoint_bfs_seed_export_intermediate,
+    shake_fixpoint_bfs_seed_export_semantic_lookup,
+    shake_fixpoint_bfs_seed_export_enqueue_symbol,
+    shake_fixpoint_bfs_seed_export_opaque,
     shake_fixpoint_process_imports,
     shake_fixpoint_re_exports,
     shake_fixpoint_eval_deps,
@@ -708,6 +716,7 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("hmr.detect") == .hmr_detect);
     try testing.expect(Category.fromString("shake.fixpoint.bfs") == .shake_fixpoint_bfs);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.follow.import") == .shake_fixpoint_bfs_follow_import);
+    try testing.expect(Category.fromString("shake.fixpoint.bfs.seed.export.resolve") == .shake_fixpoint_bfs_seed_export_resolve);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts") == .shake_const_prepass_build_facts);
 }
 
@@ -718,6 +727,7 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("hmr.detect", Category.displayName(.hmr_detect));
     try testing.expectEqualStrings("shake.fixpoint.bfs", Category.displayName(.shake_fixpoint_bfs));
     try testing.expectEqualStrings("shake.fixpoint.bfs.follow.import", Category.displayName(.shake_fixpoint_bfs_follow_import));
+    try testing.expectEqualStrings("shake.fixpoint.bfs.seed.export.resolve", Category.displayName(.shake_fixpoint_bfs_seed_export_resolve));
     try testing.expectEqualStrings("shake.const.prepass.build.facts", Category.displayName(.shake_const_prepass_build_facts));
 }
 
@@ -796,6 +806,7 @@ test "addFromCsv: shake parent → 모든 sub-phase 활성" {
     try testing.expect(enabled(.shake_fixpoint));
     try testing.expect(enabled(.shake_fixpoint_bfs));
     try testing.expect(enabled(.shake_fixpoint_bfs_follow_import));
+    try testing.expect(enabled(.shake_fixpoint_bfs_seed_export_resolve));
     try testing.expect(enabled(.shake_numeric_postpass));
 }
 

@@ -36,6 +36,14 @@ const TARGET_PHASES = [
   "shake.fixpoint.bfs.require.scan",
   "shake.fixpoint.bfs.final.mark.exports",
   "shake.fixpoint.bfs.enqueue.side.effects",
+  "shake.fixpoint.bfs.seed.export.resolve",
+  "shake.fixpoint.bfs.seed.export.mark",
+  "shake.fixpoint.bfs.seed.export.cjs",
+  "shake.fixpoint.bfs.seed.export.namespace.scan",
+  "shake.fixpoint.bfs.seed.export.intermediate",
+  "shake.fixpoint.bfs.seed.export.semantic.lookup",
+  "shake.fixpoint.bfs.seed.export.enqueue.symbol",
+  "shake.fixpoint.bfs.seed.export.opaque",
   "shake.fixpoint.re.exports",
   "shake.const.prepass",
   "shake.const.prepass.numeric.propagate",
@@ -403,15 +411,25 @@ async function main(cli: CliArgs): Promise<void> {
   console.log();
   console.log("### nested bfs helper profile");
   console.log(
-    "| Fixture | Follow import | Follow self | Seed export | Seed export self | Require scan | Side effects |",
+    "| Fixture | Follow import | Follow self | Seed export | Seed export self | Resolve | Mark | CJS | Namespace scan | Intermediate | Semantic lookup | Enqueue symbol | Opaque | Require scan | Side effects |",
   );
-  console.log("| --- | ---: | ---: | ---: | ---: | ---: | ---: |");
+  console.log(
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+  );
   for (const result of results) {
     console.log(
       `| ${result.name} | ${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.follow.import"))} | ` +
         `${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs.follow.import"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export"))} | ` +
         `${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs.seed.export"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.resolve"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.mark"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.cjs"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.namespace.scan"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.intermediate"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.semantic.lookup"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.enqueue.symbol"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.opaque"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.require.scan"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.enqueue.side.effects"))} |`,
     );

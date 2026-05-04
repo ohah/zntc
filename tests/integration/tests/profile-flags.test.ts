@@ -264,6 +264,7 @@ describe("profile CLI flags", () => {
     expect(parsed.phases["shake.fixpoint.bfs.queue"]).toBeDefined();
     expect(parsed.phases["shake.fixpoint.bfs.follow.import"]).toBeDefined();
     expect(parsed.phases["shake.fixpoint.bfs.seed.export"]).toBeDefined();
+    expect(parsed.phases["shake.fixpoint.bfs.seed.export.resolve"]).toBeDefined();
     expect(parsed.phases["shake.prune"]).toBeDefined();
   });
 });

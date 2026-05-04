@@ -69,6 +69,7 @@ fn buildAndShakeWithOpts(
     var linker = Linker.init(allocator, graph, .esm);
     try linker.link();
     linker.populateImportSymbols();
+    linker.populateNamespaceAccesses();
 
     var shaker = try TreeShaker.init(allocator, graph, &linker);
     try shaker.analyze(&.{entry});
@@ -2070,6 +2071,34 @@ test "#1558 Phase 5: namespace entry — 특정 prop만 쓰면 나머지 전체 
     try std.testing.expect(!r.shaker.isExportUsed(lib, "string"));
     try std.testing.expect(!r.shaker.isExportUsed(lib, "number"));
     try std.testing.expect(!r.shaker.isExportUsed(lib, "array"));
+}
+
+test "#1558 Phase 5: named re-export namespace entry — 사용된 prop만 source에 seed" {
+    // entry가 `export * as ns` barrel에서 named import를 하고 ns.used만 읽는 경로.
+    // seedOpaqueModule이 barrel.ns를 먼저 넓게 seed하면 source 전체가 live로 번질 수 있다.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { ns } from './barrel';
+        \\console.log(ns.used());
+    );
+    try writeFile(tmp.dir, "barrel.ts", "export * as ns from './mod';");
+    try writeFile(tmp.dir, "mod.ts",
+        \\export function used() { return 1; }
+        \\export function unused() { return 2; }
+    );
+
+    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{ "barrel.ts", "mod.ts" });
+    defer r.deinit();
+
+    const barrel = r.findModule("barrel.ts").?;
+    const mod = r.findModule("mod.ts").?;
+    try std.testing.expect(r.shaker.isIncluded(barrel));
+    try std.testing.expect(r.shaker.isIncluded(mod));
+    try std.testing.expect(r.shaker.isExportUsed(barrel, "ns"));
+    try std.testing.expect(r.shaker.isExportUsed(mod, "used"));
+    try std.testing.expect(!r.shaker.isExportUsed(mod, "unused"));
+    try std.testing.expect(!r.shaker.isExportUsed(mod, ALL_EXPORTS_SENTINEL));
 }
 
 test "#1558 Phase 5: non-entry 모듈의 dead export 안 import는 상위 전파하지 않는다" {
