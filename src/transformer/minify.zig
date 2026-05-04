@@ -999,6 +999,10 @@ fn foldNumericBinary(ast: *const Ast, left: Node, right: Node, op: Kind) ?f64 {
     const a = parseNumericLiteral(ast, left) orelse return null;
     const b = parseNumericLiteral(ast, right) orelse return null;
 
+    return foldNumericValues(a, b, op);
+}
+
+fn foldNumericValues(a: f64, b: f64, op: Kind) ?f64 {
     return switch (op) {
         .plus => a + b,
         .minus => a - b,
@@ -1011,6 +1015,58 @@ fn foldNumericBinary(ast: *const Ast, left: Node, right: Node, op: Kind) ?f64 {
         .caret => toF64Bitwise(toI32(a) ^ toI32(b)),
         else => null,
     };
+}
+
+fn evalNumericLiteralExpression(ast: *const Ast, root: NodeIndex, saw_binary: *bool, depth: u32) ?f64 {
+    if (root.isNone() or depth > 64) return null;
+    const raw: u32 = @intFromEnum(root);
+    if (raw >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[raw];
+    return switch (node.tag) {
+        .numeric_literal => parseNumericLiteral(ast, node),
+        .parenthesized_expression => evalNumericLiteralExpression(ast, node.data.unary.operand, saw_binary, depth + 1),
+        .binary_expression => blk: {
+            saw_binary.* = true;
+            const left = evalNumericLiteralExpression(ast, node.data.binary.left, saw_binary, depth + 1) orelse break :blk null;
+            const right = evalNumericLiteralExpression(ast, node.data.binary.right, saw_binary, depth + 1) orelse break :blk null;
+            const op: Kind = @enumFromInt(node.data.binary.flags);
+            break :blk foldNumericValues(left, right, op);
+        },
+        else => null,
+    };
+}
+
+inline fn spanByteLen(span: Span) u32 {
+    const start = span.start & ~ast_mod.Ast.STRING_TABLE_BIT;
+    const end = span.end & ~ast_mod.Ast.STRING_TABLE_BIT;
+    return end -| start;
+}
+
+/// Fold a standalone numeric-literal expression root in place.
+///
+/// Tree-shaking uses this for exported numeric seeds where only the initializer
+/// and const metadata need to change. It intentionally mirrors `foldBinary`'s
+/// size guard so the fast path does not introduce output growth compared with
+/// the regular minify pass.
+pub fn foldNumericLiteralExpression(ast: *Ast, root: NodeIndex) ?Span {
+    if (root.isNone()) return null;
+    const raw: u32 = @intFromEnum(root);
+    if (raw >= ast.nodes.items.len) return null;
+
+    var saw_binary = false;
+    const value = evalNumericLiteralExpression(ast, root, &saw_binary, 0) orelse return null;
+    if (!saw_binary) return null;
+
+    const new_span = formatNumber(ast, value) orelse return null;
+    const old_node = ast.nodes.items[raw];
+    if (spanByteLen(new_span) > spanByteLen(old_node.span)) return null;
+
+    ast.nodes.items[raw] = .{
+        .tag = .numeric_literal,
+        .span = new_span,
+        .data = .{ .none = 0 },
+    };
+    return new_span;
 }
 
 fn foldStringConcat(ast: *Ast, node_idx: u32, left: Node, right: Node, changed: *bool) void {
