@@ -103,6 +103,9 @@ pub const TreeShaker = struct {
     reachable_stmts: []?std.DynamicBitSet = &.{},
     /// 모듈별 sym_idx → import_binding_index 맵. 크로스-모듈 BFS에서 사용.
     sym_to_ib: []?[]?u32 = &.{},
+    /// 모듈별 import_record_index → top-level stmt_index 맵. eval dependency 판정과
+    /// require scan 이 같은 span search 를 반복하지 않도록 lazy 구축한다.
+    import_record_stmt_indices: []?[]?u32 = &.{},
     /// seedOpaqueModule 재진입 방지용 visited bitset. crossModuleBFS에서 초기화.
     opaque_visited: ?std.DynamicBitSet = null,
     /// 모듈별 used export 존재 여부 (hasAnyUsedExportDirect 최적화: O(1) 조회).
@@ -254,6 +257,12 @@ pub const TreeShaker = struct {
                 if (s) |arr| self.allocator.free(arr);
             }
             self.allocator.free(self.sym_to_ib);
+        }
+        if (self.import_record_stmt_indices.len > 0) {
+            for (self.import_record_stmt_indices) |s| {
+                if (s) |arr| self.allocator.free(arr);
+            }
+            self.allocator.free(self.import_record_stmt_indices);
         }
         if (self.has_direct_used_export.len > 0) {
             self.allocator.free(self.has_direct_used_export);
@@ -481,7 +490,16 @@ pub const TreeShaker = struct {
             m.prebuilt_stmt_info = null;
         };
         self.ast_mutated_after_link = true;
+        self.invalidateImportRecordStmtIndices(@intFromEnum(m.index));
         if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
+    }
+
+    fn invalidateImportRecordStmtIndices(self: *TreeShaker, idx: usize) void {
+        if (idx >= self.import_record_stmt_indices.len) return;
+        if (self.import_record_stmt_indices[idx]) |arr| {
+            self.allocator.free(arr);
+            self.import_record_stmt_indices[idx] = null;
+        }
     }
 
     /// pre-shake materialize 직후 후속 BFS 가 읽는 linker populate* 만 좁게 재실행.
@@ -964,7 +982,7 @@ pub const TreeShaker = struct {
                         const target = @intFromEnum(rec.resolved);
                         const tmod = self.graph.getModule(rec.resolved) orelse continue;
 
-                        const preserve = self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
+                        const preserve = try self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
                         const must_include = rec.kind == .require or
                             ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
                             (moduleHasEvaluationEffect(tmod) and preserve);
@@ -1333,7 +1351,7 @@ pub const TreeShaker = struct {
                     for (o.import_records, 0..) |rec, rec_i| {
                         if (rec.kind != .require) continue;
                         if (rec.resolved.isNone()) continue;
-                        if (!self.importRecordBelongsToStmt(infos, @intCast(item.stmt), @intCast(rec_i), o)) continue;
+                        if (!try self.importRecordBelongsToStmt(@intCast(item.mod), infos, @intCast(item.stmt), @intCast(rec_i))) continue;
                         const target_mod_idx = @intFromEnum(rec.resolved);
                         const target_module = self.graph.getModule(rec.resolved) orelse continue;
                         if (target_module.wrap_kind != .cjs) continue;
@@ -2148,50 +2166,126 @@ pub const TreeShaker = struct {
     /// named import 가 source 모듈을 fan out 시키지 않도록. dynamic_import 는 별도
     /// dyn_import_targets 경로로 처리되므로 여기선 false.
     fn shouldPreserveImportRecordForEvaluation(
-        self: *const TreeShaker,
+        self: *TreeShaker,
         m: *const Module,
         mod_idx: u32,
         rec_idx: u32,
         live_mod_idx: ?u32,
-    ) bool {
+    ) !bool {
         if (rec_idx >= m.import_records.len) return false;
         if (m.import_records[rec_idx].kind == .re_export) {
             if (self.graph.getModule(m.import_records[rec_idx].resolved)) |target| {
                 if (moduleHasEvaluationEffect(target)) return true;
             }
-            return self.importRecordHasReachableStmt(m, mod_idx, rec_idx);
+            return try self.importRecordHasReachableStmt(mod_idx, rec_idx);
         }
         if (live_mod_idx == null) return true;
         return switch (m.import_records[rec_idx].kind) {
             .dynamic_import => false,
-            .require => self.importRecordHasReachableStmt(m, live_mod_idx.?, rec_idx),
+            .require => try self.importRecordHasReachableStmt(live_mod_idx.?, rec_idx),
             .static_import => self.entry_set.isSet(mod_idx) or self.importRecordHasLiveBinding(m, mod_idx, rec_idx),
             else => true,
         };
     }
 
-    fn importRecordHasReachableStmt(self: *const TreeShaker, m: *const Module, mod_idx: u32, rec_idx: u32) bool {
+    fn importRecordHasReachableStmt(self: *TreeShaker, mod_idx: u32, rec_idx: u32) !bool {
         if (mod_idx >= self.module_stmt_infos.len or mod_idx >= self.reachable_stmts.len) return true;
         const infos = self.module_stmt_infos[mod_idx] orelse return true;
         const reachable = self.reachable_stmts[mod_idx] orelse return false;
-        if (rec_idx >= m.import_records.len) return false;
-        for (infos.stmts, 0..) |stmt, stmt_i| {
-            if (!reachable.isSet(stmt_i)) continue;
-            if (m.import_records[rec_idx].span.start >= stmt.span.start and
-                m.import_records[rec_idx].span.start < stmt.span.end)
-            {
-                return true;
-            }
-        }
-        return false;
+        const stmt_indices = (try self.ensureImportRecordStmtIndices(mod_idx, infos)) orelse return false;
+        if (rec_idx >= stmt_indices.len) return false;
+        const stmt_idx = stmt_indices[rec_idx] orelse return false;
+        return reachable.isSet(stmt_idx);
     }
 
-    fn importRecordBelongsToStmt(self: *const TreeShaker, infos: StmtInfos, stmt_idx: u32, rec_idx: u32, m: *const Module) bool {
-        _ = self;
-        if (stmt_idx >= infos.stmts.len or rec_idx >= m.import_records.len) return false;
-        const stmt = infos.stmts[stmt_idx];
-        const rec = m.import_records[rec_idx];
-        return rec.span.start >= stmt.span.start and rec.span.start < stmt.span.end;
+    fn importRecordBelongsToStmt(self: *TreeShaker, mod_idx: u32, infos: StmtInfos, stmt_idx: u32, rec_idx: u32) !bool {
+        if (stmt_idx >= infos.stmts.len) return false;
+        const stmt_indices = (try self.ensureImportRecordStmtIndices(mod_idx, infos)) orelse return false;
+        if (rec_idx >= stmt_indices.len) return false;
+        return stmt_indices[rec_idx] == stmt_idx;
+    }
+
+    fn ensureImportRecordStmtIndices(self: *TreeShaker, mod_idx: u32, infos: StmtInfos) !?[]?u32 {
+        const mod_count = self.graph.moduleCount();
+        if (mod_idx >= mod_count) return null;
+        if (self.import_record_stmt_indices.len == 0) {
+            const maps = try self.allocator.alloc(?[]?u32, mod_count);
+            for (maps) |*m| m.* = null;
+            self.import_record_stmt_indices = maps;
+        }
+        if (mod_idx >= self.import_record_stmt_indices.len) return null;
+        if (self.import_record_stmt_indices[mod_idx] == null) {
+            const m = self.getModule(mod_idx) orelse return null;
+            const map = try self.allocator.alloc(?u32, m.import_records.len);
+            errdefer self.allocator.free(map);
+            for (map) |*slot| slot.* = null;
+            for (m.import_records, 0..) |rec, rec_i| {
+                map[rec_i] = stmtIndexForPos(infos, rec.span.start);
+            }
+            self.import_record_stmt_indices[mod_idx] = map;
+        }
+        return self.import_record_stmt_indices[mod_idx].?;
+    }
+
+    fn stmtIndexForPos(infos: StmtInfos, pos: u32) ?u32 {
+        var lo: usize = 0;
+        var hi: usize = infos.stmts.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            const span = infos.stmts[mid].span;
+            if (pos < span.start) {
+                hi = mid;
+            } else if (pos >= span.end) {
+                lo = mid + 1;
+            } else {
+                return @intCast(mid);
+            }
+        }
+        return null;
+    }
+
+    test "stmtIndexForPos maps import record spans to containing top-level statement" {
+        const StmtInfo = stmt_info_mod.StmtInfo;
+        var stmts = [_]StmtInfo{
+            .{
+                .node_idx = 0,
+                .span = .{ .start = 0, .end = 10 },
+                .has_side_effects = false,
+                .declared_symbols = &.{},
+                .referenced_symbols = &.{},
+            },
+            .{
+                .node_idx = 1,
+                .span = .{ .start = 20, .end = 40 },
+                .has_side_effects = false,
+                .declared_symbols = &.{},
+                .referenced_symbols = &.{},
+            },
+            .{
+                .node_idx = 2,
+                .span = .{ .start = 50, .end = 70 },
+                .has_side_effects = false,
+                .declared_symbols = &.{},
+                .referenced_symbols = &.{},
+            },
+        };
+        const infos = StmtInfos{
+            .stmts = &stmts,
+            .symbol_to_stmt = &.{},
+            .sym_to_side_effect_stmts = &.{},
+            .sym_to_referencing_stmts = &.{},
+            .sym_to_writer_stmts = &.{},
+            .allocator = std.testing.allocator,
+        };
+
+        try std.testing.expectEqual(@as(?u32, 0), stmtIndexForPos(infos, 0));
+        try std.testing.expectEqual(@as(?u32, 0), stmtIndexForPos(infos, 9));
+        try std.testing.expectEqual(@as(?u32, 1), stmtIndexForPos(infos, 20));
+        try std.testing.expectEqual(@as(?u32, 1), stmtIndexForPos(infos, 39));
+        try std.testing.expectEqual(@as(?u32, 2), stmtIndexForPos(infos, 50));
+        try std.testing.expectEqual(@as(?u32, null), stmtIndexForPos(infos, 10));
+        try std.testing.expectEqual(@as(?u32, null), stmtIndexForPos(infos, 45));
+        try std.testing.expectEqual(@as(?u32, null), stmtIndexForPos(infos, 70));
     }
 
     /// `isImportLiveInModule` 은 reachable_stmts 미초기화 시 보수적으로 true 를 반환하지만,
