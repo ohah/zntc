@@ -503,6 +503,7 @@ pub const TreeShaker = struct {
     fn enqueueStaticImporters(
         self: *TreeShaker,
         queue: *std.ArrayList(u32),
+        queued: *std.DynamicBitSet,
         idx: u32,
         mod_count: usize,
     ) !void {
@@ -510,7 +511,9 @@ pub const TreeShaker = struct {
         for (m.importers.items) |imp| {
             const ii = @intFromEnum(imp);
             if (ii >= mod_count) continue;
+            if (queued.isSet(ii)) continue;
             try queue.append(self.allocator, @intCast(ii));
+            queued.set(ii);
         }
     }
 
@@ -521,6 +524,11 @@ pub const TreeShaker = struct {
     ) !void {
         var queue: std.ArrayList(u32) = .empty;
         defer queue.deinit(self.allocator);
+        // Same importer can be reached from many exported numeric leaves. Keep the
+        // worklist unique while pending, but allow re-enqueue after a module is
+        // popped so later AST mutations still propagate to its importers.
+        var queued = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
+        defer queued.deinit();
         // re-export-only 모듈은 importer 가 큐를 비울 때마다 한 번만 forwarding 하면 충분 —
         // 다시 들어오면 같은 importer 들을 무한히 enqueue 해 BFS 가 폭발한다.
         var forwarded_re_exports = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
@@ -535,11 +543,11 @@ pub const TreeShaker = struct {
                 const ast = &(m.ast orelse continue);
                 if (self.moduleHasNumericExportSeed(ast, sem)) {
                     self.minifyAndResyncModule(m, sem, ast, const_profile.minify_resync);
-                    try self.enqueueStaticImporters(&queue, @intCast(i), mod_count);
+                    try self.enqueueStaticImporters(&queue, &queued, @intCast(i), mod_count);
                     continue;
                 }
                 if (self.moduleHasExportedNumberConstValue(sem)) {
-                    try self.enqueueStaticImporters(&queue, @intCast(i), mod_count);
+                    try self.enqueueStaticImporters(&queue, &queued, @intCast(i), mod_count);
                 }
             }
         }
@@ -549,9 +557,10 @@ pub const TreeShaker = struct {
             defer queue_scope.end();
 
             while (queue.pop()) |idx| {
+                if (idx < mod_count) queued.unset(idx);
                 if (idx >= mod_count) continue;
                 if (try self.materializeCrossModuleConstFactsForIndex(idx, .numeric_export_chain, const_profile)) {
-                    try self.enqueueStaticImporters(&queue, idx, mod_count);
+                    try self.enqueueStaticImporters(&queue, &queued, idx, mod_count);
                     continue;
                 }
 
@@ -566,7 +575,7 @@ pub const TreeShaker = struct {
                 }
                 if (!has_re_export) continue;
                 forwarded_re_exports.set(idx);
-                try self.enqueueStaticImporters(&queue, idx, mod_count);
+                try self.enqueueStaticImporters(&queue, &queued, idx, mod_count);
             }
         }
     }
