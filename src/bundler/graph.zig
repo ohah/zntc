@@ -358,6 +358,16 @@ pub const ModuleGraph = struct {
         return self.modules.count();
     }
 
+    /// path 와 정확히 일치하는 module 의 read-only 포인터. SegmentedList 선형 스캔이라
+    /// O(N) — entry/RBM 주입처럼 build 당 호출 횟수가 작은 경로에서만 사용한다.
+    pub fn findModuleByPath(self: *const ModuleGraph, path: []const u8) ?*const Module {
+        var it = self.modulesIterator();
+        while (it.next()) |m| {
+            if (std.mem.eql(u8, m.path, path)) return m;
+        }
+        return null;
+    }
+
     /// **Accessor 전용**. 직접 호출 금지 — `parseAccessor()` 등 phase accessor 의
     /// setter 메서드를 사용하라. 외부 mutable pointer 노출은 worker race 의 root.
     pub inline fn moduleAtMut(self: *ModuleGraph, idx: ModuleIndex) ?*Module {

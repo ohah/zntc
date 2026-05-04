@@ -35,6 +35,8 @@ const OutputFile = parent.OutputFile;
 const emitChunkRuntimeHelpers = parent.emitChunkRuntimeHelpers;
 const emitModule = parent.emitModule;
 const appendRunBeforeMainCalls = parent.appendRunBeforeMainCalls;
+const isRunBeforeMainPath = parent.isRunBeforeMainPath;
+const shouldInsertRunBeforeMainBefore = parent.shouldInsertRunBeforeMainBefore;
 
 const RunBeforeMainCrossImport = struct {
     source_chunk: ChunkIndex,
@@ -550,17 +552,6 @@ fn findLastRunBeforeMainPosition(
     return last;
 }
 
-fn isRunBeforeMainPath(path: []const u8, run_before_main: []const []const u8) bool {
-    for (run_before_main) |rbm_path| {
-        if (std.mem.eql(u8, path, rbm_path)) return true;
-    }
-    return false;
-}
-
-fn shouldInsertRunBeforeMainBefore(position: usize, insert_after_pos: ?usize) bool {
-    return if (insert_after_pos) |last| position > last else true;
-}
-
 fn collectRunBeforeMainCrossImports(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(RunBeforeMainCrossImport),
@@ -570,7 +561,7 @@ fn collectRunBeforeMainCrossImports(
     run_before_main: []const []const u8,
 ) !void {
     for (run_before_main) |rbm_path| {
-        const rbm = findRunBeforeMainModule(graph, rbm_path) orelse continue;
+        const rbm = graph.findModuleByPath(rbm_path) orelse continue;
         const source_chunk = chunk_graph.getModuleChunk(rbm.index);
         if (source_chunk == .none or source_chunk == current_chunk.index) continue;
         const name = try runBeforeMainCallName(allocator, rbm) orelse continue;
@@ -635,7 +626,7 @@ fn collectRunBeforeMainExportNames(
     run_before_main: []const []const u8,
 ) !void {
     for (run_before_main) |rbm_path| {
-        const rbm = findRunBeforeMainModule(graph, rbm_path) orelse continue;
+        const rbm = graph.findModuleByPath(rbm_path) orelse continue;
         const source_chunk = chunk_graph.getModuleChunk(rbm.index);
         if (source_chunk == .none or source_chunk != current_chunk.index) continue;
         const name = try runBeforeMainCallName(allocator, rbm) orelse continue;
@@ -646,14 +637,6 @@ fn collectRunBeforeMainExportNames(
         }
         try out.append(allocator, name);
     }
-}
-
-fn findRunBeforeMainModule(graph: *const ModuleGraph, rbm_path: []const u8) ?*const Module {
-    var it = graph.modulesIterator();
-    while (it.next()) |rbm| {
-        if (std.mem.eql(u8, rbm.path, rbm_path)) return rbm;
-    }
-    return null;
 }
 
 fn runBeforeMainCallName(allocator: std.mem.Allocator, module: *const Module) !?[]const u8 {

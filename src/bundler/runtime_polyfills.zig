@@ -560,27 +560,6 @@ fn insertStaticMemberFeatures(
     }
 }
 
-fn isGlobalReferenceNamed(
-    ast: *const Ast,
-    semantic: *const ModuleSemanticData,
-    idx: NodeIndex,
-    expected: []const u8,
-) bool {
-    if (isGlobalIdentifierNamed(ast, semantic, idx, expected)) return true;
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
-    const node = ast.getNode(idx);
-    if (node.tag != .static_member_expression) return false;
-
-    const obj_idx = ast.readExtraNode(node.data.extra, 0);
-    const prop_idx = ast.readExtraNode(node.data.extra, 1);
-    if (!isGlobalIdentifierNamed(ast, semantic, obj_idx, "globalThis")) return false;
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return false;
-
-    const prop_node = ast.getNode(prop_idx);
-    if (prop_node.tag != .identifier_reference) return false;
-    return std.mem.eql(u8, ast.getText(prop_node.data.string_ref), expected);
-}
-
 fn globalReferenceName(
     ast: *const Ast,
     semantic: *const ModuleSemanticData,
