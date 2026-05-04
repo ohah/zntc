@@ -1598,18 +1598,25 @@ fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
         is_rest = true;
     }
 
-    // this 파라미터: this: Type
-    // destructuring: [a, b]: Type, {x, y}: Type
-    // 결과 NodeIndex 는 strip-only 대상이라 소비처 없음 — parser 진행용 부수효과만.
+    // this 파라미터: this: Type — this 식별자를 binding_identifier 로 보존.
+    // destructuring: [a, b]: Type, {x, y}: Type — pattern NodeIndex 를 key 로 보존.
+    // 일반: name: Type — parsePropertyKey 결과를 key 로 보존.
+    var key: NodeIndex = NodeIndex.none;
     if (self.current() == .kw_this) {
+        const this_span = self.scanner.token.span;
         try self.advance();
+        key = try self.ast.addNode(.{
+            .tag = .binding_identifier,
+            .span = this_span,
+            .data = .{ .string_ref = this_span },
+        });
     } else if (self.current() == .l_bracket or self.current() == .l_curly) {
-        _ = try self.parseBindingName();
+        key = try self.parseBindingName();
     } else {
-        _ = try self.parsePropertyKey();
+        key = try self.parsePropertyKey();
     }
 
-    _ = try self.eat(.question); // optional
+    const is_optional = try self.eat(.question);
     var type_ann = NodeIndex.none;
     if (try self.eat(.colon)) {
         type_ann = try parseType(self);
@@ -1619,16 +1626,27 @@ fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
         _ = try self.parseAssignmentExpression();
     }
 
-    // 두 tag 의 layout 이 다름:
-    //   ts_rest_type         = .unary (operand = rest 대상 타입)
-    //   ts_property_signature = .extra (strip-only; empty)
-    // 공통 NodeIndex 조합 (`name`/`type_ann`) 을 읽는 consumer 는 없으므로
-    // 각 layout 에 맞춰 분기 — audit cosmetic mismatch 해소.
+    // 두 tag 의 layout:
+    //   ts_rest_type          = .unary (operand = rest 대상 타입)
+    //   ts_property_signature = .extra `[key, type_ann, flags]` (Flow / TS 공통 — D103)
     const member_span: Span = .{ .start = param_start, .end = self.currentSpan().start };
     if (is_rest) {
         return try self.ast.addUnaryNode(.ts_rest_type, member_span, type_ann, 0);
     }
-    return try self.ast.addEmptyExtraNode(.ts_property_signature, member_span);
+    const flags: PropertySignatureFlags = .{
+        .optional = is_optional,
+        .readonly = false,
+    };
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(key),
+        @intFromEnum(type_ann),
+        flags.toU32(),
+    });
+    return try self.ast.addNode(.{
+        .tag = .ts_property_signature,
+        .span = member_span,
+        .data = .{ .extra = extra },
+    });
 }
 
 /// Index signature 파라미터 앞에 올 수 있는 modifier 토큰 (error recovery 용).

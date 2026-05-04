@@ -65,12 +65,13 @@ Per-File Arena (단일 할당자, 파일 처리 후 한 번에 해제)
 - **Cover Grammar**: expression → assignment target 노드 변환. setTag로 24B 노드의 태그만 교체.
 - **AST 정규화**: function/method/arrow params는 모두 `formal_parameters` 노드로 wrap (arrow 기준 통일). `Ast.functionParamsList()` 로 태그 무관 unwrap. 범용 리스트 순회는 `visitExtraList(NodeList)` 시그니처. Class `get x() {} / set x() {}` 는 object와 동일하게 `method_definition + flags 0x02/0x04` (별도 태그 없음). `accessor_property` 태그는 TC39 auto-accessor 필드 전용.
 
-### TypeScript/Flow Handling (D002, D005, D024)
+### TypeScript/Flow Handling (D002, D005, D024, D103)
 - 타입 체크 안 함 (스트리핑만)
 - TS 5.8까지 전체 지원
 - ✅ Flow: TIER 1+2+3 타입 스트리핑 완료 (flow.zig 독립 구현, Metro 410/410 통과. 상세: [FLOW.md](./FLOW.md))
 - ✅ Legacy decorator 구현 완료 (experimentalDecorators)
 - Stage 3 decorator: 후순위 (스펙 안정화 후)
+- **Type-level function param name 보존** (D103, 2026-05-04): TS / Flow 양쪽의 `(name: T) => Return` 형태에서 `name` 을 AST 에 보존 (`ts_property_signature` / `flow_property_signature` 의 `[key, type_ann, flags]` layout). codegen plugin (#2462) 등 type-aware consumer 가 source-text fallback 없이 AST 직접 접근. esbuild/Bun 의 strip-only 정책에서 부분 이탈 — oxc/swc/babel/hermes 와 일관성. 다른 type 노드 (conditional / indexed access / keyof 등) 는 strip 정책 그대로.
 
 ### Output (D006, D008, D009, D012)
 - ESM + CJS + IIFE (UMD/AMD는 후순위)
