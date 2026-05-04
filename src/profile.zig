@@ -114,6 +114,8 @@ pub const Category = enum {
     shake_const_prepass_numeric_seed_scan,
     shake_const_prepass_numeric_queue,
     shake_const_prepass_build_facts,
+    shake_const_prepass_build_facts_resolve,
+    shake_const_prepass_build_facts_lookup,
     shake_const_prepass_candidate_gate,
     shake_const_prepass_materialize,
     shake_const_prepass_forbidden,
@@ -732,6 +734,7 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("shake.fixpoint.bfs.follow.import") == .shake_fixpoint_bfs_follow_import);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.seed.export.resolve") == .shake_fixpoint_bfs_seed_export_resolve);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts") == .shake_const_prepass_build_facts);
+    try testing.expect(Category.fromString("shake.const.prepass.build.facts.lookup") == .shake_const_prepass_build_facts_lookup);
 }
 
 test "Category.displayName: underscore → dot 역변환" {
@@ -745,6 +748,7 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("shake.fixpoint.bfs.follow.import", Category.displayName(.shake_fixpoint_bfs_follow_import));
     try testing.expectEqualStrings("shake.fixpoint.bfs.seed.export.resolve", Category.displayName(.shake_fixpoint_bfs_seed_export_resolve));
     try testing.expectEqualStrings("shake.const.prepass.build.facts", Category.displayName(.shake_const_prepass_build_facts));
+    try testing.expectEqualStrings("shake.const.prepass.build.facts.lookup", Category.displayName(.shake_const_prepass_build_facts_lookup));
 }
 
 test "Level.fromString" {

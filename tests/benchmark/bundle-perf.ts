@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { ROOT, ZTS_BIN, buildBin as buildBinShared, getCommit } from "./_runner";
+import { ROOT, ZTS_BIN, buildBin as buildBinShared, getCommit, parseProfileJson } from "./_runner";
 import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 
 const WARMUP = 5;
@@ -96,6 +96,7 @@ function runZts(entry: string, outDir: string, externals: string[]): RunResult {
     "--outdir",
     outDir,
     "--profile=all",
+    "--profile-format=json",
   ];
   const start = performance.now();
   const r = spawnSync(ZTS_BIN, args, { stdio: "pipe", timeout: 30000 });
@@ -104,22 +105,13 @@ function runZts(entry: string, outDir: string, externals: string[]): RunResult {
     throw new Error(`zts failed: ${r.stderr?.toString().slice(0, 400)}`);
   }
 
-  // profile 출력은 stderr 로 — bundle 결과 정보(stdout) 와 섞이지 않음.
   const stdout = r.stdout.toString() + "\n" + r.stderr.toString();
+  const profile = parseProfileJson(stdout);
   const phases: Record<string, number> = {};
-  let zts_profile_total_ms = 0;
-  for (const line of stdout.split("\n")) {
-    const m = line.match(/^(\w+)\s+([\d.]+)ms\s+/);
-    if (!m) continue;
-    const [, phase, msStr] = m;
-    const ms = parseFloat(msStr);
-    if (phase === "total") zts_profile_total_ms = ms;
-    else phases[phase] = ms;
+  for (const [phase, data] of Object.entries(profile.phases)) {
+    if (data) phases[phase] = data.total_ms;
   }
-  if (zts_profile_total_ms === 0) {
-    throw new Error(`no profile output. stdout head: ${stdout.slice(0, 400)}`);
-  }
-  return { wall_ms, zts_profile_total_ms, phases };
+  return { wall_ms, zts_profile_total_ms: profile.total_ms, phases };
 }
 
 function runRolldown(bin: string, entry: string, outDir: string, externals: string[]): RunResult {

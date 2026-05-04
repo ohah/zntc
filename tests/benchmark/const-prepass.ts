@@ -70,6 +70,8 @@ const TARGET_PHASES = [
   "shake.const.prepass.numeric.seed.scan",
   "shake.const.prepass.numeric.queue",
   "shake.const.prepass.build.facts",
+  "shake.const.prepass.build.facts.resolve",
+  "shake.const.prepass.build.facts.lookup",
   "shake.const.prepass.candidate.gate",
   "shake.const.prepass.materialize",
   "shake.const.prepass.forbidden",
@@ -379,6 +381,17 @@ async function main(cli: CliArgs): Promise<void> {
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.queue"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.final.mark.exports"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.re.exports"))} |`,
+    );
+  }
+
+  console.log();
+  console.log("### const facts build profile");
+  console.log("| Fixture | Resolve | Lookup |");
+  console.log("| --- | ---: | ---: |");
+  for (const result of results) {
+    console.log(
+      `| ${result.name} | ${fmtMs(phaseMedian(result, "shake.const.prepass.build.facts.resolve"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.const.prepass.build.facts.lookup"))} |`,
     );
   }
 

@@ -17,6 +17,7 @@ const Linker = linker_mod.Linker;
 const LinkingMetadata = linker_mod.LinkingMetadata;
 const SymbolRef = linker_mod.SymbolRef;
 const ResolvedBinding = linker_mod.ResolvedBinding;
+const profile = @import("../../profile.zig");
 const makeExportKey = types.makeModuleKey;
 const makeExportKeyBuf = types.makeModuleKeyBuf;
 const PreambleWriter = linker_mod.PreambleWriter;
@@ -915,42 +916,77 @@ pub fn buildFinalExports(
 
 /// 크로스-모듈 상수 인라인 맵을 생성한다.
 /// import binding의 canonical export가 상수이면 symbol_id → ConstValue 매핑을 반환.
+pub const ConstValuesProfile = struct {
+    resolve: ?profile.Category = null,
+    lookup: ?profile.Category = null,
+};
+
 pub fn buildCrossModuleConstValues(
     self: *const Linker,
     m: *const Module,
+    sem: @import("../module.zig").ModuleSemanticData,
+) !std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) {
+    return buildCrossModuleConstValuesProfiled(self, m, sem, .{});
+}
+
+pub fn buildCrossModuleConstValuesProfiled(
+    self: *const Linker,
+    m: *const Module,
     _: @import("../module.zig").ModuleSemanticData,
-) !std.AutoHashMapUnmanaged(u32, @import("../../semantic/symbol.zig").ConstValue) {
-    var const_values: std.AutoHashMapUnmanaged(u32, @import("../../semantic/symbol.zig").ConstValue) = .{};
+    profile_cats: ConstValuesProfile,
+) !std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) {
+    var const_values: std.AutoHashMapUnmanaged(u32, semantic_symbol.ConstValue) = .{};
     if (m.import_bindings.len == 0) return const_values;
     for (m.import_bindings) |ib| {
+        if (ib.kind == .namespace) continue;
         if (ib.import_record_index >= m.import_records.len) continue;
         const rec = m.import_records[ib.import_record_index];
         if (rec.resolved.isNone()) continue;
-        const canon = self.resolveExportChain(rec.resolved, ib.imported_name, 0) orelse continue;
-        const target_module = self.graph.getModule(canon.module_index) orelse continue;
-        // 순환 그룹 멤버는 ESM TDZ 순서 보장이 깨져 const inline 안전성을 잃는다 (D065).
-        if (target_module.isInCycle()) continue;
-        const target_sem = target_module.semantic orelse continue;
-        if (target_sem.scope_maps.len == 0) continue;
-        // export_name → local_name 매핑
-        var local_name = canon.export_name;
-        for (target_module.export_bindings) |eb| {
-            if (std.mem.eql(u8, eb.exported_name, canon.export_name)) {
-                local_name = target_module.exportBindingLocalName(eb);
-                break;
-            }
-        }
-        const target_sym_idx = target_sem.scope_maps[0].get(local_name) orelse continue;
-        if (target_sym_idx >= target_sem.symbols.items.len) continue;
-        const target_sym = target_sem.symbols.items[target_sym_idx];
+        const canon = blk: {
+            var scope = profile.beginMaybe(profile_cats.resolve);
+            defer scope.end();
+            break :blk self.resolveExportChain(rec.resolved, ib.imported_name, 0) orelse continue;
+        };
+        const Lookup = struct {
+            sem: @import("../module.zig").ModuleSemanticData,
+            sym_idx: usize,
+        };
+        const lookup = blk: {
+            var scope = profile.beginMaybe(profile_cats.lookup);
+            defer scope.end();
+            const target_module = self.graph.getModule(canon.module_index) orelse continue;
+            // 순환 그룹 멤버는 ESM TDZ 순서 보장이 깨져 const inline 안전성을 잃는다 (D065).
+            if (target_module.isInCycle()) continue;
+            const target_sem = target_module.semantic orelse continue;
+            if (target_sem.scope_maps.len == 0) continue;
+            // export_name → local_name 매핑. namespace object export 는 scalar const 가 아니므로
+            // symbol lookup 전에 제외한다.
+            const local_name = local: {
+                var key_buf: [4096]u8 = undefined;
+                const key = makeExportKeyBuf(&key_buf, canon.module_index.toU32(), canon.export_name);
+                if (self.export_map.get(key)) |entry| {
+                    if (entry.binding.kind == .re_export_namespace) continue;
+                    break :local target_module.exportBindingLocalName(entry.binding);
+                }
+                break :local canon.export_name;
+            };
+            const target_sym_idx = target_sem.scope_maps[0].get(local_name) orelse continue;
+            if (target_sym_idx >= target_sem.symbols.items.len) continue;
+            break :blk Lookup{
+                .sem = target_sem,
+                .sym_idx = target_sym_idx,
+            };
+        };
+        const target_sym_idx = lookup.sym_idx;
+        const target_sym = lookup.sem.symbols.items[target_sym_idx];
         // Symbol 은 kind 만 들고 numeric text 는 사이드테이블에서 lookup (#2505).
         const cv = blk: {
-            if (target_sym.const_kind == .none) break :blk @import("../../semantic/symbol.zig").ConstValue{};
+            if (target_sym.const_kind == .none) break :blk semantic_symbol.ConstValue{};
             const text = if (target_sym.const_kind == .number)
-                target_sem.numericConstText(@intCast(target_sym_idx))
+                lookup.sem.numericConstText(@intCast(target_sym_idx))
             else
                 "";
-            break :blk @import("../../semantic/symbol.zig").ConstValue{ .kind = target_sym.const_kind, .number_text = text };
+            break :blk semantic_symbol.ConstValue{ .kind = target_sym.const_kind, .number_text = text };
         };
         if (cv.kind == .none or !cv.isSafeToInline()) continue;
         // const promotion: `let` 선언에 const_value가 설정되어 있어도 재할당이 있다면 skip.
