@@ -1,12 +1,18 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
 import { describe, expect, test } from "bun:test";
 
 import {
   __runtimePolyfillTestHooks,
+  __runtimePolyfillTestInternals,
   applyRuntimePolyfillsToNapiOptions,
   computeCoreJsCompatModules,
   isEsTarget,
   normalizeRuntimePolyfillOptions,
   normalizeRuntimeTargets,
+  type RuntimePolyfillNativePlan,
 } from "./runtime-polyfills.ts";
 
 function withRuntimeRequire<T>(runtimeRequire: any, fn: () => T): T {
@@ -16,6 +22,10 @@ function withRuntimeRequire<T>(runtimeRequire: any, fn: () => T): T {
   } finally {
     __runtimePolyfillTestHooks.reset();
   }
+}
+
+function plan(napiOptions: Record<string, unknown>): RuntimePolyfillNativePlan | undefined {
+  return napiOptions.runtimePolyfillPlan as RuntimePolyfillNativePlan | undefined;
 }
 
 function makeRuntimeRequire(listForModules: (modules: string[] | RegExp | undefined) => string[]) {
@@ -223,12 +233,11 @@ describe("runtime polyfill native plan", () => {
 
       expect(applied.modules).toContain("es.string.replace-all");
       expect(applied.modules).not.toContain("es.set");
-      expect(napiOptions.runtimePolyfillModeNative).toBe("usage");
-      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("string_replace_all");
-      expect(napiOptions.runtimePolyfillCandidateModules).toContain("es.string.replace-all");
-      expect((napiOptions.runtimePolyfillCandidatePaths as string[])[0]).toStartWith(
-        "/virtual/core-js/modules/",
-      );
+      const p = plan(napiOptions)!;
+      expect(p.mode).toBe("usage");
+      expect(p.candidates!.map((c) => c.feature)).toContain("string_replace_all");
+      expect(p.candidates!.map((c) => c.module)).toContain("es.string.replace-all");
+      expect(p.candidates![0].path).toStartWith("/virtual/core-js/modules/");
       expect(napiOptions.runBeforeMain).toBeUndefined();
       applied.cleanup();
     });
@@ -262,7 +271,10 @@ describe("runtime polyfill native plan", () => {
         runtimePolyfills: { mode: "auto", targets: ["safari 5"] },
       });
 
-      expect(napiOptions.runtimePolyfillCandidateModules).toEqual(
+      const p = plan(napiOptions)!;
+      const candidateModules = p.candidates!.map((c) => c.module);
+      const candidateFeatures = p.candidates!.map((c) => c.feature);
+      expect(candidateModules).toEqual(
         expect.arrayContaining([
           "es.array.at",
           "es.array.find-last",
@@ -282,11 +294,11 @@ describe("runtime polyfill native plan", () => {
           "web.url",
         ]),
       );
-      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("map_group_by");
-      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("set_union");
-      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("promise_any");
-      expect(napiOptions.runtimePolyfillCandidateFeatures).toContain("object_values");
-      expect(napiOptions.runtimePolyfillCandidateModules).not.toContain("es.map.constructor");
+      expect(candidateFeatures).toContain("map_group_by");
+      expect(candidateFeatures).toContain("set_union");
+      expect(candidateFeatures).toContain("promise_any");
+      expect(candidateFeatures).toContain("object_values");
+      expect(candidateModules).not.toContain("es.map.constructor");
       applied.cleanup();
     });
   });
@@ -307,9 +319,10 @@ describe("runtime polyfill native plan", () => {
       });
 
       expect(applied.modules).toEqual(["es.promise"]);
-      expect(napiOptions.runtimePolyfillModeNative).toBe("usage");
-      expect(napiOptions.runtimePolyfillIncludeModules).toEqual(["es.promise"]);
-      expect(napiOptions.runtimePolyfillExcludeModules).toEqual(["es.array.at"]);
+      const p = plan(napiOptions)!;
+      expect(p.mode).toBe("usage");
+      expect(p.include!.map((i) => i.module)).toEqual(["es.promise"]);
+      expect(p.exclude).toEqual(["es.array.at"]);
       expect(napiOptions.runBeforeMain).toBeUndefined();
       applied.cleanup();
     });
@@ -341,7 +354,7 @@ describe("runtime polyfill native plan", () => {
       expect(applied.modules).toEqual([]);
       expect(napiOptions.runtimePolyfills).toBeUndefined();
       expect(napiOptions.coreJs).toBeUndefined();
-      expect(napiOptions.runtimePolyfillModeNative).toBeUndefined();
+      expect(plan(napiOptions)).toBeUndefined();
       applied.cleanup();
     });
   });
@@ -367,9 +380,10 @@ describe("runtime polyfill native plan", () => {
 
       expect(applied.modules).toContain("es.array.at");
       expect(applied.modules).not.toContain("es.string.replace-all");
-      expect(napiOptions.runtimePolyfillModeNative).toBe("usage");
-      expect(napiOptions.runtimePolyfillIncludeModules).toEqual(["es.array.at"]);
-      expect(napiOptions.runtimePolyfillExcludeModules).toEqual(["es.string.replace-all"]);
+      const p = plan(napiOptions)!;
+      expect(p.mode).toBe("usage");
+      expect(p.include!.map((i) => i.module)).toEqual(["es.array.at"]);
+      expect(p.exclude).toEqual(["es.string.replace-all"]);
       expect(napiOptions.runBeforeMain).toBeUndefined();
       applied.cleanup();
     });
@@ -388,12 +402,10 @@ describe("runtime polyfill native plan", () => {
       });
 
       expect(applied.modules).toEqual(["es.array.at", "es.promise", "web.structured-clone"]);
-      expect(napiOptions.runtimePolyfillModeNative).toBe("entry");
-      expect(napiOptions.runtimePolyfillEntryModules).toEqual([
-        "es.promise",
-        "web.structured-clone",
-      ]);
-      expect(napiOptions.runtimePolyfillIncludeModules).toEqual(["es.array.at"]);
+      const p = plan(napiOptions)!;
+      expect(p.mode).toBe("entry");
+      expect(p.entry!.map((e) => e.module)).toEqual(["es.promise", "web.structured-clone"]);
+      expect(p.include!.map((i) => i.module)).toEqual(["es.array.at"]);
       applied.cleanup();
     });
   });
@@ -409,7 +421,7 @@ describe("runtime polyfill native plan", () => {
       });
 
       expect(applied.modules).toEqual([]);
-      expect(napiOptions.runtimePolyfillModeNative).toBeUndefined();
+      expect(plan(napiOptions)).toBeUndefined();
       applied.cleanup();
     });
   });
@@ -423,9 +435,7 @@ describe("runtime polyfill native plan", () => {
     });
 
     expect(applied.modules).toContain("es.array.at");
-    expect((napiOptions.runtimePolyfillIncludePaths as string[])[0]).toContain(
-      "core-js/modules/es.array.at.js",
-    );
+    expect(plan(napiOptions)!.include![0].path).toContain("core-js/modules/es.array.at.js");
     applied.cleanup();
   });
 
@@ -468,8 +478,34 @@ describe("runtime polyfill native plan", () => {
         runtimePolyfills: { mode: "auto", targets: ["node 18"] },
       });
       expect(empty.modules).toEqual([]);
-      expect(napiOptions.runtimePolyfillModeNative).toBeUndefined();
+      expect(plan(napiOptions)).toBeUndefined();
       empty.cleanup();
     });
+  });
+});
+
+describe("Zig collector ↔ TS feature module table sync", () => {
+  // Zig 의 collector 가 emit 하는 feature 키마다 TS 측에 최소 하나의 core-js
+  // module 매핑이 있어야 한다. 누락되면 candidate 가 NAPI 로 전달되지 않아
+  // detection 은 일어나지만 polyfill 이 적용되지 않는 silent miss 가 된다.
+  test("every feature emitted by runtime_polyfills.zig has a matching core-js module entry", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = resolve(here, "..", "..", "..");
+    const zigSource = readFileSync(resolve(repoRoot, "src/bundler/runtime_polyfills.zig"), "utf-8");
+
+    const zigFeatures = new Set<string>();
+    const featureRegex =
+      /\.feature\s*=\s*"([^"]+)"|out\.insert\s*\(\s*allocator\s*,\s*"([^"]+)"\s*\)/g;
+    for (const match of zigSource.matchAll(featureRegex)) {
+      const key = match[1] ?? match[2];
+      if (key) zigFeatures.add(key);
+    }
+    expect(zigFeatures.size).toBeGreaterThan(0);
+
+    const tsFeatures = new Set(
+      __runtimePolyfillTestInternals.featureModules.map((entry) => entry.feature),
+    );
+    const missingFromTs = [...zigFeatures].filter((f) => !tsFeatures.has(f)).sort();
+    expect(missingFromTs).toEqual([]);
   });
 });
