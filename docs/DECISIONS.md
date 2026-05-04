@@ -856,5 +856,30 @@
   - `assert` → `with` 자동 마이그레이션 (static import 한정)
 - **미구현으로 남긴 것**: attrs → loader override, 알 수 없는 type 검증, 확장자 mismatch diagnostic. **필요 발생 시 재검토** 하되 현 시점엔 Won't Fix.
 
+### D103: Type-level function param name 보존 — esbuild/Bun strip-only 정책 부분 이탈 (2026-05-04)
+- **결정**: TS / Flow 의 type-level function (`(name: T, ...) => Return`) 의 param name 을 AST 에 보존. `parseTypeMemberParam` (TS) / `parseFunctionTypeParamList` (Flow) 가 빈 노드 만들지 말고 `ts_property_signature` / `flow_property_signature` 의 `[key, type_ann, flags]` layout 을 정보로 채움. Flow 의 arrow type 노드도 `flow_literal_type` sentinel 대신 `flow_function_type` 으로 보존.
+- **실측 비교 (2026-05-04)**:
+  | Parser | Top-level type 노드 보존 | Type-level function param.name 보존 |
+  | --- | --- | --- |
+  | **oxc** | ✅ `TSFunctionType.params: FormalParameters` | ✅ |
+  | **swc** | ✅ `TsFnType.params: Vec<TsFnParam>` | ✅ |
+  | **@babel/parser** | ✅ | ✅ (`param.name`) |
+  | **hermes-parser** | ✅ | ✅ (`param.name.name`) |
+  | **esbuild** | ❌ `skipTypeScriptFnArgs` strip | ❌ |
+  | **Bun** (esbuild fork) | ❌ `skipTypescriptFnArgs` strip | ❌ |
+  | **ZTS (이전)** | TS ✅ / Flow ❌ (`flow_literal_type` sentinel) | TS ❌ / Flow ❌ (둘 다 strip) |
+  | **ZTS (D103 후)** | TS ✅ / Flow ✅ | TS ✅ / Flow ✅ |
+- **이유**:
+  1. **Codegen plugin** (`@react-native/codegen` 등가) 의 `codegenNativeCommands<T>` 처리에 `T` interface 의 method param name 이 필요 (#2462). reference 가 `param.name.name` 직접 사용.
+  2. **TS 측은 이미 부분 보존** (top-level type 노드는 모두 별도 tag 로 정보 보존, type member param 만 strip) — Flow 도 같은 모델로 가야 일관성. 본 결정 전엔 TS / Flow 가 비대칭.
+  3. **성능 영향 측정 noise 안** — `Pipeline Profile` Parser 시간 변동 ±35% 가 측정 noise 자체 (Debug build 5-runs avg). Release 측정도 의미적 영향 없을 것으로 추정.
+  4. **메모리**: type 노드가 strip-only sentinel (8B `data: .none = 0`) 대신 정보 extras (16-32B). type-heavy 코드에서 노드 메모리 ~2-4x — 다만 transformer strip 단계에서 통째 버려져 영구 유지 X.
+- **trade-off (정직)**:
+  - ZTS 의 reference 인 Bun 이 strip-only 진영. ZTS 가 부분 이탈해서 oxc/swc/babel/hermes 진영으로 일부 이동. 기존 `flow_literal_type` 정책 (multi-purpose strip sentinel) 의 다른 사용처 (conditional / indexed access / keyof / typeof / 리터럴) 는 그대로 — TS 도 일부 strip (`ts_indexed_access_type` 는 `addEmptyExtraNode`) 하니 정책 일관성.
+- **영향 범위**:
+  - `parseTypeMemberParam` 9 callers (TS interface method, function type, mapped type 등) — 빈 ts_property_signature 가정 안 하던 caller 라 변경 영향 0 (자동 동작).
+  - `parseFunctionTypeParamList` 호출자 (Flow function type 4 path) — 동일.
+- **codegen plugin (#2462) 효과**: `extractCommandParams` 의 source-text 기반 depth-aware paren split fallback 제거 가능 → AST 기반으로 단순화.
+
 ### Phase 6 (Advanced) 미결정 사항
 - 개발 서버 고급 기능 (증분 재빌드, 프레임워크 통합)

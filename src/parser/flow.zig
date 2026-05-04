@@ -106,12 +106,10 @@ pub fn parseType(self: *Parser) ParseError2!NodeIndex {
     // arrow 파라미터의 반환 타입 컨텍스트에서는 금지 — (): any => {} / (): any => 1
     if (self.current() == .arrow and !self.flow_in_return_type) {
         try self.advance();
-        _ = try parseType(self);
-        return try self.ast.addNode(.{
-            .tag = .flow_literal_type,
-            .span = self.ast.getNode(t).span,
-            .data = .{ .none = 0 },
-        });
+        const return_type = try parseType(self);
+        // shorthand 의 단일 positional param 은 t (이미 파싱된 type) 자체 — name 없음.
+        const params = try self.ast.addNodeList(&.{t});
+        return makeFunctionType(self, self.ast.getNode(t).span.start, NodeIndex.none, params, return_type);
     }
 
     return t;
@@ -405,17 +403,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             try self.expect(.r_paren);
             try self.expect(.arrow);
             const return_type = try parseType(self);
-            const extra = try self.ast.addExtras(&.{
-                @intFromEnum(type_params),
-                params.start,
-                params.len,
-                @intFromEnum(return_type),
-            });
-            return try self.ast.addNode(.{
-                .tag = .flow_function_type,
-                .span = .{ .start = span.start, .end = self.currentSpan().start },
-                .data = .{ .extra = extra },
-            });
+            return makeFunctionType(self, span.start, type_params, params, return_type);
         },
         // 튜플 타입: [T, U]
         .l_bracket => return parseTupleType(self),
@@ -599,7 +587,8 @@ fn parseTypeParameter(self: *Parser) ParseError2!NodeIndex {
 /// 괄호 타입 (Type) 또는 함수 타입 (a: Type) => Type (Babel 방식).
 /// 1단계: `()`, `...`, `identifier:` → 확정적 function type
 /// 2단계: 그 외 → grouped type으로 먼저 파싱, `,` 또는 `) =>` 따르면 function type
-/// backtracking 없이 동작. 타입 스트리핑 전용이므로 결과는 flow_literal_type.
+/// backtracking 없이 동작. function type 형태는 `flow_function_type` 노드 (정보 보존),
+/// 단순 grouped type 은 `flow_literal_type` strip — TS 와 일관성.
 fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     const start = self.currentSpan().start;
     try self.advance(); // skip '('
@@ -608,8 +597,8 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     if (self.current() == .r_paren) {
         try self.advance();
         try self.expect(.arrow);
-        _ = try parseType(self);
-        return makeLiteralType(self, start);
+        const return_type = try parseType(self);
+        return makeFunctionType(self, start, NodeIndex.none, .{ .start = 0, .len = 0 }, return_type);
     }
 
     // ...rest 또는 identifier: → 확정적 named/rest function param
@@ -623,18 +612,20 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     };
 
     if (is_definite_fn) {
-        _ = try parseFunctionTypeParamList(self);
+        const params = try parseFunctionTypeParamList(self);
         try self.expect(.r_paren);
         try self.expect(.arrow);
-        _ = try parseType(self);
-        return makeLiteralType(self, start);
+        const return_type = try parseType(self);
+        return makeFunctionType(self, start, NodeIndex.none, params, return_type);
     }
 
     // grouped type으로 먼저 파싱
-    _ = try parseType(self);
+    const first_type = try parseType(self);
 
     // `,` → function type (positional params) — 나머지 params 소비
     if (try self.eat(.comma)) {
+        const scratch_top = self.saveScratch();
+        try self.scratch.append(self.allocator, first_type);
         while (self.current() != .r_paren and self.current() != .eof) {
             const loop_guard_pos = self.scanner.token.span.start;
             if (self.current() == .dot3) try self.advance();
@@ -642,18 +633,27 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
             if (self.current() == .identifier or (self.current().isKeyword() and !self.current().isReservedKeyword())) {
                 const next = try self.peekNextKind();
                 if (next == .colon or next == .question) {
-                    _ = try parseFunctionTypeParamList(self);
+                    const named = try parseFunctionTypeParamList(self);
+                    var i: u32 = 0;
+                    while (i < named.len) : (i += 1) {
+                        const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[named.start + i]);
+                        try self.scratch.append(self.allocator, idx);
+                    }
                     break;
                 }
             }
-            _ = try parseType(self);
+            const param_type = try parseType(self);
+            try self.scratch.append(self.allocator, param_type);
             if (!try self.eat(.comma)) break;
             if (try self.ensureLoopProgress(loop_guard_pos)) break;
         }
         try self.expect(.r_paren);
         try self.expect(.arrow);
-        _ = try parseType(self);
-        return makeLiteralType(self, start);
+        const return_type = try parseType(self);
+        const items = self.scratch.items[scratch_top..];
+        const params = try self.ast.addNodeList(items);
+        self.scratch.shrinkRetainingCapacity(scratch_top);
+        return makeFunctionType(self, start, NodeIndex.none, params, return_type);
     }
 
     // `) =>` → single positional param function type
@@ -662,7 +662,9 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
         try self.advance();
         if (self.current() == .arrow and !self.flow_in_return_type) {
             try self.advance();
-            _ = try parseType(self);
+            const return_type = try parseType(self);
+            const params = try self.ast.addNodeList(&.{first_type});
+            return makeFunctionType(self, start, NodeIndex.none, params, return_type);
         }
         return makeLiteralType(self, start);
     }
@@ -670,6 +672,26 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
     // 그 외: 단순 괄호 타입
     try self.expect(.r_paren);
     return makeLiteralType(self, start);
+}
+
+fn makeFunctionType(
+    self: *Parser,
+    start: u32,
+    type_params: NodeIndex,
+    params: ast_mod.NodeList,
+    return_type: NodeIndex,
+) !NodeIndex {
+    const extra = try self.ast.addExtras(&.{
+        @intFromEnum(type_params),
+        params.start,
+        params.len,
+        @intFromEnum(return_type),
+    });
+    return self.ast.addNode(.{
+        .tag = .flow_function_type,
+        .span = .{ .start = start, .end = self.currentSpan().start },
+        .data = .{ .extra = extra },
+    });
 }
 
 fn makeLiteralType(self: *Parser, start: u32) !NodeIndex {
@@ -683,12 +705,18 @@ fn makeLiteralType(self: *Parser, start: u32) !NodeIndex {
 /// 함수 타입 파라미터 리스트: name: Type, name?: Type, ...rest: Type
 /// Flow는 `(t: number) => void` 형태에서 `t`가 파라미터 이름.
 /// 이름이 없는 `(number) => void` 형태도 허용 (positional).
+///
+/// 각 param 은 `flow_property_signature` 노드로 보존 — `[key, type_ann, flags]` layout
+/// (TS 의 `parseTypeMemberParam` 와 일관성). codegen plugin 등 type-level function
+/// param 의 name 이 필요한 consumer 가 AST 직접 접근 가능 (#2462 source-text fallback
+/// 제거).
 fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
     const scratch_top = self.saveScratch();
     while (self.current() != .r_paren and self.current() != .eof) {
         const loop_guard_pos = self.scanner.token.span.start;
+        const param_start = self.currentSpan().start;
 
-        // ...rest 파라미터
+        // ...rest 파라미터 — name 정보 안 가짐, 단순 strip.
         if (self.current() == .dot3) {
             try self.advance();
         }
@@ -696,37 +724,40 @@ fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
         // name: Type 또는 name?: Type — 이름 뒤에 : 또는 ?: 가 오면 named param
         if (self.current() == .identifier) {
             const next = try self.peekNextKind();
-            if (next == .colon) {
-                // name: Type
+            if (next == .colon or next == .question) {
+                const name_span = self.scanner.token.span;
+                const name_node = try self.ast.addNode(.{
+                    .tag = .binding_identifier,
+                    .span = name_span,
+                    .data = .{ .string_ref = name_span },
+                });
                 try self.advance(); // skip name
-                try self.advance(); // skip :
-                const param_type = try parseType(self);
-                try self.scratch.append(self.allocator, param_type);
-                if (!try self.eat(.comma)) break;
-                if (try self.ensureLoopProgress(loop_guard_pos)) break;
-                continue;
-            } else if (next == .question) {
-                // name?: Type (optional)
-                try self.advance(); // skip name
-                try self.advance(); // skip ?
+                const is_optional = try self.eat(.question);
+                var type_ann: NodeIndex = NodeIndex.none;
                 if (try self.eat(.colon)) {
-                    const param_type = try parseType(self);
-                    try self.scratch.append(self.allocator, param_type);
-                } else {
-                    // name? without colon — treat as type
-                    try self.scratch.append(self.allocator, try self.ast.addNode(.{
-                        .tag = .flow_literal_type,
-                        .span = .{ .start = loop_guard_pos, .end = self.currentSpan().start },
-                        .data = .{ .none = 0 },
-                    }));
+                    type_ann = try parseType(self);
                 }
+                const flags: PropertySignatureFlags = .{
+                    .optional = is_optional,
+                    .readonly = false,
+                };
+                const extra = try self.ast.addExtras(&.{
+                    @intFromEnum(name_node),
+                    @intFromEnum(type_ann),
+                    flags.toU32(),
+                });
+                try self.scratch.append(self.allocator, try self.ast.addNode(.{
+                    .tag = .flow_property_signature,
+                    .span = .{ .start = param_start, .end = self.currentSpan().start },
+                    .data = .{ .extra = extra },
+                }));
                 if (!try self.eat(.comma)) break;
                 if (try self.ensureLoopProgress(loop_guard_pos)) break;
                 continue;
             }
         }
 
-        // positional: Type (이름 없는 파라미터)
+        // positional: Type (이름 없는 파라미터) — strip-only.
         const param_type = try parseType(self);
         try self.scratch.append(self.allocator, param_type);
 
