@@ -78,6 +78,19 @@ ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
 | `graph` | Module graph build (resolve + parse + semantic 상위) | `src/bundler/graph.zig` |
 | `link` | Linker (scope hoisting) | `src/bundler/linker.zig` |
 | `shake` | Tree shaker | `src/bundler/tree_shaker.zig` |
+| `shake.setup` | Tree shaker setup and initial seeds | `src/bundler/tree_shaker.zig` |
+| `shake.const_prepass` | Cross-module const materialize / numeric propagation before shake | `src/bundler/tree_shaker.zig` |
+| `shake.purity` | Automatic side-effect purity classification | `src/bundler/tree_shaker.zig` |
+| `shake.stmt_info` | Statement reachability info build | `src/bundler/tree_shaker.zig` |
+| `shake.fixpoint` | Tree shaker fixpoint loop total | `src/bundler/tree_shaker.zig` |
+| `shake.fixpoint.sym_to_ib` | Symbol-to-import-binding map build | `src/bundler/tree_shaker.zig` |
+| `shake.fixpoint.bfs` | Cross-module statement reachability BFS | `src/bundler/tree_shaker.zig` |
+| `shake.fixpoint.process_imports` | Included-module import processing | `src/bundler/tree_shaker.zig` |
+| `shake.fixpoint.re_exports` | Re-export source inclusion | `src/bundler/tree_shaker.zig` |
+| `shake.fixpoint.eval_deps` | Evaluation dependency preservation | `src/bundler/tree_shaker.zig` |
+| `shake.prune` | Unused sideEffects=false module pruning | `src/bundler/tree_shaker.zig` |
+| `shake.numeric_postpass` | Numeric const materialize after reachability | `src/bundler/tree_shaker.zig` |
+| `shake.mirror` | Final `Module.isIncluded` mirror | `src/bundler/tree_shaker.zig` |
 | `transform` | Transformer 전체 | `src/transformer/transformer.zig` |
 | `transform.ts_strip` | TS 타입 스트리핑 (detailed) | ibid |
 | `transform.jsx` | JSX lowering (detailed) | ibid |

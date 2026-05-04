@@ -3082,12 +3082,12 @@ fn printUsage(writer: anytype) !void {
         \\                                      all, none, scan, parse, semantic, resolve, graph,
         \\                                      link, shake, transform, codegen, metadata, emit,
         \\                                      hmr, cache (dot notation for sub-phases:
-        \\                                      parse.ast_build, transform.jsx, hmr.detect, ...).
+        \\                                      parse.ast_build, transform.jsx, shake.fixpoint.bfs, ...).
         \\                                      Parent category activates all children.
         \\                                      Examples:
         \\                                        --profile=all
         \\                                        --profile=parse,transform
-        \\                                        --profile=transform.jsx,transform.ts_strip
+        \\                                        --profile=shake.fixpoint.bfs,shake.numeric_postpass
         \\  --profile-level=<L>               Detail level: summary | detailed | per-module | per-pass
         \\                                      (default: summary)
         \\  --profile-format=<F>              Output format: table | tree | json | csv
