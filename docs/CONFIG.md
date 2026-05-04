@@ -36,7 +36,8 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `jsxFactory` / `jsxFragment`                 |                flag                |               ✅               |      `jsxFactory` 등      | tsconfig fallback                                                  |
 | `external`                                   |          `--external:lib`          |               ✅               |            ❌             | 배열 — CLI 비어있으면 config                                       |
 | `packagesExternal`                           |       `--packages=external`        |               ✅               |            ❌             | bare package import 전체 external, relative/absolute는 번들        |
-| `alias`                                      |           `--alias:K=V`            |               ✅               |     tsconfig `paths`      | 객체 머지: 키 단위 CLI override                                    |
+| `alias`                                      |           `--alias:K=V`            |               ✅               |     tsconfig `paths`      | 객체 머지: 키 단위 CLI override. resolve **전** 무조건 치환        |
+| `fallback`                                   | `--fallback:K=V` / `--fallback:K=false` |          ✅               |            ❌             | resolve **실패 시에만** 적용. webpack `resolve.fallback` 호환. `=false` 면 빈 모듈 |
 | `define`                                     |           `--define:K=V`           |               ✅               |            ❌             | 객체 머지: 키 단위 CLI override                                    |
 | `loader`                                     |        `--loader:.ext=type`        |               ✅               |            ❌             | 객체 머지                                                          |
 | `minify` / `minifyWhitespace` 등             |           `--minify` 등            |               ✅               |            ❌             | boolean — CLI default(false) 시 config=true 만 적용                |
@@ -219,6 +220,47 @@ zts --bundle --config ./configs/prod.config.ts entry.ts
 # → 자동 탐색 우회 (cwd 의 zts.config.* 무시).
 # → 함수형 config 의 command='bundle', mode 는 --mode 또는 default.
 ```
+
+### 8. `alias` 와 `fallback` — Node 빌트인 폴리필 / 강제 매핑
+
+webpack `resolve.alias` / `resolve.fallback` 와 동일 시맨틱.
+
+```ts
+// zts.config.ts — Node 라이브러리를 브라우저에서 쓸 때
+export default defineConfig({
+  platform: 'browser',
+  alias: {
+    // resolve **전 무조건** 치환. 실제 패키지 설치 여부 무시.
+    // 예: axios 1.15+ 처럼 fully-specified 를 강제하는 ESM 라이브러리에서
+    //     'process/browser' (확장자 없음) 를 강제로 특정 파일에 매핑.
+    'process/browser': './node_modules/process/browser.js',
+  },
+  fallback: {
+    // 일반 해석이 **실패할 때만** 적용. 실제 패키지가 있으면 그쪽 우선.
+    fs: false,                    // → 빈 모듈
+    crypto: 'crypto-browserify',  // → npm 패키지로 polyfill
+    stream: 'stream-browserify',
+  },
+});
+```
+
+CLI 도 동일:
+
+```bash
+zts build entry.ts --platform=browser \
+  --alias:process/browser=./node_modules/process/browser.js \
+  --fallback:fs=false \
+  --fallback:crypto=crypto-browserify
+```
+
+차이 요약:
+
+| 옵션       | 적용 시점          | 매칭         | 실제 패키지 우선? | 빈 모듈 처리             |
+| ---------- | ------------------ | ------------ | ----------------- | ------------------------ |
+| `alias`    | resolve **전 항상**| exact + prefix | ❌ — alias 우선   | ❌ (빈 모듈 → blockList 사용)|
+| `fallback` | resolve **실패 시**| exact only   | ✅ — 실패 시에만  | ✅ (`=false`)             |
+
+자동 polyfill 한 줄 매핑 (`node-polyfill-webpack-plugin` 류) 은 ZTS 가 제공하지 않는다 — esbuild 정책과 동일하게 사용자가 명시 매핑하거나 plugin 으로 처리.
 
 ## 다른 번들러와의 차이
 
