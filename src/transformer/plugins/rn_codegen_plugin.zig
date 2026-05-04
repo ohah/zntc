@@ -47,6 +47,7 @@ const codegen = @import("rn_codegen/mod.zig");
 const type_index_mod = codegen.type_index;
 const schema_builder = codegen.schema_builder;
 const view_config_emitter = codegen.view_config_emitter;
+const stmt_info = @import("../../bundler/stmt_info.zig");
 
 const CODEGEN_MARKER = "codegenNativeComponent";
 
@@ -93,16 +94,25 @@ fn onTransform(
     defer type_index.deinit(alloc);
 
     const decl_idx = type_index.get(props_type_name) orelse return null;
-    const component_name = findComponentName(&parser.ast, program) orelse return null;
+    const call_idx = findCodegenCall(&parser.ast, program) orelse return null;
+    const component_name = extractCallArg0String(&parser.ast, call_idx) orelse return null;
+    const paper_component_name = extractPaperComponentName(&parser.ast, call_idx);
 
-    const shape = schema_builder.build(&parser.ast, &type_index, component_name, decl_idx, alloc) catch return null;
+    const shape = schema_builder.build(
+        &parser.ast,
+        &type_index,
+        component_name,
+        paper_component_name,
+        decl_idx,
+        alloc,
+    ) catch return null;
     defer alloc.free(shape.props);
     defer alloc.free(shape.events);
 
     const view_config = view_config_emitter.emit(shape, alloc) catch return null;
     defer alloc.free(view_config);
 
-    return assembleFileReplacement(component_name, view_config, alloc) catch return null;
+    return assembleFileReplacement(shape.nativeName(), view_config, alloc) catch return null;
 }
 
 /// `codegenNativeComponent<TYPE_NAME>` 에서 `TYPE_NAME` 추출.
@@ -126,9 +136,9 @@ fn extractTypeArg(code: []const u8) ?[]const u8 {
     return null;
 }
 
-/// program 자식 중 `export default codegenNativeComponent('Name', ...)` 패턴을 찾아
-/// 첫 string 인자 (component name) 추출. quote 는 벗긴다.
-fn findComponentName(ast: *const ast_mod.Ast, program_idx: NodeIndex) ?[]const u8 {
+/// program 자식 중 `export default codegenNativeComponent('Name', { ... })` 패턴을
+/// 찾아 그 call_expression 의 NodeIndex 반환. 첫 매칭만 — spec 파일은 보통 한 개.
+fn findCodegenCall(ast: *const ast_mod.Ast, program_idx: NodeIndex) ?NodeIndex {
     const program = ast.getNode(program_idx);
     if (program.tag != .program) return null;
 
@@ -137,8 +147,7 @@ fn findComponentName(ast: *const ast_mod.Ast, program_idx: NodeIndex) ?[]const u
     while (i < list.len) : (i += 1) {
         const stmt: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
         const node = ast.getNode(stmt);
-        const call_idx = unwrapToCallExpression(ast, stmt, node) orelse continue;
-        if (extractCallArg0String(ast, call_idx)) |name| return name;
+        if (unwrapToCallExpression(ast, stmt, node)) |call_idx| return call_idx;
     }
     return null;
 }
@@ -182,10 +191,44 @@ fn extractCallArg0String(ast: *const ast_mod.Ast, call_idx: NodeIndex) ?[]const 
     return stripQuotes(raw);
 }
 
+/// `codegenNativeComponent('Name', { paperComponentName: 'X', ... })` 의 두 번째 인자
+/// (options object) 안에서 `paperComponentName` string property 추출. 옵션이 없거나
+/// paperComponentName 키가 없으면 null. RN spec 의 Paper(legacy) 호환용 — RN runtime 의
+/// `uiViewClassName` 은 이 값을 우선 (없으면 첫 인자 사용).
+///
+/// 인식 한계: `{ paperComponentName: 'X' }` 와 `{ "paperComponentName": 'X' }` 만.
+/// computed key (`{ [k]: 'X' }`), shorthand, escape-bearing string 은 모두 reject —
+/// RN spec 에서 등장 가능성 0.
+fn extractPaperComponentName(ast: *const ast_mod.Ast, call_idx: NodeIndex) ?[]const u8 {
+    const node = ast.getNode(call_idx);
+    const e = node.data.extra;
+    if (e + 2 >= ast.extra_data.items.len) return null;
+    const args_start = ast.extra_data.items[e + 1];
+    const args_len = ast.extra_data.items[e + 2];
+    if (args_len < 2) return null;
+    const arg1_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 1]);
+    const arg1 = ast.getNode(arg1_idx);
+    if (arg1.tag != .object_expression) return null;
+
+    const props = arg1.data.list;
+    var i: u32 = 0;
+    while (i < props.len) : (i += 1) {
+        const prop_idx: NodeIndex = @enumFromInt(ast.extra_data.items[props.start + i]);
+        const prop = ast.getNode(prop_idx);
+        if (prop.tag != .object_property) continue;
+        const key_name = stmt_info.plainObjectKeyName(ast, prop.data.binary.left) orelse continue;
+        if (!std.mem.eql(u8, key_name, "paperComponentName")) continue;
+        return stmt_info.plainStringLiteralValue(ast, ast_mod.Ast.objectPropertyValue(prop));
+    }
+    return null;
+}
+
 /// 최종 파일 교체 문자열 조립. RN 런타임이 기대하는 정확한 형태:
 /// `@react-native/codegen` 의 `GenerateViewConfigJs.generate()` 의 fileTemplate 와 동일.
+/// `native_name` 은 caller 가 `shape.nativeName()` 으로 결정 (paper 우선) — 본 함수는
+/// 순수 문자열 어셈블리만 담당.
 fn assembleFileReplacement(
-    component_name: []const u8,
+    native_name: []const u8,
     view_config_js: []const u8,
     alloc: std.mem.Allocator,
 ) ![]u8 {
@@ -195,6 +238,6 @@ fn assembleFileReplacement(
             "let nativeComponentName = '{s}';\n" ++
             "{s}\n" ++
             "export default NativeComponentRegistry.get(nativeComponentName, () => __INTERNAL_VIEW_CONFIG);\n",
-        .{ component_name, view_config_js },
+        .{ native_name, view_config_js },
     );
 }

@@ -214,6 +214,12 @@ pub const ComponentShape = struct {
     events: []const EventTypeShape = &.{},
     props: []const NamedShape(PropTypeAnnotation) = &.{},
     commands: []const NamedShape(CommandTypeAnnotation) = &.{},
+
+    /// RN runtime 이 등록한 native 클래스 이름 — Paper 호환을 위해 paperComponentName
+    /// 우선. emitter / file wrapper 양쪽이 같은 lookup 을 하지 않게 한 곳에 모음.
+    pub fn nativeName(self: ComponentShape) []const u8 {
+        return self.paper_component_name orelse self.name;
+    }
 };
 
 /// 한 spec 파일에 들어있는 모든 ComponentShape (보통 1 개, 가끔 여러 개).
