@@ -123,6 +123,9 @@ pub const TreeShaker = struct {
     /// 다시 훑지 않도록 module index -> exported namespace name -> source module index 를
     /// lazy 구축한다.
     re_export_namespace_sources: []?std.StringHashMapUnmanaged(u32) = &.{},
+    /// seedExport(target module, exported name) 중복 처리 방지용 per-BFS scratch.
+    /// 키 문자열은 모듈/바인딩 storage가 소유하므로 별도 복사하지 않는다.
+    seeded_exports: std.HashMapUnmanaged(SeededExportKey, void, SeededExportKeyContext, 80) = .empty,
     /// numeric const fact propagation 의 DFS 스크래치. propagateNumericExportConstFacts /
     /// nodeContainsNumericConstRef / nodeIsNumericLiteralFoldSeed 가 매 호출마다
     /// ArrayList 를 새로 만들지 않도록 재사용. clearRetainingCapacity 로만 비운다.
@@ -137,6 +140,24 @@ pub const TreeShaker = struct {
 
     const max_fixpoint_iterations: u32 = 100;
     const max_numeric_const_post_passes: u32 = 2;
+
+    const SeededExportKey = struct {
+        module_index: u32,
+        export_name: []const u8,
+    };
+
+    const SeededExportKeyContext = struct {
+        pub fn hash(_: SeededExportKeyContext, key: SeededExportKey) u64 {
+            var h = std.hash.Wyhash.init(0);
+            h.update(std.mem.asBytes(&key.module_index));
+            h.update(key.export_name);
+            return h.final();
+        }
+
+        pub fn eql(_: SeededExportKeyContext, a: SeededExportKey, b: SeededExportKey) bool {
+            return a.module_index == b.module_index and std.mem.eql(u8, a.export_name, b.export_name);
+        }
+    };
 
     const ReExportNsConsumerUsage = struct {
         opaque_all: bool = false,
@@ -227,6 +248,7 @@ pub const TreeShaker = struct {
             }
             self.allocator.free(self.re_export_namespace_sources);
         }
+        self.seeded_exports.deinit(self.allocator);
         if (self.reachable_stmts.len > 0) {
             for (self.reachable_stmts) |*rs| {
                 if (rs.*) |*bs| bs.deinit();
@@ -1006,6 +1028,14 @@ pub const TreeShaker = struct {
         return self.used_exports.contains(key);
     }
 
+    fn markSeedExportVisited(self: *TreeShaker, module_index: u32, export_name: []const u8) !bool {
+        const entry = try self.seeded_exports.getOrPut(self.allocator, .{
+            .module_index = module_index,
+            .export_name = export_name,
+        });
+        return !entry.found_existing;
+    }
+
     /// import binding의 심볼이 해당 모듈에서 reachable statement에서 참조되는지 확인.
     /// emitter가 export_bindings 필터링에 사용.
     pub fn isImportLiveInModule(self: *const TreeShaker, module_index: u32, local_name: []const u8) bool {
@@ -1146,6 +1176,8 @@ pub const TreeShaker = struct {
     ) std.mem.Allocator.Error!void {
         var scope = profile.begin(.shake_fixpoint_bfs);
         defer scope.end();
+
+        self.seeded_exports.clearRetainingCapacity();
 
         var queue: std.ArrayListUnmanaged(BfsItem) = .empty;
         defer queue.deinit(self.allocator);
@@ -1514,15 +1546,29 @@ pub const TreeShaker = struct {
         var seed_scope = profile.begin(.shake_fixpoint_bfs_seed_export);
         defer seed_scope.end();
 
+        if (!try self.markSeedExportVisited(@intCast(target_mod), imported_name)) return;
+
         const mod_count = self.graph.moduleCount();
-        const canonical = self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse return;
+        const canonical = blk: {
+            var resolve_scope = profile.begin(.shake_fixpoint_bfs_seed_export_resolve);
+            defer resolve_scope.end();
+            break :blk self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse return;
+        };
         const canon_mod = canonical.module_index.toU32();
         const canon_m = self.graph.getModule(canonical.module_index) orelse return;
 
-        try self.markExportUsed(canon_mod, canonical.export_name);
-        self.included.set(canon_mod);
+        {
+            var mark_scope = profile.begin(.shake_fixpoint_bfs_seed_export_mark);
+            defer mark_scope.end();
+
+            try self.markExportUsed(canon_mod, canonical.export_name);
+            self.included.set(canon_mod);
+        }
 
         if (canon_m.wrap_kind == .cjs) {
+            var cjs_scope = profile.begin(.shake_fixpoint_bfs_seed_export_cjs);
+            defer cjs_scope.end();
+
             if (canon_mod != target_mod) {
                 try self.markAndSeedAllStmts(canon_mod, queue, module_stmt_infos, reachable_stmts);
                 return;
@@ -1544,23 +1590,33 @@ pub const TreeShaker = struct {
 
         // namespace barrel re-export: canonical이 namespace import를 가리키면
         // 소스 모듈의 모든 export를 시드해야 함 (import * as z; export { z } 패턴)
-        const canon_local = self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name;
-        for (canon_m.import_bindings) |cib| {
-            if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, canon_local)) {
-                if (cib.import_record_index < canon_m.import_records.len) {
-                    const ns_src_idx = canon_m.import_records[cib.import_record_index].resolved;
-                    if (self.graph.getModule(ns_src_idx) != null) {
-                        const ns_src = @intFromEnum(ns_src_idx);
-                        try self.markAllExportsUsed(@intCast(ns_src));
-                        self.included.set(ns_src);
-                        try self.seedAllStmts(@intCast(ns_src), queue, module_stmt_infos, reachable_stmts);
+        var cached_canon_local: ?[]const u8 = null;
+        if (canon_m.import_bindings.len > 0) {
+            var namespace_scope = profile.begin(.shake_fixpoint_bfs_seed_export_namespace_scan);
+            defer namespace_scope.end();
+
+            const canon_local = self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name;
+            cached_canon_local = canon_local;
+            for (canon_m.import_bindings) |cib| {
+                if (cib.kind == .namespace and std.mem.eql(u8, cib.local_name, canon_local)) {
+                    if (cib.import_record_index < canon_m.import_records.len) {
+                        const ns_src_idx = canon_m.import_records[cib.import_record_index].resolved;
+                        if (self.graph.getModule(ns_src_idx) != null) {
+                            const ns_src = @intFromEnum(ns_src_idx);
+                            try self.markAllExportsUsed(@intCast(ns_src));
+                            self.included.set(ns_src);
+                            try self.seedAllStmts(@intCast(ns_src), queue, module_stmt_infos, reachable_stmts);
+                        }
                     }
+                    break;
                 }
-                break;
             }
         }
 
         if (canon_mod != target_mod and target_mod < mod_count) {
+            var intermediate_scope = profile.begin(.shake_fixpoint_bfs_seed_export_intermediate);
+            defer intermediate_scope.end();
+
             try self.markExportUsed(@intCast(target_mod), imported_name);
             self.included.set(target_mod);
             // 중간 모듈의 export 선언 statement도 reachable로 마킹
@@ -1578,19 +1634,43 @@ pub const TreeShaker = struct {
         }
 
         const target_module = canon_m;
+        var semantic_scope = profile.begin(.shake_fixpoint_bfs_seed_export_semantic_lookup);
         const target_sem = target_module.semantic orelse {
+            semantic_scope.end();
+            var opaque_scope = profile.begin(.shake_fixpoint_bfs_seed_export_opaque);
+            defer opaque_scope.end();
             try self.seedOpaqueModule(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
             return;
         };
-        if (target_sem.scope_maps.len == 0) return;
+        if (target_sem.scope_maps.len == 0) {
+            semantic_scope.end();
+            return;
+        }
 
-        const local_name = self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name;
-        const sym_idx = target_sem.scope_maps[0].get(local_name) orelse return;
+        const sym_idx = if (target_module.findExportSymbol(canonical.export_name).semanticIndex()) |direct_sym|
+            direct_sym
+        else blk: {
+            const local_name = cached_canon_local orelse (self.linker.getExportLocalName(@intCast(canon_mod), canonical.export_name) orelse canonical.export_name);
+            break :blk target_sem.scope_maps[0].get(local_name) orelse {
+                semantic_scope.end();
+                return;
+            };
+        };
         const target_infos = module_stmt_infos[canon_mod] orelse {
+            semantic_scope.end();
+            var opaque_scope = profile.begin(.shake_fixpoint_bfs_seed_export_opaque);
+            defer opaque_scope.end();
             try self.seedOpaqueModule(@intCast(canon_mod), queue, module_stmt_infos, reachable_stmts);
             return;
         };
-        try self.enqueueSymbolLiveStatements(@intCast(canon_mod), target_infos, @intCast(sym_idx), reachable_stmts, queue);
+        semantic_scope.end();
+
+        {
+            var enqueue_scope = profile.begin(.shake_fixpoint_bfs_seed_export_enqueue_symbol);
+            defer enqueue_scope.end();
+
+            try self.enqueueSymbolLiveStatements(@intCast(canon_mod), target_infos, @intCast(sym_idx), reachable_stmts, queue);
+        }
 
         // side-effect statement는 enqueueStmt에서 lazy 시드됨
     }
@@ -1768,6 +1848,20 @@ pub const TreeShaker = struct {
                     try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
                 }
             } else {
+                if (ib.kind == .named and ib.namespace_used_properties != null) {
+                    const ns_source_map = try self.ensureReExportNamespaceSourceMap(@intCast(target));
+                    if (ns_source_map) |map| {
+                        if (map.get(ib.imported_name)) |inner_src| {
+                            if (!self.included.isSet(target)) self.included.set(target);
+                            if (!self.included.isSet(inner_src)) self.included.set(inner_src);
+                            for (ib.namespace_used_properties.?) |prop_name| {
+                                try self.seedExport(@intCast(inner_src), prop_name, queue, module_stmt_infos, reachable_stmts);
+                            }
+                            try self.markExportUsed(@intCast(target), ib.imported_name);
+                            continue;
+                        }
+                    }
+                }
                 try self.seedExport(target, ib.imported_name, queue, module_stmt_infos, reachable_stmts);
             }
         }
