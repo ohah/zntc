@@ -426,6 +426,39 @@ describe("const_value cross-module 인라인 correctness", () => {
     expect(run.trim()).toBe("2 99");
   });
 
+  test("numeric post-pass resync는 re-export alias symbol을 최신 semantic에 맞춘다", async () => {
+    const fx = await createFixture({
+      "seed.ts": `export const base = 1;`,
+      "left.ts": `
+        import { base } from "./seed";
+        const unusedLocal = 123;
+        export const value = base + 1;
+      `,
+      "barrel.ts": `export { value as answer } from "./left";`,
+      "index.ts": `
+        import { answer } from "./barrel";
+        console.log(answer);
+      `,
+    });
+    cleanup = fx.cleanup;
+    const out = join(fx.dir, "out.js");
+    const build = await runZts([
+      "--bundle",
+      join(fx.dir, "index.ts"),
+      "-o",
+      out,
+      "--platform=node",
+    ]);
+    expect(build.exitCode).toBe(0);
+
+    const src = readFileSync(out, "utf8");
+    expect(src).toMatch(/console\.log\(2\)/);
+    expect(src).not.toContain("unusedLocal");
+
+    const run = await Bun.$`node ${out}`.text();
+    expect(run.trim()).toBe("2");
+  });
+
   test("--minify 에서 pre-shake materialize 이후 numeric post-pass 미발화 경로도 emit 정상", async () => {
     // #2502 회귀 방지. inner refreshLinkMetadataAfterPreShakeMutation 가 좁은 populate*
     // 만 실행하고 ast_mutated_after_link 를 sticky 유지해 outer finalize 가 항상 발화해야

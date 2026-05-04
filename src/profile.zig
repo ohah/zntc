@@ -82,6 +82,7 @@ pub const Category = enum {
     graph_discover_pm_is_pkg_type,
     graph_finalize,
     graph_resync,
+    graph_resync_const,
     graph_resync_semantic,
     graph_resync_stmt_info,
     graph_resync_import_scan,
@@ -89,6 +90,7 @@ pub const Category = enum {
     graph_resync_export_bindings,
     graph_resync_classify,
     graph_resync_alias,
+    graph_resync_binding_refs,
     graph_runtime_polyfills,
     graph_runtime_polyfills_collect,
     graph_runtime_polyfills_aggregate,
@@ -161,6 +163,9 @@ pub const Category = enum {
     shake_numeric_postpass_reachable,
     shake_numeric_postpass_replace,
     shake_numeric_postpass_minify_resync,
+    shake_numeric_postpass_minify,
+    shake_numeric_postpass_resync,
+    shake_numeric_postpass_minify_skip,
     shake_mirror,
     metadata,
     metadata_register_ns_rewrites,
@@ -742,6 +747,9 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("shake.fixpoint.bfs.seed.export.resolve") == .shake_fixpoint_bfs_seed_export_resolve);
     try testing.expect(Category.fromString("shake.fixpoint.re.exports.module") == .shake_fixpoint_re_exports_module);
     try testing.expect(Category.fromString("shake.numeric.postpass.build.facts.resolve") == .shake_numeric_postpass_build_facts_resolve);
+    try testing.expect(Category.fromString("shake.numeric.postpass.minify.skip") == .shake_numeric_postpass_minify_skip);
+    try testing.expect(Category.fromString("graph.resync.const") == .graph_resync_const);
+    try testing.expect(Category.fromString("graph.resync.binding.refs") == .graph_resync_binding_refs);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts") == .shake_const_prepass_build_facts);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts.lookup") == .shake_const_prepass_build_facts_lookup);
 }
@@ -758,6 +766,9 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("shake.fixpoint.bfs.seed.export.resolve", Category.displayName(.shake_fixpoint_bfs_seed_export_resolve));
     try testing.expectEqualStrings("shake.fixpoint.re.exports.module", Category.displayName(.shake_fixpoint_re_exports_module));
     try testing.expectEqualStrings("shake.numeric.postpass.build.facts.resolve", Category.displayName(.shake_numeric_postpass_build_facts_resolve));
+    try testing.expectEqualStrings("shake.numeric.postpass.minify.skip", Category.displayName(.shake_numeric_postpass_minify_skip));
+    try testing.expectEqualStrings("graph.resync.const", Category.displayName(.graph_resync_const));
+    try testing.expectEqualStrings("graph.resync.binding.refs", Category.displayName(.graph_resync_binding_refs));
     try testing.expectEqualStrings("shake.const.prepass.build.facts", Category.displayName(.shake_const_prepass_build_facts));
     try testing.expectEqualStrings("shake.const.prepass.build.facts.lookup", Category.displayName(.shake_const_prepass_build_facts_lookup));
 }

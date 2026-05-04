@@ -2350,17 +2350,12 @@ pub const ModuleGraph = struct {
         }
     }
 
-    pub fn resyncModuleMetadataAfterAstMutation(
+    fn refreshSemanticAndStmtInfoAfterAstMutation(
         self: *ModuleGraph,
         module: *Module,
         arena_alloc: std.mem.Allocator,
     ) !void {
-        var resync_scope = profile.begin(.graph_resync);
-        defer resync_scope.end();
-
         const ast = &(module.ast orelse return);
-        const previous_import_records = module.import_records;
-        const previous_import_bindings = module.import_bindings;
         const previous_semantic = module.semantic;
 
         var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
@@ -2419,6 +2414,74 @@ pub const ModuleGraph = struct {
                 );
             }
         }
+    }
+
+    fn refreshStableBindingRefsAfterSemanticResync(
+        self: *ModuleGraph,
+        module: *Module,
+        arena_alloc: std.mem.Allocator,
+        cat: profile.Category,
+    ) !void {
+        var binding_refs_scope = profile.begin(cat);
+        defer binding_refs_scope.end();
+
+        const sem = if (module.semantic) |*s| s else return;
+        const scope0: ?std.StringHashMap(usize) =
+            if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
+        for (module.import_bindings) |*ib| {
+            if (ib.isSynthetic()) continue;
+            ib.local_symbol = bundler_symbol.SymbolRef.invalid;
+            if (scope0) |module_scope| {
+                if (module_scope.get(ib.local_name)) |sym_idx| {
+                    ib.local_symbol = bundler_symbol.SymbolRef.makeSemantic(module.index, sym_idx);
+                }
+            }
+        }
+
+        if (module.alias_table) |*table| table.deinit();
+        module.alias_table = AliasTable.init(self.allocator);
+        try binding_scanner_mod.populateSyntheticSymbols(
+            &module.alias_table.?,
+            module.index,
+            module.export_bindings,
+            &sem.symbols,
+            arena_alloc,
+            scope0,
+        );
+    }
+
+    /// Numeric const materialization replaces identifier reads and may let minify fold
+    /// expressions, but it does not add/remove import or export declarations. Keep the
+    /// expensive syntax-level scanners intact for general transforms and use this path
+    /// only when the caller owns that invariant.
+    pub fn resyncModuleMetadataAfterConstMaterialization(
+        self: *ModuleGraph,
+        module: *Module,
+        arena_alloc: std.mem.Allocator,
+    ) !void {
+        var resync_scope = profile.begin(.graph_resync);
+        defer resync_scope.end();
+        var const_scope = profile.begin(.graph_resync_const);
+        defer const_scope.end();
+
+        _ = &(module.ast orelse return);
+        try self.refreshSemanticAndStmtInfoAfterAstMutation(module, arena_alloc);
+        try self.refreshStableBindingRefsAfterSemanticResync(module, arena_alloc, .graph_resync_binding_refs);
+    }
+
+    pub fn resyncModuleMetadataAfterAstMutation(
+        self: *ModuleGraph,
+        module: *Module,
+        arena_alloc: std.mem.Allocator,
+    ) !void {
+        var resync_scope = profile.begin(.graph_resync);
+        defer resync_scope.end();
+
+        const ast = &(module.ast orelse return);
+        const previous_import_records = module.import_records;
+        const previous_import_bindings = module.import_bindings;
+
+        try self.refreshSemanticAndStmtInfoAfterAstMutation(module, arena_alloc);
 
         var scan_result: import_scanner.ScanResult = undefined;
         {
@@ -2499,25 +2562,7 @@ pub const ModuleGraph = struct {
             );
         }
 
-        {
-            var alias_scope = profile.begin(.graph_resync_alias);
-            defer alias_scope.end();
-
-            if (module.alias_table) |*table| table.deinit();
-            module.alias_table = AliasTable.init(self.allocator);
-            if (module.semantic) |*sem| {
-                const scope0: ?std.StringHashMap(usize) =
-                    if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
-                try binding_scanner_mod.populateSyntheticSymbols(
-                    &module.alias_table.?,
-                    module.index,
-                    module.export_bindings,
-                    &sem.symbols,
-                    arena_alloc,
-                    scope0,
-                );
-            }
-        }
+        try self.refreshStableBindingRefsAfterSemanticResync(module, arena_alloc, .graph_resync_alias);
     }
 
     fn suppressRuntimeHelperInternalUnresolved(module: *Module) void {

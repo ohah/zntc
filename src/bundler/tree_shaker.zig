@@ -85,7 +85,12 @@ const ConstMaterializeProfile = struct {
     candidate_gate: ?profile.Category = null,
     materialize: ?profile.Category = null,
     minify_resync: ?profile.Category = null,
+    minify: ?profile.Category = null,
+    resync: ?profile.Category = null,
+    minify_skip: ?profile.Category = null,
     inner: constant_facts.MaterializeProfile = .{},
+    skip_minify_if_safe: bool = false,
+    stable_import_export_syntax: bool = false,
 };
 
 pub const TreeShaker = struct {
@@ -479,15 +484,38 @@ pub const TreeShaker = struct {
         sem: ModuleSemanticData,
         ast: *Ast,
         profile_cat: ?profile.Category,
+        minify_cat: ?profile.Category,
+        resync_cat: ?profile.Category,
+        skip_cat: ?profile.Category,
+        skip_minify: bool,
+        stable_import_export_syntax: bool,
     ) void {
         var scope = profile.beginMaybe(profile_cat);
         defer scope.end();
 
-        const minify_mod = @import("../transformer/minify.zig");
-        const root = ast.transformed_root orelse NodeIndex.none;
-        const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, self.graph.transform_options_base.minify_syntax);
-        minify_mod.minify(ast, ctx, self.allocator, root);
-        self.markAstMutatedAndResync(m);
+        if (skip_minify) {
+            var skip_scope = profile.beginMaybe(skip_cat);
+            defer skip_scope.end();
+        } else {
+            var minify_scope = profile.beginMaybe(minify_cat);
+            defer minify_scope.end();
+
+            const minify_mod = @import("../transformer/minify.zig");
+            const root = ast.transformed_root orelse NodeIndex.none;
+            const ctx = minify_mod.MinifyCtx.fromSemantic(&m.semantic.?, sem.symbol_ids, self.graph.transform_options_base.minify_syntax);
+            minify_mod.minify(ast, ctx, self.allocator, root);
+        }
+
+        {
+            var resync_scope = profile.beginMaybe(resync_cat);
+            defer resync_scope.end();
+
+            if (stable_import_export_syntax) {
+                self.markConstMaterializedAndResync(m);
+            } else {
+                self.markAstMutatedAndResync(m);
+            }
+        }
     }
 
     /// AST mutation 후 모듈 metadata 재동기화 + linker rename/mangling 재계산 신호 set.
@@ -499,6 +527,16 @@ pub const TreeShaker = struct {
         // 분석 산출물이 self.allocator 로 새서 leak 되므로 invariant 로 강제.
         std.debug.assert(m.parse_arena != null);
         self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator()) catch {
+            m.prebuilt_stmt_info = null;
+        };
+        self.ast_mutated_after_link = true;
+        self.invalidateImportRecordStmtIndices(@intFromEnum(m.index));
+        if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
+    }
+
+    fn markConstMaterializedAndResync(self: *TreeShaker, m: *Module) void {
+        std.debug.assert(m.parse_arena != null);
+        self.graph.resyncModuleMetadataAfterConstMaterialization(m, m.parse_arena.?.allocator()) catch {
             m.prebuilt_stmt_info = null;
         };
         self.ast_mutated_after_link = true;
@@ -574,15 +612,35 @@ pub const TreeShaker = struct {
             self.materialize_scratch = constant_facts.Scratch.init(self.allocator, self.graph.moduleCount()) catch null;
         }
         const scratch_ptr: ?*constant_facts.Scratch = if (self.materialize_scratch) |*s| s else null;
-        const changed = blk: {
+        const materialized = blk: {
             var materialize_scope = profile.beginMaybe(const_profile.materialize);
             defer materialize_scope.end();
-            break :blk constant_facts.materializeWithScratch(self.allocator, ast, sem.symbol_ids, &const_values, scratch_ptr, module_index, const_profile.inner);
+            break :blk constant_facts.materializeWithScratchDetailed(
+                self.allocator,
+                ast,
+                sem.symbol_ids,
+                &const_values,
+                scratch_ptr,
+                module_index,
+                const_profile.inner,
+                const_profile.skip_minify_if_safe,
+            );
         };
         const_values.deinit(self.allocator);
-        if (!changed) return false;
+        if (!materialized.changed) return false;
 
-        self.minifyAndResyncModule(m, sem, ast, const_profile.minify_resync);
+        const skip_minify = const_profile.skip_minify_if_safe and !materialized.needs_minify;
+        self.minifyAndResyncModule(
+            m,
+            sem,
+            ast,
+            const_profile.minify_resync,
+            const_profile.minify,
+            const_profile.resync,
+            const_profile.minify_skip,
+            skip_minify,
+            const_profile.stable_import_export_syntax,
+        );
         return true;
     }
 
@@ -643,6 +701,11 @@ pub const TreeShaker = struct {
             .candidate_gate = .shake_numeric_postpass_candidate_gate,
             .materialize = .shake_numeric_postpass_materialize,
             .minify_resync = .shake_numeric_postpass_minify_resync,
+            .minify = .shake_numeric_postpass_minify,
+            .resync = .shake_numeric_postpass_resync,
+            .minify_skip = .shake_numeric_postpass_minify_skip,
+            .skip_minify_if_safe = true,
+            .stable_import_export_syntax = true,
             .inner = .{
                 .forbidden = .shake_numeric_postpass_forbidden,
                 .reachable = .shake_numeric_postpass_reachable,
