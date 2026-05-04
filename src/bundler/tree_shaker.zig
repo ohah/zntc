@@ -36,6 +36,7 @@ const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 const constant_facts = @import("constant_facts.zig");
 const ConstValue = @import("../semantic/symbol.zig").ConstValue;
 const runtime_helper_modules = @import("../runtime_helper_modules.zig");
+const profile = @import("../profile.zig");
 
 /// `used_exports`의 all-exports-used sentinel. 모듈의 전체 export가 사용됨을 표시.
 /// 일반 export 이름과 겹치지 않도록 의도적으로 JS 식별자 아닌 `"*"` 선택.
@@ -529,44 +530,49 @@ pub const TreeShaker = struct {
 
         // re_export_star_targets bitset 한 번 build — tryMarkReExportNsSubset 가 fixpoint
         // 안에서 매번 O(M·E) scan 하지 않도록.
-        var re_star_targets = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
-        errdefer re_star_targets.deinit();
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            for (m.export_bindings) |eb| {
-                if (eb.kind != .re_export_star) continue;
-                const rec_idx = eb.import_record_index orelse continue;
-                if (rec_idx >= m.import_records.len) continue;
-                const src = m.import_records[rec_idx].resolved;
-                if (src == .none) continue;
-                re_star_targets.set(@intFromEnum(src));
-            }
-        }
-        self.re_export_star_targets = re_star_targets;
+        {
+            var setup_scope = profile.begin(.shake_setup);
+            defer setup_scope.end();
 
-        // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용).
-        // `inject` and `runBeforeMain` are not output entries, but they are
-        // execution roots and may be import-only prelude modules.
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            for (entry_points) |ep| {
-                if (std.mem.eql(u8, m.path, ep)) {
-                    self.entry_set.set(i);
-                    break;
+            var re_star_targets = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
+            errdefer re_star_targets.deinit();
+            for (0..mod_count) |i| {
+                const m = self.getModule(@intCast(i)) orelse continue;
+                for (m.export_bindings) |eb| {
+                    if (eb.kind != .re_export_star) continue;
+                    const rec_idx = eb.import_record_index orelse continue;
+                    if (rec_idx >= m.import_records.len) continue;
+                    const src = m.import_records[rec_idx].resolved;
+                    if (src == .none) continue;
+                    re_star_targets.set(@intFromEnum(src));
                 }
             }
-            if (self.entry_set.isSet(i)) continue;
-            for (self.graph.inject_files) |inject_path| {
-                if (std.mem.eql(u8, m.path, inject_path)) {
-                    self.entry_set.set(i);
-                    break;
+            self.re_export_star_targets = re_star_targets;
+
+            // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용).
+            // `inject` and `runBeforeMain` are not output entries, but they are
+            // execution roots and may be import-only prelude modules.
+            for (0..mod_count) |i| {
+                const m = self.getModule(@intCast(i)) orelse continue;
+                for (entry_points) |ep| {
+                    if (std.mem.eql(u8, m.path, ep)) {
+                        self.entry_set.set(i);
+                        break;
+                    }
                 }
-            }
-            if (self.entry_set.isSet(i)) continue;
-            for (self.graph.run_before_main_files) |rbm_path| {
-                if (std.mem.eql(u8, m.path, rbm_path)) {
-                    self.entry_set.set(i);
-                    break;
+                if (self.entry_set.isSet(i)) continue;
+                for (self.graph.inject_files) |inject_path| {
+                    if (std.mem.eql(u8, m.path, inject_path)) {
+                        self.entry_set.set(i);
+                        break;
+                    }
+                }
+                if (self.entry_set.isSet(i)) continue;
+                for (self.graph.run_before_main_files) |rbm_path| {
+                    if (std.mem.eql(u8, m.path, rbm_path)) {
+                        self.entry_set.set(i);
+                        break;
+                    }
                 }
             }
         }
@@ -575,18 +581,23 @@ pub const TreeShaker = struct {
         // 그래야 `if (DEV) heavy()` 같은 dead branch 안 import가 BFS seed로 번지지 않는다.
         // preserve-modules는 원본 모듈 경계가 출력 계약이므로, import edge를 제거할 수
         // 있는 materialize는 reachability 확정 뒤 numeric post-pass에서만 수행한다.
-        if (!self.graph.preserve_modules) {
-            if (self.graph.transform_options_base.minify_syntax) {
-                _ = try self.materializeCrossModuleConstFacts(mod_count, .all, false);
-            } else {
-                try self.propagateNumericExportConstFacts(mod_count);
-            }
-        }
+        {
+            var const_scope = profile.begin(.shake_const_prepass);
+            defer const_scope.end();
 
-        if (self.graph.resolve_cache.platform == .node) {
-            try self.applyNodeBufferCapabilityFacts();
+            if (!self.graph.preserve_modules) {
+                if (self.graph.transform_options_base.minify_syntax) {
+                    _ = try self.materializeCrossModuleConstFacts(mod_count, .all, false);
+                } else {
+                    try self.propagateNumericExportConstFacts(mod_count);
+                }
+            }
+
+            if (self.graph.resolve_cache.platform == .node) {
+                try self.applyNodeBufferCapabilityFacts();
+            }
+            self.refreshLinkMetadataAfterPreShakeMutation();
         }
-        self.refreshLinkMetadataAfterPreShakeMutation();
 
         // 자동 순수 판별: 진입점이 아닌 모듈의 top-level이 모두 순수하면 side_effects=false
         // (rolldown/esbuild 동작: package.json sideEffects 없어도 자동 감지)
@@ -594,29 +605,39 @@ pub const TreeShaker = struct {
         // (rolldown DeterminedSideEffects::UserDefined 포팅).
         // require.context match 로 등록된 모듈 (is_context_dep) 도 건드리지 않음 —
         // runtime require 로 접근하므로 AST 상 pure 여도 제거하면 안 됨.
-        for (0..mod_count) |i| {
-            const m = self.moduleAtMut(@intCast(i)) orelse continue;
-            if (!m.side_effects) continue;
-            if (m.side_effects_user_defined) continue;
-            if (self.entry_set.isSet(i)) continue;
-            if (m.is_context_dep) continue;
-            if (m.ast) |ast| {
-                const unresolved = if (m.semantic) |*s| &s.unresolved_references else null;
-                if (isModulePure(&ast, unresolved)) {
-                    m.side_effects = false;
+        {
+            var purity_scope = profile.begin(.shake_purity);
+            defer purity_scope.end();
+
+            for (0..mod_count) |i| {
+                const m = self.moduleAtMut(@intCast(i)) orelse continue;
+                if (!m.side_effects) continue;
+                if (m.side_effects_user_defined) continue;
+                if (self.entry_set.isSet(i)) continue;
+                if (m.is_context_dep) continue;
+                if (m.ast) |ast| {
+                    const unresolved = if (m.semantic) |*s| &s.unresolved_references else null;
+                    if (isModulePure(&ast, unresolved)) {
+                        m.side_effects = false;
+                    }
                 }
             }
         }
 
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            const is_entry = self.entry_set.isSet(i);
-            if (is_entry or m.is_context_dep) self.included.set(i);
-            if (!is_entry) continue;
-            for (m.dependencies.items) |dep_idx| {
-                const dep = self.graph.getModule(dep_idx) orelse continue;
-                if (moduleHasEvaluationEffect(dep)) {
-                    self.included.set(@intFromEnum(dep_idx));
+        {
+            var setup_scope = profile.begin(.shake_setup);
+            defer setup_scope.end();
+
+            for (0..mod_count) |i| {
+                const m = self.getModule(@intCast(i)) orelse continue;
+                const is_entry = self.entry_set.isSet(i);
+                if (is_entry or m.is_context_dep) self.included.set(i);
+                if (!is_entry) continue;
+                for (m.dependencies.items) |dep_idx| {
+                    const dep = self.graph.getModule(dep_idx) orelse continue;
+                    if (moduleHasEvaluationEffect(dep)) {
+                        self.included.set(@intFromEnum(dep_idx));
+                    }
                 }
             }
         }
@@ -625,76 +646,88 @@ pub const TreeShaker = struct {
         // 분석에서 누락되므로 별도 추적해 prune 단계에서 보호한다 (#1260).
         var dyn_import_targets = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
         defer dyn_import_targets.deinit();
-        var dyn_it = self.graph.modulesIterator();
-        while (dyn_it.next()) |m| {
-            for (m.import_records) |rec| {
-                if (rec.kind != .dynamic_import or rec.resolved.isNone()) continue;
-                const target = @intFromEnum(rec.resolved);
-                if (target < mod_count) {
-                    dyn_import_targets.set(target);
-                    // dynamic import는 runtime에 임의 export에 접근할 수 있으므로
-                    // 모든 export를 사용으로 마킹 (entry와 동일 취급).
-                    self.included.set(target);
-                    try self.markAllExportsUsed(@intCast(target));
+        {
+            var setup_scope = profile.begin(.shake_setup);
+            defer setup_scope.end();
+
+            var dyn_it = self.graph.modulesIterator();
+            while (dyn_it.next()) |m| {
+                for (m.import_records) |rec| {
+                    if (rec.kind != .dynamic_import or rec.resolved.isNone()) continue;
+                    const target = @intFromEnum(rec.resolved);
+                    if (target < mod_count) {
+                        dyn_import_targets.set(target);
+                        // dynamic import는 runtime에 임의 export에 접근할 수 있으므로
+                        // 모든 export를 사용으로 마킹 (entry와 동일 취급).
+                        self.included.set(target);
+                        try self.markAllExportsUsed(@intCast(target));
+                    }
                 }
             }
-        }
 
-        // has_direct_used_export 배열 초기화 (hasAnyUsedExportDirect O(1) 조회용)
-        const has_due = try self.allocator.alloc(bool, mod_count);
-        @memset(has_due, false);
-        self.has_direct_used_export = has_due;
+            // has_direct_used_export 배열 초기화 (hasAnyUsedExportDirect O(1) 조회용)
+            const has_due = try self.allocator.alloc(bool, mod_count);
+            @memset(has_due, false);
+            self.has_direct_used_export = has_due;
 
-        // entry / context_dep 모듈의 모든 export를 사용으로 마킹 — runtime require 로
-        // 접근하는 모듈은 어떤 export 가 쓰일지 정적으로 알 수 없음 (dynamic import 와 유사).
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            if (self.entry_set.isSet(i) or m.is_context_dep) try self.markAllExportsUsed(@intCast(i));
+            // entry / context_dep 모듈의 모든 export를 사용으로 마킹 — runtime require 로
+            // 접근하는 모듈은 어떤 export 가 쓰일지 정적으로 알 수 없음 (dynamic import 와 유사).
+            for (0..mod_count) |i| {
+                const m = self.getModule(@intCast(i)) orelse continue;
+                if (self.entry_set.isSet(i) or m.is_context_dep) try self.markAllExportsUsed(@intCast(i));
+            }
         }
 
         // StmtInfo 구축을 fixpoint 루프 전에 수행(#1558).
         // fixpoint 중에 BFS가 statement-level reachability를 사용하려면 미리 필요.
         // 모든 non-entry non-wrapped 모듈에 대해 구축 — included 여부는 이후 fixpoint에서 확장.
-        var module_stmt_infos = try self.allocator.alloc(?StmtInfos, mod_count);
-        for (module_stmt_infos) |*si| si.* = null;
-        self.module_stmt_infos = module_stmt_infos;
+        var module_stmt_infos: []?StmtInfos = undefined;
+        var reachable_stmts: []?std.DynamicBitSet = undefined;
+        {
+            var stmt_scope = profile.begin(.shake_stmt_info);
+            defer stmt_scope.end();
 
-        const reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, mod_count);
-        for (reachable_stmts) |*rs| rs.* = null;
-        self.reachable_stmts = reachable_stmts;
+            module_stmt_infos = try self.allocator.alloc(?StmtInfos, mod_count);
+            for (module_stmt_infos) |*si| si.* = null;
+            self.module_stmt_infos = module_stmt_infos;
 
-        var prebuilt_mask = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
-        self.prebuilt_mask = prebuilt_mask;
-        for (0..mod_count) |i| {
-            const m = self.getModule(@intCast(i)) orelse continue;
-            // .esm wrap 은 emit shape (lazy init) 일 뿐이라 reachability 분석에 의미 영향
-            // 없지만, 기존 opaque 가정에 의존하는 코드 경로 (barrel re-export indirection 의
-            // emit-vs-shake 좌표 등) 가 있어 _명시적으로 pure 표시된_ 모듈에만 StmtInfo
-            // 빌드 (#2398). `sideEffects: false` 가 user 의 "drop 가능" 신호이므로 그 신호가
-            // 있을 때만 정밀 DCE — RN core 처럼 sideEffects 미명시 모듈은 기존 보수 동작 유지.
-            // rolldown 의 `try_extract_lazy_barrel_info` (DeterminedSideEffects::UserDefined(false))
-            // 와 동일 게이트.
-            const is_user_declared_pure = m.side_effects_user_defined and !m.side_effects;
-            if (m.wrap_kind == .esm and !is_user_declared_pure) continue;
+            reachable_stmts = try self.allocator.alloc(?std.DynamicBitSet, mod_count);
+            for (reachable_stmts) |*rs| rs.* = null;
+            self.reachable_stmts = reachable_stmts;
 
-            if (m.wrap_kind != .cjs) {
-                if (m.prebuilt_stmt_info) |prebuilt| {
-                    module_stmt_infos[i] = prebuilt;
-                    prebuilt_mask.set(i);
-                    continue;
+            var prebuilt_mask = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
+            self.prebuilt_mask = prebuilt_mask;
+            for (0..mod_count) |i| {
+                const m = self.getModule(@intCast(i)) orelse continue;
+                // .esm wrap 은 emit shape (lazy init) 일 뿐이라 reachability 분석에 의미 영향
+                // 없지만, 기존 opaque 가정에 의존하는 코드 경로 (barrel re-export indirection 의
+                // emit-vs-shake 좌표 등) 가 있어 _명시적으로 pure 표시된_ 모듈에만 StmtInfo
+                // 빌드 (#2398). `sideEffects: false` 가 user 의 "drop 가능" 신호이므로 그 신호가
+                // 있을 때만 정밀 DCE — RN core 처럼 sideEffects 미명시 모듈은 기존 보수 동작 유지.
+                // rolldown 의 `try_extract_lazy_barrel_info` (DeterminedSideEffects::UserDefined(false))
+                // 와 동일 게이트.
+                const is_user_declared_pure = m.side_effects_user_defined and !m.side_effects;
+                if (m.wrap_kind == .esm and !is_user_declared_pure) continue;
+
+                if (m.wrap_kind != .cjs) {
+                    if (m.prebuilt_stmt_info) |prebuilt| {
+                        module_stmt_infos[i] = prebuilt;
+                        prebuilt_mask.set(i);
+                        continue;
+                    }
                 }
-            }
 
-            const sem = m.semantic orelse continue;
-            const ast = &(m.ast orelse continue);
-            module_stmt_infos[i] = stmt_info_mod.build(
-                self.allocator,
-                ast,
-                sem.symbols.items,
-                sem.symbol_ids,
-                &sem.unresolved_references,
-                m.wrap_kind == .cjs,
-            ) catch null;
+                const sem = m.semantic orelse continue;
+                const ast = &(m.ast orelse continue);
+                module_stmt_infos[i] = stmt_info_mod.build(
+                    self.allocator,
+                    ast,
+                    sem.symbols.items,
+                    sem.symbol_ids,
+                    &sem.unresolved_references,
+                    m.wrap_kind == .cjs,
+                ) catch null;
+            }
         }
 
         // --- Unified fixpoint (#1558 Step 3+4) ---
@@ -706,6 +739,9 @@ pub const TreeShaker = struct {
         // used_exports 또는 included 변화 없으면 수렴. BFS만이 used_exports 진리 소스.
         var iteration: u32 = 0;
         while (iteration < max_fixpoint_iterations) : (iteration += 1) {
+            var fixpoint_scope = profile.begin(.shake_fixpoint);
+            defer fixpoint_scope.end();
+
             var changed = false;
             const used_count_before = self.used_exports.count();
             const included_count_before = self.included.count();
@@ -722,30 +758,35 @@ pub const TreeShaker = struct {
 
             if (try self.includeReExportSources(true)) changed = true;
 
-            for (0..mod_count) |i| {
-                if (!self.included.isSet(i)) continue;
-                const m = self.getModule(@intCast(i)) orelse continue;
-                const live_idx: ?u32 = if (m.wrap_kind == .esm) null else @intCast(i);
-                for (m.import_records, 0..) |rec, rec_i| {
-                    if (rec.resolved.isNone()) continue;
-                    const target = @intFromEnum(rec.resolved);
-                    const tmod = self.graph.getModule(rec.resolved) orelse continue;
+            {
+                var eval_scope = profile.begin(.shake_fixpoint_eval_deps);
+                defer eval_scope.end();
 
-                    const preserve = self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
-                    const must_include = rec.kind == .require or
-                        ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
-                        (moduleHasEvaluationEffect(tmod) and preserve);
-                    if (!must_include) continue;
-                    if (!self.included.isSet(target)) {
-                        self.included.set(target);
-                        changed = true;
-                    }
-                    // require() 는 namespace 접근 → 어떤 export 가 읽힐지 정적 분석 불가.
-                    // 보수적으로 target 의 모든 export 를 used 로 마킹. .cjs 와 .esm wrap 둘 다
-                    // (#2398: 이전엔 .esm 의 StmtInfo 가 안 만들어져 reachability 가 conservative
-                    // true 라 자동 보존됐지만, 본 PR 에서 .esm StmtInfo 를 빌드하면서 명시 마킹 필요).
-                    if (rec.kind == .require and tmod.wrap_kind.isWrapped() and preserve) {
-                        try self.markAllExportsUsed(@intCast(target));
+                for (0..mod_count) |i| {
+                    if (!self.included.isSet(i)) continue;
+                    const m = self.getModule(@intCast(i)) orelse continue;
+                    const live_idx: ?u32 = if (m.wrap_kind == .esm) null else @intCast(i);
+                    for (m.import_records, 0..) |rec, rec_i| {
+                        if (rec.resolved.isNone()) continue;
+                        const target = @intFromEnum(rec.resolved);
+                        const tmod = self.graph.getModule(rec.resolved) orelse continue;
+
+                        const preserve = self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
+                        const must_include = rec.kind == .require or
+                            ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
+                            (moduleHasEvaluationEffect(tmod) and preserve);
+                        if (!must_include) continue;
+                        if (!self.included.isSet(target)) {
+                            self.included.set(target);
+                            changed = true;
+                        }
+                        // require() 는 namespace 접근 → 어떤 export 가 읽힐지 정적 분석 불가.
+                        // 보수적으로 target 의 모든 export 를 used 로 마킹. .cjs 와 .esm wrap 둘 다
+                        // (#2398: 이전엔 .esm 의 StmtInfo 가 안 만들어져 reachability 가 conservative
+                        // true 라 자동 보존됐지만, 본 PR 에서 .esm StmtInfo 를 빌드하면서 명시 마킹 필요).
+                        if (rec.kind == .require and tmod.wrap_kind.isWrapped() and preserve) {
+                            try self.markAllExportsUsed(@intCast(target));
+                        }
                     }
                 }
             }
@@ -756,34 +797,49 @@ pub const TreeShaker = struct {
         }
 
         // 미사용 sideEffects=false 모듈 제거.
-        for (0..mod_count) |i| {
-            if (!self.included.isSet(i)) continue;
-            const m = self.getModule(@intCast(i)) orelse continue;
-            if (self.entry_set.isSet(i) or moduleHasEvaluationEffect(m)) continue;
-            if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
-            if (m.is_context_dep) continue; // require.context match 는 runtime require 대상
-            if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
-                self.included.unset(i);
+        {
+            var prune_scope = profile.begin(.shake_prune);
+            defer prune_scope.end();
+
+            for (0..mod_count) |i| {
+                if (!self.included.isSet(i)) continue;
+                const m = self.getModule(@intCast(i)) orelse continue;
+                if (self.entry_set.isSet(i) or moduleHasEvaluationEffect(m)) continue;
+                if (dyn_import_targets.isSet(i)) continue; // #1260: dynamic import target 보호
+                if (m.is_context_dep) continue; // require.context match 는 runtime require 대상
+                if (!self.hasAnyUsedExport(@intCast(i)) and !self.hasAnyUsedExportDirect(@intCast(i))) {
+                    self.included.unset(i);
+                }
             }
         }
 
         // Numeric chain 축약은 번들 크기/그래프 성능에 직접 영향을 주므로 `--minify` 없이도
         // 실행한다. used_exports/reachability 판정이 끝난 뒤로 미루는 건 디버그용 tree-shaker
         // 기대값 보존. 어떤 모듈도 numeric export 가 없으면 build/scan 비용 자체를 회피.
-        if (self.shouldRunNumericPostPass() and self.anyModuleHasExportedNumberConst(mod_count)) {
-            var pass: u32 = 0;
-            while (pass < max_numeric_const_post_passes) : (pass += 1) {
-                const forward_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, false);
-                const reverse_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, true);
-                if (!forward_changed and !reverse_changed) break;
+        {
+            var numeric_scope = profile.begin(.shake_numeric_postpass);
+            defer numeric_scope.end();
+
+            if (self.shouldRunNumericPostPass() and self.anyModuleHasExportedNumberConst(mod_count)) {
+                var pass: u32 = 0;
+                while (pass < max_numeric_const_post_passes) : (pass += 1) {
+                    const forward_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, false);
+                    const reverse_changed = try self.materializeCrossModuleConstFacts(mod_count, .numeric, true);
+                    if (!forward_changed and !reverse_changed) break;
+                }
             }
         }
 
         // ModuleInfo `isIncluded` 노출용 — 최종 included BitSet 을 Module 에 mirror.
         // chunk gen / NAPI 가 BitSet 직접 보유 안 해도 `m.is_included` 로 조회 가능.
-        for (0..mod_count) |i| {
-            const m = self.moduleAtMut(@intCast(i)) orelse continue;
-            m.is_included = self.included.isSet(i);
+        {
+            var mirror_scope = profile.begin(.shake_mirror);
+            defer mirror_scope.end();
+
+            for (0..mod_count) |i| {
+                const m = self.moduleAtMut(@intCast(i)) orelse continue;
+                m.is_included = self.included.isSet(i);
+            }
         }
     }
 
@@ -930,6 +986,9 @@ pub const TreeShaker = struct {
 
     /// 모든 included 모듈의 sym_to_ib 맵 구축/확장.
     fn buildSymToIbMaps(self: *TreeShaker) !void {
+        var scope = profile.begin(.shake_fixpoint_sym_to_ib);
+        defer scope.end();
+
         for (0..self.graph.moduleCount()) |i| {
             if (!self.included.isSet(i)) continue;
             try self.ensureSymToIbForModule(@intCast(i));
@@ -944,6 +1003,9 @@ pub const TreeShaker = struct {
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
+        var scope = profile.begin(.shake_fixpoint_bfs);
+        defer scope.end();
+
         var queue: std.ArrayListUnmanaged(BfsItem) = .empty;
         defer queue.deinit(self.allocator);
 
@@ -1716,6 +1778,9 @@ pub const TreeShaker = struct {
     }
 
     fn includeReExportSources(self: *TreeShaker, check_used: bool) !bool {
+        var scope = profile.begin(.shake_fixpoint_re_exports);
+        defer scope.end();
+
         var changed = false;
         for (0..self.graph.moduleCount()) |i| {
             if (!self.included.isSet(i)) continue;
@@ -1885,6 +1950,9 @@ pub const TreeShaker = struct {
     /// import binding → export 마킹 + canonical 모듈 포함.
     /// live_mod_idx가 non-null이면 StmtInfo 도달성 기반 추가 필터링 적용.
     fn processModuleImportsInner(self: *TreeShaker, m: Module, live_mod_idx: ?u32) !bool {
+        var scope = profile.begin(.shake_fixpoint_process_imports);
+        defer scope.end();
+
         // moduleHasAnyReachableStmt 는 binding 루프 내내 결과 불변 — 한 번만 검사 후
         // 도달 stmt 0 이면 어떤 binding 도 live 일 수 없으므로 즉시 종료.
         if (live_mod_idx) |idx| {

@@ -227,4 +227,35 @@ describe("profile CLI flags", () => {
     expect(parsed.phases.parse.total_ms).toBeGreaterThan(0);
     expect(parsed.phases.parse.count).toBeGreaterThanOrEqual(1);
   });
+
+  test("--profile=shake 는 tree-shaker 하위 phase 를 노출", async () => {
+    const fixture = await createFixture({
+      "dep-a.ts": `export const a = 1; export const unusedA = 10;`,
+      "dep-b.ts": `export const b = 2; export const unusedB = 20;`,
+      "index.ts": `
+        import { a } from "./dep-a";
+        import { b } from "./dep-b";
+        console.log(a + b);
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const result = await runZts([
+      "--bundle",
+      join(fixture.dir, "index.ts"),
+      "--profile=shake",
+      "--profile-level=detailed",
+      "--profile-format=json",
+      "-o",
+      join(fixture.dir, "out.js"),
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf("{")));
+    expect(parsed.phases.shake).toBeDefined();
+    expect(parsed.phases["shake.const.prepass"]).toBeDefined();
+    expect(parsed.phases["shake.fixpoint"]).toBeDefined();
+    expect(parsed.phases["shake.fixpoint.bfs"]).toBeDefined();
+    expect(parsed.phases["shake.prune"]).toBeDefined();
+  });
 });

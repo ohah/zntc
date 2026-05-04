@@ -104,6 +104,19 @@ pub const Category = enum {
     link_populate_import_symbols,
     link_populate_namespace_accesses,
     shake,
+    shake_setup,
+    shake_const_prepass,
+    shake_purity,
+    shake_stmt_info,
+    shake_fixpoint,
+    shake_fixpoint_sym_to_ib,
+    shake_fixpoint_bfs,
+    shake_fixpoint_process_imports,
+    shake_fixpoint_re_exports,
+    shake_fixpoint_eval_deps,
+    shake_prune,
+    shake_numeric_postpass,
+    shake_mirror,
     metadata,
     metadata_register_ns_rewrites,
 
@@ -601,6 +614,7 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("transform.ts_strip") == .transform_ts_strip);
     try testing.expect(Category.fromString("Transform.JSX") == .transform_jsx);
     try testing.expect(Category.fromString("hmr.detect") == .hmr_detect);
+    try testing.expect(Category.fromString("shake.fixpoint.bfs") == .shake_fixpoint_bfs);
 }
 
 test "Category.displayName: underscore → dot 역변환" {
@@ -608,6 +622,7 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("parse.ast.build", Category.displayName(.parse_ast_build));
     try testing.expectEqualStrings("transform.ts.strip", Category.displayName(.transform_ts_strip));
     try testing.expectEqualStrings("hmr.detect", Category.displayName(.hmr_detect));
+    try testing.expectEqualStrings("shake.fixpoint.bfs", Category.displayName(.shake_fixpoint_bfs));
 }
 
 test "Level.fromString" {
@@ -672,6 +687,18 @@ test "addFromCsv: parent 활성화 시 child 자동 활성" {
     addFromCsv("parse");
     try testing.expect(enabled(.parse));
     try testing.expect(enabled(.parse_ast_build));
+}
+
+test "addFromCsv: shake parent → 모든 sub-phase 활성" {
+    resetForTest();
+    defer resetForTest();
+
+    addFromCsv("shake");
+    try testing.expect(enabled(.shake));
+    try testing.expect(enabled(.shake_const_prepass));
+    try testing.expect(enabled(.shake_fixpoint));
+    try testing.expect(enabled(.shake_fixpoint_bfs));
+    try testing.expect(enabled(.shake_numeric_postpass));
 }
 
 test "addFromCsv: child 만 지정하면 parent 는 비활성" {
