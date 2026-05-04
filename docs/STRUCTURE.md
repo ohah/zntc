@@ -240,7 +240,7 @@ tests/
     transpile-conformance.ts #  TS strip + 다운레벨 정합성
     extract-esbuild-tests.ts #  esbuild 회귀 케이스 임포트
     smoke-diagnostics.test.ts # 스모크 결과 회귀 어서션
-    baselines/              #   bundle-perf baseline JSON
+    baselines/              #   특수 목적 baseline JSON (예: mangler-property)
 
 references/                 # 레퍼런스 프로젝트 (.gitignore, 로컬만)
   bun/                      #   Zig — 파서/렉서/SIMD 참고

@@ -112,19 +112,19 @@ bun run smoke.ts -- --keep-output               # 산출물 보존 (디버깅)
 - 빌드 성공 + 실행 성공 + 출력 일치 3단 어서션
 - `smoke-diagnostics.test.ts` — 결과를 통합 테스트에서 다시 회귀 어서션
 
-## 번들 perf 회귀 가드
+## 번들 perf 도구 비교
 ```bash
-# 비교 모드 — baseline 대비 ±15% 초과 시 fail
+# ZTS / Rolldown / Rspack 을 같은 fixture 로 실측 비교
 bun run tests/benchmark/bundle-perf.ts
 
-# baseline 갱신 (의도적 perf 변경 시)
-bun run tests/benchmark/bundle-perf.ts --write
+# JSON 결과 덤프
+bun run tests/benchmark/bundle-perf.ts --output ./bundle-perf.json
 ```
 - fixture 3종 (small 10 / medium 100 / large 200 모듈, externals 포함)
-- 워밍업 5회 + 측정 20회 → median 비교
-- baseline: `tests/benchmark/baselines/bundle-perf.json` (commit 됨)
-- 머신 의존 — 절대값은 머신마다 다름. dev 머신 비교는 의미 있음, CI 절대값은 다름
-- CI: `benchmark.yml` 가 PR 마다 `--no-fail --output` 으로 실행 → JSON artifact 업로드 (트렌드 추적, 회귀 fail 안 함)
+- 워밍업 5회 + 측정 20회 → CLI wall time median 비교
+- 체크인된 bundle-perf baseline 없음. 같은 CI runner 에서 ZTS / Rolldown / Rspack 을 나란히 돌린 실측값만 보고한다
+- ZTS `--profile=all` total 은 내부 phase 진단용으로만 별도 기록한다
+- CI: `benchmark.yml` 가 PR 마다 `--no-fail --output` 으로 실행 → JSON artifact 업로드 (트렌드 추적)
 
 ## 기타 벤치 / 분석
 - `bench.ts` / `pipeline.ts` — 합성 벤치 (200 모듈, 단계별 시간)
