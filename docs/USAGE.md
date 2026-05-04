@@ -41,6 +41,10 @@ Env 로딩 순서는 `.env`, `.env.local`, `.env.{mode}`, `.env.{mode}.local`이
 imported CSS 산출물에 자동 적용한다. Tailwind v4는 `postcss.config.mjs`에
 `@tailwindcss/postcss` 플러그인을 설정하면 동작한다.
 
+`zts dev`는 빌드 에러와 런타임 에러를 브라우저 오버레이로 표시한다. 런타임 stack trace는
+source map을 적용해 가능한 경우 원본 `main.ts:line:column` 위치로 보여준다.
+세부 동작: [HMR.md § 에러 오버레이](./HMR.md#에러-오버레이).
+
 ## 설정 파일 (`zts.config.json` / `zts.config.{ts,js,mjs,cjs,mts,cts}`)
 
 ### `zts.config.json` — TranspileOptions defaults

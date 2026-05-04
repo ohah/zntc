@@ -24,6 +24,9 @@ const SCSS_PREVIEW_PORT = 3993;
 const SCSS_DEV_PORT = 3992;
 const SASS_HTML_PREVIEW_PORT = 3991;
 const SCSS_RECOVERY_DEV_PORT = 3990;
+const OVERLAY_DEV_PORT = 3989;
+const RUNTIME_OVERLAY_DEV_PORT = 3988;
+const REJECTION_OVERLAY_DEV_PORT = 3987;
 
 const FIXTURE: Record<string, string> = {
   "index.html": `<!doctype html>
@@ -185,6 +188,126 @@ test.describe("zts dev E2E", () => {
     const css = await request.get(`http://localhost:${DEV_PORT}/src/style.css`);
     expect(css.status()).toBe(200);
     expect(await css.text()).toContain("rgb(220, 230, 240)");
+  });
+
+  test("dev 모드는 초기 번들 에러를 브라우저 오버레이로 보여준다", async ({ page }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-overlay-e2e-"));
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(
+      join(dir, "index.html"),
+      '<div id="root">waiting for bundle</div><script type="module" src="/src/main.ts"></script>',
+    );
+    await writeFile(join(dir, "src/main.ts"), "const broken: = ;");
+    const server = spawn(ZTS_BIN, ["dev", dir, "--port", String(OVERLAY_DEV_PORT)], {
+      stdio: "pipe",
+    });
+    await new Promise((r) => setTimeout(r, 2500));
+
+    try {
+      await page.goto(`http://localhost:${OVERLAY_DEV_PORT}/`, { waitUntil: "domcontentloaded" });
+      await expect(page.locator("#zts-error-overlay")).toBeVisible({ timeout: 5000 });
+      await expect(page.locator("#zts-error-overlay .title")).toContainText("Build Error");
+      await expect(
+        page.locator("#zts-error-overlay .message").filter({ hasText: "Type expected" }),
+      ).toBeVisible();
+
+      await writeFile(
+        join(dir, "src/main.ts"),
+        'document.getElementById("root")!.textContent = "fixed";',
+      );
+      await expect(page.locator("#zts-error-overlay")).not.toBeVisible({ timeout: 5000 });
+      await expect(page.locator("#root")).toHaveText("fixed");
+    } finally {
+      server.kill();
+      await new Promise((r) => server.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev 모드는 런타임 에러 스택을 브라우저 오버레이로 보여준다", async ({ page }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-runtime-overlay-e2e-"));
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(
+      join(dir, "index.html"),
+      '<style>.title,.message,.close{display:none!important}</style><div id="root">waiting for runtime</div><script type="module" src="/src/main.ts"></script>',
+    );
+    await writeFile(
+      join(dir, "src/main.ts"),
+      'document.getElementById("root")!.textContent = "before runtime error";\nthrow new Error("zts runtime overlay check");',
+    );
+    const server = spawn(ZTS_BIN, ["dev", dir, "--port", String(RUNTIME_OVERLAY_DEV_PORT)], {
+      stdio: "pipe",
+    });
+    await new Promise((r) => setTimeout(r, 2500));
+
+    try {
+      await page.goto(`http://localhost:${RUNTIME_OVERLAY_DEV_PORT}/`, {
+        waitUntil: "domcontentloaded",
+      });
+      await expect(page.locator("#zts-error-overlay")).toBeVisible({ timeout: 5000 });
+      await expect(page.locator("#zts-error-overlay .title")).toContainText("Runtime Error");
+      await expect(
+        page.locator("#zts-error-overlay .message").filter({
+          hasText: "Error: zts runtime overlay check",
+        }),
+      ).toBeVisible();
+      await expect(
+        page.locator("#zts-error-overlay .message").filter({ hasText: "main.ts:2:7" }),
+      ).toBeVisible();
+
+      await page.mouse.click(12, 12);
+      await expect(page.locator("#zts-error-overlay")).toBeVisible();
+      await page.locator("#zts-error-overlay .close").click();
+      await expect(page.locator("#zts-error-overlay")).not.toBeVisible();
+
+      await writeFile(
+        join(dir, "src/main.ts"),
+        'document.getElementById("root")!.textContent = "runtime fixed";',
+      );
+      await expect(page.locator("#zts-error-overlay")).not.toBeVisible({ timeout: 5000 });
+      await expect(page.locator("#root")).toHaveText("runtime fixed");
+    } finally {
+      server.kill();
+      await new Promise((r) => server.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("dev 모드는 unhandled rejection 스택도 런타임 오버레이로 보여준다", async ({ page }) => {
+    const dir = await mkdtemp(join(tmpdir(), "zts-app-rejection-overlay-e2e-"));
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(
+      join(dir, "index.html"),
+      '<div id="root">waiting for rejection</div><script type="module" src="/src/main.ts"></script>',
+    );
+    await writeFile(
+      join(dir, "src/main.ts"),
+      'document.getElementById("root")!.textContent = "before rejection";\nPromise.reject(new Error("zts promise overlay check"));',
+    );
+    const server = spawn(ZTS_BIN, ["dev", dir, "--port", String(REJECTION_OVERLAY_DEV_PORT)], {
+      stdio: "pipe",
+    });
+    await new Promise((r) => setTimeout(r, 2500));
+
+    try {
+      await page.goto(`http://localhost:${REJECTION_OVERLAY_DEV_PORT}/`, {
+        waitUntil: "domcontentloaded",
+      });
+      await expect(page.locator("#zts-error-overlay")).toBeVisible({ timeout: 5000 });
+      await expect(page.locator("#zts-error-overlay .title")).toContainText("Runtime Error");
+      await expect(
+        page.locator("#zts-error-overlay .message").filter({
+          hasText: "Error: zts promise overlay check",
+        }),
+      ).toBeVisible();
+      await expect(
+        page.locator("#zts-error-overlay .message").filter({ hasText: "main.ts:2" }),
+      ).toBeVisible();
+    } finally {
+      server.kill();
+      await new Promise((r) => server.on("close", r));
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
