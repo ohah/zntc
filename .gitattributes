@@ -1,0 +1,2 @@
+references/** linguist-vendored=true
+tests/codegen-snapshots/**/golden/** linguist-generated=true
