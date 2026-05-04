@@ -72,12 +72,15 @@ const VisitedSet = std.AutoHashMapUnmanaged(NodeIndex, void);
 /// 외부에서 받음 (declaration 자체엔 이름 없음).
 /// `paper_component_name` 은 `codegenNativeComponent('Name', { paperComponentName: 'X' })`
 /// 의 옵션. 없으면 null. RN runtime 의 `uiViewClassName` 은 이 값을 우선 (#2462).
+/// `commands_decl_idx` 는 `codegenNativeCommands<NativeCommands>(...)` 의 type argument
+/// 가 가리키는 interface declaration. 없으면 null (commands 미사용 spec).
 pub fn build(
     ast: *const Ast,
     type_index: *const TypeIndex,
     component_name: []const u8,
     paper_component_name: ?[]const u8,
     native_props_idx: NodeIndex,
+    commands_decl_idx: ?NodeIndex,
     alloc: std.mem.Allocator,
 ) Error!schema.ComponentShape {
     var visited: VisitedSet = .{};
@@ -100,12 +103,166 @@ pub fn build(
     try dedupByName(schema.NamedShape(schema.PropTypeAnnotation), &props_buf, alloc);
     try dedupByName(schema.EventTypeShape, &events_buf, alloc);
 
+    const commands: []const schema.NamedShape(schema.CommandTypeAnnotation) = if (commands_decl_idx) |c|
+        try buildCommands(ast, type_index, c, alloc)
+    else
+        &.{};
+
     return .{
         .name = component_name,
         .paper_component_name = paper_component_name,
         .props = try props_buf.toOwnedSlice(alloc),
         .events = try events_buf.toOwnedSlice(alloc),
+        .commands = commands,
     };
+}
+
+/// NativeCommands interface body → commands schema. interface 의 각 property_signature
+/// (`+commandName: (ref: ElementRef<T>, ...) => void` 또는 method shorthand) 마다 이름 +
+/// 첫 인자 `ref` 를 제외한 나머지 인자 names 를 추출.
+///
+/// reference (`@react-native/codegen` `flow/components/commands.js:35` 의
+/// `value.params.slice(1)`) 와 동일 contract — 첫 인자는 항상 viewRef, codegen 은 emit
+/// 에 그 자리에 `ref` 를 직접 식별자로 박음 (`GenerateViewConfigJs.js:323`).
+///
+/// param 의 type 은 emit 에 안 쓰므로 모두 `.string` fallback (CommandParamTypeAnnotation
+/// 에 `mixed` 가 없음). schema validation 측면에서 정확한 type 은 후속 PR.
+pub fn buildCommands(
+    ast: *const Ast,
+    type_index: *const TypeIndex,
+    commands_decl_idx: NodeIndex,
+    alloc: std.mem.Allocator,
+) Error![]const schema.NamedShape(schema.CommandTypeAnnotation) {
+    var visited: VisitedSet = .{};
+    defer visited.deinit(alloc);
+    var members_buf = std.ArrayList(NodeIndex).empty;
+    defer members_buf.deinit(alloc);
+    try collectAllMembers(ast, type_index, commands_decl_idx, &members_buf, &visited, 0, alloc);
+
+    var out = std.ArrayList(schema.NamedShape(schema.CommandTypeAnnotation)).empty;
+    defer out.deinit(alloc);
+
+    for (members_buf.items) |sig_idx| {
+        const sig = ast.getNode(sig_idx);
+        if (sig.tag != .ts_property_signature and sig.tag != .flow_property_signature) continue;
+        const e = sig.data.extra;
+        if (e + 2 >= ast.extra_data.items.len) continue;
+        const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+        const type_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
+
+        // 함수 시그니처 검증: TS 는 ts_function_type 으로 보존, Flow 는 type info 를
+        // strip 해 flow_literal_type 으로 만듦 (`flow.zig` arrow type → strip-only).
+        // 양쪽 모두 prop_signature 의 source text 에 `=>` 가 포함되므로 그걸로 검출.
+        const sig_src = ast.getText(sig.span);
+        const has_arrow = std.mem.indexOf(u8, sig_src, "=>") != null;
+        if (!isFunctionType(ast, type_idx) and !has_arrow) continue;
+
+        const name = extractKeyName(ast, key_idx) orelse continue;
+        // TS 면 ts_function_type 의 span 에 `(...)`, Flow 면 sig 전체 source 의 첫 `(...)`
+        // 가 함수 인자 list. extractCommandParams 가 첫 paren-balanced 부분을 split.
+        const params_src = if (isFunctionType(ast, type_idx))
+            ast.getText(ast.getNode(type_idx).span)
+        else
+            sig_src;
+        const params = try extractCommandParams(params_src, alloc);
+        try out.append(alloc, .{
+            .name = name,
+            .optional = PropertySignatureFlags.fromU32(ast.extra_data.items[e + 2]).optional,
+            .type_annotation = .{ .params = params },
+        });
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// function_type 노드 (`(ref, p1, p2) => void`) 의 params list 에서 첫 인자 (`ref`) 를
+/// 제외한 나머지 인자 names 추출. 각 param 의 type 은 `.string` fallback (emit 에 안 씀).
+///
+/// ZTS parser 의 `parseTypeMemberParam` (`ts.zig:1316-1392`) 는 type-level function 의
+/// param 을 빈 `ts_property_signature` 로 strip-only 변환 — name 정보가 AST 에 없음.
+/// 따라서 ts_function_type / flow_function_type 의 **source text 자체** 를 depth-aware
+/// 스캔으로 outer paren 내용을 split 후 각 segment 의 leading identifier 추출.
+///
+/// RN spec 의 NativeCommands interface 의 method 시그니처는 단순 — generic / object
+/// literal / nested call 안 의 `,` 만 depth 카운팅 (`<>`, `()`, `{}`, `[]`) 으로 회피.
+fn extractCommandParams(
+    src: []const u8,
+    alloc: std.mem.Allocator,
+) Error![]const schema.NamedShape(schema.CommandParamTypeAnnotation) {
+    const paren_open = std.mem.indexOfScalar(u8, src, '(') orelse return &.{};
+    const paren_close = matchingParen(src, paren_open) orelse return &.{};
+    const inner = src[paren_open + 1 .. paren_close];
+
+    var out = std.ArrayList(schema.NamedShape(schema.CommandParamTypeAnnotation)).empty;
+    defer out.deinit(alloc);
+
+    var seg_start: usize = 0;
+    var i: usize = 0;
+    var depth: i32 = 0;
+    var first = true;
+    while (i <= inner.len) : (i += 1) {
+        const at_end = i == inner.len;
+        if (!at_end) {
+            switch (inner[i]) {
+                '<', '(', '{', '[' => depth += 1,
+                '>', ')', '}', ']' => depth -= 1,
+                else => {},
+            }
+        }
+        if ((!at_end and inner[i] == ',' and depth == 0) or at_end) {
+            const seg = std.mem.trim(u8, inner[seg_start..i], " \t\n\r");
+            seg_start = i + 1;
+            if (seg.len == 0) continue;
+            if (first) {
+                first = false;
+                continue; // ref 첫 인자 skip — reference contract.
+            }
+            const name = leadingIdentifier(seg) orelse continue;
+            try out.append(alloc, .{
+                .name = name,
+                .optional = false,
+                .type_annotation = .string,
+            });
+        }
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// `src[open]` (`(`) 에 매칭하는 `)` 인덱스. depth 카운팅. 미매칭이면 null.
+fn matchingParen(src: []const u8, open: usize) ?usize {
+    var depth: i32 = 0;
+    var i = open;
+    while (i < src.len) : (i += 1) {
+        switch (src[i]) {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if (depth == 0) return i;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+/// segment 의 시작 부분에서 식별자 (`name`, `name?`, `name:`) 추출.
+fn leadingIdentifier(seg: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    // identifier 첫 글자: a-z, A-Z, _, $.
+    if (i >= seg.len) return null;
+    const first = seg[i];
+    if (!((first >= 'a' and first <= 'z') or
+        (first >= 'A' and first <= 'Z') or
+        first == '_' or first == '$')) return null;
+    i += 1;
+    while (i < seg.len) : (i += 1) {
+        const c = seg[i];
+        if ((c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '_' or c == '$') continue;
+        break;
+    }
+    return seg[0..i];
 }
 
 /// 같은 `.name` 을 가진 항목을 dedup. **TS/Flow override 시멘틱 정합**:

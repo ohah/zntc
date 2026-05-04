@@ -172,3 +172,45 @@ test "codegen_plugin: 옵션 object 있지만 paperComponentName 키 없으면 �
     try expectContains(out, "let nativeComponentName = 'Plain'");
     try expectContains(out, "uiViewClassName: 'Plain'");
 }
+
+test "codegen_plugin: codegenNativeCommands → dispatchCommand wrapper + Commands export" {
+    const code =
+        \\type NativeProps = { color: string };
+        \\interface NativeCommands {
+        \\  highlightTraceUpdates: (
+        \\    ref: React.ElementRef<View>,
+        \\    updates: ReadonlyArray<number>,
+        \\  ) => void;
+        \\  clearElements: (ref: React.ElementRef<View>) => void;
+        \\}
+        \\export const Commands = codegenNativeCommands<NativeCommands>({
+        \\  supportedCommands: ['highlightTraceUpdates', 'clearElements'],
+        \\});
+        \\export default codegenNativeComponent<NativeProps>('DebuggingOverlay');
+    ;
+    const out_opt = try callTransform(std.testing.allocator, code, "/path/DebuggingOverlayNativeComponent.ts");
+    try std.testing.expect(out_opt != null);
+    const out = out_opt.?;
+    defer std.testing.allocator.free(out);
+
+    try expectContains(out, "const {dispatchCommand} = require(\"react-native/Libraries/ReactNative/RendererProxy\")");
+    try expectContains(out, "export const Commands = {");
+    // 인자 있는 command — ref + updates
+    try expectContains(out, "highlightTraceUpdates(ref, updates) { dispatchCommand(ref, \"highlightTraceUpdates\", [updates]); }");
+    // 인자 없는 command — ref 만, [] 빈 배열
+    try expectContains(out, "clearElements(ref) { dispatchCommand(ref, \"clearElements\", []); }");
+}
+
+test "codegen_plugin: codegenNativeCommands 호출 없으면 Commands export / dispatchCommand 없음" {
+    const code =
+        \\type NativeProps = { color: string };
+        \\export default codegenNativeComponent<NativeProps>('NoCmds');
+    ;
+    const out_opt = try callTransform(std.testing.allocator, code, "/path/NoCmdsNativeComponent.ts");
+    try std.testing.expect(out_opt != null);
+    const out = out_opt.?;
+    defer std.testing.allocator.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "export const Commands") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "dispatchCommand") == null);
+}

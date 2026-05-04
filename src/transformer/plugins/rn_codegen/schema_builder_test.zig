@@ -67,7 +67,7 @@ fn parseAndIndex(alloc: std.mem.Allocator, source: []const u8, mode: ParseMode) 
 /// `name` 의 declaration NodeIndex 로부터 ComponentShape 빌드. caller 가 프리 free.
 fn buildShape(p: *Parsed, type_name: []const u8, component_name: []const u8) !schema.ComponentShape {
     const decl_idx = p.type_index.get(type_name) orelse return error.TypeNotIndexed;
-    return schema_builder.build(&p.parser.ast, &p.type_index, component_name, null, decl_idx, p.alloc);
+    return schema_builder.build(&p.parser.ast, &p.type_index, component_name, null, decl_idx, null, p.alloc);
 }
 
 fn freeShape(alloc: std.mem.Allocator, shape: schema.ComponentShape) void {
@@ -277,7 +277,7 @@ test "schema_builder: invalid declaration → InvalidNativePropsBody" {
     try std.testing.expect(list.len > 0);
     const stmt: NodeIndex = @enumFromInt(p.parser.ast.extra_data.items[list.start]);
 
-    const result = schema_builder.build(&p.parser.ast, &p.type_index, "X", null, stmt, std.testing.allocator);
+    const result = schema_builder.build(&p.parser.ast, &p.type_index, "X", null, stmt, null, std.testing.allocator);
     try std.testing.expectError(error.InvalidNativePropsBody, result);
 }
 
