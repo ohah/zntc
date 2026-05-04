@@ -116,6 +116,9 @@ pub const TreeShaker = struct {
     /// 모듈 인덱스가 다른 모듈의 `export * from` source 인지 표시. tryMarkReExportNsSubset
     /// 에서 chain 추적 시 O(M·E) scan 대신 O(1) 조회 (#1928).
     re_export_star_targets: ?std.DynamicBitSet = null,
+    /// export source include fixpoint 에서 볼 re-export 보유 모듈 목록.
+    /// fixpoint 마다 전체 module graph 를 훑지 않고 후보만 순회한다.
+    re_export_modules: std.ArrayListUnmanaged(u32) = .empty,
     /// `export * as X from './src'` source lookup cache.
     /// followImport 가 named virtual namespace binding 마다 target.export_bindings 전체를
     /// 다시 훑지 않도록 module index -> exported namespace name -> source module index 를
@@ -239,6 +242,7 @@ pub const TreeShaker = struct {
         }
         if (self.prebuilt_mask) |*mask| mask.deinit();
         if (self.re_export_star_targets) |*mask| mask.deinit();
+        self.re_export_modules.deinit(self.allocator);
         if (self.re_export_namespace_sources.len > 0) {
             for (self.re_export_namespace_sources) |*maybe_map| {
                 if (maybe_map.*) |*map| map.deinit(self.allocator);
@@ -730,9 +734,13 @@ pub const TreeShaker = struct {
 
             var re_star_targets = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
             errdefer re_star_targets.deinit();
+            var re_export_modules: std.ArrayListUnmanaged(u32) = .empty;
+            errdefer re_export_modules.deinit(self.allocator);
             for (0..mod_count) |i| {
                 const m = self.getModule(@intCast(i)) orelse continue;
+                var has_re_export = false;
                 for (m.export_bindings) |eb| {
+                    if (eb.kind == .re_export or eb.kind.isReExportAll()) has_re_export = true;
                     if (eb.kind != .re_export_star) continue;
                     const rec_idx = eb.import_record_index orelse continue;
                     if (rec_idx >= m.import_records.len) continue;
@@ -740,8 +748,10 @@ pub const TreeShaker = struct {
                     if (src == .none) continue;
                     re_star_targets.set(@intFromEnum(src));
                 }
+                if (has_re_export) try re_export_modules.append(self.allocator, @intCast(i));
             }
             self.re_export_star_targets = re_star_targets;
+            self.re_export_modules = re_export_modules;
 
             // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용).
             // `inject` and `runBeforeMain` are not output entries, but they are
@@ -979,7 +989,10 @@ pub const TreeShaker = struct {
                 if (try self.processModuleImportsInner(m.*, live_idx)) changed = true;
             }
 
-            if (try self.includeReExportSources(true)) changed = true;
+            if (self.used_exports.count() != used_count_before) changed = true;
+            if (self.included.count() != included_count_before) changed = true;
+
+            if ((iteration == 0 or changed) and try self.includeReExportSources(true)) changed = true;
 
             {
                 var eval_scope = profile.begin(.shake_fixpoint_eval_deps);
@@ -2124,7 +2137,11 @@ pub const TreeShaker = struct {
         defer scope.end();
 
         var changed = false;
-        for (0..self.graph.moduleCount()) |i| {
+        for (self.re_export_modules.items) |i| {
+            var module_scope = profile.begin(.shake_fixpoint_re_exports_module);
+            defer module_scope.end();
+
+            if (i >= self.graph.moduleCount()) continue;
             if (!self.included.isSet(i)) continue;
             const m = self.getModule(@intCast(i)) orelse continue;
             var ns_usage: ReExportNsConsumerUsage = .{};

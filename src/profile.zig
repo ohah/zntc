@@ -146,6 +146,7 @@ pub const Category = enum {
     shake_fixpoint_bfs_seed_export_opaque,
     shake_fixpoint_process_imports,
     shake_fixpoint_re_exports,
+    shake_fixpoint_re_exports_module,
     shake_fixpoint_eval_deps,
     shake_prune,
     shake_numeric_postpass,
@@ -280,6 +281,11 @@ comptime {
     }
 }
 
+const all_categories_mask: u128 = if (num_categories == 128)
+    std.math.maxInt(u128)
+else
+    (@as(u128, 1) << @as(u7, @intCast(num_categories))) - 1;
+
 const all_categories: [num_categories]Category = blk: {
     var cats: [num_categories]Category = undefined;
     for (@typeInfo(Category).@"enum".fields, 0..) |f, i| {
@@ -352,7 +358,7 @@ pub fn addFromCsv(csv: []const u8) void {
         if (name.len == 0) continue;
 
         if (std.ascii.eqlIgnoreCase(name, "all")) {
-            enabled_mask = comptime (@as(u128, 1) << num_categories) - 1;
+            enabled_mask = all_categories_mask;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "none")) {
@@ -369,7 +375,7 @@ pub fn addFromCsv(csv: []const u8) void {
 pub fn addCategories(names: []const []const u8) void {
     for (names) |name| {
         if (std.ascii.eqlIgnoreCase(name, "all")) {
-            enabled_mask = comptime (@as(u128, 1) << num_categories) - 1;
+            enabled_mask = all_categories_mask;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "none")) {
@@ -733,6 +739,7 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("shake.fixpoint.bfs") == .shake_fixpoint_bfs);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.follow.import") == .shake_fixpoint_bfs_follow_import);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.seed.export.resolve") == .shake_fixpoint_bfs_seed_export_resolve);
+    try testing.expect(Category.fromString("shake.fixpoint.re.exports.module") == .shake_fixpoint_re_exports_module);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts") == .shake_const_prepass_build_facts);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts.lookup") == .shake_const_prepass_build_facts_lookup);
 }
@@ -747,6 +754,7 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("shake.fixpoint.bfs", Category.displayName(.shake_fixpoint_bfs));
     try testing.expectEqualStrings("shake.fixpoint.bfs.follow.import", Category.displayName(.shake_fixpoint_bfs_follow_import));
     try testing.expectEqualStrings("shake.fixpoint.bfs.seed.export.resolve", Category.displayName(.shake_fixpoint_bfs_seed_export_resolve));
+    try testing.expectEqualStrings("shake.fixpoint.re.exports.module", Category.displayName(.shake_fixpoint_re_exports_module));
     try testing.expectEqualStrings("shake.const.prepass.build.facts", Category.displayName(.shake_const_prepass_build_facts));
     try testing.expectEqualStrings("shake.const.prepass.build.facts.lookup", Category.displayName(.shake_const_prepass_build_facts_lookup));
 }
@@ -1079,4 +1087,12 @@ test "resetForTest 초기화" {
     try testing.expectEqual(@as(u64, 0), totalNs(.parse));
     try testing.expectEqual(@as(u64, 0), selfNs(.parse));
     try testing.expectEqual(@as(u32, 0), count(.parse));
+}
+
+test "addFromCsv all enables last category" {
+    resetForTest();
+    defer resetForTest();
+
+    addFromCsv("all");
+    try testing.expect(enabled(.shake_fixpoint_re_exports_module));
 }
