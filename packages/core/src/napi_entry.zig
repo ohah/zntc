@@ -698,6 +698,134 @@ fn resolveEntryPoint(alloc: std.mem.Allocator, path: []const u8) ?[]const u8 {
     return resolved;
 }
 
+// ─── runtimePolyfillPlan 객체 파싱 헬퍼 ───
+// JS wrapper 가 8 개 parallel 배열 대신 단일 객체로 plan 을 넘기게 했으므로
+// 여기서 한 번에 푼다. 길이 equality 같은 invariant 가 객체 구조에 자연스럽게 들어가
+// 별도 검증이 필요 없다.
+
+const RuntimePolyfillParseError = error{InvalidPlan} || std.mem.Allocator.Error;
+
+// 호출처에서 alloc 은 항상 native_alloc 이라, 양쪽이 갈라지면 owned_strings 와
+// 다른 allocator 로 free 시도해서 곧 망가진다. 시그니처에서 alloc 을 제거해
+// 일관성을 강제한다.
+fn ownPlanString(
+    env: c.napi_env,
+    elem: c.napi_value,
+    key: [*:0]const u8,
+    error_msg: [*:0]const u8,
+    owned_strings: *std.ArrayList([]const u8),
+) RuntimePolyfillParseError![]const u8 {
+    const s = getObjectString(env, elem, key, native_alloc) orelse {
+        _ = throwError(env, error_msg);
+        return error.InvalidPlan;
+    };
+    errdefer native_alloc.free(s);
+    try owned_strings.append(native_alloc, s);
+    return s;
+}
+
+fn planArrayLen(env: c.napi_env, arr_val: c.napi_value, error_msg: [*:0]const u8) RuntimePolyfillParseError!u32 {
+    var is_array: bool = false;
+    _ = c.napi_is_array(env, arr_val, &is_array);
+    if (!is_array) {
+        _ = throwError(env, error_msg);
+        return error.InvalidPlan;
+    }
+    var len: u32 = 0;
+    _ = c.napi_get_array_length(env, arr_val, &len);
+    return len;
+}
+
+fn parseRuntimePolyfillCandidatesArray(
+    env: c.napi_env,
+    plan_val: c.napi_value,
+    owned_strings: *std.ArrayList([]const u8),
+) RuntimePolyfillParseError![]const bundler_mod.runtime_polyfills.Candidate {
+    const arr_val = getNamedProperty(env, plan_val, "candidates") orelse return &.{};
+    const len = try planArrayLen(env, arr_val, "runtimePolyfillPlan.candidates must be an array");
+    if (len == 0) return &.{};
+    const buf = try native_alloc.alloc(bundler_mod.runtime_polyfills.Candidate, len);
+    errdefer native_alloc.free(buf);
+    for (0..len) |i| {
+        var elem: c.napi_value = undefined;
+        if (c.napi_get_element(env, arr_val, @intCast(i), &elem) != c.napi_ok) {
+            _ = throwError(env, "runtimePolyfillPlan.candidates entry inaccessible");
+            return error.InvalidPlan;
+        }
+        const feature = try ownPlanString(env, elem, "feature", "runtimePolyfillPlan.candidates[].feature missing", owned_strings);
+        if (feature.len == 0) {
+            _ = throwError(env, "runtimePolyfillPlan.candidates[].feature must be non-empty");
+            return error.InvalidPlan;
+        }
+        const module = try ownPlanString(env, elem, "module", "runtimePolyfillPlan.candidates[].module missing", owned_strings);
+        const path = try ownPlanString(env, elem, "path", "runtimePolyfillPlan.candidates[].path missing", owned_strings);
+        buf[i] = .{ .feature = feature, .module = module, .path = path };
+    }
+    return buf;
+}
+
+fn parseRuntimePolyfillResolvedArray(
+    env: c.napi_env,
+    plan_val: c.napi_value,
+    key: [*:0]const u8,
+    owned_strings: *std.ArrayList([]const u8),
+) RuntimePolyfillParseError![]const bundler_mod.runtime_polyfills.ResolvedModule {
+    const arr_val = getNamedProperty(env, plan_val, key) orelse return &.{};
+    const len = try planArrayLen(env, arr_val, "runtimePolyfillPlan resolved-module array must be an array");
+    if (len == 0) return &.{};
+    const buf = try native_alloc.alloc(bundler_mod.runtime_polyfills.ResolvedModule, len);
+    errdefer native_alloc.free(buf);
+    for (0..len) |i| {
+        var elem: c.napi_value = undefined;
+        if (c.napi_get_element(env, arr_val, @intCast(i), &elem) != c.napi_ok) {
+            _ = throwError(env, "runtimePolyfillPlan resolved-module entry inaccessible");
+            return error.InvalidPlan;
+        }
+        const module = try ownPlanString(env, elem, "module", "runtimePolyfillPlan resolved-module[].module missing", owned_strings);
+        const path = try ownPlanString(env, elem, "path", "runtimePolyfillPlan resolved-module[].path missing", owned_strings);
+        buf[i] = .{ .module = module, .path = path };
+    }
+    return buf;
+}
+
+fn parseRuntimePolyfillPlan(
+    env: c.napi_env,
+    opts_obj: c.napi_value,
+    owned_strings: *std.ArrayList([]const u8),
+    owned_string_arrays: *std.ArrayList([]const []const u8),
+) RuntimePolyfillParseError!?bundler_mod.runtime_polyfills.Plan {
+    const plan_val = getNamedProperty(env, opts_obj, "runtimePolyfillPlan") orelse return null;
+
+    const mode_str = try ownPlanString(env, plan_val, "mode", "runtimePolyfillPlan.mode missing", owned_strings);
+    const mode = bundler_mod.runtime_polyfills.Mode.fromString(mode_str) orelse {
+        _ = throwError(env, "runtimePolyfillPlan.mode unknown");
+        return error.InvalidPlan;
+    };
+
+    const candidates = try parseRuntimePolyfillCandidatesArray(env, plan_val, owned_strings);
+    const entry_modules = try parseRuntimePolyfillResolvedArray(env, plan_val, "entry", owned_strings);
+    const include = try parseRuntimePolyfillResolvedArray(env, plan_val, "include", owned_strings);
+
+    var exclude: []const []const u8 = &.{};
+    if (getNamedProperty(env, plan_val, "exclude")) |arr_val| {
+        const parsed = parseStringArray(env, arr_val, native_alloc) orelse {
+            _ = throwError(env, "runtimePolyfillPlan.exclude must be a string array");
+            return error.InvalidPlan;
+        };
+        for (parsed) |s| try owned_strings.append(native_alloc, s);
+        try owned_string_arrays.append(native_alloc, parsed);
+        exclude = parsed;
+    }
+
+    return .{
+        .mode = mode,
+        .candidates = candidates,
+        .entry_modules = entry_modules,
+        .include = include,
+        .exclude = exclude,
+    };
+}
+
 // ─── buildSync 함수 ───
 
 fn napiBuildSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_value {
@@ -3806,131 +3934,7 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
-    const runtime_polyfill_mode_str = getObjectString(env, opts_obj, "runtimePolyfillModeNative", native_alloc);
-    if (runtime_polyfill_mode_str) |s| if (!trackStr(owned_strings, s)) return null;
-
-    const runtime_candidate_features = getObjectStringArray(env, opts_obj, "runtimePolyfillCandidateFeatures", native_alloc);
-    if (runtime_candidate_features) |arr| {
-        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
-        if (!trackArr(owned_string_arrays, arr)) return null;
-    }
-    const runtime_candidate_modules = getObjectStringArray(env, opts_obj, "runtimePolyfillCandidateModules", native_alloc);
-    if (runtime_candidate_modules) |arr| {
-        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
-        if (!trackArr(owned_string_arrays, arr)) return null;
-    }
-    const runtime_candidate_paths = getObjectStringArray(env, opts_obj, "runtimePolyfillCandidatePaths", native_alloc);
-    if (runtime_candidate_paths) |arr| {
-        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
-        if (!trackArr(owned_string_arrays, arr)) return null;
-    }
-    const runtime_entry_modules = getObjectStringArray(env, opts_obj, "runtimePolyfillEntryModules", native_alloc);
-    if (runtime_entry_modules) |arr| {
-        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
-        if (!trackArr(owned_string_arrays, arr)) return null;
-    }
-    const runtime_entry_paths = getObjectStringArray(env, opts_obj, "runtimePolyfillEntryPaths", native_alloc);
-    if (runtime_entry_paths) |arr| {
-        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
-        if (!trackArr(owned_string_arrays, arr)) return null;
-    }
-    const runtime_include_modules = getObjectStringArray(env, opts_obj, "runtimePolyfillIncludeModules", native_alloc);
-    if (runtime_include_modules) |arr| {
-        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
-        if (!trackArr(owned_string_arrays, arr)) return null;
-    }
-    const runtime_include_paths = getObjectStringArray(env, opts_obj, "runtimePolyfillIncludePaths", native_alloc);
-    if (runtime_include_paths) |arr| {
-        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
-        if (!trackArr(owned_string_arrays, arr)) return null;
-    }
-    const runtime_exclude_modules = getObjectStringArray(env, opts_obj, "runtimePolyfillExcludeModules", native_alloc);
-    if (runtime_exclude_modules) |arr| {
-        for (arr) |s| if (!trackStr(owned_strings, s)) return null;
-        if (!trackArr(owned_string_arrays, arr)) return null;
-    }
-
-    const runtime_polyfill_plan: ?bundler_mod.runtime_polyfills.Plan = blk: {
-        const mode_s = runtime_polyfill_mode_str orelse break :blk null;
-        const mode = bundler_mod.runtime_polyfills.Mode.fromString(mode_s) orelse {
-            _ = throwError(env, "invalid runtime polyfill native mode");
-            return null;
-        };
-
-        var candidates: []const bundler_mod.runtime_polyfills.Candidate = &.{};
-        if (runtime_candidate_features) |features| {
-            const modules = runtime_candidate_modules orelse {
-                _ = throwError(env, "invalid runtime polyfill candidate plan");
-                return null;
-            };
-            const paths = runtime_candidate_paths orelse {
-                _ = throwError(env, "invalid runtime polyfill candidate plan");
-                return null;
-            };
-            if (features.len != modules.len or modules.len != paths.len) {
-                _ = throwError(env, "invalid runtime polyfill candidate plan");
-                return null;
-            }
-            if (features.len > 0) {
-                const buf = native_alloc.alloc(bundler_mod.runtime_polyfills.Candidate, features.len) catch return null;
-                for (features, 0..) |feature_s, i| {
-                    if (feature_s.len == 0) {
-                        _ = throwError(env, "invalid runtime polyfill feature");
-                        native_alloc.free(buf);
-                        return null;
-                    }
-                    buf[i] = .{ .feature = feature_s, .module = modules[i], .path = paths[i] };
-                }
-                candidates = buf;
-            }
-        }
-
-        var entry_modules: []const bundler_mod.runtime_polyfills.ResolvedModule = &.{};
-        if (runtime_entry_modules) |modules| {
-            const paths = runtime_entry_paths orelse {
-                _ = throwError(env, "invalid runtime polyfill entry plan");
-                return null;
-            };
-            if (modules.len != paths.len) {
-                _ = throwError(env, "invalid runtime polyfill entry plan");
-                return null;
-            }
-            if (modules.len > 0) {
-                const buf = native_alloc.alloc(bundler_mod.runtime_polyfills.ResolvedModule, modules.len) catch return null;
-                for (modules, 0..) |module_name, i| {
-                    buf[i] = .{ .module = module_name, .path = paths[i] };
-                }
-                entry_modules = buf;
-            }
-        }
-
-        var include: []const bundler_mod.runtime_polyfills.ResolvedModule = &.{};
-        if (runtime_include_modules) |modules| {
-            const paths = runtime_include_paths orelse {
-                _ = throwError(env, "invalid runtime polyfill include plan");
-                return null;
-            };
-            if (modules.len != paths.len) {
-                _ = throwError(env, "invalid runtime polyfill include plan");
-                return null;
-            }
-            if (modules.len > 0) {
-                const buf = native_alloc.alloc(bundler_mod.runtime_polyfills.ResolvedModule, modules.len) catch return null;
-                for (modules, 0..) |module_name, i| {
-                    buf[i] = .{ .module = module_name, .path = paths[i] };
-                }
-                include = buf;
-            }
-        }
-
-        break :blk .{
-            .mode = mode,
-            .candidates = candidates,
-            .entry_modules = entry_modules,
-            .include = include,
-            .exclude = runtime_exclude_modules orelse &.{},
-        };
-    };
+    const runtime_polyfill_plan = parseRuntimePolyfillPlan(env, opts_obj, owned_strings, owned_string_arrays) catch return null;
 
     // silentConsoleErrorPatterns: string[] (RegExp source strings)
     const silent_console_error_patterns = getObjectStringArray(env, opts_obj, "silentConsoleErrorPatterns", native_alloc);

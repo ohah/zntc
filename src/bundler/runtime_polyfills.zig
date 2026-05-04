@@ -92,18 +92,8 @@ fn comptimeSortByName(comptime entries: anytype) [entries.len]NameFeature {
     return sorted;
 }
 
-fn lowerBoundByName(haystack: []const NameFeature, name: []const u8) usize {
-    var lo: usize = 0;
-    var hi: usize = haystack.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        if (std.mem.lessThan(u8, haystack[mid].name, name)) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo;
+fn cmpNameVsEntry(needle: []const u8, item: NameFeature) std.math.Order {
+    return std.mem.order(u8, needle, item.name);
 }
 
 const global_features_unsorted = [_]NameFeature{
@@ -545,7 +535,7 @@ fn insertFeaturesForName(
     name: []const u8,
     mappings: []const NameFeature,
 ) !void {
-    var i = lowerBoundByName(mappings, name);
+    var i = std.sort.lowerBound(NameFeature, mappings, name, cmpNameVsEntry);
     while (i < mappings.len and std.mem.eql(u8, mappings[i].name, name)) : (i += 1) {
         try out.insert(allocator, mappings[i].feature);
     }
