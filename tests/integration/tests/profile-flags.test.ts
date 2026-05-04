@@ -255,6 +255,8 @@ describe("profile CLI flags", () => {
     const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf("{")));
     expect(parsed.phases.shake).toBeDefined();
     expect(parsed.phases.shake.self_ms).toBeGreaterThanOrEqual(0);
+    expect(parsed.phases["shake.init"]).toBeDefined();
+    expect(parsed.phases["shake.analyze"]).toBeDefined();
     expect(parsed.phases["shake.const.prepass"]).toBeDefined();
     expect(parsed.phases["shake.const.prepass.numeric.propagate"]).toBeDefined();
     expect(parsed.phases["shake.const.prepass.build.facts"]).toBeDefined();

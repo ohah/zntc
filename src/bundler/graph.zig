@@ -2318,6 +2318,38 @@ pub const ModuleGraph = struct {
     /// 이 중앙 resync 경로를 우회해서 record/binding 만 수동 보정하면 linker, tree-shaker,
     /// chunking 이 서로 다른 AST/semantic 상태를 보게 되므로 여기서만 metadata 재구축
     /// 정책을 확장해야 한다 (#1913).
+    fn preserveCanonicalNamesAfterSemanticResync(
+        source: []const u8,
+        old_sem: ModuleSemanticData,
+        new_sem: *ModuleSemanticData,
+    ) void {
+        const module_scope: ?*const std.StringHashMap(usize) = if (new_sem.scope_maps.len > 0) &new_sem.scope_maps[0] else null;
+        for (old_sem.symbols.items) |old_sym| {
+            if (old_sym.canonical_name.len == 0) continue;
+
+            if (old_sym.synthetic_kind == null) {
+                const name = old_sym.nameText(source);
+                const new_idx = if (module_scope) |scope| scope.get(name) else null;
+                if (new_idx) |idx| {
+                    if (idx < new_sem.symbols.items.len) {
+                        const new_sym = &new_sem.symbols.items[idx];
+                        if (new_sym.synthetic_kind == null) {
+                            new_sym.canonical_name = old_sym.canonical_name;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            for (new_sem.symbols.items) |*new_sym| {
+                if (new_sym.synthetic_kind != old_sym.synthetic_kind) continue;
+                if (!std.mem.eql(u8, new_sym.synthetic_name, old_sym.synthetic_name)) continue;
+                new_sym.canonical_name = old_sym.canonical_name;
+                break;
+            }
+        }
+    }
+
     pub fn resyncModuleMetadataAfterAstMutation(
         self: *ModuleGraph,
         module: *Module,
@@ -2329,6 +2361,7 @@ pub const ModuleGraph = struct {
         const ast = &(module.ast orelse return);
         const previous_import_records = module.import_records;
         const previous_import_bindings = module.import_bindings;
+        const previous_semantic = module.semantic;
 
         var analyzer = SemanticAnalyzer.init(arena_alloc, ast);
         {
@@ -2352,6 +2385,11 @@ pub const ModuleGraph = struct {
                 .references = analyzer.references.items,
                 .numeric_const_texts = analyzer.numeric_const_texts,
             };
+            if (!self.minify_identifiers) {
+                if (previous_semantic) |old_sem| {
+                    preserveCanonicalNamesAfterSemanticResync(module.source, old_sem, &module.semantic.?);
+                }
+            }
             suppressRuntimeHelperInternalUnresolved(module);
             module.uses_top_level_await = analyzer.has_top_level_await;
             if (module.transform_cache) |*cache| {

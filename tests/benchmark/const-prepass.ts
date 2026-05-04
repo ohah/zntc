@@ -37,7 +37,14 @@ const DEFAULT_ITERATIONS = 9;
 
 const TARGET_PHASES = [
   "shake",
+  "shake.init",
+  "shake.analyze",
+  "shake.post.link.finalize",
+  "shake.setup",
+  "shake.purity",
+  "shake.stmt.info",
   "shake.fixpoint",
+  "shake.fixpoint.sym.to.ib",
   "shake.fixpoint.bfs",
   "shake.fixpoint.bfs.seed",
   "shake.fixpoint.bfs.queue",
@@ -54,7 +61,10 @@ const TARGET_PHASES = [
   "shake.fixpoint.bfs.seed.export.semantic.lookup",
   "shake.fixpoint.bfs.seed.export.enqueue.symbol",
   "shake.fixpoint.bfs.seed.export.opaque",
+  "shake.fixpoint.process.imports",
   "shake.fixpoint.re.exports",
+  "shake.fixpoint.eval.deps",
+  "shake.prune",
   "shake.const.prepass",
   "shake.const.prepass.numeric.propagate",
   "shake.const.prepass.numeric.seed.scan",
@@ -68,6 +78,8 @@ const TARGET_PHASES = [
   "shake.const.prepass.minify.resync",
   "shake.const.prepass.node.buffer",
   "shake.const.prepass.link.refresh",
+  "shake.numeric.postpass",
+  "shake.mirror",
 ] as const;
 
 type TargetPhase = (typeof TARGET_PHASES)[number];
@@ -344,16 +356,19 @@ async function main(cli: CliArgs): Promise<void> {
   console.log();
   console.log("### tree-shake profile");
   console.log(
-    "| Fixture | Profile total | Shake | Shake self | Const prepass | Build facts | Build count | Fixpoint | BFS | BFS self | BFS seed | BFS queue | Final mark | Re-exports |",
+    "| Fixture | Profile total | Shake | Shake self | Init | Analyze | Analyze self | Const prepass | Build facts | Build count | Fixpoint | BFS | BFS self | BFS seed | BFS queue | Final mark | Re-exports |",
   );
   console.log(
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   );
   for (const result of results) {
     console.log(
       `| ${result.name} | ${fmtMs(result.total_ms_stats.median)} | ` +
         `${fmtMs(phaseMedian(result, "shake"))} | ` +
         `${fmtMs(phaseSelfMedian(result, "shake"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.init"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.analyze"))} | ` +
+        `${fmtMs(phaseSelfMedian(result, "shake.analyze"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.const.prepass"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.const.prepass.build.facts"))} | ` +
         `${phaseCount(result, "shake.const.prepass.build.facts")} | ` +
@@ -364,6 +379,37 @@ async function main(cli: CliArgs): Promise<void> {
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.queue"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.final.mark.exports"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.re.exports"))} |`,
+    );
+  }
+
+  console.log();
+  console.log("### shake self profile");
+  console.log(
+    "| Fixture | Setup | Purity | Stmt info | Prune | Numeric postpass | Mirror | Post-link finalize |",
+  );
+  console.log("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+  for (const result of results) {
+    console.log(
+      `| ${result.name} | ${fmtMs(phaseMedian(result, "shake.setup"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.purity"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.stmt.info"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.prune"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.mirror"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.post.link.finalize"))} |`,
+    );
+  }
+
+  console.log();
+  console.log("### fixpoint helper profile");
+  console.log("| Fixture | Sym to import | Process imports | Re-exports | Eval deps |");
+  console.log("| --- | ---: | ---: | ---: | ---: |");
+  for (const result of results) {
+    console.log(
+      `| ${result.name} | ${fmtMs(phaseMedian(result, "shake.fixpoint.sym.to.ib"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.process.imports"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.re.exports"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.eval.deps"))} |`,
     );
   }
 
