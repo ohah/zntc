@@ -4,10 +4,9 @@ on:
   push:
     branches: [main]
     paths:
+      # Deploy Pages only when the docs site itself changes. Core/source changes
+      # still run CI, but they should not publish docs unless docs files changed.
       - "documents/**"
-      - "packages/core/**"
-      - "packages/wasm/**"
-      - "src/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
