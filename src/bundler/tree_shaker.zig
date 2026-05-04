@@ -118,6 +118,11 @@ pub const TreeShaker = struct {
     /// 모듈 인덱스가 다른 모듈의 `export * from` source 인지 표시. tryMarkReExportNsSubset
     /// 에서 chain 추적 시 O(M·E) scan 대신 O(1) 조회 (#1928).
     re_export_star_targets: ?std.DynamicBitSet = null,
+    /// `export * as X from './src'` source lookup cache.
+    /// followImport 가 named virtual namespace binding 마다 target.export_bindings 전체를
+    /// 다시 훑지 않도록 module index -> exported namespace name -> source module index 를
+    /// lazy 구축한다.
+    re_export_namespace_sources: []?std.StringHashMapUnmanaged(u32) = &.{},
     /// numeric const fact propagation 의 DFS 스크래치. propagateNumericExportConstFacts /
     /// nodeContainsNumericConstRef / nodeIsNumericLiteralFoldSeed 가 매 호출마다
     /// ArrayList 를 새로 만들지 않도록 재사용. clearRetainingCapacity 로만 비운다.
@@ -216,6 +221,12 @@ pub const TreeShaker = struct {
         }
         if (self.prebuilt_mask) |*mask| mask.deinit();
         if (self.re_export_star_targets) |*mask| mask.deinit();
+        if (self.re_export_namespace_sources.len > 0) {
+            for (self.re_export_namespace_sources) |*maybe_map| {
+                if (maybe_map.*) |*map| map.deinit(self.allocator);
+            }
+            self.allocator.free(self.re_export_namespace_sources);
+        }
         if (self.reachable_stmts.len > 0) {
             for (self.reachable_stmts) |*rs| {
                 if (rs.*) |*bs| bs.deinit();
@@ -1347,6 +1358,38 @@ pub const TreeShaker = struct {
     }
 
     /// import binding을 따라 타겟 모듈의 export statement를 시드.
+    fn ensureReExportNamespaceSourceMap(
+        self: *TreeShaker,
+        mod_idx: u32,
+    ) std.mem.Allocator.Error!?*std.StringHashMapUnmanaged(u32) {
+        if (mod_idx >= self.graph.moduleCount()) return null;
+        if (self.re_export_namespace_sources.len == 0) {
+            const maps = try self.allocator.alloc(?std.StringHashMapUnmanaged(u32), self.graph.moduleCount());
+            for (maps) |*map| map.* = null;
+            self.re_export_namespace_sources = maps;
+        }
+        if (mod_idx >= self.re_export_namespace_sources.len) return null;
+        if (self.re_export_namespace_sources[mod_idx] == null) {
+            var map: std.StringHashMapUnmanaged(u32) = .{};
+            errdefer map.deinit(self.allocator);
+            const target_module = self.getModule(mod_idx) orelse {
+                self.re_export_namespace_sources[mod_idx] = map;
+                return &self.re_export_namespace_sources[mod_idx].?;
+            };
+            for (target_module.export_bindings) |eb| {
+                if (eb.kind != .re_export_namespace) continue;
+                const rec_idx = eb.import_record_index orelse continue;
+                if (rec_idx >= target_module.import_records.len) continue;
+                const resolved = target_module.import_records[rec_idx].resolved;
+                if (self.graph.getModule(resolved) == null) continue;
+                const entry = try map.getOrPut(self.allocator, eb.exported_name);
+                if (!entry.found_existing) entry.value_ptr.* = @intFromEnum(resolved);
+            }
+            self.re_export_namespace_sources[mod_idx] = map;
+        }
+        return &self.re_export_namespace_sources[mod_idx].?;
+    }
+
     fn followImport(
         self: *TreeShaker,
         mod_idx: u32,
@@ -1417,23 +1460,18 @@ pub const TreeShaker = struct {
         // 이렇게 하지 않으면 seedExport가 idx.ts의 "M"를 resolve해도 idx.ts scope에
         // "M" 로컬이 없어 enqueue가 실패 → source 모듈 statement 도달성 누락.
         if (ib.kind == .named and ib.namespace_used_properties != null) {
-            const target_module = self.graph.getModule(rec.resolved).?;
-            for (target_module.export_bindings) |eb| {
-                if (eb.kind != .re_export_namespace) continue;
-                if (!std.mem.eql(u8, eb.exported_name, ib.imported_name)) continue;
-                const rec_idx = eb.import_record_index orelse break;
-                if (rec_idx >= target_module.import_records.len) break;
-                const inner_src = @intFromEnum(target_module.import_records[rec_idx].resolved);
-                if (self.graph.getModule(target_module.import_records[rec_idx].resolved) == null) break;
-
-                // inner_src를 include + 각 member를 seed
-                if (!self.included.isSet(inner_src)) self.included.set(inner_src);
-                for (ib.namespace_used_properties.?) |prop_name| {
-                    try self.seedExport(@intCast(inner_src), prop_name, queue, module_stmt_infos, reachable_stmts);
+            const ns_source_map = try self.ensureReExportNamespaceSourceMap(@intCast(target));
+            if (ns_source_map) |map| {
+                if (map.get(ib.imported_name)) |inner_src| {
+                    // inner_src를 include + 각 member를 seed
+                    if (!self.included.isSet(inner_src)) self.included.set(inner_src);
+                    for (ib.namespace_used_properties.?) |prop_name| {
+                        try self.seedExport(@intCast(inner_src), prop_name, queue, module_stmt_infos, reachable_stmts);
+                    }
+                    // target(idx.ts)의 "M" export도 마킹 — includeReExportSources에서 tryMarkReExportNsSubset이 동작하도록.
+                    try self.markExportUsed(@intCast(target), ib.imported_name);
+                    return;
                 }
-                // target(idx.ts)의 "M" export도 마킹 — includeReExportSources에서 tryMarkReExportNsSubset이 동작하도록.
-                try self.markExportUsed(@intCast(target), ib.imported_name);
-                return;
             }
         }
 
