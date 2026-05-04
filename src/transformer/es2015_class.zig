@@ -3274,28 +3274,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const GenMod = @import("es2015_generator.zig").ES2015Generator(@TypeOf(self.*));
 
                 if (self.options.unsupported.generator) {
-                    // Class lowering builds the method function expression directly,
-                    // bypassing visitMethodBodyWithCtx(), so mirror its arrow
-                    // capture environment before the state-machine pass visits body.
-                    const saved_arrow_depth = self.arrow_this_depth;
-                    const saved_needs_this = self.needs_this_var;
-                    const saved_needs_args = self.needs_arguments_var;
-                    const saved_super_alias = self.super_call_this_alias;
-                    self.arrow_this_depth = 0;
-                    self.needs_this_var = false;
-                    self.needs_arguments_var = false;
-                    self.super_call_this_alias = false;
-                    defer {
-                        self.arrow_this_depth = saved_arrow_depth;
-                        self.needs_this_var = saved_needs_this;
-                        self.needs_arguments_var = saved_needs_args;
-                        self.super_call_this_alias = saved_super_alias;
-                    }
+                    const arrow_env = es_helpers.pushArrowEnv(self);
+                    defer es_helpers.popArrowEnv(self, arrow_env);
 
                     const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
                     if (!sm_result.body.isNone()) {
-                        const needs_this_capture = self.options.unsupported.arrow and self.needs_this_var;
-                        const needs_arguments_capture = self.options.unsupported.arrow and self.needs_arguments_var;
                         const gen_call = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
                         const gen_wrapper = try es_helpers.wrapInFunction(self, gen_call, span);
                         const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
@@ -3305,8 +3288,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             sm_result.var_decl,
                             new_params,
                             span,
-                            needs_this_capture,
-                            needs_arguments_capture,
                         );
                         return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
                     }
@@ -3314,7 +3295,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const method_nt: ?Transformer.NewTargetCtx = if (self.options.unsupported.new_target) .method else null;
                 const gen_wrapper = try es_helpers.buildGeneratorWrapper(self, try visitMethodBodyWithCtx(self, body_idx, span, method_nt), span);
                 const async_call = try es_helpers.buildAsyncHelperCall(self, gen_wrapper, span);
-                const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span, false, false);
+                const func_expr = try buildWrappedFunc(self, async_call, .none, new_params, span);
                 return buildMethodAssignment(self, info, class_name_span, key_idx, func_expr, span);
             }
 
@@ -3348,14 +3329,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         /// return call_expr 를 body로 하는 function expression 생성.
         /// var_decl이 있으면 body 앞에 추가 (hoisted vars).
+        /// arrow lowering 결과 `_this`/`_arguments` 캡처가 필요하면 호출자가 미리
+        /// arrow env 스코프 안에서 needs_this_var/needs_arguments_var 가 set 되도록 한다.
         fn buildWrappedFunc(
             self: *Transformer,
             call_expr: NodeIndex,
             var_decl: NodeIndex,
             params: ast_mod.NodeList,
             span: Span,
-            needs_this_capture: bool,
-            needs_arguments_capture: bool,
         ) Transformer.Error!NodeIndex {
             const return_stmt = try self.ast.addNode(.{
                 .tag = .return_statement,
@@ -3365,22 +3346,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            if (needs_this_capture) {
-                const this_init = try self.ast.addNode(.{
-                    .tag = .this_expression,
-                    .span = span,
-                    .data = .{ .none = 0 },
-                });
-                try self.scratch.append(self.allocator, try self.buildVarDecl("_this", this_init, span));
-            }
-            if (needs_arguments_capture) {
-                const args_span = try self.ast.addString("arguments");
-                const args_init = try self.ast.addNode(.{
-                    .tag = .identifier_reference,
-                    .span = args_span,
-                    .data = .{ .string_ref = args_span },
-                });
-                try self.scratch.append(self.allocator, try self.buildVarDecl("_arguments", args_init, span));
+            if (self.options.unsupported.arrow) {
+                var capture_stmts: [2]NodeIndex = undefined;
+                const count = try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, span);
+                try self.scratch.appendSlice(self.allocator, capture_stmts[0..count]);
             }
             if (!var_decl.isNone()) try self.scratch.append(self.allocator, var_decl);
             try self.scratch.append(self.allocator, return_stmt);

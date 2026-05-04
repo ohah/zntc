@@ -289,6 +289,16 @@ describe("runtime polyfill usage scanner", () => {
     }
   });
 
+  test("ignores entry files whose contents fail to read", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-scan-"));
+    try {
+      const missing = join(dir, "vanished.ts");
+      expect(collectRuntimePolyfillUsageFromFiles([missing])).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("scans require dependencies and directory index modules", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-scan-"));
     try {
@@ -325,6 +335,34 @@ describe("runtime polyfill prelude", () => {
       expect(readFileSync(path, "utf8")).toContain("core-js/modules/es.string.replace-all.js");
       prelude!.cleanup();
       expect(existsSync(path)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("uses the test-hook runtime require when overridden", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfill-prelude-"));
+    try {
+      const entry = join(dir, "entry.ts");
+      writeFileSync(entry, `console.log("entry");`);
+      const stub = {
+        resolve(specifier: string) {
+          return `/virtual/${specifier}`;
+        },
+      };
+      withRuntimeRequire(stub, () => {
+        const prelude = createRuntimePolyfillPrelude(["es.string.replace-all"], {
+          entryPoints: [entry],
+        });
+        expect(prelude).not.toBeNull();
+        try {
+          expect(readFileSync(prelude!.path, "utf8")).toContain(
+            "/virtual/core-js/modules/es.string.replace-all.js",
+          );
+        } finally {
+          prelude!.cleanup();
+        }
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

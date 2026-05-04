@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
@@ -113,16 +113,6 @@ const ES_TARGETS = new Set([
 
 const DEVICE_TARGET_RE =
   /\b(?:iphone|ipad|ipod|galaxy|pixel|nexus|oneplus|xiaomi|redmi|huawei|motorola|moto)\b/i;
-
-const RUNTIME_USAGE_MODULES = new Set([
-  "es.array.at",
-  "es.map",
-  "es.object.has-own",
-  "es.promise",
-  "es.set",
-  "es.string.replace-all",
-  "web.structured-clone",
-]);
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
 
@@ -448,9 +438,9 @@ function visitAst(
   }
 }
 
-export function scanRuntimePolyfillUsage(source: string, filename = "input.js"): string[] {
-  const ast = parseSource(source, filename);
+function scanAst(ast: unknown): { used: Set<string>; specifiers: string[] } {
   const used = new Set<string>();
+  const specifiers: string[] = [];
   visitAst(ast, null, (node, parent) => {
     if (node.type === "MemberExpression") {
       recordMemberUsage(node, used);
@@ -459,19 +449,18 @@ export function scanRuntimePolyfillUsage(source: string, filename = "input.js"):
     if (node.type === "NewExpression" || node.type === "CallExpression") {
       const name = identifierName(node.callee);
       if (name) recordIdentifierUsage(name, used);
+      if (node.type === "CallExpression" && name === "require") {
+        const args = Array.isArray(node.arguments) ? node.arguments : [];
+        const spec = stringLiteralValue(args[0]);
+        if (spec) specifiers.push(spec);
+      }
       return;
     }
     if (node.type === "Identifier" && !shouldSkipIdentifier(node, parent)) {
       const name = identifierName(node);
       if (name) recordIdentifierUsage(name, used);
+      return;
     }
-  });
-  return [...used].filter((moduleName) => RUNTIME_USAGE_MODULES.has(moduleName)).sort();
-}
-
-function importSpecifiersFromAst(ast: unknown): string[] {
-  const specs: string[] = [];
-  visitAst(ast, null, (node) => {
     if (
       (node.type === "ImportDeclaration" ||
         node.type === "ExportNamedDeclaration" ||
@@ -479,15 +468,15 @@ function importSpecifiersFromAst(ast: unknown): string[] {
       node.source
     ) {
       const spec = stringLiteralValue(node.source);
-      if (spec) specs.push(spec);
-    }
-    if (node.type === "CallExpression" && identifierName(node.callee) === "require") {
-      const args = Array.isArray(node.arguments) ? node.arguments : [];
-      const spec = stringLiteralValue(args[0]);
-      if (spec) specs.push(spec);
+      if (spec) specifiers.push(spec);
     }
   });
-  return specs;
+  return { used, specifiers };
+}
+
+export function scanRuntimePolyfillUsage(source: string, filename = "input.js"): string[] {
+  const { used } = scanAst(parseSource(source, filename));
+  return [...used].sort();
 }
 
 function isRelativeSpecifier(specifier: string): boolean {
@@ -543,15 +532,19 @@ export function collectRuntimePolyfillUsageFromFiles(
   const seen = new Set<string>();
   const used = new Set<string>();
 
-  while (queue.length > 0) {
-    const file = queue.shift()!;
-    if (seen.has(file) || !existsSync(file) || !isSourceFile(file)) continue;
+  for (let head = 0; head < queue.length; head++) {
+    const file = queue[head]!;
+    if (seen.has(file) || !isSourceFile(file)) continue;
+    let source: string;
+    try {
+      source = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
     seen.add(file);
-    const source = readFileSync(file, "utf8");
-    for (const moduleName of scanRuntimePolyfillUsage(source, file)) used.add(moduleName);
-
-    const ast = parseSource(source, file);
-    for (const specifier of importSpecifiersFromAst(ast)) {
+    const { used: fileUsed, specifiers } = scanAst(parseSource(source, file));
+    for (const moduleName of fileUsed) used.add(moduleName);
+    for (const specifier of specifiers) {
       const resolved = resolveSourceImport(file, specifier, options.resolveExtensions);
       if (resolved && !seen.has(resolved)) queue.push(resolved);
     }
@@ -577,11 +570,10 @@ function computeRuntimePolyfillModules(
     const used = collectRuntimePolyfillUsageFromFiles(options.entryPoints, {
       resolveExtensions: options.resolveExtensions,
     });
-    const unsupportedUsed = computeCoreJsCompatModules(runtime.targets, used, {
+    modules = computeCoreJsCompatModules(runtime.targets, used, {
       version: runtime.coreJsVersion,
       proposals: runtime.proposals,
     });
-    modules = unsupportedUsed;
   }
 
   const out = new Set(modules);
@@ -590,26 +582,30 @@ function computeRuntimePolyfillModules(
   return [...out].sort();
 }
 
-function resolveCoreJsModule(moduleName: string, entryPoints: readonly string[]): string {
-  const specifier = `core-js/modules/${moduleName}.js`;
-  const errors: string[] = [];
-  const roots = [
-    entryPoints[0] ? resolve(dirname(resolve(entryPoints[0])), "package.json") : null,
-    import.meta.url,
-  ].filter(Boolean) as string[];
-
-  for (const root of roots) {
-    try {
-      const req = createRequire(root);
-      return req.resolve(specifier);
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+function buildCoreJsResolver(entryPoints: readonly string[]): (moduleName: string) => string {
+  const override = runtimeRequireOverride;
+  const requires: RuntimeRequire[] = [];
+  if (override) {
+    requires.push(override);
+  } else {
+    const entry = entryPoints[0];
+    if (entry) requires.push(createRequire(resolve(dirname(resolve(entry)), "package.json")));
+    requires.push(createRequire(import.meta.url));
   }
-
-  throw new Error(
-    `@zts/core: runtimePolyfills could not resolve '${specifier}'. Install core-js with \`bun add core-js\`.\n${errors[0] ?? ""}`,
-  );
+  return (moduleName: string) => {
+    const specifier = `core-js/modules/${moduleName}.js`;
+    let firstError: string | undefined;
+    for (const req of requires) {
+      try {
+        return req.resolve(specifier);
+      } catch (err) {
+        firstError ??= err instanceof Error ? err.message : String(err);
+      }
+    }
+    throw new Error(
+      `@zts/core: runtimePolyfills could not resolve '${specifier}'. Install core-js with \`bun add core-js\`.\n${firstError ?? ""}`,
+    );
+  };
 }
 
 export function createRuntimePolyfillPrelude(
@@ -617,13 +613,11 @@ export function createRuntimePolyfillPrelude(
   options: RuntimePolyfillBuildOptions,
 ): { path: string; cleanup: () => void } | null {
   if (modules.length === 0) return null;
+  const resolveCoreJs = buildCoreJsResolver(options.entryPoints);
   const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-"));
   const path = join(dir, "prelude.mjs");
   const imports = modules
-    .map((moduleName) => {
-      const resolved = resolveCoreJsModule(moduleName, options.entryPoints);
-      return `import ${JSON.stringify(resolved)};`;
-    })
+    .map((moduleName) => `import ${JSON.stringify(resolveCoreJs(moduleName))};`)
     .join("\n");
   writeFileSync(path, `${imports}\n`, "utf8");
   return {
