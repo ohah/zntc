@@ -63,6 +63,7 @@ const TARGET_PHASES = [
   "shake.fixpoint.bfs.seed.export.opaque",
   "shake.fixpoint.process.imports",
   "shake.fixpoint.re.exports",
+  "shake.fixpoint.re.exports.module",
   "shake.fixpoint.eval.deps",
   "shake.prune",
   "shake.const.prepass",
@@ -415,13 +416,16 @@ async function main(cli: CliArgs): Promise<void> {
 
   console.log();
   console.log("### fixpoint helper profile");
-  console.log("| Fixture | Sym to import | Process imports | Re-exports | Eval deps |");
-  console.log("| --- | ---: | ---: | ---: | ---: |");
+  console.log(
+    "| Fixture | Sym to import | Process imports | Re-exports | Re-export modules | Eval deps |",
+  );
+  console.log("| --- | ---: | ---: | ---: | ---: | ---: |");
   for (const result of results) {
     console.log(
       `| ${result.name} | ${fmtMs(phaseMedian(result, "shake.fixpoint.sym.to.ib"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.process.imports"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.re.exports"))} | ` +
+        `${phaseCount(result, "shake.fixpoint.re.exports.module")} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.eval.deps"))} |`,
     );
   }
