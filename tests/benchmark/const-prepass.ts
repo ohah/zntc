@@ -14,13 +14,23 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import {
+  ROOT,
+  ZTS_BIN,
+  buildBin as buildBinShared,
+  getCommit,
+  parsePositiveInt,
+  parseProfileJson,
+  type ProfileJson,
+} from "./_runner";
 import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 
-const ROOT = resolve(__dirname, "../..");
-const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
+function buildBin(): void {
+  buildBinShared("tree-shake-profile");
+}
 
 const DEFAULT_WARMUP = 3;
 const DEFAULT_ITERATIONS = 9;
@@ -72,21 +82,6 @@ interface FixtureSpec {
   name: string;
   size: number;
   write: (dir: string, size: number) => string;
-}
-
-interface ProfilePhase {
-  total_ms: number;
-  self_ms?: number;
-  count: number;
-  pct: number;
-  self_pct?: number;
-}
-
-interface ProfileJson {
-  profile_version: number;
-  total_ms: number;
-  level: string;
-  phases: Record<string, ProfilePhase | undefined>;
 }
 
 interface PhaseResult {
@@ -172,25 +167,6 @@ function writeNamespaceFixture(dir: string, size: number): string {
   return join(dir, "entry.ts");
 }
 
-function buildBin(): void {
-  if (existsSync(ZTS_BIN)) return;
-  console.log("[tree-shake-profile] zts binary not found, building ReleaseFast...");
-  const result = spawnSync("zig", ["build", "-Doptimize=ReleaseFast"], {
-    cwd: ROOT,
-    stdio: "inherit",
-  });
-  if (result.status !== 0) throw new Error("zig build failed");
-}
-
-function getCommit(): string {
-  const result = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
-    cwd: ROOT,
-    encoding: "utf8",
-    stdio: "pipe",
-  });
-  return result.stdout.trim() || "unknown";
-}
-
 function runOne(entry: string, outDir: string): ProfileJson {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
@@ -217,15 +193,6 @@ function runOne(entry: string, outDir: string): ProfileJson {
     throw new Error(`zts failed: ${result.stderr.slice(0, 800)}`);
   }
   return parseProfileJson(`${result.stdout}\n${result.stderr}`);
-}
-
-function parseProfileJson(output: string): ProfileJson {
-  const start = output.indexOf("{");
-  const end = output.lastIndexOf("}");
-  if (start < 0 || end < start) {
-    throw new Error(`missing profile JSON output: ${output.slice(0, 800)}`);
-  }
-  return JSON.parse(output.slice(start, end + 1)) as ProfileJson;
 }
 
 function median(values: number[]): number {
@@ -308,13 +275,13 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (arg.startsWith("--output=")) {
       args.output = arg.slice("--output=".length);
     } else if (arg === "--warmup") {
-      args.warmup = parsePositiveInt(argv[++i], "warmup");
+      args.warmup = parsePositiveInt("--warmup", argv[++i]);
     } else if (arg.startsWith("--warmup=")) {
-      args.warmup = parsePositiveInt(arg.slice("--warmup=".length), "warmup");
+      args.warmup = parsePositiveInt("--warmup", arg.slice("--warmup=".length));
     } else if (arg === "--iterations") {
-      args.iterations = parsePositiveInt(argv[++i], "iterations");
+      args.iterations = parsePositiveInt("--iterations", argv[++i]);
     } else if (arg.startsWith("--iterations=")) {
-      args.iterations = parsePositiveInt(arg.slice("--iterations=".length), "iterations");
+      args.iterations = parsePositiveInt("--iterations", arg.slice("--iterations=".length));
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -323,14 +290,6 @@ function parseArgs(argv: string[]): CliArgs {
     }
   }
   return args;
-}
-
-function parsePositiveInt(value: string | undefined, name: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error(`--${name} must be a positive integer`);
-  }
-  return parsed;
 }
 
 function printHelp(): void {

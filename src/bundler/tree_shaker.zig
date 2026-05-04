@@ -86,11 +86,6 @@ const ConstMaterializeProfile = struct {
     inner: constant_facts.MaterializeProfile = .{},
 };
 
-inline fn beginProfileMaybe(cat: ?profile.Category) profile.Scope {
-    if (cat) |c| return profile.begin(c);
-    return .{};
-}
-
 pub const TreeShaker = struct {
     allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
@@ -465,7 +460,7 @@ pub const TreeShaker = struct {
         ast: *Ast,
         profile_cat: ?profile.Category,
     ) void {
-        var scope = beginProfileMaybe(profile_cat);
+        var scope = profile.beginMaybe(profile_cat);
         defer scope.end();
 
         const minify_mod = @import("../transformer/minify.zig");
@@ -524,12 +519,12 @@ pub const TreeShaker = struct {
         const sem = m.semantic orelse return false;
         const ast = &(m.ast orelse return false);
         var const_values = blk: {
-            var build_scope = beginProfileMaybe(const_profile.build_facts);
+            var build_scope = profile.beginMaybe(const_profile.build_facts);
             defer build_scope.end();
             break :blk try self.linker.buildCrossModuleConstValues(m, sem);
         };
         const should_materialize = blk: {
-            var gate_scope = beginProfileMaybe(const_profile.candidate_gate);
+            var gate_scope = profile.beginMaybe(const_profile.candidate_gate);
             defer gate_scope.end();
             break :blk self.shouldMaterializeConstFacts(ast, sem, &const_values, filter);
         };
@@ -543,7 +538,7 @@ pub const TreeShaker = struct {
         }
         const scratch_ptr: ?*constant_facts.Scratch = if (self.materialize_scratch) |*s| s else null;
         const changed = blk: {
-            var materialize_scope = beginProfileMaybe(const_profile.materialize);
+            var materialize_scope = profile.beginMaybe(const_profile.materialize);
             defer materialize_scope.end();
             break :blk constant_facts.materializeWithScratch(self.allocator, ast, sem.symbol_ids, &const_values, scratch_ptr, module_index, const_profile.inner);
         };
@@ -1543,10 +1538,10 @@ pub const TreeShaker = struct {
         module_stmt_infos: []?StmtInfos,
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!void {
+        if (!try self.markSeedExportVisited(@intCast(target_mod), imported_name)) return;
+
         var seed_scope = profile.begin(.shake_fixpoint_bfs_seed_export);
         defer seed_scope.end();
-
-        if (!try self.markSeedExportVisited(@intCast(target_mod), imported_name)) return;
 
         const mod_count = self.graph.moduleCount();
         const canonical = blk: {

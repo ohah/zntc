@@ -26,11 +26,10 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { ROOT, ZTS_BIN, buildBin as buildBinShared, getCommit } from "./_runner";
 import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 
-const ROOT = resolve(__dirname, "../..");
-const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
 const BASELINE_PATH = join(__dirname, "baselines", "bundle-perf.json");
 
 const WARMUP = 5;
@@ -165,18 +164,7 @@ interface BaselineFile {
 // ─── 메인 ───
 
 function buildBin() {
-  if (existsSync(ZTS_BIN)) return;
-  console.log("[bundle-perf] zts binary not found, building Release...");
-  const r = spawnSync("zig", ["build", "-Doptimize=ReleaseFast"], {
-    cwd: ROOT,
-    stdio: "inherit",
-  });
-  if (r.status !== 0) throw new Error("zig build failed");
-}
-
-function getCommit(): string {
-  const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: ROOT, stdio: "pipe" });
-  return r.stdout.toString().trim() || "unknown";
+  buildBinShared("bundle-perf");
 }
 
 async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
