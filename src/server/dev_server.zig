@@ -59,6 +59,43 @@ const WsClients = struct {
     }
 };
 
+const ErrorState = struct {
+    mutex: std.Thread.Mutex = .{},
+    json: ?[]const u8 = null,
+
+    fn deinit(self: *ErrorState, allocator: std.mem.Allocator) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.json) |json| allocator.free(json);
+        self.json = null;
+    }
+
+    fn setOwned(self: *ErrorState, allocator: std.mem.Allocator, json: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.json) |old| allocator.free(old);
+        self.json = json;
+    }
+
+    fn setCopy(self: *ErrorState, allocator: std.mem.Allocator, json: []const u8) !void {
+        const copy = try allocator.dupe(u8, json);
+        self.setOwned(allocator, copy);
+    }
+
+    fn clear(self: *ErrorState, allocator: std.mem.Allocator) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.json) |json| allocator.free(json);
+        self.json = null;
+    }
+
+    fn sendIfPresent(self: *ErrorState, writer: *std.Io.Writer) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.json) |json| writeWsFrame(writer, json) catch {};
+    }
+};
+
 /// 한 SSE 구독자 — `*std.Io.Writer`만 갖고는 chunked transfer-encoding의 chunk 종결을
 /// underlying TCP까지 push할 수 없다. `body_writer`가 있으면 `BodyWriter.flush()`로
 /// `http_protocol_output.flush()`까지 호출해 frame이 즉시 클라이언트에 도달.
@@ -248,6 +285,24 @@ fn writeJsonEscaped(w: anytype, s: []const u8) !void {
     }
 }
 
+fn buildErrorJsonFromDiagnostics(allocator: std.mem.Allocator, diags: anytype) ![]const u8 {
+    var msg: std.ArrayList(u8) = .empty;
+    defer msg.deinit(allocator);
+    const w = msg.writer(allocator);
+
+    try w.writeAll("{\"type\":\"error\",\"errors\":[");
+    for (diags, 0..) |d, i| {
+        if (i > 0) try w.writeByte(',');
+        try w.writeAll("{\"file\":\"");
+        try writeJsonEscaped(w, d.file_path);
+        try w.writeAll("\",\"message\":\"");
+        try writeJsonEscaped(w, d.message);
+        try w.writeAll("\"}");
+    }
+    try w.writeAll("]}");
+    return try allocator.dupe(u8, msg.items);
+}
+
 /// 임의의 std.json.Value를 JSON으로 직렬화 (MCP `id` 필드용 — string/integer/null만).
 fn writeJsonValue(w: anytype, v: std.json.Value) !void {
     switch (v) {
@@ -278,6 +333,7 @@ pub const DevServer = struct {
     sse_clients: SseClients = .{},
     /// 모노토닉 이벤트 시퀀스 (SSE payload의 id 필드).
     event_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    error_state: ErrorState = .{},
     /// Control API `/reset-cache`가 설정; watchLoop가 다음 iteration에서 소비.
     cache_reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// MCP `get_build_events` 도구용 이벤트 히스토리 (최근 N개).
@@ -319,7 +375,300 @@ pub const DevServer = struct {
     const max_file_size: u64 = 50 * 1024 * 1024;
     const bundle_path = "/bundle.js";
     const hmr_path = "/__hmr";
+    const app_dev_client_path = "/__zts_app_dev_client__";
     const watch_interval_ms = 500;
+    const app_dev_client_js =
+        \\const socketProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+        \\let overlay = null;
+        \\let closeOverlayOnEsc = null;
+        \\function hideOverlay() {
+        \\  if (closeOverlayOnEsc) document.removeEventListener("keydown", closeOverlayOnEsc);
+        \\  closeOverlayOnEsc = null;
+        \\  if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        \\  overlay = null;
+        \\}
+        \\function normalizeErrors(errors) {
+        \\  if (!Array.isArray(errors) || errors.length === 0) {
+        \\    return [{ file: "", message: "Unknown build error" }];
+        \\  }
+        \\  return errors.map(function(error) {
+        \\    if (typeof error === "string") return { file: "", message: error };
+        \\    return {
+        \\      file: error && typeof error.file === "string" ? error.file : "",
+        \\      message: error && typeof error.message === "string" ? error.message : String(error)
+        \\    };
+        \\  });
+        \\}
+        \\function normalizeRuntimeError(error, file) {
+        \\  if (error && typeof error.stack === "string" && error.stack) {
+        \\    return { file: file || "", message: error.stack };
+        \\  }
+        \\  if (error && typeof error.message === "string" && error.message) {
+        \\    const name = typeof error.name === "string" && error.name ? error.name : "Error";
+        \\    return { file: file || "", message: name + ": " + error.message };
+        \\  }
+        \\  return { file: file || "", message: String(error || "Unknown runtime error") };
+        \\}
+        \\const sourceMapCache = new Map();
+        \\const sourceMapVlqChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        \\function displaySourceName(source) {
+        \\  if (!source) return "";
+        \\  const clean = String(source).split("?")[0].split("#")[0];
+        \\  const slash = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
+        \\  return slash >= 0 ? clean.slice(slash + 1) : clean;
+        \\}
+        \\function decodeSourceMapVlq(segment) {
+        \\  const values = [];
+        \\  let result = 0;
+        \\  let shift = 0;
+        \\  for (const ch of segment) {
+        \\    let digit = sourceMapVlqChars.indexOf(ch);
+        \\    if (digit < 0) return values;
+        \\    const continuation = digit & 32;
+        \\    digit &= 31;
+        \\    result += digit << shift;
+        \\    if (continuation) {
+        \\      shift += 5;
+        \\      continue;
+        \\    }
+        \\    const negative = result & 1;
+        \\    const value = result >> 1;
+        \\    values.push(negative ? -value : value);
+        \\    result = 0;
+        \\    shift = 0;
+        \\  }
+        \\  return values;
+        \\}
+        \\function parseSourceMapMappings(map) {
+        \\  if (map.__ztsParsedMappings) return map.__ztsParsedMappings;
+        \\  let source = 0;
+        \\  let originalLine = 0;
+        \\  let originalColumn = 0;
+        \\  let name = 0;
+        \\  const parsed = [];
+        \\  for (const line of String(map.mappings || "").split(";")) {
+        \\    let generatedColumn = 0;
+        \\    const segments = [];
+        \\    for (const segment of line.split(",")) {
+        \\      if (!segment) continue;
+        \\      const values = decodeSourceMapVlq(segment);
+        \\      if (values.length === 0) continue;
+        \\      generatedColumn += values[0];
+        \\      if (values.length >= 4) {
+        \\        source += values[1];
+        \\        originalLine += values[2];
+        \\        originalColumn += values[3];
+        \\        if (values.length >= 5) name += values[4];
+        \\        segments.push({ generatedColumn, source, originalLine, originalColumn });
+        \\      }
+        \\    }
+        \\    parsed.push(segments);
+        \\  }
+        \\  Object.defineProperty(map, "__ztsParsedMappings", { value: parsed });
+        \\  return parsed;
+        \\}
+        \\function findOriginalPosition(map, line, column) {
+        \\  const segments = parseSourceMapMappings(map)[line - 1];
+        \\  if (!segments || segments.length === 0) return null;
+        \\  let lo = 0;
+        \\  let hi = segments.length - 1;
+        \\  let best = null;
+        \\  while (lo <= hi) {
+        \\    const mid = (lo + hi) >> 1;
+        \\    const segment = segments[mid];
+        \\    if (segment.generatedColumn <= column) {
+        \\      best = segment;
+        \\      lo = mid + 1;
+        \\    } else {
+        \\      hi = mid - 1;
+        \\    }
+        \\  }
+        \\  best = best || segments[0];
+        \\  const source = map.sources && map.sources[best.source];
+        \\  if (!source) return null;
+        \\  const columnOffset = Math.max(0, column - best.generatedColumn);
+        \\  return {
+        \\    source: displaySourceName(source),
+        \\    line: best.originalLine + 1,
+        \\    column: best.originalColumn + columnOffset,
+        \\  };
+        \\}
+        \\async function loadSourceMapForGeneratedUrl(url) {
+        \\  const generatedUrl = new URL(url, location.href).href;
+        \\  if (sourceMapCache.has(generatedUrl)) return sourceMapCache.get(generatedUrl);
+        \\  const promise = (async function() {
+        \\    let mapUrl = generatedUrl + ".map";
+        \\    const jsResponse = await fetch(generatedUrl, { cache: "no-store" }).catch(function() { return null; });
+        \\    if (jsResponse && jsResponse.ok) {
+        \\      const code = await jsResponse.text();
+        \\      const match =
+        \\        code.match(/\/\/[#@]\s*sourceMappingURL=([^\n\r]+)/) ||
+        \\        code.match(/\/\*[#@]\s*sourceMappingURL=([^*]+)\*\//);
+        \\      if (match) {
+        \\        const ref = match[1].trim();
+        \\        if (ref.startsWith("data:")) {
+        \\          const comma = ref.indexOf(",");
+        \\          if (comma >= 0) {
+        \\            const meta = ref.slice(0, comma);
+        \\            const data = ref.slice(comma + 1);
+        \\            const json = meta.includes(";base64") ? atob(data) : decodeURIComponent(data);
+        \\            return JSON.parse(json);
+        \\          }
+        \\        } else {
+        \\          mapUrl = new URL(ref, generatedUrl).href;
+        \\        }
+        \\      }
+        \\    }
+        \\    const mapResponse = await fetch(mapUrl, { cache: "no-store" }).catch(function() { return null; });
+        \\    return mapResponse && mapResponse.ok ? mapResponse.json() : null;
+        \\  })();
+        \\  sourceMapCache.set(generatedUrl, promise);
+        \\  return promise;
+        \\}
+        \\async function mapGeneratedLocation(url, line, column) {
+        \\  const map = await loadSourceMapForGeneratedUrl(url);
+        \\  return map ? findOriginalPosition(map, line, column) : null;
+        \\}
+        \\async function mapLocationText(text) {
+        \\  if (!text) return text;
+        \\  const match = String(text).match(/(https?:\/\/[^\s)]+):(\d+):(\d+)/);
+        \\  if (!match) return text;
+        \\  const mapped = await mapGeneratedLocation(match[1], Number(match[2]), Number(match[3]));
+        \\  if (!mapped) return text;
+        \\  return String(text).replace(match[0], mapped.source + ":" + mapped.line + ":" + mapped.column);
+        \\}
+        \\async function mapStackTrace(stack) {
+        \\  if (typeof stack !== "string") return stack;
+        \\  const lines = [];
+        \\  for (const line of stack.split("\n")) {
+        \\    lines.push(await mapLocationText(line));
+        \\  }
+        \\  return lines.join("\n");
+        \\}
+        \\async function normalizeRuntimeErrorWithSourceMap(error, file) {
+        \\  const item = normalizeRuntimeError(error, file);
+        \\  item.file = await mapLocationText(item.file);
+        \\  item.message = await mapStackTrace(item.message);
+        \\  return item;
+        \\}
+        \\async function showRuntimeOverlay(error, file) {
+        \\  let item;
+        \\  try {
+        \\    item = await normalizeRuntimeErrorWithSourceMap(error, file);
+        \\  } catch (_) {
+        \\    item = normalizeRuntimeError(error, file);
+        \\  }
+        \\  showOverlay([item], "Runtime Error");
+        \\}
+        \\function showOverlay(errors, titleText = "Build Error") {
+        \\  hideOverlay();
+        \\  const items = normalizeErrors(errors);
+        \\  overlay = document.createElement("div");
+        \\  overlay.id = "zts-error-overlay";
+        \\  overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:block;";
+        \\  const root = overlay.attachShadow ? overlay.attachShadow({ mode: "open" }) : overlay;
+        \\  const style = document.createElement("style");
+        \\  style.textContent = ":host{position:fixed;inset:0;z-index:2147483647;display:block;--font:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--red:#fb7185;--text:#f8fafc;--muted:#cbd5e1;--blue:#93c5fd;--window:#181818;}" +
+        \\    ".backdrop{position:fixed;inset:0;overflow:auto;padding:32px;box-sizing:border-box;background:rgba(0,0,0,.66);font:14px/1.5 var(--font);color:var(--text);}" +
+        \\    ".window{max-width:980px;margin:0 auto;background:var(--window);border-top:8px solid var(--red);border-radius:6px 6px 8px 8px;box-shadow:0 19px 38px rgba(0,0,0,.30),0 15px 12px rgba(0,0,0,.22);overflow:hidden;}" +
+        \\    ".header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(255,255,255,.12);}" +
+        \\    ".title{font-size:18px;font-weight:700;color:#fecdd3;}" +
+        \\    ".close{width:30px;height:30px;border:1px solid rgba(255,255,255,.25);border-radius:4px;background:#111827;color:var(--text);cursor:pointer;font:18px/1 var(--font);}" +
+        \\    ".card{padding:18px 20px;border-top:1px solid rgba(255,255,255,.08);}" +
+        \\    ".file{margin-bottom:10px;color:var(--blue);word-break:break-all;}" +
+        \\    ".message{margin:0;white-space:pre-wrap;color:#fff;word-break:break-word;font:14px/1.5 var(--font);}";
+        \\  const backdrop = document.createElement("div");
+        \\  backdrop.className = "backdrop";
+        \\  const panel = document.createElement("div");
+        \\  panel.className = "window";
+        \\  panel.onclick = function(event) { event.stopPropagation(); };
+        \\  const header = document.createElement("div");
+        \\  header.className = "header";
+        \\  const title = document.createElement("div");
+        \\  title.className = "title";
+        \\  title.textContent = titleText;
+        \\  const close = document.createElement("button");
+        \\  close.type = "button";
+        \\  close.textContent = "x";
+        \\  close.className = "close";
+        \\  close.setAttribute("aria-label", "Close error overlay");
+        \\  close.onclick = hideOverlay;
+        \\  header.appendChild(title);
+        \\  header.appendChild(close);
+        \\  panel.appendChild(header);
+        \\  for (const item of items) {
+        \\    const card = document.createElement("div");
+        \\    card.className = "card";
+        \\    if (item.file) {
+        \\      const file = document.createElement("div");
+        \\      file.className = "file";
+        \\      file.textContent = item.file;
+        \\      card.appendChild(file);
+        \\    }
+        \\    const message = document.createElement("pre");
+        \\    message.className = "message";
+        \\    message.textContent = item.message;
+        \\    card.appendChild(message);
+        \\    panel.appendChild(card);
+        \\  }
+        \\  backdrop.appendChild(panel);
+        \\  root.appendChild(style);
+        \\  root.appendChild(backdrop);
+        \\  closeOverlayOnEsc = function(event) {
+        \\    if (event.key === "Escape" || event.code === "Escape") hideOverlay();
+        \\  };
+        \\  document.addEventListener("keydown", closeOverlayOnEsc);
+        \\  (document.body || document.documentElement).appendChild(overlay);
+        \\}
+        \\globalThis.__zts_show_error_overlay = showOverlay;
+        \\globalThis.__zts_clear_error_overlay = hideOverlay;
+        \\window.addEventListener("error", function(event) {
+        \\  const file = event.filename ? event.filename + ":" + event.lineno + ":" + event.colno : "";
+        \\  showRuntimeOverlay(event.error || event.message, file);
+        \\});
+        \\window.addEventListener("unhandledrejection", function(event) {
+        \\  showRuntimeOverlay(event.reason, "");
+        \\});
+        \\const socket = new WebSocket(socketProtocol + "//" + location.host + "/__hmr");
+        \\socket.addEventListener("message", function(event) {
+        \\  const msg = JSON.parse(event.data);
+        \\  if (msg.type === "error") { showOverlay(msg.errors); return; }
+        \\  if (msg.type === "clear-error") { hideOverlay(); return; }
+        \\  if (msg.type === "update-start") return;
+        \\  if (msg.type === "update-done") { hideOverlay(); return; }
+        \\  if (msg.type === "full-reload") { hideOverlay(); location.reload(); return; }
+        \\  if (msg.type === "update") {
+        \\    hideOverlay();
+        \\    if (typeof __zts_apply_update === "function") __zts_apply_update(msg.modules);
+        \\    else location.reload();
+        \\    return;
+        \\  }
+        \\  if (msg.type === "css-update") {
+        \\    hideOverlay();
+        \\    const targetPath = msg.href || msg.file;
+        \\    const stamp = msg.timestamp || Date.now();
+        \\    const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
+        \\    let updated = false;
+        \\    for (const link of links) {
+        \\      const href = link.getAttribute("href");
+        \\      if (!href) continue;
+        \\      const current = new URL(href, location.href);
+        \\      const target = new URL(targetPath || current.pathname, location.href);
+        \\      if (targetPath && current.pathname !== target.pathname) continue;
+        \\      const next = new URL(current.href);
+        \\      next.searchParams.set("t", String(stamp));
+        \\      const replacement = link.cloneNode();
+        \\      replacement.href = next.href;
+        \\      replacement.onload = function() { link.remove(); };
+        \\      replacement.onerror = function() { location.reload(); };
+        \\      link.after(replacement);
+        \\      updated = true;
+        \\    }
+        \\    if (!updated) location.reload();
+        \\  }
+        \\});
+        \\
+    ;
 
     const js_headers = cors_headers ++ [_]http.Header{
         .{ .name = "Content-Type", .value = "application/javascript; charset=utf-8" },
@@ -368,6 +717,7 @@ pub const DevServer = struct {
         if (self.abs_entry) |ae| self.allocator.free(ae);
         self.root_dir.close();
         self.event_ring.deinit();
+        self.error_state.deinit(self.allocator);
     }
 
     pub fn start(self: *DevServer) !void {
@@ -622,6 +972,7 @@ pub const DevServer = struct {
             getLog().print("  [ws] failed to send connected message\n", .{}) catch {};
             return;
         };
+        self.error_state.sendIfPresent(writer);
 
         // 클라이언트 메시지 수신 루프 (ping/pong은 std.http가 자동 처리)
         while (true) {
@@ -662,11 +1013,12 @@ pub const DevServer = struct {
 
         // 초기 번들
         const initial = inc_bundler.rebuild() catch return;
+        var fallback_paths = [_][]const u8{abs_entry};
         const initial_paths: []const []const u8 = switch (initial) {
             .success => |r| r.paths,
-            .build_error => |err_msg| {
-                self.allocator.free(err_msg);
-                return;
+            .build_error => |err_msg| blk: {
+                self.error_state.setOwned(self.allocator, err_msg);
+                break :blk fallback_paths[0..];
             },
             .fatal => return,
         };
@@ -770,6 +1122,9 @@ pub const DevServer = struct {
             const build_duration_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - build_start_ns)) / std.time.ns_per_ms;
             switch (rebuild_result) {
                 .success => |result| {
+                    self.error_state.clear(self.allocator);
+                    self.ws_clients.broadcast("{\"type\":\"clear-error\"}");
+
                     // bundle_build_done 이벤트
                     var done_buf: [256]u8 = undefined;
                     if (std.fmt.bufPrint(&done_buf, "{{\"type\":\"bundle_build_done\",\"id\":\"{d}\",\"totalModules\":{d},\"duration\":{d:.2}}}", .{ build_id, result.paths.len, build_duration_ms })) |json| {
@@ -820,6 +1175,7 @@ pub const DevServer = struct {
                 },
                 .build_error => |err_msg| {
                     defer self.allocator.free(err_msg);
+                    self.error_state.setCopy(self.allocator, err_msg) catch {};
                     self.ws_clients.broadcast(err_msg);
                     getLog().print("  [watch] build error, overlay sent\n", .{}) catch {};
 
@@ -1194,6 +1550,11 @@ pub const DevServer = struct {
                 return;
             }
 
+            if (std.mem.eql(u8, raw_path, app_dev_client_path)) {
+                self.serveAppDevClient(request) catch {};
+                return;
+            }
+
             // /bundle.js.map — 캐시된 소스맵 반환
             if (std.mem.eql(u8, raw_path, "/bundle.js.map")) {
                 self.serveSourceMap(request) catch {};
@@ -1260,6 +1621,12 @@ pub const DevServer = struct {
 
         if (result.hasErrors()) {
             const diags = result.getDiagnostics();
+            if (buildErrorJsonFromDiagnostics(self.allocator, diags)) |err_json| {
+                defer self.allocator.free(err_json);
+                self.error_state.setCopy(self.allocator, err_json) catch {};
+                self.ws_clients.broadcast(err_json);
+            } else |_| {}
+
             var msg: std.ArrayList(u8) = .empty;
             defer msg.deinit(self.allocator);
             const w = msg.writer(self.allocator);
@@ -1281,6 +1648,8 @@ pub const DevServer = struct {
             getLog().print("  500 {s} (bundle errors)\n", .{abs_entry}) catch {};
             return;
         }
+        self.error_state.clear(self.allocator);
+        self.ws_clients.broadcast("{\"type\":\"clear-error\"}");
 
         // 소스맵 캐시 업데이트 (소유권 이전 — dupe 불필요)
         if (result.sourcemap) |sm| {
@@ -1317,6 +1686,13 @@ pub const DevServer = struct {
                 .extra_headers = &cors_headers,
             });
         }
+    }
+
+    fn serveAppDevClient(_: *DevServer, request: *http.Server.Request) !void {
+        try request.respond(app_dev_client_js, .{
+            .extra_headers = &js_headers,
+        });
+        getLog().print("  200 {s}\n", .{app_dev_client_path}) catch {};
     }
 
     /// /@react-refresh — react-refresh/runtime 가상 모듈 서빙.
@@ -1376,76 +1752,8 @@ pub const DevServer = struct {
             \\<body>
             \\<div id="root"></div>
             \\<script src="/@react-refresh"></script>
+            \\<script type="module" src="/__zts_app_dev_client__"></script>
             \\<script type="module" src="/bundle.js"></script>
-            \\<script>
-            \\(function() {
-            \\  var ws, timer, overlay;
-            \\  function showOverlay(errors) {
-            \\    hideOverlay();
-            \\    overlay = document.createElement('div');
-            \\    overlay.id = 'zts-error-overlay';
-            \\    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);color:#ff5555;font-family:monospace;font-size:14px;padding:32px;box-sizing:border-box;z-index:99999;overflow:auto;white-space:pre-wrap;';
-            \\    var wrap = document.createElement('div');
-            \\    wrap.style.cssText = 'max-width:800px;margin:0 auto';
-            \\    var h = document.createElement('h2');
-            \\    h.style.cssText = 'color:#ff5555;margin:0 0 16px';
-            \\    h.textContent = 'Build Error';
-            \\    wrap.appendChild(h);
-            \\    for (var i = 0; i < errors.length; i++) {
-            \\      var card = document.createElement('div');
-            \\      card.style.cssText = 'background:#1a1a1a;border:1px solid #ff5555;border-radius:4px;padding:16px;margin-bottom:12px';
-            \\      var file = document.createElement('div');
-            \\      file.style.cssText = 'color:#888;margin-bottom:8px';
-            \\      file.textContent = errors[i].file;
-            \\      var msg = document.createElement('div');
-            \\      msg.style.cssText = 'color:#fff';
-            \\      msg.textContent = errors[i].message;
-            \\      card.appendChild(file);
-            \\      card.appendChild(msg);
-            \\      wrap.appendChild(card);
-            \\    }
-            \\    overlay.appendChild(wrap);
-            \\    overlay.onclick = function() { hideOverlay(); };
-            \\    document.body.appendChild(overlay);
-            \\  }
-            \\  function hideOverlay() {
-            \\    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-            \\    overlay = null;
-            \\  }
-            \\  function connect() {
-            \\    ws = new WebSocket('ws://' + location.host + '/__hmr');
-            \\    ws.onopen = function() { console.log('[zts] HMR connected'); };
-            \\    ws.onmessage = function(e) {
-            \\      var msg = JSON.parse(e.data);
-            \\      if (msg.type === 'update-start' || msg.type === 'update-done') return;
-            \\      if (msg.type === 'full-reload') { hideOverlay(); location.reload(); }
-            \\      if (msg.type === 'update') {
-            \\        if (typeof __zts_apply_update === 'function') {
-            \\          hideOverlay();
-            \\          __zts_apply_update(msg.modules);
-            \\        } else { hideOverlay(); location.reload(); }
-            \\      }
-            \\      if (msg.type === 'css-update') {
-            \\        var links = document.querySelectorAll('link[rel="stylesheet"]');
-            \\        for (var j = 0; j < links.length; j++) {
-            \\          var href = links[j].getAttribute('href');
-            \\          if (href && href.split('?')[0] === msg.file) {
-            \\            links[j].href = msg.file + '?t=' + Date.now();
-            \\            console.log('[zts] CSS updated:', msg.file);
-            \\          }
-            \\        }
-            \\      }
-            \\      if (msg.type === 'error') { showOverlay(msg.errors); }
-            \\    };
-            \\    ws.onclose = function() {
-            \\      console.log('[zts] HMR disconnected, reconnecting...');
-            \\      clearTimeout(timer);
-            \\      timer = setTimeout(connect, 1000);
-            \\    };
-            \\  }
-            \\  connect();
-            \\})();
-            \\</script>
             \\</body>
             \\</html>
         ;
@@ -1478,11 +1786,39 @@ pub const DevServer = struct {
             .{ .name = "Content-Type", .value = content_type },
         };
 
+        if (self.entry_point != null and std.mem.eql(u8, rel_path, "index.html")) {
+            const injected = try self.injectAppDevClient(content);
+            defer self.allocator.free(injected);
+            try request.respond(injected, .{
+                .extra_headers = &headers,
+            });
+            getLog().print("  200 {s}\n", .{rel_path}) catch {};
+            return;
+        }
+
         try request.respond(content, .{
             .extra_headers = &headers,
         });
 
         getLog().print("  200 {s}\n", .{rel_path}) catch {};
+    }
+
+    fn injectAppDevClient(self: *DevServer, html: []const u8) ![]const u8 {
+        if (std.mem.indexOf(u8, html, app_dev_client_path) != null) {
+            return try self.allocator.dupe(u8, html);
+        }
+
+        const tag = "<script type=\"module\" src=\"" ++ app_dev_client_path ++ "\"></script>\n";
+        const insert_at = std.mem.indexOf(u8, html, "</head>") orelse
+            std.mem.indexOf(u8, html, "<script") orelse
+            html.len;
+
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(self.allocator);
+        try out.appendSlice(self.allocator, html[0..insert_at]);
+        try out.appendSlice(self.allocator, tag);
+        try out.appendSlice(self.allocator, html[insert_at..]);
+        return try out.toOwnedSlice(self.allocator);
     }
 
     fn stripBasePath(self: *const DevServer, raw_path: []const u8) []const u8 {

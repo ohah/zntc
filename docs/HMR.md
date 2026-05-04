@@ -68,6 +68,25 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
   11. ✅ CSS 핫 리로드 — PR #275
 ```
 
+## 에러 오버레이
+
+`zts dev`는 브라우저 개발 클라이언트를 HTML에 주입해 빌드 에러와 런타임 에러를
+전체 화면 오버레이로 표시한다. 오버레이는 앱 CSS와 충돌하지 않도록 Shadow DOM 안에
+렌더링되며, 배경 클릭으로 닫히지 않는다. 사용자가 명시적으로 닫을 때는 `x` 버튼을
+누른다.
+
+지원 범위:
+- 초기 번들 실패와 watch rebuild 실패는 HMR WebSocket의 `error` payload로 전송된다.
+- 빌드가 다시 성공하면 `clear-error`를 전송해 기존 오버레이를 제거한다.
+- 런타임 `error`와 `unhandledrejection`은 브라우저 클라이언트가 직접 잡아
+  `Runtime Error` 오버레이로 표시한다.
+- 런타임 stack trace는 dev bundle의 `sourceMappingURL`을 따라 source map을 읽고,
+  가능한 경우 `/bundle.js` 위치를 원본 `main.ts:line:column` 위치로 매핑해 보여준다.
+
+구현상 Zig dev server는 Vite처럼 원본 ESM 모듈을 각각 서빙하지 않고, `/bundle.js`
+단일 dev bundle을 module script로 로드한다. 따라서 DevTools 콘솔처럼 원본 위치를
+보여주려면 오버레이 클라이언트가 source map을 직접 적용해야 한다.
+
 ## 아키텍처
 ```
 브라우저/RN 앱
