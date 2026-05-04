@@ -955,6 +955,11 @@ pub const TreeShaker = struct {
         //   (b) processModuleImports(live_mod_idx): BFS-reachable statement 안 import만 마킹
         //   (c) re-export source include / side-effect 전파
         // used_exports 또는 included 변화 없으면 수렴. BFS만이 used_exports 진리 소스.
+        // seedExport 결과는 linker graph + StmtInfo 기준으로 결정적이다.
+        // fixpoint 전체에서 visited set을 유지해 두 번째 pass가 같은 export를 다시
+        // resolve/enqueue 하지 않고 새로 발견된 seed만 처리하게 한다.
+        self.seeded_exports.clearRetainingCapacity();
+
         var iteration: u32 = 0;
         while (iteration < max_fixpoint_iterations) : (iteration += 1) {
             var fixpoint_scope = profile.begin(.shake_fixpoint);
@@ -1226,8 +1231,6 @@ pub const TreeShaker = struct {
     ) std.mem.Allocator.Error!void {
         var scope = profile.begin(.shake_fixpoint_bfs);
         defer scope.end();
-
-        self.seeded_exports.clearRetainingCapacity();
 
         var queue: std.ArrayListUnmanaged(BfsItem) = .empty;
         defer queue.deinit(self.allocator);

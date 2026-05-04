@@ -429,16 +429,17 @@ async function main(cli: CliArgs): Promise<void> {
   console.log();
   console.log("### nested bfs helper profile");
   console.log(
-    "| Fixture | Follow import | Follow self | Seed export | Seed export self | Resolve | Mark | CJS | Namespace scan | Intermediate | Semantic lookup | Enqueue symbol | Opaque | Require scan | Side effects |",
+    "| Fixture | Follow import | Follow self | Seed export | Seed count | Seed export self | Resolve | Mark | CJS | Namespace scan | Intermediate | Semantic lookup | Enqueue symbol | Opaque | Require scan | Side effects |",
   );
   console.log(
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   );
   for (const result of results) {
     console.log(
       `| ${result.name} | ${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.follow.import"))} | ` +
         `${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs.follow.import"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export"))} | ` +
+        `${phaseCount(result, "shake.fixpoint.bfs.seed.export")} | ` +
         `${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs.seed.export"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.resolve"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.mark"))} | ` +
