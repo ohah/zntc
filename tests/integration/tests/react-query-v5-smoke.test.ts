@@ -58,7 +58,7 @@ describe.skipIf(!hasReactQuery)("React Query v5 smoke", () => {
         "--platform=node",
         "--target=es5",
         "--runtime-polyfills=auto",
-        "--runtime-target=ios12",
+        "--runtime-target=ios_saf 12",
       ],
       { bin: "js" },
     );

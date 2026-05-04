@@ -491,7 +491,7 @@ describe("CLI: bundle", () => {
         "--bundle",
         join(polyfillDir, "entry.ts"),
         "--runtime-polyfills=auto",
-        "--runtime-target=ios12",
+        "--runtime-target=ios_saf 12",
       ]);
 
       expect(exitCode).toBe(0);
@@ -520,7 +520,7 @@ describe("CLI: bundle", () => {
 
       expect(exitCode).not.toBe(0);
       expect(stderr).toContain("Physical device names are not supported");
-      expect(stderr).toContain("ios12");
+      expect(stderr).toContain("ios_saf 12");
     } finally {
       rmSync(polyfillDir, { recursive: true, force: true });
     }

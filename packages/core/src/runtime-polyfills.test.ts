@@ -25,34 +25,35 @@ function withRuntimeRequire<T>(runtimeRequire: any, fn: () => T): T {
 }
 
 describe("runtime polyfill target normalization", () => {
-  test("normalizes compact and spaced engine targets", () => {
-    expect(normalizeRuntimeTargets("ios12")).toEqual({ ios: "12" });
-    expect(normalizeRuntimeTargets("ios_saf 12")).toEqual({ ios: "12" });
-    expect(normalizeRuntimeTargets("iOS >= 12")).toEqual({ ios: "12" });
-    expect(normalizeRuntimeTargets("chrome >= 85")).toEqual({ chrome: "85" });
-    expect(normalizeRuntimeTargets("android >= 5")).toEqual({ android: "5" });
-    expect(normalizeRuntimeTargets("samsung >= 14")).toEqual({ samsung: "14" });
-    expect(normalizeRuntimeTargets("hermes0.7")).toEqual({ hermes: "0.7" });
-    expect(normalizeRuntimeTargets("hermes 0.7")).toEqual({ hermes: "0.7" });
-    expect(normalizeRuntimeTargets("react-native 0.70")).toEqual({ "react-native": "0.70" });
-    expect(normalizeRuntimeTargets("node18")).toEqual({ node: "18" });
+  test("keeps Rspack/SWC browserslist targets", () => {
+    expect(normalizeRuntimeTargets("ios_saf 12")).toBe("ios_saf 12");
+    expect(normalizeRuntimeTargets("iOS >= 12")).toBe("iOS >= 12");
+    expect(normalizeRuntimeTargets("chrome >= 85")).toBe("chrome >= 85");
+    expect(normalizeRuntimeTargets("android >= 5")).toBe("android >= 5");
+    expect(normalizeRuntimeTargets("samsung >= 14")).toBe("samsung >= 14");
+    expect(normalizeRuntimeTargets("node 18")).toBe("node 18");
+    expect(normalizeRuntimeTargets(["chrome >= 85", "safari >= 14"])).toEqual([
+      "chrome >= 85",
+      "safari >= 14",
+    ]);
   });
 
-  test("merges object targets and rejects device names", () => {
-    expect(normalizeRuntimeTargets([{ ios: "12" }, "chrome85", "node18"])).toEqual({
-      ios: "12",
-      chrome: "85",
-      node: "18",
-    });
+  test("rejects device names and unsupported shorthand targets", () => {
     expect(() => normalizeRuntimeTargets("iPhone 8")).toThrow("Physical device names");
     expect(() => normalizeRuntimeTargets("Galaxy S10")).toThrow("Physical device names");
+    expect(() => normalizeRuntimeTargets("ios12")).toThrow("Compact runtime target shorthands");
+    expect(() => normalizeRuntimeTargets("hermes0.7")).toThrow("Compact runtime target shorthands");
+    expect(() => normalizeRuntimeTargets("node18")).toThrow("Compact runtime target shorthands");
+    expect(() => normalizeRuntimeTargets("hermes 0.7")).toThrow("Rspack/SWC env.targets");
+    expect(() => normalizeRuntimeTargets("react-native 0.70")).toThrow("Rspack/SWC env.targets");
   });
 
   test("keeps browserslist queries when they are not engine-version targets", () => {
     expect(normalizeRuntimeTargets("last 2 chrome versions")).toBe("last 2 chrome versions");
-    expect(() => normalizeRuntimeTargets(["last 2 versions", "hermes0.7"])).toThrow(
-      "cannot mix browserslist queries",
-    );
+    expect(normalizeRuntimeTargets(["last 2 versions", "not dead"])).toEqual([
+      "last 2 versions",
+      "not dead",
+    ]);
   });
 
   test("normalizes runtime polyfill options and validates invalid inputs", () => {
@@ -94,6 +95,33 @@ describe("runtime polyfill target normalization", () => {
         }) as any
       ).targets,
     ).toEqual({ hermes: "0.7" });
+    expect(
+      (
+        normalizeRuntimePolyfillOptions({
+          entryPoints: [],
+          target: "node18",
+          runtimePolyfills: "entry",
+        }) as any
+      ).targets,
+    ).toEqual({ node: "18" });
+    expect(
+      (
+        normalizeRuntimePolyfillOptions({
+          entryPoints: [],
+          target: "chrome >= 85",
+          runtimePolyfills: "entry",
+        }) as any
+      ).targets,
+    ).toBe("chrome >= 85");
+    expect(
+      (
+        normalizeRuntimePolyfillOptions({
+          entryPoints: [],
+          runtimePolyfills: { mode: "entry", targets: ["safari >= 14"], coreJs: "3.49" },
+          coreJs: "3.48",
+        }) as any
+      ).coreJsVersion,
+    ).toBe("3.49");
 
     expect(() =>
       normalizeRuntimePolyfillOptions({
@@ -330,7 +358,7 @@ describe("runtime polyfill prelude", () => {
         entryPoints: [entry],
         runtimePolyfills: {
           mode: "auto",
-          targets: "ios12",
+          targets: ["ios_saf 12"],
           include: ["es.array.at"],
           exclude: ["es.string.replace-all"],
         },
@@ -358,7 +386,7 @@ describe("runtime polyfill prelude", () => {
       const napiOptions: Record<string, unknown> = {};
       const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
         entryPoints: [entry],
-        runtimePolyfills: { mode: "entry", targets: "node999" },
+        runtimePolyfills: { mode: "entry", targets: ["ie 11"] },
       });
       try {
         expect(applied.modules.length).toBeGreaterThan(0);
@@ -386,7 +414,7 @@ describe("runtime polyfill prelude", () => {
         {},
         {
           entryPoints: [entry],
-          runtimePolyfills: { mode: "auto", targets: "node18" },
+          runtimePolyfills: { mode: "auto", targets: ["node 18"] },
         },
       );
       expect(empty.modules).toEqual([]);

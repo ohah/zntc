@@ -5,44 +5,6 @@ import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 export type RuntimePolyfillMode = "auto" | "usage" | "entry";
 export type RuntimePolyfillProvider = "core-js";
-export type RuntimeTargetObject = Record<string, string | number>;
-export type RuntimeTargetVersion =
-  | `${number}`
-  | `${number}.${number}`
-  | `${number}.${number}.${number}`;
-export type RuntimeTargetComparator = ">=" | ">" | "<=" | "<" | "=";
-export type RuntimeTargetName =
-  | "chrome"
-  | "firefox"
-  | "safari"
-  | "ios"
-  | "ios_saf"
-  | "iOS"
-  | "android"
-  | "samsung"
-  | "edge"
-  | "opera"
-  | "node"
-  | "hermes"
-  | "react-native";
-export type RuntimeTargetCompactName =
-  | "ios"
-  | "chrome"
-  | "firefox"
-  | "safari"
-  | "android"
-  | "samsung"
-  | "edge"
-  | "opera"
-  | "node"
-  | "hermes";
-export type RuntimeTargetQuery =
-  | `${RuntimeTargetName} ${RuntimeTargetVersion}`
-  | `${RuntimeTargetName} ${RuntimeTargetComparator} ${RuntimeTargetVersion}`;
-export type RuntimeTarget =
-  | `${RuntimeTargetCompactName}${RuntimeTargetVersion}`
-  | RuntimeTargetQuery
-  | (string & {});
 
 export interface RuntimePolyfillOptions {
   /**
@@ -55,12 +17,15 @@ export interface RuntimePolyfillOptions {
   /** Polyfill provider. Only `core-js` is currently supported. */
   provider?: RuntimePolyfillProvider;
   /**
-   * Runtime engine targets for core-js-compat.
+   * Browserslist targets for core-js-compat, matching Rspack/SWC `env.targets`.
    *
-   * Examples: `"ios12"`, `"chrome >= 85"`, `"hermes0.7"`, `"react-native 0.70"`,
-   * or `{ node: "18" }`. Physical device names such as `"iPhone 8"` are rejected.
+   * Examples: `["chrome >= 87", "edge >= 88", "firefox >= 78", "safari >= 14"]`.
+   * Physical device names such as `"iPhone 8"` and compact shorthands such as
+   * `"ios12"` are rejected.
    */
-  targets?: RuntimeTarget | RuntimeTarget[] | RuntimeTargetObject;
+  targets?: string | string[];
+  /** core-js version used for compatibility calculation, matching Rspack/SWC `env.coreJs`. */
+  coreJs?: string;
   /** Additional core-js modules to force into the synthetic prelude. */
   include?: string[];
   /** core-js modules to remove after target and usage calculation. */
@@ -92,7 +57,8 @@ interface NormalizedRuntimePolyfills {
   coreJsVersion?: string;
 }
 
-type CoreJsTargets = string | string[] | RuntimeTargetObject;
+type CoreJsTargetObject = Record<string, string | number>;
+type CoreJsTargets = string | string[] | CoreJsTargetObject;
 
 type RuntimeRequire = ReturnType<typeof createRequire>;
 
@@ -147,19 +113,6 @@ const ES_TARGETS = new Set([
 
 const DEVICE_TARGET_RE =
   /\b(?:iphone|ipad|ipod|galaxy|pixel|nexus|oneplus|xiaomi|redmi|huawei|motorola|moto)\b/i;
-
-const TARGET_KEY_ALIASES: Record<string, string> = {
-  ios_saf: "ios",
-  ios: "ios",
-  safari: "safari",
-  chrome: "chrome",
-  android: "android",
-  samsung: "samsung",
-  hermes: "hermes",
-  "react-native": "react-native",
-  reactnative: "react-native",
-  node: "node",
-};
 
 const RUNTIME_USAGE_MODULES = new Set([
   "es.array.at",
@@ -239,77 +192,47 @@ function readInstalledCoreJsVersion(): string | undefined {
 function assertNotPhysicalDeviceTarget(raw: string): void {
   if (!DEVICE_TARGET_RE.test(raw)) return;
   throw new Error(
-    `@zts/core: unsupported runtime target '${raw}'. Physical device names are not supported; use engine targets such as 'ios12', 'ios_saf 12', 'chrome >= 85', 'hermes0.7', or 'node18'.`,
+    `@zts/core: unsupported runtime target '${raw}'. Physical device names are not supported; use Browserslist targets such as 'ios_saf 12', 'chrome >= 85', or 'node 18'.`,
   );
 }
 
-function normalizeTargetKey(raw: string): string | null {
-  return TARGET_KEY_ALIASES[raw.toLowerCase()] ?? null;
+function assertNotCompactRuntimeTarget(raw: string): void {
+  const compact = raw.match(
+    /^(ios_saf|ios|safari|chrome|android|samsung|hermes|node)v?\d+(?:\.\d+)*$/i,
+  );
+  if (!compact) return;
+  throw new Error(
+    `@zts/core: unsupported runtime target '${raw}'. Compact runtime target shorthands are not supported; use Browserslist targets such as 'ios_saf 12', 'chrome >= 85', or 'node 18'.`,
+  );
 }
 
-function normalizeTargetObject(targets: RuntimeTargetObject): RuntimeTargetObject {
-  const out: RuntimeTargetObject = {};
-  for (const [rawKey, rawValue] of Object.entries(targets)) {
-    const key = normalizeTargetKey(rawKey);
-    if (!key) throw new Error(`@zts/core: unsupported runtime target engine '${rawKey}'.`);
-    out[key] = String(rawValue);
-  }
-  return out;
+function assertBrowserslistRuntimeTarget(raw: string): void {
+  if (!/^(?:hermes|react-native|reactnative)\b/i.test(raw)) return;
+  throw new Error(
+    `@zts/core: unsupported runtime target '${raw}'. runtimePolyfills.targets follows Rspack/SWC env.targets and accepts Browserslist queries; use platform: 'react-native' for the default Hermes runtime target.`,
+  );
 }
 
-function mergeTargetObjects(targets: RuntimeTargetObject[]): RuntimeTargetObject {
-  const out: RuntimeTargetObject = {};
-  for (const target of targets) Object.assign(out, target);
-  return out;
-}
-
-function normalizeRuntimeTargetString(raw: string): RuntimeTargetObject | string {
+function normalizeRuntimeTargetString(raw: string): string {
   const value = raw.trim();
   assertNotPhysicalDeviceTarget(value);
-
-  const compact = value.match(
-    /^(ios_saf|ios|safari|chrome|android|samsung|hermes|node)\s*v?(\d+(?:\.\d+)*)$/i,
-  );
-  if (compact) {
-    const key = normalizeTargetKey(compact[1]);
-    if (!key) throw new Error(`@zts/core: unsupported runtime target '${raw}'.`);
-    return { [key]: compact[2] };
-  }
-
-  const spaced = value.match(
-    /^(ios_saf|ios|safari|chrome|android|samsung|hermes|react-native|reactnative|node)\s*(?:>=|=)?\s*v?(\d+(?:\.\d+)*)$/i,
-  );
-  if (spaced) {
-    const key = normalizeTargetKey(spaced[1]);
-    if (!key) throw new Error(`@zts/core: unsupported runtime target '${raw}'.`);
-    return { [key]: spaced[2] };
-  }
-
+  assertNotCompactRuntimeTarget(value);
+  assertBrowserslistRuntimeTarget(value);
   return value;
 }
 
-export function normalizeRuntimeTargets(
-  targets: RuntimeTarget | RuntimeTarget[] | RuntimeTargetObject,
-): CoreJsTargets {
-  if (Array.isArray(targets)) {
-    const objectTargets: RuntimeTargetObject[] = [];
-    const queries: string[] = [];
-    for (const target of targets) {
-      const normalized = normalizeRuntimeTargets(target);
-      if (typeof normalized === "string") queries.push(normalized);
-      else if (Array.isArray(normalized)) queries.push(...normalized);
-      else objectTargets.push(normalized);
-    }
-    if (queries.length > 0 && objectTargets.length > 0) {
-      throw new Error(
-        "@zts/core: runtime target arrays cannot mix browserslist queries with Hermes/React Native object targets.",
-      );
-    }
-    if (queries.length > 0) return queries;
-    return mergeTargetObjects(objectTargets);
-  }
-  if (typeof targets === "string") return normalizeRuntimeTargetString(targets);
-  return normalizeTargetObject(targets);
+export function normalizeRuntimeTargets(targets: string | string[]): string | string[] {
+  if (Array.isArray(targets)) return targets.map(normalizeRuntimeTargetString);
+  return normalizeRuntimeTargetString(targets);
+}
+
+function normalizeBuildTargetForRuntime(target: string | undefined): CoreJsTargets | undefined {
+  if (!target || isEsTarget(target)) return undefined;
+  const nodeTarget = target.match(/^node(\d+(?:\.\d+)*)$/i);
+  if (nodeTarget) return { node: nodeTarget[1] };
+  const hermesTarget = target.match(/^hermes(\d+(?:\.\d+)*)$/i);
+  if (hermesTarget) return { hermes: hermesTarget[1] };
+  return normalizeRuntimeTargets(target);
 }
 
 function defaultRuntimeTargets(options: RuntimePolyfillBuildOptions): CoreJsTargets {
@@ -325,11 +248,10 @@ function chooseRuntimeTargets(
   options: RuntimePolyfillBuildOptions,
   runtime: RuntimePolyfillOptions,
 ): CoreJsTargets {
-  const raw =
-    runtime.targets ??
-    (options.browserslist ? options.browserslist : undefined) ??
-    (!isEsTarget(options.target) && options.target ? options.target : undefined);
+  const raw = runtime.targets ?? (options.browserslist ? options.browserslist : undefined);
   if (raw !== undefined) return normalizeRuntimeTargets(raw);
+  const target = normalizeBuildTargetForRuntime(options.target);
+  if (target !== undefined) return target;
   return defaultRuntimeTargets(options);
 }
 
@@ -368,7 +290,7 @@ export function normalizeRuntimePolyfillOptions(
     include: (runtime.include ?? []).map(normalizeCoreJsModuleName),
     exclude: (runtime.exclude ?? []).map(normalizeCoreJsModuleName),
     proposals: runtime.proposals === true,
-    coreJsVersion: options.coreJs ?? readInstalledCoreJsVersion(),
+    coreJsVersion: runtime.coreJs ?? options.coreJs ?? readInstalledCoreJsVersion(),
   };
 }
 

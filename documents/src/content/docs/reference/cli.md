@@ -72,7 +72,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--rn-platform=ios\|android`                      | RN 서브 플랫폼 (`.ios.*`/`.android.*` 확장자)                      |
 | `--target=<spec>`                                 | ES 타겟: `es2015`~`esnext` 또는 엔진 버전 (`chrome80,safari14` 등) |
 | `--runtime-polyfills=auto\|usage\|entry\|off`     | core-js 런타임 API 폴리필 주입                                     |
-| `--runtime-target=<query>`                        | core-js 폴리필 타겟. 반복 가능 (`ios12`, `hermes0.7`, `node18`)    |
+| `--runtime-target=<query>`                        | core-js 폴리필 Browserslist 타겟. 반복 가능 (`chrome >= 87`)       |
 | `--core-js=<version>`                             | core-js-compat 계산에 사용할 core-js 버전                          |
 | `--global-name=<name>`                            | IIFE export 변수명                                                 |
 

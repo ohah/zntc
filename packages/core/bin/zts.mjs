@@ -159,7 +159,7 @@ function usageLines(command) {
     "  --profile-level=<level>    Profile level: summary, detailed, per-module, per-pass",
     "  --profile-format=<format>  Profile output: table, tree, json, csv",
     "  --runtime-polyfills=<mode> Inject core-js runtime polyfills: auto, usage, entry, off",
-    "  --runtime-target=<query>   Runtime polyfill target (repeatable: ios12, chrome>=85, node18)",
+    "  --runtime-target=<query>   Runtime polyfill Browserslist target (repeatable: 'chrome >= 87', 'safari >= 14')",
     "  --core-js=<version>        core-js version used for runtime polyfill compatibility",
     "  --stop-after=<phase>       Stop transpile after a given phase (debug)",
     "  --tokenize[=false]         Print scanner tokens instead of generated code",
@@ -1870,8 +1870,7 @@ function mergeCliRuntimeTargets(runtimePolyfills, runtimeTargetQueries) {
     return runtimePolyfills;
   }
   if (runtimePolyfills === undefined || runtimePolyfills === "off") return runtimePolyfills;
-  const targets =
-    runtimeTargetQueries.length === 1 ? runtimeTargetQueries[0] : runtimeTargetQueries;
+  const targets = runtimeTargetQueries;
   if (typeof runtimePolyfills === "string") return { mode: runtimePolyfills, targets };
   if (runtimePolyfills && typeof runtimePolyfills === "object") {
     return { ...runtimePolyfills, targets };
