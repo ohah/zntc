@@ -10,13 +10,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  ROOT,
-  ZTS_BIN,
-  buildBin as buildBinShared,
-  getCommit,
-  parsePositiveInt,
-} from "./_runner";
+import { ROOT, ZTS_BIN, buildBin as buildBinShared, getCommit, parsePositiveInt } from "./_runner";
 import { makeSyntheticMonorepo, parseProfileOutput, type ProfileRun } from "./monorepo-fixture";
 import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 

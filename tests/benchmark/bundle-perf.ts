@@ -1,40 +1,47 @@
 #!/usr/bin/env bun
 /**
- * Bundle performance baseline runner.
+ * Bundle performance CI comparison runner.
  *
- * 결정론적 fixture 로 ZTS 번들 시간을 측정하고 baseline 과 비교.
- * 회귀 가드용 — manualChunks/external phantom 등 graph traversal 변경 후
- * "보이지 않는 perf 회귀" 가 누적되는 것 방지.
+ * 결정론적 fixture 를 같은 CI 머신에서 ZTS / Rolldown / Rspack 으로 번들링해
+ * wall time 을 비교한다. 체크인된 절대 baseline 은 사용하지 않는다.
  *
  * 실행:
- *   bun run tests/benchmark/bundle-perf.ts                    # baseline 과 비교
- *   bun run tests/benchmark/bundle-perf.ts --write            # baseline 갱신
- *   bun run tests/benchmark/bundle-perf.ts --output <path>    # 결과 JSON 덤프
- *   bun run tests/benchmark/bundle-perf.ts --no-fail          # 회귀 시도 exit 0
+ *   bun run tests/benchmark/bundle-perf.ts
+ *   bun run tests/benchmark/bundle-perf.ts --output <path>
+ *   bun run tests/benchmark/bundle-perf.ts --no-fail
  *
  * 측정 방법론:
  *   - 워밍업 5회 (mtime/dentry 캐시 워밍)
- *   - 측정 20회 — outlier (min/max) 1개씩 제거 → 18회 평균
- *   - threshold: median 의 ±15% (단일 PR 회귀 감지 + 머신간 변동 흡수)
- *
- * 머신 의존성:
- *   - 절대값은 머신마다 다름 — 같은 머신에서 PR 전후 비교 의미 있음
- *   - CI 에선 absolute 비교 무의미 → `--no-fail --output` 으로 결과만 수집,
- *     artifact 업로드해 PR 코멘트 / 트렌드 추적용으로 활용.
+ *   - 측정 20회
+ *   - 비교값은 CLI wall time median
+ *   - ZTS `--profile=all` total 은 내부 phase 진단용으로 별도 기록
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { ROOT, ZTS_BIN, buildBin as buildBinShared, getCommit } from "./_runner";
 import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
 
-const BASELINE_PATH = join(__dirname, "baselines", "bundle-perf.json");
-
 const WARMUP = 5;
 const ITERATIONS = 20;
-const TOLERANCE = 0.15; // median ±15%
+
+type ToolName = "zts" | "rolldown" | "rspack";
+
+const TOOL_ORDER: ToolName[] = ["zts", "rolldown", "rspack"];
+
+function toolLabel(tool: ToolName): string {
+  switch (tool) {
+    case "zts":
+      return "ZTS";
+    case "rolldown":
+      return "Rolldown";
+    case "rspack":
+      return "Rspack";
+  }
+}
 
 // ─── Fixture 생성 (결정론적) ───
 
@@ -64,11 +71,20 @@ function makeFixture(dir: string, moduleCount: number, externals: string[]): str
 // ─── 측정 ───
 
 interface RunResult {
-  total_ms: number;
-  phases: Record<string, number>;
+  wall_ms: number;
+  zts_profile_total_ms?: number;
+  phases?: Record<string, number>;
 }
 
-function runOne(entry: string, outDir: string, externals: string[]): RunResult {
+function findBin(name: string): string | null {
+  const local = join(__dirname, "node_modules", ".bin", name);
+  if (existsSync(local)) return local;
+  const root = join(ROOT, "node_modules", ".bin", name);
+  if (existsSync(root)) return root;
+  return null;
+}
+
+function runZts(entry: string, outDir: string, externals: string[]): RunResult {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const args = [
@@ -81,26 +97,81 @@ function runOne(entry: string, outDir: string, externals: string[]): RunResult {
     outDir,
     "--profile=all",
   ];
+  const start = performance.now();
   const r = spawnSync(ZTS_BIN, args, { stdio: "pipe", timeout: 30000 });
+  const wall_ms = performance.now() - start;
   if (r.status !== 0) {
     throw new Error(`zts failed: ${r.stderr?.toString().slice(0, 400)}`);
   }
+
   // profile 출력은 stderr 로 — bundle 결과 정보(stdout) 와 섞이지 않음.
   const stdout = r.stdout.toString() + "\n" + r.stderr.toString();
   const phases: Record<string, number> = {};
-  let total_ms = 0;
+  let zts_profile_total_ms = 0;
   for (const line of stdout.split("\n")) {
     const m = line.match(/^(\w+)\s+([\d.]+)ms\s+/);
     if (!m) continue;
     const [, phase, msStr] = m;
     const ms = parseFloat(msStr);
-    if (phase === "total") total_ms = ms;
+    if (phase === "total") zts_profile_total_ms = ms;
     else phases[phase] = ms;
   }
-  if (total_ms === 0) {
+  if (zts_profile_total_ms === 0) {
     throw new Error(`no profile output. stdout head: ${stdout.slice(0, 400)}`);
   }
-  return { total_ms, phases };
+  return { wall_ms, zts_profile_total_ms, phases };
+}
+
+function runRolldown(bin: string, entry: string, outDir: string, externals: string[]): RunResult {
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(outDir, { recursive: true });
+  const args = [entry, "--format=esm", "--dir", outDir];
+  if (externals.length > 0) args.push("--external", externals.join(","));
+
+  const start = performance.now();
+  const r = spawnSync(bin, args, { stdio: "pipe", timeout: 30000 });
+  const wall_ms = performance.now() - start;
+  if (r.status !== 0) {
+    throw new Error(`rolldown failed: ${r.stderr?.toString().slice(0, 600)}`);
+  }
+  return { wall_ms };
+}
+
+function writeRspackConfig(
+  configPath: string,
+  entry: string,
+  outDir: string,
+  externals: string[],
+): void {
+  writeFileSync(
+    configPath,
+    `module.exports = {
+  mode: 'production',
+  entry: ${JSON.stringify(entry)},
+  output: { path: ${JSON.stringify(outDir)}, filename: 'rspack.js' },
+  target: 'web',
+  externals: ${JSON.stringify(externals)},
+  resolve: { extensions: ['.ts', '.js'] },
+  module: { rules: [{ test: /\\.ts$/, type: 'javascript/auto', use: { loader: 'builtin:swc-loader', options: { jsc: { parser: { syntax: 'typescript' } } } } }] },
+};`,
+  );
+}
+
+function runRspack(bin: string, configPath: string, outDir: string): RunResult {
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(outDir, { recursive: true });
+
+  const start = performance.now();
+  const r = spawnSync(bin, ["build", "--config", configPath], {
+    cwd: ROOT,
+    stdio: "pipe",
+    timeout: 30000,
+  });
+  const wall_ms = performance.now() - start;
+  if (r.status !== 0) {
+    throw new Error(`rspack failed: ${r.stderr?.toString().slice(0, 800)}`);
+  }
+  return { wall_ms };
 }
 
 interface Stats {
@@ -114,10 +185,10 @@ interface Stats {
 
 function computeStats(samples: number[]): Stats {
   const stats = computeMetricStats(samples);
-  return toBaselineStats(stats);
+  return toJsonStats(stats);
 }
 
-function toBaselineStats(stats: MetricStats): Stats {
+function toJsonStats(stats: MetricStats): Stats {
   return {
     median: stats.median,
     mean: stats.mean,
@@ -146,18 +217,27 @@ const FIXTURES: FixtureSpec[] = [
   },
 ];
 
+interface ToolResult {
+  tool: ToolName;
+  wall_ms_stats: Stats | null;
+  zts_profile_total_ms_stats?: Stats;
+  phase_median_ms?: Record<string, number>;
+  skipped?: string;
+}
+
 interface FixtureResult {
   name: string;
   module_count: number;
   externals: number;
-  total_ms_stats: Stats;
-  phase_median_ms: Record<string, number>;
+  tools: ToolResult[];
 }
 
-interface BaselineFile {
+interface RunReport {
   version: number;
   generated_at: string;
   zts_commit: string;
+  warmup: number;
+  iterations: number;
   fixtures: FixtureResult[];
 }
 
@@ -167,70 +247,183 @@ function buildBin() {
   buildBinShared("bundle-perf");
 }
 
-async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
-  const tmp = mkdtempSync(join(tmpdir(), "zts-bundle-perf-"));
-  const fixDir = join(tmp, "src");
-  const outDir = join(tmp, "dist");
-  const entry = makeFixture(fixDir, spec.module_count, spec.externals);
+function createRunners(
+  entry: string,
+  tmp: string,
+  externals: string[],
+): Partial<Record<ToolName, () => RunResult>> {
+  const rolldownBin = findBin("rolldown");
+  const rspackBin = findBin("rspack");
+  const rspackOut = join(tmp, "rspack-out");
+  const rspackConfig = join(tmp, "rspack.config.cjs");
+  writeRspackConfig(rspackConfig, entry, rspackOut, externals);
 
-  // 워밍업
-  for (let i = 0; i < WARMUP; i++) runOne(entry, outDir, spec.externals);
-
-  // 측정
-  const totals: number[] = [];
-  const phaseSeries: Record<string, number[]> = {};
-  for (let i = 0; i < ITERATIONS; i++) {
-    const r = runOne(entry, outDir, spec.externals);
-    totals.push(r.total_ms);
-    for (const [k, v] of Object.entries(r.phases)) {
-      (phaseSeries[k] ??= []).push(v);
-    }
-  }
-  rmSync(tmp, { recursive: true, force: true });
-
-  const phase_median_ms: Record<string, number> = {};
-  for (const [k, arr] of Object.entries(phaseSeries)) {
-    phase_median_ms[k] = computeStats(arr).median;
-  }
   return {
-    name: spec.name,
-    module_count: spec.module_count,
-    externals: spec.externals.length,
-    total_ms_stats: computeStats(totals),
-    phase_median_ms,
+    zts: () => runZts(entry, join(tmp, "zts-out"), externals),
+    rolldown: rolldownBin
+      ? () => runRolldown(rolldownBin, entry, join(tmp, "rolldown-out"), externals)
+      : undefined,
+    rspack: rspackBin ? () => runRspack(rspackBin, rspackConfig, rspackOut) : undefined,
   };
 }
 
-function fmtMs(n: number): string {
-  return n.toFixed(2) + "ms";
+async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
+  const tmp = mkdtempSync(join(tmpdir(), "zts-bundle-perf-"));
+  const fixDir = join(tmp, "src");
+  const entry = makeFixture(fixDir, spec.module_count, spec.externals);
+  const runners = createRunners(entry, tmp, spec.externals);
+
+  try {
+    for (let i = 0; i < WARMUP; i++) {
+      for (const tool of TOOL_ORDER) runners[tool]?.();
+    }
+
+    const wallSamples: Partial<Record<ToolName, number[]>> = {};
+    const ztsProfileTotals: number[] = [];
+    const phaseSeries: Record<string, number[]> = {};
+
+    for (let i = 0; i < ITERATIONS; i++) {
+      for (const tool of TOOL_ORDER) {
+        const run = runners[tool];
+        if (!run) continue;
+        const r = run();
+        (wallSamples[tool] ??= []).push(r.wall_ms);
+        if (tool === "zts") {
+          if (r.zts_profile_total_ms !== undefined) ztsProfileTotals.push(r.zts_profile_total_ms);
+          for (const [k, v] of Object.entries(r.phases ?? {})) {
+            (phaseSeries[k] ??= []).push(v);
+          }
+        }
+      }
+    }
+
+    const phase_median_ms: Record<string, number> = {};
+    for (const [k, arr] of Object.entries(phaseSeries)) {
+      phase_median_ms[k] = computeStats(arr).median;
+    }
+
+    const tools: ToolResult[] = TOOL_ORDER.map((tool) => {
+      const samples = wallSamples[tool];
+      if (!samples || samples.length === 0) {
+        return {
+          tool,
+          wall_ms_stats: null,
+          skipped: tool === "zts" ? "missing zts runner" : `${tool} binary not found`,
+        };
+      }
+      const result: ToolResult = {
+        tool,
+        wall_ms_stats: computeStats(samples),
+      };
+      if (tool === "zts") {
+        result.zts_profile_total_ms_stats = computeStats(ztsProfileTotals);
+        result.phase_median_ms = phase_median_ms;
+      }
+      return result;
+    });
+
+    return {
+      name: spec.name,
+      module_count: spec.module_count,
+      externals: spec.externals.length,
+      tools,
+    };
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
-function fmtMarkdownMs(n: number): string {
+function fmtMarkdownMs(n: number | null | undefined): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return "-";
   return formatMetric(n, "ms");
 }
 
-function fmtSignedMs(n: number): string {
-  const sign = n > 0 ? "+" : "";
-  return sign + formatMetric(n, "ms");
+function fmtRatio(
+  numerator: number | null | undefined,
+  denominator: number | null | undefined,
+): string {
+  if (
+    numerator === null ||
+    numerator === undefined ||
+    denominator === null ||
+    denominator === undefined ||
+    denominator === 0
+  ) {
+    return "-";
+  }
+  return `${(numerator / denominator).toFixed(2)}x`;
 }
 
-function fmtCurrentVsBaseline(curMs: number, baseMs: number): string {
-  if (baseMs === 0) return "-";
-  return `${(curMs / baseMs).toFixed(2)}x`;
+function toolResult(fixture: FixtureResult, tool: ToolName): ToolResult | undefined {
+  return fixture.tools.find((r) => r.tool === tool);
+}
+
+function medianWall(fixture: FixtureResult, tool: ToolName): number | null {
+  return toolResult(fixture, tool)?.wall_ms_stats?.median ?? null;
+}
+
+function ztsProfileMedian(fixture: FixtureResult): number | null {
+  return toolResult(fixture, "zts")?.zts_profile_total_ms_stats?.median ?? null;
+}
+
+function fastestTool(fixture: FixtureResult): string {
+  const candidates = fixture.tools
+    .filter((r): r is ToolResult & { wall_ms_stats: Stats } => r.wall_ms_stats !== null)
+    .sort((a, b) => a.wall_ms_stats.median - b.wall_ms_stats.median);
+  if (candidates.length === 0) return "-";
+  const fastest = candidates[0];
+  return `${toolLabel(fastest.tool)} (${fmtMarkdownMs(fastest.wall_ms_stats.median)})`;
+}
+
+function printReport(runReport: RunReport): void {
+  console.log();
+  console.log("### bundle-perf — CI tool comparison context");
+  console.log("| Field | Value |");
+  console.log("| --- | --- |");
+  console.log(`| Current run commit | ${runReport.zts_commit} |`);
+  console.log("| Baseline | none; same-run CI wall-time comparison |");
+  console.log("| Tools | ZTS / Rolldown / Rspack |");
+  console.log("| Primary metric | CLI wall time median |");
+  console.log("| ZTS profile total | included only as internal phase diagnostic |");
+  console.log(`| Warmup / iterations | ${runReport.warmup} / ${runReport.iterations} |`);
+  console.log();
+  console.log("### bundle-perf — CI wall-time tool comparison");
+  console.log(
+    "| Fixture | ZTS wall median | Rolldown wall median | Rspack wall median | Fastest | Rolldown / ZTS | Rspack / ZTS | ZTS profile total |",
+  );
+  console.log(
+    "|---------|-----------------|----------------------|--------------------|---------|----------------|--------------|-------------------|",
+  );
+  for (const fixture of runReport.fixtures) {
+    const zts = medianWall(fixture, "zts");
+    const rolldown = medianWall(fixture, "rolldown");
+    const rspack = medianWall(fixture, "rspack");
+    console.log(
+      `| ${fixture.name} | ${fmtMarkdownMs(zts)} | ${fmtMarkdownMs(rolldown)} | ${fmtMarkdownMs(rspack)} | ${fastestTool(fixture)} | ${fmtRatio(rolldown, zts)} | ${fmtRatio(rspack, zts)} | ${fmtMarkdownMs(ztsProfileMedian(fixture))} |`,
+    );
+  }
+  console.log();
+  console.log("### bundle-perf — ZTS phase medians");
+  console.log("| Fixture | Resolve | Graph | Link | Shake | Transform | Codegen | Emit |");
+  console.log("|---------|---------|-------|------|-------|-----------|---------|------|");
+  for (const fixture of runReport.fixtures) {
+    const phases = toolResult(fixture, "zts")?.phase_median_ms ?? {};
+    console.log(
+      `| ${fixture.name} | ${fmtMarkdownMs(phases.resolve)} | ${fmtMarkdownMs(phases.graph)} | ${fmtMarkdownMs(phases.link)} | ${fmtMarkdownMs(phases.shake)} | ${fmtMarkdownMs(phases.transform)} | ${fmtMarkdownMs(phases.codegen)} | ${fmtMarkdownMs(phases.emit)} |`,
+    );
+  }
 }
 
 interface CliArgs {
-  write: boolean;
   noFail: boolean;
   output: string | null;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { write: false, noFail: false, output: null };
+  const args: CliArgs = { noFail: false, output: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--write") args.write = true;
-    else if (a === "--no-fail") args.noFail = true;
+    if (a === "--no-fail") args.noFail = true;
     else if (a === "--output") args.output = argv[++i] ?? null;
   }
   return args;
@@ -238,24 +431,31 @@ function parseArgs(argv: string[]): CliArgs {
 
 async function main(cli: CliArgs) {
   buildBin();
+  const available = TOOL_ORDER.filter((tool) => tool === "zts" || findBin(tool)).join(",");
   console.log(`[bundle-perf] zts ${getCommit()} | warmup=${WARMUP} iter=${ITERATIONS}`);
+  console.log(`[bundle-perf] available tools: ${available}`);
   console.log();
 
-  const results: FixtureResult[] = [];
+  const fixtures: FixtureResult[] = [];
   for (const spec of FIXTURES) {
     process.stdout.write(`  ${spec.name}... `);
     const r = await measureFixture(spec);
+    const zts = medianWall(r, "zts");
+    const rolldown = medianWall(r, "rolldown");
+    const rspack = medianWall(r, "rspack");
     console.log(
-      `median=${fmtMs(r.total_ms_stats.median)} trimmed_mean=${fmtMs(r.total_ms_stats.trimmed_mean)} p95=${fmtMs(r.total_ms_stats.p95)}`,
+      `zts=${fmtMarkdownMs(zts)} rolldown=${fmtMarkdownMs(rolldown)} rspack=${fmtMarkdownMs(rspack)} zts_profile_total=${fmtMarkdownMs(ztsProfileMedian(r))}`,
     );
-    results.push(r);
+    fixtures.push(r);
   }
 
-  const runReport: BaselineFile = {
-    version: 1,
+  const runReport: RunReport = {
+    version: 2,
     generated_at: new Date().toISOString(),
     zts_commit: getCommit(),
-    fixtures: results,
+    warmup: WARMUP,
+    iterations: ITERATIONS,
+    fixtures,
   };
 
   if (cli.output) {
@@ -263,76 +463,7 @@ async function main(cli: CliArgs) {
     console.log(`\n[bundle-perf] run report written: ${cli.output}`);
   }
 
-  if (cli.write) {
-    writeFileSync(BASELINE_PATH, JSON.stringify(runReport, null, 2) + "\n");
-    console.log(`\n[bundle-perf] baseline written: ${BASELINE_PATH}`);
-    return;
-  }
-
-  if (!existsSync(BASELINE_PATH)) {
-    console.log(`\n[bundle-perf] no baseline at ${BASELINE_PATH}`);
-    console.log("Run with --write to create baseline.");
-    if (!cli.noFail) process.exit(1);
-    return;
-  }
-
-  const baseline = JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as BaselineFile;
-  console.log();
-  console.log("### bundle-perf — checked-in baseline context");
-  console.log("| Field | Value |");
-  console.log("| --- | --- |");
-  console.log(`| Current run commit | ${runReport.zts_commit} |`);
-  console.log(`| Baseline source | \`tests/benchmark/baselines/bundle-perf.json\` |`);
-  console.log(`| Baseline snapshot | ${baseline.zts_commit} @ ${baseline.generated_at} |`);
-  console.log(`| Metric | ZTS \`--profile=all\` total, not CLI wall time |`);
-  console.log(`| Comparison mode | Checked-in absolute baseline, not PR-base A/B |`);
-  console.log(
-    `| Sign convention | positive Δ means current is slower than baseline; negative Δ means faster |`,
-  );
-  console.log(
-    `| CI failure mode | Informational when run with \`--no-fail\`; status still shows REGRESS/IMPROVE |`,
-  );
-  console.log(`| Regression threshold | median outside ±${(TOLERANCE * 100).toFixed(0)}% |`);
-  console.log();
-  console.log("### bundle-perf — checked-in baseline comparison");
-  console.log(
-    "| Fixture | Current median | Baseline median | Δ ms | Current / baseline | Δ % | Trimmed mean | p95 | Status |",
-  );
-  console.log(
-    "|---------|----------------|-----------------|------|----------|-----|--------------|-----|--------|",
-  );
-  let regressed = 0;
-  for (const r of results) {
-    const base = baseline.fixtures.find((f) => f.name === r.name);
-    if (!base) {
-      console.log(`  ${r.name}: NEW (no baseline)`);
-      console.log(
-        `| ${r.name} | ${fmtMarkdownMs(r.total_ms_stats.median)} | - | - | - | - | ${fmtMarkdownMs(r.total_ms_stats.trimmed_mean)} | ${fmtMarkdownMs(r.total_ms_stats.p95)} | NEW |`,
-      );
-      continue;
-    }
-    const baseMs = base.total_ms_stats.median;
-    const curMs = r.total_ms_stats.median;
-    const delta = curMs - baseMs;
-    const pct = (delta / baseMs) * 100;
-    const sign = pct > 0 ? "+" : "";
-    const within = Math.abs(pct) <= TOLERANCE * 100;
-    const tag = within ? "OK" : pct > 0 ? "REGRESS" : "IMPROVE";
-    console.log(
-      `  ${r.name}: ${fmtMs(curMs)} vs ${fmtMs(baseMs)} (${sign}${pct.toFixed(1)}%) [${tag}]`,
-    );
-    console.log(
-      `| ${r.name} | ${fmtMarkdownMs(curMs)} | ${fmtMarkdownMs(baseMs)} | ${fmtSignedMs(delta)} | ${fmtCurrentVsBaseline(curMs, baseMs)} | ${sign}${pct.toFixed(1)}% | ${fmtMarkdownMs(r.total_ms_stats.trimmed_mean)} | ${fmtMarkdownMs(r.total_ms_stats.p95)} | ${tag} |`,
-    );
-    if (!within && pct > 0) regressed++;
-  }
-
-  if (regressed > 0) {
-    console.log(`\n[bundle-perf] ${regressed} regression(s)`);
-    if (!cli.noFail) process.exit(1);
-    return;
-  }
-  console.log("\n[bundle-perf] no regression");
+  printReport(runReport);
 }
 
 await main(parseArgs(process.argv.slice(2)));
