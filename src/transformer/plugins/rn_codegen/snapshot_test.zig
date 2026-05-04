@@ -1,10 +1,15 @@
 //! RN 버전별 spec snapshot 에 대해 ZTS rn_codegen_plugin 의 출력이
 //! `@react-native/codegen` reference 와 **의미적으로** 동등한지 검증.
 //!
-//! 비교 단위: view config 객체에 등록되는 키 set (= RN runtime contract).
+//! 비교 단위: view config 객체에 등록되는 키 set (= RN runtime contract) +
+//! runtime contract 에 영향을 주는 핵심 value:
 //!   - top-level: uiViewClassName, validAttributes, directEventTypes, bubblingEventTypes
 //!   - validAttributes 의 attribute 이름 set
 //!   - directEventTypes / bubblingEventTypes 의 event name set
+//!   - **uiViewClassName value** (RN native 측의 등록 클래스 이름과 1:1 매칭 필수 —
+//!     `paperComponentName` 옵션이 있으면 그 값이 와야 함)
+//!   - **`export const Commands` 존재 여부** (codegenNativeCommands → dispatchCommand
+//!     변환이 누락되면 imperative API 가 깨짐)
 //!
 //! cosmetic 차이 (quote style / prop order / trailing comma / value formatting / Object.assign +
 //! ConditionallyIgnoredEventHandlers wrapper) 는 무시 — 양쪽이 같은 attribute / event 를
@@ -395,6 +400,23 @@ fn compareKeySets(
     return error.TestKeySetMismatch;
 }
 
+/// `uiViewClassName: 'X'` 의 X 추출. quote 종류 무시. 없으면 null.
+fn extractUiViewClassName(obj_body: []const u8) ?[]const u8 {
+    const v = extractSection(obj_body, "uiViewClassName") orelse return null;
+    const trimmed = std.mem.trim(u8, v, " \t\n\r");
+    if (trimmed.len < 2) return null;
+    const q = trimmed[0];
+    if (q != '\'' and q != '"') return null;
+    if (trimmed[trimmed.len - 1] != q) return null;
+    return trimmed[1 .. trimmed.len - 1];
+}
+
+/// `export const Commands` 가 source 어디든 등장하는지 — codegenNativeCommands 가
+/// dispatchCommand 래퍼로 변환됐는지 검증. value 자체는 비교 안 함 (cosmetic 차이 큼).
+fn hasCommandsExport(src: []const u8) bool {
+    return std.mem.indexOf(u8, src, "export const Commands") != null;
+}
+
 fn compareCase(suite: []const u8, fixture_name: []const u8, golden_name: []const u8) !void {
     const alloc = std.testing.allocator;
 
@@ -428,6 +450,34 @@ fn compareCase(suite: []const u8, fixture_name: []const u8, golden_name: []const
     try compareSectionKeySets(alloc, "validAttributes", ref_obj, zts_obj);
     try compareSectionKeySets(alloc, "directEventTypes", ref_obj, zts_obj);
     try compareSectionKeySets(alloc, "bubblingEventTypes", ref_obj, zts_obj);
+
+    // uiViewClassName value 일치 — `paperComponentName` 옵션이 있는 spec 에서 잘못된
+    // 클래스 이름을 emit 하면 RN native 측에서 컴포넌트 not found.
+    const ref_cls = extractUiViewClassName(ref_obj);
+    const zts_cls = extractUiViewClassName(zts_obj);
+    if (ref_cls == null or zts_cls == null or !std.mem.eql(u8, ref_cls.?, zts_cls.?)) {
+        std.debug.print(
+            "[{s}] uiViewClassName mismatch — ref={s} zts={s}\n",
+            .{ fixture_name, ref_cls orelse "<missing>", zts_cls orelse "<missing>" },
+        );
+        return error.TestUiViewClassNameMismatch;
+    }
+
+    // `codegenNativeCommands` 호출이 fixture 에 있으면 reference 가 `export const Commands`
+    // 를 emit. ZTS 가 같은 emit 을 안 하면 imperative `Commands.X(ref, ...)` 호출이 깨짐.
+    const ref_has_cmds = hasCommandsExport(golden);
+    const zts_has_cmds = hasCommandsExport(zts_out);
+    if (ref_has_cmds != zts_has_cmds) {
+        std.debug.print(
+            "[{s}] Commands export presence mismatch — ref={s} zts={s}\n",
+            .{
+                fixture_name,
+                if (ref_has_cmds) "present" else "missing",
+                if (zts_has_cmds) "present" else "missing",
+            },
+        );
+        return error.TestCommandsExportMismatch;
+    }
 }
 
 fn compareSectionKeySets(
