@@ -82,6 +82,17 @@ const TARGET_PHASES = [
   "shake.const.prepass.node.buffer",
   "shake.const.prepass.link.refresh",
   "shake.numeric.postpass",
+  "shake.numeric.postpass.queue.seed",
+  "shake.numeric.postpass.queue",
+  "shake.numeric.postpass.build.facts",
+  "shake.numeric.postpass.build.facts.resolve",
+  "shake.numeric.postpass.build.facts.lookup",
+  "shake.numeric.postpass.candidate.gate",
+  "shake.numeric.postpass.materialize",
+  "shake.numeric.postpass.forbidden",
+  "shake.numeric.postpass.reachable",
+  "shake.numeric.postpass.replace",
+  "shake.numeric.postpass.minify.resync",
   "shake.mirror",
 ] as const;
 
@@ -415,6 +426,30 @@ async function main(cli: CliArgs): Promise<void> {
   }
 
   console.log();
+  console.log("### numeric postpass profile");
+  console.log(
+    "| Fixture | Queue seed | Queue | Build facts | Resolve | Lookup | Candidate | Materialize | Forbidden | Reachable | Replace | Minify resync |",
+  );
+  console.log(
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+  );
+  for (const result of results) {
+    console.log(
+      `| ${result.name} | ${fmtMs(phaseMedian(result, "shake.numeric.postpass.queue.seed"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.queue"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.build.facts"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.build.facts.resolve"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.build.facts.lookup"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.candidate.gate"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.materialize"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.forbidden"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.reachable"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.replace"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.numeric.postpass.minify.resync"))} |`,
+    );
+  }
+
+  console.log();
   console.log("### fixpoint helper profile");
   console.log(
     "| Fixture | Sym to import | Process imports | Re-exports | Re-export modules | Eval deps |",
@@ -433,10 +468,10 @@ async function main(cli: CliArgs): Promise<void> {
   console.log();
   console.log("### nested bfs helper profile");
   console.log(
-    "| Fixture | Follow import | Follow self | Seed export | Seed count | Seed export self | Resolve | Mark | CJS | Namespace scan | Intermediate | Semantic lookup | Enqueue symbol | Opaque | Require scan | Side effects |",
+    "| Fixture | Follow import | Follow self | Seed export | Seed count | Seed export self | Resolve | Mark | CJS | Namespace scan | Intermediate | Semantic lookup | Enqueue symbol | Opaque | Require scan | Require count | Side effects |",
   );
   console.log(
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   );
   for (const result of results) {
     console.log(
@@ -454,6 +489,7 @@ async function main(cli: CliArgs): Promise<void> {
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.enqueue.symbol"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.opaque"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.require.scan"))} | ` +
+        `${phaseCount(result, "shake.fixpoint.bfs.require.scan")} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.enqueue.side.effects"))} |`,
     );
   }

@@ -150,6 +150,17 @@ pub const Category = enum {
     shake_fixpoint_eval_deps,
     shake_prune,
     shake_numeric_postpass,
+    shake_numeric_postpass_queue_seed,
+    shake_numeric_postpass_queue,
+    shake_numeric_postpass_build_facts,
+    shake_numeric_postpass_build_facts_resolve,
+    shake_numeric_postpass_build_facts_lookup,
+    shake_numeric_postpass_candidate_gate,
+    shake_numeric_postpass_materialize,
+    shake_numeric_postpass_forbidden,
+    shake_numeric_postpass_reachable,
+    shake_numeric_postpass_replace,
+    shake_numeric_postpass_minify_resync,
     shake_mirror,
     metadata,
     metadata_register_ns_rewrites,
@@ -272,19 +283,8 @@ pub const Format = enum {
 // State (process-global)
 // ============================================================================
 
-/// Category 수. u128 bitmask 안에 맞아야 함 (128 미만).
+/// Category 수. `ProfileMask` 크기와 counters 배열의 comptime 길이로 사용한다.
 pub const num_categories = @typeInfo(Category).@"enum".fields.len;
-
-comptime {
-    if (num_categories > 128) {
-        @compileError("Category count exceeded u128 bitmask. Switch to ArrayBitSet.");
-    }
-}
-
-const all_categories_mask: u128 = if (num_categories == 128)
-    std.math.maxInt(u128)
-else
-    (@as(u128, 1) << @as(u7, @intCast(num_categories))) - 1;
 
 const all_categories: [num_categories]Category = blk: {
     var cats: [num_categories]Category = undefined;
@@ -294,10 +294,12 @@ const all_categories: [num_categories]Category = blk: {
     break :blk cats;
 };
 
-/// 활성 카테고리 비트마스크. hot path 에서는 `enabled()` 의 single AND 로 검사.
+const ProfileMask = std.StaticBitSet(num_categories);
+
+/// 활성 카테고리 비트마스크. hot path 에서는 `enabled()` 의 bitset lookup 만 수행.
 /// 프로세스 전역 — 초기화 후 read-only 로 다뤄 thread-safe. 수집 data array 는 현재
 /// single-thread 가정 (PR 7 에서 per-thread merge 로 확장 예정).
-var enabled_mask: u128 = 0;
+var enabled_mask: ProfileMask = ProfileMask.initEmpty();
 
 /// 현재 level. Reporter 가 어떤 수준까지 노출할지 결정.
 var current_level: Level = .summary;
@@ -327,16 +329,15 @@ var active_scope_len: u8 = 0;
 // Activation API (CLI / NAPI / env 공용)
 // ============================================================================
 
-/// 활성 여부 조회 (inline + single AND — hot path 용).
+/// 활성 여부 조회 (inline bitset lookup — hot path 용).
 pub inline fn enabled(cat: Category) bool {
-    const bit = @as(u128, 1) << @intFromEnum(cat);
-    return (enabled_mask & bit) != 0;
+    return enabled_mask.isSet(@intFromEnum(cat));
 }
 
 /// 하나라도 활성화된 category 가 있는지. HMR rebuild 에서 counters reset 을 조건부로
 /// 수행할 때 사용 (비활성 상태의 불필요한 memset 회피).
 pub inline fn anyEnabled() bool {
-    return enabled_mask != 0;
+    return enabled_mask.count() != 0;
 }
 
 /// Level 조회.
@@ -358,11 +359,11 @@ pub fn addFromCsv(csv: []const u8) void {
         if (name.len == 0) continue;
 
         if (std.ascii.eqlIgnoreCase(name, "all")) {
-            enabled_mask = all_categories_mask;
+            enabled_mask = ProfileMask.initFull();
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "none")) {
-            enabled_mask = 0;
+            enabled_mask = ProfileMask.initEmpty();
             continue;
         }
         if (Category.fromString(name)) |c| {
@@ -375,11 +376,11 @@ pub fn addFromCsv(csv: []const u8) void {
 pub fn addCategories(names: []const []const u8) void {
     for (names) |name| {
         if (std.ascii.eqlIgnoreCase(name, "all")) {
-            enabled_mask = all_categories_mask;
+            enabled_mask = ProfileMask.initFull();
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "none")) {
-            enabled_mask = 0;
+            enabled_mask = ProfileMask.initEmpty();
             continue;
         }
         if (Category.fromString(name)) |c| {
@@ -416,7 +417,7 @@ fn zeroCounters() void {
 
 /// 테스트 / 재초기화용. 전체 상태 초기화 (mask + level + counters 모두).
 pub fn resetForTest() void {
-    enabled_mask = 0;
+    enabled_mask = ProfileMask.initEmpty();
     current_level = .summary;
     zeroCounters();
 }
@@ -439,7 +440,7 @@ fn enableCategoryAndChildren(parent: Category) void {
             child_name[parent_name.len] == '_';
         if (is_self or is_child) {
             const child = @field(Category, child_name);
-            enabled_mask |= @as(u128, 1) << @intFromEnum(child);
+            enabled_mask.set(@intFromEnum(child));
         }
     }
 }
@@ -740,6 +741,7 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("shake.fixpoint.bfs.follow.import") == .shake_fixpoint_bfs_follow_import);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.seed.export.resolve") == .shake_fixpoint_bfs_seed_export_resolve);
     try testing.expect(Category.fromString("shake.fixpoint.re.exports.module") == .shake_fixpoint_re_exports_module);
+    try testing.expect(Category.fromString("shake.numeric.postpass.build.facts.resolve") == .shake_numeric_postpass_build_facts_resolve);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts") == .shake_const_prepass_build_facts);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts.lookup") == .shake_const_prepass_build_facts_lookup);
 }
@@ -755,6 +757,7 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("shake.fixpoint.bfs.follow.import", Category.displayName(.shake_fixpoint_bfs_follow_import));
     try testing.expectEqualStrings("shake.fixpoint.bfs.seed.export.resolve", Category.displayName(.shake_fixpoint_bfs_seed_export_resolve));
     try testing.expectEqualStrings("shake.fixpoint.re.exports.module", Category.displayName(.shake_fixpoint_re_exports_module));
+    try testing.expectEqualStrings("shake.numeric.postpass.build.facts.resolve", Category.displayName(.shake_numeric_postpass_build_facts_resolve));
     try testing.expectEqualStrings("shake.const.prepass.build.facts", Category.displayName(.shake_const_prepass_build_facts));
     try testing.expectEqualStrings("shake.const.prepass.build.facts.lookup", Category.displayName(.shake_const_prepass_build_facts_lookup));
 }
@@ -1089,10 +1092,11 @@ test "resetForTest 초기화" {
     try testing.expectEqual(@as(u32, 0), count(.parse));
 }
 
-test "addFromCsv all enables last category" {
+test "addFromCsv all enables categories beyond u128 mask boundary" {
     resetForTest();
     defer resetForTest();
 
     addFromCsv("all");
     try testing.expect(enabled(.shake_fixpoint_re_exports_module));
+    try testing.expect(enabled(.cache));
 }

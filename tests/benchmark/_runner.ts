@@ -53,10 +53,49 @@ export interface ProfileJson {
 
 /// stdout/stderr 에 섞여 나온 `--profile-format=json` 블록을 추출해 파싱.
 export function parseProfileJson(output: string): ProfileJson {
-  const start = output.indexOf("{");
-  const end = output.lastIndexOf("}");
-  if (start < 0 || end < start) {
+  const marker = '"profile_version"';
+  const markerIndex = output.indexOf(marker);
+  if (markerIndex < 0) {
     throw new Error(`missing profile JSON output: ${output.slice(0, 800)}`);
   }
-  return JSON.parse(output.slice(start, end + 1)) as ProfileJson;
+
+  const start = output.lastIndexOf("{", markerIndex);
+  if (start < 0) {
+    throw new Error(`malformed profile JSON output: ${output.slice(0, 800)}`);
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < output.length; i++) {
+    const ch = output[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      depth++;
+      continue;
+    }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return JSON.parse(output.slice(start, i + 1)) as ProfileJson;
+      }
+    }
+  }
+
+  throw new Error(`unterminated profile JSON output: ${output.slice(start, start + 800)}`);
 }
