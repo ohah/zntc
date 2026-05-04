@@ -930,9 +930,12 @@ function findOriginalPosition(map, line, column) {
 async function loadSourceMapForGeneratedUrl(url) {
   const generatedUrl = new URL(url, location.href).href;
   if (sourceMapCache.has(generatedUrl)) return sourceMapCache.get(generatedUrl);
+  const safeJson = async (response) => {
+    try { return await response.json(); } catch (_) { return null; }
+  };
   const promise = (async () => {
     const direct = await fetch(generatedUrl + ".map", { cache: "no-store" }).catch(() => null);
-    if (direct && direct.ok) return direct.json();
+    if (direct && direct.ok) return safeJson(direct);
     const jsResponse = await fetch(generatedUrl, { cache: "no-store" }).catch(() => null);
     if (!jsResponse || !jsResponse.ok) return null;
     const code = await jsResponse.text();
@@ -946,11 +949,15 @@ async function loadSourceMapForGeneratedUrl(url) {
       if (comma < 0) return null;
       const meta = ref.slice(0, comma);
       const data = ref.slice(comma + 1);
-      const json = meta.includes(";base64") ? atob(data) : decodeURIComponent(data);
-      return JSON.parse(json);
+      try {
+        const json = meta.includes(";base64") ? atob(data) : decodeURIComponent(data);
+        return JSON.parse(json);
+      } catch (_) {
+        return null;
+      }
     }
     const mapResponse = await fetch(new URL(ref, generatedUrl).href, { cache: "no-store" }).catch(() => null);
-    return mapResponse && mapResponse.ok ? mapResponse.json() : null;
+    return mapResponse && mapResponse.ok ? safeJson(mapResponse) : null;
   })();
   sourceMapCache.set(generatedUrl, promise);
   return promise;
@@ -992,8 +999,7 @@ function showOverlay(errors, titleText = "Build Error") {
   const items = normalizeErrors(errors);
   overlay = document.createElement("div");
   overlay.id = "zts-error-overlay";
-  const root = overlay.attachShadow ? overlay.attachShadow({ mode: "open" }) : overlay;
-  if (root === overlay) overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:block;";
+  const root = overlay.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = ":host{position:fixed;inset:0;z-index:2147483647;display:block;--font:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--red:#fb7185;--text:#f8fafc;--blue:#93c5fd;--window:#181818;}" +
     ".backdrop{position:fixed;inset:0;overflow:auto;padding:32px;box-sizing:border-box;background:rgba(0,0,0,.66);font:14px/1.5 var(--font);color:var(--text);}" +
