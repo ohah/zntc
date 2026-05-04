@@ -72,12 +72,15 @@ const VisitedSet = std.AutoHashMapUnmanaged(NodeIndex, void);
 /// 외부에서 받음 (declaration 자체엔 이름 없음).
 /// `paper_component_name` 은 `codegenNativeComponent('Name', { paperComponentName: 'X' })`
 /// 의 옵션. 없으면 null. RN runtime 의 `uiViewClassName` 은 이 값을 우선 (#2462).
+/// `commands_decl_idx` 는 `codegenNativeCommands<NativeCommands>(...)` 의 type argument
+/// 가 가리키는 interface declaration. 없으면 null (commands 미사용 spec).
 pub fn build(
     ast: *const Ast,
     type_index: *const TypeIndex,
     component_name: []const u8,
     paper_component_name: ?[]const u8,
     native_props_idx: NodeIndex,
+    commands_decl_idx: ?NodeIndex,
     alloc: std.mem.Allocator,
 ) Error!schema.ComponentShape {
     var visited: VisitedSet = .{};
@@ -100,11 +103,120 @@ pub fn build(
     try dedupByName(schema.NamedShape(schema.PropTypeAnnotation), &props_buf, alloc);
     try dedupByName(schema.EventTypeShape, &events_buf, alloc);
 
+    const commands: []const schema.NamedShape(schema.CommandTypeAnnotation) = if (commands_decl_idx) |c|
+        try buildCommands(ast, type_index, c, alloc)
+    else
+        &.{};
+
     return .{
         .name = component_name,
         .paper_component_name = paper_component_name,
         .props = try props_buf.toOwnedSlice(alloc),
         .events = try events_buf.toOwnedSlice(alloc),
+        .commands = commands,
+    };
+}
+
+/// NativeCommands interface body → commands schema. 각 method property 마다 이름 +
+/// 첫 인자 `ref` 를 제외한 나머지 인자 names 를 추출.
+///
+/// reference (`@react-native/codegen` `flow/components/commands.js:35-36` 의
+/// `value.params.slice(1).map(param => { const paramName = param.name.name; ... })`,
+/// `typescript/components/commands.js:42` 의 `param.name`) 와 동일 contract — 첫 인자는
+/// 항상 viewRef, codegen 은 emit 에 그 자리에 `ref` 식별자를 직접 박음
+/// (`GenerateViewConfigJs.js:323`).
+///
+/// D103 으로 type-level function param name 이 AST 에 보존됨 — flow_property_signature
+/// / ts_property_signature 의 extra[0] 의 binding_identifier 직접 추출. 이전엔
+/// source-text fallback 필요했음.
+///
+/// param 의 type 은 emit 에 안 쓰므로 `.string` fallback (CommandParamTypeAnnotation 에
+/// `mixed` 가 없음). 정확한 type 매핑은 후속 PR.
+pub fn buildCommands(
+    ast: *const Ast,
+    type_index: *const TypeIndex,
+    commands_decl_idx: NodeIndex,
+    alloc: std.mem.Allocator,
+) Error![]const schema.NamedShape(schema.CommandTypeAnnotation) {
+    var visited: VisitedSet = .{};
+    defer visited.deinit(alloc);
+    var members_buf = std.ArrayList(NodeIndex).empty;
+    defer members_buf.deinit(alloc);
+    try collectAllMembers(ast, type_index, commands_decl_idx, &members_buf, &visited, 0, alloc);
+
+    var out = std.ArrayList(schema.NamedShape(schema.CommandTypeAnnotation)).empty;
+    defer out.deinit(alloc);
+
+    for (members_buf.items) |sig_idx| {
+        const info = decodePropertySignature(ast, sig_idx) orelse continue;
+        if (!isFunctionType(ast, info.type_ann)) continue;
+
+        const name = extractKeyName(ast, info.key) orelse continue;
+        const params = try extractCommandParams(ast, info.type_ann, alloc);
+        try out.append(alloc, .{
+            .name = name,
+            .optional = info.flags.optional,
+            .type_annotation = .{ .params = params },
+        });
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// function_type 노드 (`(ref, p1, p2) => void`) 의 params list 에서 첫 인자 (`ref`) 를
+/// 제외한 나머지 인자 names 추출. AST 직접 순회 (D103 후 type-level param 이
+/// flow_property_signature / ts_property_signature 의 `[key, type_ann, flags]` layout 으로
+/// 보존됨 — extra[0] 의 binding_identifier 에서 이름 추출).
+///
+/// 각 param 의 type 은 emit 에 안 쓰므로 `.string` fallback.
+fn extractCommandParams(
+    ast: *const Ast,
+    fn_type_idx: NodeIndex,
+    alloc: std.mem.Allocator,
+) Error![]const schema.NamedShape(schema.CommandParamTypeAnnotation) {
+    const fn_type = ast.getNode(fn_type_idx);
+    // ts_function_type / flow_function_type: extra = [type_params, params_start, params_len, return_type]
+    const e = fn_type.data.extra;
+    if (e + 3 >= ast.extra_data.items.len) return &.{};
+    const params_start = ast.extra_data.items[e + 1];
+    const params_len = ast.extra_data.items[e + 2];
+    if (params_len <= 1) return &.{}; // ref 만 있으면 빈 args.
+
+    var out = std.ArrayList(schema.NamedShape(schema.CommandParamTypeAnnotation)).empty;
+    defer out.deinit(alloc);
+    var i: u32 = 1; // 첫 인자 ref 는 skip — reference 의 `value.params.slice(1)` 와 동일.
+    while (i < params_len) : (i += 1) {
+        const p_idx: NodeIndex = @enumFromInt(ast.extra_data.items[params_start + i]);
+        // type-level function param: ts_property_signature / flow_property_signature
+        // (D103). extra = [key, type_ann, flags].
+        const info = decodePropertySignature(ast, p_idx) orelse continue;
+        const param_name = extractKeyName(ast, info.key) orelse continue;
+        try out.append(alloc, .{
+            .name = param_name,
+            .optional = false,
+            .type_annotation = .string,
+        });
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+/// `ts_property_signature` / `flow_property_signature` 의 `[key, type_ann, flags]` extras
+/// 디코드. 다른 tag 또는 OOB 면 null. 같은 layout 을 3 callsite (classifyMember +
+/// buildCommands + extractCommandParams) 에서 사용.
+const PropertySignatureInfo = struct {
+    key: NodeIndex,
+    type_ann: NodeIndex,
+    flags: PropertySignatureFlags,
+};
+
+fn decodePropertySignature(ast: *const Ast, sig_idx: NodeIndex) ?PropertySignatureInfo {
+    const sig = ast.getNode(sig_idx);
+    if (sig.tag != .ts_property_signature and sig.tag != .flow_property_signature) return null;
+    const e = sig.data.extra;
+    if (e + 2 >= ast.extra_data.items.len) return null;
+    return .{
+        .key = @enumFromInt(ast.extra_data.items[e]),
+        .type_ann = @enumFromInt(ast.extra_data.items[e + 1]),
+        .flags = PropertySignatureFlags.fromU32(ast.extra_data.items[e + 2]),
     };
 }
 
@@ -450,22 +562,15 @@ fn classifyMember(
     events: *std.ArrayList(schema.EventTypeShape),
     alloc: std.mem.Allocator,
 ) Error!void {
-    const sig = ast.getNode(sig_idx);
-    const e = sig.data.extra;
-    if (e + 2 >= ast.extra_data.items.len) return error.UnsupportedPropType;
+    const info = decodePropertySignature(ast, sig_idx) orelse return error.UnsupportedPropType;
+    const key_name = extractKeyName(ast, info.key) orelse return error.UnsupportedPropType;
+    if (info.type_ann == .none) return error.UnsupportedPropType;
 
-    const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-    const type_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
-    const flags = PropertySignatureFlags.fromU32(ast.extra_data.items[e + 2]);
-
-    const key_name = extractKeyName(ast, key_idx) orelse return error.UnsupportedPropType;
-    if (type_idx == .none) return error.UnsupportedPropType;
-
-    if (isFunctionType(ast, type_idx)) {
+    if (isFunctionType(ast, info.type_ann)) {
         try events.append(alloc, .{
             .name = key_name,
             .bubbling_type = classifyEventBubbling(key_name),
-            .optional = flags.optional,
+            .optional = info.flags.optional,
             .argument = null, // PR #3b 스코프: argument 추출 미구현. PR #3b-2 에서 확장.
         });
         return;
@@ -475,20 +580,20 @@ fn classifyMember(
     // wrapper. react-native-svg 의 fabric spec 들이 `onSvgLayout?: DirectEventHandler<E>`
     // 형태로 사용. wrapper 이름이 bubble vs direct 를 결정하므로 prop 이름 휴리스틱
     // (`onCapture`) 보다 우선.
-    if (eventHandlerBubbling(ast, type_idx)) |bubbling| {
+    if (eventHandlerBubbling(ast, info.type_ann)) |bubbling| {
         try events.append(alloc, .{
             .name = key_name,
             .bubbling_type = bubbling,
-            .optional = flags.optional,
+            .optional = info.flags.optional,
             .argument = null,
         });
         return;
     }
 
-    const prop_type = try mapPropType(ast, type_index, type_idx);
+    const prop_type = try mapPropType(ast, type_index, info.type_ann);
     try props.append(alloc, .{
         .name = key_name,
-        .optional = flags.optional,
+        .optional = info.flags.optional,
         .type_annotation = prop_type,
     });
 }

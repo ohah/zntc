@@ -49,7 +49,9 @@ const schema_builder = codegen.schema_builder;
 const view_config_emitter = codegen.view_config_emitter;
 const stmt_info = @import("../../bundler/stmt_info.zig");
 
-const CODEGEN_MARKER = "codegenNativeComponent";
+// `@react-native/codegen` (`parsers-commons.js:689,968,1048` + `parsers-primitives.js:538`)
+// 와 `babel-plugin-codegen/index.js:74-149` 가 marker 이름을 inline literal 로 직접 비교.
+// ZTS 도 동일 패턴 — 별도 상수 없이 텍스트 스캔 / AST callee 비교에 inline 사용.
 
 pub fn plugin() Plugin {
     return .{
@@ -70,9 +72,9 @@ fn onTransform(
     // 파일 식별은 filename suffix 가 아니라 AST 레벨 검증 (`findComponentName`) 으로 결정 —
     // export default codegenNativeComponent(...) 패턴이 정확한 식별자.
     if (!std.mem.endsWith(u8, id, ".js") and !std.mem.endsWith(u8, id, ".ts")) return null;
-    if (std.mem.indexOf(u8, code, CODEGEN_MARKER) == null) return null;
+    if (std.mem.indexOf(u8, code, "codegenNativeComponent") == null) return null;
 
-    const props_type_name = extractTypeArg(code) orelse return null;
+    const props_type_name = extractTypeArg(code, "codegenNativeComponent") orelse return null;
 
     var scanner = Scanner.init(alloc, code) catch return null;
     defer scanner.deinit();
@@ -98,30 +100,46 @@ fn onTransform(
     const component_name = extractCallArg0String(&parser.ast, call_idx) orelse return null;
     const paper_component_name = extractPaperComponentName(&parser.ast, call_idx);
 
+    // commands 는 옵셔널 — `export const Commands = codegenNativeCommands<T>(...)` 패턴이
+    // 있으면 T 의 interface decl 을 builder 에 전달.
+    const commands_type_name = extractTypeArg(code, "codegenNativeCommands");
+    const commands_decl_idx = if (commands_type_name) |n| type_index.get(n) else null;
+
     const shape = schema_builder.build(
         &parser.ast,
         &type_index,
         component_name,
         paper_component_name,
         decl_idx,
+        commands_decl_idx,
         alloc,
     ) catch return null;
     defer alloc.free(shape.props);
     defer alloc.free(shape.events);
+    defer if (shape.hasCommands()) {
+        for (shape.commands) |c| alloc.free(c.type_annotation.params);
+        alloc.free(shape.commands);
+    };
 
     const view_config = view_config_emitter.emit(shape, alloc) catch return null;
     defer alloc.free(view_config);
 
-    return assembleFileReplacement(shape.nativeName(), view_config, alloc) catch return null;
+    return assembleFileReplacement(
+        shape.nativeName(),
+        view_config,
+        shape.hasCommands(),
+        alloc,
+    ) catch return null;
 }
 
-/// `codegenNativeComponent<TYPE_NAME>` 에서 `TYPE_NAME` 추출.
-/// 정상적인 spec 파일은 이 형태이므로 단순 텍스트 스캔으로 충분.
-/// AST 레벨에선 type argument 가 expression context 에서 speculative parse 후 폐기됨.
-fn extractTypeArg(code: []const u8) ?[]const u8 {
+/// `<MARKER><TYPE_NAME>` 에서 `TYPE_NAME` 추출 (예: `codegenNativeComponent<NativeProps>`,
+/// `codegenNativeCommands<NativeCommands>`). 정상적인 spec 파일은 이 형태이므로 단순
+/// 텍스트 스캔으로 충분. AST 레벨에선 type argument 가 expression context 에서
+/// speculative parse 후 폐기됨.
+fn extractTypeArg(code: []const u8, marker: []const u8) ?[]const u8 {
     var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, code, search_from, CODEGEN_MARKER)) |marker| {
-        const after = marker + CODEGEN_MARKER.len;
+    while (std.mem.indexOfPos(u8, code, search_from, marker)) |m| {
+        const after = m + marker.len;
         if (after >= code.len) return null;
         if (code[after] != '<') {
             search_from = after;
@@ -171,8 +189,7 @@ fn callIsCodegenMarker(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     const callee_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
     const callee = ast.getNode(callee_idx);
     if (callee.tag != .identifier_reference) return false;
-    const name = ast.getText(callee.span);
-    return std.mem.eql(u8, name, CODEGEN_MARKER);
+    return std.mem.eql(u8, ast.getText(callee.span), "codegenNativeComponent");
 }
 
 /// call_expression 의 첫 인자가 string literal 이면 unquoted 텍스트 반환.
@@ -226,18 +243,25 @@ fn extractPaperComponentName(ast: *const ast_mod.Ast, call_idx: NodeIndex) ?[]co
 /// 최종 파일 교체 문자열 조립. RN 런타임이 기대하는 정확한 형태:
 /// `@react-native/codegen` 의 `GenerateViewConfigJs.generate()` 의 fileTemplate 와 동일.
 /// `native_name` 은 caller 가 `shape.nativeName()` 으로 결정 (paper 우선) — 본 함수는
-/// 순수 문자열 어셈블리만 담당.
+/// 순수 문자열 어셈블리만 담당. `has_commands` true 면 `dispatchCommand` import 도
+/// prepend (commands export 가 emit 결과 안에 이미 포함됨).
 fn assembleFileReplacement(
     native_name: []const u8,
     view_config_js: []const u8,
+    has_commands: bool,
     alloc: std.mem.Allocator,
 ) ![]u8 {
+    const dispatch_import = if (has_commands)
+        "const {dispatchCommand} = require(\"react-native/Libraries/ReactNative/RendererProxy\");\n"
+    else
+        "";
     return std.fmt.allocPrint(
         alloc,
         "const NativeComponentRegistry = require('react-native/Libraries/NativeComponent/NativeComponentRegistry');\n" ++
+            "{s}" ++
             "let nativeComponentName = '{s}';\n" ++
             "{s}\n" ++
             "export default NativeComponentRegistry.get(nativeComponentName, () => __INTERNAL_VIEW_CONFIG);\n",
-        .{ native_name, view_config_js },
+        .{ dispatch_import, native_name, view_config_js },
     );
 }
