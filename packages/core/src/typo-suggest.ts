@@ -110,7 +110,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "target",
   "browserslist",
   "runtimePolyfills",
-  "runtimeTargets",
   "coreJs",
   // ─── JSX ───
   "jsx",

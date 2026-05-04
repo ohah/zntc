@@ -358,8 +358,7 @@ describe("runtime polyfill prelude", () => {
       const napiOptions: Record<string, unknown> = {};
       const applied = applyRuntimePolyfillsToNapiOptions(napiOptions, {
         entryPoints: [entry],
-        runtimePolyfills: "entry",
-        runtimeTargets: "node999",
+        runtimePolyfills: { mode: "entry", targets: "node999" },
       });
       try {
         expect(applied.modules.length).toBeGreaterThan(0);
@@ -387,8 +386,7 @@ describe("runtime polyfill prelude", () => {
         {},
         {
           entryPoints: [entry],
-          runtimePolyfills: "auto",
-          runtimeTargets: "node18",
+          runtimePolyfills: { mode: "auto", targets: "node18" },
         },
       );
       expect(empty.modules).toEqual([]);

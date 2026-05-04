@@ -2947,6 +2947,92 @@ test "ES5: compound assignment +/while await RHS preserves operator (#1896)" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "sum=_state.sent()") == null);
 }
 
+test "ES5: async method state machine captures this for nested arrows" {
+    var r = try e2eES5Async(std.testing.allocator,
+        \\class QueryLike {
+        \\  constructor() { this.value = 42; }
+        \\  async fetch() {
+        \\    const createContext = () => ({ value: this.value });
+        \\    const context = createContext();
+        \\    return context.value;
+        \\  }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:_this.value") != null);
+}
+
+test "ES5: Babel async-to-generator fixture async-arrow-in-method captures lexical this" {
+    var r = try e2eES5Async(std.testing.allocator,
+        \\let TestClass = {
+        \\  name: "John Doe",
+        \\  testMethodFailure() {
+        \\    return new Promise(async (resolve) => {
+        \\      console.log(this);
+        \\      setTimeout(resolve, 1000);
+        \\    });
+        \\  }
+        \\};
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(_this)") != null);
+}
+
+test "ES5: Babel async-to-generator fixture object-method-with-arrows keeps function boundaries" {
+    var r = try e2eES5Async(std.testing.allocator,
+        \\class Class {
+        \\  async method() {
+        \\    this;
+        \\    () => this;
+        \\    () => {
+        \\      this;
+        \\      () => this;
+        \\      function x() {
+        \\        this;
+        \\        () => { this; }
+        \\        async () => { this; }
+        \\      }
+        \\    }
+        \\    function x() {
+        \\      this;
+        \\      () => { this; }
+        \\      async () => { this; }
+        \\    }
+        \\  }
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _arguments=arguments") == null);
+}
+
+test "ES5: Babel async-to-generator fixture deeply-nested-asyncs captures this and arguments" {
+    var r = try e2eES5Async(std.testing.allocator,
+        \\async function s(x, ...args) {
+        \\  let t = async (y, a) => {
+        \\    let r = async (z, b, ...innerArgs) =>  {
+        \\      await z;
+        \\      console.log(this, innerArgs, arguments);
+        \\      return this.x;
+        \\    }
+        \\    await r();
+        \\    console.log(this, args, arguments);
+        \\    return this.g(r);
+        \\  }
+        \\  await t();
+        \\  return this.h(t);
+        \\}
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _arguments=arguments") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "console.log(_this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_arguments)") != null);
+}
+
 test "ES5: for-await-of hoists loop var to function top (#1901)" {
     // `for await (var v of arr)` 의 `var v` 가 함수 top 에 hoist 안 되면 strict mode
     // 에서 `v is not defined` throw. Babel/TS 는 함수 top 에 모든 var (loop binding +

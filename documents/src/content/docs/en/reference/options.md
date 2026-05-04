@@ -27,8 +27,7 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 |---|---|---|---|
 | `target` | `es5`, `es2015`–`es2025`, `esnext` | `esnext` | ES downlevel target. When set, features introduced after the target version are auto-lowered |
 | `unsupported` | `integer` (u32) | `0` | Direct `UnsupportedFeatures` bitmask. Used to inject browserslist-derived feature sets — takes precedence over `target` |
-| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | Inject core-js runtime API polyfills. `auto`/`usage` inject used APIs only; `entry` injects target-required modules broadly |
-| `runtimeTargets` | `string \| string[] \| object` | `defaults` | core-js-compat runtime targets (`ios12`, `chrome >= 85`, `hermes0.7`, `node18`, etc.). Physical device names are unsupported |
+| `runtimePolyfills` | `"off" \| "auto" \| "usage" \| "entry" \| object` | `"off"` | Inject core-js runtime API polyfills. Set targets through the object form's `targets` field |
 | `coreJs` | `string` | installed version | core-js version used by core-js-compat |
 
 ### Parsing

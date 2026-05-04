@@ -799,15 +799,11 @@ interface BuildOptionsCommon {
    * - `"off"` (default): 자동 런타임 폴리필 없음.
    * - `"auto"` / `"usage"`: 엔트리와 로컬 의존성의 실제 사용 API만 스캔해 타겟 미지원 모듈 주입.
    * - `"entry"`: 타겟 기준 필요한 core-js ES/Web 모듈을 엔트리 prelude에 포괄 주입.
+   * - 타겟 지정은 객체 form의 `targets` 필드를 사용한다.
    */
   runtimePolyfills?: RuntimePolyfillsOption;
   /** core-js-compat 계산에 사용할 core-js 버전 (예: `"3.49"`). */
   coreJs?: string;
-  /**
-   * core-js-compat 런타임 엔진 타겟.
-   * 예: `"ios12"`, `"chrome >= 85"`, `"hermes0.7"`, `"react-native 0.70"`, `{ node: "18" }`.
-   */
-  runtimeTargets?: RuntimeTarget | RuntimeTarget[] | RuntimeTargetObject;
   /** 엔트리 모듈 직전에 실행할 모듈 경로 */
   runBeforeMain?: string[];
   /** 번들 그래프 밖의 디렉토리를 감시 루트에 추가 (Metro watchFolders 호환).
@@ -1531,7 +1527,6 @@ function prepareNapiOptions(options: BuildOptions): {
     platform: options.platform,
     target: options.target,
     browserslist: options.browserslist,
-    runtimeTargets: options.runtimeTargets,
     runtimePolyfills: options.runtimePolyfills,
     coreJs: options.coreJs,
     runBeforeMain: options.runBeforeMain,

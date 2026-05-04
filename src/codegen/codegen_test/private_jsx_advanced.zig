@@ -1107,6 +1107,28 @@ test "#1278-1: standalone _method_fn 내부의 this.#field가 WeakMap get으로 
     try std.testing.expect(std.mem.indexOf(u8, r.output, "this.#field") == null);
 }
 
+test "ES5: standalone private method captures this for nested arrows" {
+    var r = try e2eTarget(std.testing.allocator,
+        \\function batch(fn) { fn(); }
+        \\class Foo {
+        \\  constructor() {
+        \\    this.listeners = [listener => listener(this)];
+        \\  }
+        \\  #notify() {
+        \\    batch(() => {
+        \\      this.listeners.forEach((listener) => listener(this));
+        \\    });
+        \\  }
+        \\  run() { this.#notify(); }
+        \\}
+        \\new Foo().run();
+    , .es5);
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function _notify_fn()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "var _this=this") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "_this.listeners.forEach") != null);
+}
+
 // ES2022 Ergonomic Brand Checks: #x in obj
 // ================================================================
 // Spec: https://tc39.es/ecma262/#sec-relational-operators
