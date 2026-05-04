@@ -124,6 +124,13 @@ pub const Category = enum {
     shake_fixpoint,
     shake_fixpoint_sym_to_ib,
     shake_fixpoint_bfs,
+    shake_fixpoint_bfs_seed,
+    shake_fixpoint_bfs_queue,
+    shake_fixpoint_bfs_follow_import,
+    shake_fixpoint_bfs_seed_export,
+    shake_fixpoint_bfs_require_scan,
+    shake_fixpoint_bfs_final_mark_exports,
+    shake_fixpoint_bfs_enqueue_side_effects,
     shake_fixpoint_process_imports,
     shake_fixpoint_re_exports,
     shake_fixpoint_eval_deps,
@@ -269,10 +276,25 @@ var enabled_mask: u128 = 0;
 var current_level: Level = .summary;
 
 /// 각 category 별 누적 시간 (ns).
+/// Parent scope 전체 시간을 보존하는 inclusive total 이다.
 var totals_ns: [num_categories]u64 = [_]u64{0} ** num_categories;
+
+/// 각 category 별 child scope 제외 시간 (ns).
+/// `total_ms` 는 기존 호환성을 위해 inclusive 로 유지하고, 전체 합계/JSON self_ms 는
+/// 이 값을 사용해 nested phase 중복 합산을 피한다.
+var self_totals_ns: [num_categories]u64 = [_]u64{0} ** num_categories;
 
 /// 각 category 별 호출 횟수.
 var counts: [num_categories]u32 = [_]u32{0} ** num_categories;
+
+const max_scope_depth = 128;
+
+const ActiveScope = struct {
+    child_ns: u64 = 0,
+};
+
+var active_scopes: [max_scope_depth]ActiveScope = [_]ActiveScope{.{}} ** max_scope_depth;
+var active_scope_len: u8 = 0;
 
 // ============================================================================
 // Activation API (CLI / NAPI / env 공용)
@@ -360,7 +382,9 @@ pub fn initFromEnv(allocator: std.mem.Allocator) void {
 /// Zig upgrade 로 버그 사라지면 이 함수 제거하고 `@memset` 두 줄 복원.
 fn zeroCounters() void {
     totals_ns = [_]u64{0} ** num_categories;
+    self_totals_ns = [_]u64{0} ** num_categories;
     counts = [_]u32{0} ** num_categories;
+    active_scope_len = 0;
 }
 
 /// 테스트 / 재초기화용. 전체 상태 초기화 (mask + level + counters 모두).
@@ -403,11 +427,30 @@ fn enableCategoryAndChildren(parent: Category) void {
 pub const Scope = struct {
     timer: ?std.time.Timer = null,
     category: Category = .scan, // 비활성 시 사용 안 됨
+    stack_index: u8 = 0,
+    stack_active: bool = false,
 
     pub fn end(self: *Scope) void {
         if (self.timer) |*t| {
             const elapsed_ns = t.read();
-            recordTiming(self.category, elapsed_ns);
+            var child_ns: u64 = 0;
+            if (self.stack_active) {
+                if (active_scope_len == self.stack_index + 1) {
+                    child_ns = active_scopes[self.stack_index].child_ns;
+                    active_scope_len = self.stack_index;
+                    if (self.stack_index > 0) {
+                        active_scopes[self.stack_index - 1].child_ns += elapsed_ns;
+                    }
+                } else {
+                    // Scope 는 LIFO 로 닫혀야 child subtraction 이 정확하다. 혹시 깨지면
+                    // 이후 sample 오염을 막기 위해 stack 만 비우고 inclusive/self 동일 처리.
+                    active_scope_len = 0;
+                }
+                self.stack_active = false;
+            }
+            const self_ns = elapsed_ns -| child_ns;
+            recordTiming(self.category, elapsed_ns, self_ns);
+            self.timer = null;
         }
     }
 };
@@ -416,21 +459,38 @@ pub const Scope = struct {
 /// 활성 category 면 Timer 시작 + category 기록.
 pub inline fn begin(cat: Category) Scope {
     if (!enabled(cat)) return .{};
+    const timer = std.time.Timer.start() catch return .{};
+    if (active_scope_len >= max_scope_depth) {
+        return .{
+            .timer = timer,
+            .category = cat,
+        };
+    }
+    const stack_index = active_scope_len;
+    active_scopes[stack_index] = .{};
+    active_scope_len += 1;
     return .{
-        .timer = std.time.Timer.start() catch null,
+        .timer = timer,
         .category = cat,
+        .stack_index = stack_index,
+        .stack_active = true,
     };
 }
 
-fn recordTiming(cat: Category, ns: u64) void {
+fn recordTiming(cat: Category, ns: u64, self_ns: u64) void {
     const idx = @intFromEnum(cat);
     totals_ns[idx] += ns;
+    self_totals_ns[idx] += self_ns;
     counts[idx] += 1;
 }
 
 /// 수집된 원시 데이터 조회 (테스트 + 외부 리포터용).
 pub fn totalNs(cat: Category) u64 {
     return totals_ns[@intFromEnum(cat)];
+}
+
+pub fn selfNs(cat: Category) u64 {
+    return self_totals_ns[@intFromEnum(cat)];
 }
 
 pub fn count(cat: Category) u32 {
@@ -453,7 +513,7 @@ pub fn report(writer: anytype, format: Format) !void {
 
 fn totalAllNs() u64 {
     var sum: u64 = 0;
-    for (totals_ns) |ns| sum += ns;
+    for (self_totals_ns) |ns| sum += ns;
     return sum;
 }
 
@@ -473,8 +533,8 @@ fn isChildOf(cat: Category, parent: Category) bool {
 
 fn reportTable(writer: anytype) !void {
     try writer.writeAll("=== ZTS Profile ===\n");
-    try writer.writeAll("Phase                Total       %      Count\n");
-    try writer.writeAll("--------------------|-----------|-------|------\n");
+    try writer.writeAll("Phase                Total       Self        %      Count\n");
+    try writer.writeAll("--------------------|-----------|-----------|-------|------\n");
 
     const total = totalAllNs();
     if (total == 0) {
@@ -489,19 +549,21 @@ fn reportTable(writer: anytype) !void {
         const skip = counts[idx] == 0 or (current_level == .summary and is_sub);
         if (!skip) {
             const ns = totals_ns[idx];
+            const self_ns = self_totals_ns[idx];
             const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
-            const pct = @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(total)) * 100.0;
+            const self_ms = @as(f64, @floatFromInt(self_ns)) / 1_000_000.0;
+            const pct = @as(f64, @floatFromInt(self_ns)) / @as(f64, @floatFromInt(total)) * 100.0;
             const name = Category.displayName(cat);
 
-            try writer.print("{s: <20} {d: >7.2}ms  {d: >4.1}%  {d: >5}\n", .{
-                name, ms, pct, counts[idx],
+            try writer.print("{s: <20} {d: >7.2}ms  {d: >7.2}ms  {d: >4.1}%  {d: >5}\n", .{
+                name, ms, self_ms, pct, counts[idx],
             });
         }
     }
 
-    try writer.writeAll("--------------------|-----------|-------|------\n");
+    try writer.writeAll("--------------------|-----------|-----------|-------|------\n");
     const total_ms = @as(f64, @floatFromInt(total)) / 1_000_000.0;
-    try writer.print("{s: <20} {d: >7.2}ms  100.0%\n", .{ "total", total_ms });
+    try writer.print("{s: <20} {d: >7.2}ms  {d: >7.2}ms  100.0%\n", .{ "total", total_ms, total_ms });
 }
 
 fn reportTree(writer: anytype) !void {
@@ -525,9 +587,11 @@ fn reportTree(writer: anytype) !void {
         const idx = @intFromEnum(cat);
         if (counts[idx] > 0 and isTopLevel(cat)) {
             const ns = totals_ns[idx];
+            const self_ns = self_totals_ns[idx];
             const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
-            const pct = @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(total)) * 100.0;
-            try writer.print("├─ {s: <16} {d: >7.2}ms  ({d:.1}%)\n", .{ Category.displayName(cat), ms, pct });
+            const self_ms = @as(f64, @floatFromInt(self_ns)) / 1_000_000.0;
+            const pct = @as(f64, @floatFromInt(self_ns)) / @as(f64, @floatFromInt(total)) * 100.0;
+            try writer.print("├─ {s: <16} {d: >7.2}ms total  {d: >7.2}ms self  ({d:.1}%)\n", .{ Category.displayName(cat), ms, self_ms, pct });
 
             if (current_level != .summary) {
                 // Sub-phases.
@@ -536,11 +600,14 @@ fn reportTree(writer: anytype) !void {
                     const sub_idx = @intFromEnum(sub_cat);
                     if (counts[sub_idx] > 0 and isChildOf(sub_cat, cat)) {
                         const sub_ns = totals_ns[sub_idx];
+                        const sub_self_ns = self_totals_ns[sub_idx];
                         const sub_ms = @as(f64, @floatFromInt(sub_ns)) / 1_000_000.0;
-                        const sub_pct_of_parent = @as(f64, @floatFromInt(sub_ns)) / @as(f64, @floatFromInt(ns)) * 100.0;
-                        try writer.print("│  └─ {s: <13} {d: >7.2}ms  ({d:.1}% of {s})\n", .{
+                        const sub_self_ms = @as(f64, @floatFromInt(sub_self_ns)) / 1_000_000.0;
+                        const sub_pct_of_parent = @as(f64, @floatFromInt(sub_self_ns)) / @as(f64, @floatFromInt(ns)) * 100.0;
+                        try writer.print("│  └─ {s: <13} {d: >7.2}ms total  {d: >7.2}ms self  ({d:.1}% of {s})\n", .{
                             Category.displayName(sub_cat),
                             sub_ms,
+                            sub_self_ms,
                             sub_pct_of_parent,
                             Category.displayName(cat),
                         });
@@ -569,17 +636,23 @@ fn reportJson(writer: anytype) !void {
         const skip = counts[idx] == 0 or (current_level == .summary and is_sub);
         if (!skip) {
             const ns = totals_ns[idx];
+            const self_ns = self_totals_ns[idx];
             const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+            const self_ms = @as(f64, @floatFromInt(self_ns)) / 1_000_000.0;
             const pct = if (total > 0)
                 @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(total)) * 100.0
+            else
+                0.0;
+            const self_pct = if (total > 0)
+                @as(f64, @floatFromInt(self_ns)) / @as(f64, @floatFromInt(total)) * 100.0
             else
                 0.0;
 
             if (!first) try writer.writeAll(",\n");
             first = false;
             try writer.print(
-                "    \"{s}\": {{ \"total_ms\": {d:.3}, \"count\": {d}, \"pct\": {d:.2} }}",
-                .{ Category.displayName(cat), ms, counts[idx], pct },
+                "    \"{s}\": {{ \"total_ms\": {d:.3}, \"self_ms\": {d:.3}, \"count\": {d}, \"pct\": {d:.2}, \"self_pct\": {d:.2} }}",
+                .{ Category.displayName(cat), ms, self_ms, counts[idx], pct, self_pct },
             );
         }
     }
@@ -587,7 +660,7 @@ fn reportJson(writer: anytype) !void {
 }
 
 fn reportCsv(writer: anytype) !void {
-    try writer.writeAll("phase,total_ms,count,pct\n");
+    try writer.writeAll("phase,total_ms,self_ms,count,pct,self_pct\n");
     const total = totalAllNs();
 
     inline for (@typeInfo(Category).@"enum".fields) |f| {
@@ -597,13 +670,19 @@ fn reportCsv(writer: anytype) !void {
         const skip = counts[idx] == 0 or (current_level == .summary and is_sub);
         if (!skip) {
             const ns = totals_ns[idx];
+            const self_ns = self_totals_ns[idx];
             const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+            const self_ms = @as(f64, @floatFromInt(self_ns)) / 1_000_000.0;
             const pct = if (total > 0)
                 @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(total)) * 100.0
             else
                 0.0;
+            const self_pct = if (total > 0)
+                @as(f64, @floatFromInt(self_ns)) / @as(f64, @floatFromInt(total)) * 100.0
+            else
+                0.0;
 
-            try writer.print("{s},{d:.3},{d},{d:.2}\n", .{ Category.displayName(cat), ms, counts[idx], pct });
+            try writer.print("{s},{d:.3},{d:.3},{d},{d:.2},{d:.2}\n", .{ Category.displayName(cat), ms, self_ms, counts[idx], pct, self_pct });
         }
     }
 }
@@ -628,6 +707,7 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("Transform.JSX") == .transform_jsx);
     try testing.expect(Category.fromString("hmr.detect") == .hmr_detect);
     try testing.expect(Category.fromString("shake.fixpoint.bfs") == .shake_fixpoint_bfs);
+    try testing.expect(Category.fromString("shake.fixpoint.bfs.follow.import") == .shake_fixpoint_bfs_follow_import);
     try testing.expect(Category.fromString("shake.const.prepass.build.facts") == .shake_const_prepass_build_facts);
 }
 
@@ -637,6 +717,7 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("transform.ts.strip", Category.displayName(.transform_ts_strip));
     try testing.expectEqualStrings("hmr.detect", Category.displayName(.hmr_detect));
     try testing.expectEqualStrings("shake.fixpoint.bfs", Category.displayName(.shake_fixpoint_bfs));
+    try testing.expectEqualStrings("shake.fixpoint.bfs.follow.import", Category.displayName(.shake_fixpoint_bfs_follow_import));
     try testing.expectEqualStrings("shake.const.prepass.build.facts", Category.displayName(.shake_const_prepass_build_facts));
 }
 
@@ -714,6 +795,7 @@ test "addFromCsv: shake parent → 모든 sub-phase 활성" {
     try testing.expect(enabled(.shake_const_prepass_build_facts));
     try testing.expect(enabled(.shake_fixpoint));
     try testing.expect(enabled(.shake_fixpoint_bfs));
+    try testing.expect(enabled(.shake_fixpoint_bfs_follow_import));
     try testing.expect(enabled(.shake_numeric_postpass));
 }
 
@@ -767,6 +849,7 @@ test "Scope: 비활성 category 는 zero-cost" {
     try testing.expect(scope.timer == null);
     scope.end();
     try testing.expectEqual(@as(u64, 0), totalNs(.parse));
+    try testing.expectEqual(@as(u64, 0), selfNs(.parse));
     try testing.expectEqual(@as(u32, 0), count(.parse));
 }
 
@@ -785,8 +868,10 @@ test "Scope: 활성 category 는 시간 누적" {
     s2.end();
 
     const total = totalNs(.parse);
+    const self_total = selfNs(.parse);
     // 실제 시간은 OS 스케줄링에 따라 다름. 최소 보장만 검증.
     try testing.expect(total >= 2_000_000);
+    try testing.expect(self_total >= 2_000_000);
     try testing.expectEqual(@as(u32, 2), count(.parse));
 }
 
@@ -809,6 +894,9 @@ test "Scope: nested 호출 누적" {
     try testing.expect(totalNs(.parse_ast_build) > 0);
     // Outer 가 inner 를 포함하는지 대략 검증 — parent 가 child 보다 크거나 같음.
     try testing.expect(totalNs(.parse) >= totalNs(.parse_ast_build));
+    try testing.expect(selfNs(.parse) <= totalNs(.parse));
+    try testing.expect(selfNs(.parse_ast_build) <= totalNs(.parse_ast_build));
+    try testing.expectEqual(totalNs(.parse), totalAllNs());
 }
 
 test "setLevel / level" {
@@ -855,6 +943,7 @@ test "report: json format 기본 구조" {
 
     try testing.expect(std.mem.indexOf(u8, output, "\"profile_version\": 1") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\"total_ms\"") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\"self_ms\"") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\"phases\"") != null);
     try testing.expect(std.mem.indexOf(u8, output, "\"parse\"") != null);
 }
@@ -873,7 +962,7 @@ test "report: csv format 기본 구조" {
     try report(fbs.writer(), .csv);
     const output = fbs.getWritten();
 
-    try testing.expect(std.mem.startsWith(u8, output, "phase,total_ms,count,pct\n"));
+    try testing.expect(std.mem.startsWith(u8, output, "phase,total_ms,self_ms,count,pct,self_pct\n"));
     try testing.expect(std.mem.indexOf(u8, output, "parse,") != null);
 }
 
@@ -954,5 +1043,6 @@ test "resetForTest 초기화" {
     try testing.expect(!enabled(.parse));
     try testing.expect(level() == .summary);
     try testing.expectEqual(@as(u64, 0), totalNs(.parse));
+    try testing.expectEqual(@as(u64, 0), selfNs(.parse));
     try testing.expectEqual(@as(u32, 0), count(.parse));
 }

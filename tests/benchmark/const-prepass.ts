@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
 /**
- * Const prepass tree-shaking profile runner.
+ * Tree-shaking profile runner.
  *
- * This benchmark keeps the synthetic fixtures used while tuning
- * `shake.const.prepass` reproducible. It is intentionally profile-oriented:
- * compare the same machine before/after a tree-shaking change, then keep the
- * JSON output for trend tracking.
+ * This benchmark keeps the synthetic fixtures used while tuning tree-shaking
+ * reproducible. It is intentionally profile-oriented: compare the same machine
+ * before/after a tree-shaking change, then keep the JSON output for trend
+ * tracking.
  *
  * Examples:
  *   bun run tests/benchmark/const-prepass.ts
  *   bun run tests/benchmark/const-prepass.ts --warmup=3 --iterations=9
- *   bun run tests/benchmark/const-prepass.ts --output /tmp/const-prepass.json
+ *   bun run tests/benchmark/const-prepass.ts --output /tmp/tree-shake-profile.json
  */
 
 import { spawnSync } from "node:child_process";
@@ -26,6 +26,17 @@ const DEFAULT_WARMUP = 3;
 const DEFAULT_ITERATIONS = 9;
 
 const TARGET_PHASES = [
+  "shake",
+  "shake.fixpoint",
+  "shake.fixpoint.bfs",
+  "shake.fixpoint.bfs.seed",
+  "shake.fixpoint.bfs.queue",
+  "shake.fixpoint.bfs.follow.import",
+  "shake.fixpoint.bfs.seed.export",
+  "shake.fixpoint.bfs.require.scan",
+  "shake.fixpoint.bfs.final.mark.exports",
+  "shake.fixpoint.bfs.enqueue.side.effects",
+  "shake.fixpoint.re.exports",
   "shake.const.prepass",
   "shake.const.prepass.numeric.propagate",
   "shake.const.prepass.numeric.seed.scan",
@@ -57,8 +68,10 @@ interface FixtureSpec {
 
 interface ProfilePhase {
   total_ms: number;
+  self_ms?: number;
   count: number;
   pct: number;
+  self_pct?: number;
 }
 
 interface ProfileJson {
@@ -70,6 +83,7 @@ interface ProfileJson {
 
 interface PhaseResult {
   total_ms_stats: MetricStats;
+  self_ms_stats: MetricStats;
   count_median: number;
 }
 
@@ -93,6 +107,7 @@ const FIXTURES: FixtureSpec[] = [
   { name: "flat-1000", size: 1000, write: writeFlatFixture },
   { name: "reexport-500", size: 500, write: writeReExportFixture },
   { name: "namespace-500", size: 500, write: writeNamespaceFixture },
+  { name: "namespace-2000", size: 2000, write: writeNamespaceFixture },
 ];
 
 function writeFlatFixture(dir: string, size: number): string {
@@ -151,7 +166,7 @@ function writeNamespaceFixture(dir: string, size: number): string {
 
 function buildBin(): void {
   if (existsSync(ZTS_BIN)) return;
-  console.log("[const-prepass] zts binary not found, building ReleaseFast...");
+  console.log("[tree-shake-profile] zts binary not found, building ReleaseFast...");
   const result = spawnSync("zig", ["build", "-Doptimize=ReleaseFast"], {
     cwd: ROOT,
     stdio: "inherit",
@@ -179,7 +194,7 @@ function runOne(entry: string, outDir: string): ProfileJson {
       "--format=esm",
       "-o",
       join(outDir, "out.js"),
-      "--profile=shake.const.prepass",
+      "--profile=shake",
       "--profile-level=detailed",
       "--profile-format=json",
     ],
@@ -210,7 +225,7 @@ function median(values: number[]): number {
 }
 
 function measureFixture(spec: FixtureSpec, cli: CliArgs): FixtureResult {
-  const tmp = mkdtempSync(join(tmpdir(), "zts-const-prepass-"));
+  const tmp = mkdtempSync(join(tmpdir(), "zts-tree-shake-profile-"));
   try {
     const srcDir = join(tmp, "src");
     const outDir = join(tmp, "dist");
@@ -220,6 +235,7 @@ function measureFixture(spec: FixtureSpec, cli: CliArgs): FixtureResult {
 
     const totalSamples: number[] = [];
     const phaseTimeSamples: Partial<Record<TargetPhase, number[]>> = {};
+    const phaseSelfTimeSamples: Partial<Record<TargetPhase, number[]>> = {};
     const phaseCountSamples: Partial<Record<TargetPhase, number[]>> = {};
     for (let i = 0; i < cli.iterations; i++) {
       const profile = runOne(entry, outDir);
@@ -227,6 +243,7 @@ function measureFixture(spec: FixtureSpec, cli: CliArgs): FixtureResult {
       for (const phase of TARGET_PHASES) {
         const hit = profile.phases[phase];
         (phaseTimeSamples[phase] ??= []).push(hit?.total_ms ?? 0);
+        (phaseSelfTimeSamples[phase] ??= []).push(hit?.self_ms ?? hit?.total_ms ?? 0);
         (phaseCountSamples[phase] ??= []).push(hit?.count ?? 0);
       }
     }
@@ -234,9 +251,11 @@ function measureFixture(spec: FixtureSpec, cli: CliArgs): FixtureResult {
     const phases: Partial<Record<TargetPhase, PhaseResult>> = {};
     for (const phase of TARGET_PHASES) {
       const times = phaseTimeSamples[phase] ?? [];
+      const selfTimes = phaseSelfTimeSamples[phase] ?? [];
       const counts = phaseCountSamples[phase] ?? [];
       phases[phase] = {
         total_ms_stats: computeMetricStats(times),
+        self_ms_stats: computeMetricStats(selfTimes),
         count_median: median(counts),
       };
     }
@@ -262,6 +281,10 @@ function phaseMedian(result: FixtureResult, phase: TargetPhase): number {
 
 function phaseCount(result: FixtureResult, phase: TargetPhase): number {
   return result.phases[phase]?.count_median ?? 0;
+}
+
+function phaseSelfMedian(result: FixtureResult, phase: TargetPhase): number {
+  return result.phases[phase]?.self_ms_stats.median ?? phaseMedian(result, phase);
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -315,7 +338,9 @@ Options:
 
 async function main(cli: CliArgs): Promise<void> {
   buildBin();
-  console.log(`[const-prepass] zts ${getCommit()} | warmup=${cli.warmup} iter=${cli.iterations}`);
+  console.log(
+    `[tree-shake-profile] zts ${getCommit()} | warmup=${cli.warmup} iter=${cli.iterations}`,
+  );
   console.log();
 
   const results: FixtureResult[] = [];
@@ -324,7 +349,12 @@ async function main(cli: CliArgs): Promise<void> {
     const result = measureFixture(spec, cli);
     results.push(result);
     console.log(
-      `const=${fmtMs(phaseMedian(result, "shake.const.prepass"))} ` +
+      `shake=${fmtMs(phaseMedian(result, "shake"))} ` +
+        `bfs=${fmtMs(phaseMedian(result, "shake.fixpoint.bfs"))} ` +
+        `bfs.self=${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs"))} ` +
+        `seed=${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed"))} ` +
+        `queue=${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.queue"))} ` +
+        `const=${fmtMs(phaseMedian(result, "shake.const.prepass"))} ` +
         `build.facts=${fmtMs(phaseMedian(result, "shake.const.prepass.build.facts"))} ` +
         `count=${phaseCount(result, "shake.const.prepass.build.facts")}`,
     );
@@ -341,25 +371,49 @@ async function main(cli: CliArgs): Promise<void> {
 
   if (cli.output) {
     writeFileSync(cli.output, JSON.stringify(report, null, 2) + "\n");
-    console.log(`\n[const-prepass] run report written: ${cli.output}`);
+    console.log(`\n[tree-shake-profile] run report written: ${cli.output}`);
   }
 
   console.log();
-  console.log("### const-prepass profile");
+  console.log("### tree-shake profile");
   console.log(
-    "| Fixture | Total | Const prepass | Numeric propagate | Numeric queue | Build facts | Build count | Minify resync | Minify count |",
+    "| Fixture | Profile total | Shake | Shake self | Const prepass | Build facts | Build count | Fixpoint | BFS | BFS self | BFS seed | BFS queue | Final mark | Re-exports |",
   );
-  console.log("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+  console.log(
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+  );
   for (const result of results) {
     console.log(
       `| ${result.name} | ${fmtMs(result.total_ms_stats.median)} | ` +
+        `${fmtMs(phaseMedian(result, "shake"))} | ` +
+        `${fmtMs(phaseSelfMedian(result, "shake"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.const.prepass"))} | ` +
-        `${fmtMs(phaseMedian(result, "shake.const.prepass.numeric.propagate"))} | ` +
-        `${fmtMs(phaseMedian(result, "shake.const.prepass.numeric.queue"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.const.prepass.build.facts"))} | ` +
         `${phaseCount(result, "shake.const.prepass.build.facts")} | ` +
-        `${fmtMs(phaseMedian(result, "shake.const.prepass.minify.resync"))} | ` +
-        `${phaseCount(result, "shake.const.prepass.minify.resync")} |`,
+        `${fmtMs(phaseMedian(result, "shake.fixpoint"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs"))} | ` +
+        `${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.queue"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.final.mark.exports"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.re.exports"))} |`,
+    );
+  }
+
+  console.log();
+  console.log("### nested bfs helper profile");
+  console.log(
+    "| Fixture | Follow import | Follow self | Seed export | Seed export self | Require scan | Side effects |",
+  );
+  console.log("| --- | ---: | ---: | ---: | ---: | ---: | ---: |");
+  for (const result of results) {
+    console.log(
+      `| ${result.name} | ${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.follow.import"))} | ` +
+        `${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs.follow.import"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export"))} | ` +
+        `${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs.seed.export"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.require.scan"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.enqueue.side.effects"))} |`,
     );
   }
 }

@@ -78,7 +78,7 @@ describe("profile CLI flags", () => {
     ]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).toContain("phase,total_ms,count,pct");
+    expect(result.stderr).toContain("phase,total_ms,self_ms,count,pct,self_pct");
   });
 
   test("--profile-level=detailed 는 tree 포맷과 조합 가능", async () => {
@@ -225,6 +225,7 @@ describe("profile CLI flags", () => {
     const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf("{")));
     expect(parsed.phases.parse).toBeDefined();
     expect(parsed.phases.parse.total_ms).toBeGreaterThan(0);
+    expect(parsed.phases.parse.self_ms).toBeGreaterThanOrEqual(0);
     expect(parsed.phases.parse.count).toBeGreaterThanOrEqual(1);
   });
 
@@ -253,12 +254,16 @@ describe("profile CLI flags", () => {
     expect(result.exitCode).toBe(0);
     const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf("{")));
     expect(parsed.phases.shake).toBeDefined();
+    expect(parsed.phases.shake.self_ms).toBeGreaterThanOrEqual(0);
     expect(parsed.phases["shake.const.prepass"]).toBeDefined();
     expect(parsed.phases["shake.const.prepass.numeric.propagate"]).toBeDefined();
     expect(parsed.phases["shake.const.prepass.build.facts"]).toBeDefined();
     expect(parsed.phases["shake.const.prepass.candidate.gate"]).toBeDefined();
     expect(parsed.phases["shake.fixpoint"]).toBeDefined();
     expect(parsed.phases["shake.fixpoint.bfs"]).toBeDefined();
+    expect(parsed.phases["shake.fixpoint.bfs.queue"]).toBeDefined();
+    expect(parsed.phases["shake.fixpoint.bfs.follow.import"]).toBeDefined();
+    expect(parsed.phases["shake.fixpoint.bfs.seed.export"]).toBeDefined();
     expect(parsed.phases["shake.prune"]).toBeDefined();
   });
 });
