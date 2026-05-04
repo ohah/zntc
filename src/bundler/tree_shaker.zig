@@ -80,6 +80,8 @@ const ConstMaterializeFilter = enum {
 
 const ConstMaterializeProfile = struct {
     build_facts: ?profile.Category = null,
+    build_facts_resolve: ?profile.Category = null,
+    build_facts_lookup: ?profile.Category = null,
     candidate_gate: ?profile.Category = null,
     materialize: ?profile.Category = null,
     minify_resync: ?profile.Category = null,
@@ -106,6 +108,9 @@ pub const TreeShaker = struct {
     /// 모듈별 import_record_index → top-level stmt_index 맵. eval dependency 판정과
     /// require scan 이 같은 span search 를 반복하지 않도록 lazy 구축한다.
     import_record_stmt_indices: []?[]?u32 = &.{},
+    /// BFS require scan 이 require 없는 모듈의 import_records 전체를 매번 훑지 않도록
+    /// analyze 시작 때 한 번 계산하는 모듈별 플래그.
+    module_has_require_records: []bool = &.{},
     /// seedOpaqueModule 재진입 방지용 visited bitset. crossModuleBFS에서 초기화.
     opaque_visited: ?std.DynamicBitSet = null,
     /// 모듈별 used export 존재 여부 (hasAnyUsedExportDirect 최적화: O(1) 조회).
@@ -267,6 +272,9 @@ pub const TreeShaker = struct {
                 if (s) |arr| self.allocator.free(arr);
             }
             self.allocator.free(self.import_record_stmt_indices);
+        }
+        if (self.module_has_require_records.len > 0) {
+            self.allocator.free(self.module_has_require_records);
         }
         if (self.has_direct_used_export.len > 0) {
             self.allocator.free(self.has_direct_used_export);
@@ -545,8 +553,8 @@ pub const TreeShaker = struct {
             defer build_scope.end();
             const build_profile = if (const_profile.build_facts != null)
                 Linker.ConstValuesProfile{
-                    .resolve = .shake_const_prepass_build_facts_resolve,
-                    .lookup = .shake_const_prepass_build_facts_lookup,
+                    .resolve = const_profile.build_facts_resolve,
+                    .lookup = const_profile.build_facts_lookup,
                 }
             else
                 Linker.ConstValuesProfile{};
@@ -628,16 +636,40 @@ pub const TreeShaker = struct {
         var queued = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
         defer queued.deinit();
 
-        for (0..mod_count) |i| {
-            try self.enqueueNumericPostPassModule(&queue, &queued, @intCast(i), mod_count);
+        const postpass_profile = ConstMaterializeProfile{
+            .build_facts = .shake_numeric_postpass_build_facts,
+            .build_facts_resolve = .shake_numeric_postpass_build_facts_resolve,
+            .build_facts_lookup = .shake_numeric_postpass_build_facts_lookup,
+            .candidate_gate = .shake_numeric_postpass_candidate_gate,
+            .materialize = .shake_numeric_postpass_materialize,
+            .minify_resync = .shake_numeric_postpass_minify_resync,
+            .inner = .{
+                .forbidden = .shake_numeric_postpass_forbidden,
+                .reachable = .shake_numeric_postpass_reachable,
+                .replace = .shake_numeric_postpass_replace,
+            },
+        };
+
+        {
+            var seed_scope = profile.begin(.shake_numeric_postpass_queue_seed);
+            defer seed_scope.end();
+
+            for (0..mod_count) |i| {
+                try self.enqueueNumericPostPassModule(&queue, &queued, @intCast(i), mod_count);
+            }
         }
 
-        while (queue.pop()) |idx| {
-            if (idx < mod_count) queued.unset(idx);
-            if (idx >= mod_count) continue;
-            if (!self.shouldVisitNumericPostPassModule(idx)) continue;
-            if (!try self.materializeCrossModuleConstFactsForIndex(idx, .numeric, .{})) continue;
-            try self.enqueueStaticImporters(&queue, &queued, idx, mod_count);
+        {
+            var queue_scope = profile.begin(.shake_numeric_postpass_queue);
+            defer queue_scope.end();
+
+            while (queue.pop()) |idx| {
+                if (idx < mod_count) queued.unset(idx);
+                if (idx >= mod_count) continue;
+                if (!self.shouldVisitNumericPostPassModule(idx)) continue;
+                if (!try self.materializeCrossModuleConstFactsForIndex(idx, .numeric, postpass_profile)) continue;
+                try self.enqueueStaticImporters(&queue, &queued, idx, mod_count);
+            }
         }
     }
 
@@ -736,9 +768,15 @@ pub const TreeShaker = struct {
             errdefer re_star_targets.deinit();
             var re_export_modules: std.ArrayListUnmanaged(u32) = .empty;
             errdefer re_export_modules.deinit(self.allocator);
+            const require_flags = try self.allocator.alloc(bool, mod_count);
+            errdefer self.allocator.free(require_flags);
             for (0..mod_count) |i| {
-                const m = self.getModule(@intCast(i)) orelse continue;
+                const m = self.getModule(@intCast(i)) orelse {
+                    require_flags[i] = false;
+                    continue;
+                };
                 var has_re_export = false;
+                var has_require = false;
                 for (m.export_bindings) |eb| {
                     if (eb.kind == .re_export or eb.kind.isReExportAll()) has_re_export = true;
                     if (eb.kind != .re_export_star) continue;
@@ -748,10 +786,18 @@ pub const TreeShaker = struct {
                     if (src == .none) continue;
                     re_star_targets.set(@intFromEnum(src));
                 }
+                for (m.import_records) |rec| {
+                    if (rec.kind == .require) {
+                        has_require = true;
+                        break;
+                    }
+                }
+                require_flags[i] = has_require;
                 if (has_re_export) try re_export_modules.append(self.allocator, @intCast(i));
             }
             self.re_export_star_targets = re_star_targets;
             self.re_export_modules = re_export_modules;
+            self.module_has_require_records = require_flags;
 
             // entry_set 먼저 계산 (자동 순수 판별에서 진입점 제외용).
             // `inject` and `runBeforeMain` are not output entries, but they are
@@ -791,6 +837,8 @@ pub const TreeShaker = struct {
 
             const prepass_const_profile = ConstMaterializeProfile{
                 .build_facts = .shake_const_prepass_build_facts,
+                .build_facts_resolve = .shake_const_prepass_build_facts_resolve,
+                .build_facts_lookup = .shake_const_prepass_build_facts_lookup,
                 .candidate_gate = .shake_const_prepass_candidate_gate,
                 .materialize = .shake_const_prepass_materialize,
                 .minify_resync = .shake_const_prepass_minify_resync,
@@ -1367,30 +1415,34 @@ pub const TreeShaker = struct {
                     }
                 }
 
-                if (owner) |o| {
-                    var require_scope = profile.begin(.shake_fixpoint_bfs_require_scan);
-                    defer require_scope.end();
+                const has_require_records = item.mod < self.module_has_require_records.len and
+                    self.module_has_require_records[item.mod];
+                if (has_require_records) {
+                    if (owner) |o| {
+                        var require_scope = profile.begin(.shake_fixpoint_bfs_require_scan);
+                        defer require_scope.end();
 
-                    for (o.import_records, 0..) |rec, rec_i| {
-                        if (rec.kind != .require) continue;
-                        if (rec.resolved.isNone()) continue;
-                        if (!try self.importRecordBelongsToStmt(@intCast(item.mod), infos, @intCast(item.stmt), @intCast(rec_i))) continue;
-                        const target_mod_idx = @intFromEnum(rec.resolved);
-                        const target_module = self.graph.getModule(rec.resolved) orelse continue;
-                        if (target_module.wrap_kind != .cjs) continue;
-                        if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
-                            !self.isExportUsed(@intCast(target_mod_idx), ALL_EXPORTS_SENTINEL) and
-                            self.hasAnyUsedExportDirect(@intCast(target_mod_idx)) and
-                            moduleExportsRequireProxyMatches(o, infos, @intCast(item.stmt), rec.resolved))
-                        {
-                            const target_infos = module_stmt_infos[target_mod_idx] orelse {
-                                try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                        for (o.import_records, 0..) |rec, rec_i| {
+                            if (rec.kind != .require) continue;
+                            if (rec.resolved.isNone()) continue;
+                            if (!try self.importRecordBelongsToStmt(@intCast(item.mod), infos, @intCast(item.stmt), @intCast(rec_i))) continue;
+                            const target_mod_idx = @intFromEnum(rec.resolved);
+                            const target_module = self.graph.getModule(rec.resolved) orelse continue;
+                            if (target_module.wrap_kind != .cjs) continue;
+                            if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
+                                !self.isExportUsed(@intCast(target_mod_idx), ALL_EXPORTS_SENTINEL) and
+                                self.hasAnyUsedExportDirect(@intCast(target_mod_idx)) and
+                                moduleExportsRequireProxyMatches(o, infos, @intCast(item.stmt), rec.resolved))
+                            {
+                                const target_infos = module_stmt_infos[target_mod_idx] orelse {
+                                    try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
+                                    continue;
+                                };
+                                try self.seedSideEffectStmts(@intCast(target_mod_idx), target_infos, &queue, reachable_stmts);
                                 continue;
-                            };
-                            try self.seedSideEffectStmts(@intCast(target_mod_idx), target_infos, &queue, reachable_stmts);
-                            continue;
+                            }
+                            try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
                         }
-                        try self.markAndSeedAllStmts(@intCast(target_mod_idx), &queue, module_stmt_infos, reachable_stmts);
                     }
                 }
             }
