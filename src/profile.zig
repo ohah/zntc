@@ -104,6 +104,9 @@ pub const Category = enum {
     link_populate_import_symbols,
     link_populate_namespace_accesses,
     shake,
+    shake_init,
+    shake_analyze,
+    shake_post_link_finalize,
     shake_setup,
     shake_const_prepass,
     shake_const_prepass_full_materialize,
@@ -274,6 +277,14 @@ comptime {
         @compileError("Category count exceeded u128 bitmask. Switch to ArrayBitSet.");
     }
 }
+
+const all_categories: [num_categories]Category = blk: {
+    var cats: [num_categories]Category = undefined;
+    for (@typeInfo(Category).@"enum".fields, 0..) |f, i| {
+        cats[i] = @field(Category, f.name);
+    }
+    break :blk cats;
+};
 
 /// 활성 카테고리 비트마스크. hot path 에서는 `enabled()` 의 single AND 로 검사.
 /// 프로세스 전역 — 초기화 후 read-only 로 다뤄 thread-safe. 수집 data array 는 현재
@@ -581,9 +592,6 @@ fn reportTable(writer: anytype) !void {
 }
 
 fn reportTree(writer: anytype) !void {
-    // Nested inline for 는 N² comptime branches 를 유발하므로 quota 상향.
-    @setEvalBranchQuota(num_categories * num_categories * 16);
-
     try writer.writeAll("=== ZTS Profile (detailed) ===\n");
 
     const total = totalAllNs();
@@ -596,8 +604,7 @@ fn reportTree(writer: anytype) !void {
     try writer.print("total: {d:.2}ms\n", .{total_ms});
 
     // Top-level categories.
-    inline for (@typeInfo(Category).@"enum".fields) |f_top| {
-        const cat = @field(Category, f_top.name);
+    for (all_categories) |cat| {
         const idx = @intFromEnum(cat);
         if (counts[idx] > 0 and isTopLevel(cat)) {
             const ns = totals_ns[idx];
@@ -609,8 +616,7 @@ fn reportTree(writer: anytype) !void {
 
             if (current_level != .summary) {
                 // Sub-phases.
-                inline for (@typeInfo(Category).@"enum".fields) |f_sub| {
-                    const sub_cat = @field(Category, f_sub.name);
+                for (all_categories) |sub_cat| {
                     const sub_idx = @intFromEnum(sub_cat);
                     if (counts[sub_idx] > 0 and isChildOf(sub_cat, cat)) {
                         const sub_ns = totals_ns[sub_idx];
@@ -720,6 +726,8 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("transform.ts_strip") == .transform_ts_strip);
     try testing.expect(Category.fromString("Transform.JSX") == .transform_jsx);
     try testing.expect(Category.fromString("hmr.detect") == .hmr_detect);
+    try testing.expect(Category.fromString("shake.analyze") == .shake_analyze);
+    try testing.expect(Category.fromString("shake.post.link.finalize") == .shake_post_link_finalize);
     try testing.expect(Category.fromString("shake.fixpoint.bfs") == .shake_fixpoint_bfs);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.follow.import") == .shake_fixpoint_bfs_follow_import);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.seed.export.resolve") == .shake_fixpoint_bfs_seed_export_resolve);
@@ -731,6 +739,8 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("parse.ast.build", Category.displayName(.parse_ast_build));
     try testing.expectEqualStrings("transform.ts.strip", Category.displayName(.transform_ts_strip));
     try testing.expectEqualStrings("hmr.detect", Category.displayName(.hmr_detect));
+    try testing.expectEqualStrings("shake.analyze", Category.displayName(.shake_analyze));
+    try testing.expectEqualStrings("shake.post.link.finalize", Category.displayName(.shake_post_link_finalize));
     try testing.expectEqualStrings("shake.fixpoint.bfs", Category.displayName(.shake_fixpoint_bfs));
     try testing.expectEqualStrings("shake.fixpoint.bfs.follow.import", Category.displayName(.shake_fixpoint_bfs_follow_import));
     try testing.expectEqualStrings("shake.fixpoint.bfs.seed.export.resolve", Category.displayName(.shake_fixpoint_bfs_seed_export_resolve));
@@ -807,6 +817,9 @@ test "addFromCsv: shake parent → 모든 sub-phase 활성" {
 
     addFromCsv("shake");
     try testing.expect(enabled(.shake));
+    try testing.expect(enabled(.shake_init));
+    try testing.expect(enabled(.shake_analyze));
+    try testing.expect(enabled(.shake_post_link_finalize));
     try testing.expect(enabled(.shake_const_prepass));
     try testing.expect(enabled(.shake_const_prepass_build_facts));
     try testing.expect(enabled(.shake_fixpoint));

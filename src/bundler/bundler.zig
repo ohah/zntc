@@ -1012,16 +1012,35 @@ pub const Bundler = struct {
         // dev_mode에서는 tree-shaking 스킵 (개발 중 모든 코드 필요)
         var shake_scope = profile.begin(.shake);
         var shaker: ?TreeShaker = if (!self.options.dev_mode and self.options.scope_hoist and self.options.tree_shaking) blk: {
-            var s = try TreeShaker.init(self.allocator, &graph, &(linker.?));
-            try s.analyze(self.options.entry_points);
+            var s = blk_init: {
+                var init_scope = profile.begin(.shake_init);
+                defer init_scope.end();
+                break :blk_init try TreeShaker.init(self.allocator, &graph, &(linker.?));
+            };
+            {
+                var analyze_scope = profile.begin(.shake_analyze);
+                defer analyze_scope.end();
+                try s.analyze(self.options.entry_points);
+            }
             if (s.ast_mutated_after_link and !self.options.code_splitting) {
-                // resync 로 새 symbol id 가 생긴 모듈이 있으니 rename/mangling 재계산.
-                try (&(linker.?)).finalize(.{
-                    .compute_renames = true,
-                    .compute_mangling = self.options.minify_identifiers,
-                    .clear_first = true,
-                    .populate_namespace_accesses = false,
-                });
+                var post_link_scope = profile.begin(.shake_post_link_finalize);
+                defer post_link_scope.end();
+                if (self.options.minify_identifiers) {
+                    // Mangling ranks depend on fresh semantic symbol IDs and ref counts.
+                    try (&(linker.?)).finalize(.{
+                        .compute_renames = true,
+                        .compute_mangling = true,
+                        .clear_first = true,
+                        .populate_namespace_accesses = false,
+                    });
+                } else {
+                    // Tree-shake constant folding only removes/replaces references. Graph
+                    // resync preserves existing canonical names, so emit only needs import
+                    // and re-export metadata refreshed for the final AST snapshot.
+                    const l = &(linker.?);
+                    l.populateReExportAliases();
+                    l.populateImportSymbols();
+                }
             }
             // metadata builder 가 `Module.is_included` 비트를 신뢰해 tree-shake 된 target 의
             // CJS preamble emit 을 건너뛸 수 있도록 plug. analyze() 가 끝난 뒤 mirror 가
