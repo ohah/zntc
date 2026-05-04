@@ -6737,6 +6737,21 @@ describe("@zts/core browserslist", () => {
     }
   });
 
+  test("runtimePolyfills rejects compact target shorthand through build API", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-runtime-polyfills-shorthand-"));
+    try {
+      writeFileSync(join(dir, "entry.ts"), `"a".replaceAll("a", "b");`);
+      expect(() =>
+        buildSync({
+          entryPoints: [join(dir, "entry.ts")],
+          runtimePolyfills: { mode: "auto", targets: ["ios12"] },
+        }),
+      ).toThrow("Compact runtime target shorthands");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("browserslist: build API — target + browserslist 동시 지정 시 browserslist 우선", () => {
     const dir = mkdtempSync(join(tmpdir(), "zts-bs-both-"));
     writeFileSync(

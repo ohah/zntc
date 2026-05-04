@@ -526,6 +526,28 @@ describe("CLI: bundle", () => {
     }
   });
 
+  test("번들 + --runtime-target compact shorthand는 거부", () => {
+    const polyfillDir = mkdtempSync(join(tmpdir(), "zts-cli-runtime-shorthand-"));
+    try {
+      writeFileSync(
+        join(polyfillDir, "entry.ts"),
+        `globalThis.__VALUE__ = "a".replaceAll("a", "b");`,
+      );
+
+      const { stderr, exitCode } = runCli([
+        "--bundle",
+        join(polyfillDir, "entry.ts"),
+        "--runtime-polyfills=auto",
+        "--runtime-target=ios12",
+      ]);
+
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain("Compact runtime target shorthands");
+    } finally {
+      rmSync(polyfillDir, { recursive: true, force: true });
+    }
+  });
+
   test("번들 + --drop-labels=DEV,TEST 라벨 블록 제거", () => {
     const labelDir = mkdtempSync(join(tmpdir(), "zts-cli-drop-labels-"));
     try {
@@ -2436,6 +2458,24 @@ describe("CLI: zts.config 자동 탐색 + BuildOptions 머지", () => {
     expect(exitCode).toBe(0);
     // minify 시 식별자 축약으로 someLongName 같은 긴 이름이 사라짐.
     expect(stdout).not.toContain("someLongName");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("zts.config.json 의 runtimePolyfills 가 적용됨", () => {
+    const dir = mkdtempSync(join(tmpdir(), "zts-config-runtime-polyfills-"));
+    writeFileSync(join(dir, "entry.ts"), `globalThis.__VALUE__ = "a".replaceAll("a", "b");`);
+    writeFileSync(
+      join(dir, "zts.config.json"),
+      JSON.stringify({
+        entryPoints: ["./entry.ts"],
+        format: "iife",
+        runtimePolyfills: { mode: "auto", targets: ["ios_saf 12"] },
+      }),
+    );
+    const { stdout, stderr, exitCode } = runCli(["--bundle"], { cwd: dir });
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("es.string.replace-all");
     rmSync(dir, { recursive: true, force: true });
   });
 
