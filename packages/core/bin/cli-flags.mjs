@@ -153,7 +153,7 @@ export const FLAG_REGISTRY = [
   { kind: "array", flag: "--external", target: "external" },
   { kind: "array", flag: "--drop", target: "drop", forms: ["equal"] },
   { kind: "array", flag: "--plugin", target: "pluginPaths", forms: ["pair"] },
-  { kind: "array", flag: "--runtime-target", target: "runtimeTargets" },
+  { kind: "array", flag: "--runtime-target", target: "runtimeTargetQueries" },
 
   // ─── kind=csv — `,` 분리 → array ───
   { kind: "csv", flag: "--drop-labels", target: "dropLabels", forms: ["equal"] },

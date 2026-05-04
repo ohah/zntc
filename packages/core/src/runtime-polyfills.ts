@@ -6,14 +6,66 @@ import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 export type RuntimePolyfillMode = "auto" | "usage" | "entry";
 export type RuntimePolyfillProvider = "core-js";
 export type RuntimeTargetObject = Record<string, string | number>;
-export type RuntimeTarget = string;
+export type RuntimeTargetVersion =
+  | `${number}`
+  | `${number}.${number}`
+  | `${number}.${number}.${number}`;
+export type RuntimeTargetComparator = ">=" | ">" | "<=" | "<" | "=";
+export type RuntimeTargetName =
+  | "chrome"
+  | "firefox"
+  | "safari"
+  | "ios"
+  | "ios_saf"
+  | "iOS"
+  | "android"
+  | "samsung"
+  | "edge"
+  | "opera"
+  | "node"
+  | "hermes"
+  | "react-native";
+export type RuntimeTargetCompactName =
+  | "ios"
+  | "chrome"
+  | "firefox"
+  | "safari"
+  | "android"
+  | "samsung"
+  | "edge"
+  | "opera"
+  | "node"
+  | "hermes";
+export type RuntimeTargetQuery =
+  | `${RuntimeTargetName} ${RuntimeTargetVersion}`
+  | `${RuntimeTargetName} ${RuntimeTargetComparator} ${RuntimeTargetVersion}`;
+export type RuntimeTarget =
+  | `${RuntimeTargetCompactName}${RuntimeTargetVersion}`
+  | RuntimeTargetQuery
+  | (string & {});
 
 export interface RuntimePolyfillOptions {
+  /**
+   * Runtime polyfill injection strategy.
+   *
+   * `auto` and `usage` scan statically detectable API usage, while `entry`
+   * injects all target-required core-js ES/Web modules.
+   */
   mode?: RuntimePolyfillMode;
+  /** Polyfill provider. Only `core-js` is currently supported. */
   provider?: RuntimePolyfillProvider;
+  /**
+   * Runtime engine targets for core-js-compat.
+   *
+   * Examples: `"ios12"`, `"chrome >= 85"`, `"hermes0.7"`, `"react-native 0.70"`,
+   * or `{ node: "18" }`. Physical device names such as `"iPhone 8"` are rejected.
+   */
   targets?: RuntimeTarget | RuntimeTarget[] | RuntimeTargetObject;
+  /** Additional core-js modules to force into the synthetic prelude. */
   include?: string[];
+  /** core-js modules to remove after target and usage calculation. */
   exclude?: string[];
+  /** Include proposal polyfills when querying core-js-compat. */
   proposals?: boolean;
 }
 
@@ -24,7 +76,6 @@ export interface RuntimePolyfillBuildOptions {
   platform?: string;
   target?: string;
   browserslist?: string | string[];
-  runtimeTargets?: RuntimeTarget | RuntimeTarget[] | RuntimeTargetObject;
   runtimePolyfills?: RuntimePolyfillsOption;
   coreJs?: string;
   runBeforeMain?: string[];
@@ -276,7 +327,6 @@ function chooseRuntimeTargets(
 ): CoreJsTargets {
   const raw =
     runtime.targets ??
-    options.runtimeTargets ??
     (options.browserslist ? options.browserslist : undefined) ??
     (!isEsTarget(options.target) && options.target ? options.target : undefined);
   if (raw !== undefined) return normalizeRuntimeTargets(raw);
@@ -667,7 +717,6 @@ export function applyRuntimePolyfillsToNapiOptions(
   options: RuntimePolyfillBuildOptions,
 ): { cleanup: () => void; modules: string[] } {
   delete napiOptions.runtimePolyfills;
-  delete napiOptions.runtimeTargets;
   delete napiOptions.coreJs;
 
   if (options.target && !isEsTarget(options.target)) delete napiOptions.target;

@@ -302,7 +302,7 @@ function parseArgs(argv) {
     profileFormat: undefined,
     runtimePolyfills: undefined,
     coreJs: undefined,
-    runtimeTargets: [],
+    runtimeTargetQueries: [],
     ignoreAnnotations: false,
     jsxSideEffects: false,
     stopAfter: undefined,
@@ -1848,7 +1848,6 @@ function mergeConfigIntoOpts(opts, config) {
     "conditions",
     "nodePaths",
     "profile",
-    "runtimeTargets",
   ];
   for (const key of ARRAY_KEYS) {
     if (opts[key].length === 0 && Array.isArray(config[key]) && config[key].length > 0) {
@@ -1864,6 +1863,20 @@ function mergeConfigIntoOpts(opts, config) {
   mergeServerConfigIntoOpts(opts, config);
 
   return opts;
+}
+
+function mergeCliRuntimeTargets(runtimePolyfills, runtimeTargetQueries) {
+  if (!Array.isArray(runtimeTargetQueries) || runtimeTargetQueries.length === 0) {
+    return runtimePolyfills;
+  }
+  if (runtimePolyfills === undefined || runtimePolyfills === "off") return runtimePolyfills;
+  const targets =
+    runtimeTargetQueries.length === 1 ? runtimeTargetQueries[0] : runtimeTargetQueries;
+  if (typeof runtimePolyfills === "string") return { mode: runtimePolyfills, targets };
+  if (runtimePolyfills && typeof runtimePolyfills === "object") {
+    return { ...runtimePolyfills, targets };
+  }
+  return runtimePolyfills;
 }
 
 async function runBundle(opts, config) {
@@ -1943,9 +1956,8 @@ async function runBundle(opts, config) {
     profile: opts.profile.length > 0 ? opts.profile : undefined,
     profileLevel: opts.profileLevel,
     profileFormat: opts.profileFormat,
-    runtimePolyfills: opts.runtimePolyfills,
+    runtimePolyfills: mergeCliRuntimeTargets(opts.runtimePolyfills, opts.runtimeTargetQueries),
     coreJs: opts.coreJs,
-    runtimeTargets: opts.runtimeTargets.length > 0 ? opts.runtimeTargets : undefined,
     ignoreAnnotations: opts.ignoreAnnotations,
     jsxSideEffects: opts.jsxSideEffects,
     // NAPI 가 tsconfig paths / baseUrl 을 alias 로 변환해 resolver 에 주입하도록 전달.

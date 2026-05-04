@@ -214,7 +214,6 @@ const ts_buildoptions_only_allowlist = [_][]const u8{
     "target",
     "browserslist",
     "runtimePolyfills", // JS wrapper가 core-js prelude 로 변환 후 runBeforeMain 으로 전달
-    "runtimeTargets", // runtimePolyfills 전용 core-js-compat 타겟
     "coreJs", // runtimePolyfills 전용 core-js 버전 힌트
     "plugins",
     "compiler", // 1st-party transform 네임스페이스 (compiler.styledComponents/emotion).

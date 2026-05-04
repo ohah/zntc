@@ -1097,9 +1097,52 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
     const body_idx: NodeIndex = @enumFromInt(self.readU32(method_node.data.extra, ast_mod.MethodExtra.body));
     const method_flags = self.readU32(method_node.data.extra, ast_mod.MethodExtra.flags);
 
+    const saved_arrow_depth = self.arrow_this_depth;
+    const saved_needs_this = self.needs_this_var;
+    const saved_needs_args = self.needs_arguments_var;
+    const saved_super_alias = self.super_call_this_alias;
+    self.arrow_this_depth = 0;
+    self.needs_this_var = false;
+    self.needs_arguments_var = false;
+    self.super_call_this_alias = false;
+    defer {
+        self.arrow_this_depth = saved_arrow_depth;
+        self.needs_this_var = saved_needs_this;
+        self.needs_arguments_var = saved_needs_args;
+        self.super_call_this_alias = saved_super_alias;
+    }
+
     const new_params = try self.visitExtraList(.{ .start = params_start, .len = params_len });
 
-    const new_body = try self.visitNode(body_idx);
+    var new_body = try self.visitNode(body_idx);
+    if (self.options.unsupported.arrow and !new_body.isNone() and
+        (self.needs_this_var or self.needs_arguments_var))
+    {
+        var capture_stmts: [2]NodeIndex = undefined;
+        var capture_count: usize = 0;
+
+        if (self.needs_this_var) {
+            const this_init = try self.ast.addNode(.{
+                .tag = .this_expression,
+                .span = span,
+                .data = .{ .none = 0 },
+            });
+            capture_stmts[capture_count] = try self.buildVarDecl("_this", this_init, span);
+            capture_count += 1;
+        }
+        if (self.needs_arguments_var) {
+            const args_span = try self.ast.addString("arguments");
+            const args_init = try self.ast.addNode(.{
+                .tag = .identifier_reference,
+                .span = args_span,
+                .data = .{ .string_ref = args_span },
+            });
+            capture_stmts[capture_count] = try self.buildVarDecl("_arguments", args_init, span);
+            capture_count += 1;
+        }
+
+        new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
+    }
 
     const name_span = try self.ast.addString(name);
     const name_node = try makeBindingIdentifier(self, name_span);
