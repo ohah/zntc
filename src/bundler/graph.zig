@@ -677,11 +677,12 @@ pub const ModuleGraph = struct {
     fn debugRuntimePolyfillUsage(self: *ModuleGraph, module_path: []const u8, usage: runtime_polyfills.FeatureSet) void {
         _ = self;
         if (!debug_log.enabled(.runtime_polyfills)) return;
-        for (usage.items[0..usage.len]) |feature| {
+        var it = usage.keyIterator();
+        while (it.next()) |feature| {
             debug_log.print(
                 .runtime_polyfills,
                 "mode=usage module={s} feature={s} decision=detected\n",
-                .{ module_path, feature },
+                .{ module_path, feature.* },
             );
         }
     }
