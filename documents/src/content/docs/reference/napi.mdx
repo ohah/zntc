@@ -67,6 +67,52 @@ console.log(r.map);     // 소스맵 JSON
 - `define` — `{ key: value }` 정적 치환
 - `sourcemap` / `sourcemapDebugIds`
 - `tsconfigPath` / `tsconfigRaw`
+- `cache` — `TsconfigCache` 인스턴스 (autodiscover walk 캐시 재사용)
+
+## `tokenize(source, options)`
+
+단일 파일을 lexer 로 토큰화. 파싱 없이 토큰 배열 반환.
+
+```ts
+import { tokenize } from "@zts/core";
+
+const tokens = tokenize("const x = 1;", { filename: "input.ts" });
+console.log(tokens[0]); // { kind, text, start, end, line, column, hasNewlineBefore }
+```
+
+`TokenizeToken` 필드: `kind` / `text` / `start` / `end` / `line` / `column` / `hasNewlineBefore`.
+`TokenizeOptions`: `{ filename?: string }`.
+
+## `TsconfigCache`
+
+`tsconfig` autodiscover walk 결과를 in-process 재사용하는 캐시. 다수 파일을 반복 transpile 하는
+Vite / Rollup 플러그인 작성자에게 권장 — 파일당 5–10 fs syscall 절약. `tsconfigPath` / `tsconfigRaw`
+명시 시 캐시는 무시됨.
+
+```ts
+import { TsconfigCache, transpile } from "@zts/core";
+
+using cache = new TsconfigCache();             // Symbol.dispose 자동 clear
+for (const file of files) {
+  transpile(read(file), { filename: file, cache });
+}
+console.log(cache.size);                        // 캐시된 entry 수
+cache.clear();                                  // 명시 비우기 (재사용 가능)
+```
+
+## `configureProfile(profile, level?)` / `profileReport(format?)`
+
+Profile category 활성화 + 결과 출력. CLI `--profile` / `--profile-level` 의 NAPI 대응.
+
+```ts
+import { configureProfile, profileReport, transpile } from "@zts/core";
+
+configureProfile(["parse", "transform"], "summary");
+transpile(source, {});
+console.log(profileReport("table"));            // "table" | "tree" | "json" | "csv"
+```
+
+`level`: `"summary" | "detailed" | "per-module" | "per-pass"`.
 
 ## `build(options)` / `buildSync(options)`
 
@@ -84,7 +130,7 @@ const result = await build({
   platform: "browser",
   minify: true,
   sourcemap: true,
-  outputExports: "named",            // CJS/UMD entry export 형식 (#2159)
+  outputExports: "named",            // CJS/UMD entry export 형식
   inlineDynamicImports: false,       // dynamic import 인라인 여부 (#2185)
   manualChunks: (id, meta) => {      // record form 또는 함수형
     if (id.includes("node_modules")) return "vendor";
@@ -96,6 +142,7 @@ console.log(`Built ${result.outputFiles.length} files`);
 ```
 
 `buildSync()` 는 동기 버전 — JS 플러그인 미지원 (스레드 모델 한계). 단순 단일 파일 빌드에 적합.
+Array 형태 `alias` 도 미지원 (host RegExp 위임 — `build()` 사용).
 
 **번들 전용 옵션**:
 - `entryPoints` — 진입점 배열
@@ -104,15 +151,103 @@ console.log(`Built ${result.outputFiles.length} files`);
 - `preserveModules` / `preserveModulesRoot`
 - `inlineDynamicImports`
 - `external` — `string[]` 또는 RegExp
-- `alias` — `Record<string, string>` 또는 `[{find, replacement}]` (Vite 형식, #2153)
-- `loader` — `Record<string, "file" | "dataurl" | "base64" | "binary" | "text" | "copy" | "empty">`
+- `alias` — 두 형태 (아래 참고)
+- `loader` — 확장자별 로더 (아래 참고)
 - `manualChunks` — 함수형 또는 record form (#2186)
-- `outputExports` — `"auto" | "named" | "default" | "none"` (#2159)
-- `banner` / `footer`
+- `outputExports` — `"auto" | "named" | "default" | "none"`. `default` 모드에 named 가 섞이면 warning + 빈 출력.
+- `banner` / `footer` / `intro` / `outro`
 - `entryNames` / `chunkNames` / `assetNames`
 - `metafile` / `analyze`
-- `sourcemap` / `sourcemapMode` (`"linked" | "inline" | "external" | "hidden"`, #2152)
-- `logLevel` / `logOverride` / `logLimit` (#2158)
+- `sourcemap` / `sourcemapMode` (`"linked" | "external" | "inline"`)
+- `emitDiskSourcemap` — `false` 면 `.map` 디스크 쓰기 생략 → `WatchHandle.getBundleSourceMap()` lazy serve
+- `logLevel` (`silent | error | warning | info | debug | verbose`) — throw 안 함, `result.errors` 길이로 실패 판정
+- `logOverride` / `logLimit`
+- `browserslist` — `string | string[]`. 지정 시 `target` 보다 우선
+- `server` — `DevServerOptions` (`zts dev` / `--serve` 기본값. CLI flag 가 우선)
+
+### `alias` 형태
+
+```ts
+// (1) Object — esbuild 형태. exact + prefix 매칭
+build({ alias: { react: "preact/compat" } });
+//   "react" / "react/hooks" → "preact/compat" / "preact/compat/hooks"
+
+// (2) Array — Vite 형태. RegExp find 지원, build() 만 가능
+build({ alias: [{ find: /^@\/(.*)$/, replacement: "./src/$1" }] });
+```
+
+### `loader` vocabulary
+
+값으로 받는 로더: `js | jsx | ts | tsx | json | css | file | dataurl | base64 | text | binary | copy | empty`.
+
+```ts
+build({ loader: { ".png": "file", ".svg": "text", ".wasm": "binary" } });
+```
+
+### `server` (DevServerOptions)
+
+| 필드 | 의미 |
+|---|---|
+| `port` | 리스닝 포트. CLI `--port` 가 override |
+| `host` | 호스트. `true` 면 `0.0.0.0` (Vite 호환) |
+| `strictPort` | port 충돌 시 다음 port 시도 대신 종료 |
+| `open` | 시작 후 브라우저 자동 열기 |
+
+### React Native 관련 옵션
+
+`platform: "react-native"` 시 자동 활성화되는 항목 포함 — Hermes 호환 매트릭스 강제로 `target` /
+`browserslist` 는 무시됨.
+
+- `assetRegistry` — Metro AssetRegistry 모듈 경로 (또는 `false` 로 비활성)
+- `silentConsoleErrorPatterns` — 매칭되는 `console.error` 호출 silent swallow (RegExp source 배열)
+- `entryErrorGuard` — entry trigger 호출을 `try/catch + ErrorUtils.reportFatalError` 로 wrap. RN 자동 활성
+- `strictExecutionOrder` — 함수 선언 호이스팅 방지 (rolldown 동등). RN 자동 활성
+- `workletPluginVersion` — `react-native-worklets` 패키지 버전 문자열
+- `workletTransform` — Reanimated worklet 변환. RN 자동 활성
+- `codegenTransform` — `*NativeComponent` 의 `codegenNativeComponent` inline view config 치환. RN 자동 활성
+- `configurableExports` — `Object.defineProperty` 에 `configurable: true` (RN/Hermes 호환)
+- `reactRefresh` — React Fast Refresh 활성화
+- `devMode` — 모듈을 `__zts_register()` 팩토리 + HMR 런타임 주입
+- `rootDir` — dev mode 모듈 ID 기준 경로
+- `collectModuleCodes` — dev mode per-module code 수집 (HMR rebuild 용)
+- `moduleSpecifierMap` — `import { x } from 'lodash'` → `import x from 'lodash/x'` 등 cherry-pick 분해 매핑
+- `globals` — Rollup `output.globals`. IIFE/UMD external → 글로벌 변수 매핑
+- `intro` / `outro` — Rollup `output.intro/outro`. 포맷 wrapper 내부 코드 앞/뒤 삽입
+- `blockList` — 해석 차단 패턴 (`RegExp | string` 배열, Metro `blockList` 호환)
+- `fallback` — 일반 해석 실패 시에만 적용 (`{ crypto: "crypto-browserify", fs: false }`)
+- `watchFolders` — 그래프 밖 디렉토리 감시 추가 (Metro 호환)
+- `watchInclude` / `watchExclude` — `watchFolders` glob 화이트/블랙리스트
+
+### `runtimePolyfills` / `runtimeTarget` / `coreJs`
+
+core-js 기반 런타임 API 폴리필 자동 주입. 값 형태:
+
+```ts
+runtimePolyfills: "off" | "auto" | "usage" | "entry" | RuntimePolyfillOptions
+```
+
+`RuntimePolyfillOptions` 필드: `mode` (`auto | usage | entry`) / `provider` (`"core-js"`) /
+`targets` (browserslist 쿼리) / `coreJs` (버전 문자열) / `include[]` / `exclude[]` / `proposals` (boolean).
+`coreJs` top-level 옵션은 `runtimePolyfills.coreJs` 와 동일 역할.
+
+### `compiler` 네임스페이스
+
+라이브러리별 1st-party transform 설정 (`@next/swc` 호환 surface). `babel-plugin-styled-components` /
+`@emotion/babel-plugin` 과 동일한 결과를 plugin 등록 없이 옵션만 켜서 얻는다.
+
+```ts
+build({
+  compiler: {
+    styledComponents: { displayName: true, ssr: true, minify: true },
+    emotion: { autoLabel: "dev-only", labelFormat: "[local]" },
+  },
+});
+```
+
+`StyledComponentsOptions`: `displayName` / `ssr` / `cssProp` / `fileName` / `meaninglessFileNames` /
+`transpileTemplateLiterals` / `pure` / `minify` / `topLevelImportPaths` / `namespace` / `meta`.
+`EmotionOptions`: `autoLabel` (`"always" | "dev-only" | "never" | boolean`) / `labelFormat` / `importMap` /
+`sourceMap`. (`jsxImportSource` 는 `BuildOptions` 의 동명 옵션으로 별도 지정.)
 
 ## `watch(options)`
 
@@ -129,13 +264,47 @@ const handle = watch({
   bundle: true,
   onReady: () => console.log("first build ready"),
   onRebuild: (event) => {
-    console.log("rebuild", event.changedFiles);
+    console.log("rebuild", event.changed);          // 변경된 파일 경로 배열
+    console.log("emit", event.phaseDurations?.emit);
   },
 });
 
-// 종료 시
 handle.stop();
 ```
+
+### `WatchRebuildEvent` 필드
+
+- `success: boolean` / `error?: string` — rebuild 결과
+- `changed?: string[]` — 변경 감지된 파일 경로
+- `graphChanged?: boolean` — module graph 위상 변경 여부
+- `updates?: Array<{ id, code, map? }>` — HMR 모듈 단위 코드 (dev mode)
+- `bytes?: number` / `reparsedModules?: number`
+- `phaseDurations?: { ... }` — 단계별 ms
+
+`phaseDurations` 의 기본 phase: `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`.
+
+Sub-phase (`profile: ["..."]` 또는 `ZTS_PROFILE` env 활성 시): `scan` / `parse` / `resolve` /
+`semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` /
+`graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` /
+`emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
+
+> 2026-04-22 이전의 `phaseDurations.parse` / `semantic` 은 사실 `graph` / `link+shake` 를 담은
+> 레거시 이름이었으며 제거됨. 현재 `parse` 는 진짜 parser 시간만.
+
+### `WatchHandle` lazy sourcemap
+
+```ts
+const handle = watch({ ..., sourcemap: true, emitDiskSourcemap: false });
+
+// dev server 가 /bundle.js.map 요청 받을 때
+const bundleMap = handle.getBundleSourceMap();              // string | null
+
+// dev server 가 /hmr-map/:moduleId 요청 받을 때
+const moduleMap = handle.getHmrSourceMap(absoluteModulePath); // string | null
+```
+
+VLQ encode + sourcesContent 첨부를 emit 단계 밖으로 빼서 HMR latency 절감. `sourcemap` 비활성 / 초기
+빌드 전 / `stop()` 이후엔 `null`.
 
 ## `vitePlugin(rollupPlugin)`
 
@@ -166,6 +335,7 @@ const myPlugin: ZtsPlugin = {
   setup(build) {
     build.onResolve({ filter: /^@my\// }, (args) => ({
       path: resolve(__dirname, args.path),
+      // disabled: true,                            // 빈 모듈로 대체 (Metro/webpack fallback escape)
     }));
     build.onLoad({ filter: /\.md$/ }, (args) => ({
       contents: readFileSync(args.path, "utf-8"),
@@ -177,9 +347,88 @@ const myPlugin: ZtsPlugin = {
     build.onBuildStart(() => console.log("started"));      // (#2156)
     build.onBuildEnd((err) => err && console.error(err));  // (#2156)
     build.onCloseBundle(() => console.log("done"));        // (#2156)
+
+    // require.context 매칭 결과를 host runtime 의 RegExp 로 채움
+    build.onResolveContext({ filter: /./ }, (args) => {
+      const re = new RegExp(args.filter ?? ".*", args.flags ?? "");
+      return { context: scanDir(args.dir, args.recursive, re) };
+    });
+
+    // 함수 단위 AST visit — directive strip / trailing code 주입
+    build.onAstFunction({ filter: /\.tsx?$/ }, (info) => {
+      if (info.directives.includes("worklet")) return { stripDirective: "worklet" };
+    });
   },
 };
 ```
+
+### `onResolve` 추가 반환 필드
+
+- `path` — 해석된 절대 경로
+- `external` — import 문 보존 (런타임 해석)
+- `disabled` — 빈 모듈 (`module.exports = {}`) 로 대체. Metro `{ type: 'empty' }`, webpack `resolve.fallback: false` 매핑
+
+### `onAstFunction`
+
+`AstFunctionInfo`: `name` / `directives` / `closureVars` / `params` / `sourcePath` / `bodyText` /
+`flags: { async, generator }`.
+`AstFunctionResult`: `stripDirective?` / `trailingCode?: string[]`.
+
+## App 빌드 (Vite-style HTML 엔트리)
+
+```ts
+import { buildAppSync, prepareAppDevSync } from "@zts/core";
+
+// 프로덕션: HTML 엔트리에서 module / CSS / asset 스캔 → outdir
+const r = buildAppSync({ root: ".", outdir: "dist", entryHtml: "index.html" });
+
+// 개발: dev server 가 사용할 임시 prepare (mode = "development")
+const dev = prepareAppDevSync({ root: ".", outdir: ".zts-dev" });
+```
+
+`AppBuildOptions` / `AppDevPrepareOptions` 의 추가 필드: `publicDir` / `base` / `mode` / `envDir` /
+`envPrefixes` / `define` / `minify` / `sourcemap` / `splitting` / `compiler`.
+
+## Config / Workspace API
+
+### Unified config loader
+
+```ts
+import { loadConfig, defineConfig } from "@zts/core";
+
+const env = { mode: "production", command: "build" };
+const config = await loadConfig({ cwd: process.cwd(), env });
+```
+
+추가 export: `findConfigPath`, `findModeConfigPath`, `loadModuleDefault`, `mergeUserConfigs`,
+`importAndResolveDefault`, `defaultConfigEnv`. 타입: `UserConfig` / `UserConfigInput` /
+`UserConfigFn` / `ConfigEnv` / `ModuleKind`.
+
+### Workspace
+
+```ts
+import { defineWorkspace, loadWorkspace } from "@zts/core";
+
+export default defineWorkspace([
+  "packages/*",
+  { path: "apps/web", name: "web" },
+  { config: defineConfig({ bundle: { entryPoints: ["src/i.ts"] } }) },
+]);
+```
+
+추가 export: `loadWorkspace`, `filterWorkspaces`, `findWorkspacePath`, `identifyWorkspaceEntries`,
+`loadIdentifiedConfig`, `WORKSPACE_EXT_PRIORITY`. 타입: `Workspace` / `WorkspaceEntry` /
+`WorkspaceFn` / `IdentifiedWorkspace`.
+
+### Utilities
+
+- `envToDefine(env, prefixes)` — `.env` 변수 → `define` 매핑
+- `loadEnv(mode, dir, prefixes?)` — `.env[.mode][.local]` 우선순위 로드
+- `KNOWN_CONFIG_KEYS` — 알려진 config 키 집합
+- `suggestKey(key)` — 오타 추정 (Levenshtein 기반)
+- `warnUnknownKeys(obj)` — 미지의 키 경고 출력
+- `isPlainObject(v)` — 순수 객체 판별
+- `validateTsConfigRaw(raw)` — `tsconfigRaw` JSON 사전 검증
 
 ## `defineConfig(config)`
 
@@ -200,17 +449,29 @@ export default defineConfig({
 
 ## `benchmark(options)`
 
-ZTS / esbuild / swc 등을 같은 입력에 적용해 단계별 시간 측정. 벤치마크 결과는 [Benchmarks](/zts/reference/benchmarks/) 참고.
+특정 phase 를 N 회 반복 실행하고 통계 (mean/median/p95/p99/stddev/min/max) 를 반환.
+CLI `zts bench --phase=...` 의 NAPI 대응 — 같은 engine 사용. 결과는 [Benchmarks](/zts/reference/benchmarks/) 참고.
 
 ```ts
 import { benchmark } from "@zts/core";
 
 const r = benchmark({
-  source: "...",
+  file: "./src/App.tsx",
+  phases: ["parse", "transform"],
   iterations: 100,
-  engines: ["zts", "esbuild"],
+  warmup: 10,
 });
+console.log(r.phases.parse.mean_ms);
 ```
+
+`BenchmarkOptions` 필드:
+- `source?` 또는 `file?` — 둘 중 하나 필수
+- `filename?` — `source` 와 함께 (확장자 감지용)
+- `phases: string[]` — 측정할 profile category. `all` / `none` 불가
+- `iterations?` (default 100) / `warmup?` (default 10)
+
+`BenchmarkPhaseStats`: `samples` / `mean_ms` / `median_ms` / `p95_ms` / `p99_ms` / `min_ms` /
+`max_ms` / `stddev_ms`. `BenchmarkResult`: `phases: Record<string, BenchmarkPhaseStats>`.
 
 ## 참고
 

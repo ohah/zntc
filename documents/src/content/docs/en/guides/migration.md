@@ -174,6 +174,10 @@ export default defineConfig({
 
 Vite is a combination of dev server + production bundler (Rollup/Rolldown). ZTS is a standalone bundler and doesn't replace all Vite features.
 
+:::caution[ConfigEnv `command` value differs]
+In a function-form config (`defineConfig(({ command, mode }) => ...)`), Vite's `command` is `"build" | "serve"`, while ZTS uses `"bundle" | "serve" | "watch"`. Migrate any `command === "build"` branches to `"bundle"`; watch mode (`zts --watch`) arrives as a distinct value.
+:::
+
 ### Vite production build replacement
 
 ```bash
@@ -195,13 +199,19 @@ export default defineConfig({
     sourcemap: true,
     rollupOptions: {
       external: ['react', 'react-dom'],
+      output: {
+        globals: { react: 'React', 'react-dom': 'ReactDOM' },
+      },
     },
   },
 });
 
 // ZTS CLI equivalent
-// zts --bundle src/main.ts --outdir dist --minify --sourcemap --external react --external react-dom
+// zts --bundle src/main.ts --outdir dist --minify --sourcemap --external react --external react-dom \
+//   --global:react=React --global:react-dom=ReactDOM
 ```
+
+Rollup `output.globals` maps to ZTS CLI `--global:<specifier>=<global>` or `defineConfig({ globals: { react: "React" } })`. Used when IIFE/UMD output needs to substitute external specifiers with global variables.
 
 ### Vite plugin → ZTS plugin
 
@@ -254,7 +264,8 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | `public/` static directory           | Supported in app mode (`--public-dir`)                                                                   |
 | HTML entry (`index.html`)            | Supported in app mode (`--entry-html`)                                                                   |
 | SPA fallback                         | `zts preview --spa-fallback`                                                                             |
-| `resolve.alias`                      | `--alias:name=target`                                                                                    |
+| `resolve.alias` (object)             | `--alias:name=target` or `defineConfig({ alias: { ... } })`                                              |
+| `resolve.alias` (array, RegExp)      | `defineConfig({ alias: [{ find: /^@\//, replacement: "./src/" }] })` (build() only, not in buildSync)    |
 | `resolve.conditions`                 | `conditions: ["prod", "foo"]` or `--conditions=prod,foo`                                                 |
 | `optimizeDeps` (pre-bundling)        | Not needed (handled during bundling)                                                                     |
 | `ssr` / SSR build                    | Not supported                                                                                            |
@@ -313,6 +324,7 @@ module.exports = {
 | `DefinePlugin`                     | `--define:KEY=VALUE`                                         |
 | `ProvidePlugin`                    | `--inject:./shim.js`                                         |
 | `IgnorePlugin`                     | `--external <pkg>` or `--block-list=<pattern>`               |
+| `resolve.fallback: { fs: false, crypto: 'crypto-browserify' }` | `fallback: { fs: false, crypto: 'crypto-browserify' }` (applied only when normal resolution fails) |
 | `BannerPlugin`                     | `--banner:js=...`                                            |
 | `SplitChunksPlugin`                | `--splitting` (automatic)                                    |
 | `MiniCssExtractPlugin`             | Built-in Lightning CSS post-processing (separate CSS chunks) |

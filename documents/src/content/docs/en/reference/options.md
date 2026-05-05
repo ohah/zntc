@@ -113,6 +113,8 @@ Detection is based on the static graph AST. Local bindings/imports that shadow `
 | `asciiOnly` | `boolean` | `false` | Escape non-ASCII as hex escape sequences |
 | `charsetUtf8` | `boolean` | `false` | Preserve non-ASCII verbatim |
 
+`asciiOnly` and `charsetUtf8` are paired toggles for the same output charset dimension. The CLI mapping is asymmetric — `--charset=utf8` maps to `charsetUtf8=true` and `--ascii-only` maps to `asciiOnly=true`, but `--charset=ascii` is not accepted.
+
 ### Code Splitting / Chunks
 
 | Option | Type | Default | Description |
@@ -122,7 +124,18 @@ Detection is based on the static graph AST. Local bindings/imports that shadow `
 | `inlineDynamicImports` | `boolean` | `false` | Absorb dynamic-import targets into the importer chunk + `__esm` wrapping (single-file output). CLI: `--inline-dynamic-imports` (#2185) |
 | `external` | `string[]` | `[]` | Specifiers to exclude from the bundle. Registered as phantom modules in the graph |
 | `preserveModules` | `boolean` | `false` | Preserve original directory structure instead of bundling (Rollup compatible) |
-| `outputExports` | `auto`, `named`, `default`, `none` | `auto` | CJS/UMD entry export shape (Rollup `output.exports` compatible, #2159). `default` mode + named exports → build error |
+| `outputExports` | `auto`, `named`, `default`, `none` | `auto` | CJS/UMD entry export shape (Rollup `output.exports` compatible). See full semantics below |
+
+`outputExports` 4-value semantics:
+
+| Value      | Behavior                                                                                                              |
+| ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| `"auto"`   | default-only → `module.exports = X`. named-only → `exports.X = X` (no `__esModule`). mixed → `exports.X = X` + `__esModule` flag |
+| `"named"`  | Always named (`exports.X = X`). When a default export is also present, `__esModule` flag is added automatically (rolldown `IfDefaultProp`) |
+| `"default"`| Single `module.exports = X`. Only emits correctly when the entry has default-only exports — mixing in named exports triggers a warning and **empty output** |
+| `"none"`   | Do not emit any export                                                                                                |
+
+`outputExports` is ignored for ESM output.
 
 ### Minify
 
@@ -144,7 +157,7 @@ Detection is based on the static graph AST. Local bindings/imports that shadow `
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `sourcemap` | `boolean` | `false` | Emit sourcemap JSON |
-| `sourcemapMode` | `linked`, `inline`, `external`, `hidden` | `linked` | Sourcemap output style (#2152). `linked` = external `.js.map` + `sourceMappingURL` comment (esbuild/rolldown default) |
+| `sourcemapMode` | `linked`, `external`, `inline` | `linked` | Sourcemap output style. `linked` = external `.js.map` + `sourceMappingURL` comment (esbuild/rolldown default) |
 | `sourcemapDebugIds` | `boolean` | `false` | Sentry-compatible Debug ID |
 | `sourcesContent` | `boolean` | `true` | Include original source in sourcemap |
 | `sourceRoot` | `string` | `""` | Sourcemap `sourceRoot` field |
@@ -154,6 +167,13 @@ Detection is based on the static graph AST. Local bindings/imports that shadow `
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `define` | `Array<{key, value}>` | `[]` | Identifier substitution. `value` is **raw JSON** — strings must be quoted (e.g., `value: "\"1.0.0\""`) |
+
+### Diagnostics / Logging
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `logLevel` | `"silent" \| "error" \| "warning" \| "info" \| "debug" \| "verbose"` | `"warning"` | Filter applied to the NAPI build result `errors`/`warnings` arrays. `"silent"` empties both arrays. `"error"` empties only `warnings`. `"warning"` (default) keeps both. `"info"` / `"debug"` / `"verbose"` currently behave like `"warning"` (no info-level diagnostics are emitted yet). `build()` does **not** throw based on `logLevel` — failures must be inspected via `result.errors` |
+| `logLimit` | `number` | `0` | Per-array cap on `errors` and `warnings`. `0` means unlimited. Mirrors esbuild `logLimit` |
 
 ## Relation to the TS API
 

@@ -174,6 +174,10 @@ export default defineConfig({
 
 Vite는 개발 서버 + 프로덕션 번들러(Rollup/Rolldown)의 조합입니다. ZTS는 단독 번들러이므로 Vite의 모든 기능을 대체하지는 않습니다.
 
+:::caution[ConfigEnv `command` 값 차이]
+함수형 config(`defineConfig(({ command, mode }) => ...)`)에서 Vite 는 `command` 가 `"build" | "serve"` 두 가지인 반면, ZTS 는 `"bundle" | "serve" | "watch"` 세 가지입니다. Vite 에서 `command === "build"` 분기를 쓰던 코드는 ZTS 에서 `"bundle"` 로 바꿔야 하며, watch 모드(`zts --watch`)는 별도 값으로 들어옵니다.
+:::
+
 ### Vite 프로덕션 빌드 대체
 
 ```bash
@@ -195,13 +199,19 @@ export default defineConfig({
     sourcemap: true,
     rollupOptions: {
       external: ['react', 'react-dom'],
+      output: {
+        globals: { react: 'React', 'react-dom': 'ReactDOM' },
+      },
     },
   },
 });
 
 // zts CLI 대응
-// zts --bundle src/main.ts --outdir dist --minify --sourcemap --external react --external react-dom
+// zts --bundle src/main.ts --outdir dist --minify --sourcemap --external react --external react-dom \
+//   --global:react=React --global:react-dom=ReactDOM
 ```
+
+Rollup `output.globals` 는 ZTS 에선 CLI `--global:<specifier>=<global>` 또는 `defineConfig({ globals: { react: "React" } })` 로 매핑됩니다. IIFE/UMD 출력에서 external specifier 를 전역 변수로 치환할 때 사용합니다.
 
 ### Vite 플러그인 → ZTS 플러그인
 
@@ -254,7 +264,8 @@ export default defineConfig({
 | `public/` 정적 디렉토리              | 앱 모드에서 지원 (`--public-dir`)                                                                      |
 | HTML 엔트리 (`index.html`)           | 앱 모드에서 지원 (`--entry-html`)                                                                      |
 | SPA fallback                         | `zts preview --spa-fallback`                                                                           |
-| `resolve.alias`                      | `--alias:name=target`                                                                                  |
+| `resolve.alias` (object)             | `--alias:name=target` 또는 `defineConfig({ alias: { ... } })`                                          |
+| `resolve.alias` (array, RegExp)      | `defineConfig({ alias: [{ find: /^@\//, replacement: "./src/" }] })` (build()만, buildSync 미지원)     |
 | `resolve.conditions`                 | `conditions: ["prod", "foo"]` 또는 `--conditions=prod,foo`                                             |
 | `optimizeDeps` (pre-bundling)        | 불필요 (번들 시 직접 처리)                                                                             |
 | `ssr` / SSR 빌드                     | 미지원                                                                                                 |
@@ -313,6 +324,7 @@ module.exports = {
 | `DefinePlugin`                     | `--define:KEY=VALUE`                               |
 | `ProvidePlugin`                    | `--inject:./shim.js`                               |
 | `IgnorePlugin`                     | `--external <pkg>` 또는 `--block-list=<pattern>`   |
+| `resolve.fallback: { fs: false, crypto: 'crypto-browserify' }` | `fallback: { fs: false, crypto: 'crypto-browserify' }` (해석 실패 시에만 적용) |
 | `BannerPlugin`                     | `--banner:js=...`                                  |
 | `SplitChunksPlugin`                | `--splitting` (자동)                               |
 | `MiniCssExtractPlugin`             | 내장 Lightning CSS 후처리 (별도 CSS 청크 출력)     |

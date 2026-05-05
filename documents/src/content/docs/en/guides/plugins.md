@@ -49,6 +49,22 @@ Custom module path resolution (first-match).
 }
 ```
 
+#### `disabled` return — empty module fallback
+
+Returning `disabled: true` replaces the module with an empty object (`module.exports = {}`). The escape hatch for Metro `resolveRequest` returning `{ type: 'empty' }` or webpack `resolve.fallback` set to `false`.
+
+```typescript
+{
+  name: 'stub-node-builtins',
+  resolveId(source) {
+    if (source === 'fs' || source === 'path') {
+      return { disabled: true };
+    }
+    return null;
+  }
+}
+```
+
 ### load
 
 Custom module content loading (first-match).
@@ -84,7 +100,9 @@ When the object returned from `load` includes `loader`, the graph overrides the 
 }
 ```
 
-Supported loaders: `text` / `dataurl` / `base64` / `binary` / `empty` / `javascript` / `json` / `css`.
+Supported loaders: `file` / `copy` / `dataurl` / `base64` / `text` / `binary` / `empty` / `json` / `css` / `js` / `jsx` / `ts` / `tsx`.
+
+`js` / `jsx` / `ts` / `tsx` force the `contents` returned from `onLoad` into the matching parser mode — useful for extension-less virtual modules or sources disguised under a different extension.
 
 #### `contents` binary support (#2157 follow-up)
 
@@ -107,7 +125,7 @@ Supported loaders: `text` / `dataurl` / `base64` / `binary` / `empty` / `javascr
 
 ### transform
 
-Transform module code (chaining -- all plugins applied in order).
+Transform module code (chaining — all plugins applied in order).
 
 ```typescript
 {
@@ -144,6 +162,76 @@ Called after bundle generation is complete.
   generateBundle(outputs) {
     console.log(`Built ${outputs.length} files`);
   }
+}
+```
+
+### onResolveContext
+
+Lets the host runtime fill in `require.context(dir, recursive, filter, mode)` matches. ZTS has no built-in regex executor, so it delegates to the host's RegExp (Node V8 / Bun JSC).
+
+Callback arguments:
+- `dir` — first arg of `require.context`.
+- `recursive` — second arg.
+- `filter` — regex source (no slashes).
+- `flags` — regex flags.
+- `importer` — the calling module path.
+
+Callback return:
+- `{ context: string[] }` — array of matched file paths (empty array = empty context).
+- `null` / `undefined` — try the next plugin. If all return null, the graph emits a `require_context_no_handler` diagnostic.
+
+```typescript
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
+{
+  name: 'require-context',
+  setup(build) {
+    build.onResolveContext({ filter: /^\.\/app/ }, ({ dir, filter, flags, importer }) => {
+      const re = new RegExp(filter ?? '.', flags ?? '');
+      const root = join(importer, '..', dir);
+      const files = readdirSync(root).filter((f) => re.test(f)).map((f) => join(root, f));
+      return { context: files };
+    });
+  },
+}
+```
+
+### onAstFunction
+
+High-power AST hook. For each function in files matching `filter`, receives `AstFunctionInfo` and may return `stripDirective` to remove a directive plus `trailingCode` to inject statements after the function definition.
+
+```typescript
+interface AstFunctionInfo {
+  name: string | null;
+  directives: string[];        // prologue directives in the function body
+  closureVars: string[];       // outer identifiers referenced
+  params: string[];
+  sourcePath: string;
+  bodyText: string;
+  flags: { async: boolean; generator: boolean };
+}
+
+interface AstFunctionResult {
+  stripDirective?: string;     // directive to strip from the body prologue
+  trailingCode?: string[];     // statements to insert after the function definition
+}
+```
+
+This is the external surface for 1st-party transforms like Reanimated worklets (injecting hash/closure/initData into `"worklet"`-directive functions). Use it only when you need function-scope metadata that a regular `transform` can't reach.
+
+```typescript
+{
+  name: 'mark-worklets',
+  setup(build) {
+    build.onAstFunction({ filter: /\.tsx?$/ }, (info) => {
+      if (!info.directives.includes('worklet')) return null;
+      return {
+        stripDirective: 'worklet',
+        trailingCode: [`${info.name}.__hash = ${JSON.stringify(info.bodyText.length)};`],
+      };
+    });
+  },
 }
 ```
 

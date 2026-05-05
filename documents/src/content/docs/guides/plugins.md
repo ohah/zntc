@@ -87,6 +87,22 @@ export default defineConfig({
 }
 ```
 
+#### `disabled` 반환 — empty module fallback
+
+반환 객체에 `disabled: true` 를 포함하면 해당 모듈을 빈 객체(`module.exports = {}`) 로 대체. Metro `resolveRequest` 가 `{ type: 'empty' }` 반환하거나 webpack `resolve.fallback` 이 `false` 일 때의 escape hatch.
+
+```typescript
+{
+  name: 'stub-node-builtins',
+  resolveId(source) {
+    if (source === 'fs' || source === 'path') {
+      return { disabled: true };
+    }
+    return null;
+  }
+}
+```
+
 ### load
 
 모듈 내용을 커스텀으로 로드합니다 (first-match).
@@ -122,7 +138,9 @@ export default defineConfig({
 }
 ```
 
-지원 loader: `text` / `dataurl` / `base64` / `binary` / `empty` / `javascript` / `json` / `css`.
+지원 loader: `file` / `copy` / `dataurl` / `base64` / `text` / `binary` / `empty` / `json` / `css` / `js` / `jsx` / `ts` / `tsx`.
+
+`js` / `jsx` / `ts` / `tsx` 는 `onLoad` 가 반환한 `contents` 를 해당 parser mode 로 강제 해석 — 확장자 없는 virtual module 이나 다른 확장자로 위장된 소스를 강제 파싱할 때 사용.
 
 #### `contents` binary 지원 (#2157 follow-up)
 
@@ -182,6 +200,76 @@ export default defineConfig({
   generateBundle(outputs) {
     console.log(`Built ${outputs.length} files`);
   }
+}
+```
+
+### onResolveContext
+
+`require.context(dir, recursive, filter, mode)` 의 매칭 결과를 호스트 런타임에서 채운다. ZTS 는 자체 regex executor 가 없어 host 의 RegExp (Node V8 / Bun JSC) 에 위임.
+
+콜백 인자:
+- `dir` — `require.context` 의 첫 인자.
+- `recursive` — 두 번째 인자.
+- `filter` — 정규식 본문 (slashes 없이).
+- `flags` — 정규식 플래그.
+- `importer` — 호출한 모듈 경로.
+
+콜백 반환:
+- `{ context: string[] }` — 매칭된 파일 경로 배열 (빈 배열 = empty context).
+- `null` / `undefined` — 다음 plugin 시도. 모든 plugin 이 null 이면 graph 가 `require_context_no_handler` diagnostic.
+
+```typescript
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
+{
+  name: 'require-context',
+  setup(build) {
+    build.onResolveContext({ filter: /^\.\/app/ }, ({ dir, filter, flags, importer }) => {
+      const re = new RegExp(filter ?? '.', flags ?? '');
+      const root = join(importer, '..', dir);
+      const files = readdirSync(root).filter((f) => re.test(f)).map((f) => join(root, f));
+      return { context: files };
+    });
+  },
+}
+```
+
+### onAstFunction
+
+고출력 AST 훅. `filter` 매칭된 파일 안 함수 단위로 `AstFunctionInfo` 를 받아, `stripDirective` 로 디렉티브 제거 + `trailingCode` 로 함수 뒤에 코드를 추가할 수 있다.
+
+```typescript
+interface AstFunctionInfo {
+  name: string | null;
+  directives: string[];        // 함수 본문 prologue directive 들
+  closureVars: string[];       // 외부 식별자 참조 목록
+  params: string[];
+  sourcePath: string;
+  bodyText: string;
+  flags: { async: boolean; generator: boolean };
+}
+
+interface AstFunctionResult {
+  stripDirective?: string;     // 본문 prologue 에서 제거할 directive
+  trailingCode?: string[];     // 함수 정의 뒤 삽입할 statement 들
+}
+```
+
+Reanimated worklet (`"worklet"` 디렉티브 함수에 hash/closure/initData 주입) 같은 1st-party transform 의 외부 구현 surface — 일반 transform 으로는 어려운 함수-스코프 메타데이터 접근이 필요한 경우에만 쓸 것.
+
+```typescript
+{
+  name: 'mark-worklets',
+  setup(build) {
+    build.onAstFunction({ filter: /\.tsx?$/ }, (info) => {
+      if (!info.directives.includes('worklet')) return null;
+      return {
+        stripDirective: 'worklet',
+        trailingCode: [`${info.name}.__hash = ${JSON.stringify(info.bodyText.length)};`],
+      };
+    });
+  },
 }
 ```
 

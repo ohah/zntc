@@ -68,6 +68,60 @@ zts --bundle entry.ts --external react --external react-dom
 zts --bundle entry.ts --alias:react=preact/compat
 ```
 
+In the config, two forms are supported (esbuild / Vite compatible).
+
+```ts
+// Object form — exact + prefix matching (esbuild alias)
+defineConfig({
+  alias: { react: "preact/compat", "@/": "./src/" },
+});
+
+// Array form — RegExp supported (Vite resolve.alias). build() only, not buildSync.
+defineConfig({
+  alias: [
+    { find: /^@\/(.*)$/, replacement: "./src/$1" },
+    { find: "lodash", replacement: "lodash-es" },
+  ],
+});
+```
+
+`alias` is substituted **unconditionally before** normal resolution. To apply only on resolve failure, use `fallback`. See the Babel migration guide for full `babel-plugin-module-resolver` mapping.
+
+## Fallback
+
+Compatible with webpack `resolve.fallback` / Metro `resolver.extraNodeModules`. Applied **only when normal resolution fails**. Mainly used to swap in browser polyfills for Node built-ins.
+
+```ts
+defineConfig({
+  fallback: {
+    fs: false,                       // replace with empty module
+    crypto: "crypto-browserify",
+    stream: "stream-browserify",
+  },
+});
+```
+
+A string value re-resolves to that specifier. `false` substitutes an empty module.
+
+## Block List
+
+Compatible with Metro `resolver.blockList` / webpack `IgnorePlugin`. Matching absolute paths fail to resolve and are excluded from the bundle graph.
+
+```ts
+defineConfig({
+  blockList: [
+    /\/__mocks__\//,
+    /\.test\.tsx?$/,
+    "/private-internal/.*",
+  ],
+});
+```
+
+- `RegExp`: extracts `.source` and uses it as the pattern
+- `string`: treated as a regex string verbatim
+- Supported syntax: literals, `.*`, `^`, `$`, `\x` escapes. `|`, `[]`, `()`, `+?`, `\w\d` are not supported
+- With `platform: "react-native"`, Metro's default patterns (`__tests__`, iOS/Android build folders, etc.) are auto-prepended; user patterns are appended after
+
 ## Loader
 
 ```bash
@@ -85,12 +139,25 @@ zts --bundle entry.ts --outdir dist/ \
   --asset-names="assets/[name]-[hash]"
 ```
 
-## Banner / Footer
+## Banner / Footer / Intro / Outro
+
+`banner` / `footer` insert text **outside** the format wrapper, at the very top/bottom (license headers, shebangs). `intro` / `outro` insert text **inside** the wrapper, before/after the bundle code (Rollup `output.intro`/`output.outro` compatible). The difference is most visible with wrapper formats like IIFE/UMD.
 
 ```bash
 zts --bundle entry.ts -o bundle.js \
   --banner:js="/* MIT License */" \
-  --footer:js="/* End of bundle */"
+  --footer:js="/* End of bundle */" \
+  --intro="'use strict';" \
+  --outro="globalThis.__BUILD_OK__ = true;"
+```
+
+```ts
+defineConfig({
+  banner: "/* MIT License */",
+  footer: "/* End of bundle */",
+  intro: "'use strict';",
+  outro: "globalThis.__BUILD_OK__ = true;",
+});
 ```
 
 ## Metafile
@@ -132,6 +199,20 @@ zts --bundle entry.ts -o bundle.js --target=chrome80,safari14
 zts --bundle entry.ts -o bundle.js --target=node18
 zts --bundle entry.ts -o bundle.js --target=hermes0.70
 ```
+
+### `browserslist`
+
+You can specify the downleveling matrix with a Browserslist query string (or string array) instead of `target`. When set, `browserslist` **takes precedence** over `target`. With `platform: "react-native"`, the Hermes matrix is enforced and `browserslist` cannot be passed (ignored at runtime).
+
+```ts
+defineConfig({
+  browserslist: "> 0.5%, last 2 versions, not dead",
+  // or
+  // browserslist: ["chrome >= 80", "safari >= 14"],
+});
+```
+
+The matrix is shared with CSS post-processing (Lightning CSS).
 
 ## Runtime Polyfills (core-js)
 
@@ -190,6 +271,14 @@ Execution order preserves existing manual polyfills and entry hooks.
 manual polyfills / inject roots -> runtime core-js prelude -> runBeforeMain -> user entry
 ```
 
+`runBeforeMain` is an array of module paths to run immediately before the entry module. They are pulled into the bundle graph and emitted as a prelude that runs after manual polyfills / runtime polyfills and just before the user entry. Use it for environment setup that must run before the entry — for example the React Native polyfill flow (`InitializeCore` and friends). For plain polyfill injection that runs at the very start of the bundle, use `polyfills` instead.
+
+```ts
+defineConfig({
+  runBeforeMain: ["./src/setup-env.ts"],
+});
+```
+
 For observability, enable the runtime polyfill debug category with graph profiling.
 
 ```bash
@@ -209,6 +298,25 @@ zts --bundle entry.ts --format=cjs    # CommonJS
 zts --bundle entry.ts --format=iife --global-name=MyLib  # IIFE
 zts --bundle entry.ts --format=umd --global-name=MyLib   # UMD
 zts --bundle entry.ts --format=amd                       # AMD
+```
+
+### IIFE/UMD external → global mapping (`globals`)
+
+Compatible with Rollup `output.globals`. In IIFE/UMD output, substitutes `external` specifiers with runtime global variables.
+
+```bash
+zts --bundle entry.ts -o bundle.js --format=umd --global-name=MyLib \
+  --external react --external react-dom \
+  --global:react=React --global:react-dom=ReactDOM
+```
+
+```ts
+defineConfig({
+  format: "umd",
+  globalName: "MyLib",
+  external: ["react", "react-dom"],
+  globals: { react: "React", "react-dom": "ReactDOM" },
+});
 ```
 
 ## Watch Mode
