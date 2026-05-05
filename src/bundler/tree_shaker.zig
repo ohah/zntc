@@ -78,7 +78,31 @@ const ConstMaterializeFilter = enum {
     numeric_export_chain,
 };
 
+/// const-materialize 호출이 어느 단계에서 수행되는지 — 이 enum 하나가
+/// 두 가지 동작 차이를 결정해 호출부의 짝지은 boolean 두 개를 대체한다:
+///   1) `materialized.needs_minify == false` 일 때 minify 자체를 스킵해도 안전한가
+///      (postpass 만 in-place 치환이라 안전)
+///   2) resync 가 일반 AST mutation 경로 vs const-materialize 전용 경로 중 어느 쪽인가
+///      (postpass 는 import/export syntax 보존을 caller 가 보장)
+const ConstPassPolicy = enum {
+    /// 일반 const fact materialization. AST 가 어떤 식으로든 변할 수 있어
+    /// import_scan 까지 다시 도는 full resync 가 필요하다.
+    pre_pass,
+    /// numeric leaf 치환 한정. import/export syntax 가 보존된다는 caller invariant 위에
+    /// 동작하므로 graph_resync_const 만 돌리고 minify 도 스킵 가능.
+    numeric_post_pass,
+
+    fn skipMinifyIfSafe(self: ConstPassPolicy) bool {
+        return self == .numeric_post_pass;
+    }
+
+    fn stableImportExportSyntax(self: ConstPassPolicy) bool {
+        return self == .numeric_post_pass;
+    }
+};
+
 const ConstMaterializeProfile = struct {
+    policy: ConstPassPolicy,
     build_facts: ?profile.Category = null,
     build_facts_resolve: ?profile.Category = null,
     build_facts_lookup: ?profile.Category = null,
@@ -89,8 +113,6 @@ const ConstMaterializeProfile = struct {
     resync: ?profile.Category = null,
     minify_skip: ?profile.Category = null,
     inner: constant_facts.MaterializeProfile = .{},
-    skip_minify_if_safe: bool = false,
-    stable_import_export_syntax: bool = false,
 };
 
 pub const TreeShaker = struct {
@@ -481,21 +503,17 @@ pub const TreeShaker = struct {
         m: *Module,
         sem: ModuleSemanticData,
         ast: *Ast,
-        profile_cat: ?profile.Category,
-        minify_cat: ?profile.Category,
-        resync_cat: ?profile.Category,
-        skip_cat: ?profile.Category,
+        const_profile: ConstMaterializeProfile,
         skip_minify: bool,
-        stable_import_export_syntax: bool,
     ) void {
-        var scope = profile.beginMaybe(profile_cat);
+        var scope = profile.beginMaybe(const_profile.minify_resync);
         defer scope.end();
 
         if (skip_minify) {
-            var skip_scope = profile.beginMaybe(skip_cat);
+            var skip_scope = profile.beginMaybe(const_profile.minify_skip);
             defer skip_scope.end();
         } else {
-            var minify_scope = profile.beginMaybe(minify_cat);
+            var minify_scope = profile.beginMaybe(const_profile.minify);
             defer minify_scope.end();
 
             const minify_mod = @import("../transformer/minify.zig");
@@ -505,10 +523,10 @@ pub const TreeShaker = struct {
         }
 
         {
-            var resync_scope = profile.beginMaybe(resync_cat);
+            var resync_scope = profile.beginMaybe(const_profile.resync);
             defer resync_scope.end();
 
-            if (stable_import_export_syntax) {
+            if (const_profile.policy.stableImportExportSyntax()) {
                 self.markConstMaterializedAndResync(m);
             } else {
                 self.markAstMutatedAndResync(m);
@@ -623,24 +641,14 @@ pub const TreeShaker = struct {
                 scratch_ptr,
                 module_index,
                 const_profile.inner,
-                const_profile.skip_minify_if_safe,
+                const_profile.policy.skipMinifyIfSafe(),
             );
         };
         const_values.deinit(self.allocator);
         if (!materialized.changed) return false;
 
-        const skip_minify = const_profile.skip_minify_if_safe and !materialized.needs_minify;
-        self.minifyAndResyncModule(
-            m,
-            sem,
-            ast,
-            const_profile.minify_resync,
-            const_profile.minify,
-            const_profile.resync,
-            const_profile.minify_skip,
-            skip_minify,
-            const_profile.stable_import_export_syntax,
-        );
+        const skip_minify = const_profile.policy.skipMinifyIfSafe() and !materialized.needs_minify;
+        self.minifyAndResyncModule(m, sem, ast, const_profile, skip_minify);
         return true;
     }
 
@@ -711,6 +719,7 @@ pub const TreeShaker = struct {
         defer queued.deinit();
 
         const postpass_profile = ConstMaterializeProfile{
+            .policy = .numeric_post_pass,
             .build_facts = .shake_numeric_postpass_build_facts,
             .build_facts_resolve = .shake_numeric_postpass_build_facts_resolve,
             .build_facts_lookup = .shake_numeric_postpass_build_facts_lookup,
@@ -720,8 +729,6 @@ pub const TreeShaker = struct {
             .minify = .shake_numeric_postpass_minify,
             .resync = .shake_numeric_postpass_resync,
             .minify_skip = .shake_numeric_postpass_minify_skip,
-            .skip_minify_if_safe = true,
-            .stable_import_export_syntax = true,
             .inner = .{
                 .forbidden = .shake_numeric_postpass_forbidden,
                 .reachable = .shake_numeric_postpass_reachable,
@@ -914,6 +921,7 @@ pub const TreeShaker = struct {
             defer const_scope.end();
 
             const prepass_const_profile = ConstMaterializeProfile{
+                .policy = .pre_pass,
                 .build_facts = .shake_const_prepass_build_facts,
                 .build_facts_resolve = .shake_const_prepass_build_facts_resolve,
                 .build_facts_lookup = .shake_const_prepass_build_facts_lookup,
