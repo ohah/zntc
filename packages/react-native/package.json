@@ -26,7 +26,8 @@
   },
   "dependencies": {
     "@zts/core": "workspace:*",
-    "@zts/server": "workspace:*"
+    "@zts/server": "workspace:*",
+    "jsc-safe-url": "^0.2.4"
   },
   "devDependencies": {
     "@types/node": "^25.5.2"
