@@ -33,7 +33,18 @@ export {
   isHmrMapRoute,
   isMapRoute,
 } from "./routes/bundle.ts";
+export { handleSymbolicateRequest, isSymbolicateRoute } from "./routes/symbolicate.ts";
 export { postProcessSourceMap } from "./sourcemap.ts";
+export {
+  applyCustomizeFrame,
+  createSourceMapConsumer,
+  extractCodeFrame,
+  normalizeFrame,
+  symbolicateFrame,
+  type SymbolicateCodeFrame,
+  type SymbolicateRequest,
+  type SymbolicateResponse,
+} from "./symbolicate-source.ts";
 export type { Broadcast, FrameInfo, Middleware, MiddlewareEnhanceContext } from "./types.ts";
 
 /** Dev server lifecycle handle. */
