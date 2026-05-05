@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: generators", () => {
-  test("generatorAssignability", async () => {
+describe('TSC: generators', () => {
+  test('generatorAssignability', async () => {
     await expectPass(
       `
 declare let _: any;
@@ -78,7 +78,7 @@ async function f3() {
       [],
     );
   });
-  test("generatorExplicitReturnType", async () => {
+  test('generatorExplicitReturnType', async () => {
     await expectPass(
       `
 function* g1(): Generator<number, boolean, string> {
@@ -107,7 +107,7 @@ function* g4(): Generator<number, boolean, string> {
       [],
     );
   });
-  test("generatorImplicitAny", async () => {
+  test('generatorImplicitAny', async () => {
     await expectPass(
       `
 function* g() {}
@@ -144,7 +144,7 @@ function* g6() {
       [],
     );
   });
-  test("generatorReturnContextualType", async () => {
+  test('generatorReturnContextualType', async () => {
     await expectPass(
       `
 // #35995
@@ -185,7 +185,7 @@ async function* g4(): AsyncIterator<any, { x: 'x' }, any> {
       [],
     );
   });
-  test("generatorReturnTypeFallback.1", async () => {
+  test('generatorReturnTypeFallback.1', async () => {
     await expectPass(
       `
 // Allow generators to fallback to IterableIterator if they do not need a type for the sent value while in strictNullChecks mode.
@@ -195,7 +195,7 @@ function* f() {
       [],
     );
   });
-  test("generatorReturnTypeFallback.2", async () => {
+  test('generatorReturnTypeFallback.2', async () => {
     await expectPass(
       `
 // Allow generators to fallback to IterableIterator if they do not need a type for the sent value while in strictNullChecks mode.
@@ -206,7 +206,7 @@ function* f() {
       [],
     );
   });
-  test("generatorReturnTypeFallback.3", async () => {
+  test('generatorReturnTypeFallback.3', async () => {
     await expectPass(
       `
 function* f() {
@@ -215,7 +215,7 @@ function* f() {
       [],
     );
   });
-  test("generatorReturnTypeFallback.4", async () => {
+  test('generatorReturnTypeFallback.4', async () => {
     await expectPass(
       `
 // Allow generators to fallback to IterableIterator if they are not in strictNullChecks mode
@@ -226,7 +226,7 @@ function* f() {
       [],
     );
   });
-  test("generatorReturnTypeFallback.5", async () => {
+  test('generatorReturnTypeFallback.5', async () => {
     await expectPass(
       `
 // Allow generators to fallback to IterableIterator if they do not need a type for the sent value while in strictNullChecks mode.
@@ -236,7 +236,7 @@ function* f(): IterableIterator<number> {
       [],
     );
   });
-  test("generatorReturnTypeIndirectReferenceToGlobalType", async () => {
+  test('generatorReturnTypeIndirectReferenceToGlobalType', async () => {
     await expectPass(
       `
 interface I1 extends Iterator<0, 1, 2> {}
@@ -248,7 +248,7 @@ function* f1(): I1 {
       [],
     );
   });
-  test("generatorReturnTypeInference", async () => {
+  test('generatorReturnTypeInference', async () => {
     await expectPass(
       `
 declare const iterableIterator: IterableIterator<number>;
@@ -387,7 +387,7 @@ function* g311() { // Generator<undefined, void, string>
       [],
     );
   });
-  test("generatorReturnTypeInferenceNonStrict", async () => {
+  test('generatorReturnTypeInferenceNonStrict', async () => {
     await expectPass(
       `
 declare const iterableIterator: IterableIterator<number>;
@@ -528,7 +528,7 @@ function* g311() { // Generator<any (implicit), void, string>
       [],
     );
   });
-  test("generatorYieldContextualType", async () => {
+  test('generatorYieldContextualType', async () => {
     await expectPass(
       `declare function f1<T, R, S>(gen: () => Generator<R, T, S>): void;
 f1<0, 0, 1>(function* () {
@@ -650,7 +650,7 @@ function* showStep<
       [],
     );
   });
-  test("restParameterInDownlevelGenerator", async () => {
+  test('restParameterInDownlevelGenerator', async () => {
     await expectPass(
       `
 // https://github.com/Microsoft/TypeScript/issues/30653
@@ -660,7 +660,7 @@ function * mergeStringLists(...strings: string[]) {
       [],
     );
   });
-  test("yieldStatementNoAsiAfterTransform", async () => {
+  test('yieldStatementNoAsiAfterTransform', async () => {
     await expectPass(
       `declare var a: any;
 

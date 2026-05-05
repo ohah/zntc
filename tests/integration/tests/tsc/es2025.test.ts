@@ -1,15 +1,15 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es2025", () => {
-  test("float16Array", async () => {
+describe('TSC: es2025', () => {
+  test('float16Array', async () => {
     await expectPass(
       `
 const float16 = new Float16Array(4);`,
       [],
     );
   });
-  test("intlDurationFormat", async () => {
+  test('intlDurationFormat', async () => {
     await expectPass(
       `
 new Intl.DurationFormat('en').format({
@@ -21,7 +21,7 @@ new Intl.DurationFormat('en').format({
       [],
     );
   });
-  test("regExpEscape", async () => {
+  test('regExpEscape', async () => {
     await expectPass(
       `
 const regExp = new RegExp(RegExp.escape("foo.bar"));
@@ -29,7 +29,7 @@ regExp.test("foo.bar");`,
       [],
     );
   });
-  test("syncIteratorHelpers", async () => {
+  test('syncIteratorHelpers', async () => {
     await expectPass(
       `
 [1, 2, 3, 4].values()

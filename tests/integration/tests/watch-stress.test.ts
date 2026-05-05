@@ -1,13 +1,13 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect } from 'bun:test';
 import {
   createFixture,
   createNdjsonTail,
   killAndWait,
   spawnWatchJson,
   waitForNdjsonLines,
-} from "./helpers";
-import { join } from "node:path";
-import { writeFileSync } from "node:fs";
+} from './helpers';
+import { join } from 'node:path';
+import { writeFileSync } from 'node:fs';
 
 /**
  * Watch 메모리 누수 시뮬레이션 스트레스 테스트.
@@ -19,9 +19,9 @@ import { writeFileSync } from "node:fs";
 /** `ps -o rss= -p <pid>`로 RSS(KB)를 샘플링. Linux/macOS 공용. */
 async function sampleRSS(pid: number): Promise<number> {
   const proc = Bun.spawn({
-    cmd: ["ps", "-o", "rss=", "-p", String(pid)],
-    stdout: "pipe",
-    stderr: "pipe",
+    cmd: ['ps', '-o', 'rss=', '-p', String(pid)],
+    stdout: 'pipe',
+    stderr: 'pipe',
   });
   const stdout = await new Response(proc.stdout).text();
   await proc.exited;
@@ -35,13 +35,13 @@ async function sampleRSS(pid: number): Promise<number> {
 /** shell 부모 PID의 자식(zts) 찾기. Linux/macOS 공용. */
 async function findZtsChildPid(parentPid: number): Promise<number> {
   const proc = Bun.spawn({
-    cmd: ["pgrep", "-P", String(parentPid), "zts"],
-    stdout: "pipe",
-    stderr: "pipe",
+    cmd: ['pgrep', '-P', String(parentPid), 'zts'],
+    stdout: 'pipe',
+    stderr: 'pipe',
   });
   const stdout = await new Response(proc.stdout).text();
   await proc.exited;
-  const pid = Number.parseInt(stdout.trim().split("\n")[0], 10);
+  const pid = Number.parseInt(stdout.trim().split('\n')[0], 10);
   if (Number.isNaN(pid)) {
     throw new Error(`failed to find zts child of pid ${parentPid}`);
   }
@@ -62,9 +62,9 @@ function linearSlope(samples: Array<{ x: number; y: number }>): number {
   return den === 0 ? 0 : num / den;
 }
 
-describe("watch 메모리 스트레스 (시뮬레이션)", () => {
+describe('watch 메모리 스트레스 (시뮬레이션)', () => {
   test(
-    "연속 rebuild N회 후 RSS 궤적이 임계값 내",
+    '연속 rebuild N회 후 RSS 궤적이 임계값 내',
     { timeout: 10 * 60 * 1000 /* 10분 — CI 느린 러너 여유 */ },
     async () => {
       const ITERATIONS = 150;
@@ -75,13 +75,13 @@ describe("watch 메모리 스트레스 (시뮬레이션)", () => {
       const TOTAL_GROWTH_MAX_KB = 2048; // 2MB — warmup 후 정상 변동 흡수
 
       const { dir, cleanup } = await createFixture({
-        "entry.ts": `export const v = 0;\nexport const extra = "padding";\n`,
+        'entry.ts': `export const v = 0;\nexport const extra = "padding";\n`,
       });
-      const outFile = join(dir, "out.js");
-      const entryFile = join(dir, "entry.ts");
-      const jsonOut = join(dir, "ndjson.txt");
+      const outFile = join(dir, 'out.js');
+      const entryFile = join(dir, 'entry.ts');
+      const jsonOut = join(dir, 'ndjson.txt');
 
-      const proc = spawnWatchJson(["--bundle", entryFile, "-o", outFile, "--watch-json"], jsonOut);
+      const proc = spawnWatchJson(['--bundle', entryFile, '-o', outFile, '--watch-json'], jsonOut);
       const tail = createNdjsonTail();
 
       try {
@@ -107,7 +107,7 @@ describe("watch 메모리 스트레스 (시뮬레이션)", () => {
         const slope = linearSlope(samples);
         const totalGrowth = max - first;
 
-        const trace = samples.map((s) => `${s.x}:${s.y}KB`).join(", ");
+        const trace = samples.map((s) => `${s.x}:${s.y}KB`).join(', ');
         const summary = `iters=${ITERATIONS} first=${first}KB last=${last}KB max=${max}KB slope=${slope.toFixed(2)}KB/rebuild growth=${totalGrowth}KB`;
 
         // 실패 시 디버깅 편의. 성공 시에도 CI 로그에 궤적 한 줄 남겨 트렌드 모니터링.

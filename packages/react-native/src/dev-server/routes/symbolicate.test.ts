@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import type { ServerResponse } from "node:http";
-import { Readable } from "node:stream";
+import { describe, expect, test } from 'bun:test';
+import type { ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
 
-import type { WatchHandle } from "@zts/core";
+import type { WatchHandle } from '@zts/core';
 
-import type { PlatformState, PlatformStateRegistry } from "../platform-state.ts";
-import { handleSymbolicateRequest, isSymbolicateRoute } from "./symbolicate.ts";
+import type { PlatformState, PlatformStateRegistry } from '../platform-state.ts';
+import { handleSymbolicateRequest, isSymbolicateRoute } from './symbolicate.ts';
 
 interface MockRes {
   statusCode?: number;
@@ -33,9 +33,9 @@ function streamReq(json: string) {
 
 function makeState(bundleMap: string | null = null): PlatformState {
   return {
-    platform: "ios",
-    outputDir: "/tmp",
-    outputPath: "/tmp/b.js",
+    platform: 'ios',
+    outputDir: '/tmp',
+    outputPath: '/tmp/b.js',
     handle: {
       stop() {},
       getBundleSourceMap: () => bundleMap,
@@ -57,61 +57,61 @@ function fixedRegistry(state: PlatformState): PlatformStateRegistry {
   };
 }
 
-describe("isSymbolicateRoute", () => {
-  test("POST /symbolicate 매치", () =>
-    expect(isSymbolicateRoute("/symbolicate", "POST")).toBe(true));
-  test("GET /symbolicate 미매치", () =>
-    expect(isSymbolicateRoute("/symbolicate", "GET")).toBe(false));
-  test("/other 미매치", () => expect(isSymbolicateRoute("/other", "POST")).toBe(false));
+describe('isSymbolicateRoute', () => {
+  test('POST /symbolicate 매치', () =>
+    expect(isSymbolicateRoute('/symbolicate', 'POST')).toBe(true));
+  test('GET /symbolicate 미매치', () =>
+    expect(isSymbolicateRoute('/symbolicate', 'GET')).toBe(false));
+  test('/other 미매치', () => expect(isSymbolicateRoute('/other', 'POST')).toBe(false));
 });
 
-describe("handleSymbolicateRequest", () => {
-  test("invalid JSON → 400", async () => {
+describe('handleSymbolicateRequest', () => {
+  test('invalid JSON → 400', async () => {
     const res = makeRes();
     await handleSymbolicateRequest(
-      streamReq("not json") as never,
+      streamReq('not json') as never,
       res as unknown as ServerResponse,
-      new URL("http://x/symbolicate"),
+      new URL('http://x/symbolicate'),
       fixedRegistry(makeState()),
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       undefined,
     );
     expect(res.statusCode).toBe(400);
-    expect(res.payload).toEqual({ error: "Invalid JSON body" });
+    expect(res.payload).toEqual({ error: 'Invalid JSON body' });
   });
 
-  test("sourcemap 없음 → 200 + fallback (frame 그대로)", async () => {
+  test('sourcemap 없음 → 200 + fallback (frame 그대로)', async () => {
     const res = makeRes();
     await handleSymbolicateRequest(
       streamReq(
         JSON.stringify({
-          stack: [{ file: "bundle.js", lineNumber: 5, column: 1, methodName: "foo" }],
+          stack: [{ file: 'bundle.js', lineNumber: 5, column: 1, methodName: 'foo' }],
         }),
       ) as never,
       res as unknown as ServerResponse,
-      new URL("http://x/symbolicate"),
+      new URL('http://x/symbolicate'),
       fixedRegistry(makeState(null)),
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       undefined,
     );
     expect(res.statusCode).toBe(200);
     expect(res.payload).toEqual({
-      stack: [{ file: "bundle.js", lineNumber: 5, column: 1, methodName: "foo" }],
+      stack: [{ file: 'bundle.js', lineNumber: 5, column: 1, methodName: 'foo' }],
       codeFrame: null,
     });
   });
 
-  test("invalid sourcemap JSON → 200 + fallback", async () => {
+  test('invalid sourcemap JSON → 200 + fallback', async () => {
     const res = makeRes();
     await handleSymbolicateRequest(
       streamReq(JSON.stringify({ stack: [] })) as never,
       res as unknown as ServerResponse,
-      new URL("http://x/symbolicate"),
-      fixedRegistry(makeState("not a json sourcemap")),
-      "ios",
-      "/proj",
+      new URL('http://x/symbolicate'),
+      fixedRegistry(makeState('not a json sourcemap')),
+      'ios',
+      '/proj',
       undefined,
     );
     expect(res.statusCode).toBe(200);
@@ -119,58 +119,58 @@ describe("handleSymbolicateRequest", () => {
     expect((res.payload as { codeFrame: unknown }).codeFrame).toBeNull();
   });
 
-  test("정상 sourcemap — frame 역매핑 후 200", async () => {
+  test('정상 sourcemap — frame 역매핑 후 200', async () => {
     const sourceMap = JSON.stringify({
       version: 3,
-      sources: ["src/foo.ts"],
-      names: ["bar"],
-      mappings: "AAAA",
+      sources: ['src/foo.ts'],
+      names: ['bar'],
+      mappings: 'AAAA',
     });
     const res = makeRes();
     await handleSymbolicateRequest(
       streamReq(
         JSON.stringify({
-          stack: [{ file: "bundle.js", lineNumber: 1, column: 0, methodName: null }],
+          stack: [{ file: 'bundle.js', lineNumber: 1, column: 0, methodName: null }],
         }),
       ) as never,
       res as unknown as ServerResponse,
-      new URL("http://x/symbolicate?platform=ios"),
+      new URL('http://x/symbolicate?platform=ios'),
       fixedRegistry(makeState(sourceMap)),
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       undefined,
     );
     expect(res.statusCode).toBe(200);
     const stack = (res.payload as { stack: Array<{ file: string }> }).stack;
-    expect(stack[0]?.file).toContain("foo.ts");
+    expect(stack[0]?.file).toContain('foo.ts');
   });
 
-  test("customizeFrame collapse:true → 응답에 collapse 포함", async () => {
+  test('customizeFrame collapse:true → 응답에 collapse 포함', async () => {
     const sourceMap = JSON.stringify({
       version: 3,
-      sources: ["src/foo.ts"],
+      sources: ['src/foo.ts'],
       names: [],
-      mappings: "AAAA",
+      mappings: 'AAAA',
     });
     const res = makeRes();
     await handleSymbolicateRequest(
       streamReq(
         JSON.stringify({
-          stack: [{ file: "bundle.js", lineNumber: 1, column: 0 }],
+          stack: [{ file: 'bundle.js', lineNumber: 1, column: 0 }],
         }),
       ) as never,
       res as unknown as ServerResponse,
-      new URL("http://x/symbolicate"),
+      new URL('http://x/symbolicate'),
       fixedRegistry(makeState(sourceMap)),
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       async () => ({ collapse: true }),
     );
     const stack = (res.payload as { stack: Array<{ collapse?: boolean }> }).stack;
     expect(stack[0]?.collapse).toBe(true);
   });
 
-  test("platform query parsing — invalid → default", async () => {
+  test('platform query parsing — invalid → default', async () => {
     const recorded: string[] = [];
     const registry: PlatformStateRegistry = {
       platforms: new Map(),
@@ -183,12 +183,12 @@ describe("handleSymbolicateRequest", () => {
     await handleSymbolicateRequest(
       streamReq(JSON.stringify({ stack: [] })) as never,
       makeRes() as unknown as ServerResponse,
-      new URL("http://x/symbolicate?platform=web"),
+      new URL('http://x/symbolicate?platform=web'),
       registry,
-      "android",
-      "/proj",
+      'android',
+      '/proj',
       undefined,
     );
-    expect(recorded).toEqual(["android"]);
+    expect(recorded).toEqual(['android']);
   });
 });

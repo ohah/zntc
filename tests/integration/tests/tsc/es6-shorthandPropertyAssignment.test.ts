@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/shorthandPropertyAssignment", () => {
-  test("objectLiteralShorthandProperties", async () => {
+describe('TSC: es6/shorthandPropertyAssignment', () => {
+  test('objectLiteralShorthandProperties', async () => {
     await expectPass(
       `var a, b, c;
 
@@ -27,7 +27,7 @@ var x3 = {
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesAssignment", async () => {
+  test('objectLiteralShorthandPropertiesAssignment', async () => {
     await expectPass(
       `// @target: es2015
 var id: number = 10000;
@@ -47,7 +47,7 @@ var person3: { name: string; id:number } = bar("Hello", 5);
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesAssignmentError", async () => {
+  test('objectLiteralShorthandPropertiesAssignmentError', async () => {
     await expectPass(
       `// @target: es2015
 var id: number = 10000;
@@ -63,7 +63,7 @@ bar({ name, id });  // error
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesAssignmentErrorFromMissingIdentifier", async () => {
+  test('objectLiteralShorthandPropertiesAssignmentErrorFromMissingIdentifier', async () => {
     await expectPass(
       `// @target: es2015
 var id: number = 10000;
@@ -78,7 +78,7 @@ var person2: { name: string, id: number } = bar("hello", 5);
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesAssignmentES6", async () => {
+  test('objectLiteralShorthandPropertiesAssignmentES6', async () => {
     await expectPass(
       `// @lib: es5
 var id: number = 10000;
@@ -98,7 +98,7 @@ var person3: { name: string; id: number } = bar("Hello", 5);
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesErrorFromNoneExistingIdentifier", async () => {
+  test('objectLiteralShorthandPropertiesErrorFromNoneExistingIdentifier', async () => {
     await expectPass(
       `var x = {
     x, // OK
@@ -108,7 +108,7 @@ var person3: { name: string; id: number } = bar("Hello", 5);
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesErrorFromNotUsingIdentifier", async () => {
+  test('objectLiteralShorthandPropertiesErrorFromNotUsingIdentifier', async () => {
     await expectError(
       `// errors
 var y = {
@@ -133,7 +133,7 @@ var v = { class };  // error`,
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesErrorWithModule", async () => {
+  test('objectLiteralShorthandPropertiesErrorWithModule', async () => {
     await expectError(
       `// module export
 var x = "Foo";
@@ -153,7 +153,7 @@ m.y.x;
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesES6", async () => {
+  test('objectLiteralShorthandPropertiesES6', async () => {
     await expectPass(
       `var a, b, c;
 
@@ -178,7 +178,7 @@ var x3 = {
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesFunctionArgument", async () => {
+  test('objectLiteralShorthandPropertiesFunctionArgument', async () => {
     await expectPass(
       `// @target: es2015
 var id: number = 10000;
@@ -194,7 +194,7 @@ var obj = { name: name, id: id };`,
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesFunctionArgument2", async () => {
+  test('objectLiteralShorthandPropertiesFunctionArgument2', async () => {
     await expectPass(
       `// @target: es2015
 var id: number = 10000;
@@ -208,7 +208,7 @@ foo(person);  // error
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesWithModule", async () => {
+  test('objectLiteralShorthandPropertiesWithModule', async () => {
     await expectPass(
       `// module export
 
@@ -227,7 +227,7 @@ namespace m {
       [],
     );
   });
-  test("objectLiteralShorthandPropertiesWithModuleES6", async () => {
+  test('objectLiteralShorthandPropertiesWithModuleES6', async () => {
     await expectPass(
       `
 namespace m {

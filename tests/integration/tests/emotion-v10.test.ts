@@ -1,13 +1,13 @@
-import { describe, it, expect, afterEach } from "bun:test";
+import { describe, it, expect, afterEach } from 'bun:test';
 import {
   createFixture,
   hasEmotionV10Fixture,
   EMOTION_V10_FIXTURE_NODE_MODULES,
   linkNodeModules,
   runZtsInDir,
-} from "./helpers";
-import { join } from "node:path";
-import { readFile } from "node:fs/promises";
+} from './helpers';
+import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 // emotion v10 (legacy) 사용자 커버리지.
 // v10 의 entry (`@emotion/core`) 가 v11 (`@emotion/react`) 와 별도 패키지라 같은
@@ -17,24 +17,24 @@ import { readFile } from "node:fs/promises";
 const hasV10 = hasEmotionV10Fixture();
 
 const V10_CSS_PACKAGES = [
-  "@emotion/core",
-  "@emotion/css",
-  "@emotion/cache",
-  "@emotion/serialize",
-  "@emotion/sheet",
-  "@emotion/utils",
-  "@emotion/hash",
-  "@emotion/unitless",
-  "@emotion/memoize",
-  "@emotion/stylis",
-  "@emotion/weak-memoize",
+  '@emotion/core',
+  '@emotion/css',
+  '@emotion/cache',
+  '@emotion/serialize',
+  '@emotion/sheet',
+  '@emotion/utils',
+  '@emotion/hash',
+  '@emotion/unitless',
+  '@emotion/memoize',
+  '@emotion/stylis',
+  '@emotion/weak-memoize',
 ];
 
 const V10_STYLED_PACKAGES = [
   ...V10_CSS_PACKAGES,
-  "@emotion/styled",
-  "@emotion/styled-base",
-  "@emotion/is-prop-valid",
+  '@emotion/styled',
+  '@emotion/styled-base',
+  '@emotion/is-prop-valid',
 ];
 
 /// v10 fixture 패키지 + emotion config 로 번들. 9× boilerplate 흡수.
@@ -48,18 +48,18 @@ async function runV10Bundle(opts: {
   /** 기본 V10_CSS_PACKAGES. styled 가 필요하면 V10_STYLED_PACKAGES. */
   packages?: string[];
 }): Promise<{ out: string; cleanup: () => Promise<void>; exitCode: number }> {
-  const entry = opts.entry ?? "index.ts";
+  const entry = opts.entry ?? 'index.ts';
   const fixture = await createFixture({
     [entry]: opts.source,
-    "zts.config.json": JSON.stringify(opts.config),
+    'zts.config.json': JSON.stringify(opts.config),
   });
   await linkNodeModules(fixture.dir, opts.packages ?? V10_CSS_PACKAGES, {
     extraRoots: [EMOTION_V10_FIXTURE_NODE_MODULES],
   });
 
-  const outFile = join(fixture.dir, "out.js");
-  const result = await runZtsInDir(fixture.dir, ["--bundle", entry, "-o", outFile], {
-    bin: "js",
+  const outFile = join(fixture.dir, 'out.js');
+  const result = await runZtsInDir(fixture.dir, ['--bundle', entry, '-o', outFile], {
+    bin: 'js',
   });
   if (result.exitCode !== 0) {
     await fixture.cleanup();
@@ -67,11 +67,11 @@ async function runV10Bundle(opts: {
       `zts bundle failed (exit ${result.exitCode})\nstderr:\n${result.stderr}\nstdout:\n${result.stdout}`,
     );
   }
-  const out = await readFile(outFile, "utf-8");
+  const out = await readFile(outFile, 'utf-8');
   return { out, cleanup: fixture.cleanup, exitCode: result.exitCode };
 }
 
-describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
+describe.skipIf(!hasV10)('Emotion v10 — autoLabel + 번들링', () => {
   let cleanup: (() => Promise<void>) | undefined;
   afterEach(async () => {
     if (cleanup) {
@@ -82,7 +82,7 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
 
   // ─── @emotion/core (v10 메인 entry) ───
 
-  it("@emotion/core css binding — autoLabel prepend", async () => {
+  it('@emotion/core css binding — autoLabel prepend', async () => {
     const r = await runV10Bundle({
       source: `
         import { css } from "@emotion/core";
@@ -93,11 +93,11 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:card;");
-    expect(r.out).toContain("color: hotpink");
+    expect(r.out).toContain('label:card;');
+    expect(r.out).toContain('color: hotpink');
   });
 
-  it("@emotion/core keyframes — autoLabel prepend", async () => {
+  it('@emotion/core keyframes — autoLabel prepend', async () => {
     const r = await runV10Bundle({
       source: `
         import { keyframes } from "@emotion/core";
@@ -108,11 +108,11 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:fadeIn;");
-    expect(r.out).toContain("opacity: 0");
+    expect(r.out).toContain('label:fadeIn;');
+    expect(r.out).toContain('opacity: 0');
   });
 
-  it("@emotion/core css + keyframes 동시 import — 양쪽 다 인식", async () => {
+  it('@emotion/core css + keyframes 동시 import — 양쪽 다 인식', async () => {
     const r = await runV10Bundle({
       source: `
         import { css, keyframes } from "@emotion/core";
@@ -124,13 +124,13 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:spin;");
-    expect(r.out).toContain("label:card;");
+    expect(r.out).toContain('label:spin;');
+    expect(r.out).toContain('label:card;');
   });
 
   // ─── @emotion/styled v10 (default styled) ───
 
-  it("@emotion/styled v10 — styled.div 도 autoLabel", async () => {
+  it('@emotion/styled v10 — styled.div 도 autoLabel', async () => {
     const r = await runV10Bundle({
       source: `
         import styled from "@emotion/styled";
@@ -142,11 +142,11 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:Btn;");
-    expect(r.out).toContain("dodgerblue");
+    expect(r.out).toContain('label:Btn;');
+    expect(r.out).toContain('dodgerblue');
   });
 
-  it("@emotion/styled v10 — styled(Component) chain 도 인식", async () => {
+  it('@emotion/styled v10 — styled(Component) chain 도 인식', async () => {
     const r = await runV10Bundle({
       source: `
         import styled from "@emotion/styled";
@@ -159,12 +159,12 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:Wrapped;");
+    expect(r.out).toContain('label:Wrapped;');
   });
 
   // ─── JSX inline css prop (v10 jsx pragma 패턴) ───
 
-  it("@emotion/core JSX inline `<div css={css`...`}>` autoLabel", async () => {
+  it('@emotion/core JSX inline `<div css={css`...`}>` autoLabel', async () => {
     const r = await runV10Bundle({
       source: `
         /** @jsx jsx */
@@ -172,18 +172,18 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const el = <div css={css\`color: hotpink;\`}>hello</div>;
         console.log(el);
       `,
-      entry: "index.tsx",
+      entry: 'index.tsx',
       config: { compiler: { emotion: true } },
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:div;");
-    expect(r.out).toContain("hotpink");
+    expect(r.out).toContain('label:div;');
+    expect(r.out).toContain('hotpink');
   });
 
   // ─── 옵션 비활성 / 격리 검증 ───
 
-  it("emotion 비활성 — v10 패키지 import 해도 label 추가 안 됨", async () => {
+  it('emotion 비활성 — v10 패키지 import 해도 label 추가 안 됨', async () => {
     const r = await runV10Bundle({
       source: `
         import { css } from "@emotion/core";
@@ -196,11 +196,11 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     expect(r.exitCode).toBe(0);
     // emotion v10 런타임 자체에 `label:` 문자열이 있어 단순 substring 검사로는 부족.
     // 우리 transform 이 prepend 하는 `label:<var>;` 패턴을 직접 확인.
-    expect(r.out).not.toContain("label:card;");
-    expect(r.out).toContain("color: red");
+    expect(r.out).not.toContain('label:card;');
+    expect(r.out).toContain('color: red');
   });
 
-  it("autoLabel 명시적 disable — v10 에서도 옵션 존중", async () => {
+  it('autoLabel 명시적 disable — v10 에서도 옵션 존중', async () => {
     const r = await runV10Bundle({
       source: `
         import { css } from "@emotion/core";
@@ -211,13 +211,13 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).not.toContain("label:card;");
-    expect(r.out).toContain("color: red");
+    expect(r.out).not.toContain('label:card;');
+    expect(r.out).toContain('color: red');
   });
 
   // ─── Global / injectGlobal (v10) ───
 
-  it("@emotion/css v10 — injectGlobal binding autoLabel", async () => {
+  it('@emotion/css v10 — injectGlobal binding autoLabel', async () => {
     const r = await runV10Bundle({
       source: `
         import { injectGlobal } from "@emotion/css";
@@ -228,11 +228,11 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:reset;");
-    expect(r.out).toContain("box-sizing: border-box");
+    expect(r.out).toContain('label:reset;');
+    expect(r.out).toContain('box-sizing: border-box');
   });
 
-  it("@emotion/core v10 — <Global styles={css`...`}> autoLabel", async () => {
+  it('@emotion/core v10 — <Global styles={css`...`}> autoLabel', async () => {
     const r = await runV10Bundle({
       source: `
         /** @jsx jsx */
@@ -240,18 +240,18 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const el = <Global styles={css\`body { color: red; }\`} />;
         console.log(el);
       `,
-      entry: "index.tsx",
+      entry: 'index.tsx',
       config: { compiler: { emotion: true } },
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:Global;");
-    expect(r.out).toContain("color: red");
+    expect(r.out).toContain('label:Global;');
+    expect(r.out).toContain('color: red');
   });
 
   // ─── sourceMap (babel-plugin-emotion 호환) ───
 
-  it("@emotion/core v10 — sourceMap: true 일 때 inline sourceMap 주석 추가", async () => {
+  it('@emotion/core v10 — sourceMap: true 일 때 inline sourceMap 주석 추가', async () => {
     const r = await runV10Bundle({
       source: `
         import { css } from "@emotion/core";
@@ -262,10 +262,10 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
-    expect(r.out).toContain("label:card;");
-    expect(r.out).toContain("/*# sourceMappingURL=data:application/json;charset=utf-8;base64,");
+    expect(r.out).toContain('label:card;');
+    expect(r.out).toContain('/*# sourceMappingURL=data:application/json;charset=utf-8;base64,');
     // base64 안에 source filename 이 인코딩됐는지 (decoding 검증은 unit 테스트가 함)
-    expect(r.out).toContain("hotpink");
+    expect(r.out).toContain('hotpink');
   });
 
   it("@emotion/core v10 — `<div css={{color:'red'}}>` object literal 도 css(...) wrap", async () => {
@@ -276,21 +276,21 @@ describe.skipIf(!hasV10)("Emotion v10 — autoLabel + 번들링", () => {
         const el = <div css={{ color: 'hotpink' }} />;
         console.log(el);
       `,
-      entry: "index.tsx",
+      entry: 'index.tsx',
       config: { compiler: { emotion: true } },
     });
     cleanup = r.cleanup;
     expect(r.exitCode).toBe(0);
     // css({...}) call 형태 + PURE annotation + label arg
-    expect(r.out).toContain("/* @__PURE__ */");
-    expect(r.out).toContain("css({");
+    expect(r.out).toContain('/* @__PURE__ */');
+    expect(r.out).toContain('css({');
     expect(r.out).toContain('"label:div;"');
-    expect(r.out).toContain("hotpink");
+    expect(r.out).toContain('hotpink');
   });
 
-  it("v10 격리 검증 — fixture 의 @emotion/core 가 v10.x 인지", async () => {
-    const pkgPath = join(EMOTION_V10_FIXTURE_NODE_MODULES, "@emotion/core/package.json");
-    const pkg = JSON.parse(await readFile(pkgPath, "utf-8"));
+  it('v10 격리 검증 — fixture 의 @emotion/core 가 v10.x 인지', async () => {
+    const pkgPath = join(EMOTION_V10_FIXTURE_NODE_MODULES, '@emotion/core/package.json');
+    const pkg = JSON.parse(await readFile(pkgPath, 'utf-8'));
     expect(pkg.version).toMatch(/^10\./);
   });
 });

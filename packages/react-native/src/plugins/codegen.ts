@@ -5,18 +5,18 @@
 // crash (예: View config not found for component DebuggingOverlay). 이 plugin
 // 이 marker 가진 파일만 Babel 로 한번 더 돌려 view config 를 inline.
 
-import type { ZtsPlugin } from "@zts/core";
+import type { ZtsPlugin } from '@zts/core';
 
 import {
   type BabelInstance,
   type BabelTransformOptions,
   getErrorMessage,
   requireFromCli,
-} from "./internal.ts";
-import type { PluginConfig } from "./types.ts";
+} from './internal.ts';
+import type { PluginConfig } from './types.ts';
 
 /** `codegenNativeComponent` literal — code 에 이 marker 미포함 시 transform skip. */
-export const CODEGEN_NATIVE_COMPONENT_MARKER = "codegenNativeComponent";
+export const CODEGEN_NATIVE_COMPONENT_MARKER = 'codegenNativeComponent';
 
 /** `.js` / `.ts` 파일만 처리. RN NativeComponent 파일은 항상 .js/.ts (jsx/tsx 미지원). */
 const CODEGEN_FILENAME_PATTERN = /\.(js|ts)$/;
@@ -35,16 +35,16 @@ export function createCodegenTransformer(
 
   function ensureBabel(): void {
     if (babel) return;
-    babel = requireFromCli("@babel/core") as BabelInstance;
+    babel = requireFromCli('@babel/core') as BabelInstance;
 
     try {
       const codegenPath = (() => {
         try {
-          return requireFromCli.resolve("@react-native/babel-plugin-codegen", {
+          return requireFromCli.resolve('@react-native/babel-plugin-codegen', {
             paths: [projectRoot],
           });
         } catch {
-          return requireFromCli.resolve("@react-native/babel-plugin-codegen");
+          return requireFromCli.resolve('@react-native/babel-plugin-codegen');
         }
       })();
       codegenPlugin = requireFromCli(codegenPath);
@@ -70,7 +70,7 @@ export function createCodegenTransformer(
 
     // RN NativeComponent 파일은 확장자로 언어 구분: .js → Flow 제네릭, .ts →
     // TypeScript. babel-plugin-codegen 내부 parseFile() 도 같은 분기.
-    const parserPlugins = filename.endsWith(".ts") ? ["typescript"] : ["flow"];
+    const parserPlugins = filename.endsWith('.ts') ? ['typescript'] : ['flow'];
 
     try {
       ensureBabel();
@@ -80,13 +80,13 @@ export function createCodegenTransformer(
         parserOpts: { plugins: parserPlugins },
       });
       if (result?.code && result.code !== code) {
-        process.stderr.write(`[zts:codegen] ${filename.split("/").pop()}: view config inlined\n`);
+        process.stderr.write(`[zts:codegen] ${filename.split('/').pop()}: view config inlined\n`);
         return result.code;
       }
       return null;
     } catch (err: unknown) {
       process.stderr.write(
-        `[zts:codegen] ${filename.split("/").pop()} failed: ${getErrorMessage(err, 120)}\n`,
+        `[zts:codegen] ${filename.split('/').pop()} failed: ${getErrorMessage(err, 120)}\n`,
       );
       return null;
     }
@@ -100,7 +100,7 @@ export function createCodegenTransformer(
  */
 export function createCodegenPlugin(config: PluginConfig): ZtsPlugin {
   return {
-    name: "zts:react-native:codegen-view-config",
+    name: 'zts:react-native:codegen-view-config',
     setup(build) {
       const transformer = createCodegenTransformer(config.projectRoot);
       build.onTransform({ filter: /\.(js|ts)$/ }, (args) => {

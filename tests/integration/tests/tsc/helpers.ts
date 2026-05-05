@@ -1,8 +1,8 @@
-import { createFixture, runZts } from "../helpers";
-import { expect } from "bun:test";
+import { createFixture, runZts } from '../helpers';
+import { expect } from 'bun:test';
 
 export async function expectPass(code: string, flags: string[] = []) {
-  const fixture = await createFixture({ "input.ts": code });
+  const fixture = await createFixture({ 'input.ts': code });
   try {
     const result = await runZts([...flags, `${fixture.dir}/input.ts`]);
 
@@ -19,10 +19,10 @@ export async function expectPass(code: string, flags: string[] = []) {
 }
 
 export async function expectError(code: string, flags: string[] = []) {
-  const fixture = await createFixture({ "input.ts": code });
+  const fixture = await createFixture({ 'input.ts': code });
   try {
     const result = await runZts([...flags, `${fixture.dir}/input.ts`]);
-    const hasError = result.exitCode !== 0 || result.stderr.includes("error");
+    const hasError = result.exitCode !== 0 || result.stderr.includes('error');
     expect(hasError).toBe(true);
   } finally {
     await fixture.cleanup();

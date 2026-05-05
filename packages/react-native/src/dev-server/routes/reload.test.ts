@@ -1,13 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from 'bun:test';
 
-import { handleReload, isReloadRoute } from "./reload.ts";
+import { handleReload, isReloadRoute } from './reload.ts';
 
-describe("isReloadRoute", () => {
-  test("/reload 매치", () => expect(isReloadRoute("/reload")).toBe(true));
-  test("다른 path 미매치", () => expect(isReloadRoute("/devmenu")).toBe(false));
+describe('isReloadRoute', () => {
+  test('/reload 매치', () => expect(isReloadRoute('/reload')).toBe(true));
+  test('다른 path 미매치', () => expect(isReloadRoute('/devmenu')).toBe(false));
 });
 
-describe("handleReload", () => {
+describe('handleReload', () => {
   test("broadcast('reload') + 200 OK", () => {
     const calls: Array<[string, unknown?]> = [];
     let body: string | undefined;
@@ -21,8 +21,8 @@ describe("handleReload", () => {
       },
     };
     handleReload({} as never, res as never, (m, p) => calls.push([m, p]));
-    expect(calls).toEqual([["reload", undefined]]);
+    expect(calls).toEqual([['reload', undefined]]);
     expect(code).toBe(200);
-    expect(body).toBe("OK");
+    expect(body).toBe('OK');
   });
 });

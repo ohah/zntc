@@ -1,8 +1,8 @@
-import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
-import type { Socket } from "node:net";
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
+import type { Socket } from 'node:net';
 
-import { HMR_WS_GUID } from "./protocol.ts";
+import { HMR_WS_GUID } from './protocol.ts';
 
 // FIN=1, RSV1-3=0, opcode=0x1 (text). server-to-client text frame.
 const TEXT_FRAME_FIN_OPCODE = 0x81;
@@ -52,18 +52,18 @@ export function writeTextFrame(socket: Socket, text: string): void {
  * RFC 6455 §1.3 — `Sec-WebSocket-Accept = base64(sha1(key + GUID))`.
  */
 export function computeAcceptKey(secWebSocketKey: string): string {
-  return createHash("sha1").update(`${secWebSocketKey}${HMR_WS_GUID}`).digest("base64");
+  return createHash('sha1').update(`${secWebSocketKey}${HMR_WS_GUID}`).digest('base64');
 }
 
 export function buildHandshakeResponse(secWebSocketKey: string): string {
   return [
-    "HTTP/1.1 101 Switching Protocols",
-    "Upgrade: websocket",
-    "Connection: Upgrade",
+    'HTTP/1.1 101 Switching Protocols',
+    'Upgrade: websocket',
+    'Connection: Upgrade',
     `Sec-WebSocket-Accept: ${computeAcceptKey(secWebSocketKey)}`,
-    "",
-    "",
-  ].join("\r\n");
+    '',
+    '',
+  ].join('\r\n');
 }
 
 /**
@@ -108,5 +108,5 @@ export function parseTextFrame(buffer: Buffer): ParsedTextFrame | null {
   for (let i = 0; i < payloadLen; i++) {
     payload[i] = buffer[offset + 4 + i]! ^ maskKey[i % 4]!;
   }
-  return { text: payload.toString("utf-8"), consumed: offset + 4 + payloadLen };
+  return { text: payload.toString('utf-8'), consumed: offset + 4 + payloadLen };
 }

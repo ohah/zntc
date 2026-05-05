@@ -26,15 +26,15 @@ bun add -D @zts/react-native @zts/core
 ## 사용 예
 
 ```ts
-import { init, build } from "@zts/core";
-import { buildRnBundleOptions } from "@zts/react-native";
+import { init, build } from '@zts/core';
+import { buildRnBundleOptions } from '@zts/react-native';
 
 await init();
 const result = await build(
   buildRnBundleOptions({
-    entry: "/abs/path/index.ts",
-    projectRoot: "/abs/path",
-    rnPlatform: "ios",
+    entry: '/abs/path/index.ts',
+    projectRoot: '/abs/path',
+    rnPlatform: 'ios',
     dev: false,
     sourcemap: true,
   }),

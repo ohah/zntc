@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es6/defaultParameters", () => {
-  test("emitDefaultParametersFunction", async () => {
+describe('TSC: es6/defaultParameters', () => {
+  test('emitDefaultParametersFunction', async () => {
     await expectPass(
       `// @strict: false
 function foo(x: string, y = 10) { }
@@ -12,7 +12,7 @@ function bar1(y = 10, ...rest) { }`,
       [],
     );
   });
-  test("emitDefaultParametersFunctionES6", async () => {
+  test('emitDefaultParametersFunctionES6', async () => {
     await expectPass(
       `// @strict: false
 function foo(x: string, y = 10) { }
@@ -22,7 +22,7 @@ function bar1(y = 10, ...rest) { }`,
       [],
     );
   });
-  test("emitDefaultParametersFunctionExpression", async () => {
+  test('emitDefaultParametersFunctionExpression', async () => {
     await expectPass(
       `// @strict: false
 var lambda1 = (y = "hello") => { }
@@ -37,7 +37,7 @@ var z = (function (num: number, boo = false, ...rest) { })(10)
       [],
     );
   });
-  test("emitDefaultParametersFunctionExpressionES6", async () => {
+  test('emitDefaultParametersFunctionExpressionES6', async () => {
     await expectPass(
       `// @strict: false
 var lambda1 = (y = "hello") => { }
@@ -51,7 +51,7 @@ var z = (function (num: number, boo = false, ...rest) { })(10)`,
       [],
     );
   });
-  test("emitDefaultParametersFunctionProperty", async () => {
+  test('emitDefaultParametersFunctionProperty', async () => {
     await expectPass(
       `// @strict: false
 var obj2 = {
@@ -64,7 +64,7 @@ var obj2 = {
       [],
     );
   });
-  test("emitDefaultParametersFunctionPropertyES6", async () => {
+  test('emitDefaultParametersFunctionPropertyES6', async () => {
     await expectPass(
       `// @strict: false
 var obj2 = {
@@ -76,7 +76,7 @@ var obj2 = {
       [],
     );
   });
-  test("emitDefaultParametersMethod", async () => {
+  test('emitDefaultParametersMethod', async () => {
     await expectPass(
       `// @strict: false
 class C {
@@ -99,7 +99,7 @@ class E {
       [],
     );
   });
-  test("emitDefaultParametersMethodES6", async () => {
+  test('emitDefaultParametersMethodES6', async () => {
     await expectPass(
       `// @strict: false
 class C {

@@ -1,10 +1,10 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
-  testDir: "./tests",
+  testDir: './tests',
   timeout: 30_000,
   retries: process.env.CI ? 2 : 0,
   use: {
-    trace: "on-first-retry",
+    trace: 'on-first-retry',
   },
 });

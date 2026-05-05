@@ -1,9 +1,9 @@
 // dev server 터미널 키보드 단축키 — Metro 호환 (r/d/j/i/a/c/?). raw mode +
 // keypress listener. caller 가 enabled=false 시 cleanup 즉시 반환.
 
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 export interface TerminalActionsCallbacks {
   /** `r` — RN runtime reload broadcast. */
@@ -26,9 +26,9 @@ export interface TerminalActionsOptions {
 }
 
 const DEFAULT_SHORTCUTS_HELP = [
-  "Available shortcuts:",
-  "  r - Reload    d - Dev Menu    j - DevTools",
-  "  i - iOS Sim   a - Android     c - Clear cache",
+  'Available shortcuts:',
+  '  r - Reload    d - Dev Menu    j - DevTools',
+  '  i - iOS Sim   a - Android     c - Clear cache',
 ];
 
 function defaultPrintShortcuts(): void {
@@ -36,13 +36,13 @@ function defaultPrintShortcuts(): void {
 }
 
 function openIOSSimulator(): boolean {
-  if (process.platform !== "darwin") return false;
-  if (!existsSync("/usr/bin/xcrun")) return false;
-  const child = spawn("open", ["-a", "Simulator"], {
+  if (process.platform !== 'darwin') return false;
+  if (!existsSync('/usr/bin/xcrun')) return false;
+  const child = spawn('open', ['-a', 'Simulator'], {
     detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
+    stdio: ['ignore', 'ignore', 'ignore'],
   });
-  child.on("error", () => {
+  child.on('error', () => {
     /* spawn ENOENT/EACCES — silent skip */
   });
   child.unref();
@@ -56,27 +56,27 @@ const AVD_NAME_RE = /^[a-zA-Z0-9._-]+$/;
 function openAndroidEmulator(): boolean {
   const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
   if (!androidHome) return false;
-  const emulatorPath = join(androidHome, "emulator", "emulator");
+  const emulatorPath = join(androidHome, 'emulator', 'emulator');
   if (!existsSync(emulatorPath)) return false;
 
-  const list = spawn(emulatorPath, ["-list-avds"], { stdio: ["ignore", "pipe", "ignore"] });
-  list.on("error", () => {
+  const list = spawn(emulatorPath, ['-list-avds'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  list.on('error', () => {
     /* spawn ENOENT/EACCES */
   });
-  let buf = "";
-  list.stdout?.on("data", (chunk) => {
+  let buf = '';
+  list.stdout?.on('data', (chunk) => {
     buf += chunk.toString();
   });
-  list.on("close", () => {
-    const first = buf.split("\n").find((line) => line.trim().length > 0);
+  list.on('close', () => {
+    const first = buf.split('\n').find((line) => line.trim().length > 0);
     if (!first) return;
     const avdName = first.trim();
     if (!AVD_NAME_RE.test(avdName)) return;
-    const child = spawn(emulatorPath, ["@" + avdName], {
+    const child = spawn(emulatorPath, ['@' + avdName], {
       detached: true,
-      stdio: ["ignore", "ignore", "ignore"],
+      stdio: ['ignore', 'ignore', 'ignore'],
     });
-    child.on("error", () => {
+    child.on('error', () => {
       /* silent skip */
     });
     child.unref();
@@ -100,7 +100,7 @@ export function setupTerminalActions(
   const wasRaw = stdin.isRaw;
   if (!wasRaw) stdin.setRawMode(true);
   stdin.resume();
-  stdin.setEncoding("utf8");
+  stdin.setEncoding('utf8');
 
   const printShortcuts = options.printShortcuts ?? defaultPrintShortcuts;
 
@@ -113,36 +113,36 @@ export function setupTerminalActions(
         /* ignore */
       }
     }
-    if (key === "\u0003") {
+    if (key === '\u0003') {
       cleanup();
-      process.kill(process.pid, "SIGINT");
+      process.kill(process.pid, 'SIGINT');
       return;
     }
-    if (key === "\u0004") {
+    if (key === '\u0004') {
       cleanup();
-      process.kill(process.pid, "SIGTERM");
+      process.kill(process.pid, 'SIGTERM');
       return;
     }
     switch (key.toLowerCase()) {
-      case "r":
+      case 'r':
         callbacks.onReload();
         break;
-      case "d":
+      case 'd':
         callbacks.onDevMenu();
         break;
-      case "j":
+      case 'j':
         callbacks.onOpenDevTools();
         break;
-      case "i":
+      case 'i':
         openIOSSimulator();
         break;
-      case "a":
+      case 'a':
         openAndroidEmulator();
         break;
-      case "c":
+      case 'c':
         callbacks.onClearCache();
         break;
-      case "?":
+      case '?':
         printShortcuts();
         break;
       default:
@@ -150,13 +150,13 @@ export function setupTerminalActions(
     }
   };
 
-  stdin.on("data", handleKey);
+  stdin.on('data', handleKey);
 
   let cleanedUp = false;
   function cleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
-    stdin.removeListener("data", handleKey);
+    stdin.removeListener('data', handleKey);
     if (!wasRaw && stdin.isTTY) {
       try {
         stdin.setRawMode(false);

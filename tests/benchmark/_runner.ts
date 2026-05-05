@@ -5,39 +5,39 @@
  * bundle-perf / monorepo-perf / const-prepass 에 중복돼 있어 통합.
  */
 
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
-export const ROOT = resolve(__dirname, "../..");
-export const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
+export const ROOT = resolve(__dirname, '../..');
+export const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
 
 export function buildBin(label: string): void {
   if (existsSync(ZTS_BIN)) return;
   console.log(`[${label}] zts binary not found, building ReleaseFast...`);
-  const r = spawnSync("zig", ["build", "-Doptimize=ReleaseFast"], {
+  const r = spawnSync('zig', ['build', '-Doptimize=ReleaseFast'], {
     cwd: ROOT,
-    stdio: "inherit",
+    stdio: 'inherit',
   });
-  if (r.status !== 0) throw new Error("zig build failed");
+  if (r.status !== 0) throw new Error('zig build failed');
 }
 
 /// `tests/benchmark/node_modules/.bin/<name>` → `<root>/node_modules/.bin/<name>` fallback.
 /// 비교 대상 (rolldown / rspack / esbuild) 가 어느 쪽에 설치돼 있어도 동작하도록.
 export function findNodeModulesBin(name: string): string | null {
-  const local = join(__dirname, "node_modules", ".bin", name);
+  const local = join(__dirname, 'node_modules', '.bin', name);
   if (existsSync(local)) return local;
-  const root = join(ROOT, "node_modules", ".bin", name);
+  const root = join(ROOT, 'node_modules', '.bin', name);
   if (existsSync(root)) return root;
   return null;
 }
 
 export function getCommit(): string {
-  const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
+  const r = spawnSync('git', ['rev-parse', '--short', 'HEAD'], {
     cwd: ROOT,
-    stdio: "pipe",
+    stdio: 'pipe',
   });
-  return r.stdout.toString().trim() || "unknown";
+  return r.stdout.toString().trim() || 'unknown';
 }
 
 export function parsePositiveInt(name: string, raw: string | undefined): number {
@@ -69,7 +69,7 @@ export function parseProfileJson(output: string): ProfileJson {
     throw new Error(`missing profile JSON output: ${output.slice(0, 800)}`);
   }
 
-  const start = output.lastIndexOf("{", markerIndex);
+  const start = output.lastIndexOf('{', markerIndex);
   if (start < 0) {
     throw new Error(`malformed profile JSON output: ${output.slice(0, 800)}`);
   }
@@ -83,7 +83,7 @@ export function parseProfileJson(output: string): ProfileJson {
     if (inString) {
       if (escaped) {
         escaped = false;
-      } else if (ch === "\\") {
+      } else if (ch === '\\') {
         escaped = true;
       } else if (ch === '"') {
         inString = false;
@@ -95,11 +95,11 @@ export function parseProfileJson(output: string): ProfileJson {
       inString = true;
       continue;
     }
-    if (ch === "{") {
+    if (ch === '{') {
       depth++;
       continue;
     }
-    if (ch === "}") {
+    if (ch === '}') {
       depth--;
       if (depth === 0) {
         return JSON.parse(output.slice(start, i + 1)) as ProfileJson;

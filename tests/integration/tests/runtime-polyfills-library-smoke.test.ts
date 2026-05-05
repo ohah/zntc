@@ -1,22 +1,22 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { createFixture, hasPackage, linkNodeModules, runNode, runZtsInDir } from "./helpers";
+import { afterEach, describe, expect, test } from 'bun:test';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createFixture, hasPackage, linkNodeModules, runNode, runZtsInDir } from './helpers';
 
 const OLD_RUNTIME_ARGS = [
-  "--format=cjs",
-  "--platform=node",
-  "--target=es5",
-  "--runtime-polyfills=auto",
-  "--runtime-target=safari 5",
+  '--format=cjs',
+  '--platform=node',
+  '--target=es5',
+  '--runtime-polyfills=auto',
+  '--runtime-target=safari 5',
 ];
 
 function expectNoRawDownlevelSyntax(js: string) {
-  expect(js).not.toContain("?.");
-  expect(js.replace(/^\/\/#.*$/gm, "")).not.toMatch(/(^|[^\w$])#[A-Za-z_$][\w$]*/);
+  expect(js).not.toContain('?.');
+  expect(js.replace(/^\/\/#.*$/gm, '')).not.toMatch(/(^|[^\w$])#[A-Za-z_$][\w$]*/);
 }
 
-describe("runtime polyfills library smoke", () => {
+describe('runtime polyfills library smoke', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -26,11 +26,11 @@ describe("runtime polyfills library smoke", () => {
     }
   });
 
-  test.skipIf(!hasPackage("immer"))(
-    "immer bundles to ES5 and runs Map/Set/Array.at through graph runtime polyfills",
+  test.skipIf(!hasPackage('immer'))(
+    'immer bundles to ES5 and runs Map/Set/Array.at through graph runtime polyfills',
     async () => {
       const fixture = await createFixture({
-        "index.ts": `
+        'index.ts': `
           import { enableMapSet, produce } from "immer";
 
           enableMapSet();
@@ -47,23 +47,23 @@ describe("runtime polyfills library smoke", () => {
         `,
       });
       cleanup = fixture.cleanup;
-      await linkNodeModules(fixture.dir, ["immer"]);
+      await linkNodeModules(fixture.dir, ['immer']);
 
-      const outFile = join(fixture.dir, "out.cjs");
+      const outFile = join(fixture.dir, 'out.cjs');
       const bundle = await runZtsInDir(
         fixture.dir,
-        ["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, ...OLD_RUNTIME_ARGS],
-        { bin: "js" },
+        ['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, ...OLD_RUNTIME_ARGS],
+        { bin: 'js' },
       );
       expect(bundle.exitCode).toBe(0);
 
-      const js = await readFile(outFile, "utf-8");
-      expect(js).toContain("es.map");
-      expect(js).toContain("es.set");
-      expect(js).toContain("es.array.at");
+      const js = await readFile(outFile, 'utf-8');
+      expect(js).toContain('es.map');
+      expect(js).toContain('es.set');
+      expect(js).toContain('es.array.at');
       expectNoRawDownlevelSyntax(js);
 
-      const runner = join(fixture.dir, "run-without-native-collections.cjs");
+      const runner = join(fixture.dir, 'run-without-native-collections.cjs');
       await writeFile(
         runner,
         `
@@ -74,15 +74,15 @@ describe("runtime polyfills library smoke", () => {
         `,
       );
       const run = await runNode(runner);
-      expect(run.stdout).toBe("immer 2 published");
+      expect(run.stdout).toBe('immer 2 published');
     },
   );
 
-  test.skipIf(!hasPackage("rxjs"))(
-    "rxjs bundles to ES5 and runs Promise/Map/Set/replaceAll through graph runtime polyfills",
+  test.skipIf(!hasPackage('rxjs'))(
+    'rxjs bundles to ES5 and runs Promise/Map/Set/replaceAll through graph runtime polyfills',
     async () => {
       const fixture = await createFixture({
-        "index.ts": `
+        'index.ts': `
           import { firstValueFrom, of } from "rxjs";
           import { distinct, groupBy, map, mergeMap, reduce } from "rxjs/operators";
 
@@ -97,24 +97,24 @@ describe("runtime polyfills library smoke", () => {
         `,
       });
       cleanup = fixture.cleanup;
-      await linkNodeModules(fixture.dir, ["rxjs"]);
+      await linkNodeModules(fixture.dir, ['rxjs']);
 
-      const outFile = join(fixture.dir, "out.cjs");
+      const outFile = join(fixture.dir, 'out.cjs');
       const bundle = await runZtsInDir(
         fixture.dir,
-        ["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, ...OLD_RUNTIME_ARGS],
-        { bin: "js" },
+        ['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, ...OLD_RUNTIME_ARGS],
+        { bin: 'js' },
       );
       expect(bundle.exitCode).toBe(0);
 
-      const js = await readFile(outFile, "utf-8");
-      expect(js).toContain("es.map");
-      expect(js).toContain("es.set");
-      expect(js).toContain("es.promise");
-      expect(js).toContain("es.string.replace-all");
+      const js = await readFile(outFile, 'utf-8');
+      expect(js).toContain('es.map');
+      expect(js).toContain('es.set');
+      expect(js).toContain('es.promise');
+      expect(js).toContain('es.string.replace-all');
       expectNoRawDownlevelSyntax(js);
 
-      const runner = join(fixture.dir, "run-without-native-runtime.cjs");
+      const runner = join(fixture.dir, 'run-without-native-runtime.cjs');
       await writeFile(
         runner,
         `
@@ -126,25 +126,25 @@ describe("runtime polyfills library smoke", () => {
         `,
       );
       const run = await runNode(runner);
-      expect(run.stdout).toBe("rxjs Ab");
+      expect(run.stdout).toBe('rxjs Ab');
     },
   );
 
-  test("multi-module bundle runs runtime prelude before dependency top-level code", async () => {
+  test('multi-module bundle runs runtime prelude before dependency top-level code', async () => {
     const fixture = await createFixture({
-      "entry.ts": `
+      'entry.ts': `
         import { value } from "./dep-c";
         console.log("multi-top-level", value);
       `,
-      "dep-a.ts": `
+      'dep-a.ts': `
         export const a = Object.values({ label: "value" })[0];
         export const b = Math.trunc(2.9);
       `,
-      "dep-b.ts": `
+      'dep-b.ts': `
         export const c = "7".padStart(2, "0");
         export const d = [1, 2, 3].findLast((value) => value < 3);
       `,
-      "dep-c.ts": `
+      'dep-c.ts': `
         import { a, b } from "./dep-a";
         import { c, d } from "./dep-b";
         const key = {};
@@ -155,22 +155,22 @@ describe("runtime polyfills library smoke", () => {
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.cjs");
+    const outFile = join(fixture.dir, 'out.cjs');
     const bundle = await runZtsInDir(
       fixture.dir,
-      ["--bundle", join(fixture.dir, "entry.ts"), "-o", outFile, ...OLD_RUNTIME_ARGS],
-      { bin: "js" },
+      ['--bundle', join(fixture.dir, 'entry.ts'), '-o', outFile, ...OLD_RUNTIME_ARGS],
+      { bin: 'js' },
     );
     expect(bundle.exitCode).toBe(0);
 
-    const js = await readFile(outFile, "utf-8");
-    expect(js).toContain("es.object.values");
-    expect(js).toContain("es.math.trunc");
-    expect(js).toContain("es.string.pad-start");
-    expect(js).toContain("es.array.find-last");
-    expect(js).toContain("es.weak-map");
+    const js = await readFile(outFile, 'utf-8');
+    expect(js).toContain('es.object.values');
+    expect(js).toContain('es.math.trunc');
+    expect(js).toContain('es.string.pad-start');
+    expect(js).toContain('es.array.find-last');
+    expect(js).toContain('es.weak-map');
 
-    const runner = join(fixture.dir, "run-multi-module-top-level.cjs");
+    const runner = join(fixture.dir, 'run-multi-module-top-level.cjs');
     await writeFile(
       runner,
       `
@@ -183,18 +183,18 @@ describe("runtime polyfills library smoke", () => {
       `,
     );
     const run = await runNode(runner);
-    expect(run.stdout).toBe("multi-top-level value|2|07|2|weak");
+    expect(run.stdout).toBe('multi-top-level value|2|07|2|weak');
   });
 
-  test("splitting keeps runtime prelude before on-demand chunks", async () => {
+  test('splitting keeps runtime prelude before on-demand chunks', async () => {
     const fixture = await createFixture({
-      "package.json": '{"type":"module"}',
-      "main.ts": `
+      'package.json': '{"type":"module"}',
+      'main.ts': `
         import("./lazy").then((mod) => {
           console.log("split", mod.value());
         });
       `,
-      "lazy.ts": `
+      'lazy.ts': `
         export function value() {
           return "x-x".replaceAll("x", "y");
         }
@@ -202,29 +202,29 @@ describe("runtime polyfills library smoke", () => {
     });
     cleanup = fixture.cleanup;
 
-    const outDir = join(fixture.dir, "dist");
+    const outDir = join(fixture.dir, 'dist');
     const bundle = await runZtsInDir(
       fixture.dir,
       [
-        "--bundle",
-        join(fixture.dir, "main.ts"),
-        "--outdir",
+        '--bundle',
+        join(fixture.dir, 'main.ts'),
+        '--outdir',
         outDir,
-        "--format=esm",
-        "--platform=node",
-        "--target=es5",
-        "--splitting",
-        "--runtime-polyfills=auto",
-        "--runtime-target=ios_saf 12",
+        '--format=esm',
+        '--platform=node',
+        '--target=es5',
+        '--splitting',
+        '--runtime-polyfills=auto',
+        '--runtime-target=ios_saf 12',
       ],
-      { bin: "js" },
+      { bin: 'js' },
     );
     expect(bundle.exitCode).toBe(0);
 
-    const main = await readFile(join(outDir, "main.js"), "utf-8");
-    expect(main).toContain("es.string.replace-all");
+    const main = await readFile(join(outDir, 'main.js'), 'utf-8');
+    expect(main).toContain('es.string.replace-all');
 
-    const runner = join(fixture.dir, "run-split.mjs");
+    const runner = join(fixture.dir, 'run-split.mjs');
     await writeFile(
       runner,
       `
@@ -233,21 +233,21 @@ describe("runtime polyfills library smoke", () => {
       `,
     );
     const run = await runNode(runner);
-    expect(run.stdout).toBe("split y-y");
+    expect(run.stdout).toBe('split y-y');
   });
 
-  test("multi-entry splitting imports shared runtime prelude call symbols", async () => {
+  test('multi-entry splitting imports shared runtime prelude call symbols', async () => {
     const fixture = await createFixture({
-      "package.json": '{"type":"module"}',
-      "entry-a.ts": `
+      'package.json': '{"type":"module"}',
+      'entry-a.ts': `
         export const done = import("./lazy-a")
           .then((mod) => mod.value())
           .then((value) => console.log("entry-a", value));
       `,
-      "entry-b.ts": `
+      'entry-b.ts': `
         console.log("entry-b", "ok");
       `,
-      "lazy-a.ts": `
+      'lazy-a.ts': `
         export function value() {
           return Promise.resolve(["m", "n"].at(-1)).then((last) =>
             Object.hasOwn({ n: 1 }, last) ? last : "missing"
@@ -257,27 +257,27 @@ describe("runtime polyfills library smoke", () => {
     });
     cleanup = fixture.cleanup;
 
-    const outDir = join(fixture.dir, "dist");
+    const outDir = join(fixture.dir, 'dist');
     const bundle = await runZtsInDir(
       fixture.dir,
       [
-        "--bundle",
-        join(fixture.dir, "entry-a.ts"),
-        join(fixture.dir, "entry-b.ts"),
-        "--outdir",
+        '--bundle',
+        join(fixture.dir, 'entry-a.ts'),
+        join(fixture.dir, 'entry-b.ts'),
+        '--outdir',
         outDir,
-        "--format=esm",
-        "--platform=node",
-        "--target=es5",
-        "--splitting",
-        "--runtime-polyfills=auto",
-        "--runtime-target=safari 5",
+        '--format=esm',
+        '--platform=node',
+        '--target=es5',
+        '--splitting',
+        '--runtime-polyfills=auto',
+        '--runtime-target=safari 5',
       ],
-      { bin: "js" },
+      { bin: 'js' },
     );
     expect(bundle.exitCode).toBe(0);
 
-    const runner = join(fixture.dir, "run-multi-entry-split.mjs");
+    const runner = join(fixture.dir, 'run-multi-entry-split.mjs');
     await writeFile(
       runner,
       `
@@ -290,6 +290,6 @@ describe("runtime polyfills library smoke", () => {
       `,
     );
     const run = await runNode(runner);
-    expect(run.stdout).toBe("entry-b ok\nentry-a n");
+    expect(run.stdout).toBe('entry-b ok\nentry-a n');
   });
 });

@@ -16,15 +16,15 @@
  *   bun run tests/benchmark/mangler-property.ts --write  # baseline 갱신
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { COMMON_FIXTURES, type CommonFixture } from "./_fixtures";
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { COMMON_FIXTURES, type CommonFixture } from './_fixtures';
 
-const ROOT = resolve(__dirname, "../..");
-const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
-const BASELINE_PATH = join(__dirname, "baselines", "mangler-property.json");
+const ROOT = resolve(__dirname, '../..');
+const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const BASELINE_PATH = join(__dirname, 'baselines', 'mangler-property.json');
 
 const BUNDLE_SIZE_TOLERANCE = 0.01; // ±1%
 const NAME_LENGTH_TOLERANCE = 0.01; // ±1%
@@ -93,22 +93,22 @@ function runFixture(f: Fixture): FixtureResult {
   const entryFile = join(__dirname, `_mangle_entry_${f.name}.ts`);
   writeFileSync(entryFile, f.entry);
   try {
-    const outFile = join(dir, "zts.js");
-    const reportFile = join(dir, "report.json");
+    const outFile = join(dir, 'zts.js');
+    const reportFile = join(dir, 'report.json');
     const args = [
-      "--bundle",
+      '--bundle',
       entryFile,
-      "-o",
+      '-o',
       outFile,
-      "--minify",
-      `--platform=${f.platform ?? "node"}`,
+      '--minify',
+      `--platform=${f.platform ?? 'node'}`,
       `--mangle-report=${reportFile}`,
     ];
-    const r = spawnSync(ZTS_BIN, args, { encoding: "utf8", timeout: 180_000 });
+    const r = spawnSync(ZTS_BIN, args, { encoding: 'utf8', timeout: 180_000 });
     if (r.status !== 0) {
       throw new Error(`zts failed (${r.status}): ${r.stderr}`);
     }
-    const report: ManglerReport = JSON.parse(readFileSync(reportFile, "utf8"));
+    const report: ManglerReport = JSON.parse(readFileSync(reportFile, 'utf8'));
     return {
       name: f.name,
       report,
@@ -170,7 +170,7 @@ function checkFixture(baseline: FixtureResult, current: FixtureResult): Check[] 
 }
 
 function main(): void {
-  const writeBaseline = process.argv.includes("--write");
+  const writeBaseline = process.argv.includes('--write');
 
   const results: FixtureResult[] = [];
   for (const f of fixtures) {
@@ -184,20 +184,20 @@ function main(): void {
   }
 
   if (writeBaseline) {
-    mkdirSync(join(__dirname, "baselines"), { recursive: true });
+    mkdirSync(join(__dirname, 'baselines'), { recursive: true });
     const bl: Baseline = {
       version: 1,
       generated_at: new Date().toISOString(),
       fixtures: results,
     };
-    writeFileSync(BASELINE_PATH, JSON.stringify(bl, null, 2) + "\n");
+    writeFileSync(BASELINE_PATH, JSON.stringify(bl, null, 2) + '\n');
     console.log(`\nBaseline written: ${BASELINE_PATH}`);
     return;
   }
 
   let baseline: Baseline;
   try {
-    baseline = JSON.parse(readFileSync(BASELINE_PATH, "utf8"));
+    baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
   } catch {
     console.log(`\n(no baseline at ${BASELINE_PATH} — run with --write to create)`);
     return;
@@ -205,7 +205,7 @@ function main(): void {
 
   const baselineByName = new Map(baseline.fixtures.map((f) => [f.name, f]));
   let failed = 0;
-  console.log("\n# Baseline comparison\n");
+  console.log('\n# Baseline comparison\n');
   for (const cur of results) {
     const base = baselineByName.get(cur.name);
     if (!base) {
@@ -213,7 +213,7 @@ function main(): void {
       continue;
     }
     for (const c of checkFixture(base, cur)) {
-      const mark = c.ok ? "✓" : "✗";
+      const mark = c.ok ? '✓' : '✗';
       console.log(`- ${mark} ${c.label}: ${c.detail}`);
       if (!c.ok) failed += 1;
     }
@@ -222,7 +222,7 @@ function main(): void {
     console.error(`\n${failed} check(s) failed.`);
     process.exit(1);
   }
-  console.log("\nAll property checks within tolerance.");
+  console.log('\nAll property checks within tolerance.');
 }
 
 main();

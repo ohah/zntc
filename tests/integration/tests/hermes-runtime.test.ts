@@ -1,7 +1,7 @@
-import { describe, test, expect, beforeAll } from "bun:test";
-import { ZTS_BIN } from "./helpers";
-import { resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { describe, test, expect, beforeAll } from 'bun:test';
+import { ZTS_BIN } from './helpers';
+import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 
 /**
  * Hermes 런타임 테스트.
@@ -13,32 +13,32 @@ import { existsSync } from "node:fs";
  * - RN 번들 초기화 경로 (DOMException, Performance 등)
  */
 
-const EXAMPLE_APP = resolve(import.meta.dir, "fixtures/rn-example-app");
+const EXAMPLE_APP = resolve(import.meta.dir, 'fixtures/rn-example-app');
 
 // Hermes 런타임 바이너리 경로 탐색
 function findHermes(): string | null {
-  const hermesDir = process.platform === "linux" ? "linux64-bin" : "osx-bin";
+  const hermesDir = process.platform === 'linux' ? 'linux64-bin' : 'osx-bin';
   // 1. workspace node_modules (devDependencies 로 추가됨 — `bun install` 만으로
   //    로컬 검증 가능). #2218 fix: 이전엔 npm global 만 봐서 `npm install -g`
   //    안 한 로컬 환경에선 silent skip.
-  const wsRoot = resolve(import.meta.dir, "../../..");
-  const local = resolve(wsRoot, "node_modules/hermes-engine-cli", hermesDir, "hermes");
+  const wsRoot = resolve(import.meta.dir, '../../..');
+  const local = resolve(wsRoot, 'node_modules/hermes-engine-cli', hermesDir, 'hermes');
   if (existsSync(local)) return local;
   // 2. npm global (CI 의 `npm install -g hermes-engine-cli` path)
-  const globalNpm = Bun.spawnSync(["npm", "root", "-g"]);
+  const globalNpm = Bun.spawnSync(['npm', 'root', '-g']);
   if (globalNpm.exitCode === 0) {
     const dir = globalNpm.stdout.toString().trim();
     const p = resolve(dir, `hermes-engine-cli/${hermesDir}/hermes`);
     if (existsSync(p)) return p;
   }
   // 3. PATH
-  const which = Bun.spawnSync(["which", "hermes"]);
+  const which = Bun.spawnSync(['which', 'hermes']);
   if (which.exitCode === 0) return which.stdout.toString().trim();
   return null;
 }
 
 function findHermesc(): string | null {
-  const hermescDir = process.platform === "linux" ? "linux64-bin" : "osx-bin";
+  const hermescDir = process.platform === 'linux' ? 'linux64-bin' : 'osx-bin';
   const p = resolve(EXAMPLE_APP, `node_modules/hermes-compiler/hermesc/${hermescDir}/hermesc`);
   return existsSync(p) ? p : null;
 }
@@ -48,27 +48,27 @@ function runHermes(
   code: string,
 ): { stdout: string; stderr: string; exitCode: number } {
   const tmpFile = `/tmp/hermes-test-${Date.now()}.js`;
-  require("fs").writeFileSync(tmpFile, code);
+  require('fs').writeFileSync(tmpFile, code);
   const result = Bun.spawnSync([hermes, tmpFile]);
   return {
-    stdout: result.stdout?.toString() ?? "",
-    stderr: result.stderr?.toString() ?? "",
+    stdout: result.stdout?.toString() ?? '',
+    stderr: result.stderr?.toString() ?? '',
     exitCode: result.exitCode,
   };
 }
 
-describe("Hermes 런타임: for-in 클로저 캡처 버그 검증", () => {
+describe('Hermes 런타임: for-in 클로저 캡처 버그 검증', () => {
   let hermes: string | null = null;
 
   beforeAll(() => {
     hermes = findHermes();
     if (!hermes) {
-      console.log("⚠ hermes runtime not found — skipping runtime tests");
-      console.log("  Install: npm install -g hermes-engine-cli");
+      console.log('⚠ hermes runtime not found — skipping runtime tests');
+      console.log('  Install: npm install -g hermes-engine-cli');
     }
   });
 
-  test("for (let key in obj) + closure: Hermes 버그 재현", () => {
+  test('for (let key in obj) + closure: Hermes 버그 재현', () => {
     if (!hermes) return; // skip if no hermes
     const result = runHermes(
       hermes,
@@ -83,10 +83,10 @@ describe("Hermes 런타임: for-in 클로저 캡처 버그 검증", () => {
     `,
     );
     // Hermes에서 이 버그가 존재함을 확인 (회귀 감지용)
-    expect(result.stdout.trim()).toBe("BUG_CONFIRMED");
+    expect(result.stdout.trim()).toBe('BUG_CONFIRMED');
   });
 
-  test("Object.keys().forEach 방식: Hermes에서 정상 동작", () => {
+  test('Object.keys().forEach 방식: Hermes에서 정상 동작', () => {
     if (!hermes) return;
     const result = runHermes(
       hermes,
@@ -99,10 +99,10 @@ describe("Hermes 런타임: for-in 클로저 캡처 버그 검증", () => {
       print(r.a === 1 && r.b === 2 && r.c === 3 ? "OK" : "FAIL");
     `,
     );
-    expect(result.stdout.trim()).toBe("OK");
+    expect(result.stdout.trim()).toBe('OK');
   });
 
-  test("__copyProps 런타임: 다중 export getter 정확성", () => {
+  test('__copyProps 런타임: 다중 export getter 정확성', () => {
     if (!hermes) return;
     const result = runHermes(
       hermes,
@@ -132,44 +132,44 @@ describe("Hermes 런타임: for-in 클로저 캡처 버그 검증", () => {
       print(result.default === "IMPL" && result.PublicGuard === "GUARD" ? "OK" : "FAIL");
     `,
     );
-    expect(result.stdout).toContain("OK");
-    expect(result.stdout).toContain("default:IMPL");
-    expect(result.stdout).toContain("guard:GUARD");
+    expect(result.stdout).toContain('OK');
+    expect(result.stdout).toContain('default:IMPL');
+    expect(result.stdout).toContain('guard:GUARD');
   });
 });
 
-describe("Hermes 런타임: ZTS 번들 실행 검증", () => {
+describe('Hermes 런타임: ZTS 번들 실행 검증', () => {
   let hermes: string | null = null;
 
   beforeAll(() => {
     hermes = findHermes();
   });
 
-  test("RN 번들 Hermes 구문 검증 (hermesc)", async () => {
+  test('RN 번들 Hermes 구문 검증 (hermesc)', async () => {
     const hermesc = findHermesc();
     if (!hermesc) return; // hermesc not found (bun install 미실행)
-    const outFile = resolve(EXAMPLE_APP, "zts-hermes.js");
+    const outFile = resolve(EXAMPLE_APP, 'zts-hermes.js');
     const zts = Bun.spawnSync([
       ZTS_BIN,
-      "--bundle",
-      resolve(EXAMPLE_APP, "index.js"),
-      "--platform=react-native",
-      "--rn-platform=ios",
-      "--flow",
-      "-o",
+      '--bundle',
+      resolve(EXAMPLE_APP, 'index.js'),
+      '--platform=react-native',
+      '--rn-platform=ios',
+      '--flow',
+      '-o',
       outFile,
     ]);
     if (zts.exitCode !== 0) return; // 번들 실패 시 skip (node_modules 부재 등)
 
-    const hbc = resolve(EXAMPLE_APP, "zts-hermes.hbc");
-    const result = Bun.spawnSync([hermesc, "-emit-binary", "-out", hbc, outFile]);
-    const stderr = result.stderr?.toString() ?? "";
+    const hbc = resolve(EXAMPLE_APP, 'zts-hermes.hbc');
+    const result = Bun.spawnSync([hermesc, '-emit-binary', '-out', hbc, outFile]);
+    const stderr = result.stderr?.toString() ?? '';
     const errorCount = (stderr.match(/error:/g) || []).length;
     console.log(`hermesc errors: ${errorCount}`);
     expect(errorCount).toBe(0);
   }, 60_000);
 
-  test("async method this binding via __generator(thisArg, ...) (#1909)", () => {
+  test('async method this binding via __generator(thisArg, ...) (#1909)', () => {
     if (!hermes) return;
     // ZTS 가 emit 한 ES5 generator state machine 의 callback 안 `this` 가 enclosing
     // function 의 this 와 동일해야. 이전엔 `body.call(null, _)` 라 callback 안 `this.x`
@@ -177,14 +177,14 @@ describe("Hermes 런타임: ZTS 번들 실행 검증", () => {
     const tmp = `/tmp/zts-async-this-${Date.now()}.js`;
     const ts = `var obj = { x: 42, async f() { return this.x * 2; } };
 obj.f().then(function(v) { print("RES:" + v); }, function(e) { print("ERR:" + e.message); });`;
-    require("fs").writeFileSync(tmp + ".ts", ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + ".ts", "--target=es5", "-o", tmp]);
+    require('fs').writeFileSync(tmp + '.ts', ts);
+    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
     expect(zts.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
-    expect(result.stdout?.toString() ?? "").toContain("RES:84");
+    expect(result.stdout?.toString() ?? '').toContain('RES:84');
   });
 
-  test("yield* string iterable wrap via __values (#1910)", () => {
+  test('yield* string iterable wrap via __values (#1910)', () => {
     if (!hermes) return;
     // `yield* 'abc'` 가 raw string 으로 op[5] 에 못 가도록 __values() wrap.
     const tmp = `/tmp/zts-yield-star-${Date.now()}.js`;
@@ -192,14 +192,14 @@ obj.f().then(function(v) { print("RES:" + v); }, function(e) { print("ERR:" + e.
 var arr = [];
 for (var v of g()) arr.push(v);
 print("RES:" + arr.join(","));`;
-    require("fs").writeFileSync(tmp + ".ts", ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + ".ts", "--target=es5", "-o", tmp]);
+    require('fs').writeFileSync(tmp + '.ts', ts);
+    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
     expect(zts.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
-    expect(result.stdout?.toString() ?? "").toContain("RES:a,b,c");
+    expect(result.stdout?.toString() ?? '').toContain('RES:a,b,c');
   });
 
-  test("compound `+=` with await preserves operator (#1896)", () => {
+  test('compound `+=` with await preserves operator (#1896)', () => {
     if (!hermes) return;
     // sum += await x() 가 sum = _state.sent() 으로 떨어지지 않아야.
     const tmp = `/tmp/zts-compound-await-${Date.now()}.js`;
@@ -208,18 +208,18 @@ print("RES:" + arr.join(","));`;
   for (var i = 0; i < 3; i++) sum += await Promise.resolve(i + 1);
   return sum;
 })().then(function(v) { print("RES:" + v); });`;
-    require("fs").writeFileSync(tmp + ".ts", ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + ".ts", "--target=es5", "-o", tmp]);
+    require('fs').writeFileSync(tmp + '.ts', ts);
+    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
     expect(zts.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
-    expect(result.stdout?.toString() ?? "").toContain("RES:6");
+    expect(result.stdout?.toString() ?? '').toContain('RES:6');
   });
 
   // Hermes vanilla 가 `Symbol.asyncIterator` 미지원 — RN production 은 init script 가 polyfill
   // 하지만 standalone Hermes 는 그대로 throw. RN-like 환경 시뮬용 polyfill prepend.
   const ASYNC_ITER_POLYFILL = `if (typeof Symbol !== "undefined" && !Symbol.asyncIterator) Symbol.asyncIterator = Symbol("Symbol.asyncIterator");\n`;
 
-  test("for-await-of var hoist (#1901)", () => {
+  test('for-await-of var hoist (#1901)', () => {
     if (!hermes) return;
     // `for await (var v of arr)` 의 `var v` + helper temps 모두 함수 top hoist.
     const tmp = `/tmp/zts-forawait-${Date.now()}.js`;
@@ -229,14 +229,14 @@ print("RES:" + arr.join(","));`;
   for await (var v of arr) sum += v;
   return sum;
 })().then(function(v) { print("RES:" + v); }, function(e) { print("ERR:" + e.message); });`;
-    require("fs").writeFileSync(tmp + ".ts", ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + ".ts", "--target=es5", "-o", tmp]);
+    require('fs').writeFileSync(tmp + '.ts', ts);
+    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
     expect(zts.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
-    expect(result.stdout?.toString() ?? "").toContain("RES:6");
+    expect(result.stdout?.toString() ?? '').toContain('RES:6');
   });
 
-  test("async generator (async function*) yields via __asyncGenerator (#1911)", () => {
+  test('async generator (async function*) yields via __asyncGenerator (#1911)', () => {
     if (!hermes) return;
     // for await of 가 async generator 의 Symbol.asyncIterator 사용 — Promise unwrap.
     const tmp = `/tmp/zts-asyncgen-${Date.now()}.js`;
@@ -246,48 +246,48 @@ print("RES:" + arr.join(","));`;
   for await (var v of g()) arr.push(v);
   print("RES:" + arr.join(","));
 })();`;
-    require("fs").writeFileSync(tmp + ".ts", ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + ".ts", "--target=es5", "-o", tmp]);
+    require('fs').writeFileSync(tmp + '.ts', ts);
+    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
     expect(zts.exitCode).toBe(0);
     const result = Bun.spawnSync([hermes!, tmp]);
-    expect(result.stdout?.toString() ?? "").toContain("RES:1,2,3");
+    expect(result.stdout?.toString() ?? '').toContain('RES:1,2,3');
   });
 
-  test("if-await self-loop fix (#1887)", () => {
+  test('if-await self-loop fix (#1887)', () => {
     if (!hermes) return;
     // `if (cond) { await x(); }` 가 마지막 statement 인 패턴 — 이전엔 무한 루프 → 통과 = 정상 종료.
     const tmp = `/tmp/zts-ifawait-${Date.now()}.js`;
     const ts = `(async function f(x) { if (x) { await Promise.resolve(); } return "done"; })(true)
   .then(function(v) { print("RES:" + v); });`;
-    require("fs").writeFileSync(tmp + ".ts", ts);
-    const zts = Bun.spawnSync([ZTS_BIN, tmp + ".ts", "--target=es5", "-o", tmp]);
+    require('fs').writeFileSync(tmp + '.ts', ts);
+    const zts = Bun.spawnSync([ZTS_BIN, tmp + '.ts', '--target=es5', '-o', tmp]);
     expect(zts.exitCode).toBe(0);
     // 무한 루프면 timeout — 10 초 cap.
     const result = Bun.spawnSync([hermes!, tmp], { timeout: 10000 });
-    expect(result.stdout?.toString() ?? "").toContain("RES:done");
+    expect(result.stdout?.toString() ?? '').toContain('RES:done');
   });
 
-  test("__copyProps getOwnPropertyNames 패턴이 번들에 포함됨", async () => {
+  test('__copyProps getOwnPropertyNames 패턴이 번들에 포함됨', async () => {
     // 이전 테스트(hermesc)에 의존하지 않고 자체 번들 생성
-    const outFile = resolve(EXAMPLE_APP, "zts-hermes.js");
+    const outFile = resolve(EXAMPLE_APP, 'zts-hermes.js');
     const zts = Bun.spawnSync([
       ZTS_BIN,
-      "--bundle",
-      resolve(EXAMPLE_APP, "index.js"),
-      "--platform=react-native",
-      "--rn-platform=ios",
-      "--flow",
-      "-o",
+      '--bundle',
+      resolve(EXAMPLE_APP, 'index.js'),
+      '--platform=react-native',
+      '--rn-platform=ios',
+      '--flow',
+      '-o',
       outFile,
     ]);
     if (zts.exitCode !== 0) return; // 번들 실패 시 skip (bun install 미실행 등)
     const output = await Bun.file(outFile).text();
     // getOwnPropertyNames + for 루프 방식 (Rolldown 호환)
-    expect(output).toContain("getOwnPropertyNames");
-    expect(output).toContain("getOwnPropertyDescriptor");
+    expect(output).toContain('getOwnPropertyNames');
+    expect(output).toContain('getOwnPropertyDescriptor');
     // 구 방식이 남아있지 않은지 확인
-    expect(output).not.toContain("Object.keys(from).forEach");
-    expect(output).not.toContain("for(let key in from)");
+    expect(output).not.toContain('Object.keys(from).forEach');
+    expect(output).not.toContain('for(let key in from)');
     expect(output).not.toMatch(/for\s*\(\s*let\s+key\s+in\s+from\s*\)/);
   });
 });

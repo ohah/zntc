@@ -5,9 +5,9 @@
 // 를 패치할 수 있도록 (zts 가 자기 node_modules 에서 resolve 하면 다른 instance
 // 가 되어 패치 누락).
 
-import { createRequire } from "node:module";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Duplex } from "node:stream";
+import { createRequire } from 'node:module';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 
 export interface DevMiddleware {
   middleware: (req: IncomingMessage, res: ServerResponse, next: (err?: unknown) => void) => void;
@@ -33,14 +33,14 @@ function resolveDevMiddlewarePath(projectRoot: string): string | null {
   const projectRequire = createRequire(`${projectRoot}/package.json`);
   const candidates: Array<() => string> = [
     () => {
-      const reactNativePath = projectRequire.resolve("react-native/package.json");
+      const reactNativePath = projectRequire.resolve('react-native/package.json');
       const rnRequire = createRequire(reactNativePath);
-      const cliPluginPath = rnRequire.resolve("@react-native/community-cli-plugin/package.json");
+      const cliPluginPath = rnRequire.resolve('@react-native/community-cli-plugin/package.json');
       const cliPluginRequire = createRequire(cliPluginPath);
-      return cliPluginRequire.resolve("@react-native/dev-middleware");
+      return cliPluginRequire.resolve('@react-native/dev-middleware');
     },
-    () => projectRequire.resolve("@react-native/dev-middleware"),
-    () => require.resolve("@react-native/dev-middleware"),
+    () => projectRequire.resolve('@react-native/dev-middleware'),
+    () => require.resolve('@react-native/dev-middleware'),
   ];
   for (const candidate of candidates) {
     try {
@@ -85,7 +85,7 @@ export async function loadDevMiddleware(
       logger: {
         info: () => {},
         warn: () => {},
-        error: (...args) => console.error("[zts/rn dev-middleware]", ...args),
+        error: (...args) => console.error('[zts/rn dev-middleware]', ...args),
       },
     });
   } catch {
@@ -94,8 +94,8 @@ export async function loadDevMiddleware(
 }
 
 export const DEV_MIDDLEWARE_PATH_PREFIXES = [
-  "/json",
-  "/open-debugger",
-  "/debugger-frontend",
-  "/launch-js-devtools",
+  '/json',
+  '/open-debugger',
+  '/debugger-frontend',
+  '/launch-js-devtools',
 ];

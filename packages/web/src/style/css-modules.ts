@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
-import { basename, relative, sep } from "node:path";
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { basename, relative, sep } from 'node:path';
 
 import {
   isCssIdent,
@@ -8,15 +8,15 @@ import {
   skipCssString,
   skipCssUrl,
   startsWithCssIdent,
-} from "./css-parser.ts";
+} from './css-parser.ts';
 
 /** `.module.css` 종결만 인식 — case-sensitive (Vite/webpack css-loader 컨벤션 일치). */
 export function isCssModuleFile(path: string): boolean {
-  return basename(path).endsWith(".module.css");
+  return basename(path).endsWith('.module.css');
 }
 
 export function cssModuleGeneratedCssPath(file: string): string {
-  return file.replace(/\.module\.css$/, ".module.zts.css");
+  return file.replace(/\.module\.css$/, '.module.zts.css');
 }
 
 /**
@@ -36,8 +36,8 @@ const SAFE_LOCAL_RE = /[^a-zA-Z0-9_]/g;
  * hash 8 chars (~48 bits) 면 100k 클래스에서도 birthday collision <0.001%.
  */
 export function cssModuleLocalName(root: string, file: string, local: string): string {
-  const rel = relative(root, file).replaceAll(sep, "/");
-  const fileName = basename(file, ".module.css").replace(SAFE_LOCAL_RE, "_");
+  const rel = relative(root, file).replaceAll(sep, '/');
+  const fileName = basename(file, '.module.css').replace(SAFE_LOCAL_RE, '_');
   return cssModuleLocalNameWithCachedFile(rel, fileName, local);
 }
 
@@ -46,8 +46,8 @@ export function cssModuleLocalName(root: string, file: string, local: string): s
  * helper. 100 class CSS 면 path/string 연산 99회 절약.
  */
 function cssModuleLocalNameWithCachedFile(rel: string, fileName: string, local: string): string {
-  const safeLocal = local.replace(SAFE_LOCAL_RE, "_");
-  const hash = createHash("sha1").update(`${rel}:${local}`).digest("base64url").slice(0, 8);
+  const safeLocal = local.replace(SAFE_LOCAL_RE, '_');
+  const hash = createHash('sha1').update(`${rel}:${local}`).digest('base64url').slice(0, 8);
   return `${fileName}_${safeLocal}__${hash}`;
 }
 
@@ -66,21 +66,21 @@ export function scanCssModuleClassTokens(css: string): CssModuleClassToken[] {
   let i = 0;
   while (i < css.length) {
     const ch = css[i]!;
-    const next = css[i + 1] ?? "";
-    if ((ch === '"' || ch === "'") && css[i - 1] !== "\\") {
+    const next = css[i + 1] ?? '';
+    if ((ch === '"' || ch === "'") && css[i - 1] !== '\\') {
       i = skipCssString(css, i, ch);
       continue;
     }
-    if (ch === "/" && next === "*") {
-      const end = css.indexOf("*/", i + 2);
+    if (ch === '/' && next === '*') {
+      const end = css.indexOf('*/', i + 2);
       i = end === -1 ? css.length : end + 2;
       continue;
     }
-    if (startsWithCssIdent(css, i, "url(")) {
+    if (startsWithCssIdent(css, i, 'url(')) {
       i = skipCssUrl(css, i + 4);
       continue;
     }
-    if (ch === "." && isCssIdentStart(next)) {
+    if (ch === '.' && isCssIdentStart(next)) {
       let end = i + 2;
       while (end < css.length && isCssIdent(css[end]!)) end += 1;
       tokens.push({ start: i, end, local: css.slice(i + 1, end) });
@@ -105,53 +105,53 @@ const VALID_EXPORT_NAME_RE = /^[$A-Z_a-z][$\w]*$/;
 // ECMAScript ReservedWord + FutureReservedWord + strict-mode binding 제약 (`arguments`).
 // `export const ${name}` 의 top-level binding 으로 SyntaxError 가 나는 모든 이름.
 const CSS_MODULE_RESERVED_EXPORTS: ReadonlySet<string> = new Set([
-  "arguments",
-  "await",
-  "break",
-  "case",
-  "catch",
-  "class",
-  "const",
-  "continue",
-  "debugger",
-  "default",
-  "delete",
-  "do",
-  "else",
-  "enum",
-  "export",
-  "extends",
-  "false",
-  "finally",
-  "for",
-  "function",
-  "if",
-  "implements",
-  "import",
-  "in",
-  "instanceof",
-  "interface",
-  "let",
-  "new",
-  "null",
-  "package",
-  "private",
-  "protected",
-  "public",
-  "return",
-  "static",
-  "super",
-  "switch",
-  "this",
-  "throw",
-  "true",
-  "try",
-  "typeof",
-  "var",
-  "void",
-  "while",
-  "with",
-  "yield",
+  'arguments',
+  'await',
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'enum',
+  'export',
+  'extends',
+  'false',
+  'finally',
+  'for',
+  'function',
+  'if',
+  'implements',
+  'import',
+  'in',
+  'instanceof',
+  'interface',
+  'let',
+  'new',
+  'null',
+  'package',
+  'private',
+  'protected',
+  'public',
+  'return',
+  'static',
+  'super',
+  'switch',
+  'this',
+  'throw',
+  'true',
+  'try',
+  'typeof',
+  'var',
+  'void',
+  'while',
+  'with',
+  'yield',
 ]);
 
 export function isValidExportName(name: string): boolean {
@@ -171,16 +171,16 @@ export function buildCssModuleProxy(
   const named = Object.keys(mapping)
     .filter(isValidExportName)
     .map((name) => `export const ${name} = ${JSON.stringify(mapping[name])};`)
-    .join("\n");
+    .join('\n');
   return [
     `import ${JSON.stringify(cssImport)};`,
     `const styles = ${stylesJson};`,
-    "export default styles;",
+    'export default styles;',
     named,
-    "",
+    '',
   ]
     .filter(Boolean)
-    .join("\n");
+    .join('\n');
 }
 
 /**
@@ -191,11 +191,11 @@ export function rewriteCssModuleReferences(sourceFiles: readonly string[]): void
   const pattern = /(["'])([^"']+\.module\.css)([?#][^"']*)?\1/g;
   for (const source of sourceFiles) {
     if (/\.html?$/i.test(source)) continue;
-    const input = readFileSync(source, "utf8");
-    if (!input.includes(".module.css")) continue;
+    const input = readFileSync(source, 'utf8');
+    if (!input.includes('.module.css')) continue;
     const output = input.replace(
       pattern,
-      (_match, quote, spec, suffix = "") => `${quote}${spec}.js${suffix}${quote}`,
+      (_match, quote, spec, suffix = '') => `${quote}${spec}.js${suffix}${quote}`,
     );
     if (output !== input) writeFileSync(source, output);
   }
@@ -228,11 +228,11 @@ export function transformCssModules(
   if (targets.length === 0) return moduleFiles.map(cssModuleGeneratedCssPath);
 
   for (const file of targets) {
-    const css = readFileSync(file, "utf8");
+    const css = readFileSync(file, 'utf8');
     // 단일 scan 으로 token + mapping 동시 생성 — collect + rewrite 의 중복 scan 회피.
     const tokens = scanCssModuleClassTokens(css);
-    const rel = relative(root, file).replaceAll(sep, "/");
-    const fileName = basename(file, ".module.css").replace(SAFE_LOCAL_RE, "_");
+    const rel = relative(root, file).replaceAll(sep, '/');
+    const fileName = basename(file, '.module.css').replace(SAFE_LOCAL_RE, '_');
     const mapping: Record<string, string> = {};
     for (const token of tokens) {
       if (!mapping[token.local]) {
@@ -247,7 +247,7 @@ export function transformCssModules(
 
   rewriteCssModuleReferences(dirtySources ?? styleSources);
 
-  if (logLevel !== "silent") {
+  if (logLevel !== 'silent') {
     console.error(`[css-modules] processed ${targets.length} CSS module file(s)`);
   }
   return moduleFiles.map(cssModuleGeneratedCssPath);
@@ -262,7 +262,7 @@ function rewriteCssModuleClassesWithTokens(
   tokens: readonly CssModuleClassToken[],
   mapping: Record<string, string>,
 ): string {
-  let out = "";
+  let out = '';
   let offset = 0;
   for (const token of tokens) {
     const scoped = mapping[token.local];

@@ -9,20 +9,20 @@
  * 실행: bun run minify-bench.ts
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { COMMON_FIXTURES, type CommonFixture } from "./_fixtures";
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { COMMON_FIXTURES, type CommonFixture } from './_fixtures';
 
-const ROOT = resolve(__dirname, "../..");
-const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
-const ESBUILD_BIN = existsSync(join(__dirname, "node_modules/.bin/esbuild"))
-  ? join(__dirname, "node_modules/.bin/esbuild")
-  : join(ROOT, "node_modules/.bin/esbuild");
-const ROLLDOWN_BIN = existsSync(join(__dirname, "node_modules/.bin/rolldown"))
-  ? join(__dirname, "node_modules/.bin/rolldown")
-  : join(ROOT, "node_modules/.bin/rolldown");
+const ROOT = resolve(__dirname, '../..');
+const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ESBUILD_BIN = existsSync(join(__dirname, 'node_modules/.bin/esbuild'))
+  ? join(__dirname, 'node_modules/.bin/esbuild')
+  : join(ROOT, 'node_modules/.bin/esbuild');
+const ROLLDOWN_BIN = existsSync(join(__dirname, 'node_modules/.bin/rolldown'))
+  ? join(__dirname, 'node_modules/.bin/rolldown')
+  : join(ROOT, 'node_modules/.bin/rolldown');
 
 const EXEC_TIMEOUT_MS = 180_000;
 
@@ -57,59 +57,59 @@ function histTotal(h: LengthHistogram): number {
 
 // JS 예약어 — identifier 카운트에서 제외하여 순수 식별자만 집계
 const KEYWORDS = new Set([
-  "var",
-  "let",
-  "const",
-  "function",
-  "return",
-  "if",
-  "else",
-  "for",
-  "while",
-  "do",
-  "switch",
-  "case",
-  "default",
-  "break",
-  "continue",
-  "throw",
-  "try",
-  "catch",
-  "finally",
-  "new",
-  "delete",
-  "typeof",
-  "instanceof",
-  "in",
-  "of",
-  "void",
-  "null",
-  "undefined",
-  "true",
-  "false",
-  "this",
-  "super",
-  "class",
-  "extends",
-  "import",
-  "export",
-  "from",
-  "as",
-  "async",
-  "await",
-  "yield",
-  "static",
-  "get",
-  "set",
-  "public",
-  "private",
-  "protected",
-  "debugger",
-  "with",
-  "enum",
-  "implements",
-  "interface",
-  "package",
+  'var',
+  'let',
+  'const',
+  'function',
+  'return',
+  'if',
+  'else',
+  'for',
+  'while',
+  'do',
+  'switch',
+  'case',
+  'default',
+  'break',
+  'continue',
+  'throw',
+  'try',
+  'catch',
+  'finally',
+  'new',
+  'delete',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'void',
+  'null',
+  'undefined',
+  'true',
+  'false',
+  'this',
+  'super',
+  'class',
+  'extends',
+  'import',
+  'export',
+  'from',
+  'as',
+  'async',
+  'await',
+  'yield',
+  'static',
+  'get',
+  'set',
+  'public',
+  'private',
+  'protected',
+  'debugger',
+  'with',
+  'enum',
+  'implements',
+  'interface',
+  'package',
 ]);
 
 const EMPTY_HIST: LengthHistogram = {
@@ -141,9 +141,9 @@ function histogramOf(src: string): LengthHistogram {
 
 function exec(bin: string, args: string[], cwd?: string) {
   const start = performance.now();
-  const r = spawnSync(bin, args, { cwd, stdio: "pipe", timeout: EXEC_TIMEOUT_MS });
+  const r = spawnSync(bin, args, { cwd, stdio: 'pipe', timeout: EXEC_TIMEOUT_MS });
   const time = Math.round(performance.now() - start);
-  return { ok: r.status === 0, time, stderr: r.stderr?.toString() ?? "" };
+  return { ok: r.status === 0, time, stderr: r.stderr?.toString() ?? '' };
 }
 
 function runTool(
@@ -158,7 +158,7 @@ function runTool(
     if (stderr) console.error(`[${label}] ${stderr.slice(0, 300)}`);
     return { ok: false, size: 0, time, hist: { ...EMPTY_HIST } };
   }
-  const src = readFileSync(outFile, "utf8");
+  const src = readFileSync(outFile, 'utf8');
   return { ok: true, size: statSync(outFile).size, time, hist: histogramOf(src) };
 }
 
@@ -168,39 +168,39 @@ function benchFixture(f: Fixture): BenchResult {
   // (tmpdir에서는 `import 'effect'` 같은 node_modules 참조가 실패). smoke.ts도 같은 이유로 동일 패턴.
   const entryFile = join(__dirname, `_minify_entry_${f.name}.ts`);
   writeFileSync(entryFile, f.entry);
-  const platform = f.platform ?? "node";
-  const format = f.format ?? "esm";
+  const platform = f.platform ?? 'node';
+  const format = f.format ?? 'esm';
 
   try {
-    const ztsOut = join(dir, "zts.js");
-    const esOut = join(dir, "es.js");
-    const rdOut = join(dir, "rd.js");
+    const ztsOut = join(dir, 'zts.js');
+    const esOut = join(dir, 'es.js');
+    const rdOut = join(dir, 'rd.js');
 
     const zts = runTool(
-      "zts",
+      'zts',
       ZTS_BIN,
       [
-        "--bundle",
+        '--bundle',
         entryFile,
-        "-o",
+        '-o',
         ztsOut,
-        "--minify",
+        '--minify',
         `--platform=${platform}`,
-        ...(format === "cjs" ? ["--format=cjs"] : []),
+        ...(format === 'cjs' ? ['--format=cjs'] : []),
       ],
       ztsOut,
     );
 
     const esb = existsSync(ESBUILD_BIN)
       ? runTool(
-          "esbuild",
+          'esbuild',
           ESBUILD_BIN,
           [
             entryFile,
-            "--bundle",
+            '--bundle',
             `--outfile=${esOut}`,
-            "--minify",
-            "--loader:.ts=ts",
+            '--minify',
+            '--loader:.ts=ts',
             `--platform=${platform}`,
             `--format=${format}`,
           ],
@@ -211,9 +211,9 @@ function benchFixture(f: Fixture): BenchResult {
 
     const rd = existsSync(ROLLDOWN_BIN)
       ? runTool(
-          "rolldown",
+          'rolldown',
           ROLLDOWN_BIN,
-          [entryFile, "-o", rdOut, "--format", format, "--platform", platform, "--minify"],
+          [entryFile, '-o', rdOut, '--format', format, '--platform', platform, '--minify'],
           rdOut,
           __dirname,
         )
@@ -229,8 +229,8 @@ function benchFixture(f: Fixture): BenchResult {
 }
 
 function formatKb(n: number): string {
-  if (n === 0) return "   -  ";
-  return (n / 1024).toFixed(1).padStart(5) + "KB";
+  if (n === 0) return '   -  ';
+  return (n / 1024).toFixed(1).padStart(5) + 'KB';
 }
 
 function pad(s: string | number, n: number): string {
@@ -247,24 +247,24 @@ function formatResult(res: BenchResult): string {
     if (!r)
       return `| ${pad(label, 8)} | n/a      | n/a     | -    | -    | -    | -    | -     | -     |`;
     if (!r.ok) {
-      return `| ${pad(label, 8)} | FAIL     | ${pad(r.time + "ms", 7)} | -    | -    | -    | -    | -     | -     |`;
+      return `| ${pad(label, 8)} | FAIL     | ${pad(r.time + 'ms', 7)} | -    | -    | -    | -    | -     | -     |`;
     }
     const h = r.hist;
-    return `| ${pad(label, 8)} | ${formatKb(r.size)} | ${pad(r.time + "ms", 7)} | ${pad(h.len1, 4)} | ${pad(h.len2, 4)} | ${pad(h.len3, 4)} | ${pad(h.len4, 4)} | ${pad(h.len5plus, 5)} | ${pad(histTotal(h), 5)} |`;
+    return `| ${pad(label, 8)} | ${formatKb(r.size)} | ${pad(r.time + 'ms', 7)} | ${pad(h.len1, 4)} | ${pad(h.len2, 4)} | ${pad(h.len3, 4)} | ${pad(h.len4, 4)} | ${pad(h.len5plus, 5)} | ${pad(histTotal(h), 5)} |`;
   };
 
   return [
     header,
-    row("zts", res.zts),
-    row("esbuild", res.esbuild),
-    row("rolldown", res.rolldown),
-  ].join("\n");
+    row('zts', res.zts),
+    row('esbuild', res.esbuild),
+    row('rolldown', res.rolldown),
+  ].join('\n');
 }
 
 function main() {
-  console.log("# Minify Benchmark (#1608 baseline)\n");
-  console.log("`--minify` 기준 bundle 사이즈 + distinct identifier 길이 분포.");
-  console.log("문자열 토큰 노이즈는 세 도구 모두에 동일하게 적용되므로 비교는 유효.\n");
+  console.log('# Minify Benchmark (#1608 baseline)\n');
+  console.log('`--minify` 기준 bundle 사이즈 + distinct identifier 길이 분포.');
+  console.log('문자열 토큰 노이즈는 세 도구 모두에 동일하게 적용되므로 비교는 유효.\n');
 
   if (!existsSync(ZTS_BIN)) {
     console.error(`ZTS 바이너리 없음: ${ZTS_BIN}\n  먼저 \`zig build\`를 실행하세요.`);

@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es6/decorators", () => {
-  test("decoratorOnClassAccessor1.es6", async () => {
+describe('TSC: es6/decorators', () => {
+  test('decoratorOnClassAccessor1.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -12,7 +12,7 @@ export default class {
       [],
     );
   });
-  test("decoratorOnClass1.es6", async () => {
+  test('decoratorOnClass1.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -24,7 +24,7 @@ let c = new C();`,
       [],
     );
   });
-  test("decoratorOnClass2.es6", async () => {
+  test('decoratorOnClass2.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -36,7 +36,7 @@ let c = new C();`,
       [],
     );
   });
-  test("decoratorOnClass3.es6", async () => {
+  test('decoratorOnClass3.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -48,7 +48,7 @@ let c = new C();`,
       [],
     );
   });
-  test("decoratorOnClass4.es6", async () => {
+  test('decoratorOnClass4.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -58,7 +58,7 @@ export default class {
       [],
     );
   });
-  test("decoratorOnClass5.es6", async () => {
+  test('decoratorOnClass5.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -72,7 +72,7 @@ let c = new C();`,
       [],
     );
   });
-  test("decoratorOnClass6.es6", async () => {
+  test('decoratorOnClass6.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -86,7 +86,7 @@ let c = new C();`,
       [],
     );
   });
-  test("decoratorOnClass7.es6", async () => {
+  test('decoratorOnClass7.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -100,7 +100,7 @@ let c = new C();`,
       [],
     );
   });
-  test("decoratorOnClass8.es6", async () => {
+  test('decoratorOnClass8.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -111,7 +111,7 @@ export default class {
       [],
     );
   });
-  test("decoratorOnClassMethod1.es6", async () => {
+  test('decoratorOnClassMethod1.es6', async () => {
     await expectPass(
       `declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -121,7 +121,7 @@ export default class {
       [],
     );
   });
-  test("decoratorOnClassMethodParameter1.es6", async () => {
+  test('decoratorOnClassMethodParameter1.es6', async () => {
     await expectPass(
       `declare function dec(target: Object, propertyKey: string | symbol, parameterIndex: number): void;
 
@@ -131,7 +131,7 @@ export default class {
       [],
     );
   });
-  test("decoratorOnClassProperty1.es6", async () => {
+  test('decoratorOnClassProperty1.es6', async () => {
     await expectPass(
       `declare function dec(target: any, propertyKey: string): void;
 

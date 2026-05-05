@@ -30,7 +30,7 @@ export function toJsonStats(stats: MetricStats): JsonStats {
 
 export function computeMetricStats(samples: number[]): MetricStats {
   if (samples.length === 0) {
-    throw new Error("cannot compute benchmark stats from empty samples");
+    throw new Error('cannot compute benchmark stats from empty samples');
   }
 
   const sorted = [...samples].sort((a, b) => a - b);
@@ -51,7 +51,7 @@ export function computeMetricStats(samples: number[]): MetricStats {
   };
 }
 
-export function formatMetric(n: number, unit: "ms" | "us" = "ms"): string {
+export function formatMetric(n: number, unit: 'ms' | 'us' = 'ms'): string {
   const rounded = n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2);
   return `${rounded}${unit}`;
 }

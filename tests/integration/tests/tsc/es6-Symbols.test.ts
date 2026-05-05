@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es6/Symbols", () => {
-  test("symbolDeclarationEmit1", async () => {
+describe('TSC: es6/Symbols', () => {
+  test('symbolDeclarationEmit1', async () => {
     await expectPass(
       `class C {
     [Symbol.toPrimitive]: number;
@@ -10,7 +10,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit10", async () => {
+  test('symbolDeclarationEmit10', async () => {
     await expectPass(
       `var obj = {
     get [Symbol.isConcatSpreadable]() { return '' },
@@ -19,7 +19,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit11", async () => {
+  test('symbolDeclarationEmit11', async () => {
     await expectPass(
       `class C {
     static [Symbol.iterator] = 0;
@@ -30,7 +30,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit12", async () => {
+  test('symbolDeclarationEmit12', async () => {
     await expectPass(
       `namespace M {
     interface I { }
@@ -47,7 +47,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit13", async () => {
+  test('symbolDeclarationEmit13', async () => {
     await expectPass(
       `class C {
     get [Symbol.toPrimitive]() { return ""; }
@@ -56,7 +56,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit14", async () => {
+  test('symbolDeclarationEmit14', async () => {
     await expectPass(
       `class C {
     get [Symbol.toPrimitive]() { return ""; }
@@ -65,7 +65,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit2", async () => {
+  test('symbolDeclarationEmit2', async () => {
     await expectPass(
       `class C {
     [Symbol.toPrimitive] = "";
@@ -73,7 +73,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit3", async () => {
+  test('symbolDeclarationEmit3', async () => {
     await expectPass(
       `class C {
     [Symbol.toPrimitive](x: number);
@@ -83,7 +83,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit4", async () => {
+  test('symbolDeclarationEmit4', async () => {
     await expectPass(
       `class C {
     get [Symbol.toPrimitive]() { return ""; }
@@ -92,7 +92,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit5", async () => {
+  test('symbolDeclarationEmit5', async () => {
     await expectPass(
       `interface I {
     [Symbol.isConcatSpreadable](): string;
@@ -100,7 +100,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit6", async () => {
+  test('symbolDeclarationEmit6', async () => {
     await expectPass(
       `interface I {
     [Symbol.isConcatSpreadable]: string;
@@ -108,7 +108,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit7", async () => {
+  test('symbolDeclarationEmit7', async () => {
     await expectPass(
       `var obj: {
     [Symbol.isConcatSpreadable]: string;
@@ -116,7 +116,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit8", async () => {
+  test('symbolDeclarationEmit8', async () => {
     await expectPass(
       `var obj = {
     [Symbol.isConcatSpreadable]: 0
@@ -124,7 +124,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolDeclarationEmit9", async () => {
+  test('symbolDeclarationEmit9', async () => {
     await expectPass(
       `var obj = {
     [Symbol.isConcatSpreadable]() { }
@@ -132,7 +132,7 @@ describe("TSC: es6/Symbols", () => {
       [],
     );
   });
-  test("symbolProperty1", async () => {
+  test('symbolProperty1', async () => {
     await expectPass(
       `var s: symbol;
 var x = {
@@ -145,7 +145,7 @@ var x = {
       [],
     );
   });
-  test("symbolProperty10", async () => {
+  test('symbolProperty10', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator]: { x; y };
@@ -160,7 +160,7 @@ var c: C = i;`,
       [],
     );
   });
-  test("symbolProperty11", async () => {
+  test('symbolProperty11', async () => {
     await expectPass(
       `class C { }
 interface I {
@@ -173,7 +173,7 @@ var c: C = i;`,
       [],
     );
   });
-  test("symbolProperty12", async () => {
+  test('symbolProperty12', async () => {
     await expectPass(
       `class C {
     private [Symbol.iterator]: { x };
@@ -188,7 +188,7 @@ var c: C = i;`,
       [],
     );
   });
-  test("symbolProperty13", async () => {
+  test('symbolProperty13', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator]: { x; y };
@@ -209,7 +209,7 @@ bar(i);`,
       [],
     );
   });
-  test("symbolProperty14", async () => {
+  test('symbolProperty14', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator]: { x; y };
@@ -230,7 +230,7 @@ bar(i);`,
       [],
     );
   });
-  test("symbolProperty15", async () => {
+  test('symbolProperty15', async () => {
     await expectPass(
       `class C { }
 interface I {
@@ -249,7 +249,7 @@ bar(i);`,
       [],
     );
   });
-  test("symbolProperty16", async () => {
+  test('symbolProperty16', async () => {
     await expectPass(
       `class C {
     private [Symbol.iterator]: { x };
@@ -270,7 +270,7 @@ bar(i);`,
       [],
     );
   });
-  test("symbolProperty17", async () => {
+  test('symbolProperty17', async () => {
     await expectPass(
       `interface I {
     [Symbol.iterator]: number;
@@ -283,7 +283,7 @@ var it = i[Symbol.iterator];`,
       [],
     );
   });
-  test("symbolProperty18", async () => {
+  test('symbolProperty18', async () => {
     await expectPass(
       `var i = {
     [Symbol.iterator]: 0,
@@ -297,7 +297,7 @@ i[Symbol.toPrimitive] = false;`,
       [],
     );
   });
-  test("symbolProperty19", async () => {
+  test('symbolProperty19', async () => {
     await expectPass(
       `var i = {
     [Symbol.iterator]: { p: null },
@@ -309,7 +309,7 @@ var str = i[Symbol.toStringTag]();`,
       [],
     );
   });
-  test("symbolProperty2", async () => {
+  test('symbolProperty2', async () => {
     await expectPass(
       `var s = Symbol();
 var x = {
@@ -322,7 +322,7 @@ var x = {
       [],
     );
   });
-  test("symbolProperty20", async () => {
+  test('symbolProperty20', async () => {
     await expectPass(
       `interface I {
     [Symbol.iterator]: (s: string) => string;
@@ -336,7 +336,7 @@ var i: I = {
       [],
     );
   });
-  test("symbolProperty21", async () => {
+  test('symbolProperty21', async () => {
     await expectPass(
       `interface I<T, U> {
     [Symbol.unscopables]: T;
@@ -353,7 +353,7 @@ foo({
       [],
     );
   });
-  test("symbolProperty22", async () => {
+  test('symbolProperty22', async () => {
     await expectPass(
       `interface I<T, U> {
     [Symbol.unscopables](x: T): U;
@@ -365,7 +365,7 @@ foo("", { [Symbol.unscopables]: s => s.length });`,
       [],
     );
   });
-  test("symbolProperty23", async () => {
+  test('symbolProperty23', async () => {
     await expectPass(
       `interface I {
     [Symbol.toPrimitive]: () => boolean;
@@ -379,7 +379,7 @@ class C implements I {
       [],
     );
   });
-  test("symbolProperty24", async () => {
+  test('symbolProperty24', async () => {
     await expectPass(
       `interface I {
     [Symbol.toPrimitive]: () => boolean;
@@ -393,7 +393,7 @@ class C implements I {
       [],
     );
   });
-  test("symbolProperty25", async () => {
+  test('symbolProperty25', async () => {
     await expectPass(
       `interface I {
     [Symbol.toPrimitive]: () => boolean;
@@ -407,7 +407,7 @@ class C implements I {
       [],
     );
   });
-  test("symbolProperty26", async () => {
+  test('symbolProperty26', async () => {
     await expectPass(
       `class C1 {
     [Symbol.toStringTag]() {
@@ -423,7 +423,7 @@ class C2 extends C1 {
       [],
     );
   });
-  test("symbolProperty27", async () => {
+  test('symbolProperty27', async () => {
     await expectPass(
       `class C1 {
     [Symbol.toStringTag]() {
@@ -439,7 +439,7 @@ class C2 extends C1 {
       [],
     );
   });
-  test("symbolProperty28", async () => {
+  test('symbolProperty28', async () => {
     await expectPass(
       `class C1 {
     [Symbol.toStringTag]() {
@@ -454,7 +454,7 @@ var obj = c[Symbol.toStringTag]().x;`,
       [],
     );
   });
-  test("symbolProperty29", async () => {
+  test('symbolProperty29', async () => {
     await expectPass(
       `class C1 {
     [Symbol.toStringTag]() {
@@ -465,7 +465,7 @@ var obj = c[Symbol.toStringTag]().x;`,
       [],
     );
   });
-  test("symbolProperty3", async () => {
+  test('symbolProperty3', async () => {
     await expectPass(
       `var s = Symbol;
 var x = {
@@ -478,7 +478,7 @@ var x = {
       [],
     );
   });
-  test("symbolProperty30", async () => {
+  test('symbolProperty30', async () => {
     await expectPass(
       `class C1 {
     [Symbol.toStringTag]() {
@@ -489,7 +489,7 @@ var x = {
       [],
     );
   });
-  test("symbolProperty31", async () => {
+  test('symbolProperty31', async () => {
     await expectPass(
       `class C1 {
     [Symbol.toStringTag]() {
@@ -502,7 +502,7 @@ class C2 extends C1 {
       [],
     );
   });
-  test("symbolProperty32", async () => {
+  test('symbolProperty32', async () => {
     await expectPass(
       `class C1 {
     [Symbol.toStringTag]() {
@@ -515,7 +515,7 @@ class C2 extends C1 {
       [],
     );
   });
-  test("symbolProperty33", async () => {
+  test('symbolProperty33', async () => {
     await expectPass(
       `class C1 extends C2 {
     [Symbol.toStringTag]() {
@@ -528,7 +528,7 @@ class C2 {
       [],
     );
   });
-  test("symbolProperty34", async () => {
+  test('symbolProperty34', async () => {
     await expectPass(
       `class C1 extends C2 {
     [Symbol.toStringTag]() {
@@ -541,7 +541,7 @@ class C2 {
       [],
     );
   });
-  test("symbolProperty35", async () => {
+  test('symbolProperty35', async () => {
     await expectPass(
       `interface I1 {
     [Symbol.toStringTag](): { x: string }
@@ -554,7 +554,7 @@ interface I3 extends I1, I2 { }`,
       [],
     );
   });
-  test("symbolProperty36", async () => {
+  test('symbolProperty36', async () => {
     await expectPass(
       `var x = {
     [Symbol.isConcatSpreadable]: 0,
@@ -563,7 +563,7 @@ interface I3 extends I1, I2 { }`,
       [],
     );
   });
-  test("symbolProperty37", async () => {
+  test('symbolProperty37', async () => {
     await expectPass(
       `interface I {
     [Symbol.isConcatSpreadable]: string;
@@ -572,7 +572,7 @@ interface I3 extends I1, I2 { }`,
       [],
     );
   });
-  test("symbolProperty38", async () => {
+  test('symbolProperty38', async () => {
     await expectPass(
       `interface I {
     [Symbol.isConcatSpreadable]: string;
@@ -583,7 +583,7 @@ interface I {
       [],
     );
   });
-  test("symbolProperty39", async () => {
+  test('symbolProperty39', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator](x: string): string;
@@ -598,7 +598,7 @@ interface I {
       [],
     );
   });
-  test("symbolProperty4", async () => {
+  test('symbolProperty4', async () => {
     await expectPass(
       `var x = {
     [Symbol()]: 0,
@@ -610,7 +610,7 @@ interface I {
       [],
     );
   });
-  test("symbolProperty40", async () => {
+  test('symbolProperty40', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator](x: string): string;
@@ -627,7 +627,7 @@ c[Symbol.iterator](0);
       [],
     );
   });
-  test("symbolProperty41", async () => {
+  test('symbolProperty41', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator](x: string): { x: string };
@@ -644,7 +644,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty42", async () => {
+  test('symbolProperty42', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator](x: string): string;
@@ -656,7 +656,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty43", async () => {
+  test('symbolProperty43', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator](x: string): string;
@@ -665,7 +665,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty44", async () => {
+  test('symbolProperty44', async () => {
     await expectPass(
       `class C {
     get [Symbol.hasInstance]() {
@@ -678,7 +678,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty45", async () => {
+  test('symbolProperty45', async () => {
     await expectPass(
       `class C {
     get [Symbol.hasInstance]() {
@@ -691,7 +691,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty46", async () => {
+  test('symbolProperty46', async () => {
     await expectPass(
       `class C {
     get [Symbol.hasInstance]() {
@@ -707,7 +707,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty47", async () => {
+  test('symbolProperty47', async () => {
     await expectPass(
       `class C {
     get [Symbol.hasInstance]() {
@@ -723,7 +723,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty48", async () => {
+  test('symbolProperty48', async () => {
     await expectPass(
       `namespace M {
     var Symbol;
@@ -735,7 +735,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty49", async () => {
+  test('symbolProperty49', async () => {
     await expectPass(
       `namespace M {
     export var Symbol;
@@ -747,7 +747,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty5", async () => {
+  test('symbolProperty5', async () => {
     await expectPass(
       `var x = {
     [Symbol.iterator]: 0,
@@ -759,7 +759,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty50", async () => {
+  test('symbolProperty50', async () => {
     await expectPass(
       `namespace M {
     interface Symbol { }
@@ -771,7 +771,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty51", async () => {
+  test('symbolProperty51', async () => {
     await expectPass(
       `namespace M {
     namespace Symbol { }
@@ -783,7 +783,7 @@ c[Symbol.iterator]("hello");
       [],
     );
   });
-  test("symbolProperty52", async () => {
+  test('symbolProperty52', async () => {
     await expectPass(
       `var obj = {
     [Symbol.nonsense]: 0
@@ -795,7 +795,7 @@ obj[Symbol.nonsense];`,
       [],
     );
   });
-  test("symbolProperty53", async () => {
+  test('symbolProperty53', async () => {
     await expectPass(
       `var obj = {
     [Symbol.for]: 0
@@ -805,7 +805,7 @@ obj[Symbol.for];`,
       [],
     );
   });
-  test("symbolProperty54", async () => {
+  test('symbolProperty54', async () => {
     await expectPass(
       `var obj = {
     [Symbol.prototype]: 0
@@ -813,7 +813,7 @@ obj[Symbol.for];`,
       [],
     );
   });
-  test("symbolProperty55", async () => {
+  test('symbolProperty55', async () => {
     await expectPass(
       `var obj = {
     [Symbol.iterator]: 0
@@ -828,7 +828,7 @@ namespace M {
       [],
     );
   });
-  test("symbolProperty56", async () => {
+  test('symbolProperty56', async () => {
     await expectPass(
       `var obj = {
     [Symbol.iterator]: 0
@@ -843,7 +843,7 @@ namespace M {
       [],
     );
   });
-  test("symbolProperty57", async () => {
+  test('symbolProperty57', async () => {
     await expectPass(
       `var obj = {
     [Symbol.iterator]: 0
@@ -854,7 +854,7 @@ obj[Symbol["nonsense"]];`,
       [],
     );
   });
-  test("symbolProperty58", async () => {
+  test('symbolProperty58', async () => {
     await expectPass(
       `interface SymbolConstructor {
     foo: string;
@@ -866,7 +866,7 @@ var obj = {
       [],
     );
   });
-  test("symbolProperty59", async () => {
+  test('symbolProperty59', async () => {
     await expectPass(
       `interface I {
     [Symbol.keyFor]: string;
@@ -874,7 +874,7 @@ var obj = {
       [],
     );
   });
-  test("symbolProperty6", async () => {
+  test('symbolProperty6', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator] = 0;
@@ -887,7 +887,7 @@ var obj = {
       [],
     );
   });
-  test("symbolProperty60", async () => {
+  test('symbolProperty60', async () => {
     await expectPass(
       `// https://github.com/Microsoft/TypeScript/issues/20146
 interface I1 {
@@ -914,7 +914,7 @@ interface I4 {
       [],
     );
   });
-  test("symbolProperty61", async () => {
+  test('symbolProperty61', async () => {
     await expectPass(
       `
 declare global {
@@ -949,7 +949,7 @@ from(new MyObservable(42))`,
       [],
     );
   });
-  test("symbolProperty7", async () => {
+  test('symbolProperty7', async () => {
     await expectPass(
       `class C {
     [Symbol()] = 0;
@@ -962,7 +962,7 @@ from(new MyObservable(42))`,
       [],
     );
   });
-  test("symbolProperty8", async () => {
+  test('symbolProperty8', async () => {
     await expectPass(
       `interface I {
     [Symbol.unscopables]: number;
@@ -971,7 +971,7 @@ from(new MyObservable(42))`,
       [],
     );
   });
-  test("symbolProperty9", async () => {
+  test('symbolProperty9', async () => {
     await expectPass(
       `class C {
     [Symbol.iterator]: { x; y };
@@ -986,7 +986,7 @@ var c: C = i;`,
       [],
     );
   });
-  test("symbolType1", async () => {
+  test('symbolType1', async () => {
     await expectPass(
       `Symbol() instanceof Symbol;
 Symbol instanceof Symbol();
@@ -995,7 +995,7 @@ Symbol instanceof (Symbol() || {});`,
       [],
     );
   });
-  test("symbolType10", async () => {
+  test('symbolType10', async () => {
     await expectPass(
       `var s = Symbol.for("bitwise");
 s & s;
@@ -1007,7 +1007,7 @@ s & 0;
       [],
     );
   });
-  test("symbolType11", async () => {
+  test('symbolType11', async () => {
     await expectPass(
       `var s = Symbol.for("logical");
 s && s;
@@ -1019,7 +1019,7 @@ s || 1;
       [],
     );
   });
-  test("symbolType12", async () => {
+  test('symbolType12', async () => {
     await expectPass(
       `var s = Symbol.for("assign");
 var str = "";
@@ -1052,7 +1052,7 @@ str += (s || str);`,
       [],
     );
   });
-  test("symbolType13", async () => {
+  test('symbolType13', async () => {
     await expectPass(
       `var s = Symbol();
 var x: any;
@@ -1063,10 +1063,10 @@ for (var y in s) { }`,
       [],
     );
   });
-  test("symbolType14", async () => {
+  test('symbolType14', async () => {
     await expectPass(`new Symbol();`, []);
   });
-  test("symbolType15", async () => {
+  test('symbolType15', async () => {
     await expectPass(
       `declare var sym: symbol;
 var symObj: Symbol;
@@ -1076,7 +1076,7 @@ sym = symObj;`,
       [],
     );
   });
-  test("symbolType16", async () => {
+  test('symbolType16', async () => {
     await expectPass(
       `interface Symbol {
     newSymbolProp: number;
@@ -1087,7 +1087,7 @@ sym.newSymbolProp;`,
       [],
     );
   });
-  test("symbolType17", async () => {
+  test('symbolType17', async () => {
     await expectPass(
       `interface Foo { prop }
 var x: symbol | Foo;
@@ -1102,7 +1102,7 @@ else {
       [],
     );
   });
-  test("symbolType18", async () => {
+  test('symbolType18', async () => {
     await expectPass(
       `interface Foo { prop }
 var x: symbol | Foo;
@@ -1117,7 +1117,7 @@ else {
       [],
     );
   });
-  test("symbolType19", async () => {
+  test('symbolType19', async () => {
     await expectPass(
       `enum E { }
 var x: symbol | E;
@@ -1132,21 +1132,21 @@ else {
       [],
     );
   });
-  test("symbolType2", async () => {
+  test('symbolType2', async () => {
     await expectPass(
       `Symbol.isConcatSpreadable in {};
 "" in Symbol.toPrimitive;`,
       [],
     );
   });
-  test("symbolType20", async () => {
+  test('symbolType20', async () => {
     await expectPass(
       `//@target: ES6
 interface symbol { }`,
       [],
     );
   });
-  test("symbolType3", async () => {
+  test('symbolType3', async () => {
     await expectPass(
       `var s = Symbol();
 delete Symbol.iterator;
@@ -1163,7 +1163,7 @@ typeof Symbol.toStringTag;
       [],
     );
   });
-  test("symbolType4", async () => {
+  test('symbolType4', async () => {
     await expectPass(
       `var s = Symbol.for("postfix");
 s++;
@@ -1171,7 +1171,7 @@ s--;`,
       [],
     );
   });
-  test("symbolType5", async () => {
+  test('symbolType5', async () => {
     await expectPass(
       `var s = Symbol.for("multiply");
 s * s;
@@ -1183,7 +1183,7 @@ s * 0;
       [],
     );
   });
-  test("symbolType6", async () => {
+  test('symbolType6', async () => {
     await expectPass(
       `var s = Symbol.for("add");
 var a: any;
@@ -1203,7 +1203,7 @@ s - 0;
       [],
     );
   });
-  test("symbolType7", async () => {
+  test('symbolType7', async () => {
     await expectPass(
       `var s = Symbol.for("shift");
 s << s;
@@ -1215,7 +1215,7 @@ s >>> 0;`,
       [],
     );
   });
-  test("symbolType8", async () => {
+  test('symbolType8', async () => {
     await expectPass(
       `var s = Symbol.for("compare");
 s < s;
@@ -1232,7 +1232,7 @@ s >= 0;
       [],
     );
   });
-  test("symbolType9", async () => {
+  test('symbolType9', async () => {
     await expectPass(
       `var s = Symbol.for("equal");
 s == s;

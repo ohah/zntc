@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
-import { runFixture } from "../helpers";
+import { describe, expect, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
+import { runFixture } from '../helpers';
 
-describe("TSC: es6/for-ofStatements", () => {
-  test("for-of-excess-declarations", async () => {
+describe('TSC: es6/for-ofStatements', () => {
+  test('for-of-excess-declarations', async () => {
     await expectError(
       `for (const a, { [b]: c} of [1]) {
 
@@ -11,7 +11,7 @@ describe("TSC: es6/for-ofStatements", () => {
       [],
     );
   });
-  test("for-of1", async () => {
+  test('for-of1', async () => {
     await expectPass(
       `//@target: ES6
 var v;
@@ -19,7 +19,7 @@ for (v of []) { }`,
       [],
     );
   });
-  test("for-of10", async () => {
+  test('for-of10', async () => {
     await expectPass(
       `//@target: ES6
 var v: string;
@@ -27,7 +27,7 @@ for (v of [0]) { }`,
       [],
     );
   });
-  test("for-of11", async () => {
+  test('for-of11', async () => {
     await expectPass(
       `//@target: ES6
 var v: string;
@@ -35,7 +35,7 @@ for (v of [0, ""]) { }`,
       [],
     );
   });
-  test("for-of12", async () => {
+  test('for-of12', async () => {
     await expectPass(
       `//@target: ES6
 var v: string;
@@ -43,7 +43,7 @@ for (v of [0, ""].values()) { }`,
       [],
     );
   });
-  test("for-of13", async () => {
+  test('for-of13', async () => {
     await expectPass(
       `//@target: ES6
 var v: string;
@@ -51,7 +51,7 @@ for (v of [""].values()) { }`,
       [],
     );
   });
-  test("for-of14", async () => {
+  test('for-of14', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -65,7 +65,7 @@ for (v of new MyStringIterator) { } // Should fail because the iterator is not i
       [],
     );
   });
-  test("for-of15", async () => {
+  test('for-of15', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -82,7 +82,7 @@ for (v of new MyStringIterator) { } // Should fail`,
       [],
     );
   });
-  test("for-of16", async () => {
+  test('for-of16', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -98,7 +98,7 @@ for (v of new MyStringIterator) { } // Should still fail (related errors should 
       [],
     );
   });
-  test("for-of17", async () => {
+  test('for-of17', async () => {
     await expectPass(
       `//@target: ES6
 class NumberIterator {
@@ -118,7 +118,7 @@ for (v of new NumberIterator) { } // Should succeed`,
       [],
     );
   });
-  test("for-of18", async () => {
+  test('for-of18', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -138,7 +138,7 @@ for (v of new MyStringIterator) { } // Should succeed`,
       [],
     );
   });
-  test("for-of19", async () => {
+  test('for-of19', async () => {
     await expectPass(
       `//@target: ES6
 class Foo { }
@@ -160,7 +160,7 @@ for (var v of new FooIterator) {
       [],
     );
   });
-  test("for-of2", async () => {
+  test('for-of2', async () => {
     await expectError(
       `//@target: ES6
 const v;
@@ -168,7 +168,7 @@ for (v of []) { }`,
       [],
     );
   });
-  test("for-of20", async () => {
+  test('for-of20', async () => {
     await expectPass(
       `//@target: ES6
 class Foo { }
@@ -190,7 +190,7 @@ for (let v of new FooIterator) {
       [],
     );
   });
-  test("for-of21", async () => {
+  test('for-of21', async () => {
     await expectPass(
       `//@target: ES6
 class Foo { }
@@ -212,7 +212,7 @@ for (const v of new FooIterator) {
       [],
     );
   });
-  test("for-of22", async () => {
+  test('for-of22', async () => {
     await expectPass(
       `//@target: ES6
 class Foo { }
@@ -235,7 +235,7 @@ for (var v of new FooIterator) {
       [],
     );
   });
-  test("for-of23", async () => {
+  test('for-of23', async () => {
     await expectPass(
       `//@target: ES6
 class Foo { }
@@ -257,7 +257,7 @@ for (const v of new FooIterator) {
       [],
     );
   });
-  test("for-of24", async () => {
+  test('for-of24', async () => {
     await expectPass(
       `//@target: ES6
 var x: any;
@@ -266,7 +266,7 @@ for (var v of x) { }
       [],
     );
   });
-  test("for-of25", async () => {
+  test('for-of25', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -280,7 +280,7 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of26", async () => {
+  test('for-of26', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -297,7 +297,7 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of27", async () => {
+  test('for-of27', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -308,7 +308,7 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of28", async () => {
+  test('for-of28', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -322,7 +322,7 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of29", async () => {
+  test('for-of29', async () => {
     // tsc type-check error only — parse level 통과 (optional computed method signature). (#1767)
     await expectPass(
       `//@target: ES6
@@ -335,7 +335,7 @@ for (var v of iterableWithOptionalIterator) { }
       [],
     );
   });
-  test("for-of3", async () => {
+  test('for-of3', async () => {
     await expectError(
       `//@target: ES6
 var v: any;
@@ -343,7 +343,7 @@ for (v++ of []) { }`,
       [],
     );
   });
-  test("for-of30", async () => {
+  test('for-of30', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -365,7 +365,7 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of31", async () => {
+  test('for-of31', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -385,14 +385,14 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of32", async () => {
+  test('for-of32', async () => {
     await expectPass(
       `//@target: ES6
 for (var v of v) { }`,
       [],
     );
   });
-  test("for-of33", async () => {
+  test('for-of33', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -405,7 +405,7 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of34", async () => {
+  test('for-of34', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -422,7 +422,7 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of35", async () => {
+  test('for-of35', async () => {
     await expectPass(
       `//@target: ES6
 class MyStringIterator {
@@ -442,7 +442,7 @@ for (var v of new MyStringIterator) { }`,
       [],
     );
   });
-  test("for-of36", async () => {
+  test('for-of36', async () => {
     await expectPass(
       `//@target: ES6
 var tuple: [string, boolean] = ["", true];
@@ -452,7 +452,7 @@ for (var v of tuple) {
       [],
     );
   });
-  test("for-of37", async () => {
+  test('for-of37', async () => {
     await expectPass(
       `//@target: ES6
 var map = new Map([["", true]]);
@@ -462,7 +462,7 @@ for (var v of map) {
       [],
     );
   });
-  test("for-of38", async () => {
+  test('for-of38', async () => {
     await expectPass(
       `//@target: ES6
 var map = new Map([["", true]]);
@@ -473,7 +473,7 @@ for (var [k, v] of map) {
       [],
     );
   });
-  test("for-of39", async () => {
+  test('for-of39', async () => {
     await expectPass(
       `// @lib: es2015
 var map = new Map([["", true], ["", 0]]);
@@ -484,7 +484,7 @@ for (var [k, v] of map) {
       [],
     );
   });
-  test("for-of4", async () => {
+  test('for-of4', async () => {
     await expectPass(
       `//@target: ES6
 for (var v of [0]) {
@@ -493,7 +493,7 @@ for (var v of [0]) {
       [],
     );
   });
-  test("for-of40", async () => {
+  test('for-of40', async () => {
     await expectPass(
       `//@target: ES6
 var map = new Map([["", true]]);
@@ -504,7 +504,7 @@ for (var [k = "", v = false] of map) {
       [],
     );
   });
-  test("for-of41", async () => {
+  test('for-of41', async () => {
     await expectPass(
       `//@target: ES6
 var array = [{x: [0], y: {p: ""}}]
@@ -515,7 +515,7 @@ for (var {x: [a], y: {p}} of array) {
       [],
     );
   });
-  test("for-of42", async () => {
+  test('for-of42', async () => {
     await expectPass(
       `//@target: ES6
 var array = [{ x: "", y: 0 }]
@@ -526,7 +526,7 @@ for (var {x: a, y: b} of array) {
       [],
     );
   });
-  test("for-of43", async () => {
+  test('for-of43', async () => {
     await expectPass(
       `//@target: ES6
 var array = [{ x: "", y: 0 }]
@@ -537,7 +537,7 @@ for (var {x: a = "", y: b = true} of array) {
       [],
     );
   });
-  test("for-of44", async () => {
+  test('for-of44', async () => {
     await expectPass(
       `//@target: ES6
 var array: [number, string | boolean | symbol][] = [[0, ""], [0, true], [1, Symbol()]]
@@ -548,7 +548,7 @@ for (var [num, strBoolSym] of array) {
       [],
     );
   });
-  test("for-of45", async () => {
+  test('for-of45', async () => {
     await expectPass(
       `//@target: ES6
 var k: string, v: boolean;
@@ -560,7 +560,7 @@ for ([k = "", v = false] of map) {
       [],
     );
   });
-  test("for-of46", async () => {
+  test('for-of46', async () => {
     await expectPass(
       `//@target: ES6
 var k: string, v: boolean;
@@ -572,7 +572,7 @@ for ([k = false, v = ""] of map) {
       [],
     );
   });
-  test("for-of47", async () => {
+  test('for-of47', async () => {
     await expectPass(
       `//@target: ES6
 var x: string, y: number;
@@ -585,7 +585,7 @@ for ({x, y: y = E.x} of array) {
       [],
     );
   });
-  test("for-of48", async () => {
+  test('for-of48', async () => {
     await expectPass(
       `//@target: ES6
 var x: string, y: number;
@@ -598,7 +598,7 @@ for ({x, y = E.x} of array) {
       [],
     );
   });
-  test("for-of49", async () => {
+  test('for-of49', async () => {
     await expectPass(
       `//@target: ES6
 var k: string, v: boolean;
@@ -610,7 +610,7 @@ for ([k, ...[v]] of map) {
       [],
     );
   });
-  test("for-of5", async () => {
+  test('for-of5', async () => {
     await expectPass(
       `//@target: ES6
 for (let v of [0]) {
@@ -619,7 +619,7 @@ for (let v of [0]) {
       [],
     );
   });
-  test("for-of50", async () => {
+  test('for-of50', async () => {
     await expectPass(
       `//@target: ES6
 var map = new Map([["", true]]);
@@ -630,21 +630,21 @@ for (const [k, v] of map) {
       [],
     );
   });
-  test("for-of51", async () => {
+  test('for-of51', async () => {
     await expectError(
       `//@target: ES6
 for (let let of []) {}`,
       [],
     );
   });
-  test("for-of52", async () => {
+  test('for-of52', async () => {
     await expectPass(
       `//@target: ES6
 for (let [v, v] of [[]]) {}`,
       [],
     );
   });
-  test("for-of53", async () => {
+  test('for-of53', async () => {
     await expectPass(
       `//@target: ES6
 for (let v of []) {
@@ -653,7 +653,7 @@ for (let v of []) {
       [],
     );
   });
-  test("for-of54", async () => {
+  test('for-of54', async () => {
     await expectPass(
       `//@target: ES6
 for (let v of []) {
@@ -662,7 +662,7 @@ for (let v of []) {
       [],
     );
   });
-  test("for-of55", async () => {
+  test('for-of55', async () => {
     await expectPass(
       `//@target: ES6
 let v = [1];
@@ -672,17 +672,17 @@ for (let v of v) {
       [],
     );
   });
-  test("for-of56", async () => {
+  test('for-of56', async () => {
     await expectPass(`for (var let of []) {}`, []);
   });
-  test("for-of57", async () => {
+  test('for-of57', async () => {
     await expectPass(
       `var iter: Iterable<number>;
 for (let num of iter) { }`,
       [],
     );
   });
-  test("for-of58", async () => {
+  test('for-of58', async () => {
     await expectPass(
       `type X = { x: 'x' };
 type Y = { y: 'y' };
@@ -696,7 +696,7 @@ for (const item of arr) {
       [],
     );
   });
-  test("for-of6", async () => {
+  test('for-of6', async () => {
     await expectPass(
       `//@target: ES6
 for (v of [0]) {
@@ -705,7 +705,7 @@ for (v of [0]) {
       [],
     );
   });
-  test("for-of7", async () => {
+  test('for-of7', async () => {
     await expectPass(
       `//@target: ES6
 v;
@@ -713,7 +713,7 @@ for (let v of [0]) { }`,
       [],
     );
   });
-  test("for-of8", async () => {
+  test('for-of8', async () => {
     await expectPass(
       `//@target: ES6
 v;
@@ -721,7 +721,7 @@ for (var v of [0]) { }`,
       [],
     );
   });
-  test("for-of9", async () => {
+  test('for-of9', async () => {
     await expectPass(
       `//@target: ES6
 var v: string;
@@ -730,10 +730,10 @@ for (v of "hello") { }`,
       [],
     );
   });
-  test("for-await-of downlevel to ES2017", async () => {
+  test('for-await-of downlevel to ES2017', async () => {
     const result = await runFixture(
       {
-        "input.ts": `
+        'input.ts': `
 async function collect(iter) {
   const out = [];
   for await (const value of iter) {
@@ -743,18 +743,18 @@ async function collect(iter) {
 }
 `,
       },
-      "input.ts",
-      ["--target=es2017"],
+      'input.ts',
+      ['--target=es2017'],
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).not.toContain("for await");
-    expect(result.stdout).toContain("__asyncValues");
-    expect(result.stdout).toContain("await");
+    expect(result.stdout).not.toContain('for await');
+    expect(result.stdout).toContain('__asyncValues');
+    expect(result.stdout).toContain('await');
   });
-  test("labeled for-await-of downlevel to ES2017", async () => {
+  test('labeled for-await-of downlevel to ES2017', async () => {
     const result = await runFixture(
       {
-        "input.ts": `
+        'input.ts': `
 async function collect(iter) {
   const out = [];
   outer: for await (const value of iter) {
@@ -765,19 +765,19 @@ async function collect(iter) {
 }
 `,
       },
-      "input.ts",
-      ["--target=es2017"],
+      'input.ts',
+      ['--target=es2017'],
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).not.toContain("for await");
-    expect(result.stdout).toContain("__asyncValues");
-    expect(result.stdout).toContain("outer:");
-    expect(result.stdout).toContain("continue outer");
+    expect(result.stdout).not.toContain('for await');
+    expect(result.stdout).toContain('__asyncValues');
+    expect(result.stdout).toContain('outer:');
+    expect(result.stdout).toContain('continue outer');
   });
-  test("for-await-of preserved at ES2018", async () => {
+  test('for-await-of preserved at ES2018', async () => {
     const result = await runFixture(
       {
-        "input.ts": `
+        'input.ts': `
 async function collect(iter) {
   for await (const value of iter) {
     console.log(value);
@@ -785,11 +785,11 @@ async function collect(iter) {
 }
 `,
       },
-      "input.ts",
-      ["--target=es2018"],
+      'input.ts',
+      ['--target=es2018'],
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("for await");
-    expect(result.stdout).not.toContain("__asyncValues");
+    expect(result.stdout).toContain('for await');
+    expect(result.stdout).not.toContain('__asyncValues');
   });
 });

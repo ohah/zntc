@@ -2,24 +2,24 @@
 // (RN 의 progress bar 호환) 또는 plain application/javascript. sourceMappingURL
 // + sourceURL 주석 추가 (Hermes source map matching 위해 jscSafeUrl).
 
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import * as jscSafeUrl from "jsc-safe-url";
+import * as jscSafeUrl from 'jsc-safe-url';
 
-import { sendText } from "../http-utils.ts";
-import { getCachedSourceMap, type PlatformStateRegistry, waitForBuild } from "../platform-state.ts";
-import { resolvePlatform } from "./_shared.ts";
+import { sendText } from '../http-utils.ts';
+import { getCachedSourceMap, type PlatformStateRegistry, waitForBuild } from '../platform-state.ts';
+import { resolvePlatform } from './_shared.ts';
 
-const HMR_MAP_PREFIX = "/__zts_hmr_map/";
-const MULTIPART_BOUNDARY = "3beqjf3apnqeu3h5jqorms4i";
-const CRLF = "\r\n";
+const HMR_MAP_PREFIX = '/__zts_hmr_map/';
+const MULTIPART_BOUNDARY = '3beqjf3apnqeu3h5jqorms4i';
+const CRLF = '\r\n';
 
 export function isBundleRoute(pathname: string): boolean {
-  return pathname.endsWith(".bundle") || pathname.endsWith(".bundle.js");
+  return pathname.endsWith('.bundle') || pathname.endsWith('.bundle.js');
 }
 
 export function isMapRoute(pathname: string): boolean {
-  return pathname.endsWith(".map") || pathname.endsWith(".bundle.map");
+  return pathname.endsWith('.map') || pathname.endsWith('.bundle.map');
 }
 
 export function isHmrMapRoute(pathname: string): boolean {
@@ -31,7 +31,7 @@ export async function handleBundleRequest(
   res: ServerResponse,
   url: URL,
   registry: PlatformStateRegistry,
-  defaultPlatform: "ios" | "android",
+  defaultPlatform: 'ios' | 'android',
   projectRoot: string,
   port: number,
 ): Promise<void> {
@@ -45,30 +45,30 @@ export async function handleBundleRequest(
       res,
       200,
       `throw new Error(${JSON.stringify(state.buildError)});`,
-      "application/javascript",
+      'application/javascript',
     );
     return;
   }
   if (!state.bundle) {
-    sendText(res, 503, "Bundle not ready yet. Build may have failed - check server logs.");
+    sendText(res, 503, 'Bundle not ready yet. Build may have failed - check server logs.');
     return;
   }
 
   // sourceURL = jscSafeUrl 형태 (Hermes 가 source map 매칭 시 jscSafe URL 기대).
   const host = req.headers.host || `localhost:${port}`;
-  const fullUrl = `http://${host}${url.pathname}${url.search}${url.hash || ""}`;
+  const fullUrl = `http://${host}${url.pathname}${url.search}${url.hash || ''}`;
   const bundleUrl = jscSafeUrl.toJscSafeUrl(fullUrl);
-  const mapPathname = url.pathname.replace(/\.bundle(\.js)?$/, ".map");
+  const mapPathname = url.pathname.replace(/\.bundle(\.js)?$/, '.map');
   const mapUrl = `http://${host}${mapPathname}${url.search}`;
   const bundle = `${state.bundle}\n//# sourceMappingURL=${mapUrl}\n//# sourceURL=${bundleUrl}`;
 
-  if (req.headers.accept === "multipart/mixed") {
+  if (req.headers.accept === 'multipart/mixed') {
     res.writeHead(200, {
-      "Content-Type": `multipart/mixed; boundary="${MULTIPART_BOUNDARY}"`,
-      "Cache-Control": "no-cache",
-      "X-React-Native-Project-Root": projectRoot,
+      'Content-Type': `multipart/mixed; boundary="${MULTIPART_BOUNDARY}"`,
+      'Cache-Control': 'no-cache',
+      'X-React-Native-Project-Root': projectRoot,
     });
-    res.write("If you are seeing this, your client does not support multipart response");
+    res.write('If you are seeing this, your client does not support multipart response');
     res.write(
       `${CRLF}--${MULTIPART_BOUNDARY}${CRLF}` +
         `Content-Type: application/json${CRLF}${CRLF}` +
@@ -90,11 +90,11 @@ export async function handleBundleRequest(
   }
 
   res.writeHead(200, {
-    "Content-Type": "application/javascript; charset=UTF-8",
-    "Content-Length": Buffer.byteLength(bundle),
-    "Cache-Control": "no-cache",
-    "X-React-Native-Project-Root": projectRoot,
-    "Content-Location": bundleUrl,
+    'Content-Type': 'application/javascript; charset=UTF-8',
+    'Content-Length': Buffer.byteLength(bundle),
+    'Cache-Control': 'no-cache',
+    'X-React-Native-Project-Root': projectRoot,
+    'Content-Location': bundleUrl,
   });
   res.end(bundle);
 }
@@ -104,20 +104,20 @@ export function handleMapRequest(
   res: ServerResponse,
   url: URL,
   registry: PlatformStateRegistry,
-  defaultPlatform: "ios" | "android",
+  defaultPlatform: 'ios' | 'android',
 ): void {
   const state = resolvePlatform(url, registry, defaultPlatform);
   const json = getCachedSourceMap(state);
   if (!json) {
-    sendText(res, 404, "Source map not available");
+    sendText(res, 404, 'Source map not available');
     return;
   }
   res.writeHead(200, {
-    "Content-Type": "application/json",
-    "Content-Length": Buffer.byteLength(json),
-    "Access-Control-Allow-Origin": "devtools://devtools",
-    "X-Content-Type-Options": "nosniff",
-    "Cache-Control": "no-cache",
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(json),
+    'Access-Control-Allow-Origin': 'devtools://devtools',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-cache',
   });
   res.end(json);
 }
@@ -127,21 +127,21 @@ export function handleHmrMapRequest(
   res: ServerResponse,
   url: URL,
   registry: PlatformStateRegistry,
-  defaultPlatform: "ios" | "android",
+  defaultPlatform: 'ios' | 'android',
 ): void {
   const state = resolvePlatform(url, registry, defaultPlatform);
   const moduleId = decodeURIComponent(url.pathname.slice(HMR_MAP_PREFIX.length));
   const json = state.handle.getHmrSourceMap(moduleId);
   if (!json) {
-    sendText(res, 404, "HMR source map not found");
+    sendText(res, 404, 'HMR source map not found');
     return;
   }
   res.writeHead(200, {
-    "Content-Type": "application/json",
-    "Content-Length": Buffer.byteLength(json),
-    "Access-Control-Allow-Origin": "devtools://devtools",
-    "X-Content-Type-Options": "nosniff",
-    "Cache-Control": "no-cache",
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(json),
+    'Access-Control-Allow-Origin': 'devtools://devtools',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-cache',
   });
   res.end(json);
 }

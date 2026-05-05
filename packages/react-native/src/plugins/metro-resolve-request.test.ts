@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from 'bun:test';
 
-import type { CustomResolver } from "../metro-resolver-types.ts";
-import { createMetroResolveRequestPlugin } from "./metro-resolve-request.ts";
+import type { CustomResolver } from '../metro-resolver-types.ts';
+import { createMetroResolveRequestPlugin } from './metro-resolve-request.ts';
 
 interface OnResolveHandler {
   (args: { path: string; importer?: string }): { path?: string; disabled?: boolean } | null;
@@ -9,7 +9,7 @@ interface OnResolveHandler {
 
 function captureHandler(opts: {
   resolveRequest: CustomResolver;
-  platform: "ios" | "android" | "web";
+  platform: 'ios' | 'android' | 'web';
 }): OnResolveHandler {
   const plugin = createMetroResolveRequestPlugin(opts);
   let captured: OnResolveHandler | null = null;
@@ -22,82 +22,82 @@ function captureHandler(opts: {
     onTransform() {},
   };
   plugin.setup(fakeBuild as never);
-  if (!captured) throw new Error("handler not registered");
+  if (!captured) throw new Error('handler not registered');
   return captured;
 }
 
-describe("createMetroResolveRequestPlugin", () => {
-  test("Resolution.sourceFile → `{ path }`", () => {
+describe('createMetroResolveRequestPlugin', () => {
+  test('Resolution.sourceFile → `{ path }`', () => {
     const resolver: CustomResolver = (_ctx, name) => ({
-      type: "sourceFile",
+      type: 'sourceFile',
       filePath: `/abs/${name}.ts`,
     });
-    const handler = captureHandler({ resolveRequest: resolver, platform: "ios" });
-    expect(handler({ path: "react", importer: "/abs/origin.ts" })).toEqual({
-      path: "/abs/react.ts",
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });
+    expect(handler({ path: 'react', importer: '/abs/origin.ts' })).toEqual({
+      path: '/abs/react.ts',
     });
   });
 
-  test("Resolution.assetFiles → 첫 element path", () => {
+  test('Resolution.assetFiles → 첫 element path', () => {
     const resolver: CustomResolver = () => ({
-      type: "assetFiles",
-      filePaths: ["/abs/a@2x.png", "/abs/a@3x.png"],
+      type: 'assetFiles',
+      filePaths: ['/abs/a@2x.png', '/abs/a@3x.png'],
     });
-    const handler = captureHandler({ resolveRequest: resolver, platform: "ios" });
-    expect(handler({ path: "./a.png", importer: "/abs/origin.ts" })).toEqual({
-      path: "/abs/a@2x.png",
-    });
-  });
-
-  test("Resolution.assetFiles 빈 배열 → 원래 path 유지", () => {
-    const resolver: CustomResolver = () => ({ type: "assetFiles", filePaths: [] });
-    const handler = captureHandler({ resolveRequest: resolver, platform: "android" });
-    expect(handler({ path: "./missing.png", importer: "/abs/x" })).toEqual({
-      path: "./missing.png",
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });
+    expect(handler({ path: './a.png', importer: '/abs/origin.ts' })).toEqual({
+      path: '/abs/a@2x.png',
     });
   });
 
-  test("Resolution.empty → `{ disabled: true }`", () => {
-    const resolver: CustomResolver = () => ({ type: "empty" });
-    const handler = captureHandler({ resolveRequest: resolver, platform: "ios" });
-    expect(handler({ path: "polyfilled", importer: "/abs/x" })).toEqual({ disabled: true });
+  test('Resolution.assetFiles 빈 배열 → 원래 path 유지', () => {
+    const resolver: CustomResolver = () => ({ type: 'assetFiles', filePaths: [] });
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'android' });
+    expect(handler({ path: './missing.png', importer: '/abs/x' })).toEqual({
+      path: './missing.png',
+    });
   });
 
-  test("default resolver 위임 (sentinel throw) → null (ZTS fallthrough)", () => {
+  test('Resolution.empty → `{ disabled: true }`', () => {
+    const resolver: CustomResolver = () => ({ type: 'empty' });
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });
+    expect(handler({ path: 'polyfilled', importer: '/abs/x' })).toEqual({ disabled: true });
+  });
+
+  test('default resolver 위임 (sentinel throw) → null (ZTS fallthrough)', () => {
     const resolver: CustomResolver = (ctx, name, platform) =>
       ctx.resolveRequest(ctx, name, platform);
-    const handler = captureHandler({ resolveRequest: resolver, platform: "ios" });
-    expect(handler({ path: "react", importer: "/abs/x" })).toBeNull();
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });
+    expect(handler({ path: 'react', importer: '/abs/x' })).toBeNull();
   });
 
-  test("custom resolver 의 일반 throw 는 propagate", () => {
+  test('custom resolver 의 일반 throw 는 propagate', () => {
     const resolver: CustomResolver = () => {
-      throw new Error("custom-error");
+      throw new Error('custom-error');
     };
-    const handler = captureHandler({ resolveRequest: resolver, platform: "ios" });
-    expect(() => handler({ path: "x", importer: "/abs/y" })).toThrow("custom-error");
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });
+    expect(() => handler({ path: 'x', importer: '/abs/y' })).toThrow('custom-error');
   });
 
-  test("platform=web → resolver 에 null 전달 (RN 외 platform 우회)", () => {
-    let receivedPlatform: string | null | undefined = "uninitialized";
+  test('platform=web → resolver 에 null 전달 (RN 외 platform 우회)', () => {
+    let receivedPlatform: string | null | undefined = 'uninitialized';
     const resolver: CustomResolver = (_ctx, _name, platform) => {
       receivedPlatform = platform;
-      return { type: "empty" };
+      return { type: 'empty' };
     };
-    const handler = captureHandler({ resolveRequest: resolver, platform: "web" });
-    handler({ path: "x", importer: "/abs/y" });
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'web' });
+    handler({ path: 'x', importer: '/abs/y' });
     expect(receivedPlatform).toBeNull();
   });
 
-  test("importer 없으면 originModulePath 빈 string", () => {
+  test('importer 없으면 originModulePath 빈 string', () => {
     let receivedOrigin: string | null = null;
     const resolver: CustomResolver = (ctx, _name, _platform) => {
       receivedOrigin = ctx.originModulePath;
-      return { type: "empty" };
+      return { type: 'empty' };
     };
-    const handler = captureHandler({ resolveRequest: resolver, platform: "ios" });
-    handler({ path: "x" });
-    expect(receivedOrigin).toBe("");
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });
+    handler({ path: 'x' });
+    expect(receivedOrigin).toBe('');
   });
 
   test("Metro 'context.resolveRequest' 호출 — fallback 함수가 sentinel throw", () => {
@@ -110,10 +110,10 @@ describe("createMetroResolveRequestPlugin", () => {
         fallbackCalled = true;
         throw _err; // sentinel propagate
       }
-      return { type: "empty" };
+      return { type: 'empty' };
     };
-    const handler = captureHandler({ resolveRequest: resolver, platform: "ios" });
-    expect(handler({ path: "x", importer: "/abs/y" })).toBeNull();
+    const handler = captureHandler({ resolveRequest: resolver, platform: 'ios' });
+    expect(handler({ path: 'x', importer: '/abs/y' })).toBeNull();
     expect(fallbackCalled).toBe(true);
   });
 });

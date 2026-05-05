@@ -1,24 +1,24 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 
-import { joinUrl } from "../url.ts";
-import { collectAppFiles, type NodeRequire, requireFromAppRoot } from "./loader.ts";
+import { joinUrl } from '../url.ts';
+import { collectAppFiles, type NodeRequire, requireFromAppRoot } from './loader.ts';
 
 // 순서는 zts.mjs L892-902 와 동일 — postcss.config.* 이 .postcssrc.* 보다 우선.
 // PR #5e 의 redirect 시점까지 양쪽 sync 유지 (#2539).
 export const POSTCSS_CONFIG_NAMES: readonly string[] = [
-  "postcss.config.mjs",
-  "postcss.config.js",
-  "postcss.config.cjs",
-  "postcss.config.json",
-  ".postcssrc",
-  ".postcssrc.json",
-  ".postcssrc.js",
-  ".postcssrc.cjs",
-  ".postcssrc.mjs",
+  'postcss.config.mjs',
+  'postcss.config.js',
+  'postcss.config.cjs',
+  'postcss.config.json',
+  '.postcssrc',
+  '.postcssrc.json',
+  '.postcssrc.js',
+  '.postcssrc.cjs',
+  '.postcssrc.mjs',
 ];
 
-export const isCssFile = (path: string): boolean => path.endsWith(".css");
+export const isCssFile = (path: string): boolean => path.endsWith('.css');
 
 export function isPostcssConfigFile(path: string): boolean {
   return POSTCSS_CONFIG_NAMES.includes(basename(path));
@@ -48,16 +48,16 @@ export function collectPostcssMessages(
 ): void {
   if (!messages) return;
   for (const message of messages) {
-    if (message.type === "dependency" && typeof message.file === "string") {
+    if (message.type === 'dependency' && typeof message.file === 'string') {
       deps.add(resolve(message.file));
     }
-    if (message.type === "dir-dependency") {
+    if (message.type === 'dir-dependency') {
       const dir =
-        (typeof message.dir === "string" && message.dir) ||
-        (typeof message.directory === "string" && message.directory);
+        (typeof message.dir === 'string' && message.dir) ||
+        (typeof message.directory === 'string' && message.directory);
       if (dir) dirDeps.add(resolve(dir));
     }
-    if (message.type === "context-dependency" && typeof message.file === "string") {
+    if (message.type === 'context-dependency' && typeof message.file === 'string') {
       deps.add(resolve(message.file));
     }
   }
@@ -68,9 +68,9 @@ export function logPostcssProcessed(
   count: number,
   configFile: string | null | undefined,
 ): void {
-  if (logLevel === "silent") return;
+  if (logLevel === 'silent') return;
   console.error(
-    `[postcss] processed ${count} CSS file(s) using ${basename(configFile ?? "postcss config")}`,
+    `[postcss] processed ${count} CSS file(s) using ${basename(configFile ?? 'postcss config')}`,
   );
 }
 
@@ -111,16 +111,16 @@ export async function loadPostcssConfig(
   configEnv: ConfigEnv,
   fallbackRequire: NodeRequire,
 ): Promise<LoadedPostcss | null> {
-  const postcssrc = requireFromAppRoot(root, fallbackRequire, "postcss-load-config") as (
+  const postcssrc = requireFromAppRoot(root, fallbackRequire, 'postcss-load-config') as (
     env: { cwd: string; env: string },
     root: string,
   ) => Promise<PostcssrcConfig>;
-  const postcssModule = requireFromAppRoot(root, fallbackRequire, "postcss") as {
-    default?: LoadedPostcss["postcss"];
-  } & LoadedPostcss["postcss"];
-  const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss["postcss"];
+  const postcssModule = requireFromAppRoot(root, fallbackRequire, 'postcss') as {
+    default?: LoadedPostcss['postcss'];
+  } & LoadedPostcss['postcss'];
+  const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss['postcss'];
   const config = await postcssrc({ cwd: root, env: configEnv.mode }, root).catch((err) => {
-    if ((err as { message?: string })?.message?.includes("No PostCSS Config found")) return null;
+    if ((err as { message?: string })?.message?.includes('No PostCSS Config found')) return null;
     throw err;
   });
   if (!config) return null;
@@ -151,7 +151,7 @@ export async function runPostcssIfConfigured(
   const cssFiles = collectAppFiles(cssDir, { skipDir, predicate: isCssFile });
   await Promise.all(
     cssFiles.map(async (file) => {
-      const input = readFileSync(file, "utf8");
+      const input = readFileSync(file, 'utf8');
       const result = await loaded.postcss(loaded.plugins).process(input, {
         ...loaded.options,
         from: file,
@@ -207,7 +207,7 @@ export async function runPostcssForAppDev(
   mkdirSync(outdir, { recursive: true });
   const allCssFiles = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile });
   const targets =
-    changedPath && changedPath.endsWith(".css") && allCssFiles.includes(changedPath)
+    changedPath && changedPath.endsWith('.css') && allCssFiles.includes(changedPath)
       ? [changedPath]
       : allCssFiles;
 
@@ -216,7 +216,7 @@ export async function runPostcssForAppDev(
       const outputRel = relative(root, file);
       const outputPath = join(outdir, outputRel);
       mkdirSync(dirname(outputPath), { recursive: true });
-      const input = readFileSync(file, "utf8");
+      const input = readFileSync(file, 'utf8');
       const result = await loaded.postcss(loaded.plugins).process(input, {
         ...loaded.options,
         from: file,

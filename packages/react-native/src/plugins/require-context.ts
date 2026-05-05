@@ -2,10 +2,10 @@
 // 책임. Phase 2.5 의 onResolveContext hook 사용 — 디렉토리 FS scan + filter
 // regex 매칭 + 결정적 정렬. importer 기준 상대 경로만, projectRoot 의존성 0.
 
-import { readdirSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { readdirSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 
-import type { ZtsPlugin } from "@zts/core";
+import type { ZtsPlugin } from '@zts/core';
 
 /**
  * `require.context(dir, recursive, filter, flags?)` 의 host-side 평가. 디렉토리
@@ -14,7 +14,7 @@ import type { ZtsPlugin } from "@zts/core";
  */
 export function createRequireContextPlugin(): ZtsPlugin {
   return {
-    name: "zts:react-native:require-context",
+    name: 'zts:react-native:require-context',
     setup(build) {
       build.onResolveContext({ filter: /.*/ }, (args) => {
         const { dir, recursive, filter, flags, importer } = args;
@@ -38,9 +38,9 @@ export function createRequireContextPlugin(): ZtsPlugin {
           return { context: [] };
         }
 
-        const re = filter ? new RegExp(filter, flags ?? "") : /^\.\/.*$/;
+        const re = filter ? new RegExp(filter, flags ?? '') : /^\.\/.*$/;
         const matched = entries
-          .map((f) => `./${f.replace(/\\/g, "/")}`)
+          .map((f) => `./${f.replace(/\\/g, '/')}`)
           .filter((p) => re.test(p))
           .sort();
 

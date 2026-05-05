@@ -14,7 +14,7 @@
 // caller (번개 / RN 사용자) 가 input 으로 base config 전달 → preset 이 BuildOptions
 // 빌드 → 마지막에 input.override 로 사용자 override 가능.
 
-import { resolve } from "node:path";
+import { resolve } from 'node:path';
 
 import {
   build,
@@ -26,20 +26,20 @@ import {
   type WatchReadyEvent,
   type WatchRebuildEvent,
   type ZtsPlugin,
-} from "@zts/core";
+} from '@zts/core';
 
-import type { CustomResolver, MetroPlatform } from "./metro-resolver-types.ts";
-import { createAssetPlugin } from "./plugins/asset.ts";
-import { createBabelPlugin } from "./plugins/babel.ts";
-import { createCodegenPlugin } from "./plugins/codegen.ts";
-import { requireFromCli } from "./plugins/internal.ts";
+import type { CustomResolver, MetroPlatform } from './metro-resolver-types.ts';
+import { createAssetPlugin } from './plugins/asset.ts';
+import { createBabelPlugin } from './plugins/babel.ts';
+import { createCodegenPlugin } from './plugins/codegen.ts';
+import { requireFromCli } from './plugins/internal.ts';
 import {
   createMetroResolveRequestPlugin,
   type MetroResolveRequestOptions,
-} from "./plugins/metro-resolve-request.ts";
-import { createRequireContextPlugin } from "./plugins/require-context.ts";
-import type { InlineBabelConfig } from "./plugins/types.ts";
-import { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from "./rn-constants.ts";
+} from './plugins/metro-resolve-request.ts';
+import { createRequireContextPlugin } from './plugins/require-context.ts';
+import type { InlineBabelConfig } from './plugins/types.ts';
+import { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from './rn-constants.ts';
 
 export interface RnBundleInput {
   /** 절대 경로 entry. */
@@ -47,7 +47,7 @@ export interface RnBundleInput {
   /** 프로젝트 루트 — RN polyfill / InitializeCore / Reanimated worklets resolve 의 base. */
   projectRoot: string;
   /** RN platform — preset 의 default ext / mainFields / asset loaders 결정. */
-  rnPlatform: "ios" | "android";
+  rnPlatform: 'ios' | 'android';
   /** dev mode — banner / jsx / devMode / reactRefresh / footer 분기. */
   dev: boolean;
   /** sourcemap emit. dev 시 inline 권장. */
@@ -114,47 +114,47 @@ export interface RnBundleInput {
   workletPluginVersion?: string;
 }
 
-const DEFAULT_SOURCE_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"];
+const DEFAULT_SOURCE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json'];
 const DEFAULT_ASSET_EXTS = [
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".svg",
-  ".ttf",
-  ".otf",
-  ".mp3",
-  ".mp4",
-  ".m4a",
-  ".m4v",
-  ".pdf",
-  ".html",
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.svg',
+  '.ttf',
+  '.otf',
+  '.mp3',
+  '.mp4',
+  '.m4a',
+  '.m4v',
+  '.pdf',
+  '.html',
 ];
 
 const NATIVE_AND_BASE = [
-  ".native.ts",
-  ".native.tsx",
-  ".native.js",
-  ".native.jsx",
-  ".ts",
-  ".tsx",
-  ".js",
-  ".jsx",
-  ".json",
+  '.native.ts',
+  '.native.tsx',
+  '.native.js',
+  '.native.jsx',
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.json',
 ];
 
-function buildResolveExtensions(rnPlatform: "ios" | "android"): string[] {
-  if (rnPlatform === "ios") {
-    return [".ios.ts", ".ios.tsx", ".ios.js", ".ios.jsx", ...NATIVE_AND_BASE];
+function buildResolveExtensions(rnPlatform: 'ios' | 'android'): string[] {
+  if (rnPlatform === 'ios') {
+    return ['.ios.ts', '.ios.tsx', '.ios.js', '.ios.jsx', ...NATIVE_AND_BASE];
   }
-  return [".android.ts", ".android.tsx", ".android.js", ".android.jsx", ...NATIVE_AND_BASE];
+  return ['.android.ts', '.android.tsx', '.android.js', '.android.jsx', ...NATIVE_AND_BASE];
 }
 
 function buildAssetLoaders(assetExts: readonly string[]): Record<string, string> {
   const loaders: Record<string, string> = {};
   for (const ext of assetExts) {
-    loaders[ext.startsWith(".") ? ext : `.${ext}`] = "file";
+    loaders[ext.startsWith('.') ? ext : `.${ext}`] = 'file';
   }
   return loaders;
 }
@@ -164,11 +164,11 @@ function buildAssetLoaders(assetExts: readonly string[]): Record<string, string>
  * SyntaxError. caller 가 prelude 식별자를 override 할 의도면 `define` 사용.
  */
 const PRELUDE_RESERVED = new Set([
-  "__BUNDLE_START_TIME__",
-  "__DEV__",
-  "__ZTS_RN_GLOBAL__",
-  "global",
-  "process",
+  '__BUNDLE_START_TIME__',
+  '__DEV__',
+  '__ZTS_RN_GLOBAL__',
+  'global',
+  'process',
 ]);
 
 function formatExtraVars(extraVars: Record<string, unknown>): string {
@@ -177,7 +177,7 @@ function formatExtraVars(extraVars: Record<string, unknown>): string {
     if (PRELUDE_RESERVED.has(key)) continue;
     out.push(`var ${key}=${JSON.stringify(value)};`);
   }
-  return out.join("");
+  return out.join('');
 }
 
 function buildPrelude(input: RnBundleInput): string {
@@ -193,14 +193,14 @@ function buildPrelude(input: RnBundleInput): string {
     `var __DEV__=${dev};`,
     `var __ZTS_RN_GLOBAL__=typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this;`,
     `if(typeof global==='undefined')var global=__ZTS_RN_GLOBAL__;`,
-    `var process=__ZTS_RN_GLOBAL__.process||{};process.env=process.env||{};process.env.NODE_ENV=process.env.NODE_ENV||"${dev ? "development" : "production"}";`,
+    `var process=__ZTS_RN_GLOBAL__.process||{};process.env=process.env||{};process.env.NODE_ENV=process.env.NODE_ENV||"${dev ? 'development' : 'production'}";`,
   ];
   if (extra?.extraVars && Object.keys(extra.extraVars).length > 0) {
     const formatted = formatExtraVars(extra.extraVars);
     if (formatted) lines.push(formatted);
   }
   if (bannerExtras) lines.push(bannerExtras);
-  return lines.join("");
+  return lines.join('');
 }
 
 /**
@@ -215,7 +215,7 @@ function buildFooter(dev: boolean): string {
   if (dev) {
     parts.push(`setTimeout(function(){try{NativeModules.DevLoadingView.hide()}catch(e){}},0);`);
   }
-  return parts.join("");
+  return parts.join('');
 }
 
 function resolveWorkletPluginVersion(
@@ -224,7 +224,7 @@ function resolveWorkletPluginVersion(
 ): string | undefined {
   if (override) return override;
   try {
-    const pkgPath = requireFromCli.resolve("react-native-worklets/package.json", {
+    const pkgPath = requireFromCli.resolve('react-native-worklets/package.json', {
       paths: [projectRoot],
     });
     const pkg = requireFromCli(pkgPath) as { version?: string };
@@ -241,10 +241,10 @@ function deepMerge<T extends Record<string, unknown>>(base: T, override: Partial
     const existing = result[key];
     if (
       existing &&
-      typeof existing === "object" &&
+      typeof existing === 'object' &&
       !Array.isArray(existing) &&
       value &&
-      typeof value === "object" &&
+      typeof value === 'object' &&
       !Array.isArray(value)
     ) {
       result[key] = deepMerge(
@@ -312,7 +312,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     for (const p of extra.polyfills) polyfills.push(resolve(projectRoot, p));
   }
   const runBeforeMain: string[] = [];
-  const initCore = tryResolve("react-native/Libraries/Core/InitializeCore", projectRoot);
+  const initCore = tryResolve('react-native/Libraries/Core/InitializeCore', projectRoot);
   if (initCore) runBeforeMain.push(initCore);
   if (extra?.prelude && extra.prelude.length > 0) {
     // 사용자 추가 prelude — InitializeCore 이후에 실행. 절대/상대 모두 projectRoot
@@ -321,32 +321,32 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   }
 
   const define: Record<string, string> = {
-    global: "__ZTS_RN_GLOBAL__",
+    global: '__ZTS_RN_GLOBAL__',
     __DEV__: String(dev),
-    "process.env.NODE_ENV": `"${dev ? "development" : "production"}"`,
+    'process.env.NODE_ENV': `"${dev ? 'development' : 'production'}"`,
     // Expo Router 의 require.context 인자 정적 평가용 (Phase 2.6 import_scanner).
-    "process.env.EXPO_ROUTER_APP_ROOT": '"./app"',
-    "process.env.EXPO_ROUTER_IMPORT_MODE": '"sync"',
-    "process.env.EXPO_OS": `"${rnPlatform}"`,
+    'process.env.EXPO_ROUTER_APP_ROOT': '"./app"',
+    'process.env.EXPO_ROUTER_IMPORT_MODE': '"sync"',
+    'process.env.EXPO_OS': `"${rnPlatform}"`,
   };
 
   const baseLoader = buildAssetLoaders(assetExts);
 
   const preset: BuildOptions = {
     entryPoints: [resolve(projectRoot, entry)],
-    platform: "react-native",
+    platform: 'react-native',
     sourcemap: sourcemap ?? dev,
     minify: minify ?? false,
     plugins,
     emitDiskSourcemap: !dev,
-    target: "es5",
+    target: 'es5',
     flow: true,
     jsxInJs: true,
     configurableExports: true,
     strictExecutionOrder: true,
     workletTransform: true,
     resolveExtensions: buildResolveExtensions(rnPlatform),
-    mainFields: ["react-native", "browser", "module", "main"],
+    mainFields: ['react-native', 'browser', 'module', 'main'],
     loader: baseLoader,
     alias: {},
     define,
@@ -368,7 +368,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   preset.footer = buildFooter(dev);
 
   if (dev) {
-    preset.jsx = "automatic-dev";
+    preset.jsx = 'automatic-dev';
     preset.devMode = true;
     preset.reactRefresh = true;
     preset.collectModuleCodes = true;

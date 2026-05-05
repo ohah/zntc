@@ -14,9 +14,9 @@
  * 빈 문자열 prefix `""` 를 포함하면 전체 노출 — 주의해서 사용.
  */
 
-import { resolve as pathResolve } from "node:path";
+import { resolve as pathResolve } from 'node:path';
 
-import { readFileIfExists } from "./config-loader.ts";
+import { readFileIfExists } from './config-loader.ts';
 
 /**
  * `.env` 라인 1개를 `KEY=value` 로 파싱. 단순한 dotenv 호환 파서:
@@ -27,8 +27,8 @@ import { readFileIfExists } from "./config-loader.ts";
  */
 function parseDotenvLine(line: string): [string, string] | null {
   const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith("#")) return null;
-  const eqIdx = trimmed.indexOf("=");
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  const eqIdx = trimmed.indexOf('=');
   if (eqIdx <= 0) return null;
   const key = trimmed.slice(0, eqIdx).trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
@@ -40,7 +40,7 @@ function parseDotenvLine(line: string): [string, string] | null {
     value = value.slice(1, -1);
   } else {
     // unquoted value: ` # comment` 인라인 주석 제거 (dotenv 16+ / Vite 호환).
-    value = value.replace(/\s+#.*$/, "");
+    value = value.replace(/\s+#.*$/, '');
   }
   return [key, value];
 }
@@ -67,7 +67,7 @@ function parseDotenvFile(filePath: string): Record<string, string> {
 export function loadEnv(
   mode: string,
   envDir: string,
-  prefixes: string | string[] = ["VITE_", "ZTS_"],
+  prefixes: string | string[] = ['VITE_', 'ZTS_'],
 ): Record<string, string> {
   const prefixList = Array.isArray(prefixes) ? prefixes : [prefixes];
   const dir = pathResolve(envDir);
@@ -98,12 +98,12 @@ export function loadEnv(
 export function envToDefine(
   env: Record<string, string>,
   mode: string,
-  baseUrl = "/",
+  baseUrl = '/',
 ): Record<string, string> {
   const envObject: Record<string, string | boolean> = {
     MODE: mode,
-    PROD: mode === "production",
-    DEV: mode !== "production",
+    PROD: mode === 'production',
+    DEV: mode !== 'production',
     // ZTS 는 현재 SSR 빌드를 별도 mode 로 구분하지 않아 항상 false. 향후 SSR 지원 시
     // BuildOptions 의 ssr 플래그 (또는 새 옵션) 와 연동해야 함.
     SSR: false,
@@ -112,7 +112,7 @@ export function envToDefine(
   for (const [key, value] of Object.entries(env)) envObject[key] = value;
 
   const define: Record<string, string> = {
-    "import.meta.env": JSON.stringify(envObject),
+    'import.meta.env': JSON.stringify(envObject),
   };
   for (const [key, value] of Object.entries(envObject)) {
     define[`import.meta.env.${key}`] = JSON.stringify(value);

@@ -7,28 +7,28 @@
  * esbuild와의 벽시계 시간 비교도 포함.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
-const ROOT = resolve(__dirname, "../..");
-const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
-const ESBUILD_BIN = join(ROOT, "node_modules/.bin/esbuild");
+const ROOT = resolve(__dirname, '../..');
+const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ESBUILD_BIN = join(ROOT, 'node_modules/.bin/esbuild');
 const ITERATIONS = 5;
 
 // ============================================================
 // Fixture generators — 패턴별 TS 코드 생성
 // ============================================================
 
-type PatternName = "simple" | "expr" | "string" | "object" | "react";
+type PatternName = 'simple' | 'expr' | 'string' | 'object' | 'react';
 
 function generateSimple(lines: number): string {
   const parts: string[] = [];
   for (let i = 0; i < lines; i++) {
     parts.push(`const v${i}: number = ${i} + Math.random();`);
   }
-  return parts.join("\n");
+  return parts.join('\n');
 }
 
 function generateExpr(lines: number): string {
@@ -38,7 +38,7 @@ function generateExpr(lines: number): string {
       `const e${i} = ((${i} + ${i + 1}) * (${i + 2} - ${i + 3})) / ((${i + 4} % ${i + 5}) || 1);`,
     );
   }
-  return parts.join("\n");
+  return parts.join('\n');
 }
 
 function generateString(lines: number): string {
@@ -48,7 +48,7 @@ function generateString(lines: number): string {
       `const s${i} = "hello world ${i} this is a longer string with special chars \\n\\t";`,
     );
   }
-  return parts.join("\n");
+  return parts.join('\n');
 }
 
 function generateObject(lines: number): string {
@@ -59,13 +59,13 @@ function generateObject(lines: number): string {
     parts.push(`interface I${i} { a${i}: string; b${i}: number; }`);
     parts.push(`const o${i}: I${i} = { a${i}: "v", b${i}: ${i} };`);
   }
-  return parts.join("\n");
+  return parts.join('\n');
 }
 
 function generateReact(lines: number): string {
   const parts: string[] = [
     'import React, { useState, useCallback, createElement } from "react";',
-    "",
+    '',
   ];
   // 각 컴포넌트 ~5줄 → lines/5 컴포넌트
   const count = Math.max(1, Math.floor(lines / 5));
@@ -77,7 +77,7 @@ function generateReact(lines: number): string {
     parts.push(`  return createElement("div", { onClick: handler${i} }, name${i}, String(s${i}));`);
     parts.push(`};`);
   }
-  return parts.join("\n");
+  return parts.join('\n');
 }
 
 const GENERATORS: Record<PatternName, (lines: number) => string> = {
@@ -111,7 +111,7 @@ interface ProfileJson {
 
 function parseTiming(stderr: string): PipelineTiming | null {
   // `--profile-format=json` 은 `{ ... }` JSON 블록을 stderr 로 출력한다.
-  const start = stderr.indexOf("{");
+  const start = stderr.indexOf('{');
   if (start < 0) return null;
   const json = stderr.slice(start);
   let data: ProfileJson;
@@ -122,11 +122,11 @@ function parseTiming(stderr: string): PipelineTiming | null {
   }
   const get = (name: string): number => data.phases[name]?.total_ms ?? 0;
   return {
-    scan: get("scan"),
-    parse: get("parse"),
-    semantic: get("semantic"),
-    transform: get("transform"),
-    codegen: get("codegen"),
+    scan: get('scan'),
+    parse: get('parse'),
+    semantic: get('semantic'),
+    transform: get('transform'),
+    codegen: get('codegen'),
     total: data.total_ms,
   };
 }
@@ -142,12 +142,12 @@ function median(values: number[]): number {
 
 function medianTiming(timings: PipelineTiming[]): PipelineTiming {
   const keys: (keyof PipelineTiming)[] = [
-    "scan",
-    "parse",
-    "semantic",
-    "transform",
-    "codegen",
-    "total",
+    'scan',
+    'parse',
+    'semantic',
+    'transform',
+    'codegen',
+    'total',
   ];
   const result: Record<string, number> = {};
   for (const key of keys) {
@@ -158,20 +158,20 @@ function medianTiming(timings: PipelineTiming[]): PipelineTiming {
 
 function measureZtsTiming(inputFile: string, outFile: string): PipelineTiming | null {
   const timings: PipelineTiming[] = [];
-  const profileArgs = ["--profile=all", "--profile-format=json"];
+  const profileArgs = ['--profile=all', '--profile-format=json'];
 
   // warmup
-  spawnSync(ZTS_BIN, [inputFile, ...profileArgs, "-o", outFile], {
-    stdio: "pipe",
+  spawnSync(ZTS_BIN, [inputFile, ...profileArgs, '-o', outFile], {
+    stdio: 'pipe',
     timeout: 60000,
   });
 
   for (let i = 0; i < ITERATIONS; i++) {
-    const result = spawnSync(ZTS_BIN, [inputFile, ...profileArgs, "-o", outFile], {
-      stdio: "pipe",
+    const result = spawnSync(ZTS_BIN, [inputFile, ...profileArgs, '-o', outFile], {
+      stdio: 'pipe',
       timeout: 60000,
     });
-    const parsed = parseTiming(result.stderr?.toString() ?? "");
+    const parsed = parseTiming(result.stderr?.toString() ?? '');
     if (!parsed) return null;
     timings.push(parsed);
   }
@@ -183,11 +183,11 @@ function measureWallTime(bin: string, args: string[]): number {
   const times: number[] = [];
 
   // warmup
-  spawnSync(bin, args, { stdio: "pipe", timeout: 60000 });
+  spawnSync(bin, args, { stdio: 'pipe', timeout: 60000 });
 
   for (let i = 0; i < ITERATIONS; i++) {
     const start = performance.now();
-    spawnSync(bin, args, { stdio: "pipe", timeout: 60000 });
+    spawnSync(bin, args, { stdio: 'pipe', timeout: 60000 });
     times.push(performance.now() - start);
   }
 
@@ -225,7 +225,7 @@ function fmt(ms: number): string {
 }
 
 function fmtMBs(sizeKB: number, ms: number): string {
-  if (ms <= 0) return "-";
+  if (ms <= 0) return '-';
   const mbPerSec = sizeKB / 1024 / (ms / 1000);
   return Math.round(mbPerSec).toString();
 }
@@ -235,18 +235,18 @@ function fmtMBs(sizeKB: number, ms: number): string {
 // ============================================================
 
 const LINE_COUNTS = [1000, 5000, 10000, 50000];
-const PATTERNS: PatternName[] = ["simple", "expr", "string", "object", "react"];
+const PATTERNS: PatternName[] = ['simple', 'expr', 'string', 'object', 'react'];
 
 const hasEsbuild = existsSync(ESBUILD_BIN);
 
-console.log("ZTS Pipeline Profiler");
+console.log('ZTS Pipeline Profiler');
 console.log(`  Iterations: ${ITERATIONS} (median)`);
-console.log(`  Patterns: ${PATTERNS.join(", ")}`);
-console.log(`  Scales: ${LINE_COUNTS.map((l) => `${l / 1000}K`).join(", ")} lines`);
-console.log(`  esbuild: ${hasEsbuild ? "available" : "not found"}`);
+console.log(`  Patterns: ${PATTERNS.join(', ')}`);
+console.log(`  Scales: ${LINE_COUNTS.map((l) => `${l / 1000}K`).join(', ')} lines`);
+console.log(`  esbuild: ${hasEsbuild ? 'available' : 'not found'}`);
 console.log(`  Platform: ${process.platform} ${process.arch}\n`);
 
-const dir = mkdtempSync(join(tmpdir(), "zts-pipeline-"));
+const dir = mkdtempSync(join(tmpdir(), 'zts-pipeline-'));
 const pipelineResults: PipelineResult[] = [];
 const wallTimeResults: WallTimeResult[] = [];
 
@@ -277,7 +277,7 @@ for (const pattern of PATTERNS) {
     }
 
     // Wall time: ZTS vs esbuild
-    const ztsMs = measureWallTime(ZTS_BIN, [inputFile, "-o", outFile]);
+    const ztsMs = measureWallTime(ZTS_BIN, [inputFile, '-o', outFile]);
     let esbuildMs = -1;
     if (hasEsbuild) {
       esbuildMs = measureWallTime(ESBUILD_BIN, [
@@ -288,22 +288,22 @@ for (const pattern of PATTERNS) {
     wallTimeResults.push({ pattern, lines, sizeKB, ztsMs, esbuildMs });
   }
 
-  console.log("");
+  console.log('');
 }
 
 // ============================================================
 // Output — Pipeline stage breakdown
 // ============================================================
 
-console.log("===== Pipeline Stage Breakdown (ms, median) =====\n");
+console.log('===== Pipeline Stage Breakdown (ms, median) =====\n');
 
 for (const pattern of PATTERNS) {
   const group = pipelineResults.filter((r) => r.pattern === pattern);
   if (group.length === 0) continue;
 
   console.log(`### ${pattern}\n`);
-  console.log("| Lines | Size (KB) | scan | parse | semantic | transform | codegen | total |");
-  console.log("|------:|----------:|-----:|------:|---------:|----------:|--------:|------:|");
+  console.log('| Lines | Size (KB) | scan | parse | semantic | transform | codegen | total |');
+  console.log('|------:|----------:|-----:|------:|---------:|----------:|--------:|------:|');
 
   for (const r of group) {
     const t = r.timing;
@@ -313,52 +313,52 @@ for (const pattern of PATTERNS) {
         `${fmt(t.codegen)} | ${fmt(t.total)} |`,
     );
   }
-  console.log("");
+  console.log('');
 }
 
 // ============================================================
 // Output — Throughput (MB/s)
 // ============================================================
 
-console.log("===== Throughput by Pattern (MB/s, based on total time) =====\n");
+console.log('===== Throughput by Pattern (MB/s, based on total time) =====\n');
 
-console.log("| Pattern | 1K lines | 5K lines | 10K lines | 50K lines |");
-console.log("|---------|----------|----------|-----------|-----------|");
+console.log('| Pattern | 1K lines | 5K lines | 10K lines | 50K lines |');
+console.log('|---------|----------|----------|-----------|-----------|');
 
 for (const pattern of PATTERNS) {
   const group = pipelineResults.filter((r) => r.pattern === pattern);
   const cells = LINE_COUNTS.map((lines) => {
     const r = group.find((g) => g.lines === lines);
-    return r ? fmtMBs(r.sizeKB, r.timing.total) : "-";
+    return r ? fmtMBs(r.sizeKB, r.timing.total) : '-';
   });
-  console.log(`| ${pattern} | ${cells.join(" | ")} |`);
+  console.log(`| ${pattern} | ${cells.join(' | ')} |`);
 }
 
-console.log("");
+console.log('');
 
 // ============================================================
 // Output — ZTS vs esbuild wall time
 // ============================================================
 
-console.log("===== ZTS vs esbuild (wall time, ms, median) =====\n");
+console.log('===== ZTS vs esbuild (wall time, ms, median) =====\n');
 
-console.log("| Pattern | Lines | Size (KB) | ZTS (ms) | esbuild (ms) | ratio |");
-console.log("|---------|------:|----------:|---------:|-------------:|------:|");
+console.log('| Pattern | Lines | Size (KB) | ZTS (ms) | esbuild (ms) | ratio |');
+console.log('|---------|------:|----------:|---------:|-------------:|------:|');
 
 for (const r of wallTimeResults) {
-  const ratio = r.esbuildMs > 0 ? `${(r.ztsMs / r.esbuildMs).toFixed(2)}x` : "-";
-  const esStr = r.esbuildMs > 0 ? fmt(r.esbuildMs) : "N/A";
+  const ratio = r.esbuildMs > 0 ? `${(r.ztsMs / r.esbuildMs).toFixed(2)}x` : '-';
+  const esStr = r.esbuildMs > 0 ? fmt(r.esbuildMs) : 'N/A';
   console.log(
     `| ${r.pattern} | ${r.lines.toLocaleString()} | ${r.sizeKB} | ` +
       `${fmt(r.ztsMs)} | ${esStr} | ${ratio} |`,
   );
 }
 
-console.log("");
+console.log('');
 
 // ============================================================
 // Cleanup
 // ============================================================
 
 rmSync(dir, { recursive: true, force: true });
-console.log("Done.");
+console.log('Done.');

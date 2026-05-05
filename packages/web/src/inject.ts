@@ -1,10 +1,10 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { basename, join, sep } from "node:path";
+import { readFileSync, writeFileSync } from 'node:fs';
+import { basename, join, sep } from 'node:path';
 
-import { APP_DEV_HMR_CLIENT_PATH } from "@zts/server";
+import { APP_DEV_HMR_CLIENT_PATH } from '@zts/server';
 
-import { isCssFile } from "./style/postcss.ts";
-import { joinUrl } from "./url.ts";
+import { isCssFile } from './style/postcss.ts';
+import { joinUrl } from './url.ts';
 
 interface BundleOutputFile {
   path?: string;
@@ -20,19 +20,19 @@ export interface BundleResult {
  * 아직 entry HTML 이 없을 수 있음.
  */
 export function injectIntoDevHtml(outdir: string, build: (html: string) => string | null): void {
-  const htmlPath = join(outdir, "index.html");
+  const htmlPath = join(outdir, 'index.html');
   let html: string;
   try {
-    html = readFileSync(htmlPath, "utf8");
+    html = readFileSync(htmlPath, 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return;
     throw err;
   }
   const tag = build(html);
   if (!tag) return;
-  const next = html.includes("</head>")
-    ? html.replace("</head>", `${tag}\n</head>`)
-    : html.replace("<script", `${tag}\n<script`);
+  const next = html.includes('</head>')
+    ? html.replace('</head>', `${tag}\n</head>`)
+    : html.replace('<script', `${tag}\n<script`);
   writeFileSync(htmlPath, next);
 }
 
@@ -57,7 +57,7 @@ export function injectAppDevBundleCssLinks(
       if (!html.includes(`href="${href}"`) && !html.includes(`href='${href}'`)) cssHrefs.push(href);
     }
     if (cssHrefs.length === 0) return null;
-    return cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join("\n");
+    return cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join('\n');
   });
 }
 
@@ -70,10 +70,10 @@ export function injectAppDevPipelineCssLinks(
   injectIntoDevHtml(outdir, (html) => {
     const tags: string[] = [];
     for (const rel of cssRelPaths) {
-      const href = joinUrl(base, rel.replaceAll(sep, "/"));
+      const href = joinUrl(base, rel.replaceAll(sep, '/'));
       if (html.includes(`href="${href}"`) || html.includes(`href='${href}'`)) continue;
       tags.push(`<link rel="stylesheet" href="${href}">`);
     }
-    return tags.length === 0 ? null : tags.join("\n");
+    return tags.length === 0 ? null : tags.join('\n');
   });
 }

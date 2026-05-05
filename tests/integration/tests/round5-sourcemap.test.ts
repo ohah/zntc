@@ -7,25 +7,25 @@
 ///   4. 매핑된 (src_line, src_col) 이 원본의 같은 이름 marker 위치와 일치하는지 검증
 ///
 /// fixture 는 import/export specifier (#2220), enum 멤버 (#2221) 등의 매핑 정확성을 보장.
-import { describe, test, expect } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { runZts } from "./helpers";
-import { decodeMappings, findMarkers, lookupMapping } from "./sourcemap-helpers";
+import { describe, test, expect } from 'bun:test';
+import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runZts } from './helpers';
+import { decodeMappings, findMarkers, lookupMapping } from './sourcemap-helpers';
 
-const FIXTURES_DIR = join(import.meta.dir, "fixtures/round5-sourcemap");
+const FIXTURES_DIR = join(import.meta.dir, 'fixtures/round5-sourcemap');
 const COL_TOLERANCE = 5;
 
 const fixtures = readdirSync(FIXTURES_DIR)
   .filter((f) => /\.(ts|tsx)$/.test(f))
   .sort();
 
-describe("Round 5 sourcemap mapping", () => {
+describe('Round 5 sourcemap mapping', () => {
   for (const fix of fixtures) {
     test(fix, async () => {
-      const sourceText = readFileSync(join(FIXTURES_DIR, fix), "utf-8");
+      const sourceText = readFileSync(join(FIXTURES_DIR, fix), 'utf-8');
       const sourceByName = new Map<string, ReturnType<typeof findMarkers>>();
       for (const h of findMarkers(sourceText)) {
         const arr = sourceByName.get(h.name) || [];
@@ -33,17 +33,17 @@ describe("Round 5 sourcemap mapping", () => {
         sourceByName.set(h.name, arr);
       }
 
-      const dir = await mkdtemp(join(tmpdir(), "zts-round5-"));
+      const dir = await mkdtemp(join(tmpdir(), 'zts-round5-'));
       try {
         const inFile = join(dir, fix);
         await writeFile(inFile, sourceText);
-        const outFile = join(dir, fix.replace(/\.(ts|tsx)$/, ".js"));
-        const r = await runZts([inFile, "-o", outFile, "--sourcemap"]);
+        const outFile = join(dir, fix.replace(/\.(ts|tsx)$/, '.js'));
+        const r = await runZts([inFile, '-o', outFile, '--sourcemap']);
         expect(r.exitCode).toBe(0);
 
-        const outText = readFileSync(outFile, "utf-8");
-        const mapJson = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-        const mappings = decodeMappings(mapJson.mappings || "");
+        const outText = readFileSync(outFile, 'utf-8');
+        const mapJson = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
+        const mappings = decodeMappings(mapJson.mappings || '');
 
         for (const gm of findMarkers(outText)) {
           const seg = lookupMapping(mappings, gm.line, gm.col);

@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es2024", () => {
-  test("resizableArrayBuffer", async () => {
+describe('TSC: es2024', () => {
+  test('resizableArrayBuffer', async () => {
     await expectPass(
       `
 const buffer = new ArrayBuffer(8, { maxByteLength: 16 });
@@ -10,7 +10,7 @@ buffer.resizable;`,
       [],
     );
   });
-  test("sharedMemory", async () => {
+  test('sharedMemory', async () => {
     await expectPass(
       `
 const sab = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 1024);
@@ -33,7 +33,7 @@ main();`,
       [],
     );
   });
-  test("transferableArrayBuffer", async () => {
+  test('transferableArrayBuffer', async () => {
     await expectPass(
       `
 const buffer = new ArrayBuffer(8);

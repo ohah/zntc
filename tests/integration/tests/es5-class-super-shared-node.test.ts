@@ -1,6 +1,6 @@
-import { describe, test, expect } from "bun:test";
-import { createFixture, ZTS_BIN } from "./helpers";
-import { resolve } from "node:path";
+import { describe, test, expect } from 'bun:test';
+import { createFixture, ZTS_BIN } from './helpers';
+import { resolve } from 'node:path';
 
 /**
  * Regression: bundle + --target=es5로 `extends` + `super()` + rest param 생성자를
@@ -22,15 +22,15 @@ import { resolve } from "node:path";
  * - `class Child extends Parent { field = []; constructor(...rest) { super(); ... } }`
  * - `--bundle --target=es5`
  */
-describe("bundle es5: extends + super + rest param class ctor", () => {
-  test("var _this declaration survives minify.mergeAdjacentDecls", async () => {
+describe('bundle es5: extends + super + rest param class ctor', () => {
+  test('var _this declaration survives minify.mergeAdjacentDecls', async () => {
     const fixture = await createFixture({
-      "gesture.ts": `
+      'gesture.ts': `
         export class Gesture {
           prepare(): void {}
         }
       `,
-      "composition.ts": `
+      'composition.ts': `
         import { Gesture } from './gesture';
 
         export class ComposedGesture extends Gesture {
@@ -44,15 +44,15 @@ describe("bundle es5: extends + super + rest param class ctor", () => {
           }
         }
       `,
-      "entry.ts": `
+      'entry.ts': `
         import { ComposedGesture } from './composition';
         console.log(ComposedGesture);
       `,
     });
 
     try {
-      const entry = resolve(fixture.dir, "entry.ts");
-      const proc = Bun.spawnSync([ZTS_BIN, "--bundle", "--target=es5", entry]);
+      const entry = resolve(fixture.dir, 'entry.ts');
+      const proc = Bun.spawnSync([ZTS_BIN, '--bundle', '--target=es5', entry]);
       expect(proc.exitCode).toBe(0);
       const output = proc.stdout.toString();
 
@@ -66,7 +66,7 @@ describe("bundle es5: extends + super + rest param class ctor", () => {
       const ctorBody = output.match(/function\s+ComposedGesture\s*\(\s*\)\s*\{([\s\S]*?)\n\s*\}/);
       expect(ctorBody).not.toBeNull();
       expect(ctorBody![1]).toMatch(/var\s+(?:[^;]*,\s*)?_this\b/);
-      expect(ctorBody![1]).toContain("_this = __callSuper");
+      expect(ctorBody![1]).toContain('_this = __callSuper');
     } finally {
       await fixture.cleanup();
     }

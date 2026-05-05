@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/memberFunctionDeclarations", () => {
-  test("MemberFunctionDeclaration1_es6", async () => {
+describe('TSC: es6/memberFunctionDeclarations', () => {
+  test('MemberFunctionDeclaration1_es6', async () => {
     await expectPass(
       `class C {
    *foo() { }
@@ -10,7 +10,7 @@ describe("TSC: es6/memberFunctionDeclarations", () => {
       [],
     );
   });
-  test("MemberFunctionDeclaration2_es6", async () => {
+  test('MemberFunctionDeclaration2_es6', async () => {
     await expectPass(
       `class C {
    public * foo() { }
@@ -18,7 +18,7 @@ describe("TSC: es6/memberFunctionDeclarations", () => {
       [],
     );
   });
-  test("MemberFunctionDeclaration3_es6", async () => {
+  test('MemberFunctionDeclaration3_es6', async () => {
     await expectPass(
       `class C {
    *[foo]() { }
@@ -26,7 +26,7 @@ describe("TSC: es6/memberFunctionDeclarations", () => {
       [],
     );
   });
-  test("MemberFunctionDeclaration4_es6", async () => {
+  test('MemberFunctionDeclaration4_es6', async () => {
     await expectError(
       `class C {
    *() { }
@@ -34,7 +34,7 @@ describe("TSC: es6/memberFunctionDeclarations", () => {
       [],
     );
   });
-  test("MemberFunctionDeclaration5_es6", async () => {
+  test('MemberFunctionDeclaration5_es6', async () => {
     await expectError(
       `class C {
    *
@@ -42,7 +42,7 @@ describe("TSC: es6/memberFunctionDeclarations", () => {
       [],
     );
   });
-  test("MemberFunctionDeclaration6_es6", async () => {
+  test('MemberFunctionDeclaration6_es6', async () => {
     await expectPass(
       `class C {
    *foo
@@ -50,7 +50,7 @@ describe("TSC: es6/memberFunctionDeclarations", () => {
       [],
     );
   });
-  test("MemberFunctionDeclaration7_es6", async () => {
+  test('MemberFunctionDeclaration7_es6', async () => {
     await expectPass(
       `class C {
    *foo<T>() { }
@@ -58,7 +58,7 @@ describe("TSC: es6/memberFunctionDeclarations", () => {
       [],
     );
   });
-  test("MemberFunctionDeclaration8_es6", async () => {
+  test('MemberFunctionDeclaration8_es6', async () => {
     await expectError(
       `class C {
   foo() {

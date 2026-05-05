@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/arrowFunction", () => {
-  test("disallowLineTerminatorBeforeArrow", async () => {
+describe('TSC: es6/arrowFunction', () => {
+  test('disallowLineTerminatorBeforeArrow', async () => {
     await expectError(
       `var f1 = ()
     => { }
@@ -81,7 +81,7 @@ namespace m {
       [],
     );
   });
-  test("emitArrowFunction", async () => {
+  test('emitArrowFunction', async () => {
     await expectPass(
       `// @strict: false
 var f1 = () => { }
@@ -94,7 +94,7 @@ foo(() => { return false; });`,
       [],
     );
   });
-  test("emitArrowFunctionAsIs", async () => {
+  test('emitArrowFunctionAsIs', async () => {
     await expectPass(
       `// @strict: false
 var arrow1 = a => { };
@@ -104,7 +104,7 @@ var arrow3 = (a, b) => { };`,
       [],
     );
   });
-  test("emitArrowFunctionAsIsES6", async () => {
+  test('emitArrowFunctionAsIsES6', async () => {
     await expectPass(
       `// @strict: false
 var arrow1 =  a => { };
@@ -114,7 +114,7 @@ var arrow3 = (a, b) => { };`,
       [],
     );
   });
-  test("emitArrowFunctionES6", async () => {
+  test('emitArrowFunctionES6', async () => {
     await expectPass(
       `// @strict: false
 var f1 = () => { }
@@ -140,7 +140,7 @@ var p10 = ([{ value, done }]) => { };
       [],
     );
   });
-  test("emitArrowFunctionsAsIs", async () => {
+  test('emitArrowFunctionsAsIs', async () => {
     await expectPass(
       `// @strict: false
 var arrow1 = a => { };
@@ -150,7 +150,7 @@ var arrow3 = (a, b) => { };`,
       [],
     );
   });
-  test("emitArrowFunctionsAsIsES6", async () => {
+  test('emitArrowFunctionsAsIsES6', async () => {
     await expectPass(
       `// @strict: false
 var arrow1 =  a => { };
@@ -160,7 +160,7 @@ var arrow3 = (a, b) => { };`,
       [],
     );
   });
-  test("emitArrowFunctionThisCapturing", async () => {
+  test('emitArrowFunctionThisCapturing', async () => {
     await expectPass(
       `// @strict: false
 var f1 = () => {
@@ -180,7 +180,7 @@ foo(() => {
       [],
     );
   });
-  test("emitArrowFunctionThisCapturingES6", async () => {
+  test('emitArrowFunctionThisCapturingES6', async () => {
     await expectPass(
       `// @strict: false
 var f1 = () => {
@@ -200,7 +200,7 @@ foo(() => {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments01_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments01_ES6', async () => {
     await expectPass(
       `// @strict: false
 var a = () => {
@@ -237,7 +237,7 @@ function bar() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments01", async () => {
+  test('emitArrowFunctionWhenUsingArguments01', async () => {
     await expectPass(
       `// @strict: false
 var a = () => {
@@ -274,7 +274,7 @@ function bar() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments02_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments02_ES6', async () => {
     await expectPass(
       `// @strict: false
 
@@ -282,7 +282,7 @@ var a = () => arguments;`,
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments02", async () => {
+  test('emitArrowFunctionWhenUsingArguments02', async () => {
     await expectPass(
       `// @strict: false
 
@@ -290,7 +290,7 @@ var a = () => arguments;`,
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments03_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments03_ES6', async () => {
     await expectError(
       `
 var arguments;
@@ -298,7 +298,7 @@ var a = () => arguments;`,
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments03", async () => {
+  test('emitArrowFunctionWhenUsingArguments03', async () => {
     await expectError(
       `
 var arguments;
@@ -306,7 +306,7 @@ var a = () => arguments;`,
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments04_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments04_ES6', async () => {
     await expectError(
       `
 function f() {
@@ -316,7 +316,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments04", async () => {
+  test('emitArrowFunctionWhenUsingArguments04', async () => {
     await expectError(
       `
 function f() {
@@ -326,7 +326,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments05_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments05_ES6', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -335,7 +335,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments05", async () => {
+  test('emitArrowFunctionWhenUsingArguments05', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -344,7 +344,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments06_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments06_ES6', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -353,7 +353,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments06", async () => {
+  test('emitArrowFunctionWhenUsingArguments06', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -362,7 +362,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments07_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments07_ES6', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -371,7 +371,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments07", async () => {
+  test('emitArrowFunctionWhenUsingArguments07', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -380,7 +380,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments08_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments08_ES6', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -389,7 +389,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments08", async () => {
+  test('emitArrowFunctionWhenUsingArguments08', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -398,7 +398,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments09_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments09_ES6', async () => {
     await expectPass(
       `// @strict: false
 
@@ -408,7 +408,7 @@ function f(_arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments09", async () => {
+  test('emitArrowFunctionWhenUsingArguments09', async () => {
     await expectPass(
       `// @strict: false
 
@@ -418,7 +418,7 @@ function f(_arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments10_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments10_ES6', async () => {
     await expectPass(
       `// @strict: false
 
@@ -429,7 +429,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments10", async () => {
+  test('emitArrowFunctionWhenUsingArguments10', async () => {
     await expectPass(
       `// @strict: false
 
@@ -440,7 +440,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments11_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments11_ES6', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -450,7 +450,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments11", async () => {
+  test('emitArrowFunctionWhenUsingArguments11', async () => {
     await expectError(
       `
 function f(arguments) {
@@ -460,7 +460,7 @@ function f(arguments) {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments12_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments12_ES6', async () => {
     await expectError(
       `// @strict: false
 
@@ -472,7 +472,7 @@ class C {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments12", async () => {
+  test('emitArrowFunctionWhenUsingArguments12', async () => {
     await expectError(
       `// @strict: false
 
@@ -484,7 +484,7 @@ class C {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments13_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments13_ES6', async () => {
     await expectError(
       `
 function f() {
@@ -494,7 +494,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments13", async () => {
+  test('emitArrowFunctionWhenUsingArguments13', async () => {
     await expectError(
       `
 function f() {
@@ -504,7 +504,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments14_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments14_ES6', async () => {
     await expectError(
       `
 function f() {
@@ -516,7 +516,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments14", async () => {
+  test('emitArrowFunctionWhenUsingArguments14', async () => {
     await expectError(
       `
 function f() {
@@ -528,20 +528,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments15_ES6", async () => {
-    await expectError(
-      `
-function f() {
-    var arguments = "hello";
-    if (Math.random()) {
-        const arguments = 100;
-        return () => arguments;
-    }
-}`,
-      [],
-    );
-  });
-  test("emitArrowFunctionWhenUsingArguments15", async () => {
+  test('emitArrowFunctionWhenUsingArguments15_ES6', async () => {
     await expectError(
       `
 function f() {
@@ -554,7 +541,20 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments16_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments15', async () => {
+    await expectError(
+      `
+function f() {
+    var arguments = "hello";
+    if (Math.random()) {
+        const arguments = 100;
+        return () => arguments;
+    }
+}`,
+      [],
+    );
+  });
+  test('emitArrowFunctionWhenUsingArguments16_ES6', async () => {
     await expectError(
       `
 function f() {
@@ -567,7 +567,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments16", async () => {
+  test('emitArrowFunctionWhenUsingArguments16', async () => {
     await expectError(
       `
 function f() {
@@ -580,7 +580,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments17_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments17_ES6', async () => {
     await expectError(
       `
 function f() {
@@ -593,7 +593,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments17", async () => {
+  test('emitArrowFunctionWhenUsingArguments17', async () => {
     await expectError(
       `
 function f() {
@@ -606,7 +606,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments18_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments18_ES6', async () => {
     await expectPass(
       `// @strict: false
 
@@ -619,7 +619,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments18", async () => {
+  test('emitArrowFunctionWhenUsingArguments18', async () => {
     await expectPass(
       `// @strict: false
 
@@ -632,7 +632,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments19_ES6", async () => {
+  test('emitArrowFunctionWhenUsingArguments19_ES6', async () => {
     await expectPass(
       `// @strict: false
 
@@ -652,7 +652,7 @@ function f() {
       [],
     );
   });
-  test("emitArrowFunctionWhenUsingArguments19", async () => {
+  test('emitArrowFunctionWhenUsingArguments19', async () => {
     await expectPass(
       `// @strict: false
 

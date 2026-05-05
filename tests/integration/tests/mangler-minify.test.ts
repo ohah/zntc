@@ -1,7 +1,7 @@
-import { describe, test, expect, afterEach } from "bun:test";
-import { bundleAndRun, transpileAndRun } from "./helpers";
+import { describe, test, expect, afterEach } from 'bun:test';
+import { bundleAndRun, transpileAndRun } from './helpers';
 
-describe("mangler --minify 회귀", () => {
+describe('mangler --minify 회귀', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -14,10 +14,10 @@ describe("mangler --minify 회귀", () => {
   // #1609: shouldSkip(name.len<=1) 파라미터의 원본 이름이 reserved 처리되지 않아
   // base54 카운터가 같은 이름을 다른 param에 재할당 → "Duplicate parameter name" SyntaxError.
   // Effect의 pipe(a, ab, ..., hi) 9-param 시그니처가 전형적인 재현 케이스.
-  test("9-param 함수에서 1글자 param과 slot base54 이름이 충돌하지 않는다 (#1609)", async () => {
+  test('9-param 함수에서 1글자 param과 slot base54 이름이 충돌하지 않는다 (#1609)', async () => {
     const result = await bundleAndRun(
       {
-        "index.ts": `
+        'index.ts': `
           function pipe(a: any, ab: any, bc: any, cd: any, de: any, ef: any, fg: any, gh: any, hi: any): any {
             switch (arguments.length) {
               case 1: return a;
@@ -34,22 +34,22 @@ describe("mangler --minify 회귀", () => {
           console.log(pipe(1, (x: number) => x + 1, (x: number) => x * 2));
         `,
       },
-      "index.ts",
-      ["--minify", "--platform=node"],
+      'index.ts',
+      ['--minify', '--platform=node'],
     );
     cleanup = result.cleanup;
 
-    expect(result.runStderr).not.toContain("SyntaxError");
+    expect(result.runStderr).not.toContain('SyntaxError');
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("4");
+    expect(result.runOutput).toBe('4');
   });
 
   // outer(module) 스코프의 1글자 const를 nested 함수가 참조하는데, base54 결과가
   // 동일 이름을 함수 param에 할당하면 outer 참조가 shadowing되어 잘못된 값을 반환.
-  test("outer 1글자 const가 nested 함수 param에 shadowing되지 않는다 (#1609)", async () => {
+  test('outer 1글자 const가 nested 함수 param에 shadowing되지 않는다 (#1609)', async () => {
     const result = await bundleAndRun(
       {
-        "index.ts": `
+        'index.ts': `
           const i = 100;
           function compute(aa: number, ab: number, ac: number, ad: number, ae: number, af: number, ag: number, ah: number): number {
             return i + aa + ab + ac + ad + ae + af + ag + ah;
@@ -57,22 +57,22 @@ describe("mangler --minify 회귀", () => {
           console.log(compute(1, 2, 3, 4, 5, 6, 7, 8));
         `,
       },
-      "index.ts",
-      ["--minify", "--platform=node"],
+      'index.ts',
+      ['--minify', '--platform=node'],
     );
     cleanup = result.cleanup;
 
-    expect(result.runStderr).not.toContain("SyntaxError");
+    expect(result.runStderr).not.toContain('SyntaxError');
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("136"); // 100 + (1+2+...+8)
+    expect(result.runOutput).toBe('136'); // 100 + (1+2+...+8)
   });
 
   // for-loop의 `i`/`j` counter와 sibling 파라미터가 같은 함수에 공존할 때
   // base54가 `i`/`j`를 param에 재할당하면 loop counter 참조가 오염됨.
-  test("loop counter i/j가 sibling param과 충돌하지 않는다 (#1609)", async () => {
+  test('loop counter i/j가 sibling param과 충돌하지 않는다 (#1609)', async () => {
     const result = await bundleAndRun(
       {
-        "index.ts": `
+        'index.ts': `
           function sum(aa: number[], ab: number[], ac: number[], ad: number[], ae: number[], af: number[], ag: number[]): number {
             let total = 0;
             for (let i = 0; i < aa.length; i++) total += aa[i];
@@ -82,22 +82,22 @@ describe("mangler --minify 회귀", () => {
           console.log(sum([1, 2], [3], [4], [], [], [], []));
         `,
       },
-      "index.ts",
-      ["--minify", "--platform=node"],
+      'index.ts',
+      ['--minify', '--platform=node'],
     );
     cleanup = result.cleanup;
 
-    expect(result.runStderr).not.toContain("SyntaxError");
+    expect(result.runStderr).not.toContain('SyntaxError');
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("7"); // (1+2) + 3 + 1 (ac.length) + 0*4
+    expect(result.runOutput).toBe('7'); // (1+2) + 3 + 1 (ac.length) + 0*4
   });
 
   // base54 앞자리 0~4가 모두 1글자 local(e,t,n,r,i)로 reserved인 극단 케이스.
   // 카운터가 5칸 밀려도 이후 이름(c,l,u,d,f,p,m,h,g)이 정상 할당되는지 검증.
-  test("base54 앞자리 5개(e,t,n,r,i)가 전부 reserved여도 번들 성공 (#1609)", async () => {
+  test('base54 앞자리 5개(e,t,n,r,i)가 전부 reserved여도 번들 성공 (#1609)', async () => {
     const result = await bundleAndRun(
       {
-        "index.ts": `
+        'index.ts': `
           function run(aa: number, ab: number, ac: number, ad: number, ae: number, af: number, ag: number, ah: number, ai: number): number {
             let e = aa, t = ab, n = ac, r = ad, i = ae;
             return e + t + n + r + i + af + ag + ah + ai;
@@ -105,120 +105,120 @@ describe("mangler --minify 회귀", () => {
           console.log(run(1, 2, 3, 4, 5, 6, 7, 8, 9));
         `,
       },
-      "index.ts",
-      ["--minify", "--platform=node"],
+      'index.ts',
+      ['--minify', '--platform=node'],
     );
     cleanup = result.cleanup;
 
-    expect(result.runStderr).not.toContain("SyntaxError");
+    expect(result.runStderr).not.toContain('SyntaxError');
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("45"); // 1+2+...+9
+    expect(result.runOutput).toBe('45'); // 1+2+...+9
   });
 
   // #1623: import binding이 mangling candidates에 포함되면 자체 mangle name을 받고,
   // buildMetadataForAst의 self-rename 루프가 그 이름으로 cross-module rename을 덮어써
   // declaration과 reference가 서로 다른 이름으로 mangle돼 ReferenceError 발생.
-  test("cross-module default import의 declaration과 reference 이름이 일치한다 (#1623)", async () => {
+  test('cross-module default import의 declaration과 reference 이름이 일치한다 (#1623)', async () => {
     const result = await bundleAndRun(
       {
         // 런타임 표현식이라 컴파일타임 inline이 안 돼 _default가 var로 남고
         // use.js의 flag 참조도 var로 남는 — 양쪽 이름이 일치해야 동작.
-        "dep.js": `export default globalThis.RUNTIME_FLAG;`,
-        "use.js": `
+        'dep.js': `export default globalThis.RUNTIME_FLAG;`,
+        'use.js': `
           import flag from './dep.js';
           export var x = flag ? new Set() : null;
           export function f() { return flag ? new Set() : null; }
         `,
-        "index.js": `
+        'index.js': `
           import { x, f } from './use.js';
           globalThis.RUNTIME_FLAG = false;
           console.log(x, f());
         `,
       },
-      "index.js",
-      ["--minify", "--platform=node"],
+      'index.js',
+      ['--minify', '--platform=node'],
     );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
     // RUNTIME_FLAG는 dep.js 평가 시점에 undefined → falsy → 양쪽 null
-    expect(result.runOutput).toBe("null null");
+    expect(result.runOutput).toBe('null null');
   });
 
   // post-transform semantic refresh가 module.semantic을 교체하면 기존 ExportBinding.symbol이
   // 이전 symbol table을 가리킬 수 있다. named local export alias가 새 semantic symbol로
   // 다시 연결되지 않으면 importer의 참조와 declaration 이름이 어긋난다.
-  test("post-transform semantic refresh 후 named export alias가 새 심볼을 가리킨다", async () => {
+  test('post-transform semantic refresh 후 named export alias가 새 심볼을 가리킨다', async () => {
     const result = await bundleAndRun(
       {
-        "dep.js": `
+        'dep.js': `
           const localValue = globalThis.RUNTIME_FLAG ? "bad" : "ok";
           export { localValue as value };
         `,
-        "index.js": `
+        'index.js': `
           import { value } from './dep.js';
           globalThis.RUNTIME_FLAG = true;
           console.log(value);
         `,
       },
-      "index.js",
-      ["--minify", "--platform=node"],
+      'index.js',
+      ['--minify', '--platform=node'],
     );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
     // dep.js 평가 시점에는 RUNTIME_FLAG가 undefined라 falsy.
-    expect(result.runOutput).toBe("ok");
+    expect(result.runOutput).toBe('ok');
   });
 
   // source 모듈의 default export 심볼이 post-transform semantic 기준으로 갱신되지 않으면
   // barrel re-export가 stale SymbolRef를 따라가며 default 값 연결을 잃는다.
-  test("post-transform semantic refresh 후 default re-export chain이 stale 심볼을 쓰지 않는다", async () => {
+  test('post-transform semantic refresh 후 default re-export chain이 stale 심볼을 쓰지 않는다', async () => {
     const result = await bundleAndRun(
       {
-        "dep.js": `export default globalThis.RUNTIME_FLAG ? "bad" : "ok";`,
-        "barrel.js": `export { default as value } from './dep.js';`,
-        "index.js": `
+        'dep.js': `export default globalThis.RUNTIME_FLAG ? "bad" : "ok";`,
+        'barrel.js': `export { default as value } from './dep.js';`,
+        'index.js': `
           import { value } from './barrel.js';
           globalThis.RUNTIME_FLAG = true;
           console.log(value);
         `,
       },
-      "index.js",
-      ["--minify", "--platform=node"],
+      'index.js',
+      ['--minify', '--platform=node'],
     );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("ok");
+    expect(result.runOutput).toBe('ok');
   });
 
   // namespace import는 current-side local_symbol과 local export symbol 양쪽을 모두 사용한다.
   // semantic refresh 후 ExportBinding.symbol만 낡으면 `export { ns }` 경로에서 namespace 객체가
   // 잘못된 mangled 이름으로 노출될 수 있다.
-  test("post-transform semantic refresh 후 namespace import local export가 유지된다", async () => {
+  test('post-transform semantic refresh 후 namespace import local export가 유지된다', async () => {
     const result = await bundleAndRun(
       {
-        "dep.js": `
+        'dep.js': `
           export const left = "L";
           export const right = "R";
         `,
-        "barrel.js": `
+        'barrel.js': `
           import * as ns from './dep.js';
           export { ns };
         `,
-        "index.js": `
+        'index.js': `
           import { ns } from './barrel.js';
           console.log(ns.left + ns.right);
         `,
       },
-      "index.js",
-      ["--minify", "--platform=node"],
+      'index.js',
+      ['--minify', '--platform=node'],
     );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
-    expect(result.runOutput).toBe("LR");
+    expect(result.runOutput).toBe('LR');
   });
 
   // #2197: named class expression 의 inner name 은 mangle 대상에서 제외해야 함.
@@ -228,133 +228,133 @@ describe("mangler --minify 회귀", () => {
   //
   // 격리: transpile-only path. --bundle 모드에는 inner-name elision pass 가 별도로
   // 동작 (esbuild 와 동일한 minifier convention) 하므로 그 path 와 섞이지 않게 분리.
-  test("named class expression 의 .name 이 mangle 후에도 보존된다 (#2197)", async () => {
-    const result = await transpileAndRun("const Foo = class Bar {};\nconsole.log(Foo.name);\n", [
-      "--minify",
+  test('named class expression 의 .name 이 mangle 후에도 보존된다 (#2197)', async () => {
+    const result = await transpileAndRun('const Foo = class Bar {};\nconsole.log(Foo.name);\n', [
+      '--minify',
     ]);
     cleanup = result.cleanup;
 
     expect(result.transpileExitCode).toBe(0);
-    expect(result.runOutput).toBe("Bar");
+    expect(result.runOutput).toBe('Bar');
   });
 
   // class body 안에서 inner name 으로 self-reference 하는 경우에도 동일하게 보존되어야
   // 함 (Bar 가 mangle 되면 self-ref 와 .name 둘 다 깨짐).
-  test("class expression body 의 self-reference 와 .name 이 모두 보존된다 (#2197)", async () => {
+  test('class expression body 의 self-reference 와 .name 이 모두 보존된다 (#2197)', async () => {
     const result = await transpileAndRun(
       [
-        "const Foo = class Bar {",
-        "  static n = 0;",
-        "  static count() { return ++Bar.n; }",
-        "};",
-        "console.log(Foo.count(), Foo.count(), Foo.name);",
-      ].join("\n"),
-      ["--minify"],
+        'const Foo = class Bar {',
+        '  static n = 0;',
+        '  static count() { return ++Bar.n; }',
+        '};',
+        'console.log(Foo.count(), Foo.count(), Foo.name);',
+      ].join('\n'),
+      ['--minify'],
     );
     cleanup = result.cleanup;
 
     expect(result.transpileExitCode).toBe(0);
-    expect(result.runOutput).toBe("1 2 Bar");
+    expect(result.runOutput).toBe('1 2 Bar');
   });
 
   // #2196: JSX 가 만든 `React.createElement(...)` 호출의 head 식별자 (`React`)
   // 가 mangle 결과로 attach 되도록. 이전엔 transformer 가 만든 새 노드에 symbol_id
   // 가 없어 mangler 가 무시 → outer var 만 mangle, JSX 호출은 원본 `React` 그대로
   // → `ReferenceError: React is not defined`.
-  test("JSX factory head identifier 가 mangle 결과로 따라간다 (#2196)", async () => {
+  test('JSX factory head identifier 가 mangle 결과로 따라간다 (#2196)', async () => {
     const result = await transpileAndRun(
       [
         "const React = { createElement: (t: any, p: any, ...c: any[]) => ({ t, p, c }), Fragment: 'F' };",
-        "const el = <div>hi</div>;",
-        "console.log(JSON.stringify(el));",
-      ].join("\n"),
-      ["--minify"],
-      { ext: "tsx" },
+        'const el = <div>hi</div>;',
+        'console.log(JSON.stringify(el));',
+      ].join('\n'),
+      ['--minify'],
+      { ext: 'tsx' },
     );
     cleanup = result.cleanup;
 
     expect(result.transpileExitCode).toBe(0);
-    expect(result.runStderr).not.toContain("ReferenceError");
+    expect(result.runStderr).not.toContain('ReferenceError');
     expect(result.runOutput).toBe('{"t":"div","p":null,"c":["hi"]}');
   });
 
   // Fragment + 중첩 element + spread props 까지 같은 mangle path 통과 검증.
-  test("JSX Fragment + 중첩 element + spread props 도 mangle 후 정상 (#2196)", async () => {
+  test('JSX Fragment + 중첩 element + spread props 도 mangle 후 정상 (#2196)', async () => {
     const result = await transpileAndRun(
       [
-        "const React = {",
-        "  createElement(t: any, p: any, ...c: any[]) { return { type: t, props: p || {}, children: c }; },",
+        'const React = {',
+        '  createElement(t: any, p: any, ...c: any[]) { return { type: t, props: p || {}, children: c }; },',
         "  Fragment: 'Fragment',",
-        "};",
+        '};',
         "const el = (<><div className='a' {...{ id: 'x' }}>hi {1+2}</div><span /></>);",
-        "console.log(el.type, (el as any).children[0].props.id);",
-      ].join("\n"),
-      ["--minify"],
-      { ext: "tsx" },
+        'console.log(el.type, (el as any).children[0].props.id);',
+      ].join('\n'),
+      ['--minify'],
+      { ext: 'tsx' },
     );
     cleanup = result.cleanup;
 
     expect(result.transpileExitCode).toBe(0);
-    expect(result.runStderr).not.toContain("ReferenceError");
-    expect(result.runOutput).toBe("Fragment x");
+    expect(result.runStderr).not.toContain('ReferenceError');
+    expect(result.runOutput).toBe('Fragment x');
   });
 
   // #2195: block-scoped `let` 의 declaration 이전 사용 (TDZ) 은 inline 대상에서 제외.
   // 이전엔 top-level (scope_idx=0) 한정으로만 forward-reference 검증을 돌려서 try/{}
   // 같은 block scope 의 `let` 은 무조건 단순 inline → declaration 제거 → ReferenceError
   // 가 사라져 spec 위반. fix 는 모든 scope 에 forward-reference 검증을 적용.
-  test("try 블록 안 let 의 TDZ 가 minify 후에도 보존된다 (#2195)", async () => {
+  test('try 블록 안 let 의 TDZ 가 minify 후에도 보존된다 (#2195)', async () => {
     const result = await transpileAndRun(
       [
-        "try {",
-        "  console.log(x);",
-        "  let x = 1;",
-        "} catch (e: any) {",
+        'try {',
+        '  console.log(x);',
+        '  let x = 1;',
+        '} catch (e: any) {',
         "  console.log('CAUGHT:' + e.constructor.name);",
-        "}",
-      ].join("\n"),
-      ["--minify"],
+        '}',
+      ].join('\n'),
+      ['--minify'],
     );
     cleanup = result.cleanup;
 
     expect(result.transpileExitCode).toBe(0);
-    expect(result.runOutput).toBe("CAUGHT:ReferenceError");
+    expect(result.runOutput).toBe('CAUGHT:ReferenceError');
   });
 
   // nested scope: 함수 body > try block 의 forward-reference. fix 가 모든 scope depth
   // 에서 동작하는지 검증 (이전 fix 가 top-level 만 잡았던 이유로 함수 안 block 이
   // 사각지대였음).
-  test("함수 body 안 nested block-scoped let 의 forward-reference 도 inline 금지 (#2195)", async () => {
+  test('함수 body 안 nested block-scoped let 의 forward-reference 도 inline 금지 (#2195)', async () => {
     const result = await transpileAndRun(
       [
-        "function run() {",
-        "  try {",
-        "    console.log(y);",
-        "    let y = 99;",
-        "    return y;",
-        "  } catch (e: any) {",
+        'function run() {',
+        '  try {',
+        '    console.log(y);',
+        '    let y = 99;',
+        '    return y;',
+        '  } catch (e: any) {',
         "    return 'CAUGHT:' + e.constructor.name;",
-        "  }",
-        "}",
-        "console.log(run());",
-      ].join("\n"),
-      ["--minify"],
+        '  }',
+        '}',
+        'console.log(run());',
+      ].join('\n'),
+      ['--minify'],
     );
     cleanup = result.cleanup;
 
     expect(result.transpileExitCode).toBe(0);
-    expect(result.runOutput).toBe("CAUGHT:ReferenceError");
+    expect(result.runOutput).toBe('CAUGHT:ReferenceError');
   });
 
   // sanity check: declaration 이후 사용은 여전히 inline (forward-reference 없으면 동작 유지).
-  test("declaration 이후 사용은 single-use inline 유지 (#2195 회귀 가드)", async () => {
+  test('declaration 이후 사용은 single-use inline 유지 (#2195 회귀 가드)', async () => {
     const result = await transpileAndRun(
-      ["function f() {", "  let z = 7;", "  return z + 1;", "}", "console.log(f());"].join("\n"),
-      ["--minify"],
+      ['function f() {', '  let z = 7;', '  return z + 1;', '}', 'console.log(f());'].join('\n'),
+      ['--minify'],
     );
     cleanup = result.cleanup;
 
     expect(result.transpileExitCode).toBe(0);
-    expect(result.runOutput).toBe("8");
+    expect(result.runOutput).toBe('8');
   });
 });

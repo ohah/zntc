@@ -10,7 +10,7 @@
 export function skipCssString(css: string, start: number, quote: string): number {
   let i = start + 1;
   while (i < css.length) {
-    if (css[i] === "\\" && i + 1 < css.length) {
+    if (css[i] === '\\' && i + 1 < css.length) {
       i += 2;
       continue;
     }
@@ -26,11 +26,11 @@ export function skipCssString(css: string, start: number, quote: string): number
 export function skipCssUrl(css: string, start: number): number {
   let i = start;
   while (i < css.length) {
-    if ((css[i] === '"' || css[i] === "'") && css[i - 1] !== "\\") {
+    if ((css[i] === '"' || css[i] === "'") && css[i - 1] !== '\\') {
       i = skipCssString(css, i, css[i]!);
       continue;
     }
-    if (css[i] === ")") return i + 1;
+    if (css[i] === ')') return i + 1;
     i += 1;
   }
   return css.length;
@@ -43,10 +43,10 @@ export function startsWithCssIdent(css: string, offset: number, value: string): 
 
 /** CSS identifier 시작 가능 문자 (`_`, `A-Z`, `a-z`). */
 export function isCssIdentStart(ch: string): boolean {
-  return ch === "_" || (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z");
+  return ch === '_' || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
 }
 
 /** CSS identifier 내부 가능 문자 (시작 문자 + `-` + `0-9`). */
 export function isCssIdent(ch: string): boolean {
-  return isCssIdentStart(ch) || ch === "-" || (ch >= "0" && ch <= "9");
+  return isCssIdentStart(ch) || ch === '-' || (ch >= '0' && ch <= '9');
 }

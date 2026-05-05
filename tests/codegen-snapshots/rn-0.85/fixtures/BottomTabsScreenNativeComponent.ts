@@ -158,10 +158,7 @@ export interface NativeProps extends ViewProps {
     };
   };
 
-  overrideScrollViewContentInsetAdjustmentBehavior?: CT.WithDefault<
-    boolean,
-    true
-  >;
+  overrideScrollViewContentInsetAdjustmentBehavior?: CT.WithDefault<boolean, true>;
 
   bottomScrollEdgeEffect?: CT.WithDefault<ScrollEdgeEffect, 'automatic'>;
   leftScrollEdgeEffect?: CT.WithDefault<ScrollEdgeEffect, 'automatic'>;

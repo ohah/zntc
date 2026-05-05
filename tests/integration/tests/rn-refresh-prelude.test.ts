@@ -10,13 +10,13 @@
  * - 실행 순서: HMR 런타임 → InitializeCore(prelude) → 컴포넌트 모듈
  * - HMR update 시 performReactRefresh가 호출되는지
  */
-import { describe, test, expect, afterEach } from "bun:test";
-import { createFixture, runZtsInDir } from "./helpers";
-import { join } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
-import { spawn } from "bun";
+import { describe, test, expect, afterEach } from 'bun:test';
+import { createFixture, runZtsInDir } from './helpers';
+import { join } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { spawn } from 'bun';
 
-describe("RN react-refresh prelude", () => {
+describe('RN react-refresh prelude', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -33,7 +33,7 @@ describe("RN react-refresh prelude", () => {
   function createRNFixture() {
     return createFixture({
       // mock react-refresh/runtime — 최소 API 구현
-      "node_modules/react-refresh/cjs/react-refresh-runtime.development.js": `
+      'node_modules/react-refresh/cjs/react-refresh-runtime.development.js': `
         'use strict';
         var families = new Map();
         var pendingUpdates = [];
@@ -57,14 +57,14 @@ describe("RN react-refresh prelude", () => {
         exports.getFamilyByType = function() { return undefined; };
         exports._families = families;
       `,
-      "node_modules/react-refresh/runtime.js": `
+      'node_modules/react-refresh/runtime.js': `
         'use strict';
         module.exports = require('./cjs/react-refresh-runtime.development.js');
       `,
-      "node_modules/react-refresh/package.json": `{ "name": "react-refresh", "main": "runtime.js" }`,
+      'node_modules/react-refresh/package.json': `{ "name": "react-refresh", "main": "runtime.js" }`,
 
       // mock react-native InitializeCore — setUpReactRefresh ���할
-      "node_modules/react-native/Libraries/Core/InitializeCore.js": `
+      'node_modules/react-native/Libraries/Core/InitializeCore.js': `
         'use strict';
         // setUpReactRefresh 역할: react-refresh/runtime을 로드하고 global에 노출
         var ReactRefreshRuntime = require('react-refresh/runtime');
@@ -81,44 +81,44 @@ describe("RN react-refresh prelude", () => {
         if (typeof globalThis.__TEST_REFRESH_LOG__ === 'undefined') globalThis.__TEST_REFRESH_LOG__ = [];
         globalThis.__TEST_REFRESH_LOG__.push({ action: 'InitializeCore' });
       `,
-      "node_modules/react-native/package.json": `{ "name": "react-native", "main": "index.js" }`,
+      'node_modules/react-native/package.json': `{ "name": "react-native", "main": "index.js" }`,
 
       // 사용자 코드
-      "App.tsx": `
+      'App.tsx': `
         export default function App() { return "hello from App"; }
       `,
-      "index.tsx": `
+      'index.tsx': `
         import App from './App';
         globalThis.__APP_RESULT__ = App();
       `,
     });
   }
 
-  test("RN dev mode에서 InitializeCore가 prelude로 자동 포함된다", async () => {
+  test('RN dev mode에서 InitializeCore가 prelude로 자동 포함된다', async () => {
     const fixture = await createRNFixture();
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      "index.tsx",
-      "-o",
+      '--bundle',
+      'index.tsx',
+      '-o',
       outFile,
-      "--platform=react-native",
-      "--dev",
+      '--platform=react-native',
+      '--dev',
     ]);
 
     expect(result.exitCode).toBe(0);
-    const bundle = readFileSync(outFile, "utf-8");
+    const bundle = readFileSync(outFile, 'utf-8');
 
     // InitializeCore 코드가 번들에 포함되어야 함
-    expect(bundle).toContain("__ReactRefresh");
-    expect(bundle).toContain("injectIntoGlobalHook");
+    expect(bundle).toContain('__ReactRefresh');
+    expect(bundle).toContain('injectIntoGlobalHook');
 
     // InitializeCore의 require/init 호출이 엔트리 호출보다 앞에 있어야 함
     // (모듈 정의 순서가 아닌 호출 순서가 중요)
     // run_before_main 호출은 엔트리 init 호출 직전에 삽입됨
-    const lines = bundle.split("\n");
+    const lines = bundle.split('\n');
     const initCallLine = lines.findIndex(
       (l) =>
         /(?:require|init)_.*InitializeCore/.test(l) || /(?:require|init)_.*initialize_core/.test(l),
@@ -128,24 +128,24 @@ describe("RN react-refresh prelude", () => {
     expect(initCallLine).toBeGreaterThan(-1);
   });
 
-  test("$RefreshReg$가 __ReactRefresh 설정 후 정상 호출된다", async () => {
+  test('$RefreshReg$가 __ReactRefresh 설정 후 정상 호출된다', async () => {
     const fixture = await createRNFixture();
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      "index.tsx",
-      "-o",
+      '--bundle',
+      'index.tsx',
+      '-o',
       outFile,
-      "--platform=react-native",
-      "--dev",
+      '--platform=react-native',
+      '--dev',
     ]);
     expect(result.exitCode).toBe(0);
 
     // 번들 실행 + 결과 검증 스크립트
-    const testScript = join(fixture.dir, "test_runner.js");
-    const bundleCode = readFileSync(outFile, "utf-8");
+    const testScript = join(fixture.dir, 'test_runner.js');
+    const bundleCode = readFileSync(outFile, 'utf-8');
     writeFileSync(
       testScript,
       `
@@ -175,7 +175,7 @@ describe("RN react-refresh prelude", () => {
     `,
     );
 
-    const run = spawn({ cmd: ["bun", "run", testScript], stdout: "pipe", stderr: "pipe" });
+    const run = spawn({ cmd: ['bun', 'run', testScript], stdout: 'pipe', stderr: 'pipe' });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(run.stdout).text(),
       new Response(run.stderr).text(),
@@ -183,30 +183,30 @@ describe("RN react-refresh prelude", () => {
     ]);
 
     if (exitCode !== 0) {
-      console.error("stderr:", stderr);
-      console.error("stdout:", stdout);
+      console.error('stderr:', stderr);
+      console.error('stdout:', stdout);
     }
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("PASS");
+    expect(stdout).toContain('PASS');
   });
 
-  test("실행 순서: injectIntoGlobalHook → InitializeCore → register(컴포넌트)", async () => {
+  test('실행 순서: injectIntoGlobalHook → InitializeCore → register(컴포넌트)', async () => {
     const fixture = await createRNFixture();
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      "index.tsx",
-      "-o",
+      '--bundle',
+      'index.tsx',
+      '-o',
       outFile,
-      "--platform=react-native",
-      "--dev",
+      '--platform=react-native',
+      '--dev',
     ]);
     expect(result.exitCode).toBe(0);
 
-    const testScript = join(fixture.dir, "test_order.js");
-    const bundleCode = readFileSync(outFile, "utf-8");
+    const testScript = join(fixture.dir, 'test_order.js');
+    const bundleCode = readFileSync(outFile, 'utf-8');
     writeFileSync(
       testScript,
       `
@@ -239,7 +239,7 @@ describe("RN react-refresh prelude", () => {
     `,
     );
 
-    const run = spawn({ cmd: ["bun", "run", testScript], stdout: "pipe", stderr: "pipe" });
+    const run = spawn({ cmd: ['bun', 'run', testScript], stdout: 'pipe', stderr: 'pipe' });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(run.stdout).text(),
       new Response(run.stderr).text(),
@@ -247,76 +247,76 @@ describe("RN react-refresh prelude", () => {
     ]);
 
     if (exitCode !== 0) {
-      console.error("stderr:", stderr);
-      console.error("stdout:", stdout);
+      console.error('stderr:', stderr);
+      console.error('stdout:', stdout);
     }
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("PASS");
+    expect(stdout).toContain('PASS');
   });
 
-  test("비-RN 플랫폼에서는 InitializeCore가 주입되지 않는다", async () => {
+  test('비-RN 플랫폼에서는 InitializeCore가 주입되지 않는다', async () => {
     const fixture = await createRNFixture();
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      "index.tsx",
-      "-o",
+      '--bundle',
+      'index.tsx',
+      '-o',
       outFile,
-      "--platform=browser",
-      "--dev",
+      '--platform=browser',
+      '--dev',
     ]);
     expect(result.exitCode).toBe(0);
 
-    const bundle = readFileSync(outFile, "utf-8");
+    const bundle = readFileSync(outFile, 'utf-8');
 
     // browser 플랫폼에서는 InitializeCore가 번들에 포함되지 않아야 함
-    expect(bundle).not.toContain("InitializeCore");
+    expect(bundle).not.toContain('InitializeCore');
   });
 
-  test("비-dev 모드에서는 InitializeCore prelude가 주입되지 않는다", async () => {
+  test('비-dev 모드에서는 InitializeCore prelude가 주입되지 않는다', async () => {
     const fixture = await createRNFixture();
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      "index.tsx",
-      "-o",
+      '--bundle',
+      'index.tsx',
+      '-o',
       outFile,
-      "--platform=react-native",
+      '--platform=react-native',
     ]);
     expect(result.exitCode).toBe(0);
 
-    const bundle = readFileSync(outFile, "utf-8");
+    const bundle = readFileSync(outFile, 'utf-8');
 
     // non-dev에서는 HMR 런타임과 InitializeCore prelude가 없어야 함
-    expect(bundle).not.toContain("__zts_modules");
-    expect(bundle).not.toContain("injectIntoGlobalHook");
+    expect(bundle).not.toContain('__zts_modules');
+    expect(bundle).not.toContain('injectIntoGlobalHook');
   });
 
-  test("사용자가 --run-before-main으로 이미 InitializeCore를 지정하면 중복 추가하지 않는다", async () => {
+  test('사용자가 --run-before-main으로 이미 InitializeCore를 지정하면 중복 추가하지 않는다', async () => {
     const fixture = await createRNFixture();
     cleanup = fixture.cleanup;
 
     const initCorePath = join(
       fixture.dir,
-      "node_modules/react-native/Libraries/Core/InitializeCore.js",
+      'node_modules/react-native/Libraries/Core/InitializeCore.js',
     );
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      "index.tsx",
-      "-o",
+      '--bundle',
+      'index.tsx',
+      '-o',
       outFile,
-      "--platform=react-native",
-      "--dev",
+      '--platform=react-native',
+      '--dev',
       `--run-before-main=${initCorePath}`,
     ]);
     expect(result.exitCode).toBe(0);
 
-    const bundle = readFileSync(outFile, "utf-8");
+    const bundle = readFileSync(outFile, 'utf-8');
 
     // 실제 코드(injectIntoGlobalHook)는 1번만 포함되어야 함 (정의 + 호출)
     const injectMatches = bundle.match(/injectIntoGlobalHook/g) || [];
@@ -325,24 +325,24 @@ describe("RN react-refresh prelude", () => {
     expect(injectMatches.length).toBeLessThanOrEqual(3);
   });
 
-  test("HMR 런타임에 디버그 console.log가 없다", async () => {
+  test('HMR 런타임에 디버그 console.log가 없다', async () => {
     const fixture = await createRNFixture();
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZtsInDir(fixture.dir, [
-      "--bundle",
-      "index.tsx",
-      "-o",
+      '--bundle',
+      'index.tsx',
+      '-o',
       outFile,
-      "--platform=react-native",
-      "--dev",
+      '--platform=react-native',
+      '--dev',
     ]);
     expect(result.exitCode).toBe(0);
 
-    const bundle = readFileSync(outFile, "utf-8");
+    const bundle = readFileSync(outFile, 'utf-8');
 
     // HMR 런타임의 디버그 로그가 제거되었는지 확인
-    expect(bundle).not.toContain("[zts:hmr]");
+    expect(bundle).not.toContain('[zts:hmr]');
   });
 });

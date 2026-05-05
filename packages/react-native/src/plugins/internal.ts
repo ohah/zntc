@@ -2,7 +2,7 @@
 // 4 plugin 파일 (babel/codegen/asset/metro-resolve-request) 의 require + Babel
 // type + error message 추출의 단일 출처.
 
-import { createRequire } from "node:module";
+import { createRequire } from 'node:module';
 
 /** ZTS CLI 의 createRequire — fallback / require 의 모든 plugin 공용. */
 export const requireFromCli = createRequire(import.meta.url);
@@ -34,6 +34,6 @@ export interface BabelTransformOptions {
  */
 export function getErrorMessage(err: unknown, max = 100): string {
   const e = err as { message?: unknown };
-  if (typeof e?.message === "string") return e.message.slice(0, max);
+  if (typeof e?.message === 'string') return e.message.slice(0, max);
   return String(err).slice(0, max);
 }

@@ -5,5 +5,5 @@
 const SPECIAL_CHARS_RE = /[.*+?^${}()|[\]\\]/g;
 
 export function escapeRegex(s: string): string {
-  return s.replace(SPECIAL_CHARS_RE, "\\$&");
+  return s.replace(SPECIAL_CHARS_RE, '\\$&');
 }

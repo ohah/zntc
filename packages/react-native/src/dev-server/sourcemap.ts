@@ -11,7 +11,7 @@ export function postProcessSourceMap(rawJson: string): string {
       Array.isArray(map.x_google_ignoreList) ? map.x_google_ignoreList : [],
     );
     for (let i = 0; i < map.sources.length; i++) {
-      if (typeof map.sources[i] === "string" && map.sources[i].includes("/node_modules/")) {
+      if (typeof map.sources[i] === 'string' && map.sources[i].includes('/node_modules/')) {
         existing.add(i);
       }
     }

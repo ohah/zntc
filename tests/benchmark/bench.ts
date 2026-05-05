@@ -6,15 +6,15 @@
  * 소규모/중규모/대규모 시나리오로 스케일 특성 측정.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { computeMetricStats, formatMetric, type MetricStats } from './stats';
 
-const ROOT = resolve(__dirname, "../..");
-const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
-const BIN = join(ROOT, "node_modules/.bin");
+const ROOT = resolve(__dirname, '../..');
+const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const BIN = join(ROOT, 'node_modules/.bin');
 const ITERATIONS = 5;
 
 // ============================================================
@@ -22,7 +22,7 @@ const ITERATIONS = 5;
 // ============================================================
 
 function findBin(name: string): string | null {
-  const local = join(__dirname, "node_modules/.bin", name);
+  const local = join(__dirname, 'node_modules/.bin', name);
   if (existsSync(local)) return local;
   const root = join(BIN, name);
   if (existsSync(root)) return root;
@@ -34,7 +34,7 @@ function findBin(name: string): string | null {
 // ============================================================
 
 function generateTS(lines: number): string {
-  const parts: string[] = ['import { helper } from "./helper";', ""];
+  const parts: string[] = ['import { helper } from "./helper";', ''];
   for (let i = 0; i < lines; i++) {
     parts.push(`export const value${i}: number = ${i} + helper(${i});`);
     if (i % 50 === 0) {
@@ -42,7 +42,7 @@ function generateTS(lines: number): string {
     }
   }
   parts.push(`export default function main() { return value0; }`);
-  return parts.join("\n");
+  return parts.join('\n');
 }
 
 function generateHelper(): string {
@@ -50,11 +50,11 @@ function generateHelper(): string {
 }
 
 function generateProject(dir: string, fileCount: number) {
-  mkdirSync(join(dir, "src"), { recursive: true });
+  mkdirSync(join(dir, 'src'), { recursive: true });
 
   for (let i = 0; i < fileCount - 1; i++) {
     writeFileSync(
-      join(dir, "src", `mod${i}.ts`),
+      join(dir, 'src', `mod${i}.ts`),
       `export const val${i} = ${i};\nexport function fn${i}(x: number) { return x + ${i}; }\n`,
     );
   }
@@ -62,20 +62,20 @@ function generateProject(dir: string, fileCount: number) {
   const imports = Array.from(
     { length: fileCount - 1 },
     (_, i) => `import { val${i}, fn${i} } from './mod${i}';`,
-  ).join("\n");
-  const usage = Array.from({ length: fileCount - 1 }, (_, i) => `fn${i}(val${i})`).join(" + ");
-  writeFileSync(join(dir, "src", "index.ts"), `${imports}\nconsole.log(${usage});\n`);
+  ).join('\n');
+  const usage = Array.from({ length: fileCount - 1 }, (_, i) => `fn${i}(val${i})`).join(' + ');
+  writeFileSync(join(dir, 'src', 'index.ts'), `${imports}\nconsole.log(${usage});\n`);
 
   writeFileSync(
-    join(dir, "tsconfig.json"),
+    join(dir, 'tsconfig.json'),
     JSON.stringify({
       compilerOptions: {
-        target: "es2020",
-        module: "esnext",
-        moduleResolution: "bundler",
+        target: 'es2020',
+        module: 'esnext',
+        moduleResolution: 'bundler',
         strict: true,
       },
-      include: ["src"],
+      include: ['src'],
     }),
   );
 }
@@ -119,7 +119,7 @@ function runBench(name: string, task: string, scale: string, fn: () => void): Be
 }
 
 function execBin(bin: string, args: string[], cwd?: string) {
-  spawnSync(bin, args, { cwd, stdio: "pipe", timeout: 120000 });
+  spawnSync(bin, args, { cwd, stdio: 'pipe', timeout: 120000 });
 }
 
 // ============================================================
@@ -129,35 +129,35 @@ function execBin(bin: string, args: string[], cwd?: string) {
 function benchTranspile(): BenchResult[] {
   const results: BenchResult[] = [];
   const scales = [
-    { name: "small (100 lines)", lines: 100 },
-    { name: "medium (1K lines)", lines: 1000 },
-    { name: "large (5K lines)", lines: 5000 },
+    { name: 'small (100 lines)', lines: 100 },
+    { name: 'medium (1K lines)', lines: 1000 },
+    { name: 'large (5K lines)', lines: 5000 },
   ];
 
-  const esbuildBin = findBin("esbuild");
-  const swcBin = findBin("swc");
+  const esbuildBin = findBin('esbuild');
+  const swcBin = findBin('swc');
 
   for (const scale of scales) {
-    const dir = mkdtempSync(join(tmpdir(), "zts-bench-"));
-    const inputFile = join(dir, "input.ts");
+    const dir = mkdtempSync(join(tmpdir(), 'zts-bench-'));
+    const inputFile = join(dir, 'input.ts');
     writeFileSync(inputFile, generateTS(scale.lines));
-    writeFileSync(join(dir, "helper.ts"), generateHelper());
+    writeFileSync(join(dir, 'helper.ts'), generateHelper());
 
     console.log(`\n--- Transpile: ${scale.name} ---`);
 
     results.push(
-      runBench("ZTS", "transpile", scale.name, () => {
-        execBin(ZTS_BIN, [inputFile, "-o", join(dir, "out-zts.js")]);
+      runBench('ZTS', 'transpile', scale.name, () => {
+        execBin(ZTS_BIN, [inputFile, '-o', join(dir, 'out-zts.js')]);
       }),
     );
 
     if (esbuildBin) {
       results.push(
-        runBench("esbuild", "transpile", scale.name, () => {
+        runBench('esbuild', 'transpile', scale.name, () => {
           execBin(esbuildBin, [
             inputFile,
-            `--outfile=${join(dir, "out-esbuild.js")}`,
-            "--loader=ts",
+            `--outfile=${join(dir, 'out-esbuild.js')}`,
+            '--loader=ts',
           ]);
         }),
       );
@@ -165,16 +165,16 @@ function benchTranspile(): BenchResult[] {
 
     if (swcBin) {
       results.push(
-        runBench("SWC", "transpile", scale.name, () => {
-          execBin(swcBin, [inputFile, "-o", join(dir, "out-swc.js")]);
+        runBench('SWC', 'transpile', scale.name, () => {
+          execBin(swcBin, [inputFile, '-o', join(dir, 'out-swc.js')]);
         }),
       );
     }
 
     results.push(
-      runBench("oxc (node)", "transpile", scale.name, () => {
-        execBin("node", [
-          "-e",
+      runBench('oxc (node)', 'transpile', scale.name, () => {
+        execBin('node', [
+          '-e',
           `const {transformSync}=require('oxc-transform');const fs=require('fs');` +
             `const code=fs.readFileSync(${JSON.stringify(inputFile)},'utf8');` +
             `transformSync('input.ts',code,{sourceType:'module'})`,
@@ -184,8 +184,8 @@ function benchTranspile(): BenchResult[] {
 
     // Bun (transpile via bun build --no-bundle)
     results.push(
-      runBench("Bun", "transpile", scale.name, () => {
-        execBin("bun", ["build", inputFile, "--no-bundle", "--outfile", join(dir, "out-bun.js")]);
+      runBench('Bun', 'transpile', scale.name, () => {
+        execBin('bun', ['build', inputFile, '--no-bundle', '--outfile', join(dir, 'out-bun.js')]);
       }),
     );
 
@@ -202,39 +202,39 @@ function benchTranspile(): BenchResult[] {
 function benchBundle(): BenchResult[] {
   const results: BenchResult[] = [];
   const scales = [
-    { name: "small (10 modules)", files: 10 },
-    { name: "medium (50 modules)", files: 50 },
-    { name: "large (200 modules)", files: 200 },
+    { name: 'small (10 modules)', files: 10 },
+    { name: 'medium (50 modules)', files: 50 },
+    { name: 'large (200 modules)', files: 200 },
   ];
 
-  const esbuildBin = findBin("esbuild");
-  const rolldownBin = findBin("rolldown");
-  const webpackBin = findBin("webpack");
-  const rspackBin = findBin("rspack");
+  const esbuildBin = findBin('esbuild');
+  const rolldownBin = findBin('rolldown');
+  const webpackBin = findBin('webpack');
+  const rspackBin = findBin('rspack');
 
   for (const scale of scales) {
-    const dir = mkdtempSync(join(tmpdir(), "zts-bench-bundle-"));
+    const dir = mkdtempSync(join(tmpdir(), 'zts-bench-bundle-'));
     generateProject(dir, scale.files);
-    const entry = join(dir, "src", "index.ts");
-    const outDir = join(dir, "dist");
+    const entry = join(dir, 'src', 'index.ts');
+    const outDir = join(dir, 'dist');
     mkdirSync(outDir, { recursive: true });
 
     console.log(`\n--- Bundle: ${scale.name} ---`);
 
     results.push(
-      runBench("ZTS", "bundle", scale.name, () => {
-        execBin(ZTS_BIN, ["--bundle", entry, "-o", join(outDir, "zts.js")]);
+      runBench('ZTS', 'bundle', scale.name, () => {
+        execBin(ZTS_BIN, ['--bundle', entry, '-o', join(outDir, 'zts.js')]);
       }),
     );
 
     if (esbuildBin) {
       results.push(
-        runBench("esbuild", "bundle", scale.name, () => {
+        runBench('esbuild', 'bundle', scale.name, () => {
           execBin(esbuildBin, [
             entry,
-            "--bundle",
-            `--outfile=${join(outDir, "esbuild.js")}`,
-            "--loader:.ts=ts",
+            '--bundle',
+            `--outfile=${join(outDir, 'esbuild.js')}`,
+            '--loader:.ts=ts',
           ]);
         }),
       );
@@ -242,15 +242,15 @@ function benchBundle(): BenchResult[] {
 
     // Bun bundle
     results.push(
-      runBench("Bun", "bundle", scale.name, () => {
-        execBin("bun", ["build", entry, "--outfile", join(outDir, "bun.js")]);
+      runBench('Bun', 'bundle', scale.name, () => {
+        execBin('bun', ['build', entry, '--outfile', join(outDir, 'bun.js')]);
       }),
     );
 
     if (rolldownBin) {
       results.push(
-        runBench("rolldown", "bundle", scale.name, () => {
-          execBin(rolldownBin, [entry, "--dir", join(outDir, "rolldown")]);
+        runBench('rolldown', 'bundle', scale.name, () => {
+          execBin(rolldownBin, [entry, '--dir', join(outDir, 'rolldown')]);
         }),
       );
     }
@@ -258,7 +258,7 @@ function benchBundle(): BenchResult[] {
     // webpack/rspack은 large 제외 (느려서)
     if (scale.files <= 50) {
       if (webpackBin) {
-        const config = join(dir, "webpack.config.js");
+        const config = join(dir, 'webpack.config.js');
         writeFileSync(
           config,
           `module.exports = {
@@ -269,14 +269,14 @@ function benchBundle(): BenchResult[] {
 };`,
         );
         results.push(
-          runBench("webpack", "bundle", scale.name, () => {
-            execBin(webpackBin, ["--config", config], dir);
+          runBench('webpack', 'bundle', scale.name, () => {
+            execBin(webpackBin, ['--config', config], dir);
           }),
         );
       }
 
       if (rspackBin) {
-        const config = join(dir, "rspack.config.js");
+        const config = join(dir, 'rspack.config.js');
         writeFileSync(
           config,
           `module.exports = {
@@ -287,8 +287,8 @@ function benchBundle(): BenchResult[] {
 };`,
         );
         results.push(
-          runBench("rspack", "bundle", scale.name, () => {
-            execBin(rspackBin, ["build", "--config", config], dir);
+          runBench('rspack', 'bundle', scale.name, () => {
+            execBin(rspackBin, ['build', '--config', config], dir);
           }),
         );
       }
@@ -318,8 +318,8 @@ function printResults(results: BenchResult[]) {
         });
 
       console.log(`\n### ${task} — ${scale}`);
-      console.log("| Tool | Median | Trimmed mean | Min | Max | p95 | vs fastest |");
-      console.log("|------|--------|--------------|-----|-----|-----|------------|");
+      console.log('| Tool | Median | Trimmed mean | Min | Max | p95 | vs fastest |');
+      console.log('|------|--------|--------------|-----|-----|-----|------------|');
       const fastest = group.find((r) => r.stats !== null)?.stats?.median ?? 1;
       for (const r of group) {
         if (r.stats === null) {
@@ -340,12 +340,12 @@ function printResults(results: BenchResult[]) {
 // ============================================================
 
 const args = process.argv.slice(2);
-const doTranspile = args.includes("--transpile") || args.includes("--all") || args.length === 0;
-const doBundle = args.includes("--bundle") || args.includes("--all") || args.length === 0;
+const doTranspile = args.includes('--transpile') || args.includes('--all') || args.length === 0;
+const doBundle = args.includes('--bundle') || args.includes('--all') || args.length === 0;
 
-console.log("ZTS Benchmark Suite");
+console.log('ZTS Benchmark Suite');
 console.log(`  Iterations: ${ITERATIONS} (median, trimmed mean)`);
-console.log("  Method: CLI binary direct execution (no npx overhead)");
+console.log('  Method: CLI binary direct execution (no npx overhead)');
 console.log(`  Platform: ${process.platform} ${process.arch}`);
 
 const allResults: BenchResult[] = [];
@@ -353,5 +353,5 @@ const allResults: BenchResult[] = [];
 if (doTranspile) allResults.push(...benchTranspile());
 if (doBundle) allResults.push(...benchBundle());
 
-console.log("\n===== Results =====");
+console.log('\n===== Results =====');
 printResults(allResults);
