@@ -1,8 +1,23 @@
 import { type Dirent, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 
-interface NodeRequire {
+export interface NodeRequire {
   (specifier: string): unknown;
+}
+
+/**
+ * `root` 의 package.json 기준 `require` 로 specifier 를 로드, MODULE_NOT_FOUND
+ * 시 fallbackRequire 로 fallback. postcss/sass 같은 optional dev deps 가 app
+ * 또는 CLI 어느 쪽에 있는지 모를 때 양쪽 모두 시도.
+ */
+export function requireFromAppRoot(
+  root: string,
+  fallbackRequire: NodeRequire,
+  specifier: string,
+): unknown {
+  const requireFromRoot = createRequire(join(root, "package.json")) as unknown as NodeRequire;
+  return requireFromAppOrFallback(requireFromRoot, fallbackRequire, specifier);
 }
 
 /**

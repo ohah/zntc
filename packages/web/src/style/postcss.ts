@@ -1,13 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 import { joinUrl } from "../url.ts";
-import { collectAppFiles, requireFromAppOrFallback } from "./loader.ts";
-
-interface NodeRequire {
-  (specifier: string): unknown;
-}
+import { collectAppFiles, type NodeRequire, requireFromAppRoot } from "./loader.ts";
 
 // 순서는 zts.mjs L892-902 와 동일 — postcss.config.* 이 .postcssrc.* 보다 우선.
 // PR #5e 의 redirect 시점까지 양쪽 sync 유지 (#2539).
@@ -116,13 +111,11 @@ export async function loadPostcssConfig(
   configEnv: ConfigEnv,
   fallbackRequire: NodeRequire,
 ): Promise<LoadedPostcss | null> {
-  const requireFromRoot = createRequire(join(root, "package.json")) as unknown as NodeRequire;
-  const postcssrc = requireFromAppOrFallback(
-    requireFromRoot,
-    fallbackRequire,
-    "postcss-load-config",
-  ) as (env: { cwd: string; env: string }, root: string) => Promise<PostcssrcConfig>;
-  const postcssModule = requireFromAppOrFallback(requireFromRoot, fallbackRequire, "postcss") as {
+  const postcssrc = requireFromAppRoot(root, fallbackRequire, "postcss-load-config") as (
+    env: { cwd: string; env: string },
+    root: string,
+  ) => Promise<PostcssrcConfig>;
+  const postcssModule = requireFromAppRoot(root, fallbackRequire, "postcss") as {
     default?: LoadedPostcss["postcss"];
   } & LoadedPostcss["postcss"];
   const postcss = (postcssModule.default ?? postcssModule) as LoadedPostcss["postcss"];

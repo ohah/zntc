@@ -35,5 +35,19 @@ export {
   runPostcssForAppDev,
   runPostcssIfConfigured,
 } from "./style/postcss.ts";
+export {
+  buildCssPreprocessorProxy,
+  CSS_PREPROCESSOR_EXTENSIONS,
+  compileSassFile,
+  cssPreprocessorOutputPath,
+  cssPreprocessorProxyPath,
+  isCssModulePreprocessorFile,
+  isCssPreprocessorFile,
+  isStyleReferenceSource,
+  loadSassCompiler,
+  rewriteSassReferences,
+  transformCssPreprocessors,
+  type TransformCssPreprocessorOptions,
+} from "./style/sass.ts";
 // dev-overlay-client 는 .mjs 라 별도 export — 브라우저 inject 용 string.
 export { APP_DEV_HMR_CLIENT } from "../runtime/dev-overlay-client.mjs";
