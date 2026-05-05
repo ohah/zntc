@@ -1,5 +1,6 @@
 // dev-server public surface.
 
+export { createHmrBridge, type HmrBridge, type HmrBridgeOptions } from "./hmr-bridge.ts";
 export {
   createBaseMiddleware,
   createDevHttpServer,
