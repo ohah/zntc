@@ -96,6 +96,16 @@ jobs:
           submodules: recursive
       - uses: ./.github/actions/setup-zts
 
+      # E2E test fixture 가 spawn 한 `zts build` (app 모드) 가 `@zts/web` 을
+      # lazy import. setup-zts 는 core build:js 까지만 — web/server 와 core
+      # dts 를 별도 빌드 (#2539 PR #6d 후 web 의 tsc emit 가 core 의
+      # `prepareAppDevSync` declaration 의존).
+      - name: Build @zts/core dts + @zts/server + @zts/web (E2E app 모드 의존)
+        run: |
+          bun run --cwd packages/core build:dts
+          bun run --cwd packages/server build
+          bun run --cwd packages/web build
+
       - name: Install Playwright browsers
         run: bun run playwright:install
 
