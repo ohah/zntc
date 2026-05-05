@@ -7,12 +7,17 @@ on:
       - 'src/**'
       - 'packages/**'
       - 'tests/**'
+      - '.github/workflows/integration.yml'
+      - '.github/actions/setup-zts/**'
   pull_request:
     branches: [main]
     paths:
       - 'src/**'
       - 'packages/**'
       - 'tests/**'
+      - '.github/workflows/integration.yml'
+      - '.github/actions/setup-zts/**'
+  workflow_dispatch:
 
 jobs:
   integration:
