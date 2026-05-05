@@ -1917,6 +1917,19 @@ async function main() {
     return;
   }
 
+  // RN dev/build 의 positional arg 는 entry point (파일) — web 처럼 appRoot (디렉토리)
+  // 가 아니라서 그대로 두면 envDir 가 파일을 가리켜 `.env` 로딩에서 ENOTDIR 발생.
+  // entry → entryPoints[0] 로 옮기고 그 dirname 을 appRoot 로 사용.
+  if (
+    (opts.appCommand === "dev" || opts.appCommand === "build") &&
+    opts.platform === "react-native" &&
+    opts.appRoot
+  ) {
+    const entryArg = opts.appRoot;
+    if (opts.entryPoints.length === 0) opts.entryPoints.push(entryArg);
+    opts.appRoot = dirname(resolve(entryArg));
+  }
+
   if ((opts.appCommand === "dev" || opts.appCommand === "build") && !opts.envDir) {
     opts.envDir = resolve(opts.appRoot ?? ".");
   }

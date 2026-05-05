@@ -323,14 +323,18 @@ function readFileOrThrowNotFound(absPath: string): string {
 }
 
 /**
- * 파일 부재를 정상 케이스로 처리하는 read. ENOENT 면 null, 그 외는 throw.
+ * 파일 부재를 정상 케이스로 처리하는 read. ENOENT/ENOTDIR 면 null, 그 외는 throw.
  * `.env` 같은 optional 파일 로딩 (`load-env.ts`) 에서 사용.
+ *
+ * ENOTDIR: 부모 경로가 디렉토리가 아닌 케이스 (예: envDir 가 실수로 파일을 가리키는 경우).
+ * optional lookup 의 의미상 "없음"과 동등하므로 swallow.
  */
 export function readFileIfExists(absPath: string): string | null {
   try {
     return readFileSync(absPath, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
     throw err;
   }
 }
