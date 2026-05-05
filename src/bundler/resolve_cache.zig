@@ -294,31 +294,41 @@ pub const ResolveCache = struct {
         var scope = profile.begin(.resolve);
         defer scope.end();
 
-        if (self.isExternal(specifier)) return null;
+        {
+            var external_scope = profile.begin(.resolve_external);
+            defer external_scope.end();
+            if (self.isExternal(specifier)) return null;
+        }
 
         // 스택 버퍼로 캐시 키 생성 (alloc/free 제거)
         var key_buf: [8192]u8 = undefined;
         const kind_str = @tagName(kind);
         const key_len = source_dir.len + 1 + specifier.len + 1 + kind_str.len;
-        const cache_key = if (key_len <= key_buf.len) blk: {
-            var pos: usize = 0;
-            @memcpy(key_buf[pos .. pos + source_dir.len], source_dir);
-            pos += source_dir.len;
-            key_buf[pos] = 0;
-            pos += 1;
-            @memcpy(key_buf[pos .. pos + specifier.len], specifier);
-            pos += specifier.len;
-            key_buf[pos] = 0;
-            pos += 1;
-            @memcpy(key_buf[pos .. pos + kind_str.len], kind_str);
-            pos += kind_str.len;
-            break :blk key_buf[0..pos];
-        } else self.makeCacheKey(source_dir, specifier, kind) catch
-            return error.OutOfMemory;
+        const cache_key = blk: {
+            var key_scope = profile.begin(.resolve_cache_key);
+            defer key_scope.end();
+            break :blk if (key_len <= key_buf.len) stack_key: {
+                var pos: usize = 0;
+                @memcpy(key_buf[pos .. pos + source_dir.len], source_dir);
+                pos += source_dir.len;
+                key_buf[pos] = 0;
+                pos += 1;
+                @memcpy(key_buf[pos .. pos + specifier.len], specifier);
+                pos += specifier.len;
+                key_buf[pos] = 0;
+                pos += 1;
+                @memcpy(key_buf[pos .. pos + kind_str.len], kind_str);
+                pos += kind_str.len;
+                break :stack_key key_buf[0..pos];
+            } else self.makeCacheKey(source_dir, specifier, kind) catch
+                return error.OutOfMemory;
+        };
         defer if (key_len > key_buf.len) self.allocator.free(cache_key);
 
         // 캐시 조회
         {
+            var lookup_scope = profile.begin(.resolve_cache_lookup);
+            defer lookup_scope.end();
             if (thread_safe) self.cache_mutex.lock();
             defer if (thread_safe) self.cache_mutex.unlock();
             if (self.cache.get(cache_key)) |cached| {
@@ -348,27 +358,33 @@ pub const ResolveCache = struct {
         var effective_spec = specifier;
         var remap_buf: [MAX_REMAP_DEPTH][]const u8 = undefined;
         var remap_depth: u8 = 0;
-        if (self.platform.isBrowserLike()) {
-            while (remap_depth < MAX_REMAP_DEPTH) : (remap_depth += 1) {
-                // 동일 specifier 로 self-remap 이면 즉시 종료 (recursive-module fixture).
-                if (remap_depth > 0 and std.mem.eql(u8, effective_spec, remap_buf[remap_depth - 1])) break;
-                switch (self.getBareModuleOverride(source_dir, effective_spec)) {
-                    .disabled => {
-                        const disabled_path = std.fmt.allocPrint(self.allocator, "(disabled):{s}", .{effective_spec}) catch return error.OutOfMemory;
-                        if (thread_safe) self.cache_mutex.lock();
-                        defer if (thread_safe) self.cache_mutex.unlock();
-                        self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
-                            .path = self.allocator.dupe(u8, disabled_path) catch return error.OutOfMemory,
-                            .module_type = .js,
-                        } } }) catch {};
-                        return disabledResult(disabled_path, .js);
-                    },
-                    .remap => |rep| {
-                        remap_buf[remap_depth] = effective_spec;
-                        effective_spec = rep;
-                        continue;
-                    },
-                    .none => break,
+        {
+            var browser_scope = profile.begin(.resolve_browser_override);
+            defer browser_scope.end();
+            if (self.platform.isBrowserLike()) {
+                while (remap_depth < MAX_REMAP_DEPTH) : (remap_depth += 1) {
+                    // 동일 specifier 로 self-remap 이면 즉시 종료 (recursive-module fixture).
+                    if (remap_depth > 0 and std.mem.eql(u8, effective_spec, remap_buf[remap_depth - 1])) break;
+                    switch (self.getBareModuleOverride(source_dir, effective_spec)) {
+                        .disabled => {
+                            const disabled_path = std.fmt.allocPrint(self.allocator, "(disabled):{s}", .{effective_spec}) catch return error.OutOfMemory;
+                            var store_scope = profile.begin(.resolve_cache_store);
+                            defer store_scope.end();
+                            if (thread_safe) self.cache_mutex.lock();
+                            defer if (thread_safe) self.cache_mutex.unlock();
+                            self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
+                                .path = self.allocator.dupe(u8, disabled_path) catch return error.OutOfMemory,
+                                .module_type = .js,
+                            } } }) catch {};
+                            return disabledResult(disabled_path, .js);
+                        },
+                        .remap => |rep| {
+                            remap_buf[remap_depth] = effective_spec;
+                            effective_spec = rep;
+                            continue;
+                        },
+                        .none => break,
+                    }
                 }
             }
         }
@@ -383,77 +399,95 @@ pub const ResolveCache = struct {
         }
         const resolve_ptr = if (thread_safe) &local_resolver else &self.resolver;
 
-        const result = resolve_ptr.resolve(source_dir, effective_spec) catch |err| switch (err) {
-            error.ModuleNotFound => {
-                if (thread_safe) self.cache_mutex.lock();
-                defer if (thread_safe) self.cache_mutex.unlock();
-                self.putCache(cache_key, .not_found) catch {};
-                return error.ModuleNotFound;
-            },
-            else => return err,
+        const result = blk: {
+            var resolver_scope = profile.begin(.resolve_resolver);
+            defer resolver_scope.end();
+            break :blk resolve_ptr.resolve(source_dir, effective_spec) catch |err| switch (err) {
+                error.ModuleNotFound => {
+                    var store_scope = profile.begin(.resolve_cache_store);
+                    defer store_scope.end();
+                    if (thread_safe) self.cache_mutex.lock();
+                    defer if (thread_safe) self.cache_mutex.unlock();
+                    self.putCache(cache_key, .not_found) catch {};
+                    return error.ModuleNotFound;
+                },
+                else => return err,
+            };
         };
 
         // browser override 체크 + 캐시 저장 (disabled / remap / normal).
-        {
-            if (thread_safe) self.cache_mutex.lock();
-            defer if (thread_safe) self.cache_mutex.unlock();
+        if (thread_safe) self.cache_mutex.lock();
+        defer if (thread_safe) self.cache_mutex.unlock();
 
-            // resolver 가 `--fallback:NAME=false` (또는 다른 disabled 경로) 로 빈 모듈을
-            // 반환한 경우 — disabled variant 로 캐싱 + 반환. 이 분기 없이는 `.file` 로
-            // cache 되어 graph 단계에서 일반 파싱 시도 → "No loader configured" 에러.
-            if (result.disabled) {
-                const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-                self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
-                    .path = cache_path,
-                    .module_type = result.module_type,
-                } } }) catch {};
-                return disabledResult(result.path, result.module_type);
-            }
+        // resolver 가 `--fallback:NAME=false` (또는 다른 disabled 경로) 로 빈 모듈을
+        // 반환한 경우 — disabled variant 로 캐싱 + 반환. 이 분기 없이는 `.file` 로
+        // cache 되어 graph 단계에서 일반 파싱 시도 → "No loader configured" 에러.
+        if (result.disabled) {
+            var store_scope = profile.begin(.resolve_cache_store);
+            defer store_scope.end();
+            const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+            self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
+                .path = cache_path,
+                .module_type = result.module_type,
+            } } }) catch {};
+            return disabledResult(result.path, result.module_type);
+        }
 
-            if (self.platform.isBrowserLike()) {
-                const override = self.getBrowserOverride(result.path);
-                switch (override) {
-                    .disabled => {
-                        const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-                        self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
-                            .path = cache_path,
-                            .module_type = result.module_type,
-                        } } }) catch {};
-                        return disabledResult(result.path, result.module_type);
-                    },
-                    .remap => |rep| {
-                        // rep 는 package-root 상대. Resolver.resolve(pkg_root, "./rep") 로
-                        // 확장자 / directory index 등 정상 resolve path 재사용. 성공 시 대체 결과 반환.
-                        if (findPackageDirPath(result.path)) |pkg_root| {
-                            const spec_buf = std.fmt.allocPrint(self.allocator, "./{s}", .{rep}) catch {
-                                // fallthrough
-                                const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
-                                self.putCache(cache_key, .{ .resolved = .{ .file = .{
-                                    .path = cache_path,
-                                    .module_type = result.module_type,
-                                } } }) catch {};
-                                return fileResult(result.path, result.module_type, result.is_module_field);
-                            };
-                            defer self.allocator.free(spec_buf);
-                            if (thread_safe) self.cache_mutex.unlock();
-                            const maybe_replaced = self.resolver.resolve(pkg_root, spec_buf);
-                            if (thread_safe) self.cache_mutex.lock();
-                            if (maybe_replaced) |replaced| {
-                                const cache_path = self.allocator.dupe(u8, replaced.path) catch return error.OutOfMemory;
-                                self.putCache(cache_key, .{ .resolved = .{ .file = .{
-                                    .path = cache_path,
-                                    .module_type = replaced.module_type,
-                                } } }) catch {};
-                                return fileResult(replaced.path, replaced.module_type, replaced.is_module_field);
-                            } else |_| {
-                                // fallthrough — replacement 해결 실패 시 원본 사용.
-                            }
+        if (self.platform.isBrowserLike()) {
+            var browser_scope = profile.begin(.resolve_browser_override);
+            defer browser_scope.end();
+            const override = self.getBrowserOverride(result.path);
+            switch (override) {
+                .disabled => {
+                    var store_scope = profile.begin(.resolve_cache_store);
+                    defer store_scope.end();
+                    const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+                    self.putCache(cache_key, .{ .resolved = .{ .disabled = .{
+                        .path = cache_path,
+                        .module_type = result.module_type,
+                    } } }) catch {};
+                    return disabledResult(result.path, result.module_type);
+                },
+                .remap => |rep| {
+                    // rep 는 package-root 상대. Resolver.resolve(pkg_root, "./rep") 로
+                    // 확장자 / directory index 등 정상 resolve path 재사용. 성공 시 대체 결과 반환.
+                    if (findPackageDirPath(result.path)) |pkg_root| {
+                        const spec_buf = std.fmt.allocPrint(self.allocator, "./{s}", .{rep}) catch {
+                            // fallthrough
+                            var store_scope = profile.begin(.resolve_cache_store);
+                            defer store_scope.end();
+                            const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
+                            self.putCache(cache_key, .{ .resolved = .{ .file = .{
+                                .path = cache_path,
+                                .module_type = result.module_type,
+                            } } }) catch {};
+                            return fileResult(result.path, result.module_type, result.is_module_field);
+                        };
+                        defer self.allocator.free(spec_buf);
+                        if (thread_safe) self.cache_mutex.unlock();
+                        const maybe_replaced = self.resolver.resolve(pkg_root, spec_buf);
+                        if (thread_safe) self.cache_mutex.lock();
+                        if (maybe_replaced) |replaced| {
+                            var store_scope = profile.begin(.resolve_cache_store);
+                            defer store_scope.end();
+                            const cache_path = self.allocator.dupe(u8, replaced.path) catch return error.OutOfMemory;
+                            self.putCache(cache_key, .{ .resolved = .{ .file = .{
+                                .path = cache_path,
+                                .module_type = replaced.module_type,
+                            } } }) catch {};
+                            return fileResult(replaced.path, replaced.module_type, replaced.is_module_field);
+                        } else |_| {
+                            // fallthrough — replacement 해결 실패 시 원본 사용.
                         }
-                    },
-                    .none => {},
-                }
+                    }
+                },
+                .none => {},
             }
+        }
 
+        {
+            var store_scope = profile.begin(.resolve_cache_store);
+            defer store_scope.end();
             const cache_path = self.allocator.dupe(u8, result.path) catch return error.OutOfMemory;
             self.putCache(cache_key, .{ .resolved = .{ .file = .{
                 .path = cache_path,

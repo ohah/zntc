@@ -14,7 +14,7 @@
  *   - 워밍업 5회 (mtime/dentry 캐시 워밍)
  *   - wall time 측정 20회
  *   - 비교값은 no-profile CLI wall time median
- *   - ZTS `--profile=all` 은 별도 진단 샘플로만 실행
+ *   - ZTS `--profile=all --profile-level=detailed` 는 별도 진단 샘플로만 실행
  */
 
 import { spawnSync } from "node:child_process";
@@ -82,6 +82,7 @@ interface RunResult {
   wall_ms: number;
   zts_profile_total_ms?: number;
   phases?: Record<string, number>;
+  phase_selfs?: Record<string, number>;
 }
 
 function runZts(
@@ -101,7 +102,9 @@ function runZts(
     "--outdir",
     outDir,
   ];
-  if (withProfile) args.push("--profile=all", "--profile-format=json");
+  if (withProfile) {
+    args.push("--profile=all", "--profile-level=detailed", "--profile-format=json");
+  }
 
   const start = performance.now();
   const r = spawnSync(ZTS_BIN, args, { stdio: "pipe", timeout: 30000 });
@@ -114,10 +117,12 @@ function runZts(
   const stdout = r.stdout.toString() + "\n" + r.stderr.toString();
   const profile = parseProfileJson(stdout);
   const phases: Record<string, number> = {};
+  const phase_selfs: Record<string, number> = {};
   for (const [phase, data] of Object.entries(profile.phases)) {
     if (data) phases[phase] = data.total_ms;
+    if (data?.self_ms !== undefined) phase_selfs[phase] = data.self_ms;
   }
-  return { wall_ms, zts_profile_total_ms: profile.total_ms, phases };
+  return { wall_ms, zts_profile_total_ms: profile.total_ms, phases, phase_selfs };
 }
 
 function runRolldown(bin: string, entry: string, outDir: string, externals: string[]): RunResult {
@@ -199,6 +204,7 @@ interface ToolResult {
   wall_ms_stats: JsonStats | null;
   zts_profile_total_ms_stats?: JsonStats;
   phase_median_ms?: Record<string, number>;
+  phase_self_median_ms?: Record<string, number>;
   skipped?: string;
 }
 
@@ -259,6 +265,7 @@ async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
     const wallSamples: Partial<Record<ToolName, number[]>> = {};
     const ztsProfileTotals: number[] = [];
     const phaseSeries: Record<string, number[]> = {};
+    const phaseSelfSeries: Record<string, number[]> = {};
 
     for (let i = 0; i < ITERATIONS; i++) {
       for (const tool of TOOL_ORDER) {
@@ -276,11 +283,18 @@ async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
       for (const [k, v] of Object.entries(r.phases ?? {})) {
         (phaseSeries[k] ??= []).push(v);
       }
+      for (const [k, v] of Object.entries(r.phase_selfs ?? {})) {
+        (phaseSelfSeries[k] ??= []).push(v);
+      }
     }
 
     const phase_median_ms: Record<string, number> = {};
     for (const [k, arr] of Object.entries(phaseSeries)) {
       phase_median_ms[k] = computeStats(arr).median;
+    }
+    const phase_self_median_ms: Record<string, number> = {};
+    for (const [k, arr] of Object.entries(phaseSelfSeries)) {
+      phase_self_median_ms[k] = computeStats(arr).median;
     }
 
     const tools: ToolResult[] = TOOL_ORDER.map((tool) => {
@@ -300,6 +314,7 @@ async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
         if (ztsProfileTotals.length > 0) {
           result.zts_profile_total_ms_stats = computeStats(ztsProfileTotals);
           result.phase_median_ms = phase_median_ms;
+          result.phase_self_median_ms = phase_self_median_ms;
         }
       }
       return result;
@@ -368,7 +383,10 @@ function printReport(runReport: RunReport): void {
   console.log("| Tools | ZTS / Rolldown / Rspack |");
   console.log("| Primary metric | CLI wall time median |");
   console.log(
-    "| ZTS profile total | separate --profile=all diagnostic run; not part of wall median |",
+    "| ZTS profile total | separate --profile=all --profile-level=detailed diagnostic run; not part of wall median |",
+  );
+  console.log(
+    "| ZTS phase medians | inclusive total_ms; nested child rows overlap, self_ms medians are stored in JSON |",
   );
   console.log(`| Warmup / iterations | ${runReport.warmup} / ${runReport.iterations} |`);
   console.log(`| ZTS profile iterations | ${runReport.profile_iterations} |`);
@@ -389,13 +407,27 @@ function printReport(runReport: RunReport): void {
     );
   }
   console.log();
-  console.log("### bundle-perf — ZTS phase medians");
+  console.log("### bundle-perf — ZTS phase medians (inclusive)");
   console.log("| Fixture | Resolve | Graph | Link | Shake | Transform | Codegen | Emit |");
   console.log("|---------|---------|-------|------|-------|-----------|---------|------|");
   for (const fixture of runReport.fixtures) {
     const phases = toolResult(fixture, "zts")?.phase_median_ms ?? {};
     console.log(
       `| ${fixture.name} | ${fmtMarkdownMs(phases.resolve)} | ${fmtMarkdownMs(phases.graph)} | ${fmtMarkdownMs(phases.link)} | ${fmtMarkdownMs(phases.shake)} | ${fmtMarkdownMs(phases.transform)} | ${fmtMarkdownMs(phases.codegen)} | ${fmtMarkdownMs(phases.emit)} |`,
+    );
+  }
+  console.log();
+  console.log("### bundle-perf — ZTS resolve subphase medians (inclusive)");
+  console.log(
+    "| Fixture | External | Cache key | Cache lookup | Browser override | Resolver | Path | File exists | Extensions | TS map | Directory index | Realpath | Cache store |",
+  );
+  console.log(
+    "|---------|----------|-----------|--------------|------------------|----------|------|-------------|------------|--------|-----------------|----------|-------------|",
+  );
+  for (const fixture of runReport.fixtures) {
+    const phases = toolResult(fixture, "zts")?.phase_median_ms ?? {};
+    console.log(
+      `| ${fixture.name} | ${fmtMarkdownMs(phases["resolve.external"])} | ${fmtMarkdownMs(phases["resolve.cache.key"])} | ${fmtMarkdownMs(phases["resolve.cache.lookup"])} | ${fmtMarkdownMs(phases["resolve.browser.override"])} | ${fmtMarkdownMs(phases["resolve.resolver"])} | ${fmtMarkdownMs(phases["resolve.path"])} | ${fmtMarkdownMs(phases["resolve.file.exists"])} | ${fmtMarkdownMs(phases["resolve.extensions"])} | ${fmtMarkdownMs(phases["resolve.ts.extension.map"])} | ${fmtMarkdownMs(phases["resolve.directory.index"])} | ${fmtMarkdownMs(phases["resolve.realpath"])} | ${fmtMarkdownMs(phases["resolve.cache.store"])} |`,
     );
   }
 }
