@@ -419,8 +419,8 @@ export interface ManualChunksMeta {
 /**
  * `compiler` 네임스페이스 — 라이브러리별 1st-party transform 설정 (`@next/swc` 호환 surface).
  *
- * 현재는 타입 stub. Zig transformer 가 아직 인식하지 않아 런타임 효과 없음.
- * 후속 epic 에서 styled-components / emotion 1st-party transform 도입 시 활성화.
+ * `babel-plugin-styled-components` / `@emotion/babel-plugin` 의 1st-party 대응.
+ * plugin 등록 없이 옵션만 켜면 동일한 변환 결과를 얻는다.
  */
 export interface CompilerOptions {
   /**
@@ -464,8 +464,10 @@ export interface StyledComponentsOptions {
   topLevelImportPaths?: string[];
   /**
    * `<div css={...}>` JSX prop 을 module-level styled component 로 추출 (default: false).
-   * babel-plugin-styled-components default true 와 다르게 ZTS 는 후속 PR 에서 단계별
-   * transform 구현 — 현재는 옵션 surface 만, true 켜도 transform 미적용 (사용자 코드 안전).
+   * babel-plugin-styled-components default true 와 다르게 opt-in.
+   * intrinsic / custom (jsx_member_expression 포함) / `css\`\`` 템플릿 / object form /
+   * `${expr}` 동적 prop forwarding 까지 지원. auto-inject 시 `styled` 바인딩 충돌은
+   * `_styled` / `_styled2` 로 자동 mangling.
    */
   cssProp?: boolean;
   /** [meta] 표시 (default: false) */
@@ -889,9 +891,10 @@ export interface WatchRebuildEvent {
    * 단계별 빌드 시간 (밀리초). 성공한 리빌드에서만 노출.
    *
    * **기본 phase** (항상 측정):
-   * - `detect` / `parse` / `semantic` / `emit` / `delta` / `total`
+   * - `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`
    * 필드 이름과 실제 값이 정확히 일치. 2026-04-22 이전의 `parse` / `semantic` 은
-   * 사실 각각 `graph` / `link+shake` 를 담았던 레거시 이름이었으며 제거됨.
+   * 사실 각각 `graph` / `link+shake` 를 담았던 레거시 이름이었으며 제거됨 —
+   * 이제 sub-phase 로만 (실제 parser / SemanticAnalyzer 시간) 노출된다.
    *
    * **Sub-phase** (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` / `profile: ["<cat>"]` 활성 시):
    * - `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
