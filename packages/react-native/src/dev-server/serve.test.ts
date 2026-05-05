@@ -27,7 +27,7 @@ describe("serveRn — lifecycle", () => {
       port: 0,
       terminalActions: false,
     });
-    const handle = await serveRn(options);
+    const handle = await serveRn(options, { silent: true });
     try {
       // initial platform 이 등록되었고 first build 완료 (bundle 또는 buildError 둘 중 하나).
       expect(handle.platforms.platforms.size).toBe(1);
@@ -45,7 +45,7 @@ describe("serveRn — lifecycle", () => {
       hmr: false,
       terminalActions: false,
     });
-    const handle = await serveRn(options);
+    const handle = await serveRn(options, { silent: true });
     try {
       expect(handle.hmrBridge).toBeUndefined();
     } finally {
@@ -60,7 +60,7 @@ describe("serveRn — lifecycle", () => {
       hmr: true,
       terminalActions: false,
     });
-    const handle = await serveRn(options);
+    const handle = await serveRn(options, { silent: true });
     try {
       expect(handle.hmrBridge?.path).toBe("/hot");
     } finally {
@@ -74,7 +74,7 @@ describe("serveRn — lifecycle", () => {
       port: 0,
       terminalActions: false,
     });
-    const handle = await serveRn(options);
+    const handle = await serveRn(options, { silent: true });
     expect(handle.platforms.platforms.size).toBe(1);
     await handle.stop();
     expect(handle.platforms.platforms.size).toBe(0);

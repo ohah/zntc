@@ -4,6 +4,7 @@
 
 import { createDevHttpServer, type DevHttpServerHandle } from "./http-server.ts";
 import { createHmrBridge, type HmrBridge } from "./hmr-bridge.ts";
+import { logBundle, logInfo, printZtsRnBanner } from "./logger.ts";
 import { loadCliServerApi } from "./middleware/cli-server-api.ts";
 import { loadDevMiddleware } from "./middleware/dev-middleware.ts";
 import type { RnDevServerOptions } from "./options.ts";
@@ -32,7 +33,19 @@ const noopBroadcast: Broadcast = () => {};
  * 반환. 종료는 `handle.stop()` — http server close + watch handles stop +
  * terminal raw mode 복원 순서로 graceful.
  */
-export async function serveRn(options: RnDevServerOptions): Promise<RnDevServerHandle> {
+export interface ServeRnExtras {
+  /** package version — banner 에 표시. */
+  version?: string;
+  /** banner / startup log 출력 안 함 (test 환경 등). default false. */
+  silent?: boolean;
+}
+
+export async function serveRn(
+  options: RnDevServerOptions,
+  extras: ServeRnExtras = {},
+): Promise<RnDevServerHandle> {
+  if (!extras.silent) printZtsRnBanner(extras.version);
+
   // 두 lazy load 는 독립 — 병렬로 dynamic import resolve.
   const [cliServerApi, devMiddleware] = await Promise.all([
     loadCliServerApi({ port: options.port, host: options.host }),
@@ -42,7 +55,9 @@ export async function serveRn(options: RnDevServerOptions): Promise<RnDevServerH
   const broadcast: Broadcast = cliServerApi?.broadcast ?? noopBroadcast;
 
   // hmrBridge 먼저 생성 — registry callback 으로 onRebuild 전달.
-  const hmrBridge = options.hmr ? createHmrBridge({ path: HMR_PATH }) : undefined;
+  const hmrBridge = options.hmr
+    ? createHmrBridge({ path: HMR_PATH, silent: extras.silent })
+    : undefined;
   const platforms = createPlatformStateRegistry(options, hmrBridge?.callbacks);
 
   const httpHandle: DevHttpServerHandle = await createDevHttpServer(options, {
@@ -54,8 +69,23 @@ export async function serveRn(options: RnDevServerOptions): Promise<RnDevServerH
   });
 
   // initial platform pre-spawn + first build 대기.
+  const buildStart = Date.now();
   const firstState = platforms.getOrCreate(options.bundle.rnPlatform);
   await waitForBuild(firstState);
+  if (!extras.silent) {
+    if (firstState.buildError) {
+      logBundle("failed", options.bundle.rnPlatform, options.bundle.entry, firstState.buildError);
+    } else if (firstState.bundle !== null) {
+      const sizeKB = (Buffer.byteLength(firstState.bundle) / 1024).toFixed(1);
+      const buildMs = Date.now() - buildStart;
+      logBundle(
+        "done",
+        options.bundle.rnPlatform,
+        options.bundle.entry,
+        `(${firstState.fileCount} files, ${sizeKB} KB, ${buildMs}ms)`,
+      );
+    }
+  }
 
   const terminalCleanup = setupTerminalActions(
     {
@@ -75,6 +105,12 @@ export async function serveRn(options: RnDevServerOptions): Promise<RnDevServerH
     },
     { enabled: options.terminalActions },
   );
+  if (!extras.silent && options.terminalActions) {
+    logInfo("Press ? to show keyboard shortcuts (r/d/j/i/a/c)");
+  }
+  if (!extras.silent) {
+    logInfo(`Dev server listening on ${httpHandle.url} (platform=${options.bundle.rnPlatform})`);
+  }
 
   return {
     url: httpHandle.url,
