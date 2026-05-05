@@ -56,6 +56,18 @@ pub const Category = enum {
     // ── Analysis ──
     semantic,
     resolve,
+    resolve_external,
+    resolve_cache_key,
+    resolve_cache_lookup,
+    resolve_browser_override,
+    resolve_resolver,
+    resolve_cache_store,
+    resolve_path,
+    resolve_file_exists,
+    resolve_extensions,
+    resolve_ts_extension_map,
+    resolve_directory_index,
+    resolve_realpath,
     graph,
     graph_build,
     graph_worker,
@@ -741,6 +753,9 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("transform.ts_strip") == .transform_ts_strip);
     try testing.expect(Category.fromString("Transform.JSX") == .transform_jsx);
     try testing.expect(Category.fromString("hmr.detect") == .hmr_detect);
+    try testing.expect(Category.fromString("resolve.cache.lookup") == .resolve_cache_lookup);
+    try testing.expect(Category.fromString("resolve.ts.extension.map") == .resolve_ts_extension_map);
+    try testing.expect(Category.fromString("resolve.directory.index") == .resolve_directory_index);
     try testing.expect(Category.fromString("shake.analyze") == .shake_analyze);
     try testing.expect(Category.fromString("shake.post.link.finalize") == .shake_post_link_finalize);
     try testing.expect(Category.fromString("shake.fixpoint.bfs") == .shake_fixpoint_bfs);
@@ -761,6 +776,9 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("parse.ast.build", Category.displayName(.parse_ast_build));
     try testing.expectEqualStrings("transform.ts.strip", Category.displayName(.transform_ts_strip));
     try testing.expectEqualStrings("hmr.detect", Category.displayName(.hmr_detect));
+    try testing.expectEqualStrings("resolve.cache.lookup", Category.displayName(.resolve_cache_lookup));
+    try testing.expectEqualStrings("resolve.ts.extension.map", Category.displayName(.resolve_ts_extension_map));
+    try testing.expectEqualStrings("resolve.directory.index", Category.displayName(.resolve_directory_index));
     try testing.expectEqualStrings("shake.analyze", Category.displayName(.shake_analyze));
     try testing.expectEqualStrings("shake.post.link.finalize", Category.displayName(.shake_post_link_finalize));
     try testing.expectEqualStrings("shake.fixpoint.bfs", Category.displayName(.shake_fixpoint_bfs));

@@ -23,6 +23,7 @@ const ModuleType = types.ModuleType;
 const pkg_json = @import("package_json.zig");
 const fs = @import("fs.zig");
 const PackageJson = pkg_json.PackageJson;
+const profile = @import("../profile.zig");
 
 pub const ResolveResult = struct {
     /// 해석된 절대 파일 경로
@@ -358,8 +359,12 @@ pub const Resolver = struct {
         }
 
         // 경로 조합
-        const joined = std.fs.path.resolve(self.allocator, &.{ source_dir, effective_specifier }) catch
-            return error.OutOfMemory;
+        const joined = blk: {
+            var path_scope = profile.begin(.resolve_path);
+            defer path_scope.end();
+            break :blk std.fs.path.resolve(self.allocator, &.{ source_dir, effective_specifier }) catch
+                return error.OutOfMemory;
+        };
         defer self.allocator.free(joined);
 
         // 1. 정확한 경로가 파일로 존재하는지
@@ -388,6 +393,9 @@ pub const Resolver = struct {
     /// 확장자를 하나씩 붙여서 존재하는 파일을 찾는다.
     /// custom_extensions가 설정되어 있으면 그것을 사용, 아니면 default_extensions.
     fn tryExtensions(self: *Resolver, base: []const u8) ResolveError!?ResolveResult {
+        var scope = profile.begin(.resolve_extensions);
+        defer scope.end();
+
         const extensions = if (self.custom_extensions.len > 0) self.custom_extensions else default_extensions;
         for (extensions) |ext| {
             const path = std.mem.concat(self.allocator, u8, &.{ base, ext }) catch
@@ -404,6 +412,9 @@ pub const Resolver = struct {
     /// TS 확장자 매핑: .js → .ts/.tsx 등.
     /// import './foo.js' 했는데 foo.js는 없고 foo.ts가 있으면 foo.ts로 해석.
     fn tryTsExtensionMapping(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
+        var scope = profile.begin(.resolve_ts_extension_map);
+        defer scope.end();
+
         const ext = std.fs.path.extension(path);
         for (ts_extension_map) |mapping| {
             if (std.mem.eql(u8, ext, mapping.from)) {
@@ -426,6 +437,9 @@ pub const Resolver = struct {
 
     /// 디렉토리인 경우 index 파일을 탐색한다.
     fn tryDirectoryIndex(self: *Resolver, path: []const u8) ResolveError!?ResolveResult {
+        var scope = profile.begin(.resolve_directory_index);
+        defer scope.end();
+
         // path가 디렉토리인지 확인
         if (!self.dirExists(path)) return null;
 
@@ -647,11 +661,15 @@ pub const Resolver = struct {
         // preserve_symlinks=true이면 symlink를 따라가지 않고 경로 그대로 사용.
         // 기본(false)이면 bun(.bun/)과 pnpm(.pnpm/)의 symlink를 realpath로 해석하여
         // 중첩 node_modules 탐색이 올바른 계층에서 동작하도록 한다.
-        const resolved = if (self.preserve_symlinks)
-            self.allocator.dupe(u8, path) catch return error.OutOfMemory
-        else
-            fs.realpath(self.allocator, path) catch
-                self.allocator.dupe(u8, path) catch return error.OutOfMemory;
+        const resolved = blk: {
+            var realpath_scope = profile.begin(.resolve_realpath);
+            defer realpath_scope.end();
+            break :blk if (self.preserve_symlinks)
+                self.allocator.dupe(u8, path) catch return error.OutOfMemory
+            else
+                fs.realpath(self.allocator, path) catch
+                    self.allocator.dupe(u8, path) catch return error.OutOfMemory;
+        };
         const ext = std.fs.path.extension(resolved);
         return .{
             .path = resolved,
@@ -660,6 +678,9 @@ pub const Resolver = struct {
     }
 
     fn fileExists(self: *const Resolver, path: []const u8) bool {
+        var scope = profile.begin(.resolve_file_exists);
+        defer scope.end();
+
         if (self.dir_cache) |cache| {
             const dir_path = std.fs.path.dirname(path) orelse return false;
             const file_name = std.fs.path.basename(path);
