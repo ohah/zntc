@@ -57,9 +57,58 @@ function buildOnRebuild(adapter: MetroHmrAdapter) {
   };
 }
 
+/**
+ * RN client 가 보내는 메시지 처리 — `register-entrypoints` ACK + `log` forwarding
+ * (RN runtime 의 console.log → dev server 터미널).
+ */
+function buildIncomingHandler(adapter: MetroHmrAdapter) {
+  return (text: string, socket: import("node:net").Socket): void => {
+    let msg: { type?: string; level?: string; data?: unknown } | null = null;
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (!msg || typeof msg.type !== "string") return;
+    if (msg.type === "register-entrypoints") {
+      // single-client ACK — adapter.channel 의 nodeSockets[other] 에는 안 보내고
+      // 이 socket 에만 직접 send. text frame builder 사용.
+      socket.write(buildAckFrame());
+      return;
+    }
+    if (msg.type === "log") {
+      const level = typeof msg.level === "string" ? msg.level : "log";
+      const data = Array.isArray(msg.data) ? msg.data : [msg.data];
+      const formatted = data
+        .map((arg) => {
+          if (typeof arg === "object" && arg !== null) {
+            try {
+              return JSON.stringify(arg, null, 2);
+            } catch {
+              return String(arg);
+            }
+          }
+          return String(arg);
+        })
+        .join(" ");
+      console.log(`[${level.toUpperCase()}] ${formatted}`);
+      // adapter 가 server-broadcast 하지 않음 — log 는 client→server one-way.
+      void adapter;
+    }
+  };
+}
+
+const ACK_TEXT = JSON.stringify({ type: "bundle-registered" });
+function buildAckFrame(): Buffer {
+  // RFC 6455 §5.2 server→client text frame (FIN + opcode 0x1). short payload.
+  const payload = Buffer.from(ACK_TEXT);
+  return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
+}
+
 export function createHmrBridge(options: HmrBridgeOptions): HmrBridge {
   const adapter = createMetroHmrAdapter();
   const onRebuild = buildOnRebuild(adapter);
+  adapter.channel.onIncoming(buildIncomingHandler(adapter));
 
   return {
     adapter,

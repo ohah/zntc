@@ -65,3 +65,48 @@ export function buildHandshakeResponse(secWebSocketKey: string): string {
     "",
   ].join("\r\n");
 }
+
+/**
+ * RFC 6455 §5.2 — client → server text frame parser. masked text frame 만 처리
+ * (client 가 보내는 frame 은 항상 masked). control frame (close/ping/pong) /
+ * binary / 분할 frame 은 null 반환 — caller 가 ignore.
+ *
+ * incremental parser — buffer 가 한 frame 미만이면 `{ consumed: 0 }`. caller 가
+ * 다음 chunk 와 합쳐 재시도.
+ */
+export interface ParsedTextFrame {
+  text: string;
+  consumed: number;
+}
+
+export function parseTextFrame(buffer: Buffer): ParsedTextFrame | null {
+  if (buffer.length < 2) return null;
+  const byte0 = buffer[0]!;
+  const byte1 = buffer[1]!;
+  const fin = (byte0 & 0x80) !== 0;
+  const opcode = byte0 & 0x0f;
+  const masked = (byte1 & 0x80) !== 0;
+  // text frame (opcode=0x1) + FIN=1 + masked 만. 다른 frame 은 caller skip.
+  if (!fin || opcode !== 0x1 || !masked) return null;
+
+  let payloadLen = byte1 & 0x7f;
+  let offset = 2;
+  if (payloadLen === PAYLOAD_LEN_EXTENDED_16) {
+    if (buffer.length < 4) return null;
+    payloadLen = buffer.readUInt16BE(2);
+    offset = 4;
+  } else if (payloadLen === PAYLOAD_LEN_EXTENDED_64) {
+    if (buffer.length < 10) return null;
+    const big = buffer.readBigUInt64BE(2);
+    if (big > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    payloadLen = Number(big);
+    offset = 10;
+  }
+  if (buffer.length < offset + 4 + payloadLen) return null;
+  const maskKey = buffer.subarray(offset, offset + 4);
+  const payload = Buffer.allocUnsafe(payloadLen);
+  for (let i = 0; i < payloadLen; i++) {
+    payload[i] = buffer[offset + 4 + i]! ^ maskKey[i % 4]!;
+  }
+  return { text: payload.toString("utf-8"), consumed: offset + 4 + payloadLen };
+}

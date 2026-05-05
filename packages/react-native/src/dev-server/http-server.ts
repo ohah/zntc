@@ -20,6 +20,7 @@ import {
   isMapRoute,
 } from "./routes/bundle.ts";
 import { handleDevMenu, isDevMenuRoute } from "./routes/devmenu.ts";
+import { handleIndexPage, isIndexRoute } from "./routes/index-page.ts";
 import { handleOpenUrl, isOpenUrlRoute } from "./routes/open-url.ts";
 import { handleReload, isReloadRoute } from "./routes/reload.ts";
 import { handleStatus, isStatusRoute } from "./routes/status.ts";
@@ -62,6 +63,10 @@ export function createBaseMiddleware(
       : url.pathname;
     const method = req.method;
 
+    if (isIndexRoute(pathname)) {
+      handleIndexPage(req, res, options.port);
+      return;
+    }
     if (isStatusRoute(pathname)) {
       handleStatus(req, res, options.bundle.projectRoot);
       return;

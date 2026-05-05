@@ -9,7 +9,7 @@ import {
   type HmrRnMessage,
   normalizeHmrErrors,
 } from "./protocol.ts";
-import { buildHandshakeResponse, writeTextFrame } from "./ws-frame.ts";
+import { buildHandshakeResponse, parseTextFrame, writeTextFrame } from "./ws-frame.ts";
 
 /**
  * Bun.serve `WebSocket` 의 최소 표면. Bun runtime 의 ws 객체와 호환.
@@ -19,12 +19,21 @@ export interface BunHmrClient {
   send(text: string): void;
 }
 
+/** Client → server 메시지 callback. socket 은 individual response 가능. */
+export type HmrIncomingHandler = (text: string, socket: Socket) => void;
+
 export interface HmrChannel {
   /** Node `http.Server` 의 `'upgrade'` 이벤트 핸들러로 사용. */
   accept(req: IncomingMessage, socket: Socket): void;
   /** Bun.serve 의 WebSocket client 등록. */
   addBunClient(ws: BunHmrClient): void;
   removeBunClient(ws: BunHmrClient): void;
+  /**
+   * Client → server text frame 핸들러 등록. RN HMR client 가 보내는
+   * `register-entrypoints` / `log` 메시지 처리에 사용. 한 channel 에 여러 핸들러
+   * 등록 가능 — 모두 호출됨.
+   */
+  onIncoming(handler: HmrIncomingHandler): void;
   /**
    * 모든 client (Node + Bun) 에 메시지 송출. web overlay 의 `HmrMessage` 또는
    * RN Metro 호환 `HmrRnMessage` (#2540) 모두 허용. send impl 은 JSON.stringify
@@ -59,6 +68,7 @@ function extractErrorText(error: unknown): string {
 export function createHmrChannel(): HmrChannel {
   const nodeSockets = new Set<Socket>();
   const bunClients = new Set<BunHmrClient>();
+  const incomingHandlers: HmrIncomingHandler[] = [];
   const connectedText = JSON.stringify({ type: HMR_MSG.Connected } satisfies HmrMessage);
   let currentError: HmrErrorMessage | null = null;
   // Latched error text 캐시 — N client 마다 N+1 stringify 회피 (`connected` 와 동일 패턴).
@@ -88,6 +98,28 @@ export function createHmrChannel(): HmrChannel {
       }
       socket.write(buildHandshakeResponse(key));
       nodeSockets.add(socket);
+      // Client → server text frame parsing — incremental (한 frame 이 여러
+      // chunk 로 나뉘어 올 수 있어 buffer 누적). caller 가 onIncoming 미등록이면
+      // parsing 자체 skip (overhead 0).
+      let recvBuffer: Buffer = Buffer.alloc(0);
+      socket.on("data", (chunk: Buffer) => {
+        if (incomingHandlers.length === 0) return;
+        recvBuffer = (
+          recvBuffer.length === 0 ? chunk : Buffer.concat([recvBuffer, chunk])
+        ) as Buffer;
+        while (recvBuffer.length > 0) {
+          const parsed = parseTextFrame(recvBuffer);
+          if (!parsed) break;
+          recvBuffer = recvBuffer.subarray(parsed.consumed);
+          for (const handler of incomingHandlers) {
+            try {
+              handler(parsed.text, socket);
+            } catch {
+              /* swallow user errors */
+            }
+          }
+        }
+      });
       socket.on("close", () => nodeSockets.delete(socket));
       socket.on("error", () => nodeSockets.delete(socket));
       greetNode(socket);
@@ -98,6 +130,9 @@ export function createHmrChannel(): HmrChannel {
     },
     removeBunClient(ws) {
       bunClients.delete(ws);
+    },
+    onIncoming(handler) {
+      incomingHandlers.push(handler);
     },
     broadcast(message) {
       broadcastText(JSON.stringify(message));
