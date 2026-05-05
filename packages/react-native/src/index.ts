@@ -44,5 +44,12 @@ export {
 } from "./plugins/metro-resolve-request.ts";
 export { createRequireContextPlugin } from "./plugins/require-context.ts";
 export type { PluginConfig } from "./plugins/types.ts";
+export {
+  buildRnBundleOptions,
+  bundleRn,
+  type RnBundleInput,
+  type RnWatchInput,
+  watchRn,
+} from "./preset.ts";
 export { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from "./rn-constants.ts";
 export { HMR_CLIENT_SUFFIX, ZTS_HMR_CLIENT_CODE } from "./runtime-loader.ts";
