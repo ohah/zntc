@@ -18,6 +18,7 @@ export {
 } from "@zts/server";
 
 export {
+  type AssetResolverOptions,
   type Broadcast,
   buildRnDevServerOptions,
   createBaseMiddleware,
@@ -26,8 +27,11 @@ export {
   type DevHttpServerDeps,
   type DevHttpServerHandle,
   type FrameInfo,
+  handleAssetRequest,
+  isAssetRoute,
   type Middleware,
   type MiddlewareEnhanceContext,
+  resolveAssetPath,
   type RnDevServerHandle,
   type RnDevServerOptions,
   type RnDevServerOptionsInput,
