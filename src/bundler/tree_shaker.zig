@@ -411,12 +411,11 @@ pub const TreeShaker = struct {
         }, visitChainExportInit);
     }
 
-    fn foldNumericExportSeeds(self: *TreeShaker, m: *Module, ast: *Ast) !bool {
+    fn foldNumericExportSeeds(_: *TreeShaker, m: *Module, ast: *Ast) !bool {
         const minify_mod = @import("../transformer/minify.zig");
         const sem = if (m.semantic) |*sem| sem else return false;
         const arena_alloc = if (m.parse_arena) |*arena| arena.allocator() else return false;
         var has_exported_number = false;
-        var folded = false;
 
         for (ast.nodes.items) |node| {
             if (node.tag != .variable_declarator) continue;
@@ -443,12 +442,11 @@ pub const TreeShaker = struct {
             try sem.numeric_const_texts.put(arena_alloc, @intCast(sym_id), number_text);
             sem.symbols.items[sym_id].const_kind = .number;
             has_exported_number = true;
-            folded = true;
         }
 
-        if (folded) {
-            if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
-        }
+        // `foldNumericLiteralExpression` 은 init 노드를 in-place 로 numeric_literal 로
+        // 교체할 뿐 ast.nodes 길이/순서 / parent context 는 그대로다. forbidden/reachable
+        // 비트셋의 의미가 보존되므로 materialize_scratch 무효화 불필요.
         return has_exported_number;
     }
 
@@ -540,8 +538,10 @@ pub const TreeShaker = struct {
             m.prebuilt_stmt_info = null;
         };
         self.ast_mutated_after_link = true;
-        self.invalidateImportRecordStmtIndices(@intFromEnum(m.index));
-        if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
+        // const-materialize 는 leaf identifier_reference 를 leaf literal 로 in-place 치환만 한다.
+        // ast.nodes 길이/순서, top-level 통계, import_records.span 모두 보존되므로
+        // import_record_stmt_indices / materialize_scratch (forbidden/reachable) 캐시는
+        // 그대로 유효 — 무효화 시 다음 호출에서 같은 결과를 재계산할 뿐.
     }
 
     fn invalidateImportRecordStmtIndices(self: *TreeShaker, idx: usize) void {
@@ -688,6 +688,22 @@ pub const TreeShaker = struct {
         queued.set(idx);
     }
 
+    /// `enqueueStaticImporters` 의 postpass 변형 — importer 를
+    /// `enqueueNumericPostPassModule` 가드(included/import_bindings)에 넣어 worklist
+    /// pop 시점에 같은 검사를 다시 할 필요 없게 한다.
+    fn enqueueNumericPostPassImporters(
+        self: *TreeShaker,
+        queue: *std.ArrayList(u32),
+        queued: *std.DynamicBitSet,
+        idx: u32,
+        mod_count: usize,
+    ) !void {
+        const m = self.getModule(idx) orelse return;
+        for (m.importers.items) |imp| {
+            try self.enqueueNumericPostPassModule(queue, queued, @intCast(@intFromEnum(imp)), mod_count);
+        }
+    }
+
     fn materializeNumericConstFactsWorklist(self: *TreeShaker, mod_count: usize) !void {
         var queue: std.ArrayList(u32) = .empty;
         defer queue.deinit(self.allocator);
@@ -727,11 +743,10 @@ pub const TreeShaker = struct {
             defer queue_scope.end();
 
             while (queue.pop()) |idx| {
-                if (idx < mod_count) queued.unset(idx);
                 if (idx >= mod_count) continue;
-                if (!self.shouldVisitNumericPostPassModule(idx)) continue;
+                queued.unset(idx);
                 if (!try self.materializeCrossModuleConstFactsForIndex(idx, .numeric, postpass_profile)) continue;
-                try self.enqueueStaticImporters(&queue, &queued, idx, mod_count);
+                try self.enqueueNumericPostPassImporters(&queue, &queued, idx, mod_count);
             }
         }
     }
