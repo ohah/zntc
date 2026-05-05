@@ -4,6 +4,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
+import type { HmrBridge } from "./hmr-bridge.ts";
 import { parseRequestUrl, sendText } from "./http-utils.ts";
 import type { RnDevServerOptions } from "./options.ts";
 import type { PlatformStateRegistry } from "./platform-state.ts";
@@ -27,6 +28,8 @@ export interface DevHttpServerDeps {
   broadcast: Broadcast;
   /** per-platform state — bundle/map/hmr-map 라우트가 plat 분기 시 사용. */
   platforms: PlatformStateRegistry;
+  /** HMR bridge — `/hot` upgrade 핸들 + adapter (PR #E). 미지정 시 HMR 비활성. */
+  hmrBridge?: HmrBridge;
 }
 
 export interface DevHttpServerHandle {
@@ -126,6 +129,7 @@ export async function createDevHttpServer(
     ? options.enhanceMiddleware(baseMiddleware, { httpServer: server })
     : baseMiddleware;
   server.on("request", chainToHandler(enhanced));
+  deps.hmrBridge?.attachToServer(server);
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
