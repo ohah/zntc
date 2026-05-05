@@ -323,6 +323,11 @@ describe("CLI flag ↔ BuildOptions / TranspileOptions schema sync", () => {
     // RN — CLI 만 노출
     "--rn-platform",
     "--rn-platform=",
+    "--rn-project-root",
+    "--rn-project-root=",
+    // RN dev server (#2605) — CLI 만 노출
+    "--host",
+    "--host=",
     // jsx-dev — CLI shorthand for jsx="automatic-dev"
     "--jsx-dev",
     // drop — CLI 의 `--drop=console/debugger` 는 transpile 의 dropConsole/dropDebugger 와 매핑

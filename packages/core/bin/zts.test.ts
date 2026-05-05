@@ -125,6 +125,7 @@ describe("CLI: bootstrap", () => {
       mkdirSync(binDir, { recursive: true });
       cpSync(CLI, join(binDir, "zts.mjs"));
       cpSync(resolve(import.meta.dir, "cli-flags.mjs"), join(binDir, "cli-flags.mjs"));
+      cpSync(resolve(import.meta.dir, "rn-dev-input.mjs"), join(binDir, "rn-dev-input.mjs"));
 
       const result = readRedirectedProcessOutput(
         [RUNTIME, join(binDir, "zts.mjs"), "--help"].map(shellQuote).join(" "),
@@ -5038,6 +5039,141 @@ describe("CLI: bundle --platform=react-native (#2540 PR #7)", () => {
     ]);
     expect(exitCode).toBe(0);
     expect(existsSync(out)).toBe(true);
+  });
+});
+
+describe("buildRnDevServerInput — config + opts 추출 (#2605)", () => {
+  test("entry 없음 → null", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    expect(buildRnDevServerInput({ entryPoints: [] }, {})).toBeNull();
+    expect(buildRnDevServerInput({}, {})).toBeNull();
+  });
+
+  test("config.entry 만 있어도 entry 채워짐", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput({}, { entry: "src/index.ts" });
+    expect(input?.bundle.entry).toBe("src/index.ts");
+  });
+
+  test("CLI flag 우선 — config.entry override", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput({ entryPoints: ["cli.js"] }, { entry: "config.js" });
+    expect(input?.bundle.entry).toBe("cli.js");
+  });
+
+  test("config.server.port + host → port/host 매핑", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { server: { port: 9000, host: "0.0.0.0" } },
+    );
+    expect(input?.port).toBe(9000);
+    expect(input?.host).toBe("0.0.0.0");
+  });
+
+  test("CLI port/host > config.server", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"], port: 7777, host: "1.1.1.1" },
+      { server: { port: 9000, host: "0.0.0.0" } },
+    );
+    expect(input?.port).toBe(7777);
+    expect(input?.host).toBe("1.1.1.1");
+  });
+
+  test("config.resolver.* → bundle.extra + nodeModulesPaths 매핑", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      {
+        resolver: {
+          nodeModulesPaths: ["../../node_modules"],
+          blockList: [/.web.tsx?$/],
+          extraNodeModules: { foo: "/x" },
+          sourceExts: [".ts"],
+          assetExts: [".png"],
+        },
+      },
+    );
+    expect(input?.nodeModulesPaths).toEqual(["../../node_modules"]);
+    expect(input?.bundle.extra?.blockList).toEqual([/.web.tsx?$/]);
+    expect(input?.bundle.extra?.fallback).toEqual({ foo: "/x" });
+    expect(input?.bundle.extra?.sourceExts).toEqual([".ts"]);
+    expect(input?.bundle.extra?.assetExts).toEqual([".png"]);
+  });
+
+  test("config.symbolicator.customizeFrame → symbolicator 매핑", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const fn = async () => ({ collapse: true });
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { symbolicator: { customizeFrame: fn } },
+    );
+    expect(input?.symbolicator?.customizeFrame).toBe(fn);
+  });
+
+  test("config.symbolicator.customizeFrame 없음 → symbolicator undefined", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput({ entryPoints: ["i.js"] }, {});
+    expect(input?.symbolicator).toBeUndefined();
+  });
+
+  test("config.server.enhanceMiddleware/rewriteRequestUrl 매핑", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const enhance = (mw: unknown) => mw;
+    const rewrite = (u: string) => u;
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { server: { enhanceMiddleware: enhance, rewriteRequestUrl: rewrite } },
+    );
+    expect(input?.enhanceMiddleware).toBe(enhance);
+    expect(input?.rewriteRequestUrl).toBe(rewrite);
+  });
+
+  test("config.watchFolders → bundle.extra.watchFolders", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { watchFolders: ["../shared", "../tokens"] },
+    );
+    expect(input?.bundle.extra?.watchFolders).toEqual(["../shared", "../tokens"]);
+  });
+
+  test("config.transformer.babelTransformerPath 매핑", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { transformer: { babelTransformerPath: "react-native-svg-transformer" } },
+    );
+    expect(input?.bundle.extra?.babelTransformerPath).toBe("react-native-svg-transformer");
+  });
+
+  test("config.dev=false → bundle.dev=false (CLI override 가능)", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const a = buildRnDevServerInput({ entryPoints: ["i.js"] }, { dev: false });
+    expect(a?.bundle.dev).toBe(false);
+
+    // CLI --no-dev (devMode=false) 도 false.
+    const b = buildRnDevServerInput({ entryPoints: ["i.js"], devMode: false }, { dev: true });
+    expect(b?.bundle.dev).toBe(false);
+  });
+
+  test("config.minify → bundle.minify", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput({ entryPoints: ["i.js"] }, { minify: true });
+    expect(input?.bundle.minify).toBe(true);
+  });
+
+  test("config.root → projectRoot (resolve 적용)", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput({ entryPoints: ["i.js"] }, { root: "/abs/path" });
+    expect(input?.bundle.projectRoot).toBe("/abs/path");
+  });
+
+  test("rnPlatform=android override", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput({ entryPoints: ["i.js"], rnPlatform: "android" }, {});
+    expect(input?.bundle.rnPlatform).toBe("android");
   });
 });
 

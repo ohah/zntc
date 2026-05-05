@@ -15,6 +15,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from "./cli-flags.mjs";
+import { buildRnDevServerInput } from "./rn-dev-input.mjs";
 
 function isMissingBuiltCore(error) {
   if (!error || error.code !== "ERR_MODULE_NOT_FOUND") return false;
@@ -679,40 +680,17 @@ async function runRnBundle(opts, _config) {
  * `zts dev --platform=react-native` (#2605) — @zts/react-native 의 serveRn lazy
  * import. cli-server-api / dev-middleware / RN runtime peer optional.
  */
-async function runRnDev(opts, _config) {
+async function runRnDev(opts, config) {
   const rn = await loadRnModule();
-  const projectRoot = resolve(opts.rnProjectRoot ?? ".");
-  const entry = opts.entryPoints?.[0];
-  if (!entry) {
+  const input = buildRnDevServerInput(opts, config);
+  if (!input) {
     console.error(
       "error: zts dev --platform=react-native 는 entry point 가 필요합니다 (예: `zts dev index.js --platform=react-native`)",
     );
     process.exit(1);
   }
-  const rnPlatform = opts.rnPlatform === "android" ? "android" : "ios";
-  const port = opts.port ?? 8081;
-  const host = opts.host ?? "localhost";
-
-  const handle = await rn.serveRn(
-    rn.buildRnDevServerOptions({
-      bundle: {
-        entry,
-        projectRoot,
-        rnPlatform,
-        // dev server 는 default __DEV__=true / sourcemap=true (bundle 의 default false 와 의도적 비대칭).
-        dev: opts.devMode !== false,
-        sourcemap: opts.sourcemap !== false,
-        minify:
-          opts.minify ||
-          opts.minifyWhitespace ||
-          opts.minifyIdentifiers ||
-          opts.minifySyntax ||
-          false,
-      },
-      port,
-      host,
-    }),
-  );
+  const rnPlatform = input.bundle.rnPlatform;
+  const handle = await rn.serveRn(rn.buildRnDevServerOptions(input));
 
   if (opts.logLevel !== "silent") {
     console.error(`[zts/rn] dev server listening on ${handle.url} (platform=${rnPlatform})`);
