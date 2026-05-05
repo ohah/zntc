@@ -77,6 +77,7 @@ pub const ModuleGraph = struct {
     path_to_module: std.StringHashMap(ModuleIndex),
     diagnostics: std.ArrayList(BundlerDiagnostic),
     resolve_cache: *ResolveCache,
+    source_read_cache: fs.ReadFileCache = .{},
     /// 병렬 워커에서 diagnostics 접근 보호용 mutex
     diag_mutex: std.Thread.Mutex = .{},
 
@@ -257,6 +258,7 @@ pub const ModuleGraph = struct {
         var pi_it = self.pkg_info_cache.valueIterator();
         while (pi_it.next()) |info| info.side_effects.deinit(self.allocator);
         self.pkg_info_cache.deinit(self.allocator);
+        self.source_read_cache.deinit(self.allocator);
         self.diagnostics.deinit(self.allocator);
         for (self.worker_entries.items) |we| {
             self.allocator.free(we.resolved_path);
@@ -3632,7 +3634,7 @@ pub const ModuleGraph = struct {
     ) ?[]const u8 {
         if (module.mtime != 0) return self.readModuleSource(module, alloc, max_bytes, step);
 
-        const loaded = fs.readFileWithStat(alloc, module.path, max_bytes) catch {
+        const loaded = self.source_read_cache.readFileWithStat(self.allocator, alloc, module.path, max_bytes) catch {
             self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
             module.state = .ready;
             return null;
