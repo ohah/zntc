@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "workspaces": [
     "./packages/core",
+    "./packages/server",
+    "./packages/web",
     "./packages/wasm",
+    "./packages/vite-plugin-zts",
     "./documents",
     "./examples/web",
     "./tests/integration",
