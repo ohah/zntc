@@ -12,9 +12,9 @@
  *
  * 측정 방법론:
  *   - 워밍업 5회 (mtime/dentry 캐시 워밍)
- *   - 측정 20회
- *   - 비교값은 CLI wall time median
- *   - ZTS `--profile=all` total 은 내부 phase 진단용으로 별도 기록
+ *   - wall time 측정 20회
+ *   - 비교값은 no-profile CLI wall time median
+ *   - ZTS `--profile=all` 은 별도 진단 샘플로만 실행
  */
 
 import { spawnSync } from "node:child_process";
@@ -34,6 +34,7 @@ import { computeMetricStats, formatMetric, type JsonStats, toJsonStats } from ".
 
 const WARMUP = 5;
 const ITERATIONS = 20;
+const PROFILE_ITERATIONS = 5;
 
 type ToolName = "zts" | "rolldown" | "rspack";
 
@@ -83,7 +84,12 @@ interface RunResult {
   phases?: Record<string, number>;
 }
 
-function runZts(entry: string, outDir: string, externals: string[]): RunResult {
+function runZts(
+  entry: string,
+  outDir: string,
+  externals: string[],
+  withProfile = false,
+): RunResult {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   const args = [
@@ -94,15 +100,16 @@ function runZts(entry: string, outDir: string, externals: string[]): RunResult {
     entry,
     "--outdir",
     outDir,
-    "--profile=all",
-    "--profile-format=json",
   ];
+  if (withProfile) args.push("--profile=all", "--profile-format=json");
+
   const start = performance.now();
   const r = spawnSync(ZTS_BIN, args, { stdio: "pipe", timeout: 30000 });
   const wall_ms = performance.now() - start;
   if (r.status !== 0) {
     throw new Error(`zts failed: ${r.stderr?.toString().slice(0, 400)}`);
   }
+  if (!withProfile) return { wall_ms };
 
   const stdout = r.stdout.toString() + "\n" + r.stderr.toString();
   const profile = parseProfileJson(stdout);
@@ -208,6 +215,7 @@ interface RunReport {
   zts_commit: string;
   warmup: number;
   iterations: number;
+  profile_iterations: number;
   fixtures: FixtureResult[];
 }
 
@@ -258,12 +266,15 @@ async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
         if (!run) continue;
         const r = run();
         (wallSamples[tool] ??= []).push(r.wall_ms);
-        if (tool === "zts") {
-          if (r.zts_profile_total_ms !== undefined) ztsProfileTotals.push(r.zts_profile_total_ms);
-          for (const [k, v] of Object.entries(r.phases ?? {})) {
-            (phaseSeries[k] ??= []).push(v);
-          }
-        }
+      }
+    }
+
+    runZts(entry, join(tmp, "zts-profile-warmup"), spec.externals, true);
+    for (let i = 0; i < PROFILE_ITERATIONS; i++) {
+      const r = runZts(entry, join(tmp, `zts-profile-${i}`), spec.externals, true);
+      if (r.zts_profile_total_ms !== undefined) ztsProfileTotals.push(r.zts_profile_total_ms);
+      for (const [k, v] of Object.entries(r.phases ?? {})) {
+        (phaseSeries[k] ??= []).push(v);
       }
     }
 
@@ -286,8 +297,10 @@ async function measureFixture(spec: FixtureSpec): Promise<FixtureResult> {
         wall_ms_stats: computeStats(samples),
       };
       if (tool === "zts") {
-        result.zts_profile_total_ms_stats = computeStats(ztsProfileTotals);
-        result.phase_median_ms = phase_median_ms;
+        if (ztsProfileTotals.length > 0) {
+          result.zts_profile_total_ms_stats = computeStats(ztsProfileTotals);
+          result.phase_median_ms = phase_median_ms;
+        }
       }
       return result;
     });
@@ -354,8 +367,11 @@ function printReport(runReport: RunReport): void {
   console.log("| Baseline | none; same-run CI wall-time comparison |");
   console.log("| Tools | ZTS / Rolldown / Rspack |");
   console.log("| Primary metric | CLI wall time median |");
-  console.log("| ZTS profile total | included only as internal phase diagnostic |");
+  console.log(
+    "| ZTS profile total | separate --profile=all diagnostic run; not part of wall median |",
+  );
   console.log(`| Warmup / iterations | ${runReport.warmup} / ${runReport.iterations} |`);
+  console.log(`| ZTS profile iterations | ${runReport.profile_iterations} |`);
   console.log();
   console.log("### bundle-perf — CI wall-time tool comparison");
   console.log(
@@ -422,11 +438,12 @@ async function main(cli: CliArgs) {
   }
 
   const runReport: RunReport = {
-    version: 2,
+    version: 3,
     generated_at: new Date().toISOString(),
     zts_commit: getCommit(),
     warmup: WARMUP,
     iterations: ITERATIONS,
+    profile_iterations: PROFILE_ITERATIONS,
     fixtures,
   };
 
