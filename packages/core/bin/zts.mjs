@@ -1174,6 +1174,10 @@ function scanCssModuleClassTokens(css) {
   return tokens;
 }
 
+// 다음 5 함수 (skipCssString / skipCssUrl / startsWithCssIdent / isCssIdentStart /
+// isCssIdent) 는 packages/web/src/style/css-parser.ts 에 동등 사본이 있다.
+// PR #5e (css-modules 추출) 시점에 본 정의를 import 로 redirect 후 제거 — 그
+// 전까지 logic 변경 시 양쪽을 동시에 수정 (#2539).
 function skipCssString(css, start, quote) {
   let i = start + 1;
   while (i < css.length) {
