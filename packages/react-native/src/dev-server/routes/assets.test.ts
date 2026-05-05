@@ -170,6 +170,41 @@ describe("resolveAssetPath — node_modules strategies", () => {
     });
     expect(path).toBe(join(dir, "monorepo-nm/qux/m.svg"));
   });
+
+  test("Strategy 4 — Bun .bun 디렉토리 (search by package name)", () => {
+    // /node_modules/.bun/<bunPackage@version+hash>/node_modules/<package>/<rest>
+    mkdirSync(join(dir, "node_modules/.bun/bunpkg@1.2.3+abc/node_modules/bunpkg/assets"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(dir, "node_modules/.bun/bunpkg@1.2.3+abc/node_modules/bunpkg/assets/icon.png"),
+      PNG_BYTES,
+    );
+    const path = resolveAssetPath("/node_modules/bunpkg/assets/icon.png", {
+      projectRoot: dir,
+      nodeModulesPaths: [],
+    });
+    expect(path).toBe(
+      join(dir, "node_modules/.bun/bunpkg@1.2.3+abc/node_modules/bunpkg/assets/icon.png"),
+    );
+  });
+
+  test("Strategy 4 — scoped package Bun directory (`@scope+pkg`)", () => {
+    mkdirSync(join(dir, "node_modules/.bun/@scope+pkg@1.0.0+xyz/node_modules/@scope/pkg/img"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(dir, "node_modules/.bun/@scope+pkg@1.0.0+xyz/node_modules/@scope/pkg/img/x.png"),
+      PNG_BYTES,
+    );
+    const path = resolveAssetPath("/node_modules/@scope/pkg/img/x.png", {
+      projectRoot: dir,
+      nodeModulesPaths: [],
+    });
+    expect(path).toBe(
+      join(dir, "node_modules/.bun/@scope+pkg@1.0.0+xyz/node_modules/@scope/pkg/img/x.png"),
+    );
+  });
 });
 
 describe("handleAssetRequest", () => {

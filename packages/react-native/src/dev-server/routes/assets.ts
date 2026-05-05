@@ -102,9 +102,20 @@ export function resolveAssetPath(urlPathname: string, opts: AssetResolverOptions
   if (!nmMatch) return null;
 
   const bunPackageDir = nmMatch[1];
-  const packageNameOrPath = nmMatch[2];
-  const restPath = nmMatch[3];
+  let packageNameOrPath = nmMatch[2];
+  let restPath = nmMatch[3];
   if (!packageNameOrPath || !restPath) return null;
+
+  // Scoped package: regex 의 `[^/\\]+` 가 first segment 만 잡으므로 `@scope` 가 들어오면
+  // restPath 의 first segment (`pkg`) 와 결합해 `@scope/pkg` 로 재구성. 이후 모든 strategy
+  // 가 scoped package 를 정확히 매칭.
+  if (packageNameOrPath.startsWith("@")) {
+    const slashIdx = restPath.indexOf(sep);
+    if (slashIdx > 0) {
+      packageNameOrPath = `${packageNameOrPath}/${restPath.slice(0, slashIdx)}`;
+      restPath = restPath.slice(slashIdx + 1);
+    }
+  }
 
   // Strategy 1: hoisted (npm/yarn standard) — node_modules/<package>/<rest>
   if (!bunPackageDir && !packageNameOrPath.includes("@")) {
