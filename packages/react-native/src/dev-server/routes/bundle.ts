@@ -7,12 +7,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import * as jscSafeUrl from "jsc-safe-url";
 
 import { sendText } from "../http-utils.ts";
-import {
-  getCachedSourceMap,
-  type PlatformState,
-  type PlatformStateRegistry,
-  waitForBuild,
-} from "../platform-state.ts";
+import { getCachedSourceMap, type PlatformStateRegistry, waitForBuild } from "../platform-state.ts";
+import { resolvePlatform } from "./_shared.ts";
 
 const HMR_MAP_PREFIX = "/__zts_hmr_map/";
 const MULTIPART_BOUNDARY = "3beqjf3apnqeu3h5jqorms4i";
@@ -28,16 +24,6 @@ export function isMapRoute(pathname: string): boolean {
 
 export function isHmrMapRoute(pathname: string): boolean {
   return pathname.startsWith(HMR_MAP_PREFIX);
-}
-
-function resolvePlatform(
-  url: URL,
-  registry: PlatformStateRegistry,
-  defaultPlatform: "ios" | "android",
-): PlatformState {
-  const param = url.searchParams.get("platform");
-  const platform = param === "ios" || param === "android" ? param : defaultPlatform;
-  return registry.getOrCreate(platform);
 }
 
 export async function handleBundleRequest(

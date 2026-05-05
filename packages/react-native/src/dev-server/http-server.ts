@@ -21,6 +21,7 @@ import { handleDevMenu, isDevMenuRoute } from "./routes/devmenu.ts";
 import { handleOpenUrl, isOpenUrlRoute } from "./routes/open-url.ts";
 import { handleReload, isReloadRoute } from "./routes/reload.ts";
 import { handleStatus, isStatusRoute } from "./routes/status.ts";
+import { handleSymbolicateRequest, isSymbolicateRoute } from "./routes/symbolicate.ts";
 import type { Broadcast, Middleware } from "./types.ts";
 
 export interface DevHttpServerDeps {
@@ -96,6 +97,18 @@ export function createBaseMiddleware(
     }
     if (isMapRoute(pathname)) {
       handleMapRequest(req, res, url, deps.platforms, options.bundle.rnPlatform);
+      return;
+    }
+    if (isSymbolicateRoute(pathname, method)) {
+      handleSymbolicateRequest(
+        req,
+        res,
+        url,
+        deps.platforms,
+        options.bundle.rnPlatform,
+        options.bundle.projectRoot,
+        options.symbolicator?.customizeFrame,
+      ).catch(next);
       return;
     }
     next();
