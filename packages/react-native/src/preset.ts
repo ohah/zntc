@@ -80,6 +80,15 @@ export interface RnBundleInput {
     sourceExts?: string[];
     /** RN assetExts override (default RN preset). */
     assetExts?: string[];
+    /** 사용자 추가 polyfill (preset 의 RN polyfill 와 concat — Metro `serializer.polyfills` 호환). */
+    polyfills?: string[];
+    /**
+     * 추가 global 변수 — banner 의 `var <key>=<JSON.stringify(value)>` 로 inject.
+     * Metro `serializer.extraVars` 호환. zts 의 `define` 과 의도가 다름:
+     * `define` 은 source 의 식별자 substitution (compile-time), `extraVars` 는
+     * runtime-time prelude 의 globals declaration (RN 코드 도착 전에 평가).
+     */
+    extraVars?: Record<string, unknown>;
   };
   /** RN prelude 끝에 append 할 사용자 banner string. */
   bannerExtras?: string;
@@ -132,8 +141,29 @@ function buildAssetLoaders(assetExts: readonly string[]): Record<string, string>
   return loaders;
 }
 
+/**
+ * prelude 가 이미 declare 한 식별자 — Hermes strict 모드에서 var 재선언 시
+ * SyntaxError. caller 가 prelude 식별자를 override 할 의도면 `define` 사용.
+ */
+const PRELUDE_RESERVED = new Set([
+  "__BUNDLE_START_TIME__",
+  "__DEV__",
+  "__ZTS_RN_GLOBAL__",
+  "global",
+  "process",
+]);
+
+function formatExtraVars(extraVars: Record<string, unknown>): string {
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(extraVars)) {
+    if (PRELUDE_RESERVED.has(key)) continue;
+    out.push(`var ${key}=${JSON.stringify(value)};`);
+  }
+  return out.join("");
+}
+
 function buildPrelude(input: RnBundleInput): string {
-  const { dev, bannerExtras } = input;
+  const { dev, bannerExtras, extra } = input;
   const lines = [
     `var __BUNDLE_START_TIME__=this.nativePerformanceNow?nativePerformanceNow():Date.now();`,
     `var __DEV__=${dev};`,
@@ -142,6 +172,10 @@ function buildPrelude(input: RnBundleInput): string {
     `var process=__ZTS_RN_GLOBAL__.process||{};process.env=process.env||{};process.env.NODE_ENV=process.env.NODE_ENV||"${dev ? "development" : "production"}";`,
     `globalThis.__ZTS_RN_BUNDLER__=true;`,
   ];
+  if (extra?.extraVars && Object.keys(extra.extraVars).length > 0) {
+    const formatted = formatExtraVars(extra.extraVars);
+    if (formatted) lines.push(formatted);
+  }
   if (bannerExtras) lines.push(bannerExtras);
   return lines.join("");
 }
@@ -232,7 +266,12 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     plugins.push(...extra.additionalPlugins);
   }
 
-  const polyfills = resolveRnPolyfills(projectRoot);
+  const polyfills = [...resolveRnPolyfills(projectRoot)];
+  if (extra?.polyfills && extra.polyfills.length > 0) {
+    // 사용자 추가 polyfill — projectRoot 기준으로 절대화. Metro 가 절대 경로
+    // 받는 것과 동일.
+    for (const p of extra.polyfills) polyfills.push(resolve(projectRoot, p));
+  }
   const runBeforeMain: string[] = [];
   const initCore = tryResolve("react-native/Libraries/Core/InitializeCore", projectRoot);
   if (initCore) runBeforeMain.push(initCore);
