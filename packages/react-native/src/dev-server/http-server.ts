@@ -143,21 +143,26 @@ function chainToHandler(
 }
 
 /**
- * WS upgrade chain — cli-server-api / dev-middleware 의 websocket endpoints
- * 를 등록. hmrBridge 가 자체 `attachToServer` 로 `/hot` 처리. 매칭 안 되면
- * default Node http upgrade 동작 (socket destroy).
+ * 단일 WS upgrade chain — hmrBridge `/hot` → cli-server-api endpoints →
+ * dev-middleware endpoints. 매칭 안 되면 socket destroy (bungae parity).
+ * 모든 deps 가 absent 면 listener 미등록 (default Node 동작 — destroy).
  */
 function attachWebSocketEndpoints(
   server: Server,
   deps: DevHttpServerDeps,
   options: RnDevServerOptions,
 ): void {
+  const hmr = deps.hmrBridge;
   const cli = deps.cliServerApi?.websocketEndpoints;
   const dev = deps.devMiddleware?.websocketEndpoints;
-  if (!cli && !dev) return;
+  if (!hmr && !cli && !dev) return;
 
   server.on("upgrade", (req, socket, head) => {
     const url = parseRequestUrl(req, options.host, options.port);
+    if (hmr && (url.pathname === hmr.path || url.pathname.startsWith(`${hmr.path}?`))) {
+      hmr.acceptUpgrade(req, socket as never);
+      return;
+    }
     if (cli) {
       for (const [path, ep] of Object.entries(cli)) {
         if (url.pathname === path || url.pathname.startsWith(`${path}?`)) {
@@ -174,8 +179,7 @@ function attachWebSocketEndpoints(
         }
       }
     }
-    // 매칭 안 된 path 는 hmrBridge 의 별도 listener 가 처리 가능 — destroy 안 함.
-    // PR #I 에서 단일 listener 로 통합 후 unmatched path destroy 정책 정리.
+    socket.destroy();
   });
 }
 
@@ -191,7 +195,6 @@ export async function createDevHttpServer(
     ? options.enhanceMiddleware(baseMiddleware, { httpServer: server })
     : baseMiddleware;
   server.on("request", chainToHandler(enhanced));
-  deps.hmrBridge?.attachToServer(server);
   attachWebSocketEndpoints(server, deps, options);
 
   await new Promise<void>((resolve, reject) => {

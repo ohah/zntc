@@ -1,6 +1,7 @@
 // dev-server public surface.
 
 export { createHmrBridge, type HmrBridge, type HmrBridgeOptions } from "./hmr-bridge.ts";
+export { type RnDevServerHandle, serveRn } from "./serve.ts";
 export {
   type CliServerApi,
   type CliWebsocketEndpoint,
@@ -62,10 +63,3 @@ export {
   type SymbolicateResponse,
 } from "./symbolicate-source.ts";
 export type { Broadcast, FrameInfo, Middleware, MiddlewareEnhanceContext } from "./types.ts";
-
-/** Dev server lifecycle handle. */
-export interface RnDevServerHandle {
-  readonly url: string;
-  readonly port: number;
-  stop(): Promise<void>;
-}

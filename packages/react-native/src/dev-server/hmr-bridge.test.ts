@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { Server } from "node:http";
 
 import type { WatchHandle, WatchRebuildEvent } from "@zts/core";
 
@@ -54,14 +53,14 @@ function rebuild(overrides: Partial<WatchRebuildEvent> = {}): WatchRebuildEvent 
 
 describe("createHmrBridge — onRebuild", () => {
   test("graphChanged=true → reload", () => {
-    const bridge = createHmrBridge({ path: "/hot", host: "localhost", port: 8081 });
+    const bridge = createHmrBridge({ path: "/hot" });
     const recorded = recordMessages(bridge.adapter);
     bridge.callbacks.onRebuild!(fakeState(), rebuild({ graphChanged: true }));
     expect(recorded.map((m) => m.type)).toEqual(["hmr:reload"]);
   });
 
   test("updates 있음 → start/update/done sequence + sourceMappingURL annotation", () => {
-    const bridge = createHmrBridge({ path: "/hot", host: "localhost", port: 8081 });
+    const bridge = createHmrBridge({ path: "/hot" });
     const recorded = recordMessages(bridge.adapter);
     bridge.callbacks.onRebuild!(
       fakeState("android"),
@@ -81,14 +80,14 @@ describe("createHmrBridge — onRebuild", () => {
   });
 
   test("updates 비어있고 graph 도 안 변함 → 메시지 0", () => {
-    const bridge = createHmrBridge({ path: "/hot", host: "localhost", port: 8081 });
+    const bridge = createHmrBridge({ path: "/hot" });
     const recorded = recordMessages(bridge.adapter);
     bridge.callbacks.onRebuild!(fakeState(), rebuild());
     expect(recorded).toEqual([]);
   });
 
   test("success=false → error 메시지 (state.buildError 우선)", () => {
-    const bridge = createHmrBridge({ path: "/hot", host: "localhost", port: 8081 });
+    const bridge = createHmrBridge({ path: "/hot" });
     const recorded = recordMessages(bridge.adapter);
     const state = fakeState();
     state.buildError = "from state";
@@ -97,7 +96,7 @@ describe("createHmrBridge — onRebuild", () => {
   });
 
   test("success=false + state.buildError null → event.error 사용", () => {
-    const bridge = createHmrBridge({ path: "/hot", host: "localhost", port: 8081 });
+    const bridge = createHmrBridge({ path: "/hot" });
     const recorded = recordMessages(bridge.adapter);
     bridge.callbacks.onRebuild!(
       fakeState(),
@@ -107,19 +106,18 @@ describe("createHmrBridge — onRebuild", () => {
   });
 
   test("success=false 에서 둘 다 null → fallback 메시지", () => {
-    const bridge = createHmrBridge({ path: "/hot", host: "localhost", port: 8081 });
+    const bridge = createHmrBridge({ path: "/hot" });
     const recorded = recordMessages(bridge.adapter);
     bridge.callbacks.onRebuild!(fakeState(), rebuild({ success: false } as never));
     expect(recorded[0]).toEqual({ type: "hmr:error", message: "Unknown build error" });
   });
 });
 
-describe("createHmrBridge — attachToServer", () => {
-  test("server.on('upgrade') 등록 + /hot path 시 channel.accept + initial greeting 호출", () => {
-    const bridge = createHmrBridge({ path: "/hot", host: "localhost", port: 8081 });
+describe("createHmrBridge — acceptUpgrade", () => {
+  test("acceptUpgrade 호출 → channel.accept + initial greeting", () => {
+    const bridge = createHmrBridge({ path: "/hot" });
     let acceptCalled = 0;
     let greetingCalled = 0;
-    // accept 와 sendInitialGreeting 을 spy 로 교체.
     const adapter = bridge.adapter as unknown as {
       channel: { accept: (req: unknown, sock: unknown) => void };
       sendInitialGreeting: () => void;
@@ -130,50 +128,13 @@ describe("createHmrBridge — attachToServer", () => {
     adapter.sendInitialGreeting = () => {
       greetingCalled++;
     };
-
-    const listeners: Array<(req: unknown, sock: unknown, head: unknown) => void> = [];
-    const fakeServer = {
-      on(event: string, cb: (req: unknown, sock: unknown, head: unknown) => void) {
-        if (event === "upgrade") listeners.push(cb);
-      },
-    } as never as Server;
-    bridge.attachToServer(fakeServer);
-    expect(listeners).toHaveLength(1);
-
-    // /hot 호출 — accept + greeting 호출
-    listeners[0]!(
-      { url: "/hot", headers: { host: "x:8081" } },
-      { destroy: () => {} },
-      Buffer.alloc(0),
-    );
+    bridge.acceptUpgrade({} as never, {} as never);
     expect(acceptCalled).toBe(1);
     expect(greetingCalled).toBe(1);
   });
 
-  test("/other path → accept 호출 안 함", () => {
-    const bridge = createHmrBridge({ path: "/hot", host: "localhost", port: 8081 });
-    let acceptCalled = 0;
-    const adapter = bridge.adapter as unknown as {
-      channel: { accept: () => void };
-      sendInitialGreeting: () => void;
-    };
-    adapter.channel.accept = () => {
-      acceptCalled++;
-    };
-    adapter.sendInitialGreeting = () => {};
-
-    const listeners: Array<(req: unknown, sock: unknown, head: unknown) => void> = [];
-    const fakeServer = {
-      on(event: string, cb: (req: unknown, sock: unknown, head: unknown) => void) {
-        if (event === "upgrade") listeners.push(cb);
-      },
-    } as never as Server;
-    bridge.attachToServer(fakeServer);
-    listeners[0]!(
-      { url: "/other", headers: { host: "x:8081" } },
-      { destroy: () => {} },
-      Buffer.alloc(0),
-    );
-    expect(acceptCalled).toBe(0);
+  test("path readonly 노출", () => {
+    const bridge = createHmrBridge({ path: "/__zts_hot__" });
+    expect(bridge.path).toBe("/__zts_hot__");
   });
 });

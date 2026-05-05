@@ -65,6 +65,7 @@ export {
   type PlatformStateRegistry,
   postProcessSourceMap,
   resolveAssetPath,
+  serveRn,
   setupTerminalActions,
   type TerminalActionsCallbacks,
   type TerminalActionsOptions,
