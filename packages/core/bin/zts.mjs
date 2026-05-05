@@ -1039,6 +1039,12 @@ function collectAppFiles(dir, { skipDir = null, predicate = () => true } = {}) {
 const isCssFile = (path) => path.endsWith(".css");
 const isPostcssConfigFile = (path) => POSTCSS_CONFIG_NAMES.includes(basename(path));
 
+// 다음 영역 (CSS_PREPROCESSOR_EXTENSIONS / MODULE_PREPROCESSOR_RE / Sass helper 9
+// 함수: isCssPreprocessorFile, isCssModulePreprocessorFile, cssPreprocessorOutputPath,
+// cssPreprocessorProxyPath, loadSassCompiler, compileSassFile, rewriteSassReferences,
+// isStyleReferenceSource, buildCssPreprocessorProxy, transformCssPreprocessors) 은
+// packages/web/src/style/sass.ts 에 동등 사본이 있다. PR #5e 시점에 본 정의를
+// web 으로 redirect 후 제거 — 그 전까지 logic 변경 시 양쪽을 동시에 수정 (#2539).
 const CSS_PREPROCESSOR_EXTENSIONS = new Set([".scss", ".sass"]);
 const MODULE_PREPROCESSOR_RE = /\.module\.(?:scss|sass)$/;
 
@@ -1051,7 +1057,8 @@ function isCssModulePreprocessorFile(path) {
 }
 
 function cssPreprocessorOutputPath(file) {
-  return file.replace(/\.(?:scss|sass)$/i, ".css");
+  // case-sensitive — `isCssPreprocessorFile` (extname 기준 case-sensitive) gate 와 일치.
+  return file.replace(/\.(?:scss|sass)$/, ".css");
 }
 
 function cssPreprocessorProxyPath(file) {
