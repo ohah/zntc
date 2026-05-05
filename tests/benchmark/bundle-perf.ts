@@ -417,6 +417,34 @@ function printReport(runReport: RunReport): void {
     );
   }
   console.log();
+  console.log("### bundle-perf — ZTS graph discovery read subphase medians (inclusive)");
+  console.log(
+    "| Fixture | Worker parse | PM setup | Setup read | Read file | Read+stat | Open | Stat | Read bytes | Parser setup |",
+  );
+  console.log(
+    "|---------|--------------|----------|------------|-----------|-----------|------|------|------------|--------------|",
+  );
+  for (const fixture of runReport.fixtures) {
+    const phases = toolResult(fixture, "zts")?.phase_median_ms ?? {};
+    console.log(
+      `| ${fixture.name} | ${fmtMarkdownMs(phases["graph.discover.scan.worker.parse"])} | ${fmtMarkdownMs(phases["graph.discover.pm.setup"])} | ${fmtMarkdownMs(phases["graph.discover.pm.setup.read"])} | ${fmtMarkdownMs(phases["graph.discover.pm.setup.read.file"])} | ${fmtMarkdownMs(phases["graph.discover.pm.setup.read.with.stat"])} | ${fmtMarkdownMs(phases["graph.discover.pm.setup.read.open"])} | ${fmtMarkdownMs(phases["graph.discover.pm.setup.read.stat"])} | ${fmtMarkdownMs(phases["graph.discover.pm.setup.read.bytes"])} | ${fmtMarkdownMs(phases["graph.discover.pm.setup.parser"])} |`,
+    );
+  }
+  console.log();
+  console.log("### bundle-perf — ZTS graph prepass decision subphase medians (inclusive)");
+  console.log(
+    "| Fixture | Prepass | Decision | Module gate | AST flags | Options | Unsupported walk | Run |",
+  );
+  console.log(
+    "|---------|---------|----------|-------------|-----------|---------|------------------|-----|",
+  );
+  for (const fixture of runReport.fixtures) {
+    const phases = toolResult(fixture, "zts")?.phase_median_ms ?? {};
+    console.log(
+      `| ${fixture.name} | ${fmtMarkdownMs(phases["graph.discover.pm.prepass"])} | ${fmtMarkdownMs(phases["graph.discover.pm.prepass.decision"])} | ${fmtMarkdownMs(phases["graph.discover.pm.prepass.decision.module.gate"])} | ${fmtMarkdownMs(phases["graph.discover.pm.prepass.decision.ast.flags"])} | ${fmtMarkdownMs(phases["graph.discover.pm.prepass.decision.options"])} | ${fmtMarkdownMs(phases["graph.discover.pm.prepass.decision.unsupported.walk"])} | ${fmtMarkdownMs(phases["graph.discover.pm.prepass.run"])} |`,
+    );
+  }
+  console.log();
   console.log("### bundle-perf — ZTS resolve subphase medians (inclusive)");
   console.log(
     "| Fixture | External | Cache key | Cache lookup | Browser override | Resolver | Path | File exists | Extensions | TS map | Directory index | Realpath | Cache store |",

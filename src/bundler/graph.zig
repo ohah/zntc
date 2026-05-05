@@ -2193,23 +2193,35 @@ pub const ModuleGraph = struct {
         module: *const Module,
         plugin_transform_applied: bool,
     ) bool {
-        if (!module.module_type.isJavaScriptLike()) return false;
-        if (plugin_transform_applied) return true;
+        {
+            var gate_scope = profile.begin(.graph_discover_pm_prepass_decision_module_gate);
+            defer gate_scope.end();
+            if (!module.module_type.isJavaScriptLike()) return false;
+            if (plugin_transform_applied) return true;
 
-        // 싸구려 bool 검사 먼저 (단일 byte load) → 비교적 비싼 옵션 predicate 마지막.
-        if (self.minify_identifiers) return true;
-        if (self.react_refresh or self.styled_components or self.emotion or self.worklet_transform) {
-            return true;
+            // Check cheap single-byte flags before the heavier option predicate.
+            if (self.minify_identifiers) return true;
+            if (self.react_refresh or self.styled_components or self.emotion or self.worklet_transform) {
+                return true;
+            }
         }
 
         const ast = &module.ast.?;
-        if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
-            ast.has_ts_import_equals or ast.has_ts_export_equals)
         {
-            return true;
+            var ast_flags_scope = profile.begin(.graph_discover_pm_prepass_decision_ast_flags);
+            defer ast_flags_scope.end();
+            if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
+                ast.has_ts_import_equals or ast.has_ts_export_equals)
+            {
+                return true;
+            }
         }
 
-        return self.transform_options_base.requiresGraphPrePass(ast);
+        {
+            var options_scope = profile.begin(.graph_discover_pm_prepass_decision_options);
+            defer options_scope.end();
+            return self.transform_options_base.requiresGraphPrePass(ast);
+        }
     }
 
     /// transformer pre-pass — graph 단계에서 1회 실행.
@@ -3599,10 +3611,14 @@ pub const ModuleGraph = struct {
         max_bytes: usize,
         step: BundlerDiagnostic.Step,
     ) ?[]const u8 {
-        const loaded = fs.readFile(alloc, module.path, max_bytes) catch {
-            self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
-            module.state = .ready;
-            return null;
+        const loaded = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_file);
+            defer scope.end();
+            break :blk fs.readFile(alloc, module.path, max_bytes) catch {
+                self.addDiag(.read_error, .@"error", module.path, Span.EMPTY, step, "Cannot read file", null);
+                module.state = .ready;
+                return null;
+            };
         };
         return loaded.contents;
     }

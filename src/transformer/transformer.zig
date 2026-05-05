@@ -27,6 +27,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const plugin_state = @import("plugin_state.zig");
 const PluginState = plugin_state.PluginState;
+const profile = @import("../profile.zig");
 const es2016 = @import("es2016.zig");
 const es2018 = @import("es2018.zig");
 const es2017_mod = @import("es2017.zig");
@@ -362,6 +363,9 @@ pub const TransformOptions = struct {
     fn unsupportedGraphPrePassFeatureUsed(self: *const TransformOptions, ast: *const Ast) bool {
         const u = self.unsupported;
         if (!u.hasAny()) return false;
+
+        var walk_scope = profile.begin(.graph_discover_pm_prepass_decision_unsupported_walk);
+        defer walk_scope.end();
 
         for (ast.nodes.items) |node| {
             switch (node.tag) {

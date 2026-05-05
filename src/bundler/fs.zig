@@ -13,6 +13,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const types = @import("types.zig");
+const profile = @import("../profile.zig");
 
 const is_wasm_build = builtin.target.cpu.arch == .wasm32;
 
@@ -133,17 +134,32 @@ pub const RealFS = struct {
     }
 
     pub fn readFileWithStat(_: RealFS, allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) FsError!LoadedModuleWithStat {
-        const file = std.fs.cwd().openFile(path, .{}) catch |err| return mapFsError(err);
+        var with_stat_scope = profile.begin(.graph_discover_pm_setup_read_with_stat);
+        defer with_stat_scope.end();
+
+        const file = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_open);
+            defer scope.end();
+            break :blk std.fs.cwd().openFile(path, .{}) catch |err| return mapFsError(err);
+        };
         defer file.close();
 
-        const stat = file.stat() catch |err| return mapFsError(err);
-        const bytes = file.readToEndAllocOptions(
-            allocator,
-            max_bytes,
-            @intCast(stat.size),
-            .of(u8),
-            null,
-        ) catch |err| return mapFsError(err);
+        const stat = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_stat);
+            defer scope.end();
+            break :blk file.stat() catch |err| return mapFsError(err);
+        };
+        const bytes = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_bytes);
+            defer scope.end();
+            break :blk file.readToEndAllocOptions(
+                allocator,
+                max_bytes,
+                @intCast(stat.size),
+                .of(u8),
+                null,
+            ) catch |err| return mapFsError(err);
+        };
         const kind = mapEntryKind(stat.kind);
 
         return .{
