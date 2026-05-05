@@ -188,6 +188,126 @@ Response (`content[0].text` is a JSON string):
 - **Event buffer**: `get_build_events` reads from a 256-entry ring buffer. Older events are overwritten.
 - **SSE concurrent connections**: 64. Additional connections rejected.
 
+## `server` config (zts.config)
+
+The same fields exposed via CLI `--port` / `--host` / `--open` can be set in the config file (Vite `server` compatible). CLI flags always take precedence.
+
+```ts
+// zts.config.ts
+import { defineConfig } from "@zts/core";
+
+export default defineConfig({
+  server: {
+    port: 12300,
+    host: "0.0.0.0",      // boolean true also means 0.0.0.0 (Vite parity)
+    strictPort: true,     // exit instead of trying the next port
+    open: true,           // open the served URL in the browser after startup
+  },
+});
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `port` | `number` | `12300` | Listen port. CLI `--port` overrides. |
+| `host` | `string \| boolean` | `"127.0.0.1"` | `true` = `0.0.0.0` (Vite parity). CLI `--host` overrides. |
+| `strictPort` | `boolean` | `false` | If `true`, exit on port conflict instead of falling back to the next port. |
+| `open` | `boolean` | `false` | Open the served URL in the browser after startup. CLI `--open` overrides. |
+
+## Lazy sourcemap — `emitDiskSourcemap` + `WatchHandle`
+
+When you host a dev server directly on top of `@zts/core`'s `watch()` handle, this moves the `.map` disk-write cost out of HMR latency.
+
+```ts
+import { watch } from "@zts/core";
+
+const handle = watch({
+  entryPoints: ["src/index.tsx"],
+  outfile: "dist/bundle.js",
+  bundle: true,
+  sourcemap: true,
+  emitDiskSourcemap: false,   // skip disk .map; keep in memory
+  onRebuild(event) { /* ... */ },
+});
+
+// Lazily build /bundle.js.map on request
+app.get("/bundle.js.map", (_req, res) => {
+  const json = handle.getBundleSourceMap();
+  if (!json) return res.sendStatus(404);
+  res.type("application/json").send(json);
+});
+
+// Per-module HMR sourcemap (Metro `_processSourceMapRequest` pattern)
+app.get("/hmr-map/:moduleId", (req, res) => {
+  const json = handle.getHmrSourceMap(req.params.moduleId);
+  if (!json) return res.sendStatus(404);
+  res.type("application/json").send(json);
+});
+```
+
+- `emitDiskSourcemap: true` (default): `.map` is automatically written to `output_filename + ".map"`.
+- `emitDiskSourcemap: false`: skip disk I/O — use the lazy endpoint model above.
+- `getBundleSourceMap()` / `getHmrSourceMap()` return `null` when sourcemap is off, before the first build, or after `stop()`.
+- `getHmrSourceMap(moduleId)` returns `null` if `moduleId` was not part of the most recent rebuild.
+
+## `onReady` / `onRebuild` events
+
+The rich event payload delivered to `watch()` callbacks — consume the phase breakdown and HMR delta directly from a dev server integration.
+
+```ts
+watch({
+  // ...
+  onReady(event) {
+    // event: WatchReadyEvent
+    console.log(`ready: ${event.files} files / ${event.bytes} bytes`);
+  },
+  onRebuild(event) {
+    // event: WatchRebuildEvent
+    if (!event.success) {
+      console.error("rebuild failed:", event.error);
+      return;
+    }
+    for (const file of event.changed ?? []) console.log("changed:", file);
+    for (const update of event.updates ?? []) {
+      // update.id, update.code, update.map (per-module sourcemap V3 JSON)
+      hmrSocket.send({ id: update.id, code: update.code, map: update.map });
+    }
+    const p = event.phaseDurations;
+    if (p) console.log(`total=${p.total}ms graph=${p.graph}ms emit=${p.emit}ms`);
+  },
+});
+```
+
+Key fields on `WatchRebuildEvent`:
+
+| Field | Type | Description |
+|---|---|---|
+| `success` | `boolean` | Whether the rebuild succeeded. |
+| `error` | `string?` | The fatal diagnostic message on failure. |
+| `changed` | `string[]?` | Absolute paths of files that triggered this rebuild. **It is `changed`, not `changedFiles`.** |
+| `graphChanged` | `boolean?` | Whether the module graph topology changed. |
+| `updates` | `Array<{ id, code, map? }>?` | HMR delta. `map` is the per-module standalone sourcemap V3 JSON (when sourcemap is enabled). |
+| `bytes` | `number?` | Output byte count. |
+| `reparsedModules` | `number?` | Modules that missed the cache and were re-parsed (not exposed for full builds). |
+| `phaseDurations` | object | Per-phase ms — see table below. |
+
+`phaseDurations` base phases (always measured):
+
+| Field | Meaning |
+|---|---|
+| `detect` | Change detection (mtime scan). |
+| `graph` | resolve + parse + semantic + finalize. |
+| `link` | Scope hoisting + linker. |
+| `shake` | Tree shaking. |
+| `emit` | transform + codegen + emit. |
+| `delta` | HMR delta extraction. |
+| `total` | Sum of `detect` through `delta`. |
+
+Sub-phases (only populated when `profile: ["..."]` / `ZTS_PROFILE=...` / `BUNGAE_HMR_PROFILE=1` is active; 0 otherwise):
+
+`scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` / `graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` / `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
+
+> Pre-2026-04-22 NAPI exposed `phaseDurations.parse` / `semantic`, which were actually `graph` / `link+shake` under legacy names and have been removed. Migrate to the new names (`graph` / `link` / `shake`).
+
 ## See also
 
 - [Server-Sent Events (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)

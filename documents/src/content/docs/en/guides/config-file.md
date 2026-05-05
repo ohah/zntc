@@ -55,6 +55,78 @@ See the [Transpile Options reference](/zts/en/reference/options/) — the schema
 
 **Note**: bundler-only options (`external`, `alias`, `define`, etc.) are limited in `zts.config.json`. For complex bundler configs, use `zts.config.ts` (TypeScript config with plugin support).
 
+### Common config-shape options
+
+The following options have no CLI flag (or only a partial one) and are typically expressed as objects in the config file.
+
+#### `server` — dev server defaults
+
+Defaults consumed by `zts dev` / `zts --serve`. CLI flags (`--port` / `--host` / `--open`) always take precedence.
+
+```ts
+// zts.config.ts
+export default defineConfig({
+  server: {
+    port: 5173,
+    host: true,         // true → 0.0.0.0 (matches Vite)
+    strictPort: false,  // true exits on port conflict instead of trying the next port
+    open: false,
+  },
+});
+```
+
+| Field | Type | Notes |
+| ----- | ---- | ----- |
+| `port` | `number` | CLI `--port` overrides |
+| `host` | `string \| boolean` | `true` = `0.0.0.0`. CLI `--host` overrides |
+| `strictPort` | `boolean` | Disable port-conflict fallback |
+| `open` | `boolean` | Open browser on startup. CLI `--open` overrides |
+
+#### `alias` — Object or Array (Vite-compatible)
+
+`alias` accepts two shapes:
+
+```ts
+// 1. Object form (esbuild-compatible): exact + prefix matching
+defineConfig({ alias: { react: 'preact/compat' } });
+
+// 2. Array form (Vite resolve.alias): RegExp `find` supported
+defineConfig({
+  alias: [{ find: /^@\/(.*)$/, replacement: './src/$1' }],
+});
+```
+
+- `zts.config.ts` / `.js` — both forms are supported
+- `zts.config.json` — Object form only (JSON cannot serialize `RegExp`)
+- `buildSync` — Array form not supported (RegExp matching is delegated to the host runtime, so only async `build()` / `watch()` accept it)
+
+#### `compiler` — library-specific 1st-party transforms
+
+Compatible surface with `@next/swc`'s `compiler` option. Carries `styled-components` / `emotion` 1st-party transform settings.
+
+```ts
+defineConfig({
+  compiler: {
+    styledComponents: true,
+    emotion: { autoLabel: 'dev-only' },
+  },
+});
+```
+
+For the full option list, see the [Babel migration guide](/zts/en/guides/babel-migration/).
+
+#### Functional config `ConfigEnv.command`
+
+When using `defineConfig(({ command, mode, env }) => ...)` in `zts.config.ts`, `command` can take:
+
+| `command` | When |
+| --------- | ---- |
+| `"bundle"` | `zts build` / anything else (default) |
+| `"serve"`  | `zts dev` / `zts preview` / `--serve` |
+| `"watch"`  | `--watch` |
+
+Unlike Vite (`"build" \| "serve"`), ZTS splits `"bundle"` and `"watch"` separately.
+
 ## zts.config.ts vs zts.config.json
 
 | | `zts.config.ts` | `zts.config.json` |

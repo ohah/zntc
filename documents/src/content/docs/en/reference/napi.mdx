@@ -67,6 +67,52 @@ console.log(r.map);     // sourcemap JSON
 - `define` — `{ key: value }` static replace
 - `sourcemap` / `sourcemapDebugIds`
 - `tsconfigPath` / `tsconfigRaw`
+- `cache` — `TsconfigCache` instance (reuse autodiscover walk results)
+
+## `tokenize(source, options)`
+
+Lex a single file into a flat token array — no parser, no AST.
+
+```ts
+import { tokenize } from "@zts/core";
+
+const tokens = tokenize("const x = 1;", { filename: "input.ts" });
+console.log(tokens[0]); // { kind, text, start, end, line, column, hasNewlineBefore }
+```
+
+`TokenizeToken` fields: `kind` / `text` / `start` / `end` / `line` / `column` / `hasNewlineBefore`.
+`TokenizeOptions`: `{ filename?: string }`.
+
+## `TsconfigCache`
+
+In-process cache for `tsconfig` autodiscover walk results. Recommended for Vite / Rollup plugin authors
+that repeatedly transpile many files — saves 5–10 fs syscalls per file. Bypassed when `tsconfigPath` /
+`tsconfigRaw` is explicitly set.
+
+```ts
+import { TsconfigCache, transpile } from "@zts/core";
+
+using cache = new TsconfigCache();             // Symbol.dispose auto-clears
+for (const file of files) {
+  transpile(read(file), { filename: file, cache });
+}
+console.log(cache.size);                        // cached entry count
+cache.clear();                                  // explicit clear (instance reusable)
+```
+
+## `configureProfile(profile, level?)` / `profileReport(format?)`
+
+Enable profile categories and read the report. NAPI counterpart to CLI `--profile` / `--profile-level`.
+
+```ts
+import { configureProfile, profileReport, transpile } from "@zts/core";
+
+configureProfile(["parse", "transform"], "summary");
+transpile(source, {});
+console.log(profileReport("table"));            // "table" | "tree" | "json" | "csv"
+```
+
+`level`: `"summary" | "detailed" | "per-module" | "per-pass"`.
 
 ## `build(options)` / `buildSync(options)`
 
@@ -84,7 +130,7 @@ const result = await build({
   platform: "browser",
   minify: true,
   sourcemap: true,
-  outputExports: "named",            // CJS/UMD entry export shape (#2159)
+  outputExports: "named",            // CJS/UMD entry export shape
   inlineDynamicImports: false,       // inline dynamic imports (#2185)
   manualChunks: (id, meta) => {      // function or record form
     if (id.includes("node_modules")) return "vendor";
@@ -95,7 +141,9 @@ const result = await build({
 console.log(`Built ${result.outputFiles.length} files`);
 ```
 
-`buildSync()` is the sync variant — does not support JS plugins (threading model limitation). Suitable for simple single-file builds.
+`buildSync()` is the sync variant — does not support JS plugins (threading model limitation). Suitable
+for simple single-file builds. Array-form `alias` is also unsupported (RegExp matching is delegated to
+the host — use `build()`).
 
 **Bundle-specific options**:
 - `entryPoints`
@@ -104,15 +152,103 @@ console.log(`Built ${result.outputFiles.length} files`);
 - `preserveModules` / `preserveModulesRoot`
 - `inlineDynamicImports`
 - `external` — `string[]` or RegExp
-- `alias` — `Record<string, string>` or `[{find, replacement}]` (Vite-style, #2153)
-- `loader` — `Record<string, "file" | "dataurl" | "base64" | "binary" | "text" | "copy" | "empty">`
+- `alias` — two forms (see below)
+- `loader` — extension-keyed loader override (see below)
 - `manualChunks` — function or record form (#2186)
-- `outputExports` — `"auto" | "named" | "default" | "none"` (#2159)
-- `banner` / `footer`
+- `outputExports` — `"auto" | "named" | "default" | "none"`. `default` mode with named exports mixed in emits a warning and empty output.
+- `banner` / `footer` / `intro` / `outro`
 - `entryNames` / `chunkNames` / `assetNames`
 - `metafile` / `analyze`
-- `sourcemap` / `sourcemapMode` (`"linked" | "inline" | "external" | "hidden"`, #2152)
-- `logLevel` / `logOverride` / `logLimit` (#2158)
+- `sourcemap` / `sourcemapMode` (`"linked" | "external" | "inline"`)
+- `emitDiskSourcemap` — when `false`, skip writing `.map` to disk so dev servers can lazy-serve via `WatchHandle.getBundleSourceMap()`
+- `logLevel` (`silent | error | warning | info | debug | verbose`) — does NOT throw; check `result.errors` length to detect failure
+- `logOverride` / `logLimit`
+- `browserslist` — `string | string[]`. Takes precedence over `target`
+- `server` — `DevServerOptions` (defaults for `zts dev` / `--serve`. CLI flags override)
+
+### `alias` forms
+
+```ts
+// (1) Object — esbuild form. exact + prefix match
+build({ alias: { react: "preact/compat" } });
+//   "react" / "react/hooks" → "preact/compat" / "preact/compat/hooks"
+
+// (2) Array — Vite form. RegExp `find` supported, build() only
+build({ alias: [{ find: /^@\/(.*)$/, replacement: "./src/$1" }] });
+```
+
+### `loader` vocabulary
+
+Accepted loader values: `js | jsx | ts | tsx | json | css | file | dataurl | base64 | text | binary | copy | empty`.
+
+```ts
+build({ loader: { ".png": "file", ".svg": "text", ".wasm": "binary" } });
+```
+
+### `server` (DevServerOptions)
+
+| Field | Meaning |
+|---|---|
+| `port` | Listen port. CLI `--port` overrides |
+| `host` | Listen host. `true` means `0.0.0.0` (Vite-compatible) |
+| `strictPort` | Exit if port is taken instead of trying the next one |
+| `open` | Open the URL in a browser after startup |
+
+### React Native related options
+
+Auto-enabled when `platform: "react-native"`. The Hermes compatibility matrix is enforced, so `target`
+and `browserslist` are ignored.
+
+- `assetRegistry` — Metro AssetRegistry module path (or `false` to disable)
+- `silentConsoleErrorPatterns` — silently swallow `console.error` calls matching any RegExp source pattern
+- `entryErrorGuard` — wrap entry trigger calls in `try/catch + ErrorUtils.reportFatalError`. Auto-enabled on RN
+- `strictExecutionOrder` — prevent function-declaration hoisting (rolldown parity). Auto-enabled on RN
+- `workletPluginVersion` — `react-native-worklets` package version string
+- `workletTransform` — Reanimated worklet transform. Auto-enabled on RN
+- `codegenTransform` — replace `codegenNativeComponent` calls with inline view configs. Auto-enabled on RN
+- `configurableExports` — add `configurable: true` on `Object.defineProperty` (RN/Hermes compatibility)
+- `reactRefresh` — enable React Fast Refresh
+- `devMode` — wrap modules with `__zts_register()` factory + inject HMR runtime
+- `rootDir` — base path for dev-mode module IDs
+- `collectModuleCodes` — collect per-module code in dev mode (for HMR rebuild)
+- `moduleSpecifierMap` — `import { x } from 'lodash'` → `import x from 'lodash/x'` cherry-pick rewrite
+- `globals` — Rollup `output.globals`. IIFE/UMD external → global variable map
+- `intro` / `outro` — Rollup `output.intro/outro`. Inject text inside the format wrapper
+- `blockList` — resolution block patterns (`(RegExp | string)[]`, Metro `blockList` compatible)
+- `fallback` — applied only when normal resolution fails (`{ crypto: "crypto-browserify", fs: false }`)
+- `watchFolders` — extra watch roots outside the graph (Metro compatible)
+- `watchInclude` / `watchExclude` — `watchFolders` glob include/exclude
+
+### `runtimePolyfills` / `runtimeTarget` / `coreJs`
+
+Auto-inject runtime API polyfills via core-js. Value forms:
+
+```ts
+runtimePolyfills: "off" | "auto" | "usage" | "entry" | RuntimePolyfillOptions
+```
+
+`RuntimePolyfillOptions` fields: `mode` (`auto | usage | entry`) / `provider` (`"core-js"`) /
+`targets` (browserslist query) / `coreJs` (version string) / `include[]` / `exclude[]` /
+`proposals` (boolean). The top-level `coreJs` option is equivalent to `runtimePolyfills.coreJs`.
+
+### `compiler` namespace
+
+Per-library 1st-party transform configuration (`@next/swc`-compatible surface). Drop-in replacement
+for `babel-plugin-styled-components` / `@emotion/babel-plugin` — toggle via options, no plugin registration.
+
+```ts
+build({
+  compiler: {
+    styledComponents: { displayName: true, ssr: true, minify: true },
+    emotion: { autoLabel: "dev-only", labelFormat: "[local]" },
+  },
+});
+```
+
+`StyledComponentsOptions`: `displayName` / `ssr` / `cssProp` / `fileName` / `meaninglessFileNames` /
+`transpileTemplateLiterals` / `pure` / `minify` / `topLevelImportPaths` / `namespace` / `meta`.
+`EmotionOptions`: `autoLabel` (`"always" | "dev-only" | "never" | boolean`) / `labelFormat` /
+`importMap` / `sourceMap`. (`jsxImportSource` is a separate top-level `BuildOptions` field.)
 
 ## `watch(options)`
 
@@ -129,13 +265,47 @@ const handle = watch({
   bundle: true,
   onReady: () => console.log("first build ready"),
   onRebuild: (event) => {
-    console.log("rebuild", event.changedFiles);
+    console.log("rebuild", event.changed);          // changed file paths
+    console.log("emit", event.phaseDurations?.emit);
   },
 });
 
-// shutdown
 handle.stop();
 ```
+
+### `WatchRebuildEvent` fields
+
+- `success: boolean` / `error?: string` — rebuild result
+- `changed?: string[]` — file paths that triggered the rebuild
+- `graphChanged?: boolean` — whether the module graph topology changed
+- `updates?: Array<{ id, code, map? }>` — per-module HMR payload (dev mode)
+- `bytes?: number` / `reparsedModules?: number`
+- `phaseDurations?: { ... }` — milliseconds per phase
+
+Default `phaseDurations` keys: `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`.
+
+Sub-phase keys (when `profile: ["..."]` or `ZTS_PROFILE` env is active): `scan` / `parse` / `resolve` /
+`semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` /
+`graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` /
+`emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
+
+> Before 2026-04-22 `phaseDurations.parse` / `semantic` were legacy aliases for `graph` /
+> `link+shake` and have been removed. `parse` now reflects real parser time only.
+
+### `WatchHandle` lazy sourcemap
+
+```ts
+const handle = watch({ ..., sourcemap: true, emitDiskSourcemap: false });
+
+// when the dev server receives /bundle.js.map
+const bundleMap = handle.getBundleSourceMap();              // string | null
+
+// when the dev server receives /hmr-map/:moduleId
+const moduleMap = handle.getHmrSourceMap(absoluteModulePath); // string | null
+```
+
+VLQ encoding and `sourcesContent` attachment are deferred from the emit phase to request time, cutting
+HMR latency. Returns `null` when sourcemaps are disabled, before the first build, or after `stop()`.
 
 ## `vitePlugin(rollupPlugin)`
 
@@ -166,6 +336,7 @@ const myPlugin: ZtsPlugin = {
   setup(build) {
     build.onResolve({ filter: /^@my\// }, (args) => ({
       path: resolve(__dirname, args.path),
+      // disabled: true,                            // replace with empty module (Metro/webpack fallback escape)
     }));
     build.onLoad({ filter: /\.md$/ }, (args) => ({
       contents: readFileSync(args.path, "utf-8"),
@@ -177,9 +348,88 @@ const myPlugin: ZtsPlugin = {
     build.onBuildStart(() => console.log("started"));      // (#2156)
     build.onBuildEnd((err) => err && console.error(err));  // (#2156)
     build.onCloseBundle(() => console.log("done"));        // (#2156)
+
+    // Fill require.context matches via the host runtime's RegExp engine
+    build.onResolveContext({ filter: /./ }, (args) => {
+      const re = new RegExp(args.filter ?? ".*", args.flags ?? "");
+      return { context: scanDir(args.dir, args.recursive, re) };
+    });
+
+    // Function-level AST visit — strip directive / inject trailing code
+    build.onAstFunction({ filter: /\.tsx?$/ }, (info) => {
+      if (info.directives.includes("worklet")) return { stripDirective: "worklet" };
+    });
   },
 };
 ```
+
+### Additional `onResolve` return fields
+
+- `path` — resolved absolute path
+- `external` — keep the import statement (resolved at runtime)
+- `disabled` — replace with an empty module (`module.exports = {}`). Maps Metro `{ type: 'empty' }` and webpack `resolve.fallback: false`
+
+### `onAstFunction`
+
+`AstFunctionInfo`: `name` / `directives` / `closureVars` / `params` / `sourcePath` / `bodyText` /
+`flags: { async, generator }`.
+`AstFunctionResult`: `stripDirective?` / `trailingCode?: string[]`.
+
+## App build (Vite-style HTML entry)
+
+```ts
+import { buildAppSync, prepareAppDevSync } from "@zts/core";
+
+// Production: scan modules / CSS / assets from an HTML entry → outdir
+const r = buildAppSync({ root: ".", outdir: "dist", entryHtml: "index.html" });
+
+// Development: temporary prepare for the dev server (mode = "development")
+const dev = prepareAppDevSync({ root: ".", outdir: ".zts-dev" });
+```
+
+Additional `AppBuildOptions` / `AppDevPrepareOptions` fields: `publicDir` / `base` / `mode` / `envDir` /
+`envPrefixes` / `define` / `minify` / `sourcemap` / `splitting` / `compiler`.
+
+## Config / Workspace API
+
+### Unified config loader
+
+```ts
+import { loadConfig, defineConfig } from "@zts/core";
+
+const env = { mode: "production", command: "build" };
+const config = await loadConfig({ cwd: process.cwd(), env });
+```
+
+Additional exports: `findConfigPath`, `findModeConfigPath`, `loadModuleDefault`, `mergeUserConfigs`,
+`importAndResolveDefault`, `defaultConfigEnv`. Types: `UserConfig` / `UserConfigInput` /
+`UserConfigFn` / `ConfigEnv` / `ModuleKind`.
+
+### Workspace
+
+```ts
+import { defineWorkspace, loadWorkspace } from "@zts/core";
+
+export default defineWorkspace([
+  "packages/*",
+  { path: "apps/web", name: "web" },
+  { config: defineConfig({ bundle: { entryPoints: ["src/i.ts"] } }) },
+]);
+```
+
+Additional exports: `loadWorkspace`, `filterWorkspaces`, `findWorkspacePath`,
+`identifyWorkspaceEntries`, `loadIdentifiedConfig`, `WORKSPACE_EXT_PRIORITY`. Types: `Workspace` /
+`WorkspaceEntry` / `WorkspaceFn` / `IdentifiedWorkspace`.
+
+### Utilities
+
+- `envToDefine(env, prefixes)` — `.env` variables → `define` mapping
+- `loadEnv(mode, dir, prefixes?)` — `.env[.mode][.local]` priority loader
+- `KNOWN_CONFIG_KEYS` — set of recognized config keys
+- `suggestKey(key)` — typo suggestion (Levenshtein-based)
+- `warnUnknownKeys(obj)` — warn on unknown keys
+- `isPlainObject(v)` — plain-object predicate
+- `validateTsConfigRaw(raw)` — pre-flight `tsconfigRaw` JSON validation
 
 ## `defineConfig(config)`
 
@@ -200,17 +450,30 @@ export default defineConfig({
 
 ## `benchmark(options)`
 
-Run ZTS / esbuild / swc with the same input and measure per-stage time. See [Benchmarks](/zts/reference/benchmarks/) for results.
+Run a phase N times and return statistics (mean / median / p95 / p99 / stddev / min / max). NAPI
+counterpart to `zts bench --phase=...` — same engine. See [Benchmarks](/zts/en/reference/benchmarks/)
+for results.
 
 ```ts
 import { benchmark } from "@zts/core";
 
 const r = benchmark({
-  source: "...",
+  file: "./src/App.tsx",
+  phases: ["parse", "transform"],
   iterations: 100,
-  engines: ["zts", "esbuild"],
+  warmup: 10,
 });
+console.log(r.phases.parse.mean_ms);
 ```
+
+`BenchmarkOptions` fields:
+- `source?` or `file?` — exactly one is required
+- `filename?` — paired with `source` (used for extension detection)
+- `phases: string[]` — profile categories to measure. `all` / `none` are not allowed
+- `iterations?` (default 100) / `warmup?` (default 10)
+
+`BenchmarkPhaseStats`: `samples` / `mean_ms` / `median_ms` / `p95_ms` / `p99_ms` / `min_ms` /
+`max_ms` / `stddev_ms`. `BenchmarkResult`: `phases: Record<string, BenchmarkPhaseStats>`.
 
 ## See also
 

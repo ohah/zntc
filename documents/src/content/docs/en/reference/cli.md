@@ -58,7 +58,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 
 | Option                      | Description                                                              |
 | --------------------------- | ------------------------------------------------------------------------ |
-| `-o, --outfile <path>`      | Output file path                                                         |
+| `-o, --out-file <path>`     | Output file path (the JS wrapper also accepts `--outfile` as alias)      |
 | `--outdir <path>`           | Output directory (required for dir input / splitting / preserve-modules) |
 | `--outbase=<dir>`           | Base dir for computing output paths                                      |
 | `--out-extension:.js=<ext>` | Change output extension (e.g. `.mjs`)                                    |
@@ -86,8 +86,9 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--minify-syntax`                   | `true`→`!0`, paren removal, constant folding                            |
 | `--minify-identifiers`              | Shorten local identifiers                                               |
 | `--keep-names`                      | Preserve function/class `.name`                                         |
-| `--charset=utf8\|ascii`             | Output charset                                                          |
-| `--ascii-only`                      | Non-ASCII → `\uXXXX` (= `--charset=ascii`)                              |
+| `--charset=utf8`                    | Preserve non-ASCII verbatim (parser only accepts `utf8`)                |
+| `--ascii-only`                      | Non-ASCII → `\uXXXX` (asymmetric — `--charset=ascii` is not accepted)   |
+| `--mangle-report=<path>`            | Emit original-to-mangled identifier map JSON (with `--minify-identifiers`) |
 | `--quotes=double\|single\|preserve` | String quote style                                                      |
 | `--line-limit=<n>`                  | Wrap long output lines at safe token boundaries (`0` disables wrapping) |
 
@@ -99,7 +100,6 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--sourcemap=linked`      | Explicit linked mode (#2152) — same as above                         |
 | `--sourcemap=inline`      | Inline data URL                                                      |
 | `--sourcemap=external`    | External file, no comment                                            |
-| `--sourcemap=hidden`      | External only (omit comment)                                         |
 | `--sourcemap-debug-ids`   | Sentry debugId support                                               |
 | `--sources-content=false` | Omit `sourcesContent`                                                |
 | `--source-root=<path>`    | `sourceRoot` field                                                   |
@@ -134,7 +134,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | ---------------------------------------------- | ------------------------------------------------------------------ |
 | `-p, --project <path>, --tsconfig-path <path>` | tsconfig.json path/directory                                       |
 | `--experimental-decorators`                    | Legacy decorator (`__decorateClass`)                               |
-| `--emit-decorator-metadata`                    | Emit decorator metadata (requires `experimentalDecorators`)        |
+| `--emit-decorator-metadata`                    | Emit decorator metadata (requires `experimentalDecorators`, JS-wrapper-only) |
 | `--use-define-for-class-fields=false\|true`    | Class field semantics                                              |
 | `--verbatim-module-syntax`                     | Preserve TS `verbatimModuleSyntax` imports/exports                 |
 | `--tsconfig-raw=<json>`                        | Inline tsconfig JSON string, compatible with esbuild `tsconfigRaw` |
@@ -161,14 +161,17 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--asset-names=<pattern>`                | Asset name pattern                                                                                    |
 | `--loader:.ext=type`                     | Loader by extension (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
 | `--metafile` / `--metafile=<path>`       | Build meta JSON (stdout or file)                                                                      |
-| `--analyze`                              | Bundle analysis report                                                                                |
-| `--legal-comments=<mode>`                | License comments: `none\|inline\|eof\|linked\|external`                                               |
+| `--analyze`                              | Bundle analysis report (printed to stderr). Pair with `--metafile=<path>` to also write JSON to disk. |
+| `--legal-comments=<mode>`                | License comments: `none\|inline\|eof\|linked\|external` (`linked`/`external` currently fall back to `eof`) |
 | `--packages=external`                    | Treat all bare package imports as external                                                            |
-| `--banner=<text>` / `--banner:js=<text>` | Prepend text                                                                                          |
-| `--footer=<text>` / `--footer:js=<text>` | Append text                                                                                           |
-| `--intro=<text>`                         | Prepend wrapper-internal bundle text                                                                  |
-| `--outro=<text>`                         | Append wrapper-internal bundle text                                                                   |
+| `--banner:js=<text>`                     | Prepend text (the bare `--banner=` form is JS-wrapper-only)                                           |
+| `--footer:js=<text>`                     | Append text (the bare `--footer=` form is JS-wrapper-only)                                            |
+| `--intro=<text>`                         | Prepend wrapper-internal bundle text (JS-wrapper-only — native parser does not accept it)             |
+| `--outro=<text>`                         | Append wrapper-internal bundle text (JS-wrapper-only — native parser does not accept it)              |
 | `--global:FROM=TO`                       | Map an IIFE/UMD external specifier to a global variable name                                          |
+| `--global-identifier=<name>`             | Reserve a global identifier during scope hoisting (repeatable)                                        |
+| `--polyfill=<path>`                      | Run-on-startup polyfill module path (repeatable, resolved to absolute path)                           |
+| `--run-before-main=<path>`               | Module to execute right before the entry module (repeatable, resolved to absolute path)               |
 | `--public-path=<url>`                    | Asset URL prefix                                                                                      |
 | `--shim-missing-exports`                 | Shim missing exports with `undefined`                                                                 |
 
@@ -191,6 +194,10 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `-w, --watch`                   | Watch for file changes (incremental rebuild)                                     |
 | `--watch-json`                  | NDJSON event output (for external HMR integration)                               |
 | `--watch-delay=<ms>`            | Debounce delay                                                                   |
+| `--watch-folder=<dir>`          | Add a directory to watch roots (Metro `watchFolders` compatible, resolved to absolute path, repeatable) |
+| `--watch-include=<glob>`        | Whitelist glob for watchFolders scanning (repeatable)                            |
+| `--watch-exclude=<glob>`        | Exclude glob for watchFolders scanning (repeatable)                              |
+| `--dev`                         | Enable dev mode (turn on dev-only behavior such as HMR runtime injection)        |
 | `--serve [dir]`                 | Static file server (default: `.`)                                                |
 | `--port <n>`                    | Server port                                                                      |
 | `--host [addr]`                 | Binding address                                                                  |
@@ -223,15 +230,30 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--profile-format=<format>`  | Profile output: `table\|tree\|json\|csv`                                         |
 | `--tokenize[=false]`         | Print scanner tokens instead of generated code                                   |
 | `--tokenize-format=<format>` | Token output format: `text\|json`                                                |
-| `--stop-after=<phase>`       | Debug option to stop after a compiler phase                                      |
+| `--stop-after=<phase>`       | Debug option to stop after a compiler phase (`scan\|parse\|semantic\|transform\|codegen`) |
 | `--test262 <dir>`            | Run the Zig Test262 runner                                                       |
 | `--allow-overwrite`          | Explicitly permit an output path to overwrite an input file. Blocked by default. |
 | `-h, --help`                 | Show help                                                                        |
 
-## Internal / Planned Options Not Exposed In The Current CLI
+## Benchmark (`zts bench`)
 
-These features exist as internal options or roadmap items, but are not present in the current
-`zts` CLI flag registry: `globalIdentifiers`, `polyfills`, `runBeforeMain`.
+A subcommand that runs the requested phases N times and prints mean/median/p95/p99/stddev/min/max statistics. Use baseline save/compare for before/after optimization analysis.
+
+| Option                    | Description                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| `--phase=<list>`          | Profile categories to measure as a CSV (required, e.g. `parse,transform`). `all`/`none` are not allowed |
+| `--iterations=<n>`        | Iteration count (default: 100, must be ≥ 1)                                                  |
+| `--warmup=<n>`            | Warmup runs before measured runs (default: 10)                                               |
+| `--save=<path>`           | Save the run as a baseline JSON                                                              |
+| `--compare=<path>`        | Compare against an existing baseline JSON                                                    |
+| `--format=<fmt>`          | Output format — `table\|tree\|json\|csv` (default: `table`)                                  |
+| `--profile-level=<level>` | Profile detail level (`summary\|detailed\|per-module\|per-pass`)                             |
+
+```bash
+zts bench --phase=parse,transform --iterations=200 --warmup=20 src/large.ts
+zts bench --phase=parse --save=baseline.json src/main.ts
+zts bench --phase=parse --compare=baseline.json src/main.ts
+```
 
 ## See Also
 

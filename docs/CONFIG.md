@@ -30,13 +30,14 @@ CLI > config > `--tsconfig-raw` > tsconfig file > defaults. 같은 옵션이 여
 | `format`                                     |           `--format=esm`           |               ✅               |            ❌             | esm/cjs/iife/umd/amd                                               |
 | `platform`                                   |         `--platform=node`          |               ✅               |            ❌             | node/browser/react-native                                          |
 | `target`                                     |         `--target=es2020`          |               ✅               |         `target`          | tsconfig fallback                                                  |
+| `browserslist`                               |               (없음)               |               ✅               |            ❌             | string / string[] Browserslist 쿼리. 지정 시 `target` 보다 우선. `platform: "react-native"` 에서는 사용 불가 (Hermes 매트릭스 강제) |
 | `runtimePolyfills`                           |        `--runtime-polyfills`       |               ✅               |            ❌             | core-js 런타임 API 폴리필. 타겟은 Rspack/SWC식 Browserslist query  |
 | `coreJs`                                     |          `--core-js=3.49`          |               ✅               |            ❌             | core-js-compat 계산에 사용할 core-js 버전                          |
 | `jsx`                                        |         `--jsx=automatic`          |               ✅               |           `jsx`           | preserve/transform/automatic                                       |
 | `jsxFactory` / `jsxFragment`                 |                flag                |               ✅               |      `jsxFactory` 등      | tsconfig fallback                                                  |
 | `external`                                   |          `--external:lib`          |               ✅               |            ❌             | 배열 — CLI 비어있으면 config                                       |
 | `packagesExternal`                           |       `--packages=external`        |               ✅               |            ❌             | bare package import 전체 external, relative/absolute는 번들        |
-| `alias`                                      |           `--alias:K=V`            |               ✅               |     tsconfig `paths`      | 객체 머지: 키 단위 CLI override. resolve **전** 무조건 치환        |
+| `alias`                                      |           `--alias:K=V`            |               ✅               |     tsconfig `paths`      | Object/Array 두 형태. Object 는 키 단위 CLI 머지, Array 는 build() 만 (RegExp). resolve **전** 무조건 치환 |
 | `fallback`                                   | `--fallback:K=V` / `--fallback:K=false` |          ✅               |            ❌             | resolve **실패 시에만** 적용. webpack `resolve.fallback` 호환. `=false` 면 빈 모듈 |
 | `define`                                     |           `--define:K=V`           |               ✅               |            ❌             | 객체 머지: 키 단위 CLI override                                    |
 | `loader`                                     |        `--loader:.ext=type`        |               ✅               |            ❌             | 객체 머지                                                          |
@@ -252,6 +253,34 @@ zts build entry.ts --platform=browser \
   --fallback:fs=false \
   --fallback:crypto=crypto-browserify
 ```
+
+#### `alias` 의 두 형태 (Object vs Array)
+
+`alias` 는 esbuild / Vite 호환을 위해 두 형태를 허용한다 — `Record<string, string>` 또는 `Array<{ find: string | RegExp; replacement: string }>`.
+
+```ts
+// 1. Object 형태 (esbuild 호환): exact + prefix 매칭. 정해진 specifier 만 치환.
+//    `react` 또는 `react/hooks` → `preact/compat[/hooks]`
+defineConfig({
+  alias: { react: 'preact/compat' },
+});
+
+// 2. Array 형태 (Vite `resolve.alias`): RegExp find 지원. 매칭 순서대로 첫 번째 적용.
+//    `find` 가 string 이면 prefix, RegExp 이면 host runtime 매칭 + `replacement` 치환.
+defineConfig({
+  alias: [
+    { find: /^@\/(.*)$/, replacement: './src/$1' },
+    { find: '~components', replacement: './src/components' },
+  ],
+});
+```
+
+| 형태 | 매칭 | RegExp | `buildSync` | `zts.config.json` |
+| ---- | ---- | :----: | :---------: | :---------------: |
+| Object (`Record<string, string>`) | exact + prefix | ❌ | ✅ | ✅ |
+| Array (`{ find, replacement }[]`) | string=prefix / RegExp=host runtime | ✅ | ❌ — `build()` 만 | ❌ (JSON 은 RegExp 직렬화 불가) |
+
+Array 형태는 host runtime 의 RegExp 매칭에 위임하므로 sync 경로(`buildSync`)에서는 throw 한다 — async `build()` / `watch()` 만 사용 가능. JSON config 도 RegExp 직렬화가 없으므로 `zts.config.{ts,js}` 에서만 의미 있음.
 
 차이 요약:
 

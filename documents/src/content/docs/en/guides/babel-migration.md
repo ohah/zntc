@@ -18,7 +18,9 @@ A guide to mapping each plugin/preset when migrating a Metro-based `babel.config
 | `@babel/plugin-proposal-optional-chaining` | target-based auto-downlevel | Built into ES2020 |
 | `babel-plugin-root-import` | `alias: { "~/": "./src" }` | tsconfig `paths` also works |
 | `react-native-worklets/plugin` | Built-in worklet plugin | Auto with `platform: "react-native"` |
-| `babel-plugin-lodash` | `alias: { lodash: "lodash-es" }` | ESM tree-shaking replaces it |
+| `babel-plugin-lodash` | `moduleSpecifierMap: { lodash: "lodash/{name}" }` | Cherry-pick split. `alias: { lodash: "lodash-es" }` also works (uses ESM tree-shaking) |
+| `babel-plugin-styled-components` | `compiler.styledComponents` | 1st-party transform (see below) |
+| `@emotion/babel-plugin` | `compiler.emotion` | 1st-party transform (see below) |
 | `transform-remove-console` | `drop: ["console"]` | |
 | `transform-react-remove-prop-types` | `pure: ["PropTypes.*"]` + DCE | Unnecessary with React 19+ |
 | Custom Babel plugins | **Babel bridge** (see below) | Or port to ZTS plugin |
@@ -62,6 +64,70 @@ export default defineConfig({
 ```
 
 The plugin array goes to zero. RN preset + worklet + Flow are all included in `platform: "react-native"`.
+
+### When RegExp matching is needed — `alias` array form
+
+The default object form supports only exact + prefix matching. If you need regex (like `babel-plugin-module-resolver` `regExp`), use the array form (compatible with Vite `resolve.alias`).
+
+```ts
+defineConfig({
+  alias: [
+    { find: /^@\/(.*)$/, replacement: "./src/$1" },
+    { find: /^~components\/(.*)$/, replacement: "./src/components/$1" },
+  ],
+});
+```
+
+The first matching entry wins. `find` as a string is prefix matching; as a RegExp the host runtime matches and substitutes via `replacement`.
+
+Caveat: the array form is `build()` (async) only. `buildSync()` cannot delegate RegExp matching through plugin hooks — use `Record<string, string>` object form, or switch to `build()`.
+
+## styled-components — `compiler.styledComponents`
+
+ZTS 1st-party equivalent of `babel-plugin-styled-components`. No plugin registration — just enable the option.
+
+```ts
+defineConfig({
+  compiler: {
+    styledComponents: {
+      displayName: true,             // devtools labels (default: NODE_ENV !== "production")
+      ssr: true,                     // deterministic componentId hash (default: true)
+      fileName: true,                // include filename in componentId (default: true)
+      minify: true,                  // CSS whitespace minify (default: true)
+      transpileTemplateLiterals: true, // recognize downleveled templates (default: true)
+      pure: false,                   // hint that styled.X is side-effect free (default: false)
+      namespace: "my-app",           // displayName/componentId namespace prefix
+      topLevelImportPaths: ["@my-org/styled"], // recognize vendored forks
+      cssProp: false,                // extract `<div css={...}>` into a module-level styled component (default: false)
+    },
+  },
+});
+```
+
+`compiler.styledComponents: true` enables defaults in one shot.
+
+## emotion — `compiler.emotion`
+
+ZTS 1st-party equivalent of `@emotion/babel-plugin`.
+
+```ts
+defineConfig({
+  compiler: {
+    emotion: {
+      autoLabel: "dev-only",   // "always" | "dev-only" | "never" | boolean (default: "dev-only")
+      labelFormat: "[local]",  // tokens: [local] / [filename] / [dirname] (default: "[local]")
+      sourceMap: true,          // emit sourceMap (default: true)
+      importMap: {              // import alias for forks / vendored emotion
+        "@my-org/styled": {
+          styled: { canonicalImport: ["@emotion/styled", "default"] },
+        },
+      },
+    },
+  },
+});
+```
+
+`jsxImportSource` is set as a separate top-level `BuildOptions` field (e.g. `jsxImportSource: "@emotion/react"`).
 
 ## Babel bridge — reusing custom Babel plugins
 
@@ -159,6 +225,7 @@ In Metro, tree-shaking is weak, so `import { debounce } from 'lodash'` pulls in 
 ZTS has working ESM tree-shaking, so:
 - Use `lodash-es` → automatic cherry-picking (optimal)
 - Keep `lodash` → one-line `alias: { lodash: "lodash-es" }` solves it
+- Keep `lodash` + force path import → `moduleSpecifierMap: { lodash: "lodash/{name}" }` (only converts named specifiers without aliases; falls back to original import otherwise)
 - Plugin port is unnecessary
 
 ### Q. What about `transform-react-remove-prop-types`?

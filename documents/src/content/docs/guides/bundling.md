@@ -68,6 +68,60 @@ zts --bundle entry.ts --external react --external react-dom
 zts --bundle entry.ts --alias:react=preact/compat
 ```
 
+config 에서는 두 가지 형태를 지원합니다 (esbuild / Vite 호환).
+
+```ts
+// Object 형태 — exact + prefix 매칭 (esbuild alias)
+defineConfig({
+  alias: { react: "preact/compat", "@/": "./src/" },
+});
+
+// Array 형태 — RegExp 지원 (Vite resolve.alias). build() 만 지원, buildSync 미지원.
+defineConfig({
+  alias: [
+    { find: /^@\/(.*)$/, replacement: "./src/$1" },
+    { find: "lodash", replacement: "lodash-es" },
+  ],
+});
+```
+
+`alias` 는 일반 해석 **전에 무조건** 치환됩니다. 실패 시에만 적용하려면 `fallback` 을 사용하세요. 자세한 babel-plugin-module-resolver 매핑은 Babel 마이그레이션 가이드 참고.
+
+## Fallback
+
+webpack `resolve.fallback` / Metro `resolver.extraNodeModules` 호환. 일반 해석이 **실패했을 때만** 적용. 브라우저 타겟에서 Node 내장을 polyfill 로 swap 할 때 주로 사용합니다.
+
+```ts
+defineConfig({
+  fallback: {
+    fs: false,                       // 빈 모듈로 대체
+    crypto: "crypto-browserify",
+    stream: "stream-browserify",
+  },
+});
+```
+
+값이 문자열이면 해당 specifier 로 재해석, `false` 면 빈 모듈로 대체.
+
+## Block List
+
+Metro `resolver.blockList` / webpack `IgnorePlugin` 호환. 매칭되는 절대 경로는 resolver 가 해석 실패시켜 번들 그래프에 포함되지 않습니다.
+
+```ts
+defineConfig({
+  blockList: [
+    /\/__mocks__\//,
+    /\.test\.tsx?$/,
+    "/private-internal/.*",
+  ],
+});
+```
+
+- `RegExp`: `.source` 를 추출해 패턴으로 사용
+- `string`: regex 문자열 그대로 사용
+- 지원 구문: 리터럴, `.*`, `^`, `$`, `\x` 이스케이프. `|`, `[]`, `()`, `+?`, `\w\d` 는 미지원
+- `platform: "react-native"` 시 Metro 기본 패턴(`__tests__`, iOS/Android 빌드 폴더 등)이 자동 prepend 되며 사용자 패턴은 그 뒤에 append
+
 ## Loader
 
 ```bash
@@ -85,12 +139,25 @@ zts --bundle entry.ts --outdir dist/ \
   --asset-names="assets/[name]-[hash]"
 ```
 
-## Banner / Footer
+## Banner / Footer / Intro / Outro
+
+`banner` / `footer` 는 format wrapper **밖**의 최상단/최하단에 텍스트를 삽입합니다 (라이선스 헤더, shebang 등). `intro` / `outro` 는 wrapper **안쪽**, 번들 코드 앞/뒤에 삽입합니다 (Rollup `output.intro`/`output.outro` 호환). IIFE/UMD 같은 wrapper format 에서 차이가 명확합니다.
 
 ```bash
 zts --bundle entry.ts -o bundle.js \
   --banner:js="/* MIT License */" \
-  --footer:js="/* End of bundle */"
+  --footer:js="/* End of bundle */" \
+  --intro="'use strict';" \
+  --outro="globalThis.__BUILD_OK__ = true;"
+```
+
+```ts
+defineConfig({
+  banner: "/* MIT License */",
+  footer: "/* End of bundle */",
+  intro: "'use strict';",
+  outro: "globalThis.__BUILD_OK__ = true;",
+});
 ```
 
 ## Metafile
@@ -132,6 +199,20 @@ zts --bundle entry.ts -o bundle.js --target=chrome80,safari14
 zts --bundle entry.ts -o bundle.js --target=node18
 zts --bundle entry.ts -o bundle.js --target=hermes0.70
 ```
+
+### `browserslist`
+
+`target` 대신 Browserslist 쿼리 문자열(또는 string 배열)로 다운레벨 매트릭스를 지정할 수 있습니다. 지정 시 `target` 보다 **우선**합니다. `platform: "react-native"` 에서는 Hermes 매트릭스가 강제되므로 `browserslist` 를 전달할 수 없습니다 (런타임에서도 무시).
+
+```ts
+defineConfig({
+  browserslist: "> 0.5%, last 2 versions, not dead",
+  // 또는
+  // browserslist: ["chrome >= 80", "safari >= 14"],
+});
+```
+
+CSS 후처리(Lightning CSS) 와도 매트릭스를 공유합니다.
 
 ## Runtime Polyfills (core-js)
 
@@ -190,6 +271,14 @@ Runtime target은 Rspack/SWC `env.targets`와 같은 Browserslist query입니다
 manual polyfills / inject roots -> runtime core-js prelude -> runBeforeMain -> user entry
 ```
 
+`runBeforeMain` 은 엔트리 모듈 직전에 실행할 모듈 경로 배열입니다. 번들 그래프에 포함되어 prelude 로 emit되며, manual polyfills / runtime polyfill 다음, user entry 직전에 실행됩니다. React Native 폴리플로우(`InitializeCore` 등) 처럼 entry 직전 환경 셋업 코드를 끼울 때 사용합니다. 단순 폴리필 주입은 `polyfills` (번들 시작 시 즉시 실행) 를 쓰세요.
+
+```ts
+defineConfig({
+  runBeforeMain: ["./src/setup-env.ts"],
+});
+```
+
 디버깅이 필요하면 runtime polyfill debug category와 graph profile을 함께 켭니다.
 
 ```bash
@@ -209,6 +298,25 @@ zts --bundle entry.ts --format=cjs    # CommonJS
 zts --bundle entry.ts --format=iife --global-name=MyLib  # IIFE
 zts --bundle entry.ts --format=umd --global-name=MyLib   # UMD
 zts --bundle entry.ts --format=amd                       # AMD
+```
+
+### IIFE/UMD external → 전역 매핑 (`globals`)
+
+Rollup `output.globals` 호환. IIFE/UMD 출력에서 `external` 로 빠진 specifier 를 런타임 전역 변수로 치환합니다.
+
+```bash
+zts --bundle entry.ts -o bundle.js --format=umd --global-name=MyLib \
+  --external react --external react-dom \
+  --global:react=React --global:react-dom=ReactDOM
+```
+
+```ts
+defineConfig({
+  format: "umd",
+  globalName: "MyLib",
+  external: ["react", "react-dom"],
+  globals: { react: "React", "react-dom": "ReactDOM" },
+});
 ```
 
 ## Watch 모드

@@ -188,6 +188,126 @@ dev 서버를 먼저 띄운 뒤 MCP 클라이언트(Claude Code 등) 시작.
 - **이벤트 버퍼**: `get_build_events`가 참조하는 ring buffer는 최근 256개. 그 이상은 덮어쓰임.
 - **SSE 동시 연결**: 64개. 초과 시 거부.
 
+## `server` config (zts.config)
+
+CLI `--port` / `--host` / `--open` 외에 config 파일에서도 같은 항목을 지정할 수 있다 (Vite `server` 호환). CLI flag 가 항상 우선.
+
+```ts
+// zts.config.ts
+import { defineConfig } from "@zts/core";
+
+export default defineConfig({
+  server: {
+    port: 12300,
+    host: "0.0.0.0",      // boolean true 도 0.0.0.0 의미 (Vite 동등)
+    strictPort: true,     // 점유 시 다음 포트 시도 안 하고 종료
+    open: true,           // 시작 후 브라우저 자동 열기
+  },
+});
+```
+
+| 필드 | 타입 | 기본 | 설명 |
+|---|---|---|---|
+| `port` | `number` | `12300` | listen 포트. CLI `--port` 가 override. |
+| `host` | `string \| boolean` | `"127.0.0.1"` | `true` = `0.0.0.0` (Vite 호환). CLI `--host` 가 override. |
+| `strictPort` | `boolean` | `false` | `true` 면 포트 점유 시 다음 포트로 fallback 하지 않고 종료. |
+| `open` | `boolean` | `false` | 시작 후 served URL 을 브라우저에서 자동 열기. CLI `--open` 가 override. |
+
+## Lazy sourcemap — `emitDiskSourcemap` + `WatchHandle`
+
+`@zts/core` 의 `watch()` 핸들로 dev server 를 직접 호스팅할 때 — `.map` 디스크 쓰기 비용을 HMR latency 밖으로 빼낸다.
+
+```ts
+import { watch } from "@zts/core";
+
+const handle = watch({
+  entryPoints: ["src/index.tsx"],
+  outfile: "dist/bundle.js",
+  bundle: true,
+  sourcemap: true,
+  emitDiskSourcemap: false,   // 디스크 .map 안 쓰고 메모리 보관
+  onRebuild(event) { /* ... */ },
+});
+
+// dev server 가 /bundle.js.map 요청 시 lazy 생성
+app.get("/bundle.js.map", (_req, res) => {
+  const json = handle.getBundleSourceMap();
+  if (!json) return res.sendStatus(404);
+  res.type("application/json").send(json);
+});
+
+// HMR 단위 모듈 sourcemap (Metro `_processSourceMapRequest` 패턴)
+app.get("/hmr-map/:moduleId", (req, res) => {
+  const json = handle.getHmrSourceMap(req.params.moduleId);
+  if (!json) return res.sendStatus(404);
+  res.type("application/json").send(json);
+});
+```
+
+- `emitDiskSourcemap: true` (기본): `output_filename + ".map"` 경로에 `.map` 자동 저장.
+- `emitDiskSourcemap: false`: 디스크 I/O 생략 — 위 lazy 엔드포인트 모델 사용 시.
+- `getBundleSourceMap()` / `getHmrSourceMap()` 는 sourcemap 비활성, 초기 빌드 전, `stop()` 이후엔 `null` 반환.
+- `getHmrSourceMap(moduleId)` 는 `moduleId` 가 마지막 rebuild 에 포함되지 않았으면 `null`.
+
+## `onReady` / `onRebuild` 이벤트
+
+`watch()` 콜백으로 받는 rich event payload — dev server 통합 시 phase breakdown 과 HMR delta 직접 소비.
+
+```ts
+watch({
+  // ...
+  onReady(event) {
+    // event: WatchReadyEvent
+    console.log(`ready: ${event.files} files / ${event.bytes} bytes`);
+  },
+  onRebuild(event) {
+    // event: WatchRebuildEvent
+    if (!event.success) {
+      console.error("rebuild failed:", event.error);
+      return;
+    }
+    for (const file of event.changed ?? []) console.log("changed:", file);
+    for (const update of event.updates ?? []) {
+      // update.id, update.code, update.map (per-module sourcemap V3 JSON)
+      hmrSocket.send({ id: update.id, code: update.code, map: update.map });
+    }
+    const p = event.phaseDurations;
+    if (p) console.log(`total=${p.total}ms graph=${p.graph}ms emit=${p.emit}ms`);
+  },
+});
+```
+
+`WatchRebuildEvent` 핵심 필드:
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `success` | `boolean` | rebuild 성공 여부. |
+| `error` | `string?` | 실패 시 fatal diagnostic message. |
+| `changed` | `string[]?` | 이번 rebuild 를 트리거한 파일 절대 경로. **`changedFiles` 아님 — `changed`.** |
+| `graphChanged` | `boolean?` | 모듈 그래프 토폴로지 변화 여부. |
+| `updates` | `Array<{ id, code, map? }>?` | HMR delta. `map` 은 모듈별 standalone sourcemap V3 JSON (sourcemap 활성 시). |
+| `bytes` | `number?` | 출력 바이트 수. |
+| `reparsedModules` | `number?` | 캐시 미스로 재파싱된 모듈 수 (전체 빌드에선 미노출). |
+| `phaseDurations` | object | 단계별 ms — 아래 표. |
+
+`phaseDurations` 의 기본 phase (항상 측정):
+
+| 필드 | 의미 |
+|---|---|
+| `detect` | 변경 감지 (mtime 스캔). |
+| `graph` | resolve + parse + semantic + finalize. |
+| `link` | scope hoisting + linker. |
+| `shake` | tree shaking. |
+| `emit` | transform + codegen + emit. |
+| `delta` | HMR delta 추출. |
+| `total` | `detect` ~ `delta` 합산. |
+
+Sub-phase (`profile: ["..."]` / `ZTS_PROFILE=...` / `BUNGAE_HMR_PROFILE=1` 활성 시에만 채워짐, 비활성 시 0):
+
+`scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` / `graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` / `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
+
+> 2026-04-22 이전 NAPI 의 `phaseDurations.parse` / `semantic` 은 사실 `graph` / `link+shake` 였던 레거시 이름이라 제거됐다. 새 이름 (`graph` / `link` / `shake`) 으로 마이그레이션 필수.
+
 ## 관련
 
 - [Server-Sent Events (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)

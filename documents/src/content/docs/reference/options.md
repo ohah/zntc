@@ -113,6 +113,8 @@ runtimePolyfills: {
 | `asciiOnly` | `boolean` | `false` | 비-ASCII 문자를 hex 이스케이프로 치환 |
 | `charsetUtf8` | `boolean` | `false` | 비-ASCII 문자 그대로 유지 |
 
+`asciiOnly` 와 `charsetUtf8` 은 같은 출력 charset 차원을 양쪽에서 토글하는 짝입니다. CLI 매핑은 비대칭 — `--charset=utf8` 은 `charsetUtf8=true` 로, `--ascii-only` 는 `asciiOnly=true` 로 매핑되며 `--charset=ascii` 는 받지 않습니다.
+
 ### Code Splitting / Chunks
 
 | 옵션 | 타입 | 기본값 | 설명 |
@@ -122,7 +124,18 @@ runtimePolyfills: {
 | `inlineDynamicImports` | `boolean` | `false` | dynamic import target 을 importer chunk 로 흡수 + `__esm` 래핑 (단일 파일 출력). CLI: `--inline-dynamic-imports` (#2185) |
 | `external` | `string[]` | `[]` | 번들에서 제외할 specifier 목록. graph 에는 phantom Module 로 등록 |
 | `preserveModules` | `boolean` | `false` | 번들 대신 원본 디렉토리 구조 유지 (Rollup 호환) |
-| `outputExports` | `auto`, `named`, `default`, `none` | `auto` | CJS/UMD entry export 형식 (Rollup `output.exports` 호환, #2159). `default` 모드 + named export 섞이면 빌드 실패 |
+| `outputExports` | `auto`, `named`, `default`, `none` | `auto` | CJS/UMD entry export 형식 (Rollup `output.exports` 호환). 자세한 시맨틱은 아래 표 |
+
+`outputExports` 4-value 시맨틱:
+
+| 값         | 동작                                                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------------------------------- |
+| `"auto"`   | default-only → `module.exports = X`. named-only → `exports.X = X` (no `__esModule`). mixed → `exports.X = X` + `__esModule` flag |
+| `"named"`  | 항상 named (`exports.X = X`). default 가 함께 있으면 `__esModule` flag 자동 추가 (rolldown `IfDefaultProp` 동작)    |
+| `"default"`| `module.exports = X` 단일. default-only 일 때만 정상 출력 — named 가 섞이면 warning + **빈 출력**                   |
+| `"none"`   | export 출력 안 함                                                                                                   |
+
+ESM 출력에서는 `outputExports` 가 무시됩니다.
 
 ### Minify
 
@@ -144,7 +157,7 @@ runtimePolyfills: {
 | 옵션 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
 | `sourcemap` | `boolean` | `false` | 소스맵 JSON 생성 |
-| `sourcemapMode` | `linked`, `inline`, `external`, `hidden` | `linked` | 소스맵 출력 형식 (#2152). `linked` = 외부 파일 + `sourceMappingURL` 주석 (esbuild/rolldown 기본값) |
+| `sourcemapMode` | `linked`, `external`, `inline` | `linked` | 소스맵 출력 형식. `linked` = 외부 파일 + `sourceMappingURL` 주석 (esbuild/rolldown 기본값) |
 | `sourcemapDebugIds` | `boolean` | `false` | Sentry 호환 Debug ID 삽입 |
 | `sourcesContent` | `boolean` | `true` | 소스맵에 원본 소스 포함 |
 | `sourceRoot` | `string` | `""` | 소스맵의 `sourceRoot` 필드 |
@@ -154,6 +167,13 @@ runtimePolyfills: {
 | 옵션 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
 | `define` | `Array<{key, value}>` | `[]` | 식별자 치환. `value`는 **raw JSON** — 문자열은 인용부호 포함 (예: `value: "\"1.0.0\""`) |
+
+### Diagnostics / Logging
+
+| 옵션 | 타입 | 기본값 | 설명 |
+|---|---|---|---|
+| `logLevel` | `"silent" \| "error" \| "warning" \| "info" \| "debug" \| "verbose"` | `"warning"` | NAPI build result 의 errors/warnings 배열에 적용되는 필터. `"silent"` 은 errors/warnings 둘 다 빈 배열로 만듦. `"error"` 는 warnings 만 비움. `"warning"` (default) 은 그대로. `"info"` / `"debug"` / `"verbose"` 도 현재 `"warning"` 과 동일 (info-level 진단 미emit). `build()` 는 logLevel 값과 무관하게 throw 하지 않음 — 실패도 `result.errors` 로만 확인 |
+| `logLimit` | `number` | `0` | errors/warnings 각 배열의 최대 항목 수. `0` 은 무제한. esbuild `logLimit` 동등 |
 
 ## TS API와의 관계
 

@@ -57,7 +57,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 
 | 옵션                        | 설명                                                             |
 | --------------------------- | ---------------------------------------------------------------- |
-| `-o, --outfile <path>`      | 출력 파일 경로                                                   |
+| `-o, --out-file <path>`     | 출력 파일 경로 (JS wrapper 는 `--outfile` alias 도 받음)         |
 | `--outdir <path>`           | 출력 디렉토리 (디렉토리 입력·`--splitting`·`--preserve-modules`) |
 | `--outbase=<dir>`           | 출력 기준 디렉토리 (공통 prefix 계산)                            |
 | `--out-extension:.js=<ext>` | 출력 확장자 변경 (예: `.mjs`)                                    |
@@ -85,8 +85,9 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--minify-syntax`                   | `true`→`!0`, 괄호 제거, constant folding                |
 | `--minify-identifiers`              | 지역 변수명 단축                                        |
 | `--keep-names`                      | 함수/클래스 `.name` 보존                                |
-| `--charset=utf8\|ascii`             | 출력 문자셋                                             |
-| `--ascii-only`                      | non-ASCII → `\uXXXX` (= `--charset=ascii`)              |
+| `--charset=utf8`                    | non-ASCII 문자를 그대로 유지 (parser 는 `utf8` 만 받음) |
+| `--ascii-only`                      | non-ASCII → `\uXXXX` (반대 방향 — `--charset=ascii` 는 미지원)             |
+| `--mangle-report=<path>`            | minify-identifiers 적용 시 원본↔축약 매핑 JSON 출력     |
 | `--quotes=double\|single\|preserve` | 문자열 따옴표 스타일                                    |
 | `--line-limit=<n>`                  | 안전한 토큰 경계에서 긴 출력 라인 줄바꿈 (`0`은 무제한) |
 
@@ -98,7 +99,6 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--sourcemap=linked`      | linked 명시 (#2152) — 동일                                   |
 | `--sourcemap=inline`      | data URL 인라인                                              |
 | `--sourcemap=external`    | sourceMappingURL 주석 없이 외부만                            |
-| `--sourcemap=hidden`      | 외부 파일 생성만 (주석 생략)                                 |
 | `--sourcemap-debug-ids`   | Sentry debugId 삽입                                          |
 | `--sources-content=false` | `sourcesContent` 필드 생략                                   |
 | `--source-root=<path>`    | sourceRoot 필드                                              |
@@ -133,7 +133,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | ---------------------------------------------- | -------------------------------------------------------- |
 | `-p, --project <path>, --tsconfig-path <path>` | tsconfig.json 경로/디렉토리                              |
 | `--experimental-decorators`                    | legacy decorator (`__decorateClass`)                     |
-| `--emit-decorator-metadata`                    | decorator metadata emit (`experimentalDecorators` 필요)  |
+| `--emit-decorator-metadata`                    | decorator metadata emit (`experimentalDecorators` 필요, JS wrapper 전용) |
 | `--use-define-for-class-fields=false\|true`    | 클래스 필드 의미론                                       |
 | `--verbatim-module-syntax`                     | TS `verbatimModuleSyntax` import/export 보존             |
 | `--tsconfig-raw=<json>`                        | inline tsconfig JSON 문자열 (esbuild `tsconfigRaw` 호환) |
@@ -160,14 +160,17 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--asset-names=<pattern>`                | 에셋 파일명 패턴                                                                                |
 | `--loader:.ext=type`                     | 확장자별 로더 (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
 | `--metafile` / `--metafile=<path>`       | 빌드 메타 JSON (stdout 또는 파일)                                                               |
-| `--analyze`                              | 번들 분석 리포트                                                                                |
-| `--legal-comments=<mode>`                | 라이선스 주석: `none\|inline\|eof\|linked\|external`                                            |
+| `--analyze`                              | 번들 분석 리포트 (stderr 출력). 디스크에 JSON 으로 저장하려면 `--metafile=<path>` 명시.         |
+| `--legal-comments=<mode>`                | 라이선스 주석: `none\|inline\|eof\|linked\|external` (`linked`/`external` 은 현재 `eof` fallback) |
 | `--packages=external`                    | bare package import를 모두 external 처리                                                        |
-| `--banner=<text>` / `--banner:js=<text>` | 출력 앞 텍스트                                                                                  |
-| `--footer=<text>` / `--footer:js=<text>` | 출력 뒤 텍스트                                                                                  |
-| `--intro=<text>`                         | format wrapper 내부 bundle 앞 텍스트                                                            |
-| `--outro=<text>`                         | format wrapper 내부 bundle 뒤 텍스트                                                            |
+| `--banner:js=<text>`                     | 출력 앞 텍스트 (bare `--banner=` 은 JS wrapper 만 지원)                                         |
+| `--footer:js=<text>`                     | 출력 뒤 텍스트 (bare `--footer=` 은 JS wrapper 만 지원)                                         |
+| `--intro=<text>`                         | format wrapper 내부 bundle 앞 텍스트 (JS wrapper 전용 — native parser 미지원)                   |
+| `--outro=<text>`                         | format wrapper 내부 bundle 뒤 텍스트 (JS wrapper 전용 — native parser 미지원)                   |
 | `--global:FROM=TO`                       | IIFE/UMD external specifier를 global 변수명에 매핑                                              |
+| `--global-identifier=<name>`             | scope hoisting 시 예약할 전역 식별자 (반복 가능)                                                |
+| `--polyfill=<path>`                      | 번들 시작 시 즉시 실행 폴리필 경로 (반복 가능, 절대 경로 자동 변환)                             |
+| `--run-before-main=<path>`               | 엔트리 모듈 직전에 실행할 모듈 경로 (반복 가능, 절대 경로 자동 변환)                            |
 | `--public-path=<url>`                    | 에셋 URL prefix                                                                                 |
 | `--shim-missing-exports`                 | 없는 export에 `undefined` shim                                                                  |
 
@@ -190,6 +193,10 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `-w, --watch`                   | 파일 변경 감시 (증분 리빌드)                                  |
 | `--watch-json`                  | NDJSON 이벤트 출력 (외부 HMR 연동)                            |
 | `--watch-delay=<ms>`            | 디바운스 지연                                                 |
+| `--watch-folder=<dir>`          | 감시 루트에 디렉토리 추가 (Metro `watchFolders` 호환, 절대경로 변환, 반복 가능) |
+| `--watch-include=<glob>`        | watchFolders 스캔 시 포함할 glob (반복 가능)                  |
+| `--watch-exclude=<glob>`        | watchFolders 스캔 시 제외할 glob (반복 가능)                  |
+| `--dev`                         | dev 모드 활성화 (HMR 런타임 주입 등 dev 관련 동작 켜기)       |
 | `--serve [dir]`                 | 정적 파일 서버 (기본: `.`)                                    |
 | `--port <n>`                    | 서버 포트                                                     |
 | `--host [addr]`                 | 바인딩 주소                                                   |
@@ -222,15 +229,30 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--profile-format=<format>`  | profile 출력: `table\|tree\|json\|csv`                                   |
 | `--tokenize[=false]`         | 코드 생성 대신 scanner token 출력                                        |
 | `--tokenize-format=<format>` | token 출력 형식: `text\|json`                                            |
-| `--stop-after=<phase>`       | 지정 phase 이후 중단하는 디버그 옵션                                     |
+| `--stop-after=<phase>`       | 지정 phase 이후 중단하는 디버그 옵션 (`scan\|parse\|semantic\|transform\|codegen`) |
 | `--test262 <dir>`            | Zig Test262 runner 실행                                                  |
 | `--allow-overwrite`          | 입력 파일과 같은 출력 경로를 명시적으로 허용합니다. 기본값은 차단입니다. |
 | `-h, --help`                 | 도움말                                                                   |
 
-## 현재 CLI에 노출되지 않은 내부/계획 옵션
+## Benchmark (`zts bench`)
 
-다음 기능은 코드 내부 옵션 또는 roadmap 항목이지만 현재 `zts` CLI flag registry에는 없습니다:
-`globalIdentifiers`, `polyfills`, `runBeforeMain`.
+지정한 phase 를 N 회 반복 실행하며 mean/median/p95/p99/stddev/min/max 를 출력하는 서브커맨드. baseline save/compare 로 최적화 전후 비교에 사용.
+
+| 옵션                      | 설명                                                                              |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `--phase=<list>`          | 측정할 profile category CSV (필수, 예: `parse,transform`). `all`/`none` 금지       |
+| `--iterations=<n>`        | 반복 횟수 (기본: 100, ≥ 1)                                                        |
+| `--warmup=<n>`            | 본 측정 전 warmup 회수 (기본: 10)                                                 |
+| `--save=<path>`           | 결과를 baseline JSON 으로 저장                                                    |
+| `--compare=<path>`        | 기존 baseline JSON 과 비교 출력                                                   |
+| `--format=<fmt>`          | 출력 포맷 — `table\|tree\|json\|csv` (기본: `table`)                              |
+| `--profile-level=<level>` | profile 상세 수준 (`summary\|detailed\|per-module\|per-pass`)                     |
+
+```bash
+zts bench --phase=parse,transform --iterations=200 --warmup=20 src/large.ts
+zts bench --phase=parse --save=baseline.json src/main.ts
+zts bench --phase=parse --compare=baseline.json src/main.ts
+```
 
 ## 참고
 
