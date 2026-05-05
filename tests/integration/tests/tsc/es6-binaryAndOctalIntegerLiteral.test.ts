@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/binaryAndOctalIntegerLiteral", () => {
-  test("binaryIntegerLiteral", async () => {
+describe('TSC: es6/binaryAndOctalIntegerLiteral', () => {
+  test('binaryIntegerLiteral', async () => {
     await expectPass(
       `// @target: es5, es2015
 var bin1 = 0b11010;
@@ -50,7 +50,7 @@ obj2["Infinity"];   // any
       [],
     );
   });
-  test("binaryIntegerLiteralError", async () => {
+  test('binaryIntegerLiteralError', async () => {
     await expectError(
       `// @target: es2015
 // error
@@ -66,7 +66,7 @@ var obj1 = {
       [],
     );
   });
-  test("binaryIntegerLiteralES6", async () => {
+  test('binaryIntegerLiteralES6', async () => {
     await expectPass(
       `// @target: es6
 var bin1 = 0b11010;
@@ -115,7 +115,7 @@ obj2["Infinity"];   // any
       [],
     );
   });
-  test("invalidBinaryIntegerLiteralAndOctalIntegerLiteral", async () => {
+  test('invalidBinaryIntegerLiteralAndOctalIntegerLiteral', async () => {
     await expectError(
       `// @target: es2015
 // Error
@@ -126,7 +126,7 @@ var octal = 0O91010;`,
       [],
     );
   });
-  test("octalIntegerLiteral", async () => {
+  test('octalIntegerLiteral', async () => {
     await expectPass(
       `// @target: es5, es2015
 var oct1 = 0o45436;
@@ -172,7 +172,7 @@ obj2["Infinity"];  // any`,
       [],
     );
   });
-  test("octalIntegerLiteralError", async () => {
+  test('octalIntegerLiteralError', async () => {
     await expectError(
       `// @target: es2015
 // error
@@ -188,7 +188,7 @@ var obj1 = {
       [],
     );
   });
-  test("octalIntegerLiteralES6", async () => {
+  test('octalIntegerLiteralES6', async () => {
     await expectPass(
       `// @target: es6
 var oct1 = 0o45436;

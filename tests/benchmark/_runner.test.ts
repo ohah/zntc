@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { parseProfileJson } from "./_runner";
+import { describe, expect, test } from 'bun:test';
+import { parseProfileJson } from './_runner';
 
-describe("benchmark profile JSON parser", () => {
-  test("extracts the profile block when other braces are present", () => {
+describe('benchmark profile JSON parser', () => {
+  test('extracts the profile block when other braces are present', () => {
     const parsed = parseProfileJson(`
       warning: object-like text { not: "json" }
       {
@@ -21,7 +21,7 @@ describe("benchmark profile JSON parser", () => {
     expect(parsed.phases.shake?.total_ms).toBe(1);
   });
 
-  test("handles braces inside JSON strings", () => {
+  test('handles braces inside JSON strings', () => {
     const parsed = parseProfileJson(`
       {
         "profile_version": 1,
@@ -31,6 +31,6 @@ describe("benchmark profile JSON parser", () => {
       }
     `);
 
-    expect(parsed.level).toBe("summary {still string}");
+    expect(parsed.level).toBe('summary {still string}');
   });
 });

@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es6/spread", () => {
-  test("arrayLiteralSpread", async () => {
+describe('TSC: es6/spread', () => {
+  test('arrayLiteralSpread', async () => {
     await expectPass(
       `function f0() {
     var a = [1, 2, 3];
@@ -30,7 +30,7 @@ function f2() {
       [],
     );
   });
-  test("arrayLiteralSpreadES5iterable", async () => {
+  test('arrayLiteralSpreadES5iterable', async () => {
     await expectPass(
       `function f0() {
     var a = [1, 2, 3];
@@ -58,7 +58,7 @@ function f2() {
       [],
     );
   });
-  test("arraySpreadImportHelpers", async () => {
+  test('arraySpreadImportHelpers', async () => {
     await expectPass(
       `
 export {};
@@ -73,7 +73,7 @@ declare module "tslib" {
       [],
     );
   });
-  test("arraySpreadInCall", async () => {
+  test('arraySpreadInCall', async () => {
     await expectPass(
       `
 declare function f1(a: number, b: number, c: number, d: number, e: number, f: number): void;
@@ -111,7 +111,7 @@ action.run(...[100, 'foo']) // error`,
       [],
     );
   });
-  test("iteratorSpreadInArray", async () => {
+  test('iteratorSpreadInArray', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -131,7 +131,7 @@ var array = [...new SymbolIterator];
       [],
     );
   });
-  test("iteratorSpreadInArray10", async () => {
+  test('iteratorSpreadInArray10', async () => {
     await expectPass(
       `class SymbolIterator {
     [Symbol.iterator]() {
@@ -143,14 +143,14 @@ var array = [...new SymbolIterator];`,
       [],
     );
   });
-  test("iteratorSpreadInArray11", async () => {
+  test('iteratorSpreadInArray11', async () => {
     await expectPass(
       `var iter: Iterable<number>;
 var array = [...iter];`,
       [],
     );
   });
-  test("iteratorSpreadInArray2", async () => {
+  test('iteratorSpreadInArray2', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -183,7 +183,7 @@ var array = [...new NumberIterator, ...new SymbolIterator];
       [],
     );
   });
-  test("iteratorSpreadInArray3", async () => {
+  test('iteratorSpreadInArray3', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -202,7 +202,7 @@ var array = [...[0, 1], ...new SymbolIterator];`,
       [],
     );
   });
-  test("iteratorSpreadInArray4", async () => {
+  test('iteratorSpreadInArray4', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -221,7 +221,7 @@ var array = [0, 1, ...new SymbolIterator];`,
       [],
     );
   });
-  test("iteratorSpreadInArray5", async () => {
+  test('iteratorSpreadInArray5', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -240,7 +240,7 @@ var array: number[] = [0, 1, ...new SymbolIterator];`,
       [],
     );
   });
-  test("iteratorSpreadInArray6", async () => {
+  test('iteratorSpreadInArray6', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -260,7 +260,7 @@ array.concat([...new SymbolIterator]);`,
       [],
     );
   });
-  test("iteratorSpreadInArray7", async () => {
+  test('iteratorSpreadInArray7', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -280,7 +280,7 @@ array.concat([...new SymbolIterator]);`,
       [],
     );
   });
-  test("iteratorSpreadInArray8", async () => {
+  test('iteratorSpreadInArray8', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -295,7 +295,7 @@ var array = [...new SymbolIterator];`,
       [],
     );
   });
-  test("iteratorSpreadInArray9", async () => {
+  test('iteratorSpreadInArray9', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -313,7 +313,7 @@ var array = [...new SymbolIterator];`,
       [],
     );
   });
-  test("iteratorSpreadInCall", async () => {
+  test('iteratorSpreadInCall', async () => {
     await expectPass(
       `function foo(s: symbol) { }
 class SymbolIterator {
@@ -333,7 +333,7 @@ foo(...new SymbolIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall10", async () => {
+  test('iteratorSpreadInCall10', async () => {
     await expectPass(
       `function foo<T>(s: T[]) { return s[0] }
 class SymbolIterator {
@@ -353,7 +353,7 @@ foo(...new SymbolIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall11", async () => {
+  test('iteratorSpreadInCall11', async () => {
     await expectPass(
       `function foo<T>(...s: T[]) { return s[0] }
 class SymbolIterator {
@@ -373,7 +373,7 @@ foo(...new SymbolIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall12", async () => {
+  test('iteratorSpreadInCall12', async () => {
     await expectPass(
       `class Foo<T> {
     constructor(...s: T[]) { }
@@ -409,7 +409,7 @@ new Foo(...[...new SymbolIterator, ...[...new _StringIterator]]);`,
       [],
     );
   });
-  test("iteratorSpreadInCall2", async () => {
+  test('iteratorSpreadInCall2', async () => {
     await expectPass(
       `function foo(s: symbol[]) { }
 class SymbolIterator {
@@ -429,7 +429,7 @@ foo(...new SymbolIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall3", async () => {
+  test('iteratorSpreadInCall3', async () => {
     await expectPass(
       `function foo(...s: symbol[]) { }
 class SymbolIterator {
@@ -449,7 +449,7 @@ foo(...new SymbolIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall4", async () => {
+  test('iteratorSpreadInCall4', async () => {
     await expectPass(
       `function foo(s1: symbol, ...s: symbol[]) { }
 class SymbolIterator {
@@ -469,7 +469,7 @@ foo(...new SymbolIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall5", async () => {
+  test('iteratorSpreadInCall5', async () => {
     await expectPass(
       `function foo(...s: (symbol | string)[]) { }
 class SymbolIterator {
@@ -502,7 +502,7 @@ foo(...new SymbolIterator, ...new _StringIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall6", async () => {
+  test('iteratorSpreadInCall6', async () => {
     await expectPass(
       `function foo(...s: (symbol | number)[]) { }
 class SymbolIterator {
@@ -535,7 +535,7 @@ foo(...new SymbolIterator, ...new _StringIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall7", async () => {
+  test('iteratorSpreadInCall7', async () => {
     await expectPass(
       `function foo<T>(...s: T[]) { return s[0]; }
 class SymbolIterator {
@@ -568,7 +568,7 @@ foo(...new SymbolIterator, ...new _StringIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall8", async () => {
+  test('iteratorSpreadInCall8', async () => {
     await expectPass(
       `class Foo<T> {
     constructor(...s: T[]) { }
@@ -604,7 +604,7 @@ new Foo(...new SymbolIterator, ...new _StringIterator);`,
       [],
     );
   });
-  test("iteratorSpreadInCall9", async () => {
+  test('iteratorSpreadInCall9', async () => {
     await expectPass(
       `class Foo<T> {
     constructor(...s: T[]) { }

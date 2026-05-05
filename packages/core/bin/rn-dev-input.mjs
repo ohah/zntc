@@ -2,7 +2,7 @@
 // 별도 module 로 분리해 단위 테스트가 zts.mjs 의 entry main() 트리거 없이
 // helper 만 import 가능.
 
-import { resolve } from "node:path";
+import { resolve } from 'node:path';
 
 /**
  * config 의 미지원 필드는 stderr 에 한 번 경고 — silent drop 방지. zts 의
@@ -11,20 +11,20 @@ import { resolve } from "node:path";
  */
 const UNSUPPORTED_FIELDS = [
   // graph-bundler (Metro 호환) 전용 — zts NAPI build 는 미수용.
-  ["transformer", "inlineRequires"],
-  ["transformer", "minifier"],
-  ["serializer", "bundleType"],
-  ["serializer", "getModulesRunBeforeMainModule"],
-  ["serializer", "getPolyfills"],
-  ["serializer", "shouldAddToIgnoreList"],
-  ["serializer", "inlineSourceMap"],
+  ['transformer', 'inlineRequires'],
+  ['transformer', 'minifier'],
+  ['serializer', 'bundleType'],
+  ['serializer', 'getModulesRunBeforeMainModule'],
+  ['serializer', 'getPolyfills'],
+  ['serializer', 'shouldAddToIgnoreList'],
+  ['serializer', 'inlineSourceMap'],
   // dummy placeholder — bungae 도 declared-but-unused.
-  ["server", "forwardClientLogs"],
-  ["server", "verifyConnections"],
-  ["server", "https"],
-  ["server", "key"],
-  ["server", "cert"],
-  ["server", "unstable_serverRoot"],
+  ['server', 'forwardClientLogs'],
+  ['server', 'verifyConnections'],
+  ['server', 'https'],
+  ['server', 'key'],
+  ['server', 'cert'],
+  ['server', 'unstable_serverRoot'],
 ];
 
 function warnUnsupported(config) {
@@ -50,10 +50,10 @@ function warnUnsupported(config) {
  */
 export function buildRnDevServerInput(opts, config) {
   const cfg = config ?? {};
-  const projectRoot = resolve(opts.rnProjectRoot ?? cfg.root ?? ".");
+  const projectRoot = resolve(opts.rnProjectRoot ?? cfg.root ?? '.');
   const entry = opts.entryPoints?.[0] ?? cfg.entry;
   if (!entry) return null;
-  const rnPlatform = opts.rnPlatform === "android" ? "android" : "ios";
+  const rnPlatform = opts.rnPlatform === 'android' ? 'android' : 'ios';
   const server = cfg.server ?? {};
   const resolver = cfg.resolver ?? {};
   const transformer = cfg.transformer ?? {};
@@ -96,7 +96,7 @@ export function buildRnDevServerInput(opts, config) {
       },
     },
     port: opts.port ?? server.port ?? 8081,
-    host: opts.host ?? server.host ?? "localhost",
+    host: opts.host ?? server.host ?? 'localhost',
     nodeModulesPaths: resolver.nodeModulesPaths ?? [],
     enhanceMiddleware: server.enhanceMiddleware,
     rewriteRequestUrl: server.rewriteRequestUrl,

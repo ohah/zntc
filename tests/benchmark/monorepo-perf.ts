@@ -6,10 +6,10 @@
  * 선형으로 증가하는지 확인하기 위한 측정 스크립트다.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   ROOT,
   ZTS_BIN,
@@ -17,9 +17,9 @@ import {
   findNodeModulesBin,
   getCommit,
   parsePositiveInt,
-} from "./_runner";
-import { makeSyntheticMonorepo, parseProfileOutput, type ProfileRun } from "./monorepo-fixture";
-import { computeMetricStats, formatMetric, type JsonStats, toJsonStats } from "./stats";
+} from './_runner';
+import { makeSyntheticMonorepo, parseProfileOutput, type ProfileRun } from './monorepo-fixture';
+import { computeMetricStats, formatMetric, type JsonStats, toJsonStats } from './stats';
 
 const WARMUP = 2;
 const ITERATIONS = 5;
@@ -84,15 +84,15 @@ function parseArgs(argv: string[]): CliArgs {
     };
 
     let v: string | undefined;
-    if ((v = take("--packages")) !== undefined) args.packages = parsePositiveInt("--packages", v);
-    else if ((v = take("--modules-per-package")) !== undefined)
-      args.modulesPerPackage = parsePositiveInt("--modules-per-package", v);
-    else if ((v = take("--warmup")) !== undefined) args.warmup = parseNonNegativeInt("--warmup", v);
-    else if ((v = take("--iterations")) !== undefined)
-      args.iterations = parsePositiveInt("--iterations", v);
-    else if ((v = take("--output")) !== undefined) args.output = v;
-    else if ((v = take("--keep-fixture")) !== undefined) args.keepFixture = v;
-    else if (a === "--compare") args.compare = true;
+    if ((v = take('--packages')) !== undefined) args.packages = parsePositiveInt('--packages', v);
+    else if ((v = take('--modules-per-package')) !== undefined)
+      args.modulesPerPackage = parsePositiveInt('--modules-per-package', v);
+    else if ((v = take('--warmup')) !== undefined) args.warmup = parseNonNegativeInt('--warmup', v);
+    else if ((v = take('--iterations')) !== undefined)
+      args.iterations = parsePositiveInt('--iterations', v);
+    else if ((v = take('--output')) !== undefined) args.output = v;
+    else if ((v = take('--keep-fixture')) !== undefined) args.keepFixture = v;
+    else if (a === '--compare') args.compare = true;
     else throw new Error(`unknown arg: ${a}`);
   }
 
@@ -106,16 +106,16 @@ function parseNonNegativeInt(name: string, raw: string | undefined): number {
 }
 
 function buildBin() {
-  buildBinShared("monorepo-perf");
+  buildBinShared('monorepo-perf');
 }
 
 function runZts(entry: string, outDir: string, profile: boolean): ZtsRun {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
-  const args = ["--bundle", "--format=esm", "--splitting", entry, "--outdir", outDir];
-  if (profile) args.push("--profile=all");
+  const args = ['--bundle', '--format=esm', '--splitting', entry, '--outdir', outDir];
+  if (profile) args.push('--profile=all');
   const start = performance.now();
-  const r = spawnSync(ZTS_BIN, args, { stdio: "pipe", timeout: 120000 });
+  const r = spawnSync(ZTS_BIN, args, { stdio: 'pipe', timeout: 120000 });
   const wallMs = performance.now() - start;
   if (r.status !== 0) {
     throw new Error(`zts failed: ${r.stderr.toString().slice(0, 800)}`);
@@ -126,26 +126,26 @@ function runZts(entry: string, outDir: string, profile: boolean): ZtsRun {
   return { ...parsed, wallMs };
 }
 
-function runTool(tool: "zts" | "esbuild" | "rolldown", entry: string, outDir: string): WallRun {
+function runTool(tool: 'zts' | 'esbuild' | 'rolldown', entry: string, outDir: string): WallRun {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
 
-  const bin = tool === "zts" ? ZTS_BIN : findNodeModulesBin(tool);
+  const bin = tool === 'zts' ? ZTS_BIN : findNodeModulesBin(tool);
   if (!bin) throw new Error(`${tool} binary not found`);
 
   const args: string[] = (() => {
     switch (tool) {
-      case "zts":
-        return ["--bundle", "--format=esm", "--splitting", entry, "--outdir", outDir];
-      case "esbuild":
-        return [entry, "--bundle", "--format=esm", "--splitting", `--outdir=${outDir}`];
-      case "rolldown":
-        return [entry, "--dir", outDir];
+      case 'zts':
+        return ['--bundle', '--format=esm', '--splitting', entry, '--outdir', outDir];
+      case 'esbuild':
+        return [entry, '--bundle', '--format=esm', '--splitting', `--outdir=${outDir}`];
+      case 'rolldown':
+        return [entry, '--dir', outDir];
     }
   })();
 
   const start = performance.now();
-  const r = spawnSync(bin, args, { stdio: "pipe", timeout: 120000 });
+  const r = spawnSync(bin, args, { stdio: 'pipe', timeout: 120000 });
   if (r.status !== 0) {
     throw new Error(`${tool} failed: ${r.stderr.toString().slice(0, 500)}`);
   }
@@ -167,19 +167,19 @@ function topPhases(
 }
 
 function printMarkdown(report: RunReport) {
-  console.log("\n### monorepo-perf — synthetic workspace");
+  console.log('\n### monorepo-perf — synthetic workspace');
   console.log(
-    "| Packages | Modules/pkg | Total modules | Wall median | Wall trimmed mean | Wall p95 | Profile total median |",
+    '| Packages | Modules/pkg | Total modules | Wall median | Wall trimmed mean | Wall p95 | Profile total median |',
   );
   console.log(
-    "|----------|-------------|---------------|-------------|-------------------|----------|----------------------|",
+    '|----------|-------------|---------------|-------------|-------------------|----------|----------------------|',
   );
   console.log(
     `| ${report.fixture.packages} | ${report.fixture.modules_per_package} | ${report.fixture.module_count} | ${formatMetric(report.wall_ms_stats.median)} | ${formatMetric(report.wall_ms_stats.trimmed_mean)} | ${formatMetric(report.wall_ms_stats.p95)} | ${formatMetric(report.profile_total_ms_stats.median)} |`,
   );
 
-  console.log("\n| Top phase | Median | % of total |");
-  console.log("|-----------|--------|------------|");
+  console.log('\n| Top phase | Median | % of total |');
+  console.log('|-----------|--------|------------|');
   for (const p of report.top_phases) {
     console.log(
       `| ${p.phase} | ${formatMetric(p.median_ms)} | ${p.percent_of_total.toFixed(1)}% |`,
@@ -187,8 +187,8 @@ function printMarkdown(report: RunReport) {
   }
 
   if (report.tool_comparison) {
-    console.log("\n| Tool | Median | Trimmed mean | p95 | vs ZTS |");
-    console.log("|------|--------|--------------|-----|--------|");
+    console.log('\n| Tool | Median | Trimmed mean | p95 | vs ZTS |');
+    console.log('|------|--------|--------------|-----|--------|');
     for (const tool of report.tool_comparison) {
       if (!tool.wall_ms_stats) {
         console.log(`| ${tool.tool} | FAIL | - | - | - |`);
@@ -202,7 +202,7 @@ function printMarkdown(report: RunReport) {
 }
 
 function measureComparisonTool(
-  tool: "zts" | "esbuild" | "rolldown",
+  tool: 'zts' | 'esbuild' | 'rolldown',
   entry: string,
   outDir: string,
   warmup: number,
@@ -231,7 +231,7 @@ function measureComparisonTool(
 
 async function main(cli: CliArgs) {
   buildBin();
-  const tmp = cli.keepFixture ?? mkdtempSync(join(tmpdir(), "zts-monorepo-perf-"));
+  const tmp = cli.keepFixture ?? mkdtempSync(join(tmpdir(), 'zts-monorepo-perf-'));
   if (cli.keepFixture) mkdirSync(tmp, { recursive: true });
 
   try {
@@ -239,7 +239,7 @@ async function main(cli: CliArgs) {
       packageCount: cli.packages,
       modulesPerPackage: cli.modulesPerPackage,
     });
-    const outDir = join(tmp, "dist");
+    const outDir = join(tmp, 'dist');
 
     console.log(
       `[monorepo-perf] zts ${getCommit()} | packages=${cli.packages} modules/pkg=${cli.modulesPerPackage} total_modules=${fixture.moduleCount} warmup=${cli.warmup} iter=${cli.iterations}`,
@@ -261,7 +261,7 @@ async function main(cli: CliArgs) {
     // profile mode 는 instrumentation 오버헤드가 있어 wall 측정과 분리해 별도로 N회 돌린다.
     // wall stats 는 위의 비-profile 측정으로 고정, phase 통계는 여기서만 산출.
     for (let i = 0; i < cli.iterations; i++) {
-      const profileRun = runZts(fixture.entry, join(tmp, "dist-profile"), true);
+      const profileRun = runZts(fixture.entry, join(tmp, 'dist-profile'), true);
       profileTotals.push(profileRun.totalMs);
       for (const [phase, ms] of Object.entries(profileRun.phases)) {
         (phaseSeries[phase] ??= []).push(ms);
@@ -291,25 +291,25 @@ async function main(cli: CliArgs) {
     if (cli.compare) {
       report.tool_comparison = [
         measureComparisonTool(
-          "zts",
+          'zts',
           fixture.entry,
-          join(tmp, "dist-zts-compare"),
+          join(tmp, 'dist-zts-compare'),
           cli.warmup,
           cli.iterations,
           wallStats.median,
         ),
         measureComparisonTool(
-          "esbuild",
+          'esbuild',
           fixture.entry,
-          join(tmp, "dist-esbuild"),
+          join(tmp, 'dist-esbuild'),
           cli.warmup,
           cli.iterations,
           wallStats.median,
         ),
         measureComparisonTool(
-          "rolldown",
+          'rolldown',
           fixture.entry,
-          join(tmp, "dist-rolldown"),
+          join(tmp, 'dist-rolldown'),
           cli.warmup,
           cli.iterations,
           wallStats.median,
@@ -320,7 +320,7 @@ async function main(cli: CliArgs) {
     printMarkdown(report);
 
     if (cli.output) {
-      writeFileSync(cli.output, JSON.stringify(report, null, 2) + "\n");
+      writeFileSync(cli.output, JSON.stringify(report, null, 2) + '\n');
       console.log(`\n[monorepo-perf] report written: ${cli.output}`);
     }
     if (cli.keepFixture) {

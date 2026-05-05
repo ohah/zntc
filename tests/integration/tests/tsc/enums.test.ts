@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: enums", () => {
-  test("awaitAndYield", async () => {
+describe('TSC: enums', () => {
+  test('awaitAndYield', async () => {
     await expectError(
       `async function* test(x: Promise<number>) {
     enum E {
@@ -13,7 +13,7 @@ describe("TSC: enums", () => {
       [],
     );
   });
-  test("enumBasics", async () => {
+  test('enumBasics', async () => {
     await expectPass(
       `// Enum without initializers have first member = 0 and successive members = N + 1
 enum E1 {
@@ -98,7 +98,7 @@ var doPropagate = [
       [],
     );
   });
-  test("enumClassification", async () => {
+  test('enumClassification', async () => {
     await expectPass(
       `
 // An enum type where each member has no initializer or an initializer that specififes
@@ -183,7 +183,7 @@ enum E20 {
       [],
     );
   });
-  test("enumConstantMembers", async () => {
+  test('enumConstantMembers', async () => {
     await expectPass(
       `// Constant members allow negatives, but not decimals. Also hex literals are allowed
 enum E1 {
@@ -228,7 +228,7 @@ const enum E6 {
       [],
     );
   });
-  test("enumConstantMemberWithString", async () => {
+  test('enumConstantMemberWithString', async () => {
     await expectPass(
       `enum T1 {
     a = "1",
@@ -265,7 +265,7 @@ declare enum T6 {
       [],
     );
   });
-  test("enumConstantMemberWithStringEmitDeclaration", async () => {
+  test('enumConstantMemberWithStringEmitDeclaration', async () => {
     await expectPass(
       `enum T1 {
     a = "1",
@@ -299,7 +299,7 @@ declare enum T6 {
       [],
     );
   });
-  test("enumConstantMemberWithTemplateLiterals", async () => {
+  test('enumConstantMemberWithTemplateLiterals', async () => {
     await expectPass(
       `enum T1 {
     a = \`1\`
@@ -348,7 +348,7 @@ declare enum T7 {
       [],
     );
   });
-  test("enumConstantMemberWithTemplateLiteralsEmitDeclaration", async () => {
+  test('enumConstantMemberWithTemplateLiteralsEmitDeclaration', async () => {
     await expectPass(
       `enum T1 {
     a = \`1\`
@@ -393,7 +393,7 @@ declare enum T7 {
       [],
     );
   });
-  test("enumErrorOnConstantBindingWithInitializer", async () => {
+  test('enumErrorOnConstantBindingWithInitializer', async () => {
     await expectPass(
       `
 type Thing = {
@@ -409,7 +409,7 @@ enum E {
       [],
     );
   });
-  test("enumErrors", async () => {
+  test('enumErrors', async () => {
     await expectError(
       `// Enum named with PredefinedTypes
 enum any { }
@@ -468,7 +468,7 @@ enum E14 { a, b: any "hello" += 1, c, d}
       [],
     );
   });
-  test("enumExportMergingES6", async () => {
+  test('enumExportMergingES6', async () => {
     await expectPass(
       `export enum Animals {
 	Cat = 1
@@ -483,7 +483,7 @@ export enum Animals {
       [],
     );
   });
-  test("enumMerging", async () => {
+  test('enumMerging', async () => {
     await expectPass(
       `// Enum with only constant members across 2 declarations with the same root module
 // Enum with initializer in all declarations with constant members with the same root module
@@ -554,7 +554,7 @@ namespace M6 {
       [],
     );
   });
-  test("enumMergingErrors", async () => {
+  test('enumMergingErrors', async () => {
     await expectPass(
       `// Enum with constant, computed, constant members split across 3 declarations with the same root module
 namespace M {
@@ -601,7 +601,7 @@ namespace M2 {
       [],
     );
   });
-  test("enumShadowedInfinityNaN", async () => {
+  test('enumShadowedInfinityNaN', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/54981
 

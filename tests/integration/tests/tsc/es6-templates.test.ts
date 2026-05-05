@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/templates", () => {
-  test("taggedTemplateStringsPlainCharactersThatArePartsOfEscapes01_ES6", async () => {
+describe('TSC: es6/templates', () => {
+  test('taggedTemplateStringsPlainCharactersThatArePartsOfEscapes01_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -14,7 +14,7 @@ f \`0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2028 2029 0085 t v f b 
       [],
     );
   });
-  test("taggedTemplateStringsPlainCharactersThatArePartsOfEscapes01", async () => {
+  test('taggedTemplateStringsPlainCharactersThatArePartsOfEscapes01', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -27,7 +27,7 @@ f \`0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2028 2029 0085 t v f b 
       [],
     );
   });
-  test("taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02_ES6", async () => {
+  test('taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -39,7 +39,7 @@ f \`0\${ " " }1\${ " " }2\${ " " }3\${ " " }4\${ " " }5\${ " " }6\${ " " }7\${ "
       [],
     );
   });
-  test("taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02", async () => {
+  test('taggedTemplateStringsPlainCharactersThatArePartsOfEscapes02', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -48,7 +48,7 @@ f \`0\${ " " }1\${ " " }2\${ " " }3\${ " " }4\${ " " }5\${ " " }6\${ " " }7\${ "
       [],
     );
   });
-  test("taggedTemplateStringsTypeArgumentInference", async () => {
+  test('taggedTemplateStringsTypeArgumentInference', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -147,7 +147,7 @@ var arr: any[];
       [],
     );
   });
-  test("taggedTemplateStringsTypeArgumentInferenceES6", async () => {
+  test('taggedTemplateStringsTypeArgumentInferenceES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -245,7 +245,7 @@ var arr: any[];
       [],
     );
   });
-  test("taggedTemplateStringsWithIncompatibleTypedTags", async () => {
+  test('taggedTemplateStringsWithIncompatibleTypedTags', async () => {
     await expectPass(
       `// @target: es2015
 interface I {
@@ -284,7 +284,7 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
       [],
     );
   });
-  test("taggedTemplateStringsWithIncompatibleTypedTagsES6", async () => {
+  test('taggedTemplateStringsWithIncompatibleTypedTagsES6', async () => {
     await expectPass(
       `// @target: ES6
 interface I {
@@ -322,7 +322,7 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);`,
       [],
     );
   });
-  test("taggedTemplateStringsWithManyCallAndMemberExpressions", async () => {
+  test('taggedTemplateStringsWithManyCallAndMemberExpressions', async () => {
     await expectPass(
       `// @target: es2015
 interface I {
@@ -343,7 +343,7 @@ var x = new new new f \`abc\${ 0 }def\`.member("hello")(42) === true;
       [],
     );
   });
-  test("taggedTemplateStringsWithManyCallAndMemberExpressionsES6", async () => {
+  test('taggedTemplateStringsWithManyCallAndMemberExpressionsES6', async () => {
     await expectPass(
       `// @target: ES6
 interface I {
@@ -364,7 +364,7 @@ var x = new new new f \`abc\${ 0 }def\`.member("hello")(42) === true;
       [],
     );
   });
-  test("taggedTemplateStringsWithOverloadResolution1_ES6", async () => {
+  test('taggedTemplateStringsWithOverloadResolution1_ES6', async () => {
     await expectPass(
       `//@target: es6
 function foo(strs: TemplateStringsArray): number;
@@ -392,7 +392,7 @@ var z = foo \`\${1}\${2}\${3}\`;  // any (with error)
       [],
     );
   });
-  test("taggedTemplateStringsWithOverloadResolution1", async () => {
+  test('taggedTemplateStringsWithOverloadResolution1', async () => {
     await expectPass(
       `// @target: es2015
 function foo(strs: TemplateStringsArray): number;
@@ -420,7 +420,7 @@ var z = foo \`\${1}\${2}\${3}\`;  // any (with error)
       [],
     );
   });
-  test("taggedTemplateStringsWithOverloadResolution2_ES6", async () => {
+  test('taggedTemplateStringsWithOverloadResolution2_ES6', async () => {
     await expectPass(
       `//@target: es6
 function foo1(strs: TemplateStringsArray, x: number): string;
@@ -443,7 +443,7 @@ var d = foo2([], 1);`,
       [],
     );
   });
-  test("taggedTemplateStringsWithOverloadResolution2", async () => {
+  test('taggedTemplateStringsWithOverloadResolution2', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -467,7 +467,7 @@ var d = foo2([], 1);`,
       [],
     );
   });
-  test("taggedTemplateStringsWithOverloadResolution3_ES6", async () => {
+  test('taggedTemplateStringsWithOverloadResolution3_ES6', async () => {
     await expectPass(
       `//@target: es6
 // Ambiguous call picks the first overload in declaration order
@@ -545,7 +545,7 @@ fn5 \`\${ (n) => n.substr(0) }\`;
       [],
     );
   });
-  test("taggedTemplateStringsWithOverloadResolution3", async () => {
+  test('taggedTemplateStringsWithOverloadResolution3', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -624,7 +624,7 @@ fn5 \`\${ (n) => n.substr(0) }\`;
       [],
     );
   });
-  test("taggedTemplateStringsWithTagNamedDeclare", async () => {
+  test('taggedTemplateStringsWithTagNamedDeclare', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -636,7 +636,7 @@ declare \`Hello \${0} world!\`;`,
       [],
     );
   });
-  test("taggedTemplateStringsWithTagNamedDeclareES6", async () => {
+  test('taggedTemplateStringsWithTagNamedDeclareES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -647,7 +647,7 @@ declare \`Hello \${0} world!\`;`,
       [],
     );
   });
-  test("taggedTemplateStringsWithTagsTypedAsAny", async () => {
+  test('taggedTemplateStringsWithTagsTypedAsAny', async () => {
     await expectPass(
       `// @target: es2015
 var f: any;
@@ -678,7 +678,7 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);`,
       [],
     );
   });
-  test("taggedTemplateStringsWithTagsTypedAsAnyES6", async () => {
+  test('taggedTemplateStringsWithTagsTypedAsAnyES6', async () => {
     await expectPass(
       `// @target: ES6
 var f: any;
@@ -708,7 +708,7 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);`,
       [],
     );
   });
-  test("taggedTemplateStringsWithTypedTags", async () => {
+  test('taggedTemplateStringsWithTypedTags', async () => {
     await expectPass(
       `// @target: es2015
 interface I {
@@ -745,7 +745,7 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
       [],
     );
   });
-  test("taggedTemplateStringsWithTypedTagsES6", async () => {
+  test('taggedTemplateStringsWithTypedTagsES6', async () => {
     await expectPass(
       `// @target: ES6
 interface I {
@@ -782,7 +782,7 @@ f.thisIsNotATag(\`abc\${1}def\${2}ghi\`);
       [],
     );
   });
-  test("taggedTemplateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpression", async () => {
+  test('taggedTemplateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpression', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -794,7 +794,7 @@ foo \`\${function (x: number) { x = "bad"; } }\`;`,
       [],
     );
   });
-  test("taggedTemplateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpressionES6", async () => {
+  test('taggedTemplateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpressionES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -805,7 +805,7 @@ foo \`\${function (x: number) { x = "bad"; } }\`;`,
       [],
     );
   });
-  test("taggedTemplatesWithTypeArguments1", async () => {
+  test('taggedTemplatesWithTypeArguments1', async () => {
     await expectPass(
       `
 declare function f<T>(strs: TemplateStringsArray, ...callbacks: Array<(x: T) => any>): void;
@@ -856,7 +856,7 @@ c.returnedObjProp.z;`,
       [],
     );
   });
-  test("taggedTemplatesWithTypeArguments2", async () => {
+  test('taggedTemplatesWithTypeArguments2', async () => {
     await expectPass(
       `
 export interface SomethingTaggable {
@@ -900,14 +900,14 @@ class SomeDerived<T> extends SomeBase<number, string, T> {
       [],
     );
   });
-  test("taggedTemplateUntypedTagCall01", async () => {
+  test('taggedTemplateUntypedTagCall01', async () => {
     await expectPass(
       `var tag: Function;
 tag \`Hello world!\`;`,
       [],
     );
   });
-  test("taggedTemplateWithConstructableTag01", async () => {
+  test('taggedTemplateWithConstructableTag01', async () => {
     await expectPass(
       `class CtorTag { }
 
@@ -915,7 +915,7 @@ CtorTag \`Hello world!\`;`,
       [],
     );
   });
-  test("taggedTemplateWithConstructableTag02", async () => {
+  test('taggedTemplateWithConstructableTag02', async () => {
     await expectPass(
       `interface I {
     new (...args: any[]): string;
@@ -926,10 +926,10 @@ tag \`Hello world!\`;`,
       [],
     );
   });
-  test("TemplateExpression1", async () => {
+  test('TemplateExpression1', async () => {
     await expectError(`var v = \`foo \${ a `, []);
   });
-  test("templateStringBinaryOperations", async () => {
+  test('templateStringBinaryOperations', async () => {
     await expectPass(
       `// @target: es2015
 var a = 1 + \`\${ 3 }\`;
@@ -987,7 +987,7 @@ var l4 = 1 + \`2\${ 3 & 4 }5\` + 6;
       [],
     );
   });
-  test("templateStringBinaryOperationsES6", async () => {
+  test('templateStringBinaryOperationsES6', async () => {
     await expectPass(
       `// @target: ES6
 var a = 1 + \`\${ 3 }\`;
@@ -1045,7 +1045,7 @@ var l4 = 1 + \`2\${ 3 & 4 }5\` + 6;
       [],
     );
   });
-  test("templateStringBinaryOperationsES6Invalid", async () => {
+  test('templateStringBinaryOperationsES6Invalid', async () => {
     await expectPass(
       `// @target: ES6
 var a = 1 - \`\${ 3 }\`;
@@ -1159,7 +1159,7 @@ var hc = \`2\${ 3 & 4 }5\` & 6;
       [],
     );
   });
-  test("templateStringBinaryOperationsInvalid", async () => {
+  test('templateStringBinaryOperationsInvalid', async () => {
     await expectPass(
       `// @target: es2015
 var a = 1 - \`\${ 3 }\`;
@@ -1273,7 +1273,7 @@ var hc = \`2\${ 3 & 4 }5\` & 6;
       [],
     );
   });
-  test("templateStringControlCharacterEscapes01_ES6", async () => {
+  test('templateStringControlCharacterEscapes01_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1281,7 +1281,7 @@ var x = \`\\0\\x00\\u0000 0 00 0000\`;`,
       [],
     );
   });
-  test("templateStringControlCharacterEscapes01", async () => {
+  test('templateStringControlCharacterEscapes01', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1290,7 +1290,7 @@ var x = \`\\0\\x00\\u0000 0 00 0000\`;`,
       [],
     );
   });
-  test("templateStringControlCharacterEscapes02_ES6", async () => {
+  test('templateStringControlCharacterEscapes02_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1298,7 +1298,7 @@ var x = \`\\x19\\u0019 19\`;`,
       [],
     );
   });
-  test("templateStringControlCharacterEscapes02", async () => {
+  test('templateStringControlCharacterEscapes02', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1307,7 +1307,7 @@ var x = \`\\x19\\u0019 19\`;`,
       [],
     );
   });
-  test("templateStringControlCharacterEscapes03_ES6", async () => {
+  test('templateStringControlCharacterEscapes03_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1315,7 +1315,7 @@ var x = \`\\x1F\\u001f 1F 1f\`;`,
       [],
     );
   });
-  test("templateStringControlCharacterEscapes03", async () => {
+  test('templateStringControlCharacterEscapes03', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1324,7 +1324,7 @@ var x = \`\\x1F\\u001f 1F 1f\`;`,
       [],
     );
   });
-  test("templateStringControlCharacterEscapes04_ES6", async () => {
+  test('templateStringControlCharacterEscapes04_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1332,7 +1332,7 @@ var x = \`\\x20\\u0020 20\`;`,
       [],
     );
   });
-  test("templateStringControlCharacterEscapes04", async () => {
+  test('templateStringControlCharacterEscapes04', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1341,77 +1341,77 @@ var x = \`\\x20\\u0020 20\`;`,
       [],
     );
   });
-  test("templateStringInArray", async () => {
+  test('templateStringInArray', async () => {
     await expectPass(
       `// @target: es2015
 var x = [1, 2, \`abc\${ 123 }def\`];`,
       [],
     );
   });
-  test("templateStringInArrowFunction", async () => {
+  test('templateStringInArrowFunction', async () => {
     await expectPass(
       `// @target: es2015
 var x = x => \`abc\${ x }def\`;`,
       [],
     );
   });
-  test("templateStringInArrowFunctionES6", async () => {
+  test('templateStringInArrowFunctionES6', async () => {
     await expectPass(
       `// @strict: false
 var x = x => \`abc\${ x }def\`;`,
       [],
     );
   });
-  test("templateStringInCallExpression", async () => {
+  test('templateStringInCallExpression', async () => {
     await expectPass(
       `// @target: es2015
 \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);`,
       [],
     );
   });
-  test("templateStringInCallExpressionES6", async () => {
+  test('templateStringInCallExpressionES6', async () => {
     await expectPass(
       `// @target: ES6
 \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);`,
       [],
     );
   });
-  test("templateStringInConditional", async () => {
+  test('templateStringInConditional', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ " " }def\` ? \`abc\${ " " }def\` : \`abc\${ " " }def\`;`,
       [],
     );
   });
-  test("templateStringInConditionalES6", async () => {
+  test('templateStringInConditionalES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ " " }def\` ? \`abc\${ " " }def\` : \`abc\${ " " }def\`;`,
       [],
     );
   });
-  test("templateStringInDeleteExpression", async () => {
+  test('templateStringInDeleteExpression', async () => {
     await expectPass(
       `// @target: es2015
 delete \`abc\${0}abc\`;`,
       [],
     );
   });
-  test("templateStringInDeleteExpressionES6", async () => {
+  test('templateStringInDeleteExpressionES6', async () => {
     await expectPass(
       `// @target: ES6
 delete \`abc\${0}abc\`;`,
       [],
     );
   });
-  test("templateStringInDivision", async () => {
+  test('templateStringInDivision', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ 1 }def\` / 1;`,
       [],
     );
   });
-  test("templateStringInEqualityChecks", async () => {
+  test('templateStringInEqualityChecks', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${0}abc\` === \`abc\` ||
@@ -1421,7 +1421,7 @@ var x = \`abc\${0}abc\` === \`abc\` ||
       [],
     );
   });
-  test("templateStringInEqualityChecksES6", async () => {
+  test('templateStringInEqualityChecksES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${0}abc\` === \`abc\` ||
@@ -1431,7 +1431,7 @@ var x = \`abc\${0}abc\` === \`abc\` ||
       [],
     );
   });
-  test("templateStringInFunctionExpression", async () => {
+  test('templateStringInFunctionExpression', async () => {
     await expectPass(
       `var x = function y() {
     \`abc\${ 0 }def\`
@@ -1440,7 +1440,7 @@ var x = \`abc\${0}abc\` === \`abc\` ||
       [],
     );
   });
-  test("templateStringInFunctionExpressionES6", async () => {
+  test('templateStringInFunctionExpressionES6', async () => {
     await expectPass(
       `var x = function y() {
     \`abc\${ 0 }def\`
@@ -1449,7 +1449,7 @@ var x = \`abc\${0}abc\` === \`abc\` ||
       [],
     );
   });
-  test("templateStringInFunctionParameterType", async () => {
+  test('templateStringInFunctionParameterType', async () => {
     await expectError(
       `// @target: es2015
 function f(\`hello\`);
@@ -1460,7 +1460,7 @@ function f(x: string) {
       [],
     );
   });
-  test("templateStringInFunctionParameterTypeES6", async () => {
+  test('templateStringInFunctionParameterTypeES6', async () => {
     await expectError(
       `// @target: ES6
 function f(\`hello\`);
@@ -1471,49 +1471,49 @@ function f(x: string) {
       [],
     );
   });
-  test("templateStringInIndexExpression", async () => {
+  test('templateStringInIndexExpression', async () => {
     await expectPass(
       `// @target: es2015
 \`abc\${0}abc\`[\`0\`];`,
       [],
     );
   });
-  test("templateStringInIndexExpressionES6", async () => {
+  test('templateStringInIndexExpressionES6', async () => {
     await expectPass(
       `// @target: ES6
 \`abc\${0}abc\`[\`0\`];`,
       [],
     );
   });
-  test("templateStringInInOperator", async () => {
+  test('templateStringInInOperator', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`\${ "hi" }\` in { hi: 10, hello: 20};`,
       [],
     );
   });
-  test("templateStringInInOperatorES6", async () => {
+  test('templateStringInInOperatorES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`\${ "hi" }\` in { hi: 10, hello: 20};`,
       [],
     );
   });
-  test("templateStringInInstanceOf", async () => {
+  test('templateStringInInstanceOf', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ 0 }def\` instanceof String;`,
       [],
     );
   });
-  test("templateStringInInstanceOfES6", async () => {
+  test('templateStringInInstanceOfES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ 0 }def\` instanceof String;`,
       [],
     );
   });
-  test("templateStringInModuleName", async () => {
+  test('templateStringInModuleName', async () => {
     await expectError(
       `// @target: es2015
 declare module \`M1\` {
@@ -1524,7 +1524,7 @@ declare module \`M\${2}\` {
       [],
     );
   });
-  test("templateStringInModuleNameES6", async () => {
+  test('templateStringInModuleNameES6', async () => {
     await expectError(
       `// @target: ES6
 declare module \`M1\` {
@@ -1535,63 +1535,63 @@ declare module \`M\${2}\` {
       [],
     );
   });
-  test("templateStringInModulo", async () => {
+  test('templateStringInModulo', async () => {
     await expectPass(
       `// @target: es2015
 var x = 1 % \`abc\${ 1 }def\`;`,
       [],
     );
   });
-  test("templateStringInModuloES6", async () => {
+  test('templateStringInModuloES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = 1 % \`abc\${ 1 }def\`;`,
       [],
     );
   });
-  test("templateStringInMultiplication", async () => {
+  test('templateStringInMultiplication', async () => {
     await expectPass(
       `// @target: es2015
 var x = 1 * \`abc\${ 1 }def\`;`,
       [],
     );
   });
-  test("templateStringInMultiplicationES6", async () => {
+  test('templateStringInMultiplicationES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = 1 * \`abc\${ 1 }def\`;`,
       [],
     );
   });
-  test("templateStringInNewExpression", async () => {
+  test('templateStringInNewExpression', async () => {
     await expectPass(
       `// @target: es2015
 new \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);`,
       [],
     );
   });
-  test("templateStringInNewExpressionES6", async () => {
+  test('templateStringInNewExpressionES6', async () => {
     await expectPass(
       `// @target: ES6
 new \`abc\${0}abc\`(\`hello \${0} world\`, \`   \`, \`1\${2}3\`);`,
       [],
     );
   });
-  test("templateStringInNewOperator", async () => {
+  test('templateStringInNewOperator', async () => {
     await expectPass(
       `// @target: es2015
 var x = new \`abc\${ 1 }def\`;`,
       [],
     );
   });
-  test("templateStringInNewOperatorES6", async () => {
+  test('templateStringInNewOperatorES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = new \`abc\${ 1 }def\`;`,
       [],
     );
   });
-  test("templateStringInObjectLiteral", async () => {
+  test('templateStringInObjectLiteral', async () => {
     await expectError(
       `// @target: es2015
 var x = {
@@ -1601,7 +1601,7 @@ var x = {
       [],
     );
   });
-  test("templateStringInObjectLiteralES6", async () => {
+  test('templateStringInObjectLiteralES6', async () => {
     await expectError(
       `// @target: ES6
 var x = {
@@ -1611,21 +1611,21 @@ var x = {
       [],
     );
   });
-  test("templateStringInParentheses", async () => {
+  test('templateStringInParentheses', async () => {
     await expectPass(
       `// @target: es2015
 var x = (\`abc\${0}abc\`);`,
       [],
     );
   });
-  test("templateStringInParenthesesES6", async () => {
+  test('templateStringInParenthesesES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = (\`abc\${0}abc\`);`,
       [],
     );
   });
-  test("templateStringInPropertyAssignment", async () => {
+  test('templateStringInPropertyAssignment', async () => {
     await expectPass(
       `// @target: es2015
 var x = {
@@ -1634,7 +1634,7 @@ var x = {
       [],
     );
   });
-  test("templateStringInPropertyAssignmentES6", async () => {
+  test('templateStringInPropertyAssignmentES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = {
@@ -1643,7 +1643,7 @@ var x = {
       [],
     );
   });
-  test("templateStringInPropertyName1", async () => {
+  test('templateStringInPropertyName1', async () => {
     await expectError(
       `// @target: es2015
 var x = {
@@ -1652,7 +1652,7 @@ var x = {
       [],
     );
   });
-  test("templateStringInPropertyName2", async () => {
+  test('templateStringInPropertyName2', async () => {
     await expectError(
       `// @target: es2015
 var x = {
@@ -1661,7 +1661,7 @@ var x = {
       [],
     );
   });
-  test("templateStringInPropertyNameES6_1", async () => {
+  test('templateStringInPropertyNameES6_1', async () => {
     await expectError(
       `// @target: ES6
 var x = {
@@ -1670,7 +1670,7 @@ var x = {
       [],
     );
   });
-  test("templateStringInPropertyNameES6_2", async () => {
+  test('templateStringInPropertyNameES6_2', async () => {
     await expectError(
       `// @target: ES6
 var x = {
@@ -1679,7 +1679,7 @@ var x = {
       [],
     );
   });
-  test("templateStringInSwitchAndCase", async () => {
+  test('templateStringInSwitchAndCase', async () => {
     await expectPass(
       `// @target: es2015
 switch (\`abc\${0}abc\`) {
@@ -1691,7 +1691,7 @@ switch (\`abc\${0}abc\`) {
       [],
     );
   });
-  test("templateStringInSwitchAndCaseES6", async () => {
+  test('templateStringInSwitchAndCaseES6', async () => {
     await expectPass(
       `// @target: ES6
 switch (\`abc\${0}abc\`) {
@@ -1703,63 +1703,63 @@ switch (\`abc\${0}abc\`) {
       [],
     );
   });
-  test("templateStringInTaggedTemplate", async () => {
+  test('templateStringInTaggedTemplate', async () => {
     await expectPass(
       `// @target: es2015
 \`I AM THE \${ \`\${ \`TAG\` } \` } PORTION\`    \`I \${ "AM" } THE TEMPLATE PORTION\``,
       [],
     );
   });
-  test("templateStringInTaggedTemplateES6", async () => {
+  test('templateStringInTaggedTemplateES6', async () => {
     await expectPass(
       `// @target: ES6
 \`I AM THE \${ \`\${ \`TAG\` } \` } PORTION\`    \`I \${ "AM" } THE TEMPLATE PORTION\``,
       [],
     );
   });
-  test("templateStringInTypeAssertion", async () => {
+  test('templateStringInTypeAssertion', async () => {
     await expectPass(
       `// @target: es2015
 var x = <any>\`abc\${ 123 }def\`;`,
       [],
     );
   });
-  test("templateStringInTypeAssertionES6", async () => {
+  test('templateStringInTypeAssertionES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = <any>\`abc\${ 123 }def\`;`,
       [],
     );
   });
-  test("templateStringInTypeOf", async () => {
+  test('templateStringInTypeOf', async () => {
     await expectPass(
       `// @target: es2015
 var x = typeof \`abc\${ 123 }def\`;`,
       [],
     );
   });
-  test("templateStringInTypeOfES6", async () => {
+  test('templateStringInTypeOfES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = typeof \`abc\${ 123 }def\`;`,
       [],
     );
   });
-  test("templateStringInUnaryPlus", async () => {
+  test('templateStringInUnaryPlus', async () => {
     await expectPass(
       `// @target: es2015
 var x = +\`abc\${ 123 }def\`;`,
       [],
     );
   });
-  test("templateStringInUnaryPlusES6", async () => {
+  test('templateStringInUnaryPlusES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = +\`abc\${ 123 }def\`;`,
       [],
     );
   });
-  test("templateStringInWhile", async () => {
+  test('templateStringInWhile', async () => {
     await expectPass(
       `// @target: es2015
 while (\`abc\${0}abc\`) {
@@ -1768,7 +1768,7 @@ while (\`abc\${0}abc\`) {
       [],
     );
   });
-  test("templateStringInWhileES6", async () => {
+  test('templateStringInWhileES6', async () => {
     await expectPass(
       `// @target: ES6
 while (\`abc\${0}abc\`) {
@@ -1777,7 +1777,7 @@ while (\`abc\${0}abc\`) {
       [],
     );
   });
-  test("templateStringInYieldKeyword", async () => {
+  test('templateStringInYieldKeyword', async () => {
     await expectPass(
       `// @strict: false
 function* gen() {
@@ -1788,7 +1788,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringMultiline1_ES6", async () => {
+  test('templateStringMultiline1_ES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -1799,7 +1799,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringMultiline1", async () => {
+  test('templateStringMultiline1', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1811,7 +1811,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringMultiline2_ES6", async () => {
+  test('templateStringMultiline2_ES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -1822,7 +1822,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringMultiline2", async () => {
+  test('templateStringMultiline2', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1834,7 +1834,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringMultiline3_ES6", async () => {
+  test('templateStringMultiline3_ES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -1845,7 +1845,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringMultiline3", async () => {
+  test('templateStringMultiline3', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1857,7 +1857,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringPlainCharactersThatArePartsOfEscapes01_ES6", async () => {
+  test('templateStringPlainCharactersThatArePartsOfEscapes01_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1865,7 +1865,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringPlainCharactersThatArePartsOfEscapes01", async () => {
+  test('templateStringPlainCharactersThatArePartsOfEscapes01', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1873,7 +1873,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringPlainCharactersThatArePartsOfEscapes02_ES6", async () => {
+  test('templateStringPlainCharactersThatArePartsOfEscapes02_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1881,7 +1881,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringPlainCharactersThatArePartsOfEscapes02", async () => {
+  test('templateStringPlainCharactersThatArePartsOfEscapes02', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1890,7 +1890,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpression", async () => {
+  test('templateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpression', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1899,7 +1899,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpressionES6", async () => {
+  test('templateStringsWithTypeErrorInFunctionExpressionsInSubstitutionExpressionES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -1907,14 +1907,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringTermination1_ES6", async () => {
+  test('templateStringTermination1_ES6', async () => {
     await expectPass(
       `// @target: ES6
 \`\``,
       [],
     );
   });
-  test("templateStringTermination1", async () => {
+  test('templateStringTermination1', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1922,14 +1922,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringTermination2_ES6", async () => {
+  test('templateStringTermination2_ES6', async () => {
     await expectPass(
       `// @target: ES6
 \`\\\\\``,
       [],
     );
   });
-  test("templateStringTermination2", async () => {
+  test('templateStringTermination2', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1937,14 +1937,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringTermination3_ES6", async () => {
+  test('templateStringTermination3_ES6', async () => {
     await expectPass(
       `// @target: ES6
 \`\\\`\``,
       [],
     );
   });
-  test("templateStringTermination3", async () => {
+  test('templateStringTermination3', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1952,14 +1952,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringTermination4_ES6", async () => {
+  test('templateStringTermination4_ES6', async () => {
     await expectPass(
       `// @target: ES6
 \`\\\\\\\\\``,
       [],
     );
   });
-  test("templateStringTermination4", async () => {
+  test('templateStringTermination4', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1967,14 +1967,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringTermination5_ES6", async () => {
+  test('templateStringTermination5_ES6', async () => {
     await expectPass(
       `// @target: ES6
 \`\\\\\\\\\\\\\``,
       [],
     );
   });
-  test("templateStringTermination5", async () => {
+  test('templateStringTermination5', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1982,14 +1982,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringUnterminated1_ES6", async () => {
+  test('templateStringUnterminated1_ES6', async () => {
     await expectError(
       `// @target: ES6
 \``,
       [],
     );
   });
-  test("templateStringUnterminated1", async () => {
+  test('templateStringUnterminated1', async () => {
     await expectError(
       `// @target: es2015
 
@@ -1997,14 +1997,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringUnterminated2_ES6", async () => {
+  test('templateStringUnterminated2_ES6', async () => {
     await expectError(
       `// @target: ES6
 \`\\\``,
       [],
     );
   });
-  test("templateStringUnterminated2", async () => {
+  test('templateStringUnterminated2', async () => {
     await expectError(
       `// @target: es2015
 
@@ -2012,14 +2012,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringUnterminated3_ES6", async () => {
+  test('templateStringUnterminated3_ES6', async () => {
     await expectError(
       `// @target: ES6
 \`\\\\`,
       [],
     );
   });
-  test("templateStringUnterminated3", async () => {
+  test('templateStringUnterminated3', async () => {
     await expectError(
       `// @target: es2015
 
@@ -2027,14 +2027,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringUnterminated4_ES6", async () => {
+  test('templateStringUnterminated4_ES6', async () => {
     await expectError(
       `// @target: ES6
 \`\\\\\\\``,
       [],
     );
   });
-  test("templateStringUnterminated4", async () => {
+  test('templateStringUnterminated4', async () => {
     await expectError(
       `// @target: es2015
 
@@ -2042,14 +2042,14 @@ function* gen() {
       [],
     );
   });
-  test("templateStringUnterminated5_ES6", async () => {
+  test('templateStringUnterminated5_ES6', async () => {
     await expectError(
       `// @target: ES6
 \`\\\\\\\\\\\``,
       [],
     );
   });
-  test("templateStringUnterminated5", async () => {
+  test('templateStringUnterminated5', async () => {
     await expectError(
       `// @target: es2015
 
@@ -2057,7 +2057,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringWhitespaceEscapes1_ES6", async () => {
+  test('templateStringWhitespaceEscapes1_ES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -2065,7 +2065,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringWhitespaceEscapes1", async () => {
+  test('templateStringWhitespaceEscapes1', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -2074,7 +2074,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringWhitespaceEscapes2_ES6", async () => {
+  test('templateStringWhitespaceEscapes2_ES6', async () => {
     await expectPass(
       `//@target: es6
 
@@ -2083,7 +2083,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringWhitespaceEscapes2", async () => {
+  test('templateStringWhitespaceEscapes2', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -2093,7 +2093,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringWithBackslashEscapes01_ES6", async () => {
+  test('templateStringWithBackslashEscapes01_ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -2104,7 +2104,7 @@ var d = \`hello\\\\\\\\world\`;`,
       [],
     );
   });
-  test("templateStringWithBackslashEscapes01", async () => {
+  test('templateStringWithBackslashEscapes01', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -2116,7 +2116,7 @@ var d = \`hello\\\\\\\\world\`;`,
       [],
     );
   });
-  test("templateStringWithCommentsInArrowFunction", async () => {
+  test('templateStringWithCommentsInArrowFunction', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -2136,49 +2136,49 @@ const f2 = () =>
       [],
     );
   });
-  test("templateStringWithEmbeddedAddition", async () => {
+  test('templateStringWithEmbeddedAddition', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ 10 + 10 }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedAdditionES6", async () => {
+  test('templateStringWithEmbeddedAdditionES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ 10 + 10 }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedArray", async () => {
+  test('templateStringWithEmbeddedArray', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ [1,2,3] }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedArrayES6", async () => {
+  test('templateStringWithEmbeddedArrayES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ [1,2,3] }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedArrowFunction", async () => {
+  test('templateStringWithEmbeddedArrowFunction', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ x => x }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedArrowFunctionES6", async () => {
+  test('templateStringWithEmbeddedArrowFunctionES6', async () => {
     await expectPass(
       `// @strict: false
 var x = \`abc\${ x => x }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedComments", async () => {
+  test('templateStringWithEmbeddedComments', async () => {
     await expectPass(
       `// @target: es2015
 \`head\${ // single line comment
@@ -2196,7 +2196,7 @@ tail\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedCommentsES6", async () => {
+  test('templateStringWithEmbeddedCommentsES6', async () => {
     await expectPass(
       `// @target: ES6
 \`head\${ // single line comment
@@ -2214,181 +2214,181 @@ tail\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedConditional", async () => {
+  test('templateStringWithEmbeddedConditional', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ true ? false : " " }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedConditionalES6", async () => {
+  test('templateStringWithEmbeddedConditionalES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ true ? false : " " }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedDivision", async () => {
+  test('templateStringWithEmbeddedDivision', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ 1 / 1 }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedDivisionES6", async () => {
+  test('templateStringWithEmbeddedDivisionES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ 1 / 1 }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedFunctionExpression", async () => {
+  test('templateStringWithEmbeddedFunctionExpression', async () => {
     await expectPass(`var x = \`abc\${ function y() { return y; } }def\`;`, []);
   });
-  test("templateStringWithEmbeddedFunctionExpressionES6", async () => {
+  test('templateStringWithEmbeddedFunctionExpressionES6', async () => {
     await expectPass(`var x = \`abc\${ function y() { return y; } }def\`;`, []);
   });
-  test("templateStringWithEmbeddedInOperator", async () => {
+  test('templateStringWithEmbeddedInOperator', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ "hi" in { hi: 10, hello: 20} }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedInOperatorES6", async () => {
+  test('templateStringWithEmbeddedInOperatorES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ "hi" in { hi: 10, hello: 20} }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedInstanceOf", async () => {
+  test('templateStringWithEmbeddedInstanceOf', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ "hello" instanceof String }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedInstanceOfES6", async () => {
+  test('templateStringWithEmbeddedInstanceOfES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ "hello" instanceof String }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedModulo", async () => {
+  test('templateStringWithEmbeddedModulo', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ 1 % 1 }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedModuloES6", async () => {
+  test('templateStringWithEmbeddedModuloES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ 1 % 1 }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedMultiplication", async () => {
+  test('templateStringWithEmbeddedMultiplication', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ 7 * 6 }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedMultiplicationES6", async () => {
+  test('templateStringWithEmbeddedMultiplicationES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ 7 * 6 }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedNewOperator", async () => {
+  test('templateStringWithEmbeddedNewOperator', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ new String("Hi") }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedNewOperatorES6", async () => {
+  test('templateStringWithEmbeddedNewOperatorES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ new String("Hi") }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedObjectLiteral", async () => {
+  test('templateStringWithEmbeddedObjectLiteral', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ { x: 10, y: 20 } }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedObjectLiteralES6", async () => {
+  test('templateStringWithEmbeddedObjectLiteralES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ { x: 10, y: 20 } }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedTemplateString", async () => {
+  test('templateStringWithEmbeddedTemplateString', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`123\${ \`456 \${ " | " } 654\` }321 123\${ \`456 \${ " | " } 654\` }321\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedTemplateStringES6", async () => {
+  test('templateStringWithEmbeddedTemplateStringES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`123\${ \`456 \${ " | " } 654\` }321 123\${ \`456 \${ " | " } 654\` }321\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedTypeAssertionOnAddition", async () => {
+  test('templateStringWithEmbeddedTypeAssertionOnAddition', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ <any>(10 + 10) }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedTypeAssertionOnAdditionES6", async () => {
+  test('templateStringWithEmbeddedTypeAssertionOnAdditionES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ <any>(10 + 10) }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedTypeOfOperator", async () => {
+  test('templateStringWithEmbeddedTypeOfOperator', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ typeof "hi" }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedTypeOfOperatorES6", async () => {
+  test('templateStringWithEmbeddedTypeOfOperatorES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ typeof "hi" }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedUnaryPlus", async () => {
+  test('templateStringWithEmbeddedUnaryPlus', async () => {
     await expectPass(
       `// @target: es2015
 var x = \`abc\${ +Infinity }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedUnaryPlusES6", async () => {
+  test('templateStringWithEmbeddedUnaryPlusES6', async () => {
     await expectPass(
       `// @target: ES6
 var x = \`abc\${ +Infinity }def\`;`,
       [],
     );
   });
-  test("templateStringWithEmbeddedYieldKeyword", async () => {
+  test('templateStringWithEmbeddedYieldKeyword', async () => {
     await expectError(
       `// @target: es2015
 function* gen {
@@ -2399,7 +2399,7 @@ function* gen {
       [],
     );
   });
-  test("templateStringWithEmbeddedYieldKeywordES6", async () => {
+  test('templateStringWithEmbeddedYieldKeywordES6', async () => {
     await expectPass(
       `// @strict: false
 function* gen() {
@@ -2410,7 +2410,7 @@ function* gen() {
       [],
     );
   });
-  test("templateStringWithEmptyLiteralPortions", async () => {
+  test('templateStringWithEmptyLiteralPortions', async () => {
     await expectPass(
       `// @target: es2015
 var a = \`\`;
@@ -2442,7 +2442,7 @@ var m = \`1\${ 0 }2\${ 0 }3\`;
       [],
     );
   });
-  test("templateStringWithEmptyLiteralPortionsES6", async () => {
+  test('templateStringWithEmptyLiteralPortionsES6', async () => {
     await expectPass(
       `// @target: ES6
 var a = \`\`;
@@ -2474,28 +2474,28 @@ var m = \`1\${ 0 }2\${ 0 }3\`;
       [],
     );
   });
-  test("templateStringWithOpenCommentInStringPortion", async () => {
+  test('templateStringWithOpenCommentInStringPortion', async () => {
     await expectPass(
       `// @target: es2015
 \` /**head  \${ 10 } // still middle  \${ 20 } /* still tail \``,
       [],
     );
   });
-  test("templateStringWithOpenCommentInStringPortionES6", async () => {
+  test('templateStringWithOpenCommentInStringPortionES6', async () => {
     await expectPass(
       `// @target: ES6
 \` /**head  \${ 10 } // still middle  \${ 20 } /* still tail \``,
       [],
     );
   });
-  test("templateStringWithPropertyAccess", async () => {
+  test('templateStringWithPropertyAccess', async () => {
     await expectPass(
       `// @target: es2015
 \`abc\${0}abc\`.indexOf(\`abc\`);`,
       [],
     );
   });
-  test("templateStringWithPropertyAccessES6", async () => {
+  test('templateStringWithPropertyAccessES6', async () => {
     await expectPass(
       `// @target: ES6
 \`abc\${0}abc\`.indexOf(\`abc\`);`,

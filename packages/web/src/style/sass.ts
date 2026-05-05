@@ -1,14 +1,14 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname } from "node:path";
+import { readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, extname } from 'node:path';
 
-import { type NodeRequire, requireFromAppRoot } from "./loader.ts";
+import { type NodeRequire, requireFromAppRoot } from './loader.ts';
 
 interface SassCompiler {
   compile: (file: string, options: SassCompileOptions) => SassCompileResult;
 }
 
 interface SassCompileOptions {
-  style?: "expanded" | "compressed";
+  style?: 'expanded' | 'compressed';
   loadPaths?: string[];
   sourceMap?: boolean;
 }
@@ -17,7 +17,7 @@ interface SassCompileResult {
   css: string;
 }
 
-export const CSS_PREPROCESSOR_EXTENSIONS: ReadonlySet<string> = new Set([".scss", ".sass"]);
+export const CSS_PREPROCESSOR_EXTENSIONS: ReadonlySet<string> = new Set(['.scss', '.sass']);
 const MODULE_PREPROCESSOR_RE = /\.module\.(?:scss|sass)$/;
 
 export function isCssPreprocessorFile(path: string): boolean {
@@ -29,7 +29,7 @@ export function isCssModulePreprocessorFile(path: string): boolean {
 }
 
 export function cssPreprocessorOutputPath(file: string): string {
-  return file.replace(/\.(?:scss|sass)$/, ".css");
+  return file.replace(/\.(?:scss|sass)$/, '.css');
 }
 
 export function cssPreprocessorProxyPath(file: string): string {
@@ -38,7 +38,7 @@ export function cssPreprocessorProxyPath(file: string): string {
 
 /** Sass compiler 를 app-first / fallback-second 로 require. 모듈 미설치 시 친화 메시지 throw. */
 export function loadSassCompiler(root: string, fallbackRequire: NodeRequire): SassCompiler {
-  return requireFromAppRoot(root, fallbackRequire, "sass") as SassCompiler;
+  return requireFromAppRoot(root, fallbackRequire, 'sass') as SassCompiler;
 }
 
 /**
@@ -51,7 +51,7 @@ export function compileSassFile(
   loadRoot: string,
 ): SassCompileResult {
   return sass.compile(file, {
-    style: "expanded",
+    style: 'expanded',
     loadPaths: [dirname(file), loadRoot],
     sourceMap: false,
   });
@@ -71,13 +71,13 @@ export function isStyleReferenceSource(path: string): boolean {
 export function rewriteSassReferences(sourceFiles: readonly string[]): void {
   const pattern = /(["'])([^"']+\.(?:scss|sass))([?#][^"']*)?\1/g;
   for (const source of sourceFiles) {
-    const input = readFileSync(source, "utf8");
-    if (!input.includes(".scss") && !input.includes(".sass")) continue;
+    const input = readFileSync(source, 'utf8');
+    if (!input.includes('.scss') && !input.includes('.sass')) continue;
     // .html / .htm 모두 분기 (rewriteCssModuleReferences 와 일관 — case-insensitive).
-    const toExt = /\.html?$/i.test(source) ? ".css" : ".css.js";
+    const toExt = /\.html?$/i.test(source) ? '.css' : '.css.js';
     const output = input.replace(
       pattern,
-      (_match, quote, spec, suffix = "") =>
+      (_match, quote, spec, suffix = '') =>
         `${quote}${spec.replace(/\.(?:scss|sass)$/, toExt)}${suffix}${quote}`,
     );
     if (output !== input) writeFileSync(source, output);
@@ -127,8 +127,8 @@ export function transformCssPreprocessors(
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     const message =
-      code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND"
-        ? "Sass/SCSS support requires the optional `sass` package. Install it with `bun add -d sass` or `npm install -D sass`."
+      code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND'
+        ? 'Sass/SCSS support requires the optional `sass` package. Install it with `bun add -d sass` or `npm install -D sass`.'
         : `Failed to load sass: ${(err as { message?: string })?.message ?? err}`;
     throw new Error(message);
   }
@@ -141,7 +141,7 @@ export function transformCssPreprocessors(
   }
 
   rewriteSassReferences(dirtySources ?? sourceFiles);
-  if (logLevel !== "silent") {
+  if (logLevel !== 'silent') {
     console.error(`[sass] processed ${targets.length} Sass/SCSS file(s)`);
   }
   return files.map(cssPreprocessorOutputPath);

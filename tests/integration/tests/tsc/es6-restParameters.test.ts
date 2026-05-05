@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es6/restParameters", () => {
-  test("emitRestParametersFunction", async () => {
+describe('TSC: es6/restParameters', () => {
+  test('emitRestParametersFunction', async () => {
     await expectPass(
       `// @strict: false
 function bar(...rest) { }
@@ -10,7 +10,7 @@ function foo(x: number, y: string, ...rest) { }`,
       [],
     );
   });
-  test("emitRestParametersFunctionES6", async () => {
+  test('emitRestParametersFunctionES6', async () => {
     await expectPass(
       `// @strict: false
 function bar(...rest) { }
@@ -18,7 +18,7 @@ function foo(x: number, y: string, ...rest) { }`,
       [],
     );
   });
-  test("emitRestParametersFunctionExpression", async () => {
+  test('emitRestParametersFunctionExpression', async () => {
     await expectPass(
       `// @strict: false
 var funcExp = (...rest) => { }
@@ -29,7 +29,7 @@ var funcExp3 = (function (...rest) { })()
       [],
     );
   });
-  test("emitRestParametersFunctionExpressionES6", async () => {
+  test('emitRestParametersFunctionExpressionES6', async () => {
     await expectPass(
       `// @strict: false
 var funcExp = (...rest) => { }
@@ -39,7 +39,7 @@ var funcExp3 = (function (...rest) { })()`,
       [],
     );
   });
-  test("emitRestParametersFunctionProperty", async () => {
+  test('emitRestParametersFunctionProperty', async () => {
     await expectPass(
       `// @strict: false
 var obj: {
@@ -52,7 +52,7 @@ var obj2 = {
       [],
     );
   });
-  test("emitRestParametersFunctionPropertyES6", async () => {
+  test('emitRestParametersFunctionPropertyES6', async () => {
     await expectPass(
       `// @strict: false
 var obj: {
@@ -65,7 +65,7 @@ var obj2 = {
       [],
     );
   });
-  test("emitRestParametersMethod", async () => {
+  test('emitRestParametersMethod', async () => {
     await expectPass(
       `// @strict: false
 class C {
@@ -84,7 +84,7 @@ class D {
       [],
     );
   });
-  test("emitRestParametersMethodES6", async () => {
+  test('emitRestParametersMethodES6', async () => {
     await expectPass(
       `// @strict: false
 class C {
@@ -104,7 +104,7 @@ class D {
       [],
     );
   });
-  test("readonlyRestParameters", async () => {
+  test('readonlyRestParameters', async () => {
     await expectPass(
       `
 function f0(a: string, b: string) {

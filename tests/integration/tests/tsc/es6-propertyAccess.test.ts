@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es6/propertyAccess", () => {
-  test("propertyAccessNumericLiterals.es6", async () => {
+describe('TSC: es6/propertyAccess', () => {
+  test('propertyAccessNumericLiterals.es6', async () => {
     await expectPass(
       `0xffffffff.toString();
 0o01234.toString();

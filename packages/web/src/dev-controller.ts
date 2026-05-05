@@ -6,33 +6,33 @@ import {
   rmSync,
   symlinkSync,
   writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 
-import { prepareAppDevSync } from "@zts/core";
+import { prepareAppDevSync } from '@zts/core';
 
 import {
   type BundleResult,
   injectAppDevBundleCssLinks,
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
-} from "./inject.ts";
+} from './inject.ts';
 import {
   cssModuleGeneratedCssPath,
   cssModuleProxyPath,
   isCssModuleFile,
   transformCssModules,
-} from "./style/css-modules.ts";
-import { type NodeRequire } from "./style/loader.ts";
-import { collectAppFiles } from "./style/loader.ts";
+} from './style/css-modules.ts';
+import { type NodeRequire } from './style/loader.ts';
+import { collectAppFiles } from './style/loader.ts';
 import {
   findPostcssConfig,
   isCssFile,
   isPostcssConfigFile,
   runPostcssForAppDev,
   runPostcssIfConfigured,
-} from "./style/postcss.ts";
+} from './style/postcss.ts';
 import {
   compileSassFile,
   cssPreprocessorOutputPath,
@@ -42,8 +42,8 @@ import {
   isStyleReferenceSource,
   loadSassCompiler,
   transformCssPreprocessors,
-} from "./style/sass.ts";
-import { joinUrl } from "./url.ts";
+} from './style/sass.ts';
+import { joinUrl } from './url.ts';
 
 // app 의 dev mode pipeline temp root 추적 — exit/SIGINT/SIGTERM 으로 cleanup.
 const postcssTempRoots = new Set<string>();
@@ -94,9 +94,9 @@ export interface AppCssPipelineResult {
 }
 
 function normalizeBase(base: string | undefined): string {
-  if (!base) return "/";
-  let normalized = base.startsWith("/") ? base : `/${base}`;
-  if (!normalized.endsWith("/")) normalized = `${normalized}/`;
+  if (!base) return '/';
+  let normalized = base.startsWith('/') ? base : `/${base}`;
+  if (!normalized.endsWith('/')) normalized = `${normalized}/`;
   return normalized;
 }
 
@@ -146,7 +146,7 @@ function syncDirtyFilesIntoTempRoot(
 ): void {
   for (const abs of dirtyPaths) {
     const rel = relative(root, abs);
-    if (!rel || rel.startsWith("..")) continue;
+    if (!rel || rel.startsWith('..')) continue;
     const dst = join(tempRoot, rel);
     if (existsSync(abs)) {
       mirrorFile(abs, dst);
@@ -167,12 +167,12 @@ function registerPostcssTempRoot(tempRoot: string): void {
     for (const root of postcssTempRoots) rmSync(root, { recursive: true, force: true });
     postcssTempRoots.clear();
   };
-  process.once("exit", cleanupAll);
-  process.once("SIGINT", () => {
+  process.once('exit', cleanupAll);
+  process.once('SIGINT', () => {
     cleanupAll();
     process.exit(130);
   });
-  process.once("SIGTERM", () => {
+  process.once('SIGTERM', () => {
     cleanupAll();
     process.exit(143);
   });
@@ -198,10 +198,10 @@ function copyAppRootForPostcss(
   const skip = new Set([
     resolve(outdir),
     resolve(tempRoot),
-    resolve(join(root, "node_modules")),
-    resolve(join(root, ".git")),
-    resolve(join(root, "dist")),
-    resolve(join(root, ".zts-dev")),
+    resolve(join(root, 'node_modules')),
+    resolve(join(root, '.git')),
+    resolve(join(root, 'dist')),
+    resolve(join(root, '.zts-dev')),
   ]);
   cpSync(root, tempRoot, {
     recursive: true,
@@ -215,10 +215,10 @@ function copyAppRootForPostcss(
       return true;
     },
   });
-  const appNodeModules = join(root, "node_modules");
+  const appNodeModules = join(root, 'node_modules');
   const nodeModulesTarget = existsSync(appNodeModules) ? appNodeModules : cliNodeModules;
   if (existsSync(nodeModulesTarget)) {
-    symlinkSync(nodeModulesTarget, join(tempRoot, "node_modules"), "dir");
+    symlinkSync(nodeModulesTarget, join(tempRoot, 'node_modules'), 'dir');
   }
   return tempRoot;
 }
@@ -380,8 +380,8 @@ export function createAppDevController(
   deps: AppDevControllerDeps,
 ): AppDevController {
   const { fallbackRequire } = deps;
-  const outdir = resolve(opts.outdir || join(root, ".zts-dev"));
-  const base = normalizeBase(opts.base ?? opts.publicPath ?? "/");
+  const outdir = resolve(opts.outdir || join(root, '.zts-dev'));
+  const base = normalizeBase(opts.base ?? opts.publicPath ?? '/');
   let cssDeps = new Set<string>();
   let cssDirDeps = new Set<string>();
   let primaryHref: string | null = null;
@@ -414,7 +414,7 @@ export function createAppDevController(
         outdir,
         configEnv,
         opts.logLevel,
-        "dev",
+        'dev',
         deps,
         reuseRoot
           ? { existingTempRoot: pipelineRoot, dirtyPaths, cache: pipelineCache }
@@ -426,8 +426,8 @@ export function createAppDevController(
       const prepared = prepareAppDevSync({
         root: prepareRoot,
         outdir,
-        entryHtml: opts.entryHtml ?? "index.html",
-        publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
+        entryHtml: opts.entryHtml ?? 'index.html',
+        publicDir: opts.publicDir === undefined ? 'public' : opts.publicDir,
         base,
         mode: configEnv.mode,
         envDir: opts.envDir ? resolve(opts.envDir) : prepareRoot,
@@ -503,11 +503,11 @@ export function createAppDevController(
       // 컴파일된 CSS 도 outdir 에 mirror 해서 dev server 가 서빙 가능하게.
       const cssRel = relative(pipelineRoot, cssTempPath);
       mirrorFile(cssTempPath, join(outdir, cssRel));
-      return joinUrl(base, cssRel.replaceAll(sep, "/"));
+      return joinUrl(base, cssRel.replaceAll(sep, '/'));
     },
     hrefFor(absPath) {
-      if (absPath.endsWith(".css")) return joinUrl(base, relative(root, absPath));
-      return primaryHref ?? joinUrl(base, "style.css");
+      if (absPath.endsWith('.css')) return joinUrl(base, relative(root, absPath));
+      return primaryHref ?? joinUrl(base, 'style.css');
     },
   };
 }

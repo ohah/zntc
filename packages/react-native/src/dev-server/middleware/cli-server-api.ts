@@ -4,10 +4,10 @@
 // 없이도 base/asset/bundle/symbolicate 라우트는 동작 (HMR adapter 가 자체
 // broadcast 처리).
 
-import type { IncomingMessage } from "node:http";
-import type { Duplex } from "node:stream";
+import type { IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
 
-import type { Broadcast } from "../types.ts";
+import type { Broadcast } from '../types.ts';
 
 export interface CliWebsocketEndpoint {
   handleUpgrade(
@@ -41,7 +41,7 @@ export async function loadCliServerApi(
   try {
     // dynamic import — peer optional. tsc 의 module resolution 회피하려 string
     // variable 로 우회 (peer 미설치 환경에서 type-check 통과).
-    const specifier: string = "@react-native-community/cli-server-api";
+    const specifier: string = '@react-native-community/cli-server-api';
     const mod = (await import(specifier)) as unknown as {
       createDevServerMiddleware: (input: {
         port: number;

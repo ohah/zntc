@@ -1,6 +1,6 @@
-import { describe, test, expect, afterEach } from "bun:test";
-import { createFixture, ZTS_BIN } from "./helpers";
-import { join } from "node:path";
+import { describe, test, expect, afterEach } from 'bun:test';
+import { createFixture, ZTS_BIN } from './helpers';
+import { join } from 'node:path';
 
 // dev server 테스트는 서버를 백그라운드로 시작하고 HTTP 요청으로 검증
 async function startDevServer(
@@ -9,15 +9,15 @@ async function startDevServer(
 ): Promise<{ proc: ReturnType<typeof Bun.spawn>; port: number; kill: () => Promise<void> }> {
   const proc = Bun.spawn({
     cmd: [ZTS_BIN, ...args],
-    stdout: "pipe",
-    stderr: "pipe",
+    stdout: 'pipe',
+    stderr: 'pipe',
   });
 
   // 서버 시작 대기
   await new Promise((r) => setTimeout(r, opts.timeout ?? 2000));
 
   // stderr에서 포트 추출
-  const port = args.includes("--port") ? Number.parseInt(args[args.indexOf("--port") + 1]) : 12300;
+  const port = args.includes('--port') ? Number.parseInt(args[args.indexOf('--port') + 1]) : 12300;
 
   return {
     proc,
@@ -29,7 +29,7 @@ async function startDevServer(
   };
 }
 
-describe("Dev Server", () => {
+describe('Dev Server', () => {
   let cleanup: (() => Promise<void>) | undefined;
   let killServer: (() => Promise<void>) | undefined;
 
@@ -44,102 +44,102 @@ describe("Dev Server", () => {
     }
   });
 
-  test("serves bundle on default port 12300", async () => {
+  test('serves bundle on default port 12300', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("hello");`,
+      'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
-    const server = await startDevServer(["--serve", "--bundle", join(fixture.dir, "index.ts")]);
+    const server = await startDevServer(['--serve', '--bundle', join(fixture.dir, 'index.ts')]);
     killServer = server.kill;
 
     const res = await fetch(`http://localhost:${server.port}/bundle.js`);
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain("hello");
+    expect(text).toContain('hello');
   });
 
-  test("--port changes listen port", async () => {
+  test('--port changes listen port', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("custom-port");`,
+      'index.ts': `console.log("custom-port");`,
     });
     cleanup = fixture.cleanup;
 
     const server = await startDevServer([
-      "--serve",
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "--port",
-      "12399",
+      '--serve',
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '--port',
+      '12399',
     ]);
     killServer = server.kill;
 
     const res = await fetch(`http://localhost:12399/bundle.js`);
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain("custom-port");
+    expect(text).toContain('custom-port');
   });
 
-  test("serves static files", async () => {
+  test('serves static files', async () => {
     const fixture = await createFixture({
-      "hello.txt": "static content",
+      'hello.txt': 'static content',
     });
     cleanup = fixture.cleanup;
 
-    const server = await startDevServer(["--serve", fixture.dir, "--port", "12398"]);
+    const server = await startDevServer(['--serve', fixture.dir, '--port', '12398']);
     killServer = server.kill;
 
     const res = await fetch(`http://localhost:12398/hello.txt`);
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(text).toContain("static content");
+    expect(text).toContain('static content');
   });
 
-  test("returns 404 for missing files", async () => {
+  test('returns 404 for missing files', async () => {
     const fixture = await createFixture({
-      "index.html": "<h1>home</h1>",
+      'index.html': '<h1>home</h1>',
     });
     cleanup = fixture.cleanup;
 
-    const server = await startDevServer(["--serve", fixture.dir, "--port", "12397"]);
+    const server = await startDevServer(['--serve', fixture.dir, '--port', '12397']);
     killServer = server.kill;
 
     const res = await fetch(`http://localhost:12397/nonexistent.js`);
     expect(res.status).toBe(404);
   });
 
-  test("CORS headers are present", async () => {
+  test('CORS headers are present', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log(1);`,
+      'index.ts': `console.log(1);`,
     });
     cleanup = fixture.cleanup;
 
     const server = await startDevServer([
-      "--serve",
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "--port",
-      "12396",
+      '--serve',
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '--port',
+      '12396',
     ]);
     killServer = server.kill;
 
     const res = await fetch(`http://localhost:12396/bundle.js`);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
   });
 
-  test("--proxy forwards requests to backend", async () => {
+  test('--proxy forwards requests to backend', async () => {
     // 간단한 백엔드 서버 시작
     const backendServer = Bun.serve({
       port: 18080,
       fetch() {
-        return new Response(JSON.stringify({ message: "from backend" }), {
-          headers: { "Content-Type": "application/json" },
+        return new Response(JSON.stringify({ message: 'from backend' }), {
+          headers: { 'Content-Type': 'application/json' },
         });
       },
     });
 
     const fixture = await createFixture({
-      "index.ts": `console.log("proxy-test");`,
+      'index.ts': `console.log("proxy-test");`,
     });
     cleanup = async () => {
       backendServer.stop();
@@ -147,34 +147,34 @@ describe("Dev Server", () => {
     };
 
     const server = await startDevServer([
-      "--serve",
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "--port",
-      "12395",
-      "--proxy",
-      "/api=http://127.0.0.1:18080",
+      '--serve',
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '--port',
+      '12395',
+      '--proxy',
+      '/api=http://127.0.0.1:18080',
     ]);
     killServer = server.kill;
 
     const res = await fetch(`http://localhost:12395/api/data`);
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.message).toBe("from backend");
+    expect(json.message).toBe('from backend');
   });
 
-  test("--proxy passes request headers to backend", async () => {
-    let receivedAuth = "";
+  test('--proxy passes request headers to backend', async () => {
+    let receivedAuth = '';
     const backendServer = Bun.serve({
       port: 18081,
       fetch(req) {
-        receivedAuth = req.headers.get("authorization") || "";
-        return new Response("ok");
+        receivedAuth = req.headers.get('authorization') || '';
+        return new Response('ok');
       },
     });
 
     const fixture = await createFixture({
-      "index.ts": `console.log(1);`,
+      'index.ts': `console.log(1);`,
     });
     cleanup = async () => {
       backendServer.stop();
@@ -182,20 +182,20 @@ describe("Dev Server", () => {
     };
 
     const server = await startDevServer([
-      "--serve",
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "--port",
-      "12394",
-      "--proxy",
-      "/api=http://127.0.0.1:18081",
+      '--serve',
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '--port',
+      '12394',
+      '--proxy',
+      '/api=http://127.0.0.1:18081',
     ]);
     killServer = server.kill;
 
     await fetch(`http://localhost:12394/api/test`, {
-      headers: { Authorization: "Bearer token123" },
+      headers: { Authorization: 'Bearer token123' },
     });
 
-    expect(receivedAuth).toBe("Bearer token123");
+    expect(receivedAuth).toBe('Bearer token123');
   });
 });

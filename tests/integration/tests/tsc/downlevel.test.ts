@@ -1,41 +1,41 @@
-import { describe, test, expect } from "bun:test";
-import { createFixture, runZts } from "../helpers";
+import { describe, test, expect } from 'bun:test';
+import { createFixture, runZts } from '../helpers';
 
 async function expectPass(code: string, flags: string[] = []) {
-  const fixture = await createFixture({ "input.ts": code });
+  const fixture = await createFixture({ 'input.ts': code });
   try {
     const result = await runZts([...flags, `${fixture.dir}/input.ts`]);
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).not.toContain("error:");
+    expect(result.stderr).not.toContain('error:');
   } finally {
     await fixture.cleanup();
   }
 }
 
 async function expectError(code: string, flags: string[] = []) {
-  const fixture = await createFixture({ "input.ts": code });
+  const fixture = await createFixture({ 'input.ts': code });
   try {
     const result = await runZts([...flags, `${fixture.dir}/input.ts`]);
-    const hasError = result.exitCode !== 0 || result.stderr.includes("error");
+    const hasError = result.exitCode !== 0 || result.stderr.includes('error');
     expect(hasError).toBe(true);
   } finally {
     await fixture.cleanup();
   }
 }
 
-describe("TSC downlevel conformance", () => {
-  describe("es5", () => {
-    test("es5DateAPIs", async () => {
+describe('TSC downlevel conformance', () => {
+  describe('es5', () => {
+    test('es5DateAPIs', async () => {
       await expectPass(
         `
 Date.UTC(2017); // should error`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
   });
 
-  describe("es2016", () => {
-    test("es2016IntlAPIs", async () => {
+  describe('es2016', () => {
+    test('es2016IntlAPIs', async () => {
       await expectPass(
         `
 // Sample from
@@ -57,22 +57,22 @@ try {
     });
   });
 
-  describe("es2017", () => {
-    test("assignSharedArrayBufferToArrayBuffer", async () => {
+  describe('es2017', () => {
+    test('assignSharedArrayBufferToArrayBuffer', async () => {
       await expectPass(
         `
 var foo: ArrayBuffer = new SharedArrayBuffer(1024); // should error`,
         [],
       );
     });
-    test("es2017DateAPIs", async () => {
+    test('es2017DateAPIs', async () => {
       await expectPass(
         `
 Date.UTC(2017);`,
         [],
       );
     });
-    test("useObjectValuesAndEntries1", async () => {
+    test('useObjectValuesAndEntries1', async () => {
       await expectPass(
         `
 var o = { a: 1, b: 2 };
@@ -108,7 +108,7 @@ var values6 = Object.values(i);                     // any[]`,
         [],
       );
     });
-    test("useObjectValuesAndEntries2", async () => {
+    test('useObjectValuesAndEntries2', async () => {
       await expectPass(
         `
 var o = { a: 1, b: 2 };
@@ -121,7 +121,7 @@ var entries = Object.entries(o);`,
         [],
       );
     });
-    test("useObjectValuesAndEntries3", async () => {
+    test('useObjectValuesAndEntries3', async () => {
       await expectPass(
         `
 var o = { a: 1, b: 2 };
@@ -134,7 +134,7 @@ var entries = Object.entries(o);`,
         [],
       );
     });
-    test("useObjectValuesAndEntries4", async () => {
+    test('useObjectValuesAndEntries4', async () => {
       await expectPass(
         `
 var o = { a: 1, b: 2 };
@@ -147,7 +147,7 @@ var entries = Object.entries(o);`,
         [],
       );
     });
-    test("useSharedArrayBuffer1", async () => {
+    test('useSharedArrayBuffer1', async () => {
       await expectPass(
         `
 var foge = new SharedArrayBuffer(1024);
@@ -156,7 +156,7 @@ var len = foge.byteLength;`,
         [],
       );
     });
-    test("useSharedArrayBuffer2", async () => {
+    test('useSharedArrayBuffer2', async () => {
       await expectPass(
         `
 var foge = new SharedArrayBuffer(1024);
@@ -165,7 +165,7 @@ var len = foge.byteLength;`,
         [],
       );
     });
-    test("useSharedArrayBuffer3", async () => {
+    test('useSharedArrayBuffer3', async () => {
       await expectPass(
         `
 var foge = new SharedArrayBuffer(1024);
@@ -174,7 +174,7 @@ var len = foge.byteLength;`,
         [],
       );
     });
-    test("useSharedArrayBuffer4", async () => {
+    test('useSharedArrayBuffer4', async () => {
       await expectPass(
         `
 var foge = new SharedArrayBuffer(1024);
@@ -185,7 +185,7 @@ var species = SharedArrayBuffer[Symbol.species];`,
         [],
       );
     });
-    test("useSharedArrayBuffer5", async () => {
+    test('useSharedArrayBuffer5', async () => {
       await expectPass(
         `
 var foge = new SharedArrayBuffer(1024);
@@ -194,7 +194,7 @@ var species = SharedArrayBuffer[Symbol.species];`,
         [],
       );
     });
-    test("useSharedArrayBuffer6", async () => {
+    test('useSharedArrayBuffer6', async () => {
       await expectPass(
         `
 var foge = new SharedArrayBuffer(1024);
@@ -207,8 +207,8 @@ var length = SharedArrayBuffer.length;
     });
   });
 
-  describe("es2018", () => {
-    test("es2018IntlAPIs", async () => {
+  describe('es2018', () => {
+    test('es2018IntlAPIs', async () => {
       await expectPass(
         `
 // Sample from
@@ -223,7 +223,7 @@ console.log(part.type, part.value);
         [],
       );
     });
-    test("invalidTaggedTemplateEscapeSequences", async () => {
+    test('invalidTaggedTemplateEscapeSequences', async () => {
       await expectError(
         `
 function tag (str: any, ...args: any[]): any {
@@ -254,7 +254,7 @@ const a14 = tag\`\${ 100 }\\x00\` // \\x00
         [],
       );
     });
-    test("usePromiseFinally", async () => {
+    test('usePromiseFinally', async () => {
       await expectPass(
         `
 let promise1 = new Promise(function(resolve, reject) {})
@@ -263,7 +263,7 @@ let promise1 = new Promise(function(resolve, reject) {})
         [],
       );
     });
-    test("useRegexpGroups", async () => {
+    test('useRegexpGroups', async () => {
       await expectPass(
         `
 let re = /(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})/u;
@@ -286,8 +286,8 @@ let foo = "foo".match(/(?<bar>foo)/)!.groups.foo;`,
     });
   });
 
-  describe("es2019", () => {
-    test("allowUnescapedParagraphAndLineSeparatorsInStringLiteral", async () => {
+  describe('es2019', () => {
+    test('allowUnescapedParagraphAndLineSeparatorsInStringLiteral', async () => {
       await expectPass(
         `// Strings containing unescaped line / paragraph separators
 // Using both single quotes, double quotes and template literals
@@ -316,7 +316,7 @@ var arr = [
         [],
       );
     });
-    test("globalThisAmbientModules", async () => {
+    test('globalThisAmbientModules', async () => {
       // tsc는 typeof globalThis에서 ambient module 참조를 타입 에러로 잡지만,
       // ZTS는 타입 체킹을 하지 않으므로 트랜스파일은 성공해야 함.
       // (이전에는 declare module body 내 export 파서 에러로 우연히 실패했음)
@@ -335,7 +335,7 @@ const bad1: (typeof globalThis)["\\"ambientModule\\""] = 'ambientModule'`,
         [],
       );
     });
-    test("globalThisBlockscopedProperties", async () => {
+    test('globalThisBlockscopedProperties', async () => {
       await expectPass(
         `var x = 1
 const y = 2
@@ -356,10 +356,10 @@ declare let themAll: keyof typeof globalThis`,
         [],
       );
     });
-    test("globalThisCollision", async () => {
+    test('globalThisCollision', async () => {
       await expectPass(`var globalThis;`, []);
     });
-    test("globalThisGlobalExportAsGlobal", async () => {
+    test('globalThisGlobalExportAsGlobal', async () => {
       await expectPass(
         `// https://github.com/microsoft/TypeScript/issues/33754
 declare global {
@@ -369,7 +369,7 @@ declare global {
         [],
       );
     });
-    test("globalThisPropertyAssignment", async () => {
+    test('globalThisPropertyAssignment', async () => {
       await expectPass(
         `this.x = 1
 var y = 2
@@ -380,7 +380,7 @@ globalThis.alpha = 4`,
         [],
       );
     });
-    test("globalThisReadonlyProperties", async () => {
+    test('globalThisReadonlyProperties', async () => {
       await expectPass(
         `globalThis.globalThis = 1 as any // should error
 var x = 1
@@ -390,14 +390,14 @@ globalThis.y = 4 // should error`,
         [],
       );
     });
-    test("globalThisTypeIndexAccess", async () => {
+    test('globalThisTypeIndexAccess', async () => {
       await expectPass(
         `
 declare const w_e: (typeof globalThis)["globalThis"]`,
         [],
       );
     });
-    test("globalThisUnknown", async () => {
+    test('globalThisUnknown', async () => {
       await expectPass(
         `declare let win: Window & typeof globalThis;
 
@@ -414,7 +414,7 @@ globalThis['hi']`,
         [],
       );
     });
-    test("globalThisUnknownNoImplicitAny", async () => {
+    test('globalThisUnknownNoImplicitAny', async () => {
       await expectPass(
         `declare let win: Window & typeof globalThis;
 
@@ -429,7 +429,7 @@ globalThis['hi']`,
         [],
       );
     });
-    test("globalThisVarDeclaration", async () => {
+    test('globalThisVarDeclaration', async () => {
       await expectPass(
         `var a = 10;
 this.a;
@@ -461,7 +461,7 @@ top.b;`,
         [],
       );
     });
-    test("importMeta", async () => {
+    test('importMeta', async () => {
       await expectError(
         `
 
@@ -500,7 +500,7 @@ const { a, b, c } = import.meta.wellKnownProperty;`,
         [],
       );
     });
-    test("importMetaNarrowing", async () => {
+    test('importMetaNarrowing', async () => {
       await expectPass(
         `
 declare global { interface ImportMeta {foo?: () => void} };
@@ -513,8 +513,8 @@ if (import.meta.foo) {
     });
   });
 
-  describe("es2020", () => {
-    test("bigintMissingES2019", async () => {
+  describe('es2020', () => {
+    test('bigintMissingES2019', async () => {
       await expectPass(
         `declare function test<A, B extends A>(): void;
 
@@ -525,7 +525,7 @@ test<{t?: string}, bigint>();
         [],
       );
     });
-    test("bigintMissingES2020", async () => {
+    test('bigintMissingES2020', async () => {
       await expectPass(
         `declare function test<A, B extends A>(): void;
 
@@ -536,7 +536,7 @@ test<{t?: string}, bigint>();
         [],
       );
     });
-    test("bigintMissingESNext", async () => {
+    test('bigintMissingESNext', async () => {
       await expectPass(
         `declare function test<A, B extends A>(): void;
 
@@ -547,7 +547,7 @@ test<{t?: string}, bigint>();
         [],
       );
     });
-    test("constructBigint", async () => {
+    test('constructBigint', async () => {
       await expectPass(
         `BigInt(1);
 BigInt(1n);
@@ -561,7 +561,7 @@ BigInt(undefined)`,
         [],
       );
     });
-    test("es2020IntlAPIs", async () => {
+    test('es2020IntlAPIs', async () => {
       await expectPass(
         `
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl#Locale_identification_and_negotiation
@@ -624,7 +624,7 @@ console.log(Intl.DisplayNames.supportedLocalesOf(localesArg, {})); // ["es-ES", 
         [],
       );
     });
-    test("intlNumberFormatES2020", async () => {
+    test('intlNumberFormatES2020', async () => {
       await expectPass(
         `
 // New/updated resolved options in ES2020
@@ -654,7 +654,7 @@ const types: Intl.NumberFormatPartTypes[] = [ 'compact', 'unit', 'unknown' ];
         [],
       );
     });
-    test("localesObjectArgument", async () => {
+    test('localesObjectArgument', async () => {
       await expectPass(
         `
 const enUS = new Intl.Locale("en-US");
@@ -725,8 +725,8 @@ Intl.NumberFormat.supportedLocalesOf(readonlyLocales);`,
     });
   });
 
-  describe("emitter/es5", () => {
-    test("emitter.asyncGenerators.classMethods.es5", async () => {
+  describe('emitter/es5', () => {
+    test('emitter.asyncGenerators.classMethods.es5', async () => {
       await expectPass(
         `class C1 {
     async * f() {
@@ -778,10 +778,10 @@ class C9 extends B9 {
     }
 }
 `,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("emitter.asyncGenerators.functionDeclarations.es5", async () => {
+    test('emitter.asyncGenerators.functionDeclarations.es5', async () => {
       await expectPass(
         `async function * f1() {
 }
@@ -804,10 +804,10 @@ async function * f7() {
     return 1;
 }
 `,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("emitter.asyncGenerators.functionExpressions.es5", async () => {
+    test('emitter.asyncGenerators.functionExpressions.es5', async () => {
       await expectPass(
         `const f1 = async function * () {
 }
@@ -830,10 +830,10 @@ const f7 = async function * () {
     return 1;
 }
 `,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("emitter.asyncGenerators.objectLiteralMethods.es5", async () => {
+    test('emitter.asyncGenerators.objectLiteralMethods.es5', async () => {
       await expectPass(
         `const o1 = {
     async * f() {
@@ -870,163 +870,13 @@ const o7 = {
     }
 }
 `,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
   });
 
-  describe("emitter/es2015", () => {
-    test("emitter.asyncGenerators.classMethods.es2015", async () => {
-      await expectPass(
-        `class C1 {
-    async * f() {
-    }
-}
-class C2 {
-    async * f() {
-        const x = yield;
-    }
-}
-class C3 {
-    async * f() {
-        const x = yield 1;
-    }
-}
-class C4 {
-    async * f() {
-        const x = yield* [1];
-    }
-}
-class C5 {
-    async * f() {
-        const x = yield* (async function*() { yield 1; })();
-    }
-}
-class C6 {
-    async * f() {
-        const x = await 1;
-    }
-}
-class C7 {
-    async * f() {
-        return 1;
-    }
-}
-class C8 {
-    g() {
-    }
-    async * f() {
-        this.g();
-    }
-}
-class B9 {
-    g() {}
-}
-class C9 extends B9 {
-    async * f() {
-        super.g();
-    }
-}
-`,
-        [],
-      );
-    });
-    test("emitter.asyncGenerators.functionDeclarations.es2015", async () => {
-      await expectPass(
-        `async function * f1() {
-}
-async function * f2() {
-    const x = yield;
-}
-async function * f3() {
-    const x = yield 1;
-}
-async function * f4() {
-    const x = yield* [1];
-}
-async function * f5() {
-    const x = yield* (async function*() { yield 1; })();
-}
-async function * f6() {
-    const x = await 1;
-}
-async function * f7() {
-    return 1;
-}
-`,
-        [],
-      );
-    });
-    test("emitter.asyncGenerators.functionExpressions.es2015", async () => {
-      await expectPass(
-        `const f1 = async function * () {
-}
-const f2 = async function * () {
-    const x = yield;
-}
-const f3 = async function * () {
-    const x = yield 1;
-}
-const f4 = async function * () {
-    const x = yield* [1];
-}
-const f5 = async function * () {
-    const x = yield* (async function*() { yield 1; })();
-}
-const f6 = async function * () {
-    const x = await 1;
-}
-const f7 = async function * () {
-    return 1;
-}
-`,
-        [],
-      );
-    });
-    test("emitter.asyncGenerators.objectLiteralMethods.es2015", async () => {
-      await expectPass(
-        `const o1 = {
-    async * f() {
-    }
-}
-const o2 = {
-    async * f() {
-        const x = yield;
-    }
-}
-const o3 = {
-    async * f() {
-        const x = yield 1;
-    }
-}
-const o4 = {
-    async * f() {
-        const x = yield* [1];
-    }
-}
-const o5 = {
-    async * f() {
-        const x = yield* (async function*() { yield 1; })();
-    }
-}
-const o6 = {
-    async * f() {
-        const x = await 1;
-    }
-}
-const o7 = {
-    async * f() {
-        return 1;
-    }
-}
-`,
-        [],
-      );
-    });
-  });
-
-  describe("emitter/es2018", () => {
-    test("emitter.asyncGenerators.classMethods.es2018", async () => {
+  describe('emitter/es2015', () => {
+    test('emitter.asyncGenerators.classMethods.es2015', async () => {
       await expectPass(
         `class C1 {
     async * f() {
@@ -1081,7 +931,7 @@ class C9 extends B9 {
         [],
       );
     });
-    test("emitter.asyncGenerators.functionDeclarations.es2018", async () => {
+    test('emitter.asyncGenerators.functionDeclarations.es2015', async () => {
       await expectPass(
         `async function * f1() {
 }
@@ -1107,7 +957,7 @@ async function * f7() {
         [],
       );
     });
-    test("emitter.asyncGenerators.functionExpressions.es2018", async () => {
+    test('emitter.asyncGenerators.functionExpressions.es2015', async () => {
       await expectPass(
         `const f1 = async function * () {
 }
@@ -1133,7 +983,7 @@ const f7 = async function * () {
         [],
       );
     });
-    test("emitter.asyncGenerators.objectLiteralMethods.es2018", async () => {
+    test('emitter.asyncGenerators.objectLiteralMethods.es2015', async () => {
       await expectPass(
         `const o1 = {
     async * f() {
@@ -1175,8 +1025,158 @@ const o7 = {
     });
   });
 
-  describe("emitter/es2019", () => {
-    test("emitter.noCatchBinding.es2019", async () => {
+  describe('emitter/es2018', () => {
+    test('emitter.asyncGenerators.classMethods.es2018', async () => {
+      await expectPass(
+        `class C1 {
+    async * f() {
+    }
+}
+class C2 {
+    async * f() {
+        const x = yield;
+    }
+}
+class C3 {
+    async * f() {
+        const x = yield 1;
+    }
+}
+class C4 {
+    async * f() {
+        const x = yield* [1];
+    }
+}
+class C5 {
+    async * f() {
+        const x = yield* (async function*() { yield 1; })();
+    }
+}
+class C6 {
+    async * f() {
+        const x = await 1;
+    }
+}
+class C7 {
+    async * f() {
+        return 1;
+    }
+}
+class C8 {
+    g() {
+    }
+    async * f() {
+        this.g();
+    }
+}
+class B9 {
+    g() {}
+}
+class C9 extends B9 {
+    async * f() {
+        super.g();
+    }
+}
+`,
+        [],
+      );
+    });
+    test('emitter.asyncGenerators.functionDeclarations.es2018', async () => {
+      await expectPass(
+        `async function * f1() {
+}
+async function * f2() {
+    const x = yield;
+}
+async function * f3() {
+    const x = yield 1;
+}
+async function * f4() {
+    const x = yield* [1];
+}
+async function * f5() {
+    const x = yield* (async function*() { yield 1; })();
+}
+async function * f6() {
+    const x = await 1;
+}
+async function * f7() {
+    return 1;
+}
+`,
+        [],
+      );
+    });
+    test('emitter.asyncGenerators.functionExpressions.es2018', async () => {
+      await expectPass(
+        `const f1 = async function * () {
+}
+const f2 = async function * () {
+    const x = yield;
+}
+const f3 = async function * () {
+    const x = yield 1;
+}
+const f4 = async function * () {
+    const x = yield* [1];
+}
+const f5 = async function * () {
+    const x = yield* (async function*() { yield 1; })();
+}
+const f6 = async function * () {
+    const x = await 1;
+}
+const f7 = async function * () {
+    return 1;
+}
+`,
+        [],
+      );
+    });
+    test('emitter.asyncGenerators.objectLiteralMethods.es2018', async () => {
+      await expectPass(
+        `const o1 = {
+    async * f() {
+    }
+}
+const o2 = {
+    async * f() {
+        const x = yield;
+    }
+}
+const o3 = {
+    async * f() {
+        const x = yield 1;
+    }
+}
+const o4 = {
+    async * f() {
+        const x = yield* [1];
+    }
+}
+const o5 = {
+    async * f() {
+        const x = yield* (async function*() { yield 1; })();
+    }
+}
+const o6 = {
+    async * f() {
+        const x = await 1;
+    }
+}
+const o7 = {
+    async * f() {
+        return 1;
+    }
+}
+`,
+        [],
+      );
+    });
+  });
+
+  describe('emitter/es2019', () => {
+    test('emitter.noCatchBinding.es2019', async () => {
       await expectPass(
         `function f() {
     try { } catch { }
@@ -1190,42 +1190,42 @@ const o7 = {
     });
   });
 
-  describe("async/es5", () => {
-    test("asyncAliasReturnType_es5", async () => {
+  describe('async/es5', () => {
+    test('asyncAliasReturnType_es5', async () => {
       await expectPass(
         `type PromiseAlias<T> = Promise<T>;
 
 async function f(): PromiseAlias<void> {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("arrowFunctionWithParameterNameAsync_es5", async () => {
+    test('arrowFunctionWithParameterNameAsync_es5', async () => {
       await expectPass(
         `
 const x = async => async;`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction1_es5", async () => {
+    test('asyncArrowFunction1_es5', async () => {
       await expectPass(
         `
 var foo = async (): Promise<void> => {
 };`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction10_es5", async () => {
+    test('asyncArrowFunction10_es5', async () => {
       await expectPass(
         `
 var foo = async (): Promise<void> => {
    // Legal to use 'await' in a type context.
    var v: await;
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction11_es5", async () => {
+    test('asyncArrowFunction11_es5', async () => {
       await expectPass(
         `// https://github.com/Microsoft/TypeScript/issues/24722
 class A {
@@ -1234,47 +1234,47 @@ class A {
         const obj = { ["a"]: () => this }; // computed property name after \`await\` triggers case
     };
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction2_es5", async () => {
+    test('asyncArrowFunction2_es5', async () => {
       await expectError(
         `var f = (await) => {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction3_es5", async () => {
+    test('asyncArrowFunction3_es5', async () => {
       await expectError(
         `function f(await = await) {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction4_es5", async () => {
+    test('asyncArrowFunction4_es5', async () => {
       await expectPass(
         `var await = () => {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction5_es5", async () => {
+    test('asyncArrowFunction5_es5', async () => {
       await expectPass(
         `
 var foo = async (await): Promise<void> => {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction6_es5", async () => {
+    test('asyncArrowFunction6_es5', async () => {
       await expectError(
         `
 var foo = async (a = await): Promise<void> => {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction7_es5", async () => {
+    test('asyncArrowFunction7_es5', async () => {
       await expectError(
         `
 var bar = async (): Promise<void> => {
@@ -1282,26 +1282,26 @@ var bar = async (): Promise<void> => {
   var foo = async (a = await): Promise<void> => {
   }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction8_es5", async () => {
+    test('asyncArrowFunction8_es5', async () => {
       await expectError(
         `
 var foo = async (): Promise<void> => {
   var v = { [await]: foo }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunction9_es5", async () => {
+    test('asyncArrowFunction9_es5', async () => {
       await expectError(
         `var foo = async (a = await => await): Promise<void> => {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunctionCapturesArguments_es5", async () => {
+    test('asyncArrowFunctionCapturesArguments_es5', async () => {
       await expectPass(
         `class C {
    method() {
@@ -1309,29 +1309,29 @@ var foo = async (): Promise<void> => {
       var fn = async () => await other.apply(this, arguments);
    }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncArrowFunctionCapturesThis_es5", async () => {
+    test('asyncArrowFunctionCapturesThis_es5', async () => {
       await expectPass(
         `class C {
    method() {
       var fn = async () => await this;
    }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncUnParenthesizedArrowFunction_es5", async () => {
+    test('asyncUnParenthesizedArrowFunction_es5', async () => {
       await expectPass(
         `
 declare function someOtherFunction(i: any): Promise<void>;
 const x = async i => await someOtherFunction(i)
 const x1 = async (i) => await someOtherFunction(i);`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncAwait_es5", async () => {
+    test('asyncAwait_es5', async () => {
       await expectPass(
         `type MyPromise<T> = Promise<T>;
 declare var MyPromise: typeof Promise;
@@ -1379,10 +1379,10 @@ async function f14() {
         break block;
     }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncAwaitNestedClasses_es5", async () => {
+    test('asyncAwaitNestedClasses_es5', async () => {
       await expectPass(
         `// https://github.com/Microsoft/TypeScript/issues/20744
 class A {
@@ -1399,53 +1399,53 @@ class A {
 }
 
 A.B.C.func();`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncClass_es5", async () => {
+    test('asyncClass_es5', async () => {
       await expectError(
         `async class C {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncConstructor_es5", async () => {
+    test('asyncConstructor_es5', async () => {
       await expectError(
         `class C {
   async constructor() {
   }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncDeclare_es5", async () => {
-      await expectPass(`declare async function foo(): Promise<void>;`, ["--target=es5"]);
+    test('asyncDeclare_es5', async () => {
+      await expectPass(`declare async function foo(): Promise<void>;`, ['--target=es5']);
     });
-    test("asyncEnum_es5", async () => {
+    test('asyncEnum_es5', async () => {
       await expectError(
         `async enum E {
   Value
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncGetter_es5", async () => {
+    test('asyncGetter_es5', async () => {
       await expectError(
         `class C {
   async get foo() {
   }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncInterface_es5", async () => {
+    test('asyncInterface_es5', async () => {
       await expectError(
         `async interface I {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncMethodWithSuper_es5", async () => {
+    test('asyncMethodWithSuper_es5', async () => {
       await expectPass(
         `class A {
     x() {
@@ -1502,24 +1502,24 @@ class B extends A {
     }
 }
 `,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncModule_es5", async () => {
+    test('asyncModule_es5', async () => {
       await expectError(
         `async namespace M {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncMultiFile_es5", async () => {
+    test('asyncMultiFile_es5', async () => {
       await expectPass(
         `async function f() {}
 function g() { }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncQualifiedReturnType_es5", async () => {
+    test('asyncQualifiedReturnType_es5', async () => {
       await expectPass(
         `namespace X {
     export class MyPromise<T> extends Promise<T> {
@@ -1528,19 +1528,19 @@ function g() { }`,
 
 async function f(): X.MyPromise<void> {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncSetter_es5", async () => {
+    test('asyncSetter_es5', async () => {
       await expectError(
         `class C {
   async set foo(value) {
   }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncUseStrict_es5", async () => {
+    test('asyncUseStrict_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1548,10 +1548,10 @@ async function func(): Promise<void> {
     "use strict";
     var b = await p || a;
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitBinaryExpression1_es5", async () => {
+    test('awaitBinaryExpression1_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1562,10 +1562,10 @@ async function func(): Promise<void> {
     var b = await p || a;
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitBinaryExpression2_es5", async () => {
+    test('awaitBinaryExpression2_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1576,10 +1576,10 @@ async function func(): Promise<void> {
     var b = await p && a;
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitBinaryExpression3_es5", async () => {
+    test('awaitBinaryExpression3_es5', async () => {
       await expectPass(
         `declare var a: number;
 declare var p: Promise<number>;
@@ -1590,10 +1590,10 @@ async function func(): Promise<void> {
     var b = await p + a;
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitBinaryExpression4_es5", async () => {
+    test('awaitBinaryExpression4_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1604,10 +1604,10 @@ async function func(): Promise<void> {
     var b = (await p, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitBinaryExpression5_es5", async () => {
+    test('awaitBinaryExpression5_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1619,10 +1619,10 @@ async function func(): Promise<void> {
     o.a = await p;
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitCallExpression1_es5", async () => {
+    test('awaitCallExpression1_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1637,10 +1637,10 @@ async function func(): Promise<void> {
     var b = fn(a, a, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitCallExpression2_es5", async () => {
+    test('awaitCallExpression2_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1655,10 +1655,10 @@ async function func(): Promise<void> {
     var b = fn(await p, a, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitCallExpression3_es5", async () => {
+    test('awaitCallExpression3_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1673,10 +1673,10 @@ async function func(): Promise<void> {
     var b = fn(a, await p, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitCallExpression4_es5", async () => {
+    test('awaitCallExpression4_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1691,10 +1691,10 @@ async function func(): Promise<void> {
     var b = (await pfn)(a, a, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitCallExpression5_es5", async () => {
+    test('awaitCallExpression5_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1709,10 +1709,10 @@ async function func(): Promise<void> {
     var b = o.fn(a, a, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitCallExpression6_es5", async () => {
+    test('awaitCallExpression6_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1727,10 +1727,10 @@ async function func(): Promise<void> {
     var b = o.fn(await p, a, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitCallExpression7_es5", async () => {
+    test('awaitCallExpression7_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1745,10 +1745,10 @@ async function func(): Promise<void> {
     var b = o.fn(a, await p, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitCallExpression8_es5", async () => {
+    test('awaitCallExpression8_es5', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -1763,10 +1763,10 @@ async function func(): Promise<void> {
     var b = (await po).fn(a, a, a);
     after();
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitClassExpression_es5", async () => {
+    test('awaitClassExpression_es5', async () => {
       await expectPass(
         `declare class C { }
 declare var p: Promise<typeof C>;
@@ -1775,10 +1775,10 @@ async function func(): Promise<void> {
     class D extends (await p) {
     }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("awaitUnion_es5", async () => {
+    test('awaitUnion_es5', async () => {
       await expectPass(
         `declare let a: number | string;
 declare let b: PromiseLike<number> | PromiseLike<string>;
@@ -1792,51 +1792,51 @@ async function f() {
 	let await_d = await d;
 	let await_e = await e;
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration1_es5", async () => {
+    test('asyncFunctionDeclaration1_es5', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration10_es5", async () => {
+    test('asyncFunctionDeclaration10_es5', async () => {
       await expectError(
         `async function foo(a = await => await): Promise<void> {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration11_es5", async () => {
+    test('asyncFunctionDeclaration11_es5', async () => {
       await expectPass(
         `async function await(): Promise<void> {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration12_es5", async () => {
-      await expectError(`var v = async function await(): Promise<void> { }`, ["--target=es5"]);
+    test('asyncFunctionDeclaration12_es5', async () => {
+      await expectError(`var v = async function await(): Promise<void> { }`, ['--target=es5']);
     });
-    test("asyncFunctionDeclaration13_es5", async () => {
+    test('asyncFunctionDeclaration13_es5', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
    // Legal to use 'await' in a type context.
    var v: await;
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration14_es5", async () => {
+    test('asyncFunctionDeclaration14_es5', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
   return;
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration15_es5", async () => {
+    test('asyncFunctionDeclaration15_es5', async () => {
       await expectPass(
         `declare class Thenable { then(): void; }
 declare let a: any;
@@ -1862,10 +1862,10 @@ async function fn17() { await a; } // valid: Promise<void>
 async function fn18() { await obj; } // valid: Promise<void>
 async function fn19() { await thenable; } // error
 `,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration16_es5", async () => {
+    test('asyncFunctionDeclaration16_es5', async () => {
       await expectPass(
         `
 declare class Thenable { then(): void; }
@@ -1919,66 +1919,66 @@ const f5 = async str => {
     return str;
 }
 `,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration2_es5", async () => {
+    test('asyncFunctionDeclaration2_es5', async () => {
       await expectPass(
         `function f(await) {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration3_es5", async () => {
+    test('asyncFunctionDeclaration3_es5', async () => {
       await expectError(
         `function f(await = await) {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration4_es5", async () => {
+    test('asyncFunctionDeclaration4_es5', async () => {
       await expectPass(
         `function await() {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration5_es5", async () => {
+    test('asyncFunctionDeclaration5_es5', async () => {
       await expectError(
         `async function foo(await): Promise<void> {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration6_es5", async () => {
+    test('asyncFunctionDeclaration6_es5', async () => {
       await expectError(
         `async function foo(a = await): Promise<void> {
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration7_es5", async () => {
+    test('asyncFunctionDeclaration7_es5', async () => {
       await expectError(
         `async function bar(): Promise<void> {
   // 'await' here is an identifier, and not a yield expression.
   async function foo(a = await): Promise<void> {
   }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclaration8_es5", async () => {
-      await expectError(`var v = { [await]: foo }`, ["--target=es5"]);
+    test('asyncFunctionDeclaration8_es5', async () => {
+      await expectError(`var v = { [await]: foo }`, ['--target=es5']);
     });
-    test("asyncFunctionDeclaration9_es5", async () => {
+    test('asyncFunctionDeclaration9_es5', async () => {
       await expectError(
         `async function foo(): Promise<void> {
   var v = { [await]: foo }
 }`,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
-    test("asyncFunctionDeclarationCapturesArguments_es5", async () => {
+    test('asyncFunctionDeclarationCapturesArguments_es5', async () => {
       await expectPass(
         `class C {
    method() {
@@ -1989,13 +1989,13 @@ const f5 = async str => {
    }
 }
 `,
-        ["--target=es5"],
+        ['--target=es5'],
       );
     });
   });
 
-  describe("async/es6", () => {
-    test("asyncAliasReturnType_es6", async () => {
+  describe('async/es6', () => {
+    test('asyncAliasReturnType_es6', async () => {
       await expectPass(
         `type PromiseAlias<T> = Promise<T>;
 
@@ -2004,14 +2004,14 @@ async function f(): PromiseAlias<void> {
         [],
       );
     });
-    test("arrowFunctionWithParameterNameAsync_es6", async () => {
+    test('arrowFunctionWithParameterNameAsync_es6', async () => {
       await expectPass(
         `
 const x = async => async;`,
         [],
       );
     });
-    test("asyncArrowFunction1_es6", async () => {
+    test('asyncArrowFunction1_es6', async () => {
       await expectPass(
         `
 var foo = async (): Promise<void> => {
@@ -2019,7 +2019,7 @@ var foo = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction10_es6", async () => {
+    test('asyncArrowFunction10_es6', async () => {
       await expectPass(
         `
 var foo = async (): Promise<void> => {
@@ -2029,28 +2029,28 @@ var foo = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction2_es6", async () => {
+    test('asyncArrowFunction2_es6', async () => {
       await expectError(
         `var f = (await) => {
 }`,
         [],
       );
     });
-    test("asyncArrowFunction3_es6", async () => {
+    test('asyncArrowFunction3_es6', async () => {
       await expectError(
         `function f(await = await) {
 }`,
         [],
       );
     });
-    test("asyncArrowFunction4_es6", async () => {
+    test('asyncArrowFunction4_es6', async () => {
       await expectPass(
         `var await = () => {
 }`,
         [],
       );
     });
-    test("asyncArrowFunction5_es6", async () => {
+    test('asyncArrowFunction5_es6', async () => {
       await expectPass(
         `
 var foo = async (await): Promise<void> => {
@@ -2058,7 +2058,7 @@ var foo = async (await): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction6_es6", async () => {
+    test('asyncArrowFunction6_es6', async () => {
       await expectError(
         `
 var foo = async (a = await): Promise<void> => {
@@ -2066,7 +2066,7 @@ var foo = async (a = await): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction7_es6", async () => {
+    test('asyncArrowFunction7_es6', async () => {
       await expectError(
         `
 var bar = async (): Promise<void> => {
@@ -2077,7 +2077,7 @@ var bar = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction8_es6", async () => {
+    test('asyncArrowFunction8_es6', async () => {
       await expectError(
         `
 var foo = async (): Promise<void> => {
@@ -2086,14 +2086,14 @@ var foo = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction9_es6", async () => {
+    test('asyncArrowFunction9_es6', async () => {
       await expectError(
         `var foo = async (a = await => await): Promise<void> => {
 }`,
         [],
       );
     });
-    test("asyncArrowFunctionCapturesArguments_es6", async () => {
+    test('asyncArrowFunctionCapturesArguments_es6', async () => {
       await expectPass(
         `class C {
    method() {
@@ -2108,7 +2108,7 @@ function f() {
         [],
       );
     });
-    test("asyncArrowFunctionCapturesThis_es6", async () => {
+    test('asyncArrowFunctionCapturesThis_es6', async () => {
       await expectPass(
         `class C {
    method() {
@@ -2118,7 +2118,7 @@ function f() {
         [],
       );
     });
-    test("asyncUnParenthesizedArrowFunction_es6", async () => {
+    test('asyncUnParenthesizedArrowFunction_es6', async () => {
       await expectPass(
         `
 declare function someOtherFunction(i: any): Promise<void>;
@@ -2127,7 +2127,7 @@ const x1 = async (i) => await someOtherFunction(i);`,
         [],
       );
     });
-    test("asyncAwait_es6", async () => {
+    test('asyncAwait_es6', async () => {
       await expectPass(
         `type MyPromise<T> = Promise<T>;
 declare var MyPromise: typeof Promise;
@@ -2178,14 +2178,14 @@ async function f14() {
         [],
       );
     });
-    test("asyncClass_es6", async () => {
+    test('asyncClass_es6', async () => {
       await expectError(
         `async class C {  
 }`,
         [],
       );
     });
-    test("asyncConstructor_es6", async () => {
+    test('asyncConstructor_es6', async () => {
       await expectError(
         `class C {  
   async constructor() {    
@@ -2194,10 +2194,10 @@ async function f14() {
         [],
       );
     });
-    test("asyncDeclare_es6", async () => {
+    test('asyncDeclare_es6', async () => {
       await expectPass(`declare async function foo(): Promise<void>;`, []);
     });
-    test("asyncEnum_es6", async () => {
+    test('asyncEnum_es6', async () => {
       await expectError(
         `async enum E {  
   Value
@@ -2205,7 +2205,7 @@ async function f14() {
         [],
       );
     });
-    test("asyncGetter_es6", async () => {
+    test('asyncGetter_es6', async () => {
       await expectError(
         `class C {
   async get foo() {
@@ -2214,14 +2214,14 @@ async function f14() {
         [],
       );
     });
-    test("asyncInterface_es6", async () => {
+    test('asyncInterface_es6', async () => {
       await expectError(
         `async interface I {  
 }`,
         [],
       );
     });
-    test("asyncMethodWithSuper_es6", async () => {
+    test('asyncMethodWithSuper_es6', async () => {
       await expectPass(
         `class A {
     x() {
@@ -2439,21 +2439,21 @@ class Derived extends Base {
         [],
       );
     });
-    test("asyncModule_es6", async () => {
+    test('asyncModule_es6', async () => {
       await expectError(
         `async namespace M {   
 }`,
         [],
       );
     });
-    test("asyncMultiFile_es6", async () => {
+    test('asyncMultiFile_es6', async () => {
       await expectPass(
         `async function f() {}
 function g() { }`,
         [],
       );
     });
-    test("asyncQualifiedReturnType_es6", async () => {
+    test('asyncQualifiedReturnType_es6', async () => {
       await expectPass(
         `namespace X {
     export class MyPromise<T> extends Promise<T> {
@@ -2465,7 +2465,7 @@ async function f(): X.MyPromise<void> {
         [],
       );
     });
-    test("asyncSetter_es6", async () => {
+    test('asyncSetter_es6', async () => {
       await expectError(
         `class C {
   async set foo(value) {
@@ -2474,7 +2474,7 @@ async function f(): X.MyPromise<void> {
         [],
       );
     });
-    test("asyncUseStrict_es6", async () => {
+    test('asyncUseStrict_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2485,7 +2485,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("asyncWithVarShadowing_es6", async () => {
+    test('asyncWithVarShadowing_es6', async () => {
       await expectPass(
         `// https://github.com/Microsoft/TypeScript/issues/20461
 declare const y: any;
@@ -2712,7 +2712,7 @@ async function fn40(x) {
         [],
       );
     });
-    test("await_unaryExpression_es6_1", async () => {
+    test('await_unaryExpression_es6_1', async () => {
       await expectPass(
         `// @target: es6
 
@@ -2738,7 +2738,7 @@ async function bar4() {
         [],
       );
     });
-    test("await_unaryExpression_es6_2", async () => {
+    test('await_unaryExpression_es6_2', async () => {
       await expectPass(
         `// @target: es6
 
@@ -2756,7 +2756,7 @@ async function bar3() {
         [],
       );
     });
-    test("await_unaryExpression_es6_3", async () => {
+    test('await_unaryExpression_es6_3', async () => {
       await expectError(
         `// @target: es6
 
@@ -2780,7 +2780,7 @@ async function bar4() {
         [],
       );
     });
-    test("await_unaryExpression_es6", async () => {
+    test('await_unaryExpression_es6', async () => {
       await expectPass(
         `// @target: es6
 
@@ -2802,7 +2802,7 @@ async function bar4() {
         [],
       );
     });
-    test("awaitBinaryExpression1_es6", async () => {
+    test('awaitBinaryExpression1_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2816,7 +2816,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitBinaryExpression2_es6", async () => {
+    test('awaitBinaryExpression2_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2830,7 +2830,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitBinaryExpression3_es6", async () => {
+    test('awaitBinaryExpression3_es6', async () => {
       await expectPass(
         `declare var a: number;
 declare var p: Promise<number>;
@@ -2844,7 +2844,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitBinaryExpression4_es6", async () => {
+    test('awaitBinaryExpression4_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2858,7 +2858,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitBinaryExpression5_es6", async () => {
+    test('awaitBinaryExpression5_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2873,7 +2873,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression1_es6", async () => {
+    test('awaitCallExpression1_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2891,7 +2891,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression2_es6", async () => {
+    test('awaitCallExpression2_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2909,7 +2909,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression3_es6", async () => {
+    test('awaitCallExpression3_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2927,7 +2927,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression4_es6", async () => {
+    test('awaitCallExpression4_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2945,7 +2945,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression5_es6", async () => {
+    test('awaitCallExpression5_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2963,7 +2963,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression6_es6", async () => {
+    test('awaitCallExpression6_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2981,7 +2981,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression7_es6", async () => {
+    test('awaitCallExpression7_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -2999,7 +2999,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression8_es6", async () => {
+    test('awaitCallExpression8_es6', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3017,7 +3017,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitClassExpression_es6", async () => {
+    test('awaitClassExpression_es6', async () => {
       await expectPass(
         `declare class C { }
 declare var p: Promise<typeof C>;
@@ -3029,7 +3029,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitUnion_es6", async () => {
+    test('awaitUnion_es6', async () => {
       await expectPass(
         `declare let a: number | string;
 declare let b: PromiseLike<number> | PromiseLike<string>;
@@ -3046,31 +3046,31 @@ async function f() {
         [],
       );
     });
-    test("asyncFunctionDeclaration1_es6", async () => {
+    test('asyncFunctionDeclaration1_es6', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration10_es6", async () => {
+    test('asyncFunctionDeclaration10_es6', async () => {
       await expectError(
         `async function foo(a = await => await): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration11_es6", async () => {
+    test('asyncFunctionDeclaration11_es6', async () => {
       await expectPass(
         `async function await(): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration12_es6", async () => {
+    test('asyncFunctionDeclaration12_es6', async () => {
       await expectError(`var v = async function await(): Promise<void> { }`, []);
     });
-    test("asyncFunctionDeclaration13_es6", async () => {
+    test('asyncFunctionDeclaration13_es6', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
    // Legal to use 'await' in a type context.
@@ -3079,7 +3079,7 @@ async function f() {
         [],
       );
     });
-    test("asyncFunctionDeclaration14_es6", async () => {
+    test('asyncFunctionDeclaration14_es6', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
   return;
@@ -3087,7 +3087,7 @@ async function f() {
         [],
       );
     });
-    test("asyncFunctionDeclaration15_es6", async () => {
+    test('asyncFunctionDeclaration15_es6', async () => {
       await expectPass(
         `declare class Thenable { then(): void; }
 declare let a: any;
@@ -3116,42 +3116,42 @@ async function fn19() { await thenable; } // error
         [],
       );
     });
-    test("asyncFunctionDeclaration2_es6", async () => {
+    test('asyncFunctionDeclaration2_es6', async () => {
       await expectPass(
         `function f(await) {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration3_es6", async () => {
+    test('asyncFunctionDeclaration3_es6', async () => {
       await expectError(
         `function f(await = await) {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration4_es6", async () => {
+    test('asyncFunctionDeclaration4_es6', async () => {
       await expectPass(
         `function await() {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration5_es6", async () => {
+    test('asyncFunctionDeclaration5_es6', async () => {
       await expectError(
         `async function foo(await): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration6_es6", async () => {
+    test('asyncFunctionDeclaration6_es6', async () => {
       await expectError(
         `async function foo(a = await): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration7_es6", async () => {
+    test('asyncFunctionDeclaration7_es6', async () => {
       await expectError(
         `async function bar(): Promise<void> {
   // 'await' here is an identifier, and not a yield expression.
@@ -3161,10 +3161,10 @@ async function fn19() { await thenable; } // error
         [],
       );
     });
-    test("asyncFunctionDeclaration8_es6", async () => {
+    test('asyncFunctionDeclaration8_es6', async () => {
       await expectError(`var v = { [await]: foo }`, []);
     });
-    test("asyncFunctionDeclaration9_es6", async () => {
+    test('asyncFunctionDeclaration9_es6', async () => {
       await expectError(
         `async function foo(): Promise<void> {
   var v = { [await]: foo }
@@ -3172,7 +3172,7 @@ async function fn19() { await thenable; } // error
         [],
       );
     });
-    test("asyncOrYieldAsBindingIdentifier1", async () => {
+    test('asyncOrYieldAsBindingIdentifier1', async () => {
       await expectError(
         `
 function f_let () {
@@ -3227,15 +3227,15 @@ function * f4_const () {
     });
   });
 
-  describe("async/es2017", () => {
-    test("arrowFunctionWithParameterNameAsync_es2017", async () => {
+  describe('async/es2017', () => {
+    test('arrowFunctionWithParameterNameAsync_es2017', async () => {
       await expectPass(
         `
 const x = async => async;`,
         [],
       );
     });
-    test("asyncArrowFunction_allowJs", async () => {
+    test('asyncArrowFunction_allowJs', async () => {
       await expectPass(
         `
 // Error (good)
@@ -3268,7 +3268,7 @@ f(async () => {
         [],
       );
     });
-    test("asyncArrowFunction1_es2017", async () => {
+    test('asyncArrowFunction1_es2017', async () => {
       await expectPass(
         `
 var foo = async (): Promise<void> => {
@@ -3276,7 +3276,7 @@ var foo = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction10_es2017", async () => {
+    test('asyncArrowFunction10_es2017', async () => {
       await expectPass(
         `
 var foo = async (): Promise<void> => {
@@ -3286,28 +3286,28 @@ var foo = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction2_es2017", async () => {
+    test('asyncArrowFunction2_es2017', async () => {
       await expectError(
         `var f = (await) => {
 }`,
         [],
       );
     });
-    test("asyncArrowFunction3_es2017", async () => {
+    test('asyncArrowFunction3_es2017', async () => {
       await expectError(
         `function f(await = await) {
 }`,
         [],
       );
     });
-    test("asyncArrowFunction4_es2017", async () => {
+    test('asyncArrowFunction4_es2017', async () => {
       await expectPass(
         `var await = () => {
 }`,
         [],
       );
     });
-    test("asyncArrowFunction5_es2017", async () => {
+    test('asyncArrowFunction5_es2017', async () => {
       await expectPass(
         `
 var foo = async (await): Promise<void> => {
@@ -3315,7 +3315,7 @@ var foo = async (await): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction6_es2017", async () => {
+    test('asyncArrowFunction6_es2017', async () => {
       await expectError(
         `
 var foo = async (a = await): Promise<void> => {
@@ -3323,7 +3323,7 @@ var foo = async (a = await): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction7_es2017", async () => {
+    test('asyncArrowFunction7_es2017', async () => {
       await expectError(
         `
 var bar = async (): Promise<void> => {
@@ -3334,7 +3334,7 @@ var bar = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction8_es2017", async () => {
+    test('asyncArrowFunction8_es2017', async () => {
       await expectError(
         `
 var foo = async (): Promise<void> => {
@@ -3343,14 +3343,14 @@ var foo = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunction9_es2017", async () => {
+    test('asyncArrowFunction9_es2017', async () => {
       await expectError(
         `var foo = async (a = await => await): Promise<void> => {
 }`,
         [],
       );
     });
-    test("asyncArrowFunctionCapturesArguments_es2017", async () => {
+    test('asyncArrowFunctionCapturesArguments_es2017', async () => {
       await expectPass(
         `class C {
    method() {
@@ -3361,7 +3361,7 @@ var foo = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncArrowFunctionCapturesThis_es2017", async () => {
+    test('asyncArrowFunctionCapturesThis_es2017', async () => {
       await expectPass(
         `class C {
    method() {
@@ -3371,7 +3371,7 @@ var foo = async (): Promise<void> => {
         [],
       );
     });
-    test("asyncUnParenthesizedArrowFunction_es2017", async () => {
+    test('asyncUnParenthesizedArrowFunction_es2017', async () => {
       await expectPass(
         `
 declare function someOtherFunction(i: any): Promise<void>;
@@ -3380,7 +3380,7 @@ const x1 = async (i) => await someOtherFunction(i);`,
         [],
       );
     });
-    test("asyncAwait_es2017", async () => {
+    test('asyncAwait_es2017', async () => {
       await expectPass(
         `type MyPromise<T> = Promise<T>;
 declare var MyPromise: typeof Promise;
@@ -3431,7 +3431,7 @@ async function f14() {
         [],
       );
     });
-    test("asyncMethodWithSuper_es2017", async () => {
+    test('asyncMethodWithSuper_es2017', async () => {
       await expectPass(
         `class A {
     x() {
@@ -3491,7 +3491,7 @@ class B extends A {
         [],
       );
     });
-    test("asyncMethodWithSuperConflict_es6", async () => {
+    test('asyncMethodWithSuperConflict_es6', async () => {
       await expectPass(
         `class A {
     x() {
@@ -3555,7 +3555,7 @@ class B extends A {
         [],
       );
     });
-    test("asyncUseStrict_es2017", async () => {
+    test('asyncUseStrict_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3566,7 +3566,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("await_incorrectThisType", async () => {
+    test('await_incorrectThisType', async () => {
       await expectPass(
         `
 // https://github.com/microsoft/TypeScript/issues/47711
@@ -3616,7 +3616,7 @@ async function test() {
         [],
       );
     });
-    test("await_unaryExpression_es2017_1", async () => {
+    test('await_unaryExpression_es2017_1', async () => {
       await expectPass(
         `// @target: es2017
 
@@ -3642,7 +3642,7 @@ async function bar4() {
         [],
       );
     });
-    test("await_unaryExpression_es2017_2", async () => {
+    test('await_unaryExpression_es2017_2', async () => {
       await expectPass(
         `// @target: es2017
 
@@ -3660,7 +3660,7 @@ async function bar3() {
         [],
       );
     });
-    test("await_unaryExpression_es2017_3", async () => {
+    test('await_unaryExpression_es2017_3', async () => {
       await expectError(
         `// @target: es2017
 
@@ -3684,7 +3684,7 @@ async function bar4() {
         [],
       );
     });
-    test("await_unaryExpression_es2017", async () => {
+    test('await_unaryExpression_es2017', async () => {
       await expectPass(
         `// @target: es2017
 
@@ -3706,7 +3706,7 @@ async function bar4() {
         [],
       );
     });
-    test("awaitBinaryExpression1_es2017", async () => {
+    test('awaitBinaryExpression1_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3720,7 +3720,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitBinaryExpression2_es2017", async () => {
+    test('awaitBinaryExpression2_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3734,7 +3734,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitBinaryExpression3_es2017", async () => {
+    test('awaitBinaryExpression3_es2017', async () => {
       await expectPass(
         `declare var a: number;
 declare var p: Promise<number>;
@@ -3748,7 +3748,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitBinaryExpression4_es2017", async () => {
+    test('awaitBinaryExpression4_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3762,7 +3762,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitBinaryExpression5_es2017", async () => {
+    test('awaitBinaryExpression5_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3777,7 +3777,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression1_es2017", async () => {
+    test('awaitCallExpression1_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3795,7 +3795,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression2_es2017", async () => {
+    test('awaitCallExpression2_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3813,7 +3813,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression3_es2017", async () => {
+    test('awaitCallExpression3_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3831,7 +3831,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression4_es2017", async () => {
+    test('awaitCallExpression4_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3849,7 +3849,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression5_es2017", async () => {
+    test('awaitCallExpression5_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3867,7 +3867,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression6_es2017", async () => {
+    test('awaitCallExpression6_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3885,7 +3885,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression7_es2017", async () => {
+    test('awaitCallExpression7_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3903,7 +3903,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitCallExpression8_es2017", async () => {
+    test('awaitCallExpression8_es2017', async () => {
       await expectPass(
         `declare var a: boolean;
 declare var p: Promise<boolean>;
@@ -3921,7 +3921,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitClassExpression_es2017", async () => {
+    test('awaitClassExpression_es2017', async () => {
       await expectPass(
         `declare class C { }
 declare var p: Promise<typeof C>;
@@ -3933,7 +3933,7 @@ async function func(): Promise<void> {
         [],
       );
     });
-    test("awaitInheritedPromise_es2017", async () => {
+    test('awaitInheritedPromise_es2017', async () => {
       await expectPass(
         `interface A extends Promise<string> {}
 declare var a: A;
@@ -3943,31 +3943,31 @@ async function f() {
         [],
       );
     });
-    test("asyncFunctionDeclaration1_es2017", async () => {
+    test('asyncFunctionDeclaration1_es2017', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration10_es2017", async () => {
+    test('asyncFunctionDeclaration10_es2017', async () => {
       await expectError(
         `async function foo(a = await => await): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration11_es2017", async () => {
+    test('asyncFunctionDeclaration11_es2017', async () => {
       await expectPass(
         `async function await(): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration12_es2017", async () => {
+    test('asyncFunctionDeclaration12_es2017', async () => {
       await expectError(`var v = async function await(): Promise<void> { }`, []);
     });
-    test("asyncFunctionDeclaration13_es2017", async () => {
+    test('asyncFunctionDeclaration13_es2017', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
    // Legal to use 'await' in a type context.
@@ -3976,7 +3976,7 @@ async function f() {
         [],
       );
     });
-    test("asyncFunctionDeclaration14_es2017", async () => {
+    test('asyncFunctionDeclaration14_es2017', async () => {
       await expectPass(
         `async function foo(): Promise<void> {
   return;
@@ -3984,42 +3984,42 @@ async function f() {
         [],
       );
     });
-    test("asyncFunctionDeclaration2_es2017", async () => {
+    test('asyncFunctionDeclaration2_es2017', async () => {
       await expectPass(
         `function f(await) {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration3_es2017", async () => {
+    test('asyncFunctionDeclaration3_es2017', async () => {
       await expectError(
         `function f(await = await) {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration4_es2017", async () => {
+    test('asyncFunctionDeclaration4_es2017', async () => {
       await expectPass(
         `function await() {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration5_es2017", async () => {
+    test('asyncFunctionDeclaration5_es2017', async () => {
       await expectError(
         `async function foo(await): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration6_es2017", async () => {
+    test('asyncFunctionDeclaration6_es2017', async () => {
       await expectError(
         `async function foo(a = await): Promise<void> {
 }`,
         [],
       );
     });
-    test("asyncFunctionDeclaration7_es2017", async () => {
+    test('asyncFunctionDeclaration7_es2017', async () => {
       await expectError(
         `async function bar(): Promise<void> {
   // 'await' here is an identifier, and not a yield expression.
@@ -4029,10 +4029,10 @@ async function f() {
         [],
       );
     });
-    test("asyncFunctionDeclaration8_es2017", async () => {
+    test('asyncFunctionDeclaration8_es2017', async () => {
       await expectError(`var v = { [await]: foo }`, []);
     });
-    test("asyncFunctionDeclaration9_es2017", async () => {
+    test('asyncFunctionDeclaration9_es2017', async () => {
       await expectError(
         `async function foo(): Promise<void> {
   var v = { [await]: foo }

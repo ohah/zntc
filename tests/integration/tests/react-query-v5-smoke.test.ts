@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { createFixture, hasPackage, linkNodeModules, runNode, runZtsInDir } from "./helpers";
+import { afterEach, describe, expect, it } from 'bun:test';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createFixture, hasPackage, linkNodeModules, runNode, runZtsInDir } from './helpers';
 
-const hasReactQuery = hasPackage("@tanstack/react-query");
+const hasReactQuery = hasPackage('@tanstack/react-query');
 
-describe.skipIf(!hasReactQuery)("React Query v5 smoke", () => {
+describe.skipIf(!hasReactQuery)('React Query v5 smoke', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -15,9 +15,9 @@ describe.skipIf(!hasReactQuery)("React Query v5 smoke", () => {
     }
   });
 
-  it("@tanstack/react-query v5 bundles to ES5 and runs replaceAll through runtime polyfills", async () => {
+  it('@tanstack/react-query v5 bundles to ES5 and runs replaceAll through runtime polyfills', async () => {
     const fixture = await createFixture({
-      "index.ts": `
+      'index.ts': `
         import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
         type Result = { ok: true; value: number };
@@ -44,39 +44,39 @@ describe.skipIf(!hasReactQuery)("React Query v5 smoke", () => {
     });
     cleanup = fixture.cleanup;
 
-    await linkNodeModules(fixture.dir, ["@tanstack/react-query", "@tanstack/query-core", "react"]);
+    await linkNodeModules(fixture.dir, ['@tanstack/react-query', '@tanstack/query-core', 'react']);
 
-    const outFile = join(fixture.dir, "out.cjs");
+    const outFile = join(fixture.dir, 'out.cjs');
     const bundle = await runZtsInDir(
       fixture.dir,
       [
-        "--bundle",
-        join(fixture.dir, "index.ts"),
-        "-o",
+        '--bundle',
+        join(fixture.dir, 'index.ts'),
+        '-o',
         outFile,
-        "--format=cjs",
-        "--platform=node",
-        "--target=es5",
-        "--runtime-polyfills=auto",
-        "--runtime-target=ios_saf 12",
+        '--format=cjs',
+        '--platform=node',
+        '--target=es5',
+        '--runtime-polyfills=auto',
+        '--runtime-target=ios_saf 12',
       ],
-      { bin: "js" },
+      { bin: 'js' },
     );
     expect(bundle.exitCode).toBe(0);
 
-    const js = await readFile(outFile, "utf-8");
-    expect(js).toContain("QueryClient");
-    expect(js).toContain("es.string.replace-all");
-    expect(js).not.toContain("@tanstack/react-query");
-    expect(js).not.toContain("?.");
-    expect(js.replace(/^\/\/#.*$/gm, "")).not.toMatch(/(^|[^\w$])#[A-Za-z_$][\w$]*/);
+    const js = await readFile(outFile, 'utf-8');
+    expect(js).toContain('QueryClient');
+    expect(js).toContain('es.string.replace-all');
+    expect(js).not.toContain('@tanstack/react-query');
+    expect(js).not.toContain('?.');
+    expect(js.replace(/^\/\/#.*$/gm, '')).not.toMatch(/(^|[^\w$])#[A-Za-z_$][\w$]*/);
 
-    const runner = join(fixture.dir, "run-without-native-replaceall.cjs");
+    const runner = join(fixture.dir, 'run-without-native-replaceall.cjs');
     await writeFile(
       runner,
       `String.prototype.replaceAll = undefined;\nrequire(${JSON.stringify(outFile)});\n`,
     );
     const run = await runNode(runner);
-    expect(run.stdout).toBe("react-query-v5 true 42");
+    expect(run.stdout).toBe('react-query-v5 true 42');
   });
 });

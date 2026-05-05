@@ -44,7 +44,7 @@
     "lodash-es": "^4.17.21",
     "mobx": "^6.13.0",
     "nanoid": "^5.1.9",
-    "oxfmt": "^0.47.0",
+    "oxfmt": "^0.48.0",
     "oxlint": "^1.62.0",
     "postcss": "^8.5.8",
     "postcss-load-config": "^6.0.1",

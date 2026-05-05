@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: classes", () => {
-  test("awaitAndYieldInProperty", async () => {
+describe('TSC: classes', () => {
+  test('awaitAndYieldInProperty', async () => {
     await expectError(
       `async function* test(x: Promise<string>) {
     class C {
@@ -24,7 +24,7 @@ describe("TSC: classes", () => {
       [],
     );
   });
-  test("classAbstractAccessor", async () => {
+  test('classAbstractAccessor', async () => {
     await expectPass(
       `
 abstract class A {
@@ -37,7 +37,7 @@ abstract class A {
       [],
     );
   });
-  test("classAbstractAsIdentifier", async () => {
+  test('classAbstractAsIdentifier', async () => {
     await expectPass(
       `class abstract {
     foo() { return 1; }
@@ -47,7 +47,7 @@ new abstract;`,
       [],
     );
   });
-  test("classAbstractAssignabilityConstructorFunction", async () => {
+  test('classAbstractAssignabilityConstructorFunction', async () => {
     await expectPass(
       `abstract class A { }
 
@@ -60,7 +60,7 @@ AAA = "asdf";`,
       [],
     );
   });
-  test("classAbstractClinterfaceAssignability", async () => {
+  test('classAbstractClinterfaceAssignability', async () => {
     await expectPass(
       `interface I {
     x: number;
@@ -88,7 +88,7 @@ AAA = A;`,
       [],
     );
   });
-  test("classAbstractConstructor", async () => {
+  test('classAbstractConstructor', async () => {
     await expectPass(
       `abstract class A {
     abstract constructor() {}
@@ -96,7 +96,7 @@ AAA = A;`,
       [],
     );
   });
-  test("classAbstractConstructorAssignability", async () => {
+  test('classAbstractConstructorAssignability', async () => {
     await expectPass(
       `
 class A {}
@@ -115,7 +115,7 @@ new CC;`,
       [],
     );
   });
-  test("classAbstractCrashedOnce", async () => {
+  test('classAbstractCrashedOnce', async () => {
     await expectError(
       `abstract class foo {
     protected abstract test();
@@ -130,7 +130,7 @@ var x = new bar();`,
       [],
     );
   });
-  test("classAbstractDeclarations.d", async () => {
+  test('classAbstractDeclarations.d', async () => {
     await expectPass(
       `declare abstract class A {
     abstract constructor() {}
@@ -160,7 +160,7 @@ declare class CCC extends AAA {}`,
       [],
     );
   });
-  test("classAbstractExtends", async () => {
+  test('classAbstractExtends', async () => {
     await expectPass(
       `
 class A {
@@ -181,7 +181,7 @@ class E extends B {
       [],
     );
   });
-  test("classAbstractFactoryFunction", async () => {
+  test('classAbstractFactoryFunction', async () => {
     await expectPass(
       `
 class A {}
@@ -203,7 +203,7 @@ NewB(B);`,
       [],
     );
   });
-  test("classAbstractGeneric", async () => {
+  test('classAbstractGeneric', async () => {
     await expectPass(
       `abstract class A<T> {
     t: T;
@@ -233,7 +233,7 @@ class G<T> extends A<T> {
       [],
     );
   });
-  test("classAbstractInAModule", async () => {
+  test('classAbstractInAModule', async () => {
     await expectPass(
       `namespace M {
     export abstract class A {}
@@ -245,7 +245,7 @@ new M.B;`,
       [],
     );
   });
-  test("classAbstractInheritance1", async () => {
+  test('classAbstractInheritance1', async () => {
     await expectPass(
       `abstract class A {}
 
@@ -271,7 +271,7 @@ abstract class GG extends CC {}`,
       [],
     );
   });
-  test("classAbstractInheritance2", async () => {
+  test('classAbstractInheritance2', async () => {
     await expectPass(
       `abstract class A {
     abstract m1(): number;
@@ -288,7 +288,7 @@ const C = class extends A {}
       [],
     );
   });
-  test("classAbstractInstantiations1", async () => {
+  test('classAbstractInstantiations1', async () => {
     await expectPass(
       `
 //
@@ -317,7 +317,7 @@ c = new B;
       [],
     );
   });
-  test("classAbstractInstantiations2", async () => {
+  test('classAbstractInstantiations2', async () => {
     await expectPass(
       `class A {
     // ...
@@ -373,7 +373,7 @@ class H { // error -- not declared abstract
       [],
     );
   });
-  test("classAbstractMergedDeclaration", async () => {
+  test('classAbstractMergedDeclaration', async () => {
     await expectPass(
       `abstract class CM {}
 namespace CM {}
@@ -418,7 +418,7 @@ new DCC2;`,
       [],
     );
   });
-  test("classAbstractMethodInNonAbstractClass", async () => {
+  test('classAbstractMethodInNonAbstractClass', async () => {
     await expectPass(
       `class A {
     abstract foo();
@@ -430,7 +430,7 @@ class B {
       [],
     );
   });
-  test("classAbstractMethodWithImplementation", async () => {
+  test('classAbstractMethodWithImplementation', async () => {
     await expectPass(
       `abstract class A {
     abstract foo() {}
@@ -438,7 +438,7 @@ class B {
       [],
     );
   });
-  test("classAbstractMixedWithModifiers", async () => {
+  test('classAbstractMixedWithModifiers', async () => {
     await expectError(
       `abstract class A {
     abstract foo_a();
@@ -461,7 +461,7 @@ class B {
       [],
     );
   });
-  test("classAbstractOverloads", async () => {
+  test('classAbstractOverloads', async () => {
     await expectPass(
       `abstract class A {
     abstract foo();
@@ -490,7 +490,7 @@ abstract class B {
       [],
     );
   });
-  test("classAbstractOverrideWithAbstract", async () => {
+  test('classAbstractOverrideWithAbstract', async () => {
     await expectPass(
       `class A {
     foo() {}
@@ -518,7 +518,7 @@ class DD extends BB {
       [],
     );
   });
-  test("classAbstractProperties", async () => {
+  test('classAbstractProperties', async () => {
     await expectPass(
       `abstract class A {
     abstract x : number;
@@ -536,7 +536,7 @@ class DD extends BB {
       [],
     );
   });
-  test("classAbstractSingleLineDecl", async () => {
+  test('classAbstractSingleLineDecl', async () => {
     await expectPass(
       `abstract class A {}
 
@@ -553,7 +553,7 @@ new C;`,
       [],
     );
   });
-  test("classAbstractSuperCalls", async () => {
+  test('classAbstractSuperCalls', async () => {
     await expectPass(
       `
 class A {
@@ -585,7 +585,7 @@ abstract class BB extends AA {
       [],
     );
   });
-  test("classAbstractUsingAbstractMethod1", async () => {
+  test('classAbstractUsingAbstractMethod1', async () => {
     await expectPass(
       `abstract class A {
     abstract foo() : number;
@@ -607,7 +607,7 @@ a.foo();`,
       [],
     );
   });
-  test("classAbstractUsingAbstractMethods2", async () => {
+  test('classAbstractUsingAbstractMethods2', async () => {
     await expectPass(
       `class A {
     abstract foo();
@@ -639,10 +639,10 @@ class DD extends AA {
       [],
     );
   });
-  test("classAbstractWithInterface", async () => {
+  test('classAbstractWithInterface', async () => {
     await expectError(`abstract interface I {}`, []);
   });
-  test("classAndInterfaceMerge.d", async () => {
+  test('classAndInterfaceMerge.d', async () => {
     await expectPass(
       `
 interface C { }
@@ -672,7 +672,7 @@ declare namespace M {
       [],
     );
   });
-  test("classAndInterfaceMergeConflictingMembers", async () => {
+  test('classAndInterfaceMergeConflictingMembers', async () => {
     await expectPass(
       `declare class C1 {
     public x : number;
@@ -700,7 +700,7 @@ interface C3 {
       [],
     );
   });
-  test("classAndInterfaceWithSameName", async () => {
+  test('classAndInterfaceWithSameName', async () => {
     await expectPass(
       `class C { foo: string; }
 interface C { foo: string; }
@@ -717,7 +717,7 @@ namespace M {
       [],
     );
   });
-  test("classAndVariableWithSameName", async () => {
+  test('classAndVariableWithSameName', async () => {
     await expectPass(
       `class C { foo: string; } // error
 var C = ''; // error
@@ -732,7 +732,7 @@ namespace M {
       [],
     );
   });
-  test("classBodyWithStatements", async () => {
+  test('classBodyWithStatements', async () => {
     await expectError(
       `class C {
     var x = 1;
@@ -750,7 +750,7 @@ class C3 {
       [],
     );
   });
-  test("classWithEmptyBody", async () => {
+  test('classWithEmptyBody', async () => {
     await expectPass(
       `class C {
 }
@@ -775,7 +775,7 @@ d = () => { }`,
       [],
     );
   });
-  test("classDeclarationLoop", async () => {
+  test('classDeclarationLoop', async () => {
     await expectPass(
       `const arr = [];
 for (let i = 0; i < 10; ++i) {
@@ -787,7 +787,7 @@ for (let i = 0; i < 10; ++i) {
       [],
     );
   });
-  test("classExtendingBuiltinType", async () => {
+  test('classExtendingBuiltinType', async () => {
     await expectPass(
       `class C1 extends Object { }
 class C2 extends Function { }
@@ -803,7 +803,7 @@ class C10 extends Array<number> { }
       [],
     );
   });
-  test("classExtendingClassLikeType", async () => {
+  test('classExtendingClassLikeType', async () => {
     await expectPass(
       `interface Base<T, U> {
     x: T;
@@ -866,7 +866,7 @@ class D5 extends getBadBase() {
       [],
     );
   });
-  test("classExtendingNonConstructor", async () => {
+  test('classExtendingNonConstructor', async () => {
     await expectPass(
       `var x: {};
 
@@ -885,7 +885,7 @@ class C7 extends foo { }
       [],
     );
   });
-  test("classExtendingNull", async () => {
+  test('classExtendingNull', async () => {
     await expectPass(
       `class C1 extends null { }
 class C2 extends (null) { }
@@ -894,7 +894,7 @@ class C4 extends (null) { x = 1; }`,
       [],
     );
   });
-  test("classAppearsToHaveMembersOfObject", async () => {
+  test('classAppearsToHaveMembersOfObject', async () => {
     await expectPass(
       `class C { foo: string; }
 
@@ -907,7 +907,7 @@ var o2: {} = c;
       [],
     );
   });
-  test("classExtendingClass", async () => {
+  test('classExtendingClass', async () => {
     await expectPass(
       `class C {
     foo: string;
@@ -943,7 +943,7 @@ var r8 = D2.other(1);`,
       [],
     );
   });
-  test("classExtendingOptionalChain", async () => {
+  test('classExtendingOptionalChain', async () => {
     await expectError(
       `namespace A {
     export class B {}
@@ -958,7 +958,7 @@ class C2 implements A?.B {}
       [],
     );
   });
-  test("classExtendingPrimitive", async () => {
+  test('classExtendingPrimitive', async () => {
     await expectError(
       `// classes cannot extend primitives
 
@@ -986,7 +986,7 @@ const C14 = class C extends boolean { }
       [],
     );
   });
-  test("classExtendingPrimitive2", async () => {
+  test('classExtendingPrimitive2', async () => {
     await expectError(
       `// classes cannot extend primitives
 
@@ -995,7 +995,7 @@ class C5a extends null { }`,
       [],
     );
   });
-  test("classExtendsEveryObjectType", async () => {
+  test('classExtendsEveryObjectType', async () => {
     await expectError(
       `interface I {
     foo: string;
@@ -1016,7 +1016,7 @@ class C6 extends []{ } // error`,
       [],
     );
   });
-  test("classExtendsEveryObjectType2", async () => {
+  test('classExtendsEveryObjectType2', async () => {
     await expectError(
       `class C2 extends { foo: string; } { } // error
 
@@ -1024,7 +1024,7 @@ class C6 extends []{ } // error`,
       [],
     );
   });
-  test("classExtendsItself", async () => {
+  test('classExtendsItself', async () => {
     await expectPass(
       `class C extends C { } // error
 
@@ -1034,7 +1034,7 @@ class E<T> extends E<string> { } // error`,
       [],
     );
   });
-  test("classExtendsItselfIndirectly", async () => {
+  test('classExtendsItselfIndirectly', async () => {
     await expectPass(
       `class C extends E { foo: string; } // error
 
@@ -1050,7 +1050,7 @@ class E2<T> extends D2<T> { baz: T; }`,
       [],
     );
   });
-  test("classExtendsItselfIndirectly2", async () => {
+  test('classExtendsItselfIndirectly2', async () => {
     await expectPass(
       `class C extends N.E { foo: string; } // error
 
@@ -1077,7 +1077,7 @@ namespace O {
       [],
     );
   });
-  test("classExtendsItselfIndirectly3", async () => {
+  test('classExtendsItselfIndirectly3', async () => {
     await expectPass(
       `class C extends E { foo: string; } // error
 
@@ -1093,7 +1093,7 @@ class E2<T> extends D2<T> { baz: T; }`,
       [],
     );
   });
-  test("classExtendsShadowedConstructorFunction", async () => {
+  test('classExtendsShadowedConstructorFunction', async () => {
     await expectPass(
       `class C { foo: string; }
 
@@ -1106,7 +1106,7 @@ namespace M {
       [],
     );
   });
-  test("classExtendsValidConstructorFunction", async () => {
+  test('classExtendsValidConstructorFunction', async () => {
     await expectPass(
       `function foo() { }
 
@@ -1116,7 +1116,7 @@ class C extends foo { } // error, cannot extend it though`,
       [],
     );
   });
-  test("classIsSubtypeOfBaseType", async () => {
+  test('classIsSubtypeOfBaseType', async () => {
     await expectPass(
       `class Base<T> {
     foo: T;
@@ -1136,7 +1136,7 @@ class Derived2 extends Base<{ bar: string; }> {
       [],
     );
   });
-  test("constructorFunctionTypeIsAssignableToBaseType", async () => {
+  test('constructorFunctionTypeIsAssignableToBaseType', async () => {
     await expectPass(
       `class Base {
     static foo: {
@@ -1160,7 +1160,7 @@ class Derived2 extends Base {
       [],
     );
   });
-  test("constructorFunctionTypeIsAssignableToBaseType2", async () => {
+  test('constructorFunctionTypeIsAssignableToBaseType2', async () => {
     await expectPass(
       `// the constructor function itself does not need to be a subtype of the base type constructor function
 
@@ -1197,7 +1197,7 @@ class Derived2 extends Base {
       [],
     );
   });
-  test("derivedTypeDoesNotRequireExtendsClause", async () => {
+  test('derivedTypeDoesNotRequireExtendsClause', async () => {
     await expectPass(
       `class Base {
     foo: string;
@@ -1222,7 +1222,7 @@ var r: Base[] = [d1, d2];`,
       [],
     );
   });
-  test("classImplementsMergedClassInterface", async () => {
+  test('classImplementsMergedClassInterface', async () => {
     await expectPass(
       `declare class C1 {
     x : number;
@@ -1250,7 +1250,7 @@ class C5 implements C1 { // okay
       [],
     );
   });
-  test("classInsideBlock", async () => {
+  test('classInsideBlock', async () => {
     await expectPass(
       `function foo() {
     class C { }
@@ -1258,7 +1258,7 @@ class C5 implements C1 { // okay
       [],
     );
   });
-  test("classWithPredefinedTypesAsNames", async () => {
+  test('classWithPredefinedTypesAsNames', async () => {
     await expectPass(
       `// classes cannot use predefined types as names
 
@@ -1269,7 +1269,7 @@ class string { }`,
       [],
     );
   });
-  test("classWithPredefinedTypesAsNames2", async () => {
+  test('classWithPredefinedTypesAsNames2', async () => {
     await expectError(
       `// classes cannot use predefined types as names
 
@@ -1277,7 +1277,7 @@ class void {}`,
       [],
     );
   });
-  test("classWithSemicolonClassElement1", async () => {
+  test('classWithSemicolonClassElement1', async () => {
     await expectPass(
       `class C {
     ;
@@ -1285,7 +1285,7 @@ class void {}`,
       [],
     );
   });
-  test("classWithSemicolonClassElement2", async () => {
+  test('classWithSemicolonClassElement2', async () => {
     await expectPass(
       `class C {
     ;
@@ -1294,7 +1294,7 @@ class void {}`,
       [],
     );
   });
-  test("declaredClassMergedwithSelf", async () => {
+  test('declaredClassMergedwithSelf', async () => {
     await expectPass(
       `
 
@@ -1316,7 +1316,7 @@ declare class C3 { }`,
       [],
     );
   });
-  test("mergeClassInterfaceAndModule", async () => {
+  test('mergeClassInterfaceAndModule', async () => {
     await expectPass(
       `
 interface C1 {}
@@ -1337,7 +1337,7 @@ interface C4 {}`,
       [],
     );
   });
-  test("mergedClassInterface", async () => {
+  test('mergedClassInterface', async () => {
     await expectPass(
       `
 
@@ -1392,7 +1392,7 @@ declare class C7 { }`,
       [],
     );
   });
-  test("mergedInheritedClassInterface", async () => {
+  test('mergedInheritedClassInterface', async () => {
     await expectPass(
       `interface BaseInterface {
     required: number;
@@ -1443,7 +1443,7 @@ grandchild.method2();
       [],
     );
   });
-  test("modifierOnClassDeclarationMemberInFunction", async () => {
+  test('modifierOnClassDeclarationMemberInFunction', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1457,7 +1457,7 @@ function f() {
       [],
     );
   });
-  test("classExpression", async () => {
+  test('classExpression', async () => {
     await expectPass(
       `var x = class C {
 }
@@ -1474,17 +1474,17 @@ namespace M {
       [],
     );
   });
-  test("classExpression1", async () => {
+  test('classExpression1', async () => {
     await expectPass(`var v = class C {};`, []);
   });
-  test("classExpression2", async () => {
+  test('classExpression2', async () => {
     await expectPass(
       `class D { }
 var v = class C extends D {};`,
       [],
     );
   });
-  test("classExpression3", async () => {
+  test('classExpression3', async () => {
     await expectPass(
       `let C = class extends class extends class { a = 1 } { b = 2 } { c = 3 };
 let c = new C();
@@ -1495,7 +1495,7 @@ c.c;
       [],
     );
   });
-  test("classExpression4", async () => {
+  test('classExpression4', async () => {
     await expectPass(
       `let C = class {
     foo() {
@@ -1507,7 +1507,7 @@ let x = (new C).foo();
       [],
     );
   });
-  test("classExpression5", async () => {
+  test('classExpression5', async () => {
     await expectPass(
       `new class {
     hi() {
@@ -1517,7 +1517,7 @@ let x = (new C).foo();
       [],
     );
   });
-  test("classExpressionLoop", async () => {
+  test('classExpressionLoop', async () => {
     await expectPass(
       `let arr = [];
 for (let i = 0; i < 10; ++i) {
@@ -1528,7 +1528,7 @@ for (let i = 0; i < 10; ++i) {
       [],
     );
   });
-  test("classWithStaticFieldInParameterBindingPattern.2", async () => {
+  test('classWithStaticFieldInParameterBindingPattern.2', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -1541,7 +1541,7 @@ const x = "";
       [],
     );
   });
-  test("classWithStaticFieldInParameterBindingPattern.3", async () => {
+  test('classWithStaticFieldInParameterBindingPattern.3', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -1554,7 +1554,7 @@ const x = "";
       [],
     );
   });
-  test("classWithStaticFieldInParameterBindingPattern", async () => {
+  test('classWithStaticFieldInParameterBindingPattern', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -1562,7 +1562,7 @@ const x = "";
       [],
     );
   });
-  test("classWithStaticFieldInParameterInitializer.2", async () => {
+  test('classWithStaticFieldInParameterInitializer.2', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -1574,7 +1574,7 @@ const x = "";
       [],
     );
   });
-  test("classWithStaticFieldInParameterInitializer.3", async () => {
+  test('classWithStaticFieldInParameterInitializer.3', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -1586,7 +1586,7 @@ const x = "";
       [],
     );
   });
-  test("classWithStaticFieldInParameterInitializer", async () => {
+  test('classWithStaticFieldInParameterInitializer', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -1594,7 +1594,7 @@ const x = "";
       [],
     );
   });
-  test("genericClassExpressionInFunction", async () => {
+  test('genericClassExpressionInFunction', async () => {
     await expectPass(
       `// @target: es2015
 class A<T> {
@@ -1631,7 +1631,7 @@ s.genericVar = 12;
       [],
     );
   });
-  test("modifierOnClassExpressionMemberInFunction", async () => {
+  test('modifierOnClassExpressionMemberInFunction', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -1645,7 +1645,7 @@ function g() {
       [],
     );
   });
-  test("classStaticBlock1", async () => {
+  test('classStaticBlock1', async () => {
     await expectPass(
       `const a = 2;
 
@@ -1660,7 +1660,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock10", async () => {
+  test('classStaticBlock10', async () => {
     await expectPass(
       `var a1 = 1;
 var a2 = 1;
@@ -1693,7 +1693,7 @@ class C2 {
       [],
     );
   });
-  test("classStaticBlock11", async () => {
+  test('classStaticBlock11', async () => {
     await expectPass(
       `
 let getX;
@@ -1712,7 +1712,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock12", async () => {
+  test('classStaticBlock12', async () => {
     await expectPass(
       `
 class C {
@@ -1726,7 +1726,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock13", async () => {
+  test('classStaticBlock13', async () => {
     await expectPass(
       `
 class C {
@@ -1744,7 +1744,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock14", async () => {
+  test('classStaticBlock14', async () => {
     await expectPass(
       `
 class C {
@@ -1763,7 +1763,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock15", async () => {
+  test('classStaticBlock15', async () => {
     await expectPass(
       `var _C__1;
 
@@ -1785,7 +1785,7 @@ console.log(_C__1)
       [],
     );
   });
-  test("classStaticBlock16", async () => {
+  test('classStaticBlock16', async () => {
     await expectPass(
       `
 let getX: (c: C) => number;
@@ -1815,7 +1815,7 @@ class D {
       [],
     );
   });
-  test("classStaticBlock17", async () => {
+  test('classStaticBlock17', async () => {
     await expectPass(
       `
 let friendA: { getX(o: A): number, setX(o: A, v: number): void };
@@ -1852,7 +1852,7 @@ a.getX();`,
       [],
     );
   });
-  test("classStaticBlock18", async () => {
+  test('classStaticBlock18', async () => {
     await expectPass(
       `
 function foo () {
@@ -1872,7 +1872,7 @@ function foo () {
       [],
     );
   });
-  test("classStaticBlock19", async () => {
+  test('classStaticBlock19', async () => {
     await expectPass(
       `class C {
     @decorator
@@ -1884,7 +1884,7 @@ function foo () {
       [],
     );
   });
-  test("classStaticBlock2", async () => {
+  test('classStaticBlock2', async () => {
     await expectPass(
       `
 const a = 1;
@@ -1909,7 +1909,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock20", async () => {
+  test('classStaticBlock20', async () => {
     await expectError(
       `class C {
     async static {
@@ -1928,7 +1928,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock21", async () => {
+  test('classStaticBlock21', async () => {
     await expectPass(
       `class C {
     /* jsdocs */
@@ -1940,7 +1940,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock22", async () => {
+  test('classStaticBlock22', async () => {
     await expectError(
       `
 let await: "any";
@@ -2017,7 +2017,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock23", async () => {
+  test('classStaticBlock23', async () => {
     await expectPass(
       `
 const nums = [1, 2, 3].map(n => Promise.resolve(n))
@@ -2043,7 +2043,7 @@ async function foo () {
       [],
     );
   });
-  test("classStaticBlock24", async () => {
+  test('classStaticBlock24', async () => {
     await expectPass(
       `
 export class C {
@@ -2056,7 +2056,7 @@ export class C {
       [],
     );
   });
-  test("classStaticBlock25", async () => {
+  test('classStaticBlock25', async () => {
     await expectPass(
       `
 const a = 1;
@@ -2081,7 +2081,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock26", async () => {
+  test('classStaticBlock26', async () => {
     await expectError(
       `
 class C {
@@ -2116,7 +2116,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock27", async () => {
+  test('classStaticBlock27', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/44872
 
@@ -2138,7 +2138,7 @@ void class Foo {
       [],
     );
   });
-  test("classStaticBlock28", async () => {
+  test('classStaticBlock28', async () => {
     await expectPass(
       `
 let foo: number;
@@ -2153,7 +2153,7 @@ console.log(foo)`,
       [],
     );
   });
-  test("classStaticBlock3", async () => {
+  test('classStaticBlock3', async () => {
     await expectPass(
       `
 const a = 1;
@@ -2177,7 +2177,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock4", async () => {
+  test('classStaticBlock4', async () => {
     await expectPass(
       `
 class C {
@@ -2198,7 +2198,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlock5", async () => {
+  test('classStaticBlock5', async () => {
     await expectPass(
       `
 class B {
@@ -2220,7 +2220,7 @@ class C extends B {
       [],
     );
   });
-  test("classStaticBlock6", async () => {
+  test('classStaticBlock6', async () => {
     await expectError(
       `class B {
     static a = 1;
@@ -2299,7 +2299,7 @@ class foo2 {
       [],
     );
   });
-  test("classStaticBlock7", async () => {
+  test('classStaticBlock7', async () => {
     await expectError(
       `class C {
     static {
@@ -2348,7 +2348,7 @@ function f3 () {
       [],
     );
   });
-  test("classStaticBlock8", async () => {
+  test('classStaticBlock8', async () => {
     await expectError(
       `function foo (v: number) {
     label: while (v) {
@@ -2402,7 +2402,7 @@ function f3 () {
       [],
     );
   });
-  test("classStaticBlock9", async () => {
+  test('classStaticBlock9', async () => {
     await expectPass(
       `class A {
     static bar = A.foo + 1
@@ -2415,7 +2415,7 @@ function f3 () {
       [],
     );
   });
-  test("classStaticBlockUseBeforeDef1", async () => {
+  test('classStaticBlockUseBeforeDef1', async () => {
     await expectPass(
       `
 class C {
@@ -2433,7 +2433,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlockUseBeforeDef2", async () => {
+  test('classStaticBlockUseBeforeDef2', async () => {
     await expectPass(
       `
 class C {
@@ -2446,7 +2446,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlockUseBeforeDef3", async () => {
+  test('classStaticBlockUseBeforeDef3', async () => {
     await expectPass(
       `
 class A {
@@ -2495,7 +2495,7 @@ u; // should be "BAR"
       [],
     );
   });
-  test("classStaticBlockUseBeforeDef4", async () => {
+  test('classStaticBlockUseBeforeDef4', async () => {
     await expectPass(
       `
 class C {
@@ -2512,7 +2512,7 @@ class C {
       [],
     );
   });
-  test("classStaticBlockUseBeforeDef5", async () => {
+  test('classStaticBlockUseBeforeDef5', async () => {
     await expectPass(
       `
 class C {
@@ -2524,7 +2524,7 @@ class C {
       [],
     );
   });
-  test("classWithoutExplicitConstructor", async () => {
+  test('classWithoutExplicitConstructor', async () => {
     await expectPass(
       `class C {
     x = 1
@@ -2544,7 +2544,7 @@ var d2 = new D(null); // error`,
       [],
     );
   });
-  test("derivedClassWithoutExplicitConstructor", async () => {
+  test('derivedClassWithoutExplicitConstructor', async () => {
     await expectPass(
       `class Base {
     a = 1;
@@ -2574,7 +2574,7 @@ var d2 = new D(new Date()); // ok`,
       [],
     );
   });
-  test("derivedClassWithoutExplicitConstructor2", async () => {
+  test('derivedClassWithoutExplicitConstructor2', async () => {
     await expectPass(
       `class Base {
     a = 1;
@@ -2612,7 +2612,7 @@ var d4 = new D(new Date(), new Date(), new Date());`,
       [],
     );
   });
-  test("derivedClassWithoutExplicitConstructor3", async () => {
+  test('derivedClassWithoutExplicitConstructor3', async () => {
     await expectPass(
       `// automatic constructors with a class hieararchy of depth > 2
 
@@ -2663,7 +2663,7 @@ var d3 = new D2(new Date(), new Date()); // ok`,
       [],
     );
   });
-  test("classConstructorAccessibility", async () => {
+  test('classConstructorAccessibility', async () => {
     await expectPass(
       `
 class C {
@@ -2703,7 +2703,7 @@ namespace Generic {
       [],
     );
   });
-  test("classConstructorAccessibility2", async () => {
+  test('classConstructorAccessibility2', async () => {
     await expectPass(
       `
 class BaseA {
@@ -2754,7 +2754,7 @@ var dc = new DerivedC(1);
       [],
     );
   });
-  test("classConstructorAccessibility3", async () => {
+  test('classConstructorAccessibility3', async () => {
     await expectPass(
       `
 class Foo {
@@ -2793,7 +2793,7 @@ c = Baz;`,
       [],
     );
   });
-  test("classConstructorAccessibility4", async () => {
+  test('classConstructorAccessibility4', async () => {
     await expectPass(
       `
 class A {
@@ -2828,7 +2828,7 @@ class D {
       [],
     );
   });
-  test("classConstructorAccessibility5", async () => {
+  test('classConstructorAccessibility5', async () => {
     await expectPass(
       `class Base {
     protected constructor() { }
@@ -2844,7 +2844,7 @@ class Unrelated {
       [],
     );
   });
-  test("classConstructorOverloadsAccessibility", async () => {
+  test('classConstructorOverloadsAccessibility', async () => {
     await expectPass(
       `
 class A {
@@ -2882,7 +2882,7 @@ class D {
       [],
     );
   });
-  test("classConstructorParametersAccessibility", async () => {
+  test('classConstructorParametersAccessibility', async () => {
     await expectPass(
       `class C1 {
     constructor(public x: number) { }
@@ -2913,7 +2913,7 @@ class Derived extends C3 {
       [],
     );
   });
-  test("classConstructorParametersAccessibility2", async () => {
+  test('classConstructorParametersAccessibility2', async () => {
     await expectPass(
       `class C1 {
     constructor(public x?: number) { }
@@ -2944,7 +2944,7 @@ class Derived extends C3 {
       [],
     );
   });
-  test("classConstructorParametersAccessibility3", async () => {
+  test('classConstructorParametersAccessibility3', async () => {
     await expectPass(
       `class Base {
     constructor(protected p: number) { }
@@ -2962,7 +2962,7 @@ d.p;  // public, OK`,
       [],
     );
   });
-  test("classWithTwoConstructorDefinitions", async () => {
+  test('classWithTwoConstructorDefinitions', async () => {
     await expectPass(
       `class C {
     constructor() { } // error
@@ -2976,7 +2976,7 @@ class D<T> {
       [],
     );
   });
-  test("constructorDefaultValuesReferencingThis", async () => {
+  test('constructorDefaultValuesReferencingThis', async () => {
     await expectPass(
       `class C {
     public baseProp = 1;
@@ -3000,7 +3000,7 @@ class F extends C {
       [],
     );
   });
-  test("constructorImplementationWithDefaultValues", async () => {
+  test('constructorImplementationWithDefaultValues', async () => {
     await expectPass(
       `class C {
     constructor(x);
@@ -3025,7 +3025,7 @@ class E<T extends Date> {
       [],
     );
   });
-  test("constructorImplementationWithDefaultValues2", async () => {
+  test('constructorImplementationWithDefaultValues2', async () => {
     await expectPass(
       `class C {
     constructor(x);
@@ -3050,7 +3050,7 @@ class E<T extends Date> {
       [],
     );
   });
-  test("constructorOverloadsWithDefaultValues", async () => {
+  test('constructorOverloadsWithDefaultValues', async () => {
     await expectPass(
       `class C {
     foo: string;
@@ -3068,7 +3068,7 @@ class D<T> {
       [],
     );
   });
-  test("constructorOverloadsWithOptionalParameters", async () => {
+  test('constructorOverloadsWithOptionalParameters', async () => {
     await expectPass(
       `class C {
     foo: string;
@@ -3086,7 +3086,7 @@ class D<T> {
       [],
     );
   });
-  test("constructorParameterProperties", async () => {
+  test('constructorParameterProperties', async () => {
     await expectPass(
       `class C {
     y: string;
@@ -3112,7 +3112,7 @@ var r4 = d.z; // error
       [],
     );
   });
-  test("constructorParameterProperties2", async () => {
+  test('constructorParameterProperties2', async () => {
     await expectPass(
       `class C {
     y: number;
@@ -3149,7 +3149,7 @@ var r4 = f.y; // error
       [],
     );
   });
-  test("declarationEmitReadonly", async () => {
+  test('declarationEmitReadonly', async () => {
     await expectPass(
       `
 class C {
@@ -3158,7 +3158,7 @@ class C {
       [],
     );
   });
-  test("readonlyConstructorAssignment", async () => {
+  test('readonlyConstructorAssignment', async () => {
     await expectPass(
       `// Tests that readonly parameter properties behave like regular readonly properties
 
@@ -3202,7 +3202,7 @@ class E extends D {
       [],
     );
   });
-  test("readonlyInAmbientClass", async () => {
+  test('readonlyInAmbientClass', async () => {
     await expectPass(
       `declare class C{
 	constructor(readonly x: number);
@@ -3211,7 +3211,7 @@ class E extends D {
       [],
     );
   });
-  test("readonlyInConstructorParameters", async () => {
+  test('readonlyInConstructorParameters', async () => {
     await expectError(
       `class C {
     constructor(readonly x: number) {}
@@ -3229,7 +3229,7 @@ new F(1).x;`,
       [],
     );
   });
-  test("readonlyReadonly", async () => {
+  test('readonlyReadonly', async () => {
     await expectPass(
       `class C {
     readonly readonly x: number;
@@ -3238,7 +3238,7 @@ new F(1).x;`,
       [],
     );
   });
-  test("constructorWithAssignableReturnExpression", async () => {
+  test('constructorWithAssignableReturnExpression', async () => {
     await expectPass(
       `// a class constructor may return an expression, it must be assignable to the class instance type to be valid
 
@@ -3278,7 +3278,7 @@ class G<T> {
       [],
     );
   });
-  test("constructorWithExpressionLessReturn", async () => {
+  test('constructorWithExpressionLessReturn', async () => {
     await expectPass(
       `class C {
     constructor() {
@@ -3307,7 +3307,7 @@ class F<T> {
       [],
     );
   });
-  test("quotedConstructors", async () => {
+  test('quotedConstructors', async () => {
     await expectPass(
       `class C {
     "constructor"() {
@@ -3343,7 +3343,7 @@ class F {
       [],
     );
   });
-  test("derivedClassConstructorWithoutSuperCall", async () => {
+  test('derivedClassConstructorWithoutSuperCall', async () => {
     await expectError(
       `// derived class constructors must contain a super call
 
@@ -3380,7 +3380,7 @@ class Derived4<T> extends Base2<T> {
       [],
     );
   });
-  test("derivedClassParameterProperties", async () => {
+  test('derivedClassParameterProperties', async () => {
     await expectPass(
       `// ordering of super calls in derived constructors matters depending on other class contents
 
@@ -3479,7 +3479,7 @@ class Derived10<T> extends Base2<T> {
       [],
     );
   });
-  test("derivedClassSuperCallsInNonConstructorMembers", async () => {
+  test('derivedClassSuperCallsInNonConstructorMembers', async () => {
     await expectError(
       `// error to use super calls outside a constructor
 
@@ -3515,7 +3515,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("derivedClassSuperCallsWithThisArg", async () => {
+  test('derivedClassSuperCallsWithThisArg', async () => {
     await expectPass(
       `class Base {
     x: string;
@@ -3548,7 +3548,7 @@ class Derived4 extends Base {
       [],
     );
   });
-  test("derivedClassSuperProperties", async () => {
+  test('derivedClassSuperProperties', async () => {
     await expectPass(
       `
 declare const decorate: any;
@@ -3955,7 +3955,7 @@ const DerivedWithLoops = [
       [],
     );
   });
-  test("derivedClassSuperStatementPosition", async () => {
+  test('derivedClassSuperStatementPosition', async () => {
     await expectPass(
       `
 class DerivedBasic extends Object {
@@ -4057,7 +4057,7 @@ class DerivedInConditionalWithProperties extends Object {
       [],
     );
   });
-  test("emitStatementsBeforeSuperCall", async () => {
+  test('emitStatementsBeforeSuperCall', async () => {
     await expectPass(
       `
 class Base {
@@ -4083,7 +4083,7 @@ class Test extends Base {
       [],
     );
   });
-  test("emitStatementsBeforeSuperCallWithDefineFields", async () => {
+  test('emitStatementsBeforeSuperCallWithDefineFields', async () => {
     await expectPass(
       `
 class Base {
@@ -4109,7 +4109,7 @@ class Test extends Base {
       [],
     );
   });
-  test("superCallInConstructorWithNoBaseType", async () => {
+  test('superCallInConstructorWithNoBaseType', async () => {
     await expectError(
       `class C {
     constructor() {
@@ -4125,7 +4125,7 @@ class D<T> {
       [],
     );
   });
-  test("superPropertyInConstructorBeforeSuperCall", async () => {
+  test('superPropertyInConstructorBeforeSuperCall', async () => {
     await expectPass(
       `class B {
     constructor(x?: string) {}
@@ -4145,7 +4145,7 @@ class C2 extends B {
       [],
     );
   });
-  test("privateIndexer", async () => {
+  test('privateIndexer', async () => {
     await expectPass(
       `// private indexers not allowed
 
@@ -4163,7 +4163,7 @@ class E<T> {
       [],
     );
   });
-  test("privateIndexer2", async () => {
+  test('privateIndexer2', async () => {
     await expectError(
       `// private indexers not allowed
 
@@ -4177,7 +4177,7 @@ var y: {
       [],
     );
   });
-  test("publicIndexer", async () => {
+  test('publicIndexer', async () => {
     await expectPass(
       `// public indexers not allowed
 
@@ -4195,7 +4195,7 @@ class E<T> {
       [],
     );
   });
-  test("staticIndexers", async () => {
+  test('staticIndexers', async () => {
     await expectPass(
       `// static indexers not allowed
 
@@ -4213,7 +4213,7 @@ class E<T> {
       [],
     );
   });
-  test("classPropertyAsPrivate", async () => {
+  test('classPropertyAsPrivate', async () => {
     await expectPass(
       `class C {
     private x: string;
@@ -4241,7 +4241,7 @@ C.foo();`,
       [],
     );
   });
-  test("classPropertyAsProtected", async () => {
+  test('classPropertyAsProtected', async () => {
     await expectPass(
       `class C {
     protected x: string;
@@ -4269,7 +4269,7 @@ C.foo();`,
       [],
     );
   });
-  test("classPropertyIsPublicByDefault", async () => {
+  test('classPropertyIsPublicByDefault', async () => {
     await expectPass(
       `class C {
     x: string;
@@ -4296,7 +4296,7 @@ C.foo();`,
       [],
     );
   });
-  test("privateClassPropertyAccessibleWithinClass", async () => {
+  test('privateClassPropertyAccessibleWithinClass', async () => {
     await expectPass(
       `// no errors
 
@@ -4332,7 +4332,7 @@ class C2 {
       [],
     );
   });
-  test("privateClassPropertyAccessibleWithinNestedClass", async () => {
+  test('privateClassPropertyAccessibleWithinNestedClass', async () => {
     await expectPass(
       `// no errors
 
@@ -4374,7 +4374,7 @@ class C {
       [],
     );
   });
-  test("privateInstanceMemberAccessibility", async () => {
+  test('privateInstanceMemberAccessibility', async () => {
     await expectError(
       `class Base {
     private foo: string;
@@ -4392,7 +4392,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("privateProtectedMembersAreNotAccessibleDestructuring", async () => {
+  test('privateProtectedMembersAreNotAccessibleDestructuring', async () => {
     await expectPass(
       `class K {
     private priv;
@@ -4421,7 +4421,7 @@ function f({ priv, prot, privateMethod }: K) {
       [],
     );
   });
-  test("privateStaticMemberAccessibility", async () => {
+  test('privateStaticMemberAccessibility', async () => {
     await expectPass(
       `class Base {
     private static foo: string;
@@ -4434,7 +4434,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("privateStaticNotAccessibleInClodule", async () => {
+  test('privateStaticNotAccessibleInClodule', async () => {
     await expectPass(
       `// Any attempt to access a private property member outside the class body that contains its declaration results in a compile-time error.
 
@@ -4449,7 +4449,7 @@ namespace C {
       [],
     );
   });
-  test("privateStaticNotAccessibleInClodule2", async () => {
+  test('privateStaticNotAccessibleInClodule2', async () => {
     await expectPass(
       `// Any attempt to access a private property member outside the class body that contains its declaration results in a compile-time error.
 
@@ -4468,7 +4468,7 @@ namespace D {
       [],
     );
   });
-  test("protectedClassPropertyAccessibleWithinClass", async () => {
+  test('protectedClassPropertyAccessibleWithinClass', async () => {
     await expectPass(
       `// no errors
 
@@ -4504,7 +4504,7 @@ class C2 {
       [],
     );
   });
-  test("protectedClassPropertyAccessibleWithinNestedClass", async () => {
+  test('protectedClassPropertyAccessibleWithinNestedClass', async () => {
     await expectPass(
       `// no errors
 
@@ -4546,7 +4546,7 @@ class C {
       [],
     );
   });
-  test("protectedClassPropertyAccessibleWithinNestedSubclass", async () => {
+  test('protectedClassPropertyAccessibleWithinNestedSubclass', async () => {
     await expectPass(
       `
 class B {
@@ -4589,7 +4589,7 @@ class E extends C {
       [],
     );
   });
-  test("protectedClassPropertyAccessibleWithinNestedSubclass1", async () => {
+  test('protectedClassPropertyAccessibleWithinNestedSubclass1', async () => {
     await expectPass(
       `class Base {
     protected x!: string;
@@ -4708,7 +4708,7 @@ d4.x;                   // Error, neither within their declaring class nor class
       [],
     );
   });
-  test("protectedClassPropertyAccessibleWithinSubclass", async () => {
+  test('protectedClassPropertyAccessibleWithinSubclass', async () => {
     await expectPass(
       `// no errors
 
@@ -4732,7 +4732,7 @@ class C extends B {
       [],
     );
   });
-  test("protectedClassPropertyAccessibleWithinSubclass2", async () => {
+  test('protectedClassPropertyAccessibleWithinSubclass2', async () => {
     await expectPass(
       `class Base {
     protected x!: string;
@@ -4831,7 +4831,7 @@ d4.x;                   // Error, neither within their declaring class nor class
       [],
     );
   });
-  test("protectedClassPropertyAccessibleWithinSubclass3", async () => {
+  test('protectedClassPropertyAccessibleWithinSubclass3', async () => {
     await expectPass(
       `class Base {
     protected x: string;
@@ -4849,7 +4849,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("protectedInstanceMemberAccessibility", async () => {
+  test('protectedInstanceMemberAccessibility', async () => {
     await expectPass(
       `class A {
     protected x!: string;
@@ -4898,7 +4898,7 @@ class C extends A {
       [],
     );
   });
-  test("protectedStaticClassPropertyAccessibleWithinSubclass", async () => {
+  test('protectedStaticClassPropertyAccessibleWithinSubclass', async () => {
     await expectPass(
       `class Base {
     protected static x: string;
@@ -4946,7 +4946,7 @@ Derived3.x;     // Error, neither within their declaring class nor classes deriv
       [],
     );
   });
-  test("protectedStaticClassPropertyAccessibleWithinSubclass2", async () => {
+  test('protectedStaticClassPropertyAccessibleWithinSubclass2', async () => {
     await expectPass(
       `class Base {
     protected static x: string;
@@ -4972,7 +4972,7 @@ class Derived2 extends Derived1 {
       [],
     );
   });
-  test("protectedStaticNotAccessibleInClodule", async () => {
+  test('protectedStaticNotAccessibleInClodule', async () => {
     await expectPass(
       `// Any attempt to access a private property member outside the class body that contains its declaration results in a compile-time error.
 
@@ -4988,7 +4988,7 @@ namespace C {
       [],
     );
   });
-  test("genericSetterInClassType", async () => {
+  test('genericSetterInClassType', async () => {
     await expectPass(
       `
 namespace Generic {
@@ -5019,7 +5019,7 @@ namespace Generic {
       [],
     );
   });
-  test("genericSetterInClassTypeJsDoc", async () => {
+  test('genericSetterInClassTypeJsDoc', async () => {
     await expectPass(
       `
 /**
@@ -5048,7 +5048,7 @@ new Box(3).value = 3;
       [],
     );
   });
-  test("indexersInClassType", async () => {
+  test('indexersInClassType', async () => {
     await expectPass(
       `class C {
     [x: number]: Date;
@@ -5070,7 +5070,7 @@ var r3 = r.a
       [],
     );
   });
-  test("instancePropertiesInheritedIntoClassType", async () => {
+  test('instancePropertiesInheritedIntoClassType', async () => {
     await expectPass(
       `namespace NonGeneric {
     class C {
@@ -5117,7 +5117,7 @@ namespace Generic {
       [],
     );
   });
-  test("instancePropertyInClassType", async () => {
+  test('instancePropertyInClassType', async () => {
     await expectPass(
       `namespace NonGeneric {
     class C {
@@ -5160,7 +5160,7 @@ namespace Generic {
       [],
     );
   });
-  test("staticPropertyNotInClassType", async () => {
+  test('staticPropertyNotInClassType', async () => {
     await expectPass(
       `namespace NonGeneric {
     class C {
@@ -5204,7 +5204,7 @@ namespace Generic {
       [],
     );
   });
-  test("classWithBaseClassButNoConstructor", async () => {
+  test('classWithBaseClassButNoConstructor', async () => {
     await expectPass(
       `class Base {
     constructor(x: number) { }
@@ -5249,7 +5249,7 @@ var d6 = new D(1); // ok`,
       [],
     );
   });
-  test("classWithConstructors", async () => {
+  test('classWithConstructors', async () => {
     await expectPass(
       `namespace NonGeneric {
     class C {
@@ -5303,7 +5303,7 @@ namespace Generics {
       [],
     );
   });
-  test("classWithNoConstructorOrBaseClass", async () => {
+  test('classWithNoConstructorOrBaseClass', async () => {
     await expectPass(
       `class C {
     x: string;
@@ -5324,7 +5324,7 @@ var r2 = D;
       [],
     );
   });
-  test("classWithStaticMembers", async () => {
+  test('classWithStaticMembers', async () => {
     await expectPass(
       `class C {
     static fn() { return this; }
@@ -5348,7 +5348,7 @@ var r3 = r.foo;`,
       [],
     );
   });
-  test("constructorHasPrototypeProperty", async () => {
+  test('constructorHasPrototypeProperty', async () => {
     await expectPass(
       `namespace NonGeneric {
     class C {
@@ -5384,7 +5384,7 @@ namespace Generic {
       [],
     );
   });
-  test("derivedClassFunctionOverridesBaseClassAccessor", async () => {
+  test('derivedClassFunctionOverridesBaseClassAccessor', async () => {
     await expectPass(
       `class Base {
     get x() {
@@ -5403,7 +5403,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("derivedClassIncludesInheritedMembers", async () => {
+  test('derivedClassIncludesInheritedMembers', async () => {
     await expectPass(
       `class Base {
     a: string;
@@ -5448,7 +5448,7 @@ var r8 = d2[1];
       [],
     );
   });
-  test("derivedClassOverridesIndexersWithAssignmentCompatibility", async () => {
+  test('derivedClassOverridesIndexersWithAssignmentCompatibility', async () => {
     await expectPass(
       `class Base {
     [x: string]: Object;
@@ -5470,7 +5470,7 @@ class Derived2 extends Base2 {
       [],
     );
   });
-  test("derivedClassOverridesPrivates", async () => {
+  test('derivedClassOverridesPrivates', async () => {
     await expectPass(
       `class Base {
     private x: { foo: string };
@@ -5490,7 +5490,7 @@ class Derived2 extends Base2 {
       [],
     );
   });
-  test("derivedClassOverridesProtectedMembers", async () => {
+  test('derivedClassOverridesProtectedMembers', async () => {
     await expectPass(
       `
 var x: { foo: string; }
@@ -5531,7 +5531,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("derivedClassOverridesProtectedMembers2", async () => {
+  test('derivedClassOverridesProtectedMembers2', async () => {
     await expectPass(
       `var x: { foo: string; }
 var y: { foo: string; bar: string; }
@@ -5599,7 +5599,7 @@ var r8 = d2[1];
       [],
     );
   });
-  test("derivedClassOverridesProtectedMembers3", async () => {
+  test('derivedClassOverridesProtectedMembers3', async () => {
     await expectPass(
       `
 var x: { foo: string; }
@@ -5675,7 +5675,7 @@ class Derived10 extends Base {
       [],
     );
   });
-  test("derivedClassOverridesProtectedMembers4", async () => {
+  test('derivedClassOverridesProtectedMembers4', async () => {
     await expectPass(
       `var x: { foo: string; }
 var y: { foo: string; bar: string; }
@@ -5694,7 +5694,7 @@ class Derived2 extends Derived1 {
       [],
     );
   });
-  test("derivedClassOverridesPublicMembers", async () => {
+  test('derivedClassOverridesPublicMembers', async () => {
     await expectPass(
       `var x: { foo: string; }
 var y: { foo: string; bar: string; }
@@ -5761,7 +5761,7 @@ var r8 = d2[1];
       [],
     );
   });
-  test("derivedClassOverridesWithoutSubtype", async () => {
+  test('derivedClassOverridesWithoutSubtype', async () => {
     await expectPass(
       `class Base {
     x: {
@@ -5789,7 +5789,7 @@ class Derived2 extends Base2 {
       [],
     );
   });
-  test("derivedClassTransitivity", async () => {
+  test('derivedClassTransitivity', async () => {
     await expectPass(
       `// subclassing is not transitive when you can remove required parameters and add optional parameters
 
@@ -5814,7 +5814,7 @@ var r2 = e.foo('');`,
       [],
     );
   });
-  test("derivedClassTransitivity2", async () => {
+  test('derivedClassTransitivity2', async () => {
     await expectPass(
       `// subclassing is not transitive when you can remove required parameters and add optional parameters
 
@@ -5839,7 +5839,7 @@ var r2 = e.foo(1, '');`,
       [],
     );
   });
-  test("derivedClassTransitivity3", async () => {
+  test('derivedClassTransitivity3', async () => {
     await expectPass(
       `// subclassing is not transitive when you can remove required parameters and add optional parameters
 
@@ -5864,7 +5864,7 @@ var r2 = e.foo('', 1);`,
       [],
     );
   });
-  test("derivedClassTransitivity4", async () => {
+  test('derivedClassTransitivity4', async () => {
     await expectPass(
       `// subclassing is not transitive when you can remove required parameters and add optional parameters on protected members
 
@@ -5889,7 +5889,7 @@ var r2 = e.foo('');`,
       [],
     );
   });
-  test("derivedClassWithAny", async () => {
+  test('derivedClassWithAny', async () => {
     await expectPass(
       `class C {
     x: number;
@@ -5953,7 +5953,7 @@ var r = c.foo(); // e.foo would return string
       [],
     );
   });
-  test("derivedClassWithPrivateInstanceShadowingProtectedInstance", async () => {
+  test('derivedClassWithPrivateInstanceShadowingProtectedInstance', async () => {
     await expectPass(
       `
 class Base {
@@ -5980,7 +5980,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("derivedClassWithPrivateInstanceShadowingPublicInstance", async () => {
+  test('derivedClassWithPrivateInstanceShadowingPublicInstance', async () => {
     await expectPass(
       `class Base {
     public x: string;
@@ -6017,7 +6017,7 @@ Derived.a = 2; // error`,
       [],
     );
   });
-  test("derivedClassWithPrivateStaticShadowingProtectedStatic", async () => {
+  test('derivedClassWithPrivateStaticShadowingProtectedStatic', async () => {
     await expectPass(
       `
 class Base {
@@ -6043,7 +6043,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("derivedClassWithPrivateStaticShadowingPublicStatic", async () => {
+  test('derivedClassWithPrivateStaticShadowingPublicStatic', async () => {
     await expectPass(
       `class Base {
     public static x: string;
@@ -6081,7 +6081,7 @@ Derived.a = 2; // error`,
       [],
     );
   });
-  test("derivedGenericClassWithAny", async () => {
+  test('derivedGenericClassWithAny', async () => {
     await expectPass(
       `class C<T extends number> {
     x: T;
@@ -6128,7 +6128,7 @@ var r = c.foo(); // e.foo would return string`,
       [],
     );
   });
-  test("thisAndSuperInStaticMembers1", async () => {
+  test('thisAndSuperInStaticMembers1', async () => {
     await expectPass(
       `
 declare class B {
@@ -6173,7 +6173,7 @@ class C extends B {
       [],
     );
   });
-  test("thisAndSuperInStaticMembers2", async () => {
+  test('thisAndSuperInStaticMembers2', async () => {
     await expectPass(
       `
 declare class B {
@@ -6218,7 +6218,7 @@ class C extends B {
       [],
     );
   });
-  test("thisAndSuperInStaticMembers3", async () => {
+  test('thisAndSuperInStaticMembers3', async () => {
     await expectPass(
       `
 declare class B {
@@ -6246,7 +6246,7 @@ class C extends B {
       [],
     );
   });
-  test("thisAndSuperInStaticMembers4", async () => {
+  test('thisAndSuperInStaticMembers4', async () => {
     await expectPass(
       `
 declare class B {
@@ -6274,7 +6274,7 @@ class C extends B {
       [],
     );
   });
-  test("typeOfThisInInstanceMember", async () => {
+  test('typeOfThisInInstanceMember', async () => {
     await expectPass(
       `class C {
     x = this;
@@ -6310,7 +6310,7 @@ rs.forEach(x => {
       [],
     );
   });
-  test("typeOfThisInInstanceMember2", async () => {
+  test('typeOfThisInInstanceMember2', async () => {
     await expectPass(
       `class C<T> {
     x = this;
@@ -6350,7 +6350,7 @@ rs.forEach(x => {
       [],
     );
   });
-  test("typeOfThisInstanceMemberNarrowedWithLoopAntecedent", async () => {
+  test('typeOfThisInstanceMemberNarrowedWithLoopAntecedent', async () => {
     await expectPass(
       `// #31995
 type State = {
@@ -6386,7 +6386,7 @@ class SomeClass2 {
       [],
     );
   });
-  test("typeOfThisInStaticMembers", async () => {
+  test('typeOfThisInStaticMembers', async () => {
     await expectPass(
       `class C {
     constructor(x: number) { }
@@ -6425,7 +6425,7 @@ var r7 = new t2('');
       [],
     );
   });
-  test("typeOfThisInStaticMembers10", async () => {
+  test('typeOfThisInStaticMembers10', async () => {
     await expectPass(
       `
 declare const foo: any;
@@ -6479,7 +6479,7 @@ class DD extends CC {
       [],
     );
   });
-  test("typeOfThisInStaticMembers11", async () => {
+  test('typeOfThisInStaticMembers11', async () => {
     await expectPass(
       `
 declare const foo: any;
@@ -6533,7 +6533,7 @@ class DD extends CC {
       [],
     );
   });
-  test("typeOfThisInStaticMembers12", async () => {
+  test('typeOfThisInStaticMembers12', async () => {
     await expectPass(
       `
 class C {
@@ -6547,7 +6547,7 @@ class C {
       [],
     );
   });
-  test("typeOfThisInStaticMembers13", async () => {
+  test('typeOfThisInStaticMembers13', async () => {
     await expectPass(
       `
 class C {
@@ -6561,7 +6561,7 @@ class C {
       [],
     );
   });
-  test("typeOfThisInStaticMembers2", async () => {
+  test('typeOfThisInStaticMembers2', async () => {
     await expectPass(
       `class C {
     static foo = this; // ok
@@ -6573,7 +6573,7 @@ class C2<T> {
       [],
     );
   });
-  test("typeOfThisInStaticMembers3", async () => {
+  test('typeOfThisInStaticMembers3', async () => {
     await expectPass(
       `class C {
     static a = 1;
@@ -6589,7 +6589,7 @@ class D extends C {
       [],
     );
   });
-  test("typeOfThisInStaticMembers4", async () => {
+  test('typeOfThisInStaticMembers4', async () => {
     await expectPass(
       `class C {
     static a = 1;
@@ -6605,7 +6605,7 @@ class D extends C {
       [],
     );
   });
-  test("typeOfThisInStaticMembers5", async () => {
+  test('typeOfThisInStaticMembers5', async () => {
     await expectPass(
       `
 class C {
@@ -6619,7 +6619,7 @@ class C {
       [],
     );
   });
-  test("typeOfThisInStaticMembers6", async () => {
+  test('typeOfThisInStaticMembers6', async () => {
     await expectError(
       `class C {
     static f = 1
@@ -6632,7 +6632,7 @@ class D extends C {
       [],
     );
   });
-  test("typeOfThisInStaticMembers7", async () => {
+  test('typeOfThisInStaticMembers7', async () => {
     await expectPass(
       `
 class C {
@@ -6649,7 +6649,7 @@ class D extends C {
       [],
     );
   });
-  test("typeOfThisInStaticMembers8", async () => {
+  test('typeOfThisInStaticMembers8', async () => {
     await expectPass(
       `
 class C {
@@ -6673,7 +6673,7 @@ class C {
       [],
     );
   });
-  test("typeOfThisInStaticMembers9", async () => {
+  test('typeOfThisInStaticMembers9', async () => {
     await expectError(
       `
 class C {
@@ -6700,7 +6700,7 @@ class D extends C {
       [],
     );
   });
-  test("privateNameAccessors", async () => {
+  test('privateNameAccessors', async () => {
     await expectPass(
       `
 class A1 {
@@ -6720,7 +6720,7 @@ class A1 {
       [],
     );
   });
-  test("privateNameAccessorsAccess", async () => {
+  test('privateNameAccessorsAccess', async () => {
     await expectPass(
       `
 class A2 {
@@ -6751,7 +6751,7 @@ class B2 {
       [],
     );
   });
-  test("privateNameAccessorsCallExpression", async () => {
+  test('privateNameAccessorsCallExpression', async () => {
     await expectPass(
       `
 class A {
@@ -6775,7 +6775,7 @@ class A {
       [],
     );
   });
-  test("privateNameAccessorssDerivedClasses", async () => {
+  test('privateNameAccessorssDerivedClasses', async () => {
     await expectPass(
       `
 class Base {
@@ -6792,7 +6792,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("privateNameAmbientNoImplicitAny", async () => {
+  test('privateNameAmbientNoImplicitAny', async () => {
     await expectPass(
       `declare class A {
     #prop;
@@ -6803,7 +6803,7 @@ class B {
       [],
     );
   });
-  test("privateNameAndAny", async () => {
+  test('privateNameAndAny', async () => {
     await expectPass(
       `
 class A {
@@ -6836,7 +6836,7 @@ class A {
       [],
     );
   });
-  test("privateNameAndIndexSignature", async () => {
+  test('privateNameAndIndexSignature', async () => {
     await expectPass(
       `
 class A {
@@ -6853,7 +6853,7 @@ class A {
       [],
     );
   });
-  test("privateNameAndObjectRestSpread", async () => {
+  test('privateNameAndObjectRestSpread', async () => {
     await expectPass(
       `
 class C {
@@ -6875,7 +6875,7 @@ class C {
       [],
     );
   });
-  test("privateNameAndPropertySignature", async () => {
+  test('privateNameAndPropertySignature', async () => {
     await expectPass(
       `type A = {
     #foo: string;
@@ -6900,7 +6900,7 @@ declare const y: [{ qux: { #quux: 3 } }];`,
       [],
     );
   });
-  test("privateNameAndStaticInitializer", async () => {
+  test('privateNameAndStaticInitializer', async () => {
     await expectPass(
       `
 class A {
@@ -6911,7 +6911,7 @@ class A {
       [],
     );
   });
-  test("privateNameBadAssignment", async () => {
+  test('privateNameBadAssignment', async () => {
     await expectPass(
       `
 exports.#nope = 1;           // Error (outside class body)
@@ -6931,7 +6931,7 @@ class C {
       [],
     );
   });
-  test("privateNameBadDeclaration", async () => {
+  test('privateNameBadDeclaration', async () => {
     await expectError(
       `function A() { }
 A.prototype = {
@@ -6953,7 +6953,7 @@ class C {
       [],
     );
   });
-  test("privateNameBadSuper", async () => {
+  test('privateNameBadSuper', async () => {
     await expectPass(
       `class B {};
 class A extends B {
@@ -6966,7 +6966,7 @@ class A extends B {
       [],
     );
   });
-  test("privateNameBadSuperUseDefineForClassFields", async () => {
+  test('privateNameBadSuperUseDefineForClassFields', async () => {
     await expectPass(
       `class B {};
 class A extends B {
@@ -6979,7 +6979,7 @@ class A extends B {
       [],
     );
   });
-  test("privateNameCircularReference", async () => {
+  test('privateNameCircularReference', async () => {
     await expectPass(
       `
 class A {
@@ -6990,7 +6990,7 @@ class A {
       [],
     );
   });
-  test("privateNameClassExpressionLoop", async () => {
+  test('privateNameClassExpressionLoop', async () => {
     await expectPass(
       `const array = [];
 for (let i = 0; i < 10; ++i) {
@@ -7004,7 +7004,7 @@ for (let i = 0; i < 10; ++i) {
       [],
     );
   });
-  test("privateNameComputedPropertyName1", async () => {
+  test('privateNameComputedPropertyName1', async () => {
     await expectPass(
       `
 class A {
@@ -7047,7 +7047,7 @@ new A().test();
       [],
     );
   });
-  test("privateNameComputedPropertyName2", async () => {
+  test('privateNameComputedPropertyName2', async () => {
     await expectPass(
       `
 let getX: (a: A) => number;
@@ -7062,7 +7062,7 @@ console.log(getX(new A));
       [],
     );
   });
-  test("privateNameComputedPropertyName3", async () => {
+  test('privateNameComputedPropertyName3', async () => {
     await expectPass(
       `
 class Foo {
@@ -7092,7 +7092,7 @@ console.log(new Foo("NAME").getValue(100));
       [],
     );
   });
-  test("privateNameComputedPropertyName4", async () => {
+  test('privateNameComputedPropertyName4', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/44113
 class C1 {
@@ -7111,7 +7111,7 @@ class C3 {
       [],
     );
   });
-  test("privateNameConstructorReserved", async () => {
+  test('privateNameConstructorReserved', async () => {
     await expectError(
       `
 class A {
@@ -7121,7 +7121,7 @@ class A {
       [],
     );
   });
-  test("privateNameConstructorSignature", async () => {
+  test('privateNameConstructorSignature', async () => {
     await expectPass(
       `
 interface D {
@@ -7142,7 +7142,7 @@ interface C {
       [],
     );
   });
-  test("privateNameDeclaration", async () => {
+  test('privateNameDeclaration', async () => {
     await expectPass(
       `
 class A {
@@ -7158,7 +7158,7 @@ class A {
       [],
     );
   });
-  test("privateNameDeclarationMerging", async () => {
+  test('privateNameDeclarationMerging', async () => {
     await expectPass(
       `
 class D {};
@@ -7178,7 +7178,7 @@ interface C {
       [],
     );
   });
-  test("privateNameDuplicateField", async () => {
+  test('privateNameDuplicateField', async () => {
     await expectPass(
       `
 function Field() {
@@ -7587,7 +7587,7 @@ function StaticSetter() {
       [],
     );
   });
-  test("privateNameEmitHelpers", async () => {
+  test('privateNameEmitHelpers', async () => {
     await expectPass(
       `
 
@@ -7603,7 +7603,7 @@ export declare function __classPrivateFieldSet<T extends object, V>(receiver: T,
       [],
     );
   });
-  test("privateNameEnum", async () => {
+  test('privateNameEnum', async () => {
     await expectPass(
       `
 enum E {
@@ -7612,7 +7612,7 @@ enum E {
       [],
     );
   });
-  test("privateNameES5Ban", async () => {
+  test('privateNameES5Ban', async () => {
     await expectPass(
       `
 class A {
@@ -7629,7 +7629,7 @@ class A {
       [],
     );
   });
-  test("privateNameField", async () => {
+  test('privateNameField', async () => {
     await expectPass(
       `
 class A {
@@ -7641,7 +7641,7 @@ class A {
       [],
     );
   });
-  test("privateNameFieldAccess", async () => {
+  test('privateNameFieldAccess', async () => {
     await expectPass(
       `
 class A {
@@ -7654,7 +7654,7 @@ class A {
       [],
     );
   });
-  test("privateNameFieldAssignment", async () => {
+  test('privateNameFieldAssignment', async () => {
     await expectPass(
       `
 class A {
@@ -7695,7 +7695,7 @@ class A {
       [],
     );
   });
-  test("privateNameFieldCallExpression", async () => {
+  test('privateNameFieldCallExpression', async () => {
     await expectPass(
       `
 class A {
@@ -7721,7 +7721,7 @@ class A {
       [],
     );
   });
-  test("privateNameFieldClassExpression", async () => {
+  test('privateNameFieldClassExpression', async () => {
     await expectPass(
       `
 class B {
@@ -7738,7 +7738,7 @@ class B {
       [],
     );
   });
-  test("privateNameFieldDerivedClasses", async () => {
+  test('privateNameFieldDerivedClasses', async () => {
     await expectPass(
       `
 class Base {
@@ -7755,7 +7755,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("privateNameFieldDestructuredBinding", async () => {
+  test('privateNameFieldDestructuredBinding', async () => {
     await expectPass(
       `
 class A {
@@ -7785,7 +7785,7 @@ class A {
       [],
     );
   });
-  test("privateNameFieldInitializer", async () => {
+  test('privateNameFieldInitializer', async () => {
     await expectPass(
       `
 class A {
@@ -7796,7 +7796,7 @@ class A {
       [],
     );
   });
-  test("privateNameFieldParenthesisLeftAssignment", async () => {
+  test('privateNameFieldParenthesisLeftAssignment', async () => {
     await expectPass(
       `
 class Foo {
@@ -7826,7 +7826,7 @@ class Foo {
       [],
     );
   });
-  test("privateNameFieldsESNext", async () => {
+  test('privateNameFieldsESNext', async () => {
     await expectPass(
       `
 class C {
@@ -7850,7 +7850,7 @@ class C {
       [],
     );
   });
-  test("privateNameFieldUnaryMutation", async () => {
+  test('privateNameFieldUnaryMutation', async () => {
     await expectPass(
       `
 class C {
@@ -7907,7 +7907,7 @@ class C {
       [],
     );
   });
-  test("privateNameHashCharName", async () => {
+  test('privateNameHashCharName', async () => {
     await expectError(
       `
 #
@@ -7923,7 +7923,7 @@ class C {
       [],
     );
   });
-  test("privateNameImplicitDeclaration", async () => {
+  test('privateNameImplicitDeclaration', async () => {
     await expectPass(
       `
 class C {
@@ -7935,7 +7935,7 @@ class C {
       [],
     );
   });
-  test("privateNameInInExpression", async () => {
+  test('privateNameInInExpression', async () => {
     await expectError(
       `
 class Foo {
@@ -8056,7 +8056,7 @@ function badSyntax(v: Foo) {
       [],
     );
   });
-  test("privateNameInInExpressionTransform", async () => {
+  test('privateNameInInExpressionTransform', async () => {
     await expectError(
       `
 class Foo {
@@ -8108,7 +8108,7 @@ export { }
       [],
     );
   });
-  test("privateNameInInExpressionUnused", async () => {
+  test('privateNameInInExpressionUnused', async () => {
     await expectPass(
       `
 class Foo {
@@ -8123,7 +8123,7 @@ class Foo {
       [],
     );
   });
-  test("privateNameInLhsReceiverExpression", async () => {
+  test('privateNameInLhsReceiverExpression', async () => {
     await expectPass(
       `
 class Test {
@@ -8136,7 +8136,7 @@ class Test {
       [],
     );
   });
-  test("privateNameInObjectLiteral-1", async () => {
+  test('privateNameInObjectLiteral-1', async () => {
     await expectError(
       `const obj = {
     #foo: 1
@@ -8144,7 +8144,7 @@ class Test {
       [],
     );
   });
-  test("privateNameInObjectLiteral-2", async () => {
+  test('privateNameInObjectLiteral-2', async () => {
     await expectError(
       `const obj = {
     #foo() {
@@ -8154,7 +8154,7 @@ class Test {
       [],
     );
   });
-  test("privateNameInObjectLiteral-3", async () => {
+  test('privateNameInObjectLiteral-3', async () => {
     await expectPass(
       `const obj = {
     get #foo() {
@@ -8164,7 +8164,7 @@ class Test {
       [],
     );
   });
-  test("privateNameJsBadAssignment", async () => {
+  test('privateNameJsBadAssignment', async () => {
     await expectPass(
       `
 exports.#nope = 1;           // Error (outside class body)
@@ -8183,7 +8183,7 @@ class C {
       [],
     );
   });
-  test("privateNameJsBadDeclaration", async () => {
+  test('privateNameJsBadDeclaration', async () => {
     await expectError(
       `
 function A() { }
@@ -8206,7 +8206,7 @@ class C {
       [],
     );
   });
-  test("privateNameLateSuper", async () => {
+  test('privateNameLateSuper', async () => {
     await expectPass(
       `class B {}
 class A extends B {
@@ -8219,7 +8219,7 @@ class A extends B {
       [],
     );
   });
-  test("privateNameLateSuperUseDefineForClassFields", async () => {
+  test('privateNameLateSuperUseDefineForClassFields', async () => {
     await expectPass(
       `class B {}
 class A extends B {
@@ -8232,7 +8232,7 @@ class A extends B {
       [],
     );
   });
-  test("privateNameMethod", async () => {
+  test('privateNameMethod', async () => {
     await expectPass(
       `
 class A1 {
@@ -8250,7 +8250,7 @@ class A1 {
       [],
     );
   });
-  test("privateNameMethodAccess", async () => {
+  test('privateNameMethodAccess', async () => {
     await expectPass(
       `
 class A2 {
@@ -8279,7 +8279,7 @@ class B2 {
       [],
     );
   });
-  test("privateNameMethodAssignment", async () => {
+  test('privateNameMethodAssignment', async () => {
     await expectPass(
       `
 class A3 {
@@ -8297,7 +8297,7 @@ class A3 {
       [],
     );
   });
-  test("privateNameMethodAsync", async () => {
+  test('privateNameMethodAsync', async () => {
     await expectPass(
       `
 const C = class {
@@ -8316,7 +8316,7 @@ new C().foo().then(console.log);`,
       [],
     );
   });
-  test("privateNameMethodCallExpression", async () => {
+  test('privateNameMethodCallExpression', async () => {
     await expectPass(
       `
 class AA {
@@ -8346,7 +8346,7 @@ class AA {
       [],
     );
   });
-  test("privateNameMethodClassExpression", async () => {
+  test('privateNameMethodClassExpression', async () => {
     await expectPass(
       `
 const C = class {
@@ -8362,7 +8362,7 @@ C.getInstance().#field; // Error`,
       [],
     );
   });
-  test("privateNameMethodInStaticFieldInit", async () => {
+  test('privateNameMethodInStaticFieldInit', async () => {
     await expectPass(
       `
 class C {
@@ -8374,7 +8374,7 @@ console.log(C.s);`,
       [],
     );
   });
-  test("privateNameMethodsDerivedClasses", async () => {
+  test('privateNameMethodsDerivedClasses', async () => {
     await expectPass(
       `
 class Base {
@@ -8391,7 +8391,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("privateNameNestedClassAccessorsShadowing", async () => {
+  test('privateNameNestedClassAccessorsShadowing', async () => {
     await expectPass(
       `
 class Base {
@@ -8411,7 +8411,7 @@ class Base {
       [],
     );
   });
-  test("privateNameNestedClassFieldShadowing", async () => {
+  test('privateNameNestedClassFieldShadowing', async () => {
     await expectPass(
       `
 class Base {
@@ -8431,7 +8431,7 @@ class Base {
       [],
     );
   });
-  test("privateNameNestedClassMethodShadowing", async () => {
+  test('privateNameNestedClassMethodShadowing', async () => {
     await expectPass(
       `
 class Base {
@@ -8451,7 +8451,7 @@ class Base {
       [],
     );
   });
-  test("privateNameNestedClassNameConflict", async () => {
+  test('privateNameNestedClassNameConflict', async () => {
     await expectPass(
       `
 class A {
@@ -8466,7 +8466,7 @@ class A {
       [],
     );
   });
-  test("privateNameNestedMethodAccess", async () => {
+  test('privateNameNestedMethodAccess', async () => {
     await expectPass(
       `
 class C {
@@ -8495,7 +8495,7 @@ class C {
       [],
     );
   });
-  test("privateNameNotAccessibleOutsideDefiningClass", async () => {
+  test('privateNameNotAccessibleOutsideDefiningClass', async () => {
     await expectPass(
       `
 class A {
@@ -8507,7 +8507,7 @@ new A().#foo = 4;               // Error
       [],
     );
   });
-  test("privateNameNotAllowedOutsideClass", async () => {
+  test('privateNameNotAllowedOutsideClass', async () => {
     await expectError(
       `
 const #foo = 3;
@@ -8515,7 +8515,7 @@ const #foo = 3;
       [],
     );
   });
-  test("privateNameReadonly", async () => {
+  test('privateNameReadonly', async () => {
     await expectPass(
       `
 const C = class {
@@ -8529,7 +8529,7 @@ console.log(new C().foo());`,
       [],
     );
   });
-  test("privateNamesAndDecorators", async () => {
+  test('privateNamesAndDecorators', async () => {
     await expectPass(
       `declare function dec<T>(target: T): T;
 
@@ -8542,7 +8542,7 @@ class A {
       [],
     );
   });
-  test("privateNamesAndFields", async () => {
+  test('privateNamesAndFields', async () => {
     await expectPass(
       `
 class A {
@@ -8563,7 +8563,7 @@ class B extends A {
       [],
     );
   });
-  test("privateNamesAndGenericClasses-2", async () => {
+  test('privateNamesAndGenericClasses-2', async () => {
     await expectPass(
       `
 class C<T> {
@@ -8596,7 +8596,7 @@ b = a;                                    // Error
       [],
     );
   });
-  test("privateNamesAndIndexedAccess", async () => {
+  test('privateNamesAndIndexedAccess', async () => {
     await expectError(
       `
 class C {
@@ -8614,7 +8614,7 @@ class C {
       [],
     );
   });
-  test("privateNamesAndkeyof", async () => {
+  test('privateNamesAndkeyof', async () => {
     await expectPass(
       `
 class A {
@@ -8641,7 +8641,7 @@ k = "fooProp"; // Error
       [],
     );
   });
-  test("privateNamesAndMethods", async () => {
+  test('privateNamesAndMethods', async () => {
     await expectPass(
       `
 class A {
@@ -8676,7 +8676,7 @@ class B extends A {
       [],
     );
   });
-  test("privateNamesAndStaticFields", async () => {
+  test('privateNamesAndStaticFields', async () => {
     await expectPass(
       `
 class A {
@@ -8704,7 +8704,7 @@ const willErrorSomeDay: typeof A = class {}; // OK for now
       [],
     );
   });
-  test("privateNamesAndStaticMethods", async () => {
+  test('privateNamesAndStaticMethods', async () => {
     await expectPass(
       `
 class A {
@@ -8740,7 +8740,7 @@ class B extends A {
       [],
     );
   });
-  test("privateNamesAssertion", async () => {
+  test('privateNamesAssertion', async () => {
     await expectPass(
       `
 class Foo {
@@ -8770,7 +8770,7 @@ class Foo2 {
       [],
     );
   });
-  test("privateNamesConstructorChain-1", async () => {
+  test('privateNamesConstructorChain-1', async () => {
     await expectPass(
       `
 class Parent {
@@ -8789,7 +8789,7 @@ class Child extends Parent {
       [],
     );
   });
-  test("privateNamesConstructorChain-2", async () => {
+  test('privateNamesConstructorChain-2', async () => {
     await expectPass(
       `
 class Parent<T> {
@@ -8810,7 +8810,7 @@ new Parent<number>().accessChildProps();`,
       [],
     );
   });
-  test("privateNameSetterExprReturnValue", async () => {
+  test('privateNameSetterExprReturnValue', async () => {
     await expectPass(
       `
 class C {
@@ -8825,7 +8825,7 @@ new C().bar();`,
       [],
     );
   });
-  test("privateNameSetterNoGetter", async () => {
+  test('privateNameSetterNoGetter', async () => {
     await expectPass(
       `
 const C = class {
@@ -8839,7 +8839,7 @@ console.log(new C().m());`,
       [],
     );
   });
-  test("privateNamesIncompatibleModifiers", async () => {
+  test('privateNamesIncompatibleModifiers', async () => {
     await expectError(
       `
 class A {
@@ -8879,7 +8879,7 @@ abstract class B {
       [],
     );
   });
-  test("privateNamesIncompatibleModifiersJs", async () => {
+  test('privateNamesIncompatibleModifiersJs', async () => {
     await expectPass(
       `
 class A {
@@ -8944,7 +8944,7 @@ class A {
       [],
     );
   });
-  test("privateNamesInGenericClasses", async () => {
+  test('privateNamesInGenericClasses', async () => {
     await expectPass(
       `
 class C<T> {
@@ -8977,7 +8977,7 @@ b = a;                                    // Error
       [],
     );
   });
-  test("privateNamesInNestedClasses-1", async () => {
+  test('privateNamesInNestedClasses-1', async () => {
     await expectPass(
       `
 class A {
@@ -9008,7 +9008,7 @@ new A().method();`,
       [],
     );
   });
-  test("privateNamesInNestedClasses-2", async () => {
+  test('privateNamesInNestedClasses-2', async () => {
     await expectPass(
       `
 class A {
@@ -9030,7 +9030,7 @@ class A {
       [],
     );
   });
-  test("privateNamesInterfaceExtendingClass", async () => {
+  test('privateNamesInterfaceExtendingClass', async () => {
     await expectPass(
       `
 class C {
@@ -9047,7 +9047,7 @@ function func(x: I) {
       [],
     );
   });
-  test("privateNamesNoDelete", async () => {
+  test('privateNamesNoDelete', async () => {
     await expectError(
       `
 class A {
@@ -9060,7 +9060,7 @@ class A {
       [],
     );
   });
-  test("privateNamesNotAllowedAsParameters", async () => {
+  test('privateNamesNotAllowedAsParameters', async () => {
     await expectError(
       `
 class A {
@@ -9070,14 +9070,14 @@ class A {
       [],
     );
   });
-  test("privateNamesNotAllowedInVariableDeclarations", async () => {
+  test('privateNamesNotAllowedInVariableDeclarations', async () => {
     await expectError(
       `
 const #foo = 3;`,
       [],
     );
   });
-  test("privateNameStaticAccessors", async () => {
+  test('privateNameStaticAccessors', async () => {
     await expectPass(
       `
 class A1 {
@@ -9097,7 +9097,7 @@ class A1 {
       [],
     );
   });
-  test("privateNameStaticAccessorsAccess", async () => {
+  test('privateNameStaticAccessorsAccess', async () => {
     await expectPass(
       `export {}
 class A2 {
@@ -9129,7 +9129,7 @@ class B2 {
       [],
     );
   });
-  test("privateNameStaticAccessorsCallExpression", async () => {
+  test('privateNameStaticAccessorsCallExpression', async () => {
     await expectPass(
       `
 class A {
@@ -9153,7 +9153,7 @@ class A {
       [],
     );
   });
-  test("privateNameStaticAccessorssDerivedClasses", async () => {
+  test('privateNameStaticAccessorssDerivedClasses', async () => {
     await expectPass(
       `
 class Base {
@@ -9170,7 +9170,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("privateNameStaticAndStaticInitializer", async () => {
+  test('privateNameStaticAndStaticInitializer', async () => {
     await expectPass(
       `
 class A {
@@ -9180,7 +9180,7 @@ class A {
       [],
     );
   });
-  test("privateNameStaticEmitHelpers", async () => {
+  test('privateNameStaticEmitHelpers', async () => {
     await expectPass(
       `
 
@@ -9196,7 +9196,7 @@ export declare function __classPrivateFieldSet<T extends object, V>(receiver: T,
       [],
     );
   });
-  test("privateNameStaticFieldAccess", async () => {
+  test('privateNameStaticFieldAccess', async () => {
     await expectPass(
       `
 class A {
@@ -9210,7 +9210,7 @@ class A {
       [],
     );
   });
-  test("privateNameStaticFieldAssignment", async () => {
+  test('privateNameStaticFieldAssignment', async () => {
     await expectPass(
       `
 class A {
@@ -9251,7 +9251,7 @@ class A {
       [],
     );
   });
-  test("privateNameStaticFieldCallExpression", async () => {
+  test('privateNameStaticFieldCallExpression', async () => {
     await expectPass(
       `
 class A {
@@ -9277,7 +9277,7 @@ class A {
       [],
     );
   });
-  test("privateNameStaticFieldClassExpression", async () => {
+  test('privateNameStaticFieldClassExpression', async () => {
     await expectPass(
       `
 class B {
@@ -9302,7 +9302,7 @@ class B {
       [],
     );
   });
-  test("privateNameStaticFieldDerivedClasses", async () => {
+  test('privateNameStaticFieldDerivedClasses', async () => {
     await expectPass(
       `
 class Base {
@@ -9322,7 +9322,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("privateNameStaticFieldDestructuredBinding", async () => {
+  test('privateNameStaticFieldDestructuredBinding', async () => {
     await expectPass(
       `
 class A {
@@ -9352,7 +9352,7 @@ class A {
       [],
     );
   });
-  test("privateNameStaticFieldInitializer", async () => {
+  test('privateNameStaticFieldInitializer', async () => {
     await expectPass(
       `
 class A {
@@ -9363,7 +9363,7 @@ class A {
       [],
     );
   });
-  test("privateNameStaticFieldNoInitializer", async () => {
+  test('privateNameStaticFieldNoInitializer', async () => {
     await expectPass(
       `
 const C = class {
@@ -9377,7 +9377,7 @@ class C2 {
       [],
     );
   });
-  test("privateNameStaticFieldUnaryMutation", async () => {
+  test('privateNameStaticFieldUnaryMutation', async () => {
     await expectPass(
       `
 class C {
@@ -9412,7 +9412,7 @@ class C {
       [],
     );
   });
-  test("privateNameStaticMethod", async () => {
+  test('privateNameStaticMethod', async () => {
     await expectPass(
       `
 class A1 {
@@ -9430,7 +9430,7 @@ class A1 {
       [],
     );
   });
-  test("privateNameStaticMethodAssignment", async () => {
+  test('privateNameStaticMethodAssignment', async () => {
     await expectPass(
       `
 class A3 {
@@ -9448,7 +9448,7 @@ class A3 {
       [],
     );
   });
-  test("privateNameStaticMethodAsync", async () => {
+  test('privateNameStaticMethodAsync', async () => {
     await expectError(
       `
 const C = class {
@@ -9466,7 +9466,7 @@ const C = class {
       [],
     );
   });
-  test("privateNameStaticMethodCallExpression", async () => {
+  test('privateNameStaticMethodCallExpression', async () => {
     await expectPass(
       `
 class AA {
@@ -9496,7 +9496,7 @@ class AA {
       [],
     );
   });
-  test("privateNameStaticMethodClassExpression", async () => {
+  test('privateNameStaticMethodClassExpression', async () => {
     await expectPass(
       `
 const C = class D {
@@ -9512,7 +9512,7 @@ C.getClass().#field; // Error`,
       [],
     );
   });
-  test("privateNameStaticMethodInStaticFieldInit", async () => {
+  test('privateNameStaticMethodInStaticFieldInit', async () => {
     await expectPass(
       `
 class C {
@@ -9524,7 +9524,7 @@ console.log(C.s);`,
       [],
     );
   });
-  test("privateNameStaticsAndStaticMethods", async () => {
+  test('privateNameStaticsAndStaticMethods', async () => {
     await expectPass(
       `
 class A {
@@ -9560,7 +9560,7 @@ class B extends A {
       [],
     );
   });
-  test("privateNamesUnique-1", async () => {
+  test('privateNamesUnique-1', async () => {
     await expectPass(
       `
 class A {
@@ -9576,7 +9576,7 @@ const b: A = new B();     // Error: Property #foo is missing
       [],
     );
   });
-  test("privateNamesUnique-3", async () => {
+  test('privateNamesUnique-3', async () => {
     await expectPass(
       `
 class A {
@@ -9595,7 +9595,7 @@ class B {
       [],
     );
   });
-  test("privateNamesUnique-4", async () => {
+  test('privateNamesUnique-4', async () => {
     await expectPass(
       `
 class A1 { }
@@ -9607,7 +9607,7 @@ const c: C = a;`,
       [],
     );
   });
-  test("privateNamesUnique-5", async () => {
+  test('privateNamesUnique-5', async () => {
     await expectPass(
       `
 // same as privateNamesUnique-1, but with an interface
@@ -9625,7 +9625,7 @@ const b: A2 = new B();`,
       [],
     );
   });
-  test("privateNamesUseBeforeDef", async () => {
+  test('privateNamesUseBeforeDef', async () => {
     await expectPass(
       `
 class A {
@@ -9650,7 +9650,7 @@ class B {
       [],
     );
   });
-  test("privateNameUncheckedJsOptionalChain", async () => {
+  test('privateNameUncheckedJsOptionalChain', async () => {
     await expectPass(
       `
 class C {
@@ -9663,7 +9663,7 @@ class C {
       [],
     );
   });
-  test("privateNameUnused", async () => {
+  test('privateNameUnused', async () => {
     await expectPass(
       `
 export class A {
@@ -9695,7 +9695,7 @@ export class A3 {
       [],
     );
   });
-  test("privateNameWhenNotUseDefineForClassFieldsInEsNext", async () => {
+  test('privateNameWhenNotUseDefineForClassFieldsInEsNext', async () => {
     await expectPass(
       `
 class TestWithStatics {
@@ -9752,7 +9752,7 @@ class TestNonStatics {
       [],
     );
   });
-  test("privateStaticNameShadowing", async () => {
+  test('privateStaticNameShadowing', async () => {
     await expectPass(
       `
 class X {
@@ -9771,7 +9771,7 @@ class X {
       [],
     );
   });
-  test("privateWriteOnlyAccessorRead", async () => {
+  test('privateWriteOnlyAccessorRead', async () => {
     await expectPass(
       `class Test {
   set #value(v: { foo: { bar: number } }) {}
@@ -9810,7 +9810,7 @@ new Test().m();
       [],
     );
   });
-  test("typeFromPrivatePropertyAssignment", async () => {
+  test('typeFromPrivatePropertyAssignment', async () => {
     await expectPass(
       `
 type Foo = { foo?: string };
@@ -9827,7 +9827,7 @@ class C {
       [],
     );
   });
-  test("typeFromPrivatePropertyAssignmentJs", async () => {
+  test('typeFromPrivatePropertyAssignmentJs', async () => {
     await expectPass(
       `
 class C {
@@ -9843,7 +9843,7 @@ class C {
       [],
     );
   });
-  test("optionalMethodDeclarations", async () => {
+  test('optionalMethodDeclarations', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/34952#issuecomment-552025027
@@ -9854,7 +9854,7 @@ class C {
       [],
     );
   });
-  test("mixinAbstractClasses.2", async () => {
+  test('mixinAbstractClasses.2', async () => {
     await expectPass(
       `
 interface Mixin {
@@ -9885,7 +9885,7 @@ new MixedBase();`,
       [],
     );
   });
-  test("mixinAbstractClasses", async () => {
+  test('mixinAbstractClasses', async () => {
     await expectPass(
       `
 interface Mixin {
@@ -9925,7 +9925,7 @@ wasAbstract.mixinMethod();`,
       [],
     );
   });
-  test("mixinAbstractClassesReturnTypeInference", async () => {
+  test('mixinAbstractClassesReturnTypeInference', async () => {
     await expectPass(
       `
 interface Mixin1 {
@@ -9953,7 +9953,7 @@ class DerivedFromAbstract2 extends Mixin2(AbstractBase) {
       [],
     );
   });
-  test("mixinAccessModifiers", async () => {
+  test('mixinAccessModifiers', async () => {
     await expectPass(
       `
 type Constructable = new (...args: any[]) => object;
@@ -10090,7 +10090,7 @@ function f9(x: ProtectedGeneric<{a: void;}> & ProtectedGeneric<{a:void;b:void;}>
       [],
     );
   });
-  test("mixinAccessors1", async () => {
+  test('mixinAccessors1', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/58790
@@ -10117,7 +10117,7 @@ class MyClass extends mixin(BaseClass) {
       [],
     );
   });
-  test("mixinAccessors2", async () => {
+  test('mixinAccessors2', async () => {
     await expectPass(
       `
 function mixin<T extends { new (...args: any[]): {} }>(superclass: T) {
@@ -10136,7 +10136,7 @@ class MyClass extends mixin(BaseClass) {
       [],
     );
   });
-  test("mixinAccessors3", async () => {
+  test('mixinAccessors3', async () => {
     await expectPass(
       `
 function mixin<T extends { new (...args: any[]): {} }>(superclass: T) {
@@ -10160,7 +10160,7 @@ class MyClass extends mixin(BaseClass) {
       [],
     );
   });
-  test("mixinAccessors4", async () => {
+  test('mixinAccessors4', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/44938
@@ -10188,7 +10188,7 @@ class C extends Mixin(A) {
       [],
     );
   });
-  test("mixinAccessors5", async () => {
+  test('mixinAccessors5', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/61967
@@ -10217,7 +10217,7 @@ declare class TestB extends basicMixin(GetterA, GetterB) {
       [],
     );
   });
-  test("mixinClassesAnnotated", async () => {
+  test('mixinClassesAnnotated', async () => {
     await expectPass(
       `
 type Constructor<T> = new(...args: any[]) => T;
@@ -10288,7 +10288,7 @@ class Thing3 extends Thing2 {
       [],
     );
   });
-  test("mixinClassesAnonymous", async () => {
+  test('mixinClassesAnonymous', async () => {
     await expectPass(
       `type Constructor<T> = new(...args: any[]) => T;
 
@@ -10357,7 +10357,7 @@ const Timestamped = <CT extends Constructor<object>>(Base: CT) => {
       [],
     );
   });
-  test("mixinClassesMembers", async () => {
+  test('mixinClassesMembers', async () => {
     await expectPass(
       `
 declare class C1 {
@@ -10460,7 +10460,7 @@ class C3 extends Mixed3 {
       [],
     );
   });
-  test("mixinWithBaseDependingOnSelfNoCrash1", async () => {
+  test('mixinWithBaseDependingOnSelfNoCrash1', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/60202
@@ -10479,7 +10479,7 @@ export {};`,
       [],
     );
   });
-  test("nestedClassDeclaration", async () => {
+  test('nestedClassDeclaration', async () => {
     await expectError(
       `// nested classes are not allowed
 
@@ -10502,7 +10502,7 @@ var x = {
       [],
     );
   });
-  test("abstractProperty", async () => {
+  test('abstractProperty', async () => {
     await expectPass(
       `abstract class A {
     protected abstract x: string;
@@ -10521,7 +10521,7 @@ class C extends A {
       [],
     );
   });
-  test("abstractPropertyInitializer", async () => {
+  test('abstractPropertyInitializer', async () => {
     await expectPass(
       `abstract class C {
     abstract prop = 1
@@ -10529,7 +10529,7 @@ class C extends A {
       [],
     );
   });
-  test("accessibilityModifiers", async () => {
+  test('accessibilityModifiers', async () => {
     await expectPass(
       `
 // No errors
@@ -10579,7 +10579,7 @@ class E {
       [],
     );
   });
-  test("accessorsOverrideMethod", async () => {
+  test('accessorsOverrideMethod', async () => {
     await expectPass(
       `class A {
     m() { }
@@ -10590,7 +10590,7 @@ class B extends A {
       [],
     );
   });
-  test("accessorsOverrideProperty", async () => {
+  test('accessorsOverrideProperty', async () => {
     await expectPass(
       `class A {
     p = 'yep'
@@ -10609,7 +10609,7 @@ class D extends C {
       [],
     );
   });
-  test("accessorsOverrideProperty10", async () => {
+  test('accessorsOverrideProperty10', async () => {
     await expectPass(
       `
 class A {
@@ -10624,7 +10624,7 @@ class C extends B {
       [],
     );
   });
-  test("accessorsOverrideProperty2", async () => {
+  test('accessorsOverrideProperty2', async () => {
     await expectPass(
       `class Base {
   x = 1;
@@ -10640,7 +10640,7 @@ console.log(obj.x); // number`,
       [],
     );
   });
-  test("accessorsOverrideProperty3", async () => {
+  test('accessorsOverrideProperty3', async () => {
     await expectPass(
       `declare class Animal {
     sound: string
@@ -10653,7 +10653,7 @@ class Lion extends Animal {
       [],
     );
   });
-  test("accessorsOverrideProperty4", async () => {
+  test('accessorsOverrideProperty4', async () => {
     await expectPass(
       `declare class Animal {
     sound: string;
@@ -10666,7 +10666,7 @@ class Lion extends Animal {
       [],
     );
   });
-  test("accessorsOverrideProperty5", async () => {
+  test('accessorsOverrideProperty5', async () => {
     await expectPass(
       `interface I {
     p: number
@@ -10680,7 +10680,7 @@ class C extends B {
       [],
     );
   });
-  test("accessorsOverrideProperty6", async () => {
+  test('accessorsOverrideProperty6', async () => {
     await expectPass(
       `class A {
     p = 'yep'
@@ -10699,7 +10699,7 @@ class D extends C {
       [],
     );
   });
-  test("accessorsOverrideProperty7", async () => {
+  test('accessorsOverrideProperty7', async () => {
     await expectPass(
       `abstract class A {
     abstract p = 'yep'
@@ -10710,7 +10710,7 @@ class B extends A {
       [],
     );
   });
-  test("accessorsOverrideProperty8", async () => {
+  test('accessorsOverrideProperty8', async () => {
     await expectPass(
       `type Types = 'boolean' | 'unknown' | 'string';
 
@@ -10745,7 +10745,7 @@ const value = mine.x;`,
       [],
     );
   });
-  test("accessorsOverrideProperty9", async () => {
+  test('accessorsOverrideProperty9', async () => {
     await expectPass(
       `// #41347, based on microsoft/rushstack
 
@@ -10797,7 +10797,7 @@ export class ApiEnum extends ApiItemContainerMixin(ApiItem) {
       [],
     );
   });
-  test("assignParameterPropertyToPropertyDeclarationES2022", async () => {
+  test('assignParameterPropertyToPropertyDeclarationES2022', async () => {
     await expectPass(
       `class C {
     qux = this.bar // should error
@@ -10852,7 +10852,7 @@ class H {
       [],
     );
   });
-  test("assignParameterPropertyToPropertyDeclarationESNext", async () => {
+  test('assignParameterPropertyToPropertyDeclarationESNext', async () => {
     await expectPass(
       `class C {
     qux = this.bar // should error
@@ -10907,7 +10907,7 @@ class H {
       [],
     );
   });
-  test("autoAccessor1", async () => {
+  test('autoAccessor1', async () => {
     await expectPass(
       `
 class C1 {
@@ -10920,7 +10920,7 @@ class C1 {
       [],
     );
   });
-  test("autoAccessor10", async () => {
+  test('autoAccessor10', async () => {
     await expectPass(
       `
 class C1 {
@@ -10954,7 +10954,7 @@ class C4_2 {
       [],
     );
   });
-  test("autoAccessor11", async () => {
+  test('autoAccessor11', async () => {
     await expectPass(
       `
 class C {
@@ -10975,7 +10975,7 @@ class C {
       [],
     );
   });
-  test("autoAccessor2", async () => {
+  test('autoAccessor2', async () => {
     await expectPass(
       `
 class C1 {
@@ -10998,7 +10998,7 @@ class C1 {
       [],
     );
   });
-  test("autoAccessor3", async () => {
+  test('autoAccessor3', async () => {
     await expectPass(
       `
 class C1 {
@@ -11011,7 +11011,7 @@ class C1 {
       [],
     );
   });
-  test("autoAccessor4", async () => {
+  test('autoAccessor4', async () => {
     await expectPass(
       `
 class C1 {
@@ -11024,7 +11024,7 @@ class C1 {
       [],
     );
   });
-  test("autoAccessor5", async () => {
+  test('autoAccessor5', async () => {
     await expectPass(
       `
 class C1 {
@@ -11041,7 +11041,7 @@ class C2 {
       [],
     );
   });
-  test("autoAccessor6", async () => {
+  test('autoAccessor6', async () => {
     await expectPass(
       `
 class C1 {
@@ -11059,7 +11059,7 @@ class C3 extends C1 {
       [],
     );
   });
-  test("autoAccessor7", async () => {
+  test('autoAccessor7', async () => {
     await expectPass(
       `
 abstract class C1 {
@@ -11077,7 +11077,7 @@ class C3 extends C1 {
       [],
     );
   });
-  test("autoAccessor8", async () => {
+  test('autoAccessor8', async () => {
     await expectPass(
       `
 class C1 {
@@ -11101,7 +11101,7 @@ function f() {
       [],
     );
   });
-  test("autoAccessor9", async () => {
+  test('autoAccessor9', async () => {
     await expectPass(
       `
 // Auto-accessors do not use Set semantics themselves, so do not need to be transformed if there are no other
@@ -11153,7 +11153,7 @@ class C7 {
       [],
     );
   });
-  test("autoAccessorAllowedModifiers", async () => {
+  test('autoAccessorAllowedModifiers', async () => {
     await expectPass(
       `
 abstract class C1 {
@@ -11186,7 +11186,7 @@ declare class C3 {
       [],
     );
   });
-  test("autoAccessorExperimentalDecorators", async () => {
+  test('autoAccessorExperimentalDecorators', async () => {
     await expectError(
       `
 declare var dec: (target: any, key: PropertyKey, desc: PropertyDescriptor) => void;
@@ -11210,7 +11210,7 @@ class C2 {
       [],
     );
   });
-  test("autoAccessorNoUseDefineForClassFields", async () => {
+  test('autoAccessorNoUseDefineForClassFields', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/51528
@@ -11248,7 +11248,7 @@ class C6 {
       [],
     );
   });
-  test("canFollowGetSetKeyword", async () => {
+  test('canFollowGetSetKeyword', async () => {
     await expectError(
       `class A {
     get
@@ -11269,7 +11269,7 @@ const d = {
       [],
     );
   });
-  test("constructorParameterShadowsOuterScopes", async () => {
+  test('constructorParameterShadowsOuterScopes', async () => {
     await expectPass(
       `// Initializer expressions for instance member variables are evaluated in the scope of the class constructor 
 // body but are not permitted to reference parameters or local variables of the constructor.
@@ -11294,7 +11294,7 @@ class D {
       [],
     );
   });
-  test("constructorParameterShadowsOuterScopes2", async () => {
+  test('constructorParameterShadowsOuterScopes2', async () => {
     await expectPass(
       `
 
@@ -11333,7 +11333,7 @@ class E {
       [],
     );
   });
-  test("defineProperty", async () => {
+  test('defineProperty', async () => {
     await expectPass(
       `var x: "p" = "p"
 class A {
@@ -11361,7 +11361,7 @@ class C extends B {
       [],
     );
   });
-  test("derivedUninitializedPropertyDeclaration", async () => {
+  test('derivedUninitializedPropertyDeclaration', async () => {
     await expectPass(
       `class A {
     property = 'x';
@@ -11447,7 +11447,7 @@ class M extends L {
       [],
     );
   });
-  test("initializationOrdering1", async () => {
+  test('initializationOrdering1', async () => {
     await expectPass(
       `
 class Helper {
@@ -11468,7 +11468,7 @@ new Broken(new Helper)`,
       [],
     );
   });
-  test("initializerReferencingConstructorLocals", async () => {
+  test('initializerReferencingConstructorLocals', async () => {
     await expectPass(
       `// Initializer expressions for instance member variables are evaluated in the scope of the class constructor body but are not permitted to reference parameters or local variables of the constructor. 
 
@@ -11494,7 +11494,7 @@ class D<T> {
       [],
     );
   });
-  test("initializerReferencingConstructorParameters", async () => {
+  test('initializerReferencingConstructorParameters', async () => {
     await expectPass(
       `// Initializer expressions for instance member variables are evaluated in the scope of the class constructor body but are not permitted to reference parameters or local variables of the constructor. 
 
@@ -11524,7 +11524,7 @@ class F<T> {
       [],
     );
   });
-  test("instanceMemberInitialization", async () => {
+  test('instanceMemberInitialization', async () => {
     await expectPass(
       `class C {
     x = 1;
@@ -11546,7 +11546,7 @@ class MyMap<K, V> {
       [],
     );
   });
-  test("instanceMemberWithComputedPropertyName", async () => {
+  test('instanceMemberWithComputedPropertyName', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/30953
 "use strict";
@@ -11560,7 +11560,7 @@ class C {
       [],
     );
   });
-  test("instanceMemberWithComputedPropertyName2", async () => {
+  test('instanceMemberWithComputedPropertyName2', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/33857
 "use strict";
@@ -11572,7 +11572,7 @@ class C {
       [],
     );
   });
-  test("accessorsAreNotContextuallyTyped", async () => {
+  test('accessorsAreNotContextuallyTyped', async () => {
     await expectPass(
       `// accessors are not contextually typed
 
@@ -11590,7 +11590,7 @@ var r = c.x(''); // string`,
       [],
     );
   });
-  test("accessorWithES5", async () => {
+  test('accessorWithES5', async () => {
     await expectPass(
       `
 class C {
@@ -11614,7 +11614,7 @@ var y = {
       [],
     );
   });
-  test("accessorWithMismatchedAccessibilityModifiers", async () => {
+  test('accessorWithMismatchedAccessibilityModifiers', async () => {
     await expectPass(
       `
 class C {
@@ -11651,7 +11651,7 @@ class F {
       [],
     );
   });
-  test("ambientAccessors", async () => {
+  test('ambientAccessors', async () => {
     await expectPass(
       `// ok to use accessors in ambient class in ES3
 declare class C {
@@ -11670,7 +11670,7 @@ declare class C {
       [],
     );
   });
-  test("typeOfThisInAccessor", async () => {
+  test('typeOfThisInAccessor', async () => {
     await expectPass(
       `class C {
     get x() {
@@ -11706,7 +11706,7 @@ var x = {
       [],
     );
   });
-  test("derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess", async () => {
+  test('derivedTypeAccessesHiddenBaseCallViaSuperPropertyAccess', async () => {
     await expectPass(
       `class Base {
     foo(x: { a: number }): { a: number } {
@@ -11728,7 +11728,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("instanceMemberAssignsToClassPrototype", async () => {
+  test('instanceMemberAssignsToClassPrototype', async () => {
     await expectPass(
       `class C {
     foo() {
@@ -11745,7 +11745,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("memberFunctionOverloadMixingStaticAndInstance", async () => {
+  test('memberFunctionOverloadMixingStaticAndInstance', async () => {
     await expectPass(
       `class C {
     foo();
@@ -11769,7 +11769,7 @@ class F<T> {
       [],
     );
   });
-  test("memberFunctionsWithPrivateOverloads", async () => {
+  test('memberFunctionsWithPrivateOverloads', async () => {
     await expectPass(
       `class C {
     private foo(x: number);
@@ -11823,7 +11823,7 @@ var r4 = D.bar(''); // error`,
       [],
     );
   });
-  test("memberFunctionsWithPublicOverloads", async () => {
+  test('memberFunctionsWithPublicOverloads', async () => {
     await expectPass(
       `class C {
     public foo(x: number);
@@ -11868,7 +11868,7 @@ class D<T> {
       [],
     );
   });
-  test("memberFunctionsWithPublicPrivateOverloads", async () => {
+  test('memberFunctionsWithPublicPrivateOverloads', async () => {
     await expectPass(
       `class C {
     private foo(x: number);
@@ -11935,7 +11935,7 @@ var r2 = d.foo(2); // error`,
       [],
     );
   });
-  test("staticFactory1", async () => {
+  test('staticFactory1', async () => {
     await expectPass(
       `class Base {
     foo() { return 1; }
@@ -11953,7 +11953,7 @@ d.foo();  `,
       [],
     );
   });
-  test("staticMemberAssignsToConstructorFunctionMembers", async () => {
+  test('staticMemberAssignsToConstructorFunctionMembers', async () => {
     await expectPass(
       `class C {
     static foo() {
@@ -11970,7 +11970,7 @@ d.foo();  `,
       [],
     );
   });
-  test("typeOfThisInMemberFunctions", async () => {
+  test('typeOfThisInMemberFunctions', async () => {
     await expectPass(
       `class C {
     foo() {
@@ -12006,7 +12006,7 @@ class E<T extends Date> {
       [],
     );
   });
-  test("optionalMethod", async () => {
+  test('optionalMethod', async () => {
     await expectPass(
       `class Base {
     method?() { }
@@ -12014,7 +12014,7 @@ class E<T extends Date> {
       [],
     );
   });
-  test("optionalProperty", async () => {
+  test('optionalProperty', async () => {
     await expectPass(
       `class C {
     prop?;
@@ -12022,7 +12022,7 @@ class E<T extends Date> {
       [],
     );
   });
-  test("overrideInterfaceProperty", async () => {
+  test('overrideInterfaceProperty', async () => {
     await expectPass(
       `interface Mup<K, V> {
     readonly size: number;
@@ -12044,7 +12044,7 @@ class Kasizz extends Mup {
       [],
     );
   });
-  test("propertyAndAccessorWithSameName", async () => {
+  test('propertyAndAccessorWithSameName', async () => {
     await expectPass(
       `class C {
     x: number;
@@ -12068,7 +12068,7 @@ class E {
       [],
     );
   });
-  test("propertyAndFunctionWithSameName", async () => {
+  test('propertyAndFunctionWithSameName', async () => {
     await expectPass(
       `class C {
     x: number;
@@ -12084,7 +12084,7 @@ class D {
       [],
     );
   });
-  test("propertyNamedConstructor", async () => {
+  test('propertyNamedConstructor', async () => {
     await expectError(
       `class X1 {
   "constructor" = 3; // Error
@@ -12096,7 +12096,7 @@ class X2 {
       [],
     );
   });
-  test("propertyNamedPrototype", async () => {
+  test('propertyNamedPrototype', async () => {
     await expectError(
       `class C {
     prototype: number; // ok
@@ -12105,7 +12105,7 @@ class X2 {
       [],
     );
   });
-  test("propertyOverridesAccessors", async () => {
+  test('propertyOverridesAccessors', async () => {
     await expectPass(
       `class A {
     get p() { return 'oh no' }
@@ -12124,7 +12124,7 @@ class D extends C {
       [],
     );
   });
-  test("propertyOverridesAccessors2", async () => {
+  test('propertyOverridesAccessors2', async () => {
     await expectPass(
       `class Base {
   get x() { return 2; }
@@ -12140,7 +12140,7 @@ console.log(obj.x); // 2`,
       [],
     );
   });
-  test("propertyOverridesAccessors3", async () => {
+  test('propertyOverridesAccessors3', async () => {
     await expectPass(
       `class Animal {
     _sound = 'rustling noise in the bushes'
@@ -12168,7 +12168,7 @@ lion.makeSound() // with [[Define]]: Expected "RAWR!" but got "rustling noise in
       [],
     );
   });
-  test("propertyOverridesAccessors4", async () => {
+  test('propertyOverridesAccessors4', async () => {
     await expectPass(
       `declare class Animal {
     get sound(): string
@@ -12180,7 +12180,7 @@ class Lion extends Animal {
       [],
     );
   });
-  test("propertyOverridesAccessors5", async () => {
+  test('propertyOverridesAccessors5', async () => {
     await expectPass(
       `class A {
     get p() { return 'oh no' }
@@ -12193,7 +12193,7 @@ class B extends A {
       [],
     );
   });
-  test("propertyOverridesAccessors6", async () => {
+  test('propertyOverridesAccessors6', async () => {
     await expectPass(
       `
 class A {
@@ -12208,7 +12208,7 @@ class C extends B {
       [],
     );
   });
-  test("propertyOverridesMethod", async () => {
+  test('propertyOverridesMethod', async () => {
     await expectPass(
       `class A {
     m() { }
@@ -12219,7 +12219,7 @@ class B extends A {
       [],
     );
   });
-  test("redeclaredProperty", async () => {
+  test('redeclaredProperty', async () => {
     await expectPass(
       `class Base {
   b = 1;
@@ -12237,7 +12237,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("redefinedPararameterProperty", async () => {
+  test('redefinedPararameterProperty', async () => {
     await expectPass(
       `class Base {
     a = 1;
@@ -12254,7 +12254,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("staticAndNonStaticPropertiesSameName", async () => {
+  test('staticAndNonStaticPropertiesSameName', async () => {
     await expectPass(
       `class C {
     x: number;
@@ -12266,7 +12266,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("staticAutoAccessors", async () => {
+  test('staticAutoAccessors', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/53752
 
@@ -12282,7 +12282,7 @@ class A {
       [],
     );
   });
-  test("staticAutoAccessorsWithDecorators", async () => {
+  test('staticAutoAccessorsWithDecorators', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/53752
 
@@ -12299,7 +12299,7 @@ class A {
       [],
     );
   });
-  test("staticMemberInitialization", async () => {
+  test('staticMemberInitialization', async () => {
     await expectPass(
       `class C {
     static x = 1;
@@ -12310,7 +12310,7 @@ var r = C.x;`,
       [],
     );
   });
-  test("staticPropertyAndFunctionWithSameName", async () => {
+  test('staticPropertyAndFunctionWithSameName', async () => {
     await expectPass(
       `class C {
     static f: number;
@@ -12324,7 +12324,7 @@ class D {
       [],
     );
   });
-  test("staticPropertyNameConflicts", async () => {
+  test('staticPropertyNameConflicts', async () => {
     await expectError(
       `
 const FunctionPropertyNames = {
@@ -12678,7 +12678,7 @@ export class ExportedStaticArgumentsFn {
       [],
     );
   });
-  test("staticPropertyNameConflictsInAmbientContext", async () => {
+  test('staticPropertyNameConflictsInAmbientContext', async () => {
     await expectError(
       `
 // name
@@ -12738,7 +12738,7 @@ declare class StaticArgumentsFn {
       [],
     );
   });
-  test("strictPropertyInitialization", async () => {
+  test('strictPropertyInitialization', async () => {
     await expectPass(
       `
 // Properties with non-undefined types require initialization
@@ -12904,7 +12904,7 @@ class C13 {
       [],
     );
   });
-  test("thisInInstanceMemberInitializer", async () => {
+  test('thisInInstanceMemberInitializer', async () => {
     await expectPass(
       `class C {
     x = this;
@@ -12917,7 +12917,7 @@ class D<T> {
       [],
     );
   });
-  test("thisPropertyOverridesAccessors", async () => {
+  test('thisPropertyOverridesAccessors', async () => {
     await expectPass(
       `class Foo {
     get p() { return 1 }
@@ -12934,7 +12934,7 @@ class Bar extends Foo {
       [],
     );
   });
-  test("twoAccessorsWithSameName", async () => {
+  test('twoAccessorsWithSameName', async () => {
     await expectPass(
       `class C {
     get x() { return 1; }
@@ -12973,7 +12973,7 @@ var y = {
       [],
     );
   });
-  test("twoAccessorsWithSameName2", async () => {
+  test('twoAccessorsWithSameName2', async () => {
     await expectPass(
       `class C {
     static get x() { return 1; }
@@ -12994,7 +12994,7 @@ class E {
       [],
     );
   });
-  test("staticIndexSignature1", async () => {
+  test('staticIndexSignature1', async () => {
     await expectPass(
       `class C {
     static [s: string]: number;
@@ -13010,7 +13010,7 @@ const bar = C[42] `,
       [],
     );
   });
-  test("staticIndexSignature2", async () => {
+  test('staticIndexSignature2', async () => {
     await expectPass(
       `class C {
     static readonly [s: string]: number;
@@ -13026,7 +13026,7 @@ const bar = C[42] `,
       [],
     );
   });
-  test("staticIndexSignature3", async () => {
+  test('staticIndexSignature3', async () => {
     await expectPass(
       `
 class B {
@@ -13058,7 +13058,7 @@ const h = DD[42]`,
       [],
     );
   });
-  test("staticIndexSignature4", async () => {
+  test('staticIndexSignature4', async () => {
     await expectPass(
       `
 class B {
@@ -13099,7 +13099,7 @@ if (v === 0) {
       [],
     );
   });
-  test("staticIndexSignature5", async () => {
+  test('staticIndexSignature5', async () => {
     await expectPass(
       `
 class B {
@@ -13127,7 +13127,7 @@ type TGI = Omit<I, number>`,
       [],
     );
   });
-  test("staticIndexSignature6", async () => {
+  test('staticIndexSignature6', async () => {
     await expectPass(
       `
 function foo () {
@@ -13150,7 +13150,7 @@ c.foo(1);`,
       [],
     );
   });
-  test("staticIndexSignature7", async () => {
+  test('staticIndexSignature7', async () => {
     await expectPass(
       `class X {
     static [index: string]: string;

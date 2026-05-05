@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/newTarget", () => {
-  test("invalidNewTarget.es5", async () => {
+describe('TSC: es6/newTarget', () => {
+  test('invalidNewTarget.es5', async () => {
     await expectError(
       `const a = new.target;
 const b = () => new.target;
@@ -31,7 +31,7 @@ const O = {
       [],
     );
   });
-  test("invalidNewTarget.es6", async () => {
+  test('invalidNewTarget.es6', async () => {
     await expectError(
       `const a = new.target;
 const b = () => new.target;
@@ -60,7 +60,7 @@ const O = {
       [],
     );
   });
-  test("newTarget.es5", async () => {
+  test('newTarget.es5', async () => {
     await expectPass(
       `class A {
     constructor() {
@@ -97,7 +97,7 @@ const O = {
       [],
     );
   });
-  test("newTarget.es6", async () => {
+  test('newTarget.es6', async () => {
     await expectPass(
       `class A {
     constructor() {
@@ -134,7 +134,7 @@ const O = {
       [],
     );
   });
-  test("newTargetNarrowing", async () => {
+  test('newTargetNarrowing', async () => {
     await expectPass(
       `
 function foo(x: true) { }

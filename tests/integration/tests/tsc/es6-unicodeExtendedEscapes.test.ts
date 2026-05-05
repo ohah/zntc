@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/unicodeExtendedEscapes", () => {
-  test("unicodeExtendedEscapesInRegularExpressions01", async () => {
+describe('TSC: es6/unicodeExtendedEscapes', () => {
+  test('unicodeExtendedEscapesInRegularExpressions01', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -11,7 +11,7 @@ var x = /\\u{0}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions02", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions02', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -20,7 +20,7 @@ var x = /\\u{00}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions03", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions03', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -29,7 +29,7 @@ var x = /\\u{0000}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions04", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions04', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -38,7 +38,7 @@ var x = /\\u{00000000}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions05", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions05', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -47,7 +47,7 @@ var x = /\\u{48}\\u{65}\\u{6c}\\u{6c}\\u{6f}\\u{20}\\u{77}\\u{6f}\\u{72}\\u{6c}\
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions06", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions06', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -58,7 +58,7 @@ var x = /\\u{10FFFF}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions07", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions07', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -69,7 +69,7 @@ var x = /\\u{110000}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions08", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions08', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -81,7 +81,7 @@ var x = /\\u{FFFF}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions09", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions09', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -93,7 +93,7 @@ var x = /\\u{10000}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions10", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions10', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -106,7 +106,7 @@ var x = /\\u{D800}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions11", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions11', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -119,7 +119,7 @@ var x = /\\u{DC00}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions12", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions12', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -128,7 +128,7 @@ var x = /\\u{FFFFFFFF}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions13", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions13', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -137,7 +137,7 @@ var x = /\\u{DDDDD}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions14", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions14', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -147,7 +147,7 @@ var x = /\\u{-DDDD}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions15", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions15', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -156,7 +156,7 @@ var x = /\\u{abcd}\\u{ef12}\\u{3456}\\u{7890}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions16", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions16', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -165,7 +165,7 @@ var x = /\\u{ABCD}\\u{EF12}\\u{3456}\\u{7890}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions17", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions17', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -174,7 +174,7 @@ var x = /\\u{r}\\u{n}\\u{t}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions18", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions18', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -183,7 +183,7 @@ var x = /\\u{65}\\u{65}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInRegularExpressions19", async () => {
+  test('unicodeExtendedEscapesInRegularExpressions19', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -192,7 +192,7 @@ var x = /\\u{}/gu;
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings01", async () => {
+  test('unicodeExtendedEscapesInStrings01', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -201,7 +201,7 @@ var x = "\\u{0}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings02", async () => {
+  test('unicodeExtendedEscapesInStrings02', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -210,7 +210,7 @@ var x = "\\u{00}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings03", async () => {
+  test('unicodeExtendedEscapesInStrings03', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -219,7 +219,7 @@ var x = "\\u{0000}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings04", async () => {
+  test('unicodeExtendedEscapesInStrings04', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -228,7 +228,7 @@ var x = "\\u{00000000}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings05", async () => {
+  test('unicodeExtendedEscapesInStrings05', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -237,7 +237,7 @@ var x = "\\u{48}\\u{65}\\u{6c}\\u{6c}\\u{6f}\\u{20}\\u{77}\\u{6f}\\u{72}\\u{6c}\
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings06", async () => {
+  test('unicodeExtendedEscapesInStrings06', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -248,7 +248,7 @@ var x = "\\u{10FFFF}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings07", async () => {
+  test('unicodeExtendedEscapesInStrings07', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -259,7 +259,7 @@ var x = "\\u{110000}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings08", async () => {
+  test('unicodeExtendedEscapesInStrings08', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -271,7 +271,7 @@ var x = "\\u{FFFF}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings09", async () => {
+  test('unicodeExtendedEscapesInStrings09', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -283,7 +283,7 @@ var x = "\\u{10000}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings10", async () => {
+  test('unicodeExtendedEscapesInStrings10', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -296,7 +296,7 @@ var x = "\\u{D800}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings11", async () => {
+  test('unicodeExtendedEscapesInStrings11', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -309,7 +309,7 @@ var x = "\\u{DC00}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings12", async () => {
+  test('unicodeExtendedEscapesInStrings12', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -318,7 +318,7 @@ var x = "\\u{FFFFFFFF}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings13", async () => {
+  test('unicodeExtendedEscapesInStrings13', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -327,7 +327,7 @@ var x = "\\u{DDDDD}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings14", async () => {
+  test('unicodeExtendedEscapesInStrings14', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -337,7 +337,7 @@ var x = "\\u{-DDDD}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings15", async () => {
+  test('unicodeExtendedEscapesInStrings15', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -346,7 +346,7 @@ var x = "\\u{abcd}\\u{ef12}\\u{3456}\\u{7890}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings16", async () => {
+  test('unicodeExtendedEscapesInStrings16', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -355,7 +355,7 @@ var x = "\\u{ABCD}\\u{EF12}\\u{3456}\\u{7890}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings17", async () => {
+  test('unicodeExtendedEscapesInStrings17', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -364,7 +364,7 @@ var x = "\\u{r}\\u{n}\\u{t}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings18", async () => {
+  test('unicodeExtendedEscapesInStrings18', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -373,7 +373,7 @@ var x = "\\u{65}\\u{65}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings19", async () => {
+  test('unicodeExtendedEscapesInStrings19', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -382,7 +382,7 @@ var x = "\\u{}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings20", async () => {
+  test('unicodeExtendedEscapesInStrings20', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -391,7 +391,7 @@ var x = "\\u{";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings21", async () => {
+  test('unicodeExtendedEscapesInStrings21', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -400,7 +400,7 @@ var x = "\\u{67";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings22", async () => {
+  test('unicodeExtendedEscapesInStrings22', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -409,7 +409,7 @@ var x = "\\u{00000000000067";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings23", async () => {
+  test('unicodeExtendedEscapesInStrings23', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -418,7 +418,7 @@ var x = "\\u{00000000000067}";
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings24", async () => {
+  test('unicodeExtendedEscapesInStrings24', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -427,7 +427,7 @@ var x = "\\u{00000000000067
       [],
     );
   });
-  test("unicodeExtendedEscapesInStrings25", async () => {
+  test('unicodeExtendedEscapesInStrings25', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -436,7 +436,7 @@ var x = "\\u{00000000000067}
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates01", async () => {
+  test('unicodeExtendedEscapesInTemplates01', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -445,7 +445,7 @@ var x = \`\\u{0}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates02", async () => {
+  test('unicodeExtendedEscapesInTemplates02', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -454,7 +454,7 @@ var x = \`\\u{00}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates03", async () => {
+  test('unicodeExtendedEscapesInTemplates03', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -463,7 +463,7 @@ var x = \`\\u{0000}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates04", async () => {
+  test('unicodeExtendedEscapesInTemplates04', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -472,7 +472,7 @@ var x = \`\\u{00000000}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates05", async () => {
+  test('unicodeExtendedEscapesInTemplates05', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -481,7 +481,7 @@ var x = \`\\u{48}\\u{65}\\u{6c}\\u{6c}\\u{6f}\\u{20}\\u{77}\\u{6f}\\u{72}\\u{6c}
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates06", async () => {
+  test('unicodeExtendedEscapesInTemplates06', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -492,7 +492,7 @@ var x = \`\\u{10FFFF}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates07", async () => {
+  test('unicodeExtendedEscapesInTemplates07', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -503,7 +503,7 @@ var x = \`\\u{110000}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates08", async () => {
+  test('unicodeExtendedEscapesInTemplates08', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -515,7 +515,7 @@ var x = \`\\u{FFFF}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates09", async () => {
+  test('unicodeExtendedEscapesInTemplates09', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -527,7 +527,7 @@ var x = \`\\u{10000}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates10", async () => {
+  test('unicodeExtendedEscapesInTemplates10', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -540,7 +540,7 @@ var x = \`\\u{D800}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates11", async () => {
+  test('unicodeExtendedEscapesInTemplates11', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -553,7 +553,7 @@ var x = \`\\u{DC00}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates12", async () => {
+  test('unicodeExtendedEscapesInTemplates12', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -562,7 +562,7 @@ var x = \`\\u{FFFFFFFF}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates13", async () => {
+  test('unicodeExtendedEscapesInTemplates13', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -571,7 +571,7 @@ var x = \`\\u{DDDDD}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates14", async () => {
+  test('unicodeExtendedEscapesInTemplates14', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -581,7 +581,7 @@ var x = \`\\u{-DDDD}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates15", async () => {
+  test('unicodeExtendedEscapesInTemplates15', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -590,7 +590,7 @@ var x = \`\\u{abcd}\\u{ef12}\\u{3456}\\u{7890}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates16", async () => {
+  test('unicodeExtendedEscapesInTemplates16', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -599,7 +599,7 @@ var x = \`\\u{ABCD}\\u{EF12}\\u{3456}\\u{7890}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates17", async () => {
+  test('unicodeExtendedEscapesInTemplates17', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -608,7 +608,7 @@ var x = \`\\u{r}\\u{n}\\u{t}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates18", async () => {
+  test('unicodeExtendedEscapesInTemplates18', async () => {
     await expectPass(
       `// @target: es5,es6
 
@@ -617,7 +617,7 @@ var x = \`\\u{65}\\u{65}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates19", async () => {
+  test('unicodeExtendedEscapesInTemplates19', async () => {
     await expectError(
       `// @target: es5,es6
 
@@ -626,7 +626,7 @@ var x = \`\\u{}\`;
       [],
     );
   });
-  test("unicodeExtendedEscapesInTemplates20", async () => {
+  test('unicodeExtendedEscapesInTemplates20', async () => {
     await expectPass(
       `// @target: es5,es6
 

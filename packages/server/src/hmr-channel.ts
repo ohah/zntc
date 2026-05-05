@@ -1,5 +1,5 @@
-import type { IncomingMessage } from "node:http";
-import type { Socket } from "node:net";
+import type { IncomingMessage } from 'node:http';
+import type { Socket } from 'node:net';
 
 import {
   HMR_MSG,
@@ -8,8 +8,8 @@ import {
   type HmrMessage,
   type HmrRnMessage,
   normalizeHmrErrors,
-} from "./protocol.ts";
-import { buildHandshakeResponse, parseTextFrame, writeTextFrame } from "./ws-frame.ts";
+} from './protocol.ts';
+import { buildHandshakeResponse, parseTextFrame, writeTextFrame } from './ws-frame.ts';
 
 /**
  * Bun.serve `WebSocket` 의 최소 표면. Bun runtime 의 ws 객체와 호환.
@@ -59,8 +59,8 @@ function extractErrorText(error: unknown): string {
   // zts.mjs parity (L1169): truthy chain — 빈 string 은 다음 fallback 으로 떨어짐.
   const e = (error ?? {}) as WithStack;
   return (
-    (typeof e.stack === "string" && e.stack) ||
-    (typeof e.message === "string" && e.message) ||
+    (typeof e.stack === 'string' && e.stack) ||
+    (typeof e.message === 'string' && e.message) ||
     String(error)
   );
 }
@@ -91,8 +91,8 @@ export function createHmrChannel(): HmrChannel {
 
   return {
     accept(req, socket) {
-      const key = req.headers["sec-websocket-key"];
-      if (typeof key !== "string") {
+      const key = req.headers['sec-websocket-key'];
+      if (typeof key !== 'string') {
         socket.destroy();
         return;
       }
@@ -102,7 +102,7 @@ export function createHmrChannel(): HmrChannel {
       // chunk 로 나뉘어 올 수 있어 buffer 누적). caller 가 onIncoming 미등록이면
       // parsing 자체 skip (overhead 0).
       let recvBuffer: Buffer = Buffer.alloc(0);
-      socket.on("data", (chunk: Buffer) => {
+      socket.on('data', (chunk: Buffer) => {
         if (incomingHandlers.length === 0) return;
         recvBuffer = (
           recvBuffer.length === 0 ? chunk : Buffer.concat([recvBuffer, chunk])
@@ -120,8 +120,8 @@ export function createHmrChannel(): HmrChannel {
           }
         }
       });
-      socket.on("close", () => nodeSockets.delete(socket));
-      socket.on("error", () => nodeSockets.delete(socket));
+      socket.on('close', () => nodeSockets.delete(socket));
+      socket.on('error', () => nodeSockets.delete(socket));
       greetNode(socket);
     },
     addBunClient(ws) {

@@ -2,11 +2,11 @@
 // sourcemap → consumer → 각 frame 역매핑 + customizeFrame hook + first
 // non-bundle frame 의 code frame.
 
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { readJsonBody, sendJson } from "../http-utils.ts";
-import type { CustomizeFrame } from "../options.ts";
-import { getCachedSourceMap, type PlatformStateRegistry } from "../platform-state.ts";
+import { readJsonBody, sendJson } from '../http-utils.ts';
+import type { CustomizeFrame } from '../options.ts';
+import { getCachedSourceMap, type PlatformStateRegistry } from '../platform-state.ts';
 import {
   applyCustomizeFrame,
   createSourceMapConsumer,
@@ -15,11 +15,11 @@ import {
   symbolicateFrame,
   type SymbolicateRequest,
   type SymbolicateResponse,
-} from "../symbolicate-source.ts";
-import { resolvePlatform } from "./_shared.ts";
+} from '../symbolicate-source.ts';
+import { resolvePlatform } from './_shared.ts';
 
 export function isSymbolicateRoute(pathname: string, method: string | undefined): boolean {
-  return pathname === "/symbolicate" && method === "POST";
+  return pathname === '/symbolicate' && method === 'POST';
 }
 
 export async function handleSymbolicateRequest(
@@ -27,7 +27,7 @@ export async function handleSymbolicateRequest(
   res: ServerResponse,
   url: URL,
   registry: PlatformStateRegistry,
-  defaultPlatform: "ios" | "android",
+  defaultPlatform: 'ios' | 'android',
   projectRoot: string,
   customizeFrame: CustomizeFrame | undefined,
 ): Promise<void> {
@@ -35,7 +35,7 @@ export async function handleSymbolicateRequest(
   try {
     body = await readJsonBody<SymbolicateRequest>(req);
   } catch {
-    sendJson(res, 400, { error: "Invalid JSON body" });
+    sendJson(res, 400, { error: 'Invalid JSON body' });
     return;
   }
   const stack = body.stack ?? [];

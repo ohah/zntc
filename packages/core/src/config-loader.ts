@@ -8,13 +8,13 @@
  * (esbuild `esbuild.config.bundled-*.mjs` 패턴).
  */
 
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, extname, join, resolve as pathResolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, extname, join, resolve as pathResolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-import type { BuildOptions } from "../index";
-import { init, isPlainObject, transpile } from "../index";
+import type { BuildOptions } from '../index';
+import { init, isPlainObject, transpile } from '../index';
 
 /**
  * config 객체 형태 — 모든 BuildOptions 의 부분 집합.
@@ -37,7 +37,7 @@ export type UserConfig = Partial<BuildOptions> & {
  *   결과를 shell env 위에 합쳐 전달한다.
  */
 export interface ConfigEnv {
-  command: "bundle" | "serve" | "watch";
+  command: 'bundle' | 'serve' | 'watch';
   mode: string;
   env: Record<string, string | undefined>;
 }
@@ -54,7 +54,7 @@ export type UserConfigInput = UserConfig | UserConfigFn;
  *
  * 같은 배열에서 `TS_EXTS`/`JS_EXTS` 를 derive — 새 확장자 추가 시 한 곳만 고침.
  */
-export const CONFIG_EXT_PRIORITY = [".ts", ".mts", ".cts", ".mjs", ".js", ".cjs", ".json"] as const;
+export const CONFIG_EXT_PRIORITY = ['.ts', '.mts', '.cts', '.mjs', '.js', '.cjs', '.json'] as const;
 
 const TS_EXTS = new Set<string>(CONFIG_EXT_PRIORITY.slice(0, 3));
 const JS_EXTS = new Set<string>(CONFIG_EXT_PRIORITY.slice(3, 6));
@@ -95,12 +95,12 @@ async function loadConfigWithExtends(
 ): Promise<UserConfig> {
   if (visited.has(absPath)) {
     throw new Error(
-      `@zts/core: circular extends detected at ${absPath} (chain: ${[...visited, absPath].join(" → ")})`,
+      `@zts/core: circular extends detected at ${absPath} (chain: ${[...visited, absPath].join(' → ')})`,
     );
   }
   visited.add(absPath);
 
-  const raw = await loadModuleDefault<UserConfigInput>(absPath, "config");
+  const raw = await loadModuleDefault<UserConfigInput>(absPath, 'config');
 
   const resolved = await resolveConfigValue(raw, env, absPath);
 
@@ -135,8 +135,8 @@ async function loadConfigWithExtends(
  */
 export function defaultConfigEnv(): ConfigEnv {
   return {
-    command: "bundle",
-    mode: "production",
+    command: 'bundle',
+    mode: 'production',
     env: process.env,
   };
 }
@@ -150,12 +150,12 @@ async function resolveConfigValue(
   env: ConfigEnv | undefined,
   absPath: string,
 ): Promise<UserConfig> {
-  if (typeof raw !== "function") {
+  if (typeof raw !== 'function') {
     return raw;
   }
   const result = await raw(env ?? defaultConfigEnv());
   if (!isPlainObject(result)) {
-    const got = Array.isArray(result) ? "array" : typeof result;
+    const got = Array.isArray(result) ? 'array' : typeof result;
     throw new Error(
       `@zts/core: functional config must return an object (got ${got}) from ${absPath}`,
     );
@@ -171,7 +171,7 @@ async function resolveConfigValue(
  *
  * 새 모듈 종류 추가 시 이 union 을 확장하고 호출 사이트도 맞춰 갱신.
  */
-export type ModuleKind = "config" | "workspace";
+export type ModuleKind = 'config' | 'workspace';
 
 /**
  * 임의 모듈 파일 (TS/JS/JSON) 의 default export 를 로드. `loadConfig` 의 디스패치 로직을
@@ -204,7 +204,7 @@ export async function loadModuleDefault<T>(
 ): Promise<T> {
   const allowArray = options?.allowArray === true;
   const ext = extname(absPath).toLowerCase();
-  if (ext === ".json") {
+  if (ext === '.json') {
     const raw = readFileOrThrowNotFound(absPath);
     try {
       return JSON.parse(raw) as T;
@@ -222,7 +222,7 @@ export async function loadModuleDefault<T>(
     } catch (err) {
       if (err instanceof Error) {
         err.message = err.message
-          .replace("module not found", `${kind} file not found`)
+          .replace('module not found', `${kind} file not found`)
           .replace(
             /module must be an object or function/,
             `${kind} must export an object or function`,
@@ -248,18 +248,18 @@ async function loadTsModule(
   // `.cts` 에 `export default {...}` 를 쓴 의도는 TS 식 ESM 이므로 파싱 단계에서만
   // 가상의 `.ts` 로 호출한다 — 에러 메시지·sourcemap 에는 실제 경로가 그대로 사용된다.
   // FIXME: `transpile()` 에 `moduleType: "module"` 같은 명시 옵션이 추가되면 이전.
-  const parseFilename = absPath.endsWith(".cts") ? absPath.slice(0, -4) + ".ts" : absPath;
+  const parseFilename = absPath.endsWith('.cts') ? absPath.slice(0, -4) + '.ts' : absPath;
   const result = transpile(source, {
     filename: parseFilename,
-    format: "esm",
+    format: 'esm',
   });
   if (result.errors) {
     throw new Error(`@zts/core: ${kind} compile failed in ${absPath}\n${result.errors}`);
   }
 
-  const tmpName = `.zts-${kind}.bundled-${randomBytes(6).toString("hex")}.mjs`;
+  const tmpName = `.zts-${kind}.bundled-${randomBytes(6).toString('hex')}.mjs`;
   const tmpPath = join(dirname(absPath), tmpName);
-  writeFileSync(tmpPath, result.code, "utf8");
+  writeFileSync(tmpPath, result.code, 'utf8');
   try {
     return await importAndResolveDefault<unknown>(tmpPath, { allowArray });
   } finally {
@@ -295,7 +295,7 @@ export async function importAndResolveDefault<T = UserConfig>(
     mod = await import(url);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "ERR_MODULE_NOT_FOUND" || code === "ENOENT") {
+    if (code === 'ERR_MODULE_NOT_FOUND' || code === 'ENOENT') {
       throw new Error(`@zts/core: module not found: ${absPath}`);
     }
     throw err;
@@ -303,9 +303,9 @@ export async function importAndResolveDefault<T = UserConfig>(
   const value = (mod as { default?: unknown }).default ?? mod;
   const valueType = typeof value;
   const isArray = Array.isArray(value);
-  const validObject = valueType === "object" && value !== null && (allowArray || !isArray);
-  if (valueType !== "function" && !validObject) {
-    const got = value === null ? "null" : isArray ? "array" : valueType;
+  const validObject = valueType === 'object' && value !== null && (allowArray || !isArray);
+  if (valueType !== 'function' && !validObject) {
+    const got = value === null ? 'null' : isArray ? 'array' : valueType;
     throw new Error(`@zts/core: module must be an object or function (got ${got}) from ${absPath}`);
   }
   return value as T;
@@ -313,9 +313,9 @@ export async function importAndResolveDefault<T = UserConfig>(
 
 function readFileOrThrowNotFound(absPath: string): string {
   try {
-    return readFileSync(absPath, "utf8");
+    return readFileSync(absPath, 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new Error(`@zts/core: config file not found: ${absPath}`);
     }
     throw err;
@@ -331,10 +331,10 @@ function readFileOrThrowNotFound(absPath: string): string {
  */
 export function readFileIfExists(absPath: string): string | null {
   try {
-    return readFileSync(absPath, "utf8");
+    return readFileSync(absPath, 'utf8');
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
     throw err;
   }
 }
@@ -389,7 +389,7 @@ export function mergeUserConfigs(base: UserConfig, mode: UserConfig): UserConfig
     const modeVal = mode[key];
     if (modeVal === undefined) continue;
 
-    if (key === "plugins" && Array.isArray(modeVal) && Array.isArray(merged.plugins)) {
+    if (key === 'plugins' && Array.isArray(modeVal) && Array.isArray(merged.plugins)) {
       // plugins 는 concat — base 먼저, mode 추가.
       (merged as Record<string, unknown>).plugins = [...merged.plugins, ...modeVal];
       continue;
@@ -397,10 +397,10 @@ export function mergeUserConfigs(base: UserConfig, mode: UserConfig): UserConfig
 
     const baseVal = base[key];
     if (
-      typeof baseVal === "object" &&
+      typeof baseVal === 'object' &&
       baseVal !== null &&
       !Array.isArray(baseVal) &&
-      typeof modeVal === "object" &&
+      typeof modeVal === 'object' &&
       modeVal !== null &&
       !Array.isArray(modeVal)
     ) {

@@ -1,10 +1,10 @@
 // GET / and /index.html — dev server landing page. 브라우저로 직접 접속 시
 // bundle / map / HMR ws endpoint 의 빠른 진입 link 제공.
 
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export function isIndexRoute(pathname: string): boolean {
-  return pathname === "/" || pathname === "/index.html";
+  return pathname === '/' || pathname === '/index.html';
 }
 
 export function handleIndexPage(_req: IncomingMessage, res: ServerResponse, port: number): void {
@@ -48,8 +48,8 @@ a:hover code { background: #d0e9fc; }
 </body>
 </html>`;
   res.writeHead(200, {
-    "Content-Type": "text/html; charset=utf-8",
-    "Content-Length": Buffer.byteLength(html),
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': Buffer.byteLength(html),
   });
   res.end(html);
 }

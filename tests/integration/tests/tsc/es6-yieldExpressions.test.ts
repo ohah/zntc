@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/yieldExpressions", () => {
-  test("generatorInAmbientContext1", async () => {
+describe('TSC: es6/yieldExpressions', () => {
+  test('generatorInAmbientContext1', async () => {
     await expectPass(
       `declare class C {
     *generator(): any;
@@ -10,7 +10,7 @@ describe("TSC: es6/yieldExpressions", () => {
       [],
     );
   });
-  test("generatorInAmbientContext2", async () => {
+  test('generatorInAmbientContext2', async () => {
     await expectPass(
       `declare namespace M {
     function *generator(): any;
@@ -18,7 +18,7 @@ describe("TSC: es6/yieldExpressions", () => {
       [],
     );
   });
-  test("generatorInAmbientContext3.d", async () => {
+  test('generatorInAmbientContext3.d', async () => {
     await expectPass(
       `declare class C {
     *generator(): any;
@@ -26,7 +26,7 @@ describe("TSC: es6/yieldExpressions", () => {
       [],
     );
   });
-  test("generatorInAmbientContext4.d", async () => {
+  test('generatorInAmbientContext4.d', async () => {
     await expectPass(
       `declare namespace M {
     function *generator(): any;
@@ -34,7 +34,7 @@ describe("TSC: es6/yieldExpressions", () => {
       [],
     );
   });
-  test("generatorInAmbientContext5", async () => {
+  test('generatorInAmbientContext5', async () => {
     await expectPass(
       `class C {
     *generator(): any { }
@@ -42,7 +42,7 @@ describe("TSC: es6/yieldExpressions", () => {
       [],
     );
   });
-  test("generatorInAmbientContext6", async () => {
+  test('generatorInAmbientContext6', async () => {
     await expectPass(
       `namespace M {
     export function *generator(): any { }
@@ -50,7 +50,7 @@ describe("TSC: es6/yieldExpressions", () => {
       [],
     );
   });
-  test("generatorNoImplicitReturns", async () => {
+  test('generatorNoImplicitReturns', async () => {
     await expectPass(
       ` 
 function* testGenerator () { 
@@ -62,7 +62,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorOverloads1", async () => {
+  test('generatorOverloads1', async () => {
     await expectPass(
       `namespace M {
     function* f(s: string): Iterable<any>;
@@ -72,7 +72,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorOverloads2", async () => {
+  test('generatorOverloads2', async () => {
     await expectPass(
       `declare namespace M {
     function* f(s: string): Iterable<any>;
@@ -82,7 +82,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorOverloads3", async () => {
+  test('generatorOverloads3', async () => {
     await expectPass(
       `class C {
     *f(s: string): Iterable<any>;
@@ -92,7 +92,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorOverloads4", async () => {
+  test('generatorOverloads4', async () => {
     await expectPass(
       `class C {
     f(s: string): Iterable<any>;
@@ -102,7 +102,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorOverloads5", async () => {
+  test('generatorOverloads5', async () => {
     await expectPass(
       `namespace M {
     function f(s: string): Iterable<any>;
@@ -112,10 +112,10 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorTypeCheck1", async () => {
+  test('generatorTypeCheck1', async () => {
     await expectPass(`function* g1(): Iterator<string> { }`, []);
   });
-  test("generatorTypeCheck10", async () => {
+  test('generatorTypeCheck10', async () => {
     await expectPass(
       `function* g(): IterableIterator<any> {
     return;
@@ -123,7 +123,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorTypeCheck11", async () => {
+  test('generatorTypeCheck11', async () => {
     await expectPass(
       `function* g(): IterableIterator<number, number> {
     return 0;
@@ -131,7 +131,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorTypeCheck12", async () => {
+  test('generatorTypeCheck12', async () => {
     await expectPass(
       `function* g(): IterableIterator<number, string> {
     return "";
@@ -139,7 +139,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorTypeCheck13", async () => {
+  test('generatorTypeCheck13', async () => {
     await expectPass(
       `function* g(): IterableIterator<number, string> {
     yield 0;
@@ -148,7 +148,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorTypeCheck14", async () => {
+  test('generatorTypeCheck14', async () => {
     await expectPass(
       `function* g() {
     yield 0;
@@ -157,7 +157,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorTypeCheck15", async () => {
+  test('generatorTypeCheck15', async () => {
     await expectPass(
       `function* g() {
     return "";
@@ -165,7 +165,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorTypeCheck16", async () => {
+  test('generatorTypeCheck16', async () => {
     await expectPass(
       `function* g() {
     return;
@@ -173,7 +173,7 @@ function* testGenerator () {
       [],
     );
   });
-  test("generatorTypeCheck17", async () => {
+  test('generatorTypeCheck17', async () => {
     await expectPass(
       `class Foo { x: number }
 class Bar extends Foo { y: string }
@@ -184,7 +184,7 @@ function* g(): IterableIterator<Foo> {
       [],
     );
   });
-  test("generatorTypeCheck18", async () => {
+  test('generatorTypeCheck18', async () => {
     await expectPass(
       `class Foo { x: number }
 class Baz { z: number }
@@ -195,7 +195,7 @@ function* g(): IterableIterator<Foo> {
       [],
     );
   });
-  test("generatorTypeCheck19", async () => {
+  test('generatorTypeCheck19', async () => {
     await expectPass(
       `class Foo { x: number }
 class Bar extends Foo { y: string }
@@ -206,10 +206,10 @@ function* g(): IterableIterator<Foo> {
       [],
     );
   });
-  test("generatorTypeCheck2", async () => {
+  test('generatorTypeCheck2', async () => {
     await expectPass(`function* g1(): Iterable<string> { }`, []);
   });
-  test("generatorTypeCheck20", async () => {
+  test('generatorTypeCheck20', async () => {
     await expectPass(
       `class Foo { x: number }
 class Baz { z: number }
@@ -220,7 +220,7 @@ function* g(): IterableIterator<Foo> {
       [],
     );
   });
-  test("generatorTypeCheck21", async () => {
+  test('generatorTypeCheck21', async () => {
     await expectPass(
       `class Foo { x: number }
 class Bar extends Foo { y: string }
@@ -231,7 +231,7 @@ function* g(): IterableIterator<Foo> {
       [],
     );
   });
-  test("generatorTypeCheck22", async () => {
+  test('generatorTypeCheck22', async () => {
     await expectPass(
       `class Foo { x: number }
 class Bar extends Foo { y: string }
@@ -246,7 +246,7 @@ function* g3() {
       [],
     );
   });
-  test("generatorTypeCheck23", async () => {
+  test('generatorTypeCheck23', async () => {
     await expectPass(
       `class Foo { x: number }
 class Bar extends Foo { y: string }
@@ -262,7 +262,7 @@ function* g3() {
       [],
     );
   });
-  test("generatorTypeCheck24", async () => {
+  test('generatorTypeCheck24', async () => {
     await expectPass(
       `class Foo { x: number }
 class Bar extends Foo { y: string }
@@ -278,7 +278,7 @@ function* g3() {
       [],
     );
   });
-  test("generatorTypeCheck25", async () => {
+  test('generatorTypeCheck25', async () => {
     await expectPass(
       `class Foo { x: number }
 class Bar extends Foo { y: string }
@@ -293,7 +293,7 @@ var g3: () => Iterable<Foo> = function* () {
       [],
     );
   });
-  test("generatorTypeCheck26", async () => {
+  test('generatorTypeCheck26', async () => {
     await expectPass(
       `function* g(): IterableIterator<(x: string) => number, (x: string) => number> {
     yield x => x.length;
@@ -303,7 +303,7 @@ var g3: () => Iterable<Foo> = function* () {
       [],
     );
   });
-  test("generatorTypeCheck27", async () => {
+  test('generatorTypeCheck27', async () => {
     await expectPass(
       `function* g(): IterableIterator<(x: string) => number> {
     yield * function* () {
@@ -313,7 +313,7 @@ var g3: () => Iterable<Foo> = function* () {
       [],
     );
   });
-  test("generatorTypeCheck28", async () => {
+  test('generatorTypeCheck28', async () => {
     await expectPass(
       `function* g(): IterableIterator<(x: string) => number> {
     yield * {
@@ -325,7 +325,7 @@ var g3: () => Iterable<Foo> = function* () {
       [],
     );
   });
-  test("generatorTypeCheck29", async () => {
+  test('generatorTypeCheck29', async () => {
     await expectPass(
       `function* g2(): Iterator<Iterable<(x: string) => number>> {
     yield function* () {
@@ -335,10 +335,10 @@ var g3: () => Iterable<Foo> = function* () {
       [],
     );
   });
-  test("generatorTypeCheck3", async () => {
+  test('generatorTypeCheck3', async () => {
     await expectPass(`function* g1(): IterableIterator<string> { }`, []);
   });
-  test("generatorTypeCheck30", async () => {
+  test('generatorTypeCheck30', async () => {
     await expectPass(
       `function* g2(): Iterator<Iterable<(x: string) => number>> {
     yield function* () {
@@ -348,7 +348,7 @@ var g3: () => Iterable<Foo> = function* () {
       [],
     );
   });
-  test("generatorTypeCheck31", async () => {
+  test('generatorTypeCheck31', async () => {
     await expectPass(
       `function* g2(): Iterator<() => Iterable<(x: string) => number>> {
     yield function* () {
@@ -358,14 +358,14 @@ var g3: () => Iterable<Foo> = function* () {
       [],
     );
   });
-  test("generatorTypeCheck32", async () => {
+  test('generatorTypeCheck32', async () => {
     await expectError(
       `var s: string;
 var f: () => number = () => yield s;`,
       [],
     );
   });
-  test("generatorTypeCheck33", async () => {
+  test('generatorTypeCheck33', async () => {
     await expectPass(
       `function* g() {
     yield 0;
@@ -376,7 +376,7 @@ var f: () => number = () => yield s;`,
       [],
     );
   });
-  test("generatorTypeCheck34", async () => {
+  test('generatorTypeCheck34', async () => {
     await expectPass(
       `function* g() {
     yield 0;
@@ -387,7 +387,7 @@ var f: () => number = () => yield s;`,
       [],
     );
   });
-  test("generatorTypeCheck35", async () => {
+  test('generatorTypeCheck35', async () => {
     await expectPass(
       `function* g() {
     yield 0;
@@ -398,7 +398,7 @@ var f: () => number = () => yield s;`,
       [],
     );
   });
-  test("generatorTypeCheck36", async () => {
+  test('generatorTypeCheck36', async () => {
     await expectPass(
       `function* g() {
     yield yield 0;
@@ -406,7 +406,7 @@ var f: () => number = () => yield s;`,
       [],
     );
   });
-  test("generatorTypeCheck37", async () => {
+  test('generatorTypeCheck37', async () => {
     await expectPass(
       `function* g() {
     return yield yield 0;
@@ -414,7 +414,7 @@ var f: () => number = () => yield s;`,
       [],
     );
   });
-  test("generatorTypeCheck38", async () => {
+  test('generatorTypeCheck38', async () => {
     await expectPass(
       `var yield;
 function* g() {
@@ -424,7 +424,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck39", async () => {
+  test('generatorTypeCheck39', async () => {
     await expectError(
       `
 function decorator(x: any) {
@@ -439,10 +439,10 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck4", async () => {
+  test('generatorTypeCheck4', async () => {
     await expectPass(`function* g1(): {} { }`, []);
   });
-  test("generatorTypeCheck40", async () => {
+  test('generatorTypeCheck40', async () => {
     await expectPass(
       `function* g() {
     class C extends (yield 0) { }
@@ -450,7 +450,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck41", async () => {
+  test('generatorTypeCheck41', async () => {
     await expectPass(
       `function* g() {
     let x = {
@@ -460,7 +460,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck42", async () => {
+  test('generatorTypeCheck42', async () => {
     await expectPass(
       `function* g() {
     let x = {
@@ -472,7 +472,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck43", async () => {
+  test('generatorTypeCheck43', async () => {
     await expectPass(
       `function* g() {
     let x = {
@@ -484,7 +484,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck44", async () => {
+  test('generatorTypeCheck44', async () => {
     await expectPass(
       `function* g() {
     let x = {
@@ -496,7 +496,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck45", async () => {
+  test('generatorTypeCheck45', async () => {
     await expectPass(
       `declare function foo<T, U>(x: T, fun: () => Iterator<(x: T) => U>, fun2: (y: U) => T): T;
 
@@ -504,7 +504,7 @@ foo("", function* () { yield x => x.length }, p => undefined); // T is fixed, sh
       [],
     );
   });
-  test("generatorTypeCheck46", async () => {
+  test('generatorTypeCheck46', async () => {
     await expectPass(
       `declare function foo<T, U>(x: T, fun: () => Iterable<(x: T) => U>, fun2: (y: U) => T): T;
 
@@ -518,14 +518,14 @@ foo("", function* () {
       [],
     );
   });
-  test("generatorTypeCheck47", async () => {
+  test('generatorTypeCheck47', async () => {
     await expectPass(
       `
 function* g() { }`,
       [],
     );
   });
-  test("generatorTypeCheck48", async () => {
+  test('generatorTypeCheck48', async () => {
     await expectPass(
       `
 function* g() {
@@ -539,7 +539,7 @@ function* h() {
       [],
     );
   });
-  test("generatorTypeCheck49", async () => {
+  test('generatorTypeCheck49', async () => {
     await expectPass(
       `
 function* g() {
@@ -548,10 +548,10 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck5", async () => {
+  test('generatorTypeCheck5', async () => {
     await expectPass(`function* g1(): any { }`, []);
   });
-  test("generatorTypeCheck50", async () => {
+  test('generatorTypeCheck50', async () => {
     await expectPass(
       `
 function* g() {
@@ -560,7 +560,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck51", async () => {
+  test('generatorTypeCheck51', async () => {
     await expectPass(
       `
 function* g() {
@@ -571,7 +571,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck52", async () => {
+  test('generatorTypeCheck52', async () => {
     await expectPass(
       `class Foo { x: number }
 class Baz { z: number }
@@ -582,7 +582,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck53", async () => {
+  test('generatorTypeCheck53', async () => {
     await expectPass(
       `class Foo { x: number }
 class Baz { z: number }
@@ -593,7 +593,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck54", async () => {
+  test('generatorTypeCheck54', async () => {
     await expectPass(
       `class Foo { x: number }
 class Baz { z: number }
@@ -604,7 +604,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck55", async () => {
+  test('generatorTypeCheck55', async () => {
     await expectPass(
       `function* g() {
     var x = class C extends (yield) {};
@@ -612,7 +612,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck56", async () => {
+  test('generatorTypeCheck56', async () => {
     await expectPass(
       `function* g() {
     var x = class C {
@@ -624,7 +624,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck57", async () => {
+  test('generatorTypeCheck57', async () => {
     await expectError(
       `function* g() {
     class C {
@@ -634,7 +634,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck58", async () => {
+  test('generatorTypeCheck58', async () => {
     await expectError(
       `function* g() {
     class C {
@@ -644,7 +644,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck59", async () => {
+  test('generatorTypeCheck59', async () => {
     await expectPass(
       `function* g() {
     class C {
@@ -655,10 +655,10 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck6", async () => {
+  test('generatorTypeCheck6', async () => {
     await expectPass(`function* g1(): number { }`, []);
   });
-  test("generatorTypeCheck60", async () => {
+  test('generatorTypeCheck60', async () => {
     await expectPass(
       `function* g() {
     class C extends (yield) {};
@@ -666,7 +666,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck61", async () => {
+  test('generatorTypeCheck61', async () => {
     await expectPass(
       `function * g() {
     @(yield 0)
@@ -675,7 +675,7 @@ function* g() {
       [],
     );
   });
-  test("generatorTypeCheck62", async () => {
+  test('generatorTypeCheck62', async () => {
     await expectPass(
       `// @module: commonjs
 
@@ -718,7 +718,7 @@ export const Nothing3: Strategy<State> = strategy("Nothing", function* (state: S
       [],
     );
   });
-  test("generatorTypeCheck63", async () => {
+  test('generatorTypeCheck63', async () => {
     await expectPass(
       `// @module: commonjs
 
@@ -764,7 +764,7 @@ export const Nothing3: Strategy<State> = strategy("Nothing", function* (state: S
       [],
     );
   });
-  test("generatorTypeCheck64", async () => {
+  test('generatorTypeCheck64', async () => {
     await expectPass(
       `
 function* g3(): Generator<Generator<(x: string) => number>> {
@@ -781,7 +781,7 @@ function* g4(): Iterator<Iterable<(x: string) => number>> {
       [],
     );
   });
-  test("generatorTypeCheck7", async () => {
+  test('generatorTypeCheck7', async () => {
     await expectPass(
       `interface WeirdIter extends IterableIterator<number> {
     hello: string;
@@ -790,20 +790,20 @@ function* g1(): WeirdIter { }`,
       [],
     );
   });
-  test("generatorTypeCheck8", async () => {
+  test('generatorTypeCheck8', async () => {
     await expectPass(
       `interface BadGenerator extends Iterator<number>, Iterable<string> { }
 function* g3(): BadGenerator { }`,
       [],
     );
   });
-  test("generatorTypeCheck9", async () => {
+  test('generatorTypeCheck9', async () => {
     await expectPass(`function* g3(): void { }`, []);
   });
-  test("YieldExpression1_es6", async () => {
+  test('YieldExpression1_es6', async () => {
     await expectPass(`yield;`, []);
   });
-  test("YieldExpression10_es6", async () => {
+  test('YieldExpression10_es6', async () => {
     await expectPass(
       `var v = { * foo() {
     yield(foo);
@@ -813,7 +813,7 @@ function* g3(): BadGenerator { }`,
       [],
     );
   });
-  test("YieldExpression11_es6", async () => {
+  test('YieldExpression11_es6', async () => {
     await expectPass(
       `class C {
   *foo() {
@@ -823,7 +823,7 @@ function* g3(): BadGenerator { }`,
       [],
     );
   });
-  test("YieldExpression12_es6", async () => {
+  test('YieldExpression12_es6', async () => {
     await expectError(
       `class C {
   constructor() {
@@ -833,10 +833,10 @@ function* g3(): BadGenerator { }`,
       [],
     );
   });
-  test("YieldExpression13_es6", async () => {
+  test('YieldExpression13_es6', async () => {
     await expectPass(`function* foo() { yield }`, []);
   });
-  test("YieldExpression14_es6", async () => {
+  test('YieldExpression14_es6', async () => {
     await expectError(
       `class C {
   foo() {
@@ -846,7 +846,7 @@ function* g3(): BadGenerator { }`,
       [],
     );
   });
-  test("YieldExpression15_es6", async () => {
+  test('YieldExpression15_es6', async () => {
     await expectError(
       `var v = () => {
      yield foo
@@ -854,7 +854,7 @@ function* g3(): BadGenerator { }`,
       [],
     );
   });
-  test("YieldExpression16_es6", async () => {
+  test('YieldExpression16_es6', async () => {
     await expectError(
       `function* foo() {
   function bar() {
@@ -864,17 +864,17 @@ function* g3(): BadGenerator { }`,
       [],
     );
   });
-  test("YieldExpression17_es6", async () => {
+  test('YieldExpression17_es6', async () => {
     await expectError(`var v = { get foo() { yield foo; } }`, []);
   });
-  test("YieldExpression18_es6", async () => {
+  test('YieldExpression18_es6', async () => {
     await expectError(
       `"use strict";
 yield(foo);`,
       [],
     );
   });
-  test("YieldExpression19_es6", async () => {
+  test('YieldExpression19_es6', async () => {
     await expectPass(
       `function*foo() {
   function bar() {
@@ -886,10 +886,10 @@ yield(foo);`,
       [],
     );
   });
-  test("YieldExpression2_es6", async () => {
+  test('YieldExpression2_es6', async () => {
     await expectError(`yield foo;`, []);
   });
-  test("YieldExpression20_es6", async () => {
+  test('YieldExpression20_es6', async () => {
     await expectError(
       `
 function* test() {
@@ -900,7 +900,7 @@ function* test() {
       [],
     );
   });
-  test("YieldExpression3_es6", async () => {
+  test('YieldExpression3_es6', async () => {
     await expectPass(
       `function* foo() {
   yield
@@ -909,7 +909,7 @@ function* test() {
       [],
     );
   });
-  test("YieldExpression4_es6", async () => {
+  test('YieldExpression4_es6', async () => {
     await expectPass(
       `function* foo() {
   yield;
@@ -918,7 +918,7 @@ function* test() {
       [],
     );
   });
-  test("YieldExpression5_es6", async () => {
+  test('YieldExpression5_es6', async () => {
     await expectPass(
       `function* foo() {
   yield*
@@ -926,7 +926,7 @@ function* test() {
       [],
     );
   });
-  test("YieldExpression6_es6", async () => {
+  test('YieldExpression6_es6', async () => {
     await expectPass(
       `function* foo() {
   yield*foo
@@ -934,7 +934,7 @@ function* test() {
       [],
     );
   });
-  test("YieldExpression7_es6", async () => {
+  test('YieldExpression7_es6', async () => {
     await expectPass(
       `function* foo() {
   yield foo
@@ -942,7 +942,7 @@ function* test() {
       [],
     );
   });
-  test("YieldExpression8_es6", async () => {
+  test('YieldExpression8_es6', async () => {
     await expectPass(
       `yield(foo);
 function* foo() {
@@ -951,7 +951,7 @@ function* foo() {
       [],
     );
   });
-  test("YieldExpression9_es6", async () => {
+  test('YieldExpression9_es6', async () => {
     await expectPass(
       `var v = function*() {
   yield(foo);
@@ -959,7 +959,7 @@ function* foo() {
       [],
     );
   });
-  test("yieldExpressionInControlFlow", async () => {
+  test('yieldExpressionInControlFlow', async () => {
     await expectPass(
       `function* f() {
     var o
@@ -978,13 +978,13 @@ function* g() {
       [],
     );
   });
-  test("YieldStarExpression1_es6", async () => {
+  test('YieldStarExpression1_es6', async () => {
     await expectPass(`yield * [];`, []);
   });
-  test("YieldStarExpression2_es6", async () => {
+  test('YieldStarExpression2_es6', async () => {
     await expectError(`yield *;`, []);
   });
-  test("YieldStarExpression3_es6", async () => {
+  test('YieldStarExpression3_es6', async () => {
     await expectPass(
       `function *g() {
     yield *;
@@ -992,7 +992,7 @@ function* g() {
       [],
     );
   });
-  test("YieldStarExpression4_es6", async () => {
+  test('YieldStarExpression4_es6', async () => {
     await expectPass(
       `function *g() {
     yield * [];

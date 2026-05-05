@@ -1,11 +1,11 @@
-import { watch as fsWatch } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { watch as fsWatch } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 
-export type WatchEventType = "rename" | "change";
+export type WatchEventType = 'rename' | 'change';
 
 export interface WatcherInstance {
   close(): void;
-  on(event: "error", listener: (error: NodeJS.ErrnoException) => void): unknown;
+  on(event: 'error', listener: (error: NodeJS.ErrnoException) => void): unknown;
 }
 
 export interface WatchListener {
@@ -74,14 +74,14 @@ export function createWatcher(options: CreateWatcherOptions): WatcherHandle {
     try {
       const watcher = watch(abs, { recursive }, (_eventType, filename) => {
         if (closed) return;
-        if (typeof filename === "string" && filename.length > 0) {
+        if (typeof filename === 'string' && filename.length > 0) {
           dirty.add(resolvePath(abs, filename));
         } else {
           dirty.add(abs);
         }
         scheduleFlush();
       });
-      watcher.on("error", (err) => {
+      watcher.on('error', (err) => {
         if (closed) return;
         // zts.mjs parity (L2466-2482): error 후 fail-soft 자동 close.
         // EMFILE/ENOSPC 등 OS 한도 메시지는 caller 가 onError 안에서 처리.

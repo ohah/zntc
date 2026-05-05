@@ -4,10 +4,10 @@
  *
  * 사용: node tests/compat-table-extract.cjs > tests/fixtures/compat-table-tests.json
  */
-"use strict";
+'use strict';
 
-const dataEs6 = require("compat-table/data-es6.js");
-const dataEs2016 = require("compat-table/data-es2016plus.js");
+const dataEs6 = require('compat-table/data-es6.js');
+const dataEs2016 = require('compat-table/data-es2016plus.js');
 
 function extractExecCode(exec) {
   if (!exec) return null;
@@ -22,7 +22,7 @@ function extractExecCode(exec) {
 const result = { es6: [], es2016: [] };
 
 for (const feature of dataEs6.tests) {
-  const subtests = feature.subtests || (feature.exec ? [{ name: "main", exec: feature.exec }] : []);
+  const subtests = feature.subtests || (feature.exec ? [{ name: 'main', exec: feature.exec }] : []);
   const extracted = [];
   for (const sub of subtests) {
     const code = extractExecCode(sub.exec);
@@ -34,7 +34,7 @@ for (const feature of dataEs6.tests) {
 }
 
 for (const feature of dataEs2016.tests) {
-  const subtests = feature.subtests || (feature.exec ? [{ name: "main", exec: feature.exec }] : []);
+  const subtests = feature.subtests || (feature.exec ? [{ name: 'main', exec: feature.exec }] : []);
   const extracted = [];
   for (const sub of subtests) {
     const code = extractExecCode(sub.exec);

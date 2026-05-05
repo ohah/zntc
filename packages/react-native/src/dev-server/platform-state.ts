@@ -2,20 +2,20 @@
 // sourcemap cache. RN runtime 이 첫 요청 시점에 platform 동적 spawn (initial
 // build 대기), rebuild 마다 cache invalidate.
 
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import type { WatchHandle, WatchReadyEvent, WatchRebuildEvent } from "@zts/core";
+import type { WatchHandle, WatchReadyEvent, WatchRebuildEvent } from '@zts/core';
 
-import { watchRn } from "../preset.ts";
-import type { RnDevServerOptions } from "./options.ts";
-import { postProcessSourceMap } from "./sourcemap.ts";
+import { watchRn } from '../preset.ts';
+import type { RnDevServerOptions } from './options.ts';
+import { postProcessSourceMap } from './sourcemap.ts';
 
 const SOURCE_MAPPING_URL_RE = /\/\/# sourceMappingURL=[^\n]*/g;
 
 export interface PlatformState {
-  readonly platform: "ios" | "android";
+  readonly platform: 'ios' | 'android';
   readonly outputDir: string;
   readonly outputPath: string;
   handle: WatchHandle;
@@ -48,11 +48,11 @@ export interface PlatformStateCallbacks {
  */
 export function createPlatformState(
   options: RnDevServerOptions,
-  platform: "ios" | "android",
+  platform: 'ios' | 'android',
   callbacks?: PlatformStateCallbacks,
 ): PlatformState {
   const outputDir = mkdtempSync(join(tmpdir(), `zts-rn-${platform}-`));
-  const outputPath = join(outputDir, "bundle.js");
+  const outputPath = join(outputDir, 'bundle.js');
 
   // bundle 의 RnBundleInput 의 rnPlatform 만 override — 다른 필드 그대로 유지.
   const platformBundle = { ...options.bundle, rnPlatform: platform };
@@ -78,16 +78,16 @@ export function createPlatformState(
     onReady(event) {
       if (event.files) state.fileCount = event.files;
       if (existsSync(outputPath)) {
-        state.bundle = readFileSync(outputPath, "utf-8").replace(SOURCE_MAPPING_URL_RE, "");
+        state.bundle = readFileSync(outputPath, 'utf-8').replace(SOURCE_MAPPING_URL_RE, '');
       } else {
-        state.buildError = "Build produced no output";
+        state.buildError = 'Build produced no output';
       }
       callbacks?.onReady?.(state, event);
     },
     onRebuild(event) {
       state.lastRebuildTime = Date.now();
       if (!event.success) {
-        state.buildError = event.error ?? "Unknown build error";
+        state.buildError = event.error ?? 'Unknown build error';
         callbacks?.onRebuild?.(state, event);
         return;
       }
@@ -95,7 +95,7 @@ export function createPlatformState(
       // rebuild 마다 cache invalidate — 다음 요청 시 lazy getter 가 swap fetch.
       state.sourceMapCache = null;
       if (existsSync(outputPath)) {
-        state.bundle = readFileSync(outputPath, "utf-8").replace(SOURCE_MAPPING_URL_RE, "");
+        state.bundle = readFileSync(outputPath, 'utf-8').replace(SOURCE_MAPPING_URL_RE, '');
       }
       callbacks?.onRebuild?.(state, event);
     },
@@ -118,7 +118,7 @@ export function waitForBuild(state: PlatformState, pollIntervalMs = 50): Promise
 /** 모든 platform 의 watch handle 종료 + outputDir cleanup (caller 책임). */
 export interface PlatformStateRegistry {
   readonly platforms: ReadonlyMap<string, PlatformState>;
-  getOrCreate(platform: "ios" | "android"): PlatformState;
+  getOrCreate(platform: 'ios' | 'android'): PlatformState;
   stopAll(): Promise<void>;
 }
 

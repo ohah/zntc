@@ -7,34 +7,34 @@
  * Watch/Serve는 JS 레이어에서 구현.
  */
 
-import { mkdirSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { resolve, relative, dirname, basename, extname, join, sep } from "node:path";
-import { createServer } from "node:http";
-import { createServer as createHttpsServer } from "node:https";
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { mkdirSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { resolve, relative, dirname, basename, extname, join, sep } from 'node:path';
+import { createServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
-import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from "./cli-flags.mjs";
-import { buildRnDevServerInput } from "./rn-dev-input.mjs";
+import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from './cli-flags.mjs';
+import { buildRnDevServerInput } from './rn-dev-input.mjs';
 
 function isMissingBuiltCore(error) {
-  if (!error || error.code !== "ERR_MODULE_NOT_FOUND") return false;
-  const builtCorePath = fileURLToPath(new URL("../dist/index.js", import.meta.url));
-  return String(error.message ?? "").includes(builtCorePath);
+  if (!error || error.code !== 'ERR_MODULE_NOT_FOUND') return false;
+  const builtCorePath = fileURLToPath(new URL('../dist/index.js', import.meta.url));
+  return String(error.message ?? '').includes(builtCorePath);
 }
 
 async function loadCoreModule() {
   try {
-    return await import("../dist/index.js");
+    return await import('../dist/index.js');
   } catch (error) {
     if (!isMissingBuiltCore(error)) throw error;
-    console.error("error: @zts/core JS bundle is missing");
-    console.error("");
-    console.error("note: zts CLI runs the built JS entry at packages/core/dist/index.js.");
-    console.error("note: source TypeScript is not loaded directly by Node.");
-    console.error("");
-    console.error("help: run `bun run --cwd packages/core build:js` from the repository root.");
-    console.error("help: for a full local build, run `bun run --cwd packages/core build`.");
+    console.error('error: @zts/core JS bundle is missing');
+    console.error('');
+    console.error('note: zts CLI runs the built JS entry at packages/core/dist/index.js.');
+    console.error('note: source TypeScript is not loaded directly by Node.');
+    console.error('');
+    console.error('help: run `bun run --cwd packages/core build:js` from the repository root.');
+    console.error('help: for a full local build, run `bun run --cwd packages/core build`.');
     process.exit(1);
   }
 }
@@ -70,104 +70,104 @@ const {
 
 export { KNOWN_FLAGS };
 const requireFromCli = createRequire(import.meta.url);
-const cliNodeModules = resolve(dirname(fileURLToPath(import.meta.url)), "../../..", "node_modules");
+const cliNodeModules = resolve(dirname(fileURLToPath(import.meta.url)), '../../..', 'node_modules');
 
 // ─── CLI 인자 파싱 ───
 
 function usageLines(command) {
-  if (command === "dev") {
+  if (command === 'dev') {
     return [
-      "Usage: zts dev [root] [options]",
-      "",
-      "Options:",
-      "  --host [host]              Host to listen on (default: localhost)",
-      "  --port <port>              Port to listen on (default: 12300)",
-      "  --open                     Open the app URL in the browser",
-      "  --mode <mode>              Load mode-specific config and .env files",
-      "  --base <path>              Base public path",
-      "  --entry-html <path>        HTML entry file",
-      "  --public-dir <path|false>  Public directory to serve",
-      "  --help, -h                 Show this help message",
+      'Usage: zts dev [root] [options]',
+      '',
+      'Options:',
+      '  --host [host]              Host to listen on (default: localhost)',
+      '  --port <port>              Port to listen on (default: 12300)',
+      '  --open                     Open the app URL in the browser',
+      '  --mode <mode>              Load mode-specific config and .env files',
+      '  --base <path>              Base public path',
+      '  --entry-html <path>        HTML entry file',
+      '  --public-dir <path|false>  Public directory to serve',
+      '  --help, -h                 Show this help message',
     ];
   }
-  if (command === "build") {
+  if (command === 'build') {
     return [
-      "Usage: zts build [root] [options]",
-      "",
-      "Options:",
-      "  --outdir <dir>             Output directory",
-      "  --mode <mode>              Load mode-specific config and .env files",
-      "  --base <path>              Base public path",
-      "  --entry-html <path>        HTML entry file",
-      "  --public-dir <path|false>  Public directory to copy",
-      "  --minify                   Minify output",
-      "  --sourcemap[=mode]         Emit source maps",
-      "  --help, -h                 Show this help message",
+      'Usage: zts build [root] [options]',
+      '',
+      'Options:',
+      '  --outdir <dir>             Output directory',
+      '  --mode <mode>              Load mode-specific config and .env files',
+      '  --base <path>              Base public path',
+      '  --entry-html <path>        HTML entry file',
+      '  --public-dir <path|false>  Public directory to copy',
+      '  --minify                   Minify output',
+      '  --sourcemap[=mode]         Emit source maps',
+      '  --help, -h                 Show this help message',
     ];
   }
-  if (command === "preview") {
+  if (command === 'preview') {
     return [
-      "Usage: zts preview [outdir] [options]",
-      "",
-      "Options:",
-      "  --host [host]              Host to listen on (default: localhost)",
-      "  --port <port>              Port to listen on (default: 12300)",
-      "  --strict-port              Exit if the specified port is already in use",
-      "  --open                     Open the preview URL in the browser",
-      "  --base <path>              Base public path",
-      "  --spa-fallback[=path]      Serve an HTML fallback for app routes",
-      "  --certfile <path>          HTTPS certificate file",
-      "  --keyfile <path>           HTTPS key file",
-      "  --help, -h                 Show this help message",
+      'Usage: zts preview [outdir] [options]',
+      '',
+      'Options:',
+      '  --host [host]              Host to listen on (default: localhost)',
+      '  --port <port>              Port to listen on (default: 12300)',
+      '  --strict-port              Exit if the specified port is already in use',
+      '  --open                     Open the preview URL in the browser',
+      '  --base <path>              Base public path',
+      '  --spa-fallback[=path]      Serve an HTML fallback for app routes',
+      '  --certfile <path>          HTTPS certificate file',
+      '  --keyfile <path>           HTTPS key file',
+      '  --help, -h                 Show this help message',
     ];
   }
   return [
-    "Usage: zts [options] <file.ts>",
-    "       zts --bundle <entry.ts> -o out.js",
-    "       zts --serve --bundle <entry.ts>",
-    "       zts dev [root]",
-    "       zts build [root]",
-    "       zts preview [outdir]",
-    "",
-    "Options:",
-    "  --bundle                   Bundle dependencies",
-    "  --packages=external        Treat all bare package imports as external",
-    "  --pure:CALLEE              Mark matching call/new expressions as removable when unused",
-    "  --line-limit=<n>           Wrap generated output lines after safe token boundaries",
-    "  --conditions=<csv>         Add custom package exports conditions",
-    "  --node-paths=<csv>         Add bare specifier lookup directories",
-    "  --global:SPEC=NAME         Map external specifier to IIFE/UMD global",
-    "  --intro=<text>             Insert wrapper-internal text before bundle code",
-    "  --outro=<text>             Insert wrapper-internal text after bundle code",
-    "  --ignore-annotations       Ignore pure/sideEffects annotations",
-    "  --jsx-side-effects         Preserve unused JSX expressions",
-    "  --profile=<csv>            Collect profile categories (all, parse, transform, ...)",
-    "  --profile-level=<level>    Profile level: summary, detailed, per-module, per-pass",
-    "  --profile-format=<format>  Profile output: table, tree, json, csv",
-    "  --runtime-polyfills=<mode> Inject core-js runtime polyfills: auto, usage, entry, off",
+    'Usage: zts [options] <file.ts>',
+    '       zts --bundle <entry.ts> -o out.js',
+    '       zts --serve --bundle <entry.ts>',
+    '       zts dev [root]',
+    '       zts build [root]',
+    '       zts preview [outdir]',
+    '',
+    'Options:',
+    '  --bundle                   Bundle dependencies',
+    '  --packages=external        Treat all bare package imports as external',
+    '  --pure:CALLEE              Mark matching call/new expressions as removable when unused',
+    '  --line-limit=<n>           Wrap generated output lines after safe token boundaries',
+    '  --conditions=<csv>         Add custom package exports conditions',
+    '  --node-paths=<csv>         Add bare specifier lookup directories',
+    '  --global:SPEC=NAME         Map external specifier to IIFE/UMD global',
+    '  --intro=<text>             Insert wrapper-internal text before bundle code',
+    '  --outro=<text>             Insert wrapper-internal text after bundle code',
+    '  --ignore-annotations       Ignore pure/sideEffects annotations',
+    '  --jsx-side-effects         Preserve unused JSX expressions',
+    '  --profile=<csv>            Collect profile categories (all, parse, transform, ...)',
+    '  --profile-level=<level>    Profile level: summary, detailed, per-module, per-pass',
+    '  --profile-format=<format>  Profile output: table, tree, json, csv',
+    '  --runtime-polyfills=<mode> Inject core-js runtime polyfills: auto, usage, entry, off',
     "  --runtime-target=<query>   Runtime polyfill Browserslist target (repeatable: 'chrome >= 87', 'safari >= 14')",
-    "  --core-js=<version>        core-js version used for runtime polyfill compatibility",
-    "  --stop-after=<phase>       Stop transpile after a given phase (debug)",
-    "  --tokenize[=false]         Print scanner tokens instead of generated code",
-    "  --tokenize-format=<format> Token output: text or json",
-    "  --outdir <dir>             Output directory",
-    "  --outfile <file>, -o <file> Output file",
-    "  --allow-overwrite          Permit output paths to overwrite input files",
-    "  --watch, -w                Rebuild on changes",
-    "  --serve [dir]              Serve bundled output",
-    "  --config <path>            Config file path",
-    "  --test262 <dir>            Run Zig Test262 runner via zig build test262-run",
-    "  --help, -h                 Show this help message",
+    '  --core-js=<version>        core-js version used for runtime polyfill compatibility',
+    '  --stop-after=<phase>       Stop transpile after a given phase (debug)',
+    '  --tokenize[=false]         Print scanner tokens instead of generated code',
+    '  --tokenize-format=<format> Token output: text or json',
+    '  --outdir <dir>             Output directory',
+    '  --outfile <file>, -o <file> Output file',
+    '  --allow-overwrite          Permit output paths to overwrite input files',
+    '  --watch, -w                Rebuild on changes',
+    '  --serve [dir]              Serve bundled output',
+    '  --config <path>            Config file path',
+    '  --test262 <dir>            Run Zig Test262 runner via zig build test262-run',
+    '  --help, -h                 Show this help message',
   ];
 }
 
 function printUsage(command, stream = console.log) {
-  stream(usageLines(command).join("\n"));
+  stream(usageLines(command).join('\n'));
 }
 
 function parseArgs(argv) {
   const args = argv.slice(2);
-  const appCommands = new Set(["dev", "build", "preview"]);
+  const appCommands = new Set(['dev', 'build', 'preview']);
   const appCommand = appCommands.has(args[0]) ? args.shift() : undefined;
   const opts = {
     appCommand,
@@ -187,7 +187,7 @@ function parseArgs(argv) {
     watchJson: false,
     watchDelay: 100,
     serve: false,
-    serveDir: ".",
+    serveDir: '.',
     port: undefined,
     host: undefined,
     strictPort: false,
@@ -242,7 +242,7 @@ function parseArgs(argv) {
     stdin: false,
     project: undefined,
     tsconfigRaw: undefined,
-    logLevel: "info",
+    logLevel: 'info',
     jobs: undefined,
     logLimit: undefined,
     lineLimit: undefined,
@@ -293,17 +293,17 @@ function parseArgs(argv) {
     jsxSideEffects: false,
     stopAfter: undefined,
     tokenize: false,
-    tokenizeFormat: "text",
+    tokenizeFormat: 'text',
     test262: undefined,
   };
 
-  if (appCommand === "dev") {
+  if (appCommand === 'dev') {
     opts.serve = true;
     opts.bundle = true;
     opts.watch = true;
-  } else if (appCommand === "build") {
+  } else if (appCommand === 'build') {
     opts.bundle = true;
-  } else if (appCommand === "preview") {
+  } else if (appCommand === 'preview') {
     opts.serve = true;
   }
 
@@ -311,16 +311,16 @@ function parseArgs(argv) {
     const arg = args[i];
 
     // stdin
-    if (arg === "-") {
+    if (arg === '-') {
       opts.stdin = true;
       continue;
     }
 
     // positional (파일 경로)
-    if (!arg.startsWith("-")) {
-      if (opts.appCommand === "dev" || opts.appCommand === "build") {
+    if (!arg.startsWith('-')) {
+      if (opts.appCommand === 'dev' || opts.appCommand === 'build') {
         opts.appRoot = opts.appRoot ?? arg;
-      } else if (opts.appCommand === "preview") {
+      } else if (opts.appCommand === 'preview') {
         opts.previewDir = opts.previewDir ?? arg;
       } else {
         opts.entryPoints.push(arg);
@@ -339,9 +339,9 @@ function parseArgs(argv) {
     // ─── 특수 형식 (registry 표현이 어색해 if-chain 잔존) ───
 
     // `--serve [DIR]` — 다음 토큰이 flag 아니면 serveDir 로 사용 (next-arg optional, default 유지)
-    if (arg === "--serve") {
+    if (arg === '--serve') {
       opts.serve = true;
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         opts.serveDir = args[++i];
       }
       continue;
@@ -349,23 +349,23 @@ function parseArgs(argv) {
 
     // `--host [VALUE]` — pair-form 이지만 누락 시 default "0.0.0.0".
     // registry 의 string kind 와 의미 다름 (누락 시 undefined 가 아닌 명시 default).
-    if (arg === "--host") {
-      opts.host = args[++i] || "0.0.0.0";
+    if (arg === '--host') {
+      opts.host = args[++i] || '0.0.0.0';
       continue;
     }
 
     // dev-server proxy — `--proxy /api=http://localhost:8080` 형식 (특수 parser)
-    if (arg.startsWith("--proxy")) {
+    if (arg.startsWith('--proxy')) {
       const [path, target] =
-        arg.split("=").length > 1
-          ? [arg.split(" ")[0].replace("--proxy", "").replace("=", ""), args[i].split("=")[1]]
-          : [args[++i]?.split("=")[0], args[i]?.split("=")[1]];
+        arg.split('=').length > 1
+          ? [arg.split(' ')[0].replace('--proxy', '').replace('=', ''), args[i].split('=')[1]]
+          : [args[++i]?.split('=')[0], args[i]?.split('=')[1]];
       if (path && target) opts.proxy[path] = target;
       continue;
     }
 
     // unknown — typo 시 가장 가까운 known flag 제안 (Levenshtein, threshold 2).
-    if (opts.logLevel !== "silent") {
+    if (opts.logLevel !== 'silent') {
       const suggestion = suggestKey(arg, KNOWN_FLAGS);
       console.error(
         suggestion
@@ -377,36 +377,36 @@ function parseArgs(argv) {
   }
 
   // jsx-dev 단축어
-  if (opts.jsxDev) opts.jsx = "automatic-dev";
+  if (opts.jsxDev) opts.jsx = 'automatic-dev';
 
   // esbuild legacy alias normalize: `--jsx=transform` / `--jsx=preserve` → classic.
   // docs/CONFIG.md 가 명시한 CLI vocab (preserve/transform/automatic) 을 strict NAPI vocab
   // (classic/automatic/automatic-dev) 로 변환. JS API 는 이 정규화를 받지 않고 strict union
   // type 만 허용 — CLI argv 의 raw string 만 esbuild 호환을 위해 관대하게 처리.
-  if (opts.jsx === "transform" || opts.jsx === "preserve") opts.jsx = "classic";
+  if (opts.jsx === 'transform' || opts.jsx === 'preserve') opts.jsx = 'classic';
 
   // drop 처리
   for (const d of opts.drop) {
-    if (d === "console") opts.define["console.log"] = "undefined";
-    if (d === "debugger") opts.define["debugger"] = "";
+    if (d === 'console') opts.define['console.log'] = 'undefined';
+    if (d === 'debugger') opts.define['debugger'] = '';
   }
 
   return opts;
 }
 
 function formatTokenizeOutput(tokens, format) {
-  if (format === "json") {
+  if (format === 'json') {
     return `${JSON.stringify(tokens, null, 2)}\n`;
   }
   return tokens
     .map((token) => {
       const loc = `${token.line + 1}:${token.column + 1}`;
       const span = `${token.start}-${token.end}`;
-      const text = token.text.length > 0 ? ` ${JSON.stringify(token.text)}` : "";
+      const text = token.text.length > 0 ? ` ${JSON.stringify(token.text)}` : '';
       return `${loc} ${span} ${token.kind}${text}`;
     })
-    .join("\n")
-    .concat("\n");
+    .join('\n')
+    .concat('\n');
 }
 
 // ─── 파일 출력 ───
@@ -438,7 +438,7 @@ function writeOutputFiles(outputFiles, outfile, outdir, entryPoints, allowOverwr
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, outputFiles[0].text);
     if (outputFiles.length > 1) {
-      writeFileSync(resolve(outfile + ".map"), outputFiles[1].text);
+      writeFileSync(resolve(outfile + '.map'), outputFiles[1].text);
     }
   } else if (outdir) {
     const outDirAbs = resolve(outdir);
@@ -452,37 +452,37 @@ function writeOutputFiles(outputFiles, outfile, outdir, entryPoints, allowOverwr
 }
 
 function normalizeBase(base) {
-  if (!base) return "/";
-  if (base === ".") return "";
-  let out = base.startsWith("/") ? base : `/${base}`;
-  if (!out.endsWith("/")) out += "/";
+  if (!base) return '/';
+  if (base === '.') return '';
+  let out = base.startsWith('/') ? base : `/${base}`;
+  if (!out.endsWith('/')) out += '/';
   return out;
 }
 
 function isBrowserLikePlatform(platform) {
-  return platform === undefined || platform === "browser" || platform === "react-native";
+  return platform === undefined || platform === 'browser' || platform === 'react-native';
 }
 
 function injectDefaultNodeEnvDefine(opts) {
-  if (opts.define["process.env.NODE_ENV"] !== undefined) return;
+  if (opts.define['process.env.NODE_ENV'] !== undefined) return;
 
-  const appBrowserCommand = opts.appCommand === "dev" || opts.appCommand === "build";
+  const appBrowserCommand = opts.appCommand === 'dev' || opts.appCommand === 'build';
   const browserBundle = opts.bundle && (isBrowserLikePlatform(opts.platform) || opts.minifySyntax);
   if (!appBrowserCommand && !browserBundle) return;
 
-  const isDev = opts.appCommand === "dev" || opts.serve || opts.watch;
-  opts.define["process.env.NODE_ENV"] = isDev ? '"development"' : '"production"';
+  const isDev = opts.appCommand === 'dev' || opts.serve || opts.watch;
+  opts.define['process.env.NODE_ENV'] = isDev ? '"development"' : '"production"';
 }
 
 function normalizeServerHost(host) {
-  if (host === true) return "0.0.0.0";
-  if (typeof host === "string" && host.length > 0) return host;
+  if (host === true) return '0.0.0.0';
+  if (typeof host === 'string' && host.length > 0) return host;
   return undefined;
 }
 
 function mergeServerConfigIntoOpts(opts, config) {
   const server = config?.server;
-  if (!server || typeof server !== "object") return;
+  if (!server || typeof server !== 'object') return;
 
   if (opts.port === undefined && Number.isInteger(server.port)) {
     opts.port = server.port;
@@ -501,13 +501,13 @@ function mergeServerConfigIntoOpts(opts, config) {
 
 function applyServerDefaults(opts) {
   if (opts.port === undefined) opts.port = 12300;
-  if (opts.host === undefined) opts.host = "localhost";
+  if (opts.host === undefined) opts.host = 'localhost';
 }
 
 function isPortInUseError(err) {
   const code = err?.code;
   const message = String(err?.message ?? err);
-  return code === "EADDRINUSE" || /address already in use|port .*in use/i.test(message);
+  return code === 'EADDRINUSE' || /address already in use|port .*in use/i.test(message);
 }
 
 async function resolveServePort(opts, start) {
@@ -525,8 +525,8 @@ async function resolveServePort(opts, start) {
 }
 
 function getAutoConfigSearchDir(opts) {
-  if (opts.appCommand === "dev" || opts.appCommand === "build") {
-    return resolve(opts.appRoot ?? ".");
+  if (opts.appCommand === 'dev' || opts.appCommand === 'build') {
+    return resolve(opts.appRoot ?? '.');
   }
   return process.cwd();
 }
@@ -534,12 +534,12 @@ function getAutoConfigSearchDir(opts) {
 async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   if (config?.plugins?.length || opts.pluginPaths.length > 0) {
     throw new Error(
-      "zts build app mode does not support JS plugins yet; use --bundle for plugin builds",
+      'zts build app mode does not support JS plugins yet; use --bundle for plugin builds',
     );
   }
   const web = await loadWebModule();
-  const root = resolve(opts.appRoot ?? ".");
-  const outdir = resolve(opts.outdir ?? join(root, "dist"));
+  const root = resolve(opts.appRoot ?? '.');
+  const outdir = resolve(opts.outdir ?? join(root, 'dist'));
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
   let pipelineRoot = null;
   try {
@@ -548,16 +548,16 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       outdir,
       configEnv,
       opts.logLevel,
-      "build",
+      'build',
       { fallbackRequire: requireFromCli, cliNodeModules },
     );
     pipelineRoot = pipeline?.tempRoot ?? null;
     const result = buildAppSync({
       root: pipelineRoot ?? root,
       outdir,
-      entryHtml: opts.entryHtml ?? "index.html",
-      publicDir: opts.publicDir === undefined ? "public" : opts.publicDir,
-      base: normalizeBase(opts.base ?? opts.publicPath ?? "/"),
+      entryHtml: opts.entryHtml ?? 'index.html',
+      publicDir: opts.publicDir === undefined ? 'public' : opts.publicDir,
+      base: normalizeBase(opts.base ?? opts.publicPath ?? '/'),
       mode: configEnv.mode,
       envDir: opts.envDir ? resolve(opts.envDir) : (pipelineRoot ?? root),
       envPrefixes: opts.envPrefixes,
@@ -567,7 +567,7 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       splitting: opts.splitting || undefined,
       compiler: config?.compiler,
     });
-    if (opts.logLevel !== "silent") {
+    if (opts.logLevel !== 'silent') {
       console.error(`[build] wrote ${result.outputCount ?? 0} files to ${outdir}`);
     }
     return result;
@@ -582,8 +582,8 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
 
 async function runAppDev(opts, config, configEnv, _dotenvVars) {
   const web = await loadWebModule();
-  const root = resolve(opts.appRoot ?? ".");
-  opts.outdir = opts.outdir || join(root, ".zts-dev");
+  const root = resolve(opts.appRoot ?? '.');
+  opts.outdir = opts.outdir || join(root, '.zts-dev');
   const appDev = web.createAppDevController(opts, root, configEnv, {
     fallbackRequire: requireFromCli,
     cliNodeModules,
@@ -603,14 +603,14 @@ async function loadWebModule() {
   if (webModulePromise) return webModulePromise;
   webModulePromise = (async () => {
     try {
-      return await import("@zts/web");
+      return await import('@zts/web');
     } catch (err) {
       const code = err?.code;
-      const message = String(err?.message ?? "");
-      if (code === "ERR_MODULE_NOT_FOUND" || /Cannot find package "@zts\/web"/.test(message)) {
-        console.error("error: @zts/web 패키지가 필요합니다 (zts dev / preview / build app 모드).");
-        console.error("");
-        console.error("help: install with `bun add -D @zts/web` 또는 `npm i -D @zts/web`.");
+      const message = String(err?.message ?? '');
+      if (code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package "@zts\/web"/.test(message)) {
+        console.error('error: @zts/web 패키지가 필요합니다 (zts dev / preview / build app 모드).');
+        console.error('');
+        console.error('help: install with `bun add -D @zts/web` 또는 `npm i -D @zts/web`.');
         process.exit(1);
       }
       throw err;
@@ -626,20 +626,20 @@ async function loadRnModule() {
   if (rnModulePromise) return rnModulePromise;
   rnModulePromise = (async () => {
     try {
-      return await import("@zts/react-native");
+      return await import('@zts/react-native');
     } catch (err) {
       const code = err?.code;
-      const message = String(err?.message ?? "");
+      const message = String(err?.message ?? '');
       if (
-        code === "ERR_MODULE_NOT_FOUND" ||
+        code === 'ERR_MODULE_NOT_FOUND' ||
         /Cannot find package "@zts\/react-native"/.test(message)
       ) {
         console.error(
-          "error: @zts/react-native 패키지가 필요합니다 (zts bundle --platform=react-native).",
+          'error: @zts/react-native 패키지가 필요합니다 (zts bundle --platform=react-native).',
         );
-        console.error("");
+        console.error('');
         console.error(
-          "help: install with `bun add -D @zts/react-native` 또는 `npm i -D @zts/react-native`.",
+          'help: install with `bun add -D @zts/react-native` 또는 `npm i -D @zts/react-native`.',
         );
         process.exit(1);
       }
@@ -651,15 +651,15 @@ async function loadRnModule() {
 
 async function runRnBundle(opts, _config) {
   const rn = await loadRnModule();
-  const projectRoot = resolve(opts.rnProjectRoot ?? ".");
+  const projectRoot = resolve(opts.rnProjectRoot ?? '.');
   const entry = opts.entryPoints?.[0];
   if (!entry) {
     console.error(
-      "error: zts bundle --platform=react-native 는 entry point 가 필요합니다 (예: `zts bundle index.ts --platform=react-native`)",
+      'error: zts bundle --platform=react-native 는 entry point 가 필요합니다 (예: `zts bundle index.ts --platform=react-native`)',
     );
     process.exit(1);
   }
-  const rnPlatform = opts.rnPlatform === "android" ? "android" : "ios";
+  const rnPlatform = opts.rnPlatform === 'android' ? 'android' : 'ios';
   const result = await rn.bundleRn({
     entry,
     projectRoot,
@@ -670,8 +670,8 @@ async function runRnBundle(opts, _config) {
       opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax || false,
     override: opts.outfile ? { outfile: opts.outfile, write: true } : undefined,
   });
-  if (result.errors.length === 0 && opts.logLevel !== "silent") {
-    console.error(`[bundle] react-native ${rnPlatform} ${opts.outfile ?? "(in-memory)"}`);
+  if (result.errors.length === 0 && opts.logLevel !== 'silent') {
+    console.error(`[bundle] react-native ${rnPlatform} ${opts.outfile ?? '(in-memory)'}`);
   }
   return result;
 }
@@ -685,13 +685,13 @@ async function runRnDev(opts, config) {
   const input = buildRnDevServerInput(opts, config);
   if (!input) {
     console.error(
-      "error: zts dev --platform=react-native 는 entry point 가 필요합니다 (예: `zts dev index.js --platform=react-native`)",
+      'error: zts dev --platform=react-native 는 entry point 가 필요합니다 (예: `zts dev index.js --platform=react-native`)',
     );
     process.exit(1);
   }
   // serveRn 가 자체 banner / startup log 출력 (`logInfo` Metro-style badge).
   const handle = await rn.serveRn(rn.buildRnDevServerOptions(input), {
-    silent: opts.logLevel === "silent",
+    silent: opts.logLevel === 'silent',
   });
 
   // Graceful shutdown — SIGINT / SIGTERM 시 handle.stop().
@@ -699,12 +699,12 @@ async function runRnDev(opts, config) {
     await handle.stop();
     process.exit(0);
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
 }
 
 async function runAppPreview(opts) {
-  opts.serveDir = resolve(opts.previewDir ?? opts.outdir ?? "dist");
+  opts.serveDir = resolve(opts.previewDir ?? opts.outdir ?? 'dist');
   opts.outdir = undefined;
   opts.bundle = false;
   opts.watch = false;
@@ -712,18 +712,18 @@ async function runAppPreview(opts) {
 }
 
 function normalizeSpaFallback(value) {
-  if (value === undefined || value === null || value === false || value === "false") return null;
-  const raw = value === true ? "index.html" : String(value);
-  return raw.startsWith("/") ? raw.slice(1) : raw;
+  if (value === undefined || value === null || value === false || value === 'false') return null;
+  const raw = value === true ? 'index.html' : String(value);
+  return raw.startsWith('/') ? raw.slice(1) : raw;
 }
 
 function requestAcceptsHtml(accept) {
   if (!accept) return true;
-  return accept.includes("text/html") || accept.includes("*/*");
+  return accept.includes('text/html') || accept.includes('*/*');
 }
 
 function looksLikeAssetPath(pathname) {
-  return extname(pathname) !== "";
+  return extname(pathname) !== '';
 }
 
 // ─── Transpile 모드 ───
@@ -736,11 +736,11 @@ async function runTranspile(opts) {
     for await (const chunk of process.stdin) chunks.push(chunk);
     source = Buffer.concat(chunks).toString();
   } else {
-    source = readFileSync(resolve(opts.entryPoints[0]), "utf8");
+    source = readFileSync(resolve(opts.entryPoints[0]), 'utf8');
   }
 
   if (opts.tokenize) {
-    const filename = opts.stdin ? "stdin.ts" : opts.entryPoints[0];
+    const filename = opts.stdin ? 'stdin.ts' : opts.entryPoints[0];
     const tokens = tokenize(source, { filename });
     process.stdout.write(formatTokenizeOutput(tokens, opts.tokenizeFormat));
     return;
@@ -751,7 +751,7 @@ async function runTranspile(opts) {
   }
 
   const result = transpile(source, {
-    filename: opts.stdin ? "stdin.ts" : opts.entryPoints[0],
+    filename: opts.stdin ? 'stdin.ts' : opts.entryPoints[0],
     sourcemap: opts.sourcemap,
     minify: opts.minify,
     minifyWhitespace: opts.minifyWhitespace,
@@ -773,8 +773,8 @@ async function runTranspile(opts) {
     quotes: opts.quotes,
     format: opts.format,
     platform: opts.platform,
-    dropConsole: opts.drop.includes("console"),
-    dropDebugger: opts.drop.includes("debugger"),
+    dropConsole: opts.drop.includes('console'),
+    dropDebugger: opts.drop.includes('debugger'),
     target: opts.target,
     browserslist: opts.browserslist,
     tsconfigRaw: opts.tsconfigRaw,
@@ -782,10 +782,10 @@ async function runTranspile(opts) {
   });
 
   if (opts.outfile || opts.outdir) {
-    const name = basename(opts.entryPoints[0]).replace(/\.[^.]+$/, ".js");
+    const name = basename(opts.entryPoints[0]).replace(/\.[^.]+$/, '.js');
     const outputFiles = [{ path: name, text: result.code }];
     if (opts.outfile && result.map) {
-      outputFiles.push({ path: name + ".map", text: result.map });
+      outputFiles.push({ path: name + '.map', text: result.map });
     }
     writeOutputFiles(outputFiles, opts.outfile, opts.outdir, opts.entryPoints, opts.allowOverwrite);
   } else {
@@ -793,7 +793,7 @@ async function runTranspile(opts) {
   }
 
   if (opts.profile.length > 0) {
-    process.stderr.write(profileReport(opts.profileFormat ?? "table"));
+    process.stderr.write(profileReport(opts.profileFormat ?? 'table'));
   }
 }
 
@@ -818,8 +818,8 @@ async function loadAutoConfig(opts) {
   const configSearchDir = getAutoConfigSearchDir(opts);
   const configPath = explicit ?? findConfigPath(configSearchDir);
 
-  const command = opts.serve ? "serve" : opts.watch ? "watch" : "bundle";
-  const mode = opts.mode ?? (command === "bundle" ? "production" : "development");
+  const command = opts.serve ? 'serve' : opts.watch ? 'watch' : 'bundle';
+  const mode = opts.mode ?? (command === 'bundle' ? 'production' : 'development');
 
   // .env 파일 4단계 우선순위로 로드 (#2106). prefix 미지정 시 default `["VITE_", "ZTS_"]`.
   const envDir = opts.envDir ? resolve(opts.envDir) : configSearchDir;
@@ -873,46 +873,46 @@ function mergeConfigIntoOpts(opts, config) {
   if (!config) return opts;
 
   const SCALAR_KEYS = [
-    "format",
-    "platform",
-    "target",
-    "banner",
-    "footer",
-    "globalName",
-    "publicPath",
-    "entryNames",
-    "chunkNames",
-    "assetNames",
-    "jsx",
-    "jsxFactory",
-    "jsxFragment",
-    "jsxImportSource",
-    "quotes",
-    "preserveModulesRoot",
-    "legalComments",
-    "sourceRoot",
-    "sourcemapMode",
-    "jobs",
-    "logLevel",
-    "logLimit",
-    "lineLimit",
-    "outputExports",
-    "outExtensionJs",
-    "metafile",
-    "spaFallback",
-    "outfile",
-    "outdir",
-    "outbase",
-    "browserslist",
-    "tsconfigRaw",
-    "intro",
-    "outro",
-    "stopAfter",
-    "profileLevel",
-    "profileFormat",
-    "runtimePolyfills",
-    "coreJs",
-    "tokenizeFormat",
+    'format',
+    'platform',
+    'target',
+    'banner',
+    'footer',
+    'globalName',
+    'publicPath',
+    'entryNames',
+    'chunkNames',
+    'assetNames',
+    'jsx',
+    'jsxFactory',
+    'jsxFragment',
+    'jsxImportSource',
+    'quotes',
+    'preserveModulesRoot',
+    'legalComments',
+    'sourceRoot',
+    'sourcemapMode',
+    'jobs',
+    'logLevel',
+    'logLimit',
+    'lineLimit',
+    'outputExports',
+    'outExtensionJs',
+    'metafile',
+    'spaFallback',
+    'outfile',
+    'outdir',
+    'outbase',
+    'browserslist',
+    'tsconfigRaw',
+    'intro',
+    'outro',
+    'stopAfter',
+    'profileLevel',
+    'profileFormat',
+    'runtimePolyfills',
+    'coreJs',
+    'tokenizeFormat',
   ];
   for (const key of SCALAR_KEYS) {
     if (opts[key] === undefined && config[key] !== undefined) {
@@ -923,29 +923,29 @@ function mergeConfigIntoOpts(opts, config) {
   // boolean default=false → config 가 true 면 적용. CLI 명시 false 를 구분 못 하므로
   // 함수형 config (#2103) 에서 정밀한 우선순위 적용 예정.
   const BOOL_KEYS = [
-    "minify",
-    "minifyWhitespace",
-    "minifyIdentifiers",
-    "minifySyntax",
-    "sourcemap",
-    "sourcemapDebugIds",
-    "splitting",
-    "flow",
-    "experimentalDecorators",
-    "emitDecoratorMetadata",
-    "keepNames",
-    "shimMissingExports",
-    "preserveSymlinks",
-    "charsetUtf8",
-    "asciiOnly",
-    "jsxInJs",
-    "jsxDev",
-    "preserveModules",
-    "verbatimModuleSyntax",
-    "packagesExternal",
-    "allowOverwrite",
-    "ignoreAnnotations",
-    "jsxSideEffects",
+    'minify',
+    'minifyWhitespace',
+    'minifyIdentifiers',
+    'minifySyntax',
+    'sourcemap',
+    'sourcemapDebugIds',
+    'splitting',
+    'flow',
+    'experimentalDecorators',
+    'emitDecoratorMetadata',
+    'keepNames',
+    'shimMissingExports',
+    'preserveSymlinks',
+    'charsetUtf8',
+    'asciiOnly',
+    'jsxInJs',
+    'jsxDev',
+    'preserveModules',
+    'verbatimModuleSyntax',
+    'packagesExternal',
+    'allowOverwrite',
+    'ignoreAnnotations',
+    'jsxSideEffects',
   ];
   for (const key of BOOL_KEYS) {
     if (opts[key] === false && config[key] === true) {
@@ -954,24 +954,24 @@ function mergeConfigIntoOpts(opts, config) {
   }
   // sourcesContent / treeShaking / useDefineForClassFields 는 default=true.
   // CLI 가 default 면 config 가 false 일 때 false 로.
-  for (const key of ["sourcesContent", "treeShaking", "useDefineForClassFields"]) {
+  for (const key of ['sourcesContent', 'treeShaking', 'useDefineForClassFields']) {
     if (opts[key] === true && config[key] === false) {
       opts[key] = false;
     }
   }
 
   const ARRAY_KEYS = [
-    "entryPoints",
-    "external",
-    "inject",
-    "drop",
-    "dropLabels",
-    "pure",
-    "resolveExtensions",
-    "mainFields",
-    "conditions",
-    "nodePaths",
-    "profile",
+    'entryPoints',
+    'external',
+    'inject',
+    'drop',
+    'dropLabels',
+    'pure',
+    'resolveExtensions',
+    'mainFields',
+    'conditions',
+    'nodePaths',
+    'profile',
   ];
   for (const key of ARRAY_KEYS) {
     if (opts[key].length === 0 && Array.isArray(config[key]) && config[key].length > 0) {
@@ -979,8 +979,8 @@ function mergeConfigIntoOpts(opts, config) {
     }
   }
 
-  for (const key of ["define", "alias", "loader", "globals"]) {
-    if (config[key] && typeof config[key] === "object") {
+  for (const key of ['define', 'alias', 'loader', 'globals']) {
+    if (config[key] && typeof config[key] === 'object') {
       opts[key] = { ...config[key], ...opts[key] };
     }
   }
@@ -993,10 +993,10 @@ function mergeCliRuntimeTargets(runtimePolyfills, runtimeTargetQueries) {
   if (!Array.isArray(runtimeTargetQueries) || runtimeTargetQueries.length === 0) {
     return runtimePolyfills;
   }
-  if (runtimePolyfills === undefined || runtimePolyfills === "off") return runtimePolyfills;
+  if (runtimePolyfills === undefined || runtimePolyfills === 'off') return runtimePolyfills;
   const targets = runtimeTargetQueries;
-  if (typeof runtimePolyfills === "string") return { mode: runtimePolyfills, targets };
-  if (runtimePolyfills && typeof runtimePolyfills === "object") {
+  if (typeof runtimePolyfills === 'string') return { mode: runtimePolyfills, targets };
+  if (runtimePolyfills && typeof runtimePolyfills === 'object') {
     return { ...runtimePolyfills, targets };
   }
   return runtimePolyfills;
@@ -1016,7 +1016,7 @@ async function runBundle(opts, config) {
     const cfg = await importAndResolveDefault(absPath);
     if (Array.isArray(cfg.plugins)) {
       plugins.push(...cfg.plugins);
-    } else if (typeof cfg.setup === "function") {
+    } else if (typeof cfg.setup === 'function') {
       plugins.push(cfg);
     }
   }
@@ -1057,8 +1057,8 @@ async function runBundle(opts, config) {
     dropLabels: opts.dropLabels.length > 0 ? opts.dropLabels : undefined,
     pure: opts.pure.length > 0 ? opts.pure : undefined,
     // bundle 모드도 transpile 과 동일하게 drop console/debugger 적용 (#2155).
-    dropConsole: opts.drop.includes("console"),
-    dropDebugger: opts.drop.includes("debugger"),
+    dropConsole: opts.drop.includes('console'),
+    dropDebugger: opts.drop.includes('debugger'),
     useDefineForClassFields: opts.useDefineForClassFields,
     experimentalDecorators: opts.experimentalDecorators,
     emitDecoratorMetadata: opts.emitDecoratorMetadata,
@@ -1113,13 +1113,13 @@ async function runBundle(opts, config) {
 
   const result = plugins.length > 0 ? await build(buildOpts) : buildSync(buildOpts);
 
-  if (result.errors.length > 0 && opts.logLevel !== "silent") {
+  if (result.errors.length > 0 && opts.logLevel !== 'silent') {
     for (const err of result.errors) {
-      const loc = err.location ? `${err.location.file}: ` : "";
+      const loc = err.location ? `${err.location.file}: ` : '';
       console.error(`error: ${loc}${err.text}`);
     }
   }
-  if (result.warnings.length > 0 && opts.logLevel !== "silent" && opts.logLevel !== "error") {
+  if (result.warnings.length > 0 && opts.logLevel !== 'silent' && opts.logLevel !== 'error') {
     for (const warn of result.warnings) {
       console.error(`warning: ${warn.text}`);
     }
@@ -1154,7 +1154,7 @@ async function runBundle(opts, config) {
   }
 
   if (opts.profile.length > 0) {
-    process.stderr.write(profileReport(opts.profileFormat ?? "table"));
+    process.stderr.write(profileReport(opts.profileFormat ?? 'table'));
   }
 
   return result;
@@ -1163,7 +1163,7 @@ async function runBundle(opts, config) {
 // ─── Watch 모드 ───
 
 async function runWatch(opts, config) {
-  const { watch } = await import("node:fs");
+  const { watch } = await import('node:fs');
 
   let building = false;
   let pendingRebuild = false;
@@ -1185,18 +1185,18 @@ async function runWatch(opts, config) {
       if (opts.watchJson) {
         const event =
           result.errors.length > 0
-            ? { type: "rebuild", success: false, error: result.errors[0]?.text }
-            : { type: "rebuild", success: true, files, ms: elapsed };
+            ? { type: 'rebuild', success: false, error: result.errors[0]?.text }
+            : { type: 'rebuild', success: true, files, ms: elapsed };
         console.log(JSON.stringify(event));
-      } else if (opts.logLevel !== "silent") {
+      } else if (opts.logLevel !== 'silent') {
         if (result.errors.length === 0) {
           console.error(`[watch] rebuilt in ${elapsed}ms`);
         }
       }
     } catch (err) {
       if (opts.watchJson) {
-        console.log(JSON.stringify({ type: "rebuild", success: false, error: String(err) }));
-      } else if (opts.logLevel !== "silent") {
+        console.log(JSON.stringify({ type: 'rebuild', success: false, error: String(err) }));
+      } else if (opts.logLevel !== 'silent') {
         console.error(`[watch] error: ${err}`);
       }
     } finally {
@@ -1224,11 +1224,11 @@ async function runWatch(opts, config) {
     const watcher = watch(dir, { recursive: true }, (_event, filename) => {
       if (!filename) return;
       // node_modules, .git, 출력 디렉토리 무시
-      if (filename.includes("node_modules") || filename.includes(".git")) return;
+      if (filename.includes('node_modules') || filename.includes('.git')) return;
       if (opts.outdir && filename.startsWith(basename(resolve(opts.outdir)))) return;
 
       if (restartTriggers.matches(filename)) {
-        emitRestart(opts, "config 또는 .env 파일 변경 감지");
+        emitRestart(opts, 'config 또는 .env 파일 변경 감지');
         return;
       }
 
@@ -1239,9 +1239,9 @@ async function runWatch(opts, config) {
   }
 
   if (opts.watchJson) {
-    console.log(JSON.stringify({ type: "ready" }));
-  } else if (opts.logLevel !== "silent") {
-    console.error("[watch] watching for changes...");
+    console.log(JSON.stringify({ type: 'ready' }));
+  } else if (opts.logLevel !== 'silent') {
+    console.error('[watch] watching for changes...');
   }
 }
 
@@ -1260,14 +1260,14 @@ function computeRestartTriggers(opts) {
   const autoConfig = explicitConfig ?? findConfigPath(configSearchDir);
   if (autoConfig) dirs.add(dirname(autoConfig));
 
-  const mode = opts.mode ?? (opts.serve || opts.watch ? "development" : "production");
+  const mode = opts.mode ?? (opts.serve || opts.watch ? 'development' : 'production');
   // mode-specific config (`zts.config.${mode}.{ext}`) 변경도 restart trigger (#2110).
   const modeConfig = explicitConfig ? null : findModeConfigPath(configSearchDir, mode);
   if (modeConfig) dirs.add(dirname(modeConfig));
 
   const configBase = autoConfig ? basename(autoConfig) : null;
   const modeConfigBase = modeConfig ? basename(modeConfig) : null;
-  const envBases = new Set([".env", ".env.local", `.env.${mode}`, `.env.${mode}.local`]);
+  const envBases = new Set(['.env', '.env.local', `.env.${mode}`, `.env.${mode}.local`]);
 
   return {
     dirs,
@@ -1288,9 +1288,9 @@ function computeRestartTriggers(opts) {
  * — fail-soft. 첫 error 후 watcher 를 닫으므로 `once` 로 충분.
  */
 function attachWatcherErrorHandler(watcher, dir, logLevel) {
-  watcher.once("error", (err) => {
-    if (logLevel !== "silent") {
-      if (err && (err.code === "EMFILE" || err.code === "ENOSPC")) {
+  watcher.once('error', (err) => {
+    if (logLevel !== 'silent') {
+      if (err && (err.code === 'EMFILE' || err.code === 'ENOSPC')) {
         console.error(
           `[watch] ${dir} 파일 감시 비활성화 (${err.code}): 변경 시 재빌드가 동작하지 않습니다. ` +
             `open-file 한도를 늘리거나 큰 하위 트리를 제거하세요.`,
@@ -1311,20 +1311,20 @@ function emitRestart(opts, reason) {
 
 async function emitRestartAfter(opts, reason, beforeSpawn) {
   if (opts.watchJson) {
-    console.log(JSON.stringify({ type: "restart", reason }));
-  } else if (opts.logLevel !== "silent") {
+    console.log(JSON.stringify({ type: 'restart', reason }));
+  } else if (opts.logLevel !== 'silent') {
     console.error(`[watch] ${reason} — restarting CLI...`);
   }
   if (beforeSpawn) await beforeSpawn();
   // 자식 프로세스 spawn 후 종료 — 새 프로세스가 fresh config/env 로 시작.
   // stdio inherit 으로 부모의 출력 스트림을 그대로 이어받는다.
-  const { spawn } = await import("node:child_process");
+  const { spawn } = await import('node:child_process');
   const child = spawn(process.argv[0], process.argv.slice(1), {
-    stdio: "inherit",
+    stdio: 'inherit',
     env: process.env,
   });
-  child.on("exit", (code) => process.exit(code ?? 0));
-  child.on("error", (err) => {
+  child.on('exit', (code) => process.exit(code ?? 0));
+  child.on('error', (err) => {
     console.error(`[watch] restart failed: ${err}`);
     process.exit(1);
   });
@@ -1333,7 +1333,7 @@ async function emitRestartAfter(opts, reason, beforeSpawn) {
 // ─── Serve 모드 ───
 
 async function runServe(opts, config, { appDev = null } = {}) {
-  const isBun = typeof globalThis.Bun !== "undefined";
+  const isBun = typeof globalThis.Bun !== 'undefined';
   // appDev 모드에서만 web 모듈 (HMR_MSG / APP_DEV_HMR_*_PATH / createHmrChannel /
   // APP_DEV_HMR_CLIENT) 이 필요. handleRequest / watch drain 의 hot path 마다
   // `web.X.Y` property chain 을 재계산하지 않도록 진입 시점에 destructure 해
@@ -1346,24 +1346,24 @@ async function runServe(opts, config, { appDev = null } = {}) {
   const APP_DEV_HMR_WS_PATH = web?.APP_DEV_HMR_WS_PATH;
   let serverHandle = null;
   const mimeTypes = {
-    ".html": "text/html",
-    ".js": "application/javascript",
-    ".mjs": "application/javascript",
-    ".css": "text/css",
-    ".json": "application/json",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".gif": "image/gif",
-    ".svg": "image/svg+xml",
-    ".ico": "image/x-icon",
-    ".woff": "font/woff",
-    ".woff2": "font/woff2",
-    ".map": "application/json",
+    '.html': 'text/html',
+    '.js': 'application/javascript',
+    '.mjs': 'application/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.map': 'application/json',
   };
 
   // 번들 모드면 먼저 빌드
   if (opts.bundle && opts.entryPoints.length > 0) {
-    opts.outdir = opts.outdir || join(opts.serveDir, ".zts-serve");
+    opts.outdir = opts.outdir || join(opts.serveDir, '.zts-serve');
     const bundleResult = await runBundle(opts, config);
     if (appDev) {
       if (bundleResult.errors.length > 0) {
@@ -1382,39 +1382,39 @@ async function runServe(opts, config, { appDev = null } = {}) {
   }
 
   const serveDir = resolve(opts.outdir || opts.serveDir);
-  const base = normalizeBase(opts.base ?? "/");
+  const base = normalizeBase(opts.base ?? '/');
 
-  function handleRequest(reqUrl, accept = "") {
-    let pathname = new URL(reqUrl, "http://localhost").pathname;
+  function handleRequest(reqUrl, accept = '') {
+    let pathname = new URL(reqUrl, 'http://localhost').pathname;
     if (appDev && pathname === APP_DEV_HMR_CLIENT_PATH) {
       return {
         status: 200,
         body: APP_DEV_HMR_CLIENT,
-        type: "application/javascript",
+        type: 'application/javascript',
       };
     }
-    if (base && base !== "/" && pathname.startsWith(base)) {
-      pathname = "/" + pathname.slice(base.length);
+    if (base && base !== '/' && pathname.startsWith(base)) {
+      pathname = '/' + pathname.slice(base.length);
     }
-    if (pathname === "/") pathname = "/index.html";
+    if (pathname === '/') pathname = '/index.html';
 
     let filePath = join(serveDir, pathname);
     if (!existsSync(filePath)) {
       const fallback = normalizeSpaFallback(opts.spaFallback);
       if (!fallback || !requestAcceptsHtml(accept) || looksLikeAssetPath(pathname)) {
-        return { status: 404, body: "Not Found", type: "text/plain" };
+        return { status: 404, body: 'Not Found', type: 'text/plain' };
       }
       const fallbackPath = resolve(serveDir, fallback);
       const insideServeDir =
         fallbackPath === serveDir || fallbackPath.startsWith(`${serveDir}${sep}`);
       if (!insideServeDir || !existsSync(fallbackPath)) {
-        return { status: 404, body: "Not Found", type: "text/plain" };
+        return { status: 404, body: 'Not Found', type: 'text/plain' };
       }
       filePath = fallbackPath;
     }
 
     const ext = extname(filePath);
-    const type = mimeTypes[ext] || "application/octet-stream";
+    const type = mimeTypes[ext] || 'application/octet-stream';
     const body = readFileSync(filePath);
     return { status: 200, body, type };
   }
@@ -1431,7 +1431,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         // /__hmr WebSocket upgrade — Bun-native API 사용 (Node 분기는 server.on('upgrade')).
         if (hmr && url.pathname === APP_DEV_HMR_WS_PATH) {
           if (server.upgrade(req)) return undefined;
-          return new Response("Upgrade required", { status: 426 });
+          return new Response('Upgrade required', { status: 426 });
         }
         // 프록시 처리
         for (const [prefix, target] of Object.entries(opts.proxy)) {
@@ -1440,12 +1440,12 @@ async function runServe(opts, config, { appDev = null } = {}) {
           }
         }
 
-        const { status, body, type } = handleRequest(req.url, req.headers.get("accept") ?? "");
+        const { status, body, type } = handleRequest(req.url, req.headers.get('accept') ?? '');
         return new Response(body, {
           status,
           headers: {
-            "Content-Type": type,
-            "Access-Control-Allow-Origin": "*",
+            'Content-Type': type,
+            'Access-Control-Allow-Origin': '*',
           },
         });
       },
@@ -1475,7 +1475,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
     // Node.js http/https
     const handler = async (req, res) => {
       // 프록시 처리
-      const url = new URL(req.url, `${useTls ? "https" : "http"}://${req.headers.host}`);
+      const url = new URL(req.url, `${useTls ? 'https' : 'http'}://${req.headers.host}`);
       for (const [prefix, target] of Object.entries(opts.proxy)) {
         if (url.pathname.startsWith(prefix)) {
           try {
@@ -1488,16 +1488,16 @@ async function runServe(opts, config, { appDev = null } = {}) {
             res.end(Buffer.from(body));
           } catch {
             res.writeHead(502);
-            res.end("Bad Gateway");
+            res.end('Bad Gateway');
           }
           return;
         }
       }
 
-      const { status, body, type } = handleRequest(req.url, req.headers.accept ?? "");
+      const { status, body, type } = handleRequest(req.url, req.headers.accept ?? '');
       res.writeHead(status, {
-        "Content-Type": type,
-        "Access-Control-Allow-Origin": "*",
+        'Content-Type': type,
+        'Access-Control-Allow-Origin': '*',
       });
       res.end(body);
     };
@@ -1508,8 +1508,8 @@ async function runServe(opts, config, { appDev = null } = {}) {
         )
       : createServer(handler);
     if (hmr) {
-      server.on("upgrade", (req, socket) => {
-        const pathname = new URL(req.url, `${useTls ? "https" : "http"}://${req.headers.host}`)
+      server.on('upgrade', (req, socket) => {
+        const pathname = new URL(req.url, `${useTls ? 'https' : 'http'}://${req.headers.host}`)
           .pathname;
         if (pathname !== APP_DEV_HMR_WS_PATH) {
           socket.destroy();
@@ -1523,15 +1523,15 @@ async function runServe(opts, config, { appDev = null } = {}) {
       (port) =>
         new Promise((resolveListen, rejectListen) => {
           const onError = (err) => {
-            server.off("listening", onListening);
+            server.off('listening', onListening);
             rejectListen(err);
           };
           const onListening = () => {
-            server.off("error", onError);
+            server.off('error', onError);
             resolveListen(server);
           };
-          server.once("error", onError);
-          server.once("listening", onListening);
+          server.once('error', onError);
+          server.once('listening', onListening);
           server.listen(port, opts.host);
         }),
     );
@@ -1539,25 +1539,25 @@ async function runServe(opts, config, { appDev = null } = {}) {
 
   async function closeServerForRestart() {
     if (!serverHandle) return;
-    if (typeof serverHandle.stop === "function") {
+    if (typeof serverHandle.stop === 'function') {
       await serverHandle.stop();
       return;
     }
-    if (typeof serverHandle.close === "function") {
+    if (typeof serverHandle.close === 'function') {
       await new Promise((resolveClose, rejectClose) => {
         serverHandle.close((err) => (err ? rejectClose(err) : resolveClose()));
       });
     }
   }
 
-  const protocol = useTls ? "https" : "http";
-  if (opts.logLevel !== "silent") {
+  const protocol = useTls ? 'https' : 'http';
+  if (opts.logLevel !== 'silent') {
     console.error(`[serve] ${protocol}://${opts.host}:${opts.port}`);
   }
 
   // watch 시작 (번들 모드일 때)
   if (opts.watch && opts.bundle) {
-    const { watch: fsWatch } = await import("node:fs");
+    const { watch: fsWatch } = await import('node:fs');
     const outdirAbs = opts.outdir ? resolve(opts.outdir) : null;
     const outdirPrefix = outdirAbs ? `${outdirAbs}${sep}` : null;
     let debounceTimer = null;
@@ -1572,7 +1572,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
         href: appDev.hrefFor(changedPath),
         timestamp: Date.now(),
       });
-      if (opts.logLevel !== "silent") console.error("[serve] css updated");
+      if (opts.logLevel !== 'silent') console.error('[serve] css updated');
     }
 
     async function rebuildAppDevFull(dirtyPaths = null) {
@@ -1587,7 +1587,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
       appDev.injectBundleCssLinks(bundleResult);
       await appDev.afterBundle();
       hmr?.broadcast({ type: HMR_MSG.FullReload, timestamp: Date.now() });
-      if (opts.logLevel !== "silent") console.error("[serve] rebuilt");
+      if (opts.logLevel !== 'silent') console.error('[serve] rebuilt');
     }
 
     async function drain() {
@@ -1599,7 +1599,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
           dirty.clear();
           if (!appDev) {
             await runBundle(opts, config);
-            if (opts.logLevel !== "silent") console.error("[serve] rebuilt");
+            if (opts.logLevel !== 'silent') console.error('[serve] rebuilt');
             continue;
           }
           // 변경된 path 들이 모두 CSS-only 면 incremental 처리, 그 외엔 full reload.
@@ -1609,7 +1609,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
           if (allCssOnly) {
             // postcss config 변경이 섞이면 changedPath 미지정 → 전체 재처리.
             const cssChanges = paths.filter(
-              (p) => p.endsWith(".css") && !appDev.isPostcssConfig(p),
+              (p) => p.endsWith('.css') && !appDev.isPostcssConfig(p),
             );
             // 단일 non-module `.scss/.sass` 변경 → 그 파일만 재컴파일하고 outdir mirror
             // 후 CssUpdate broadcast (BACKLOG #71). full pipeline rebuild + cpSync 회피.
@@ -1618,7 +1618,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
               if (href) {
                 hmr?.clearError();
                 hmr?.broadcast({ type: HMR_MSG.CssUpdate, href, timestamp: Date.now() });
-                if (opts.logLevel !== "silent") console.error("[serve] sass updated");
+                if (opts.logLevel !== 'silent') console.error('[serve] sass updated');
               } else {
                 await rebuildAppDevFull();
               }
@@ -1628,14 +1628,14 @@ async function runServe(opts, config, { appDev = null } = {}) {
               await appDev.afterBundle();
               hmr?.clearError();
               hmr?.broadcast({ type: HMR_MSG.CssUpdate, timestamp: Date.now() });
-              if (opts.logLevel !== "silent") console.error("[serve] css updated");
+              if (opts.logLevel !== 'silent') console.error('[serve] css updated');
             }
           } else {
             await rebuildAppDevFull(paths);
           }
         }
       } catch (err) {
-        console.error("[serve] rebuild error:", err);
+        console.error('[serve] rebuild error:', err);
         hmr?.reportThrownError(err);
       } finally {
         rebuilding = false;
@@ -1656,11 +1656,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
 
     for (const dir of watchDirs) {
       const watcher = fsWatch(dir, { recursive: true }, (_event, filename) => {
-        if (!filename || filename.includes("node_modules") || filename.includes(".git")) return;
+        if (!filename || filename.includes('node_modules') || filename.includes('.git')) return;
         const absPath = resolve(dir, filename);
         if (outdirAbs && (absPath === outdirAbs || absPath.startsWith(outdirPrefix))) return;
         if (restartTriggers.matches(filename)) {
-          void emitRestartAfter(opts, "config 또는 .env 파일 변경 감지", closeServerForRestart);
+          void emitRestartAfter(opts, 'config 또는 .env 파일 변경 감지', closeServerForRestart);
           return;
         }
         dirty.add(absPath);
@@ -1673,10 +1673,10 @@ async function runServe(opts, config, { appDev = null } = {}) {
 
   // open browser
   if (opts.open) {
-    const url = `${protocol}://${opts.host === "0.0.0.0" ? "localhost" : opts.host}:${opts.port}`;
-    const { exec } = await import("node:child_process");
+    const url = `${protocol}://${opts.host === '0.0.0.0' ? 'localhost' : opts.host}:${opts.port}`;
+    const { exec } = await import('node:child_process');
     const cmd =
-      process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+      process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     exec(`${cmd} ${url}`);
   }
 }
@@ -1685,11 +1685,11 @@ async function runServe(opts, config, { appDev = null } = {}) {
 
 async function runTest262(opts) {
   const dir = opts.test262;
-  if (!dir) throw new Error("--test262 requires a directory path");
-  const { spawnSync } = await import("node:child_process");
-  const result = spawnSync("zig", ["build", "test262-run", "--", resolve(dir)], {
-    cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
-    stdio: "inherit",
+  if (!dir) throw new Error('--test262 requires a directory path');
+  const { spawnSync } = await import('node:child_process');
+  const result = spawnSync('zig', ['build', 'test262-run', '--', resolve(dir)], {
+    cwd: resolve(dirname(fileURLToPath(import.meta.url)), '../../..'),
+    stdio: 'inherit',
   });
   if (result.error) {
     throw new Error(`failed to run Test262 runner: ${result.error.message}`);
@@ -1704,12 +1704,12 @@ async function runTest262(opts) {
  * 반환 형태가 다른 두 호출 사이트의 drift 를 차단 — 모드 분기/추가가 1곳에서 끝남.
  */
 async function dispatchBuild(opts, config, configEnv, dotenvVars) {
-  if (opts.appCommand === "build") {
+  if (opts.appCommand === 'build') {
     const result = await runAppBuild(opts, config, configEnv, dotenvVars);
     return { errors: result.errors.length };
   }
-  if (opts.appCommand === "dev") {
-    if (opts.platform === "react-native") {
+  if (opts.appCommand === 'dev') {
+    if (opts.platform === 'react-native') {
       // #2605 — RN dev server 는 별도 lazy import. cli-server-api / dev-middleware
       // / RN runtime peer optional.
       await runRnDev(opts, config);
@@ -1718,7 +1718,7 @@ async function dispatchBuild(opts, config, configEnv, dotenvVars) {
     await runAppDev(opts, config, configEnv, dotenvVars);
     return { errors: 0 };
   }
-  if (opts.appCommand === "preview") {
+  if (opts.appCommand === 'preview') {
     await runAppPreview(opts);
     return { errors: 0 };
   }
@@ -1730,7 +1730,7 @@ async function dispatchBuild(opts, config, configEnv, dotenvVars) {
     await runWatch(opts, config);
     return { errors: 0 };
   }
-  if (opts.bundle && opts.platform === "react-native") {
+  if (opts.bundle && opts.platform === 'react-native') {
     // #2540 PR #7 — RN platform 시 @zts/react-native 의 preset 호출. lazy
     // import 라 web/transpile/bundle 일반 사용자 영향 0.
     const result = await runRnBundle(opts, config);
@@ -1785,8 +1785,8 @@ function buildSubOpts(opts, w, merged) {
  * `--workspace=<name>` 필터로 단일 entry 만 남기면 serve/watch 허용.
  */
 async function runWorkspace(opts, workspacePath) {
-  const command = opts.serve ? "serve" : opts.watch ? "watch" : "bundle";
-  const mode = opts.mode ?? (command === "bundle" ? "production" : "development");
+  const command = opts.serve ? 'serve' : opts.watch ? 'watch' : 'bundle';
+  const mode = opts.mode ?? (command === 'bundle' ? 'production' : 'development');
   const env = { command, mode, env: process.env };
 
   const rootDir = dirname(resolve(workspacePath));
@@ -1821,30 +1821,30 @@ async function runWorkspace(opts, workspacePath) {
     );
   }
 
-  if (opts.logLevel !== "silent") {
-    const filterMsg = opts.workspace ? ` (filtered by name='${opts.workspace}')` : "";
+  if (opts.logLevel !== 'silent') {
+    const filterMsg = opts.workspace ? ` (filtered by name='${opts.workspace}')` : '';
     console.error(
       `@zts/core: workspace ${workspacePath} → ${resolved.length} entr${
-        resolved.length === 1 ? "y" : "ies"
+        resolved.length === 1 ? 'y' : 'ies'
       }${filterMsg}`,
     );
   }
 
   let exitCode = 0;
   for (const w of resolved) {
-    if (opts.logLevel !== "silent") {
+    if (opts.logLevel !== 'silent') {
       console.error(`\n--- workspace: ${w.name} (cwd=${w.cwd}, source=${w.source}) ---`);
     }
     const merged = rootConfig ? mergeUserConfigs(rootConfig, w.config) : w.config;
 
-    if (opts.logLevel !== "silent" && Object.keys(w.config).length > 0) {
+    if (opts.logLevel !== 'silent' && Object.keys(w.config).length > 0) {
       warnUnknownKeys(w.config, KNOWN_CONFIG_KEYS, { sourceLabel: `workspace[${w.name}]` });
     }
 
     const subOpts = buildSubOpts(opts, w, merged);
 
     if (subOpts.entryPoints.length === 0 && !subOpts.stdin && !subOpts.serve) {
-      if (opts.logLevel !== "silent") {
+      if (opts.logLevel !== 'silent') {
         console.error(`@zts/core: workspace '${w.name}' has no entryPoints — skipping`);
       }
       continue;
@@ -1897,8 +1897,8 @@ async function main() {
   // 가 아니라서 그대로 두면 envDir 가 파일을 가리켜 `.env` 로딩에서 ENOTDIR 발생.
   // entry → entryPoints[0] 로 옮기고 그 dirname 을 appRoot 로 사용.
   if (
-    (opts.appCommand === "dev" || opts.appCommand === "build") &&
-    opts.platform === "react-native" &&
+    (opts.appCommand === 'dev' || opts.appCommand === 'build') &&
+    opts.platform === 'react-native' &&
     opts.appRoot
   ) {
     const entryArg = opts.appRoot;
@@ -1906,8 +1906,8 @@ async function main() {
     opts.appRoot = dirname(resolve(entryArg));
   }
 
-  if ((opts.appCommand === "dev" || opts.appCommand === "build") && !opts.envDir) {
-    opts.envDir = resolve(opts.appRoot ?? ".");
+  if ((opts.appCommand === 'dev' || opts.appCommand === 'build') && !opts.envDir) {
+    opts.envDir = resolve(opts.appRoot ?? '.');
   }
 
   // workspace 자동 탐색 — `--workspace-config <path>` 명시 또는 cwd 의 zts.workspace.*
@@ -1932,8 +1932,8 @@ async function main() {
   if (config) {
     // unknown 키 검출 + Levenshtein "did you mean?" 제안 (#2109).
     // 머지 전에 검사 — 사용자 typo 가 silent 무시되지 않도록.
-    if (opts.logLevel !== "silent") {
-      warnUnknownKeys(config, KNOWN_CONFIG_KEYS, { sourceLabel: "zts.config" });
+    if (opts.logLevel !== 'silent') {
+      warnUnknownKeys(config, KNOWN_CONFIG_KEYS, { sourceLabel: 'zts.config' });
     }
     mergeConfigIntoOpts(opts, config);
   }
@@ -1944,7 +1944,7 @@ async function main() {
   const envDefine = envToDefine(
     dotenvVars,
     configEnv.mode,
-    normalizeBase(opts.base ?? opts.publicPath ?? "/"),
+    normalizeBase(opts.base ?? opts.publicPath ?? '/'),
   );
   for (const [key, value] of Object.entries(envDefine)) {
     if (opts.define[key] === undefined) opts.define[key] = value;

@@ -4,14 +4,14 @@
 // ZTS 코어가 직접 (preset 의 assetRegistry/loader/alias 옵션) — 이 plugin 의
 // 책임 아님.
 
-import { readFileSync } from "node:fs";
+import { readFileSync } from 'node:fs';
 
-import type { ZtsPlugin } from "@zts/core";
+import type { ZtsPlugin } from '@zts/core';
 
-import { HMR_CLIENT_SUFFIX, ZTS_HMR_CLIENT_CODE } from "../runtime-loader.ts";
-import { escapeRegex } from "./escape-regex.ts";
-import { type BabelInstance, getErrorMessage, requireFromCli } from "./internal.ts";
-import type { PluginConfig } from "./types.ts";
+import { HMR_CLIENT_SUFFIX, ZTS_HMR_CLIENT_CODE } from '../runtime-loader.ts';
+import { escapeRegex } from './escape-regex.ts';
+import { type BabelInstance, getErrorMessage, requireFromCli } from './internal.ts';
+import type { PluginConfig } from './types.ts';
 
 interface MetroTransformerResult {
   code?: string;
@@ -22,7 +22,7 @@ interface MetroTransformer {
   transform(args: {
     src: string;
     filename: string;
-    options: { platform: "ios" | "android"; dev: boolean };
+    options: { platform: 'ios' | 'android'; dev: boolean };
   }): Promise<MetroTransformerResult> | MetroTransformerResult;
 }
 
@@ -35,7 +35,7 @@ interface MetroTransformer {
  */
 export function createAssetPlugin(config: PluginConfig): ZtsPlugin {
   return {
-    name: "zts:react-native:runtime",
+    name: 'zts:react-native:runtime',
     setup(build) {
       // HMRClient.js path 매칭 — onLoad 응답으로 ZTS_HMR_CLIENT_CODE 그대로.
       const hmrClientPattern = new RegExp(`${escapeRegex(HMR_CLIENT_SUFFIX)}$`);
@@ -52,8 +52,8 @@ export function createAssetPlugin(config: PluginConfig): ZtsPlugin {
         // 외 (RN-specific 확장자, 예: .svg). 표준 JS/TS 는 ZTS 가 처리하므로 제외.
         const customExts = config.sourceExts
           .filter((e) => !/^\.(tsx?|jsx?|mjs|cjs|json)$/.test(e))
-          .map((e) => e.replace(/^\./, ""))
-          .join("|");
+          .map((e) => e.replace(/^\./, ''))
+          .join('|');
 
         if (customExts) {
           const customExtPattern = new RegExp(`\\.(${customExts})$`);
@@ -65,9 +65,9 @@ export function createAssetPlugin(config: PluginConfig): ZtsPlugin {
                 ) as MetroTransformer;
               }
               if (!babel) {
-                babel = requireFromCli("@babel/core") as BabelInstance;
+                babel = requireFromCli('@babel/core') as BabelInstance;
               }
-              const src = readFileSync(args.path, "utf8");
+              const src = readFileSync(args.path, 'utf8');
               const result = await customTransformer.transform({
                 src,
                 filename: args.path,
@@ -84,7 +84,7 @@ export function createAssetPlugin(config: PluginConfig): ZtsPlugin {
               }
             } catch (err: unknown) {
               process.stderr.write(
-                `[zts:transformer] ${args.path.split("/").pop()}: ${getErrorMessage(err)}\n`,
+                `[zts:transformer] ${args.path.split('/').pop()}: ${getErrorMessage(err)}\n`,
               );
             }
             return null;

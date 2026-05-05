@@ -1,35 +1,35 @@
-import { describe, test, expect } from "bun:test";
-import { createFixture, runZts } from "../helpers";
+import { describe, test, expect } from 'bun:test';
+import { createFixture, runZts } from '../helpers';
 
 async function expectPass(code: string) {
-  const fixture = await createFixture({ "input.ts": code });
+  const fixture = await createFixture({ 'input.ts': code });
   try {
-    const result = await runZts(["--experimental-decorators", `${fixture.dir}/input.ts`]);
+    const result = await runZts(['--experimental-decorators', `${fixture.dir}/input.ts`]);
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).not.toContain("error:");
+    expect(result.stderr).not.toContain('error:');
   } finally {
     await fixture.cleanup();
   }
 }
 
 async function expectError(code: string) {
-  const fixture = await createFixture({ "input.ts": code });
+  const fixture = await createFixture({ 'input.ts': code });
   try {
-    const result = await runZts(["--experimental-decorators", `${fixture.dir}/input.ts`]);
+    const result = await runZts(['--experimental-decorators', `${fixture.dir}/input.ts`]);
     // 에러 복구로 exit code 0이 나올 수 있으므로 stderr에 error 포함 여부로 판단
-    const hasError = result.exitCode !== 0 || result.stderr.includes("error");
+    const hasError = result.exitCode !== 0 || result.stderr.includes('error');
     expect(hasError).toBe(true);
   } finally {
     await fixture.cleanup();
   }
 }
 
-describe("TSC decorator conformance", () => {
+describe('TSC decorator conformance', () => {
   // ---------------------------------------------------------------------------
   // Class decorators
   // ---------------------------------------------------------------------------
-  describe("class decorator", () => {
-    test("decoratorOnClass1 - basic class decorator", async () => {
+  describe('class decorator', () => {
+    test('decoratorOnClass1 - basic class decorator', async () => {
       await expectPass(`
 declare function dec<T>(target: T): T;
 
@@ -38,7 +38,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClass2 - exported class decorator", async () => {
+    test('decoratorOnClass2 - exported class decorator', async () => {
       await expectPass(`
 declare function dec<T>(target: T): T;
 
@@ -47,7 +47,7 @@ export class C {
 }`);
     });
 
-    test("decoratorOnClass4 - decorator factory on class", async () => {
+    test('decoratorOnClass4 - decorator factory on class', async () => {
       await expectPass(`
 declare function dec(): <T>(target: T) => T;
 
@@ -56,7 +56,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClass5 - decorator factory on class (duplicate of 4)", async () => {
+    test('decoratorOnClass5 - decorator factory on class (duplicate of 4)', async () => {
       await expectPass(`
 declare function dec(): <T>(target: T) => T;
 
@@ -65,7 +65,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClass9 - decorator with static fields and extends", async () => {
+    test('decoratorOnClass9 - decorator with static fields and extends', async () => {
       await expectPass(`
 declare var dec: any;
 
@@ -81,7 +81,7 @@ class B extends A {
 }`);
     });
 
-    test("constructableDecoratorOnClass01", async () => {
+    test('constructableDecoratorOnClass01', async () => {
       await expectPass(`
 class CtorDtor {}
 
@@ -91,7 +91,7 @@ class C {
 }`);
     });
 
-    test("decoratedBlockScopedClass1 - decorator with static method", async () => {
+    test('decoratedBlockScopedClass1 - decorator with static method', async () => {
       await expectPass(`
 function decorator() {
     return (target: new (...args: any[]) => any) => {}
@@ -106,7 +106,7 @@ class Foo {
 Foo.func();`);
     });
 
-    test("decoratedBlockScopedClass2 - decorator inside try block", async () => {
+    test('decoratedBlockScopedClass2 - decorator inside try block', async () => {
       await expectPass(`
 function decorator() {
     return (target: new (...args: any[]) => any) => {}
@@ -124,7 +124,7 @@ try {
 catch (e) {}`);
     });
 
-    test("decoratedBlockScopedClass3 - decorator top-level and in try block", async () => {
+    test('decoratedBlockScopedClass3 - decorator top-level and in try block', async () => {
       await expectPass(`
 function decorator() {
     return (target: new (...args: any[]) => any) => {}
@@ -150,7 +150,7 @@ try {
 catch (e) {}`);
     });
 
-    test("decoratedClassExportsCommonJS1 - exported with static props", async () => {
+    test('decoratedClassExportsCommonJS1 - exported with static props', async () => {
       await expectPass(`
 declare function forwardRef(x: any): any;
 declare var Something: any;
@@ -161,7 +161,7 @@ export class Testing123 {
 }`);
     });
 
-    test("decoratedClassExportsCommonJS2 - exported simple", async () => {
+    test('decoratedClassExportsCommonJS2 - exported simple', async () => {
       await expectPass(`
 declare function forwardRef(x: any): any;
 declare var Something: any;
@@ -169,7 +169,7 @@ declare var Something: any;
 export class Testing123 { }`);
     });
 
-    test("decoratedClassExportsSystem1 - system module with static props", async () => {
+    test('decoratedClassExportsSystem1 - system module with static props', async () => {
       await expectPass(`
 declare function forwardRef(x: any): any;
 declare var Something: any;
@@ -180,7 +180,7 @@ export class Testing123 {
 }`);
     });
 
-    test("decoratedClassExportsSystem2 - system module simple", async () => {
+    test('decoratedClassExportsSystem2 - system module simple', async () => {
       await expectPass(`
 declare function forwardRef(x: any): any;
 declare var Something: any;
@@ -188,7 +188,7 @@ declare var Something: any;
 export class Testing123 { }`);
     });
 
-    test("decoratorChecksFunctionBodies - inline decorator expression", async () => {
+    test('decoratorChecksFunctionBodies - inline decorator expression', async () => {
       await expectPass(`
 function func(s: string): void {
 }
@@ -205,7 +205,7 @@ class A {
 }`);
     });
 
-    test("decoratorCallGeneric - generic interface constraint", async () => {
+    test('decoratorCallGeneric - generic interface constraint', async () => {
       await expectPass(`
 interface I<T> {
     prototype: T,
@@ -220,7 +220,7 @@ class C {
 }`);
     });
 
-    test("decoratorInAmbientContext - declare property with decorator", async () => {
+    test('decoratorInAmbientContext - declare property with decorator', async () => {
       await expectPass(`
 declare function decorator(target: any, key: any): any;
 
@@ -231,7 +231,7 @@ class Foo {
 }`);
     });
 
-    test("legacyDecorators-contextualTypes - inline arrow decorators", async () => {
+    test('legacyDecorators-contextualTypes - inline arrow decorators', async () => {
       await expectPass(`
 @((t) => { })
 class C {
@@ -268,7 +268,7 @@ class C {
 }`);
     });
 
-    test("missingDecoratorType - missing lib types", async () => {
+    test('missingDecoratorType - missing lib types', async () => {
       await expectPass(`
 interface Object { }
 interface Array<T> { }
@@ -291,8 +291,8 @@ class C {
   // ---------------------------------------------------------------------------
   // Constructor decorators
   // ---------------------------------------------------------------------------
-  describe("constructor decorator", () => {
-    test("decoratorOnClassConstructor1 - decorator on constructor (error in TSC too)", async () => {
+  describe('constructor decorator', () => {
+    test('decoratorOnClassConstructor1 - decorator on constructor (error in TSC too)', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -301,7 +301,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassConstructor4 - metadata on classes with/without constructor", async () => {
+    test('decoratorOnClassConstructor4 - metadata on classes with/without constructor', async () => {
       await expectPass(`
 declare var dec: any;
 
@@ -323,8 +323,8 @@ class C extends A {
   // ---------------------------------------------------------------------------
   // Constructor parameter decorators
   // ---------------------------------------------------------------------------
-  describe("constructor parameter decorator", () => {
-    test("decoratorOnClassConstructorParameter1 - basic param decorator", async () => {
+  describe('constructor parameter decorator', () => {
+    test('decoratorOnClassConstructorParameter1 - basic param decorator', async () => {
       await expectPass(`
 declare function dec(target: Function, propertyKey: string | symbol, parameterIndex: number): void;
 
@@ -333,7 +333,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassConstructorParameter5 - static fields + param decorator", async () => {
+    test('decoratorOnClassConstructorParameter5 - static fields + param decorator', async () => {
       await expectPass(`
 interface IFoo { }
 declare const IFoo: any;
@@ -350,8 +350,8 @@ class BulkEditPreviewProvider {
   // ---------------------------------------------------------------------------
   // Accessor decorators
   // ---------------------------------------------------------------------------
-  describe("accessor decorator", () => {
-    test("decoratorOnClassAccessor1 - get accessor", async () => {
+  describe('accessor decorator', () => {
+    test('decoratorOnClassAccessor1 - get accessor', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -360,7 +360,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassAccessor2 - public get accessor", async () => {
+    test('decoratorOnClassAccessor2 - public get accessor', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -369,7 +369,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassAccessor4 - set accessor", async () => {
+    test('decoratorOnClassAccessor4 - set accessor', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -378,7 +378,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassAccessor5 - public set accessor", async () => {
+    test('decoratorOnClassAccessor5 - public set accessor', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -387,7 +387,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassAccessor7 - multiple classes with get/set pairs", async () => {
+    test('decoratorOnClassAccessor7 - multiple classes with get/set pairs', async () => {
       await expectPass(`
 declare function dec1<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 declare function dec2<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
@@ -423,7 +423,7 @@ class F {
 }`);
     });
 
-    test("decoratorOnClassAccessor8 - metadata on get/set pairs", async () => {
+    test('decoratorOnClassAccessor8 - metadata on get/set pairs', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -460,8 +460,8 @@ class F {
   // ---------------------------------------------------------------------------
   // Method decorators
   // ---------------------------------------------------------------------------
-  describe("method decorator", () => {
-    test("decoratorOnClassMethod1 - basic method", async () => {
+  describe('method decorator', () => {
+    test('decoratorOnClassMethod1 - basic method', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -470,7 +470,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod2 - public method", async () => {
+    test('decoratorOnClassMethod2 - public method', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -479,7 +479,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod4 - computed string name", async () => {
+    test('decoratorOnClassMethod4 - computed string name', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -488,7 +488,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod5 - computed name with factory", async () => {
+    test('decoratorOnClassMethod5 - computed name with factory', async () => {
       await expectPass(`
 declare function dec(): <T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>) => TypedPropertyDescriptor<T>;
 
@@ -497,7 +497,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod6 - computed name without call", async () => {
+    test('decoratorOnClassMethod6 - computed name without call', async () => {
       await expectPass(`
 declare function dec(): <T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>) => TypedPropertyDescriptor<T>;
 
@@ -506,7 +506,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod7 - public computed name", async () => {
+    test('decoratorOnClassMethod7 - public computed name', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -515,7 +515,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod8 - wrong signature type", async () => {
+    test('decoratorOnClassMethod8 - wrong signature type', async () => {
       await expectPass(`
 declare function dec<T>(target: T): T;
 
@@ -524,7 +524,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod10 - wrong param count", async () => {
+    test('decoratorOnClassMethod10 - wrong param count', async () => {
       await expectPass(`
 declare function dec(target: Function, paramIndex: number): void;
 
@@ -533,7 +533,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod11 - this expression in decorator", async () => {
+    test('decoratorOnClassMethod11 - this expression in decorator', async () => {
       await expectPass(`
 namespace M {
     class C {
@@ -545,7 +545,7 @@ namespace M {
 }`);
     });
 
-    test("decoratorOnClassMethod13 - computed string keys", async () => {
+    test('decoratorOnClassMethod13 - computed string keys', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -555,7 +555,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod14 - private prop arrow then decorated method", async () => {
+    test('decoratorOnClassMethod14 - private prop arrow then decorated method', async () => {
       await expectPass(`
 declare var decorator: any;
 
@@ -570,7 +570,7 @@ class Foo {
 }`);
     });
 
-    test("decoratorOnClassMethod15 - private prop value then decorated method", async () => {
+    test('decoratorOnClassMethod15 - private prop value then decorated method', async () => {
       await expectPass(`
 declare var decorator: any;
 
@@ -583,7 +583,7 @@ class Foo {
 }`);
     });
 
-    test("decoratorOnClassMethod16 - private prop no initializer then decorated method", async () => {
+    test('decoratorOnClassMethod16 - private prop no initializer then decorated method', async () => {
       await expectPass(`
 declare var decorator: any;
 
@@ -596,7 +596,7 @@ class Foo {
 }`);
     });
 
-    test("decoratorOnClassMethod18 - property then decorated property", async () => {
+    test('decoratorOnClassMethod18 - property then decorated property', async () => {
       await expectPass(`
 declare var decorator: any;
 
@@ -608,7 +608,7 @@ class Foo {
 }`);
     });
 
-    test("decoratorOnClassMethod19 - private field with decorator using private access", async () => {
+    test('decoratorOnClassMethod19 - private field with decorator using private access', async () => {
       await expectPass(`
 declare var decorator: any;
 
@@ -626,7 +626,7 @@ class C2 {
 }`);
     });
 
-    test("decoratorOnClassMethodOverload1 - decorator on first overload", async () => {
+    test('decoratorOnClassMethodOverload1 - decorator on first overload', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -637,7 +637,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethodOverload2 - decorator on second overload", async () => {
+    test('decoratorOnClassMethodOverload2 - decorator on second overload', async () => {
       await expectPass(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -652,8 +652,8 @@ class C {
   // ---------------------------------------------------------------------------
   // Method parameter decorators
   // ---------------------------------------------------------------------------
-  describe("method parameter decorator", () => {
-    test("decoratorOnClassMethodParameter1 - basic param", async () => {
+  describe('method parameter decorator', () => {
+    test('decoratorOnClassMethodParameter1 - basic param', async () => {
       await expectPass(`
 declare function dec(target: Object, propertyKey: string | symbol, parameterIndex: number): void;
 
@@ -662,7 +662,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethodParameter2 - this param with decorator", async () => {
+    test('decoratorOnClassMethodParameter2 - this param with decorator', async () => {
       await expectPass(`
 declare function dec(target: Object, propertyKey: string | symbol, parameterIndex: number): void;
 
@@ -675,8 +675,8 @@ class C {
   // ---------------------------------------------------------------------------
   // Property decorators
   // ---------------------------------------------------------------------------
-  describe("property decorator", () => {
-    test("decoratorOnClassProperty1 - basic property", async () => {
+  describe('property decorator', () => {
+    test('decoratorOnClassProperty1 - basic property', async () => {
       await expectPass(`
 declare function dec(target: any, propertyKey: string): void;
 
@@ -685,7 +685,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassProperty2 - public property", async () => {
+    test('decoratorOnClassProperty2 - public property', async () => {
       await expectPass(`
 declare function dec(target: any, propertyKey: string): void;
 
@@ -694,7 +694,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassProperty6 - wrong signature (Function)", async () => {
+    test('decoratorOnClassProperty6 - wrong signature (Function)', async () => {
       await expectPass(`
 declare function dec(target: Function): void;
 
@@ -703,7 +703,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassProperty7 - wrong param count signature", async () => {
+    test('decoratorOnClassProperty7 - wrong param count signature', async () => {
       await expectPass(`
 declare function dec(target: Function, propertyKey: string | symbol, paramIndex: number): void;
 
@@ -712,7 +712,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassProperty10 - factory on property", async () => {
+    test('decoratorOnClassProperty10 - factory on property', async () => {
       await expectPass(`
 declare function dec(): <T>(target: any, propertyKey: string) => void;
 
@@ -721,7 +721,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassProperty11 - decorator without call on property", async () => {
+    test('decoratorOnClassProperty11 - decorator without call on property', async () => {
       await expectPass(`
 declare function dec(): <T>(target: any, propertyKey: string) => void;
 
@@ -730,7 +730,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassProperty12 - template literal type property", async () => {
+    test('decoratorOnClassProperty12 - template literal type property', async () => {
       await expectPass(`
 declare function dec(): <T>(target: any, propertyKey: string) => void;
 
@@ -740,7 +740,7 @@ class A {
 }`);
     });
 
-    test("decoratorOnClassProperty13 - accessor keyword property", async () => {
+    test('decoratorOnClassProperty13 - accessor keyword property', async () => {
       await expectPass(`
 declare function dec(target: any, propertyKey: string, desc: PropertyDescriptor): void;
 
@@ -753,8 +753,8 @@ class C {
   // ---------------------------------------------------------------------------
   // Multi-file cases (converted to single file)
   // ---------------------------------------------------------------------------
-  describe("multi-file cases", () => {
-    test("decoratorOnClassConstructor2 - extends with param decorator", async () => {
+  describe('multi-file cases', () => {
+    test('decoratorOnClassConstructor2 - extends with param decorator', async () => {
       await expectPass(`
 class base {}
 function foo(target: Object, propertyKey: string | symbol, parameterIndex: number) {}
@@ -763,14 +763,14 @@ class C extends base {
 }`);
     });
 
-    test("decoratedClassFromExternalModule", async () => {
+    test('decoratedClassFromExternalModule', async () => {
       await expectPass(`
 function decorate(target: any) {}
 @decorate
 class Decorated {}`);
     });
 
-    test("decoratorInstantiateModulesInFunctionBodies", async () => {
+    test('decoratorInstantiateModulesInFunctionBodies', async () => {
       await expectPass(`
 var test = "abc";
 function filter(handler: any) {
@@ -782,7 +782,7 @@ class Wat {
 }`);
     });
 
-    test("decoratorMetadata - class and method decorator", async () => {
+    test('decoratorMetadata - class and method decorator', async () => {
       await expectPass(`
 declare var decorator: any;
 class Service {}
@@ -794,7 +794,7 @@ class MyComponent {
 }`);
     });
 
-    test("decoratorMetadataWithTypeOnlyImport", async () => {
+    test('decoratorMetadataWithTypeOnlyImport', async () => {
       await expectPass(`
 declare var decorator: any;
 @decorator
@@ -805,7 +805,7 @@ class MyComponent {
 }`);
     });
 
-    test("decoratorMetadataWithTypeOnlyImport2", async () => {
+    test('decoratorMetadataWithTypeOnlyImport2', async () => {
       await expectPass(`
 declare const decorator: any;
 class Main {
@@ -818,8 +818,8 @@ class Main {
   // ---------------------------------------------------------------------------
   // Error cases (TSC also errors on these)
   // ---------------------------------------------------------------------------
-  describe("error cases (TSC also errors)", () => {
-    test("decoratorOnClassAccessor3 - modifier before decorator on get", async () => {
+  describe('error cases (TSC also errors)', () => {
+    test('decoratorOnClassAccessor3 - modifier before decorator on get', async () => {
       await expectError(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -828,7 +828,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassAccessor6 - modifier before decorator on set", async () => {
+    test('decoratorOnClassAccessor6 - modifier before decorator on set', async () => {
       await expectError(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -837,7 +837,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassConstructorParameter4 - modifier before param decorator", async () => {
+    test('decoratorOnClassConstructorParameter4 - modifier before param decorator', async () => {
       await expectError(`
 declare function dec(target: Function, propertyKey: string | symbol, parameterIndex: number): void;
 
@@ -847,7 +847,7 @@ class C {
     });
 
     // decoratorOnClass3: TSC semantic error (type check) — 우리는 타입체크 안 하므로 pass
-    test("decoratorOnClass3 - export before decorator", async () => {
+    test('decoratorOnClass3 - export before decorator', async () => {
       await expectPass(`
 declare function dec<T>(target: T): T;
 
@@ -857,7 +857,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClass8 - wrong decorator signature on class", async () => {
+    test('decoratorOnClass8 - wrong decorator signature on class', async () => {
       await expectError(`
 declare function dec(): (target: Function, paramIndex: number) => void;
 
@@ -866,7 +866,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod3 - modifier before decorator on method", async () => {
+    test('decoratorOnClassMethod3 - modifier before decorator on method', async () => {
       await expectError(`
 declare function dec<T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>): TypedPropertyDescriptor<T>;
 
@@ -875,7 +875,7 @@ class C {
 }`);
     });
 
-    test("decoratorOnClassMethod12 - super in decorator expression", async () => {
+    test('decoratorOnClassMethod12 - super in decorator expression', async () => {
       await expectError(`
 namespace M {
     class S {
@@ -888,7 +888,7 @@ namespace M {
 }`);
     });
 
-    test("decoratorOnClassMethod17 - decorator after property name", async () => {
+    test('decoratorOnClassMethod17 - decorator after property name', async () => {
       await expectError(`
 declare var decorator: any;
 
@@ -900,7 +900,7 @@ class Foo {
 }`);
     });
 
-    test("decoratorOnClassMethodParameter3 - await in decorator param", async () => {
+    test('decoratorOnClassMethodParameter3 - await in decorator param', async () => {
       await expectError(`
 declare function dec(a: any): any;
 function fn(value: Promise<number>): any {
@@ -911,7 +911,7 @@ function fn(value: Promise<number>): any {
 }`);
     });
 
-    test("decoratorOnClassMethodThisParameter - decorator on this param", async () => {
+    test('decoratorOnClassMethodThisParameter - decorator on this param', async () => {
       await expectError(`
 declare function dec(target: Object, propertyKey: string | symbol, parameterIndex: number): void;
 
@@ -924,7 +924,7 @@ class C2 {
 }`);
     });
 
-    test("decoratorOnClassProperty3 - modifier before decorator on property", async () => {
+    test('decoratorOnClassProperty3 - modifier before decorator on property', async () => {
       await expectError(`
 declare function dec(target: any, propertyKey: string): void;
 
@@ -933,7 +933,7 @@ class C {
 }`);
     });
 
-    test("decoratorMetadata-jsdoc - JSDoc syntax errors", async () => {
+    test('decoratorMetadata-jsdoc - JSDoc syntax errors', async () => {
       await expectError(`
 declare var decorator: any;
 

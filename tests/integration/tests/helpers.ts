@@ -1,22 +1,22 @@
-import { spawn } from "bun";
-import { mkdtemp, rm, writeFile, mkdir, symlink, stat } from "node:fs/promises";
-import { readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { spawn } from 'bun';
+import { mkdtemp, rm, writeFile, mkdir, symlink, stat } from 'node:fs/promises';
+import { readFileSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 
-const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
-export const ZTS_BIN = join(PROJECT_ROOT, "zig-out/bin/zts");
+const PROJECT_ROOT = resolve(import.meta.dir, '../../..');
+export const ZTS_BIN = join(PROJECT_ROOT, 'zig-out/bin/zts');
 /// JS CLI (NAPI 기반). `compiler.emotion` / `compiler.styledComponents` 같은 JS-only
 /// 옵션을 검증하려면 Zig CLI 대신 이 경로를 사용해야 함.
-export const ZTS_JS_CLI = join(PROJECT_ROOT, "packages/core/bin/zts.mjs");
-const INTEGRATION_NODE_MODULES = resolve(import.meta.dir, "../node_modules");
-const LOOKUP_ROOTS = [join(PROJECT_ROOT, "node_modules"), INTEGRATION_NODE_MODULES];
+export const ZTS_JS_CLI = join(PROJECT_ROOT, 'packages/core/bin/zts.mjs');
+const INTEGRATION_NODE_MODULES = resolve(import.meta.dir, '../node_modules');
+const LOOKUP_ROOTS = [join(PROJECT_ROOT, 'node_modules'), INTEGRATION_NODE_MODULES];
 
 /// PROJECT_ROOT/node_modules 우선, tests/integration/node_modules fallback으로 패키지 존재 검사.
 export function hasPackage(name: string): boolean {
   for (const root of LOOKUP_ROOTS) {
     try {
-      statSync(join(root, name, "package.json"));
+      statSync(join(root, name, 'package.json'));
       return true;
     } catch {}
   }
@@ -26,7 +26,7 @@ export function hasPackage(name: string): boolean {
 export async function createFixture(
   files: Record<string, string>,
 ): Promise<{ dir: string; cleanup: () => Promise<void> }> {
-  const dir = await mkdtemp(join(tmpdir(), "zts-integration-"));
+  const dir = await mkdtemp(join(tmpdir(), 'zts-integration-'));
 
   await Promise.all(
     Object.entries(files).map(async ([name, content]) => {
@@ -43,7 +43,7 @@ export async function createFixture(
 }
 
 const RN_ASSET_REGISTRY_STUB =
-  "module.exports = { registerAsset: function(a) { return a; }, getAssetByID: function() { return null; } };\n";
+  'module.exports = { registerAsset: function(a) { return a; }, getAssetByID: function() { return null; } };\n';
 
 /// RN 프리셋 사용 fixture 생성 — `react-native/Libraries/Image/AssetRegistry`가 자동 주입되므로
 /// fixture 안에 stub 모듈을 미리 만들어 둬야 unresolved_import 진단(에러)이 발생하지 않는다.
@@ -51,16 +51,16 @@ export async function createRNFixture(
   files: Record<string, string>,
 ): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   return createFixture({
-    "node_modules/react-native/Libraries/Image/AssetRegistry.js": RN_ASSET_REGISTRY_STUB,
-    "node_modules/react-native/package.json": '{"name": "react-native", "main": "index.js"}',
+    'node_modules/react-native/Libraries/Image/AssetRegistry.js': RN_ASSET_REGISTRY_STUB,
+    'node_modules/react-native/package.json': '{"name": "react-native", "main": "index.js"}',
     ...files,
   });
 }
 
 // fixture 파일에 영구 commit된 stub을 single source로 사용 (TanStack 테스트와 공유).
 const REACT_STUB = readFileSync(
-  resolve(import.meta.dir, "fixtures/rsc-directives/node_modules/react/index.js"),
-  "utf-8",
+  resolve(import.meta.dir, 'fixtures/rsc-directives/node_modules/react/index.js'),
+  'utf-8',
 );
 
 /// react import만 resolve되면 충분한 케이스(RSC, sourcemap 등)용 react stub fixture.
@@ -69,8 +69,8 @@ export async function createReactStubFixture(
   files: Record<string, string>,
 ): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   return createFixture({
-    "node_modules/react/package.json": '{"name": "react", "main": "index.js"}',
-    "node_modules/react/index.js": REACT_STUB,
+    'node_modules/react/package.json': '{"name": "react", "main": "index.js"}',
+    'node_modules/react/index.js': REACT_STUB,
     ...files,
   });
 }
@@ -89,16 +89,16 @@ export async function linkNodeModules(
   options: { extraRoots?: string[] } = {},
 ): Promise<void> {
   const roots = [...(options.extraRoots ?? []), ...LOOKUP_ROOTS];
-  const nmDir = join(dir, "node_modules");
+  const nmDir = join(dir, 'node_modules');
   await mkdir(nmDir, { recursive: true });
-  const scopes = new Set(packages.filter((p) => p.startsWith("@")).map((p) => p.split("/")[0]));
+  const scopes = new Set(packages.filter((p) => p.startsWith('@')).map((p) => p.split('/')[0]));
   await Promise.all([...scopes].map((s) => mkdir(join(nmDir, s), { recursive: true })));
   await Promise.all(
     packages.map(async (pkg) => {
       for (const root of roots) {
         const target = join(root, pkg);
         try {
-          await stat(join(target, "package.json"));
+          await stat(join(target, 'package.json'));
         } catch {
           continue;
         }
@@ -115,14 +115,14 @@ export async function linkNodeModules(
 /// `linkNodeModules({ extraRoots: [EMOTION_V10_FIXTURE_NODE_MODULES] })` 형태로 사용.
 export const EMOTION_V10_FIXTURE_NODE_MODULES = resolve(
   import.meta.dir,
-  "../fixtures/emotion-v10/node_modules",
+  '../fixtures/emotion-v10/node_modules',
 );
 
 /// emotion v10 fixture 가 설치돼 있는지 검사 — `bun install` 이 실행됐는지.
 /// CI 에서 fixture install 을 빼먹은 경우 `describe.skipIf` 로 우회 가능.
 export function hasEmotionV10Fixture(): boolean {
   try {
-    statSync(join(EMOTION_V10_FIXTURE_NODE_MODULES, "@emotion/core/package.json"));
+    statSync(join(EMOTION_V10_FIXTURE_NODE_MODULES, '@emotion/core/package.json'));
     return true;
   } catch {
     return false;
@@ -137,7 +137,7 @@ async function runCmd(
   cmd: string[],
   options?: RunOptions,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const spawnOpts: Parameters<typeof spawn>[0] = { cmd, stdout: "pipe", stderr: "pipe" };
+  const spawnOpts: Parameters<typeof spawn>[0] = { cmd, stdout: 'pipe', stderr: 'pipe' };
   if (options?.env) spawnOpts.env = options.env as Record<string, string>;
   const proc = spawn(spawnOpts);
 
@@ -163,7 +163,7 @@ export async function runZts(
 /// 검증하면 됨 — cleanup 은 throw 경로에서도 보장.
 export async function runFixture(
   files: Record<string, string>,
-  entry: string = "input.ts",
+  entry: string = 'input.ts',
   args: string[] = [],
   options?: RunOptions,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -183,7 +183,7 @@ export async function runFixture(
 export async function transpileAndRun(
   source: string,
   extraArgs: string[] = [],
-  opts: { ext?: "ts" | "tsx" | "js" | "jsx" } = {},
+  opts: { ext?: 'ts' | 'tsx' | 'js' | 'jsx' } = {},
 ): Promise<{
   transpileExitCode: number;
   transpileStderr: string;
@@ -191,12 +191,12 @@ export async function transpileAndRun(
   runStderr: string;
   cleanup: () => Promise<void>;
 }> {
-  const dir = await mkdtemp(join(tmpdir(), "zts-transpile-"));
-  const inFile = join(dir, `in.${opts.ext ?? "ts"}`);
-  const outFile = join(dir, "out.js");
+  const dir = await mkdtemp(join(tmpdir(), 'zts-transpile-'));
+  const inFile = join(dir, `in.${opts.ext ?? 'ts'}`);
+  const outFile = join(dir, 'out.js');
   await writeFile(inFile, source);
-  const r = await runZts([inFile, "-o", outFile, ...extraArgs]);
-  const exec = await runCmd(["bun", "run", outFile]);
+  const r = await runZts([inFile, '-o', outFile, ...extraArgs]);
+  const exec = await runCmd(['bun', 'run', outFile]);
   return {
     transpileExitCode: r.exitCode,
     transpileStderr: r.stderr,
@@ -208,7 +208,7 @@ export async function transpileAndRun(
 
 /// Node로 JS 파일을 실행. exit != 0 시 stdout/stderr를 포함한 에러 throw (디버깅 편의).
 export async function runNode(file: string): Promise<{ stdout: string; stderr: string }> {
-  const { stdout, stderr, exitCode } = await runCmd(["node", file]);
+  const { stdout, stderr, exitCode } = await runCmd(['node', file]);
   if (exitCode !== 0) {
     throw new Error(
       `node '${file}' exited ${exitCode}\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`,
@@ -224,14 +224,14 @@ export async function runNode(file: string): Promise<{ stdout: string; stderr: s
 export function spawnWatchJson(
   args: string[],
   jsonOutPath: string,
-): import("node:child_process").ChildProcess {
-  const { spawn: spawnChild } = require("node:child_process");
-  const quoted = args.map((a) => `"${a}"`).join(" ");
-  return spawnChild("sh", ["-c", `"${ZTS_BIN}" ${quoted} > "${jsonOutPath}" 2>/dev/null`]);
+): import('node:child_process').ChildProcess {
+  const { spawn: spawnChild } = require('node:child_process');
+  const quoted = args.map((a) => `"${a}"`).join(' ');
+  return spawnChild('sh', ['-c', `"${ZTS_BIN}" ${quoted} > "${jsonOutPath}" 2>/dev/null`]);
 }
 
 /// watch 프로세스를 kill하고 종료를 기다림. 2초 후 SIGKILL fallback — 좀비 방지.
-export function killAndWait(proc: import("node:child_process").ChildProcess): Promise<void> {
+export function killAndWait(proc: import('node:child_process').ChildProcess): Promise<void> {
   return new Promise<void>((resolve) => {
     if (proc.exitCode !== null) {
       resolve();
@@ -239,11 +239,11 @@ export function killAndWait(proc: import("node:child_process").ChildProcess): Pr
     }
     const timeout = setTimeout(() => {
       try {
-        proc.kill("SIGKILL");
+        proc.kill('SIGKILL');
       } catch {}
       resolve();
     }, 2000);
-    proc.on("exit", () => {
+    proc.on('exit', () => {
       clearTimeout(timeout);
       resolve();
     });
@@ -276,15 +276,15 @@ export async function waitForNdjsonLines<T = Record<string, unknown>>(
 
   while (Date.now() < deadline) {
     try {
-      const buf = readFileSync(path, "utf8");
+      const buf = readFileSync(path, 'utf8');
       if (buf.length > tail.offset) {
         // \n 기준 라인 분리. 부분 라인은 다음 폴링에서 처리.
         const newContent = buf.slice(tail.offset);
-        const lastNl = newContent.lastIndexOf("\n");
+        const lastNl = newContent.lastIndexOf('\n');
         if (lastNl >= 0) {
           const complete = newContent.slice(0, lastNl);
           tail.offset += lastNl + 1;
-          for (const line of complete.split("\n")) {
+          for (const line of complete.split('\n')) {
             if (!line) continue;
             try {
               tail.parsed.push(JSON.parse(line) as T);
@@ -313,10 +313,10 @@ export async function waitForNdjsonLines<T = Record<string, unknown>>(
 export async function runZtsInDir(
   dir: string,
   args: string[],
-  options: { bin?: "zig" | "js" } = {},
+  options: { bin?: 'zig' | 'js' } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const cmd = options.bin === "js" ? ["bun", ZTS_JS_CLI, ...args] : [ZTS_BIN, ...args];
-  const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe", cwd: dir });
+  const cmd = options.bin === 'js' ? ['bun', ZTS_JS_CLI, ...args] : [ZTS_BIN, ...args];
+  const proc = spawn({ cmd, stdout: 'pipe', stderr: 'pipe', cwd: dir });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -350,13 +350,13 @@ export async function runConfigBundle(opts: {
   cleanup: () => Promise<void>;
 }> {
   const { dir, cleanup } = await createFixture(opts.files);
-  const entry = opts.entry ?? "index.ts";
+  const entry = opts.entry ?? 'index.ts';
   const useOutDir = opts.outDir !== undefined;
-  const outFile = useOutDir ? undefined : join(dir, "out.js");
+  const outFile = useOutDir ? undefined : join(dir, 'out.js');
   const outDir = useOutDir ? join(dir, opts.outDir!) : undefined;
-  const ioArgs = useOutDir ? ["--outdir", outDir!] : ["-o", outFile!];
+  const ioArgs = useOutDir ? ['--outdir', outDir!] : ['-o', outFile!];
   const result = await runZtsInDir(dir, [
-    "--bundle",
+    '--bundle',
     join(dir, entry),
     ...ioArgs,
     ...(opts.args ?? []),
@@ -366,7 +366,7 @@ export async function runConfigBundle(opts: {
 
 export async function bundleAndRun(
   files: Record<string, string>,
-  entry: string = "index.ts",
+  entry: string = 'index.ts',
   extraArgs: string[] = [],
 ): Promise<{
   bundleOutput: string;
@@ -376,19 +376,19 @@ export async function bundleAndRun(
   cleanup: () => Promise<void>;
 }> {
   const { dir, cleanup } = await createFixture(files);
-  const outFile = join(dir, "out.js");
+  const outFile = join(dir, 'out.js');
 
   try {
-    const bundle = await runZts(["--bundle", join(dir, entry), "-o", outFile, ...extraArgs]);
+    const bundle = await runZts(['--bundle', join(dir, entry), '-o', outFile, ...extraArgs]);
 
     if (bundle.exitCode !== 0) {
       throw new Error(`ZTS bundle failed: ${bundle.stderr}`);
     }
 
-    const run = await runCmd(["bun", "run", outFile]);
+    const run = await runCmd(['bun', 'run', outFile]);
 
     return {
-      bundleOutput: readFileSync(outFile, "utf-8"),
+      bundleOutput: readFileSync(outFile, 'utf-8'),
       runOutput: run.stdout.trim(),
       runStderr: run.stderr,
       exitCode: run.exitCode,

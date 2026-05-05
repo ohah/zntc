@@ -6,14 +6,14 @@
 // 를 가리키는 주석을 붙여 DevTools 가 lazy fetch 가능 (관심사 분리: emitter
 // 가 sourceURL 주입, dev server 가 sourceMappingURL).
 
-import type { IncomingMessage } from "node:http";
-import type { Socket } from "node:net";
+import type { IncomingMessage } from 'node:http';
+import type { Socket } from 'node:net';
 
-import type { WatchRebuildEvent } from "@zts/core";
+import type { WatchRebuildEvent } from '@zts/core';
 
-import { createMetroHmrAdapter, type MetroHmrAdapter } from "../metro-hmr-adapter.ts";
-import { colors, logError, logInfo } from "./logger.ts";
-import type { PlatformState, PlatformStateCallbacks } from "./platform-state.ts";
+import { createMetroHmrAdapter, type MetroHmrAdapter } from '../metro-hmr-adapter.ts';
+import { colors, logError, logInfo } from './logger.ts';
+import type { PlatformState, PlatformStateCallbacks } from './platform-state.ts';
 
 export interface HmrBridgeOptions {
   /** ws path. Metro 호환 default `/hot`. */
@@ -32,7 +32,7 @@ export interface HmrBridge {
 
 function annotateUpdates(
   updates: ReadonlyArray<{ id: string; code: string }>,
-  platform: "ios" | "android",
+  platform: 'ios' | 'android',
 ): Array<{ id: string; code: string }> {
   return updates.map((u) => {
     const sourceMappingURL = `/__zts_hmr_map/${encodeURIComponent(u.id)}?platform=${platform}`;
@@ -43,7 +43,7 @@ function annotateUpdates(
 function buildOnRebuild(adapter: MetroHmrAdapter, opts: { silent?: boolean } = {}) {
   return (state: PlatformState, event: WatchRebuildEvent): void => {
     if (!event.success) {
-      const errMsg = state.buildError ?? event.error ?? "Unknown build error";
+      const errMsg = state.buildError ?? event.error ?? 'Unknown build error';
       adapter.sendError(errMsg);
       if (!opts.silent) logError(`Build failed [${state.platform}]: ${errMsg}`);
       return;
@@ -87,26 +87,26 @@ function buildOnRebuild(adapter: MetroHmrAdapter, opts: { silent?: boolean } = {
  * (RN runtime 의 console.log → dev server 터미널).
  */
 function buildIncomingHandler(adapter: MetroHmrAdapter) {
-  return (text: string, socket: import("node:net").Socket): void => {
+  return (text: string, socket: import('node:net').Socket): void => {
     let msg: { type?: string; level?: string; data?: unknown } | null = null;
     try {
       msg = JSON.parse(text);
     } catch {
       return;
     }
-    if (!msg || typeof msg.type !== "string") return;
-    if (msg.type === "register-entrypoints") {
+    if (!msg || typeof msg.type !== 'string') return;
+    if (msg.type === 'register-entrypoints') {
       // single-client ACK — adapter.channel 의 nodeSockets[other] 에는 안 보내고
       // 이 socket 에만 직접 send. text frame builder 사용.
       socket.write(buildAckFrame());
       return;
     }
-    if (msg.type === "log") {
-      const level = typeof msg.level === "string" ? msg.level : "log";
+    if (msg.type === 'log') {
+      const level = typeof msg.level === 'string' ? msg.level : 'log';
       const data = Array.isArray(msg.data) ? msg.data : [msg.data];
       const formatted = data
         .map((arg) => {
-          if (typeof arg === "object" && arg !== null) {
+          if (typeof arg === 'object' && arg !== null) {
             try {
               return JSON.stringify(arg, null, 2);
             } catch {
@@ -115,7 +115,7 @@ function buildIncomingHandler(adapter: MetroHmrAdapter) {
           }
           return String(arg);
         })
-        .join(" ");
+        .join(' ');
       console.log(`[${level.toUpperCase()}] ${formatted}`);
       // adapter 가 server-broadcast 하지 않음 — log 는 client→server one-way.
       void adapter;
@@ -123,7 +123,7 @@ function buildIncomingHandler(adapter: MetroHmrAdapter) {
   };
 }
 
-const ACK_TEXT = JSON.stringify({ type: "bundle-registered" });
+const ACK_TEXT = JSON.stringify({ type: 'bundle-registered' });
 function buildAckFrame(): Buffer {
   // RFC 6455 §5.2 server→client text frame (FIN + opcode 0x1). short payload.
   const payload = Buffer.from(ACK_TEXT);

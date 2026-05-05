@@ -4,19 +4,19 @@
 // pass. Babel/lazy-load — 첫 transform 호출 시점에 require, custom plugin 0 면
 // plugin 자체 등록 skip (createBabelPlugin 의 detectCustomPlugins false 분기).
 
-import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
-import { join } from "node:path";
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
 
-import type { ZtsPlugin } from "@zts/core";
+import type { ZtsPlugin } from '@zts/core';
 
 import {
   type BabelInstance,
   type BabelTransformOptions,
   getErrorMessage,
   requireFromCli,
-} from "./internal.ts";
-import type { InlineBabelConfig, PluginConfig } from "./types.ts";
+} from './internal.ts';
+import type { InlineBabelConfig, PluginConfig } from './types.ts';
 
 interface BabelConfigModule {
   plugins?: unknown[];
@@ -33,24 +33,24 @@ type BabelEntry = string | [string, Record<string, unknown>?, string?];
  * Babel 로 forward.
  */
 export const ZTS_NATIVE_PLUGIN_PATTERNS = [
-  "optional-chaining",
-  "nullish-coalescing",
-  "class-properties",
-  "private-methods",
-  "private-property-in-object",
-  "flow-strip-types",
-  "transform-flow",
-  "transform-typescript",
-  "transform-react-jsx",
-  "transform-arrow-functions",
-  "transform-block-scoping",
-  "transform-shorthand-properties",
-  "transform-template-literals",
-  "transform-modules-commonjs",
-  "react-native-worklets",
-  "react-native-reanimated/plugin",
-  "react-native-reanimated",
-  "@react-native/babel-preset",
+  'optional-chaining',
+  'nullish-coalescing',
+  'class-properties',
+  'private-methods',
+  'private-property-in-object',
+  'flow-strip-types',
+  'transform-flow',
+  'transform-typescript',
+  'transform-react-jsx',
+  'transform-arrow-functions',
+  'transform-block-scoping',
+  'transform-shorthand-properties',
+  'transform-template-literals',
+  'transform-modules-commonjs',
+  'react-native-worklets',
+  'react-native-reanimated/plugin',
+  'react-native-reanimated',
+  '@react-native/babel-preset',
 ];
 
 /** Plugin name 이 ZTS 가 native 처리하는 list 에 매칭되는가. substring 매칭. */
@@ -71,28 +71,28 @@ export function isZtsNativePlugin(name: string): boolean {
  * 자체로 풀려 babel 이 `.__wrapped__ is not a valid Plugin property` 로 reject.
  */
 export function applyBabelPluginPrefix(name: string): string {
-  if (name.startsWith("./") || name.startsWith("/") || name.startsWith("module:")) return name;
-  if (name.startsWith("@babel/")) {
-    const rest = name.slice("@babel/".length);
-    if (rest.startsWith("plugin-") || rest.startsWith("preset-")) return name;
+  if (name.startsWith('./') || name.startsWith('/') || name.startsWith('module:')) return name;
+  if (name.startsWith('@babel/')) {
+    const rest = name.slice('@babel/'.length);
+    if (rest.startsWith('plugin-') || rest.startsWith('preset-')) return name;
     return `@babel/plugin-${rest}`;
   }
-  if (name.startsWith("@")) {
-    const slashIdx = name.indexOf("/");
+  if (name.startsWith('@')) {
+    const slashIdx = name.indexOf('/');
     if (slashIdx > 0) {
       const scope = name.slice(0, slashIdx);
       const rest = name.slice(slashIdx + 1);
-      if (rest.startsWith("babel-plugin-") || rest.startsWith("babel-preset-")) return name;
+      if (rest.startsWith('babel-plugin-') || rest.startsWith('babel-preset-')) return name;
       return `${scope}/babel-plugin-${rest}`;
     }
     return name;
   }
-  if (name.startsWith("babel-plugin-") || name.startsWith("babel-preset-")) return name;
+  if (name.startsWith('babel-plugin-') || name.startsWith('babel-preset-')) return name;
   return `babel-plugin-${name}`;
 }
 
 function entryName(p: unknown): string {
-  return typeof p === "string" ? p : Array.isArray(p) ? (p[0] as string) : "";
+  return typeof p === 'string' ? p : Array.isArray(p) ? (p[0] as string) : '';
 }
 
 function hasNonNative(plugins: unknown[]): boolean {
@@ -101,7 +101,7 @@ function hasNonNative(plugins: unknown[]): boolean {
     // 빈 string (number/object/null 같은 invalid plugin entry) 은 skip — bungae
     // 의 minor bug fix (#2540): 원본은 빈 string 도 native 외 로 카운트해 false
     // negative.
-    return typeof name === "string" && name !== "" && !isZtsNativePlugin(name);
+    return typeof name === 'string' && name !== '' && !isZtsNativePlugin(name);
   });
 }
 
@@ -118,7 +118,7 @@ export function detectCustomPlugins(projectRoot: string, inline?: InlineBabelCon
   if (inline?.presets && hasNonNative(inline.presets)) return true;
   if (inline?.plugins && hasNonNative(inline.plugins)) return true;
   try {
-    const configPath = join(projectRoot, "babel.config.js");
+    const configPath = join(projectRoot, 'babel.config.js');
     if (!existsSync(configPath)) return false;
     // project 기준 require — examples/<app>/node_modules 의 babel plugin 을
     // 정확히 resolve 하기 위해 project 의 package.json 을 ref base 로.
@@ -191,13 +191,13 @@ export function createBabelTransformer(
     }
     babel = (() => {
       try {
-        return projectRequire("@babel/core") as BabelInstance;
+        return projectRequire('@babel/core') as BabelInstance;
       } catch {
-        return requireFromCli("@babel/core") as BabelInstance;
+        return requireFromCli('@babel/core') as BabelInstance;
       }
     })();
 
-    const configPath = join(projectRoot, "babel.config.js");
+    const configPath = join(projectRoot, 'babel.config.js');
     const fileConfig = existsSync(configPath)
       ? (projectRequire(configPath) as BabelConfigModule)
       : { plugins: [] };
@@ -207,19 +207,19 @@ export function createBabelTransformer(
     const customPlugins: unknown[] = [];
     for (const plugin of [...filePlugins, ...inlinePlugins]) {
       const name = entryName(plugin);
-      if (typeof name === "string" && name !== "" && !isZtsNativePlugin(name)) {
+      if (typeof name === 'string' && name !== '' && !isZtsNativePlugin(name)) {
         customPlugins.push(resolveEntry(plugin as BabelEntry));
       }
     }
 
     // ZTS 가 항상 추가하는 preset (TS strip) + 사용자 inline preset.
     const customPresets: unknown[] = [
-      ["@babel/preset-typescript", { isTSX: true, allExtensions: true }],
+      ['@babel/preset-typescript', { isTSX: true, allExtensions: true }],
     ];
     if (inline?.presets) {
       for (const preset of inline.presets) {
         const name = entryName(preset);
-        if (typeof name === "string" && name !== "" && !isZtsNativePlugin(name)) {
+        if (typeof name === 'string' && name !== '' && !isZtsNativePlugin(name)) {
           customPresets.push(resolveEntry(preset as BabelEntry));
         }
       }
@@ -235,9 +235,9 @@ export function createBabelTransformer(
     };
 
     const pluginNames = customPlugins.map((p) =>
-      Array.isArray(p) ? (p[0] as string).split("/").pop() : String(p).split("/").pop(),
+      Array.isArray(p) ? (p[0] as string).split('/').pop() : String(p).split('/').pop(),
     );
-    process.stderr.write(`[zts:babel] loaded: ${pluginNames.join(", ")}\n`);
+    process.stderr.write(`[zts:babel] loaded: ${pluginNames.join(', ')}\n`);
   }
 
   return (code: string, filename: string): string | null => {
@@ -249,7 +249,7 @@ export function createBabelTransformer(
       });
       if (result?.code && result.code !== code) {
         process.stderr.write(
-          `[zts:babel] ${filename.split("/").pop()}: ${code.length} -> ${result.code.length}\n`,
+          `[zts:babel] ${filename.split('/').pop()}: ${code.length} -> ${result.code.length}\n`,
         );
         return result.code;
       }
@@ -268,18 +268,18 @@ export function createBabelTransformer(
  */
 export function createBabelPlugin(config: PluginConfig): ZtsPlugin {
   return {
-    name: "zts:react-native:babel-transform",
+    name: 'zts:react-native:babel-transform',
     setup(build) {
       if (!detectCustomPlugins(config.projectRoot, config.inlineBabel)) return;
 
       const transformer = createBabelTransformer(config.projectRoot, config.inlineBabel);
 
-      const extPatterns = config.sourceExts.map((e) => e.replace(/^\./, "")).join("|");
+      const extPatterns = config.sourceExts.map((e) => e.replace(/^\./, '')).join('|');
       const sourcePattern = new RegExp(`\\.(${extPatterns})$`);
 
       build.onTransform({ filter: sourcePattern }, (args) => {
         // Skip node_modules — custom plugin 은 사용자 코드만 적용.
-        if (args.path.includes("node_modules")) return null;
+        if (args.path.includes('node_modules')) return null;
         try {
           const result = transformer(args.code, args.path);
           return result ? { code: result } : null;

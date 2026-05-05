@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/classDeclaration", () => {
-  test("classWithSemicolonClassElementES61", async () => {
+describe('TSC: es6/classDeclaration', () => {
+  test('classWithSemicolonClassElementES61', async () => {
     await expectPass(
       `class C {
     ;
@@ -10,7 +10,7 @@ describe("TSC: es6/classDeclaration", () => {
       [],
     );
   });
-  test("classWithSemicolonClassElementES62", async () => {
+  test('classWithSemicolonClassElementES62', async () => {
     await expectPass(
       `class C {
     ;
@@ -19,7 +19,7 @@ describe("TSC: es6/classDeclaration", () => {
       [],
     );
   });
-  test("emitClassDeclarationOverloadInES6", async () => {
+  test('emitClassDeclarationOverloadInES6', async () => {
     await expectPass(
       `// @target: es6
 class C {
@@ -35,7 +35,7 @@ class D {
       [],
     );
   });
-  test("emitClassDeclarationWithConstructorInES6", async () => {
+  test('emitClassDeclarationWithConstructorInES6', async () => {
     await expectPass(
       `// @strict: false
 class A {
@@ -65,7 +65,7 @@ class B {
       [],
     );
   });
-  test("emitClassDeclarationWithExtensionAndTypeArgumentInES6", async () => {
+  test('emitClassDeclarationWithExtensionAndTypeArgumentInES6', async () => {
     await expectPass(
       `// @target: es6
 class B<T> {
@@ -81,7 +81,7 @@ class D extends B<number> {
       [],
     );
   });
-  test("emitClassDeclarationWithExtensionInES6", async () => {
+  test('emitClassDeclarationWithExtensionInES6', async () => {
     await expectPass(
       `// @target: es6
 class B {
@@ -110,7 +110,7 @@ class D extends C {
       [],
     );
   });
-  test("emitClassDeclarationWithGetterSetterInES6", async () => {
+  test('emitClassDeclarationWithGetterSetterInES6', async () => {
     await expectPass(
       `// @target:es6
 class C {
@@ -143,7 +143,7 @@ class C {
       [],
     );
   });
-  test("emitClassDeclarationWithLiteralPropertyNameInES6", async () => {
+  test('emitClassDeclarationWithLiteralPropertyNameInES6', async () => {
     await expectPass(
       `// @target: es6
 class B {
@@ -163,7 +163,7 @@ class B {
       [],
     );
   });
-  test("emitClassDeclarationWithMethodInES6", async () => {
+  test('emitClassDeclarationWithMethodInES6', async () => {
     await expectPass(
       `// @target:es6
 class D {
@@ -191,7 +191,7 @@ class D {
       [],
     );
   });
-  test("emitClassDeclarationWithPropertyAccessInHeritageClause1", async () => {
+  test('emitClassDeclarationWithPropertyAccessInHeritageClause1', async () => {
     await expectPass(
       `class B {}
 function foo() {
@@ -201,7 +201,7 @@ class C extends (foo()).B {}`,
       [],
     );
   });
-  test("emitClassDeclarationWithPropertyAssignmentInES6", async () => {
+  test('emitClassDeclarationWithPropertyAssignmentInES6', async () => {
     await expectPass(
       `// @target:es6
 class C {
@@ -231,7 +231,7 @@ class F extends D{
       [],
     );
   });
-  test("emitClassDeclarationWithStaticPropertyAssignmentInES6", async () => {
+  test('emitClassDeclarationWithStaticPropertyAssignmentInES6', async () => {
     await expectPass(
       `// @target:es6
 class C {
@@ -246,7 +246,7 @@ class D {
       [],
     );
   });
-  test("emitClassDeclarationWithSuperMethodCall01", async () => {
+  test('emitClassDeclarationWithSuperMethodCall01', async () => {
     await expectPass(
       `//@target: es6
 
@@ -263,7 +263,7 @@ class Foo extends Parent {
       [],
     );
   });
-  test("emitClassDeclarationWithThisKeywordInES6", async () => {
+  test('emitClassDeclarationWithThisKeywordInES6', async () => {
     await expectPass(
       `// @target: es6
 class B {
@@ -287,7 +287,7 @@ class B {
       [],
     );
   });
-  test("emitClassDeclarationWithTypeArgumentAndOverloadInES6", async () => {
+  test('emitClassDeclarationWithTypeArgumentAndOverloadInES6', async () => {
     await expectPass(
       `// @strict: false
 class B<T> {
@@ -315,7 +315,7 @@ class B<T> {
       [],
     );
   });
-  test("emitClassDeclarationWithTypeArgumentInES6", async () => {
+  test('emitClassDeclarationWithTypeArgumentInES6', async () => {
     await expectPass(
       `// @target: es6
 class B<T> {
@@ -335,7 +335,7 @@ class B<T> {
       [],
     );
   });
-  test("exportDefaultClassWithStaticPropertyAssignmentsInES6", async () => {
+  test('exportDefaultClassWithStaticPropertyAssignmentsInES6', async () => {
     await expectPass(
       `export default class {
     static z: string = "Foo";
@@ -343,7 +343,7 @@ class B<T> {
       [],
     );
   });
-  test("parseClassDeclarationInStrictModeByDefaultInES6", async () => {
+  test('parseClassDeclarationInStrictModeByDefaultInES6', async () => {
     await expectError(
       `// @target: es6
 class C {
@@ -357,7 +357,7 @@ class C {
       [],
     );
   });
-  test("superCallBeforeThisAccessing1", async () => {
+  test('superCallBeforeThisAccessing1', async () => {
     await expectPass(
       `// @strict: false
 declare var Factory: any
@@ -379,7 +379,7 @@ class D extends Base {
       [],
     );
   });
-  test("superCallBeforeThisAccessing2", async () => {
+  test('superCallBeforeThisAccessing2', async () => {
     await expectPass(
       `// @strict: false
 class Base {
@@ -395,7 +395,7 @@ class D extends Base {
       [],
     );
   });
-  test("superCallBeforeThisAccessing3", async () => {
+  test('superCallBeforeThisAccessing3', async () => {
     await expectPass(
       `// @target: es2015
 class Base {
@@ -414,7 +414,7 @@ class D extends Base {
       [],
     );
   });
-  test("superCallBeforeThisAccessing4", async () => {
+  test('superCallBeforeThisAccessing4', async () => {
     await expectPass(
       `// @target: es2015
 class D extends null {
@@ -435,7 +435,7 @@ class E extends null {
       [],
     );
   });
-  test("superCallBeforeThisAccessing5", async () => {
+  test('superCallBeforeThisAccessing5', async () => {
     await expectPass(
       `// @strict: false
 class D extends null {
@@ -448,7 +448,7 @@ class D extends null {
       [],
     );
   });
-  test("superCallBeforeThisAccessing6", async () => {
+  test('superCallBeforeThisAccessing6', async () => {
     await expectPass(
       `// @target: es2015
 class Base {
@@ -464,7 +464,7 @@ class D extends Base {
       [],
     );
   });
-  test("superCallBeforeThisAccessing7", async () => {
+  test('superCallBeforeThisAccessing7', async () => {
     await expectPass(
       `// @target: es2015
 class Base {
@@ -483,7 +483,7 @@ class D extends Base {
       [],
     );
   });
-  test("superCallBeforeThisAccessing8", async () => {
+  test('superCallBeforeThisAccessing8', async () => {
     await expectPass(
       `// @strict: false
 class Base {
@@ -502,7 +502,7 @@ class D extends Base {
       [],
     );
   });
-  test("superCallFromClassThatHasNoBaseTypeButWithSameSymbolInterface", async () => {
+  test('superCallFromClassThatHasNoBaseTypeButWithSameSymbolInterface', async () => {
     await expectError(
       `interface Foo extends Array<number> {}
 

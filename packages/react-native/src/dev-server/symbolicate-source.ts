@@ -2,11 +2,11 @@
 // SourceMapConsumer 는 dynamic import (source-map 0.7+ peer 영향 최소화). frame
 // 별 customizeFrame 호출은 비동기 + 에러 swallow (Metro 호환).
 
-import { readFile } from "node:fs/promises";
-import { resolve as pathResolve } from "node:path";
+import { readFile } from 'node:fs/promises';
+import { resolve as pathResolve } from 'node:path';
 
-import type { CustomizeFrame } from "./options.ts";
-import type { FrameInfo } from "./types.ts";
+import type { CustomizeFrame } from './options.ts';
+import type { FrameInfo } from './types.ts';
 
 export interface SymbolicateRequest {
   stack: Array<Partial<FrameInfo>>;
@@ -49,7 +49,7 @@ export async function createSourceMapConsumer(
   // dynamic import — source-map peer dep miss 시 graceful fallback. npm types 와
   // runtime 시그니처 차이 때문에 unknown cast.
   try {
-    const mod = (await import("source-map")) as unknown as {
+    const mod = (await import('source-map')) as unknown as {
       SourceMapConsumer: new (map: unknown) => unknown;
     };
     return await (new mod.SourceMapConsumer(parsed) as unknown as Promise<SourceMapConsumerLike>);
@@ -81,7 +81,7 @@ export function symbolicateFrame(
       column: frame.column ?? 0,
     });
     if (pos.source == null || pos.line == null) return normalizeFrame(frame);
-    const sourcePath = pos.source.startsWith("/")
+    const sourcePath = pos.source.startsWith('/')
       ? pos.source
       : pathResolve(projectRoot, pos.source);
     return {
@@ -104,16 +104,16 @@ export async function extractCodeFrame(
 ): Promise<SymbolicateCodeFrame | null> {
   for (const frame of frames) {
     if (!frame.file || frame.lineNumber == null) continue;
-    if (frame.file.includes(".bundle")) continue;
+    if (frame.file.includes('.bundle')) continue;
     try {
-      const source = await readFile(frame.file, "utf-8");
-      const lines = source.split("\n");
+      const source = await readFile(frame.file, 'utf-8');
+      const lines = source.split('\n');
       const targetLine = frame.lineNumber - 1;
       if (targetLine < 0 || targetLine >= lines.length) continue;
       const startLine = Math.max(0, targetLine - 2);
       const endLine = Math.min(lines.length - 1, targetLine + 2);
       return {
-        content: lines.slice(startLine, endLine + 1).join("\n"),
+        content: lines.slice(startLine, endLine + 1).join('\n'),
         location: { row: frame.lineNumber, column: frame.column ?? 0 },
         fileName: frame.file,
       };

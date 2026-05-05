@@ -1,6 +1,6 @@
-import { describe, test, expect, afterEach } from "bun:test";
-import { runZts, createFixture } from "./helpers";
-import { join } from "node:path";
+import { describe, test, expect, afterEach } from 'bun:test';
+import { runZts, createFixture } from './helpers';
+import { join } from 'node:path';
 
 // PR 2: profile infrastructure CLI/NAPI/env 진입점 통합 검증.
 //
@@ -9,7 +9,7 @@ import { join } from "node:path";
 // 동작함을 검증한다. 실제 phase 수치 검증은 PR 3+ (Scanner/Parser timer)
 // 삽입 후 별도 테스트가 담당.
 
-describe("profile CLI flags", () => {
+describe('profile CLI flags', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -19,188 +19,188 @@ describe("profile CLI flags", () => {
     }
   });
 
-  test("--profile=all 는 성공 종료하고 리포트 헤더를 stderr 로 출력", async () => {
+  test('--profile=all 는 성공 종료하고 리포트 헤더를 stderr 로 출력', async () => {
     const fixture = await createFixture({
-      "index.ts": `const x: number = 1;\nexport const y = x + 2;`,
+      'index.ts': `const x: number = 1;\nexport const y = x + 2;`,
     });
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      join(fixture.dir, "index.ts"),
-      "--profile=all",
-      "-o",
-      join(fixture.dir, "out.js"),
+      join(fixture.dir, 'index.ts'),
+      '--profile=all',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     expect(result.exitCode).toBe(0);
     // 기본 format=table → ZTS Profile 헤더가 표시되어야 함.
-    expect(result.stderr).toContain("=== ZTS Profile ===");
+    expect(result.stderr).toContain('=== ZTS Profile ===');
   });
 
-  test("--profile-format=json 은 유효한 JSON 블록을 출력", async () => {
+  test('--profile-format=json 은 유효한 JSON 블록을 출력', async () => {
     const fixture = await createFixture({
-      "index.ts": `export const x = 1;`,
+      'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      join(fixture.dir, "index.ts"),
-      "--profile=all",
-      "--profile-format=json",
-      "-o",
-      join(fixture.dir, "out.js"),
+      join(fixture.dir, 'index.ts'),
+      '--profile=all',
+      '--profile-format=json',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     expect(result.exitCode).toBe(0);
     // JSON 블록 파싱 가능.
-    const jsonStart = result.stderr.indexOf("{");
+    const jsonStart = result.stderr.indexOf('{');
     expect(jsonStart).toBeGreaterThanOrEqual(0);
     const jsonText = result.stderr.slice(jsonStart);
     const parsed = JSON.parse(jsonText);
     expect(parsed.profile_version).toBe(1);
-    expect(typeof parsed.total_ms).toBe("number");
-    expect(parsed.level).toBe("summary");
+    expect(typeof parsed.total_ms).toBe('number');
+    expect(parsed.level).toBe('summary');
     expect(parsed.phases).toBeDefined();
   });
 
-  test("--profile-format=csv 는 헤더 행으로 시작", async () => {
+  test('--profile-format=csv 는 헤더 행으로 시작', async () => {
     const fixture = await createFixture({
-      "index.ts": `export const x = 1;`,
+      'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      join(fixture.dir, "index.ts"),
-      "--profile=all",
-      "--profile-format=csv",
-      "-o",
-      join(fixture.dir, "out.js"),
+      join(fixture.dir, 'index.ts'),
+      '--profile=all',
+      '--profile-format=csv',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).toContain("phase,total_ms,self_ms,count,pct,self_pct");
+    expect(result.stderr).toContain('phase,total_ms,self_ms,count,pct,self_pct');
   });
 
-  test("--profile-level=detailed 는 tree 포맷과 조합 가능", async () => {
+  test('--profile-level=detailed 는 tree 포맷과 조합 가능', async () => {
     const fixture = await createFixture({
-      "index.ts": `export const x = 1;`,
+      'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      join(fixture.dir, "index.ts"),
-      "--profile=all",
-      "--profile-level=detailed",
-      "--profile-format=tree",
-      "-o",
-      join(fixture.dir, "out.js"),
+      join(fixture.dir, 'index.ts'),
+      '--profile=all',
+      '--profile-level=detailed',
+      '--profile-format=tree',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).toContain("=== ZTS Profile (detailed) ===");
+    expect(result.stderr).toContain('=== ZTS Profile (detailed) ===');
   });
 
-  test("--profile-level 가 잘못된 값이면 exit 1", async () => {
+  test('--profile-level 가 잘못된 값이면 exit 1', async () => {
     const fixture = await createFixture({
-      "index.ts": `export const x = 1;`,
+      'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      join(fixture.dir, "index.ts"),
-      "--profile=all",
-      "--profile-level=bogus",
-      "-o",
-      join(fixture.dir, "out.js"),
+      join(fixture.dir, 'index.ts'),
+      '--profile=all',
+      '--profile-level=bogus',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toContain("invalid --profile-level");
+    expect(result.stderr).toContain('invalid --profile-level');
   });
 
-  test("--profile-format 가 잘못된 값이면 exit 1", async () => {
+  test('--profile-format 가 잘못된 값이면 exit 1', async () => {
     const fixture = await createFixture({
-      "index.ts": `export const x = 1;`,
+      'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      join(fixture.dir, "index.ts"),
-      "--profile=all",
-      "--profile-format=xml",
-      "-o",
-      join(fixture.dir, "out.js"),
+      join(fixture.dir, 'index.ts'),
+      '--profile=all',
+      '--profile-format=xml',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toContain("invalid --profile-format");
+    expect(result.stderr).toContain('invalid --profile-format');
   });
 
-  test("--profile 없으면 리포트 출력 없음 (breaking: 기존 --timing 기본 없음)", async () => {
+  test('--profile 없으면 리포트 출력 없음 (breaking: 기존 --timing 기본 없음)', async () => {
     const fixture = await createFixture({
-      "index.ts": `export const x = 1;`,
+      'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([join(fixture.dir, "index.ts"), "-o", join(fixture.dir, "out.js")]);
+    const result = await runZts([join(fixture.dir, 'index.ts'), '-o', join(fixture.dir, 'out.js')]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stderr).not.toContain("ZTS Profile");
+    expect(result.stderr).not.toContain('ZTS Profile');
   });
 
-  test("ZTS_PROFILE env 로 활성화 가능", async () => {
+  test('ZTS_PROFILE env 로 활성화 가능', async () => {
     const fixture = await createFixture({
-      "index.ts": `export const x = 1;`,
+      'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
     const result = await runZts(
       [
-        join(fixture.dir, "index.ts"),
-        "-o",
-        join(fixture.dir, "out.js"),
-        "--profile-format=json", // 활성 여부는 env 로, 포맷만 CLI 로.
+        join(fixture.dir, 'index.ts'),
+        '-o',
+        join(fixture.dir, 'out.js'),
+        '--profile-format=json', // 활성 여부는 env 로, 포맷만 CLI 로.
       ],
-      { env: { ...process.env, ZTS_PROFILE: "all" } },
+      { env: { ...process.env, ZTS_PROFILE: 'all' } },
     );
 
     expect(result.exitCode).toBe(0);
-    const jsonStart = result.stderr.indexOf("{");
+    const jsonStart = result.stderr.indexOf('{');
     expect(jsonStart).toBeGreaterThanOrEqual(0);
     const parsed = JSON.parse(result.stderr.slice(jsonStart));
     expect(parsed.profile_version).toBe(1);
   });
 
-  test("--timing 플래그는 제거됨 (breaking)", async () => {
+  test('--timing 플래그는 제거됨 (breaking)', async () => {
     const fixture = await createFixture({
-      "index.ts": `export const x = 1;`,
+      'index.ts': `export const x = 1;`,
     });
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      join(fixture.dir, "index.ts"),
-      "--timing",
-      "-o",
-      join(fixture.dir, "out.js"),
+      join(fixture.dir, 'index.ts'),
+      '--timing',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     // --timing 은 이제 unknown argument — exit 1 또는 경고. 최소한 Timing for ... 출력은 없어야.
-    expect(result.stderr).not.toContain("Timing for");
+    expect(result.stderr).not.toContain('Timing for');
   });
 
-  test("--help 에 --profile 섹션 포함", async () => {
-    const result = await runZts(["--help"]);
-    expect(result.stdout).toContain("--profile=");
-    expect(result.stdout).toContain("--profile-level=");
-    expect(result.stdout).toContain("--profile-format=");
-    expect(result.stdout).toContain("ZTS_PROFILE");
+  test('--help 에 --profile 섹션 포함', async () => {
+    const result = await runZts(['--help']);
+    expect(result.stdout).toContain('--profile=');
+    expect(result.stdout).toContain('--profile-level=');
+    expect(result.stdout).toContain('--profile-format=');
+    expect(result.stdout).toContain('ZTS_PROFILE');
   });
 
   // ─── Phase 실제 수치 기록 검증 (PR 3+ 에서 hot-path timer 가 삽입됨) ───
 
-  test("--profile=parse 는 parse phase 에 실제 수치 기록", async () => {
+  test('--profile=parse 는 parse phase 에 실제 수치 기록', async () => {
     const fixture = await createFixture({
-      "index.ts": `
+      'index.ts': `
         export const x: number = 1;
         export function foo(a: string, b: number) {
           return a + b.toString();
@@ -214,27 +214,27 @@ describe("profile CLI flags", () => {
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      join(fixture.dir, "index.ts"),
-      "--profile=parse",
-      "--profile-format=json",
-      "-o",
-      join(fixture.dir, "out.js"),
+      join(fixture.dir, 'index.ts'),
+      '--profile=parse',
+      '--profile-format=json',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     expect(result.exitCode).toBe(0);
-    const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf("{")));
+    const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf('{')));
     expect(parsed.phases.parse).toBeDefined();
     expect(parsed.phases.parse.total_ms).toBeGreaterThan(0);
     expect(parsed.phases.parse.self_ms).toBeGreaterThanOrEqual(0);
     expect(parsed.phases.parse.count).toBeGreaterThanOrEqual(1);
   });
 
-  test("--profile=shake 는 tree-shaker 하위 phase 를 노출", async () => {
+  test('--profile=shake 는 tree-shaker 하위 phase 를 노출', async () => {
     const fixture = await createFixture({
-      "dep-a.ts": `export const a = 1; export const unusedA = 10;`,
-      "dep-b.ts": `export const b = 2; export const unusedB = 20;`,
-      "barrel.ts": `export { b } from "./dep-b";`,
-      "index.ts": `
+      'dep-a.ts': `export const a = 1; export const unusedA = 10;`,
+      'dep-b.ts': `export const b = 2; export const unusedB = 20;`,
+      'barrel.ts': `export { b } from "./dep-b";`,
+      'index.ts': `
         import { a } from "./dep-a";
         import { b } from "./barrel";
         console.log(a + b);
@@ -243,32 +243,32 @@ describe("profile CLI flags", () => {
     cleanup = fixture.cleanup;
 
     const result = await runZts([
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "--profile=shake",
-      "--profile-level=detailed",
-      "--profile-format=json",
-      "-o",
-      join(fixture.dir, "out.js"),
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '--profile=shake',
+      '--profile-level=detailed',
+      '--profile-format=json',
+      '-o',
+      join(fixture.dir, 'out.js'),
     ]);
 
     expect(result.exitCode).toBe(0);
-    const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf("{")));
+    const parsed = JSON.parse(result.stderr.slice(result.stderr.indexOf('{')));
     expect(parsed.phases.shake).toBeDefined();
     expect(parsed.phases.shake.self_ms).toBeGreaterThanOrEqual(0);
-    expect(parsed.phases["shake.init"]).toBeDefined();
-    expect(parsed.phases["shake.analyze"]).toBeDefined();
-    expect(parsed.phases["shake.const.prepass"]).toBeDefined();
-    expect(parsed.phases["shake.const.prepass.numeric.propagate"]).toBeDefined();
-    expect(parsed.phases["shake.const.prepass.build.facts"]).toBeDefined();
-    expect(parsed.phases["shake.const.prepass.candidate.gate"]).toBeDefined();
-    expect(parsed.phases["shake.fixpoint"]).toBeDefined();
-    expect(parsed.phases["shake.fixpoint.bfs"]).toBeDefined();
-    expect(parsed.phases["shake.fixpoint.bfs.queue"]).toBeDefined();
-    expect(parsed.phases["shake.fixpoint.bfs.follow.import"]).toBeDefined();
-    expect(parsed.phases["shake.fixpoint.bfs.seed.export"]).toBeDefined();
-    expect(parsed.phases["shake.fixpoint.bfs.seed.export.direct"]).toBeDefined();
-    expect(parsed.phases["shake.fixpoint.bfs.seed.export.resolve"]).toBeDefined();
-    expect(parsed.phases["shake.prune"]).toBeDefined();
+    expect(parsed.phases['shake.init']).toBeDefined();
+    expect(parsed.phases['shake.analyze']).toBeDefined();
+    expect(parsed.phases['shake.const.prepass']).toBeDefined();
+    expect(parsed.phases['shake.const.prepass.numeric.propagate']).toBeDefined();
+    expect(parsed.phases['shake.const.prepass.build.facts']).toBeDefined();
+    expect(parsed.phases['shake.const.prepass.candidate.gate']).toBeDefined();
+    expect(parsed.phases['shake.fixpoint']).toBeDefined();
+    expect(parsed.phases['shake.fixpoint.bfs']).toBeDefined();
+    expect(parsed.phases['shake.fixpoint.bfs.queue']).toBeDefined();
+    expect(parsed.phases['shake.fixpoint.bfs.follow.import']).toBeDefined();
+    expect(parsed.phases['shake.fixpoint.bfs.seed.export']).toBeDefined();
+    expect(parsed.phases['shake.fixpoint.bfs.seed.export.direct']).toBeDefined();
+    expect(parsed.phases['shake.fixpoint.bfs.seed.export.resolve']).toBeDefined();
+    expect(parsed.phases['shake.prune']).toBeDefined();
   });
 });

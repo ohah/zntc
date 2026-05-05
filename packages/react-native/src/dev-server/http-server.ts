@@ -2,17 +2,17 @@
 // 는 next() 로 위임 — 후속 layer (asset/bundle/symbolicate routes, user
 // enhanceMiddleware) 가 처리.
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
-import * as jscSafeUrl from "jsc-safe-url";
+import * as jscSafeUrl from 'jsc-safe-url';
 
-import type { HmrBridge } from "./hmr-bridge.ts";
-import { parseRequestUrl, sendText } from "./http-utils.ts";
-import type { CliServerApi } from "./middleware/cli-server-api.ts";
-import { DEV_MIDDLEWARE_PATH_PREFIXES, type DevMiddleware } from "./middleware/dev-middleware.ts";
-import type { RnDevServerOptions } from "./options.ts";
-import type { PlatformStateRegistry } from "./platform-state.ts";
-import { handleAssetRequest, isAssetRoute } from "./routes/assets.ts";
+import type { HmrBridge } from './hmr-bridge.ts';
+import { parseRequestUrl, sendText } from './http-utils.ts';
+import type { CliServerApi } from './middleware/cli-server-api.ts';
+import { DEV_MIDDLEWARE_PATH_PREFIXES, type DevMiddleware } from './middleware/dev-middleware.ts';
+import type { RnDevServerOptions } from './options.ts';
+import type { PlatformStateRegistry } from './platform-state.ts';
+import { handleAssetRequest, isAssetRoute } from './routes/assets.ts';
 import {
   handleBundleRequest,
   handleHmrMapRequest,
@@ -20,14 +20,14 @@ import {
   isBundleRoute,
   isHmrMapRoute,
   isMapRoute,
-} from "./routes/bundle.ts";
-import { handleDevMenu, isDevMenuRoute } from "./routes/devmenu.ts";
-import { handleIndexPage, isIndexRoute } from "./routes/index-page.ts";
-import { handleOpenUrl, isOpenUrlRoute } from "./routes/open-url.ts";
-import { handleReload, isReloadRoute } from "./routes/reload.ts";
-import { handleStatus, isStatusRoute } from "./routes/status.ts";
-import { handleSymbolicateRequest, isSymbolicateRoute } from "./routes/symbolicate.ts";
-import type { Broadcast, Middleware } from "./types.ts";
+} from './routes/bundle.ts';
+import { handleDevMenu, isDevMenuRoute } from './routes/devmenu.ts';
+import { handleIndexPage, isIndexRoute } from './routes/index-page.ts';
+import { handleOpenUrl, isOpenUrlRoute } from './routes/open-url.ts';
+import { handleReload, isReloadRoute } from './routes/reload.ts';
+import { handleStatus, isStatusRoute } from './routes/status.ts';
+import { handleSymbolicateRequest, isSymbolicateRoute } from './routes/symbolicate.ts';
+import type { Broadcast, Middleware } from './types.ts';
 
 export interface DevHttpServerDeps {
   /** WS broadcast — caller 가 cli-server-api 의 messageSocketEndpoint.broadcast 와 wire. */
@@ -151,7 +151,7 @@ function chainToHandler(
         sendText(res, 500, `Internal Server Error: ${(err as Error).message ?? err}`);
         return;
       }
-      if (!res.headersSent && !res.writableEnded) sendText(res, 404, "Not Found");
+      if (!res.headersSent && !res.writableEnded) sendText(res, 404, 'Not Found');
     });
   };
 }
@@ -163,7 +163,7 @@ function chainToHandler(
  */
 type UpgradeListener = (
   req: IncomingMessage,
-  socket: import("node:net").Socket,
+  socket: import('node:net').Socket,
   head: Buffer,
 ) => void;
 
@@ -186,7 +186,7 @@ function attachWebSocketEndpoints(
     if (cli) {
       for (const [path, ep] of Object.entries(cli)) {
         if (url.pathname === path || url.pathname.startsWith(`${path}?`)) {
-          ep.handleUpgrade(req, socket, head, (ws) => ep.emit("connection", ws, req));
+          ep.handleUpgrade(req, socket, head, (ws) => ep.emit('connection', ws, req));
           return;
         }
       }
@@ -194,14 +194,14 @@ function attachWebSocketEndpoints(
     if (dev) {
       for (const [path, ep] of Object.entries(dev)) {
         if (url.pathname === path || url.pathname.startsWith(`${path}/`)) {
-          ep.handleUpgrade(req, socket, head, (ws) => ep.emit("connection", ws, req));
+          ep.handleUpgrade(req, socket, head, (ws) => ep.emit('connection', ws, req));
           return;
         }
       }
     }
     socket.destroy();
   };
-  server.on("upgrade", listener);
+  server.on('upgrade', listener);
   return listener;
 }
 
@@ -217,20 +217,20 @@ export async function createDevHttpServer(
     ? options.enhanceMiddleware(baseMiddleware, { httpServer: server })
     : baseMiddleware;
   const requestHandler = chainToHandler(enhanced);
-  server.on("request", requestHandler);
+  server.on('request', requestHandler);
   const upgradeHandler = attachWebSocketEndpoints(server, deps, options);
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
-      server.removeListener("listening", onListening);
+      server.removeListener('listening', onListening);
       reject(err);
     };
     const onListening = () => {
-      server.removeListener("error", onError);
+      server.removeListener('error', onError);
       resolve();
     };
-    server.once("error", onError);
-    server.once("listening", onListening);
+    server.once('error', onError);
+    server.once('listening', onListening);
     server.listen(options.port, options.host);
   });
 
@@ -242,8 +242,8 @@ export async function createDevHttpServer(
       new Promise<void>((resolve, reject) => {
         // server.close() 는 listener 자동 제거 안 함. 명시 제거로 closure capture
         // 해제 — watch handle / channel client refs 가 GC 대상이 되도록.
-        server.removeListener("request", requestHandler);
-        if (upgradeHandler) server.removeListener("upgrade", upgradeHandler);
+        server.removeListener('request', requestHandler);
+        if (upgradeHandler) server.removeListener('upgrade', upgradeHandler);
         server.close((err) => (err ? reject(err) : resolve()));
       }),
   };

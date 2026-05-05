@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/destructuring", () => {
-  test("arrayAssignmentPatternWithAny", async () => {
+describe('TSC: es6/destructuring', () => {
+  test('arrayAssignmentPatternWithAny', async () => {
     await expectPass(
       `var a: any;
 var x: string;
@@ -10,7 +10,7 @@ var x: string;
       [],
     );
   });
-  test("declarationInAmbientContext", async () => {
+  test('declarationInAmbientContext', async () => {
     await expectPass(
       `declare var [a, b];  // Error, destructuring declaration not allowed in ambient context
 declare var {c, d};  // Error, destructuring declaration not allowed in ambient context
@@ -18,7 +18,7 @@ declare var {c, d};  // Error, destructuring declaration not allowed in ambient 
       [],
     );
   });
-  test("declarationsAndAssignments", async () => {
+  test('declarationsAndAssignments', async () => {
     await expectPass(
       `function f0() {
     var [] = [1, "hello"];
@@ -209,7 +209,7 @@ function f21(v: [number, string, boolean]) {
       [],
     );
   });
-  test("declarationWithNoInitializer", async () => {
+  test('declarationWithNoInitializer', async () => {
     await expectPass(
       `var [a, b];          // Error, no initializer
 var {c, d};          // Error, no initializer
@@ -217,7 +217,7 @@ var {c, d};          // Error, no initializer
       [],
     );
   });
-  test("destructuringArrayBindingPatternAndAssignment1ES5", async () => {
+  test('destructuringArrayBindingPatternAndAssignment1ES5', async () => {
     await expectPass(
       `// @target: es2015
 /* AssignmentPattern:
@@ -276,7 +276,7 @@ var [c14, c15, c16] = [1, 2, "string"];
       [],
     );
   });
-  test("destructuringArrayBindingPatternAndAssignment1ES5iterable", async () => {
+  test('destructuringArrayBindingPatternAndAssignment1ES5iterable', async () => {
     await expectPass(
       `// @target: es2015
 /* AssignmentPattern:
@@ -335,7 +335,7 @@ var [c14, c15, c16] = [1, 2, "string"];
       [],
     );
   });
-  test("destructuringArrayBindingPatternAndAssignment1ES6", async () => {
+  test('destructuringArrayBindingPatternAndAssignment1ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -393,7 +393,7 @@ var [c14, c15, c16] = [1, 2, "string"];`,
       [],
     );
   });
-  test("destructuringArrayBindingPatternAndAssignment2", async () => {
+  test('destructuringArrayBindingPatternAndAssignment2', async () => {
     await expectPass(
       `// @target: es2015
 // V is an array assignment pattern, S is the type Any or an array-like type (section 3.3.2), and, for each assignment element E in V,
@@ -433,7 +433,7 @@ var [c4, c5, c6] = foo(1);  // Error`,
       [],
     );
   });
-  test("destructuringArrayBindingPatternAndAssignment3", async () => {
+  test('destructuringArrayBindingPatternAndAssignment3', async () => {
     await expectPass(
       `const [a, b = a] = [1]; // ok
 const [c, d = c, e = e] = [1]; // error for e = e
@@ -448,7 +448,7 @@ const [f, g = f, h = i, i = f] = [1]; // error for h = i
       [],
     );
   });
-  test("destructuringArrayBindingPatternAndAssignment4", async () => {
+  test('destructuringArrayBindingPatternAndAssignment4', async () => {
     await expectPass(
       `// #35497
 
@@ -458,7 +458,7 @@ const [value] = data; // Error`,
       [],
     );
   });
-  test("destructuringArrayBindingPatternAndAssignment5SiblingInitializer", async () => {
+  test('destructuringArrayBindingPatternAndAssignment5SiblingInitializer', async () => {
     await expectPass(
       `
 // To be inferred as \`number\`
@@ -488,7 +488,7 @@ function f4() {
       [],
     );
   });
-  test("destructuringAssignabilityCheck", async () => {
+  test('destructuringAssignabilityCheck', async () => {
     await expectPass(
       `
 const [] = {}; // should be error
@@ -509,7 +509,7 @@ const []: {} = {}`,
       [],
     );
   });
-  test("destructuringCatch", async () => {
+  test('destructuringCatch', async () => {
     await expectPass(
       `
 try {
@@ -543,7 +543,7 @@ catch (/*Test comment ranges*/[/*a*/a]) {
       [],
     );
   });
-  test("destructuringControlFlow", async () => {
+  test('destructuringControlFlow', async () => {
     await expectPass(
       `
 function f1(obj: { a?: string }) {
@@ -590,7 +590,7 @@ value.toUpperCase();  // Error
       [],
     );
   });
-  test("destructuringEvaluationOrder", async () => {
+  test('destructuringEvaluationOrder', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/39205
@@ -617,7 +617,7 @@ let [{ ...a }, b = a]: any[] = [{ x: 1 }]
       [],
     );
   });
-  test("destructuringInFunctionType", async () => {
+  test('destructuringInFunctionType', async () => {
     await expectPass(
       `
 interface a { a }
@@ -644,14 +644,14 @@ var v2: ([a, b, c]) => string;
       [],
     );
   });
-  test("destructuringObjectAssignmentPatternWithNestedSpread", async () => {
+  test('destructuringObjectAssignmentPatternWithNestedSpread', async () => {
     await expectPass(
       `let a: any, b: any, c: any = {x: {a: 1, y: 2}}, d: any;
 ({x: {a, ...b} = d} = c);`,
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment1ES5", async () => {
+  test('destructuringObjectBindingPatternAndAssignment1ES5', async () => {
     await expectPass(
       `// @strict: false
 // In a destructuring assignment expression, the type of the expression on the right must be assignable to the assignment target on the left.
@@ -711,7 +711,7 @@ var {"prop2": d1} = foo1();`,
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment1ES6", async () => {
+  test('destructuringObjectBindingPatternAndAssignment1ES6', async () => {
     await expectPass(
       `// @strict: false
 // In a destructuring assignment expression, the type of the expression on the right must be assignable to the assignment target on the left.
@@ -771,7 +771,7 @@ var {"prop2": d1} = foo1();`,
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment3", async () => {
+  test('destructuringObjectBindingPatternAndAssignment3', async () => {
     await expectError(
       `// @target: es2015
 // Error
@@ -785,7 +785,7 @@ var {"prop"} = { "prop": 1 };
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment4", async () => {
+  test('destructuringObjectBindingPatternAndAssignment4', async () => {
     await expectPass(
       `const {
     a = 1,
@@ -798,7 +798,7 @@ var {"prop"} = { "prop": 1 };
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment5", async () => {
+  test('destructuringObjectBindingPatternAndAssignment5', async () => {
     await expectPass(
       `function a () {
     let x: number;
@@ -808,7 +808,7 @@ var {"prop"} = { "prop": 1 };
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment6", async () => {
+  test('destructuringObjectBindingPatternAndAssignment6', async () => {
     await expectPass(
       `
 const a = "a";
@@ -821,7 +821,7 @@ console.log(aVal, bVal);`,
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment7", async () => {
+  test('destructuringObjectBindingPatternAndAssignment7', async () => {
     await expectPass(
       `
 enum K {
@@ -835,7 +835,7 @@ console.log(aVal, bVal);`,
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment8", async () => {
+  test('destructuringObjectBindingPatternAndAssignment8', async () => {
     await expectPass(
       `
 const K = {
@@ -849,7 +849,7 @@ console.log(aVal, bVal);`,
       [],
     );
   });
-  test("destructuringObjectBindingPatternAndAssignment9SiblingInitializer", async () => {
+  test('destructuringObjectBindingPatternAndAssignment9SiblingInitializer', async () => {
     await expectPass(
       `
 // To be inferred as \`number\`
@@ -880,7 +880,7 @@ function f4() {
       [],
     );
   });
-  test("destructuringParameterDeclaration10", async () => {
+  test('destructuringParameterDeclaration10', async () => {
     await expectPass(
       `
 export function prepareConfig({
@@ -913,7 +913,7 @@ export const prepareConfigWithContextualSignature: (param:{
       [],
     );
   });
-  test("destructuringParameterDeclaration1ES5", async () => {
+  test('destructuringParameterDeclaration1ES5', async () => {
     await expectPass(
       `// @target: es2015
 // A parameter declaration may specify either an identifier or a binding pattern.
@@ -1016,7 +1016,7 @@ function e5({x: [a, b, c]}: { x: [number, number, number] }) { }  // x has type 
       [],
     );
   });
-  test("destructuringParameterDeclaration1ES5iterable", async () => {
+  test('destructuringParameterDeclaration1ES5iterable', async () => {
     await expectPass(
       `// @target: es2015
 // A parameter declaration may specify either an identifier or a binding pattern.
@@ -1119,7 +1119,7 @@ function e5({x: [a, b, c]}: { x: [number, number, number] }) { }  // x has type 
       [],
     );
   });
-  test("destructuringParameterDeclaration1ES6", async () => {
+  test('destructuringParameterDeclaration1ES6', async () => {
     await expectError(
       `// Conformance for emitting ES6
 
@@ -1223,7 +1223,7 @@ function e6({x: [number, number, number]}) { }  // error, duplicate identifier;
       [],
     );
   });
-  test("destructuringParameterDeclaration2", async () => {
+  test('destructuringParameterDeclaration2', async () => {
     await expectError(
       `// @target: es2015
 // A parameter declaration may specify either an identifier or a binding pattern.
@@ -1297,7 +1297,7 @@ function e0({x: [number, number, number]}) { }  // error, duplicate identifier;
       [],
     );
   });
-  test("destructuringParameterDeclaration3ES5", async () => {
+  test('destructuringParameterDeclaration3ES5', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1349,7 +1349,7 @@ foo1(1, 2, 3, E1.a, E.b);
       [],
     );
   });
-  test("destructuringParameterDeclaration3ES5iterable", async () => {
+  test('destructuringParameterDeclaration3ES5iterable', async () => {
     await expectPass(
       `// @target: es5, es2015
 
@@ -1401,7 +1401,7 @@ foo1(1, 2, 3, E1.a, E.b);
       [],
     );
   });
-  test("destructuringParameterDeclaration3ES6", async () => {
+  test('destructuringParameterDeclaration3ES6', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1453,7 +1453,7 @@ foo1(1, 2, 3, E1.a, E.b);
       [],
     );
   });
-  test("destructuringParameterDeclaration4", async () => {
+  test('destructuringParameterDeclaration4', async () => {
     await expectError(
       `// @target: es2015
 // If the parameter is a rest parameter, the parameter type is any[]
@@ -1496,7 +1496,7 @@ foo1(1, 2, "string", E1.a, E.b);  // Error
       [],
     );
   });
-  test("destructuringParameterDeclaration5", async () => {
+  test('destructuringParameterDeclaration5', async () => {
     await expectPass(
       `// @target: es2015
 // Parameter Declaration with generic
@@ -1552,7 +1552,7 @@ d3({ y: "world" });`,
       [],
     );
   });
-  test("destructuringParameterDeclaration6", async () => {
+  test('destructuringParameterDeclaration6', async () => {
     await expectError(
       `// @target: es2015
 // A parameter declaration may specify either an identifier or a binding pattern.
@@ -1579,7 +1579,7 @@ b2({ while: 1 });
       [],
     );
   });
-  test("destructuringParameterDeclaration7ES5", async () => {
+  test('destructuringParameterDeclaration7ES5', async () => {
     await expectPass(
       `// @target: es5, es2015
 
@@ -1599,7 +1599,7 @@ function two([], [a, b, c]: number[]) {}
       [],
     );
   });
-  test("destructuringParameterDeclaration7ES5iterable", async () => {
+  test('destructuringParameterDeclaration7ES5iterable', async () => {
     await expectPass(
       `// @target: es5, es2015
 
@@ -1619,7 +1619,7 @@ function two([], [a, b, c]: number[]) {}
       [],
     );
   });
-  test("destructuringParameterDeclaration8", async () => {
+  test('destructuringParameterDeclaration8', async () => {
     await expectPass(
       `// explicit type annotation should cause \`method\` to have type 'x' | 'y'
 // both inside and outside \`test\`.
@@ -1642,7 +1642,7 @@ test({ method: 'one', nested: { p: 'a' } })`,
       [],
     );
   });
-  test("destructuringParameterDeclaration9", async () => {
+  test('destructuringParameterDeclaration9', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/59936
@@ -1693,7 +1693,7 @@ function f2([[json = []] = []] = []) { return json }`,
       [],
     );
   });
-  test("destructuringParameterProperties1", async () => {
+  test('destructuringParameterProperties1', async () => {
     await expectPass(
       `// @module: commonjs
 class C1 {
@@ -1728,7 +1728,7 @@ var [c3_x, c3_y, c3_z] = [c3.x, c3.y, c3.z];`,
       [],
     );
   });
-  test("destructuringParameterProperties2", async () => {
+  test('destructuringParameterProperties2', async () => {
     await expectPass(
       `// @module: commonjs
 class C1 {
@@ -1763,7 +1763,7 @@ var [z_a, z_b, z_c] = [z.getA(), z.getB(), z.getC()];
       [],
     );
   });
-  test("destructuringParameterProperties3", async () => {
+  test('destructuringParameterProperties3', async () => {
     await expectPass(
       `// @module: commonjs
 class C1<T, U, V> {
@@ -1801,7 +1801,7 @@ var [z_a, z_b, z_c] = [z.getA(), z.getB(), z.getC()];
       [],
     );
   });
-  test("destructuringParameterProperties4", async () => {
+  test('destructuringParameterProperties4', async () => {
     await expectPass(
       `// @target: es6
 
@@ -1834,7 +1834,7 @@ class C2 extends C1<number, string, boolean> {
       [],
     );
   });
-  test("destructuringParameterProperties5", async () => {
+  test('destructuringParameterProperties5', async () => {
     await expectPass(
       `// @module: commonjs
 type ObjType1 = { x: number; y: string; z: boolean }
@@ -1852,7 +1852,7 @@ var [a_x1, a_x2, a_x3, a_y, a_z] = [a.x1, a.x2, a.x3, a.y, a.z];`,
       [],
     );
   });
-  test("destructuringReassignsRightHandSide", async () => {
+  test('destructuringReassignsRightHandSide', async () => {
     await expectPass(
       `var foo: any = { foo: 1, bar: 2 };
 var bar: any;
@@ -1865,7 +1865,7 @@ var { foo, baz } = foo;`,
       [],
     );
   });
-  test("destructuringSameNames", async () => {
+  test('destructuringSameNames', async () => {
     await expectPass(
       `// Valid cases
 
@@ -1899,7 +1899,7 @@ const [blah2, blah2] = [333, 444];`,
       [],
     );
   });
-  test("destructuringSpread", async () => {
+  test('destructuringSpread', async () => {
     await expectPass(
       `const { x } = {
   ...{},
@@ -1931,28 +1931,28 @@ const { c, d, e, f, g } = {
       [],
     );
   });
-  test("destructuringTypeAssertionsES5_1", async () => {
+  test('destructuringTypeAssertionsES5_1', async () => {
     await expectPass(`var { x } = <any>foo();`, []);
   });
-  test("destructuringTypeAssertionsES5_2", async () => {
+  test('destructuringTypeAssertionsES5_2', async () => {
     await expectPass(`var { x } = (<any>foo());`, []);
   });
-  test("destructuringTypeAssertionsES5_3", async () => {
+  test('destructuringTypeAssertionsES5_3', async () => {
     await expectPass(`var { x } = <any>(foo());`, []);
   });
-  test("destructuringTypeAssertionsES5_4", async () => {
+  test('destructuringTypeAssertionsES5_4', async () => {
     await expectPass(`var { x } = <any><any>foo();`, []);
   });
-  test("destructuringTypeAssertionsES5_5", async () => {
+  test('destructuringTypeAssertionsES5_5', async () => {
     await expectPass(`var { x } = <any>0;`, []);
   });
-  test("destructuringTypeAssertionsES5_6", async () => {
+  test('destructuringTypeAssertionsES5_6', async () => {
     await expectPass(`var { x } = <any>new Foo;`, []);
   });
-  test("destructuringTypeAssertionsES5_7", async () => {
+  test('destructuringTypeAssertionsES5_7', async () => {
     await expectPass(`var { x } = <any><any>new Foo;`, []);
   });
-  test("destructuringVariableDeclaration1ES5", async () => {
+  test('destructuringVariableDeclaration1ES5', async () => {
     await expectPass(
       `// @target: es2015
 // The type T associated with a destructuring variable declaration is determined as follows:
@@ -1999,7 +1999,7 @@ var {h: {h1 = [undefined, null]}}: { h: { h1: number[] } } = { h: { h1: [1, 2] }
       [],
     );
   });
-  test("destructuringVariableDeclaration1ES5iterable", async () => {
+  test('destructuringVariableDeclaration1ES5iterable', async () => {
     await expectPass(
       `// @target: es5,es2015
 // The type T associated with a destructuring variable declaration is determined as follows:
@@ -2046,7 +2046,7 @@ var {h: {h1 = [undefined, null]}}: { h: { h1: number[] } } = { h: { h1: [1, 2] }
       [],
     );
   });
-  test("destructuringVariableDeclaration1ES6", async () => {
+  test('destructuringVariableDeclaration1ES6', async () => {
     await expectPass(
       `// @target: es6
 // The type T associated with a destructuring variable declaration is determined as follows:
@@ -2093,7 +2093,7 @@ var {h: {h1 = [undefined, null]}}: { h: { h1: number[] } } = { h: { h1: [1, 2] }
       [],
     );
   });
-  test("destructuringVariableDeclaration2", async () => {
+  test('destructuringVariableDeclaration2', async () => {
     await expectPass(
       `// @target: es2015
 // The type T associated with a destructuring variable declaration is determined as follows:
@@ -2118,7 +2118,7 @@ var {d: {d1 = ["string", null]}}: { d: { d1: number[] } } = { d: { d1: [1, 2] } 
       [],
     );
   });
-  test("destructuringVoid", async () => {
+  test('destructuringVoid', async () => {
     await expectPass(
       `declare const v: void;
 const {} = v;
@@ -2126,7 +2126,7 @@ const {} = v;
       [],
     );
   });
-  test("destructuringVoidStrictNullChecks", async () => {
+  test('destructuringVoidStrictNullChecks', async () => {
     await expectPass(
       `declare const v: void;
 const {} = v;
@@ -2134,7 +2134,7 @@ const {} = v;
       [],
     );
   });
-  test("destructuringWithLiteralInitializers", async () => {
+  test('destructuringWithLiteralInitializers', async () => {
     await expectPass(
       `// (arg: { x: any, y: any }) => void
 function f1({ x, y }) { }
@@ -2205,7 +2205,7 @@ g5([1, 1]);
       [],
     );
   });
-  test("destructuringWithLiteralInitializers2", async () => {
+  test('destructuringWithLiteralInitializers2', async () => {
     await expectPass(
       `
 function f00([x, y]) {}
@@ -2239,7 +2239,7 @@ function f43([x = 0, y = 'bar'] = [sx, nx]) {}
       [],
     );
   });
-  test("emptyArrayBindingPatternParameter01", async () => {
+  test('emptyArrayBindingPatternParameter01', async () => {
     await expectPass(
       `
 function f([]) {
@@ -2248,7 +2248,7 @@ function f([]) {
       [],
     );
   });
-  test("emptyArrayBindingPatternParameter02", async () => {
+  test('emptyArrayBindingPatternParameter02', async () => {
     await expectPass(
       `
 function f(a, []) {
@@ -2257,7 +2257,7 @@ function f(a, []) {
       [],
     );
   });
-  test("emptyArrayBindingPatternParameter03", async () => {
+  test('emptyArrayBindingPatternParameter03', async () => {
     await expectPass(
       `
 function f(a, []) {
@@ -2266,7 +2266,7 @@ function f(a, []) {
       [],
     );
   });
-  test("emptyArrayBindingPatternParameter04", async () => {
+  test('emptyArrayBindingPatternParameter04', async () => {
     await expectPass(
       `
 function f([] = [1,2,3,4]) {
@@ -2275,7 +2275,7 @@ function f([] = [1,2,3,4]) {
       [],
     );
   });
-  test("emptyAssignmentPatterns01_ES5", async () => {
+  test('emptyAssignmentPatterns01_ES5', async () => {
     await expectPass(
       `
 var a: any;
@@ -2287,7 +2287,7 @@ var [,] = [1,2];`,
       [],
     );
   });
-  test("emptyAssignmentPatterns01_ES5iterable", async () => {
+  test('emptyAssignmentPatterns01_ES5iterable', async () => {
     await expectPass(
       `
 var a: any;
@@ -2297,7 +2297,7 @@ var a: any;
       [],
     );
   });
-  test("emptyAssignmentPatterns01_ES6", async () => {
+  test('emptyAssignmentPatterns01_ES6', async () => {
     await expectPass(
       `
 var a: any;
@@ -2307,7 +2307,7 @@ var a: any;
       [],
     );
   });
-  test("emptyAssignmentPatterns02_ES5", async () => {
+  test('emptyAssignmentPatterns02_ES5', async () => {
     await expectPass(
       `
 var a: any;
@@ -2318,7 +2318,7 @@ let x, y, z, a1, a2, a3;
       [],
     );
   });
-  test("emptyAssignmentPatterns02_ES5iterable", async () => {
+  test('emptyAssignmentPatterns02_ES5iterable', async () => {
     await expectPass(
       `
 var a: any;
@@ -2329,7 +2329,7 @@ let x, y, z, a1, a2, a3;
       [],
     );
   });
-  test("emptyAssignmentPatterns02_ES6", async () => {
+  test('emptyAssignmentPatterns02_ES6', async () => {
     await expectPass(
       `
 var a: any;
@@ -2340,7 +2340,7 @@ let x, y, z, a1, a2, a3;
       [],
     );
   });
-  test("emptyAssignmentPatterns03_ES5", async () => {
+  test('emptyAssignmentPatterns03_ES5', async () => {
     await expectPass(
       `
 var a: any;
@@ -2350,7 +2350,7 @@ var a: any;
       [],
     );
   });
-  test("emptyAssignmentPatterns03_ES5iterable", async () => {
+  test('emptyAssignmentPatterns03_ES5iterable', async () => {
     await expectPass(
       `
 var a: any;
@@ -2360,7 +2360,7 @@ var a: any;
       [],
     );
   });
-  test("emptyAssignmentPatterns03_ES6", async () => {
+  test('emptyAssignmentPatterns03_ES6', async () => {
     await expectPass(
       `
 var a: any;
@@ -2370,7 +2370,7 @@ var a: any;
       [],
     );
   });
-  test("emptyAssignmentPatterns04_ES5", async () => {
+  test('emptyAssignmentPatterns04_ES5', async () => {
     await expectPass(
       `
 var a: any;
@@ -2381,7 +2381,7 @@ let x, y, z, a1, a2, a3;
       [],
     );
   });
-  test("emptyAssignmentPatterns04_ES5iterable", async () => {
+  test('emptyAssignmentPatterns04_ES5iterable', async () => {
     await expectPass(
       `
 var a: any;
@@ -2392,7 +2392,7 @@ let x, y, z, a1, a2, a3;
       [],
     );
   });
-  test("emptyAssignmentPatterns04_ES6", async () => {
+  test('emptyAssignmentPatterns04_ES6', async () => {
     await expectPass(
       `
 var a: any;
@@ -2403,7 +2403,7 @@ let x, y, z, a1, a2, a3;
       [],
     );
   });
-  test("emptyObjectBindingPatternParameter01", async () => {
+  test('emptyObjectBindingPatternParameter01', async () => {
     await expectPass(
       `
 function f({}) {
@@ -2412,7 +2412,7 @@ function f({}) {
       [],
     );
   });
-  test("emptyObjectBindingPatternParameter02", async () => {
+  test('emptyObjectBindingPatternParameter02', async () => {
     await expectPass(
       `
 function f(a, {}) {
@@ -2421,7 +2421,7 @@ function f(a, {}) {
       [],
     );
   });
-  test("emptyObjectBindingPatternParameter03", async () => {
+  test('emptyObjectBindingPatternParameter03', async () => {
     await expectPass(
       `
 function f({}, a) {
@@ -2430,7 +2430,7 @@ function f({}, a) {
       [],
     );
   });
-  test("emptyObjectBindingPatternParameter04", async () => {
+  test('emptyObjectBindingPatternParameter04', async () => {
     await expectPass(
       `
 function f({} = {a: 1, b: "2", c: true}) {
@@ -2439,7 +2439,7 @@ function f({} = {a: 1, b: "2", c: true}) {
       [],
     );
   });
-  test("emptyVariableDeclarationBindingPatterns01_ES5", async () => {
+  test('emptyVariableDeclarationBindingPatterns01_ES5', async () => {
     await expectPass(
       `
 (function () {
@@ -2493,7 +2493,7 @@ function f({} = {a: 1, b: "2", c: true}) {
       [],
     );
   });
-  test("emptyVariableDeclarationBindingPatterns01_ES5iterable", async () => {
+  test('emptyVariableDeclarationBindingPatterns01_ES5iterable', async () => {
     await expectPass(
       `
 (function () {
@@ -2547,7 +2547,7 @@ function f({} = {a: 1, b: "2", c: true}) {
       [],
     );
   });
-  test("emptyVariableDeclarationBindingPatterns01_ES6", async () => {
+  test('emptyVariableDeclarationBindingPatterns01_ES6', async () => {
     await expectPass(
       `
 (function () {
@@ -2601,7 +2601,7 @@ function f({} = {a: 1, b: "2", c: true}) {
       [],
     );
   });
-  test("emptyVariableDeclarationBindingPatterns02_ES5", async () => {
+  test('emptyVariableDeclarationBindingPatterns02_ES5', async () => {
     await expectError(
       `
 (function () {
@@ -2616,7 +2616,7 @@ function f({} = {a: 1, b: "2", c: true}) {
       [],
     );
   });
-  test("emptyVariableDeclarationBindingPatterns02_ES5iterable", async () => {
+  test('emptyVariableDeclarationBindingPatterns02_ES5iterable', async () => {
     await expectError(
       `
 (function () {
@@ -2631,7 +2631,7 @@ function f({} = {a: 1, b: "2", c: true}) {
       [],
     );
   });
-  test("emptyVariableDeclarationBindingPatterns02_ES6", async () => {
+  test('emptyVariableDeclarationBindingPatterns02_ES6', async () => {
     await expectError(
       `
 (function () {
@@ -2646,7 +2646,7 @@ function f({} = {a: 1, b: "2", c: true}) {
       [],
     );
   });
-  test("iterableArrayPattern1", async () => {
+  test('iterableArrayPattern1', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -2665,7 +2665,7 @@ var [a, b] = new SymbolIterator;`,
       [],
     );
   });
-  test("iterableArrayPattern10", async () => {
+  test('iterableArrayPattern10', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2687,7 +2687,7 @@ fun(new FooIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern11", async () => {
+  test('iterableArrayPattern11', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2710,7 +2710,7 @@ fun(new FooIterator);
       [],
     );
   });
-  test("iterableArrayPattern12", async () => {
+  test('iterableArrayPattern12', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2732,7 +2732,7 @@ fun(new FooIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern13", async () => {
+  test('iterableArrayPattern13', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2754,7 +2754,7 @@ fun(new FooIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern14", async () => {
+  test('iterableArrayPattern14', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2776,7 +2776,7 @@ fun(new FooIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern15", async () => {
+  test('iterableArrayPattern15', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2798,7 +2798,7 @@ fun(...new FooIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern16", async () => {
+  test('iterableArrayPattern16', async () => {
     await expectPass(
       `function fun(...[a, b]: [Bar, Bar][]) { }
 fun(...new FooIteratorIterator);
@@ -2832,7 +2832,7 @@ class FooIteratorIterator {
       [],
     );
   });
-  test("iterableArrayPattern17", async () => {
+  test('iterableArrayPattern17', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2854,7 +2854,7 @@ fun(new FooIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern18", async () => {
+  test('iterableArrayPattern18', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2876,7 +2876,7 @@ fun(new FooIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern19", async () => {
+  test('iterableArrayPattern19', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2898,7 +2898,7 @@ fun(new FooArrayIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern2", async () => {
+  test('iterableArrayPattern2', async () => {
     await expectPass(
       `class SymbolIterator {
     next() {
@@ -2917,7 +2917,7 @@ var [a, ...b] = new SymbolIterator;`,
       [],
     );
   });
-  test("iterableArrayPattern20", async () => {
+  test('iterableArrayPattern20', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -2939,62 +2939,62 @@ fun(...new FooArrayIterator);`,
       [],
     );
   });
-  test("iterableArrayPattern21", async () => {
+  test('iterableArrayPattern21', async () => {
     await expectPass(`var [a, b] = { 0: "", 1: true };`, []);
   });
-  test("iterableArrayPattern22", async () => {
+  test('iterableArrayPattern22', async () => {
     await expectPass(`var [...a] = { 0: "", 1: true };`, []);
   });
-  test("iterableArrayPattern23", async () => {
+  test('iterableArrayPattern23', async () => {
     await expectPass(
       `var a: string, b: boolean;
 [a, b] = { 0: "", 1: true };`,
       [],
     );
   });
-  test("iterableArrayPattern24", async () => {
+  test('iterableArrayPattern24', async () => {
     await expectPass(
       `var a: string, b: boolean[];
 [a, ...b] = { 0: "", 1: true };`,
       [],
     );
   });
-  test("iterableArrayPattern25", async () => {
+  test('iterableArrayPattern25', async () => {
     await expectPass(
       `function takeFirstTwoEntries(...[[k1, v1], [k2, v2]]) { }
 takeFirstTwoEntries(new Map([["", 0], ["hello", 1]]));`,
       [],
     );
   });
-  test("iterableArrayPattern26", async () => {
+  test('iterableArrayPattern26', async () => {
     await expectPass(
       `function takeFirstTwoEntries(...[[k1, v1], [k2, v2]]: [string, number][]) { }
 takeFirstTwoEntries(new Map([["", 0], ["hello", 1]]));`,
       [],
     );
   });
-  test("iterableArrayPattern27", async () => {
+  test('iterableArrayPattern27', async () => {
     await expectPass(
       `function takeFirstTwoEntries(...[[k1, v1], [k2, v2]]: [string, number][]) { }
 takeFirstTwoEntries(...new Map([["", 0], ["hello", 1]]));`,
       [],
     );
   });
-  test("iterableArrayPattern28", async () => {
+  test('iterableArrayPattern28', async () => {
     await expectPass(
       `function takeFirstTwoEntries(...[[k1, v1], [k2, v2]]: [string, number][]) { }
 takeFirstTwoEntries(...new Map([["", 0], ["hello", true]]));`,
       [],
     );
   });
-  test("iterableArrayPattern29", async () => {
+  test('iterableArrayPattern29', async () => {
     await expectPass(
       `function takeFirstTwoEntries(...[[k1, v1], [k2, v2]]: [string, number][]) { }
 takeFirstTwoEntries(...new Map([["", true], ["hello", true]]));`,
       [],
     );
   });
-  test("iterableArrayPattern3", async () => {
+  test('iterableArrayPattern3', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -3016,10 +3016,10 @@ var a: Bar, b: Bar;
       [],
     );
   });
-  test("iterableArrayPattern30", async () => {
+  test('iterableArrayPattern30', async () => {
     await expectPass(`const [[k1, v1], [k2, v2]] = new Map([["", true], ["hello", true]])`, []);
   });
-  test("iterableArrayPattern4", async () => {
+  test('iterableArrayPattern4', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -3041,7 +3041,7 @@ var a: Bar, b: Bar[];
       [],
     );
   });
-  test("iterableArrayPattern5", async () => {
+  test('iterableArrayPattern5', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -3063,7 +3063,7 @@ var a: Bar, b: string;
       [],
     );
   });
-  test("iterableArrayPattern6", async () => {
+  test('iterableArrayPattern6', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -3085,7 +3085,7 @@ var a: Bar, b: string[];
       [],
     );
   });
-  test("iterableArrayPattern7", async () => {
+  test('iterableArrayPattern7', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -3107,7 +3107,7 @@ var a: Bar, b: string[];
       [],
     );
   });
-  test("iterableArrayPattern8", async () => {
+  test('iterableArrayPattern8', async () => {
     await expectPass(
       `class Bar { x }
 class Foo extends Bar { y }
@@ -3129,7 +3129,7 @@ var a: Bar, b: string;
       [],
     );
   });
-  test("iterableArrayPattern9", async () => {
+  test('iterableArrayPattern9', async () => {
     await expectPass(
       `function fun([a, b] = new FooIterator) { }
 class Bar { x }
@@ -3149,7 +3149,7 @@ class FooIterator {
       [],
     );
   });
-  test("missingAndExcessProperties", async () => {
+  test('missingAndExcessProperties', async () => {
     await expectPass(
       `// Missing properties
 function f1() {
@@ -3188,28 +3188,28 @@ function f4() {
       [],
     );
   });
-  test("nonIterableRestElement1", async () => {
+  test('nonIterableRestElement1', async () => {
     await expectPass(
       `var c = {};
 [...c] = ["", 0];`,
       [],
     );
   });
-  test("nonIterableRestElement2", async () => {
+  test('nonIterableRestElement2', async () => {
     await expectPass(
       `var c = {};
 [...c] = ["", 0];`,
       [],
     );
   });
-  test("nonIterableRestElement3", async () => {
+  test('nonIterableRestElement3', async () => {
     await expectPass(
       `var c = { bogus: 0 };
 [...c] = ["", 0];`,
       [],
     );
   });
-  test("objectBindingPatternKeywordIdentifiers01", async () => {
+  test('objectBindingPatternKeywordIdentifiers01', async () => {
     await expectError(
       `// @target: es2015
 
@@ -3217,7 +3217,7 @@ var { while } = { while: 1 }`,
       [],
     );
   });
-  test("objectBindingPatternKeywordIdentifiers02", async () => {
+  test('objectBindingPatternKeywordIdentifiers02', async () => {
     await expectError(
       `// @target: es2015
 
@@ -3225,7 +3225,7 @@ var { while: while } = { while: 1 }`,
       [],
     );
   });
-  test("objectBindingPatternKeywordIdentifiers03", async () => {
+  test('objectBindingPatternKeywordIdentifiers03', async () => {
     await expectError(
       `// @target: es2015
 
@@ -3233,7 +3233,7 @@ var { "while" } = { while: 1 }`,
       [],
     );
   });
-  test("objectBindingPatternKeywordIdentifiers04", async () => {
+  test('objectBindingPatternKeywordIdentifiers04', async () => {
     await expectError(
       `// @target: es2015
 
@@ -3241,7 +3241,7 @@ var { "while": while } = { while: 1 }`,
       [],
     );
   });
-  test("objectBindingPatternKeywordIdentifiers05", async () => {
+  test('objectBindingPatternKeywordIdentifiers05', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -3249,7 +3249,7 @@ var { as } = { as: 1 }`,
       [],
     );
   });
-  test("objectBindingPatternKeywordIdentifiers06", async () => {
+  test('objectBindingPatternKeywordIdentifiers06', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -3257,7 +3257,7 @@ var { as: as } = { as: 1 }`,
       [],
     );
   });
-  test("optionalBindingParameters1", async () => {
+  test('optionalBindingParameters1', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -3271,7 +3271,7 @@ foo([false, 0, ""]);`,
       [],
     );
   });
-  test("optionalBindingParameters2", async () => {
+  test('optionalBindingParameters2', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -3285,7 +3285,7 @@ foo({ x: false, y: 0, z: "" });`,
       [],
     );
   });
-  test("optionalBindingParameters3", async () => {
+  test('optionalBindingParameters3', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -3302,7 +3302,7 @@ function f({ a = "a" }) {}
       [],
     );
   });
-  test("optionalBindingParameters4", async () => {
+  test('optionalBindingParameters4', async () => {
     await expectPass(
       `
 /** 
@@ -3315,7 +3315,7 @@ function foo({ cause } = {}) {
       [],
     );
   });
-  test("optionalBindingParametersInOverloads1", async () => {
+  test('optionalBindingParametersInOverloads1', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -3330,7 +3330,7 @@ foo([false, 0, ""]);`,
       [],
     );
   });
-  test("optionalBindingParametersInOverloads2", async () => {
+  test('optionalBindingParametersInOverloads2', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -3345,21 +3345,21 @@ foo({ x: false, y: 0, z: "" });`,
       [],
     );
   });
-  test("restElementWithAssignmentPattern1", async () => {
+  test('restElementWithAssignmentPattern1', async () => {
     await expectPass(
       `var a: string, b: number;
 [...[a, b = 0]] = ["", 1];`,
       [],
     );
   });
-  test("restElementWithAssignmentPattern2", async () => {
+  test('restElementWithAssignmentPattern2', async () => {
     await expectPass(
       `var a: string, b: number;
 [...{ 0: a = "", b }] = ["", 1];`,
       [],
     );
   });
-  test("restElementWithAssignmentPattern3", async () => {
+  test('restElementWithAssignmentPattern3', async () => {
     await expectPass(
       `var a: string, b: number;
 var tuple: [string, number] = ["", 1];
@@ -3367,7 +3367,7 @@ var tuple: [string, number] = ["", 1];
       [],
     );
   });
-  test("restElementWithAssignmentPattern4", async () => {
+  test('restElementWithAssignmentPattern4', async () => {
     await expectPass(
       `var a: string, b: number;
 var tuple: [string, number] = ["", 1];
@@ -3375,20 +3375,20 @@ var tuple: [string, number] = ["", 1];
       [],
     );
   });
-  test("restElementWithAssignmentPattern5", async () => {
+  test('restElementWithAssignmentPattern5', async () => {
     await expectPass(
       `var s: string, s2: string;
 [...[s, s2]] = ["", ""];`,
       [],
     );
   });
-  test("restElementWithBindingPattern", async () => {
+  test('restElementWithBindingPattern', async () => {
     await expectPass(`var [...[a, b]] = [0, 1];`, []);
   });
-  test("restElementWithBindingPattern2", async () => {
+  test('restElementWithBindingPattern2', async () => {
     await expectPass(`var [...{0: a, b }] = [0, 1];`, []);
   });
-  test("restElementWithInitializer1", async () => {
+  test('restElementWithInitializer1', async () => {
     await expectError(
       `declare var a: number[];
 var [...x = a] = a;  // Error, rest element cannot have initializer
@@ -3396,7 +3396,7 @@ var [...x = a] = a;  // Error, rest element cannot have initializer
       [],
     );
   });
-  test("restElementWithInitializer2", async () => {
+  test('restElementWithInitializer2', async () => {
     await expectError(
       `declare var a: number[];
 var x: number[];
@@ -3405,7 +3405,7 @@ var x: number[];
       [],
     );
   });
-  test("restElementWithNullInitializer", async () => {
+  test('restElementWithNullInitializer', async () => {
     await expectPass(
       `function foo1([...r] = null) {
 }
@@ -3422,7 +3422,7 @@ function foo4([...r] = []) {
       [],
     );
   });
-  test("restPropertyWithBindingPattern", async () => {
+  test('restPropertyWithBindingPattern', async () => {
     await expectError(
       `({...{}} = {});
 ({...({})} = {});

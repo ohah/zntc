@@ -16,10 +16,10 @@
  * 와 같은 디렉토리에 두면 root 옵션을 모든 entry 가 상속.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, join, resolve as pathResolve } from "node:path";
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { basename, join, resolve as pathResolve } from 'node:path';
 
-import { isPlainObject } from "../index";
+import { isPlainObject } from '../index';
 import {
   type ConfigEnv,
   defaultConfigEnv,
@@ -27,9 +27,9 @@ import {
   loadConfig,
   loadModuleDefault,
   type UserConfig,
-} from "./config-loader.ts";
+} from './config-loader.ts';
 
-const CONFIG_EXT_PRIORITY_LOCAL = [".ts", ".mts", ".cts", ".mjs", ".js", ".cjs", ".json"] as const;
+const CONFIG_EXT_PRIORITY_LOCAL = ['.ts', '.mts', '.cts', '.mjs', '.js', '.cjs', '.json'] as const;
 
 /**
  * 디렉토리 경로 또는 단일 `*` 가 포함된 glob.
@@ -139,19 +139,19 @@ export function findWorkspacePath(cwd: string): string | null {
  */
 export async function loadWorkspace(filePath: string, env?: ConfigEnv): Promise<Workspace> {
   const absPath = pathResolve(filePath);
-  const raw = await loadModuleDefault<WorkspaceInput>(absPath, "workspace", { allowArray: true });
+  const raw = await loadModuleDefault<WorkspaceInput>(absPath, 'workspace', { allowArray: true });
 
   const entries: unknown =
-    typeof raw === "function" ? await (raw as WorkspaceFn)(env ?? defaultConfigEnv()) : raw;
+    typeof raw === 'function' ? await (raw as WorkspaceFn)(env ?? defaultConfigEnv()) : raw;
 
   if (!Array.isArray(entries)) {
-    const got = entries === null ? "null" : typeof entries;
+    const got = entries === null ? 'null' : typeof entries;
     throw new Error(`@zts/core: workspace must export an array (got ${got}) from ${absPath}`);
   }
 
   for (let i = 0; i < entries.length; i += 1) {
     const e = entries[i];
-    if (typeof e === "string") {
+    if (typeof e === 'string') {
       if (!e.length) {
         throw new Error(`@zts/core: workspace[${i}] is empty string in ${absPath}`);
       }
@@ -160,12 +160,12 @@ export async function loadWorkspace(filePath: string, env?: ConfigEnv): Promise<
     if (!isPlainObject(e)) {
       throw new Error(
         `@zts/core: workspace[${i}] must be a string or object (got ${
-          Array.isArray(e) ? "array" : e === null ? "null" : typeof e
+          Array.isArray(e) ? 'array' : e === null ? 'null' : typeof e
         }) in ${absPath}`,
       );
     }
     const name = (e as { name?: unknown }).name;
-    if (typeof name !== "string" || !name) {
+    if (typeof name !== 'string' || !name) {
       throw new Error(
         `@zts/core: workspace[${i}] inline entry requires non-empty 'name' in ${absPath}`,
       );
@@ -186,7 +186,7 @@ export interface IdentifiedWorkspace {
   /** 매칭/지정된 cwd 절대 경로. */
   cwd: string;
   /** 어떤 entry 형식에서 왔는지. */
-  source: "path" | "glob" | "inline";
+  source: 'path' | 'glob' | 'inline';
   /** inline 인 경우 미리 알려진 config (name 필드는 제외). path/glob 는 `null` — 디스크에서 로드 필요. */
   inlineConfig: UserConfig | null;
 }
@@ -230,14 +230,14 @@ export function identifyWorkspaceEntries(
   };
 
   for (const entry of entries) {
-    if (typeof entry === "string") {
-      if (entry.includes("*")) {
+    if (typeof entry === 'string') {
+      if (entry.includes('*')) {
         for (const dir of expandGlob(entry, rootDir)) {
-          push({ name: detectPackageName(dir), cwd: dir, source: "glob", inlineConfig: null });
+          push({ name: detectPackageName(dir), cwd: dir, source: 'glob', inlineConfig: null });
         }
       } else {
         const abs = pathResolve(rootDir, entry);
-        push({ name: detectPackageName(abs), cwd: abs, source: "path", inlineConfig: null });
+        push({ name: detectPackageName(abs), cwd: abs, source: 'path', inlineConfig: null });
       }
       continue;
     }
@@ -245,7 +245,7 @@ export function identifyWorkspaceEntries(
     push({
       name,
       cwd: rootDir,
-      source: "inline",
+      source: 'inline',
       inlineConfig: rest as UserConfig,
     });
   }
@@ -285,24 +285,24 @@ export async function loadIdentifiedConfig(
  * @returns 매칭된 절대 디렉토리 경로 (정렬됨).
  */
 function expandGlob(pattern: string, rootDir: string): string[] {
-  if (pattern.includes("**")) {
+  if (pattern.includes('**')) {
     throw new Error(
       `@zts/core: workspace glob '**' is not supported (got '${pattern}'). Use single-level '*' patterns.`,
     );
   }
-  const lastSep = pattern.lastIndexOf("/");
+  const lastSep = pattern.lastIndexOf('/');
   if (lastSep === -1) {
     // 패턴이 단일 segment ("*foo") — rootDir 직속 디렉토리에서 매칭.
     return enumerateDirs(rootDir, pattern);
   }
   const dirPart = pattern.slice(0, lastSep);
   const namePart = pattern.slice(lastSep + 1);
-  if (dirPart.includes("*")) {
+  if (dirPart.includes('*')) {
     throw new Error(
       `@zts/core: workspace glob with '*' in directory part is not supported (got '${pattern}'). Use trailing-only '*'.`,
     );
   }
-  if (!namePart.includes("*")) {
+  if (!namePart.includes('*')) {
     // glob 인 줄 알았지만 실제로는 정적 경로 — string path 로 처리.
     return [pathResolve(rootDir, pattern)];
   }
@@ -320,8 +320,8 @@ function enumerateDirs(baseDir: string, namePattern: string): string[] {
   const out: string[] = [];
   for (const d of readdirSync(baseDir, { withFileTypes: true })) {
     if (!d.isDirectory()) continue;
-    if (d.name.startsWith(".")) continue;
-    if (d.name === "node_modules") continue;
+    if (d.name.startsWith('.')) continue;
+    if (d.name === 'node_modules') continue;
     if (matcher(d.name)) out.push(join(baseDir, d.name));
   }
   out.sort();
@@ -333,9 +333,9 @@ function enumerateDirs(baseDir: string, namePattern: string): string[] {
  * `pattern === "*"` 는 fast path 로 항상 true 반환.
  */
 function makeStarMatcher(pattern: string): (s: string) => boolean {
-  if (pattern === "*") return () => true;
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-  const re = new RegExp("^" + escaped + "$");
+  if (pattern === '*') return () => true;
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  const re = new RegExp('^' + escaped + '$');
   return (s) => re.test(s);
 }
 
@@ -345,11 +345,11 @@ function makeStarMatcher(pattern: string): (s: string) => boolean {
  * 디렉토리도 의미 있는 식별자를 갖도록).
  */
 function detectPackageName(absDir: string): string {
-  const pkgPath = join(absDir, "package.json");
+  const pkgPath = join(absDir, 'package.json');
   if (existsSync(pkgPath)) {
     try {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { name?: unknown };
-      if (typeof pkg.name === "string" && pkg.name) return pkg.name;
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { name?: unknown };
+      if (typeof pkg.name === 'string' && pkg.name) return pkg.name;
     } catch {
       // fall through to dirname
     }
@@ -379,9 +379,9 @@ export function filterWorkspaces<T extends { name: string }>(
   if (!filter) return workspaces;
   const filtered = workspaces.filter((w) => w.name === filter);
   if (filtered.length === 0) {
-    const available = workspaces.map((w) => w.name).join(", ");
+    const available = workspaces.map((w) => w.name).join(', ');
     throw new Error(
-      `@zts/core: --workspace='${filter}' matched 0 entries (available: ${available || "<none>"})`,
+      `@zts/core: --workspace='${filter}' matched 0 entries (available: ${available || '<none>'})`,
     );
   }
   return filtered;

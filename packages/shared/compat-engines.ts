@@ -11,57 +11,57 @@
  */
 
 export type Engine =
-  | "chrome"
-  | "firefox"
-  | "safari"
-  | "edge"
-  | "node"
-  | "deno"
-  | "ios"
-  | "opera"
-  | "hermes";
+  | 'chrome'
+  | 'firefox'
+  | 'safari'
+  | 'edge'
+  | 'node'
+  | 'deno'
+  | 'ios'
+  | 'opera'
+  | 'hermes';
 
 /** compat.zig의 Feature enum과 동일 순서. bit 위치 = 배열 인덱스. */
 export const FEATURES = [
   // ES2015 (bit 0-10)
-  "arrow",
-  "class",
-  "template_literal",
-  "destructuring",
-  "for_of",
-  "spread",
-  "object_extensions",
-  "default_params",
-  "block_scoping",
-  "generator",
-  "new_target",
+  'arrow',
+  'class',
+  'template_literal',
+  'destructuring',
+  'for_of',
+  'spread',
+  'object_extensions',
+  'default_params',
+  'block_scoping',
+  'generator',
+  'new_target',
   // ES2016
-  "exponentiation",
+  'exponentiation',
   // ES2017
-  "async_await",
+  'async_await',
   // ES2018
-  "object_spread",
+  'object_spread',
   // ES2019
-  "optional_catch_binding",
+  'optional_catch_binding',
   // ES2020
-  "nullish_coalescing",
-  "optional_chaining",
+  'nullish_coalescing',
+  'optional_chaining',
   // ES2021
-  "logical_assignment",
+  'logical_assignment',
   // ES2022
-  "class_static_block",
-  "class_private_method",
-  "class_private_field",
-  "top_level_await",
+  'class_static_block',
+  'class_private_method',
+  'class_private_field',
+  'top_level_await',
   // ES2023
-  "hashbang",
+  'hashbang',
   // ES2025
-  "using",
+  'using',
   // Regex / unicode escape (compat.zig 와 동일 후행 순서. esVersion 은 esbuild 대응)
-  "regex_sticky", // ES2015
-  "regex_dotall", // ES2018
-  "regex_named_groups", // ES2018
-  "unicode_brace_escape", // ES2015
+  'regex_sticky', // ES2015
+  'regex_dotall', // ES2018
+  'regex_named_groups', // ES2018
+  'unicode_brace_escape', // ES2015
 ] as const;
 
 export type Feature = (typeof FEATURES)[number];

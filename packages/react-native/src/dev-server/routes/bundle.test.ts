@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { describe, expect, test } from 'bun:test';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import type { WatchHandle } from "@zts/core";
+import type { WatchHandle } from '@zts/core';
 
-import type { PlatformState, PlatformStateRegistry } from "../platform-state.ts";
+import type { PlatformState, PlatformStateRegistry } from '../platform-state.ts';
 import {
   handleBundleRequest,
   handleHmrMapRequest,
@@ -11,7 +11,7 @@ import {
   isBundleRoute,
   isHmrMapRoute,
   isMapRoute,
-} from "./bundle.ts";
+} from './bundle.ts';
 
 interface MockRes {
   statusCode?: number;
@@ -40,7 +40,7 @@ function makeRes(): MockRes {
   };
 }
 
-function makeReq(host = "x:8081", accept?: string): IncomingMessage {
+function makeReq(host = 'x:8081', accept?: string): IncomingMessage {
   return {
     headers: { host, ...(accept ? { accept } : {}) },
   } as unknown as IncomingMessage;
@@ -61,9 +61,9 @@ function fakeHandle(
 
 function makeState(overrides: Partial<PlatformState> = {}): PlatformState {
   return {
-    platform: "ios",
-    outputDir: "/tmp",
-    outputPath: "/tmp/b.js",
+    platform: 'ios',
+    outputDir: '/tmp',
+    outputPath: '/tmp/b.js',
     handle: fakeHandle(),
     bundle: null,
     sourceMapCache: null,
@@ -85,105 +85,105 @@ function fixedRegistry(state: PlatformState): PlatformStateRegistry {
   };
 }
 
-describe("isBundleRoute / isMapRoute / isHmrMapRoute", () => {
-  test("/index.bundle / .bundle.js / .map / .bundle.map 매치", () => {
-    expect(isBundleRoute("/index.bundle")).toBe(true);
-    expect(isBundleRoute("/index.bundle.js")).toBe(true);
-    expect(isMapRoute("/index.map")).toBe(true);
-    expect(isMapRoute("/index.bundle.map")).toBe(true);
+describe('isBundleRoute / isMapRoute / isHmrMapRoute', () => {
+  test('/index.bundle / .bundle.js / .map / .bundle.map 매치', () => {
+    expect(isBundleRoute('/index.bundle')).toBe(true);
+    expect(isBundleRoute('/index.bundle.js')).toBe(true);
+    expect(isMapRoute('/index.map')).toBe(true);
+    expect(isMapRoute('/index.bundle.map')).toBe(true);
   });
 
-  test("/__zts_hmr_map/<id>", () => {
-    expect(isHmrMapRoute("/__zts_hmr_map/foo")).toBe(true);
-    expect(isHmrMapRoute("/foo")).toBe(false);
+  test('/__zts_hmr_map/<id>', () => {
+    expect(isHmrMapRoute('/__zts_hmr_map/foo')).toBe(true);
+    expect(isHmrMapRoute('/foo')).toBe(false);
   });
 });
 
-describe("handleBundleRequest", () => {
-  test("buildError → 200 + throw new Error JS", async () => {
-    const state = makeState({ buildError: "syntax error" });
+describe('handleBundleRequest', () => {
+  test('buildError → 200 + throw new Error JS', async () => {
+    const state = makeState({ buildError: 'syntax error' });
     const registry = fixedRegistry(state);
     const res = makeRes();
     await handleBundleRequest(
       makeReq() as never,
       res as unknown as ServerResponse,
-      new URL("http://x/index.bundle?platform=ios"),
+      new URL('http://x/index.bundle?platform=ios'),
       registry,
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       8081,
     );
     expect(res.statusCode).toBe(200);
-    expect(res.chunks.join("")).toContain("throw new Error");
-    expect(res.chunks.join("")).toContain("syntax error");
+    expect(res.chunks.join('')).toContain('throw new Error');
+    expect(res.chunks.join('')).toContain('syntax error');
   });
 
-  test("bundle === null + buildError === null + already-set bundle 없음 → 503", async () => {
+  test('bundle === null + buildError === null + already-set bundle 없음 → 503', async () => {
     // buildError 도 bundle 도 둘 다 null 이면 waitForBuild polling 으로 빠짐 — 즉시
     // 503 검증을 위해 두 번째 path: bundle 이 한 번도 없는 상태에서 setTimeout 으로
     // buildError 를 null 인 채로 남기는 것은 무한 polling 이라 실용적이지 않음.
     // 대신 bundle 이 빈 문자열 인 케이스를 검증.
-    const state = makeState({ bundle: "" });
+    const state = makeState({ bundle: '' });
     const registry = fixedRegistry(state);
     const res = makeRes();
     await handleBundleRequest(
       makeReq() as never,
       res as unknown as ServerResponse,
-      new URL("http://x/index.bundle"),
+      new URL('http://x/index.bundle'),
       registry,
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       8081,
     );
     expect(res.statusCode).toBe(503);
   });
 
-  test("정상 bundle — plain (sourceMappingURL + sourceURL 주입)", async () => {
-    const state = makeState({ bundle: "console.log(1);" });
+  test('정상 bundle — plain (sourceMappingURL + sourceURL 주입)', async () => {
+    const state = makeState({ bundle: 'console.log(1);' });
     const registry = fixedRegistry(state);
     const res = makeRes();
     await handleBundleRequest(
-      makeReq("x:8081") as never,
+      makeReq('x:8081') as never,
       res as unknown as ServerResponse,
-      new URL("http://x:8081/index.bundle?platform=ios&dev=true"),
+      new URL('http://x:8081/index.bundle?platform=ios&dev=true'),
       registry,
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       8081,
     );
     expect(res.statusCode).toBe(200);
-    expect(res.headers!["Content-Type"]).toBe("application/javascript; charset=UTF-8");
-    expect(res.headers!["X-React-Native-Project-Root"]).toBe("/proj");
-    const body = res.chunks.join("");
-    expect(body).toContain("console.log(1);");
-    expect(body).toContain("//# sourceMappingURL=http://x:8081/index.map?platform=ios&dev=true");
-    expect(body).toContain("//# sourceURL=");
+    expect(res.headers!['Content-Type']).toBe('application/javascript; charset=UTF-8');
+    expect(res.headers!['X-React-Native-Project-Root']).toBe('/proj');
+    const body = res.chunks.join('');
+    expect(body).toContain('console.log(1);');
+    expect(body).toContain('//# sourceMappingURL=http://x:8081/index.map?platform=ios&dev=true');
+    expect(body).toContain('//# sourceURL=');
   });
 
-  test("multipart/mixed accept → progress + bundle chunks", async () => {
-    const state = makeState({ bundle: "code;", fileCount: 3 });
+  test('multipart/mixed accept → progress + bundle chunks', async () => {
+    const state = makeState({ bundle: 'code;', fileCount: 3 });
     const registry = fixedRegistry(state);
     const res = makeRes();
     await handleBundleRequest(
-      makeReq("x:8081", "multipart/mixed") as never,
+      makeReq('x:8081', 'multipart/mixed') as never,
       res as unknown as ServerResponse,
-      new URL("http://x:8081/index.bundle?platform=ios"),
+      new URL('http://x:8081/index.bundle?platform=ios'),
       registry,
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       8081,
     );
     expect(res.statusCode).toBe(200);
-    expect(res.headers!["Content-Type"] as string).toContain("multipart/mixed");
-    const all = res.chunks.join("");
+    expect(res.headers!['Content-Type'] as string).toContain('multipart/mixed');
+    const all = res.chunks.join('');
     expect(all).toContain('{"done":3,"total":3}');
-    expect(all).toContain("X-Metro-Files-Changed-Count: 3");
-    expect(all).toContain("X-Metro-Delta-ID:");
-    expect(all).toContain("code;");
+    expect(all).toContain('X-Metro-Files-Changed-Count: 3');
+    expect(all).toContain('X-Metro-Delta-ID:');
+    expect(all).toContain('code;');
   });
 
-  test("platform=android query → registry getOrCreate 호출", async () => {
-    const state = makeState({ platform: "android", bundle: "x" });
+  test('platform=android query → registry getOrCreate 호출', async () => {
+    const state = makeState({ platform: 'android', bundle: 'x' });
     const map = new Map<string, PlatformState>();
     const recordedRequests: string[] = [];
     const registry: PlatformStateRegistry = {
@@ -199,17 +199,17 @@ describe("handleBundleRequest", () => {
     await handleBundleRequest(
       makeReq() as never,
       res as unknown as ServerResponse,
-      new URL("http://x/index.bundle?platform=android"),
+      new URL('http://x/index.bundle?platform=android'),
       registry,
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       8081,
     );
-    expect(recordedRequests).toEqual(["android"]);
+    expect(recordedRequests).toEqual(['android']);
   });
 
-  test("platform 미지정 → defaultPlatform", async () => {
-    const state = makeState({ bundle: "x" });
+  test('platform 미지정 → defaultPlatform', async () => {
+    const state = makeState({ bundle: 'x' });
     const recorded: string[] = [];
     const registry: PlatformStateRegistry = {
       platforms: new Map(),
@@ -222,17 +222,17 @@ describe("handleBundleRequest", () => {
     await handleBundleRequest(
       makeReq() as never,
       makeRes() as unknown as ServerResponse,
-      new URL("http://x/index.bundle"),
+      new URL('http://x/index.bundle'),
       registry,
-      "android",
-      "/proj",
+      'android',
+      '/proj',
       8081,
     );
-    expect(recorded).toEqual(["android"]);
+    expect(recorded).toEqual(['android']);
   });
 
-  test("platform query 가 invalid → defaultPlatform", async () => {
-    const state = makeState({ bundle: "x" });
+  test('platform query 가 invalid → defaultPlatform', async () => {
+    const state = makeState({ bundle: 'x' });
     const recorded: string[] = [];
     const registry: PlatformStateRegistry = {
       platforms: new Map(),
@@ -245,21 +245,21 @@ describe("handleBundleRequest", () => {
     await handleBundleRequest(
       makeReq() as never,
       makeRes() as unknown as ServerResponse,
-      new URL("http://x/index.bundle?platform=web"),
+      new URL('http://x/index.bundle?platform=web'),
       registry,
-      "ios",
-      "/proj",
+      'ios',
+      '/proj',
       8081,
     );
-    expect(recorded).toEqual(["ios"]);
+    expect(recorded).toEqual(['ios']);
   });
 });
 
-describe("handleMapRequest", () => {
-  test("cached source map → 200 + JSON", () => {
+describe('handleMapRequest', () => {
+  test('cached source map → 200 + JSON', () => {
     const state = makeState({
       handle: fakeHandle({
-        bundleMap: JSON.stringify({ version: 3, sources: ["a.js"] }),
+        bundleMap: JSON.stringify({ version: 3, sources: ['a.js'] }),
       }),
     });
     const registry = fixedRegistry(state);
@@ -267,58 +267,58 @@ describe("handleMapRequest", () => {
     handleMapRequest(
       {} as never,
       res as unknown as ServerResponse,
-      new URL("http://x/index.map?platform=ios"),
+      new URL('http://x/index.map?platform=ios'),
       registry,
-      "ios",
+      'ios',
     );
     expect(res.statusCode).toBe(200);
-    expect(res.headers!["Content-Type"]).toBe("application/json");
-    expect(JSON.parse(res.chunks.join("")).version).toBe(3);
+    expect(res.headers!['Content-Type']).toBe('application/json');
+    expect(JSON.parse(res.chunks.join('')).version).toBe(3);
   });
 
-  test("source map 없음 → 404", () => {
+  test('source map 없음 → 404', () => {
     const state = makeState();
     const registry = fixedRegistry(state);
     const res = makeRes();
     handleMapRequest(
       {} as never,
       res as unknown as ServerResponse,
-      new URL("http://x/index.map"),
+      new URL('http://x/index.map'),
       registry,
-      "ios",
+      'ios',
     );
     expect(res.statusCode).toBe(404);
   });
 });
 
-describe("handleHmrMapRequest", () => {
-  test("module 매치 → 200 + JSON", () => {
+describe('handleHmrMapRequest', () => {
+  test('module 매치 → 200 + JSON', () => {
     const state = makeState({
-      handle: fakeHandle({ hmrMaps: { "src/x.ts": '{"v":3,"id":"x"}' } }),
+      handle: fakeHandle({ hmrMaps: { 'src/x.ts': '{"v":3,"id":"x"}' } }),
     });
     const registry = fixedRegistry(state);
     const res = makeRes();
     handleHmrMapRequest(
       {} as never,
       res as unknown as ServerResponse,
-      new URL("http://x/__zts_hmr_map/src%2Fx.ts?platform=ios"),
+      new URL('http://x/__zts_hmr_map/src%2Fx.ts?platform=ios'),
       registry,
-      "ios",
+      'ios',
     );
     expect(res.statusCode).toBe(200);
-    expect(res.chunks.join("")).toContain('"id":"x"');
+    expect(res.chunks.join('')).toContain('"id":"x"');
   });
 
-  test("module 미매치 → 404", () => {
+  test('module 미매치 → 404', () => {
     const state = makeState();
     const registry = fixedRegistry(state);
     const res = makeRes();
     handleHmrMapRequest(
       {} as never,
       res as unknown as ServerResponse,
-      new URL("http://x/__zts_hmr_map/missing"),
+      new URL('http://x/__zts_hmr_map/missing'),
       registry,
-      "ios",
+      'ios',
     );
     expect(res.statusCode).toBe(404);
   });

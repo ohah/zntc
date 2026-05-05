@@ -1,6 +1,6 @@
-import { type Dirent, readdirSync } from "node:fs";
-import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { type Dirent, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join, resolve } from 'node:path';
 
 export interface NodeRequire {
   (specifier: string): unknown;
@@ -16,7 +16,7 @@ export function requireFromAppRoot(
   fallbackRequire: NodeRequire,
   specifier: string,
 ): unknown {
-  const requireFromRoot = createRequire(join(root, "package.json")) as unknown as NodeRequire;
+  const requireFromRoot = createRequire(join(root, 'package.json')) as unknown as NodeRequire;
   return requireFromAppOrFallback(requireFromRoot, fallbackRequire, specifier);
 }
 
@@ -34,7 +34,7 @@ export function requireFromAppOrFallback(
     return requireFromApp(specifier);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
-    if (code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") throw err;
+    if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_MODULE_NOT_FOUND') throw err;
     return fallbackRequire(specifier);
   }
 }
@@ -56,7 +56,7 @@ function readEntriesOrEmpty(dir: string): Dirent[] {
   try {
     return readdirSync(dir, { withFileTypes: true });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
   }
 }
@@ -68,7 +68,7 @@ function walkFiles(
   out: string[],
 ): void {
   for (const entry of readEntriesOrEmpty(dir)) {
-    if (entry.name === "node_modules" || entry.name === ".git") continue;
+    if (entry.name === 'node_modules' || entry.name === '.git') continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (skipResolved && resolve(path) === skipResolved) continue;

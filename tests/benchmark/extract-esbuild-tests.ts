@@ -6,13 +6,13 @@
  * 사용법: bun run extract-esbuild-tests.ts > esbuild-ts-cases.json
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
-const ROOT = resolve(__dirname, "../..");
-const TEST_FILE = resolve(ROOT, "references/esbuild/internal/js_parser/ts_parser_test.go");
+const ROOT = resolve(__dirname, '../..');
+const TEST_FILE = resolve(ROOT, 'references/esbuild/internal/js_parser/ts_parser_test.go');
 
-const source = readFileSync(TEST_FILE, "utf-8");
+const source = readFileSync(TEST_FILE, 'utf-8');
 
 interface TestCase {
   fn: string;
@@ -27,13 +27,13 @@ const cases: TestCase[] = [];
 // expectPrintedTS(t, `input`, `expected`)
 // expectPrintedTS(t, "input", "expected")
 const targetFns = [
-  "expectPrintedTS",
-  "expectPrintedTSX",
-  "expectPrintedExperimentalDecoratorTS",
-  "expectPrintedAssignSemanticsTS",
+  'expectPrintedTS',
+  'expectPrintedTSX',
+  'expectPrintedExperimentalDecoratorTS',
+  'expectPrintedAssignSemanticsTS',
 ];
 
-const lines = source.split("\n");
+const lines = source.split('\n');
 
 for (let i = 0; i < lines.length; i++) {
   const line = lines[i];
@@ -43,7 +43,7 @@ for (let i = 0; i < lines.length; i++) {
     if (idx === -1) continue;
 
     // 함수 호출 시작부터 끝까지 수집 (여러 줄에 걸칠 수 있음)
-    let chunk = "";
+    let chunk = '';
     let j = i;
     let parenDepth = 0;
     let started = false;
@@ -52,11 +52,11 @@ for (let i = 0; i < lines.length; i++) {
       const l = lines[j];
       for (let k = j === i ? idx : 0; k < l.length; k++) {
         const ch = l[k];
-        if (ch === "(") {
+        if (ch === '(') {
           parenDepth++;
           started = true;
         }
-        if (ch === ")") {
+        if (ch === ')') {
           parenDepth--;
           if (started && parenDepth === 0) {
             chunk += l.slice(0, k + 1);
@@ -64,12 +64,12 @@ for (let i = 0; i < lines.length; i++) {
           }
         }
       }
-      chunk += (j === i ? l.slice(idx) : l) + "\n";
+      chunk += (j === i ? l.slice(idx) : l) + '\n';
     }
 
     // 인자 추출: fn(t, arg1, arg2)
     // t 이후의 두 문자열 인자를 추출
-    const afterT = chunk.slice(chunk.indexOf("(t, ") + 4);
+    const afterT = chunk.slice(chunk.indexOf('(t, ') + 4);
 
     const args = extractTwoStringArgs(afterT);
     if (args) {
@@ -89,7 +89,7 @@ function extractTwoStringArgs(s: string): [string, string] | null {
 
   // 첫 번째 인자 이후 쉼표 찾기
   let rest = s.slice(first.end).trimStart();
-  if (!rest.startsWith(",")) return null;
+  if (!rest.startsWith(',')) return null;
   rest = rest.slice(1).trimStart();
 
   const second = extractString(rest);
@@ -102,32 +102,32 @@ function extractString(s: string): { value: string; end: number } | null {
   s = s.trimStart();
   const offset = s.length;
 
-  if (s.startsWith("`")) {
+  if (s.startsWith('`')) {
     // Go backtick string (raw string)
-    const end = s.indexOf("`", 1);
+    const end = s.indexOf('`', 1);
     if (end === -1) return null;
     return { value: s.slice(1, end), end: s.length - offset + end + 1 };
   }
 
   if (s.startsWith('"')) {
     // Go double-quoted string (with escapes)
-    let result = "";
+    let result = '';
     let i = 1;
     while (i < s.length) {
-      if (s[i] === "\\") {
+      if (s[i] === '\\') {
         i++;
-        if (s[i] === "n") {
-          result += "\n";
-        } else if (s[i] === "t") {
-          result += "\t";
-        } else if (s[i] === "\\") {
-          result += "\\";
+        if (s[i] === 'n') {
+          result += '\n';
+        } else if (s[i] === 't') {
+          result += '\t';
+        } else if (s[i] === '\\') {
+          result += '\\';
         } else if (s[i] === '"') {
           result += '"';
         } else if (s[i] === "'") {
           result += "'";
         } else {
-          result += "\\" + s[i];
+          result += '\\' + s[i];
         }
         i++;
       } else if (s[i] === '"') {

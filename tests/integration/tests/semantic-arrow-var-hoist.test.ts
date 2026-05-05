@@ -1,6 +1,6 @@
-import { describe, test, expect } from "bun:test";
-import { createFixture, ZTS_BIN } from "./helpers";
-import { resolve } from "node:path";
+import { describe, test, expect } from 'bun:test';
+import { createFixture, ZTS_BIN } from './helpers';
+import { resolve } from 'node:path';
 
 /**
  * Regression: arrow function body 의 `var` / `function` 선언이 semantic analyzer 의
@@ -25,10 +25,10 @@ import { resolve } from "node:path";
  *
  * 수정: `visitArrowFunction` 도 block body 일 때 `predeclareVarDecls` 를 먼저 호출.
  */
-describe("bundle: var/function in arrow body is hoisted for static resolution", () => {
-  test("var function declared after use in arrow body survives bundle", async () => {
+describe('bundle: var/function in arrow body is hoisted for static resolution', () => {
+  test('var function declared after use in arrow body survives bundle', async () => {
     const fixture = await createFixture({
-      "entry.js": `
+      'entry.js': `
         (() => {
             var __webpack_modules__ = ({
                 730: ((module, _exp, __webpack_require__) => {
@@ -59,12 +59,12 @@ describe("bundle: var/function in arrow body is hoisted for static resolution", 
     });
 
     try {
-      const entry = resolve(fixture.dir, "entry.js");
+      const entry = resolve(fixture.dir, 'entry.js');
       const proc = Bun.spawnSync([
         ZTS_BIN,
-        "--bundle",
-        "--platform=react-native",
-        "--rn-platform=ios",
+        '--bundle',
+        '--platform=react-native',
+        '--rn-platform=ios',
         entry,
       ]);
       expect(proc.exitCode).toBe(0);
@@ -72,7 +72,7 @@ describe("bundle: var/function in arrow body is hoisted for static resolution", 
 
       // 버그 시: 선언이 제거되어 사용부만 남음 → 1회.
       // 수정 후: 선언 + 사용 ≥ 2회.
-      const occurrences = output.split("validateAndParse").length - 1;
+      const occurrences = output.split('validateAndParse').length - 1;
       expect(occurrences).toBeGreaterThanOrEqual(2);
       expect(output).toMatch(/validateAndParse\s*=\s*function/);
     } finally {

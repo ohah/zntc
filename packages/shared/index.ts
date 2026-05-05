@@ -5,21 +5,21 @@
 // ─── Types ───
 
 export type Target =
-  | "es5"
-  | "es2015"
-  | "es2016"
-  | "es2017"
-  | "es2018"
-  | "es2019"
-  | "es2020"
-  | "es2021"
-  | "es2022"
-  | "es2023"
-  | "es2024"
-  | "es2025"
-  | "esnext";
+  | 'es5'
+  | 'es2015'
+  | 'es2016'
+  | 'es2017'
+  | 'es2018'
+  | 'es2019'
+  | 'es2020'
+  | 'es2021'
+  | 'es2022'
+  | 'es2023'
+  | 'es2024'
+  | 'es2025'
+  | 'esnext';
 
-export type Platform = "browser" | "node" | "neutral" | "react-native";
+export type Platform = 'browser' | 'node' | 'neutral' | 'react-native';
 
 export interface TranspileOptions {
   /** 파일 경로 (확장자 감지용, 기본: "input.ts") */
@@ -39,7 +39,7 @@ export interface TranspileOptions {
   /** 전체 축소 (whitespace + identifiers + syntax) */
   minify?: boolean;
   /** JSX 런타임 */
-  jsx?: "classic" | "automatic" | "automatic-dev";
+  jsx?: 'classic' | 'automatic' | 'automatic-dev';
   /** classic 모드 JSX factory (기본: "React.createElement") */
   jsxFactory?: string;
   /** classic 모드 Fragment factory (기본: "React.Fragment") */
@@ -79,9 +79,9 @@ export interface TranspileOptions {
    */
   tsconfigRaw?: string;
   /** 모듈 포맷 */
-  format?: "esm" | "cjs";
+  format?: 'esm' | 'cjs';
   /** 문자열 따옴표 스타일 */
-  quotes?: "double" | "single" | "preserve";
+  quotes?: 'double' | 'single' | 'preserve';
   /** 타겟 플랫폼 */
   platform?: Platform;
   /** ES 다운레벨 타겟 */
@@ -108,7 +108,7 @@ export interface TranspileOptions {
    * - "transform": Transformer 후
    * - "codegen": 전체 실행 (기본 동작과 동일)
    */
-  stopAfter?: "scan" | "parse" | "semantic" | "transform" | "codegen";
+  stopAfter?: 'scan' | 'parse' | 'semantic' | 'transform' | 'codegen';
 }
 
 export interface TranspileResult {
@@ -171,7 +171,7 @@ export function targetToUnsupported(target?: Target): number {
  * 으로 좁힐 때 사용. 함수형 config / workspace 항목 / tsconfigRaw 검증 등에서 공유.
  */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**
@@ -192,7 +192,7 @@ export function validateTsConfigRaw(raw: string | undefined): void {
     throw new Error(`failed to parse --tsconfig-raw: ${reason}`);
   }
   if (!isPlainObject(config)) {
-    throw new Error("failed to parse --tsconfig-raw: expected a JSON object");
+    throw new Error('failed to parse --tsconfig-raw: expected a JSON object');
   }
 }
 
@@ -221,7 +221,7 @@ export function buildOptionsJson(
     // CLI vocab → Zig enum tag (kebab-case → snake_case): automatic-dev → automatic_dev.
     // 그 외 (`react-jsx` 등 tsconfig vocab, typo) 도 그대로 forward — NAPI / `optionsFromJson`
     // 이 strict 검증해 invalid 면 throw (silent drop 방지).
-    payload.jsx = opts.jsx === "automatic-dev" ? "automatic_dev" : opts.jsx;
+    payload.jsx = opts.jsx === 'automatic-dev' ? 'automatic_dev' : opts.jsx;
   }
   if (opts.jsxFactory) payload.jsxFactory = opts.jsxFactory;
   if (opts.jsxFragment) payload.jsxFragment = opts.jsxFragment;
@@ -241,7 +241,7 @@ export function buildOptionsJson(
   if (opts.tsconfigRaw) payload.tsconfigRaw = opts.tsconfigRaw;
   if (opts.format) payload.format = opts.format;
   if (opts.quotes) payload.quotes = opts.quotes;
-  if (opts.platform === "react-native") payload.platform = "react_native";
+  if (opts.platform === 'react-native') payload.platform = 'react_native';
   else if (opts.platform) payload.platform = opts.platform;
   if (opts.minifyWhitespace || opts.minify) payload.minifyWhitespace = true;
   if (opts.minifyIdentifiers || opts.minify) payload.minifyIdentifiers = true;
@@ -258,11 +258,11 @@ export function buildOptionsJson(
 
 // ─── browserslist → UnsupportedFeatures ───
 
-export type { Engine, EngineVersion, Feature } from "./compat-engines";
-export { computeUnsupportedFromEngines, FEATURES } from "./compat-engines";
+export type { Engine, EngineVersion, Feature } from './compat-engines';
+export { computeUnsupportedFromEngines, FEATURES } from './compat-engines';
 
-import type { Engine, EngineVersion } from "./compat-engines";
-import { computeUnsupportedFromEngines } from "./compat-engines";
+import type { Engine, EngineVersion } from './compat-engines';
+import { computeUnsupportedFromEngines } from './compat-engines';
 
 /** browserslist 결과 문자열 ("chrome 100", "ios_saf 14.5") → EngineVersion. */
 export function parseBrowserslistEntry(entry: string): EngineVersion | null {
@@ -271,7 +271,7 @@ export function parseBrowserslistEntry(entry: string): EngineVersion | null {
   if (!m) return null;
   const name = m[1].toLowerCase();
   const versionStr = m[2];
-  const [majStr, minStr = "0"] = versionStr.split(".");
+  const [majStr, minStr = '0'] = versionStr.split('.');
   const major = parseInt(majStr, 10);
   const minor = parseInt(minStr, 10);
   if (Number.isNaN(major)) return null;
@@ -279,18 +279,18 @@ export function parseBrowserslistEntry(entry: string): EngineVersion | null {
   // browserslist 이름 → ZTS Engine 매핑
   // 미매핑 엔진(op_mini, samsung, and_chr 등)은 null 반환 → 호출자가 filter.
   const map: Record<string, Engine> = {
-    chrome: "chrome",
-    and_chr: "chrome", // Android Chrome
-    firefox: "firefox",
-    and_ff: "firefox",
-    safari: "safari",
-    ios_saf: "ios",
-    edge: "edge",
-    node: "node",
-    deno: "deno",
-    opera: "opera",
-    op_mob: "opera",
-    hermes: "hermes",
+    chrome: 'chrome',
+    and_chr: 'chrome', // Android Chrome
+    firefox: 'firefox',
+    and_ff: 'firefox',
+    safari: 'safari',
+    ios_saf: 'ios',
+    edge: 'edge',
+    node: 'node',
+    deno: 'deno',
+    opera: 'opera',
+    op_mob: 'opera',
+    hermes: 'hermes',
   };
   const engine = map[name];
   if (!engine) return null;

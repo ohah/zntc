@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es2023", () => {
-  test("intlNumberFormatES2023", async () => {
+describe('TSC: es2023', () => {
+  test('intlNumberFormatES2023', async () => {
     await expectPass(
       `
 // New / updated resolved options in ES2023, including type change for useGrouping
@@ -52,7 +52,7 @@ const filtered = nf
       [],
     );
   });
-  test("intlNumberFormatES5UseGrouping", async () => {
+  test('intlNumberFormatES5UseGrouping', async () => {
     await expectPass(
       `
 new Intl.NumberFormat('en-GB', { useGrouping: true });

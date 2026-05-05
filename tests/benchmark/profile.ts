@@ -5,11 +5,11 @@
  * 모든 도구의 파일 크기 대비 성능 스케일링을 측정한다.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ROOT, ZTS_BIN, findNodeModulesBin } from "./_runner";
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ROOT, ZTS_BIN, findNodeModulesBin } from './_runner';
 
 const ITERATIONS = 10;
 
@@ -33,7 +33,7 @@ function generateTS(lines: number): string {
       parts.push(`export function compute${i}(x: number): number { return x * ${i}; }`);
     }
   }
-  return parts.join("\n");
+  return parts.join('\n');
 }
 
 function generateImportBearingTS(lines: number): string {
@@ -53,7 +53,7 @@ function generateImportBearingTS(lines: number): string {
     parts.push(`export const fn${i} = (Qux = Foo) => Qux;`);
     i++;
   }
-  return parts.slice(0, lines).join("\n");
+  return parts.slice(0, lines).join('\n');
 }
 
 function median(times: number[]): number {
@@ -65,10 +65,10 @@ function measure(bin: string, args: string[], env?: Record<string, string>): num
   const times: number[] = [];
   const spawnEnv = env ? { ...process.env, ...env } : undefined;
   // warmup
-  spawnSync(bin, args, { stdio: "pipe", timeout: 30000, env: spawnEnv });
+  spawnSync(bin, args, { stdio: 'pipe', timeout: 30000, env: spawnEnv });
   for (let i = 0; i < ITERATIONS; i++) {
     const start = performance.now();
-    spawnSync(bin, args, { stdio: "pipe", timeout: 30000, env: spawnEnv });
+    spawnSync(bin, args, { stdio: 'pipe', timeout: 30000, env: spawnEnv });
     times.push(performance.now() - start);
   }
   return median(times);
@@ -76,19 +76,19 @@ function measure(bin: string, args: string[], env?: Record<string, string>): num
 
 function tracePlan(sample: PlanSample, dir: string): PlanHit {
   const inputFile = join(dir, sample.filename);
-  const outFile = join(dir, `${sample.name.replaceAll(/[^a-zA-Z0-9_-]/g, "_")}.js`);
+  const outFile = join(dir, `${sample.name.replaceAll(/[^a-zA-Z0-9_-]/g, '_')}.js`);
   writeFileSync(inputFile, sample.source);
-  const result = spawnSync(ZTS_BIN, [inputFile, ...(sample.args ?? []), "-o", outFile], {
-    stdio: "pipe",
+  const result = spawnSync(ZTS_BIN, [inputFile, ...(sample.args ?? []), '-o', outFile], {
+    stdio: 'pipe',
     timeout: 30000,
-    env: { ...process.env, ZTS_DEBUG: "transform_plan" },
-    encoding: "utf8",
+    env: { ...process.env, ZTS_DEBUG: 'transform_plan' },
+    encoding: 'utf8',
   });
   const match = result.stderr.match(
     /\[transform_plan\]\s+file=.*?\s+semantic=([a-z_]+)\s+reason=([a-z_]+)/,
   );
   if (!match) {
-    const prefix = result.status === 0 ? "missing" : "failed before";
+    const prefix = result.status === 0 ? 'missing' : 'failed before';
     throw new Error(
       `${prefix} transform_plan trace for ${sample.name}: ${result.stderr.slice(0, 500)}`,
     );
@@ -103,78 +103,78 @@ function formatPercent(count: number, total: number): string {
 function printPlanHitRates(dir: string): void {
   const samples: PlanSample[] = [
     {
-      name: "simple-ts-strip",
-      filename: "simple.ts",
+      name: 'simple-ts-strip',
+      filename: 'simple.ts',
       source: generateTS(1000),
     },
     {
-      name: "binding-lite-named-import",
-      filename: "binding-lite.ts",
+      name: 'binding-lite-named-import',
+      filename: 'binding-lite.ts',
       source: generateImportBearingTS(1000),
     },
     {
-      name: "default-import",
-      filename: "default-import.ts",
+      name: 'default-import',
+      filename: 'default-import.ts',
       source: `import Foo from "./lib";\nexport const value = Foo();\n`,
     },
     {
-      name: "namespace-import",
-      filename: "namespace-import.ts",
+      name: 'namespace-import',
+      filename: 'namespace-import.ts',
       source: `import * as Foo from "./lib";\nexport const value = Foo.run();\n`,
     },
     {
-      name: "jsx",
-      filename: "component.tsx",
+      name: 'jsx',
+      filename: 'component.tsx',
       source: `import { Foo } from "./lib";\nexport const value = <Foo />;\n`,
     },
     {
-      name: "enum-runtime",
-      filename: "enum.ts",
+      name: 'enum-runtime',
+      filename: 'enum.ts',
       source: `import { Foo } from "./lib";\nenum Kind { A }\nexport const value = Foo;\n`,
     },
     {
-      name: "minify-option",
-      filename: "minify.ts",
+      name: 'minify-option',
+      filename: 'minify.ts',
       source: `import { Foo } from "./lib";\nexport const value = Foo();\n`,
-      args: ["--minify"],
+      args: ['--minify'],
     },
     {
-      name: "cjs-format",
-      filename: "cjs.ts",
+      name: 'cjs-format',
+      filename: 'cjs.ts',
       source: `import { Foo } from "./lib";\nexport const value = Foo();\n`,
-      args: ["--format=cjs"],
+      args: ['--format=cjs'],
     },
     {
-      name: "downlevel-target",
-      filename: "downlevel.ts",
+      name: 'downlevel-target',
+      filename: 'downlevel.ts',
       source: `import { Foo } from "./lib";\nexport const value = () => Foo();\n`,
-      args: ["--target=es5"],
+      args: ['--target=es5'],
     },
     {
-      name: "top-level-shadow",
-      filename: "shadow.ts",
+      name: 'top-level-shadow',
+      filename: 'shadow.ts',
       source: `import { Foo } from "./lib";\nconst Foo = 1;\nexport { Foo };\n`,
     },
     {
-      name: "function-var-shadow",
-      filename: "function-var-shadow.ts",
+      name: 'function-var-shadow',
+      filename: 'function-var-shadow.ts',
       source: `import { Foo, Bar } from "./lib";\nfunction f() { var Foo = Bar(); return Foo; }\nFoo();\n`,
     },
     {
-      name: "function-expression-shadow",
-      filename: "function-expression-shadow.ts",
+      name: 'function-expression-shadow',
+      filename: 'function-expression-shadow.ts',
       source: `import { Foo, Bar } from "./lib";\nconst fn = function Foo(value = Foo) { return value; };\nBar();\n`,
     },
     {
-      name: "js-source",
-      filename: "plain.js",
+      name: 'js-source',
+      filename: 'plain.js',
       source: `const value = 1;\n`,
     },
     {
-      name: "flow-source",
-      filename: "flow.js",
+      name: 'flow-source',
+      filename: 'flow.js',
       source: `// @flow\nimport { Foo } from "./lib";\nexport const value: Foo = 1;\n`,
-      args: ["--flow"],
+      args: ['--flow'],
     },
   ];
 
@@ -190,7 +190,7 @@ function printPlanHitRates(dir: string): void {
     }
   }
 
-  console.log("\nZTS TransformPlan Hit Rates — representative route roots");
+  console.log('\nZTS TransformPlan Hit Rates — representative route roots');
   console.log(`| Semantic | Reason | Count | Share |`);
   console.log(`| --- | --- | --- | --- |`);
   const rows = [...hits.values()].sort((a, b) =>
@@ -206,25 +206,25 @@ function printPlanHitRates(dir: string): void {
 }
 
 const scales = [100, 500, 1000, 2000, 5000, 10000];
-const dir = mkdtempSync(join(tmpdir(), "zts-profile-"));
+const dir = mkdtempSync(join(tmpdir(), 'zts-profile-'));
 
-const esbuildBin = findNodeModulesBin("esbuild");
-const swcBin = findNodeModulesBin("swc");
+const esbuildBin = findNodeModulesBin('esbuild');
+const swcBin = findNodeModulesBin('swc');
 
-console.log("ZTS Scaling Profiler — All Tools");
+console.log('ZTS Scaling Profiler — All Tools');
 console.log(`  Iterations: ${ITERATIONS} (median)`);
 console.log(`  Platform: ${process.platform} ${process.arch}\n`);
 
 // Header
-const tools = ["ZTS"];
-if (esbuildBin) tools.push("esbuild");
-tools.push("Bun");
-if (swcBin) tools.push("SWC");
-tools.push("oxc (node)");
+const tools = ['ZTS'];
+if (esbuildBin) tools.push('esbuild');
+tools.push('Bun');
+if (swcBin) tools.push('SWC');
+tools.push('oxc (node)');
 
-const header = ["Lines", "Size (KB)", ...tools.map((t) => `${t} (ms)`)];
-console.log(`| ${header.join(" | ")} |`);
-console.log(`| ${header.map(() => "---").join(" | ")} |`);
+const header = ['Lines', 'Size (KB)', ...tools.map((t) => `${t} (ms)`)];
+console.log(`| ${header.join(' | ')} |`);
+console.log(`| ${header.map(() => '---').join(' | ')} |`);
 
 for (const lines of scales) {
   const source = generateTS(lines);
@@ -235,7 +235,7 @@ for (const lines of scales) {
   const row: (string | number)[] = [lines, sizeKB];
 
   // ZTS
-  row.push(measure(ZTS_BIN, [inputFile, "-o", join(dir, `out_zts_${lines}.js`)]));
+  row.push(measure(ZTS_BIN, [inputFile, '-o', join(dir, `out_zts_${lines}.js`)]));
 
   // esbuild
   if (esbuildBin) {
@@ -243,41 +243,41 @@ for (const lines of scales) {
       measure(esbuildBin, [
         inputFile,
         `--outfile=${join(dir, `out_es_${lines}.js`)}`,
-        "--loader=ts",
+        '--loader=ts',
       ]),
     );
   }
 
   // Bun
   row.push(
-    measure("bun", [
-      "build",
+    measure('bun', [
+      'build',
       inputFile,
-      "--no-bundle",
-      "--outfile",
+      '--no-bundle',
+      '--outfile',
       join(dir, `out_bun_${lines}.js`),
     ]),
   );
 
   // SWC
   if (swcBin) {
-    row.push(measure(swcBin, [inputFile, "-o", join(dir, `out_swc_${lines}.js`)]));
+    row.push(measure(swcBin, [inputFile, '-o', join(dir, `out_swc_${lines}.js`)]));
   }
 
   // oxc (node)
   row.push(
-    measure("node", [
-      "-e",
+    measure('node', [
+      '-e',
       `const {transformSync}=require('oxc-transform');const fs=require('fs');` +
         `const code=fs.readFileSync('${inputFile}','utf8');` +
         `transformSync('input.ts',code,{sourceType:'module'})`,
     ]),
   );
 
-  console.log(`| ${row.join(" | ")} |`);
+  console.log(`| ${row.join(' | ')} |`);
 }
 
-console.log("\nZTS Fast Path A/B — import-bearing TS strip");
+console.log('\nZTS Fast Path A/B — import-bearing TS strip');
 const fastScales = [25_000, 50_000, 100_000];
 console.log(`| Lines | Size (KB) | fast on (ms) | fast off (ms) | delta (ms) | ratio |`);
 console.log(`| --- | --- | --- | --- | --- | --- |`);
@@ -289,12 +289,12 @@ for (const lines of fastScales) {
   const fullOut = join(dir, `out_fast_off_${lines}.js`);
   writeFileSync(inputFile, source);
 
-  const fastOn = measure(ZTS_BIN, [inputFile, "-o", fastOut]);
-  const fastOff = measure(ZTS_BIN, [inputFile, "-o", fullOut], {
-    ZTS_DISABLE_TRANSPILE_FAST_PATH: "1",
+  const fastOn = measure(ZTS_BIN, [inputFile, '-o', fastOut]);
+  const fastOff = measure(ZTS_BIN, [inputFile, '-o', fullOut], {
+    ZTS_DISABLE_TRANSPILE_FAST_PATH: '1',
   });
   const delta = fastOff - fastOn;
-  const ratio = fastOn === 0 ? "n/a" : `${(fastOff / fastOn).toFixed(2)}x`;
+  const ratio = fastOn === 0 ? 'n/a' : `${(fastOff / fastOn).toFixed(2)}x`;
 
   console.log(
     `| ${lines} | ${Math.round(source.length / 1024)} | ${fastOn} | ${fastOff} | ${delta} | ${ratio} |`,
@@ -304,4 +304,4 @@ for (const lines of fastScales) {
 printPlanHitRates(dir);
 
 rmSync(dir, { recursive: true, force: true });
-console.log("\n(ms가 파일 크기에 비례하면 O(n), 제곱으로 증가하면 O(n²))");
+console.log('\n(ms가 파일 크기에 비례하면 O(n), 제곱으로 증가하면 O(n²))');

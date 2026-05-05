@@ -10,13 +10,13 @@
  * "browser" / "node" / "neutral" / "react-native") 와 namespace 충돌 회피
  * 위해 `Metro` prefix. `web` 은 caller 가 RN-on-web 시나리오에서 사용 가능.
  */
-export type MetroPlatform = "ios" | "android" | "web";
+export type MetroPlatform = 'ios' | 'android' | 'web';
 
 /** Metro `resolveRequest` 의 반환 타입 — Metro 표준 호환. */
 export type Resolution =
-  | { type: "sourceFile"; filePath: string }
-  | { type: "assetFiles"; filePaths: readonly string[] }
-  | { type: "empty" };
+  | { type: 'sourceFile'; filePath: string }
+  | { type: 'assetFiles'; filePaths: readonly string[] }
+  | { type: 'empty' };
 
 /**
  * Metro `resolveRequest` 의 첫 번째 인자 (context). Metro 의 ResolutionContext

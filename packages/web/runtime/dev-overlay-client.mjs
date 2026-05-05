@@ -7,7 +7,7 @@
 // module 평가 시점에 치환되어 protocol 상수 (`/__hmr`, "error" 같은 것) 가
 // 정확히 박힘 — server 측 `@zts/server/protocol` 과 single source of truth.
 
-import { APP_DEV_HMR_WS_PATH, HMR_MSG } from "@zts/server";
+import { APP_DEV_HMR_WS_PATH, HMR_MSG } from '@zts/server';
 
 // biome-ignore format: 안의 코드는 브라우저 inject 텍스트라 zts.mjs 의 원본 (#2539
 // PR #4) 과 byte-for-byte parity 유지. 사소한 escape/들여쓰기 차이도 sourcemap

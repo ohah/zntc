@@ -1,6 +1,6 @@
-import { describe, test, expect } from "bun:test";
-import { createFixture, ZTS_BIN } from "./helpers";
-import { resolve } from "node:path";
+import { describe, test, expect } from 'bun:test';
+import { createFixture, ZTS_BIN } from './helpers';
+import { resolve } from 'node:path';
 
 /**
  * Regression: transformer.visitNode가 var_declaration을 복제해 원본 노드를
@@ -23,10 +23,10 @@ import { resolve } from "node:path";
  * 수정: minify가 root에서 BFS로 도달 가능한 노드 bitset을 만들고,
  * removeDeadStores가 그 bitset 밖의 var_declaration을 건드리지 않도록 함.
  */
-describe("bundle: minify ignores orphan var_decls (#번개 실측)", () => {
-  test("module-local symbol survives when unused helper references it", async () => {
+describe('bundle: minify ignores orphan var_decls (#번개 실측)', () => {
+  test('module-local symbol survives when unused helper references it', async () => {
     const fixture = await createFixture({
-      "entry.js": `
+      'entry.js': `
         (() => {
             var __webpack_modules__ = ({
                 730: ((module, _exp, __webpack_require__) => {
@@ -53,12 +53,12 @@ describe("bundle: minify ignores orphan var_decls (#번개 실측)", () => {
     });
 
     try {
-      const entry = resolve(fixture.dir, "entry.js");
+      const entry = resolve(fixture.dir, 'entry.js');
       const proc = Bun.spawnSync([
         ZTS_BIN,
-        "--bundle",
-        "--platform=react-native",
-        "--rn-platform=ios",
+        '--bundle',
+        '--platform=react-native',
+        '--rn-platform=ios',
         entry,
       ]);
       expect(proc.exitCode).toBe(0);
@@ -66,7 +66,7 @@ describe("bundle: minify ignores orphan var_decls (#번개 실측)", () => {
 
       // 버그 시 선언이 제거되어 사용부만 남음 → 1회.
       // 수정 후 선언 + 사용 = 최소 2회.
-      const occurrences = output.split("UPDATE_AGE_ON_GET").length - 1;
+      const occurrences = output.split('UPDATE_AGE_ON_GET').length - 1;
       expect(occurrences).toBeGreaterThanOrEqual(2);
       expect(output).toContain('UPDATE_AGE_ON_GET = Symbol("updateAgeOnGet")');
     } finally {

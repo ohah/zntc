@@ -1,6 +1,6 @@
-import { describe, test, expect } from "bun:test";
-import { ZTS_BIN } from "./helpers";
-import { resolve } from "node:path";
+import { describe, test, expect } from 'bun:test';
+import { ZTS_BIN } from './helpers';
+import { resolve } from 'node:path';
 
 /**
  * React Native Flow 파싱 회귀 테스트.
@@ -8,11 +8,11 @@ import { resolve } from "node:path";
  * --flow --jsx-in-js로 트랜스파일하여 파서 호환성을 추적한다.
  */
 
-const FIXTURES = resolve(import.meta.dir, "fixtures/react-native");
+const FIXTURES = resolve(import.meta.dir, 'fixtures/react-native');
 
 async function transpile(file: string): Promise<{ exitCode: number; stderr: string }> {
   const filePath = resolve(FIXTURES, file);
-  const proc = Bun.spawnSync([ZTS_BIN, "--flow", "--jsx-in-js", filePath]);
+  const proc = Bun.spawnSync([ZTS_BIN, '--flow', '--jsx-in-js', filePath]);
   return {
     exitCode: proc.exitCode,
     stderr: proc.stderr.toString(),
@@ -22,84 +22,84 @@ async function transpile(file: string): Promise<{ exitCode: number; stderr: stri
 async function expectPass(file: string) {
   const result = await transpile(file);
   expect(result.exitCode).toBe(0);
-  expect(result.stderr).not.toContain("error:");
+  expect(result.stderr).not.toContain('error:');
 }
 
-describe("Flow RN: all 50 files passing", () => {
-  test("__flowtests__/ReactNativeTypes-flowtest.js", () =>
-    expectPass("__flowtests__/ReactNativeTypes-flowtest.js"));
-  test("ActionSheetIOS/ActionSheetIOS.js", () => expectPass("ActionSheetIOS/ActionSheetIOS.js"));
-  test("ActionSheetIOS/NativeActionSheetManager.js", () =>
-    expectPass("ActionSheetIOS/NativeActionSheetManager.js"));
-  test("Alert/Alert.js", () => expectPass("Alert/Alert.js"));
-  test("Alert/NativeAlertManager.js", () => expectPass("Alert/NativeAlertManager.js"));
-  test("Alert/RCTAlertManager.js", () => expectPass("Alert/RCTAlertManager.js"));
-  test("Alert/RCTAlertManager.android.js", () => expectPass("Alert/RCTAlertManager.android.js"));
-  test("Alert/RCTAlertManager.ios.js", () => expectPass("Alert/RCTAlertManager.ios.js"));
-  test("Animated/Animated.js", () => expectPass("Animated/Animated.js"));
-  test("Animated/AnimatedEvent.js", () => expectPass("Animated/AnimatedEvent.js"));
-  test("Animated/AnimatedExports.js", () => expectPass("Animated/AnimatedExports.js"));
-  test("Animated/AnimatedImplementation.js", () =>
-    expectPass("Animated/AnimatedImplementation.js"));
-  test("Animated/AnimatedMock.js", () => expectPass("Animated/AnimatedMock.js"));
-  test("Animated/AnimatedPlatformConfig.js", () =>
-    expectPass("Animated/AnimatedPlatformConfig.js"));
-  test("Animated/Easing.js", () => expectPass("Animated/Easing.js"));
-  test("Animated/NativeAnimatedAllowlist.js", () =>
-    expectPass("Animated/NativeAnimatedAllowlist.js"));
-  test("Animated/NativeAnimatedModule.js", () => expectPass("Animated/NativeAnimatedModule.js"));
-  test("Animated/NativeAnimatedTurboModule.js", () =>
-    expectPass("Animated/NativeAnimatedTurboModule.js"));
-  test("Animated/SpringConfig.js", () => expectPass("Animated/SpringConfig.js"));
-  test("Animated/animations/Animation.js", () => expectPass("Animated/animations/Animation.js"));
-  test("Animated/animations/DecayAnimation.js", () =>
-    expectPass("Animated/animations/DecayAnimation.js"));
-  test("Animated/animations/SpringAnimation.js", () =>
-    expectPass("Animated/animations/SpringAnimation.js"));
-  test("Animated/animations/TimingAnimation.js", () =>
-    expectPass("Animated/animations/TimingAnimation.js"));
-  test("Animated/bezier.js", () => expectPass("Animated/bezier.js"));
-  test("Animated/components/AnimatedFlatList.js", () =>
-    expectPass("Animated/components/AnimatedFlatList.js"));
-  test("Animated/components/AnimatedImage.js", () =>
-    expectPass("Animated/components/AnimatedImage.js"));
-  test("Animated/components/AnimatedScrollView.js", () =>
-    expectPass("Animated/components/AnimatedScrollView.js"));
-  test("Animated/components/AnimatedSectionList.js", () =>
-    expectPass("Animated/components/AnimatedSectionList.js"));
-  test("Animated/components/AnimatedText.js", () =>
-    expectPass("Animated/components/AnimatedText.js"));
-  test("Animated/components/AnimatedView.js", () =>
-    expectPass("Animated/components/AnimatedView.js"));
-  test("Animated/createAnimatedComponent.js", () =>
-    expectPass("Animated/createAnimatedComponent.js"));
-  test("Animated/nodes/AnimatedAddition.js", () =>
-    expectPass("Animated/nodes/AnimatedAddition.js"));
-  test("Animated/nodes/AnimatedColor.js", () => expectPass("Animated/nodes/AnimatedColor.js"));
-  test("Animated/nodes/AnimatedDiffClamp.js", () =>
-    expectPass("Animated/nodes/AnimatedDiffClamp.js"));
-  test("Animated/nodes/AnimatedDivision.js", () =>
-    expectPass("Animated/nodes/AnimatedDivision.js"));
-  test("Animated/nodes/AnimatedInterpolation.js", () =>
-    expectPass("Animated/nodes/AnimatedInterpolation.js"));
-  test("Animated/nodes/AnimatedModulo.js", () => expectPass("Animated/nodes/AnimatedModulo.js"));
-  test("Animated/nodes/AnimatedMultiplication.js", () =>
-    expectPass("Animated/nodes/AnimatedMultiplication.js"));
-  test("Animated/nodes/AnimatedNode.js", () => expectPass("Animated/nodes/AnimatedNode.js"));
-  test("Animated/nodes/AnimatedObject.js", () => expectPass("Animated/nodes/AnimatedObject.js"));
-  test("Animated/nodes/AnimatedProps.js", () => expectPass("Animated/nodes/AnimatedProps.js"));
-  test("Animated/nodes/AnimatedStyle.js", () => expectPass("Animated/nodes/AnimatedStyle.js"));
-  test("Animated/nodes/AnimatedSubtraction.js", () =>
-    expectPass("Animated/nodes/AnimatedSubtraction.js"));
-  test("Animated/nodes/AnimatedTracking.js", () =>
-    expectPass("Animated/nodes/AnimatedTracking.js"));
-  test("Animated/nodes/AnimatedTransform.js", () =>
-    expectPass("Animated/nodes/AnimatedTransform.js"));
-  test("Animated/nodes/AnimatedValue.js", () => expectPass("Animated/nodes/AnimatedValue.js"));
-  test("Animated/nodes/AnimatedValueXY.js", () => expectPass("Animated/nodes/AnimatedValueXY.js"));
-  test("Animated/nodes/AnimatedWithChildren.js", () =>
-    expectPass("Animated/nodes/AnimatedWithChildren.js"));
-  test("Animated/shouldUseTurboAnimatedModule.js", () =>
-    expectPass("Animated/shouldUseTurboAnimatedModule.js"));
-  test("Animated/useAnimatedColor.js", () => expectPass("Animated/useAnimatedColor.js"));
+describe('Flow RN: all 50 files passing', () => {
+  test('__flowtests__/ReactNativeTypes-flowtest.js', () =>
+    expectPass('__flowtests__/ReactNativeTypes-flowtest.js'));
+  test('ActionSheetIOS/ActionSheetIOS.js', () => expectPass('ActionSheetIOS/ActionSheetIOS.js'));
+  test('ActionSheetIOS/NativeActionSheetManager.js', () =>
+    expectPass('ActionSheetIOS/NativeActionSheetManager.js'));
+  test('Alert/Alert.js', () => expectPass('Alert/Alert.js'));
+  test('Alert/NativeAlertManager.js', () => expectPass('Alert/NativeAlertManager.js'));
+  test('Alert/RCTAlertManager.js', () => expectPass('Alert/RCTAlertManager.js'));
+  test('Alert/RCTAlertManager.android.js', () => expectPass('Alert/RCTAlertManager.android.js'));
+  test('Alert/RCTAlertManager.ios.js', () => expectPass('Alert/RCTAlertManager.ios.js'));
+  test('Animated/Animated.js', () => expectPass('Animated/Animated.js'));
+  test('Animated/AnimatedEvent.js', () => expectPass('Animated/AnimatedEvent.js'));
+  test('Animated/AnimatedExports.js', () => expectPass('Animated/AnimatedExports.js'));
+  test('Animated/AnimatedImplementation.js', () =>
+    expectPass('Animated/AnimatedImplementation.js'));
+  test('Animated/AnimatedMock.js', () => expectPass('Animated/AnimatedMock.js'));
+  test('Animated/AnimatedPlatformConfig.js', () =>
+    expectPass('Animated/AnimatedPlatformConfig.js'));
+  test('Animated/Easing.js', () => expectPass('Animated/Easing.js'));
+  test('Animated/NativeAnimatedAllowlist.js', () =>
+    expectPass('Animated/NativeAnimatedAllowlist.js'));
+  test('Animated/NativeAnimatedModule.js', () => expectPass('Animated/NativeAnimatedModule.js'));
+  test('Animated/NativeAnimatedTurboModule.js', () =>
+    expectPass('Animated/NativeAnimatedTurboModule.js'));
+  test('Animated/SpringConfig.js', () => expectPass('Animated/SpringConfig.js'));
+  test('Animated/animations/Animation.js', () => expectPass('Animated/animations/Animation.js'));
+  test('Animated/animations/DecayAnimation.js', () =>
+    expectPass('Animated/animations/DecayAnimation.js'));
+  test('Animated/animations/SpringAnimation.js', () =>
+    expectPass('Animated/animations/SpringAnimation.js'));
+  test('Animated/animations/TimingAnimation.js', () =>
+    expectPass('Animated/animations/TimingAnimation.js'));
+  test('Animated/bezier.js', () => expectPass('Animated/bezier.js'));
+  test('Animated/components/AnimatedFlatList.js', () =>
+    expectPass('Animated/components/AnimatedFlatList.js'));
+  test('Animated/components/AnimatedImage.js', () =>
+    expectPass('Animated/components/AnimatedImage.js'));
+  test('Animated/components/AnimatedScrollView.js', () =>
+    expectPass('Animated/components/AnimatedScrollView.js'));
+  test('Animated/components/AnimatedSectionList.js', () =>
+    expectPass('Animated/components/AnimatedSectionList.js'));
+  test('Animated/components/AnimatedText.js', () =>
+    expectPass('Animated/components/AnimatedText.js'));
+  test('Animated/components/AnimatedView.js', () =>
+    expectPass('Animated/components/AnimatedView.js'));
+  test('Animated/createAnimatedComponent.js', () =>
+    expectPass('Animated/createAnimatedComponent.js'));
+  test('Animated/nodes/AnimatedAddition.js', () =>
+    expectPass('Animated/nodes/AnimatedAddition.js'));
+  test('Animated/nodes/AnimatedColor.js', () => expectPass('Animated/nodes/AnimatedColor.js'));
+  test('Animated/nodes/AnimatedDiffClamp.js', () =>
+    expectPass('Animated/nodes/AnimatedDiffClamp.js'));
+  test('Animated/nodes/AnimatedDivision.js', () =>
+    expectPass('Animated/nodes/AnimatedDivision.js'));
+  test('Animated/nodes/AnimatedInterpolation.js', () =>
+    expectPass('Animated/nodes/AnimatedInterpolation.js'));
+  test('Animated/nodes/AnimatedModulo.js', () => expectPass('Animated/nodes/AnimatedModulo.js'));
+  test('Animated/nodes/AnimatedMultiplication.js', () =>
+    expectPass('Animated/nodes/AnimatedMultiplication.js'));
+  test('Animated/nodes/AnimatedNode.js', () => expectPass('Animated/nodes/AnimatedNode.js'));
+  test('Animated/nodes/AnimatedObject.js', () => expectPass('Animated/nodes/AnimatedObject.js'));
+  test('Animated/nodes/AnimatedProps.js', () => expectPass('Animated/nodes/AnimatedProps.js'));
+  test('Animated/nodes/AnimatedStyle.js', () => expectPass('Animated/nodes/AnimatedStyle.js'));
+  test('Animated/nodes/AnimatedSubtraction.js', () =>
+    expectPass('Animated/nodes/AnimatedSubtraction.js'));
+  test('Animated/nodes/AnimatedTracking.js', () =>
+    expectPass('Animated/nodes/AnimatedTracking.js'));
+  test('Animated/nodes/AnimatedTransform.js', () =>
+    expectPass('Animated/nodes/AnimatedTransform.js'));
+  test('Animated/nodes/AnimatedValue.js', () => expectPass('Animated/nodes/AnimatedValue.js'));
+  test('Animated/nodes/AnimatedValueXY.js', () => expectPass('Animated/nodes/AnimatedValueXY.js'));
+  test('Animated/nodes/AnimatedWithChildren.js', () =>
+    expectPass('Animated/nodes/AnimatedWithChildren.js'));
+  test('Animated/shouldUseTurboAnimatedModule.js', () =>
+    expectPass('Animated/shouldUseTurboAnimatedModule.js'));
+  test('Animated/useAnimatedColor.js', () => expectPass('Animated/useAnimatedColor.js'));
 });

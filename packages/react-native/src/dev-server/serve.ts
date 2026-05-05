@@ -2,19 +2,19 @@
 // 가 RnDevServerOptions 만 만들면 cli-server-api / dev-middleware 부가 lazy
 // 로드 + per-platform watch + HMR bridge + terminal actions 까지 자동 통합.
 
-import { createDevHttpServer, type DevHttpServerHandle } from "./http-server.ts";
-import { createHmrBridge, type HmrBridge } from "./hmr-bridge.ts";
-import { logBundle, logInfo, printZtsRnBanner } from "./logger.ts";
-import { loadCliServerApi } from "./middleware/cli-server-api.ts";
-import { loadDevMiddleware } from "./middleware/dev-middleware.ts";
-import type { RnDevServerOptions } from "./options.ts";
+import { createDevHttpServer, type DevHttpServerHandle } from './http-server.ts';
+import { createHmrBridge, type HmrBridge } from './hmr-bridge.ts';
+import { logBundle, logInfo, printZtsRnBanner } from './logger.ts';
+import { loadCliServerApi } from './middleware/cli-server-api.ts';
+import { loadDevMiddleware } from './middleware/dev-middleware.ts';
+import type { RnDevServerOptions } from './options.ts';
 import {
   createPlatformStateRegistry,
   type PlatformStateRegistry,
   waitForBuild,
-} from "./platform-state.ts";
-import { setupTerminalActions } from "./terminal-actions.ts";
-import type { Broadcast } from "./types.ts";
+} from './platform-state.ts';
+import { setupTerminalActions } from './terminal-actions.ts';
+import type { Broadcast } from './types.ts';
 
 export interface RnDevServerHandle {
   readonly url: string;
@@ -24,7 +24,7 @@ export interface RnDevServerHandle {
   stop(): Promise<void>;
 }
 
-const HMR_PATH = "/hot";
+const HMR_PATH = '/hot';
 
 const noopBroadcast: Broadcast = () => {};
 
@@ -74,12 +74,12 @@ export async function serveRn(
   await waitForBuild(firstState);
   if (!extras.silent) {
     if (firstState.buildError) {
-      logBundle("failed", options.bundle.rnPlatform, options.bundle.entry, firstState.buildError);
+      logBundle('failed', options.bundle.rnPlatform, options.bundle.entry, firstState.buildError);
     } else if (firstState.bundle !== null) {
       const sizeKB = (Buffer.byteLength(firstState.bundle) / 1024).toFixed(1);
       const buildMs = Date.now() - buildStart;
       logBundle(
-        "done",
+        'done',
         options.bundle.rnPlatform,
         options.bundle.entry,
         `(${firstState.fileCount} files, ${sizeKB} KB, ${buildMs}ms)`,
@@ -89,11 +89,11 @@ export async function serveRn(
 
   const terminalCleanup = setupTerminalActions(
     {
-      onReload: () => broadcast("reload"),
-      onDevMenu: () => broadcast("devMenu"),
+      onReload: () => broadcast('reload'),
+      onDevMenu: () => broadcast('devMenu'),
       onOpenDevTools: () => {
         // dev-middleware 가 /open-debugger POST 를 처리. 미설치 시 silent skip.
-        fetch(`${httpHandle.url}/open-debugger`, { method: "POST" }).catch(() => {});
+        fetch(`${httpHandle.url}/open-debugger`, { method: 'POST' }).catch(() => {});
       },
       onClearCache: () => {
         for (const state of platforms.platforms.values()) {
@@ -106,7 +106,7 @@ export async function serveRn(
     { enabled: options.terminalActions },
   );
   if (!extras.silent && options.terminalActions) {
-    logInfo("Press ? to show keyboard shortcuts (r/d/j/i/a/c)");
+    logInfo('Press ? to show keyboard shortcuts (r/d/j/i/a/c)');
   }
   if (!extras.silent) {
     logInfo(`Dev server listening on ${httpHandle.url} (platform=${options.bundle.rnPlatform})`);

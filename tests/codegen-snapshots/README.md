@@ -22,16 +22,16 @@ fixture 가 같이 들어감 — 모두 같은 RN 버전의 codegen reference �
 
 현재 suite:
 
-| Suite | 출처 | 비고 |
-| --- | --- | --- |
-| `rn-0.78/` | RN 0.78-stable `packages/react-native/src/private/specs/components/` (3 spec — DebuggingOverlay / ActivityIndicatorView / RCTSafeAreaView) | Flow + 이전 codegen emit 패턴 |
-| `rn-0.79/` | RN 0.79-stable `packages/react-native/src/private/specs_DEPRECATED/components/` (동일 3 spec) | 0.79 부터 spec 위치가 `specs_DEPRECATED/` 로 이동. emit 형태는 0.78 와 cosmetic 차이만 (single → double quote) |
-| `rn-0.80/` | RN 0.80-stable `specs_DEPRECATED/components/` (동일 3 spec) | 0.79 와 emit 동일 (cosmetic only) |
-| `rn-0.81/` | RN 0.81-stable `specs_DEPRECATED/components/` (동일 3 spec) | 0.80 와 emit 동일 |
-| `rn-0.82/` | RN 0.82-stable `specs_DEPRECATED/components/` (동일 3 spec) | 0.81 와 emit 동일 |
-| `rn-0.83/` | RN 0.83-stable `specs_DEPRECATED/components/` (동일 3 spec) | 0.82 와 emit 동일 |
-| `rn-0.84/` | RN 0.84-stable `specs_DEPRECATED/components/` (동일 3 spec) | 0.83 와 emit 동일 |
-| `rn-0.85/` | react-native-screens 4.23.0 (4 spec) | RN 0.85+ namespace alias 표준 채택. TS 패턴 |
+| Suite      | 출처                                                                                                                                       | 비고                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `rn-0.78/` | RN 0.78-stable `packages/react-native/src/private/specs/components/` (3 spec — DebuggingOverlay / ActivityIndicatorView / RCTSafeAreaView) | Flow + 이전 codegen emit 패턴                                                                                  |
+| `rn-0.79/` | RN 0.79-stable `packages/react-native/src/private/specs_DEPRECATED/components/` (동일 3 spec)                                              | 0.79 부터 spec 위치가 `specs_DEPRECATED/` 로 이동. emit 형태는 0.78 와 cosmetic 차이만 (single → double quote) |
+| `rn-0.80/` | RN 0.80-stable `specs_DEPRECATED/components/` (동일 3 spec)                                                                                | 0.79 와 emit 동일 (cosmetic only)                                                                              |
+| `rn-0.81/` | RN 0.81-stable `specs_DEPRECATED/components/` (동일 3 spec)                                                                                | 0.80 와 emit 동일                                                                                              |
+| `rn-0.82/` | RN 0.82-stable `specs_DEPRECATED/components/` (동일 3 spec)                                                                                | 0.81 와 emit 동일                                                                                              |
+| `rn-0.83/` | RN 0.83-stable `specs_DEPRECATED/components/` (동일 3 spec)                                                                                | 0.82 와 emit 동일                                                                                              |
+| `rn-0.84/` | RN 0.84-stable `specs_DEPRECATED/components/` (동일 3 spec)                                                                                | 0.83 와 emit 동일                                                                                              |
+| `rn-0.85/` | react-native-screens 4.23.0 (4 spec)                                                                                                       | RN 0.85+ namespace alias 표준 채택. TS 패턴                                                                    |
 
 ## Reference (untracked)
 

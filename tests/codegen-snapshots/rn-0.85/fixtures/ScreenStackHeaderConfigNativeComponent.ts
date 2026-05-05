@@ -82,9 +82,6 @@ export interface NativeProps extends ViewProps {
   userInterfaceStyle?: CT.WithDefault<UserInterfaceStyle, 'unspecified'>;
 }
 
-export default codegenNativeComponent<NativeProps>(
-  'RNSScreenStackHeaderConfig',
-  {
-    interfaceOnly: true,
-  },
-);
+export default codegenNativeComponent<NativeProps>('RNSScreenStackHeaderConfig', {
+  interfaceOnly: true,
+});

@@ -2,7 +2,7 @@
 // caller 가 require resolve 시 fallback 체인 (rn-get-polyfills → @react-native/js-polyfills)
 // 을 일관되게 사용 — RN 0.73 이전/이후 둘 다 호환.
 
-import { createRequire } from "node:module";
+import { createRequire } from 'node:module';
 
 const requireFromCli = createRequire(import.meta.url);
 
@@ -22,7 +22,7 @@ export function tryResolve(specifier: string, fromDir: string): string | null {
  * 둘 다 미설치 시 console.warn + 빈 배열 반환 — caller 는 graceful skip.
  */
 export function resolveRnPolyfills(projectRoot: string): string[] {
-  const candidates = ["react-native/rn-get-polyfills", "@react-native/js-polyfills"];
+  const candidates = ['react-native/rn-get-polyfills', '@react-native/js-polyfills'];
   for (const candidate of candidates) {
     const resolved = tryResolve(candidate, projectRoot);
     if (resolved) {
@@ -33,7 +33,7 @@ export function resolveRnPolyfills(projectRoot: string): string[] {
       }
     }
   }
-  console.warn("[zts] Could not resolve RN polyfills, skipping");
+  console.warn('[zts] Could not resolve RN polyfills, skipping');
   return [];
 }
 
@@ -43,63 +43,63 @@ export function resolveRnPolyfills(projectRoot: string): string[] {
  */
 export const RN_GLOBAL_IDENTIFIERS = [
   // polyfillPromise
-  "Promise",
+  'Promise',
   // setUpRegeneratorRuntime
-  "regeneratorRuntime",
+  'regeneratorRuntime',
   // setUpXHR
-  "XMLHttpRequest",
-  "FormData",
-  "fetch",
-  "Headers",
-  "Request",
-  "Response",
-  "WebSocket",
-  "Blob",
-  "File",
-  "FileReader",
-  "URL",
-  "URLSearchParams",
-  "AbortController",
-  "AbortSignal",
+  'XMLHttpRequest',
+  'FormData',
+  'fetch',
+  'Headers',
+  'Request',
+  'Response',
+  'WebSocket',
+  'Blob',
+  'File',
+  'FileReader',
+  'URL',
+  'URLSearchParams',
+  'AbortController',
+  'AbortSignal',
   // setUpTimers
-  "queueMicrotask",
-  "setImmediate",
-  "clearImmediate",
-  "requestIdleCallback",
-  "cancelIdleCallback",
-  "setTimeout",
-  "clearTimeout",
-  "setInterval",
-  "clearInterval",
-  "requestAnimationFrame",
-  "cancelAnimationFrame",
+  'queueMicrotask',
+  'setImmediate',
+  'clearImmediate',
+  'requestIdleCallback',
+  'cancelIdleCallback',
+  'setTimeout',
+  'clearTimeout',
+  'setInterval',
+  'clearInterval',
+  'requestAnimationFrame',
+  'cancelAnimationFrame',
   // setUpDOM
-  "DOMRect",
-  "DOMRectReadOnly",
-  "DOMRectList",
-  "HTMLCollection",
-  "NodeList",
-  "Node",
-  "Document",
-  "CharacterData",
-  "Text",
-  "Element",
-  "HTMLElement",
+  'DOMRect',
+  'DOMRectReadOnly',
+  'DOMRectList',
+  'HTMLCollection',
+  'NodeList',
+  'Node',
+  'Document',
+  'CharacterData',
+  'Text',
+  'Element',
+  'HTMLElement',
   // setUpIntersectionObserver
-  "IntersectionObserver",
+  'IntersectionObserver',
   // setUpMutationObserver
-  "MutationObserver",
-  "MutationRecord",
+  'MutationObserver',
+  'MutationRecord',
   // setUpPerformanceModern
-  "EventCounts",
-  "Performance",
-  "PerformanceEntry",
-  "PerformanceEventTiming",
-  "PerformanceLongTaskTiming",
-  "PerformanceMark",
-  "PerformanceMeasure",
-  "PerformanceObserver",
-  "PerformanceObserverEntryList",
-  "PerformanceResourceTiming",
-  "TaskAttributionTiming",
+  'EventCounts',
+  'Performance',
+  'PerformanceEntry',
+  'PerformanceEventTiming',
+  'PerformanceLongTaskTiming',
+  'PerformanceMark',
+  'PerformanceMeasure',
+  'PerformanceObserver',
+  'PerformanceObserverEntryList',
+  'PerformanceResourceTiming',
+  'TaskAttributionTiming',
 ] as const;

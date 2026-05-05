@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es2021", () => {
-  test("es2021LocalesObjectArgument", async () => {
+describe('TSC: es2021', () => {
+  test('es2021LocalesObjectArgument', async () => {
     await expectPass(
       `
 const enUS = new Intl.Locale("en-US");
@@ -16,7 +16,7 @@ Intl.ListFormat.supportedLocalesOf([deDE, jaJP]);`,
       [],
     );
   });
-  test("intlDateTimeFormatRangeES2021", async () => {
+  test('intlDateTimeFormatRangeES2021', async () => {
     await expectPass(
       `
 new Intl.DateTimeFormat().formatRange(new Date(0), new Date());
@@ -25,7 +25,7 @@ const [ part ] = new Intl.DateTimeFormat().formatRangeToParts(1000, 1000000000);
       [],
     );
   });
-  test("logicalAssignment1", async () => {
+  test('logicalAssignment1', async () => {
     await expectPass(
       `declare let a: string | undefined
 declare let b: string | undefined
@@ -55,7 +55,7 @@ i ??= 42`,
       [],
     );
   });
-  test("logicalAssignment10", async () => {
+  test('logicalAssignment10', async () => {
     await expectPass(
       `
 var count = 0;
@@ -74,7 +74,7 @@ oobj["obj"][incr()] ??= incr();
       [],
     );
   });
-  test("logicalAssignment2", async () => {
+  test('logicalAssignment2', async () => {
     await expectPass(
       `interface A {
     foo: {
@@ -105,7 +105,7 @@ c.foo.bar().baz ??= result.foo.bar().baz`,
       [],
     );
   });
-  test("logicalAssignment3", async () => {
+  test('logicalAssignment3', async () => {
     await expectPass(
       `interface A {
     baz: 0 | 1 | 42 | undefined | ''
@@ -122,7 +122,7 @@ declare const c: A;
       [],
     );
   });
-  test("logicalAssignment4", async () => {
+  test('logicalAssignment4', async () => {
     await expectPass(
       `
 function foo1(results: number[] | undefined) {
@@ -176,7 +176,7 @@ function doSomethingWithAlias(thing: ThingWithOriginal | undefined, defaultValue
       [],
     );
   });
-  test("logicalAssignment5", async () => {
+  test('logicalAssignment5', async () => {
     await expectPass(
       `
 function foo1 (f?: (a: number) => void) {
@@ -211,7 +211,7 @@ function bar3 (f?: (a: number) => void) {
       [],
     );
   });
-  test("logicalAssignment6", async () => {
+  test('logicalAssignment6', async () => {
     await expectPass(
       `
 function foo1(results: number[] | undefined, results1: number[] | undefined) {
@@ -228,7 +228,7 @@ function foo3(results: number[] | undefined, results1: number[] | undefined) {
       [],
     );
   });
-  test("logicalAssignment7", async () => {
+  test('logicalAssignment7', async () => {
     await expectPass(
       `
 function foo1(results: number[] | undefined, results1: number[] | undefined) {
@@ -245,7 +245,7 @@ function foo3(results: number[] | undefined, results1: number[] | undefined) {
       [],
     );
   });
-  test("logicalAssignment8", async () => {
+  test('logicalAssignment8', async () => {
     await expectPass(
       `
 declare const bar: { value?: number[] } | undefined
@@ -264,7 +264,7 @@ function foo3(results: number[] | undefined) {
       [],
     );
   });
-  test("logicalAssignment9", async () => {
+  test('logicalAssignment9', async () => {
     await expectPass(
       `declare let x: { a?: boolean };
 

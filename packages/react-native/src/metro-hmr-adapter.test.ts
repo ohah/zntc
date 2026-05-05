@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from 'bun:test';
 
-import { type BunHmrClient, HMR_RN_MSG } from "@zts/server";
+import { type BunHmrClient, HMR_RN_MSG } from '@zts/server';
 
-import { createMetroHmrAdapter } from "./metro-hmr-adapter.ts";
+import { createMetroHmrAdapter } from './metro-hmr-adapter.ts';
 
 class MockBunClient implements BunHmrClient {
   sent: string[] = [];
@@ -20,26 +20,26 @@ function resetSent(client: MockBunClient): void {
   client.sent.length = 0;
 }
 
-describe("createMetroHmrAdapter", () => {
-  test("channel 노출 — caller 가 accept / addBunClient 직접 호출 가능", () => {
+describe('createMetroHmrAdapter', () => {
+  test('channel 노출 — caller 가 accept / addBunClient 직접 호출 가능', () => {
     const adapter = createMetroHmrAdapter();
-    expect(typeof adapter.channel.accept).toBe("function");
-    expect(typeof adapter.channel.addBunClient).toBe("function");
-    expect(typeof adapter.channel.removeBunClient).toBe("function");
-    expect(typeof adapter.channel.broadcast).toBe("function");
+    expect(typeof adapter.channel.accept).toBe('function');
+    expect(typeof adapter.channel.addBunClient).toBe('function');
+    expect(typeof adapter.channel.removeBunClient).toBe('function');
+    expect(typeof adapter.channel.broadcast).toBe('function');
     expect(adapter.channel.clientCount).toBe(0);
   });
 
-  test("addBunClient 후 sendUpdate — UpdateStart / Update / UpdateDone 3개 메시지", () => {
+  test('addBunClient 후 sendUpdate — UpdateStart / Update / UpdateDone 3개 메시지', () => {
     const adapter = createMetroHmrAdapter();
     const client = new MockBunClient();
     adapter.channel.addBunClient(client);
     // greeting (web 의 connected) 먼저 송출 — 첫 메시지는 web HMR_MSG.Connected.
     expect(client.sent.length).toBe(1);
     const greet = JSON.parse(client.sent[0]!);
-    expect(greet.type).toBe("connected");
+    expect(greet.type).toBe('connected');
 
-    const modules = [{ id: "abc", code: "__d(...)" }];
+    const modules = [{ id: 'abc', code: '__d(...)' }];
     adapter.sendUpdate(modules);
     const after = parsedSent(client).slice(1);
     expect(after).toEqual([
@@ -49,7 +49,7 @@ describe("createMetroHmrAdapter", () => {
     ]);
   });
 
-  test("sendInitialGreeting — UpdateStart{isInitialUpdate:true} → UpdateDone", () => {
+  test('sendInitialGreeting — UpdateStart{isInitialUpdate:true} → UpdateDone', () => {
     const adapter = createMetroHmrAdapter();
     const client = new MockBunClient();
     adapter.channel.addBunClient(client);
@@ -62,7 +62,7 @@ describe("createMetroHmrAdapter", () => {
     ]);
   });
 
-  test("sendReload — Reload 단일 메시지", () => {
+  test('sendReload — Reload 단일 메시지', () => {
     const adapter = createMetroHmrAdapter();
     const client = new MockBunClient();
     adapter.channel.addBunClient(client);
@@ -72,17 +72,17 @@ describe("createMetroHmrAdapter", () => {
     expect(parsedSent(client)).toEqual([{ type: HMR_RN_MSG.Reload }]);
   });
 
-  test("sendError — Error{message}", () => {
+  test('sendError — Error{message}', () => {
     const adapter = createMetroHmrAdapter();
     const client = new MockBunClient();
     adapter.channel.addBunClient(client);
     resetSent(client);
 
-    adapter.sendError("boom");
-    expect(parsedSent(client)).toEqual([{ type: HMR_RN_MSG.Error, message: "boom" }]);
+    adapter.sendError('boom');
+    expect(parsedSent(client)).toEqual([{ type: HMR_RN_MSG.Error, message: 'boom' }]);
   });
 
-  test("multi client broadcast — 모든 client 가 같은 메시지 받음", () => {
+  test('multi client broadcast — 모든 client 가 같은 메시지 받음', () => {
     const adapter = createMetroHmrAdapter();
     const a = new MockBunClient();
     const b = new MockBunClient();
@@ -96,7 +96,7 @@ describe("createMetroHmrAdapter", () => {
     expect(parsedSent(b)).toEqual([{ type: HMR_RN_MSG.Reload }]);
   });
 
-  test("removeBunClient 후 broadcast — 제거된 client 는 받지 않음", () => {
+  test('removeBunClient 후 broadcast — 제거된 client 는 받지 않음', () => {
     const adapter = createMetroHmrAdapter();
     const a = new MockBunClient();
     const b = new MockBunClient();
@@ -111,7 +111,7 @@ describe("createMetroHmrAdapter", () => {
     expect(b.sent.length).toBe(0);
   });
 
-  test("clientCount — addBunClient / removeBunClient 따라 갱신", () => {
+  test('clientCount — addBunClient / removeBunClient 따라 갱신', () => {
     const adapter = createMetroHmrAdapter();
     const a = new MockBunClient();
     const b = new MockBunClient();
@@ -124,7 +124,7 @@ describe("createMetroHmrAdapter", () => {
     expect(adapter.channel.clientCount).toBe(1);
   });
 
-  test("sendUpdate — modules 빈 배열도 정상 (3 메시지 송출)", () => {
+  test('sendUpdate — modules 빈 배열도 정상 (3 메시지 송출)', () => {
     const adapter = createMetroHmrAdapter();
     const client = new MockBunClient();
     adapter.channel.addBunClient(client);
@@ -138,35 +138,35 @@ describe("createMetroHmrAdapter", () => {
     ]);
   });
 
-  test("sendUpdate — modules 의 map 필드 보존", () => {
+  test('sendUpdate — modules 의 map 필드 보존', () => {
     const adapter = createMetroHmrAdapter();
     const client = new MockBunClient();
     adapter.channel.addBunClient(client);
     resetSent(client);
 
-    const modules = [{ id: "x", code: "__d(...)", map: "//# sourceMappingURL=..." }];
+    const modules = [{ id: 'x', code: '__d(...)', map: '//# sourceMappingURL=...' }];
     adapter.sendUpdate(modules);
     const update = parsedSent(client)[1] as { modules: Array<Record<string, unknown>> };
     expect(update.modules[0]).toEqual({
-      id: "x",
-      code: "__d(...)",
-      map: "//# sourceMappingURL=...",
+      id: 'x',
+      code: '__d(...)',
+      map: '//# sourceMappingURL=...',
     });
   });
 
-  test("sendUpdate — readonly modules 입력 → adapter 내부 spread 후 broadcast (mutation 안전)", () => {
+  test('sendUpdate — readonly modules 입력 → adapter 내부 spread 후 broadcast (mutation 안전)', () => {
     const adapter = createMetroHmrAdapter();
     const client = new MockBunClient();
     adapter.channel.addBunClient(client);
     resetSent(client);
 
-    const original = Object.freeze([Object.freeze({ id: "y", code: "code" })]);
+    const original = Object.freeze([Object.freeze({ id: 'y', code: 'code' })]);
     expect(() => adapter.sendUpdate(original)).not.toThrow();
     const update = parsedSent(client)[1] as { modules: unknown[] };
-    expect(update.modules).toEqual([{ id: "y", code: "code" }]);
+    expect(update.modules).toEqual([{ id: 'y', code: 'code' }]);
   });
 
-  test("초기 connect 시 channel 의 자동 greeting (web HmrMessage.Connected) 은 RN adapter 와 무관하게 송출", () => {
+  test('초기 connect 시 channel 의 자동 greeting (web HmrMessage.Connected) 은 RN adapter 와 무관하게 송출', () => {
     // RN runtime 의 zts-hmr-client.js 는 onmessage 분기에서 'connected' type 을
     // case 안에 두지 않아 default 로 빠짐 (silent ignore). adapter 는 추가
     // greeting (sendInitialGreeting) 을 caller 가 명시 호출.
@@ -175,6 +175,6 @@ describe("createMetroHmrAdapter", () => {
     adapter.channel.addBunClient(client);
     expect(client.sent.length).toBe(1);
     const first = JSON.parse(client.sent[0]!);
-    expect(first.type).toBe("connected");
+    expect(first.type).toBe('connected');
   });
 });

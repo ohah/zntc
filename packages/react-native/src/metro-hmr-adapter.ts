@@ -10,7 +10,7 @@ import {
   type HmrChannel,
   HMR_RN_MSG,
   type HmrRnUpdateModule,
-} from "@zts/server";
+} from '@zts/server';
 
 export interface MetroHmrAdapter {
   /**

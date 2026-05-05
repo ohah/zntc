@@ -1,15 +1,15 @@
-import { describe, test, expect } from "bun:test";
-import { createFixture, runZts } from "./helpers";
-import { spawnSync } from "node:child_process";
+import { describe, test, expect } from 'bun:test';
+import { createFixture, runZts } from './helpers';
+import { spawnSync } from 'node:child_process';
 
 // Stage 3 decorator + --target=es5 다운레벨링 검증.
 // - Stage 3 decorator pass가 `let C = (() => { ... })()` 형태 IIFE를 emit한다.
 // - transformer.zig가 visitNode 재방문으로 arrow/let/class/accessor/static block을 ES5로 추가 lowering.
 // - static block 안의 `this`는 class name identifier로 치환되어야 한다 (class scope 소실).
 async function transpileES5(code: string): Promise<string> {
-  const fixture = await createFixture({ "input.ts": code });
+  const fixture = await createFixture({ 'input.ts': code });
   try {
-    const result = await runZts([`${fixture.dir}/input.ts`, "--target=es5"]);
+    const result = await runZts([`${fixture.dir}/input.ts`, '--target=es5']);
     if (result.exitCode !== 0) throw new Error(`zts failed: ${result.stderr}`);
     return result.stdout;
   } finally {
@@ -18,7 +18,7 @@ async function transpileES5(code: string): Promise<string> {
 }
 
 function runInNode(code: string): string {
-  const proc = spawnSync("node", ["--input-type=module", "-e", code], { encoding: "utf8" });
+  const proc = spawnSync('node', ['--input-type=module', '-e', code], { encoding: 'utf8' });
   if (proc.status !== 0) throw new Error(proc.stderr || proc.stdout);
   return proc.stdout.trim();
 }
@@ -38,8 +38,8 @@ function expectNoEs6Syntax(output: string) {
   expect(output).not.toMatch(/^\s*let\s+[A-Za-z_$]/m);
 }
 
-describe("Stage 3 decorator + --target=es5 다운레벨링", () => {
-  test("method decorator + accessor field (이슈 본문 케이스)", async () => {
+describe('Stage 3 decorator + --target=es5 다운레벨링', () => {
+  test('method decorator + accessor field (이슈 본문 케이스)', async () => {
     const out = await transpileES5(`
 function logged(target: any, ctx: any) {
   return function (this: any, ...args: any[]) { return target.apply(this, args); };
@@ -52,10 +52,10 @@ const c = new C();
 console.log(c.tick(), c.tick());
 `);
     expectNoEs6Syntax(out);
-    expect(runInNode(out)).toBe("1 2");
+    expect(runInNode(out)).toBe('1 2');
   });
 
-  test("class-level decorator (addInitializer)", async () => {
+  test('class-level decorator (addInitializer)', async () => {
     const out = await transpileES5(`
 function addStatic(target: any, ctx: any) {
   ctx.addInitializer(() => { (target as any).tag = "TAGGED"; });
@@ -65,10 +65,10 @@ class A { hello() { return "hi"; } }
 console.log(new A().hello(), (A as any).tag);
 `);
     expectNoEs6Syntax(out);
-    expect(runInNode(out)).toBe("hi TAGGED");
+    expect(runInNode(out)).toBe('hi TAGGED');
   });
 
-  test("field decorator (init 변환) — arrow_this_depth leak 회귀 방지", async () => {
+  test('field decorator (init 변환) — arrow_this_depth leak 회귀 방지', async () => {
     const out = await transpileES5(`
 function double(_v: any, _ctx: any) { return function (initial: number) { return initial * 2; }; }
 class F { @double value = 10; }
@@ -76,10 +76,10 @@ console.log(new F().value);
 `);
     expectNoEs6Syntax(out);
     // field init 안의 this가 _this로 잘못 치환되면 ReferenceError 발생 (과거 회귀).
-    expect(runInNode(out)).toBe("20");
+    expect(runInNode(out)).toBe('20');
   });
 
-  test("static method decorator", async () => {
+  test('static method decorator', async () => {
     const out = await transpileES5(`
 function wrap(target: any, _ctx: any) {
   return function (this: any, ...args: any[]) { return "W:" + target.apply(this, args); };
@@ -88,10 +88,10 @@ class S { @wrap static greet(name: string) { return "Hi " + name; } }
 console.log(S.greet("bob"));
 `);
     expectNoEs6Syntax(out);
-    expect(runInNode(out)).toBe("W:Hi bob");
+    expect(runInNode(out)).toBe('W:Hi bob');
   });
 
-  test("getter decorator", async () => {
+  test('getter decorator', async () => {
     const out = await transpileES5(`
 function log(target: any, ctx: any) {
   if (ctx.kind === "getter") return function (this: any) { return target.call(this) + "!"; };
@@ -101,10 +101,10 @@ class G { _v = 5; @log get v() { return this._v; } set v(n: number) { this._v = 
 const g = new G(); console.log(g.v); g.v = 7; console.log(g.v);
 `);
     expectNoEs6Syntax(out);
-    expect(runInNode(out)).toBe("5!\n7!");
+    expect(runInNode(out)).toBe('5!\n7!');
   });
 
-  test("extends + class decorator", async () => {
+  test('extends + class decorator', async () => {
     const out = await transpileES5(`
 function tag(target: any, ctx: any) { ctx.addInitializer(() => { (target as any).tag = "X"; }); }
 class Base { base() { return "B"; } }
@@ -113,10 +113,10 @@ class Child extends Base { child() { return this.base() + "-C"; } }
 console.log(new Child().child(), (Child as any).tag);
 `);
     expectNoEs6Syntax(out);
-    expect(runInNode(out)).toBe("B-C X");
+    expect(runInNode(out)).toBe('B-C X');
   });
 
-  test("chained decorators (적용 순서)", async () => {
+  test('chained decorators (적용 순서)', async () => {
     const out = await transpileES5(`
 function a(t: any, _c: any) { return function (this: any) { return "a(" + t.apply(this, arguments) + ")"; }; }
 function b(t: any, _c: any) { return function (this: any) { return "b(" + t.apply(this, arguments) + ")"; }; }
@@ -124,10 +124,10 @@ class Ch { @a @b go() { return "core"; } }
 console.log(new Ch().go());
 `);
     expectNoEs6Syntax(out);
-    expect(runInNode(out)).toBe("a(b(core))");
+    expect(runInNode(out)).toBe('a(b(core))');
   });
 
-  test("동일 scope에 여러 decorated class", async () => {
+  test('동일 scope에 여러 decorated class', async () => {
     const out = await transpileES5(`
 function id(t: any, _c: any) { return t; }
 class P { @id p() { return 1; } }
@@ -135,12 +135,12 @@ class Q { @id q() { return 2; } }
 console.log(new P().p(), new Q().q());
 `);
     expectNoEs6Syntax(out);
-    expect(runInNode(out)).toBe("1 2");
+    expect(runInNode(out)).toBe('1 2');
   });
 
   // #1537 — Stage 3가 accessor에 붙인 `#_{name}_accessor_storage` private backing이
   // ES5 lowering에서 WeakMap으로 풀리는지. 핵심 회귀 가드.
-  test("accessor + decorator의 private backing → WeakMap lowering (#1537)", async () => {
+  test('accessor + decorator의 private backing → WeakMap lowering (#1537)', async () => {
     const out = await transpileES5(`
 function defaultTo(def: any) {
   return function (_: any, _ctx: any) {
@@ -158,11 +158,11 @@ console.log(ad.x);
     expect(out).not.toMatch(/#[A-Za-z_]/);
     // accessor backing은 WeakMap으로 변환되어야 한다.
     expect(out).toMatch(/new WeakMap\(\)/);
-    expect(runInNode(out)).toBe("99\n5");
+    expect(runInNode(out)).toBe('99\n5');
   });
 
   // #1538 — @decorator가 붙은 `export [default] class`가 parser에서 drop되던 회귀 방지.
-  test("@decorator export class: decorator 보존 + export 유지 (#1538)", async () => {
+  test('@decorator export class: decorator 보존 + export 유지 (#1538)', async () => {
     const out = await transpileES5(`
 function tag(target: any, ctx: any) {
   ctx.addInitializer(function(this: any) { (this as any).tag = "T"; });
@@ -178,7 +178,7 @@ export class Named { hello() { return "named"; } }
     expect(out).toMatch(/__esDecorate/);
   });
 
-  test("@decorator export default class (named): let + export 분리 (#1538)", async () => {
+  test('@decorator export default class (named): let + export 분리 (#1538)', async () => {
     const out = await transpileES5(`
 function tag(target: any, ctx: any) {
   ctx.addInitializer(function(this: any) { (this as any).tag = "T"; });
@@ -191,7 +191,7 @@ export default class C { hello() { return "c"; } }
     expect(out).toMatch(/__esDecorate/);
   });
 
-  test("@decorator export default class (anonymous): 빈 변수명 없이 IIFE 감싸기 (#1538)", async () => {
+  test('@decorator export default class (anonymous): 빈 변수명 없이 IIFE 감싸기 (#1538)', async () => {
     const out = await transpileES5(`
 function tag(target: any, ctx: any) {
   ctx.addInitializer(function(this: any) { (this as any).tag = "T"; });
@@ -207,7 +207,7 @@ export default class { hello() { return "anon"; } }
   });
 
   // static block 내 this → class name 치환 (Stage 3 decorator와 독립된 일반 버그 수정)
-  test("일반 static block: this → class name 치환", async () => {
+  test('일반 static block: this → class name 치환', async () => {
     const out = await transpileES5(`
 class D {
   static counter = 0;
@@ -216,6 +216,6 @@ class D {
 console.log(D.counter, (D as any).x);
 `);
     expectNoEs6Syntax(out);
-    expect(runInNode(out)).toBe("1 42");
+    expect(runInNode(out)).toBe('1 42');
   });
 });

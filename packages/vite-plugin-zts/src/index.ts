@@ -13,9 +13,9 @@
  * ```
  */
 
-import type { Plugin } from "vite";
-import { TsconfigCache, init, transpile } from "../../core/index";
-import type { TranspileOptions } from "../../core/index";
+import type { Plugin } from 'vite';
+import { TsconfigCache, init, transpile } from '../../core/index';
+import type { TranspileOptions } from '../../core/index';
 
 export interface ZtsPluginOptions {
   /**
@@ -29,7 +29,7 @@ export interface ZtsPluginOptions {
   /**
    * ZTS transpile 옵션 (target, jsx 등)
    */
-  transpileOptions?: Omit<TranspileOptions, "filename">;
+  transpileOptions?: Omit<TranspileOptions, 'filename'>;
   /**
    * tsconfig autodiscover 결과 캐시 활성화 (기본: true). plugin 인스턴스 lifetime 동안
    * 같은 워크스페이스 안 파일은 한 번만 walk → file 당 5–10 fs syscall 절약 (#2367).
@@ -54,13 +54,13 @@ export function zts(options: ZtsPluginOptions = {}): Plugin {
   let cache: TsconfigCache | undefined;
 
   return {
-    name: "vite-plugin-zts",
+    name: 'vite-plugin-zts',
 
     // Vite 5: esbuild transform 비활성화, Vite 6+: 이미 Rolldown 기반이므로 불필요
     config(_, _env) {
       // Vite 5 이하에서만 esbuild 비활성화 (Vite 6+는 Rolldown 사용)
       try {
-        const viteVersion = parseInt(require("vite/package.json").version);
+        const viteVersion = parseInt(require('vite/package.json').version);
         if (viteVersion < 6) return { esbuild: false };
       } catch {}
       return {};

@@ -1,6 +1,6 @@
 /// Sourcemap 디코드/lookup 공용 헬퍼.
 /// 여러 sourcemap 검증 테스트가 공유.
-const VLQ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const VLQ_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 /** base64 VLQ 시퀀스를 부호 있는 정수 배열로 디코드. */
 export function decodeVlq(s: string): number[] {
@@ -35,10 +35,10 @@ export function decodeMappings(mappings: string): Segment[][] {
   const lines: Segment[][] = [];
   let prevSrcLine = 0,
     prevSrcCol = 0;
-  for (const lineStr of mappings.split(";")) {
+  for (const lineStr of mappings.split(';')) {
     const segs: Segment[] = [];
     let prevGenCol = 0;
-    for (const seg of lineStr.split(",")) {
+    for (const seg of lineStr.split(',')) {
       if (!seg) continue;
       const v = decodeVlq(seg);
       prevGenCol += v[0] || 0;
@@ -80,7 +80,7 @@ export interface MarkerHit {
 /** `MARKER_*` 식별자 위치를 텍스트에서 모두 추출. round5 sourcemap 회귀 테스트 용. */
 export function findMarkers(text: string): MarkerHit[] {
   const hits: MarkerHit[] = [];
-  const lines = text.split("\n");
+  const lines = text.split('\n');
   for (let li = 0; li < lines.length; li++) {
     const re = /\bMARKER_[A-Z_]+\b/g;
     let m: RegExpExecArray | null;

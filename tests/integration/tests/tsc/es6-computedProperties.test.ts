@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: es6/computedProperties", () => {
-  test("computedPropertyNames1_ES5", async () => {
+describe('TSC: es6/computedProperties', () => {
+  test('computedPropertyNames1_ES5', async () => {
     await expectPass(
       `var v = {
     get [0 + 1]() { return 0 },
@@ -11,7 +11,7 @@ describe("TSC: es6/computedProperties", () => {
       [],
     );
   });
-  test("computedPropertyNames1_ES6", async () => {
+  test('computedPropertyNames1_ES6', async () => {
     await expectPass(
       `var v = {
     get [0 + 1]() { return 0 },
@@ -20,7 +20,7 @@ describe("TSC: es6/computedProperties", () => {
       [],
     );
   });
-  test("computedPropertyNames10_ES5", async () => {
+  test('computedPropertyNames10_ES5', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -41,7 +41,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames10_ES6", async () => {
+  test('computedPropertyNames10_ES6', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -62,7 +62,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames11_ES5", async () => {
+  test('computedPropertyNames11_ES5', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -83,7 +83,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames11_ES6", async () => {
+  test('computedPropertyNames11_ES6', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -104,7 +104,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames12_ES5", async () => {
+  test('computedPropertyNames12_ES5', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -125,7 +125,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames12_ES6", async () => {
+  test('computedPropertyNames12_ES6', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -146,7 +146,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames13_ES5", async () => {
+  test('computedPropertyNames13_ES5', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -167,7 +167,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames13_ES6", async () => {
+  test('computedPropertyNames13_ES6', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -188,7 +188,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames14_ES5", async () => {
+  test('computedPropertyNames14_ES5', async () => {
     await expectPass(
       `var b: boolean;
 class C {
@@ -202,7 +202,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames14_ES6", async () => {
+  test('computedPropertyNames14_ES6', async () => {
     await expectPass(
       `var b: boolean;
 class C {
@@ -216,7 +216,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames15_ES5", async () => {
+  test('computedPropertyNames15_ES5', async () => {
     await expectPass(
       `var p1: number | string;
 var p2: number | number[];
@@ -229,7 +229,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames15_ES6", async () => {
+  test('computedPropertyNames15_ES6', async () => {
     await expectPass(
       `var p1: number | string;
 var p2: number | number[];
@@ -242,7 +242,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames16_ES5", async () => {
+  test('computedPropertyNames16_ES5', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -263,7 +263,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames16_ES6", async () => {
+  test('computedPropertyNames16_ES6', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -284,7 +284,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames17_ES5", async () => {
+  test('computedPropertyNames17_ES5', async () => {
     await expectPass(
       `var b: boolean;
 class C {
@@ -298,7 +298,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames17_ES6", async () => {
+  test('computedPropertyNames17_ES6', async () => {
     await expectPass(
       `var b: boolean;
 class C {
@@ -312,7 +312,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames18_ES5", async () => {
+  test('computedPropertyNames18_ES5', async () => {
     await expectPass(
       `function foo() {
     var obj = {
@@ -322,7 +322,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames18_ES6", async () => {
+  test('computedPropertyNames18_ES6', async () => {
     await expectPass(
       `function foo() {
     var obj = {
@@ -332,7 +332,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames19_ES5", async () => {
+  test('computedPropertyNames19_ES5', async () => {
     await expectPass(
       `namespace M {
     var obj = {
@@ -342,7 +342,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames19_ES6", async () => {
+  test('computedPropertyNames19_ES6', async () => {
     await expectPass(
       `namespace M {
     var obj = {
@@ -352,7 +352,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames2_ES5", async () => {
+  test('computedPropertyNames2_ES5', async () => {
     await expectPass(
       `var methodName = "method";
 var accessorName = "accessor";
@@ -367,7 +367,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames2_ES6", async () => {
+  test('computedPropertyNames2_ES6', async () => {
     await expectPass(
       `var methodName = "method";
 var accessorName = "accessor";
@@ -382,7 +382,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames20_ES5", async () => {
+  test('computedPropertyNames20_ES5', async () => {
     await expectPass(
       `var obj = {
     [this.bar]: 0
@@ -390,7 +390,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames20_ES6", async () => {
+  test('computedPropertyNames20_ES6', async () => {
     await expectPass(
       `var obj = {
     [this.bar]: 0
@@ -398,7 +398,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames21_ES5", async () => {
+  test('computedPropertyNames21_ES5', async () => {
     await expectPass(
       `class C {
     bar() {
@@ -409,7 +409,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames21_ES6", async () => {
+  test('computedPropertyNames21_ES6', async () => {
     await expectPass(
       `class C {
     bar() {
@@ -420,7 +420,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames22_ES5", async () => {
+  test('computedPropertyNames22_ES5', async () => {
     await expectPass(
       `class C {
     bar() {
@@ -433,7 +433,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames22_ES6", async () => {
+  test('computedPropertyNames22_ES6', async () => {
     await expectPass(
       `class C {
     bar() {
@@ -446,7 +446,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames23_ES5", async () => {
+  test('computedPropertyNames23_ES5', async () => {
     await expectPass(
       `class C {
     bar() {
@@ -459,7 +459,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames23_ES6", async () => {
+  test('computedPropertyNames23_ES6', async () => {
     await expectPass(
       `class C {
     bar() {
@@ -472,7 +472,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames24_ES5", async () => {
+  test('computedPropertyNames24_ES5', async () => {
     await expectError(
       `class Base {
     bar() {
@@ -485,7 +485,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames24_ES6", async () => {
+  test('computedPropertyNames24_ES6', async () => {
     await expectError(
       `class Base {
     bar() {
@@ -500,7 +500,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames25_ES5", async () => {
+  test('computedPropertyNames25_ES5', async () => {
     await expectPass(
       `class Base {
     bar() {
@@ -518,7 +518,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames25_ES6", async () => {
+  test('computedPropertyNames25_ES6', async () => {
     await expectPass(
       `class Base {
     bar() {
@@ -536,7 +536,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames26_ES5", async () => {
+  test('computedPropertyNames26_ES5', async () => {
     await expectError(
       `class Base {
     bar() {
@@ -551,7 +551,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames26_ES6", async () => {
+  test('computedPropertyNames26_ES6', async () => {
     await expectError(
       `class Base {
     bar() {
@@ -568,7 +568,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames27_ES5", async () => {
+  test('computedPropertyNames27_ES5', async () => {
     await expectError(
       `class Base {
 }
@@ -578,7 +578,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames27_ES6", async () => {
+  test('computedPropertyNames27_ES6', async () => {
     await expectError(
       `class Base {
 }
@@ -588,7 +588,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames28_ES5", async () => {
+  test('computedPropertyNames28_ES5', async () => {
     await expectPass(
       `class Base {
 }
@@ -603,7 +603,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames28_ES6", async () => {
+  test('computedPropertyNames28_ES6', async () => {
     await expectPass(
       `class Base {
 }
@@ -618,7 +618,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames29_ES5", async () => {
+  test('computedPropertyNames29_ES5', async () => {
     await expectPass(
       `class C {
     bar() {
@@ -633,7 +633,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames29_ES6", async () => {
+  test('computedPropertyNames29_ES6', async () => {
     await expectPass(
       `class C {
     bar() {
@@ -648,7 +648,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames3_ES5", async () => {
+  test('computedPropertyNames3_ES5', async () => {
     await expectError(
       `var id;
 class C {
@@ -662,7 +662,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames3_ES6", async () => {
+  test('computedPropertyNames3_ES6', async () => {
     await expectError(
       `var id;
 class C {
@@ -676,7 +676,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames30_ES5", async () => {
+  test('computedPropertyNames30_ES5', async () => {
     await expectPass(
       `class Base {
 }
@@ -696,7 +696,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames30_ES6", async () => {
+  test('computedPropertyNames30_ES6', async () => {
     await expectPass(
       `class Base {
 }
@@ -716,7 +716,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames31_ES5", async () => {
+  test('computedPropertyNames31_ES5', async () => {
     await expectPass(
       `class Base {
     bar() {
@@ -736,7 +736,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames31_ES6", async () => {
+  test('computedPropertyNames31_ES6', async () => {
     await expectPass(
       `class Base {
     bar() {
@@ -756,7 +756,7 @@ class C extends Base {
       [],
     );
   });
-  test("computedPropertyNames32_ES5", async () => {
+  test('computedPropertyNames32_ES5', async () => {
     await expectPass(
       `function foo<T>() { return '' }
 class C<T> {
@@ -768,7 +768,7 @@ class C<T> {
       [],
     );
   });
-  test("computedPropertyNames32_ES6", async () => {
+  test('computedPropertyNames32_ES6', async () => {
     await expectPass(
       `function foo<T>() { return '' }
 class C<T> {
@@ -780,7 +780,7 @@ class C<T> {
       [],
     );
   });
-  test("computedPropertyNames33_ES5", async () => {
+  test('computedPropertyNames33_ES5', async () => {
     await expectPass(
       `function foo<T>() { return '' }
 class C<T> {
@@ -794,7 +794,7 @@ class C<T> {
       [],
     );
   });
-  test("computedPropertyNames33_ES6", async () => {
+  test('computedPropertyNames33_ES6', async () => {
     await expectPass(
       `function foo<T>() { return '' }
 class C<T> {
@@ -808,7 +808,7 @@ class C<T> {
       [],
     );
   });
-  test("computedPropertyNames34_ES5", async () => {
+  test('computedPropertyNames34_ES5', async () => {
     await expectPass(
       `function foo<T>() { return '' }
 class C<T> {
@@ -822,7 +822,7 @@ class C<T> {
       [],
     );
   });
-  test("computedPropertyNames34_ES6", async () => {
+  test('computedPropertyNames34_ES6', async () => {
     await expectPass(
       `function foo<T>() { return '' }
 class C<T> {
@@ -836,7 +836,7 @@ class C<T> {
       [],
     );
   });
-  test("computedPropertyNames35_ES5", async () => {
+  test('computedPropertyNames35_ES5', async () => {
     // tsc type-check error only — parse level 통과. (#1767)
     await expectPass(
       `function foo<T>() { return '' }
@@ -847,7 +847,7 @@ interface I<T> {
       [],
     );
   });
-  test("computedPropertyNames35_ES6", async () => {
+  test('computedPropertyNames35_ES6', async () => {
     // tsc type-check error only — parse level 통과. (#1767)
     await expectPass(
       `function foo<T>() { return '' }
@@ -858,7 +858,7 @@ interface I<T> {
       [],
     );
   });
-  test("computedPropertyNames36_ES5", async () => {
+  test('computedPropertyNames36_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -873,7 +873,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames36_ES6", async () => {
+  test('computedPropertyNames36_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -888,7 +888,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames37_ES5", async () => {
+  test('computedPropertyNames37_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -903,7 +903,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames37_ES6", async () => {
+  test('computedPropertyNames37_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -918,7 +918,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames38_ES5", async () => {
+  test('computedPropertyNames38_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -933,7 +933,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames38_ES6", async () => {
+  test('computedPropertyNames38_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -948,7 +948,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames39_ES5", async () => {
+  test('computedPropertyNames39_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -963,7 +963,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames39_ES6", async () => {
+  test('computedPropertyNames39_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -978,7 +978,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames4_ES5", async () => {
+  test('computedPropertyNames4_ES5', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -999,7 +999,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames4_ES6", async () => {
+  test('computedPropertyNames4_ES6', async () => {
     await expectPass(
       `var s: string;
 var n: number;
@@ -1020,7 +1020,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames40_ES5", async () => {
+  test('computedPropertyNames40_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1035,7 +1035,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames40_ES6", async () => {
+  test('computedPropertyNames40_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1050,7 +1050,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames41_ES5", async () => {
+  test('computedPropertyNames41_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1064,7 +1064,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames41_ES6", async () => {
+  test('computedPropertyNames41_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1078,7 +1078,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames42_ES5", async () => {
+  test('computedPropertyNames42_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1092,7 +1092,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames42_ES6", async () => {
+  test('computedPropertyNames42_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1106,7 +1106,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNames43_ES5", async () => {
+  test('computedPropertyNames43_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1123,7 +1123,7 @@ class D extends C {
       [],
     );
   });
-  test("computedPropertyNames43_ES6", async () => {
+  test('computedPropertyNames43_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1140,7 +1140,7 @@ class D extends C {
       [],
     );
   });
-  test("computedPropertyNames44_ES5", async () => {
+  test('computedPropertyNames44_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1156,7 +1156,7 @@ class D extends C {
       [],
     );
   });
-  test("computedPropertyNames44_ES6", async () => {
+  test('computedPropertyNames44_ES6', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1172,24 +1172,7 @@ class D extends C {
       [],
     );
   });
-  test("computedPropertyNames45_ES5", async () => {
-    await expectPass(
-      `class Foo { x }
-class Foo2 { x; y }
-
-class C {
-    get ["get1"]() { return new Foo }
-}
-
-class D extends C {
-    // No error when the indexer is in a class more derived than the computed property
-    [s: string]: Foo2;
-    set ["set1"](p: Foo) { }
-}`,
-      [],
-    );
-  });
-  test("computedPropertyNames45_ES6", async () => {
+  test('computedPropertyNames45_ES5', async () => {
     await expectPass(
       `class Foo { x }
 class Foo2 { x; y }
@@ -1206,7 +1189,24 @@ class D extends C {
       [],
     );
   });
-  test("computedPropertyNames46_ES5", async () => {
+  test('computedPropertyNames45_ES6', async () => {
+    await expectPass(
+      `class Foo { x }
+class Foo2 { x; y }
+
+class C {
+    get ["get1"]() { return new Foo }
+}
+
+class D extends C {
+    // No error when the indexer is in a class more derived than the computed property
+    [s: string]: Foo2;
+    set ["set1"](p: Foo) { }
+}`,
+      [],
+    );
+  });
+  test('computedPropertyNames46_ES5', async () => {
     await expectPass(
       `var o = {
     ["" || 0]: 0
@@ -1214,7 +1214,7 @@ class D extends C {
       [],
     );
   });
-  test("computedPropertyNames46_ES6", async () => {
+  test('computedPropertyNames46_ES6', async () => {
     await expectPass(
       `var o = {
     ["" || 0]: 0
@@ -1222,7 +1222,7 @@ class D extends C {
       [],
     );
   });
-  test("computedPropertyNames47_ES5", async () => {
+  test('computedPropertyNames47_ES5', async () => {
     await expectPass(
       `enum E1 { x }
 enum E2 { x }
@@ -1232,7 +1232,7 @@ var o = {
       [],
     );
   });
-  test("computedPropertyNames47_ES6", async () => {
+  test('computedPropertyNames47_ES6', async () => {
     await expectPass(
       `enum E1 { x }
 enum E2 { x }
@@ -1242,7 +1242,7 @@ var o = {
       [],
     );
   });
-  test("computedPropertyNames48_ES5", async () => {
+  test('computedPropertyNames48_ES5', async () => {
     await expectPass(
       `declare function extractIndexer<T>(p: { [n: number]: T }): T;
 
@@ -1264,7 +1264,7 @@ extractIndexer({
       [],
     );
   });
-  test("computedPropertyNames48_ES6", async () => {
+  test('computedPropertyNames48_ES6', async () => {
     await expectPass(
       `declare function extractIndexer<T>(p: { [n: number]: T }): T;
 
@@ -1286,7 +1286,7 @@ extractIndexer({
       [],
     );
   });
-  test("computedPropertyNames49_ES5", async () => {
+  test('computedPropertyNames49_ES5', async () => {
     await expectPass(
       `
 var x = {
@@ -1316,7 +1316,7 @@ var x = {
       [],
     );
   });
-  test("computedPropertyNames49_ES6", async () => {
+  test('computedPropertyNames49_ES6', async () => {
     await expectPass(
       `
 var x = {
@@ -1346,7 +1346,7 @@ var x = {
       [],
     );
   });
-  test("computedPropertyNames5_ES5", async () => {
+  test('computedPropertyNames5_ES5', async () => {
     await expectPass(
       `declare var b: boolean;
 var v = {
@@ -1360,7 +1360,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames5_ES6", async () => {
+  test('computedPropertyNames5_ES6', async () => {
     await expectPass(
       `declare var b: boolean;
 var v = {
@@ -1374,7 +1374,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames50_ES5", async () => {
+  test('computedPropertyNames50_ES5', async () => {
     await expectPass(
       `
 var x = {
@@ -1404,7 +1404,7 @@ var x = {
       [],
     );
   });
-  test("computedPropertyNames50_ES6", async () => {
+  test('computedPropertyNames50_ES6', async () => {
     await expectPass(
       `
 var x = {
@@ -1434,7 +1434,7 @@ var x = {
       [],
     );
   });
-  test("computedPropertyNames51_ES5", async () => {
+  test('computedPropertyNames51_ES5', async () => {
     await expectPass(
       `function f<T, K extends keyof T>() {
     var t!: T;
@@ -1447,7 +1447,7 @@ var x = {
       [],
     );
   });
-  test("computedPropertyNames51_ES6", async () => {
+  test('computedPropertyNames51_ES6', async () => {
     await expectPass(
       `function f<T, K extends keyof T>() {
     var t!: T;
@@ -1460,7 +1460,7 @@ var x = {
       [],
     );
   });
-  test("computedPropertyNames52", async () => {
+  test('computedPropertyNames52', async () => {
     await expectPass(
       `const array = [];
 for (let i = 0; i < 10; ++i) {
@@ -1472,7 +1472,7 @@ for (let i = 0; i < 10; ++i) {
       [],
     );
   });
-  test("computedPropertyNames6_ES5", async () => {
+  test('computedPropertyNames6_ES5', async () => {
     await expectPass(
       `declare var p1: number | string;
 declare var p2: number | number[];
@@ -1485,7 +1485,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames6_ES6", async () => {
+  test('computedPropertyNames6_ES6', async () => {
     await expectPass(
       `declare var p1: number | string;
 declare var p2: number | number[];
@@ -1498,7 +1498,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames7_ES5", async () => {
+  test('computedPropertyNames7_ES5', async () => {
     await expectPass(
       `enum E {
     member
@@ -1509,7 +1509,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames7_ES6", async () => {
+  test('computedPropertyNames7_ES6', async () => {
     await expectPass(
       `enum E {
     member
@@ -1520,7 +1520,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames8_ES5", async () => {
+  test('computedPropertyNames8_ES5', async () => {
     await expectPass(
       `function f<T, U extends string>() {
     var t!: T;
@@ -1533,7 +1533,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames8_ES6", async () => {
+  test('computedPropertyNames8_ES6', async () => {
     await expectPass(
       `function f<T, U extends string>() {
     var t!: T;
@@ -1546,7 +1546,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames9_ES5", async () => {
+  test('computedPropertyNames9_ES5', async () => {
     await expectPass(
       `function f(s: string): string;
 function f(n: number): number;
@@ -1561,7 +1561,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNames9_ES6", async () => {
+  test('computedPropertyNames9_ES6', async () => {
     await expectPass(
       `function f(s: string): string;
 function f(n: number): number;
@@ -1576,7 +1576,7 @@ var v = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType1_ES5", async () => {
+  test('computedPropertyNamesContextualType1_ES5', async () => {
     await expectPass(
       `interface I {
     [s: string]: (x: string) => number;
@@ -1590,7 +1590,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType1_ES6", async () => {
+  test('computedPropertyNamesContextualType1_ES6', async () => {
     await expectPass(
       `interface I {
     [s: string]: (x: string) => number;
@@ -1604,7 +1604,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType10_ES5", async () => {
+  test('computedPropertyNamesContextualType10_ES5', async () => {
     await expectPass(
       `interface I {
     [s: number]: boolean;
@@ -1617,7 +1617,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType10_ES6", async () => {
+  test('computedPropertyNamesContextualType10_ES6', async () => {
     await expectPass(
       `interface I {
     [s: number]: boolean;
@@ -1630,7 +1630,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType2_ES5", async () => {
+  test('computedPropertyNamesContextualType2_ES5', async () => {
     await expectPass(
       `interface I {
     [s: string]: (x: any) => number; // Doesn't get hit
@@ -1644,7 +1644,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType2_ES6", async () => {
+  test('computedPropertyNamesContextualType2_ES6', async () => {
     await expectPass(
       `interface I {
     [s: string]: (x: any) => number; // Doesn't get hit
@@ -1658,7 +1658,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType3_ES5", async () => {
+  test('computedPropertyNamesContextualType3_ES5', async () => {
     await expectPass(
       `interface I {
     [s: string]: (x: string) => number;
@@ -1671,7 +1671,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType3_ES6", async () => {
+  test('computedPropertyNamesContextualType3_ES6', async () => {
     await expectPass(
       `interface I {
     [s: string]: (x: string) => number;
@@ -1684,7 +1684,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType4_ES5", async () => {
+  test('computedPropertyNamesContextualType4_ES5', async () => {
     await expectPass(
       `interface I {
     [s: string]: any;
@@ -1698,7 +1698,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType4_ES6", async () => {
+  test('computedPropertyNamesContextualType4_ES6', async () => {
     await expectPass(
       `interface I {
     [s: string]: any;
@@ -1712,7 +1712,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType5_ES5", async () => {
+  test('computedPropertyNamesContextualType5_ES5', async () => {
     await expectPass(
       `interface I {
     [s: string]: any;
@@ -1726,7 +1726,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType5_ES6", async () => {
+  test('computedPropertyNamesContextualType5_ES6', async () => {
     await expectPass(
       `interface I {
     [s: string]: any;
@@ -1740,7 +1740,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType6_ES5", async () => {
+  test('computedPropertyNamesContextualType6_ES5', async () => {
     await expectPass(
       `interface I<T> {
     [s: string]: T;
@@ -1758,7 +1758,7 @@ foo({
       [],
     );
   });
-  test("computedPropertyNamesContextualType6_ES6", async () => {
+  test('computedPropertyNamesContextualType6_ES6', async () => {
     await expectPass(
       `interface I<T> {
     [s: string]: T;
@@ -1776,7 +1776,7 @@ foo({
       [],
     );
   });
-  test("computedPropertyNamesContextualType7_ES5", async () => {
+  test('computedPropertyNamesContextualType7_ES5', async () => {
     await expectPass(
       `interface I<T> {
     [n: number]: T;
@@ -1800,7 +1800,7 @@ g({ p: "" });
       [],
     );
   });
-  test("computedPropertyNamesContextualType7_ES6", async () => {
+  test('computedPropertyNamesContextualType7_ES6', async () => {
     await expectPass(
       `interface I<T> {
     [n: number]: T;
@@ -1824,7 +1824,7 @@ g({ p: "" });
       [],
     );
   });
-  test("computedPropertyNamesContextualType8_ES5", async () => {
+  test('computedPropertyNamesContextualType8_ES5', async () => {
     await expectPass(
       `interface I {
     [s: string]: boolean;
@@ -1838,7 +1838,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType8_ES6", async () => {
+  test('computedPropertyNamesContextualType8_ES6', async () => {
     await expectPass(
       `interface I {
     [s: string]: boolean;
@@ -1852,7 +1852,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType9_ES5", async () => {
+  test('computedPropertyNamesContextualType9_ES5', async () => {
     await expectPass(
       `interface I {
     [s: string]: boolean;
@@ -1866,7 +1866,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesContextualType9_ES6", async () => {
+  test('computedPropertyNamesContextualType9_ES6', async () => {
     await expectPass(
       `interface I {
     [s: string]: boolean;
@@ -1880,7 +1880,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit1_ES5", async () => {
+  test('computedPropertyNamesDeclarationEmit1_ES5', async () => {
     await expectPass(
       `class C {
     ["" + ""]() { }
@@ -1890,7 +1890,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit1_ES6", async () => {
+  test('computedPropertyNamesDeclarationEmit1_ES6', async () => {
     await expectPass(
       `class C {
     ["" + ""]() { }
@@ -1900,7 +1900,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit2_ES5", async () => {
+  test('computedPropertyNamesDeclarationEmit2_ES5', async () => {
     await expectPass(
       `class C {
     static ["" + ""]() { }
@@ -1910,7 +1910,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit2_ES6", async () => {
+  test('computedPropertyNamesDeclarationEmit2_ES6', async () => {
     await expectPass(
       `class C {
     static ["" + ""]() { }
@@ -1920,7 +1920,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit3_ES5", async () => {
+  test('computedPropertyNamesDeclarationEmit3_ES5', async () => {
     await expectPass(
       `interface I {
     ["" + ""](): void;
@@ -1928,7 +1928,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit3_ES6", async () => {
+  test('computedPropertyNamesDeclarationEmit3_ES6', async () => {
     await expectPass(
       `interface I {
     ["" + ""](): void;
@@ -1936,7 +1936,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit4_ES5", async () => {
+  test('computedPropertyNamesDeclarationEmit4_ES5', async () => {
     await expectPass(
       `var v: {
     ["" + ""](): void;
@@ -1944,7 +1944,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit4_ES6", async () => {
+  test('computedPropertyNamesDeclarationEmit4_ES6', async () => {
     await expectPass(
       `var v: {
     ["" + ""](): void;
@@ -1952,7 +1952,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit5_ES5", async () => {
+  test('computedPropertyNamesDeclarationEmit5_ES5', async () => {
     await expectPass(
       `var v = {
     ["" + ""]: 0,
@@ -1963,7 +1963,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit5_ES6", async () => {
+  test('computedPropertyNamesDeclarationEmit5_ES6', async () => {
     await expectPass(
       `var v = {
     ["" + ""]: 0,
@@ -1974,7 +1974,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit6_ES5", async () => {
+  test('computedPropertyNamesDeclarationEmit6_ES5', async () => {
     await expectPass(
       `var v = {
   [-1]: {},
@@ -1985,7 +1985,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesDeclarationEmit6_ES6", async () => {
+  test('computedPropertyNamesDeclarationEmit6_ES6', async () => {
     await expectPass(
       `var v = {
   [-1]: {},
@@ -1996,7 +1996,7 @@ var o: I = {
       [],
     );
   });
-  test("computedPropertyNamesOnOverloads_ES5", async () => {
+  test('computedPropertyNamesOnOverloads_ES5', async () => {
     await expectPass(
       `var methodName = "method";
 var accessorName = "accessor";
@@ -2008,7 +2008,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNamesOnOverloads_ES6", async () => {
+  test('computedPropertyNamesOnOverloads_ES6', async () => {
     await expectPass(
       `var methodName = "method";
 var accessorName = "accessor";
@@ -2020,7 +2020,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNamesSourceMap1_ES5", async () => {
+  test('computedPropertyNamesSourceMap1_ES5', async () => {
     await expectPass(
       `class C {
     ["hello"]() {
@@ -2033,7 +2033,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNamesSourceMap1_ES6", async () => {
+  test('computedPropertyNamesSourceMap1_ES6', async () => {
     await expectPass(
       `class C {
     ["hello"]() {
@@ -2046,7 +2046,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNamesSourceMap2_ES5", async () => {
+  test('computedPropertyNamesSourceMap2_ES5', async () => {
     await expectPass(
       `var v = {
     ["hello"]() {
@@ -2059,7 +2059,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNamesSourceMap2_ES6", async () => {
+  test('computedPropertyNamesSourceMap2_ES6', async () => {
     await expectPass(
       `var v = {
     ["hello"]() {
@@ -2072,7 +2072,7 @@ class C {
       [],
     );
   });
-  test("computedPropertyNamesWithStaticProperty", async () => {
+  test('computedPropertyNamesWithStaticProperty', async () => {
     await expectPass(
       `class C1 {
     static staticProp = 10;

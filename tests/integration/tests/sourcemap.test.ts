@@ -1,11 +1,11 @@
-import { describe, test, expect, afterEach } from "bun:test";
-import { createFixture, createReactStubFixture, runZts } from "./helpers";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { describe, test, expect, afterEach } from 'bun:test';
+import { createFixture, createReactStubFixture, runZts } from './helpers';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** VLQ 디코딩: 소스맵 매핑 세그먼트를 숫자 배열로 변환 */
 function decodeVlq(s: string): number[] {
-  const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const result: number[] = [];
   let i = 0;
   while (i < s.length) {
@@ -28,7 +28,7 @@ function getMappedSourceLines(
   mappings: string,
   targetSourceIdx: number,
 ): { genLine: number; srcLine: number }[] {
-  const lines = mappings.split(";");
+  const lines = mappings.split(';');
   let genCol = 0,
     srcIdx = 0,
     srcLine = 0,
@@ -37,7 +37,7 @@ function getMappedSourceLines(
   for (let gn = 0; gn < lines.length; gn++) {
     if (!lines[gn]) continue;
     genCol = 0;
-    for (const seg of lines[gn].split(",")) {
+    for (const seg of lines[gn].split(',')) {
       if (!seg) continue;
       const vals = decodeVlq(seg);
       genCol += vals[0];
@@ -54,7 +54,7 @@ function getMappedSourceLines(
   return result;
 }
 
-describe("소스맵", () => {
+describe('소스맵', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -64,28 +64,28 @@ describe("소스맵", () => {
     }
   });
 
-  test("번들 소스맵에 sourcesContent가 포함된다", async () => {
+  test('번들 소스맵에 sourcesContent가 포함된다', async () => {
     const fixture = await createFixture({
-      "index.ts": `import { add } from "./math";\nconsole.log(add(1, 2));`,
-      "math.ts": `export function add(a: number, b: number): number {\n  return a + b;\n}`,
+      'index.ts': `import { add } from "./math";\nconsole.log(add(1, 2));`,
+      'math.ts': `export function add(a: number, b: number): number {\n  return a + b;\n}`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZts([
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '-o',
       outFile,
-      "--sourcemap",
+      '--sourcemap',
     ]);
     expect(result.exitCode).toBe(0);
 
     // .map 파일이 생성되어야 한다
-    const mapPath = outFile + ".map";
+    const mapPath = outFile + '.map';
     expect(existsSync(mapPath)).toBe(true);
 
-    const map = JSON.parse(readFileSync(mapPath, "utf-8"));
+    const map = JSON.parse(readFileSync(mapPath, 'utf-8'));
 
     // V3 소스맵 기본 필드 검증
     expect(map.version).toBe(3);
@@ -100,62 +100,62 @@ describe("소스맵", () => {
 
     // 각 sourcesContent가 비어있지 않아야 한다
     for (const content of map.sourcesContent) {
-      expect(typeof content).toBe("string");
+      expect(typeof content).toBe('string');
       expect(content.length).toBeGreaterThan(0);
     }
 
     // 원본 소스 내용이 포함되어 있어야 한다
-    const allContent = map.sourcesContent.join("\n");
-    expect(allContent).toContain("function add");
-    expect(allContent).toContain("console.log");
+    const allContent = map.sourcesContent.join('\n');
+    expect(allContent).toContain('function add');
+    expect(allContent).toContain('console.log');
   });
 
-  test("번들 출력에 sourceMappingURL이 포함된다", async () => {
+  test('번들 출력에 sourceMappingURL이 포함된다', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("hello");`,
+      'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'out.js');
+    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
-    const output = readFileSync(outFile, "utf-8");
-    expect(output).toContain("//# sourceMappingURL=out.js.map");
+    const output = readFileSync(outFile, 'utf-8');
+    expect(output).toContain('//# sourceMappingURL=out.js.map');
   });
 
-  test("--sources-content=false이면 sourcesContent가 없다", async () => {
+  test('--sources-content=false이면 sourcesContent가 없다', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("hello");`,
+      'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     await runZts([
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '-o',
       outFile,
-      "--sourcemap",
-      "--sources-content=false",
+      '--sourcemap',
+      '--sources-content=false',
     ]);
 
-    const mapPath = outFile + ".map";
+    const mapPath = outFile + '.map';
     expect(existsSync(mapPath)).toBe(true);
 
-    const map = JSON.parse(readFileSync(mapPath, "utf-8"));
+    const map = JSON.parse(readFileSync(mapPath, 'utf-8'));
     expect(map.sourcesContent).toBeUndefined();
   });
 
-  test("소스맵 mappings가 유효한 VLQ이다", async () => {
+  test('소스맵 mappings가 유효한 VLQ이다', async () => {
     const fixture = await createFixture({
-      "index.ts": `const x = 1;\nconst y = 2;\nconsole.log(x + y);`,
+      'index.ts': `const x = 1;\nconst y = 2;\nconsole.log(x + y);`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'out.js');
+    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
     // mappings는 base64 VLQ 문자 + 세미콜론 + 콤마만 포함해야 한다
     const validChars = /^[A-Za-z0-9+/;,]*$/;
@@ -165,118 +165,118 @@ describe("소스맵", () => {
     expect(map.mappings.length).toBeGreaterThan(0);
   });
 
-  test("단일 파일 트랜스파일 소스맵", async () => {
+  test('단일 파일 트랜스파일 소스맵', async () => {
     const fixture = await createFixture({
-      "input.ts": `const x: number = 42;\nconsole.log(x);`,
+      'input.ts': `const x: number = 42;\nconsole.log(x);`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "output.js");
-    const result = await runZts([join(fixture.dir, "input.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'output.js');
+    const result = await runZts([join(fixture.dir, 'input.ts'), '-o', outFile, '--sourcemap']);
     expect(result.exitCode).toBe(0);
 
-    const mapPath = outFile + ".map";
+    const mapPath = outFile + '.map';
     expect(existsSync(mapPath)).toBe(true);
 
-    const map = JSON.parse(readFileSync(mapPath, "utf-8"));
+    const map = JSON.parse(readFileSync(mapPath, 'utf-8'));
     expect(map.version).toBe(3);
     expect(map.sources.length).toBeGreaterThanOrEqual(1);
     expect(map.mappings.length).toBeGreaterThan(0);
   });
 
-  test("다중 모듈 번들에서 sources에 모든 모듈이 포함된다", async () => {
+  test('다중 모듈 번들에서 sources에 모든 모듈이 포함된다', async () => {
     const fixture = await createFixture({
-      "src/index.ts": `import { greet } from "./util";\nconsole.log(greet("world"));`,
-      "src/util.ts": `export function greet(name: string): string {\n  return "hello " + name;\n}`,
+      'src/index.ts': `import { greet } from "./util";\nconsole.log(greet("world"));`,
+      'src/util.ts': `export function greet(name: string): string {\n  return "hello " + name;\n}`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "dist/out.js");
-    await runZts(["--bundle", join(fixture.dir, "src/index.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'dist/out.js');
+    await runZts(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile, '--sourcemap']);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
     // 두 모듈 모두 sources에 포함되어야 한다 (node_modules/.zts/runtime.js 제외)
-    const moduleSources = map.sources.filter((s: string) => s !== "node_modules/.zts/runtime.js");
+    const moduleSources = map.sources.filter((s: string) => s !== 'node_modules/.zts/runtime.js');
     expect(moduleSources.length).toBe(2);
-    const joined = moduleSources.join("|");
-    expect(joined).toContain("index.ts");
-    expect(joined).toContain("util.ts");
+    const joined = moduleSources.join('|');
+    expect(joined).toContain('index.ts');
+    expect(joined).toContain('util.ts');
 
     // sourcesContent도 각 모듈의 내용을 포함해야 한다 (node_modules/.zts/runtime.js 제외)
     expect(moduleSources.length).toBe(2);
-    const allContent = map.sourcesContent.join("\n");
-    expect(allContent).toContain("function greet");
+    const allContent = map.sourcesContent.join('\n');
+    expect(allContent).toContain('function greet');
   });
 
-  test("sources 경로가 상대 경로여야 한다 (절대 경로 금지)", async () => {
+  test('sources 경로가 상대 경로여야 한다 (절대 경로 금지)', async () => {
     // cwd 하위에 fixture를 만들어야 root_dir prefix가 제거됨
-    const { mkdtempSync, writeFileSync: wfs, rmSync } = await import("node:fs");
-    const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-test-"));
+    const { mkdtempSync, writeFileSync: wfs, rmSync } = await import('node:fs');
+    const tmpDir = mkdtempSync(join(process.cwd(), '.tmp-sm-test-'));
     cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
 
-    wfs(join(tmpDir, "index.ts"), `import { x } from "./lib";\nconsole.log(x);`);
-    wfs(join(tmpDir, "lib.ts"), `export const x = 42;`);
+    wfs(join(tmpDir, 'index.ts'), `import { x } from "./lib";\nconsole.log(x);`);
+    wfs(join(tmpDir, 'lib.ts'), `export const x = 42;`);
 
-    const outFile = join(tmpDir, "out.js");
-    await runZts(["--bundle", join(tmpDir, "index.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(tmpDir, 'out.js');
+    await runZts(['--bundle', join(tmpDir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
     for (const source of map.sources) {
-      expect(source.startsWith("/")).toBe(false);
+      expect(source.startsWith('/')).toBe(false);
     }
   });
 
-  test("매핑 줄 번호가 번들 줄 수를 초과하지 않는다 (prologue 오프셋 검증)", async () => {
+  test('매핑 줄 번호가 번들 줄 수를 초과하지 않는다 (prologue 오프셋 검증)', async () => {
     const fixture = await createFixture({
-      "index.ts": `import { greet } from "./util";\nconsole.log(greet("world"));`,
-      "util.ts": `export function greet(name: string) {\n  return "hello " + name;\n}`,
+      'index.ts': `import { greet } from "./util";\nconsole.log(greet("world"));`,
+      'util.ts': `export function greet(name: string) {\n  return "hello " + name;\n}`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'out.js');
+    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-    const bundleLines = readFileSync(outFile, "utf-8").split("\n").length;
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
+    const bundleLines = readFileSync(outFile, 'utf-8').split('\n').length;
 
     // 매핑의 줄 수가 번들 줄 수 이하여야 한다 (2배 되면 prologue 오프셋 버그)
-    const mappingLineCount = map.mappings.split(";").length;
+    const mappingLineCount = map.mappings.split(';').length;
     expect(mappingLineCount).toBeLessThanOrEqual(bundleLines + 1);
   });
 
-  test("ESM 래핑 모듈(RN)의 호이스팅 함수가 소스맵에 매핑된다", async () => {
+  test('ESM 래핑 모듈(RN)의 호이스팅 함수가 소스맵에 매핑된다', async () => {
     const fixture = await createFixture({
-      "index.ts": `import { greet } from "./lib";\nconsole.log(greet("test"));`,
-      "lib.ts": [
+      'index.ts': `import { greet } from "./lib";\nconsole.log(greet("test"));`,
+      'lib.ts': [
         `export function greet(name: string) {`,
         `  console.log("greeting:", name);`,
         `  return "hello " + name;`,
         `}`,
         ``,
         `export const VERSION = "1.0";`,
-      ].join("\n"),
+      ].join('\n'),
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     await runZts([
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '-o',
       outFile,
-      "--sourcemap",
-      "--platform=react-native",
+      '--sourcemap',
+      '--platform=react-native',
     ]);
-    expect(existsSync(outFile + ".map")).toBe(true);
+    expect(existsSync(outFile + '.map')).toBe(true);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-    const bundleCode = readFileSync(outFile, "utf-8");
-    const bundleLines = bundleCode.split("\n");
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
+    const bundleCode = readFileSync(outFile, 'utf-8');
+    const bundleLines = bundleCode.split('\n');
 
     // lib.ts 소스 인덱스 찾기
-    const libIdx = map.sources.findIndex((s: string) => s.includes("lib.ts"));
+    const libIdx = map.sources.findIndex((s: string) => s.includes('lib.ts'));
     expect(libIdx).toBeGreaterThanOrEqual(0);
 
     // lib.ts에 대한 매핑 추출
@@ -294,20 +294,20 @@ describe("소스맵", () => {
 
     // 매핑된 번들 줄에 lib.ts 관련 코드가 있어야 한다
     const firstMapping = libMappings[0];
-    const mappedBundleLine = bundleLines[firstMapping.genLine - 1] || "";
+    const mappedBundleLine = bundleLines[firstMapping.genLine - 1] || '';
     expect(
-      mappedBundleLine.includes("greet") ||
-        mappedBundleLine.includes("function") ||
-        mappedBundleLine.includes("console") ||
-        mappedBundleLine.includes("VERSION") ||
-        mappedBundleLine.includes("1.0"),
+      mappedBundleLine.includes('greet') ||
+        mappedBundleLine.includes('function') ||
+        mappedBundleLine.includes('console') ||
+        mappedBundleLine.includes('VERSION') ||
+        mappedBundleLine.includes('1.0'),
     ).toBe(true);
   });
 
-  test("TypeScript type 선언이 있어도 소스맵 줄 번호가 정확하다 (#954)", async () => {
+  test('TypeScript type 선언이 있어도 소스맵 줄 번호가 정확하다 (#954)', async () => {
     const fixture = await createReactStubFixture({
-      "index.ts": `import { App } from "./app";\nconsole.log(App("test"));`,
-      "app.ts": [
+      'index.ts': `import { App } from "./app";\nconsole.log(App("test"));`,
+      'app.ts': [
         `import React from "react";`, // line 1
         ``, // line 2
         `type Props = {`, // line 3
@@ -323,16 +323,16 @@ describe("소스맵", () => {
         `  console.log("line 13: name is", name);`, // line 13
         `  return "hello " + name;`, // line 14
         `}`, // line 15
-      ].join("\n"),
+      ].join('\n'),
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'out.js');
+    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
-    const appIdx = map.sources.findIndex((s: string) => s.includes("app.ts"));
+    const appIdx = map.sources.findIndex((s: string) => s.includes('app.ts'));
     expect(appIdx).toBeGreaterThanOrEqual(0);
 
     const appMappings = getMappedSourceLines(map.mappings, appIdx);
@@ -355,21 +355,21 @@ describe("소스맵", () => {
     expect(mappedLines.has(8)).toBe(false);
   });
 
-  test("단일 파일 트랜스파일에서도 type 선언 후 줄 번호가 정확하다 (#954)", async () => {
+  test('단일 파일 트랜스파일에서도 type 선언 후 줄 번호가 정확하다 (#954)', async () => {
     const fixture = await createFixture({
-      "input.ts": [
+      'input.ts': [
         `type X = { a: number };`, // line 1
         `const val = 42;`, // line 2
         `console.log(val);`, // line 3
-      ].join("\n"),
+      ].join('\n'),
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    await runZts([join(fixture.dir, "input.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'out.js');
+    await runZts([join(fixture.dir, 'input.ts'), '-o', outFile, '--sourcemap']);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-    const srcIdx = map.sources.findIndex((s: string) => s.includes("input.ts"));
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
+    const srcIdx = map.sources.findIndex((s: string) => s.includes('input.ts'));
     expect(srcIdx).toBeGreaterThanOrEqual(0);
 
     const mappings = getMappedSourceLines(map.mappings, srcIdx);
@@ -383,27 +383,27 @@ describe("소스맵", () => {
     expect(mappedLines.has(1)).toBe(false);
   });
 
-  test("번들 소스맵에서 console.log가 올바른 원본 줄에 매핑된다", async () => {
+  test('번들 소스맵에서 console.log가 올바른 원본 줄에 매핑된다', async () => {
     const fixture = await createFixture({
-      "index.ts": `import { hello } from "./lib";\nhello();`,
-      "lib.ts": [
+      'index.ts': `import { hello } from "./lib";\nhello();`,
+      'lib.ts': [
         `export function hello() {`, // line 1
         `  const x = 1;`, // line 2
         `  console.log("from lib line 3");`, // line 3
         `  console.log("from lib line 4");`, // line 4
         `}`, // line 5
-      ].join("\n"),
+      ].join('\n'),
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'out.js');
+    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-    const bundleCode = readFileSync(outFile, "utf-8");
-    const bundleLines = bundleCode.split("\n");
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
+    const bundleCode = readFileSync(outFile, 'utf-8');
+    const bundleLines = bundleCode.split('\n');
 
-    const libIdx = map.sources.findIndex((s: string) => s.includes("lib.ts"));
+    const libIdx = map.sources.findIndex((s: string) => s.includes('lib.ts'));
     expect(libIdx).toBeGreaterThanOrEqual(0);
 
     const libMappings = getMappedSourceLines(map.mappings, libIdx);
@@ -412,39 +412,39 @@ describe("소스맵", () => {
     const line3Maps = libMappings.filter((m) => m.srcLine === 3);
     expect(line3Maps.length).toBeGreaterThan(0);
     // 해당 번들 줄에 실제로 "from lib line 3" 내용이 있어야 함
-    const bundleLine3 = bundleLines[line3Maps[0].genLine - 1] || "";
-    expect(bundleLine3).toContain("from lib line 3");
+    const bundleLine3 = bundleLines[line3Maps[0].genLine - 1] || '';
+    expect(bundleLine3).toContain('from lib line 3');
 
     // console.log("from lib line 4") → src line 4에 매핑
     const line4Maps = libMappings.filter((m) => m.srcLine === 4);
     expect(line4Maps.length).toBeGreaterThan(0);
-    const bundleLine4 = bundleLines[line4Maps[0].genLine - 1] || "";
-    expect(bundleLine4).toContain("from lib line 4");
+    const bundleLine4 = bundleLines[line4Maps[0].genLine - 1] || '';
+    expect(bundleLine4).toContain('from lib line 4');
   });
 
-  test("prologue 영역이 node_modules/.zts/runtime.js 소스로 매핑되고 x_google_ignoreList에 등록된다", async () => {
-    const { mkdtempSync, writeFileSync: wfs, rmSync } = await import("node:fs");
-    const tmpDir = mkdtempSync(join(process.cwd(), ".tmp-sm-prologue-"));
+  test('prologue 영역이 node_modules/.zts/runtime.js 소스로 매핑되고 x_google_ignoreList에 등록된다', async () => {
+    const { mkdtempSync, writeFileSync: wfs, rmSync } = await import('node:fs');
+    const tmpDir = mkdtempSync(join(process.cwd(), '.tmp-sm-prologue-'));
     cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
 
-    wfs(join(tmpDir, "index.ts"), `console.log("hello");`);
-    wfs(join(tmpDir, "poly.js"), `console.log("polyfill loaded");`);
+    wfs(join(tmpDir, 'index.ts'), `console.log("hello");`);
+    wfs(join(tmpDir, 'poly.js'), `console.log("polyfill loaded");`);
 
-    const outFile = join(tmpDir, "out.js");
+    const outFile = join(tmpDir, 'out.js');
     const result = await runZts([
-      "--bundle",
-      join(tmpDir, "index.ts"),
-      "-o",
+      '--bundle',
+      join(tmpDir, 'index.ts'),
+      '-o',
       outFile,
-      "--sourcemap",
-      `--polyfill=${join(tmpDir, "poly.js")}`,
+      '--sourcemap',
+      `--polyfill=${join(tmpDir, 'poly.js')}`,
     ]);
     expect(result.exitCode).toBe(0);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
     // node_modules/.zts/runtime.js 가상 소스가 sources에 포함
-    const rtIdx = map.sources.findIndex((s: string) => s === "node_modules/.zts/runtime.js");
+    const rtIdx = map.sources.findIndex((s: string) => s === 'node_modules/.zts/runtime.js');
     expect(rtIdx).toBeGreaterThanOrEqual(0);
 
     // x_google_ignoreList에 node_modules/.zts/runtime.js 인덱스 등록
@@ -458,107 +458,107 @@ describe("소스맵", () => {
     expect(rtMappings[0].genLine).toBeLessThanOrEqual(10);
   });
 
-  test("prologue가 없는 ESM 번들에서는 node_modules/.zts/runtime.js과 x_google_ignoreList가 없다", async () => {
+  test('prologue가 없는 ESM 번들에서는 node_modules/.zts/runtime.js과 x_google_ignoreList가 없다', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("hello");`,
+      'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     await runZts([
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '-o',
       outFile,
-      "--sourcemap",
-      "--format=esm",
+      '--sourcemap',
+      '--format=esm',
     ]);
 
-    const map = JSON.parse(readFileSync(outFile + ".map", "utf-8"));
-    const hasRuntime = map.sources.some((s: string) => s === "node_modules/.zts/runtime.js");
+    const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
+    const hasRuntime = map.sources.some((s: string) => s === 'node_modules/.zts/runtime.js');
     expect(hasRuntime).toBe(false);
   });
 
   // ─── #2152 sourcemap mode (linked / external / inline) ─────────────────────
 
-  test("--sourcemap=linked (default): .map 파일 + sourceMappingURL 주석", async () => {
+  test('--sourcemap=linked (default): .map 파일 + sourceMappingURL 주석', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("hello");`,
+      'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     const result = await runZts([
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '-o',
       outFile,
-      "--sourcemap=linked",
+      '--sourcemap=linked',
     ]);
     if (result.exitCode !== 0) throw new Error(`zts failed: ${result.stderr}`);
 
-    expect(existsSync(outFile + ".map")).toBe(true);
-    const output = readFileSync(outFile, "utf-8");
-    expect(output).toContain("//# sourceMappingURL=out.js.map");
-    expect(output).not.toContain("data:application/json;base64,");
+    expect(existsSync(outFile + '.map')).toBe(true);
+    const output = readFileSync(outFile, 'utf-8');
+    expect(output).toContain('//# sourceMappingURL=out.js.map');
+    expect(output).not.toContain('data:application/json;base64,');
   });
 
-  test("--sourcemap=external: .map 파일 emit 하되 URL 주석 없음 (Sentry 표준)", async () => {
+  test('--sourcemap=external: .map 파일 emit 하되 URL 주석 없음 (Sentry 표준)', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("hello");`,
+      'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
+    const outFile = join(fixture.dir, 'out.js');
     await runZts([
-      "--bundle",
-      join(fixture.dir, "index.ts"),
-      "-o",
+      '--bundle',
+      join(fixture.dir, 'index.ts'),
+      '-o',
       outFile,
-      "--sourcemap=external",
+      '--sourcemap=external',
     ]);
 
     // .map 파일은 여전히 emit
-    expect(existsSync(outFile + ".map")).toBe(true);
-    const output = readFileSync(outFile, "utf-8");
+    expect(existsSync(outFile + '.map')).toBe(true);
+    const output = readFileSync(outFile, 'utf-8');
     // URL 주석은 없음 — 위치 비공개.
-    expect(output).not.toContain("//# sourceMappingURL=");
-    expect(output).not.toContain("data:application/json;base64,");
+    expect(output).not.toContain('//# sourceMappingURL=');
+    expect(output).not.toContain('data:application/json;base64,');
   });
 
-  test("--sourcemap=inline: .map 파일 미생성 + base64 data URL 주석", async () => {
+  test('--sourcemap=inline: .map 파일 미생성 + base64 data URL 주석', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("hello");`,
+      'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap=inline"]);
+    const outFile = join(fixture.dir, 'out.js');
+    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap=inline']);
 
     // 별도 .map 파일 미생성.
-    expect(existsSync(outFile + ".map")).toBe(false);
-    const output = readFileSync(outFile, "utf-8");
-    expect(output).toContain("//# sourceMappingURL=data:application/json;base64,");
+    expect(existsSync(outFile + '.map')).toBe(false);
+    const output = readFileSync(outFile, 'utf-8');
+    expect(output).toContain('//# sourceMappingURL=data:application/json;base64,');
     // base64 payload 가 sourcemap V3 JSON — base64 decode 후 version: 3 검증.
     const match = output.match(/sourceMappingURL=data:application\/json;base64,([^\n]+)/);
     expect(match).toBeTruthy();
-    const decoded = JSON.parse(Buffer.from(match![1], "base64").toString("utf-8"));
+    const decoded = JSON.parse(Buffer.from(match![1], 'base64').toString('utf-8'));
     expect(decoded.version).toBe(3);
     expect(decoded.sources).toBeArray();
   });
 
-  test("--sourcemap (단독, mode 미지정): linked 와 동일", async () => {
+  test('--sourcemap (단독, mode 미지정): linked 와 동일', async () => {
     const fixture = await createFixture({
-      "index.ts": `console.log("hello");`,
+      'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
-    const outFile = join(fixture.dir, "out.js");
-    await runZts(["--bundle", join(fixture.dir, "index.ts"), "-o", outFile, "--sourcemap"]);
+    const outFile = join(fixture.dir, 'out.js');
+    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
     // mode 미지정 → linked 동작 (기존 동작).
-    expect(existsSync(outFile + ".map")).toBe(true);
-    const output = readFileSync(outFile, "utf-8");
-    expect(output).toContain("//# sourceMappingURL=out.js.map");
+    expect(existsSync(outFile + '.map')).toBe(true);
+    const output = readFileSync(outFile, 'utf-8');
+    expect(output).toContain('//# sourceMappingURL=out.js.map');
   });
 });

@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass } from './helpers';
 
-describe("TSC: es2022", () => {
-  test("es2022IntlAPIs", async () => {
+describe('TSC: es2022', () => {
+  test('es2022IntlAPIs', async () => {
     await expectPass(
       `
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat/DateTimeFormat#using_timezonename
@@ -21,7 +21,7 @@ for (const key of enumerationKeys) {
       [],
     );
   });
-  test("es2022LocalesObjectArgument", async () => {
+  test('es2022LocalesObjectArgument', async () => {
     await expectPass(
       `
 const enUS = new Intl.Locale("en-US");
@@ -35,7 +35,7 @@ Intl.Segmenter.supportedLocalesOf([deDE, jaJP]);`,
       [],
     );
   });
-  test("es2024SharedMemory", async () => {
+  test('es2024SharedMemory', async () => {
     await expectPass(
       `
 // ES2024 Atomics.waitAsync was included in the ES2022 type file due to a mistake.

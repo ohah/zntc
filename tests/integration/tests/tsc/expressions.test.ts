@@ -1,8 +1,8 @@
-import { describe, test } from "bun:test";
-import { expectPass, expectError } from "./helpers";
+import { describe, test } from 'bun:test';
+import { expectPass, expectError } from './helpers';
 
-describe("TSC: expressions", () => {
-  test("arrayLiteralInference", async () => {
+describe('TSC: expressions', () => {
+  test('arrayLiteralInference', async () => {
     await expectPass(
       `
 // Repro from #31204
@@ -42,7 +42,7 @@ let b2: boolean[][] = foo([true], [false]);
       [],
     );
   });
-  test("arrayLiterals", async () => {
+  test('arrayLiterals', async () => {
     await expectPass(
       `// Empty array literal with no contextual type has type Undefined[]
 
@@ -83,7 +83,7 @@ var context4: Base[] = [new Derived1(), new Derived1()];
       [],
     );
   });
-  test("arrayLiterals2ES5", async () => {
+  test('arrayLiterals2ES5', async () => {
     await expectPass(
       `// @strict: false
 // ElementList:  ( Modified )
@@ -145,7 +145,7 @@ var d9 = [[...temp1], ...["hello"]];`,
       [],
     );
   });
-  test("arrayLiterals2ES6", async () => {
+  test('arrayLiterals2ES6', async () => {
     await expectPass(
       `// @target:es6
 // ElementList:  ( Modified )
@@ -205,7 +205,7 @@ var d9 = [[...temp1], ...["hello"]];`,
       [],
     );
   });
-  test("arrayLiterals3", async () => {
+  test('arrayLiterals3', async () => {
     await expectPass(
       `// @target: es2015
 // Each element expression in a non-empty array literal is processed as follows:
@@ -246,7 +246,7 @@ var c2: myArray = [...temp1, ...temp];            // Error cannot assign (number
       [],
     );
   });
-  test("asOpEmitParens", async () => {
+  test('asOpEmitParens', async () => {
     await expectPass(
       `declare var x;
 // Must emit as (x + 1) * 3
@@ -261,7 +261,7 @@ new (x() as any);
       [],
     );
   });
-  test("asOperator1", async () => {
+  test('asOperator1', async () => {
     await expectPass(
       `var as = 43;
 var x = undefined as number;
@@ -275,14 +275,14 @@ j = '';
       [],
     );
   });
-  test("asOperator2", async () => {
+  test('asOperator2', async () => {
     await expectPass(
       `var x = 23 as string;
 `,
       [],
     );
   });
-  test("asOperator3", async () => {
+  test('asOperator3', async () => {
     await expectPass(
       `declare function tag(...x: any[]): any;
 
@@ -297,7 +297,7 @@ var h = tag \`Hello\` as string;`,
       [],
     );
   });
-  test("asOperatorAmbiguity", async () => {
+  test('asOperatorAmbiguity', async () => {
     await expectPass(
       `interface A<T> { x: T; }
 interface B { m: string; }
@@ -311,7 +311,7 @@ var z = y[0].m; // z should be string
       [],
     );
   });
-  test("asOperatorASI", async () => {
+  test('asOperatorASI', async () => {
     await expectPass(
       `class Foo { }
 declare function as(...args: any[]);
@@ -327,14 +327,14 @@ as(Foo); // should emit
       [],
     );
   });
-  test("asOperatorContextualType", async () => {
+  test('asOperatorContextualType', async () => {
     await expectPass(
       `// should error
 var x = (v => v) as (x: number) => string;`,
       [],
     );
   });
-  test("asOperatorNames", async () => {
+  test('asOperatorNames', async () => {
     await expectPass(
       `var a = 20;
 var b = a as string;
@@ -344,7 +344,7 @@ var as1 = as as string;
       [],
     );
   });
-  test("assignmentGenericLookupTypeNarrowing", async () => {
+  test('assignmentGenericLookupTypeNarrowing', async () => {
     await expectPass(
       `// Repro from #26130
 
@@ -360,7 +360,7 @@ function bar<K extends "foo">(key: K) {
       [],
     );
   });
-  test("assignmentLHSIsReference", async () => {
+  test('assignmentLHSIsReference', async () => {
     await expectPass(
       `var value: any;
 
@@ -389,7 +389,7 @@ function fn2(x4: number) {
       [],
     );
   });
-  test("assignmentLHSIsValue", async () => {
+  test('assignmentLHSIsValue', async () => {
     await expectError(
       `// expected error for all the LHS of assignments
 var value: any;
@@ -464,7 +464,7 @@ foo() = value;
       [],
     );
   });
-  test("assignmentTypeNarrowing", async () => {
+  test('assignmentTypeNarrowing', async () => {
     await expectPass(
       `let x: string | number | boolean | RegExp;
 
@@ -503,7 +503,7 @@ arr.push({ x: "ok" });`,
       [],
     );
   });
-  test("compoundAdditionAssignmentLHSCanBeAssigned", async () => {
+  test('compoundAdditionAssignmentLHSCanBeAssigned', async () => {
     await expectPass(
       `enum E { a, b }
 
@@ -558,7 +558,7 @@ x7 += a;`,
       [],
     );
   });
-  test("compoundAdditionAssignmentLHSCannotBeAssigned", async () => {
+  test('compoundAdditionAssignmentLHSCannotBeAssigned', async () => {
     await expectPass(
       `// string can add every type, and result string cannot be assigned to below types
 enum E { a, b, c }
@@ -580,7 +580,7 @@ x5 += '';`,
       [],
     );
   });
-  test("compoundAdditionAssignmentWithInvalidOperands", async () => {
+  test('compoundAdditionAssignmentWithInvalidOperands', async () => {
     await expectPass(
       `enum E { a, b }
 
@@ -625,7 +625,7 @@ x5 += {};`,
       [],
     );
   });
-  test("compoundArithmeticAssignmentLHSCanBeAssigned", async () => {
+  test('compoundArithmeticAssignmentLHSCanBeAssigned', async () => {
     await expectPass(
       `enum E { a, b, c }
 
@@ -656,7 +656,7 @@ x3 *= undefined;`,
       [],
     );
   });
-  test("compoundArithmeticAssignmentWithInvalidOperands", async () => {
+  test('compoundArithmeticAssignmentWithInvalidOperands', async () => {
     await expectPass(
       `enum E { a, b }
 
@@ -721,7 +721,7 @@ x6 *= {};`,
       [],
     );
   });
-  test("compoundAssignmentLHSIsReference", async () => {
+  test('compoundAssignmentLHSIsReference', async () => {
     await expectPass(
       `var value;
 
@@ -760,7 +760,7 @@ function fn2(x4: number) {
       [],
     );
   });
-  test("compoundAssignmentLHSIsValue", async () => {
+  test('compoundAssignmentLHSIsValue', async () => {
     await expectError(
       `
 // expected error for all the LHS of compound assignments (arithmetic and addition)
@@ -888,7 +888,7 @@ foo() += value;
       [],
     );
   });
-  test("additionOperatorWithAnyAndEveryType", async () => {
+  test('additionOperatorWithAnyAndEveryType', async () => {
     await expectPass(
       `function foo() { }
 class C {
@@ -932,7 +932,7 @@ var r20 = a + ((a: string) => { return a });`,
       [],
     );
   });
-  test("additionOperatorWithConstrainedTypeParameter", async () => {
+  test('additionOperatorWithConstrainedTypeParameter', async () => {
     await expectPass(
       `// test for #17069
 function sum<T extends Record<K, number>, K extends string>(n: number, v: T, k: K) {
@@ -948,7 +948,7 @@ function realSum<T extends Record<K, number>, K extends string>(n: number, vs: T
       [],
     );
   });
-  test("additionOperatorWithInvalidOperands", async () => {
+  test('additionOperatorWithInvalidOperands', async () => {
     await expectPass(
       `function foo() { }
 class C {
@@ -993,7 +993,7 @@ var r20 = E.a + M;`,
       [],
     );
   });
-  test("additionOperatorWithNullValueAndInvalidOperator", async () => {
+  test('additionOperatorWithNullValueAndInvalidOperator', async () => {
     await expectPass(
       `// If one operand is the null or undefined value, it is treated as having the type of the other operand.
 
@@ -1021,7 +1021,7 @@ var r11 = null + (() => { });`,
       [],
     );
   });
-  test("additionOperatorWithNullValueAndValidOperator", async () => {
+  test('additionOperatorWithNullValueAndValidOperator', async () => {
     await expectPass(
       `// If one operand is the null or undefined value, it is treated as having the type of the other operand.
 
@@ -1056,7 +1056,7 @@ var r16 = '' + null;`,
       [],
     );
   });
-  test("additionOperatorWithNumberAndEnum", async () => {
+  test('additionOperatorWithNumberAndEnum', async () => {
     await expectPass(
       `enum E { a, b }
 enum F { c, d }
@@ -1084,7 +1084,7 @@ var r14 = c + c;`,
       [],
     );
   });
-  test("additionOperatorWithOnlyNullValueOrUndefinedValue", async () => {
+  test('additionOperatorWithOnlyNullValueOrUndefinedValue', async () => {
     await expectPass(
       `// bug 819721
 var r1 = null + null;
@@ -1094,7 +1094,7 @@ var r4 = undefined + undefined;`,
       [],
     );
   });
-  test("additionOperatorWithStringAndEveryType", async () => {
+  test('additionOperatorWithStringAndEveryType', async () => {
     await expectPass(
       `enum E { a, b, c }
 
@@ -1137,7 +1137,7 @@ var r20 = x + [];`,
       [],
     );
   });
-  test("additionOperatorWithTypeParameter", async () => {
+  test('additionOperatorWithTypeParameter', async () => {
     await expectPass(
       `// type parameter type is not a valid operand of addition operator
 enum E { a, b }
@@ -1180,7 +1180,7 @@ function foo<T, U>(t: T, u: U) {
       [],
     );
   });
-  test("additionOperatorWithUndefinedValueAndInvalidOperands", async () => {
+  test('additionOperatorWithUndefinedValueAndInvalidOperands', async () => {
     await expectPass(
       `// If one operand is the null or undefined value, it is treated as having the type of the other operand.
 
@@ -1208,7 +1208,7 @@ var r11 = undefined + (() => { });`,
       [],
     );
   });
-  test("additionOperatorWithUndefinedValueAndValidOperator", async () => {
+  test('additionOperatorWithUndefinedValueAndValidOperator', async () => {
     await expectPass(
       `// If one operand is the null or undefined value, it is treated as having the type of the other operand.
 
@@ -1243,7 +1243,7 @@ var r16 = '' + undefined;`,
       [],
     );
   });
-  test("arithmeticOperatorWithAnyAndNumber", async () => {
+  test('arithmeticOperatorWithAnyAndNumber', async () => {
     await expectPass(
       `var a: any;
 var b: number;
@@ -1350,7 +1350,7 @@ var rj8 = b | b;`,
       [],
     );
   });
-  test("arithmeticOperatorWithEnum", async () => {
+  test('arithmeticOperatorWithEnum', async () => {
     await expectPass(
       `// operands of an enum type are treated as having the primitive type Number.
 
@@ -1505,7 +1505,7 @@ var rj12 = 1 | E.b;`,
       [],
     );
   });
-  test("arithmeticOperatorWithEnumUnion", async () => {
+  test('arithmeticOperatorWithEnumUnion', async () => {
     await expectPass(
       `// operands of an enum type are treated as having the primitive type Number.
 
@@ -1664,7 +1664,7 @@ var rj12 = 1 | E.b;`,
       [],
     );
   });
-  test("arithmeticOperatorWithInvalidOperands", async () => {
+  test('arithmeticOperatorWithInvalidOperands', async () => {
     await expectPass(
       `// these operators require their operands to be of type Any, the Number primitive type, or
 // an enum type
@@ -2250,7 +2250,7 @@ var r10h6 = f | E.b;`,
       [],
     );
   });
-  test("arithmeticOperatorWithNullValueAndInvalidOperands", async () => {
+  test('arithmeticOperatorWithNullValueAndInvalidOperands', async () => {
     await expectPass(
       `// If one operand is the null or undefined value, it is treated as having the type of the
 // other operand.
@@ -2431,7 +2431,7 @@ var r10d3 = {} | null;`,
       [],
     );
   });
-  test("arithmeticOperatorWithNullValueAndValidOperands", async () => {
+  test('arithmeticOperatorWithNullValueAndValidOperands', async () => {
     await expectPass(
       `// If one operand is the null or undefined value, it is treated as having the type of the
 // other operand.
@@ -2546,7 +2546,7 @@ var rj8 = E.b | null;`,
       [],
     );
   });
-  test("arithmeticOperatorWithOnlyNullValueOrUndefinedValue", async () => {
+  test('arithmeticOperatorWithOnlyNullValueOrUndefinedValue', async () => {
     await expectPass(
       `// operator *
 var ra1 = null * null;
@@ -2610,7 +2610,7 @@ var rj4 = undefined | undefined;`,
       [],
     );
   });
-  test("arithmeticOperatorWithTypeParameter", async () => {
+  test('arithmeticOperatorWithTypeParameter', async () => {
     await expectPass(
       `// type parameter type is not valid for arithmetic operand
 function foo<T>(t: T) {
@@ -2744,7 +2744,7 @@ function foo<T>(t: T) {
       [],
     );
   });
-  test("arithmeticOperatorWithUndefinedValueAndInvalidOperands", async () => {
+  test('arithmeticOperatorWithUndefinedValueAndInvalidOperands', async () => {
     await expectPass(
       `// If one operand is the undefined or undefined value, it is treated as having the type of the
 // other operand.
@@ -2925,7 +2925,7 @@ var r10d3 = {} | undefined;`,
       [],
     );
   });
-  test("arithmeticOperatorWithUndefinedValueAndValidOperands", async () => {
+  test('arithmeticOperatorWithUndefinedValueAndValidOperands', async () => {
     await expectPass(
       `// If one operand is the undefined or undefined value, it is treated as having the type of the
 // other operand.
@@ -3040,7 +3040,7 @@ var rj8 = E.b | undefined;`,
       [],
     );
   });
-  test("comparisonOperatorWithIdenticalObjects", async () => {
+  test('comparisonOperatorWithIdenticalObjects', async () => {
     await expectPass(
       `class A1 {
     public a: string;
@@ -3239,7 +3239,7 @@ var r8b7 = b6 !== a6;`,
       [],
     );
   });
-  test("comparisonOperatorWithIdenticalPrimitiveType", async () => {
+  test('comparisonOperatorWithIdenticalPrimitiveType', async () => {
     await expectPass(
       `enum E { a, b, c }
 
@@ -3323,7 +3323,7 @@ var rh7 = undefined !== undefined;`,
       [],
     );
   });
-  test("comparisonOperatorWithIdenticalTypeParameter", async () => {
+  test('comparisonOperatorWithIdenticalTypeParameter', async () => {
     await expectPass(
       `function foo<T>(t: T) {
     var r1 = t < t;
@@ -3338,7 +3338,7 @@ var rh7 = undefined !== undefined;`,
       [],
     );
   });
-  test("comparisonOperatorWithIntersectionType", async () => {
+  test('comparisonOperatorWithIntersectionType', async () => {
     await expectPass(
       `declare let a: { a: 1 }
 a > 1;
@@ -3348,7 +3348,7 @@ b > 1;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipObjectsOnCallSignature", async () => {
+  test('comparisonOperatorWithNoRelationshipObjectsOnCallSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -3521,7 +3521,7 @@ var r8b7 = b7 !== a7;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipObjectsOnConstructorSignature", async () => {
+  test('comparisonOperatorWithNoRelationshipObjectsOnConstructorSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -3694,7 +3694,7 @@ var r8b7 = b7 !== a7;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipObjectsOnIndexSignature", async () => {
+  test('comparisonOperatorWithNoRelationshipObjectsOnIndexSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -3810,7 +3810,7 @@ var r8b4 = b4 !== a4;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipObjectsOnInstantiatedCallSignature", async () => {
+  test('comparisonOperatorWithNoRelationshipObjectsOnInstantiatedCallSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -3964,7 +3964,7 @@ var r8b6 = b6 !== a6;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipObjectsOnInstantiatedConstructorSignature", async () => {
+  test('comparisonOperatorWithNoRelationshipObjectsOnInstantiatedConstructorSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -4118,7 +4118,7 @@ var r8b6 = b6 !== a6;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipObjectsOnOptionalProperty", async () => {
+  test('comparisonOperatorWithNoRelationshipObjectsOnOptionalProperty', async () => {
     await expectPass(
       `interface A1 {
     b?: number;
@@ -4165,7 +4165,7 @@ var rh2 = b !== a;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipObjectsOnProperty", async () => {
+  test('comparisonOperatorWithNoRelationshipObjectsOnProperty', async () => {
     await expectPass(
       `class A1 {
     public a: number;
@@ -4246,7 +4246,7 @@ var r8b2 = b2 !== a2;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipPrimitiveType", async () => {
+  test('comparisonOperatorWithNoRelationshipPrimitiveType', async () => {
     await expectPass(
       `enum E { a, b, c }
 
@@ -4466,7 +4466,7 @@ var r8e1 = e !== d;`,
       [],
     );
   });
-  test("comparisonOperatorWithNoRelationshipTypeParameter", async () => {
+  test('comparisonOperatorWithNoRelationshipTypeParameter', async () => {
     await expectPass(
       `enum E { a, b, c }
 
@@ -4627,7 +4627,7 @@ function foo<T, U>(t: T, u: U) {
       [],
     );
   });
-  test("comparisonOperatorWithNumberOperand", async () => {
+  test('comparisonOperatorWithNumberOperand', async () => {
     await expectPass(
       `
 // repro #52036
@@ -4636,7 +4636,7 @@ t1 >= 0 // error`,
       [],
     );
   });
-  test("comparisonOperatorWithNumericLiteral", async () => {
+  test('comparisonOperatorWithNumericLiteral', async () => {
     await expectPass(
       `type BrandedNum = number & { __numberBrand: any };
 var x : BrandedNum;
@@ -4683,7 +4683,7 @@ x !== <BrandedNum>0;`,
       [],
     );
   });
-  test("comparisonOperatorWithOneOperandIsAny", async () => {
+  test('comparisonOperatorWithOneOperandIsAny', async () => {
     await expectPass(
       `var x: any;
 
@@ -4855,7 +4855,7 @@ var r8b7 = g !== x;`,
       [],
     );
   });
-  test("comparisonOperatorWithOneOperandIsNull", async () => {
+  test('comparisonOperatorWithOneOperandIsNull', async () => {
     await expectPass(
       `enum E { a, b, c }
 
@@ -5025,7 +5025,7 @@ var r8b7 = g !== null;`,
       [],
     );
   });
-  test("comparisonOperatorWithOneOperandIsUndefined", async () => {
+  test('comparisonOperatorWithOneOperandIsUndefined', async () => {
     await expectPass(
       `var x: typeof undefined;
 
@@ -5197,7 +5197,7 @@ var r8b7 = g !== x;`,
       [],
     );
   });
-  test("comparisonOperatorWithSubtypeEnumAndNumber", async () => {
+  test('comparisonOperatorWithSubtypeEnumAndNumber', async () => {
     await expectPass(
       `enum E { a, b, c }
 
@@ -5270,7 +5270,7 @@ var rh6 = 0 !== E.a;`,
       [],
     );
   });
-  test("comparisonOperatorWithSubtypeObjectOnCallSignature", async () => {
+  test('comparisonOperatorWithSubtypeObjectOnCallSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -5534,7 +5534,7 @@ var r8b11 = b11 !== a11;
       [],
     );
   });
-  test("comparisonOperatorWithSubtypeObjectOnConstructorSignature", async () => {
+  test('comparisonOperatorWithSubtypeObjectOnConstructorSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -5760,7 +5760,7 @@ var r8b9 = b9 !== a9;
       [],
     );
   });
-  test("comparisonOperatorWithSubtypeObjectOnIndexSignature", async () => {
+  test('comparisonOperatorWithSubtypeObjectOnIndexSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -5872,7 +5872,7 @@ var r8b1 = b4 !== a4;`,
       [],
     );
   });
-  test("comparisonOperatorWithSubtypeObjectOnInstantiatedCallSignature", async () => {
+  test('comparisonOperatorWithSubtypeObjectOnInstantiatedCallSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -6041,7 +6041,7 @@ var r8b6 = b6 !== a6;
       [],
     );
   });
-  test("comparisonOperatorWithSubtypeObjectOnInstantiatedConstructorSignature", async () => {
+  test('comparisonOperatorWithSubtypeObjectOnInstantiatedConstructorSignature', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -6210,7 +6210,7 @@ var r8b6 = b6 !== a6;
       [],
     );
   });
-  test("comparisonOperatorWithSubtypeObjectOnOptionalProperty", async () => {
+  test('comparisonOperatorWithSubtypeObjectOnOptionalProperty', async () => {
     await expectPass(
       `interface I {
     a: string;
@@ -6258,7 +6258,7 @@ var rh2 = b !== a;`,
       [],
     );
   });
-  test("comparisonOperatorWithSubtypeObjectOnProperty", async () => {
+  test('comparisonOperatorWithSubtypeObjectOnProperty', async () => {
     await expectPass(
       `class Base {
     public a: string;
@@ -6341,7 +6341,7 @@ var rh4 = b2 !== a2;`,
       [],
     );
   });
-  test("comparisonOperatorWithTwoOperandsAreAny", async () => {
+  test('comparisonOperatorWithTwoOperandsAreAny', async () => {
     await expectPass(
       `var a: any;
 
@@ -6356,7 +6356,7 @@ var r8 = a !== a;`,
       [],
     );
   });
-  test("comparisonOperatorWithTypeParameter", async () => {
+  test('comparisonOperatorWithTypeParameter', async () => {
     await expectPass(
       `var a: {};
 var b: Object;
@@ -6439,7 +6439,7 @@ function foo<T, U/* extends T*/, V/* extends U*/>(t: T, u: U, v: V) {
       [],
     );
   });
-  test("inOperatorWithInvalidOperands", async () => {
+  test('inOperatorWithInvalidOperands', async () => {
     await expectPass(
       `class Foo {}
 enum E { a }
@@ -6491,7 +6491,7 @@ var rc1 = {} in '';`,
       [],
     );
   });
-  test("inOperatorWithValidOperands", async () => {
+  test('inOperatorWithValidOperands', async () => {
     await expectPass(
       `var x: any;
 
@@ -6541,7 +6541,7 @@ var rc2 = x in (c2 || c3);`,
       [],
     );
   });
-  test("instanceofOperatorWithAny", async () => {
+  test('instanceofOperatorWithAny', async () => {
     await expectPass(
       `var a: any;
 
@@ -6549,7 +6549,7 @@ var r: boolean = a instanceof a;`,
       [],
     );
   });
-  test("instanceofOperatorWithInvalidOperands.es2015", async () => {
+  test('instanceofOperatorWithInvalidOperands.es2015', async () => {
     // tsc 의 type-check 단계 전용 에러. parse 수준에서는 valid TS 이므로 통과해야 맞다.
     // #1767 이전에는 computed property key (`[Symbol.hasInstance]`) 를 index signature 로
     // 오분류해 parse 가 깨졌기 때문에 expectError 가 우연히 pass 했던 것.
@@ -6610,7 +6610,7 @@ declare var o6: {[Symbol.hasInstance](value: unknown): number;};
 var rb11 = x instanceof o6;`,
     );
   });
-  test("instanceofOperatorWithInvalidOperands", async () => {
+  test('instanceofOperatorWithInvalidOperands', async () => {
     await expectPass(
       `class C {
     foo() { }
@@ -6661,7 +6661,7 @@ var rc1 = '' instanceof {};`,
       [],
     );
   });
-  test("instanceofOperatorWithInvalidStaticToString", async () => {
+  test('instanceofOperatorWithInvalidStaticToString', async () => {
     await expectPass(
       `declare class StaticToString {
     static toString(): void;
@@ -6687,7 +6687,7 @@ function baz(normal: NormalToString) {
       [],
     );
   });
-  test("instanceofOperatorWithLHSIsObject", async () => {
+  test('instanceofOperatorWithLHSIsObject', async () => {
     await expectPass(
       `class C { }
 
@@ -6706,7 +6706,7 @@ var r4 = d instanceof x1;`,
       [],
     );
   });
-  test("instanceofOperatorWithLHSIsTypeParameter", async () => {
+  test('instanceofOperatorWithLHSIsTypeParameter', async () => {
     await expectPass(
       `function foo<T>(t: T) {
     var x: any;
@@ -6715,7 +6715,7 @@ var r4 = d instanceof x1;`,
       [],
     );
   });
-  test("instanceofOperatorWithRHSHasSymbolHasInstance", async () => {
+  test('instanceofOperatorWithRHSHasSymbolHasInstance', async () => {
     // tsc 의 type-check 단계 전용 에러. parse 수준에서는 valid TS 이므로 통과해야 맞다.
     // #1767 이전에는 computed property key (`[Symbol.hasInstance]`) 를 index signature 로
     // 오분류해 parse 가 깨졌기 때문에 expectError 가 우연히 pass 했던 것.
@@ -6855,7 +6855,7 @@ lhs0 instanceof rhs15 && lhs0;
 `,
     );
   });
-  test("instanceofOperatorWithRHSIsSubtypeOfFunction", async () => {
+  test('instanceofOperatorWithRHSIsSubtypeOfFunction', async () => {
     await expectPass(
       `interface I extends Function { }
 
@@ -6874,7 +6874,7 @@ var r6 = x instanceof undefined;`,
       [],
     );
   });
-  test("logicalAndOperatorStrictMode", async () => {
+  test('logicalAndOperatorStrictMode', async () => {
     await expectPass(
       `
 const a = [0];
@@ -6960,7 +6960,7 @@ const z8 = z && z;`,
       [],
     );
   });
-  test("logicalAndOperatorWithEveryType", async () => {
+  test('logicalAndOperatorWithEveryType', async () => {
     await expectPass(
       `// The && operator permits the operands to be of any type and produces a result of the same
 // type as the second operand.
@@ -7088,7 +7088,7 @@ var rj10 = undefined && undefined;`,
       [],
     );
   });
-  test("logicalAndOperatorWithTypeParameters", async () => {
+  test('logicalAndOperatorWithTypeParameters', async () => {
     await expectPass(
       `// The && operator permits the operands to be of any type and produces a result of the same
 // type as the second operand.
@@ -7112,7 +7112,7 @@ function foo<T, U, V/* extends T*/>(t: T, u: U, v: V) {
       [],
     );
   });
-  test("logicalOrExpressionIsContextuallyTyped", async () => {
+  test('logicalOrExpressionIsContextuallyTyped', async () => {
     await expectPass(
       `// The || operator permits the operands to be of any type.
 // If the || expression is contextually typed, the operands are contextually typed by the
@@ -7123,7 +7123,7 @@ var r: { a: string } = { a: '', b: 123 } || { a: '', b: true };`,
       [],
     );
   });
-  test("logicalOrExpressionIsNotContextuallyTyped", async () => {
+  test('logicalOrExpressionIsNotContextuallyTyped', async () => {
     await expectPass(
       `// The || operator permits the operands to be of any type.
 // If the || expression is not contextually typed, the right operand is contextually typed
@@ -7138,7 +7138,7 @@ var r = a || ((a) => a.toLowerCase());`,
       [],
     );
   });
-  test("logicalOrOperatorWithEveryType", async () => {
+  test('logicalOrOperatorWithEveryType', async () => {
     await expectPass(
       `// The || operator permits the operands to be of any type.
 // If the || expression is not contextually typed, the right operand is contextually typed
@@ -7268,7 +7268,7 @@ var rf10 = undefined || undefined; // undefined || undefined is any`,
       [],
     );
   });
-  test("logicalOrOperatorWithTypeParameters", async () => {
+  test('logicalOrOperatorWithTypeParameters', async () => {
     await expectPass(
       `function fn1<T, U>(t: T, u: U) {
     var r1 = t || t;
@@ -7296,7 +7296,7 @@ function fn3<T extends { a: string; b: string }, U extends { a: string; b: numbe
       [],
     );
   });
-  test("commaOperatorInvalidAssignmentType", async () => {
+  test('commaOperatorInvalidAssignmentType', async () => {
     await expectPass(
       `
 declare var BOOLEAN: boolean;
@@ -7319,7 +7319,7 @@ resultIsString = (STRING, NUMBER);`,
       [],
     );
   });
-  test("commaOperatorOtherInvalidOperation", async () => {
+  test('commaOperatorOtherInvalidOperation', async () => {
     await expectPass(
       `
 //Expect to have compiler errors
@@ -7338,7 +7338,7 @@ function foo1<T1, T2>() {
       [],
     );
   });
-  test("commaOperatorOtherValidOperation", async () => {
+  test('commaOperatorOtherValidOperation', async () => {
     await expectPass(
       `
 //Comma operator in for loop
@@ -7364,7 +7364,7 @@ function foo1<T1, T2>()
       [],
     );
   });
-  test("commaOperatorsMultipleOperators", async () => {
+  test('commaOperatorsMultipleOperators', async () => {
     await expectPass(
       `
 var ANY: any;
@@ -7396,7 +7396,7 @@ var resultIsObject2 = (++NUMBER, STRING.charAt(0), new Object());`,
       [],
     );
   });
-  test("commaOperatorWithoutOperand", async () => {
+  test('commaOperatorWithoutOperand', async () => {
     await expectError(
       `declare var ANY: any;
 declare var BOOLEAN: boolean;
@@ -7424,7 +7424,7 @@ declare var OBJECT: Object;
       [],
     );
   });
-  test("commaOperatorWithSecondOperandAnyType", async () => {
+  test('commaOperatorWithSecondOperandAnyType', async () => {
     await expectPass(
       `
 var ANY: any;
@@ -7466,7 +7466,7 @@ var resultIsAny11 = (!BOOLEAN, x.doSomeThing());`,
       [],
     );
   });
-  test("commaOperatorWithSecondOperandBooleanType", async () => {
+  test('commaOperatorWithSecondOperandBooleanType', async () => {
     await expectPass(
       `
 var ANY: any;
@@ -7506,7 +7506,7 @@ var resultIsBoolean11 = (OBJECT = [1, 2, 3], BOOLEAN = false);`,
       [],
     );
   });
-  test("commaOperatorWithSecondOperandNumberType", async () => {
+  test('commaOperatorWithSecondOperandNumberType', async () => {
     await expectPass(
       `
 var ANY: any;
@@ -7546,7 +7546,7 @@ var resultIsNumber11 = (STRING.trim(), NUMBER = 1);`,
       [],
     );
   });
-  test("commaOperatorWithSecondOperandObjectType", async () => {
+  test('commaOperatorWithSecondOperandObjectType', async () => {
     await expectPass(
       `
 var ANY: any;
@@ -7590,7 +7590,7 @@ var resultIsObject11 = (STRING.toLowerCase(), new CLASS());`,
       [],
     );
   });
-  test("commaOperatorWithSecondOperandStringType", async () => {
+  test('commaOperatorWithSecondOperandStringType', async () => {
     await expectPass(
       `
 var ANY: any;
@@ -7632,7 +7632,7 @@ var resultIsString11 = (new Object, STRING + "string");`,
       [],
     );
   });
-  test("conditionalOperatorConditionIsBooleanType", async () => {
+  test('conditionalOperatorConditionIsBooleanType', async () => {
     await expectPass(
       `//Cond ? Expr1 : Expr2,  Cond is of boolean type, Expr1 and Expr2 have the same type
 var condBoolean: boolean;
@@ -7698,7 +7698,7 @@ var resultIsStringOrBoolean4 = typeof "123" === "string" ? exprString1 : exprBoo
       [],
     );
   });
-  test("conditionalOperatorConditionIsNumberType", async () => {
+  test('conditionalOperatorConditionIsNumberType', async () => {
     await expectPass(
       `//Cond ? Expr1 : Expr2,  Cond is of number type, Expr1 and Expr2 have the same type
 declare var condNumber: number;
@@ -7766,7 +7766,7 @@ var resultIsStringOrBoolean3 = foo() / array[1] ? exprString1 : exprBoolean1; //
       [],
     );
   });
-  test("conditionalOperatorConditionIsObjectType", async () => {
+  test('conditionalOperatorConditionIsObjectType', async () => {
     await expectPass(
       `//Cond ? Expr1 : Expr2,  Cond is of object type, Expr1 and Expr2 have the same type
 declare var condObject: Object;
@@ -7834,7 +7834,7 @@ var resultIsStringOrBoolean3 = C.doIt() ? exprString1 : exprBoolean1; // union`,
       [],
     );
   });
-  test("conditionalOperatorConditoinIsAnyType", async () => {
+  test('conditionalOperatorConditoinIsAnyType', async () => {
     await expectPass(
       `//Cond ? Expr1 : Expr2,  Cond is of any type, Expr1 and Expr2 have the same type
 declare var condAny: any;
@@ -7902,7 +7902,7 @@ var resultIsStringOrBoolean5 = x.doSomeThing() ? exprString1 : exprBoolean1; // 
       [],
     );
   });
-  test("conditionalOperatorConditoinIsStringType", async () => {
+  test('conditionalOperatorConditoinIsStringType', async () => {
     await expectPass(
       `//Cond ? Expr1 : Expr2,  Cond is of string type, Expr1 and Expr2 have the same type
 declare var condString: string;
@@ -7971,7 +7971,7 @@ var resultIsStringOrBoolean4 = condString.toUpperCase ? exprString1 : exprBoolea
       [],
     );
   });
-  test("conditionalOperatorWithIdenticalBCT", async () => {
+  test('conditionalOperatorWithIdenticalBCT', async () => {
     await expectPass(
       `//Cond ? Expr1 : Expr2,  Expr1 and Expr2 have identical best common type
 class X { propertyX: any; propertyX1: number; propertyX2: string };
@@ -8022,7 +8022,7 @@ var result11: any = true ? 1 : 'string';`,
       [],
     );
   });
-  test("conditionalOperatorWithoutIdenticalBCT", async () => {
+  test('conditionalOperatorWithoutIdenticalBCT', async () => {
     await expectPass(
       `//Cond ? Expr1 : Expr2,  Expr1 and Expr2 have no identical best common type
 class X { propertyX: any; propertyX1: number; propertyX2: string };
@@ -8050,7 +8050,7 @@ var result61: (t: X) => number| string = true ? (m) => m.propertyX1 : (n) => n.p
       [],
     );
   });
-  test("argumentExpressionContextualTyping", async () => {
+  test('argumentExpressionContextualTyping', async () => {
     await expectPass(
       `// @target: es2015
 // In a typed function call, argument expressions are contextually typed by their corresponding parameter types.
@@ -8074,7 +8074,7 @@ foo(o);                              // Error because x has an array type namely
       [],
     );
   });
-  test("arrayLiteralExpressionContextualTyping", async () => {
+  test('arrayLiteralExpressionContextualTyping', async () => {
     await expectPass(
       `// @target: es2015
 // In a contextually typed array literal expression containing no spread elements, an element expression at index N is contextually typed by
@@ -8095,7 +8095,7 @@ var spr2:[number, number, number] = [1, 2, 3, ...tup];  // Error
       [],
     );
   });
-  test("functionExpressionContextualTyping1", async () => {
+  test('functionExpressionContextualTyping1', async () => {
     await expectPass(
       `// @strict: false
 // When a function expression with no type parameters and no parameter type annotations 
@@ -8157,7 +8157,7 @@ class C<T, U> {
       [],
     );
   });
-  test("functionExpressionContextualTyping2", async () => {
+  test('functionExpressionContextualTyping2', async () => {
     await expectPass(
       `// @target: es2015
 // A contextual signature S is extracted from a function type T as follows:
@@ -8174,7 +8174,7 @@ a1 = (foo, bar) => { return true; }  // Error`,
       [],
     );
   });
-  test("functionExpressionContextualTyping3", async () => {
+  test('functionExpressionContextualTyping3', async () => {
     await expectPass(
       `
 // #31114
@@ -8184,7 +8184,7 @@ f((a: any) => "")`,
     );
   });
   // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
-  test("generatedContextualTyping", async () => {
+  test('generatedContextualTyping', async () => {
     await expectPass(
       `
 class Base { private p; }
@@ -8544,7 +8544,7 @@ var x356 = function(n: Genric<Base>) { }; x356({ func: n => { return [d1, d2]; }
       [],
     );
   });
-  test("getSetAccessorContextualTyping", async () => {
+  test('getSetAccessorContextualTyping', async () => {
     await expectPass(
       `// @target: es5, es2015
 // In the body of a get accessor with no return type annotation,
@@ -8575,14 +8575,14 @@ class C {
       [],
     );
   });
-  test("iterableContextualTyping1", async () => {
+  test('iterableContextualTyping1', async () => {
     await expectPass(
       `//@target: ES6
 var iter: Iterable<(x: string) => number> = [s => s.length];`,
       [],
     );
   });
-  test("objectLiteralContextualTyping", async () => {
+  test('objectLiteralContextualTyping', async () => {
     await expectPass(
       `// In a contextually typed object literal, each property value expression is contextually typed by
 //      the type of the property with a matching name in the contextual type, if any, or otherwise
@@ -8617,7 +8617,7 @@ var b: {};
       [],
     );
   });
-  test("parenthesizedContexualTyping1", async () => {
+  test('parenthesizedContexualTyping1', async () => {
     await expectError(
       `
 function fun<T>(g: (x: T) => T, x: T): T;
@@ -8651,7 +8651,7 @@ var obj2: ObjType = ({ x: x => (x, undefined), y: y => (y, undefined) });`,
       [],
     );
   });
-  test("parenthesizedContexualTyping2", async () => {
+  test('parenthesizedContexualTyping2', async () => {
     await expectError(
       `// These tests ensure that in cases where it may *appear* that a value has a type,
 // they actually are properly being contextually typed. The way we test this is
@@ -8692,7 +8692,7 @@ var obj2: ObjType = ({ x: x => (x, undefined), y: y => (y, undefined) });`,
       [],
     );
   });
-  test("parenthesizedContexualTyping3", async () => {
+  test('parenthesizedContexualTyping3', async () => {
     await expectPass(
       `
 // Contextual typing for parenthesized substitution expressions in tagged templates.
@@ -8717,7 +8717,7 @@ var h = tempFun \`\${ (x => x) } \${ (((x => x))) } \${ undefined }\``,
       [],
     );
   });
-  test("superCallParameterContextualTyping1", async () => {
+  test('superCallParameterContextualTyping1', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -8735,7 +8735,7 @@ class B extends A<number, string> {
       [],
     );
   });
-  test("superCallParameterContextualTyping2", async () => {
+  test('superCallParameterContextualTyping2', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -8752,7 +8752,7 @@ class C extends A<number, string> {
       [],
     );
   });
-  test("superCallParameterContextualTyping3", async () => {
+  test('superCallParameterContextualTyping3', async () => {
     await expectPass(
       `// @target: es2015
 interface ContextualType<T> {
@@ -8789,7 +8789,7 @@ class C extends CBase<string> {
       [],
     );
   });
-  test("taggedTemplateContextualTyping1", async () => {
+  test('taggedTemplateContextualTyping1', async () => {
     await expectPass(
       `
 type FuncType = (x: <T>(p: T) => T) => typeof x;
@@ -8812,7 +8812,7 @@ tempTag1 \`\${ (x: <T>(p: T) => T) => { x<number>(undefined); return x; } }\${ y
       [],
     );
   });
-  test("taggedTemplateContextualTyping2", async () => {
+  test('taggedTemplateContextualTyping2', async () => {
     await expectPass(
       `
 type FuncType1 = (x: <T>(p: T) => T) => typeof x;
@@ -8834,7 +8834,7 @@ tempTag2 \`\${ x => { x<number, string>(undefined); return x; } }\${ undefined }
       [],
     );
   });
-  test("letIdentifierInElementAccess01", async () => {
+  test('letIdentifierInElementAccess01', async () => {
     await expectPass(
       `// @target: es2015
 var let: any = {};
@@ -8842,7 +8842,7 @@ var let: any = {};
       [],
     );
   });
-  test("stringEnumInElementAccess01", async () => {
+  test('stringEnumInElementAccess01', async () => {
     await expectPass(
       `enum E {
     A = "a",
@@ -8862,7 +8862,7 @@ const snb: string | number | boolean = item[e];`,
       [],
     );
   });
-  test("callOverload", async () => {
+  test('callOverload', async () => {
     await expectPass(
       `declare function fn(x: any): void;
 declare function takeTwo(x: any, y: any): void;
@@ -8878,7 +8878,7 @@ withRest(...n); `,
       [],
     );
   });
-  test("callWithMissingVoid", async () => {
+  test('callWithMissingVoid', async () => {
     await expectPass(
       `
 // From #4260
@@ -8967,7 +8967,7 @@ call((x: number | void, y: number | void) => 42, 4, 2) // ok`,
       [],
     );
   });
-  test("callWithMissingVoidUndefinedUnknownAnyInJs", async () => {
+  test('callWithMissingVoidUndefinedUnknownAnyInJs', async () => {
     await expectPass(
       `declare function f1(p: void): void;
 declare function f2(p: undefined): void;
@@ -9009,7 +9009,7 @@ o4.m();
       [],
     );
   });
-  test("callWithSpread", async () => {
+  test('callWithSpread', async () => {
     await expectPass(
       `interface X {
     foo(x: number, y: number, ...z: string[]): X;
@@ -9072,7 +9072,7 @@ class D extends C {
       [],
     );
   });
-  test("callWithSpread2", async () => {
+  test('callWithSpread2', async () => {
     await expectPass(
       `declare function all(a?: number, b?: number): void;
 declare function weird(a?: number | string, b?: number | string): void;
@@ -9113,7 +9113,7 @@ prefix2("g", ...ns);`,
       [],
     );
   });
-  test("callWithSpread3", async () => {
+  test('callWithSpread3', async () => {
     await expectPass(
       `declare const s2: [string, string];
 declare const s3: [string, string, string];
@@ -9153,7 +9153,7 @@ fs5(...s2, "foo", ...s2);`,
       [],
     );
   });
-  test("callWithSpread4", async () => {
+  test('callWithSpread4', async () => {
     await expectPass(
       `type R = { a: number }
 type W = { b: number }
@@ -9187,7 +9187,7 @@ pli(...[reads, writes, writes] as const)`,
       [],
     );
   });
-  test("callWithSpread5", async () => {
+  test('callWithSpread5', async () => {
     await expectPass(
       `declare const x: number
 declare const nnnu: [number, number, number?]
@@ -9199,7 +9199,7 @@ fn(...nntnnnt, x)`,
       [],
     );
   });
-  test("callWithSpreadES6", async () => {
+  test('callWithSpreadES6', async () => {
     await expectPass(
       `
 interface X {
@@ -9255,7 +9255,7 @@ class D extends C {
       [],
     );
   });
-  test("forgottenNew", async () => {
+  test('forgottenNew', async () => {
     await expectPass(
       `namespace Tools {
     export class NullLogger { }
@@ -9265,7 +9265,7 @@ var logger = Tools.NullLogger();`,
       [],
     );
   });
-  test("functionCalls", async () => {
+  test('functionCalls', async () => {
     await expectPass(
       `
 // Invoke function call on value of type 'any' with no type arguments
@@ -9306,7 +9306,7 @@ func<any>();
       [],
     );
   });
-  test("grammarAmbiguities", async () => {
+  test('grammarAmbiguities', async () => {
     await expectPass(
       `function f(n: any) { return null; }
 function g<A, B>(x: any) { return null; }
@@ -9322,7 +9322,7 @@ f(g < A, B > +(7)); // Should error
       [],
     );
   });
-  test("newWithSpread", async () => {
+  test('newWithSpread', async () => {
     await expectPass(
       `
 function f(x: number, y: number, ...z: string[]) {
@@ -9424,7 +9424,7 @@ new i["a-b"][1](1, 2, ...a, "string");`,
       [],
     );
   });
-  test("newWithSpreadES5", async () => {
+  test('newWithSpreadES5', async () => {
     await expectPass(
       `
 function f(x: number, y: number, ...z: string[]) {
@@ -9525,7 +9525,7 @@ new i["a-b"][1](1, 2, ...a, "string");`,
       [],
     );
   });
-  test("newWithSpreadES6", async () => {
+  test('newWithSpreadES6', async () => {
     await expectPass(
       `
 function f(x: number, y: number, ...z: string[]) {
@@ -9627,7 +9627,7 @@ new i["a-b"][1](1, 2, ...a, "string");`,
       [],
     );
   });
-  test("overloadResolution", async () => {
+  test('overloadResolution', async () => {
     await expectPass(
       `class SomeBase {
     private n;
@@ -9726,7 +9726,7 @@ var s = fn5((n) => n.substr(0));
       [],
     );
   });
-  test("overloadResolutionClassConstructors", async () => {
+  test('overloadResolutionClassConstructors', async () => {
     await expectPass(
       `class SomeBase {
     private n;
@@ -9832,7 +9832,7 @@ new fn5((n) => n.blah); // Error
       [],
     );
   });
-  test("overloadResolutionConstructors", async () => {
+  test('overloadResolutionConstructors', async () => {
     await expectPass(
       `class SomeBase {
     private n;
@@ -9939,7 +9939,7 @@ var s = new fn5((n) => n.substr(0));
       [],
     );
   });
-  test("typeArgumentInference", async () => {
+  test('typeArgumentInference', async () => {
     await expectPass(
       `// Generic call with no parameters
 function noParams<T>() { }
@@ -10044,7 +10044,7 @@ var arr: any[];
       [],
     );
   });
-  test("typeArgumentInferenceConstructSignatures", async () => {
+  test('typeArgumentInferenceConstructSignatures', async () => {
     await expectPass(
       `// Generic call with no parameters
 interface NoParams {
@@ -10187,7 +10187,7 @@ declare var arr: any[];
       [],
     );
   });
-  test("typeArgumentInferenceErrors", async () => {
+  test('typeArgumentInferenceErrors', async () => {
     await expectPass(
       `// Generic call with multiple type parameters and only one used in parameter type annotation
 function someGenerics1<T, U>(n: T, m: number) { }
@@ -10208,7 +10208,7 @@ someGenerics6<number>((n: number) => n, (n: string) => n, (n: number) => n); // 
       [],
     );
   });
-  test("typeArgumentInferenceTransitiveConstraints", async () => {
+  test('typeArgumentInferenceTransitiveConstraints', async () => {
     await expectPass(
       `
 function fn<A extends Date, B extends A, C extends B>(a: A, b: B, c: C) {
@@ -10221,7 +10221,7 @@ var d: Date[]; // Should be OK (d should be Date[])
       [],
     );
   });
-  test("typeArgumentInferenceWithConstraints", async () => {
+  test('typeArgumentInferenceWithConstraints', async () => {
     await expectPass(
       `// Generic call with no parameters
 function noParams<T extends {}>() { }
@@ -10331,7 +10331,7 @@ var arr: any[];
       [],
     );
   });
-  test("typeArgumentInferenceWithObjectLiteral", async () => {
+  test('typeArgumentInferenceWithObjectLiteral', async () => {
     await expectPass(
       `interface Computed<T> {
     read(): T;
@@ -10372,7 +10372,7 @@ var v3 = f1({ w: x => x, r: () => E1.X }, E2.X);  // Error
       [],
     );
   });
-  test("arrowFunctionContexts", async () => {
+  test('arrowFunctionContexts', async () => {
     await expectPass(
       `
 // Arrow function used in with statement
@@ -10473,7 +10473,7 @@ var asserted2: any;
       [],
     );
   });
-  test("arrowFunctionExpressions", async () => {
+  test('arrowFunctionExpressions', async () => {
     await expectPass(
       `// ArrowFormalParameters => AssignmentExpression is equivalent to ArrowFormalParameters => { return AssignmentExpression; }
 var a = (p: string) => p.length;
@@ -10577,7 +10577,7 @@ function tryCatchFn() {
       [],
     );
   });
-  test("contextuallyTypedFunctionExpressionsAndReturnAnnotations", async () => {
+  test('contextuallyTypedFunctionExpressionsAndReturnAnnotations', async () => {
     await expectPass(
       `declare function foo(x: (y: string) => (y2: number) => void);
 
@@ -10597,7 +10597,7 @@ foo((y: string) => {
     );
   });
   // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
-  test("contextuallyTypedIife", async () => {
+  test('contextuallyTypedIife', async () => {
     await expectPass(
       `// arrow
 (jake => { })("build");
@@ -10635,7 +10635,7 @@ let eleven = (o => o.a(11))({ a: function(n) { return n; } });
     );
   });
   // ZTS 는 transpile-only — TS type-check expectError 는 transpile-pass 로 reframe (#2314)
-  test("contextuallyTypedIifeStrict", async () => {
+  test('contextuallyTypedIifeStrict', async () => {
     await expectPass(
       `// arrow
 (jake => { })("build");
@@ -10672,7 +10672,7 @@ let eleven = (o => o.a(11))({ a: function(n) { return n; } });
       [],
     );
   });
-  test("typeOfThisInFunctionExpression", async () => {
+  test('typeOfThisInFunctionExpression', async () => {
     await expectPass(
       `// type of 'this' in FunctionExpression is Any
 
@@ -10722,7 +10722,7 @@ namespace M {
       [],
     );
   });
-  test("voidParamAssignmentCompatibility", async () => {
+  test('voidParamAssignmentCompatibility', async () => {
     await expectPass(
       `declare function g(a: void): void;
 let gg: () => void = g;
@@ -10737,7 +10737,7 @@ gg = o.method;
       [],
     );
   });
-  test("scopeResolutionIdentifiers", async () => {
+  test('scopeResolutionIdentifiers', async () => {
     await expectPass(
       `// EveryType used in a nested scope of a different EveryType with the same name, type of the identifier is the one defined in the inner scope
 
@@ -10780,7 +10780,7 @@ namespace M3 {
       [],
     );
   });
-  test("literals", async () => {
+  test('literals', async () => {
     await expectError(
       `
 //typeof null is Null
@@ -10824,7 +10824,7 @@ var r = /\\\\\\\\/;
       [],
     );
   });
-  test("strictModeOctalLiterals", async () => {
+  test('strictModeOctalLiterals', async () => {
     await expectError(
       `export enum E {
     A = 12 + 01
@@ -10833,7 +10833,7 @@ const orbitol: 01 = 01`,
       [],
     );
   });
-  test("newOperatorConformance", async () => {
+  test('newOperatorConformance', async () => {
     await expectPass(
       `
 class C0 {
@@ -10901,7 +10901,7 @@ var n = new nested();
       [],
     );
   });
-  test("newOperatorErrorCases_noImplicitAny", async () => {
+  test('newOperatorErrorCases_noImplicitAny', async () => {
     await expectPass(
       `
 function fnNumber(this: void): number { return 90; }
@@ -10915,7 +10915,7 @@ new functionVoidNoThis(); // Error`,
       [],
     );
   });
-  test("newOperatorErrorCases", async () => {
+  test('newOperatorErrorCases', async () => {
     await expectError(
       `
 class C0 {
@@ -10958,7 +10958,7 @@ var s = new fnNumber(); // Error
       [],
     );
   });
-  test("nullishCoalescingAssignmentVsPrivateFieldsJsEmit1", async () => {
+  test('nullishCoalescingAssignmentVsPrivateFieldsJsEmit1', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/61109
@@ -10977,7 +10977,7 @@ function neverThis(): never {
       [],
     );
   });
-  test("nullishCoalescingOperator_es2020", async () => {
+  test('nullishCoalescingOperator_es2020', async () => {
     await expectPass(
       `
 declare const a1: 'literal' | undefined | null
@@ -11020,7 +11020,7 @@ let y6 = c && (a ?? b) as any;`,
       [],
     );
   });
-  test("nullishCoalescingOperator_not_strict", async () => {
+  test('nullishCoalescingOperator_not_strict', async () => {
     await expectPass(
       `
 declare const a1: 'literal' | undefined | null
@@ -11046,7 +11046,7 @@ const aa9 = a9 ?? 'whatever'`,
       [],
     );
   });
-  test("nullishCoalescingOperator1", async () => {
+  test('nullishCoalescingOperator1', async () => {
     await expectPass(
       `
 declare const a1: string | undefined | null
@@ -11116,7 +11116,7 @@ else {
       [],
     );
   });
-  test("nullishCoalescingOperator10", async () => {
+  test('nullishCoalescingOperator10', async () => {
     await expectPass(
       `
 declare function f(): string | undefined;
@@ -11125,7 +11125,7 @@ let gg = f() ?? 'foo'`,
       [],
     );
   });
-  test("nullishCoalescingOperator11", async () => {
+  test('nullishCoalescingOperator11', async () => {
     await expectPass(
       `
 declare const f11: 1 | 0 | '' | null | undefined;
@@ -11134,7 +11134,7 @@ let g11 = f11 ?? f11.toFixed()`,
       [],
     );
   });
-  test("nullishCoalescingOperator12", async () => {
+  test('nullishCoalescingOperator12', async () => {
     await expectPass(
       `
 const obj: { arr: any[] } = { arr: [] };
@@ -11142,7 +11142,7 @@ for (const i of obj?.arr ?? []) { }`,
       [],
     );
   });
-  test("nullishCoalescingOperator2", async () => {
+  test('nullishCoalescingOperator2', async () => {
     await expectPass(
       `
 declare const a1: 'literal' | undefined | null
@@ -11168,7 +11168,7 @@ const aa9 = a9 ?? 'whatever'`,
       [],
     );
   });
-  test("nullishCoalescingOperator3", async () => {
+  test('nullishCoalescingOperator3', async () => {
     await expectPass(
       `
 declare const a1: 'literal' | undefined | null
@@ -11183,7 +11183,7 @@ const aa1 = a1 ?? a2 ?? a3 ?? a4 ?? a5 ?? a6 ?? 'whatever'`,
       [],
     );
   });
-  test("nullishCoalescingOperator4", async () => {
+  test('nullishCoalescingOperator4', async () => {
     await expectPass(
       `
 declare const a1: 'literal' | undefined | null
@@ -11192,7 +11192,7 @@ const aa2 = a1 || a1.toLocaleUpperCase()`,
       [],
     );
   });
-  test("nullishCoalescingOperator5", async () => {
+  test('nullishCoalescingOperator5', async () => {
     await expectError(
       `
 declare const a: string | undefined
@@ -11237,14 +11237,14 @@ a && (b ?? c);`,
       [],
     );
   });
-  test("nullishCoalescingOperator6", async () => {
+  test('nullishCoalescingOperator6', async () => {
     await expectPass(
       `
 function foo(foo: string, bar = foo ?? "bar") { }`,
       [],
     );
   });
-  test("nullishCoalescingOperator7", async () => {
+  test('nullishCoalescingOperator7', async () => {
     await expectPass(
       `
 declare const a: string | undefined;
@@ -11261,7 +11261,7 @@ function f () {
       [],
     );
   });
-  test("nullishCoalescingOperator8", async () => {
+  test('nullishCoalescingOperator8', async () => {
     await expectPass(
       `
 declare const a: { p: string | undefined, m(): string | undefined };
@@ -11273,7 +11273,7 @@ const n3 = a.m() ?? b.p ?? b.m() ?? "default";;`,
       [],
     );
   });
-  test("nullishCoalescingOperator9", async () => {
+  test('nullishCoalescingOperator9', async () => {
     await expectPass(
       `
 declare let f: null | ((x: string) => void);
@@ -11283,7 +11283,7 @@ let gg = f ?? (abc => { void abc.toLowerCase() })`,
       [],
     );
   });
-  test("nullishCoalescingOperatorInAsyncGenerator", async () => {
+  test('nullishCoalescingOperatorInAsyncGenerator', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/37686
@@ -11297,7 +11297,7 @@ async function* f(a: { b?: number }) {
       [],
     );
   });
-  test("nullishCoalescingOperatorInParameterBindingPattern.2", async () => {
+  test('nullishCoalescingOperatorInParameterBindingPattern.2', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -11309,7 +11309,7 @@ const x = "";
       [],
     );
   });
-  test("nullishCoalescingOperatorInParameterBindingPattern", async () => {
+  test('nullishCoalescingOperatorInParameterBindingPattern', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -11318,7 +11318,7 @@ const a = (): string | undefined => undefined;
       [],
     );
   });
-  test("nullishCoalescingOperatorInParameterInitializer.2", async () => {
+  test('nullishCoalescingOperatorInParameterInitializer.2', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -11330,7 +11330,7 @@ const x = "";
       [],
     );
   });
-  test("nullishCoalescingOperatorInParameterInitializer", async () => {
+  test('nullishCoalescingOperatorInParameterInitializer', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -11339,7 +11339,7 @@ const a = (): string | undefined => undefined;
       [],
     );
   });
-  test("objectLiteralErrors", async () => {
+  test('objectLiteralErrors', async () => {
     await expectError(
       `
 // Multiple properties with the same name
@@ -11397,7 +11397,7 @@ var h1 = {
       [],
     );
   });
-  test("objectLiteralGettersAndSetters", async () => {
+  test('objectLiteralGettersAndSetters', async () => {
     await expectPass(
       `// Get and set accessor with the same name
 var sameName1a = { get 'a'() { return ''; }, set a(n) { var p = n; var p: string; } };
@@ -11485,7 +11485,7 @@ var getParamType3 = {
       [],
     );
   });
-  test("objectLiteralNormalization", async () => {
+  test('objectLiteralNormalization', async () => {
     await expectPass(
       `
 // Object literals in unions are normalized upon widening
@@ -11541,7 +11541,7 @@ let e4 = f({ a: 2 }, data);
       [],
     );
   });
-  test("incrementAndDecrement", async () => {
+  test('incrementAndDecrement', async () => {
     await expectError(
       `enum E { A, B, C };
 var x = 4;
@@ -11607,7 +11607,7 @@ w--; // Error
       [],
     );
   });
-  test("callChain.2", async () => {
+  test('callChain.2', async () => {
     await expectPass(
       `
 declare const o1: undefined | (() => number);
@@ -11622,7 +11622,7 @@ o3.b?.().c;
       [],
     );
   });
-  test("callChain.3", async () => {
+  test('callChain.3', async () => {
     await expectPass(
       `
 declare function absorb<T>(): T;
@@ -11638,7 +11638,7 @@ t1 = a!.m!({x: 12});`,
       [],
     );
   });
-  test("callChain", async () => {
+  test('callChain', async () => {
     await expectPass(
       `
 declare const o1: undefined | ((...args: any[]) => number);
@@ -11685,7 +11685,7 @@ o2?.b()!.toString!;`,
       [],
     );
   });
-  test("callChainInference", async () => {
+  test('callChainInference', async () => {
     await expectPass(
       `
 // Repro from #42404
@@ -11707,7 +11707,7 @@ value?.foo("a");
       [],
     );
   });
-  test("callChainWithSuper", async () => {
+  test('callChainWithSuper', async () => {
     await expectPass(
       `
 // GH#34952
@@ -11719,7 +11719,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("parentheses", async () => {
+  test('parentheses', async () => {
     await expectPass(
       `
 declare const o1: ((...args: any[]) => number);
@@ -11734,7 +11734,7 @@ declare const o4: { b: ((...args: any[]) => { c: (...args: any[]) => number } ) 
       [],
     );
   });
-  test("superMethodCall", async () => {
+  test('superMethodCall', async () => {
     await expectPass(
       `class Base {
     method?() { }
@@ -11752,7 +11752,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("thisMethodCall", async () => {
+  test('thisMethodCall', async () => {
     await expectPass(
       `class C {
     method?() {}
@@ -11763,7 +11763,7 @@ class Derived extends Base {
       [],
     );
   });
-  test("deleteChain", async () => {
+  test('deleteChain', async () => {
     await expectPass(
       `
 declare const o1: undefined | { b: string };
@@ -11793,7 +11793,7 @@ delete (o6.b?.['c'].d?.['e']);`,
       [],
     );
   });
-  test("elementAccessChain.2", async () => {
+  test('elementAccessChain.2', async () => {
     await expectPass(
       `
 declare const o1: undefined | { b: string };
@@ -11810,7 +11810,7 @@ o3.b?.["c"];
       [],
     );
   });
-  test("elementAccessChain.3", async () => {
+  test('elementAccessChain.3', async () => {
     await expectError(
       `
 declare const obj: any;
@@ -11845,7 +11845,7 @@ for (obj?.a["b"] of []);
       [],
     );
   });
-  test("elementAccessChain", async () => {
+  test('elementAccessChain', async () => {
     await expectPass(
       `
 declare const o1: undefined | { b: string };
@@ -11881,7 +11881,7 @@ o2?.["b"]!["c"]!;`,
       [],
     );
   });
-  test("optionalChainingInArrow", async () => {
+  test('optionalChainingInArrow', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/41814
 const test = (names: string[]) =>
@@ -11891,7 +11891,7 @@ const test = (names: string[]) =>
       [],
     );
   });
-  test("optionalChainingInference", async () => {
+  test('optionalChainingInference', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/34579
 declare function unbox<T>(box: { value: T | undefined }): T;
@@ -11928,7 +11928,7 @@ const v8: number = unbox(b8);
       [],
     );
   });
-  test("optionalChainingInLoop", async () => {
+  test('optionalChainingInLoop', async () => {
     await expectPass(
       `// https://github.com/microsoft/TypeScript/issues/40643
 const list: any[] = []
@@ -11941,7 +11941,7 @@ for (const comp of list) {
       [],
     );
   });
-  test("optionalChainingInParameterBindingPattern.2", async () => {
+  test('optionalChainingInParameterBindingPattern.2', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -11953,7 +11953,7 @@ const x = "";
       [],
     );
   });
-  test("optionalChainingInParameterBindingPattern", async () => {
+  test('optionalChainingInParameterBindingPattern', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -11962,7 +11962,7 @@ const a = (): { d: string } | undefined => undefined;
       [],
     );
   });
-  test("optionalChainingInParameterInitializer.2", async () => {
+  test('optionalChainingInParameterInitializer.2', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -11974,7 +11974,7 @@ const x = "";
       [],
     );
   });
-  test("optionalChainingInParameterInitializer", async () => {
+  test('optionalChainingInParameterInitializer', async () => {
     await expectPass(
       `
 // https://github.com/microsoft/TypeScript/issues/36295
@@ -11983,7 +11983,7 @@ const a = (): { d: string } | undefined => undefined;
       [],
     );
   });
-  test("optionalChainingInTypeAssertions", async () => {
+  test('optionalChainingInTypeAssertions', async () => {
     await expectPass(
       `
 class Foo {
@@ -12006,7 +12006,7 @@ const foo = new Foo();
       [],
     );
   });
-  test("privateIdentifierChain.1", async () => {
+  test('privateIdentifierChain.1', async () => {
     await expectPass(
       `
 class A {
@@ -12024,7 +12024,7 @@ class A {
       [],
     );
   });
-  test("propertyAccessChain.2", async () => {
+  test('propertyAccessChain.2', async () => {
     await expectPass(
       `
 declare const o1: undefined | { b: string };
@@ -12039,7 +12039,7 @@ o3.b?.c;
       [],
     );
   });
-  test("propertyAccessChain.3", async () => {
+  test('propertyAccessChain.3', async () => {
     await expectError(
       `
 declare const obj: any;
@@ -12074,7 +12074,7 @@ for (obj?.a.b of []);
       [],
     );
   });
-  test("propertyAccessChain", async () => {
+  test('propertyAccessChain', async () => {
     await expectPass(
       `
 declare const o1: undefined | { b: string };
@@ -12105,7 +12105,7 @@ o2?.b!.c!;`,
       [],
     );
   });
-  test("taggedTemplateChain", async () => {
+  test('taggedTemplateChain', async () => {
     await expectError(
       `declare let a: any;
 a?.\`b\`;
@@ -12114,7 +12114,7 @@ a?.\`b\${1}c\`;`,
       [],
     );
   });
-  test("propertyAccess", async () => {
+  test('propertyAccess', async () => {
     await expectPass(
       `class A {
     a!: number;
@@ -12269,7 +12269,7 @@ var x3: A;
       [],
     );
   });
-  test("propertyAccessNumericLiterals", async () => {
+  test('propertyAccessNumericLiterals', async () => {
     await expectError(
       `0xffffffff.toString();
 0o01234.toString();
@@ -12287,7 +12287,7 @@ var x3: A;
       [],
     );
   });
-  test("propertyAccessStringIndexSignature", async () => {
+  test('propertyAccessStringIndexSignature', async () => {
     await expectPass(
       `interface Flags { [name: string]: boolean };
 declare let flags: Flags;
@@ -12303,7 +12303,7 @@ empty["that's ok"];`,
       [],
     );
   });
-  test("propertyAccessWidening", async () => {
+  test('propertyAccessWidening', async () => {
     await expectPass(
       `
 // Repro from #31762
@@ -12330,7 +12330,7 @@ function foo(options?: { a: string, b: number }) {
       [],
     );
   });
-  test("errorSuperCalls", async () => {
+  test('errorSuperCalls', async () => {
     await expectError(
       `//super call in class constructor with no base type
 class NoBase {
@@ -12409,7 +12409,7 @@ class OtherDerived extends OtherBase {
       [],
     );
   });
-  test("superCalls", async () => {
+  test('superCalls', async () => {
     await expectPass(
       `class Base {
     x = 43;
@@ -12444,7 +12444,7 @@ class OtherDerived extends OtherBase {
       [],
     );
   });
-  test("errorSuperPropertyAccess", async () => {
+  test('errorSuperPropertyAccess', async () => {
     await expectError(
       `//super property access in constructor of class with no base type
 //super property access in instance member function of class with no base type
@@ -12577,7 +12577,7 @@ var obj = { n: super.wat, p: super.foo() };
       [],
     );
   });
-  test("superPropertyAccessNoError", async () => {
+  test('superPropertyAccessNoError', async () => {
     await expectPass(
       `//super.publicInstanceMemberFunction in constructor of derived class
 //super.publicInstanceMemberFunction in instance member function of derived class
@@ -12652,7 +12652,7 @@ instance.returnThis().fn();
       [],
     );
   });
-  test("superSymbolIndexedAccess1", async () => {
+  test('superSymbolIndexedAccess1', async () => {
     await expectPass(
       `var symbol = Symbol.for('myThing');
 
@@ -12670,7 +12670,7 @@ class Bar extends Foo {
       [],
     );
   });
-  test("superSymbolIndexedAccess2", async () => {
+  test('superSymbolIndexedAccess2', async () => {
     await expectPass(
       `
 class Foo {
@@ -12687,7 +12687,7 @@ class Bar extends Foo {
       [],
     );
   });
-  test("superSymbolIndexedAccess3", async () => {
+  test('superSymbolIndexedAccess3', async () => {
     await expectPass(
       `var symbol = Symbol.for('myThing');
 
@@ -12705,7 +12705,7 @@ class Bar extends Foo {
       [],
     );
   });
-  test("superSymbolIndexedAccess4", async () => {
+  test('superSymbolIndexedAccess4', async () => {
     await expectPass(
       `var symbol = Symbol.for('myThing');
 
@@ -12717,7 +12717,7 @@ class Bar {
       [],
     );
   });
-  test("superSymbolIndexedAccess5", async () => {
+  test('superSymbolIndexedAccess5', async () => {
     await expectPass(
       `var symbol: any;
 
@@ -12735,7 +12735,7 @@ class Bar extends Foo {
       [],
     );
   });
-  test("superSymbolIndexedAccess6", async () => {
+  test('superSymbolIndexedAccess6', async () => {
     await expectPass(
       `var symbol: any;
 
@@ -12753,7 +12753,7 @@ class Bar extends Foo {
       [],
     );
   });
-  test("thisInInvalidContexts", async () => {
+  test('thisInInvalidContexts', async () => {
     await expectPass(
       `class BaseErrClass {
     constructor(t: any) { }
@@ -12801,7 +12801,7 @@ enum SomeEnum {
       [],
     );
   });
-  test("thisInInvalidContextsExternalModule", async () => {
+  test('thisInInvalidContextsExternalModule', async () => {
     await expectPass(
       `class BaseErrClass {
     constructor(t: any) { }
@@ -12849,7 +12849,7 @@ export = this; // Should be an error`,
       [],
     );
   });
-  test("thisInObjectLiterals", async () => {
+  test('thisInObjectLiterals', async () => {
     await expectPass(
       `
 class MyClass {
@@ -12874,7 +12874,7 @@ var obj: { f: () => any; };
       [],
     );
   });
-  test("typeOfThisGeneral", async () => {
+  test('typeOfThisGeneral', async () => {
     await expectPass(
       `class MyTestClass {
     private canary: number;
@@ -13056,7 +13056,7 @@ this.spaaaaace = 4;
       [],
     );
   });
-  test("typeOfThisInConstructorParamList", async () => {
+  test('typeOfThisInConstructorParamList', async () => {
     await expectPass(
       `//type of 'this' in constructor param list is the class instance type (error)
 class ErrClass {
@@ -13067,7 +13067,7 @@ class ErrClass {
       [],
     );
   });
-  test("constAssertions", async () => {
+  test('constAssertions', async () => {
     await expectPass(
       `
 let v1 = 'abc' as const;
@@ -13193,21 +13193,21 @@ const fooConst54374: Foo54374 = {
       [],
     );
   });
-  test("duplicatePropertiesInTypeAssertions01", async () => {
+  test('duplicatePropertiesInTypeAssertions01', async () => {
     await expectPass(
       `
 let x = <{a: number; a: number}>{};`,
       [],
     );
   });
-  test("duplicatePropertiesInTypeAssertions02", async () => {
+  test('duplicatePropertiesInTypeAssertions02', async () => {
     await expectPass(
       `
 let x = {} as {a: number; a: number};`,
       [],
     );
   });
-  test("typeAssertions", async () => {
+  test('typeAssertions', async () => {
     await expectError(
       `// Function call whose argument is a 1 arg generic function call with explicit type arguments
 function fn1<T>(t: T) { }
@@ -13263,7 +13263,7 @@ if((numOrStr === undefined) as numOrStr is string) { // Error
       [],
     );
   });
-  test("nullOrUndefinedTypeGuardIsOrderIndependent", async () => {
+  test('nullOrUndefinedTypeGuardIsOrderIndependent', async () => {
     await expectPass(
       `function test(strOrNull: string | null, strOrUndefined: string | undefined) {
     var str: string = "original";
@@ -13281,7 +13281,7 @@ if((numOrStr === undefined) as numOrStr is string) { // Error
       [],
     );
   });
-  test("typeGuardEnums", async () => {
+  test('typeGuardEnums', async () => {
     await expectPass(
       `enum E {}
 enum V {}
@@ -13305,7 +13305,7 @@ else {
       [],
     );
   });
-  test("typeGuardFunction", async () => {
+  test('typeGuardFunction', async () => {
     await expectPass(
       `
 class A {
@@ -13393,7 +13393,7 @@ let union3: boolean | B = isA(union2) || union2;`,
       [],
     );
   });
-  test("typeGuardFunctionErrors", async () => {
+  test('typeGuardFunctionErrors', async () => {
     await expectError(
       `
 class A {
@@ -13565,7 +13565,7 @@ declare function newError3(x: number): x is NeedsFoo<number>; // should error`,
       [],
     );
   });
-  test("typeGuardFunctionGenerics", async () => {
+  test('typeGuardFunctionGenerics', async () => {
     await expectPass(
       `
 class A {
@@ -13603,7 +13603,7 @@ let test3: B = funE(isB, 1);`,
       [],
     );
   });
-  test("typeGuardFunctionOfFormThis", async () => {
+  test('typeGuardFunctionOfFormThis', async () => {
     await expectPass(
       `class RoyalGuard {
     isLeader(): this is LeadGuard {
@@ -13749,7 +13749,7 @@ interface MimicGuardInterface {
       [],
     );
   });
-  test("typeGuardFunctionOfFormThisErrors", async () => {
+  test('typeGuardFunctionOfFormThisErrors', async () => {
     await expectPass(
       `class RoyalGuard {
     isLeader(): this is LeadGuard {
@@ -13813,7 +13813,7 @@ else {
       [],
     );
   });
-  test("typeGuardInClass", async () => {
+  test('typeGuardInClass', async () => {
     await expectPass(
       `declare var x: string | number;
 
@@ -13835,7 +13835,7 @@ else {
       [],
     );
   });
-  test("typeGuardIntersectionTypes", async () => {
+  test('typeGuardIntersectionTypes', async () => {
     await expectPass(
       `
 interface X {
@@ -13952,7 +13952,7 @@ function beastFoo(beast: Object) {
       [],
     );
   });
-  test("typeGuardNarrowsPrimitiveIntersection", async () => {
+  test('typeGuardNarrowsPrimitiveIntersection', async () => {
     await expectPass(
       `type Tag = {__tag: any};
 declare function isNonBlank(value: string) : value is (string & Tag);
@@ -13979,7 +13979,7 @@ if (isNonBlank2(value)) {
       [],
     );
   });
-  test("typeGuardNarrowsToLiteralType", async () => {
+  test('typeGuardNarrowsToLiteralType', async () => {
     await expectPass(
       `declare function isFoo(value: string) : value is "foo";
 declare function doThis(value: "foo"): void;
@@ -13995,7 +13995,7 @@ if (isFoo(value)) {
       [],
     );
   });
-  test("typeGuardNarrowsToLiteralTypeUnion", async () => {
+  test('typeGuardNarrowsToLiteralTypeUnion', async () => {
     await expectPass(
       `declare function isFoo(value: string) : value is ("foo" | "bar");
 declare function doThis(value: "foo" | "bar"): void;
@@ -14011,7 +14011,7 @@ if (isFoo(value)) {
       [],
     );
   });
-  test("typeGuardNesting", async () => {
+  test('typeGuardNesting', async () => {
     await expectPass(
       `let strOrBool: string|boolean;
 if ((typeof strOrBool === 'boolean' && !strOrBool) || typeof strOrBool === 'string') {
@@ -14031,7 +14031,7 @@ if ((typeof strOrBool !== 'string' && !strOrBool) || typeof strOrBool !== 'boole
       [],
     );
   });
-  test("typeGuardOfFormExpr1AndExpr2", async () => {
+  test('typeGuardOfFormExpr1AndExpr2', async () => {
     await expectPass(
       `var str: string;
 var bool: boolean;
@@ -14082,7 +14082,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormExpr1OrExpr2", async () => {
+  test('typeGuardOfFormExpr1OrExpr2', async () => {
     await expectPass(
       `var str: string;
 var bool: boolean;
@@ -14133,7 +14133,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormFunctionEquality", async () => {
+  test('typeGuardOfFormFunctionEquality', async () => {
     await expectPass(
       `declare function isString1(a: number, b: Object): b is string;
 
@@ -14153,7 +14153,7 @@ function isString3(a: number, b: number, c: Object): c is string {
       [],
     );
   });
-  test("typeGuardOfFormInstanceOf", async () => {
+  test('typeGuardOfFormInstanceOf', async () => {
     await expectPass(
       `// A type guard of the form x instanceof C, where C is of a subtype of the global type 'Function' 
 // and C has a property named 'prototype'
@@ -14225,7 +14225,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormInstanceOfOnInterface", async () => {
+  test('typeGuardOfFormInstanceOfOnInterface', async () => {
     await expectPass(
       `// A type guard of the form x instanceof C, where C is of a subtype of the global type 'Function' 
 // and C has a property named 'prototype'
@@ -14268,7 +14268,7 @@ var r2: D1 | C2 = c2Ord1 instanceof c1 && c2Ord1; // C2 | D1`,
       [],
     );
   });
-  test("typeGuardOfFormIsType", async () => {
+  test('typeGuardOfFormIsType', async () => {
     await expectPass(
       `
 class C1 {
@@ -14310,7 +14310,7 @@ var r2: C2 | D1 = isC1(c2Ord1) && c2Ord1; // C2 | D1`,
       [],
     );
   });
-  test("typeGuardOfFormIsTypeOnInterfaces", async () => {
+  test('typeGuardOfFormIsTypeOnInterfaces', async () => {
     await expectPass(
       `
 interface C1 {
@@ -14361,7 +14361,7 @@ var r2: C2 | D1 = isC1(c2Ord1) && c2Ord1; // C2 | D1`,
       [],
     );
   });
-  test("typeGuardOfFormNotExpr", async () => {
+  test('typeGuardOfFormNotExpr', async () => {
     await expectPass(
       `var str: string;
 var bool: boolean;
@@ -14419,7 +14419,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormThisMember", async () => {
+  test('typeGuardOfFormThisMember', async () => {
     await expectError(
       `// There's a 'File' class in the stdlib, wrap with a namespace to avoid collision
 namespace Test {
@@ -14506,7 +14506,7 @@ namespace Test {
       [],
     );
   });
-  test("typeGuardOfFormThisMemberErrors", async () => {
+  test('typeGuardOfFormThisMemberErrors', async () => {
     await expectError(
       `// There's a 'File' class in the stdlib, wrap with a namespace to avoid collision
 namespace Test {
@@ -14543,7 +14543,7 @@ namespace Test {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfBoolean", async () => {
+  test('typeGuardOfFormTypeOfBoolean', async () => {
     await expectPass(
       `class C { private p: string };
 
@@ -14634,7 +14634,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfEqualEqualHasNoEffect", async () => {
+  test('typeGuardOfFormTypeOfEqualEqualHasNoEffect', async () => {
     await expectPass(
       `class C { private p: string };
 
@@ -14674,7 +14674,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfFunction", async () => {
+  test('typeGuardOfFormTypeOfFunction', async () => {
     await expectPass(
       `
 function f1(x: any) {
@@ -14766,7 +14766,7 @@ function f101(x: string | Record<string, any>) {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfIsOrderIndependent", async () => {
+  test('typeGuardOfFormTypeOfIsOrderIndependent', async () => {
     await expectPass(
       `var strOrNum: string | number;
 var strOrBool: string | boolean;
@@ -14804,7 +14804,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfNotEqualHasNoEffect", async () => {
+  test('typeGuardOfFormTypeOfNotEqualHasNoEffect', async () => {
     await expectPass(
       `class C { private p: string };
 
@@ -14844,7 +14844,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfNumber", async () => {
+  test('typeGuardOfFormTypeOfNumber', async () => {
     await expectPass(
       `class C { private p: string };
 
@@ -14934,7 +14934,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfOther", async () => {
+  test('typeGuardOfFormTypeOfOther', async () => {
     await expectPass(
       `class C { private p: string };
 
@@ -15020,7 +15020,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfPrimitiveSubtype", async () => {
+  test('typeGuardOfFormTypeOfPrimitiveSubtype', async () => {
     await expectPass(
       `let a: {};
 let b: {toString(): string};
@@ -15047,7 +15047,7 @@ if (typeof b === "boolean") {
       [],
     );
   });
-  test("typeGuardOfFormTypeOfString", async () => {
+  test('typeGuardOfFormTypeOfString', async () => {
     await expectPass(
       `class C { private p: string };
 
@@ -15137,7 +15137,7 @@ else {
       [],
     );
   });
-  test("typeGuardOfFromPropNameInUnionType", async () => {
+  test('typeGuardOfFromPropNameInUnionType', async () => {
     await expectPass(
       `class A { a: string; }
 class B { b: number; }
@@ -15248,7 +15248,7 @@ function f(i: Indexed) {
       [],
     );
   });
-  test("typeGuardRedundancy", async () => {
+  test('typeGuardRedundancy', async () => {
     await expectPass(
       `var x: string|number;
 
@@ -15262,7 +15262,7 @@ var r4 = !(typeof x === "string" || typeof x === "string") ? x.toFixed : x.subst
       [],
     );
   });
-  test("typeGuardsDefeat", async () => {
+  test('typeGuardsDefeat', async () => {
     await expectPass(
       `// Also note that it is possible to defeat a type guard by calling a function that changes the 
 // type of the guarded variable.
@@ -15304,7 +15304,7 @@ function foo3(x: number | string) {
       [],
     );
   });
-  test("typeGuardsInClassAccessors", async () => {
+  test('typeGuardsInClassAccessors', async () => {
     await expectPass(
       `
 // Note that type guards affect types of variables and parameters only and 
@@ -15412,7 +15412,7 @@ class ClassWithAccessors {
       [],
     );
   });
-  test("typeGuardsInClassMethods", async () => {
+  test('typeGuardsInClassMethods', async () => {
     await expectPass(
       `// Note that type guards affect types of variables and parameters only and 
 // have no effect on members of objects such as properties. 
@@ -15485,7 +15485,7 @@ class C1 {
       [],
     );
   });
-  test("typeGuardsInConditionalExpression", async () => {
+  test('typeGuardsInConditionalExpression', async () => {
     await expectPass(
       `// In the true expression of a conditional expression, 
 // the type of a variable or parameter is narrowed by any type guard in the condition when true, 
@@ -15579,7 +15579,7 @@ function foo12(x: number | string | boolean) {
       [],
     );
   });
-  test("typeGuardsInDoStatement", async () => {
+  test('typeGuardsInDoStatement', async () => {
     await expectPass(
       `let cond: boolean;
 function a(x: string | number | boolean) {
@@ -15611,7 +15611,7 @@ function c(x: string | number) {
       [],
     );
   });
-  test("typeGuardsInExternalModule", async () => {
+  test('typeGuardsInExternalModule', async () => {
     await expectPass(
       `// Note that type guards affect types of variables and parameters only and 
 // have no effect on members of objects such as properties. 
@@ -15639,7 +15639,7 @@ else {
       [],
     );
   });
-  test("typeGuardsInForStatement", async () => {
+  test('typeGuardsInForStatement', async () => {
     await expectPass(
       `let cond: boolean;
 function a(x: string | number) {
@@ -15665,7 +15665,7 @@ function c(x: string | number) {
       [],
     );
   });
-  test("typeGuardsInFunction", async () => {
+  test('typeGuardsInFunction', async () => {
     await expectPass(
       `// Note that type guards affect types of variables and parameters only and 
 // have no effect on members of objects such as properties. 
@@ -15757,7 +15757,7 @@ strOrNum = typeof f4() === "string" && f4(); // string | number `,
       [],
     );
   });
-  test("typeGuardsInFunctionAndModuleBlock", async () => {
+  test('typeGuardsInFunctionAndModuleBlock', async () => {
     await expectPass(
       `// typeguards are scoped in function/module block
 
@@ -15841,7 +15841,7 @@ namespace m1 {
       [],
     );
   });
-  test("typeGuardsInGlobal", async () => {
+  test('typeGuardsInGlobal', async () => {
     await expectPass(
       `// Note that type guards affect types of variables and parameters only and 
 // have no effect on members of objects such as properties. 
@@ -15859,7 +15859,7 @@ else {
       [],
     );
   });
-  test("typeGuardsInIfStatement", async () => {
+  test('typeGuardsInIfStatement', async () => {
     await expectPass(
       `// In the true branch statement of an 'if' statement, 
 // the type of a variable or parameter is narrowed by any type guard in the 'if' condition when true.
@@ -16005,7 +16005,7 @@ function foo12(x: number | string | boolean) {
       [],
     );
   });
-  test("typeGuardsInModule", async () => {
+  test('typeGuardsInModule', async () => {
     await expectPass(
       `// Note that type guards affect types of variables and parameters only and 
 // have no effect on members of objects such as properties. 
@@ -16097,7 +16097,7 @@ namespace m3.m4 {
       [],
     );
   });
-  test("typeGuardsInProperties", async () => {
+  test('typeGuardsInProperties', async () => {
     await expectPass(
       `
 // Note that type guards affect types of variables and parameters only and 
@@ -16128,7 +16128,7 @@ strOrNum = typeof obj1.x === "string" && obj1.x;  // string | number`,
       [],
     );
   });
-  test("typeGuardsInRightOperandOfAndAndOperator", async () => {
+  test('typeGuardsInRightOperandOfAndAndOperator', async () => {
     await expectPass(
       `// In the right operand of a && operation, 
 // the type of a variable or parameter is narrowed by any type guard in the left operand when true.
@@ -16178,7 +16178,7 @@ function foo7(x: number | string | boolean) {
       [],
     );
   });
-  test("typeGuardsInRightOperandOfOrOrOperator", async () => {
+  test('typeGuardsInRightOperandOfOrOrOperator', async () => {
     await expectPass(
       `// In the right operand of a || operation, 
 // the type of a variable or parameter is narrowed by any type guard in the left operand when false, 
@@ -16229,7 +16229,7 @@ function foo7(x: number | string | boolean) {
       [],
     );
   });
-  test("typeGuardsInWhileStatement", async () => {
+  test('typeGuardsInWhileStatement', async () => {
     await expectPass(
       `let cond: boolean;
 function a(x: string | number) {
@@ -16258,7 +16258,7 @@ function c(x: string | number) {
       [],
     );
   });
-  test("typeGuardsObjectMethods", async () => {
+  test('typeGuardsObjectMethods', async () => {
     await expectPass(
       `
 // Note that type guards affect types of variables and parameters only and 
@@ -16313,7 +16313,7 @@ strOrNum = typeof obj1.prop === "string" && obj1.prop; `,
       [],
     );
   });
-  test("typeGuardsOnClassProperty", async () => {
+  test('typeGuardsOnClassProperty', async () => {
     await expectPass(
       `// @target: es2015
 // Note that type guards affect types of variables and parameters only and 
@@ -16347,7 +16347,7 @@ if (typeof prop1 === "string" && prop1.toLocaleLowerCase()) { }`,
       [],
     );
   });
-  test("typeGuardsWithAny", async () => {
+  test('typeGuardsWithAny', async () => {
     await expectPass(
       `var x: any = { p: 0 };
 
@@ -16389,7 +16389,7 @@ else {
       [],
     );
   });
-  test("typeGuardsWithInstanceOf", async () => {
+  test('typeGuardsWithInstanceOf', async () => {
     await expectPass(
       `// @target: es2015
 
@@ -16437,7 +16437,7 @@ function foo() {
       [],
     );
   });
-  test("typeGuardsWithInstanceOfByConstructorSignature", async () => {
+  test('typeGuardsWithInstanceOfByConstructorSignature', async () => {
     await expectPass(
       `interface AConstructor {
     new (): A;
@@ -16643,7 +16643,7 @@ if (obj18 instanceof Function) { // can't narrow type from 'any' to 'Function'
       [],
     );
   });
-  test("typeGuardsWithInstanceOfBySymbolHasInstance", async () => {
+  test('typeGuardsWithInstanceOfBySymbolHasInstance', async () => {
     // tsc type-check error only — parse level 통과 ([Symbol.hasInstance] computed method). (#1767)
     await expectPass(
       `
@@ -16861,7 +16861,7 @@ if (obj18 instanceof Function) { // can't narrow type from 'any' to 'Function'
       [],
     );
   });
-  test("typeGuardTautologicalConsistiency", async () => {
+  test('typeGuardTautologicalConsistiency', async () => {
     await expectPass(
       `let stringOrNumber: string | number;
 
@@ -16878,7 +16878,7 @@ if (typeof stringOrNumber === "number" && typeof stringOrNumber !== "number") {
       [],
     );
   });
-  test("typeGuardTypeOfUndefined", async () => {
+  test('typeGuardTypeOfUndefined', async () => {
     await expectPass(
       `// undefined type guard adds no new type information
 function test1(a: any) {
@@ -17068,7 +17068,7 @@ function test16(a: boolean | number | void) {
       [],
     );
   });
-  test("TypeGuardWithArrayUnion", async () => {
+  test('TypeGuardWithArrayUnion', async () => {
     await expectPass(
       `class Message {
     value: string;
@@ -17083,7 +17083,7 @@ function saySize(message: Message | Message[]) {
       [],
     );
   });
-  test("TypeGuardWithEnumUnion", async () => {
+  test('TypeGuardWithEnumUnion', async () => {
     await expectPass(
       `enum Color { R, G, B }
 
@@ -17124,7 +17124,7 @@ function f2(x: Color | string | string[]) {
       [],
     );
   });
-  test("typePredicateASI", async () => {
+  test('typePredicateASI', async () => {
     await expectPass(
       `interface I {
     foo(callback: (a: any, b: any) => void): I
@@ -17133,21 +17133,21 @@ function f2(x: Color | string | string[]) {
       [],
     );
   });
-  test("typePredicateOnVariableDeclaration01", async () => {
+  test('typePredicateOnVariableDeclaration01', async () => {
     await expectError(
       `
 var x: this is string;`,
       [],
     );
   });
-  test("typePredicateOnVariableDeclaration02", async () => {
+  test('typePredicateOnVariableDeclaration02', async () => {
     await expectError(
       `
 var y: z is number;`,
       [],
     );
   });
-  test("typeSatisfaction_asConstArrays", async () => {
+  test('typeSatisfaction_asConstArrays', async () => {
     await expectPass(
       `
 // with readonly array
@@ -17158,7 +17158,7 @@ const arr2 = [1, 2, 3] as const satisfies unknown[]`,
       [],
     );
   });
-  test("typeSatisfaction_contextualTyping1", async () => {
+  test('typeSatisfaction_contextualTyping1', async () => {
     await expectPass(
       `type Predicates = { [s: string]: (n: number) => boolean };
 
@@ -17169,7 +17169,7 @@ const p = {
       [],
     );
   });
-  test("typeSatisfaction_contextualTyping2", async () => {
+  test('typeSatisfaction_contextualTyping2', async () => {
     await expectPass(
       `
 let obj: { f(s: string): void } & Record<string, unknown> = {
@@ -17182,7 +17182,7 @@ let obj: { f(s: string): void } & Record<string, unknown> = {
       [],
     );
   });
-  test("typeSatisfaction_contextualTyping3", async () => {
+  test('typeSatisfaction_contextualTyping3', async () => {
     await expectPass(
       `
 // see https://github.com/microsoft/TypeScript/issues/53920#issuecomment-1516616255
@@ -17207,7 +17207,7 @@ fn(32);`,
       [],
     );
   });
-  test("typeSatisfaction_ensureInterfaceImpl", async () => {
+  test('typeSatisfaction_ensureInterfaceImpl', async () => {
     await expectPass(
       `type Movable = {
     move(distance: number): void;
@@ -17223,7 +17223,7 @@ const car = {
       [],
     );
   });
-  test("typeSatisfaction_errorLocations1", async () => {
+  test('typeSatisfaction_errorLocations1', async () => {
     await expectPass(
       `
 const obj1 = { a: 1 };
@@ -17280,14 +17280,14 @@ function fn6(): number {
       [],
     );
   });
-  test("typeSatisfaction_js", async () => {
+  test('typeSatisfaction_js', async () => {
     await expectPass(
       `
 var v = undefined satisfies 1;`,
       [],
     );
   });
-  test("typeSatisfaction_optionalMemberConformance", async () => {
+  test('typeSatisfaction_optionalMemberConformance', async () => {
     await expectPass(
       `type Point2d = { x: number, y: number };
 // Undesirable behavior today with type annotation
@@ -17299,7 +17299,7 @@ let p = a.y;`,
       [],
     );
   });
-  test("typeSatisfaction_propertyNameFulfillment", async () => {
+  test('typeSatisfaction_propertyNameFulfillment', async () => {
     await expectPass(
       `type Keys = 'a' | 'b' | 'c' | 'd';
 
@@ -17317,7 +17317,7 @@ let d = p.d;`,
       [],
     );
   });
-  test("typeSatisfaction_propertyValueConformance1", async () => {
+  test('typeSatisfaction_propertyValueConformance1', async () => {
     await expectPass(
       `
 type Facts = { [key: string]: boolean };
@@ -17346,7 +17346,7 @@ const x2 = {
       [],
     );
   });
-  test("typeSatisfaction_propertyValueConformance2", async () => {
+  test('typeSatisfaction_propertyValueConformance2', async () => {
     await expectPass(
       `
 type Facts = { [key: string]: boolean };
@@ -17375,7 +17375,7 @@ const x2 = {
       [],
     );
   });
-  test("typeSatisfaction_propertyValueConformance3", async () => {
+  test('typeSatisfaction_propertyValueConformance3', async () => {
     await expectPass(
       `export type Color = { r: number, g: number, b: number };
 
@@ -17388,7 +17388,7 @@ export const Palette = {
       [],
     );
   });
-  test("typeSatisfaction_propNameConstraining", async () => {
+  test('typeSatisfaction_propNameConstraining', async () => {
     await expectPass(
       `type Keys = 'a' | 'b' | 'c' | 'd';
 
@@ -17406,14 +17406,14 @@ let d = p.d;`,
       [],
     );
   });
-  test("typeSatisfaction_vacuousIntersectionOfContextualTypes", async () => {
+  test('typeSatisfaction_vacuousIntersectionOfContextualTypes', async () => {
     await expectPass(
       `const a: "baz" = "foo" satisfies "foo" | "bar";
 const b: { xyz: "baz" } = { xyz: "foo" } satisfies { xyz: "foo" | "bar" };`,
       [],
     );
   });
-  test("typeSatisfaction", async () => {
+  test('typeSatisfaction', async () => {
     await expectPass(
       `interface I1 {
     a: number;
@@ -17442,7 +17442,7 @@ let t8 = { a: 'test', b: 'test' } satisfies A;`,
       [],
     );
   });
-  test("typeSatisfactionWithDefaultExport", async () => {
+  test('typeSatisfactionWithDefaultExport', async () => {
     await expectPass(
       `
 interface Foo {
@@ -17457,7 +17457,7 @@ export default { a: 1 } satisfies Foo;`,
       [],
     );
   });
-  test("bitwiseNotOperatorInvalidOperations", async () => {
+  test('bitwiseNotOperatorInvalidOperations', async () => {
     await expectError(
       `// Unary operator ~
 var q;
@@ -17473,7 +17473,7 @@ var b =~;`,
       [],
     );
   });
-  test("bitwiseNotOperatorWithAnyOtherType", async () => {
+  test('bitwiseNotOperatorWithAnyOtherType', async () => {
     await expectPass(
       `
 // ~ operator on any type
@@ -17541,7 +17541,7 @@ var ResultIsNumber20 = ~~~(ANY + ANY1);
       [],
     );
   });
-  test("bitwiseNotOperatorWithBooleanType", async () => {
+  test('bitwiseNotOperatorWithBooleanType', async () => {
     await expectPass(
       `
 // ~ operator on boolean type
@@ -17585,7 +17585,7 @@ var ResultIsNumber8 = ~~BOOLEAN;
       [],
     );
   });
-  test("bitwiseNotOperatorWithEnumType", async () => {
+  test('bitwiseNotOperatorWithEnumType', async () => {
     await expectPass(
       `
 // ~ operator on enum type
@@ -17609,7 +17609,7 @@ var ResultIsNumber4 = ~~~(ENUM1["A"] + ENUM1.B);
       [],
     );
   });
-  test("bitwiseNotOperatorWithNumberType", async () => {
+  test('bitwiseNotOperatorWithNumberType', async () => {
     await expectPass(
       `
 // ~ operator on number type
@@ -17659,7 +17659,7 @@ var ResultIsNumber13 = ~~~(NUMBER + NUMBER);
       [],
     );
   });
-  test("bitwiseNotOperatorWithStringType", async () => {
+  test('bitwiseNotOperatorWithStringType', async () => {
     await expectPass(
       `
 // ~ operator on string type
@@ -17708,7 +17708,7 @@ var ResultIsNumber14 = ~~~(STRING + STRING);
       [],
     );
   });
-  test("decrementOperatorWithAnyOtherType", async () => {
+  test('decrementOperatorWithAnyOtherType', async () => {
     await expectPass(
       `// -- operator on any type
 
@@ -17761,7 +17761,7 @@ M.n--;`,
       [],
     );
   });
-  test("decrementOperatorWithAnyOtherTypeInvalidOperations", async () => {
+  test('decrementOperatorWithAnyOtherTypeInvalidOperations', async () => {
     await expectError(
       `// -- operator on any type
 declare var ANY1: any;
@@ -17838,7 +17838,7 @@ ANY2--;
       [],
     );
   });
-  test("decrementOperatorWithEnumType", async () => {
+  test('decrementOperatorWithEnumType', async () => {
     await expectPass(
       `// -- operator on enum type
 
@@ -17855,7 +17855,7 @@ ENUM1[A]--;`,
       [],
     );
   });
-  test("decrementOperatorWithEnumTypeInvalidOperations", async () => {
+  test('decrementOperatorWithEnumTypeInvalidOperations', async () => {
     await expectError(
       `// -- operator on enum type
 
@@ -17882,7 +17882,7 @@ ENUM1--;`,
       [],
     );
   });
-  test("decrementOperatorWithNumberType", async () => {
+  test('decrementOperatorWithNumberType', async () => {
     await expectPass(
       `// -- operator on number type
 var NUMBER: number;
@@ -17926,7 +17926,7 @@ objA.a--, M.n--;`,
       [],
     );
   });
-  test("decrementOperatorWithNumberTypeInvalidOperations", async () => {
+  test('decrementOperatorWithNumberTypeInvalidOperations', async () => {
     await expectError(
       `// -- operator on number type
 declare var NUMBER: number;
@@ -17977,7 +17977,7 @@ foo()--;`,
       [],
     );
   });
-  test("decrementOperatorWithUnsupportedBooleanType", async () => {
+  test('decrementOperatorWithUnsupportedBooleanType', async () => {
     await expectError(
       `// -- operator on boolean type
 declare var BOOLEAN: boolean;
@@ -18036,7 +18036,7 @@ objA.a--, M.n--;`,
       [],
     );
   });
-  test("decrementOperatorWithUnsupportedStringType", async () => {
+  test('decrementOperatorWithUnsupportedStringType', async () => {
     await expectError(
       `// -- operator on string type
 declare var STRING: string;
@@ -18106,7 +18106,7 @@ objA.a--, M.n--;`,
       [],
     );
   });
-  test("deleteOperatorInvalidOperations", async () => {
+  test('deleteOperatorInvalidOperations', async () => {
     await expectError(
       `// Unary operator delete
 var ANY;
@@ -18126,7 +18126,7 @@ class testADelx {
       [],
     );
   });
-  test("deleteOperatorWithAnyOtherType", async () => {
+  test('deleteOperatorWithAnyOtherType', async () => {
     await expectError(
       `// delete  operator on any type
 
@@ -18192,7 +18192,7 @@ delete M.n;`,
       [],
     );
   });
-  test("deleteOperatorWithBooleanType", async () => {
+  test('deleteOperatorWithBooleanType', async () => {
     await expectError(
       `// delete  operator on boolean type
 declare var BOOLEAN: boolean;
@@ -18235,7 +18235,7 @@ delete M.n;`,
       [],
     );
   });
-  test("deleteOperatorWithEnumType", async () => {
+  test('deleteOperatorWithEnumType', async () => {
     await expectError(
       `// delete  operator on enum type
 
@@ -18262,7 +18262,7 @@ delete ENUM, ENUM1;`,
       [],
     );
   });
-  test("deleteOperatorWithNumberType", async () => {
+  test('deleteOperatorWithNumberType', async () => {
     await expectError(
       `// delete  operator on number type
 declare var NUMBER: number;
@@ -18312,7 +18312,7 @@ delete objA.a, M.n;`,
       [],
     );
   });
-  test("deleteOperatorWithStringType", async () => {
+  test('deleteOperatorWithStringType', async () => {
     await expectError(
       `// delete  operator on string type
 declare var STRING: string;
@@ -18361,7 +18361,7 @@ delete objA.a,M.n;`,
       [],
     );
   });
-  test("incrementOperatorWithAnyOtherType", async () => {
+  test('incrementOperatorWithAnyOtherType', async () => {
     await expectPass(
       `// ++ operator on any type
 
@@ -18414,7 +18414,7 @@ M.n++;`,
       [],
     );
   });
-  test("incrementOperatorWithAnyOtherTypeInvalidOperations", async () => {
+  test('incrementOperatorWithAnyOtherTypeInvalidOperations', async () => {
     await expectError(
       `// ++ operator on any type
 var ANY1: any;
@@ -18488,7 +18488,7 @@ ANY2++;
       [],
     );
   });
-  test("incrementOperatorWithEnumType", async () => {
+  test('incrementOperatorWithEnumType', async () => {
     await expectPass(
       `// ++ operator on enum type
 
@@ -18505,7 +18505,7 @@ ENUM1.B++;`,
       [],
     );
   });
-  test("incrementOperatorWithEnumTypeInvalidOperations", async () => {
+  test('incrementOperatorWithEnumTypeInvalidOperations', async () => {
     await expectError(
       `// ++ operator on enum type
 
@@ -18532,7 +18532,7 @@ ENUM1++;`,
       [],
     );
   });
-  test("incrementOperatorWithNumberType", async () => {
+  test('incrementOperatorWithNumberType', async () => {
     await expectPass(
       `// ++ operator on number type
 var NUMBER: number;
@@ -18576,7 +18576,7 @@ objA.a++, M.n++;`,
       [],
     );
   });
-  test("incrementOperatorWithNumberTypeInvalidOperations", async () => {
+  test('incrementOperatorWithNumberTypeInvalidOperations', async () => {
     await expectError(
       `// ++ operator on number type
 declare var NUMBER: number;
@@ -18627,7 +18627,7 @@ foo()++;`,
       [],
     );
   });
-  test("incrementOperatorWithUnsupportedBooleanType", async () => {
+  test('incrementOperatorWithUnsupportedBooleanType', async () => {
     await expectError(
       `// ++ operator on boolean type
 declare var BOOLEAN: boolean;
@@ -18686,7 +18686,7 @@ objA.a++, M.n++;`,
       [],
     );
   });
-  test("incrementOperatorWithUnsupportedStringType", async () => {
+  test('incrementOperatorWithUnsupportedStringType', async () => {
     await expectError(
       `// ++ operator on string type
 declare var STRING: string;
@@ -18756,7 +18756,7 @@ objA.a++, M.n++;`,
       [],
     );
   });
-  test("logicalNotOperatorInvalidOperations", async () => {
+  test('logicalNotOperatorInvalidOperations', async () => {
     await expectError(
       `// Unary operator !
 declare var b: number;
@@ -18772,7 +18772,7 @@ var BOOLEAN3 =!;`,
       [],
     );
   });
-  test("logicalNotOperatorWithAnyOtherType", async () => {
+  test('logicalNotOperatorWithAnyOtherType', async () => {
     await expectPass(
       `// ! operator on any type
 
@@ -18836,7 +18836,7 @@ var ResultIsBoolean21 = !!!(ANY + ANY1);
       [],
     );
   });
-  test("logicalNotOperatorWithBooleanType", async () => {
+  test('logicalNotOperatorWithBooleanType', async () => {
     await expectPass(
       `// ! operator on boolean type
 declare var BOOLEAN: boolean;
@@ -18879,7 +18879,7 @@ var ResultIsBoolean = !!BOOLEAN;
       [],
     );
   });
-  test("logicalNotOperatorWithEnumType", async () => {
+  test('logicalNotOperatorWithEnumType', async () => {
     await expectPass(
       `// ! operator on enum type
 
@@ -18905,7 +18905,7 @@ var ResultIsBoolean5 = !!!(ENUM["B"] + ENUM.C);
       [],
     );
   });
-  test("logicalNotOperatorWithNumberType", async () => {
+  test('logicalNotOperatorWithNumberType', async () => {
     await expectPass(
       `// ! operator on number type
 declare var NUMBER: number;
@@ -18955,7 +18955,7 @@ var ResultIsBoolean13 = !!!(NUMBER + NUMBER);
       [],
     );
   });
-  test("logicalNotOperatorWithStringType", async () => {
+  test('logicalNotOperatorWithStringType', async () => {
     await expectPass(
       `// ! operator on string type
 declare var STRING: string;
@@ -19004,7 +19004,7 @@ var ResultIsBoolean14 = !!!(STRING + STRING);
       [],
     );
   });
-  test("negateOperatorInvalidOperations", async () => {
+  test('negateOperatorInvalidOperations', async () => {
     await expectError(
       `// Unary operator -
 
@@ -19021,7 +19021,7 @@ var NUMBER =-;`,
       [],
     );
   });
-  test("negateOperatorWithAnyOtherType", async () => {
+  test('negateOperatorWithAnyOtherType', async () => {
     await expectPass(
       `// - operator on any type
 
@@ -19079,7 +19079,7 @@ var ResultIsNumber15 = -(ANY - ANY1);
       [],
     );
   });
-  test("negateOperatorWithBooleanType", async () => {
+  test('negateOperatorWithBooleanType', async () => {
     await expectPass(
       `// - operator on boolean type
 declare var BOOLEAN: boolean;
@@ -19119,7 +19119,7 @@ var ResultIsNumber7 = -A.foo();
       [],
     );
   });
-  test("negateOperatorWithEnumType", async () => {
+  test('negateOperatorWithEnumType', async () => {
     await expectPass(
       `// - operator on enum type
 
@@ -19141,7 +19141,7 @@ var ResultIsNumber3 = -(ENUM1.B + ENUM1[""]);
       [],
     );
   });
-  test("negateOperatorWithNumberType", async () => {
+  test('negateOperatorWithNumberType', async () => {
     await expectPass(
       `// - operator on number type
 declare var NUMBER: number;
@@ -19187,7 +19187,7 @@ var ResultIsNumber11 = -(NUMBER - NUMBER);
       [],
     );
   });
-  test("negateOperatorWithStringType", async () => {
+  test('negateOperatorWithStringType', async () => {
     await expectPass(
       `// - operator on string type
 declare var STRING: string;
@@ -19232,7 +19232,7 @@ var ResultIsNumber12 = -STRING.charAt(0);
       [],
     );
   });
-  test("plusOperatorInvalidOperations", async () => {
+  test('plusOperatorInvalidOperations', async () => {
     await expectError(
       `// Unary operator +
 var b;
@@ -19245,7 +19245,7 @@ var result2 =+;`,
       [],
     );
   });
-  test("plusOperatorWithAnyOtherType", async () => {
+  test('plusOperatorWithAnyOtherType', async () => {
     await expectPass(
       `// + operator on any type
 
@@ -19306,7 +19306,7 @@ var ResultIsNumber19 = +(undefined + undefined);
       [],
     );
   });
-  test("plusOperatorWithBooleanType", async () => {
+  test('plusOperatorWithBooleanType', async () => {
     await expectPass(
       `// + operator on boolean type
 declare var BOOLEAN: boolean;
@@ -19346,7 +19346,7 @@ var ResultIsNumber7 = +A.foo();
       [],
     );
   });
-  test("plusOperatorWithEnumType", async () => {
+  test('plusOperatorWithEnumType', async () => {
     await expectPass(
       `// + operator on enum type
 
@@ -19369,7 +19369,7 @@ var ResultIsNumber4 = +(ENUM[0] + ENUM1["B"]);
       [],
     );
   });
-  test("plusOperatorWithNumberType", async () => {
+  test('plusOperatorWithNumberType', async () => {
     await expectPass(
       `// + operator on number type
 declare var NUMBER: number;
@@ -19415,7 +19415,7 @@ var ResultIsNumber11 = +(NUMBER + NUMBER);
       [],
     );
   });
-  test("plusOperatorWithStringType", async () => {
+  test('plusOperatorWithStringType', async () => {
     await expectPass(
       `// + operator on string type
 declare var STRING: string;
@@ -19460,7 +19460,7 @@ var ResultIsNumber12 = +STRING.charAt(0);
       [],
     );
   });
-  test("typeofOperatorInvalidOperations", async () => {
+  test('typeofOperatorInvalidOperations', async () => {
     await expectError(
       `// Unary operator typeof
 
@@ -19472,7 +19472,7 @@ var ANY1 = typeof ;`,
       [],
     );
   });
-  test("typeofOperatorWithAnyOtherType", async () => {
+  test('typeofOperatorWithAnyOtherType', async () => {
     await expectPass(
       `// typeof  operator on any type
 
@@ -19551,7 +19551,7 @@ z: typeof obj1.x;`,
       [],
     );
   });
-  test("typeofOperatorWithBooleanType", async () => {
+  test('typeofOperatorWithBooleanType', async () => {
     await expectPass(
       `
 // typeof  operator on boolean type
@@ -19607,7 +19607,7 @@ z: typeof M.n;`,
       [],
     );
   });
-  test("typeofOperatorWithEnumType", async () => {
+  test('typeofOperatorWithEnumType', async () => {
     await expectPass(
       `
 // typeof  operator on enum type
@@ -19640,7 +19640,7 @@ z: typeof ENUM1;`,
       [],
     );
   });
-  test("typeofOperatorWithNumberType", async () => {
+  test('typeofOperatorWithNumberType', async () => {
     await expectPass(
       `// typeof  operator on number type
 declare var NUMBER: number;
@@ -19703,7 +19703,7 @@ z: typeof M.n;`,
       [],
     );
   });
-  test("typeofOperatorWithStringType", async () => {
+  test('typeofOperatorWithStringType', async () => {
     await expectPass(
       `// typeof  operator on string type
 declare var STRING: string;
@@ -19765,7 +19765,7 @@ z: typeof M.n;`,
       [],
     );
   });
-  test("voidOperatorInvalidOperations", async () => {
+  test('voidOperatorInvalidOperations', async () => {
     await expectError(
       `// Unary operator void
 
@@ -19777,7 +19777,7 @@ var ANY1 = void ;`,
       [],
     );
   });
-  test("voidOperatorWithAnyOtherType", async () => {
+  test('voidOperatorWithAnyOtherType', async () => {
     await expectPass(
       `// void  operator on any type
 
@@ -19842,7 +19842,7 @@ void M.n;`,
       [],
     );
   });
-  test("voidOperatorWithBooleanType", async () => {
+  test('voidOperatorWithBooleanType', async () => {
     await expectPass(
       `// void  operator on boolean type
 var BOOLEAN: boolean;
@@ -19885,7 +19885,7 @@ void M.n;`,
       [],
     );
   });
-  test("voidOperatorWithEnumType", async () => {
+  test('voidOperatorWithEnumType', async () => {
     await expectPass(
       `// void  operator on enum type
 
@@ -19912,7 +19912,7 @@ void ENUM, ENUM1;`,
       [],
     );
   });
-  test("voidOperatorWithNumberType", async () => {
+  test('voidOperatorWithNumberType', async () => {
     await expectPass(
       `// void  operator on number type
 var NUMBER: number;
@@ -19962,7 +19962,7 @@ void objA.a, M.n;`,
       [],
     );
   });
-  test("voidOperatorWithStringType", async () => {
+  test('voidOperatorWithStringType', async () => {
     await expectPass(
       `// void  operator on string type
 var STRING: string;
@@ -20011,7 +20011,7 @@ void objA.a,M.n;`,
       [],
     );
   });
-  test("assignments", async () => {
+  test('assignments', async () => {
     await expectPass(
       `// In this file:
 //  Assign to a module
@@ -20047,7 +20047,7 @@ I = null; // Error`,
       [],
     );
   });
-  test("assignmentToParenthesizedIdentifiers", async () => {
+  test('assignmentToParenthesizedIdentifiers', async () => {
     await expectPass(
       `var x: number;
 x = 3; // OK
