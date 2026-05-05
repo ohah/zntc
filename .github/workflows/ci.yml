@@ -119,8 +119,11 @@ jobs:
         if: runner.os != 'Windows'
         run: zig build napi
 
-      - name: Build JS wrapper
-        run: cd packages/core && bun build index.ts --outdir dist --format esm --target node
+      # JS + dts 둘 다 emit. dts 는 web/server 의 `tsc --emitDeclarationOnly`
+      # 가 `import { prepareAppDevSync } from "@zts/core"` 의 declaration 을
+      # resolve 할 때 필요 (#2539 PR #6d 후 web 이 core 를 typed import).
+      - name: Build JS wrapper + dts
+        run: cd packages/core && bun run build:js && bun run build:dts
 
       - name: Copy .node to package
         run: cp zig-out/lib/zts.node packages/core/zts.node 2>/dev/null || true
