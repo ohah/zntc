@@ -10,7 +10,7 @@
     "ios:release": "react-native run-ios --mode Release",
     "start": "react-native start",
     "start:zts": "zts dev --platform=react-native --rn-platform=ios index.js",
-    "build:zts:core": "bun run --cwd ../../packages/core build",
+    "build:zts:core": "bun run --cwd ../../packages/core build && bun run --cwd ../../packages/server build && bun run --cwd ../../packages/react-native build",
     "bundle:zts:ios": "zts bundle index.js --platform=react-native --rn-platform=ios -o ios/main.jsbundle",
     "bundle:zts:android": "zts bundle index.js --platform=react-native --rn-platform=android -o android/app/src/main/assets/index.android.bundle",
     "bundle:metro:ios": "react-native bundle --platform ios --dev false --entry-file index.js --bundle-output ios/main.jsbundle --assets-dest ios",
