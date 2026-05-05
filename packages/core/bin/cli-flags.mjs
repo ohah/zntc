@@ -103,6 +103,8 @@ export const FLAG_REGISTRY = [
     forms: ["equal"],
   },
   { kind: "string", flag: "--rn-platform", target: "rnPlatform", forms: ["equal"] },
+  // #2540 PR #7 — RN preset 의 projectRoot. 기본 cwd, 사용자 monorepo root 지정 시 사용.
+  { kind: "string", flag: "--rn-project-root", target: "rnProjectRoot", forms: ["equal"] },
   { kind: "string", flag: "--source-root", target: "sourceRoot", forms: ["equal"] },
   // #2159 — `--output-exports=auto|named|default|none` (Rollup output.exports 호환).
   { kind: "string", flag: "--output-exports", target: "outputExports", forms: ["equal"] },
