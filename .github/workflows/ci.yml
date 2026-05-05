@@ -147,6 +147,16 @@ jobs:
         continue-on-error: true
         run: bun scripts/napi-bundler-bug-check.ts
 
+      # vite-plugin-zts 가 dev server 영역 (HMR overlay / postcss / sass /
+      # lightningcss / @zts/web / @zts/server) 을 import / inline 하지 않는지
+      # 검증 — Vite 의 자체 dev server 가 처리하므로 이중 결합되면 안 됨 (#2539).
+      - name: vite-plugin-zts 의존 격리 검증
+        run: |
+          if grep -rE "APP_DEV_HMR_CLIENT|lightningcss|postcss-load-config|@zts/web|@zts/server" packages/vite-plugin-zts/src/; then
+            echo "::error::vite-plugin-zts 가 dev server 영역 (web/server/lightningcss/postcss-load-config) 을 참조함"
+            exit 1
+          fi
+
   wasm:
     name: WASM Build & Test
     runs-on: ubuntu-latest
