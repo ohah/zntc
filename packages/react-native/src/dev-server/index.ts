@@ -47,6 +47,11 @@ export {
 export { handleSymbolicateRequest, isSymbolicateRoute } from "./routes/symbolicate.ts";
 export { postProcessSourceMap } from "./sourcemap.ts";
 export {
+  setupTerminalActions,
+  type TerminalActionsCallbacks,
+  type TerminalActionsOptions,
+} from "./terminal-actions.ts";
+export {
   applyCustomizeFrame,
   createSourceMapConsumer,
   extractCodeFrame,
