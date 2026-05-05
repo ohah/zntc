@@ -1088,7 +1088,8 @@ function rewriteSassReferences(sourceFiles) {
   for (const source of sourceFiles) {
     const input = readFileSync(source, "utf8");
     if (!input.includes(".scss") && !input.includes(".sass")) continue;
-    const toExt = source.endsWith(".html") ? ".css" : ".css.js";
+    // .html / .htm + case-insensitive — rewriteCssModuleReferences 와 일관.
+    const toExt = /\.html?$/i.test(source) ? ".css" : ".css.js";
     const output = input.replace(
       pattern,
       (_match, quote, spec, suffix = "") =>
@@ -1147,6 +1148,13 @@ function transformCssPreprocessors(root, files, sourceFiles, logLevel, opts = {}
   return files.map(cssPreprocessorOutputPath);
 }
 
+// 다음 영역 (isCssModuleFile / cssModuleGeneratedCssPath / cssModuleProxyPath /
+// cssModuleLocalName / scanCssModuleClassTokens / collectCssModuleClasses /
+// rewriteCssModuleClasses / isValidExportName + CSS_MODULE_RESERVED_EXPORTS /
+// buildCssModuleProxy / rewriteCssModuleReferences / transformCssModules) 은
+// packages/web/src/style/css-modules.ts 에 동등 사본이 있다. PR #6 (cut over)
+// 시점에 본 정의를 import 로 redirect 후 제거 — 그 전까지 logic 변경 시 양쪽을
+// 동시에 수정 (#2539).
 function isCssModuleFile(path) {
   return basename(path).endsWith(".module.css");
 }
@@ -1364,11 +1372,32 @@ function transformCssModules(root, moduleFiles, styleSources, logLevel, opts = {
 
   for (const file of targets) {
     const css = readFileSync(file, "utf8");
+    // 단일 scan 으로 token + mapping 동시 생성 — collect + rewrite 의 중복 scan 회피.
+    const tokens = scanCssModuleClassTokens(css);
+    const rel = relative(root, file).replaceAll(sep, "/");
+    const fileName = basename(file, ".module.css").replace(/[^a-zA-Z0-9_]/g, "_");
     const mapping = {};
-    for (const local of collectCssModuleClasses(css)) {
-      mapping[local] = cssModuleLocalName(root, file, local);
+    for (const token of tokens) {
+      if (!mapping[token.local]) {
+        // sha1 base64url slice(8): #2539 (web/css-modules.ts) 와 동일 스킴.
+        const safeLocal = token.local.replace(/[^a-zA-Z0-9_]/g, "_");
+        const hash = createHash("sha1")
+          .update(`${rel}:${token.local}`)
+          .digest("base64url")
+          .slice(0, 8);
+        mapping[token.local] = `${fileName}_${safeLocal}__${hash}`;
+      }
     }
-    const rewrittenCss = rewriteCssModuleClasses(css, mapping);
+    let rewrittenCss = "";
+    let offset = 0;
+    for (const token of tokens) {
+      const scoped = mapping[token.local];
+      if (!scoped) continue;
+      rewrittenCss += css.slice(offset, token.start);
+      rewrittenCss += `.${scoped}`;
+      offset = token.end;
+    }
+    rewrittenCss += css.slice(offset);
     const generatedCssPath = cssModuleGeneratedCssPath(file);
     writeFileSync(generatedCssPath, rewrittenCss);
     writeFileSync(cssModuleProxyPath(file), buildCssModuleProxy(generatedCssPath, mapping));
