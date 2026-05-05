@@ -1,8 +1,8 @@
-# @zts/server (internal)
+# @zts/server
 
-ZTS 의 internal server layer. **private 패키지** (`"private": true`) — npm 에 publish 되지 않습니다.
+ZTS 의 internal server layer. **`@zts/web` / `@zts/react-native` 가 의존성으로 사용** — 사용자가 직접 install 할 일 없음.
 
-`@zts/web` / `@zts/react-native` 빌드 시 dist 에 자동 inline 되어, 외부에 별도 패키지로 노출되지 않습니다.
+> 공개 npm 패키지지만 의도는 internal 라이브러리. ZTS bundler 가 workspace dep auto-inline 을 지원하기 전까지의 임시 노출 — 후속에 다시 private 로 전환 예정 (#2539).
 
 ## 역할
 

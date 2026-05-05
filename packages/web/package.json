@@ -17,7 +17,7 @@
     }
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core --external lightningcss --external postcss --external postcss-load-config --external sass",
+    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core --external @zts/server --external lightningcss --external postcss --external postcss-load-config --external sass",
     "build:dts": "bun x tsc --emitDeclarationOnly",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test"
@@ -25,5 +25,8 @@
   "dependencies": {
     "@zts/core": "workspace:*",
     "@zts/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2"
   }
 }

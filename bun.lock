@@ -9,6 +9,7 @@
         "@emotion/react": "^11.14.0",
         "@tailwindcss/postcss": "^4.2.2",
         "@tanstack/react-query": "^5",
+        "@zts/web": "workspace:*",
         "clsx": "^2.1.1",
         "date-fns": "^4.1.0",
         "hermes-engine-cli": "^0.12.0",
@@ -105,6 +106,9 @@
       "dependencies": {
         "@zts/core": "workspace:*",
       },
+      "devDependencies": {
+        "@types/node": "^25.5.2",
+      },
     },
     "packages/vite-plugin-zts": {
       "name": "vite-plugin-zts",
@@ -126,6 +130,9 @@
       "dependencies": {
         "@zts/core": "workspace:*",
         "@zts/server": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^25.5.2",
       },
     },
     "tests/benchmark": {

@@ -1,8 +1,7 @@
 {
   "name": "@zts/server",
   "version": "0.1.0",
-  "private": true,
-  "description": "ZTS internal server layer — HMR protocol, WS frame, watcher, TLS",
+  "description": "ZTS internal server layer (HMR protocol, WS frame, watcher, TLS) — @zts/web · @zts/react-native 가 dep 으로 사용. 직접 install 비추",
   "license": "MIT",
   "files": [
     "dist/",
@@ -18,12 +17,13 @@
     }
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core",
-    "build:dts": "bun x tsc --emitDeclarationOnly",
-    "build": "bun run build:bundle && bun run build:dts",
+    "build": "bun x tsc",
     "test": "bun test"
   },
   "dependencies": {
     "@zts/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2"
   }
 }
