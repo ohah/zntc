@@ -37,6 +37,7 @@ export {
   isAssetRoute,
   resolveAssetPath,
 } from "./routes/assets.ts";
+export { handleIndexPage, isIndexRoute } from "./routes/index-page.ts";
 export {
   handleBundleRequest,
   handleHmrMapRequest,
