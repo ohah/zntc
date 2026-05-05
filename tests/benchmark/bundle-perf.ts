@@ -30,12 +30,7 @@ import {
   getCommit,
   parseProfileJson,
 } from "./_runner";
-import {
-  computeMetricStats,
-  formatMetric,
-  type JsonStats,
-  toJsonStats,
-} from "./stats";
+import { computeMetricStats, formatMetric, type JsonStats, toJsonStats } from "./stats";
 
 const WARMUP = 5;
 const ITERATIONS = 20;
@@ -406,7 +401,9 @@ function parseArgs(argv: string[]): CliArgs {
 
 async function main(cli: CliArgs) {
   buildBin();
-  const available = TOOL_ORDER.filter((tool) => tool === "zts" || findNodeModulesBin(tool)).join(",");
+  const available = TOOL_ORDER.filter((tool) => tool === "zts" || findNodeModulesBin(tool)).join(
+    ",",
+  );
   console.log(`[bundle-perf] zts ${getCommit()} | warmup=${WARMUP} iter=${ITERATIONS}`);
   console.log(`[bundle-perf] available tools: ${available}`);
   console.log();

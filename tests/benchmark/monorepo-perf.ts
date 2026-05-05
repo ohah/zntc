@@ -19,12 +19,7 @@ import {
   parsePositiveInt,
 } from "./_runner";
 import { makeSyntheticMonorepo, parseProfileOutput, type ProfileRun } from "./monorepo-fixture";
-import {
-  computeMetricStats,
-  formatMetric,
-  type JsonStats,
-  toJsonStats,
-} from "./stats";
+import { computeMetricStats, formatMetric, type JsonStats, toJsonStats } from "./stats";
 
 const WARMUP = 2;
 const ITERATIONS = 5;
