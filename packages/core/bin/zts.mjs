@@ -988,6 +988,10 @@ function cleanupPostcssTempRoot(tempRoot) {
   rmSync(tempRoot, { recursive: true, force: true });
 }
 
+// 다음 2 함수 (requireFromAppOrCli / collectAppFiles) 는 packages/web/src/style/
+// loader.ts 에 동등 사본이 있다 (시그니처는 cli context 제거 — fallbackRequire 인자).
+// PR #5e (css-modules 추출) 시점에 본 정의를 web 으로 redirect 후 제거 — 그 전까지
+// logic 변경 시 양쪽을 동시에 수정 (#2539).
 function requireFromAppOrCli(requireFromRoot, specifier) {
   try {
     return requireFromRoot(specifier);
@@ -998,20 +1002,32 @@ function requireFromAppOrCli(requireFromRoot, specifier) {
   }
 }
 
-function collectAppFiles(dir, { skipDir = null, predicate = () => true } = {}) {
-  if (!existsSync(dir)) return [];
-  const skipResolved = skipDir ? resolve(skipDir) : null;
-  const files = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+function readEntriesOrEmpty(dir) {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return [];
+    throw err;
+  }
+}
+
+function walkAppFiles(dir, skipResolved, predicate, out) {
+  for (const entry of readEntriesOrEmpty(dir)) {
     if (entry.name === "node_modules" || entry.name === ".git") continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (skipResolved && resolve(path) === skipResolved) continue;
-      files.push(...collectAppFiles(path, { skipDir, predicate }));
+      walkAppFiles(path, skipResolved, predicate, out);
     } else if (entry.isFile() && predicate(path)) {
-      files.push(path);
+      out.push(path);
     }
   }
+}
+
+function collectAppFiles(dir, { skipDir = null, predicate = () => true } = {}) {
+  const skipResolved = skipDir ? resolve(skipDir) : null;
+  const files = [];
+  walkAppFiles(dir, skipResolved, predicate, files);
   return files;
 }
 
