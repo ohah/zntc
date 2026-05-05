@@ -43,6 +43,27 @@ function url(path: string): string {
   return `http://localhost:${addr.port}${path}`;
 }
 
+describe("createDevHttpServer — index page (`/` `/index.html`)", () => {
+  test("GET / → 200 HTML + bundle/map/HMR link 포함", async () => {
+    const res = await fetch(url("/"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    const body = await res.text();
+    expect(body).toContain("ZTS RN Dev Server");
+    expect(body).toContain("/index.bundle?platform=ios&dev=true");
+    expect(body).toContain("/index.bundle?platform=android&dev=true");
+    expect(body).toContain("/index.bundle.map?platform=ios");
+    // ws:// link 의 port 가 응답에 반영 (port=0 으로 listen 시 actual port 가 다름이라
+    // body 에는 options.port=0 그대로 — caller-set port. dev 시 8081 일 때 정상).
+  });
+
+  test("GET /index.html — alias 동작", async () => {
+    const res = await fetch(url("/index.html"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+  });
+});
+
 describe("createDevHttpServer — base routes", () => {
   test("GET /status → 200 packager-status:running + project-root header", async () => {
     const res = await fetch(url("/status"));

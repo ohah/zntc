@@ -1,12 +1,13 @@
 {
   "name": "zts-example-react-native-expo",
-  "main": "expo-router/entry",
   "version": "1.0.0",
   "private": true,
   "description": "ZTS dev server + bundler example — Expo 55 / RN 0.83",
+  "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
     "start:zts": "zts dev --platform=react-native --rn-platform=ios index.js",
+    "prestart:zts": "bun run build:zts:core",
     "build:zts:core": "bun run --cwd ../../packages/core build && bun run --cwd ../../packages/server build && bun run --cwd ../../packages/react-native build",
     "bundle:zts:ios": "zts bundle index.js --platform=react-native --rn-platform=ios -o dist/main.ios.jsbundle",
     "bundle:zts:android": "zts bundle index.js --platform=react-native --rn-platform=android -o dist/main.android.jsbundle",

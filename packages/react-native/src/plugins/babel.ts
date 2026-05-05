@@ -5,6 +5,7 @@
 // plugin 자체 등록 skip (createBabelPlugin 의 detectCustomPlugins false 분기).
 
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 
 import type { ZtsPlugin } from "@zts/core";
@@ -61,7 +62,10 @@ export function detectCustomPlugins(projectRoot: string): boolean {
   try {
     const configPath = join(projectRoot, "babel.config.js");
     if (!existsSync(configPath)) return false;
-    const config = requireFromCli(configPath) as BabelConfigModule;
+    // project 기준 require — examples/<app>/node_modules 의 babel plugin 을
+    // 정확히 resolve 하기 위해 project 의 package.json 을 ref base 로.
+    const projectRequire = createRequire(`${projectRoot}/package.json`);
+    const config = projectRequire(configPath) as BabelConfigModule;
     const plugins: unknown[] = config?.plugins ?? [];
     return plugins.some((p) => {
       const name = typeof p === "string" ? p : Array.isArray(p) ? (p[0] as string) : "";
@@ -89,10 +93,26 @@ export function createBabelTransformer(
 
   function ensureBabel(): void {
     if (babel) return;
-    babel = requireFromCli("@babel/core") as BabelInstance;
+    // project 기준 require — examples/<app>/node_modules 의 babel plugin 을
+    // 정확히 resolve. fallback 으로 zts CLI require (workspace hoist case).
+    const projectRequire = createRequire(`${projectRoot}/package.json`);
+    function resolvePluginPath(name: string): string {
+      try {
+        return projectRequire.resolve(name);
+      } catch {
+        return requireFromCli.resolve(name);
+      }
+    }
+    babel = (() => {
+      try {
+        return projectRequire("@babel/core") as BabelInstance;
+      } catch {
+        return requireFromCli("@babel/core") as BabelInstance;
+      }
+    })();
 
     const configPath = join(projectRoot, "babel.config.js");
-    const config = requireFromCli(configPath) as BabelConfigModule;
+    const config = projectRequire(configPath) as BabelConfigModule;
     const plugins: unknown[] = config?.plugins ?? [];
 
     const customPlugins: unknown[] = [];
@@ -103,7 +123,7 @@ export function createBabelTransformer(
         if (Array.isArray(plugin)) {
           try {
             customPlugins.push([
-              requireFromCli.resolve(plugin[0] as string),
+              resolvePluginPath(plugin[0] as string),
               ...(plugin.slice(1) as unknown[]),
             ]);
           } catch {
@@ -111,7 +131,7 @@ export function createBabelTransformer(
           }
         } else {
           try {
-            customPlugins.push(requireFromCli.resolve(name));
+            customPlugins.push(resolvePluginPath(name));
           } catch {
             customPlugins.push(name);
           }
