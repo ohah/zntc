@@ -135,6 +135,7 @@ pub const Category = enum {
     shake_fixpoint_bfs_queue,
     shake_fixpoint_bfs_follow_import,
     shake_fixpoint_bfs_seed_export,
+    shake_fixpoint_bfs_seed_export_direct,
     shake_fixpoint_bfs_require_scan,
     shake_fixpoint_bfs_final_mark_exports,
     shake_fixpoint_bfs_enqueue_side_effects,
@@ -744,6 +745,7 @@ test "Category.fromString: dot notation 정규화" {
     try testing.expect(Category.fromString("shake.post.link.finalize") == .shake_post_link_finalize);
     try testing.expect(Category.fromString("shake.fixpoint.bfs") == .shake_fixpoint_bfs);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.follow.import") == .shake_fixpoint_bfs_follow_import);
+    try testing.expect(Category.fromString("shake.fixpoint.bfs.seed.export.direct") == .shake_fixpoint_bfs_seed_export_direct);
     try testing.expect(Category.fromString("shake.fixpoint.bfs.seed.export.resolve") == .shake_fixpoint_bfs_seed_export_resolve);
     try testing.expect(Category.fromString("shake.fixpoint.re.exports.module") == .shake_fixpoint_re_exports_module);
     try testing.expect(Category.fromString("shake.numeric.postpass.build.facts.resolve") == .shake_numeric_postpass_build_facts_resolve);
@@ -763,6 +765,7 @@ test "Category.displayName: underscore → dot 역변환" {
     try testing.expectEqualStrings("shake.post.link.finalize", Category.displayName(.shake_post_link_finalize));
     try testing.expectEqualStrings("shake.fixpoint.bfs", Category.displayName(.shake_fixpoint_bfs));
     try testing.expectEqualStrings("shake.fixpoint.bfs.follow.import", Category.displayName(.shake_fixpoint_bfs_follow_import));
+    try testing.expectEqualStrings("shake.fixpoint.bfs.seed.export.direct", Category.displayName(.shake_fixpoint_bfs_seed_export_direct));
     try testing.expectEqualStrings("shake.fixpoint.bfs.seed.export.resolve", Category.displayName(.shake_fixpoint_bfs_seed_export_resolve));
     try testing.expectEqualStrings("shake.fixpoint.re.exports.module", Category.displayName(.shake_fixpoint_re_exports_module));
     try testing.expectEqualStrings("shake.numeric.postpass.build.facts.resolve", Category.displayName(.shake_numeric_postpass_build_facts_resolve));
@@ -851,6 +854,7 @@ test "addFromCsv: shake parent → 모든 sub-phase 활성" {
     try testing.expect(enabled(.shake_fixpoint));
     try testing.expect(enabled(.shake_fixpoint_bfs));
     try testing.expect(enabled(.shake_fixpoint_bfs_follow_import));
+    try testing.expect(enabled(.shake_fixpoint_bfs_seed_export_direct));
     try testing.expect(enabled(.shake_fixpoint_bfs_seed_export_resolve));
     try testing.expect(enabled(.shake_numeric_postpass));
 }
