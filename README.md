@@ -104,10 +104,18 @@ Vite 어댑터 — `vite-plugin-zts` 가 Vite 의 esbuild transform 을 ZTS 로 
 
 | 패키지 | 역할 |
 |--------|------|
-| `@zts/core` | NAPI .node 바인딩 + Node.js / Bun CLI (`zts` 커맨드) |
+| `@zts/core` | NAPI .node 바인딩 + Node.js / Bun CLI (`zts` 커맨드) + transpile / bundle / lightningcss |
+| `@zts/web` | dev server + HMR overlay + postcss / sass pipeline + dev controller (#2539) |
+| `@zts/server` | private — protocol / WS frame / watcher / HMR channel (web 의 dist 에 inline, 사용자 install 불필요) |
 | `@zts/wasm` | WASM 빌드 (브라우저 playground / Deno / Workers) |
 | `@zts/shared` | core / wasm 공유 타입 (TranspileOptions, Target, compat-engines) |
-| `vite-plugin-zts` | Vite 의 esbuild transform 을 ZTS 로 교체 |
+| `vite-plugin-zts` | Vite 의 esbuild transform 을 ZTS 로 교체 (`@zts/core` 만 사용) |
+
+### Install matrix
+
+- `@zts/core` 단독 — `zts transpile` / `zts bundle` (라이브러리 모드) / WASM 환경
+- `@zts/core` + `@zts/web` — `zts dev` / `zts preview` / `zts build` (app 모드 with postcss / sass / CSS Modules / HMR overlay)
+- `vite-plugin-zts` — Vite 사용자 (Vite 자체 dev server / HMR — `@zts/web` 불필요)
 
 ## References
 

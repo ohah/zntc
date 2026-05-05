@@ -210,17 +210,23 @@ src/
     wyhash.zig              #   wyhash 해시 (콘텐츠 해시 / mangler)
 
 packages/
-  core/                     # @zts/core — C NAPI .node addon + Node CLI (기본 경로)
-    bin/                    #   `zts` CLI 엔트리 (zts.mjs)
+  core/                     # @zts/core — C NAPI .node addon + Node CLI + lightningcss
+    bin/                    #   `zts` CLI 엔트리 (zts.mjs) — dev/preview/build app 시 @zts/web 을 lazy import
     src/                    #   napi_entry.zig + JS 사이드 (config-loader/load-env/workspace 등)
     index.ts                #   JS API (init/transpile/build) — NAPI .node 로드 + 옵션 검증
     dist/                   #   bun build 산출물 (배포용)
+  web/                      # @zts/web — dev server / postcss·sass / HMR overlay (#2539)
+    runtime/                #   APP_DEV_HMR_CLIENT (브라우저 inject 용)
+    src/                    #   inject / dev-controller / style/ (postcss · sass · css-modules · css-parser · loader)
+    dist/                   #   zts self-build (server 가 inline)
+  server/                   # @zts/server — private (npm 미공개, web/RN 공통 protocol/watcher/HMR)
+    src/                    #   protocol (HMR_MSG / 상수) / ws-frame (RFC 6455) / watcher / hmr-channel
+    dist/                   #   zts self-build — web 의 dist 에 자동 inline
   wasm/                     # @zts/wasm — WASM 빌드 (브라우저 playground, Deno/Workers)
     src/wasm_entry.zig      #   transpile only WASM 진입
     src/wasm_bundler_entry.zig  # 번들러 포함 WASM 진입 (wasm32-wasi + threads)
   shared/                   # core/wasm 공유 타입 (TranspileOptions, Target, compat-engines)
-  vite-plugin-zts/          # Vite 플러그인 (esbuild transform → ZTS 교체, @zts/core 기반)
-  plugin/                   # 사용자 플러그인 워크스페이스 (workspace 의존성용)
+  vite-plugin-zts/          # Vite 플러그인 (esbuild transform → ZTS 교체, @zts/core 만 사용)
 
 tests/
   test262/                  # TC39 공식 Test262 (서브모듈, 50,504건)
