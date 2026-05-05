@@ -24,6 +24,16 @@ describe("loadEnv", () => {
     expect(loadEnv("production", dir)).toEqual({});
   });
 
+  test("envDir 가 파일을 가리키면 throw 대신 빈 객체 (ENOTDIR swallow)", () => {
+    // RN dev (#2605) 에서 positional arg 가 entry 파일이라 envDir 가 잘못
+    // 파일 경로가 되는 케이스 회귀 방지. readFileIfExists 의 ENOTDIR 처리.
+    reset();
+    const filePath = join(dir, "index.js");
+    writeFileSync(filePath, "// entry");
+    expect(() => loadEnv("production", filePath)).not.toThrow();
+    expect(loadEnv("production", filePath)).toEqual({});
+  });
+
   test(".env 단일 파일: prefix 일치 키만 노출", () => {
     reset();
     writeFileSync(
