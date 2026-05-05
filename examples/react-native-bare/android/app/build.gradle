@@ -1,0 +1,351 @@
+apply plugin: "com.android.application"
+apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: "com.facebook.react"
+
+/**
+ * This is the configuration block to customize your React Native Android app.
+ * By default you don't need to apply any configuration, just uncomment the lines you need.
+ */
+react {
+    /* Folders */
+    //   The root of your project, i.e. where "package.json" lives. Default is '../..'
+    root = file("../../")
+    //   The folder where the react-native NPM package is. Default is ../../node_modules/react-native
+    // reactNativeDir = file("../../node_modules/react-native")
+    //   The folder where the react-native Codegen package is. Default is ../../node_modules/@react-native/codegen
+    // codegenDir = file("../../node_modules/@react-native/codegen")
+    //   The cli.js file which is the React Native CLI entrypoint. Default is ../../node_modules/react-native/cli.js
+    // cliFile = file("../../node_modules/react-native/cli.js")
+
+    /* Variants */
+    //   The list of variants to that are debuggable. For those we're going to
+    //   skip the bundling of the JS bundle and the assets. By default is just 'debug'.
+    //   If you add flavors like lite, prod, etc. you'll have to list your debuggableVariants.
+    // debuggableVariants = ["liteDebug", "prodDebug"]
+
+    /* Bundling */
+    //   A list containing the node command and its flags. Default is just 'node'.
+    // nodeExecutableAndArgs = ["node"]
+    //
+    //   The command to run when bundling. By default is 'bundle'
+    // bundleCommand = "ram-bundle"
+    //
+    //   The path to the CLI configuration file. Default is empty.
+    // bundleConfig = file(../rn-cli.config.js)
+    //
+    //   The name of the generated asset file containing your JS bundle
+    // bundleAssetName = "MyApplication.android.bundle"
+    //
+    //   The entry file for bundle generation. Default is 'index.android.js' or 'index.js'
+    // entryFile = file("../js/MyApplication.android.js")
+    //
+    //   A list of extra flags to pass to the 'bundle' commands.
+    //   See https://github.com/react-native-community/cli/blob/main/docs/commands.md#bundle
+    // extraPackagerArgs = []
+
+    /* Hermes Commands */
+    //   The hermes compiler command to run. By default it is 'hermesc'
+    //   Windows에서 hermesc 바이너리 경로 확인 및 설정 / Check and set hermesc binary path on Windows
+    //   모노레포 루트의 .bun 디렉토리에서 hermes-compiler 패키지 확인 / Check hermes-compiler package in monorepo root .bun directory
+    def osName = System.getProperty("os.name").toLowerCase()
+    if (osName.contains("windows")) {
+        // Use rootProject to get monorepo root / rootProject를 사용하여 모노레포 루트 가져오기
+        // rootProject.projectDir is android directory (examples/ExampleApp/android)
+        // rootProject.projectDir는 android 디렉토리 (examples/ExampleApp/android)
+        // Go up 3 levels: android -> ExampleApp -> examples -> monorepo root
+        // 3단계 위로: android -> ExampleApp -> examples -> 모노레포 루트
+        def monorepoRoot = rootProject.projectDir.parentFile.parentFile.parentFile
+        def bunHermesPath = new File(monorepoRoot, "node_modules/.bun/hermes-compiler@0.14.0/node_modules/hermes-compiler/hermesc/win64-bin/hermesc.exe")
+        if (bunHermesPath.exists()) {
+            hermesCommand = bunHermesPath.absolutePath
+        } else {
+            // Fallback: try with 2 levels up (if examples/ExampleApp is the root)
+            // 대안: 2단계 위로 시도 (examples/ExampleApp가 루트인 경우)
+            def fallbackRoot = rootProject.projectDir.parentFile.parentFile
+            def fallbackPath = new File(fallbackRoot, "node_modules/.bun/hermes-compiler@0.14.0/node_modules/hermes-compiler/hermesc/win64-bin/hermesc.exe")
+            if (fallbackPath.exists()) {
+                hermesCommand = fallbackPath.absolutePath
+            }
+        }
+    } else {
+        // macOS/Linux: Try bun's hermes-compiler package first / macOS/Linux: bun의 hermes-compiler 패키지 먼저 시도
+        println "[Hermes Debug] Starting hermesc path search / hermesc 경로 검색 시작"
+        println "[Hermes Debug] OS: ${osName}"
+        println "[Hermes Debug] rootProject.projectDir: ${rootProject.projectDir.absolutePath}"
+
+        def monorepoRoot = rootProject.projectDir.parentFile.parentFile.parentFile
+        def exampleRoot = rootProject.projectDir.parentFile.parentFile
+        // Use linux64-bin for Linux (hermes-compiler uses linux64-bin, not linux-bin) / Linux의 경우 linux64-bin 사용 (hermes-compiler는 linux64-bin 사용, linux-bin 아님)
+        def osBin = osName.contains("mac") ? "osx-bin" : "linux64-bin"
+        def reactNativeDir = file("../../node_modules/react-native")
+
+        println "[Hermes Debug] monorepoRoot: ${monorepoRoot.absolutePath}"
+        println "[Hermes Debug] exampleRoot: ${exampleRoot.absolutePath}"
+        println "[Hermes Debug] reactNativeDir: ${reactNativeDir.absolutePath}"
+        println "[Hermes Debug] osBin: ${osBin}"
+
+        // Try monorepo root paths / 모노레포 루트 경로 시도
+        def bunHermesPath = new File(monorepoRoot, "node_modules/.bun/hermes-compiler@0.14.0/node_modules/hermes-compiler/hermesc/${osBin}/hermesc")
+        println "[Hermes Debug] Trying: ${bunHermesPath.absolutePath} (exists: ${bunHermesPath.exists()})"
+        if (bunHermesPath.exists()) {
+            hermesCommand = bunHermesPath.absolutePath
+            println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+        } else {
+            // Fallback: try linux-bin if linux64-bin doesn't exist (for older hermes-compiler versions) / linux64-bin이 없으면 linux-bin 시도 (구버전 hermes-compiler용)
+            if (!osName.contains("mac") && osBin == "linux64-bin") {
+                def bunHermesPathFallback = new File(monorepoRoot, "node_modules/.bun/hermes-compiler@0.14.0/node_modules/hermes-compiler/hermesc/linux-bin/hermesc")
+                println "[Hermes Debug] Trying fallback: ${bunHermesPathFallback.absolutePath} (exists: ${bunHermesPathFallback.exists()})"
+                if (bunHermesPathFallback.exists()) {
+                    hermesCommand = bunHermesPathFallback.absolutePath
+                    println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                }
+            }
+        }
+        if (!hermesCommand) {
+            // Try monorepo root node_modules / 모노레포 루트 node_modules 시도
+            def monorepoHermesPath = new File(monorepoRoot, "node_modules/hermes-compiler/hermesc/${osBin}/hermesc")
+            println "[Hermes Debug] Trying: ${monorepoHermesPath.absolutePath} (exists: ${monorepoHermesPath.exists()})"
+            if (monorepoHermesPath.exists()) {
+                hermesCommand = monorepoHermesPath.absolutePath
+                println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+            } else {
+                // Fallback: try linux-bin if linux64-bin doesn't exist / linux64-bin이 없으면 linux-bin 시도
+                if (!osName.contains("mac") && osBin == "linux64-bin") {
+                    def monorepoHermesPathFallback = new File(monorepoRoot, "node_modules/hermes-compiler/hermesc/linux-bin/hermesc")
+                    println "[Hermes Debug] Trying fallback: ${monorepoHermesPathFallback.absolutePath} (exists: ${monorepoHermesPathFallback.exists()})"
+                    if (monorepoHermesPathFallback.exists()) {
+                        hermesCommand = monorepoHermesPathFallback.absolutePath
+                        println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                    }
+                }
+            }
+            if (!hermesCommand) {
+                // Fallback: try with 2 levels up (if examples/ExampleApp is the root)
+                // 대안: 2단계 위로 시도 (examples/ExampleApp가 루트인 경우)
+                def fallbackRoot = rootProject.projectDir.parentFile.parentFile
+                def fallbackPath = new File(fallbackRoot, "node_modules/.bun/hermes-compiler@0.14.0/node_modules/hermes-compiler/hermesc/${osBin}/hermesc")
+                println "[Hermes Debug] Trying: ${fallbackPath.absolutePath} (exists: ${fallbackPath.exists()})"
+                if (fallbackPath.exists()) {
+                    hermesCommand = fallbackPath.absolutePath
+                    println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                } else {
+                    // Fallback: try linux-bin if linux64-bin doesn't exist / linux64-bin이 없으면 linux-bin 시도
+                    if (!osName.contains("mac") && osBin == "linux64-bin") {
+                        def fallbackPathFallback = new File(fallbackRoot, "node_modules/.bun/hermes-compiler@0.14.0/node_modules/hermes-compiler/hermesc/linux-bin/hermesc")
+                        println "[Hermes Debug] Trying fallback: ${fallbackPathFallback.absolutePath} (exists: ${fallbackPathFallback.exists()})"
+                        if (fallbackPathFallback.exists()) {
+                            hermesCommand = fallbackPathFallback.absolutePath
+                            println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                        }
+                    }
+                }
+                if (!hermesCommand) {
+                    // Try example root node_modules / 예제 루트 node_modules 시도
+                    def exampleHermesPath = new File(exampleRoot, "node_modules/hermes-compiler/hermesc/${osBin}/hermesc")
+                    println "[Hermes Debug] Trying: ${exampleHermesPath.absolutePath} (exists: ${exampleHermesPath.exists()})"
+                    if (exampleHermesPath.exists()) {
+                        hermesCommand = exampleHermesPath.absolutePath
+                        println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                    } else {
+                        // Fallback: try linux-bin if linux64-bin doesn't exist / linux64-bin이 없으면 linux-bin 시도
+                        if (!osName.contains("mac") && osBin == "linux64-bin") {
+                            def exampleHermesPathFallback = new File(exampleRoot, "node_modules/hermes-compiler/hermesc/linux-bin/hermesc")
+                            println "[Hermes Debug] Trying fallback: ${exampleHermesPathFallback.absolutePath} (exists: ${exampleHermesPathFallback.exists()})"
+                            if (exampleHermesPathFallback.exists()) {
+                                hermesCommand = exampleHermesPathFallback.absolutePath
+                                println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                            }
+                        }
+                    }
+                    if (!hermesCommand) {
+                        // Try React Native's node_modules / React Native의 node_modules 시도
+                        def reactNativeHermesPath = new File(reactNativeDir, "node_modules/hermes-compiler/hermesc/${osBin}/hermesc")
+                        println "[Hermes Debug] Trying: ${reactNativeHermesPath.absolutePath} (exists: ${reactNativeHermesPath.exists()})"
+                        if (reactNativeHermesPath.exists()) {
+                            hermesCommand = reactNativeHermesPath.absolutePath
+                            println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                        } else {
+                            // Fallback: try linux-bin if linux64-bin doesn't exist / linux64-bin이 없으면 linux-bin 시도
+                            if (!osName.contains("mac") && osBin == "linux64-bin") {
+                                def reactNativeHermesPathFallback = new File(reactNativeDir, "node_modules/hermes-compiler/hermesc/linux-bin/hermesc")
+                                println "[Hermes Debug] Trying fallback: ${reactNativeHermesPathFallback.absolutePath} (exists: ${reactNativeHermesPathFallback.exists()})"
+                                if (reactNativeHermesPathFallback.exists()) {
+                                    hermesCommand = reactNativeHermesPathFallback.absolutePath
+                                    println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                                }
+                            }
+                        }
+                        if (!hermesCommand) {
+                            // Try React Native's nested node_modules / React Native의 중첩된 node_modules 시도
+                            def reactNativeNestedHermesPath = new File(reactNativeDir, "node_modules/react-native/node_modules/hermes-compiler/hermesc/${osBin}/hermesc")
+                            println "[Hermes Debug] Trying: ${reactNativeNestedHermesPath.absolutePath} (exists: ${reactNativeNestedHermesPath.exists()})"
+                            if (reactNativeNestedHermesPath.exists()) {
+                                hermesCommand = reactNativeNestedHermesPath.absolutePath
+                                println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                            } else {
+                                // Fallback: try linux-bin if linux64-bin doesn't exist / linux64-bin이 없으면 linux-bin 시도
+                                if (!osName.contains("mac") && osBin == "linux64-bin") {
+                                    def reactNativeNestedHermesPathFallback = new File(reactNativeDir, "node_modules/react-native/node_modules/hermes-compiler/hermesc/linux-bin/hermesc")
+                                    println "[Hermes Debug] Trying fallback: ${reactNativeNestedHermesPathFallback.absolutePath} (exists: ${reactNativeNestedHermesPathFallback.exists()})"
+                                    if (reactNativeNestedHermesPathFallback.exists()) {
+                                        hermesCommand = reactNativeNestedHermesPathFallback.absolutePath
+                                        println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                                    }
+                                }
+                            }
+                            if (!hermesCommand) {
+                                // Last fallback: try React Native's default path (may not exist in 0.83.1)
+                                // 마지막 대안: React Native 기본 경로 시도 (0.83.1에서는 존재하지 않을 수 있음)
+                                def defaultHermesPath = new File(reactNativeDir, "sdks/hermesc/${osBin}/hermesc")
+                                println "[Hermes Debug] Trying: ${defaultHermesPath.absolutePath} (exists: ${defaultHermesPath.exists()})"
+                                if (defaultHermesPath.exists()) {
+                                    hermesCommand = defaultHermesPath.absolutePath
+                                    println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                                } else {
+                                    // Fallback: try linux-bin if linux64-bin doesn't exist / linux64-bin이 없으면 linux-bin 시도
+                                    if (!osName.contains("mac") && osBin == "linux64-bin") {
+                                        def defaultHermesPathFallback = new File(reactNativeDir, "sdks/hermesc/linux-bin/hermesc")
+                                        println "[Hermes Debug] Trying fallback: ${defaultHermesPathFallback.absolutePath} (exists: ${defaultHermesPathFallback.exists()})"
+                                        if (defaultHermesPathFallback.exists()) {
+                                            hermesCommand = defaultHermesPathFallback.absolutePath
+                                            println "[Hermes Debug] ✅ Found hermesc at: ${hermesCommand}"
+                                        }
+                                    }
+                                }
+                                if (!hermesCommand) {
+                                    // Debug: print attempted paths / 디버그: 시도한 경로 출력
+                                    println "[Hermes Debug] ❌ WARNING: Could not find hermesc binary. Attempted paths:"
+                                    println "[Hermes Debug]   - ${bunHermesPath.absolutePath}"
+                                    println "[Hermes Debug]   - ${monorepoHermesPath.absolutePath}"
+                                    println "[Hermes Debug]   - ${fallbackPath.absolutePath}"
+                                    println "[Hermes Debug]   - ${exampleHermesPath.absolutePath}"
+                                    println "[Hermes Debug]   - ${reactNativeHermesPath.absolutePath}"
+                                    println "[Hermes Debug]   - ${reactNativeNestedHermesPath.absolutePath}"
+                                    println "[Hermes Debug]   - ${defaultHermesPath.absolutePath}"
+                                    println "[Hermes Debug] Trying system hermesc..."
+                                    hermesCommand = "hermesc"
+                                    println "[Hermes Debug] Using system command: ${hermesCommand}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    //
+    //   The list of flags to pass to the Hermes compiler. By default is "-O", "-output-source-map"
+    // hermesFlags = ["-O", "-output-source-map"]
+
+    /* Autolinking */
+    autolinkLibrariesWithApp()
+}
+
+// Custom task to use Bungae bundle if BUNGAE environment variable is set
+def useBungae = System.getenv("BUNGAE") == "true"
+
+if (useBungae) {
+    println "🚀 Using Bungae bundler..."
+    
+    // Disable Metro bundling tasks
+    tasks.whenTaskAdded { task ->
+        if (task.name.contains("createBundle") && task.name.contains("JsAndAssets")) {
+            task.enabled = false
+            println "⏭️  Skipping Metro bundling task: ${task.name}"
+        }
+    }
+    
+    // Verify Bungae bundle exists before build
+    android.applicationVariants.all { variant ->
+        def variantName = variant.name.capitalize()
+        def bundleFileName = "index.android.bundle"
+        def projectRoot = rootProject.projectDir.parentFile
+        
+        // Check multiple possible locations
+        def possiblePaths = [
+            new File(projectRoot, "android/app/src/main/assets/${bundleFileName}"),
+            new File(projectRoot, ".bungae/${bundleFileName}"),
+        ]
+        
+        def bundleFound = false
+        for (def path : possiblePaths) {
+            if (path.exists()) {
+                println "✅ Found Bungae bundle at: ${path}"
+                bundleFound = true
+                break
+            }
+        }
+        
+        if (!bundleFound) {
+            throw new GradleException(
+                "Bungae bundle not found. Please run 'bun run build:bungae --platform android --mode release' first.\n" +
+                "Expected locations:\n" +
+                possiblePaths.collect { "  - ${it}" }.join("\n")
+            )
+        }
+    }
+}
+
+/**
+ * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
+ */
+def enableProguardInReleaseBuilds = false
+
+/**
+ * The preferred build flavor of JavaScriptCore (JSC)
+ *
+ * For example, to use the international variant, you can use:
+ * `def jscFlavor = io.github.react-native-community:jsc-android-intl:2026004.+`
+ *
+ * The international variant includes ICU i18n library and necessary data
+ * allowing to use e.g. `Date.toLocaleString` and `String.localeCompare` that
+ * give correct results when using with locales other than en-US. Note that
+ * this variant is about 6MiB larger per architecture than default.
+ */
+def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
+
+android {
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    compileSdk rootProject.ext.compileSdkVersion
+
+    namespace "com.exampleapp"
+    defaultConfig {
+        applicationId "com.exampleapp"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+    }
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            // Caution! In production, you need to generate your own keystore file.
+            // see https://reactnative.dev/docs/signed-apk-android.
+            signingConfig signingConfigs.debug
+            minifyEnabled enableProguardInReleaseBuilds
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+        }
+    }
+}
+
+dependencies {
+    // The version of react-native is set by the React Native Gradle Plugin
+    implementation("com.facebook.react:react-android")
+
+    if (hermesEnabled.toBoolean()) {
+        implementation("com.facebook.react:hermes-android")
+    } else {
+        implementation jscFlavor
+    }
+}
