@@ -894,8 +894,8 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
 /// `local`/`exported` 는 모듈 소유 — caller 는 slice 자체만 free.
 ///
 /// `export * from "./x"` (re-export-all) 의 경우 source 모듈의 named export 를
-/// `collectExportsRecursive` 로 평탄화해 entry 의 export 로 포함시킨다 (esbuild
-/// 와 rolldown 의 scope-hoisted ESM 동작과 일치). #2576.
+/// `collectExportsRecursive` 로 평탄화해 entry 의 export 로 포함시킨다 — ECMAScript
+/// 15.2.3.5 의 default 제외 규정 포함. scope-hoisted ESM 출력 (#2576).
 ///
 /// `owned_strings` 는 caller 의 `owned_rename_values` (LinkingMetadata 의 owned
 /// slice 영역). collectExportsRecursive 가 NsExportPair.owned=true 를 emit 하는

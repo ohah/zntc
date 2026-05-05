@@ -2509,7 +2509,6 @@ pub const Linker = struct {
 
     /// 모듈의 모든 export를 재귀적으로 수집 (export * 체인 포함).
     /// seen: export 이름 dedup, visited: 모듈 수준 dedup (diamond export * 방지).
-    /// metadata.zig 의 `buildFinalExports` (#2576) 도 entry 의 re-export-star 평탄화에 사용.
     pub fn collectExportsRecursive(
         self: *const Linker,
         exports: *std.ArrayList(NsExportPair),
