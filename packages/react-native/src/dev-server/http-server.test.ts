@@ -6,6 +6,7 @@ import {
   type DevHttpServerHandle,
 } from "./http-server.ts";
 import { buildRnDevServerOptions } from "./options.ts";
+import type { PlatformStateRegistry } from "./platform-state.ts";
 
 const BUNDLE = {
   entry: "/proj/src/index.ts",
@@ -14,12 +15,21 @@ const BUNDLE = {
   dev: true,
 };
 
+const noopPlatforms: PlatformStateRegistry = {
+  platforms: new Map(),
+  getOrCreate: () => {
+    throw new Error("not used");
+  },
+  async stopAll() {},
+};
+
 let handle: DevHttpServerHandle;
 const recorded: Array<[string, unknown?]> = [];
 
 beforeAll(async () => {
   handle = await createDevHttpServer(buildRnDevServerOptions({ bundle: BUNDLE, port: 0 }), {
     broadcast: (m, p) => recorded.push([m, p]),
+    platforms: noopPlatforms,
   });
 });
 
@@ -98,7 +108,7 @@ describe("createBaseMiddleware — rewriteRequestUrl 호출", () => {
       bundle: BUNDLE,
       rewriteRequestUrl: () => "/status",
     });
-    const mw = createBaseMiddleware(opts, { broadcast: () => {} });
+    const mw = createBaseMiddleware(opts, { broadcast: () => {}, platforms: noopPlatforms });
     let body: string | undefined;
     let code: number | undefined;
     const headers: Record<string, unknown> = {};
@@ -129,7 +139,7 @@ describe("createDevHttpServer — chain error/terminal 경로", () => {
       port: 0,
       enhanceMiddleware: () => (_req, _res, next) => next(new Error("boom")),
     });
-    const h = await createDevHttpServer(opts, { broadcast: () => {} });
+    const h = await createDevHttpServer(opts, { broadcast: () => {}, platforms: noopPlatforms });
     try {
       const addr = h.server.address();
       const port = typeof addr === "object" && addr ? addr.port : 0;
@@ -151,7 +161,7 @@ describe("createDevHttpServer — chain error/terminal 경로", () => {
         next();
       },
     });
-    const h = await createDevHttpServer(opts, { broadcast: () => {} });
+    const h = await createDevHttpServer(opts, { broadcast: () => {}, platforms: noopPlatforms });
     try {
       const addr = h.server.address();
       const port = typeof addr === "object" && addr ? addr.port : 0;
@@ -178,7 +188,7 @@ describe("createDevHttpServer — enhanceMiddleware", () => {
         base(req, res, next);
       },
     });
-    const h = await createDevHttpServer(opts, { broadcast: () => {} });
+    const h = await createDevHttpServer(opts, { broadcast: () => {}, platforms: noopPlatforms });
     try {
       const addr = h.server.address();
       const port = typeof addr === "object" && addr ? addr.port : 0;
@@ -193,7 +203,7 @@ describe("createDevHttpServer — enhanceMiddleware", () => {
 
   test("enhanceMiddleware 미지정 시 base 만", async () => {
     const opts = buildRnDevServerOptions({ bundle: BUNDLE, port: 0 });
-    const h = await createDevHttpServer(opts, { broadcast: () => {} });
+    const h = await createDevHttpServer(opts, { broadcast: () => {}, platforms: noopPlatforms });
     try {
       const addr = h.server.address();
       const port = typeof addr === "object" && addr ? addr.port : 0;
@@ -208,7 +218,7 @@ describe("createDevHttpServer — enhanceMiddleware", () => {
     await expect(
       createDevHttpServer(
         buildRnDevServerOptions({ bundle: BUNDLE, port: 0, host: "256.256.256.256" }),
-        { broadcast: () => {} },
+        { broadcast: () => {}, platforms: noopPlatforms },
       ),
     ).rejects.toThrow();
   });

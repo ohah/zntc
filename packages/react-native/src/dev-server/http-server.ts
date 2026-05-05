@@ -6,7 +6,16 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import { parseRequestUrl, sendText } from "./http-utils.ts";
 import type { RnDevServerOptions } from "./options.ts";
+import type { PlatformStateRegistry } from "./platform-state.ts";
 import { handleAssetRequest, isAssetRoute } from "./routes/assets.ts";
+import {
+  handleBundleRequest,
+  handleHmrMapRequest,
+  handleMapRequest,
+  isBundleRoute,
+  isHmrMapRoute,
+  isMapRoute,
+} from "./routes/bundle.ts";
 import { handleDevMenu, isDevMenuRoute } from "./routes/devmenu.ts";
 import { handleOpenUrl, isOpenUrlRoute } from "./routes/open-url.ts";
 import { handleReload, isReloadRoute } from "./routes/reload.ts";
@@ -16,6 +25,8 @@ import type { Broadcast, Middleware } from "./types.ts";
 export interface DevHttpServerDeps {
   /** WS broadcast — caller 가 cli-server-api 의 messageSocketEndpoint.broadcast 와 wire. */
   broadcast: Broadcast;
+  /** per-platform state — bundle/map/hmr-map 라우트가 plat 분기 시 사용. */
+  platforms: PlatformStateRegistry;
 }
 
 export interface DevHttpServerHandle {
@@ -62,6 +73,26 @@ export function createBaseMiddleware(
         projectRoot: options.bundle.projectRoot,
         nodeModulesPaths: options.nodeModulesPaths,
       }).catch(next);
+      return;
+    }
+    if (isBundleRoute(pathname)) {
+      handleBundleRequest(
+        req,
+        res,
+        url,
+        deps.platforms,
+        options.bundle.rnPlatform,
+        options.bundle.projectRoot,
+        options.port,
+      ).catch(next);
+      return;
+    }
+    if (isHmrMapRoute(pathname)) {
+      handleHmrMapRequest(req, res, url, deps.platforms, options.bundle.rnPlatform);
+      return;
+    }
+    if (isMapRoute(pathname)) {
+      handleMapRequest(req, res, url, deps.platforms, options.bundle.rnPlatform);
       return;
     }
     next();

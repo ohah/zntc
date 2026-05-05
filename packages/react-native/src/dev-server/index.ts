@@ -10,11 +10,29 @@ export { parseRequestUrl, readJsonBody, sendJson, sendText } from "./http-utils.
 export type { CustomizeFrame, RnDevServerOptions, RnDevServerOptionsInput } from "./options.ts";
 export { buildRnDevServerOptions } from "./options.ts";
 export {
+  createPlatformState,
+  createPlatformStateRegistry,
+  getCachedSourceMap,
+  type PlatformState,
+  type PlatformStateCallbacks,
+  type PlatformStateRegistry,
+  waitForBuild,
+} from "./platform-state.ts";
+export {
   type AssetResolverOptions,
   handleAssetRequest,
   isAssetRoute,
   resolveAssetPath,
 } from "./routes/assets.ts";
+export {
+  handleBundleRequest,
+  handleHmrMapRequest,
+  handleMapRequest,
+  isBundleRoute,
+  isHmrMapRoute,
+  isMapRoute,
+} from "./routes/bundle.ts";
+export { postProcessSourceMap } from "./sourcemap.ts";
 export type { Broadcast, FrameInfo, Middleware, MiddlewareEnhanceContext } from "./types.ts";
 
 /** Dev server lifecycle handle. */
