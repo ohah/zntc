@@ -1,14 +1,17 @@
 // @zts/web — dev server / postcss·sass·lightningcss / HMR overlay 가 자리잡는 패키지.
 // 분리 진행: #2539.
 
-// `@zts/server` 의 HMR 표면을 web 사용자 (zts.mjs CLI / RN bridge / future
-// edge runtime) 가 단일 entry 로 받도록 재수출. server 는 private 패키지라
+// `@zts/server` 의 HMR / Watcher 표면을 web 사용자 (zts.mjs CLI / RN bridge /
+// future edge runtime) 가 단일 entry 로 받도록 재수출. server 는 private 패키지라
 // web 의 dist 에 inline 되므로 consumer 는 별도 install 불필요.
 export {
   APP_DEV_HMR_CLIENT_PATH,
   APP_DEV_HMR_WS_PATH,
   type BunHmrClient,
   createHmrChannel,
+  createWatcher,
+  type CreateWatcherOptions,
+  HMR_MSG,
   type HmrChannel,
   type HmrConnectedMessage,
   type HmrCssUpdateMessage,
@@ -17,7 +20,11 @@ export {
   type HmrFullReloadMessage,
   type HmrMessage,
   type HmrMessageType,
-  HMR_MSG,
+  type WatchEventType,
+  type WatchFn,
+  type WatchListener,
+  type WatcherHandle,
+  type WatcherInstance,
 } from "@zts/server";
 export {
   type BundleResult,

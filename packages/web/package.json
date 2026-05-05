@@ -1,7 +1,7 @@
 {
   "name": "@zts/web",
   "version": "0.1.0",
-  "description": "ZTS web platform — dev server, postcss/sass/lightningcss pipeline, HMR overlay",
+  "description": "ZTS web platform — dev server, postcss/sass pipeline, HMR overlay",
   "license": "MIT",
   "files": [
     "dist/",
@@ -17,7 +17,7 @@
     }
   },
   "scripts": {
-    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core --external lightningcss --external postcss --external postcss-load-config --external sass",
+    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core --external postcss --external postcss-load-config --external sass",
     "build:dts": "bun x tsc --emitDeclarationOnly",
     "build": "bun run build:bundle && bun run build:dts",
     "test": "bun test"
@@ -28,5 +28,10 @@
   },
   "devDependencies": {
     "@types/node": "^25.5.2"
+  },
+  "optionalDependencies": {
+    "postcss": "^8.5.8",
+    "postcss-load-config": "^6.0.1",
+    "sass": "^1.99.0"
   }
 }
