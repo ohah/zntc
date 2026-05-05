@@ -9,5 +9,12 @@ export {
   injectIntoDevHtml,
   joinUrl,
 } from "./inject.ts";
+export {
+  isCssIdent,
+  isCssIdentStart,
+  skipCssString,
+  skipCssUrl,
+  startsWithCssIdent,
+} from "./style/css-parser.ts";
 // dev-overlay-client 는 .mjs 라 별도 export — 브라우저 inject 용 string.
 export { APP_DEV_HMR_CLIENT } from "../runtime/dev-overlay-client.mjs";
