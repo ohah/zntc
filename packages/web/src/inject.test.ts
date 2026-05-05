@@ -8,8 +8,8 @@ import {
   injectAppDevHmrClient,
   injectAppDevPipelineCssLinks,
   injectIntoDevHtml,
-  joinUrl,
 } from "./inject.ts";
+import { joinUrl } from "./url.ts";
 
 let outdir: string;
 let htmlPath: string;

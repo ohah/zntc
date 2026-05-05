@@ -3,19 +3,15 @@ import { basename, join, sep } from "node:path";
 
 import { APP_DEV_HMR_CLIENT_PATH } from "@zts/server";
 
+import { isCssFile } from "./style/postcss.ts";
+import { joinUrl } from "./url.ts";
+
 interface BundleOutputFile {
   path?: string;
 }
 
 export interface BundleResult {
   outputFiles?: readonly BundleOutputFile[];
-}
-
-const isCssFile = (path: string): boolean => path.endsWith(".css");
-
-export function joinUrl(base: string | undefined, rel: string): string {
-  if (!base) return rel;
-  return `${base}${rel}`;
 }
 
 /**
