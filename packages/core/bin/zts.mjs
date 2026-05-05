@@ -618,6 +618,63 @@ async function loadWebModule() {
   return webModulePromise;
 }
 
+// RN 모드 (`zts bundle --platform=react-native`) — @zts/react-native 을 lazy
+// import. transpile/bundle 일반 사용자는 web 처럼 영향 0 (#2540 PR #7).
+let rnModulePromise = null;
+async function loadRnModule() {
+  if (rnModulePromise) return rnModulePromise;
+  rnModulePromise = (async () => {
+    try {
+      return await import("@zts/react-native");
+    } catch (err) {
+      const code = err?.code;
+      const message = String(err?.message ?? "");
+      if (
+        code === "ERR_MODULE_NOT_FOUND" ||
+        /Cannot find package "@zts\/react-native"/.test(message)
+      ) {
+        console.error(
+          "error: @zts/react-native 패키지가 필요합니다 (zts bundle --platform=react-native).",
+        );
+        console.error("");
+        console.error(
+          "help: install with `bun add -D @zts/react-native` 또는 `npm i -D @zts/react-native`.",
+        );
+        process.exit(1);
+      }
+      throw err;
+    }
+  })();
+  return rnModulePromise;
+}
+
+async function runRnBundle(opts, _config) {
+  const rn = await loadRnModule();
+  const projectRoot = resolve(opts.rnProjectRoot ?? ".");
+  const entry = opts.entryPoints?.[0];
+  if (!entry) {
+    console.error(
+      "error: zts bundle --platform=react-native 는 entry point 가 필요합니다 (예: `zts bundle index.ts --platform=react-native`)",
+    );
+    process.exit(1);
+  }
+  const rnPlatform = opts.rnPlatform === "android" ? "android" : "ios";
+  const result = await rn.bundleRn({
+    entry,
+    projectRoot,
+    rnPlatform,
+    dev: Boolean(opts.devMode),
+    sourcemap: Boolean(opts.sourcemap),
+    minify:
+      opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax || false,
+    override: opts.outfile ? { outfile: opts.outfile, write: true } : undefined,
+  });
+  if (result.errors.length === 0 && opts.logLevel !== "silent") {
+    console.error(`[bundle] react-native ${rnPlatform} ${opts.outfile ?? "(in-memory)"}`);
+  }
+  return result;
+}
+
 async function runAppPreview(opts) {
   opts.serveDir = resolve(opts.previewDir ?? opts.outdir ?? "dist");
   opts.outdir = undefined;
@@ -1638,6 +1695,12 @@ async function dispatchBuild(opts, config, configEnv, dotenvVars) {
   if (opts.watch) {
     await runWatch(opts, config);
     return { errors: 0 };
+  }
+  if (opts.bundle && opts.platform === "react-native") {
+    // #2540 PR #7 — RN platform 시 @zts/react-native 의 preset 호출. lazy
+    // import 라 web/transpile/bundle 일반 사용자 영향 0.
+    const result = await runRnBundle(opts, config);
+    return { errors: result.errors.length };
   }
   if (opts.bundle) {
     const result = await runBundle(opts, config);

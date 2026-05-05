@@ -9,6 +9,7 @@
         "@emotion/react": "^11.14.0",
         "@tailwindcss/postcss": "^4.2.2",
         "@tanstack/react-query": "^5",
+        "@zts/react-native": "workspace:*",
         "@zts/web": "workspace:*",
         "clsx": "^2.1.1",
         "date-fns": "^4.1.0",
