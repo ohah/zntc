@@ -10,6 +10,8 @@ export interface RnDevServerOptions {
   bundle: RnBundleInput;
   port: number;
   host: string;
+  /** Asset resolution 의 fallback (monorepo / pnpm / bun 의 .bun 디렉토리 등). */
+  nodeModulesPaths: readonly string[];
   enhanceMiddleware?: (mw: Middleware, ctx: MiddlewareEnhanceContext) => Middleware;
   rewriteRequestUrl?: (url: string) => string;
   symbolicator?: { customizeFrame?: CustomizeFrame };
@@ -26,6 +28,7 @@ export function buildRnDevServerOptions(input: RnDevServerOptionsInput): RnDevSe
     bundle: input.bundle,
     port: input.port ?? 8081,
     host: input.host ?? "localhost",
+    nodeModulesPaths: input.nodeModulesPaths ?? [],
     enhanceMiddleware: input.enhanceMiddleware,
     rewriteRequestUrl: input.rewriteRequestUrl,
     symbolicator: input.symbolicator?.customizeFrame

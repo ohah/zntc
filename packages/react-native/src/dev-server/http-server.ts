@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import { parseRequestUrl, sendText } from "./http-utils.ts";
 import type { RnDevServerOptions } from "./options.ts";
+import { handleAssetRequest, isAssetRoute } from "./routes/assets.ts";
 import { handleDevMenu, isDevMenuRoute } from "./routes/devmenu.ts";
 import { handleOpenUrl, isOpenUrlRoute } from "./routes/open-url.ts";
 import { handleReload, isReloadRoute } from "./routes/reload.ts";
@@ -54,6 +55,13 @@ export function createBaseMiddleware(
     }
     if (isOpenUrlRoute(pathname, method)) {
       handleOpenUrl(req, res).catch(next);
+      return;
+    }
+    if (isAssetRoute(pathname)) {
+      handleAssetRequest(req, res, url, {
+        projectRoot: options.bundle.projectRoot,
+        nodeModulesPaths: options.nodeModulesPaths,
+      }).catch(next);
       return;
     }
     next();
