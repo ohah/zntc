@@ -192,4 +192,40 @@ describe("createPlatformStateRegistry — 캐싱", () => {
     await registry.stopAll();
     expect(registry.platforms.size).toBe(0);
   });
+
+  test("multi-platform — ios + android 동시 spawn 후 각자 별 watch handle (Finding #9)", async () => {
+    const opts = buildRnDevServerOptions({
+      bundle: { entry: entryPath, projectRoot: dir, rnPlatform: "ios", dev: true },
+    });
+    const registry = createPlatformStateRegistry(opts);
+    try {
+      const ios = registry.getOrCreate("ios");
+      const android = registry.getOrCreate("android");
+      // 첫 build 둘 다 대기 (동시).
+      await Promise.all([waitForBuild(ios), waitForBuild(android)]);
+      expect(ios.bundle !== null || ios.buildError !== null).toBe(true);
+      expect(android.bundle !== null || android.buildError !== null).toBe(true);
+      expect(ios.outputDir).not.toBe(android.outputDir);
+    } finally {
+      await registry.stopAll();
+    }
+  });
+});
+
+describe("createPlatformState — onReady/onRebuild 콜백 (Finding #7)", () => {
+  test("stopAll 시 watch handle 의 stop 이 throw 해도 silent", async () => {
+    // platform-state.ts 의 stopAll try/catch 분기 검증. handle.stop 이 throw 하면
+    // 다른 platform 의 cleanup 이 영향 받지 않아야 함.
+    const opts = buildRnDevServerOptions({
+      bundle: { entry: entryPath, projectRoot: dir, rnPlatform: "ios", dev: true },
+    });
+    const registry = createPlatformStateRegistry(opts);
+    const ios = registry.getOrCreate("ios");
+    // handle.stop 을 throw 로 monkey-patch.
+    (ios.handle as unknown as { stop: () => void }).stop = () => {
+      throw new Error("simulated stop fail");
+    };
+    await expect(registry.stopAll()).resolves.toBeUndefined();
+    expect(registry.platforms.size).toBe(0);
+  });
 });

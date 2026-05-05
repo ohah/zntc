@@ -147,17 +147,23 @@ function chainToHandler(
  * dev-middleware endpoints. 매칭 안 되면 socket destroy (bungae parity).
  * 모든 deps 가 absent 면 listener 미등록 (default Node 동작 — destroy).
  */
+type UpgradeListener = (
+  req: IncomingMessage,
+  socket: import("node:net").Socket,
+  head: Buffer,
+) => void;
+
 function attachWebSocketEndpoints(
   server: Server,
   deps: DevHttpServerDeps,
   options: RnDevServerOptions,
-): void {
+): UpgradeListener | null {
   const hmr = deps.hmrBridge;
   const cli = deps.cliServerApi?.websocketEndpoints;
   const dev = deps.devMiddleware?.websocketEndpoints;
-  if (!hmr && !cli && !dev) return;
+  if (!hmr && !cli && !dev) return null;
 
-  server.on("upgrade", (req, socket, head) => {
+  const listener: UpgradeListener = (req, socket, head) => {
     const url = parseRequestUrl(req, options.host, options.port);
     if (hmr && (url.pathname === hmr.path || url.pathname.startsWith(`${hmr.path}?`))) {
       hmr.acceptUpgrade(req, socket as never);
@@ -180,7 +186,9 @@ function attachWebSocketEndpoints(
       }
     }
     socket.destroy();
-  });
+  };
+  server.on("upgrade", listener);
+  return listener;
 }
 
 export async function createDevHttpServer(
@@ -194,8 +202,9 @@ export async function createDevHttpServer(
   const enhanced = options.enhanceMiddleware
     ? options.enhanceMiddleware(baseMiddleware, { httpServer: server })
     : baseMiddleware;
-  server.on("request", chainToHandler(enhanced));
-  attachWebSocketEndpoints(server, deps, options);
+  const requestHandler = chainToHandler(enhanced);
+  server.on("request", requestHandler);
+  const upgradeHandler = attachWebSocketEndpoints(server, deps, options);
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
@@ -217,6 +226,10 @@ export async function createDevHttpServer(
     port: options.port,
     stop: () =>
       new Promise<void>((resolve, reject) => {
+        // server.close() 는 listener 자동 제거 안 함. 명시 제거로 closure capture
+        // 해제 — watch handle / channel client refs 가 GC 대상이 되도록.
+        server.removeListener("request", requestHandler);
+        if (upgradeHandler) server.removeListener("upgrade", upgradeHandler);
         server.close((err) => (err ? reject(err) : resolve()));
       }),
   };

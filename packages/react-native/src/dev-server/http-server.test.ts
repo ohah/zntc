@@ -223,3 +223,133 @@ describe("createDevHttpServer — enhanceMiddleware", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("attachWebSocketEndpoints — chain ordering (Finding #4)", () => {
+  test("listener: hmrBridge `/hot` 우선 → cli endpoints → dev endpoints → unmatched destroy", async () => {
+    const recorded: string[] = [];
+    const opts = buildRnDevServerOptions({ bundle: BUNDLE, port: 0 });
+    const fakeHmr = {
+      adapter: {} as never,
+      callbacks: {},
+      path: "/hot",
+      acceptUpgrade: () => recorded.push("hmr:/hot"),
+    };
+    const fakeCli = {
+      websocketEndpoints: {
+        "/message": {
+          handleUpgrade: () => recorded.push("cli:/message"),
+          emit: () => {},
+        },
+      },
+      broadcast: () => {},
+    };
+    const fakeDev = {
+      middleware: ((_req: never, _res: never, _next: never) => {}) as never,
+      websocketEndpoints: {
+        "/inspector": {
+          handleUpgrade: () => recorded.push("dev:/inspector"),
+          emit: () => {},
+        },
+      },
+    };
+    const h = await createDevHttpServer(opts, {
+      broadcast: () => {},
+      platforms: noopPlatforms,
+      hmrBridge: fakeHmr,
+      cliServerApi: fakeCli,
+      devMiddleware: fakeDev as never,
+    });
+
+    try {
+      // 단일 'upgrade' listener — server.listeners('upgrade')[0] 가져와 직접 호출.
+      const listeners = h.server.listeners("upgrade");
+      expect(listeners).toHaveLength(1);
+      const upgradeListener = listeners[0]! as (req: unknown, sock: unknown, head: unknown) => void;
+
+      const fakeSocket = { destroy: () => recorded.push("destroyed") };
+      const head = Buffer.alloc(0);
+
+      upgradeListener({ url: "/hot", headers: { host: "x:8081" } }, fakeSocket, head);
+      upgradeListener({ url: "/message", headers: { host: "x:8081" } }, fakeSocket, head);
+      upgradeListener({ url: "/inspector", headers: { host: "x:8081" } }, fakeSocket, head);
+      upgradeListener({ url: "/__nope__", headers: { host: "x:8081" } }, fakeSocket, head);
+
+      expect(recorded).toEqual(["hmr:/hot", "cli:/message", "dev:/inspector", "destroyed"]);
+    } finally {
+      await h.stop();
+    }
+  });
+
+  test("hmrBridge 만 — cli/dev 미설치 시 hmr 만 chain", async () => {
+    const recorded: string[] = [];
+    const opts = buildRnDevServerOptions({ bundle: BUNDLE, port: 0 });
+    const fakeHmr = {
+      adapter: {} as never,
+      callbacks: {},
+      path: "/hot",
+      acceptUpgrade: () => recorded.push("hmr"),
+    };
+    const h = await createDevHttpServer(opts, {
+      broadcast: () => {},
+      platforms: noopPlatforms,
+      hmrBridge: fakeHmr,
+    });
+    try {
+      const listeners = h.server.listeners("upgrade");
+      expect(listeners).toHaveLength(1);
+      const fn = listeners[0]! as (req: unknown, s: unknown, h: unknown) => void;
+      const sock = { destroy: () => recorded.push("destroyed") };
+      fn({ url: "/hot", headers: {} }, sock, Buffer.alloc(0));
+      fn({ url: "/other", headers: {} }, sock, Buffer.alloc(0));
+      expect(recorded).toEqual(["hmr", "destroyed"]);
+    } finally {
+      await h.stop();
+    }
+  });
+
+  test("아무 deps 없으면 'upgrade' listener 미등록 (Node default 동작)", async () => {
+    const opts = buildRnDevServerOptions({ bundle: BUNDLE, port: 0 });
+    const h = await createDevHttpServer(opts, {
+      broadcast: () => {},
+      platforms: noopPlatforms,
+    });
+    try {
+      expect(h.server.listenerCount("upgrade")).toBe(0);
+    } finally {
+      await h.stop();
+    }
+  });
+});
+
+describe("createDevHttpServer — listener cleanup (Finding #3)", () => {
+  test("stop() 후 server 의 'request' / 'upgrade' listener 가 모두 정리됨", async () => {
+    const opts = buildRnDevServerOptions({ bundle: BUNDLE, port: 0 });
+    const fakeHmr = {
+      adapter: {} as never,
+      callbacks: {},
+      path: "/hot",
+      acceptUpgrade: () => {},
+    };
+    const fakeCli = {
+      websocketEndpoints: {
+        "/message": { handleUpgrade: () => {}, emit: () => {} },
+      },
+      broadcast: () => {},
+    };
+    const h = await createDevHttpServer(opts, {
+      broadcast: () => {},
+      platforms: noopPlatforms,
+      hmrBridge: fakeHmr,
+      cliServerApi: fakeCli,
+    });
+    // listen 후 'request' 1 + 'upgrade' 1 (hmr/cli/dev 중 하나라도 있으면).
+    expect(h.server.listenerCount("request")).toBe(1);
+    expect(h.server.listenerCount("upgrade")).toBe(1);
+    await h.stop();
+    // 현재 createDevHttpServer.stop() 은 server.close() 만 호출 — listener 명시 제거
+    // 안 함. server.close() 는 listener 자동 제거 안 함 (Node API spec).
+    // 이 expect 는 fix 전 fail.
+    expect(h.server.listenerCount("request")).toBe(0);
+    expect(h.server.listenerCount("upgrade")).toBe(0);
+  });
+});
