@@ -6,12 +6,11 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { ROOT, ZTS_BIN, findNodeModulesBin } from "./_runner";
 
-const ROOT = resolve(__dirname, "../..");
-const ZTS_BIN = join(ROOT, "zig-out/bin/zts");
 const ITERATIONS = 10;
 
 type PlanSample = {
@@ -25,14 +24,6 @@ type PlanHit = {
   semantic: string;
   reason: string;
 };
-
-function findBin(name: string): string | null {
-  const local = join(__dirname, "node_modules/.bin", name);
-  if (existsSync(local)) return local;
-  const root = join(ROOT, "node_modules/.bin", name);
-  if (existsSync(root)) return root;
-  return null;
-}
 
 function generateTS(lines: number): string {
   const parts: string[] = [];
@@ -217,8 +208,8 @@ function printPlanHitRates(dir: string): void {
 const scales = [100, 500, 1000, 2000, 5000, 10000];
 const dir = mkdtempSync(join(tmpdir(), "zts-profile-"));
 
-const esbuildBin = findBin("esbuild");
-const swcBin = findBin("swc");
+const esbuildBin = findNodeModulesBin("esbuild");
+const swcBin = findNodeModulesBin("swc");
 
 console.log("ZTS Scaling Profiler — All Tools");
 console.log(`  Iterations: ${ITERATIONS} (median)`);

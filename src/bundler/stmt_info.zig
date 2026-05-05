@@ -862,6 +862,26 @@ pub fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
     return null; // 어떤 statement span에도 속하지 않음
 }
 
+/// `ModuleStmtInfos.stmts` 의 span 으로부터 pos 를 포함하는 stmt index 를 binary search.
+/// `findStmtForPos` 와 동일 알고리즘이지만 SOA span 슬라이스가 별도로 존재하지 않는 호출부용.
+pub fn findStmtIndexFromInfos(infos: ModuleStmtInfos, pos: u32) ?u32 {
+    if (infos.stmts.len == 0) return null;
+    var lo: u32 = 0;
+    var hi: u32 = @intCast(infos.stmts.len);
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const span = infos.stmts[mid].span;
+        if (pos >= span.end) {
+            lo = mid + 1;
+        } else if (pos < span.start) {
+            hi = mid;
+        } else {
+            return mid;
+        }
+    }
+    return null;
+}
+
 const ReverseIndex = struct {
     sym_to_referencing_stmts: []const []const u32,
     sym_to_side_effect_stmts: []const []const u32,
@@ -1346,4 +1366,47 @@ pub fn build(
         .sym_to_writer_stmts = sym_to_writer_stmts,
         .allocator = allocator,
     };
+}
+
+test "findStmtIndexFromInfos maps pos to containing top-level statement" {
+    var stmts = [_]StmtInfo{
+        .{
+            .node_idx = 0,
+            .span = .{ .start = 0, .end = 10 },
+            .has_side_effects = false,
+            .declared_symbols = &.{},
+            .referenced_symbols = &.{},
+        },
+        .{
+            .node_idx = 1,
+            .span = .{ .start = 20, .end = 40 },
+            .has_side_effects = false,
+            .declared_symbols = &.{},
+            .referenced_symbols = &.{},
+        },
+        .{
+            .node_idx = 2,
+            .span = .{ .start = 50, .end = 70 },
+            .has_side_effects = false,
+            .declared_symbols = &.{},
+            .referenced_symbols = &.{},
+        },
+    };
+    const infos = ModuleStmtInfos{
+        .stmts = &stmts,
+        .symbol_to_stmt = &.{},
+        .sym_to_side_effect_stmts = &.{},
+        .sym_to_referencing_stmts = &.{},
+        .sym_to_writer_stmts = &.{},
+        .allocator = std.testing.allocator,
+    };
+
+    try std.testing.expectEqual(@as(?u32, 0), findStmtIndexFromInfos(infos, 0));
+    try std.testing.expectEqual(@as(?u32, 0), findStmtIndexFromInfos(infos, 9));
+    try std.testing.expectEqual(@as(?u32, 1), findStmtIndexFromInfos(infos, 20));
+    try std.testing.expectEqual(@as(?u32, 1), findStmtIndexFromInfos(infos, 39));
+    try std.testing.expectEqual(@as(?u32, 2), findStmtIndexFromInfos(infos, 50));
+    try std.testing.expectEqual(@as(?u32, null), findStmtIndexFromInfos(infos, 10));
+    try std.testing.expectEqual(@as(?u32, null), findStmtIndexFromInfos(infos, 45));
+    try std.testing.expectEqual(@as(?u32, null), findStmtIndexFromInfos(infos, 70));
 }

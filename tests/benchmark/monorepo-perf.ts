@@ -7,12 +7,24 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ROOT, ZTS_BIN, buildBin as buildBinShared, getCommit, parsePositiveInt } from "./_runner";
+import {
+  ROOT,
+  ZTS_BIN,
+  buildBin as buildBinShared,
+  findNodeModulesBin,
+  getCommit,
+  parsePositiveInt,
+} from "./_runner";
 import { makeSyntheticMonorepo, parseProfileOutput, type ProfileRun } from "./monorepo-fixture";
-import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
+import {
+  computeMetricStats,
+  formatMetric,
+  type JsonStats,
+  toJsonStats,
+} from "./stats";
 
 const WARMUP = 2;
 const ITERATIONS = 5;
@@ -41,15 +53,6 @@ interface RunReport {
   phase_median_ms: Record<string, number>;
   top_phases: Array<{ phase: string; median_ms: number; percent_of_total: number }>;
   tool_comparison?: ToolResult[];
-}
-
-interface JsonStats {
-  median: number;
-  mean: number;
-  min: number;
-  max: number;
-  p95: number;
-  trimmed_mean: number;
 }
 
 interface ToolResult {
@@ -101,14 +104,6 @@ function parseArgs(argv: string[]): CliArgs {
   return args;
 }
 
-function findBin(name: string): string | null {
-  const local = join(__dirname, "node_modules", ".bin", name);
-  if (existsSync(local)) return local;
-  const root = join(ROOT, "node_modules", ".bin", name);
-  if (existsSync(root)) return root;
-  return null;
-}
-
 function parseNonNegativeInt(name: string, raw: string | undefined): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a non-negative integer`);
@@ -140,7 +135,7 @@ function runTool(tool: "zts" | "esbuild" | "rolldown", entry: string, outDir: st
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
 
-  const bin = tool === "zts" ? ZTS_BIN : findBin(tool);
+  const bin = tool === "zts" ? ZTS_BIN : findNodeModulesBin(tool);
   if (!bin) throw new Error(`${tool} binary not found`);
 
   const args: string[] = (() => {
@@ -160,17 +155,6 @@ function runTool(tool: "zts" | "esbuild" | "rolldown", entry: string, outDir: st
     throw new Error(`${tool} failed: ${r.stderr.toString().slice(0, 500)}`);
   }
   return { wallMs: performance.now() - start };
-}
-
-function toJsonStats(stats: MetricStats): JsonStats {
-  return {
-    median: stats.median,
-    mean: stats.mean,
-    min: stats.min,
-    max: stats.max,
-    p95: stats.p95,
-    trimmed_mean: stats.trimmedMean,
-  };
 }
 
 function topPhases(

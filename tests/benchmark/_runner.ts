@@ -22,6 +22,16 @@ export function buildBin(label: string): void {
   if (r.status !== 0) throw new Error("zig build failed");
 }
 
+/// `tests/benchmark/node_modules/.bin/<name>` → `<root>/node_modules/.bin/<name>` fallback.
+/// 비교 대상 (rolldown / rspack / esbuild) 가 어느 쪽에 설치돼 있어도 동작하도록.
+export function findNodeModulesBin(name: string): string | null {
+  const local = join(__dirname, "node_modules", ".bin", name);
+  if (existsSync(local)) return local;
+  const root = join(ROOT, "node_modules", ".bin", name);
+  if (existsSync(root)) return root;
+  return null;
+}
+
 export function getCommit(): string {
   const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
     cwd: ROOT,
