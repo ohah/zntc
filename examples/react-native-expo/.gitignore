@@ -1,0 +1,19 @@
+# Build artifacts
+.zts/
+.expo/
+node_modules/
+dist/
+*.jsbundle
+*.jsbundle.map
+
+# iOS
+ios/Pods/
+ios/build/
+
+# Android
+android/build/
+android/app/build/
+
+# Logs
+*.log
+npm-debug.log*

@@ -12,6 +12,7 @@
     "./documents",
     "./examples/web",
     "./examples/react-native-bare",
+    "./examples/react-native-expo",
     "./tests/integration",
     "./tests/e2e",
     "./tests/benchmark"
