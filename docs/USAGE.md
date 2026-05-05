@@ -26,6 +26,14 @@ zts preview [outdir]
 hashed JS/CSS/assets와 rewritten `dist/index.html`을 출력한다. `public/` 파일은
 변환 없이 outdir 루트로 복사하며 번들 산출물과 충돌하면 에러를 낸다.
 
+> **`@zts/web` 필요** (#2539) — `zts dev` / `zts preview` / `zts build` (app 모드) 는
+> `@zts/web` 패키지를 lazy import 한다. `@zts/core` 단독 install 사용자가 app
+> 모드를 호출하면 친화 에러 메시지 + exit 1. 설치:
+> ```bash
+> bun add -D @zts/web        # 또는 npm i -D @zts/web
+> ```
+> `zts transpile` / `zts bundle` (라이브러리 모드) 는 web 불필요.
+
 지원 옵션:
 
 - `--entry-html <file>` — 기본 `index.html`
