@@ -758,7 +758,12 @@ pub fn buildMetadataForAst(
     }
 
     // 3. 엔트리 포인트 final exports
-    const final_export_entries = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
+    const final_export_entries = try self.buildFinalExports(
+        is_entry,
+        module_index,
+        m.export_bindings,
+        &owned_nested_renames,
+    );
 
     // 크로스-모듈 상수 인라인: import binding의 canonical export가 상수이면 매핑
     const const_values = try self.buildCrossModuleConstValues(self.getModule(module_index).?, sem);
@@ -887,29 +892,63 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module) !std.StringHa
 /// 엔트리 포인트의 최종 export entry를 생성한다.
 /// is_entry가 false이거나 emit 대상 export가 없으면 null 반환. 반환 slice 의
 /// `local`/`exported` 는 모듈 소유 — caller 는 slice 자체만 free.
+///
+/// `export * from "./x"` (re-export-all) 의 경우 source 모듈의 named export 를
+/// `collectExportsRecursive` 로 평탄화해 entry 의 export 로 포함시킨다 (esbuild
+/// 와 rolldown 의 scope-hoisted ESM 동작과 일치). #2576.
+///
+/// `owned_strings` 는 caller 의 `owned_rename_values` (LinkingMetadata 의 owned
+/// slice 영역). collectExportsRecursive 가 NsExportPair.owned=true 를 emit 하는
+/// case (e.g. namespace inline literal 의 안전한 식별자) 시 ownership 을 caller
+/// 로 이전 — LinkingMetadata.deinit 시 free.
 pub fn buildFinalExports(
     self: *const Linker,
     is_entry: bool,
     module_index: u32,
     export_bindings: []const ExportBinding,
+    owned_strings: *std.ArrayListUnmanaged([]const u8),
 ) !?[]const LinkingMetadata.FinalExportEntry {
     if (!is_entry or export_bindings.len == 0) return null;
 
-    // re-export-all / `*` 는 entry export 가 아니므로 skip — len 이 entry 상한.
+    // collectExportsRecursive 가 직접 export + re-export-star 재귀 + diamond/circular
+    // 를 한 번에 평탄화. ESM 스펙 (export * 는 default 제외) 도 처리.
+    var pairs: std.ArrayList(@import("../linker.zig").Linker.NsExportPair) = .empty;
+    defer {
+        // owned=true 가 아직 살아있는 (caller 로 이전 안 된) item 은 여기서 free.
+        // 정상 path 에선 모두 owned=false 로 reset 후 ownership 이전됐어야 함.
+        for (pairs.items) |p| if (p.owned) self.allocator.free(p.local);
+        pairs.deinit(self.allocator);
+    }
+    var seen = std.StringHashMap(void).init(self.allocator);
+    defer seen.deinit();
+    var visited = std.AutoHashMap(u32, void).init(self.allocator);
+    defer visited.deinit();
+
+    try self.collectExportsRecursive(
+        &pairs,
+        &seen,
+        &visited,
+        @enumFromInt(module_index),
+        0,
+    );
+
+    if (pairs.items.len == 0) return null;
+
     var entries: std.ArrayListUnmanaged(LinkingMetadata.FinalExportEntry) = .empty;
     errdefer entries.deinit(self.allocator);
-    try entries.ensureTotalCapacityPrecise(self.allocator, export_bindings.len);
-    for (export_bindings) |eb| {
-        if (eb.kind.isReExportAll()) continue;
-        if (std.mem.eql(u8, eb.exported_name, "*")) continue;
+    try entries.ensureTotalCapacityPrecise(self.allocator, pairs.items.len);
+    for (pairs.items) |*p| {
+        // owned=true 는 buildInlineObjectStr 가 만든 namespace inline literal.
+        // ownership 을 caller 의 owned_rename_values 로 이전해 LinkingMetadata.deinit
+        // 시 free 되도록 — entries 의 .local 은 그 slice 를 borrow.
+        if (p.owned) {
+            try owned_strings.append(self.allocator, p.local);
+            p.owned = false;
+        }
         entries.appendAssumeCapacity(.{
-            .local = self.getCanonicalForExport(eb, module_index),
-            .exported = eb.exported_name,
+            .local = p.local,
+            .exported = p.exported,
         });
-    }
-    if (entries.items.len == 0) {
-        entries.deinit(self.allocator);
-        return null;
     }
     return try entries.toOwnedSlice(self.allocator);
 }
@@ -1421,7 +1460,17 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
     }
 
     // 5. 엔트리 포인트: final exports
-    const final_export_entries = try self.buildFinalExports(is_entry, module_index, m.export_bindings);
+    var owned_rename_values: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (owned_rename_values.items) |v| self.allocator.free(v);
+        owned_rename_values.deinit(self.allocator);
+    }
+    const final_export_entries = try self.buildFinalExports(
+        is_entry,
+        module_index,
+        m.export_bindings,
+        &owned_rename_values,
+    );
 
     return .{
         .skip_nodes = skip_nodes,
@@ -1429,6 +1478,7 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
         .final_exports = null,
         .final_export_entries = final_export_entries,
         .symbol_ids = sem.symbol_ids,
+        .owned_rename_values = owned_rename_values,
         .allocator = self.allocator,
     };
 }
