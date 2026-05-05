@@ -94,6 +94,41 @@ describe("detectCustomPlugins", () => {
   });
 });
 
+describe("detectCustomPlugins — project-기준 require (#2605 audit)", () => {
+  test("project node_modules 의 babel plugin 인식", () => {
+    // Fixture: project 디렉토리에 자체 node_modules + custom babel plugin install.
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fix-test" }));
+    mkdirSync(join(dir, "node_modules/my-fake-plugin"), { recursive: true });
+    writeFileSync(
+      join(dir, "node_modules/my-fake-plugin/package.json"),
+      JSON.stringify({ name: "my-fake-plugin", main: "index.js" }),
+    );
+    writeFileSync(
+      join(dir, "node_modules/my-fake-plugin/index.js"),
+      "module.exports = function fake(){ return {}; };",
+    );
+    writeFileSync(
+      join(dir, "babel.config.js"),
+      `module.exports = { plugins: ['my-fake-plugin'] };`,
+    );
+    // detectCustomPlugins 가 project 의 node_modules 에서 require 성공 → ZTS
+    // native 외 plugin 으로 인식.
+    expect(detectCustomPlugins(dir)).toBe(true);
+  });
+
+  test("babel-plugin-root-import 같은 외부 plugin — config 만 detect", () => {
+    // detectCustomPlugins 는 plugin require 성공 안 해도 string name 만으로 판단.
+    // require 실패 시점은 createBabelTransformer 의 ensureBabel — 그 단계에서
+    // project-기준 resolve fallback 으로 처리.
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fix-test" }));
+    writeFileSync(
+      join(dir, "babel.config.js"),
+      `module.exports = { plugins: [['babel-plugin-root-import', { rootPathPrefix: '~/' }]] };`,
+    );
+    expect(detectCustomPlugins(dir)).toBe(true);
+  });
+});
+
 describe("ZTS_NATIVE_PLUGIN_PATTERNS", () => {
   test("count >= 15 (sanity)", () => {
     expect(ZTS_NATIVE_PLUGIN_PATTERNS.length).toBeGreaterThanOrEqual(15);
