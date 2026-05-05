@@ -588,17 +588,9 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
   }
 }
 
-const APP_DEV_HMR_CLIENT_PATH = "/__zts_app_dev_hmr__";
-const APP_DEV_HMR_WS_PATH = "/__hmr";
-const HMR_MSG = Object.freeze({
-  Connected: "connected",
-  CssUpdate: "css-update",
-  ClearError: "clear-error",
-  Error: "error",
-  FullReload: "full-reload",
-});
-// RFC 6455 fixed handshake GUID — 변경 불가.
-const HMR_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+// HMR_MSG / APP_DEV_HMR_*_PATH / createHmrChannel 등은 @zts/server 가 source
+// of truth. dev/preview/build app 모드의 lazy load 한 web 모듈을 통해 접근
+// (web 의 dist 에 server 가 inline). #2539 PR #6a cut over.
 
 async function runAppDev(opts, config, configEnv, _dotenvVars) {
   const web = await loadWebModule();
@@ -783,105 +775,6 @@ async function loadWebModule() {
     }
   })();
   return webModulePromise;
-}
-
-function createAppDevHmrChannel() {
-  // Node 와 Bun runtime 의 WebSocket 표현이 다르므로 두 클라이언트 종류를 구분.
-  const nodeSockets = new Set();
-  const bunClients = new Set();
-  const connected = JSON.stringify({ type: HMR_MSG.Connected });
-  let currentError = null;
-  function broadcastPayload(message) {
-    const text = JSON.stringify(message);
-    for (const socket of nodeSockets) writeWsText(socket, text);
-    for (const ws of bunClients) ws.send(text);
-  }
-  function sendCurrentErrorToNode(socket) {
-    if (currentError) writeWsText(socket, JSON.stringify(currentError));
-  }
-  function sendCurrentErrorToBun(ws) {
-    if (currentError) ws.send(JSON.stringify(currentError));
-  }
-  return {
-    accept(req, socket) {
-      const key = req.headers["sec-websocket-key"];
-      if (!key) {
-        socket.destroy();
-        return;
-      }
-      const accept = createHash("sha1").update(`${key}${HMR_WS_GUID}`).digest("base64");
-      socket.write(
-        [
-          "HTTP/1.1 101 Switching Protocols",
-          "Upgrade: websocket",
-          "Connection: Upgrade",
-          `Sec-WebSocket-Accept: ${accept}`,
-          "",
-          "",
-        ].join("\r\n"),
-      );
-      nodeSockets.add(socket);
-      socket.on("close", () => nodeSockets.delete(socket));
-      socket.on("error", () => nodeSockets.delete(socket));
-      writeWsText(socket, connected);
-      sendCurrentErrorToNode(socket);
-    },
-    addBunClient(ws) {
-      bunClients.add(ws);
-      ws.send(connected);
-      sendCurrentErrorToBun(ws);
-    },
-    removeBunClient(ws) {
-      bunClients.delete(ws);
-    },
-    broadcast(message) {
-      broadcastPayload(message);
-    },
-    reportError(errors) {
-      currentError = {
-        type: HMR_MSG.Error,
-        errors: normalizeAppDevErrors(errors),
-        timestamp: Date.now(),
-      };
-      broadcastPayload(currentError);
-    },
-    reportThrownError(error) {
-      this.reportError([{ text: error?.stack || error?.message || String(error) }]);
-    },
-    clearError() {
-      currentError = null;
-    },
-  };
-}
-
-function normalizeAppDevErrors(errors) {
-  if (!Array.isArray(errors) || errors.length === 0) {
-    return [{ file: "", message: "Unknown build error" }];
-  }
-  return errors.map((error) => ({
-    file: typeof error?.location?.file === "string" ? error.location.file : "",
-    message: String(error?.text ?? error?.message ?? error),
-  }));
-}
-
-function writeWsText(socket, text) {
-  if (socket.destroyed) return;
-  const payload = Buffer.from(text);
-  let header;
-  if (payload.length < 126) {
-    header = Buffer.from([0x81, payload.length]);
-  } else if (payload.length < 65536) {
-    header = Buffer.allocUnsafe(4);
-    header[0] = 0x81;
-    header[1] = 126;
-    header.writeUInt16BE(payload.length, 2);
-  } else {
-    header = Buffer.allocUnsafe(10);
-    header[0] = 0x81;
-    header[1] = 127;
-    header.writeBigUInt64BE(BigInt(payload.length), 2);
-  }
-  socket.write(Buffer.concat([header, payload]));
 }
 
 // 다음 영역 (POSTCSS_CONFIG_NAMES / findPostcssConfig / isPostcssConfigFile /
@@ -2251,10 +2144,16 @@ async function emitRestartAfter(opts, reason, beforeSpawn) {
 
 async function runServe(opts, config, { appDev = null } = {}) {
   const isBun = typeof globalThis.Bun !== "undefined";
-  const hmr = appDev ? createAppDevHmrChannel() : null;
-  // appDev 모드에서만 web 의 APP_DEV_HMR_CLIENT 가 필요. handleRequest 가 sync 라
-  // 진입 시점에 한 번 load 후 closure 로 사용.
+  // appDev 모드에서만 web 모듈 (HMR_MSG / APP_DEV_HMR_*_PATH / createHmrChannel /
+  // APP_DEV_HMR_CLIENT) 이 필요. handleRequest / watch drain 의 hot path 마다
+  // `web.X.Y` property chain 을 재계산하지 않도록 진입 시점에 destructure 해
+  // 캐시 (per-request 호출, #2539 PR #6a /simplify finding).
   const web = appDev ? await loadWebModule() : null;
+  const hmr = web ? web.createHmrChannel() : null;
+  const HMR_MSG = web?.HMR_MSG;
+  const APP_DEV_HMR_CLIENT = web?.APP_DEV_HMR_CLIENT;
+  const APP_DEV_HMR_CLIENT_PATH = web?.APP_DEV_HMR_CLIENT_PATH;
+  const APP_DEV_HMR_WS_PATH = web?.APP_DEV_HMR_WS_PATH;
   let serverHandle = null;
   const mimeTypes = {
     ".html": "text/html",
@@ -2300,7 +2199,7 @@ async function runServe(opts, config, { appDev = null } = {}) {
     if (appDev && pathname === APP_DEV_HMR_CLIENT_PATH) {
       return {
         status: 200,
-        body: web.APP_DEV_HMR_CLIENT,
+        body: APP_DEV_HMR_CLIENT,
         type: "application/javascript",
       };
     }
