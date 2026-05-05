@@ -2,6 +2,17 @@
 
 export { createHmrBridge, type HmrBridge, type HmrBridgeOptions } from "./hmr-bridge.ts";
 export {
+  type CliServerApi,
+  type CliWebsocketEndpoint,
+  loadCliServerApi,
+  type LoadCliServerApiOptions,
+} from "./middleware/cli-server-api.ts";
+export {
+  type DevMiddleware,
+  loadDevMiddleware,
+  type LoadDevMiddlewareOptions,
+} from "./middleware/dev-middleware.ts";
+export {
   createBaseMiddleware,
   createDevHttpServer,
   type DevHttpServerDeps,
