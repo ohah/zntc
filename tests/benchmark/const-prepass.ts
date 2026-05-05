@@ -50,6 +50,7 @@ const TARGET_PHASES = [
   "shake.fixpoint.bfs.queue",
   "shake.fixpoint.bfs.follow.import",
   "shake.fixpoint.bfs.seed.export",
+  "shake.fixpoint.bfs.seed.export.direct",
   "shake.fixpoint.bfs.require.scan",
   "shake.fixpoint.bfs.final.mark.exports",
   "shake.fixpoint.bfs.enqueue.side.effects",
@@ -505,10 +506,10 @@ async function main(cli: CliArgs): Promise<void> {
   console.log();
   console.log("### nested bfs helper profile");
   console.log(
-    "| Fixture | Follow import | Follow self | Seed export | Seed count | Seed export self | Resolve | Mark | CJS | Namespace scan | Intermediate | Semantic lookup | Enqueue symbol | Opaque | Require scan | Require count | Side effects |",
+    "| Fixture | Follow import | Follow self | Seed export | Seed count | Seed export self | Direct local | Resolve | Mark | CJS | Namespace scan | Intermediate | Semantic lookup | Enqueue symbol | Opaque | Require scan | Require count | Side effects |",
   );
   console.log(
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   );
   for (const result of results) {
     console.log(
@@ -517,6 +518,7 @@ async function main(cli: CliArgs): Promise<void> {
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export"))} | ` +
         `${phaseCount(result, "shake.fixpoint.bfs.seed.export")} | ` +
         `${fmtMs(phaseSelfMedian(result, "shake.fixpoint.bfs.seed.export"))} | ` +
+        `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.direct"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.resolve"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.mark"))} | ` +
         `${fmtMs(phaseMedian(result, "shake.fixpoint.bfs.seed.export.cjs"))} | ` +

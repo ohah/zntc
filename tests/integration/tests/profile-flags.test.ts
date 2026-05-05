@@ -233,9 +233,10 @@ describe("profile CLI flags", () => {
     const fixture = await createFixture({
       "dep-a.ts": `export const a = 1; export const unusedA = 10;`,
       "dep-b.ts": `export const b = 2; export const unusedB = 20;`,
+      "barrel.ts": `export { b } from "./dep-b";`,
       "index.ts": `
         import { a } from "./dep-a";
-        import { b } from "./dep-b";
+        import { b } from "./barrel";
         console.log(a + b);
       `,
     });
@@ -266,6 +267,7 @@ describe("profile CLI flags", () => {
     expect(parsed.phases["shake.fixpoint.bfs.queue"]).toBeDefined();
     expect(parsed.phases["shake.fixpoint.bfs.follow.import"]).toBeDefined();
     expect(parsed.phases["shake.fixpoint.bfs.seed.export"]).toBeDefined();
+    expect(parsed.phases["shake.fixpoint.bfs.seed.export.direct"]).toBeDefined();
     expect(parsed.phases["shake.fixpoint.bfs.seed.export.resolve"]).toBeDefined();
     expect(parsed.phases["shake.prune"]).toBeDefined();
   });

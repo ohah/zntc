@@ -1715,6 +1715,64 @@ pub const TreeShaker = struct {
         try self.seedExport(target, ib.imported_name, queue, module_stmt_infos, reachable_stmts);
     }
 
+    fn seedDirectLocalExport(
+        self: *TreeShaker,
+        target_mod: usize,
+        imported_name: []const u8,
+        queue: *std.ArrayListUnmanaged(BfsItem),
+        module_stmt_infos: []?StmtInfos,
+        reachable_stmts: []?std.DynamicBitSet,
+    ) std.mem.Allocator.Error!bool {
+        const target_u32: u32 = @intCast(target_mod);
+        const target_idx: types.ModuleIndex = @enumFromInt(target_u32);
+        const target_module = self.graph.getModule(target_idx) orelse return false;
+        if (target_module.wrap_kind == .cjs) return false;
+        // Import-backed local exports (`import { x }; export { x }`, namespace barrels)
+        // still need resolveExportChain's fallback semantics.
+        if (target_module.import_records.len != 0 or target_module.import_bindings.len != 0) return false;
+
+        const binding = target_module.findExportBinding(imported_name) orelse return false;
+        if (binding.kind != .local) return false;
+
+        const target_infos = if (target_mod < module_stmt_infos.len)
+            (module_stmt_infos[target_mod] orelse return false)
+        else
+            return false;
+
+        const local_name = target_module.exportBindingLocalName(binding.*);
+        const target_sem = target_module.semantic orelse return false;
+        if (target_sem.scope_maps.len == 0) return false;
+        const direct_sym: u32 = switch (binding.symbol) {
+            .semantic => |sym| blk: {
+                if (sym.module != target_idx or sym.symbol.isNone()) return false;
+                const sym_idx = @intFromEnum(sym.symbol);
+                if (sym_idx >= target_sem.symbols.items.len) return false;
+                break :blk sym_idx;
+            },
+            .alias => @intCast(target_sem.scope_maps[0].get(local_name) orelse return false),
+        };
+
+        var direct_scope = profile.begin(.shake_fixpoint_bfs_seed_export_direct);
+        defer direct_scope.end();
+
+        {
+            var mark_scope = profile.begin(.shake_fixpoint_bfs_seed_export_mark);
+            defer mark_scope.end();
+
+            try self.markExportUsed(target_u32, binding.exported_name);
+            self.included.set(target_mod);
+        }
+
+        {
+            var enqueue_scope = profile.begin(.shake_fixpoint_bfs_seed_export_enqueue_symbol);
+            defer enqueue_scope.end();
+
+            try self.enqueueSymbolLiveStatements(target_u32, target_infos, direct_sym, reachable_stmts, queue);
+        }
+
+        return true;
+    }
+
     /// canonical export의 선언 statement를 BFS 큐에 추가.
     fn seedExport(
         self: *TreeShaker,
@@ -1728,6 +1786,8 @@ pub const TreeShaker = struct {
 
         var seed_scope = profile.begin(.shake_fixpoint_bfs_seed_export);
         defer seed_scope.end();
+
+        if (try self.seedDirectLocalExport(target_mod, imported_name, queue, module_stmt_infos, reachable_stmts)) return;
 
         const mod_count = self.graph.moduleCount();
         const canonical = blk: {
