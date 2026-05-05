@@ -12,11 +12,14 @@ import type { Socket } from "node:net";
 import type { WatchRebuildEvent } from "@zts/core";
 
 import { createMetroHmrAdapter, type MetroHmrAdapter } from "../metro-hmr-adapter.ts";
+import { colors, logError, logInfo } from "./logger.ts";
 import type { PlatformState, PlatformStateCallbacks } from "./platform-state.ts";
 
 export interface HmrBridgeOptions {
   /** ws path. Metro 호환 default `/hot`. */
   readonly path: string;
+  /** rebuild log 출력 비활성 (test 환경). default false. */
+  readonly silent?: boolean;
 }
 
 export interface HmrBridge {
@@ -37,14 +40,25 @@ function annotateUpdates(
   });
 }
 
-function buildOnRebuild(adapter: MetroHmrAdapter) {
+function buildOnRebuild(adapter: MetroHmrAdapter, opts: { silent?: boolean } = {}) {
   return (state: PlatformState, event: WatchRebuildEvent): void => {
     if (!event.success) {
-      adapter.sendError(state.buildError ?? event.error ?? "Unknown build error");
+      const errMsg = state.buildError ?? event.error ?? "Unknown build error";
+      adapter.sendError(errMsg);
+      if (!opts.silent) logError(`Build failed [${state.platform}]: ${errMsg}`);
       return;
     }
+    const changedCount = (event as unknown as { changed?: unknown[] }).changed?.length ?? 0;
+    const ms =
+      (event as unknown as { phaseDurations?: { total?: number } }).phaseDurations?.total ??
+      Date.now() - state.lastRebuildTime;
     if (event.graphChanged) {
       adapter.sendReload();
+      if (!opts.silent) {
+        logInfo(
+          `Graph changed ${colors.dim}[${state.platform}] (${changedCount} files, ${ms}ms)${colors.reset}, full reload`,
+        );
+      }
       return;
     }
     if (event.updates && event.updates.length > 0) {
@@ -53,6 +67,17 @@ function buildOnRebuild(adapter: MetroHmrAdapter) {
         state.platform,
       );
       adapter.sendUpdate(annotated);
+      if (!opts.silent) {
+        logInfo(
+          `HMR update ${colors.dim}[${state.platform}] ${event.updates.length} module(s) (${ms}ms)${colors.reset}`,
+        );
+      }
+      return;
+    }
+    if (!opts.silent && changedCount > 0) {
+      logInfo(
+        `Rebuilt ${colors.dim}[${state.platform}] (${changedCount} files, ${ms}ms, no code change)${colors.reset}`,
+      );
     }
   };
 }
@@ -107,7 +132,7 @@ function buildAckFrame(): Buffer {
 
 export function createHmrBridge(options: HmrBridgeOptions): HmrBridge {
   const adapter = createMetroHmrAdapter();
-  const onRebuild = buildOnRebuild(adapter);
+  const onRebuild = buildOnRebuild(adapter, { silent: options.silent });
   adapter.channel.onIncoming(buildIncomingHandler(adapter));
 
   return {

@@ -1,7 +1,7 @@
 // dev-server public surface.
 
 export { createHmrBridge, type HmrBridge, type HmrBridgeOptions } from "./hmr-bridge.ts";
-export { type RnDevServerHandle, serveRn } from "./serve.ts";
+export { type RnDevServerHandle, serveRn, type ServeRnExtras } from "./serve.ts";
 export {
   type CliServerApi,
   type CliWebsocketEndpoint,
@@ -22,6 +22,7 @@ export {
 export { parseRequestUrl, readJsonBody, sendJson, sendText } from "./http-utils.ts";
 export type { CustomizeFrame, RnDevServerOptions, RnDevServerOptionsInput } from "./options.ts";
 export { buildRnDevServerOptions } from "./options.ts";
+export { colors, logBundle, logError, logInfo, logWarn, printZtsRnBanner } from "./logger.ts";
 export {
   createPlatformState,
   createPlatformStateRegistry,

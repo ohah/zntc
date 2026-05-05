@@ -689,12 +689,10 @@ async function runRnDev(opts, config) {
     );
     process.exit(1);
   }
-  const rnPlatform = input.bundle.rnPlatform;
-  const handle = await rn.serveRn(rn.buildRnDevServerOptions(input));
-
-  if (opts.logLevel !== "silent") {
-    console.error(`[zts/rn] dev server listening on ${handle.url} (platform=${rnPlatform})`);
-  }
+  // serveRn 가 자체 banner / startup log 출력 (`logInfo` Metro-style badge).
+  const handle = await rn.serveRn(rn.buildRnDevServerOptions(input), {
+    silent: opts.logLevel === "silent",
+  });
 
   // Graceful shutdown — SIGINT / SIGTERM 시 handle.stop().
   const onSignal = async () => {
