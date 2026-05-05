@@ -3,8 +3,10 @@ import {
   APP_DEV_HMR_CLIENT_PATH,
   APP_DEV_HMR_WS_PATH,
   HMR_MSG,
+  HMR_RN_MSG,
   HMR_WS_GUID,
   type HmrMessage,
+  type HmrRnMessage,
   normalizeHmrErrors,
 } from "./protocol.ts";
 
@@ -111,5 +113,81 @@ describe("normalizeHmrErrors", () => {
       { file: "", message: "null" },
       { file: "", message: "undefined" },
     ]);
+  });
+});
+
+describe("HMR_RN_MSG enum (#2540 Metro 호환)", () => {
+  test("모든 메시지 타입이 Metro `hmr:` prefix 또는 log", () => {
+    expect(HMR_RN_MSG.UpdateStart).toBe("hmr:update-start");
+    expect(HMR_RN_MSG.Update).toBe("hmr:update");
+    expect(HMR_RN_MSG.UpdateDone).toBe("hmr:update-done");
+    expect(HMR_RN_MSG.Reload).toBe("hmr:reload");
+    expect(HMR_RN_MSG.Error).toBe("hmr:error");
+    expect(HMR_RN_MSG.Log).toBe("log");
+  });
+
+  test("frozen 객체로 런타임 변경 불가", () => {
+    expect(Object.isFrozen(HMR_RN_MSG)).toBe(true);
+  });
+
+  test("web HMR_MSG namespace 와 직교 (값 충돌 없음)", () => {
+    const webValues = new Set(Object.values(HMR_MSG));
+    for (const rnValue of Object.values(HMR_RN_MSG)) {
+      expect(webValues.has(rnValue)).toBe(false);
+    }
+  });
+});
+
+describe("HmrRnMessage type 의 round-trip", () => {
+  test("UpdateStart 는 isInitialUpdate optional", () => {
+    const initial: HmrRnMessage = { type: HMR_RN_MSG.UpdateStart, isInitialUpdate: true };
+    expect(JSON.parse(JSON.stringify(initial))).toEqual({
+      type: "hmr:update-start",
+      isInitialUpdate: true,
+    });
+    const incremental: HmrRnMessage = { type: HMR_RN_MSG.UpdateStart };
+    expect(JSON.parse(JSON.stringify(incremental))).toEqual({ type: "hmr:update-start" });
+  });
+
+  test("Update 는 modules 배열 (id/code/map)", () => {
+    const msg: HmrRnMessage = {
+      type: HMR_RN_MSG.Update,
+      modules: [
+        { id: "abc", code: "__d(...)" },
+        { id: 42, code: "__d(...)", map: "//# sourceMappingURL=..." },
+      ],
+    };
+    expect(JSON.parse(JSON.stringify(msg))).toEqual({
+      type: "hmr:update",
+      modules: [
+        { id: "abc", code: "__d(...)" },
+        { id: 42, code: "__d(...)", map: "//# sourceMappingURL=..." },
+      ],
+    });
+  });
+
+  test("UpdateDone / Reload 는 type 만", () => {
+    const done: HmrRnMessage = { type: HMR_RN_MSG.UpdateDone };
+    const reload: HmrRnMessage = { type: HMR_RN_MSG.Reload };
+    expect(JSON.parse(JSON.stringify(done))).toEqual({ type: "hmr:update-done" });
+    expect(JSON.parse(JSON.stringify(reload))).toEqual({ type: "hmr:reload" });
+  });
+
+  test("Error 는 message string", () => {
+    const msg: HmrRnMessage = { type: HMR_RN_MSG.Error, message: "boom" };
+    expect(JSON.parse(JSON.stringify(msg))).toEqual({ type: "hmr:error", message: "boom" });
+  });
+
+  test("Log 는 level + data tuple", () => {
+    const msg: HmrRnMessage = {
+      type: HMR_RN_MSG.Log,
+      level: "warn",
+      data: ["hello", { x: 1 }],
+    };
+    expect(JSON.parse(JSON.stringify(msg))).toEqual({
+      type: "log",
+      level: "warn",
+      data: ["hello", { x: 1 }],
+    });
   });
 });

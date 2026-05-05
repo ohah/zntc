@@ -33,6 +33,8 @@ packages/core/dist/
 packages/server/dist/
 packages/wasm/dist/
 packages/web/dist/
+packages/react-native/dist/
+examples/web/dist/
 # 루트 cwd 에 떨어지는 임시 빌드 산출물 (NAPI 직접 호출 경로 / examples 빌드 leftover).
 /dist/
 
