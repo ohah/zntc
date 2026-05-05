@@ -458,92 +458,64 @@ pub const ModuleGraph = struct {
             _ = try self.addModule(entry_path);
         }
 
-        var pool: std.Thread.Pool = undefined;
-        const pool_opts: std.Thread.Pool.Options = if (self.max_threads > 0)
-            .{ .allocator = self.allocator, .n_jobs = self.max_threads }
-        else
-            .{ .allocator = self.allocator };
-        const pool_ok = if (pool.init(pool_opts)) |_| true else |_| false;
-        defer if (pool_ok) pool.deinit();
-
-        if (pool_ok) {
-            var channel = MpscChannel(ScanResult).init(self.allocator);
-            defer channel.deinit();
-
-            var inflight: usize = 0;
-            var spawned_up_to: usize = 0;
-
-            // 초기 모듈(엔트리 + inject + runBeforeMain) 스폰
-            while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
-                const m = self.modules.at(spawned_up_to);
-                if (m.state == .ready) continue; // disabled 모듈은 스킵
-                const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
-                pool.spawn(scanWorker, .{ self, idx, &channel }) catch {
-                    // 스레드 풀 스폰 실패 시 메인에서 직접 실행
-                    scanWorker(self, idx, &channel);
-                };
-                inflight += 1;
+        var spawned_up_to: usize = 0;
+        if (self.max_threads == 0 and self.modules.count() == 1) {
+            // Tiny graphs spend more time opening the pool/channel than scanning the first batch.
+            // Keep the initial bounded batch on the main thread, then fall back to the pool if it
+            // discovers more work.
+            spawned_up_to = try self.scanModuleRangeSequential(0, 1);
+            const pending_after_entry = self.modules.count() - spawned_up_to;
+            if (pending_after_entry > 0 and pending_after_entry <= 16) {
+                spawned_up_to = try self.scanModuleRangeSequential(spawned_up_to, self.modules.count());
             }
+        }
 
-            // 이벤트 루프: 워커 결과 수신 → 적용 → 새 모듈 즉시 스폰
-            while (inflight > 0) {
-                const result = channel.recv();
-                inflight -= 1;
+        if (spawned_up_to < self.modules.count()) {
+            var pool: std.Thread.Pool = undefined;
+            const pool_opts: std.Thread.Pool.Options = if (self.max_threads > 0)
+                .{ .allocator = self.allocator, .n_jobs = self.max_threads }
+            else
+                .{ .allocator = self.allocator };
+            const pool_ok = if (pool.init(pool_opts)) |_| true else |_| false;
+            defer if (pool_ok) pool.deinit();
 
-                var apply_scope = profile.begin(.graph_discover_apply);
-                defer apply_scope.end();
+            if (!pool_ok) {
+                try self.discoverPendingModulesSequential(spawned_up_to);
+            } else {
+                var channel = MpscChannel(ScanResult).init(self.allocator);
+                defer channel.deinit();
 
-                const mod_idx = @intFromEnum(result.module_idx);
-                const mod_ptr = self.modules.at(mod_idx);
-                self.applySideEffectsFromPackageJson(mod_ptr);
-                mod_ptr.state = .ready;
+                var inflight: usize = 0;
 
-                const records = mod_ptr.import_records;
-                const resolves = result.resolve_outputs;
-
-                // SegmentedList (#1779 PR #3): append 가 기존 포인터를 무효화하지
-                // 않으므로 inflight 워커가 보유한 *Module 포인터는 계속 유효.
-                // 이전 ArrayList 구현이 필요로 했던 "capacity 부족 → drain → realloc"
-                // 2단계 분기가 사라짐. 결과를 그대로 적용.
-
-                // resolve 결과 적용
-                for (records, 0..) |record, rec_i| {
-                    if (rec_i < resolves.len) {
-                        try self.applyResolveResult(mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
-                    }
-                }
-                // require.context matches → graph dep 등록 (#1579 Phase 4).
-                try self.applyContextDepResults(mod_idx);
-                if (resolves.len > 0) self.allocator.free(resolves);
-
-                // 새로 발견된 모듈 즉시 워커에 디스패치
+                // Spawn the initial modules: entries, inject files, and run-before-main files.
                 while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
                     const m = self.modules.at(spawned_up_to);
-                    if (m.state == .ready) continue;
+                    if (m.state == .ready) continue; // Skip disabled modules.
                     const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
                     pool.spawn(scanWorker, .{ self, idx, &channel }) catch {
+                        // Fall back to the main thread if the pool cannot spawn this job.
                         scanWorker(self, idx, &channel);
                     };
                     inflight += 1;
                 }
-            }
-        } else {
-            // 순차 폴백 (스레드 풀 없음)
-            var parse_start: usize = 0;
-            while (parse_start < self.modules.count()) {
-                const parse_end = self.modules.count();
-                for (parse_start..parse_end) |j| {
-                    self.parseModule(@enumFromInt(@as(u32, @intCast(j))));
+
+                // Apply each worker result, then immediately dispatch newly discovered modules.
+                while (inflight > 0) {
+                    const result = channel.recv();
+                    inflight -= 1;
+                    try self.applyScanResult(result);
+
+                    // Dispatch newly discovered modules without waiting for a batch boundary.
+                    while (spawned_up_to < self.modules.count()) : (spawned_up_to += 1) {
+                        const m = self.modules.at(spawned_up_to);
+                        if (m.state == .ready) continue;
+                        const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(spawned_up_to)));
+                        pool.spawn(scanWorker, .{ self, idx, &channel }) catch {
+                            scanWorker(self, idx, &channel);
+                        };
+                        inflight += 1;
+                    }
                 }
-                for (parse_start..parse_end) |i| {
-                    const m_ptr = self.modules.at(i);
-                    self.applySideEffectsFromPackageJson(m_ptr);
-                    m_ptr.state = .ready;
-                }
-                for (parse_start..parse_end) |i| {
-                    try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
-                }
-                parse_start = parse_end;
             }
         }
 
@@ -1478,9 +1450,49 @@ pub const ModuleGraph = struct {
         resolve_outputs: []ResolveOutput,
     };
 
-    /// 이벤트 큐 스캔 워커: parse + resolve 후 결과를 채널로 전송.
-    /// 그래프 변형(addModule 등)은 하지 않으므로 메인 스레드의 sole writer 보장.
+    /// Event-queue scan worker: parse and resolve, then send the result to the channel.
+    /// It does not mutate graph topology, so the main thread remains the sole writer.
     fn scanWorker(self: *ModuleGraph, idx: ModuleIndex, channel: *MpscChannel(ScanResult)) void {
+        channel.send(self.scanModule(idx));
+    }
+
+    fn scanModuleRangeSequential(self: *ModuleGraph, start: usize, end: usize) !usize {
+        var i = start;
+        while (i < end) : (i += 1) {
+            const m = self.modules.at(i);
+            if (m.state == .ready) continue;
+            const result = self.scanModule(.fromUsize(i));
+            try self.applyScanResult(result);
+        }
+        return end;
+    }
+
+    fn applyScanResult(self: *ModuleGraph, result: ScanResult) !void {
+        var apply_scope = profile.begin(.graph_discover_apply);
+        defer apply_scope.end();
+        defer if (result.resolve_outputs.len > 0) self.allocator.free(result.resolve_outputs);
+
+        const mod_idx = @intFromEnum(result.module_idx);
+        const mod_ptr = self.modules.at(mod_idx);
+        self.applySideEffectsFromPackageJson(mod_ptr);
+        mod_ptr.state = .ready;
+
+        const records = mod_ptr.import_records;
+        const resolves = result.resolve_outputs;
+
+        // SegmentedList (#1779 PR #3) appends do not invalidate existing pointers,
+        // so *Module pointers held by inflight workers remain valid. The old
+        // ArrayList-era drain/realloc path is no longer needed.
+        for (records, 0..) |record, rec_i| {
+            if (rec_i < resolves.len) {
+                try self.applyResolveResult(mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
+            }
+        }
+        // Register require.context matches as graph dependencies (#1579 Phase 4).
+        try self.applyContextDepResults(mod_idx);
+    }
+
+    fn scanModule(self: *ModuleGraph, idx: ModuleIndex) ScanResult {
         var scope = profile.begin(.graph_discover_scan_worker);
         defer scope.end();
 
@@ -1492,14 +1504,12 @@ pub const ModuleGraph = struct {
 
         const mod_idx = @intFromEnum(idx);
         if (mod_idx >= self.modules.count()) {
-            channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
-            return;
+            return .{ .module_idx = idx, .resolve_outputs = &.{} };
         }
 
         const mod_ptr = self.modules.at(mod_idx);
         if (mod_ptr.import_records.len == 0) {
-            channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
-            return;
+            return .{ .module_idx = idx, .resolve_outputs = &.{} };
         }
 
         const module_path = mod_ptr.path;
@@ -1516,8 +1526,7 @@ pub const ModuleGraph = struct {
         const records = mod_ptr.import_records;
         var results = self.allocator.alloc(ResolveOutput, records.len) catch {
             self.addDiag(.resolve_error, .@"error", module_path, Span.EMPTY, .resolve, "Out of memory allocating resolve results", null);
-            channel.send(.{ .module_idx = idx, .resolve_outputs = &.{} });
-            return;
+            return .{ .module_idx = idx, .resolve_outputs = &.{} };
         };
         for (results) |*r| r.* = .{};
 
@@ -1563,7 +1572,7 @@ pub const ModuleGraph = struct {
             }
         }
 
-        channel.send(.{ .module_idx = idx, .resolve_outputs = results });
+        return .{ .module_idx = idx, .resolve_outputs = results };
     }
 
     /// 단일 모듈을 파싱하고 import를 추출한다.
