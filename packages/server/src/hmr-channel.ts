@@ -6,6 +6,7 @@ import {
   type HmrError,
   type HmrErrorMessage,
   type HmrMessage,
+  type HmrRnMessage,
   normalizeHmrErrors,
 } from "./protocol.ts";
 import { buildHandshakeResponse, writeTextFrame } from "./ws-frame.ts";
@@ -24,8 +25,12 @@ export interface HmrChannel {
   /** Bun.serve 의 WebSocket client 등록. */
   addBunClient(ws: BunHmrClient): void;
   removeBunClient(ws: BunHmrClient): void;
-  /** 모든 client (Node + Bun) 에 메시지 송출. */
-  broadcast(message: HmrMessage): void;
+  /**
+   * 모든 client (Node + Bun) 에 메시지 송출. web overlay 의 `HmrMessage` 또는
+   * RN Metro 호환 `HmrRnMessage` (#2540) 모두 허용. send impl 은 JSON.stringify
+   * 만 — 메시지 schema 검증은 caller 책임 (type-safe 호출).
+   */
+  broadcast(message: HmrMessage | HmrRnMessage): void;
   /** Build error 를 전체 broadcast + 새 connection 에도 자동 송출. */
   reportError(errors: readonly unknown[] | unknown): void;
   /** 런타임 throw 를 stack 추출해 reportError 로 전달. */

@@ -17,7 +17,7 @@ export {
   type HmrRnUpdateStartMessage,
 } from "@zts/server";
 
-export { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from "./rn-constants.ts";
+export { createMetroHmrAdapter, type MetroHmrAdapter } from "./metro-hmr-adapter.ts";
 export type {
   CustomResolver,
   MetroPlatform,
@@ -25,4 +25,5 @@ export type {
   ResolutionContext,
 } from "./metro-resolver-types.ts";
 export { escapeRegex } from "./plugins/escape-regex.ts";
+export { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from "./rn-constants.ts";
 export { HMR_CLIENT_SUFFIX, ZTS_HMR_CLIENT_CODE } from "./runtime-loader.ts";
