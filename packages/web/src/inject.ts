@@ -1,0 +1,83 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { basename, join, sep } from "node:path";
+
+import { APP_DEV_HMR_CLIENT_PATH } from "@zts/server";
+
+interface BundleOutputFile {
+  path?: string;
+}
+
+export interface BundleResult {
+  outputFiles?: readonly BundleOutputFile[];
+}
+
+const isCssFile = (path: string): boolean => path.endsWith(".css");
+
+export function joinUrl(base: string | undefined, rel: string): string {
+  if (!base) return rel;
+  return `${base}${rel}`;
+}
+
+/**
+ * `<outdir>/index.html` 을 읽어 `build(html)` 결과 (`<head>` 직전 / `<script>`
+ * 직전 삽입할 tag string) 를 끼워 넣는다. ENOENT 면 silent skip — dev mode 에서
+ * 아직 entry HTML 이 없을 수 있음.
+ */
+export function injectIntoDevHtml(outdir: string, build: (html: string) => string | null): void {
+  const htmlPath = join(outdir, "index.html");
+  let html: string;
+  try {
+    html = readFileSync(htmlPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    throw err;
+  }
+  const tag = build(html);
+  if (!tag) return;
+  const next = html.includes("</head>")
+    ? html.replace("</head>", `${tag}\n</head>`)
+    : html.replace("<script", `${tag}\n<script`);
+  writeFileSync(htmlPath, next);
+}
+
+/** `<script type="module" src="/__zts_app_dev_hmr__"></script>` 를 head 에 1회 삽입. */
+export function injectAppDevHmrClient(outdir: string): void {
+  injectIntoDevHtml(outdir, (html) => {
+    if (html.includes(APP_DEV_HMR_CLIENT_PATH)) return null;
+    return `<script type="module" src="${APP_DEV_HMR_CLIENT_PATH}"></script>`;
+  });
+}
+
+export function injectAppDevBundleCssLinks(
+  outdir: string,
+  base: string | undefined,
+  bundleResult: BundleResult | null | undefined,
+): void {
+  injectIntoDevHtml(outdir, (html) => {
+    const cssHrefs: string[] = [];
+    for (const file of bundleResult?.outputFiles ?? []) {
+      if (!file?.path || !isCssFile(file.path)) continue;
+      const href = joinUrl(base, basename(file.path));
+      if (!html.includes(`href="${href}"`) && !html.includes(`href='${href}'`)) cssHrefs.push(href);
+    }
+    if (cssHrefs.length === 0) return null;
+    return cssHrefs.map((href) => `<link rel="stylesheet" href="${href}">`).join("\n");
+  });
+}
+
+export function injectAppDevPipelineCssLinks(
+  outdir: string,
+  base: string | undefined,
+  cssRelPaths: readonly string[],
+): void {
+  if (cssRelPaths.length === 0) return;
+  injectIntoDevHtml(outdir, (html) => {
+    const tags: string[] = [];
+    for (const rel of cssRelPaths) {
+      const href = joinUrl(base, rel.replaceAll(sep, "/"));
+      if (html.includes(`href="${href}"`) || html.includes(`href='${href}'`)) continue;
+      tags.push(`<link rel="stylesheet" href="${href}">`);
+    }
+    return tags.length === 0 ? null : tags.join("\n");
+  });
+}
