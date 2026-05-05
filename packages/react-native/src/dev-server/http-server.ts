@@ -6,6 +6,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import type { HmrBridge } from "./hmr-bridge.ts";
 import { parseRequestUrl, sendText } from "./http-utils.ts";
+import type { CliServerApi } from "./middleware/cli-server-api.ts";
+import { DEV_MIDDLEWARE_PATH_PREFIXES, type DevMiddleware } from "./middleware/dev-middleware.ts";
 import type { RnDevServerOptions } from "./options.ts";
 import type { PlatformStateRegistry } from "./platform-state.ts";
 import { handleAssetRequest, isAssetRoute } from "./routes/assets.ts";
@@ -29,8 +31,12 @@ export interface DevHttpServerDeps {
   broadcast: Broadcast;
   /** per-platform state — bundle/map/hmr-map 라우트가 plat 분기 시 사용. */
   platforms: PlatformStateRegistry;
-  /** HMR bridge — `/hot` upgrade 핸들 + adapter (PR #E). 미지정 시 HMR 비활성. */
+  /** HMR bridge — `/hot` upgrade 핸들 + adapter. 미지정 시 HMR 비활성. */
   hmrBridge?: HmrBridge;
+  /** RN DevTools dev-middleware (peer optional). 미지정 시 inspector 비활성. */
+  devMiddleware?: DevMiddleware;
+  /** cli-server-api 의 websocket endpoints (peer optional). */
+  cliServerApi?: CliServerApi;
 }
 
 export interface DevHttpServerHandle {
@@ -111,6 +117,12 @@ export function createBaseMiddleware(
       ).catch(next);
       return;
     }
+    // dev-middleware (peer optional) — /json, /open-debugger, /debugger-frontend,
+    // /launch-js-devtools 처리. 미설치 시 next() 로 fallthrough.
+    if (deps.devMiddleware && DEV_MIDDLEWARE_PATH_PREFIXES.some((p) => pathname.startsWith(p))) {
+      deps.devMiddleware.middleware(req, res, next);
+      return;
+    }
     next();
   };
 }
@@ -130,6 +142,43 @@ function chainToHandler(
   };
 }
 
+/**
+ * WS upgrade chain — cli-server-api / dev-middleware 의 websocket endpoints
+ * 를 등록. hmrBridge 가 자체 `attachToServer` 로 `/hot` 처리. 매칭 안 되면
+ * default Node http upgrade 동작 (socket destroy).
+ */
+function attachWebSocketEndpoints(
+  server: Server,
+  deps: DevHttpServerDeps,
+  options: RnDevServerOptions,
+): void {
+  const cli = deps.cliServerApi?.websocketEndpoints;
+  const dev = deps.devMiddleware?.websocketEndpoints;
+  if (!cli && !dev) return;
+
+  server.on("upgrade", (req, socket, head) => {
+    const url = parseRequestUrl(req, options.host, options.port);
+    if (cli) {
+      for (const [path, ep] of Object.entries(cli)) {
+        if (url.pathname === path || url.pathname.startsWith(`${path}?`)) {
+          ep.handleUpgrade(req, socket, head, (ws) => ep.emit("connection", ws, req));
+          return;
+        }
+      }
+    }
+    if (dev) {
+      for (const [path, ep] of Object.entries(dev)) {
+        if (url.pathname === path || url.pathname.startsWith(`${path}/`)) {
+          ep.handleUpgrade(req, socket, head, (ws) => ep.emit("connection", ws, req));
+          return;
+        }
+      }
+    }
+    // 매칭 안 된 path 는 hmrBridge 의 별도 listener 가 처리 가능 — destroy 안 함.
+    // PR #I 에서 단일 listener 로 통합 후 unmatched path destroy 정책 정리.
+  });
+}
+
 export async function createDevHttpServer(
   options: RnDevServerOptions,
   deps: DevHttpServerDeps,
@@ -143,6 +192,7 @@ export async function createDevHttpServer(
     : baseMiddleware;
   server.on("request", chainToHandler(enhanced));
   deps.hmrBridge?.attachToServer(server);
+  attachWebSocketEndpoints(server, deps, options);
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
