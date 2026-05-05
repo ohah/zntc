@@ -82,5 +82,15 @@ export {
   transformCssModules,
   type TransformCssModulesOptions,
 } from "./style/css-modules.ts";
+export {
+  type AppCssPipelineResult,
+  type AppDevController,
+  type AppDevControllerDeps,
+  type AppDevControllerOptions,
+  cleanupPostcssTempRoot,
+  createAppDevController,
+  prepareAppCssPipelineRoot,
+  type PrepareAppCssPipelineRootOptions,
+} from "./dev-controller.ts";
 // dev-overlay-client 는 .mjs 라 별도 export — 브라우저 inject 용 string.
 export { APP_DEV_HMR_CLIENT } from "../runtime/dev-overlay-client.mjs";
