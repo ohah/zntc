@@ -139,6 +139,7 @@ export const FLAG_REGISTRY = [
   { kind: "string", flag: "--public-dir", target: "publicDir" },
   { kind: "string", flag: "--base", target: "base" },
   { kind: "string", flag: "--test262", target: "test262" },
+  { kind: "string", flag: "--host", target: "host", forms: ["equal"] },
 
   // ─── kind=int — parseInt ───
   { kind: "int", flag: "--watch-delay", target: "watchDelay", forms: ["equal"] },
