@@ -884,6 +884,11 @@ function writeWsText(socket, text) {
   socket.write(Buffer.concat([header, payload]));
 }
 
+// 다음 영역 (POSTCSS_CONFIG_NAMES / findPostcssConfig / isPostcssConfigFile /
+// isCssFile / loadPostcssConfig / collectPostcssMessages / logPostcssProcessed /
+// runPostcssIfConfigured / runPostcssForAppDev) 은 packages/web/src/style/
+// postcss.ts 에 동등 사본이 있다. PR #5e 시점에 본 정의를 web 으로 redirect 후
+// 제거 — 그 전까지 logic 변경 시 양쪽을 동시에 수정 (#2539).
 const POSTCSS_CONFIG_NAMES = [
   "postcss.config.mjs",
   "postcss.config.js",
