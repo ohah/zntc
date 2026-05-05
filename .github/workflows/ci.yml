@@ -131,20 +131,13 @@ jobs:
       - name: Run NAPI tests (Node.js)
         run: node --test packages/core/napi.test.mjs
 
-      - name: Run CLI tests (Bun)
-        run: cd packages/core && bun test bin/zts.test.ts
-
-      # @zts/server (private, internal) + @zts/web 의 self-build 검증 (#2539).
-      # zts CLI 가 자기 자신을 빌드하는 dogfooding (외부 도구 없이
-      # `node ../core/bin/zts.mjs --bundle ...` + `tsc --emitDeclarationOnly`).
-      # @zts/server 의 src 가 @zts/web 의 dist 에 자동 inline 되는지 검증
-      # (workspace dep auto-inline). 본 시점은 server 가 빈 entry 라 inline
-      # 분량 0 — PR #3 후 grep 검증 추가 예정.
-      - name: Build @zts/server (self-build 검증)
-        run: bun run --cwd packages/server build
-
-      - name: Build @zts/web (self-build + inline 검증)
-        run: bun run --cwd packages/web build
+      # CLI 테스트의 dev/preview/build app 시나리오는 spawn 한 zts.mjs 가
+      # `import("@zts/web")` 을 호출 → packages/web/dist/index.js 필요.
+      # `bun run test` 가 packages/core/package.json 의 pretest hook 을 트리거 →
+      # @zts/server + @zts/web 빌드 → bin/zts.test.ts 실행 (arg passthrough).
+      # zts 자체 self-build (dogfooding) 도 같이 검증 (#2539).
+      - name: Run CLI tests (Bun, with @zts/server + @zts/web self-build via pretest)
+        run: cd packages/core && bun run test bin/zts.test.ts
 
       # ZTS 코어의 ES5 다운레벨링 / chunk split runtime helper / external 처리
       # 회귀 검증 (wasm 발견 버그가 NAPI 에서도 동일 발생 확인됨). known bugs
