@@ -205,4 +205,15 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   "codegenTransform",
   // ─── config-only ───
   "extends",
+  // ─── React Native dev server (#2605) — top-level keys for RN config ───
+  "root",
+  "entry",
+  "dev",
+  "outDir",
+  "bundler",
+  "resolver",
+  "transformer",
+  "serializer",
+  "symbolicator",
+  "watchFolders",
 ];

@@ -192,3 +192,41 @@ describe("KNOWN_CONFIG_KEYS", () => {
     }
   });
 });
+
+describe("KNOWN_CONFIG_KEYS — React Native config keys (#2605)", () => {
+  // 번개 BungaeConfig 영역 — runRnDev 가 zts.config.ts 에서 인식.
+  const rnConfigKeys = [
+    "root",
+    "entry",
+    "dev",
+    "outDir",
+    "bundler",
+    "resolver",
+    "transformer",
+    "serializer",
+    "symbolicator",
+    "watchFolders",
+  ];
+
+  test("모든 RN 영역 키가 unknown 경고 없음", () => {
+    const config = Object.fromEntries(rnConfigKeys.map((k) => [k, true]));
+    const result = warnUnknownKeys(config, KNOWN_CONFIG_KEYS, { silent: true });
+    expect(result).toEqual([]);
+  });
+
+  test("RN 키 typo — `resolvar` → `resolver` 제안", () => {
+    expect(suggestKey("resolvar", KNOWN_CONFIG_KEYS)).toBe("resolver");
+  });
+
+  test("RN 키 typo — `transfomer` → `transformer` 제안", () => {
+    expect(suggestKey("transfomer", KNOWN_CONFIG_KEYS)).toBe("transformer");
+  });
+
+  test("RN 키 typo — `symbolicater` → `symbolicator` 제안", () => {
+    expect(suggestKey("symbolicater", KNOWN_CONFIG_KEYS)).toBe("symbolicator");
+  });
+
+  test("RN 키 typo — `watchFolder` → `watchFolders` 제안", () => {
+    expect(suggestKey("watchFolder", KNOWN_CONFIG_KEYS)).toBe("watchFolders");
+  });
+});
