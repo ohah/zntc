@@ -841,7 +841,7 @@ pub const TreeShaker = struct {
                 var has_re_export = false;
                 var has_require = false;
                 for (m.export_bindings) |eb| {
-                    if (eb.kind == .re_export or eb.kind.isReExportAll()) has_re_export = true;
+                    if (eb.kind.isAnyReExport()) has_re_export = true;
                     if (eb.kind != .re_export_star) continue;
                     const rec_idx = eb.import_record_index orelse continue;
                     if (rec_idx >= m.import_records.len) continue;
@@ -2048,7 +2048,7 @@ pub const TreeShaker = struct {
         }
         // re-export 처리
         for (m.export_bindings) |eb| {
-            if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
+            if (!eb.kind.isAnyReExport()) continue;
             if (eb.import_record_index) |rec_idx| {
                 if (rec_idx < m.import_records.len) {
                     const src_idx = m.import_records[rec_idx].resolved;
@@ -2101,7 +2101,7 @@ pub const TreeShaker = struct {
         // re-export 체인 전파: export * / named re-export 대상 모듈도 시드.
         const m = self.getModule(mod_idx) orelse return;
         for (m.export_bindings) |eb| {
-            if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
+            if (!eb.kind.isAnyReExport()) continue;
             const rec_idx = eb.import_record_index orelse continue;
             if (rec_idx >= m.import_records.len) continue;
             const src_idx = m.import_records[rec_idx].resolved;
@@ -2253,17 +2253,15 @@ pub const TreeShaker = struct {
 
         var changed = false;
         for (self.re_export_modules.items) |i| {
-            var module_scope = profile.begin(.shake_fixpoint_re_exports_module);
-            defer module_scope.end();
-
-            if (i >= self.graph.moduleCount()) continue;
             if (!self.included.isSet(i)) continue;
             const m = self.getModule(@intCast(i)) orelse continue;
+            var module_scope = profile.begin(.shake_fixpoint_re_exports_module);
+            defer module_scope.end();
             var ns_usage: ReExportNsConsumerUsage = .{};
             var ns_usage_built = false;
             defer ns_usage.deinit(self.allocator);
             for (m.export_bindings) |eb| {
-                if (eb.kind != .re_export and !eb.kind.isReExportAll()) continue;
+                if (!eb.kind.isAnyReExport()) continue;
                 const rec_idx = eb.import_record_index orelse continue;
                 if (rec_idx >= m.import_records.len) continue;
                 const src_idx = m.import_records[rec_idx].resolved;
@@ -2362,72 +2360,11 @@ pub const TreeShaker = struct {
             errdefer self.allocator.free(map);
             for (map) |*slot| slot.* = null;
             for (m.import_records, 0..) |rec, rec_i| {
-                map[rec_i] = stmtIndexForPos(infos, rec.span.start);
+                map[rec_i] = stmt_info_mod.findStmtIndexFromInfos(infos, rec.span.start);
             }
             self.import_record_stmt_indices[mod_idx] = map;
         }
         return self.import_record_stmt_indices[mod_idx].?;
-    }
-
-    fn stmtIndexForPos(infos: StmtInfos, pos: u32) ?u32 {
-        var lo: usize = 0;
-        var hi: usize = infos.stmts.len;
-        while (lo < hi) {
-            const mid = lo + (hi - lo) / 2;
-            const span = infos.stmts[mid].span;
-            if (pos < span.start) {
-                hi = mid;
-            } else if (pos >= span.end) {
-                lo = mid + 1;
-            } else {
-                return @intCast(mid);
-            }
-        }
-        return null;
-    }
-
-    test "stmtIndexForPos maps import record spans to containing top-level statement" {
-        const StmtInfo = stmt_info_mod.StmtInfo;
-        var stmts = [_]StmtInfo{
-            .{
-                .node_idx = 0,
-                .span = .{ .start = 0, .end = 10 },
-                .has_side_effects = false,
-                .declared_symbols = &.{},
-                .referenced_symbols = &.{},
-            },
-            .{
-                .node_idx = 1,
-                .span = .{ .start = 20, .end = 40 },
-                .has_side_effects = false,
-                .declared_symbols = &.{},
-                .referenced_symbols = &.{},
-            },
-            .{
-                .node_idx = 2,
-                .span = .{ .start = 50, .end = 70 },
-                .has_side_effects = false,
-                .declared_symbols = &.{},
-                .referenced_symbols = &.{},
-            },
-        };
-        const infos = StmtInfos{
-            .stmts = &stmts,
-            .symbol_to_stmt = &.{},
-            .sym_to_side_effect_stmts = &.{},
-            .sym_to_referencing_stmts = &.{},
-            .sym_to_writer_stmts = &.{},
-            .allocator = std.testing.allocator,
-        };
-
-        try std.testing.expectEqual(@as(?u32, 0), stmtIndexForPos(infos, 0));
-        try std.testing.expectEqual(@as(?u32, 0), stmtIndexForPos(infos, 9));
-        try std.testing.expectEqual(@as(?u32, 1), stmtIndexForPos(infos, 20));
-        try std.testing.expectEqual(@as(?u32, 1), stmtIndexForPos(infos, 39));
-        try std.testing.expectEqual(@as(?u32, 2), stmtIndexForPos(infos, 50));
-        try std.testing.expectEqual(@as(?u32, null), stmtIndexForPos(infos, 10));
-        try std.testing.expectEqual(@as(?u32, null), stmtIndexForPos(infos, 45));
-        try std.testing.expectEqual(@as(?u32, null), stmtIndexForPos(infos, 70));
     }
 
     /// `isImportLiveInModule` 은 reachable_stmts 미초기화 시 보수적으로 true 를 반환하지만,
@@ -2641,7 +2578,7 @@ pub const TreeShaker = struct {
         try self.markExportUsed(module_index, ALL_EXPORTS_SENTINEL);
         for (m.export_bindings) |eb| {
             // re-export 소스 include는 sentinel skip 전에 처리
-            if (eb.kind.isReExportAll() or eb.kind == .re_export) {
+            if (eb.kind.isAnyReExport()) {
                 if (eb.import_record_index) |rec_idx| {
                     if (rec_idx < m.import_records.len) {
                         const source_idx = m.import_records[rec_idx].resolved;

@@ -7,6 +7,27 @@ export interface MetricStats {
   trimmedMean: number;
 }
 
+/// JSON 직렬화용 통계 형태 — `MetricStats` 와 동일하지만 `trimmed_mean` snake_case.
+export interface JsonStats {
+  median: number;
+  mean: number;
+  min: number;
+  max: number;
+  p95: number;
+  trimmed_mean: number;
+}
+
+export function toJsonStats(stats: MetricStats): JsonStats {
+  return {
+    median: stats.median,
+    mean: stats.mean,
+    min: stats.min,
+    max: stats.max,
+    p95: stats.p95,
+    trimmed_mean: stats.trimmedMean,
+  };
+}
+
 export function computeMetricStats(samples: number[]): MetricStats {
   if (samples.length === 0) {
     throw new Error("cannot compute benchmark stats from empty samples");

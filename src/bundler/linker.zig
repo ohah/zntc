@@ -619,7 +619,7 @@ pub const Linker = struct {
         var it = self.graph.modulesIterator();
         while (it.next()) |m| {
             for (m.export_bindings) |eb| {
-                if (eb.kind == .re_export or eb.kind.isReExportAll()) {
+                if (eb.kind.isAnyReExport()) {
                     self.chain_cache_enabled = true;
                     break;
                 }

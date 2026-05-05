@@ -18,12 +18,24 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { ROOT, ZTS_BIN, buildBin as buildBinShared, getCommit, parseProfileJson } from "./_runner";
-import { computeMetricStats, formatMetric, type MetricStats } from "./stats";
+import {
+  ROOT,
+  ZTS_BIN,
+  buildBin as buildBinShared,
+  findNodeModulesBin,
+  getCommit,
+  parseProfileJson,
+} from "./_runner";
+import {
+  computeMetricStats,
+  formatMetric,
+  type JsonStats,
+  toJsonStats,
+} from "./stats";
 
 const WARMUP = 5;
 const ITERATIONS = 20;
@@ -74,14 +86,6 @@ interface RunResult {
   wall_ms: number;
   zts_profile_total_ms?: number;
   phases?: Record<string, number>;
-}
-
-function findBin(name: string): string | null {
-  const local = join(__dirname, "node_modules", ".bin", name);
-  if (existsSync(local)) return local;
-  const root = join(ROOT, "node_modules", ".bin", name);
-  if (existsSync(root)) return root;
-  return null;
 }
 
 function runZts(entry: string, outDir: string, externals: string[]): RunResult {
@@ -166,29 +170,8 @@ function runRspack(bin: string, configPath: string, outDir: string): RunResult {
   return { wall_ms };
 }
 
-interface Stats {
-  median: number;
-  mean: number;
-  min: number;
-  max: number;
-  p95: number;
-  trimmed_mean: number; // min/max 제거한 평균
-}
-
-function computeStats(samples: number[]): Stats {
-  const stats = computeMetricStats(samples);
-  return toJsonStats(stats);
-}
-
-function toJsonStats(stats: MetricStats): Stats {
-  return {
-    median: stats.median,
-    mean: stats.mean,
-    min: stats.min,
-    max: stats.max,
-    p95: stats.p95,
-    trimmed_mean: stats.trimmedMean,
-  };
+function computeStats(samples: number[]): JsonStats {
+  return toJsonStats(computeMetricStats(samples));
 }
 
 // ─── Fixture spec ───
@@ -211,8 +194,8 @@ const FIXTURES: FixtureSpec[] = [
 
 interface ToolResult {
   tool: ToolName;
-  wall_ms_stats: Stats | null;
-  zts_profile_total_ms_stats?: Stats;
+  wall_ms_stats: JsonStats | null;
+  zts_profile_total_ms_stats?: JsonStats;
   phase_median_ms?: Record<string, number>;
   skipped?: string;
 }
@@ -244,8 +227,8 @@ function createRunners(
   tmp: string,
   externals: string[],
 ): Partial<Record<ToolName, () => RunResult>> {
-  const rolldownBin = findBin("rolldown");
-  const rspackBin = findBin("rspack");
+  const rolldownBin = findNodeModulesBin("rolldown");
+  const rspackBin = findNodeModulesBin("rspack");
   const rspackOut = join(tmp, "rspack-out");
   const rspackConfig = join(tmp, "rspack.config.cjs");
   writeRspackConfig(rspackConfig, entry, rspackOut, externals);
@@ -360,7 +343,7 @@ function ztsProfileMedian(fixture: FixtureResult): number | null {
 
 function fastestTool(fixture: FixtureResult): string {
   const candidates = fixture.tools
-    .filter((r): r is ToolResult & { wall_ms_stats: Stats } => r.wall_ms_stats !== null)
+    .filter((r): r is ToolResult & { wall_ms_stats: JsonStats } => r.wall_ms_stats !== null)
     .sort((a, b) => a.wall_ms_stats.median - b.wall_ms_stats.median);
   if (candidates.length === 0) return "-";
   const fastest = candidates[0];
@@ -423,7 +406,7 @@ function parseArgs(argv: string[]): CliArgs {
 
 async function main(cli: CliArgs) {
   buildBin();
-  const available = TOOL_ORDER.filter((tool) => tool === "zts" || findBin(tool)).join(",");
+  const available = TOOL_ORDER.filter((tool) => tool === "zts" || findNodeModulesBin(tool)).join(",");
   console.log(`[bundle-perf] zts ${getCommit()} | warmup=${WARMUP} iter=${ITERATIONS}`);
   console.log(`[bundle-perf] available tools: ${available}`);
   console.log();
