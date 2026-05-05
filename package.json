@@ -11,6 +11,7 @@
     "./packages/vite-plugin-zts",
     "./documents",
     "./examples/web",
+    "./examples/react-native-bare",
     "./tests/integration",
     "./tests/e2e",
     "./tests/benchmark"
