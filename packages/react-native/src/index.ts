@@ -25,3 +25,4 @@ export type {
   ResolutionContext,
 } from "./metro-resolver-types.ts";
 export { escapeRegex } from "./plugins/escape-regex.ts";
+export { HMR_CLIENT_SUFFIX, ZTS_HMR_CLIENT_CODE } from "./runtime-loader.ts";
