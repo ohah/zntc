@@ -7,6 +7,7 @@
   "scripts": {
     "start": "expo start",
     "start:zts": "zts dev --platform=react-native --rn-platform=ios index.js",
+    "build:zts:core": "bun run --cwd ../../packages/core build",
     "bundle:zts:ios": "zts bundle index.js --platform=react-native --rn-platform=ios -o dist/main.ios.jsbundle",
     "bundle:zts:android": "zts bundle index.js --platform=react-native --rn-platform=android -o dist/main.android.jsbundle",
     "reset-project": "node ./scripts/reset-project.js",
