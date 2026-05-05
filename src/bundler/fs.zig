@@ -118,6 +118,108 @@ pub fn listDir(alloc: std.mem.Allocator, path: []const u8) FsError![]DirEntry {
     return Implementation.init().listDir(alloc, path);
 }
 
+pub const ReadFileCache = if (is_wasm_build) VirtualReadFileCache else RealReadFileCache;
+
+pub const RealReadFileCache = struct {
+    dirs: std.StringHashMapUnmanaged(std.fs.Dir) = .{},
+    mutex: std.Thread.Mutex = .{},
+
+    pub fn deinit(self: *RealReadFileCache, allocator: std.mem.Allocator) void {
+        var value_it = self.dirs.valueIterator();
+        while (value_it.next()) |dir| dir.close();
+        var key_it = self.dirs.keyIterator();
+        while (key_it.next()) |key| allocator.free(key.*);
+        self.dirs.deinit(allocator);
+    }
+
+    pub fn readFileWithStat(
+        self: *RealReadFileCache,
+        cache_allocator: std.mem.Allocator,
+        content_allocator: std.mem.Allocator,
+        path: []const u8,
+        max_bytes: usize,
+    ) FsError!LoadedModuleWithStat {
+        var with_stat_scope = profile.begin(.graph_discover_pm_setup_read_with_stat);
+        defer with_stat_scope.end();
+
+        const file = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_open);
+            defer scope.end();
+            break :blk self.openFile(cache_allocator, path) catch |err| return mapFsError(err);
+        };
+        defer file.close();
+
+        const stat = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_stat);
+            defer scope.end();
+            break :blk file.stat() catch |err| return mapFsError(err);
+        };
+        const bytes = blk: {
+            var scope = profile.begin(.graph_discover_pm_setup_read_bytes);
+            defer scope.end();
+            break :blk file.readToEndAllocOptions(
+                content_allocator,
+                max_bytes,
+                @intCast(stat.size),
+                .of(u8),
+                null,
+            ) catch |err| return mapFsError(err);
+        };
+        const kind = mapEntryKind(stat.kind);
+
+        return .{
+            .loaded = .{
+                .contents = bytes,
+                .path = path,
+                .namespace = .file,
+            },
+            .stat = .{
+                .size = stat.size,
+                .is_dir = kind == .directory,
+                .mtime = stat.mtime,
+                .kind = kind,
+            },
+        };
+    }
+
+    fn openFile(self: *RealReadFileCache, allocator: std.mem.Allocator, path: []const u8) !std.fs.File {
+        const dir_path = std.fs.path.dirname(path) orelse ".";
+        const file_name = std.fs.path.basename(path);
+        if (file_name.len == 0) return error.FileNotFound;
+
+        const dir = try self.getOrOpenDir(allocator, dir_path);
+        return dir.openFile(file_name, .{});
+    }
+
+    fn getOrOpenDir(self: *RealReadFileCache, allocator: std.mem.Allocator, dir_path: []const u8) !std.fs.Dir {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.dirs.get(dir_path)) |dir| return dir;
+
+        const key = try allocator.dupe(u8, dir_path);
+        errdefer allocator.free(key);
+        var dir = try std.fs.cwd().openDir(dir_path, .{});
+        errdefer dir.close();
+        try self.dirs.put(allocator, key, dir);
+        return dir;
+    }
+};
+
+pub const VirtualReadFileCache = struct {
+    pub fn deinit(_: *VirtualReadFileCache, _: std.mem.Allocator) void {}
+
+    pub fn readFileWithStat(
+        _: *VirtualReadFileCache,
+        _: std.mem.Allocator,
+        content_allocator: std.mem.Allocator,
+        path: []const u8,
+        max_bytes: usize,
+    ) FsError!LoadedModuleWithStat {
+        return Implementation.init().readFileWithStat(content_allocator, path, max_bytes);
+    }
+};
+
 /// 호스트 OS 의 std.fs.cwd() 를 wrapping. NAPI / CLI 빌드의 default 구현.
 pub const RealFS = struct {
     pub fn init() RealFS {
