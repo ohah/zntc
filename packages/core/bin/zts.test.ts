@@ -5175,6 +5175,139 @@ describe("buildRnDevServerInput — config + opts 추출 (#2605)", () => {
     const input = buildRnDevServerInput({ entryPoints: ["i.js"], rnPlatform: "android" }, {});
     expect(input?.bundle.rnPlatform).toBe("android");
   });
+
+  test("config.serializer.polyfills → bundle.extra.polyfills 매핑", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { serializer: { polyfills: ["./shims/myPolyfill.js"] } },
+    );
+    expect(input?.bundle.extra?.polyfills).toEqual(["./shims/myPolyfill.js"]);
+  });
+
+  test("config.serializer.extraVars → bundle.extra.extraVars 매핑", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { serializer: { extraVars: { __APP_VERSION__: "1.0.0", __FLAG__: true } } },
+    );
+    expect(input?.bundle.extra?.extraVars).toEqual({
+      __APP_VERSION__: "1.0.0",
+      __FLAG__: true,
+    });
+  });
+
+  test("config.server.useGlobalHotkey=false → terminalActions=false", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const input = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { server: { useGlobalHotkey: false } },
+    );
+    expect(input?.terminalActions).toBe(false);
+  });
+
+  test("config.server.useGlobalHotkey=true (or 미지정) → terminalActions 미설정 (default true)", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const a = buildRnDevServerInput(
+      { entryPoints: ["i.js"] },
+      { server: { useGlobalHotkey: true } },
+    );
+    expect(a?.terminalActions).toBeUndefined();
+    const b = buildRnDevServerInput({ entryPoints: ["i.js"] }, {});
+    expect(b?.terminalActions).toBeUndefined();
+  });
+
+  test("미지원 필드 (transformer.inlineRequires/minifier, serializer.prelude/bundleType, server.forwardClientLogs/verifyConnections) — stderr 경고", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+      return true;
+    };
+    try {
+      buildRnDevServerInput(
+        { entryPoints: ["i.js"] },
+        {
+          transformer: { inlineRequires: true, minifier: "terser" },
+          serializer: { prelude: ["./extra-prelude.js"], bundleType: "module" },
+          server: { forwardClientLogs: true, verifyConnections: true },
+        },
+      );
+    } finally {
+      process.stderr.write = original;
+    }
+    const all = writes.join("");
+    expect(all).toContain("transformer.inlineRequires");
+    expect(all).toContain("transformer.minifier");
+    expect(all).toContain("serializer.prelude");
+    expect(all).toContain("serializer.bundleType");
+    expect(all).toContain("server.forwardClientLogs");
+    expect(all).toContain("server.verifyConnections");
+  });
+
+  test("미지원 필드 0 — stderr 경고 0 출력", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+      return true;
+    };
+    try {
+      buildRnDevServerInput({ entryPoints: ["i.js"] }, { entry: "i.js", root: "." });
+    } finally {
+      process.stderr.write = original;
+    }
+    expect(writes.join("")).not.toContain("[zts:rn-dev]");
+  });
+
+  test("transformer/serializer/server 빈 객체 — stderr 경고 0", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+      return true;
+    };
+    try {
+      buildRnDevServerInput(
+        { entryPoints: ["i.js"] },
+        { transformer: {}, serializer: {}, server: {} },
+      );
+    } finally {
+      process.stderr.write = original;
+    }
+    expect(writes.join("")).not.toContain("[zts:rn-dev]");
+  });
+
+  test("UNSUPPORTED_FIELDS — transformer.babel + server.unstable_serverRoot 도 경고", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+      return true;
+    };
+    try {
+      buildRnDevServerInput(
+        { entryPoints: ["i.js"] },
+        {
+          transformer: { babel: { presets: ["x"] } },
+          server: { unstable_serverRoot: "/srv" },
+        },
+      );
+    } finally {
+      process.stderr.write = original;
+    }
+    const all = writes.join("");
+    expect(all).toContain("transformer.babel");
+    expect(all).toContain("server.unstable_serverRoot");
+  });
 });
 
 describe("CLI: dev --platform=react-native (#2605 PR #J)", () => {

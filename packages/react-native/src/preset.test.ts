@@ -131,6 +131,86 @@ describe("buildRnBundleOptions — define / banner / footer / polyfills", () => 
     expect(opts.polyfills).toBeUndefined();
   });
 
+  test("extra.polyfills — 사용자 추가 polyfill 이 projectRoot 기준 절대화 + preset 결과에 추가", () => {
+    const opts = buildRnBundleOptions(
+      baseInput({ extra: { polyfills: ["./shims/myPolyfill.js"] } }),
+    );
+    expect(opts.polyfills).toEqual([join(dir, "shims/myPolyfill.js")]);
+  });
+
+  test("extra.polyfills — 절대 경로 그대로 보존", () => {
+    const opts = buildRnBundleOptions(baseInput({ extra: { polyfills: ["/abs/some/poly.js"] } }));
+    expect(opts.polyfills).toEqual(["/abs/some/poly.js"]);
+  });
+
+  test("extra.polyfills — 빈 배열은 polyfills 미정의 (preset 의 RN polyfill 도 미설치 fixture)", () => {
+    const opts = buildRnBundleOptions(baseInput({ extra: { polyfills: [] } }));
+    expect(opts.polyfills).toBeUndefined();
+  });
+
+  test("extra.extraVars — banner 에 `var <key>=<JSON.stringify(value)>` inject", () => {
+    const opts = buildRnBundleOptions(
+      baseInput({
+        extra: {
+          extraVars: { __APP_VERSION__: "1.2.3", __FEATURE_X__: true, __COUNT__: 42 },
+        },
+      }),
+    );
+    expect(opts.banner).toContain('var __APP_VERSION__="1.2.3";');
+    expect(opts.banner).toContain("var __FEATURE_X__=true;");
+    expect(opts.banner).toContain("var __COUNT__=42;");
+  });
+
+  test("extra.extraVars — prelude reserved 식별자 5종 모두 skip (Hermes 재선언 SyntaxError 방지)", () => {
+    const opts = buildRnBundleOptions(
+      baseInput({
+        extra: {
+          extraVars: {
+            __DEV__: false,
+            global: "x",
+            process: "y",
+            __BUNDLE_START_TIME__: 0,
+            __ZTS_RN_GLOBAL__: "z",
+            __OK__: 1,
+          },
+        },
+      }),
+    );
+    // baseline (extraVars 없는 옵션) 의 var declaration count 그대로 — extraVars
+    // 가 reserved 식별자를 재선언하지 않는지 정확히 검증.
+    const baseline = buildRnBundleOptions(baseInput()).banner!;
+    for (const id of [
+      "__DEV__",
+      "global",
+      "process",
+      "__BUNDLE_START_TIME__",
+      "__ZTS_RN_GLOBAL__",
+    ]) {
+      const re = new RegExp(`var ${id}=`, "g");
+      expect((opts.banner?.match(re) ?? []).length).toBe((baseline.match(re) ?? []).length);
+    }
+    expect(opts.banner).toContain("var __OK__=1;");
+  });
+
+  test("extra.extraVars — 빈 객체 → banner 가 baseline 과 동일", () => {
+    const baseline = buildRnBundleOptions(baseInput()).banner!;
+    const opts = buildRnBundleOptions(baseInput({ extra: { extraVars: {} } }));
+    expect(opts.banner).toBe(baseline);
+  });
+
+  test("extra.extraVars — bannerExtras 와 함께 사용 시 extraVars 가 먼저, bannerExtras 가 뒤", () => {
+    const opts = buildRnBundleOptions(
+      baseInput({
+        bannerExtras: "globalThis.__LATE__=1;",
+        extra: { extraVars: { __EARLY__: 1 } },
+      }),
+    );
+    const earlyIdx = opts.banner!.indexOf("__EARLY__");
+    const lateIdx = opts.banner!.indexOf("__LATE__");
+    expect(earlyIdx).toBeGreaterThan(0);
+    expect(lateIdx).toBeGreaterThan(earlyIdx);
+  });
+
   test("runBeforeMain — InitializeCore 미해결 시 미정의", () => {
     const opts = buildRnBundleOptions(baseInput());
     expect(opts.runBeforeMain).toBeUndefined();
