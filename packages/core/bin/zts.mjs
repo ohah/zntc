@@ -12,7 +12,6 @@ import {
   cpSync,
   existsSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   rmSync,
   mkdtempSync,
@@ -25,7 +24,6 @@ import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 
 import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from "./cli-flags.mjs";
 
@@ -551,6 +549,8 @@ async function runAppBuild(opts, config, configEnv, _dotenvVars) {
       "zts build app mode does not support JS plugins yet; use --bundle for plugin builds",
     );
   }
+  // prepareAppCssPipelineRoot / generatedPeerPaths 가 webRef 사용 — load 선행 필수.
+  await loadWebModule();
   const root = resolve(opts.appRoot ?? ".");
   const outdir = resolve(opts.outdir ?? join(root, "dist"));
   if (opts.clean) rmSync(outdir, { recursive: true, force: true });
@@ -606,6 +606,24 @@ async function runAppDev(opts, config, configEnv, _dotenvVars) {
 }
 
 function createAppDevController(opts, root, configEnv, web) {
+  // `web.X` chain 을 watch loop hot path (isCssOnlyChange / isSassOnlyChange /
+  // isPostcssConfig 가 per-changed-file) 에서 재계산 안 하도록 closure 진입 시
+  // destructure (#2539 PR #6c /simplify finding).
+  const {
+    isCssFile,
+    isCssModuleFile,
+    isCssModulePreprocessorFile,
+    isCssPreprocessorFile,
+    isPostcssConfigFile,
+    findPostcssConfig,
+    loadSassCompiler,
+    compileSassFile,
+    cssPreprocessorOutputPath,
+    runPostcssForAppDev,
+    injectAppDevHmrClient,
+    injectAppDevPipelineCssLinks,
+    injectAppDevBundleCssLinks,
+  } = web;
   const outdir = resolve(opts.outdir || join(root, ".zts-dev"));
   const base = normalizeBase(opts.base ?? opts.publicPath ?? "/");
   let cssDeps = new Set();
@@ -654,7 +672,7 @@ function createAppDevController(opts, root, configEnv, web) {
         envDir: opts.envDir ? resolve(opts.envDir) : prepareRoot,
         envPrefixes: opts.envPrefixes,
       });
-      web.injectAppDevHmrClient(outdir);
+      injectAppDevHmrClient(outdir);
       // dev mode 한정 — bundler 가 dev splitting=false 라 CSS chunk 를 emit 하지
       // 않으므로 Sass / CSS Modules 결과를 outdir 로 mirror + `<link>` 주입.
       // mirror (cpSync) 는 sass/module 입력이 dirty 일 때만 — 그 외엔 outdir 의 직전 mirror
@@ -665,7 +683,7 @@ function createAppDevController(opts, root, configEnv, web) {
         const rels = sassOrModuleDirty
           ? mirrorPipelineCssToOutdir(pipelineRoot, outdir, pipeline.generatedCssAbsPaths)
           : pipeline.generatedCssAbsPaths.map((p) => relative(pipelineRoot, p));
-        web.injectAppDevPipelineCssLinks(outdir, base, rels);
+        injectAppDevPipelineCssLinks(outdir, base, rels);
       }
       return prepared;
     },
@@ -677,6 +695,7 @@ function createAppDevController(opts, root, configEnv, web) {
         logLevel: opts.logLevel,
         base,
         changedPath,
+        fallbackRequire: requireFromCli,
       });
       cssDeps = result.deps;
       cssDirDeps = result.dirDeps;
@@ -684,7 +703,7 @@ function createAppDevController(opts, root, configEnv, web) {
       return result;
     },
     injectBundleCssLinks(bundleResult) {
-      web.injectAppDevBundleCssLinks(outdir, base, bundleResult);
+      injectAppDevBundleCssLinks(outdir, base, bundleResult);
     },
     isPostcssConfig(absPath) {
       return isPostcssConfigFile(absPath);
@@ -714,7 +733,7 @@ function createAppDevController(opts, root, configEnv, web) {
       if (findPostcssConfig(root)) return null;
       const srcTemp = join(pipelineRoot, relative(root, absPath));
       mirrorFile(absPath, srcTemp);
-      const sass = loadSassCompiler(root);
+      const sass = loadSassCompiler(root, requireFromCli);
       const result = compileSassFile(sass, srcTemp, pipelineRoot);
       const cssTempPath = cssPreprocessorOutputPath(srcTemp);
       writeFileSync(cssTempPath, result.css);
@@ -756,12 +775,22 @@ function mirrorPipelineCssToOutdir(pipelineRoot, outdir, absPaths) {
 
 // app 모드 (dev/preview/build) 에서만 @zts/web 을 lazy import. bundle/transpile/watch
 // 모드에서는 web 패키지를 받지 않은 사용자도 동작해야 하기에 정적 import 회피.
+//
+// `webRef` 는 첫 `loadWebModule()` 성공 후 동기 참조 — 같은 process 안에서 이후
+// 호출되는 helper (prepareAppCssPipelineRoot / syncDirtyFilesIntoTempRoot /
+// generatedPeerPaths / mirrorPipelineCssToOutdir 등) 가 web 의 CSS pipeline
+// 사본 (transformCssPreprocessors / transformCssModules / runPostcssForAppDev
+// / isCssFile / collectAppFiles 등) 에 parameter sprawl 없이 접근하기 위함.
+// app 외 경로 (bundle/transpile/watch) 는 webRef 를 절대 touch 하지 않는다.
 let webModulePromise = null;
+let webRef = null;
 async function loadWebModule() {
   if (webModulePromise) return webModulePromise;
   webModulePromise = (async () => {
     try {
-      return await import("@zts/web");
+      const mod = await import("@zts/web");
+      webRef = mod;
+      return mod;
     } catch (err) {
       const code = err?.code;
       const message = String(err?.message ?? "");
@@ -775,31 +804,6 @@ async function loadWebModule() {
     }
   })();
   return webModulePromise;
-}
-
-// 다음 영역 (POSTCSS_CONFIG_NAMES / findPostcssConfig / isPostcssConfigFile /
-// isCssFile / loadPostcssConfig / collectPostcssMessages / logPostcssProcessed /
-// runPostcssIfConfigured / runPostcssForAppDev) 은 packages/web/src/style/
-// postcss.ts 에 동등 사본이 있다. PR #5e 시점에 본 정의를 web 으로 redirect 후
-// 제거 — 그 전까지 logic 변경 시 양쪽을 동시에 수정 (#2539).
-const POSTCSS_CONFIG_NAMES = [
-  "postcss.config.mjs",
-  "postcss.config.js",
-  "postcss.config.cjs",
-  "postcss.config.json",
-  ".postcssrc",
-  ".postcssrc.json",
-  ".postcssrc.js",
-  ".postcssrc.cjs",
-  ".postcssrc.mjs",
-];
-
-function findPostcssConfig(root) {
-  for (const name of POSTCSS_CONFIG_NAMES) {
-    const path = join(root, name);
-    if (existsSync(path)) return path;
-  }
-  return null;
 }
 
 // Incremental: dirty 만 root → tempRoot 로 mirror. 비싼 cpSync 는 변경분으로 한정.
@@ -822,11 +826,11 @@ function syncDirtyFilesIntoTempRoot(root, tempRoot, dirtyPaths) {
 }
 
 function generatedPeerPaths(srcPath) {
-  if (isCssPreprocessorFile(srcPath)) {
-    return [cssPreprocessorOutputPath(srcPath), cssPreprocessorProxyPath(srcPath)];
+  if (webRef.isCssPreprocessorFile(srcPath)) {
+    return [webRef.cssPreprocessorOutputPath(srcPath), webRef.cssPreprocessorProxyPath(srcPath)];
   }
-  if (isCssModuleFile(srcPath)) {
-    return [cssModuleGeneratedCssPath(srcPath), cssModuleProxyPath(srcPath)];
+  if (webRef.isCssModuleFile(srcPath)) {
+    return [webRef.cssModuleGeneratedCssPath(srcPath), webRef.cssModuleProxyPath(srcPath)];
   }
   return [];
 }
@@ -886,532 +890,23 @@ function cleanupPostcssTempRoot(tempRoot) {
   rmSync(tempRoot, { recursive: true, force: true });
 }
 
-// 다음 2 함수 (requireFromAppOrCli / collectAppFiles) 는 packages/web/src/style/
-// loader.ts 에 동등 사본이 있다 (시그니처는 cli context 제거 — fallbackRequire 인자).
-// PR #5e (css-modules 추출) 시점에 본 정의를 web 으로 redirect 후 제거 — 그 전까지
-// logic 변경 시 양쪽을 동시에 수정 (#2539).
-function requireFromAppOrCli(requireFromRoot, specifier) {
-  try {
-    return requireFromRoot(specifier);
-  } catch (err) {
-    const code = err?.code;
-    if (code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") throw err;
-    return requireFromCli(specifier);
-  }
-}
-
-function readEntriesOrEmpty(dir) {
-  try {
-    return readdirSync(dir, { withFileTypes: true });
-  } catch (err) {
-    if (err?.code === "ENOENT") return [];
-    throw err;
-  }
-}
-
-function walkAppFiles(dir, skipResolved, predicate, out) {
-  for (const entry of readEntriesOrEmpty(dir)) {
-    if (entry.name === "node_modules" || entry.name === ".git") continue;
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (skipResolved && resolve(path) === skipResolved) continue;
-      walkAppFiles(path, skipResolved, predicate, out);
-    } else if (entry.isFile() && predicate(path)) {
-      out.push(path);
-    }
-  }
-}
-
-function collectAppFiles(dir, { skipDir = null, predicate = () => true } = {}) {
-  const skipResolved = skipDir ? resolve(skipDir) : null;
-  const files = [];
-  walkAppFiles(dir, skipResolved, predicate, files);
-  return files;
-}
-
-const isCssFile = (path) => path.endsWith(".css");
-const isPostcssConfigFile = (path) => POSTCSS_CONFIG_NAMES.includes(basename(path));
-
-// 다음 영역 (CSS_PREPROCESSOR_EXTENSIONS / MODULE_PREPROCESSOR_RE / Sass helper 9
-// 함수: isCssPreprocessorFile, isCssModulePreprocessorFile, cssPreprocessorOutputPath,
-// cssPreprocessorProxyPath, loadSassCompiler, compileSassFile, rewriteSassReferences,
-// isStyleReferenceSource, buildCssPreprocessorProxy, transformCssPreprocessors) 은
-// packages/web/src/style/sass.ts 에 동등 사본이 있다. PR #5e 시점에 본 정의를
-// web 으로 redirect 후 제거 — 그 전까지 logic 변경 시 양쪽을 동시에 수정 (#2539).
-const CSS_PREPROCESSOR_EXTENSIONS = new Set([".scss", ".sass"]);
-const MODULE_PREPROCESSOR_RE = /\.module\.(?:scss|sass)$/;
-
-function isCssPreprocessorFile(path) {
-  return CSS_PREPROCESSOR_EXTENSIONS.has(extname(path));
-}
-
-function isCssModulePreprocessorFile(path) {
-  return MODULE_PREPROCESSOR_RE.test(path);
-}
-
-function cssPreprocessorOutputPath(file) {
-  // case-sensitive — `isCssPreprocessorFile` (extname 기준 case-sensitive) gate 와 일치.
-  return file.replace(/\.(?:scss|sass)$/, ".css");
-}
-
-function cssPreprocessorProxyPath(file) {
-  return `${cssPreprocessorOutputPath(file)}.js`;
-}
-
-function loadSassCompiler(root) {
-  const requireFromRoot = createRequire(join(root, "package.json"));
-  return requireFromAppOrCli(requireFromRoot, "sass");
-}
-
-// Sass option 일관성: full transform 과 fast-path (rebuildScssIncremental) 양쪽이 같은
-// 옵션을 써야 한다. drift 감지는 이 헬퍼 호출 일치성으로 한다.
-function compileSassFile(sass, file, loadRoot) {
-  return sass.compile(file, {
-    style: "expanded",
-    loadPaths: [dirname(file), loadRoot],
-    sourceMap: false,
-  });
-}
-
-// HTML 은 `<link href="x.scss">` 를 그대로 컴파일된 CSS 로, JS/TS 는 `.css.js` proxy
-// (`import "./generated.css"` 한 줄짜리) 로 다른 확장자로 rewrite. CSS Modules 의
-// `.module.css` rewriter (rewriteCssModuleReferences) 는 HTML 미지원이라 별도 함수.
-function rewriteSassReferences(sourceFiles) {
-  const pattern = /(["'])([^"']+\.(?:scss|sass))([?#][^"']*)?\1/g;
-  for (const source of sourceFiles) {
-    const input = readFileSync(source, "utf8");
-    if (!input.includes(".scss") && !input.includes(".sass")) continue;
-    // .html / .htm + case-insensitive — rewriteCssModuleReferences 와 일관.
-    const toExt = /\.html?$/i.test(source) ? ".css" : ".css.js";
-    const output = input.replace(
-      pattern,
-      (_match, quote, spec, suffix = "") =>
-        `${quote}${spec.replace(/\.(?:scss|sass)$/i, toExt)}${suffix}${quote}`,
-    );
-    if (output !== input) writeFileSync(source, output);
-  }
-}
-
-function isStyleReferenceSource(path) {
-  return /\.(?:html|mjs|cjs|js|jsx|ts|tsx)$/.test(path);
-}
-
-function buildCssPreprocessorProxy(cssPath) {
-  // proxy 는 bundler 의 module graph 에서 CSS 를 side-effect 로 추적하기 위한 entry.
-  // 실제 CSS 는 build mode 에서는 bundler 의 CSS chunk 로, dev mode 에서는 컴파일된 CSS
-  // 를 outdir 로 복사한 뒤 HTML `<link>` 로 서빙한다 (`mirrorPipelineCssToOutdir` 참고).
-  const cssImport = `./${basename(cssPath)}`;
-  return `import ${JSON.stringify(cssImport)};\n`;
-}
-
-function transformCssPreprocessors(root, files, sourceFiles, logLevel, opts = {}) {
-  if (files.length === 0) return [];
-  const { dirtyOnly = null, dirtySources = null } = opts;
-  const targets = dirtyOnly ? files.filter((f) => dirtyOnly.has(f)) : files;
-  // Generated CSS path 는 입력 파일에 결정적 — 컴파일 안 해도 path 는 항상 알 수 있다.
-  // dirty 만 다시 컴파일하고, 전체 list 는 항상 반환해 outdir mirror 가 누락 없게.
-  if (targets.length === 0) {
-    return files.map(cssPreprocessorOutputPath);
-  }
-
-  let sass;
-  try {
-    sass = loadSassCompiler(root);
-  } catch (err) {
-    const message =
-      err?.code === "MODULE_NOT_FOUND" || err?.code === "ERR_MODULE_NOT_FOUND"
-        ? "Sass/SCSS support requires the optional `sass` package. Install it with `bun add -d sass` or `npm install -D sass`."
-        : `Failed to load sass: ${err?.message ?? err}`;
-    throw new Error(message);
-  }
-
-  for (const file of targets) {
-    const result = compileSassFile(sass, file, root);
-    const cssPath = cssPreprocessorOutputPath(file);
-    writeFileSync(cssPath, result.css);
-    writeFileSync(cssPreprocessorProxyPath(file), buildCssPreprocessorProxy(cssPath));
-  }
-
-  // dirty source 만 freshly cp 됐으므로 그쪽에만 rewriter 적용 (이전 prep 의 source 들은
-  // 이미 rewrite 된 상태). 전체 prep 일 때는 sourceFiles 자체가 전체.
-  rewriteSassReferences(dirtySources ?? sourceFiles);
-  if (logLevel !== "silent") {
-    console.error(`[sass] processed ${targets.length} Sass/SCSS file(s)`);
-  }
-  return files.map(cssPreprocessorOutputPath);
-}
-
-// 다음 영역 (isCssModuleFile / cssModuleGeneratedCssPath / cssModuleProxyPath /
-// cssModuleLocalName / scanCssModuleClassTokens / collectCssModuleClasses /
-// rewriteCssModuleClasses / isValidExportName + CSS_MODULE_RESERVED_EXPORTS /
-// buildCssModuleProxy / rewriteCssModuleReferences / transformCssModules) 은
-// packages/web/src/style/css-modules.ts 에 동등 사본이 있다. PR #6 (cut over)
-// 시점에 본 정의를 import 로 redirect 후 제거 — 그 전까지 logic 변경 시 양쪽을
-// 동시에 수정 (#2539).
-function isCssModuleFile(path) {
-  return basename(path).endsWith(".module.css");
-}
-
-function cssModuleGeneratedCssPath(file) {
-  return file.replace(/\.module\.css$/, ".module.zts.css");
-}
-
-function cssModuleProxyPath(file) {
-  return `${file}.js`;
-}
-
-function cssModuleLocalName(root, file, local) {
-  const rel = relative(root, file).replaceAll(sep, "/");
-  const fileName = basename(file, ".module.css").replace(/[^a-zA-Z0-9_]/g, "_");
-  const safeLocal = local.replace(/[^a-zA-Z0-9_]/g, "_");
-  // 8 chars (~48 bits) 면 100k 클래스에서도 birthday collision <0.001%. 5 chars (~30 bits)
-  // 일 때 10k 키만 돼도 ~5% 라 무성격 시각적 충돌이 가능했음.
-  const hash = createHash("sha1").update(`${rel}:${local}`).digest("base64url").slice(0, 8);
-  return `${fileName}_${safeLocal}__${hash}`;
-}
-
-// 지원 범위: 일반 `.class-name` 토큰의 위치 추출. `:global`/`:local` 슈도, `composes:`
-// 룰, `@keyframes` 이름 scoping 등 고급 CSS Modules 스펙은 미지원.
-function scanCssModuleClassTokens(css) {
-  const tokens = [];
-  let i = 0;
-  while (i < css.length) {
-    const ch = css[i];
-    const next = css[i + 1];
-    if ((ch === '"' || ch === "'") && css[i - 1] !== "\\") {
-      i = skipCssString(css, i, ch);
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      const end = css.indexOf("*/", i + 2);
-      i = end === -1 ? css.length : end + 2;
-      continue;
-    }
-    if (startsWithCssIdent(css, i, "url(")) {
-      i = skipCssUrl(css, i + 4);
-      continue;
-    }
-    if (ch === "." && isCssIdentStart(next)) {
-      let end = i + 2;
-      while (end < css.length && isCssIdent(css[end])) end += 1;
-      tokens.push({ start: i, end, local: css.slice(i + 1, end) });
-      i = end;
-      continue;
-    }
-    i += 1;
-  }
-  return tokens;
-}
-
-// 다음 5 함수 (skipCssString / skipCssUrl / startsWithCssIdent / isCssIdentStart /
-// isCssIdent) 는 packages/web/src/style/css-parser.ts 에 동등 사본이 있다.
-// PR #5e (css-modules 추출) 시점에 본 정의를 import 로 redirect 후 제거 — 그
-// 전까지 logic 변경 시 양쪽을 동시에 수정 (#2539).
-function skipCssString(css, start, quote) {
-  let i = start + 1;
-  while (i < css.length) {
-    if (css[i] === "\\" && i + 1 < css.length) {
-      i += 2;
-      continue;
-    }
-    if (css[i] === quote) return i + 1;
-    i += 1;
-  }
-  return css.length;
-}
-
-function skipCssUrl(css, start) {
-  let i = start;
-  while (i < css.length) {
-    if ((css[i] === '"' || css[i] === "'") && css[i - 1] !== "\\") {
-      i = skipCssString(css, i, css[i]);
-      continue;
-    }
-    if (css[i] === ")") return i + 1;
-    i += 1;
-  }
-  return css.length;
-}
-
-function startsWithCssIdent(css, offset, value) {
-  return css.slice(offset, offset + value.length).toLowerCase() === value;
-}
-
-function isCssIdentStart(ch) {
-  return ch === "_" || (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z");
-}
-
-function isCssIdent(ch) {
-  return isCssIdentStart(ch) || ch === "-" || (ch >= "0" && ch <= "9");
-}
-
-function collectCssModuleClasses(css) {
-  return [...new Set(scanCssModuleClassTokens(css).map((token) => token.local))];
-}
-
-function rewriteCssModuleClasses(css, mapping) {
-  const tokens = scanCssModuleClassTokens(css);
-  let out = "";
-  let offset = 0;
-  for (const token of tokens) {
-    const scoped = mapping[token.local];
-    if (!scoped) continue;
-    out += css.slice(offset, token.start);
-    out += `.${scoped}`;
-    offset = token.end;
-  }
-  out += css.slice(offset);
-  return out;
-}
-
-function isValidExportName(name) {
-  return /^[$A-Z_a-z][$\w]*$/.test(name) && !CSS_MODULE_RESERVED_EXPORTS.has(name);
-}
-
-const CSS_MODULE_RESERVED_EXPORTS = new Set([
-  "arguments",
-  "await",
-  "break",
-  "case",
-  "catch",
-  "class",
-  "const",
-  "continue",
-  "debugger",
-  "default",
-  "delete",
-  "do",
-  "else",
-  "enum",
-  "export",
-  "extends",
-  "false",
-  "finally",
-  "for",
-  "function",
-  "if",
-  "implements",
-  "import",
-  "in",
-  "instanceof",
-  "interface",
-  "let",
-  "new",
-  "null",
-  "package",
-  "private",
-  "protected",
-  "public",
-  "return",
-  "static",
-  "super",
-  "switch",
-  "this",
-  "throw",
-  "true",
-  "try",
-  "typeof",
-  "var",
-  "void",
-  "while",
-  "with",
-  "yield",
-]);
-
-function buildCssModuleProxy(generatedCssPath, mapping) {
-  // CSS 자체는 generated `.module.zts.css` 가 책임 — proxy 는 class-name map 의 default
-  // export 와 valid named export 만 emit. dev/build 모두 CSS 는 `<link>` 로 도달.
-  const cssImport = `./${basename(generatedCssPath)}`;
-  const stylesJson = JSON.stringify(mapping);
-  const named = Object.keys(mapping)
-    .filter(isValidExportName)
-    .map((name) => `export const ${name} = ${JSON.stringify(mapping[name])};`)
-    .join("\n");
-  return [
-    `import ${JSON.stringify(cssImport)};`,
-    `const styles = ${stylesJson};`,
-    "export default styles;",
-    named,
-    "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-// CSS Modules 의 source rewrite 는 HTML 미지원 — `<link href="x.module.css">` 같은 직접
-// 참조는 일반 CSS 로 취급되므로 `.js` 로 rewrite 하면 안 됨. styleSources 에서 .html
-// 은 제외하고 import specifier 만 `.module.css.js` 로 redirect 한다.
-function rewriteCssModuleReferences(sourceFiles) {
-  const pattern = /(["'])([^"']+\.module\.css)([?#][^"']*)?\1/g;
-  for (const source of sourceFiles) {
-    if (/\.html?$/i.test(source)) continue;
-    const input = readFileSync(source, "utf8");
-    if (!input.includes(".module.css")) continue;
-    const output = input.replace(
-      pattern,
-      (_match, quote, spec, suffix = "") => `${quote}${spec}.js${suffix}${quote}`,
-    );
-    if (output !== input) writeFileSync(source, output);
-  }
-}
-
-function transformCssModules(root, moduleFiles, styleSources, logLevel, opts = {}) {
-  if (moduleFiles.length === 0) return [];
-  const { dirtyOnly = null, dirtySources = null } = opts;
-  const targets = dirtyOnly ? moduleFiles.filter((f) => dirtyOnly.has(f)) : moduleFiles;
-  if (targets.length === 0) {
-    return moduleFiles.map(cssModuleGeneratedCssPath);
-  }
-
-  for (const file of targets) {
-    const css = readFileSync(file, "utf8");
-    // 단일 scan 으로 token + mapping 동시 생성 — collect + rewrite 의 중복 scan 회피.
-    const tokens = scanCssModuleClassTokens(css);
-    const rel = relative(root, file).replaceAll(sep, "/");
-    const fileName = basename(file, ".module.css").replace(/[^a-zA-Z0-9_]/g, "_");
-    const mapping = {};
-    for (const token of tokens) {
-      if (!mapping[token.local]) {
-        // sha1 base64url slice(8): #2539 (web/css-modules.ts) 와 동일 스킴.
-        const safeLocal = token.local.replace(/[^a-zA-Z0-9_]/g, "_");
-        const hash = createHash("sha1")
-          .update(`${rel}:${token.local}`)
-          .digest("base64url")
-          .slice(0, 8);
-        mapping[token.local] = `${fileName}_${safeLocal}__${hash}`;
-      }
-    }
-    let rewrittenCss = "";
-    let offset = 0;
-    for (const token of tokens) {
-      const scoped = mapping[token.local];
-      if (!scoped) continue;
-      rewrittenCss += css.slice(offset, token.start);
-      rewrittenCss += `.${scoped}`;
-      offset = token.end;
-    }
-    rewrittenCss += css.slice(offset);
-    const generatedCssPath = cssModuleGeneratedCssPath(file);
-    writeFileSync(generatedCssPath, rewrittenCss);
-    writeFileSync(cssModuleProxyPath(file), buildCssModuleProxy(generatedCssPath, mapping));
-  }
-
-  rewriteCssModuleReferences(dirtySources ?? styleSources);
-
-  if (logLevel !== "silent") {
-    console.error(`[css-modules] processed ${targets.length} CSS module file(s)`);
-  }
-  return moduleFiles.map(cssModuleGeneratedCssPath);
-}
-
-async function loadPostcssConfig(root, configEnv) {
-  const requireFromRoot = createRequire(join(root, "package.json"));
-  const postcssrc = requireFromAppOrCli(requireFromRoot, "postcss-load-config");
-  const postcssModule = requireFromAppOrCli(requireFromRoot, "postcss");
-  const postcss = postcssModule.default ?? postcssModule;
-  const config = await postcssrc({ cwd: root, env: configEnv.mode }, root).catch((err) => {
-    if (err?.message?.includes("No PostCSS Config found")) return null;
-    throw err;
-  });
-  if (!config) return null;
-  const plugins = config.plugins ?? [];
-  if (plugins.length === 0) return null;
-  return { postcss, plugins, options: config.options ?? {}, configFile: config.file ?? null };
-}
-
-function logPostcssProcessed(logLevel, count, configFile) {
-  if (logLevel === "silent") return;
-  console.error(
-    `[postcss] processed ${count} CSS file(s) using ${basename(configFile ?? "postcss config")}`,
-  );
-}
-
-async function runPostcssIfConfigured(root, cssDir, skipDir, configEnv, logLevel) {
-  const loaded = await loadPostcssConfig(root, configEnv);
-  if (!loaded) return;
-  const cssFiles = collectAppFiles(cssDir, { skipDir, predicate: isCssFile });
-  await Promise.all(
-    cssFiles.map(async (file) => {
-      const input = readFileSync(file, "utf8");
-      const result = await loaded.postcss(loaded.plugins).process(input, {
-        ...loaded.options,
-        from: file,
-        to: file,
-      });
-      writeFileSync(file, result.css);
-      if (result.map) writeFileSync(`${file}.map`, result.map.toString());
-    }),
-  );
-  logPostcssProcessed(logLevel, cssFiles.length, loaded.configFile);
-}
-
-async function runPostcssForAppDev({
-  root,
-  outdir,
-  configEnv,
-  logLevel,
-  base,
-  changedPath = null,
-}) {
-  const deps = new Set();
-  const dirDeps = new Set();
-  let primaryHref = null;
-  const configPath = findPostcssConfig(root);
-  if (!configPath) {
-    const first = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile })[0];
-    if (first) primaryHref = joinUrl(base, relative(root, first));
-    return { deps, dirDeps, primaryHref, processed: 0 };
-  }
-
-  const loaded = await loadPostcssConfig(root, configEnv);
-  if (!loaded) return { deps, dirDeps, primaryHref, processed: 0 };
-  deps.add(resolve(loaded.configFile ?? configPath));
-
-  mkdirSync(outdir, { recursive: true });
-  const allCssFiles = collectAppFiles(root, { skipDir: outdir, predicate: isCssFile });
-  // 단일 CSS 파일 변경이면 그 파일만 reprocess. 그 외(첫 빌드, postcss config 변경 등)는 전체.
-  const targets =
-    changedPath && changedPath.endsWith(".css") && allCssFiles.includes(changedPath)
-      ? [changedPath]
-      : allCssFiles;
-
-  await Promise.all(
-    targets.map(async (file) => {
-      const outputRel = relative(root, file);
-      const outputPath = join(outdir, outputRel);
-      mkdirSync(dirname(outputPath), { recursive: true });
-      const input = readFileSync(file, "utf8");
-      const result = await loaded.postcss(loaded.plugins).process(input, {
-        ...loaded.options,
-        from: file,
-        to: outputPath,
-      });
-      writeFileSync(outputPath, result.css);
-      if (result.map) writeFileSync(`${outputPath}.map`, result.map.toString());
-      deps.add(resolve(file));
-      collectPostcssMessages(result.messages, deps, dirDeps);
-    }),
-  );
-  // primaryHref 는 "임의의 첫 stylesheet" 기준 — non-CSS 변경 시 fallback 으로 사용.
-  if (allCssFiles.length > 0) primaryHref = joinUrl(base, relative(root, allCssFiles[0]));
-
-  logPostcssProcessed(logLevel, targets.length, loaded.configFile);
-  return { deps, dirDeps, primaryHref, processed: targets.length };
-}
-
-function collectPostcssMessages(messages, deps, dirDeps) {
-  for (const message of messages ?? []) {
-    if (message.type === "dependency" && message.file) deps.add(resolve(message.file));
-    if (message.type === "dir-dependency") {
-      const dir = message.dir ?? message.directory;
-      if (dir) dirDeps.add(resolve(dir));
-    }
-    if (message.type === "context-dependency" && message.file) deps.add(resolve(message.file));
-  }
-}
-
 async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phase, options = {}) {
   const { existingTempRoot = null, dirtyPaths = null, cache = null } = options;
+  // 18+ webRef.X chain 호출이 incremental rebuild 마다 — 진입 시 destructure 로
+  // V8 inline cache hit 보장 (#2539 PR #6c /simplify finding).
+  const {
+    findPostcssConfig,
+    collectAppFiles,
+    isCssFile,
+    isCssModuleFile,
+    isCssPreprocessorFile,
+    isPostcssConfigFile,
+    isStyleReferenceSource,
+    cssPreprocessorOutputPath,
+    transformCssPreprocessors,
+    transformCssModules,
+    runPostcssIfConfigured,
+  } = webRef;
   const configPath = findPostcssConfig(root);
   // F1 cache: 이전 prep 의 stylePipelineFiles 를 재사용. 호출자가 구조 변화 (.scss/.module.css
   // 추가/삭제) 시 cache=null 로 무효화한다. 재사용이면 full tree walk 를 통째 회피.
@@ -1472,6 +967,7 @@ async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phas
     preprocessorFiles.map(toTemp),
     styleSourceFiles,
     logLevel,
+    requireFromCli,
     isIncremental ? { dirtyOnly: dirtySassSet, dirtySources: dirtySourceList } : undefined,
   );
   // Incremental 모드에서 dirty 가 모두 non-CSS 면 postcss prep 도 skip — 이미 이전 prep
@@ -1480,7 +976,7 @@ async function prepareAppCssPipelineRoot(root, outdir, configEnv, logLevel, phas
     !isIncremental ||
     dirtyPaths.some((p) => isCssFile(p) || isCssPreprocessorFile(p) || isPostcssConfigFile(p));
   if (postcssRelevant) {
-    await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel);
+    await runPostcssIfConfigured(tempRoot, tempRoot, null, configEnv, logLevel, requireFromCli);
   }
   // `*.module.scss` 는 위 sass 단계에서 `*.module.css` 가 새로 만들어지므로, 사전 walk
   // 가 본 모듈 리스트엔 빠져 있다. preprocessor 출력 경로를 재계산해 보강.
