@@ -16,3 +16,12 @@ export {
   type HmrRnUpdateModule,
   type HmrRnUpdateStartMessage,
 } from "@zts/server";
+
+export { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from "./rn-constants.ts";
+export type {
+  CustomResolver,
+  MetroPlatform,
+  Resolution,
+  ResolutionContext,
+} from "./metro-resolver-types.ts";
+export { escapeRegex } from "./plugins/escape-regex.ts";
