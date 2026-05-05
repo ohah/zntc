@@ -92,9 +92,7 @@ Selectively swallow noise like the RN/Expo native immutable global polyfill conf
 ```ts
 defineConfig({
   platform: "react-native",
-  silentConsoleErrorPatterns: [
-    "^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$",
-  ],
+  silentConsoleErrorPatterns: ["^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$"],
 });
 ```
 
@@ -165,15 +163,111 @@ defineConfig({
 
 One-line summary of options commonly used on the RN platform. See each option's JSDoc / docs for full behavior.
 
-| Option | Description |
-|---|---|
-| `workletPluginVersion` | Reanimated worklet `__pluginVersion`. Must match the user's installed `react-native-worklets` version to avoid runtime errors. |
-| `codegenTransform` | Replaces `codegenNativeComponent` calls in `*NativeComponent.{js,ts}` with inline view configs. Auto-enabled on the RN platform. |
-| `entryErrorGuard` | Wraps entry trigger calls in `try/catch + ErrorUtils.reportFatalError` (Metro `guardedLoadModule` equivalent). Auto-enabled on the RN platform. |
-| `strictExecutionOrder` | Downgrades function declarations to in-factory assignments to prevent hoisting (Rolldown equivalent). Auto-enabled on the RN platform. |
-| `configurableExports` | Adds `configurable: true` to `Object.defineProperty` (RN/Hermes compatibility). |
-| `reactRefresh` | Enables React Fast Refresh. |
-| `devMode` | Wraps modules in a `__zts_register()` factory and injects the HMR runtime. |
-| `rootDir` | Base path for dev-mode module IDs. |
-| `collectModuleCodes` | Collects per-module codes in dev mode (for HMR rebuilds). |
-| `workletTransform` | Injects `__workletHash`/`__closure`/`__initData` into "worklet" directive functions. Auto-enabled on the RN platform. |
+| Option                 | Description                                                                                                                                     |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workletPluginVersion` | Reanimated worklet `__pluginVersion`. Must match the user's installed `react-native-worklets` version to avoid runtime errors.                  |
+| `codegenTransform`     | Replaces `codegenNativeComponent` calls in `*NativeComponent.{js,ts}` with inline view configs. Auto-enabled on the RN platform.                |
+| `entryErrorGuard`      | Wraps entry trigger calls in `try/catch + ErrorUtils.reportFatalError` (Metro `guardedLoadModule` equivalent). Auto-enabled on the RN platform. |
+| `strictExecutionOrder` | Downgrades function declarations to in-factory assignments to prevent hoisting (Rolldown equivalent). Auto-enabled on the RN platform.          |
+| `configurableExports`  | Adds `configurable: true` to `Object.defineProperty` (RN/Hermes compatibility).                                                                 |
+| `reactRefresh`         | Enables React Fast Refresh.                                                                                                                     |
+| `devMode`              | Wraps modules in a `__zts_register()` factory and injects the HMR runtime.                                                                      |
+| `rootDir`              | Base path for dev-mode module IDs.                                                                                                              |
+| `collectModuleCodes`   | Collects per-module codes in dev mode (for HMR rebuilds).                                                                                       |
+| `workletTransform`     | Injects `__workletHash`/`__closure`/`__initData` into "worklet" directive functions. Auto-enabled on the RN platform.                           |
+
+## Dev server (#2605)
+
+`zts dev --platform=react-native` starts a Metro-compatible dev server.
+
+```bash
+zts dev --platform=react-native --rn-platform=ios index.js \
+  --port=8081 --host=localhost
+```
+
+Endpoints (Metro compatible):
+
+- `GET /status` — packager live check (`packager-status:running`).
+- `GET /index.bundle?platform=ios&dev=true` — main bundle. With `Accept: multipart/mixed`, returns progress + bundle chunks.
+- `GET /index.map?platform=ios` — bundle source map (lazy, build-scoped cache).
+- `GET /__zts_hmr_map/<id>?platform=ios` — per-module HMR source map.
+- `GET /assets/*`, `/node_modules/*` — asset registry (iOS @2x/@3x scale variants + 7-strategy package resolve).
+- `WS /hot` — HMR (`hmr:update-start` → `hmr:update` → `hmr:update-done` / `hmr:reload` / `hmr:error`).
+- `POST /symbolicate` — RN runtime LogBox stack trace symbolication.
+- `POST /reload` / `POST /devmenu` / `POST /open-url` — Metro message broadcast.
+
+### Peer-optional packages
+
+Some features lazy-load these packages; missing packages skip gracefully:
+
+| Package                                  | Feature                                                                                                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@react-native-community/cli-server-api` | `messageSocketEndpoint.broadcast` (`/reload` / `/devmenu` over WS) + cli websocket endpoints (`/message`, `/events`, `/debugger-proxy`).                     |
+| `@react-native/dev-middleware`           | DevTools inspector / `/json` / `/open-debugger` / `/launch-js-devtools` / fusebox. **Resolved from project context** to allow Rozenite-style monkey-patches. |
+
+Install (RN 0.83+ recommended):
+
+```bash
+bun add -D @react-native-community/cli-server-api @react-native/dev-middleware
+```
+
+### Keyboard shortcuts
+
+In the dev server terminal (Metro compatible):
+
+- `r` — Reload
+- `d` — Dev Menu
+- `j` — DevTools (`POST /open-debugger`)
+- `i` — iOS Simulator open (darwin only)
+- `a` — Android Emulator open (`ANDROID_HOME` required)
+- `c` — Clear cache
+- `?` — Help
+- Ctrl+C / Ctrl+D — graceful shutdown
+
+### Programmatic API
+
+```ts
+import { buildRnDevServerOptions, serveRn } from "@zts/react-native";
+
+const handle = await serveRn(
+  buildRnDevServerOptions({
+    bundle: {
+      entry: "index.js",
+      projectRoot: process.cwd(),
+      rnPlatform: "ios",
+      dev: true,
+    },
+    port: 8081,
+    host: "localhost",
+    // User enhanceMiddleware hook (Rozenite / other DevTools).
+    enhanceMiddleware: (base, ctx) => (req, res, next) => {
+      if (req.url?.startsWith("/rozenite/")) {
+        // Custom handling...
+        return;
+      }
+      base(req, res, next);
+    },
+    symbolicator: {
+      customizeFrame: async (frame) => ({
+        // Collapse node_modules frames in DevTools.
+        collapse: frame.file?.includes("/node_modules/") ?? false,
+      }),
+    },
+  }),
+);
+
+console.log(`Listening on ${handle.url}`);
+// ... handle.stop() for graceful shutdown.
+```
+
+### Examples
+
+Validation matrix (both use \`bun run start:zts\` for the ZTS dev server):
+
+- [`examples/react-native-bare/`](https://github.com/ohah/zts/tree/main/examples/react-native-bare) — RN 0.85 bare.
+- [`examples/react-native-expo/`](https://github.com/ohah/zts/tree/main/examples/react-native-expo) — Expo 55 / RN 0.83 (Expo Router).
+
+### Compatibility
+
+- RN `>= 0.83` peer optional. `@zts/react-native` is compatible with Hermes / the RN runtime HMRClient interface and sourceMappingURL route conventions.
+- Runs on Bun and Node 22+. Dev-server lifecycle guarantees graceful shutdown on SIGINT/SIGTERM.

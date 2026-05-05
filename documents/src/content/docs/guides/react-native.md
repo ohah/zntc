@@ -92,9 +92,7 @@ RN/Expo native immutable global polyfill 충돌 같은 noise 만 선택적으로
 ```ts
 defineConfig({
   platform: "react-native",
-  silentConsoleErrorPatterns: [
-    "^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$",
-  ],
+  silentConsoleErrorPatterns: ["^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$"],
 });
 ```
 
@@ -165,15 +163,111 @@ defineConfig({
 
 RN 플랫폼에서 자주 쓰는 옵션 한 줄 요약. 자세한 동작은 각 항목 JSDoc / docs 참조.
 
-| 옵션 | 설명 |
-|---|---|
-| `workletPluginVersion` | Reanimated worklet 의 `__pluginVersion` 값. 사용자 환경 `react-native-worklets` 패키지 버전과 일치해야 런타임 에러 없음. |
-| `codegenTransform` | `*NativeComponent.{js,ts}` 의 `codegenNativeComponent` 호출을 inline view config 로 교체. RN 플랫폼에서 자동 활성. |
-| `entryErrorGuard` | entry trigger 호출을 `try/catch + ErrorUtils.reportFatalError` 로 wrap (Metro `guardedLoadModule` 동등). RN 플랫폼에서 자동 활성. |
-| `strictExecutionOrder` | 함수 선언을 factory 내부 assignment 로 다운그레이드해 호이스팅 방지 (Rolldown 동등). RN 플랫폼에서 자동 활성. |
-| `configurableExports` | `Object.defineProperty` 에 `configurable: true` 추가 (RN/Hermes 호환). |
-| `reactRefresh` | React Fast Refresh 활성화. |
-| `devMode` | 모듈을 `__zts_register()` 팩토리로 래핑 + HMR 런타임 주입. |
-| `rootDir` | dev mode 모듈 ID 기준 경로. |
-| `collectModuleCodes` | dev mode per-module codes 수집 (HMR rebuild 용). |
-| `workletTransform` | "worklet" 디렉티브 함수에 `__workletHash`/`__closure`/`__initData` 주입. RN 플랫폼에서 자동 활성. |
+| 옵션                   | 설명                                                                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `workletPluginVersion` | Reanimated worklet 의 `__pluginVersion` 값. 사용자 환경 `react-native-worklets` 패키지 버전과 일치해야 런타임 에러 없음.          |
+| `codegenTransform`     | `*NativeComponent.{js,ts}` 의 `codegenNativeComponent` 호출을 inline view config 로 교체. RN 플랫폼에서 자동 활성.                |
+| `entryErrorGuard`      | entry trigger 호출을 `try/catch + ErrorUtils.reportFatalError` 로 wrap (Metro `guardedLoadModule` 동등). RN 플랫폼에서 자동 활성. |
+| `strictExecutionOrder` | 함수 선언을 factory 내부 assignment 로 다운그레이드해 호이스팅 방지 (Rolldown 동등). RN 플랫폼에서 자동 활성.                     |
+| `configurableExports`  | `Object.defineProperty` 에 `configurable: true` 추가 (RN/Hermes 호환).                                                            |
+| `reactRefresh`         | React Fast Refresh 활성화.                                                                                                        |
+| `devMode`              | 모듈을 `__zts_register()` 팩토리로 래핑 + HMR 런타임 주입.                                                                        |
+| `rootDir`              | dev mode 모듈 ID 기준 경로.                                                                                                       |
+| `collectModuleCodes`   | dev mode per-module codes 수집 (HMR rebuild 용).                                                                                  |
+| `workletTransform`     | "worklet" 디렉티브 함수에 `__workletHash`/`__closure`/`__initData` 주입. RN 플랫폼에서 자동 활성.                                 |
+
+## Dev server (#2605)
+
+`zts dev --platform=react-native` 으로 Metro 호환 dev server 를 띄울 수 있습니다.
+
+```bash
+zts dev --platform=react-native --rn-platform=ios index.js \
+  --port=8081 --host=localhost
+```
+
+엔드포인트 (Metro 호환):
+
+- `GET /status` — packager live check (`packager-status:running`).
+- `GET /index.bundle?platform=ios&dev=true` — main bundle. `multipart/mixed` accept 시 progress + bundle chunk.
+- `GET /index.map?platform=ios` — bundle source map (lazy, build 단위 cache).
+- `GET /__zts_hmr_map/<id>?platform=ios` — per-module HMR source map.
+- `GET /assets/*`, `/node_modules/*` — asset registry (iOS @2x/@3x scale variant + 7-strategy package resolve).
+- `WS /hot` — HMR (`hmr:update-start` → `hmr:update` → `hmr:update-done` / `hmr:reload` / `hmr:error`).
+- `POST /symbolicate` — RN runtime LogBox stack trace 역매핑.
+- `POST /reload` / `POST /devmenu` / `POST /open-url` — Metro 메시지 송출.
+
+### peer optional 패키지
+
+dev server 가 일부 기능에 lazy load. 미설치 시 graceful skip:
+
+| 패키지                                   | 기능                                                                                                                                                |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@react-native-community/cli-server-api` | `messageSocketEndpoint.broadcast` (`/reload` / `/devmenu` 메시지 ws) + cli websocket endpoints (`/message`, `/events`, `/debugger-proxy`).          |
+| `@react-native/dev-middleware`           | DevTools inspector / `/json` / `/open-debugger` / `/launch-js-devtools` / fusebox. **project 기준 resolve** — Rozenite 같은 monkey-patch 도구 호환. |
+
+설치 (RN 0.83+ 권장):
+
+```bash
+bun add -D @react-native-community/cli-server-api @react-native/dev-middleware
+```
+
+### 키보드 단축키
+
+dev server 터미널에서 (Metro 호환):
+
+- `r` — Reload
+- `d` — Dev Menu
+- `j` — DevTools (`/open-debugger` POST)
+- `i` — iOS Simulator open (darwin only)
+- `a` — Android Emulator open (`ANDROID_HOME` 필요)
+- `c` — Clear cache
+- `?` — Help
+- Ctrl+C / Ctrl+D — graceful shutdown
+
+### Programmatic API
+
+```ts
+import { buildRnDevServerOptions, serveRn } from "@zts/react-native";
+
+const handle = await serveRn(
+  buildRnDevServerOptions({
+    bundle: {
+      entry: "index.js",
+      projectRoot: process.cwd(),
+      rnPlatform: "ios",
+      dev: true,
+    },
+    port: 8081,
+    host: "localhost",
+    // user enhanceMiddleware hook (Rozenite / 기타 DevTools).
+    enhanceMiddleware: (base, ctx) => (req, res, next) => {
+      if (req.url?.startsWith("/rozenite/")) {
+        // 사용자 정의 처리...
+        return;
+      }
+      base(req, res, next);
+    },
+    symbolicator: {
+      customizeFrame: async (frame) => ({
+        // node_modules frame 은 DevTools 에서 collapse.
+        collapse: frame.file?.includes("/node_modules/") ?? false,
+      }),
+    },
+  }),
+);
+
+console.log(`Listening on ${handle.url}`);
+// ... handle.stop() 시 graceful shutdown.
+```
+
+### 예제
+
+검증 매트릭스 (둘 다 \`bun run start:zts\` 로 ZTS dev server 사용):
+
+- [`examples/react-native-bare/`](https://github.com/ohah/zts/tree/main/examples/react-native-bare) — RN 0.85 bare.
+- [`examples/react-native-expo/`](https://github.com/ohah/zts/tree/main/examples/react-native-expo) — Expo 55 / RN 0.83 (Expo Router).
+
+### 호환성
+
+- RN `>= 0.83` peer optional. `@zts/react-native` 가 Hermes / RN runtime 의 HMRClient interface 와 sourceMappingURL 라우트 컨벤션 호환.
+- Bun + Node 22+ 에서 동작. dev server lifecycle 은 SIGINT/SIGTERM graceful shutdown 보장.
