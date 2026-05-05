@@ -1,5 +1,7 @@
-// HMR protocol — web overlay 가 사용하는 메시지 타입.
-// RN Metro adapter 는 #2540 에서 별도 protocol 로 추가됨 (revisionId 기반).
+// HMR protocol — web overlay 가 사용하는 메시지 타입 (HMR_MSG / HmrMessage union).
+// RN Metro 호환 메시지 타입은 별도 namespace (HMR_RN_MSG / HmrRnMessage) — Metro 의
+// `hmr:update-start` / `hmr:update` / `hmr:update-done` / `hmr:reload` / `hmr:error` /
+// `log` 그대로 (RN 런타임의 HMRClient 가 소비). web 의 HMR_MSG 와 직교 (#2540).
 
 export const HMR_MSG = Object.freeze({
   Connected: "connected",
@@ -72,3 +74,66 @@ export function normalizeHmrErrors(errors: readonly unknown[] | unknown): HmrErr
     return { file, message };
   });
 }
+
+// ─── React Native Metro HMR protocol (#2540) ─────────────────────────────────
+// Metro 의 메시지 type literal 은 `hmr:` prefix — RN runtime (zts-hmr-client.js)
+// 의 onmessage 분기 키. revisionId 기반 delta 는 caller (번개 server) 가 관리,
+// adapter 는 메시지 union 만 통과.
+
+export const HMR_RN_MSG = Object.freeze({
+  UpdateStart: "hmr:update-start",
+  Update: "hmr:update",
+  UpdateDone: "hmr:update-done",
+  Reload: "hmr:reload",
+  Error: "hmr:error",
+  Log: "log",
+} as const);
+
+export type HmrRnMessageType = (typeof HMR_RN_MSG)[keyof typeof HMR_RN_MSG];
+
+export interface HmrRnUpdateModule {
+  /** Metro module id — number (Metro 호환) 또는 string (named module). */
+  id: string | number;
+  /** 모듈 wrapper 코드 (Metro `__d(...)` 호환). */
+  code: string;
+  /** sourceMappingURL 이 적용될 inline sourcemap (optional). */
+  map?: string;
+}
+
+export interface HmrRnUpdateStartMessage {
+  type: typeof HMR_RN_MSG.UpdateStart;
+  /** initial connection 직후 송출하는 더미 update 시 true — RN 런타임의 'Refreshing…' 배너 회피. */
+  isInitialUpdate?: boolean;
+}
+
+export interface HmrRnUpdateMessage {
+  type: typeof HMR_RN_MSG.Update;
+  modules: HmrRnUpdateModule[];
+}
+
+export interface HmrRnUpdateDoneMessage {
+  type: typeof HMR_RN_MSG.UpdateDone;
+}
+
+export interface HmrRnReloadMessage {
+  type: typeof HMR_RN_MSG.Reload;
+}
+
+export interface HmrRnErrorMessage {
+  type: typeof HMR_RN_MSG.Error;
+  message: string;
+}
+
+export interface HmrRnLogMessage {
+  type: typeof HMR_RN_MSG.Log;
+  level: "log" | "info" | "warn" | "error" | "debug";
+  data: unknown[];
+}
+
+export type HmrRnMessage =
+  | HmrRnUpdateStartMessage
+  | HmrRnUpdateMessage
+  | HmrRnUpdateDoneMessage
+  | HmrRnReloadMessage
+  | HmrRnErrorMessage
+  | HmrRnLogMessage;

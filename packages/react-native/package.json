@@ -1,0 +1,42 @@
+{
+  "name": "@zts/react-native",
+  "version": "0.1.0",
+  "description": "ZTS React Native platform — Metro HMR adapter + RN preset (buildRnBundleOptions) + plugin factories + RN runtime",
+  "license": "MIT",
+  "files": [
+    "dist/",
+    "runtime/",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./runtime/zts-hmr-client.js": "./runtime/zts-hmr-client.js"
+  },
+  "scripts": {
+    "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core --external @babel/core --external @react-native/babel-plugin-codegen --external @react-native/babel-preset --external metro-resolver --external react-native --external @react-native/js-polyfills",
+    "build:dts": "bun x tsc --emitDeclarationOnly",
+    "build": "bun run build:bundle && bun run build:dts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@zts/core": "workspace:*",
+    "@zts/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2"
+  },
+  "optionalDependencies": {
+    "@babel/core": "^7.26.0",
+    "@react-native/babel-plugin-codegen": "^0.83.0",
+    "@react-native/babel-preset": "^0.83.0",
+    "@react-native/js-polyfills": "^0.83.0",
+    "metro-resolver": "^0.83.0",
+    "react-native": "^0.83.0"
+  }
+}
