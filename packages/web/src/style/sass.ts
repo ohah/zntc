@@ -73,7 +73,8 @@ export function rewriteSassReferences(sourceFiles: readonly string[]): void {
   for (const source of sourceFiles) {
     const input = readFileSync(source, "utf8");
     if (!input.includes(".scss") && !input.includes(".sass")) continue;
-    const toExt = source.endsWith(".html") ? ".css" : ".css.js";
+    // .html / .htm 모두 분기 (rewriteCssModuleReferences 와 일관 — case-insensitive).
+    const toExt = /\.html?$/i.test(source) ? ".css" : ".css.js";
     const output = input.replace(
       pattern,
       (_match, quote, spec, suffix = "") =>

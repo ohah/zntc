@@ -49,5 +49,20 @@ export {
   transformCssPreprocessors,
   type TransformCssPreprocessorOptions,
 } from "./style/sass.ts";
+export {
+  buildCssModuleProxy,
+  collectCssModuleClasses,
+  type CssModuleClassToken,
+  cssModuleGeneratedCssPath,
+  cssModuleLocalName,
+  cssModuleProxyPath,
+  isCssModuleFile,
+  isValidExportName,
+  rewriteCssModuleClasses,
+  rewriteCssModuleReferences,
+  scanCssModuleClassTokens,
+  transformCssModules,
+  type TransformCssModulesOptions,
+} from "./style/css-modules.ts";
 // dev-overlay-client 는 .mjs 라 별도 export — 브라우저 inject 용 string.
 export { APP_DEV_HMR_CLIENT } from "../runtime/dev-overlay-client.mjs";
