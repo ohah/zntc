@@ -1,7 +1,7 @@
 {
   "name": "@zts/web",
   "version": "0.1.0",
-  "description": "ZTS web platform — dev server, postcss/sass pipeline, HMR overlay",
+  "description": "ZTS web platform — dev server + HMR overlay + postcss/sass pipeline + dev controller",
   "license": "MIT",
   "files": [
     "dist/",
