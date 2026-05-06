@@ -98,12 +98,14 @@ describe("buildRnBundleOptions — define / banner / footer / polyfills", () => 
     expect(opts.define?.["process.env.NODE_ENV"]).toBe('"production"');
   });
 
-  test("banner — RN prelude 5 핵심 라인 포함", () => {
+  test("banner — RN prelude 4 핵심 라인 포함 (top-level globalThis assignment 없음 — iOS 26.4 회피)", () => {
     const opts = buildRnBundleOptions(baseInput({ dev: true }));
     expect(opts.banner).toContain("__BUNDLE_START_TIME__");
     expect(opts.banner).toContain("__DEV__=true");
     expect(opts.banner).toContain("__ZTS_RN_GLOBAL__");
-    expect(opts.banner).toContain("__ZTS_RN_BUNDLER__");
+    // __ZTS_RN_BUNDLER__ 는 footer 의 IIFE 안에서 set — banner 에 직접 두면 iOS 26.4+
+    // Hermes 가 spec global lazy registration trigger.
+    expect(opts.banner).not.toContain("globalThis.__ZTS_RN_BUNDLER__");
     expect(opts.banner).not.toContain("__BUNGAE_");
   });
 
@@ -115,8 +117,11 @@ describe("buildRnBundleOptions — define / banner / footer / polyfills", () => 
     expect(opts.banner?.endsWith('globalThis.__APP_VERSION__="1.0";')).toBe(true);
   });
 
-  test("dev=true — footer (DevLoadingView hide) 포함", () => {
+  test("dev=true — footer 에 IIFE-wrapped __ZTS_RN_BUNDLER__ flag + DevLoadingView hide 포함", () => {
     const opts = buildRnBundleOptions(baseInput({ dev: true }));
+    // top-level globalThis assignment 회피 — IIFE 안에서 set
+    expect(opts.footer).toContain("__ZTS_RN_BUNDLER__");
+    expect(opts.footer).toMatch(/\(function\(g\)\{g\.__ZTS_RN_BUNDLER__/);
     expect(opts.footer).toContain("DevLoadingView.hide");
   });
 
