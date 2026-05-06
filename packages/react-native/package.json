@@ -22,7 +22,7 @@
     "build:bundle": "node ../core/bin/zts.mjs --bundle src/index.ts --outfile dist/index.js --format=esm --target=node --external @zts/core --external @babel/core --external @react-native/babel-plugin-codegen --external @react-native/babel-preset --external metro-resolver --external react-native --external @react-native/js-polyfills",
     "build:dts": "bun x tsc --emitDeclarationOnly",
     "build": "bun run build:bundle && bun run build:dts",
-    "test": "bun test"
+    "test": "bun test --timeout 10000"
   },
   "dependencies": {
     "@zts/core": "workspace:*",

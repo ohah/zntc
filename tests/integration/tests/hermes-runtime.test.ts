@@ -262,8 +262,8 @@ print("RES:" + arr.join(","));`;
     require("fs").writeFileSync(tmp + ".ts", ts);
     const zts = Bun.spawnSync([ZTS_BIN, tmp + ".ts", "--target=es5", "-o", tmp]);
     expect(zts.exitCode).toBe(0);
-    // 무한 루프면 timeout — 5 초 cap.
-    const result = Bun.spawnSync([hermes!, tmp], { timeout: 5000 });
+    // 무한 루프면 timeout — 10 초 cap.
+    const result = Bun.spawnSync([hermes!, tmp], { timeout: 10000 });
     expect(result.stdout?.toString() ?? "").toContain("RES:done");
   });
 

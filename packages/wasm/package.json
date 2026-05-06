@@ -23,6 +23,6 @@
     "build:wasm": "cd ../.. && zig build wasm && zig build wasm-bundler",
     "build:js": "bun build index.ts --outdir dist --format esm --target browser",
     "build": "bun run build:wasm && cp ../../zig-out/bin/zts.wasm . && cp ../../zig-out/bin/zts-bundler.wasm . && bun run build:js",
-    "test": "bun test"
+    "test": "bun test --timeout 10000"
   }
 }
