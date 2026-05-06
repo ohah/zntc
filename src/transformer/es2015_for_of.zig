@@ -117,13 +117,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // --- test: !(_a = (_e = _d.next()).done) ---
 
             // _d.next()
-            const iter_ref_next = try makeRefFromSpan(self, iter_span, span);
+            const iter_ref_next = try makeRefFromSpan(self, iter_span);
             const next_prop = try es_helpers.makeIdentifierRef(self, "next");
             const iter_next = try es_helpers.makeStaticMember(self, iter_ref_next, next_prop, span);
             const iter_next_call = try es_helpers.makeCallExpr(self, iter_next, &.{}, span);
 
             // _e = _d.next()
-            const step_ref_assign = try makeRefFromSpan(self, step_span, span);
+            const step_ref_assign = try makeRefFromSpan(self, step_span);
             const step_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -136,7 +136,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const step_done = try es_helpers.makeStaticMember(self, paren_step, done_prop, span);
 
             // _a = (...).done
-            const inc_ref_assign = try makeRefFromSpan(self, inc_span, span);
+            const inc_ref_assign = try makeRefFromSpan(self, inc_span);
             const inc_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -148,7 +148,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const not_inc = try es_helpers.makeUnaryNot(self, paren_inc, span);
 
             // --- update: _a = true ---
-            const inc_ref_update = try makeRefFromSpan(self, inc_span, span);
+            const inc_ref_update = try makeRefFromSpan(self, inc_span);
             const update_true = try makeBoolLiteral(self, true_span, true);
             const for_update = try self.ast.addNode(.{
                 .tag = .assignment_expression,
@@ -160,7 +160,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const new_body = try self.visitNode(body);
 
             // _e.value
-            const step_ref_body = try makeRefFromSpan(self, step_span, span);
+            const step_ref_body = try makeRefFromSpan(self, step_span);
             const value_prop = try es_helpers.makeIdentifierRef(self, "value");
             const step_value = try es_helpers.makeStaticMember(self, step_ref_body, value_prop, span);
 
@@ -249,7 +249,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // =====================================================
             // 4. catch (_f) { _b = true; _c = _f; }
             // =====================================================
-            const die_ref_catch = try makeRefFromSpan(self, die_span, span);
+            const die_ref_catch = try makeRefFromSpan(self, die_span);
             const catch_true = try makeBoolLiteral(self, true_span, true);
             const die_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
@@ -258,8 +258,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             });
             const die_stmt = try es_helpers.makeExprStmt(self, die_assign, span);
 
-            const ie_ref_catch = try makeRefFromSpan(self, ie_span, span);
-            const err_ref_catch = try makeRefFromSpan(self, err_span, span);
+            const ie_ref_catch = try makeRefFromSpan(self, ie_span);
+            const err_ref_catch = try makeRefFromSpan(self, err_span);
             const ie_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -286,11 +286,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // =====================================================
 
             // !_a
-            const inc_ref_finally = try makeRefFromSpan(self, inc_span, span);
+            const inc_ref_finally = try makeRefFromSpan(self, inc_span);
             const not_inc_finally = try es_helpers.makeUnaryNot(self, inc_ref_finally, span);
 
             // _d.return != null
-            const iter_ref_finally = try makeRefFromSpan(self, iter_span, span);
+            const iter_ref_finally = try makeRefFromSpan(self, iter_span);
             const return_prop = try es_helpers.makeIdentifierRef(self, "return");
             const iter_return = try es_helpers.makeStaticMember(self, iter_ref_finally, return_prop, span);
             const null_lit = try self.ast.addNode(.{
@@ -320,7 +320,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             });
 
             // _d.return()
-            const iter_ref_call = try makeRefFromSpan(self, iter_span, span);
+            const iter_ref_call = try makeRefFromSpan(self, iter_span);
             const return_prop2 = try es_helpers.makeIdentifierRef(self, "return");
             const iter_return2 = try es_helpers.makeStaticMember(self, iter_ref_call, return_prop2, span);
             const iter_return_call = try es_helpers.makeCallExpr(self, iter_return2, &.{}, span);
@@ -347,8 +347,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             });
 
             // if (_b) { throw _c; }
-            const die_ref_finally = try makeRefFromSpan(self, die_span, span);
-            const ie_ref_finally = try makeRefFromSpan(self, ie_span, span);
+            const die_ref_finally = try makeRefFromSpan(self, die_span);
+            const ie_ref_finally = try makeRefFromSpan(self, ie_span);
             const throw_ie = try self.ast.addNode(.{
                 .tag = .throw_statement,
                 .span = span,
@@ -415,23 +415,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         // 헬퍼
         // ================================================================
 
-        /// `_a`/`_b`/.../`_g` 같은 다운레벨 temp 변수의 reference 노드 생성.
-        ///
-        /// `node.span` 을 `name_span` (string_table 의 합성 이름 위치) 으로 설정해야
-        /// `resyncModuleMetadataAfterAstMutation` 의 SemanticAnalyzer 가
-        /// `getSourceText(node.span)` 으로 추출하는 reference 텍스트가 binding 텍스트
-        /// (`_a` 등) 와 일치한다 — 그래야 module-scope 의 binding 과 매칭되어 동일
-        /// symbol_id 가 부여되고 mangler 의 cross-module conflict rename 이 reference
-        /// 까지 일관되게 적용된다 (#TODO Reanimated Easing.ts 회귀).
-        ///
-        /// `node_span` (= 원본 for-of 의 source 위치) 을 `node.span` 으로 두면 analyzer 가
-        /// 그 source 위치에서 `for (const [k,v] of ...)` 같은 *원본 코드* 텍스트를 읽어
-        /// binding 매칭 실패 → reference 의 symbol_id 가 None → mangler rename 추적 누락.
-        ///
-        /// 결과: declaration 만 `_a$N` 으로 rename 되고 reference 는 `_a` 그대로 →
-        /// strict mode ReferenceError → __zts_guarded silent catch → module init 미완.
-        fn makeRefFromSpan(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
-            _ = node_span;
+        /// reference 의 `node.span` 은 `name_span` 사용 (binding 과 동일한 정책).
+        /// 다른 정책 (e.g. for-of 자체의 source span) 을 쓰면 post-transform
+        /// `SemanticAnalyzer.getSourceText(node.span)` 이 원본 source 영역의 다른
+        /// 텍스트를 읽어 binding 매칭 실패 → symbol_id 가 None → mangler 의
+        /// cross-module rename 이 declaration 에만 적용되는 비대칭이 발생한다.
+        fn makeRefFromSpan(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
             return self.ast.addNode(.{
                 .tag = .identifier_reference,
                 .span = name_span,
