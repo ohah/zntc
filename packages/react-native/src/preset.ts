@@ -182,13 +182,18 @@ function formatExtraVars(extraVars: Record<string, unknown>): string {
 
 function buildPrelude(input: RnBundleInput): string {
   const { dev, bannerExtras, extra } = input;
+  // ⚠️ 중요: 이 prelude 에 **top-level `globalThis.X = ...` 또는 `globalThis.X = ...` 의 직접 assignment**
+  // 를 두면 안 된다. iOS 26.4+ Hermes 가 parse 시점에 spec global (`Location`, `TextEncoderStream`
+  // 등) placeholder 를 `configurable: false` 로 lazy 등록 → 그 후 Reanimated/Expo 의 가드 없는
+  // `Object.defineProperty(globalThis, ...)` 시도 → throw → 부팅 실패. Metro bundle 도 모든
+  // globalThis assignment 를 module factory 안 (nested scope) 에 두는 패턴이라 trigger 회피.
+  // 추가 식별자가 필요하면 `__ZTS_RN_BUNDLER__` 처럼 footer 의 IIFE 안에서 세팅.
   const lines = [
     `var __BUNDLE_START_TIME__=this.nativePerformanceNow?nativePerformanceNow():Date.now();`,
     `var __DEV__=${dev};`,
     `var __ZTS_RN_GLOBAL__=typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this;`,
     `if(typeof global==='undefined')var global=__ZTS_RN_GLOBAL__;`,
     `var process=__ZTS_RN_GLOBAL__.process||{};process.env=process.env||{};process.env.NODE_ENV=process.env.NODE_ENV||"${dev ? "development" : "production"}";`,
-    `globalThis.__ZTS_RN_BUNDLER__=true;`,
   ];
   if (extra?.extraVars && Object.keys(extra.extraVars).length > 0) {
     const formatted = formatExtraVars(extra.extraVars);
@@ -196,6 +201,21 @@ function buildPrelude(input: RnBundleInput): string {
   }
   if (bannerExtras) lines.push(bannerExtras);
   return lines.join("");
+}
+
+/**
+ * Footer 의 식별자 wrap — `globalThis.X = ...` 를 IIFE 안에서 실행해 iOS 26.4+ Hermes 의
+ * spec global lazy registration trigger 를 회피. `buildPrelude` 의 주석 참조.
+ */
+function buildFooter(dev: boolean): string {
+  const parts: string[] = [
+    // __ZTS_RN_BUNDLER__ flag — IIFE 안에서 set 해야 안전
+    `(function(g){g.__ZTS_RN_BUNDLER__=true;})(typeof globalThis!=='undefined'?globalThis:typeof global!=='undefined'?global:typeof window!=='undefined'?window:this);`,
+  ];
+  if (dev) {
+    parts.push(`setTimeout(function(){try{NativeModules.DevLoadingView.hide()}catch(e){}},0);`);
+  }
+  return parts.join("");
 }
 
 function resolveWorkletPluginVersion(
@@ -347,7 +367,9 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     preset.devMode = true;
     preset.reactRefresh = true;
     preset.collectModuleCodes = true;
-    preset.footer = "setTimeout(function(){try{NativeModules.DevLoadingView.hide()}catch(e){}},0);";
+    // Footer 는 dev 시만 — `__ZTS_RN_BUNDLER__` flag 를 IIFE 로 wrap 해 iOS 26.4+ Hermes
+    // spec global trigger 회피 (`buildPrelude` 의 주석 참조) + DevLoadingView hide.
+    preset.footer = buildFooter(true);
   }
 
   if (extra?.watchFolders && extra.watchFolders.length > 0) {
