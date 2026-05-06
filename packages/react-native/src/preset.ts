@@ -115,21 +115,47 @@ export interface RnBundleInput {
 }
 
 const DEFAULT_SOURCE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json'];
+// Metro 호환 + RN 흔한 폰트/이미지 — bungae DEFAULT_RESOLVER.assetExts 와 동일.
+// caller 가 `extra.assetExts` 로 override 하면 이 list 무시.
 const DEFAULT_ASSET_EXTS = [
-  '.png',
+  // 이미지
+  '.bmp',
+  '.gif',
   '.jpg',
   '.jpeg',
-  '.gif',
-  '.webp',
+  '.png',
+  '.psd',
   '.svg',
-  '.ttf',
-  '.otf',
-  '.mp3',
-  '.mp4',
-  '.m4a',
+  '.webp',
+  '.tiff',
+  '.tif',
+  '.xml',
+  '.avif',
+  '.ico',
+  // 비디오
   '.m4v',
-  '.pdf',
+  '.mov',
+  '.mp4',
+  '.mpeg',
+  '.mpg',
+  '.webm',
+  // 오디오
+  '.aac',
+  '.aiff',
+  '.caf',
+  '.m4a',
+  '.mp3',
+  '.wav',
+  // 문서
   '.html',
+  '.pdf',
+  '.yaml',
+  '.yml',
+  // 폰트
+  '.otf',
+  '.ttf',
+  '.woff',
+  '.woff2',
 ];
 
 const NATIVE_AND_BASE = [

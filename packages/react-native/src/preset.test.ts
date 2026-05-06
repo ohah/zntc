@@ -344,6 +344,26 @@ describe('buildRnBundleOptions — loader / alias', () => {
     expect(opts.loader?.['.svg']).toBe('file');
   });
 
+  test('loader — Metro 호환 default 폰트/이미지 확장자 모두 등록 (#2605 audit)', () => {
+    const opts = buildRnBundleOptions(baseInput());
+    // 폰트 — RN 흔한 use case (.woff/.woff2)
+    expect(opts.loader?.['.woff']).toBe('file');
+    expect(opts.loader?.['.woff2']).toBe('file');
+    // 이미지 — bmp/ico/avif 추가
+    expect(opts.loader?.['.bmp']).toBe('file');
+    expect(opts.loader?.['.ico']).toBe('file');
+    expect(opts.loader?.['.avif']).toBe('file');
+    // 비디오 — webm/mov
+    expect(opts.loader?.['.webm']).toBe('file');
+    expect(opts.loader?.['.mov']).toBe('file');
+    // 오디오 — aac/wav
+    expect(opts.loader?.['.aac']).toBe('file');
+    expect(opts.loader?.['.wav']).toBe('file');
+    // 문서 — yaml/yml
+    expect(opts.loader?.['.yaml']).toBe('file');
+    expect(opts.loader?.['.yml']).toBe('file');
+  });
+
   test('loader — assetExts override 적용', () => {
     const opts = buildRnBundleOptions(baseInput({ extra: { assetExts: ['.webp', '.woff2'] } }));
     expect(Object.keys(opts.loader ?? {}).sort()).toEqual(['.webp', '.woff2']);

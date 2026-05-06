@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { type BunHmrClient, HMR_RN_MSG } from '@zts/server';
 
-import { createMetroHmrAdapter } from './metro-hmr-adapter.ts';
+import { createMetroHmrAdapter, formatBuildError } from './metro-hmr-adapter.ts';
 
 class MockBunClient implements BunHmrClient {
   sent: string[] = [];
@@ -72,14 +72,93 @@ describe('createMetroHmrAdapter', () => {
     expect(parsedSent(client)).toEqual([{ type: HMR_RN_MSG.Reload }]);
   });
 
-  test('sendError — Error{message}', () => {
+  test('sendError — Error{message, body:BuildError} (Metro LogBox 호환, #2605 audit)', () => {
     const adapter = createMetroHmrAdapter();
     const client = new MockBunClient();
     adapter.channel.addBunClient(client);
     resetSent(client);
 
     adapter.sendError('boom');
-    expect(parsedSent(client)).toEqual([{ type: HMR_RN_MSG.Error, message: 'boom' }]);
+    expect(parsedSent(client)).toEqual([
+      {
+        type: HMR_RN_MSG.Error,
+        message: 'boom',
+        body: { type: 'BuildError', message: 'boom', errors: [{ description: 'boom' }] },
+      },
+    ]);
+  });
+
+  test('sendError — file:line:col 추출 시 body.errors[0] 에 filename/lineNumber/column', () => {
+    const adapter = createMetroHmrAdapter();
+    const client = new MockBunClient();
+    adapter.channel.addBunClient(client);
+    resetSent(client);
+
+    const msg = "Failed to compile.\n/proj/src/App.tsx:42:7: error: Unexpected token '}'";
+    adapter.sendError(msg);
+    const sent = parsedSent(client)[0] as {
+      type: string;
+      message: string;
+      body: {
+        type: string;
+        errors: Array<{
+          description: string;
+          filename?: string;
+          lineNumber?: number;
+          column?: number;
+        }>;
+      };
+    };
+    expect(sent.body.errors[0]).toEqual({
+      description: msg,
+      filename: '/proj/src/App.tsx',
+      lineNumber: 42,
+      column: 7,
+    });
+  });
+});
+
+describe('formatBuildError — Metro 호환 BuildError body 변환 (#2605 audit)', () => {
+  test('file:line:col 매칭 — errors[0] 에 분리', () => {
+    const result = formatBuildError('/abs/path/foo.ts:10:5: error: bad');
+    expect(result).toEqual({
+      type: 'BuildError',
+      message: '/abs/path/foo.ts:10:5: error: bad',
+      errors: [
+        {
+          description: '/abs/path/foo.ts:10:5: error: bad',
+          filename: '/abs/path/foo.ts',
+          lineNumber: 10,
+          column: 5,
+        },
+      ],
+    });
+  });
+
+  test('.tsx / .jsx / .mjs 다양한 ext 매칭', () => {
+    expect(formatBuildError('a/b.tsx:1:2: x').errors[0]?.filename).toBe('a/b.tsx');
+    expect(formatBuildError('a/b.jsx:1:2: x').errors[0]?.filename).toBe('a/b.jsx');
+    expect(formatBuildError('a/b.js:1:2: x').errors[0]?.filename).toBe('a/b.js');
+  });
+
+  test('위치 매칭 실패 — description 만 (file/line/col undefined)', () => {
+    const result = formatBuildError('Generic error without location');
+    expect(result.errors).toEqual([{ description: 'Generic error without location' }]);
+    expect(result.message).toBe('Generic error without location');
+  });
+
+  test('빈 message — fallback (description 만)', () => {
+    const result = formatBuildError('');
+    expect(result.errors).toEqual([{ description: '' }]);
+    expect(result.message).toBe('');
+  });
+
+  test('multiline error — 첫 위치 매칭 추출', () => {
+    const msg = 'Build error:\n/proj/src/x.ts:5:3: SyntaxError\n  more lines\n  /proj/src/y.ts:9:1';
+    const result = formatBuildError(msg);
+    expect(result.errors[0]?.filename).toBe('/proj/src/x.ts');
+    expect(result.errors[0]?.lineNumber).toBe(5);
+    expect(result.errors[0]?.column).toBe(3);
   });
 
   test('multi client broadcast — 모든 client 가 같은 메시지 받음', () => {

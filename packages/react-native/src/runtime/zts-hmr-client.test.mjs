@@ -254,11 +254,66 @@ describe('onmessage — Metro 메시지 분기', () => {
     expect(mockGlobal.__zts_reload).toHaveBeenCalled();
   });
 
-  test('hmr:error — console.error', () => {
+  test('hmr:error — console.error (backward-compat: body 없음)', () => {
     const ws = setupConnected();
     ws.onmessage({ data: JSON.stringify({ type: 'hmr:error', message: 'boom' }) });
     // setupConnected 의 onopen 이 console wrap — original 검증.
     expect(originalConsole.error).toHaveBeenCalledWith('[ZTS HMR]', 'boom');
+  });
+
+  test('hmr:error — body.errors[0].filename 있으면 file:line:col 포함 (#2605 audit)', () => {
+    const ws = setupConnected();
+    ws.onmessage({
+      data: JSON.stringify({
+        type: 'hmr:error',
+        message: 'fallback',
+        body: {
+          type: 'BuildError',
+          message: 'fallback',
+          errors: [
+            {
+              description: 'Unexpected token',
+              filename: '/proj/src/App.tsx',
+              lineNumber: 42,
+              column: 7,
+            },
+          ],
+        },
+      }),
+    });
+    expect(originalConsole.error).toHaveBeenCalledWith(
+      '[ZTS HMR] /proj/src/App.tsx:42:7',
+      'Unexpected token',
+    );
+  });
+
+  test('hmr:error — body.errors[0] 위치 정보 없음 → 단순 description', () => {
+    const ws = setupConnected();
+    ws.onmessage({
+      data: JSON.stringify({
+        type: 'hmr:error',
+        message: 'no-loc',
+        body: { type: 'BuildError', message: 'no-loc', errors: [{ description: 'no-loc' }] },
+      }),
+    });
+    expect(originalConsole.error).toHaveBeenCalledWith('[ZTS HMR]', 'no-loc');
+  });
+
+  test('hmr:error — filename 만 있고 lineNumber/column 누락 → location 부착 안 함 (#2605 audit)', () => {
+    const ws = setupConnected();
+    ws.onmessage({
+      data: JSON.stringify({
+        type: 'hmr:error',
+        message: 'partial',
+        body: {
+          type: 'BuildError',
+          message: 'partial',
+          errors: [{ description: 'partial', filename: '/proj/foo.ts' }],
+        },
+      }),
+    });
+    // 'foo.ts:undefined:undefined' 같은 false-positive 가 아닌 description 만.
+    expect(originalConsole.error).toHaveBeenCalledWith('[ZTS HMR]', 'partial');
   });
 
   test('disable() 후 hmr:error 만 통과, 그 외 메시지 무시', () => {

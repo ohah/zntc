@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { DEV_MIDDLEWARE_PATH_PREFIXES, loadDevMiddleware } from './dev-middleware.ts';
+import {
+  DEV_MIDDLEWARE_PATH_PREFIXES,
+  isDevMiddlewareRoute,
+  loadDevMiddleware,
+} from './dev-middleware.ts';
 
 let dir: string;
 
@@ -25,6 +29,38 @@ describe('DEV_MIDDLEWARE_PATH_PREFIXES', () => {
       '/debugger-frontend',
       '/launch-js-devtools',
     ]);
+  });
+});
+
+describe('isDevMiddlewareRoute — 정확 경계 매칭 (#2605 audit)', () => {
+  test('정확한 prefix 매칭 — true', () => {
+    expect(isDevMiddlewareRoute('/json')).toBe(true);
+    expect(isDevMiddlewareRoute('/open-debugger')).toBe(true);
+    expect(isDevMiddlewareRoute('/debugger-frontend')).toBe(true);
+    expect(isDevMiddlewareRoute('/launch-js-devtools')).toBe(true);
+  });
+
+  test('슬래시 경계 + tail — true', () => {
+    expect(isDevMiddlewareRoute('/json/list')).toBe(true);
+    expect(isDevMiddlewareRoute('/debugger-frontend/index.html')).toBe(true);
+    expect(isDevMiddlewareRoute('/open-debugger/something')).toBe(true);
+  });
+
+  test('substring false-positive 방지 — `/jsonbomb` / `/jsonish` → false', () => {
+    expect(isDevMiddlewareRoute('/jsonbomb')).toBe(false);
+    expect(isDevMiddlewareRoute('/jsonish')).toBe(false);
+    expect(isDevMiddlewareRoute('/open-debugger-x')).toBe(false);
+    expect(isDevMiddlewareRoute('/debugger-frontends')).toBe(false);
+  });
+
+  test('비매치 path — false', () => {
+    expect(isDevMiddlewareRoute('/')).toBe(false);
+    expect(isDevMiddlewareRoute('/index.bundle')).toBe(false);
+    expect(isDevMiddlewareRoute('/status')).toBe(false);
+  });
+
+  test('빈 string — false', () => {
+    expect(isDevMiddlewareRoute('')).toBe(false);
   });
 });
 

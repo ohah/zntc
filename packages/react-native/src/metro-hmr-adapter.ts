@@ -9,8 +9,34 @@ import {
   createHmrChannel,
   type HmrChannel,
   HMR_RN_MSG,
+  type HmrRnErrorBody,
+  type HmrRnErrorEntry,
   type HmrRnUpdateModule,
 } from '@zts/server';
+
+// ZTS error string 의 위치 추출 — `<file>.tsx?:<line>:<col>` 형태. Metro 의
+// BuildError 의 file:line:col 과 같은 형식으로 정규화 — RN LogBox 의 source link.
+const ZTS_LOCATION_RE = /([^\s]+\.[jt]sx?):(\d+):(\d+)/;
+
+/**
+ * ZTS build error → Metro 호환 `BuildError` body 로 변환. file:line:col 추출
+ * 실패해도 단일 entry 의 description 만으로 fallback. bungae 의 formatHmrError
+ * (zts-bundler/server/index.ts L824) 와 동일 로직 (#2605 audit).
+ */
+export function formatBuildError(message: string): HmrRnErrorBody {
+  const match = message.match(ZTS_LOCATION_RE);
+  const errors: HmrRnErrorEntry[] = match
+    ? [
+        {
+          description: message,
+          filename: match[1]!,
+          lineNumber: Number.parseInt(match[2]!, 10),
+          column: Number.parseInt(match[3]!, 10),
+        },
+      ]
+    : [{ description: message }];
+  return { type: 'BuildError', message, errors };
+}
 
 export interface MetroHmrAdapter {
   /**
@@ -51,7 +77,11 @@ export function createMetroHmrAdapter(): MetroHmrAdapter {
       channel.broadcast({ type: HMR_RN_MSG.Reload });
     },
     sendError(message) {
-      channel.broadcast({ type: HMR_RN_MSG.Error, message });
+      channel.broadcast({
+        type: HMR_RN_MSG.Error,
+        message,
+        body: formatBuildError(message),
+      });
     },
   };
 }

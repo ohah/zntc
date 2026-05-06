@@ -9,7 +9,7 @@ import * as jscSafeUrl from 'jsc-safe-url';
 import type { HmrBridge } from './hmr-bridge.ts';
 import { parseRequestUrl, sendText } from './http-utils.ts';
 import type { CliServerApi } from './middleware/cli-server-api.ts';
-import { DEV_MIDDLEWARE_PATH_PREFIXES, type DevMiddleware } from './middleware/dev-middleware.ts';
+import { type DevMiddleware, isDevMiddlewareRoute } from './middleware/dev-middleware.ts';
 import type { RnDevServerOptions } from './options.ts';
 import type { PlatformStateRegistry } from './platform-state.ts';
 import { handleAssetRequest, isAssetRoute } from './routes/assets.ts';
@@ -133,7 +133,7 @@ export function createBaseMiddleware(
     }
     // dev-middleware (peer optional) — /json, /open-debugger, /debugger-frontend,
     // /launch-js-devtools 처리. 미설치 시 next() 로 fallthrough.
-    if (deps.devMiddleware && DEV_MIDDLEWARE_PATH_PREFIXES.some((p) => pathname.startsWith(p))) {
+    if (deps.devMiddleware && isDevMiddlewareRoute(pathname)) {
       deps.devMiddleware.middleware(req, res, next);
       return;
     }

@@ -119,9 +119,30 @@ export interface HmrRnReloadMessage {
   type: typeof HMR_RN_MSG.Reload;
 }
 
+/**
+ * Build error 한 항목 — file:line:col 정보 (가능한 경우). RN LogBox 의 source
+ * link 표시용.
+ */
+export interface HmrRnErrorEntry {
+  description: string;
+  filename?: string;
+  lineNumber?: number;
+  column?: number;
+}
+
+/** Metro `BuildError` body wrapper — RN HMRClient 의 LogBox 와 호환. */
+export interface HmrRnErrorBody {
+  type: 'BuildError';
+  message: string;
+  errors: HmrRnErrorEntry[];
+}
+
 export interface HmrRnErrorMessage {
   type: typeof HMR_RN_MSG.Error;
+  /** Backward-compat — 단순 텍스트 표시용 fallback. */
   message: string;
+  /** Metro 호환 nested wrapper — file:line:col 파싱 결과. */
+  body?: HmrRnErrorBody;
 }
 
 export interface HmrRnLogMessage {

@@ -86,13 +86,17 @@ describe('createHmrBridge — onRebuild', () => {
     expect(recorded).toEqual([]);
   });
 
-  test('success=false → error 메시지 (state.buildError 우선)', () => {
+  test('success=false → error 메시지 (state.buildError 우선) + body wrapper', () => {
     const bridge = createHmrBridge({ path: '/hot' });
     const recorded = recordMessages(bridge.adapter);
     const state = fakeState();
     state.buildError = 'from state';
     bridge.callbacks.onRebuild!(state, rebuild({ success: false, error: 'from event' } as never));
-    expect(recorded[0]).toEqual({ type: 'hmr:error', message: 'from state' });
+    expect(recorded[0]).toEqual({
+      type: 'hmr:error',
+      message: 'from state',
+      body: { type: 'BuildError', message: 'from state', errors: [{ description: 'from state' }] },
+    });
   });
 
   test('success=false + state.buildError null → event.error 사용', () => {
@@ -102,14 +106,26 @@ describe('createHmrBridge — onRebuild', () => {
       fakeState(),
       rebuild({ success: false, error: 'syntax bad' } as never),
     );
-    expect(recorded[0]).toEqual({ type: 'hmr:error', message: 'syntax bad' });
+    expect(recorded[0]).toEqual({
+      type: 'hmr:error',
+      message: 'syntax bad',
+      body: { type: 'BuildError', message: 'syntax bad', errors: [{ description: 'syntax bad' }] },
+    });
   });
 
   test('success=false 에서 둘 다 null → fallback 메시지', () => {
     const bridge = createHmrBridge({ path: '/hot' });
     const recorded = recordMessages(bridge.adapter);
     bridge.callbacks.onRebuild!(fakeState(), rebuild({ success: false } as never));
-    expect(recorded[0]).toEqual({ type: 'hmr:error', message: 'Unknown build error' });
+    expect(recorded[0]).toEqual({
+      type: 'hmr:error',
+      message: 'Unknown build error',
+      body: {
+        type: 'BuildError',
+        message: 'Unknown build error',
+        errors: [{ description: 'Unknown build error' }],
+      },
+    });
   });
 });
 
