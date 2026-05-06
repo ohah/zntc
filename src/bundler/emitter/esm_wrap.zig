@@ -535,11 +535,11 @@ pub fn emitEsmWrappedModule(
                                 break :blk renamed;
                         }
                         break :blk local_name;
-                    }, options.configurable_exports);
+                    }, options);
                 }
             }
             for (star_entries.items) |entry| {
-                try appendExportGetter(&wrapped, allocator, entry.name, entry.getter_value, options.configurable_exports);
+                try appendExportGetter(&wrapped, allocator, entry.name, entry.getter_value, options);
             }
 
             try wrapped.appendSlice(allocator, "});\n");
@@ -1031,15 +1031,18 @@ fn appendWrappedInitCall(
 }
 
 /// __export() 내부의 "name: () => value,\n" 한 줄을 출력한다.
-/// property 이름에 따옴표가 필요하면 자동으로 감싼다.
+/// `configurable_exports` 가 true 면 RN/Hermes 호환을 위해 arrow 대신
+/// function expression getter 사용 (this binding / inline cache 시맨틱 차이).
 fn appendExportGetter(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     name: []const u8,
     value: []const u8,
-    es5: bool,
+    options: anytype,
 ) !void {
-    try buf.appendSlice(allocator, "\t");
+    const es5 = options.configurable_exports;
+    const min = options.minify_whitespace;
+    if (!min) try buf.appendSlice(allocator, "\t");
     if (needsPropertyQuote(name)) {
         try buf.appendSlice(allocator, "\"");
         try buf.appendSlice(allocator, name);
@@ -1048,13 +1051,13 @@ fn appendExportGetter(
         try buf.appendSlice(allocator, name);
     }
     if (es5) {
-        try buf.appendSlice(allocator, ": function() { return ");
+        try buf.appendSlice(allocator, if (min) ":function(){return " else ": function() { return ");
         try buf.appendSlice(allocator, value);
-        try buf.appendSlice(allocator, "; },\n");
+        try buf.appendSlice(allocator, if (min) "}," else "; },\n");
     } else {
-        try buf.appendSlice(allocator, ": () => ");
+        try buf.appendSlice(allocator, if (min) ":()=>" else ": () => ");
         try buf.appendSlice(allocator, value);
-        try buf.appendSlice(allocator, ",\n");
+        try buf.appendSlice(allocator, if (min) "," else ",\n");
     }
 }
 
