@@ -75,21 +75,18 @@ export async function createReactStubFixture(
   });
 }
 
-/// pnpm/bun 의 `.pnpm/` farm symlink 레이아웃을 모방한 fixture 생성.
-/// resolver 의 `preserve_symlinks=false` 경로(`bundler/resolver.zig:661`)가
-/// farm 을 realpath 로 풀어 flat npm 과 동일 결과를 내는지 회귀 가드 목적.
-/// 현재는 unscoped 1-hop 만 지원 — scoped/peer/nested 는 후속 PR.
+/// pnpm/bun `.pnpm/` farm symlink 레이아웃 fixture (unscoped 1-hop).
 export async function createPnpmFarmFixture(opts: {
   files: Record<string, string>;
   packages: Record<string, Record<string, string>>;
 }): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const parsed = Object.entries(opts.packages).map(([key, files]) => {
     if (key.startsWith('@')) {
-      throw new Error(`createPnpmFarmFixture: scoped package '${key}' 는 후속 PR`);
+      throw new Error(`scoped package not supported: '${key}'`);
     }
     const at = key.indexOf('@');
     if (at < 0) {
-      throw new Error(`createPnpmFarmFixture: bad package key '${key}' — expected name@version`);
+      throw new Error(`bad package key '${key}' — expected name@version`);
     }
     return { name: key.slice(0, at), version: key.slice(at + 1), files };
   });

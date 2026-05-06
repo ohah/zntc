@@ -3,8 +3,6 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createPnpmFarmFixture, runZts } from './helpers';
 
-/// 단위 테스트(`package_json_test.zig:159`)는 parsePackageJson 단계만 cover.
-/// 풀 번들 파이프라인까지 farm 이 동일 결과를 내는지는 통합에서 회귀 가드.
 describe('pnpm/bun farm symlink — bundle integration', () => {
   test('farm symlink resolves to real package and inlines source', async () => {
     const fixture = await createPnpmFarmFixture({
