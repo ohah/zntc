@@ -99,3 +99,12 @@ export const DEV_MIDDLEWARE_PATH_PREFIXES = [
   '/debugger-frontend',
   '/launch-js-devtools',
 ];
+
+/**
+ * dev-middleware path prefix 의 정확 경계 매칭. `/jsonbomb` 같은 우연한
+ * substring 일치를 막기 위해 정확한 path 또는 슬래시 경계 + tail 만 허용.
+ * bungae Server.js 의 prefix 매칭과 동일 패턴 (#2605 audit).
+ */
+export function isDevMiddlewareRoute(pathname: string): boolean {
+  return DEV_MIDDLEWARE_PATH_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}

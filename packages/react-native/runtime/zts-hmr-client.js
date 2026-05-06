@@ -180,7 +180,21 @@ var HMRClient = {
             }
             break;
           case 'hmr:error':
-            if (msg.message) {
+            // body.errors 가 있으면 file:line:col 정보를 함께 출력 — RN LogBox 가
+            // source link 자동 추출 → 클릭 시 editor jump. backward-compat 으로
+            // body 가 없는 메시지는 단순 message 만 출력.
+            if (msg.body && msg.body.errors && msg.body.errors[0]) {
+              var err = msg.body.errors[0];
+              // filename / lineNumber / column 은 type 상 모두 optional.
+              // 셋 다 있을 때만 location 부착 — 없으면 'foo.ts:undefined:undefined' 같은
+              // false-positive 회피.
+              var hasLoc =
+                err.filename &&
+                typeof err.lineNumber === 'number' &&
+                typeof err.column === 'number';
+              var loc = hasLoc ? ' ' + err.filename + ':' + err.lineNumber + ':' + err.column : '';
+              console.error('[ZTS HMR]' + loc, err.description || msg.message);
+            } else if (msg.message) {
               console.error('[ZTS HMR]', msg.message);
             }
             break;
