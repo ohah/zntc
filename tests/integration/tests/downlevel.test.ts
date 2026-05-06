@@ -544,25 +544,14 @@ describe('ES 다운레벨링 런타임 테스트', () => {
     });
 
     test('module-top for-of: declaration/reference rename consistency (Reanimated Easing 회귀)', async () => {
-      // 회귀 시나리오 (#2632 후속): 두 module 이 module-top 에서 iterator-protocol
-      // for-of 를 가지면, ZTS 가 다운레벨로 만든 temp `_a/_b/_c/_d/_e` 가 module
-      // 간 충돌. mangler 의 conflict 회피로 한쪽 binding 만 `_a$N` 으로 rename
-      // 됐는데, 같은 식 안의 reference (예: `_a = (_e = _d.next()).done`) 가
-      // symbol_id 미부여로 rename 추적 누락 → strict mode 에서 ReferenceError →
-      // module init body 가 try/catch 로 silent fail → 후속 module-level
-      // assignment (예: Easing$3 = EasingObject) 가 도달 못 함 → undefined snapshot.
-      //
-      // Reanimated 4.3.0 의 Easing.ts (`for (const [k,v] of Object.entries(EasingObject))`)
-      // 와 동일 구조를 minimal 로 재현. for-of 의 5개 binding 모두에 대해
-      // declaration 의 rename suffix 와 그 변수의 expression reference 가
-      // 일관됨을 검증.
+      // Fixture 가 두 module 모두 module-top iterator-protocol for-of 를 갖도록
+      // 강제해 mangler 가 한쪽 temp `_a/_b/.../_g` 를 `_a$N` 으로 rename 하게
+      // 만든다. 회귀 시 같은 식 안의 reference (`_a = (_e = _d.next()).done`)
+      // 는 suffix 없이 emit 되어 strict mode ReferenceError → module init silent
+      // fail. Reanimated 4.3.0 의 Easing.ts 와 동일 구조의 minimal repro.
       const result = await bundleAndRun(
         {
-          'index.ts': `
-            import './a';
-            import './b';
-            console.log('ok');
-          `,
+          'index.ts': `import './a'; import './b'; console.log('ok');`,
           'a.ts': `
             "use strict";
             const A = { x: 1, y: 2 };
@@ -587,26 +576,21 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe('ok');
 
-      // 번들 안의 for-of 다운레벨 영역들에 대해 declaration 의 rename suffix 와
-      // 같은 식 안 reference 의 suffix 가 일관 emit 됐는지 검증. inconsistency 가
-      // 있으면 strict mode 에서 ReferenceError → silent fail (회귀).
-      const out = result.bundleOutput;
-      // for-of 다운레벨 결과의 시작 패턴: `var _aXX = true,_bXX = false,_cXX = void 0;`
-      const decls = [...out.matchAll(/var (_a(?:\$\d+)?) = true,\s*_b(?:\$\d+)?\s*=\s*false,\s*_c(?:\$\d+)?\s*=\s*void 0;/g)];
+      // 다운레벨 init 패턴: `var _a$N = true, _b$N = false, _c$N = void 0;`
+      const FOR_OF_INIT_RE = /var (_a(?:\$\d+)?) = true,\s*_b(?:\$\d+)?\s*=\s*false,\s*_c(?:\$\d+)?\s*=\s*void 0;/g;
+      // suffix 없는 reference 가 등장하면 회귀 — declaration 만 rename, reference 누락.
+      const UNRENAMED_REFS = [/\b_a = \(/, /\b_b = true/, /\b_c = _f\b/, /\b_d\.next\(\)/, /\b_e\.value\b/];
+
+      const decls = [...result.bundleOutput.matchAll(FOR_OF_INIT_RE)];
       expect(decls.length).toBeGreaterThan(0);
+      // Fixture 자체가 충돌을 강제하므로 적어도 한 번은 mangler 가 rename 해야 회귀
+      // 검출이 의미 있음. rename 미발생은 fixture 무효 — fail-loud.
+      expect(decls.some((d) => d[1].includes('$'))).toBe(true);
+
       for (const d of decls) {
-        const incName = d[1]; // _a 또는 _a$N
-        if (!incName.includes('$')) continue; // rename 발생한 케이스만 검증
-        const startIdx = d.index!;
-        const inForBlock = out.slice(startIdx, startIdx + 800);
-        // declaration 이 rename 됐다면 같은 식 안의 reference 도 같은 이름이어야.
-        // suffix 없는 `_a = (`, `_b = true`, `_c = _f`, `_d.next()`, `_e.value` 같은
-        // 패턴이 등장하면 회귀.
-        expect(inForBlock).not.toMatch(/\b_a = \(/);
-        expect(inForBlock).not.toMatch(/\b_b = true/);
-        expect(inForBlock).not.toMatch(/\b_c = _f\b/);
-        expect(inForBlock).not.toMatch(/\b_d\.next\(\)/);
-        expect(inForBlock).not.toMatch(/\b_e\.value\b/);
+        if (!d[1].includes('$')) continue;
+        const inForBlock = result.bundleOutput.slice(d.index!, d.index! + 800);
+        for (const re of UNRENAMED_REFS) expect(inForBlock).not.toMatch(re);
       }
     });
 

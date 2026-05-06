@@ -26820,7 +26820,7 @@ var init__react_native_virtualized_lists_Lists_VirtualizeUtils = __esm({
 		if (lastItemOffset < overscanBegin) {
 			return { first: Math.max(0, itemCount - 1 - maxToRenderPerBatch), last: itemCount - 1 };
 		}
-		var _b = __read(elementsThatOverlapOffsets([overscanBegin, visibleBegin, visibleEnd, overscanEnd], props, listMetrics, zoomScale), 4),overscanFirst = _b[0],first = _b[1],last = _b[2],overscanLast = _b[3];
+		var _b = __read$21(elementsThatOverlapOffsets([overscanBegin, visibleBegin, visibleEnd, overscanEnd], props, listMetrics, zoomScale), 4),overscanFirst = _b[0],first = _b[1],last = _b[2],overscanLast = _b[3];
 		overscanFirst = overscanFirst == null ? 0 : overscanFirst;
 		first = first == null ? Math.max(0, overscanFirst) : first;
 		overscanLast = overscanLast == null ? itemCount - 1 : overscanLast;
@@ -26955,7 +26955,7 @@ var init__react_native_virtualized_lists_Lists_CellRenderMask = __esm({
 			if (cells.last < cells.first) {
 				return;
 			}
-			var _a = __read$22(this._findRegion(cells.first), 2),firstIntersect = _a[0],firstIntersectIdx = _a[1],_b = __read$22(this._findRegion(cells.last), 2),lastIntersect = _b[0],lastIntersectIdx = _b[1];
+			var _a = __read(this._findRegion(cells.first), 2),firstIntersect = _a[0],firstIntersectIdx = _a[1],_b = __read(this._findRegion(cells.last), 2),lastIntersect = _b[0],lastIntersectIdx = _b[1];
 			if (firstIntersectIdx === lastIntersectIdx && !firstIntersect.isSpacer) {
 				return;
 			}
@@ -60789,7 +60789,7 @@ __export(exports_react_native_safe_area_context_src_SafeAreaContext, {
 var init_react_native_safe_area_context_src_SafeAreaContext = __esm({
 	"SafeAreaContext.tsx"() {
 	SafeAreaProvider = function(_c) {
-		var children = _c.children,initialMetrics = _c.initialMetrics,initialSafeAreaInsets = _c.initialSafeAreaInsets,style = _c.style,others = __rest(_c, ["children", "initialMetrics", "initialSafeAreaInsets", "style"]),_a,_b,_c,_e,_f,_h,_i,parentInsets = useParentSafeAreaInsets(),parentFrame = useParentSafeAreaFrame(),_d = __read(React$101.useState((_c = (_b = (_a = (initialMetrics == null ? void 0 : initialMetrics.insets)) != null ? _a : initialSafeAreaInsets) != null ? _b : parentInsets) != null ? _c : null), 2),insets = _d[0],setInsets = _d[1],_g = __read(React$101.useState((_f = (_e = (initialMetrics == null ? void 0 : initialMetrics.frame)) != null ? _e : parentFrame) != null ? _f : { x: 0, y: 0, width: require_react_native_index().Dimensions.get("window").width, height: require_react_native_index().Dimensions.get("window").height }), 2),frame = _g[0],setFrame = _g[1],onInsetsChange = React$101.useCallback(function(event) {
+		var children = _c.children,initialMetrics = _c.initialMetrics,initialSafeAreaInsets = _c.initialSafeAreaInsets,style = _c.style,others = __rest(_c, ["children", "initialMetrics", "initialSafeAreaInsets", "style"]),_a,_b,_c,_e,_f,_h,_i,parentInsets = useParentSafeAreaInsets(),parentFrame = useParentSafeAreaFrame(),_d = __read$41(React$101.useState((_c = (_b = (_a = (initialMetrics == null ? void 0 : initialMetrics.insets)) != null ? _a : initialSafeAreaInsets) != null ? _b : parentInsets) != null ? _c : null), 2),insets = _d[0],setInsets = _d[1],_g = __read$41(React$101.useState((_f = (_e = (initialMetrics == null ? void 0 : initialMetrics.frame)) != null ? _e : parentFrame) != null ? _f : { x: 0, y: 0, width: require_react_native_index().Dimensions.get("window").width, height: require_react_native_index().Dimensions.get("window").height }), 2),frame = _g[0],setFrame = _g[1],onInsetsChange = React$101.useCallback(function(event) {
 			var _h = event,_i = _h.nativeEvent,nextFrame = _i.frame,nextInsets = _i.insets;
 			setFrame(function(curFrame) {
 				if (nextFrame && (nextFrame.height !== curFrame.height || nextFrame.width !== curFrame.width || nextFrame.x !== curFrame.x || nextFrame.y !== curFrame.y)) {
