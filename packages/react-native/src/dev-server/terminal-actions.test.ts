@@ -80,12 +80,46 @@ describe('setupTerminalActions — disabled / non-TTY', () => {
     expect(stdin.listenerCount('data')).toBe(0);
   });
 
-  test('stdin 비-TTY → no-op cleanup', () => {
+  test('stdin 비-TTY → no-op cleanup + stderr 알림 (#2605 audit)', () => {
     const cb = makeCallbacks();
     const stdin = makeStdin({ isTTY: false });
-    const cleanup = setupTerminalActions(cb, { enabled: true, stdin });
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+      return true;
+    };
+    let cleanup: () => void;
+    try {
+      cleanup = setupTerminalActions(cb, { enabled: true, stdin });
+    } finally {
+      process.stderr.write = original;
+    }
     expect(stdin.isRaw).toBe(false);
-    cleanup();
+    // wrapper script 사용자가 디버그 가능하도록 한 번 stderr 알림.
+    expect(writes.join('')).toContain('stdin is not a TTY');
+    expect(writes.join('')).toContain('keyboard shortcuts');
+    cleanup!();
+  });
+
+  test('enabled=false → 알림 없이 no-op (silent)', () => {
+    const cb = makeCallbacks();
+    const stdin = makeStdin({ isTTY: false });
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+      return true;
+    };
+    try {
+      setupTerminalActions(cb, { enabled: false, stdin });
+    } finally {
+      process.stderr.write = original;
+    }
+    // enabled=false 는 명시적 disable — 알림 불필요.
+    expect(writes.join('')).not.toContain('stdin is not a TTY');
   });
 });
 

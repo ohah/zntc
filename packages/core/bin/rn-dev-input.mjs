@@ -61,9 +61,10 @@ export function buildRnDevServerInput(opts, config) {
 
   warnUnsupported(cfg);
 
-  // server.useGlobalHotkey 가 의미상 terminalActions — 둘 다 r/d/? 키보드
-  // shortcut 의 enable gate. CLI 미노출이라 config 만 source.
-  const terminalActions = server.useGlobalHotkey === false ? false : undefined;
+  // server.useGlobalHotkey + CLI `--no-interactive` 둘 다 r/d/? 키보드
+  // shortcut 의 enable gate. CLI flag 우선 — 명시 시 config override.
+  const terminalActions =
+    opts.noInteractive === true ? false : server.useGlobalHotkey === false ? false : undefined;
 
   return {
     bundle: {
