@@ -25,6 +25,7 @@
     "test": "bun test --timeout 10000"
   },
   "dependencies": {
+    "@react-native-community/cli-server-api": "^15.0.0",
     "@zts/core": "workspace:*",
     "@zts/server": "workspace:*",
     "jsc-safe-url": "^0.2.4",
