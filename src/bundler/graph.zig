@@ -75,6 +75,8 @@ pub const ModuleGraph = struct {
     /// heap chunk — Module 이 수백 바이트라 stack pre-alloc 비효율.
     modules: ModuleList = .{},
     path_to_module: std.StringHashMap(ModuleIndex),
+    requested_exports: std.AutoHashMapUnmanaged(u32, RequestedExports) = .{},
+    requested_exports_mutex: std.Thread.Mutex = .{},
     diagnostics: std.ArrayList(BundlerDiagnostic),
     resolve_cache: *ResolveCache,
     source_read_cache: fs.ReadFileCache = .{},
@@ -232,6 +234,15 @@ pub const ModuleGraph = struct {
         record_index: u32,
     };
 
+    const RequestedExports = struct {
+        all: bool = false,
+        names: std.StringHashMapUnmanaged(void) = .{},
+
+        fn deinit(self: *RequestedExports, allocator: std.mem.Allocator) void {
+            self.names.deinit(allocator);
+        }
+    };
+
     pub fn init(allocator: std.mem.Allocator, resolve_cache: *ResolveCache) ModuleGraph {
         return .{
             .allocator = allocator,
@@ -255,6 +266,9 @@ pub const ModuleGraph = struct {
             self.allocator.free(key.*);
         }
         self.path_to_module.deinit();
+        var req_it = self.requested_exports.valueIterator();
+        while (req_it.next()) |req| req.deinit(self.allocator);
+        self.requested_exports.deinit(self.allocator);
         var pi_it = self.pkg_info_cache.valueIterator();
         while (pi_it.next()) |info| info.side_effects.deinit(self.allocator);
         self.pkg_info_cache.deinit(self.allocator);
@@ -439,6 +453,7 @@ pub const ModuleGraph = struct {
         defer inject_indices.deinit(self.allocator);
         for (self.inject_files) |inject_path| {
             const idx = try self.addModule(inject_path);
+            _ = try self.requestAllExports(idx);
             try inject_indices.append(self.allocator, idx);
         }
 
@@ -448,6 +463,7 @@ pub const ModuleGraph = struct {
         defer run_before_main_indices.deinit(self.allocator);
         for (self.run_before_main_files) |rbm_path| {
             const idx = try self.addModule(rbm_path);
+            _ = try self.requestAllExports(idx);
             try run_before_main_indices.append(self.allocator, idx);
         }
 
@@ -457,7 +473,8 @@ pub const ModuleGraph = struct {
         // 배치 경계 없이 모듈 발견 즉시 파싱 시작 → CPU 유휴 시간 최소화.
         var discover_scope = profile.begin(.graph_discover);
         for (entry_points) |entry_path| {
-            _ = try self.addModule(entry_path);
+            const idx = try self.addModule(entry_path);
+            _ = try self.requestAllExports(idx);
         }
 
         var spawned_up_to: usize = 0;
@@ -595,6 +612,7 @@ pub const ModuleGraph = struct {
         const discover_start = self.modules.count();
         for (selected.items) |module| {
             const idx = try self.addModule(module.path);
+            _ = try self.requestAllExports(idx);
             if (self.moduleAtMut(idx)) |m| {
                 m.is_context_dep = true;
             }
@@ -713,6 +731,232 @@ pub const ModuleGraph = struct {
         try self.linkDependency(from, to);
     }
 
+    fn requestAllExports(self: *ModuleGraph, idx: ModuleIndex) !bool {
+        if (idx.isNone()) return false;
+        const key: u32 = @intFromEnum(idx);
+        self.requested_exports_mutex.lock();
+        defer self.requested_exports_mutex.unlock();
+
+        const gop = try self.requested_exports.getOrPut(self.allocator, key);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{};
+        }
+        if (gop.value_ptr.all) return false;
+        gop.value_ptr.names.deinit(self.allocator);
+        gop.value_ptr.names = .{};
+        gop.value_ptr.all = true;
+        return true;
+    }
+
+    fn requestNamedExport(self: *ModuleGraph, idx: ModuleIndex, name: []const u8) !bool {
+        if (idx.isNone()) return false;
+        const key: u32 = @intFromEnum(idx);
+        self.requested_exports_mutex.lock();
+        defer self.requested_exports_mutex.unlock();
+
+        const gop = try self.requested_exports.getOrPut(self.allocator, key);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{};
+        }
+        if (gop.value_ptr.all) return false;
+        if (gop.value_ptr.names.contains(name)) return false;
+        try gop.value_ptr.names.put(self.allocator, name, {});
+        return true;
+    }
+
+    fn isLazyBarrelCandidate(self: *const ModuleGraph, m: *const Module) bool {
+        if (self.dev_mode or self.preserve_modules) return false;
+        return m.side_effects_user_defined and
+            !m.side_effects and
+            m.exports_kind.isEsm() and
+            m.import_records.len > 0 and
+            m.export_bindings.len > 0;
+    }
+
+    fn requestedLocalExportNeedsAllRecords(m: *const Module, req: *const RequestedExports) bool {
+        if (req.all) return true;
+        var it = req.names.keyIterator();
+        while (it.next()) |name| {
+            for (m.export_bindings) |eb| {
+                if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, name.*)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn requestedNameHasDirectNonStarExport(m: *const Module, name: []const u8) bool {
+        for (m.export_bindings) |eb| {
+            if (eb.kind == .re_export_star) continue;
+            if (std.mem.eql(u8, eb.exported_name, name)) return true;
+        }
+        return false;
+    }
+
+    fn reExportRecordMatchesRequest(m: *const Module, rec_i: usize, req: *const RequestedExports) bool {
+        if (req.all) return true;
+        var names = req.names.keyIterator();
+        while (names.next()) |requested_name| {
+            for (m.export_bindings) |eb| {
+                const eb_rec = eb.import_record_index orelse continue;
+                if (eb_rec != rec_i) continue;
+                switch (eb.kind) {
+                    .re_export => {
+                        if (std.mem.eql(u8, eb.exported_name, requested_name.*)) return true;
+                    },
+                    .re_export_namespace => {
+                        if (std.mem.eql(u8, eb.exported_name, requested_name.*)) return true;
+                    },
+                    .re_export_star => {
+                        if (!requestedNameHasDirectNonStarExport(m, requested_name.*)) return true;
+                    },
+                    .local => {},
+                }
+            }
+        }
+        return false;
+    }
+
+    fn shouldLinkResolvedRecordForModule(self: *ModuleGraph, mod_idx: usize, rec_i: usize, record: ImportRecord) bool {
+        const m = self.modules.at(mod_idx);
+        switch (record.kind) {
+            .side_effect, .require, .dynamic_import, .worker, .glob, .require_context => return true,
+            .static_import, .re_export => {},
+        }
+
+        if (!self.isLazyBarrelCandidate(m)) return true;
+
+        const key: u32 = @intCast(mod_idx);
+        self.requested_exports_mutex.lock();
+        defer self.requested_exports_mutex.unlock();
+        const req = self.requested_exports.get(key) orelse return true;
+        if (req.all) return true;
+        if (requestedLocalExportNeedsAllRecords(m, &req)) return true;
+        return reExportRecordMatchesRequest(m, rec_i, &req);
+    }
+
+    fn shouldResolveRecordForModule(self: *ModuleGraph, mod_idx: usize, rec_i: usize, record: ImportRecord) bool {
+        if (record.resolved != .none or record.is_external) return false;
+        return self.shouldLinkResolvedRecordForModule(mod_idx, rec_i, record);
+    }
+
+    fn discardResolvedModule(self: *ModuleGraph, resolved: plugin_mod.ResolvedModule) void {
+        switch (resolved) {
+            .file => |f| self.allocator.free(f.path),
+            .disabled => |d| self.allocator.free(d.path),
+            .virtual, .dataurl, .external, .custom => {},
+        }
+    }
+
+    fn markRecordLazyResolved(self: *ModuleGraph, mod_idx: usize, rec_i: usize) void {
+        if (mod_idx >= self.modules.count()) return;
+        const m = self.modules.at(mod_idx);
+        if (rec_i >= m.import_records.len) return;
+        m.import_records[rec_i].is_lazy_resolved = true;
+    }
+
+    fn hasDeferredRequestedImports(self: *ModuleGraph, mod_idx: usize) bool {
+        if (mod_idx >= self.modules.count()) return false;
+        const m = self.modules.at(mod_idx);
+        for (m.import_records, 0..) |record, rec_i| {
+            if (self.shouldResolveRecordForModule(mod_idx, rec_i, record)) return true;
+        }
+        return false;
+    }
+
+    fn resolveDeferredRequestedImportsIfReady(self: *ModuleGraph, idx: ModuleIndex) anyerror!void {
+        const mod_idx = self.validModuleSlot(idx) orelse return;
+        const m = self.modules.at(mod_idx);
+        if (m.state != .ready or m.is_external or m.is_disabled) return;
+        if (!self.hasDeferredRequestedImports(mod_idx)) return;
+        try self.resolveModuleImports(idx);
+    }
+
+    fn requestedExportsForReExportRecord(
+        self: *ModuleGraph,
+        importer: *const Module,
+        rec_i: usize,
+        dep_idx: ModuleIndex,
+    ) !bool {
+        const importer_key: u32 = @intFromEnum(importer.index);
+        var changed = false;
+
+        var requested_names: std.ArrayList([]const u8) = .empty;
+        defer requested_names.deinit(self.allocator);
+
+        self.requested_exports_mutex.lock();
+        const maybe_req = self.requested_exports.get(importer_key);
+        const request_all = if (maybe_req) |req| req.all else true;
+        if (!request_all) {
+            if (maybe_req) |req| {
+                var it = req.names.keyIterator();
+                while (it.next()) |name| {
+                    requested_names.append(self.allocator, name.*) catch {
+                        self.requested_exports_mutex.unlock();
+                        return error.OutOfMemory;
+                    };
+                }
+            }
+        }
+        self.requested_exports_mutex.unlock();
+        if (request_all) return self.requestAllExports(dep_idx);
+
+        for (requested_names.items) |requested_name| {
+            for (importer.export_bindings) |eb| {
+                const eb_rec = eb.import_record_index orelse continue;
+                if (eb_rec != rec_i) continue;
+                switch (eb.kind) {
+                    .re_export => {
+                        if (std.mem.eql(u8, eb.exported_name, requested_name)) {
+                            changed = (try self.requestNamedExport(dep_idx, eb.local_name)) or changed;
+                        }
+                    },
+                    .re_export_namespace => {
+                        if (std.mem.eql(u8, eb.exported_name, requested_name)) {
+                            changed = (try self.requestAllExports(dep_idx)) or changed;
+                        }
+                    },
+                    .re_export_star => {
+                        if (!requestedNameHasDirectNonStarExport(importer, requested_name)) {
+                            changed = (try self.requestNamedExport(dep_idx, requested_name)) or changed;
+                        }
+                    },
+                    .local => {},
+                }
+            }
+        }
+        return changed;
+    }
+
+    fn requestDependencyExports(
+        self: *ModuleGraph,
+        importer_idx: usize,
+        rec_i: usize,
+        record: ImportRecord,
+        dep_idx: ModuleIndex,
+    ) !bool {
+        const importer = self.modules.at(importer_idx);
+        switch (record.kind) {
+            .static_import => {
+                var changed = false;
+                var found_binding = false;
+                for (importer.import_bindings) |ib| {
+                    if (ib.import_record_index != rec_i) continue;
+                    found_binding = true;
+                    switch (ib.kind) {
+                        .namespace => changed = (try self.requestAllExports(dep_idx)) or changed,
+                        .default, .named => changed = (try self.requestNamedExport(dep_idx, ib.imported_name)) or changed,
+                    }
+                }
+                if (!found_binding) {
+                    changed = (try self.requestAllExports(dep_idx)) or changed;
+                }
+                return changed;
+            },
+            .re_export => return self.requestedExportsForReExportRecord(importer, rec_i, dep_idx),
+            .side_effect, .require, .dynamic_import, .worker, .glob, .require_context => return self.requestAllExports(dep_idx),
+        }
+    }
+
     /// Phase 2-4: DFS exec_index + ExportsKind 승격 + TLA 전파.
     /// build()와 buildIncremental() 양쪽에서 호출.
     fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
@@ -816,6 +1060,7 @@ pub const ModuleGraph = struct {
         defer inject_indices.deinit(self.allocator);
         for (self.inject_files) |inject_path| {
             const idx = try self.addModule(inject_path);
+            _ = try self.requestAllExports(idx);
             try inject_indices.append(self.allocator, idx);
         }
 
@@ -823,11 +1068,13 @@ pub const ModuleGraph = struct {
         defer run_before_main_indices.deinit(self.allocator);
         for (self.run_before_main_files) |rbm_path| {
             const idx = try self.addModule(rbm_path);
+            _ = try self.requestAllExports(idx);
             try run_before_main_indices.append(self.allocator, idx);
         }
 
         for (entry_points) |entry_path| {
-            _ = try self.addModule(entry_path);
+            const idx = try self.addModule(entry_path);
+            _ = try self.requestAllExports(idx);
         }
 
         var reparsed: std.ArrayListUnmanaged(types.ModuleIndex) = .empty;
@@ -916,6 +1163,7 @@ pub const ModuleGraph = struct {
             for (parse_start..parse_end) |i| {
                 if (cache_hit_modules.contains(@intCast(i))) {
                     try self.replayCachedResolvedDeps(i);
+                    try self.resolveDeferredRequestedImportsIfReady(ModuleIndex.fromUsize(i));
                 } else {
                     try self.resolveModuleImports(@enumFromInt(@as(u32, @intCast(i))));
                 }
@@ -1093,6 +1341,7 @@ pub const ModuleGraph = struct {
                     if (dep.record_index) |rec_idx| {
                         if (rec_idx < mod_ptr.import_records.len) {
                             mod_ptr.import_records[rec_idx].is_external = true;
+                            _ = try self.requestDependencyExports(mod_idx, rec_idx, mod_ptr.import_records[rec_idx], ext_idx);
                         }
                     }
                     if (dep.kind == .dynamic_import) {
@@ -1126,9 +1375,12 @@ pub const ModuleGraph = struct {
         if (dep.record_index) |rec_idx| {
             const mod_ptr = self.modules.at(mod_idx);
             if (rec_idx >= mod_ptr.import_records.len) return;
+            const request_changed = try self.requestDependencyExports(mod_idx, rec_idx, mod_ptr.import_records[rec_idx], dep_idx);
             try self.recordResolvedDep(mod_index, mod_idx, rec_idx, dep_idx, dep.kind);
+            if (request_changed) try self.resolveDeferredRequestedImportsIfReady(dep_idx);
             return;
         }
+        _ = try self.requestAllExports(dep_idx);
         if (dep.kind == .dynamic_import) {
             try self.linkDynamicImport(mod_index, dep_idx);
         } else {
@@ -1167,6 +1419,7 @@ pub const ModuleGraph = struct {
                 .file => |f| {
                     defer self.allocator.free(f.path);
                     const dep_idx = try self.addModule(f.path);
+                    _ = try self.requestAllExports(dep_idx);
                     // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
                     self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
                     try self.appendResolvedDep(mod_idx, .{
@@ -1198,6 +1451,7 @@ pub const ModuleGraph = struct {
     ) !void {
         const src_mod = self.modules.at(mod_idx);
         src_mod.import_records[rec_i].resolved = dep_idx;
+        src_mod.import_records[rec_i].is_lazy_resolved = false;
         if (kind == .dynamic_import) {
             try self.linkDynamicImport(mod_index, dep_idx);
         } else {
@@ -1382,6 +1636,7 @@ pub const ModuleGraph = struct {
                     if (f.is_module_field or self.modules.at(mod_idx).is_module_field) {
                         self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
                     }
+                    const request_changed = try self.requestDependencyExports(mod_idx, rec_i, record, dep_idx);
                     try self.appendResolvedDep(mod_idx, .{
                         .record_index = @intCast(rec_i),
                         .kind = record.kind,
@@ -1390,10 +1645,12 @@ pub const ModuleGraph = struct {
                         .target_is_module_field = f.is_module_field,
                     });
                     try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
+                    if (request_changed) try self.resolveDeferredRequestedImportsIfReady(dep_idx);
                 },
                 .disabled => |d| {
                     defer self.allocator.free(d.path);
                     const dep_idx = try self.addDisabledModule(record.specifier);
+                    _ = try self.requestDependencyExports(mod_idx, rec_i, record, dep_idx);
                     try self.appendResolvedDep(mod_idx, .{
                         .record_index = @intCast(rec_i),
                         .kind = record.kind,
@@ -1408,6 +1665,7 @@ pub const ModuleGraph = struct {
                     // specifier (runtime_helper_modules) 일 수 있어 free 안 함 — plugin 이
                     // alloc 했으면 plugin context lifetime 동안 살아있어야 한다는 규약.
                     const dep_idx = try self.addModule(v.path);
+                    const request_changed = try self.requestDependencyExports(mod_idx, rec_i, record, dep_idx);
                     try self.appendResolvedDep(mod_idx, .{
                         .record_index = @intCast(rec_i),
                         .kind = record.kind,
@@ -1415,6 +1673,7 @@ pub const ModuleGraph = struct {
                         .path = v.path,
                     });
                     try self.recordResolvedDep(mod_index, mod_idx, rec_i, dep_idx, record.kind);
+                    if (request_changed) try self.resolveDeferredRequestedImportsIfReady(dep_idx);
                 },
                 .dataurl, .external, .custom => unreachable,
             }
@@ -1426,6 +1685,8 @@ pub const ModuleGraph = struct {
             const ext_idx = try self.addExternalModule(record.specifier);
             const src_mod = self.modules.at(mod_idx);
             src_mod.import_records[rec_i].is_external = true;
+            src_mod.import_records[rec_i].is_lazy_resolved = false;
+            _ = try self.requestDependencyExports(mod_idx, rec_i, record, ext_idx);
             try self.appendResolvedDep(mod_idx, .{
                 .record_index = @intCast(rec_i),
                 .kind = record.kind,
@@ -1444,6 +1705,7 @@ pub const ModuleGraph = struct {
     const ResolveOutput = struct {
         resolved: ?plugin_mod.ResolvedModule = null,
         is_error: bool = false,
+        skipped: bool = false,
     };
 
     /// 이벤트 큐 기반 스캔 결과. 워커가 채널로 전송, 메인이 수신.
@@ -1487,8 +1749,16 @@ pub const ModuleGraph = struct {
         // ArrayList-era drain/realloc path is no longer needed.
         for (records, 0..) |record, rec_i| {
             if (rec_i < resolves.len) {
+                if (resolves[rec_i].skipped and !resolves[rec_i].is_error) {
+                    self.markRecordLazyResolved(mod_idx, rec_i);
+                    if (resolves[rec_i].resolved) |resolved| self.discardResolvedModule(resolved);
+                    continue;
+                }
                 try self.applyResolveResult(mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
             }
+        }
+        if (self.hasDeferredRequestedImports(mod_idx)) {
+            try self.resolveModuleImports(result.module_idx);
         }
         // Register require.context matches as graph dependencies (#1579 Phase 4).
         try self.applyContextDepResults(mod_idx);
@@ -1510,6 +1780,7 @@ pub const ModuleGraph = struct {
         }
 
         const mod_ptr = self.modules.at(mod_idx);
+        self.applySideEffectsFromPackageJson(mod_ptr);
         if (mod_ptr.import_records.len == 0) {
             return .{ .module_idx = idx, .resolve_outputs = &.{} };
         }
@@ -1537,8 +1808,15 @@ pub const ModuleGraph = struct {
             defer resolve_scope.end();
 
             for (records, 0..) |record, rec_i| {
-                if (record.kind == .glob) continue;
-                if (record.kind == .require_context) continue;
+                if (record.kind == .glob or record.kind == .require_context) {
+                    results[rec_i].skipped = true;
+                    continue;
+                }
+                if (record.resolved != .none or record.is_external) {
+                    results[rec_i].skipped = true;
+                    continue;
+                }
+                const should_link = self.shouldLinkResolvedRecordForModule(mod_idx, rec_i, record);
 
                 if (plugin_runner) |runner| {
                     if (self.shouldRunResolveId(record.specifier)) {
@@ -1550,7 +1828,7 @@ pub const ModuleGraph = struct {
                             },
                         };
                         if (resolve_result) |plugin_result| {
-                            results[rec_i] = .{ .resolved = plugin_result, .is_error = false };
+                            results[rec_i] = .{ .resolved = plugin_result, .is_error = false, .skipped = !should_link };
                             continue;
                         }
                     }
@@ -1562,7 +1840,7 @@ pub const ModuleGraph = struct {
                     record.kind,
                 ) catch |err| switch (err) {
                     error.ModuleNotFound => {
-                        results[rec_i] = .{ .is_error = true };
+                        results[rec_i] = .{ .is_error = true, .skipped = !should_link };
                         continue;
                     },
                     error.OutOfMemory => {
@@ -1570,7 +1848,7 @@ pub const ModuleGraph = struct {
                         continue;
                     },
                 };
-                results[rec_i] = .{ .resolved = resolved };
+                results[rec_i] = .{ .resolved = resolved, .skipped = !should_link };
             }
         }
 
@@ -2864,6 +3142,8 @@ pub const ModuleGraph = struct {
         for (records, 0..) |record, rec_i| {
             if (record.kind == .glob) continue;
             if (record.kind == .require_context) continue;
+            if (record.resolved != .none or record.is_external) continue;
+            const should_link = self.shouldLinkResolvedRecordForModule(mod_idx, rec_i, record);
 
             // Plugin: resolveId 훅 — 기본 resolver 전에 플러그인에게 경로 해석 기회를 줌
             if (plugin_runner) |runner| {
@@ -2874,7 +3154,12 @@ pub const ModuleGraph = struct {
                     };
                     // non-null이면 플러그인이 resolve 완료 → 기본 resolver 건너뜀
                     if (resolve_result) |plugin_result| {
-                        try self.applyResolveResult(mod_idx, rec_i, record, plugin_result, false);
+                        if (should_link) {
+                            try self.applyResolveResult(mod_idx, rec_i, record, plugin_result, false);
+                        } else {
+                            self.markRecordLazyResolved(mod_idx, rec_i);
+                            self.discardResolvedModule(plugin_result);
+                        }
                         continue;
                     }
                     // null이면 기본 resolver로 fall through
@@ -2892,7 +3177,12 @@ pub const ModuleGraph = struct {
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
-            try self.applyResolveResult(mod_idx, rec_i, record, resolved, false);
+            if (should_link) {
+                try self.applyResolveResult(mod_idx, rec_i, record, resolved, false);
+            } else if (resolved) |resolved_module| {
+                self.markRecordLazyResolved(mod_idx, rec_i);
+                self.discardResolvedModule(resolved_module);
+            }
         }
 
         // require.context context_expansion_deps 도 resolve + addDep.

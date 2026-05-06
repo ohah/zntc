@@ -593,6 +593,10 @@ pub const ImportRecord = struct {
     url_span: ?Span = null,
     /// resolve 완료 후 채워지는 모듈 인덱스
     resolved: ModuleIndex = .none,
+    /// resolve는 성공했지만 `sideEffects:false` lazy barrel 최적화로 target module graph
+    /// 등록만 미룬 record. 성공 resolve와 실제 unresolved를 구분해 IIFE emit 진단이
+    /// unused re-export를 오탐하지 않도록 한다.
+    is_lazy_resolved: bool = false,
     /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)
     is_external: bool = false,
     /// try-block 안의 `require("xxx")` 또는 동적 `import("xxx")` —
