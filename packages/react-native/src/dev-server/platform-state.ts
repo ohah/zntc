@@ -31,6 +31,11 @@ export interface PlatformState {
 export function getCachedSourceMap(state: PlatformState): string | null {
   if (state.sourceMapCache) return state.sourceMapCache;
   const raw = state.handle.getBundleSourceMap();
+  if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+    process.stderr.write(
+      `[zts:rn-dev:debug] getBundleSourceMap[${state.platform}]: ${raw ? `len=${raw.length}` : 'null'}\n`,
+    );
+  }
   if (!raw) return null;
   state.sourceMapCache = postProcessSourceMap(raw);
   return state.sourceMapCache;
@@ -72,6 +77,11 @@ export function createPlatformState(
     lastRebuildTime: Date.now(),
   };
 
+  if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+    process.stderr.write(
+      `[zts:rn-dev:debug] watchRn[${platform}] sourcemap=${platformBundle.sourcemap} dev=${platformBundle.dev} outfile=${outputPath}\n`,
+    );
+  }
   state.handle = watchRn({
     ...platformBundle,
     outfile: outputPath,
