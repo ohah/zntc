@@ -106,6 +106,66 @@ pub const SourceMapMode = enum {
     }
 };
 
+/// `appendSourceMappingURLComment` 의 입력. mode 별 conditional 인자를 struct
+/// 로 묶어 호출 사이트 명료성 + default 활용.
+pub const SourceMappingURLOptions = struct {
+    mode: SourceMapMode,
+    /// `linked` mode 에서 `<output_filename>.map` 형태로 부착되는 base 파일명.
+    /// helper 가 `.map` 확장자를 자동 추가하므로 caller 는 .map 빼고 전달.
+    /// `external` / `inline_` mode 에서는 무시.
+    output_filename: []const u8 = "",
+    /// `linked` mode 의 URL 앞에 `/` 를 부착해 dev server 절대 경로로 만든다.
+    /// 다른 mode 에서는 무시.
+    prefix_slash: bool = false,
+    /// `inline_` mode 에서 base64 embed 할 JSON. caller 소유 — helper 는 base64
+    /// encode 만 수행, free 는 `inline_json_slot` 가 담당. 다른 mode 에서는 무시.
+    inline_json: ?[]const u8 = null,
+};
+
+/// `//# sourceMappingURL=` 주석을 mode 별로 output 에 부착한다. emitter.zig
+/// (단일 번들) 와 chunks.zig 두 사이트가 동일한 분기 정책을 공유하도록 통합
+/// (#2660).
+///
+/// - `linked`: `//# sourceMappingURL=<output_filename>.map\n` (옵션의
+///   `prefix_slash` true 면 dev server 라우팅용 `/` prefix 부착)
+/// - `external`: 주석 없음
+/// - `inline_`: `options.inline_json` 의 base64 를 contents 에 embed. base64
+///   embed 후 `inline_json_slot.*` 을 `free` + `null` 로 갱신해 caller 의
+///   free 책임을 helper 가 인수. `inline_json_slot.*` 이 null 또는 mode 가
+///   inline_ 가 아니면 slot 갱신 안 함.
+///
+/// `options.inline_json` 과 `inline_json_slot` 은 보통 같은 변수의 값/포인터로
+/// caller 가 분리해서 넘긴다 (struct field 가 const 라서 분리 시그니처).
+pub fn appendSourceMappingURLComment(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    options: SourceMappingURLOptions,
+    inline_json_slot: *?[]const u8,
+) !void {
+    switch (options.mode) {
+        .linked => {
+            try output.appendSlice(allocator, "//# sourceMappingURL=");
+            if (options.prefix_slash) try output.append(allocator, '/');
+            try output.appendSlice(allocator, options.output_filename);
+            try output.appendSlice(allocator, ".map\n");
+        },
+        .external => {},
+        .inline_ => {
+            if (options.inline_json) |json| {
+                try output.appendSlice(allocator, "//# sourceMappingURL=data:application/json;base64,");
+                const Encoder = std.base64.standard.Encoder;
+                const encoded_len = Encoder.calcSize(json.len);
+                const old_len = output.items.len;
+                try output.resize(allocator, old_len + encoded_len);
+                _ = Encoder.encode(output.items[old_len .. old_len + encoded_len], json);
+                try output.append(allocator, '\n');
+                allocator.free(json);
+                inline_json_slot.* = null;
+            }
+        },
+    }
+}
+
 /// Bundler 레벨 sourcemap 옵션 묶음. `EmitOptions.sourcemap` / `BundleOptions.sourcemap`
 /// 양쪽에서 동일 구조체를 공유해 옵션 전파 중복을 제거한다. 단일-파일 경로
 /// (`codegen.zig`, `transpile.zig`) 는 별도 옵션 구조체가 있어 현재 범위 밖.

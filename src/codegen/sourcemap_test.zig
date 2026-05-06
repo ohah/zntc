@@ -69,3 +69,88 @@ test "SourceMapBuilder: multi-line mapping" {
     // 줄1 "AAAA" (0,0,0,0), 줄2 "AACA" (col=0, src=0, line=+1, col=0)
     try std.testing.expect(std.mem.indexOf(u8, json, "\"mappings\":\"AAAA;AACA\"") != null);
 }
+
+// ============================================================
+// appendSourceMappingURLComment (#2660)
+// ============================================================
+
+test "appendSourceMappingURLComment: linked → //# sourceMappingURL=<url>.map\\n" {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    var slot: ?[]const u8 = null;
+    try sourcemap.appendSourceMappingURLComment(&output, std.testing.allocator, .{
+        .mode = .linked,
+        .output_filename = "bundle.js",
+    }, &slot);
+    try std.testing.expectEqualStrings("//# sourceMappingURL=bundle.js.map\n", output.items);
+}
+
+test "appendSourceMappingURLComment: linked + prefix_slash → //# sourceMappingURL=/<url>.map\\n" {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    var slot: ?[]const u8 = null;
+    try sourcemap.appendSourceMappingURLComment(&output, std.testing.allocator, .{
+        .mode = .linked,
+        .output_filename = "bundle.js",
+        .prefix_slash = true,
+    }, &slot);
+    try std.testing.expectEqualStrings("//# sourceMappingURL=/bundle.js.map\n", output.items);
+}
+
+test "appendSourceMappingURLComment: external → 주석 없음" {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    var slot: ?[]const u8 = null;
+    try sourcemap.appendSourceMappingURLComment(&output, std.testing.allocator, .{
+        .mode = .external,
+        .output_filename = "bundle.js",
+    }, &slot);
+    try std.testing.expectEqual(@as(usize, 0), output.items.len);
+}
+
+test "appendSourceMappingURLComment: inline_ → base64 embed + json consumed (slot null)" {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    const json_owned = try std.testing.allocator.dupe(u8, "{\"version\":3}");
+    var slot: ?[]const u8 = json_owned;
+    try sourcemap.appendSourceMappingURLComment(&output, std.testing.allocator, .{
+        .mode = .inline_,
+        .inline_json = json_owned,
+    }, &slot);
+    // base64({"version":3}) = "eyJ2ZXJzaW9uIjozfQ=="
+    try std.testing.expectEqualStrings(
+        "//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozfQ==\n",
+        output.items,
+    );
+    // helper 가 json 을 consume + slot 갱신 — caller 의 free 책임 해제.
+    try std.testing.expect(slot == null);
+}
+
+test "appendSourceMappingURLComment: inline_ + null json → silent skip (lazy 시나리오)" {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    var slot: ?[]const u8 = null;
+    try sourcemap.appendSourceMappingURLComment(&output, std.testing.allocator, .{
+        .mode = .inline_,
+    }, &slot);
+    // lazy 등으로 json 이 null 이면 noop — output 변동 없음.
+    try std.testing.expectEqual(@as(usize, 0), output.items.len);
+    try std.testing.expect(slot == null);
+}
+
+test "appendSourceMappingURLComment: inline_ + prefix_slash 는 무시됨 (linked-only 옵션)" {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    const json_owned = try std.testing.allocator.dupe(u8, "{}");
+    var slot: ?[]const u8 = json_owned;
+    try sourcemap.appendSourceMappingURLComment(&output, std.testing.allocator, .{
+        .mode = .inline_,
+        .prefix_slash = true, // ignored
+        .inline_json = json_owned,
+    }, &slot);
+    try std.testing.expectEqualStrings(
+        "//# sourceMappingURL=data:application/json;base64,e30=\n",
+        output.items,
+    );
+    try std.testing.expect(slot == null);
+}
