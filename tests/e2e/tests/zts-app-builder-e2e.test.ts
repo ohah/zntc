@@ -28,6 +28,8 @@ const OVERLAY_DEV_PORT = 3989;
 const RUNTIME_OVERLAY_DEV_PORT = 3988;
 const REJECTION_OVERLAY_DEV_PORT = 3987;
 
+test.describe.configure({ mode: 'parallel' });
+
 const FIXTURE: Record<string, string> = {
   'index.html': `<!doctype html>
 <html>
@@ -73,7 +75,7 @@ async function writeFixture(dir: string): Promise<void> {
 }
 
 // ─── zts build → zts preview → 브라우저 ───
-test.describe('zts build + preview E2E', () => {
+test.describe.serial('zts build + preview E2E', () => {
   let fixtureDir: string;
   let preview: ChildProcess | null = null;
 
@@ -148,7 +150,7 @@ test.describe('zts build + preview E2E', () => {
 });
 
 // ─── zts dev 직접 띄움 → 브라우저 ───
-test.describe('zts dev E2E', () => {
+test.describe.serial('zts dev E2E', () => {
   let fixtureDir: string;
   let server: ChildProcess | null = null;
 
@@ -312,7 +314,7 @@ test.describe('zts dev E2E', () => {
 });
 
 // ─── 서브디렉토리 같은 basename CSS 두 개가 build → preview 후 브라우저에 모두 적용된다 ───
-test.describe('zts build: nested CSS path preservation E2E', () => {
+test.describe.serial('zts build: nested CSS path preservation E2E', () => {
   let nestedDir: string;
   let nestedPreview: ChildProcess | null = null;
   const NESTED_PORT = 3996;
@@ -380,7 +382,7 @@ test.describe('zts build: nested CSS path preservation E2E', () => {
 });
 
 // ─── CSS Modules: JS class map + 실제 브라우저 스타일 적용까지 검증 ───
-test.describe('zts app CSS Modules E2E', () => {
+test.describe.serial('zts app CSS Modules E2E', () => {
   async function writeCssModuleFixture(dir: string): Promise<void> {
     const files: Record<string, string> = {
       'index.html': `<!doctype html>
@@ -502,7 +504,7 @@ el.textContent = styles.button.includes("button_button__") ? "scoped" : "raw";
 });
 
 // ─── Sass/SCSS: optional Sass compiler 경로를 실제 브라우저에서 검증 ───
-test.describe('zts app Sass/SCSS E2E', () => {
+test.describe.serial('zts app Sass/SCSS E2E', () => {
   async function writeScssFixture(dir: string): Promise<void> {
     const files: Record<string, string> = {
       'index.html': `<!doctype html>
