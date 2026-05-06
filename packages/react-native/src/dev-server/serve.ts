@@ -26,7 +26,23 @@ export interface RnDevServerHandle {
 
 const HMR_PATH = '/hot';
 
-const noopBroadcast: Broadcast = () => {};
+/**
+ * cli-server-api 미설치 시 fallback. broadcast 호출은 silent 가 맞지만 —
+ * 사용자가 r/d 키 누르고 reload 안 됨 → 진단 어려움. 한 번만 stderr 알림 후
+ * 이후 호출은 silent (noisy 회피).
+ */
+function makeNoopBroadcast(): Broadcast {
+  let warned = false;
+  return (method) => {
+    if (!warned) {
+      warned = true;
+      process.stderr.write(
+        `[zts:rn-dev] broadcast('${method}') skipped — '@react-native-community/cli-server-api' 미설치 또는 load 실패. ` +
+          `RN runtime 의 reload/devMenu 메시지 안 감. peer dependency 설치 필요.\n`,
+      );
+    }
+  };
+}
 
 /**
  * dev server lifecycle 시작. 첫 platform 의 initial build 까지 대기 후 handle
@@ -52,7 +68,15 @@ export async function serveRn(
     loadDevMiddleware({ port: options.port, projectRoot: options.bundle.projectRoot }),
   ]);
 
-  const broadcast: Broadcast = cliServerApi?.broadcast ?? noopBroadcast;
+  const broadcast: Broadcast = cliServerApi?.broadcast ?? makeNoopBroadcast();
+  if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+    process.stderr.write(
+      `[zts:rn-dev:debug] cli-server-api: ${cliServerApi ? 'loaded' : 'null (peer 미설치 또는 load 실패)'}\n`,
+    );
+    process.stderr.write(
+      `[zts:rn-dev:debug] dev-middleware: ${devMiddleware ? 'loaded' : 'null (peer 미설치)'}\n`,
+    );
+  }
 
   // hmrBridge 먼저 생성 — registry callback 으로 onRebuild 전달.
   const hmrBridge = options.hmr
