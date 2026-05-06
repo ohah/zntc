@@ -724,6 +724,7 @@ pub fn emitWithTreeShaking(
                     results[i].preamble_lines,
                     options.sourcemap.sources_content,
                     false,
+                    wrapCloseLines(m.wrap_kind, options.minify_whitespace),
                 );
                 // function map: source 추가 순서와 동기화
                 if (options.sourcemap.function_map) {
@@ -806,6 +807,7 @@ pub fn emitWithTreeShaking(
                         results[i].preamble_lines,
                         options.sourcemap.sources_content,
                         false,
+                        wrapCloseLines(m.wrap_kind, options.minify_whitespace),
                     );
                     if (options.sourcemap.lazy) {
                         const heap_sm = try allocator.create(SourceMap.SourceMapBuilder);
@@ -1227,6 +1229,18 @@ fn adjustMappingsForLineWraps(sm: *SourceMap.SourceMapBuilder, breaks: []const W
 const dev = @import("emitter/dev.zig");
 pub const addModuleMappings = dev.addModuleMappings;
 pub const makeModuleId = dev.makeModuleId;
+
+/// wrapper 의 closing brace 가 차지하는 line 수 (#2648 sourcemap density).
+/// CJS / ESM 둘 다 `\n\t}\n});\n` (3 newlines) — wrapper closing 후 \n 까지 포함.
+/// asset / disabled = 0 (단순 form). minify_whitespace 시 closing 단일 line —
+/// mapping 추가 불필요.
+fn wrapCloseLines(wrap_kind: anytype, minify_whitespace: bool) u32 {
+    if (minify_whitespace) return 0;
+    return switch (wrap_kind) {
+        .cjs, .esm => 3,
+        else => 0,
+    };
+}
 
 /// 소스맵 sources 배열에 사용할 경로를 반환.
 /// RN 플랫폼은 Metro 호환 절대 경로, 다른 플랫폼은 root_dir 기준 상대 경로.
