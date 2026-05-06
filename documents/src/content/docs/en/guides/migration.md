@@ -156,16 +156,16 @@ export default defineConfig({
 ### Unsupported esbuild options
 
 | esbuild option                    | Alternative                                                                  |
-| --------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------ |
+| --------------------------------- | ---------------------------------------------------------------------------- |
 | `--mangle-props=<regex>`          | Not supported (mangling limited to `--minify-identifiers` on internal names) |
 | `--mangle-cache=<path>`           | Not supported                                                                |
 | `--mangle-quoted`                 | Not supported                                                                |
-| `--analyze` (tree format)         | `--analyze` (JSON only, tree format planned)                                 |
+| `--analyze` (tree format)         | `--analyze` JSON + [/analyze/](/zts/analyze/) visualization. CLI tree format planned |
 | `--servedir=<path>`               | `--serve <dir>` (positional arg)                                             |
 | `--bundle=false` (off by default) | Same default. ZTS transpiles only without `--bundle`                         |
 | `--splitting=false`               | Off by default. No flag means default                                        |
 | `--tree-shaking=false`            | Not supported. Per-package `--external` can reduce bundle scope              |
-| `--color=true                     | false`                                                                       | Not supported. Auto-detected from terminal |
+| `--color=true\|false`             | Not supported. Auto-detected from terminal                                   |
 | `--log-override:X=Y`              | Not supported. Only `--log-level`                                            |
 | `--supported:bigint=false`        | Not supported. Use `--target` for global control                             |
 | `--reserve-props=<regex>`         | Not supported                                                                |
@@ -244,7 +244,7 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 
 | Vite feature                         | ZTS equivalent                                                                                           |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| `vite` (dev server)                  | `zts dev` (HTML/env/public prepare + CSS-only HMR)                                                       |
+| `vite` (dev server)                  | `zts dev` (HTML/env/public prepare + HMR/Fast Refresh + CSS-only HMR)                                    |
 | `vite build`                         | `zts build`, or `zts --bundle <entry> --outdir dist --splitting --minify --sourcemap` for library builds |
 | `vite preview`                       | `zts preview dist`                                                                                       |
 | `import.meta.env.MODE`               | App mode auto-loads `.env*`; CLI bundles can use `--define:import.meta.env.MODE=\"production\"`          |
@@ -311,8 +311,8 @@ module.exports = {
 | `svg-loader` / `@svgr/webpack`                  | `--loader:.svg=text`/`file`/`dataurl` or plugin                |
 | `json-loader`                                   | `--loader:.json=json` (built-in default)                       |
 | `sass-loader` / `less-loader` / `stylus-loader` | Sass/SCSS is supported in app mode. Pre-compile Less/Stylus    |
-| `postcss-loader`                                | Not supported. Replaced by Lightning CSS post-processing       |
-| `html-loader`                                   | Not supported. `--loader:.html=text` for string conversion     |
+| `postcss-loader`                                | Supported in app mode. Use a plugin or pre-processing for library bundling |
+| `html-loader`                                   | App mode rewrites `index.html`; `--loader:.html=text` can stringify imports |
 | `worker-loader`                                 | Not supported (general Worker bundle support separate)         |
 | `thread-loader`                                 | Not needed. ZTS has built-in parallel pipeline (`--jobs=N`)    |
 | `cache-loader`                                  | Not needed. Uses `.zig-cache` / module-level cache             |
@@ -328,7 +328,7 @@ module.exports = {
 | `BannerPlugin`                     | `--banner:js=...`                                            |
 | `SplitChunksPlugin`                | `--splitting` (automatic)                                    |
 | `MiniCssExtractPlugin`             | Built-in Lightning CSS post-processing (separate CSS chunks) |
-| `HtmlWebpackPlugin`                | Not supported. Manage static `index.html` manually           |
+| `HtmlWebpackPlugin`                | App mode handles `index.html` plus `%ENV%`/asset rewriting   |
 | `CopyWebpackPlugin`                | Not supported. Per-asset copy via `--loader:.svg=copy`       |
 | `TerserPlugin`                     | `--minify` built-in                                          |
 | `CssMinimizerPlugin`               | Handled by Lightning CSS post-processing                     |
@@ -344,7 +344,7 @@ module.exports = {
 | `require.context`                                      | Supported (`require.context(dir, deep, regex)` — resolved via plugin `onResolveContext` hook) |
 | Lazy chunk (`import(/* webpackChunkName: "x" */ ...)`) | Dynamic import itself supported. Magic comments are not                                       |
 | `webpack.config.js` function / multi-config            | Not supported. Single-export `zts.config.ts`                                                  |
-| `devServer.proxy`                                      | Not supported. `--serve` serves static/bundle only                                            |
-| Dev server overlay                                     | Not supported (HMR errors go to console)                                                      |
+| `devServer.proxy`                                      | Supported (`--proxy /api=http://localhost:3000`)                                              |
+| Dev server overlay                                     | Supported (build/runtime error overlay + source map remap)                                    |
 | Persistent cache (`cache.type: 'filesystem'`)          | Not needed. Built-in cache                                                                    |
 | Stats JSON                                             | `--metafile=meta.json` provides similar info                                                  |

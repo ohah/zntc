@@ -156,16 +156,16 @@ export default defineConfig({
 ### 지원하지 않는 esbuild 옵션
 
 | esbuild 옵션                | 대안                                                          |
-| --------------------------- | ------------------------------------------------------------- | ------------------------ |
+| --------------------------- | ------------------------------------------------------------- |
 | `--mangle-props=<regex>`    | 미지원 (mangle 자체는 `--minify-identifiers`로 내부 식별자만) |
 | `--mangle-cache=<path>`     | 미지원                                                        |
 | `--mangle-quoted`           | 미지원                                                        |
-| `--analyze` (tree 포맷)     | `--analyze` (현재 JSON만, tree 포맷 예정)                     |
+| `--analyze` (tree 포맷)     | `--analyze` JSON + [/analyze/](/zts/analyze/) 시각화. CLI tree 포맷은 예정 |
 | `--servedir=<path>`         | `--serve <dir>` (위치 인자)                                   |
 | `--bundle=false` (기본 off) | 기본 동작 동일. ZTS도 `--bundle` 없으면 트랜스파일만          |
 | `--splitting=false`         | 기본 off. 플래그 없는 상태가 기본                             |
 | `--tree-shaking=false`      | 미지원. 개별 `--external`로 번들 포함 범위를 줄일 수 있음     |
-| `--color=true               | false`                                                        | 미지원. 터미널 자동 감지 |
+| `--color=true\|false`       | 미지원. 터미널 자동 감지                                     |
 | `--log-override:X=Y`        | 미지원. `--log-level`만                                       |
 | `--supported:bigint=false`  | 미지원. `--target`으로 일괄 제어                              |
 | `--reserve-props=<regex>`   | 미지원                                                        |
@@ -244,7 +244,7 @@ export default defineConfig({
 
 | Vite 기능                            | ZTS 대응                                                                                               |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `vite` (dev server)                  | `zts dev` (HTML/env/public prepare + CSS-only HMR)                                                     |
+| `vite` (dev server)                  | `zts dev` (HTML/env/public prepare + HMR/Fast Refresh + CSS-only HMR)                                  |
 | `vite build`                         | `zts build` 또는 library build는 `zts --bundle <entry> --outdir dist --splitting --minify --sourcemap` |
 | `vite preview`                       | `zts preview dist`                                                                                     |
 | `import.meta.env.MODE`               | 앱 모드는 `.env*` 자동 로드, CLI 번들은 `--define:import.meta.env.MODE=\"production\"`                 |
@@ -311,8 +311,8 @@ module.exports = {
 | `svg-loader` / `@svgr/webpack`                  | `--loader:.svg=text`/`file`/`dataurl` 또는 플러그인          |
 | `json-loader`                                   | `--loader:.json=json` (기본 내장)                            |
 | `sass-loader` / `less-loader` / `stylus-loader` | Sass/SCSS는 앱 모드에서 지원. Less/Stylus는 사전 컴파일 필요 |
-| `postcss-loader`                                | 미지원. Lightning CSS 플러그인으로 대체                      |
-| `html-loader`                                   | 미지원. `--loader:.html=text` 로 문자열화는 가능             |
+| `postcss-loader`                                | 앱 모드에서 PostCSS 지원. library bundling은 plugin 또는 사전 처리 |
+| `html-loader`                                   | 앱 모드는 `index.html` rewrite 지원. 문자열 import는 `--loader:.html=text` |
 | `worker-loader`                                 | 미지원 (Bundle 내 Worker 일반 지원은 별도)                   |
 | `thread-loader`                                 | 불필요. ZTS 병렬 파이프라인 내장 (`--jobs=N`)                |
 | `cache-loader`                                  | 불필요. `.zig-cache` / 모듈 레벨 캐시                        |
@@ -328,7 +328,7 @@ module.exports = {
 | `BannerPlugin`                     | `--banner:js=...`                                  |
 | `SplitChunksPlugin`                | `--splitting` (자동)                               |
 | `MiniCssExtractPlugin`             | 내장 Lightning CSS 후처리 (별도 CSS 청크 출력)     |
-| `HtmlWebpackPlugin`                | 미지원. 정적 `index.html` 직접 관리                |
+| `HtmlWebpackPlugin`                | 앱 모드 `index.html` + `%ENV%`/asset rewrite로 대응 |
 | `CopyWebpackPlugin`                | 미지원. `--loader:.svg=copy` 등으로 에셋 단위 복사 |
 | `TerserPlugin`                     | `--minify` 내장                                    |
 | `CssMinimizerPlugin`               | Lightning CSS 플러그인에서 처리                    |
@@ -344,7 +344,7 @@ module.exports = {
 | `require.context`                                      | 지원 (`require.context(dir, deep, regex)` — 플러그인의 `onResolveContext` 훅으로 매칭) |
 | Lazy chunk (`import(/* webpackChunkName: "x" */ ...)`) | 동적 import 자체는 지원. 매직 코멘트는 미지원                                          |
 | `webpack.config.js` 함수형/멀티 컨피그                 | 미지원. `zts.config.ts` 단일 export                                                    |
-| `devServer.proxy`                                      | 미지원. `--serve` 는 정적/번들만                                                       |
-| Dev server overlay                                     | 미지원 (HMR 에러는 콘솔로 전달)                                                        |
+| `devServer.proxy`                                      | 지원 (`--proxy /api=http://localhost:3000`)                                             |
+| Dev server overlay                                     | 지원 (build/runtime error overlay + source map remap)                                   |
 | Persistent cache (`cache.type: 'filesystem'`)          | 불필요. 내장 캐시 사용                                                                 |
 | Stats JSON                                             | `--metafile=meta.json` 으로 유사 정보                                                  |

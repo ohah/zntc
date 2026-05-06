@@ -1,0 +1,24 @@
+---
+title: Performance Benchmarks
+description: Performance comparison between ZTS and other tools
+---
+
+import BenchmarkCharts from '../../../../components/BenchmarkCharts.tsx';
+
+ZTS compares transpile and bundle performance against esbuild, SWC, Bun, and related tools.
+
+## Environment
+
+- **Platform**: macOS Apple Silicon (M-series)
+- **Iterations**: average of 5 runs
+- **Method**: direct CLI execution, excluding npx overhead
+
+<BenchmarkCharts client:only="react" />
+
+## How to Run
+
+Benchmark script: `tests/benchmark/bench.ts`
+
+```bash
+cd tests/benchmark && bun run bench.ts
+```

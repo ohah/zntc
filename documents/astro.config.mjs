@@ -32,7 +32,9 @@ export default defineConfig({
         },
       },
       plugins: [
-        starlightLinksValidator({ exclude: ["/zts/playground/", "/zts/en/playground/"] }),
+        starlightLinksValidator({
+          exclude: ["/zts/playground/", "/zts/en/playground/", "/zts/analyze/", "/zts/en/analyze/"],
+        }),
         starlightTypeDoc({
           entryPoints: ["../packages/core/index.ts"],
           tsconfig: "../packages/core/tsconfig.json",
@@ -104,6 +106,7 @@ export default defineConfig({
           label: "마이그레이션",
           translations: { en: "Migration" },
           items: [
+            { label: "도구 비교", slug: "guides/comparison", translations: { en: "Tool Comparison" } },
             { label: "다른 도구에서 이관", slug: "guides/migration", translations: { en: "From Other Tools" } },
             { label: "Babel 이관 (RN)", slug: "guides/babel-migration", translations: { en: "Babel Migration (RN)" } },
           ],
@@ -122,7 +125,9 @@ export default defineConfig({
             { label: "CLI", slug: "reference/cli", translations: { en: "CLI" } },
             { label: "NAPI / JS API", slug: "reference/napi", translations: { en: "NAPI / JS API" } },
             { label: "Transpile 옵션", slug: "reference/options", translations: { en: "Transpile Options" } },
+            { label: "옵션 매트릭스", slug: "reference/options-matrix", translations: { en: "Options Matrix" } },
             { label: "벤치마크", slug: "reference/benchmarks", translations: { en: "Benchmarks" } },
+            { label: "Metafile 분석", link: "/analyze/", translations: { en: "Metafile Analyze" } },
             {
               label: "에러 코드",
               translations: { en: "Error Codes" },

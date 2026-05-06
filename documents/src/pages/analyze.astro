@@ -1,0 +1,38 @@
+---
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+---
+
+<StarlightPage
+  frontmatter={{
+    title: "Metafile Analyze",
+    description: "ZTS/esbuild-compatible metafile JSON을 브라우저에서 분석합니다.",
+    tableOfContents: false,
+    pagefind: false,
+    template: "splash",
+  }}
+>
+  <div id="metafile-analyzer-mount" class="not-content"></div>
+  <script>
+    import("../components/metafile-analyzer-mount.ts");
+  </script>
+</StarlightPage>
+
+<style>
+  :global(.analyze-page .content-panel) {
+    padding: 0 !important;
+  }
+  :global(.analyze-page h1) {
+    display: none !important;
+  }
+  :global(.analyze-page .sl-markdown-content) {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  :global(.analyze-page .pagination-links) {
+    display: none !important;
+  }
+</style>
+
+<script is:inline>
+  document.documentElement.classList.add("analyze-page");
+</script>

@@ -161,7 +161,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--asset-names=<pattern>`                | Asset name pattern                                                                                    |
 | `--loader:.ext=type`                     | Loader by extension (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
 | `--metafile` / `--metafile=<path>`       | Build meta JSON (stdout or file)                                                                      |
-| `--analyze`                              | Bundle analysis report (printed to stderr). Pair with `--metafile=<path>` to also write JSON to disk. |
+| `--analyze`                              | Bundle analysis report (printed to stderr). Pair with `--metafile=<path>` to also write JSON to disk; upload it at [/analyze/](/zts/analyze/) |
 | `--legal-comments=<mode>`                | License comments: `none\|inline\|eof\|linked\|external` (`linked`/`external` currently fall back to `eof`) |
 | `--packages=external`                    | Treat all bare package imports as external                                                            |
 | `--banner:js=<text>`                     | Prepend text (the bare `--banner=` form is JS-wrapper-only)                                           |
@@ -258,5 +258,7 @@ zts bench --phase=parse --compare=baseline.json src/main.ts
 ## See Also
 
 - JS API (`@zts/core`) in `packages/core/index.ts` provides the same options programmatically.
+- Surface-level option coverage is listed in the [Options Matrix](/zts/en/reference/options-matrix/).
+- Visualize `--metafile` output on the [Metafile Analyze](/zts/analyze/) page.
 - Use `vite-plugin-zts` or `vitePlugin()` for the Vite adapter.
 - Unsupported options and future plans: [docs/ROADMAP.md](https://github.com/ohah/zts/blob/main/docs/ROADMAP.md).
