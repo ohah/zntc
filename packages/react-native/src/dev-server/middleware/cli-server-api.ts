@@ -34,6 +34,10 @@ export interface LoadCliServerApiOptions {
 /**
  * `@react-native-community/cli-server-api` 의 `createDevServerMiddleware` 실행
  * 결과 wrapping. 미설치 시 null. caller 가 broadcast 가 필요하면 fallback.
+ *
+ * `ZTS_DEBUG_TERMINAL=1` 시 import 실패 reason 을 stderr 출력 — 사용자가
+ * cli-server-api 미설치인지 다른 이유인지 추적. peer 미설치는 흔한 케이스라
+ * default 는 silent.
  */
 export async function loadCliServerApi(
   options: LoadCliServerApiOptions,
@@ -63,7 +67,12 @@ export async function loadCliServerApi(
       websocketEndpoints: result.websocketEndpoints,
       broadcast: result.messageSocketEndpoint.broadcast,
     };
-  } catch {
+  } catch (err) {
+    if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+      process.stderr.write(
+        `[zts:rn-dev:debug] cli-server-api load failed: ${(err as Error)?.message ?? err}\n`,
+      );
+    }
     return null;
   }
 }
