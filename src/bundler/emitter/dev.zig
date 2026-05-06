@@ -9,14 +9,23 @@ const SourceMap = @import("../../codegen/sourcemap.zig");
 /// 모듈 경로를 dev bundle용 ID로 변환.
 /// root_dir이 있으면 상대 경로, 없으면 절대 경로 그대로 사용.
 /// 모듈의 소스맵 매핑을 번들 레벨 SourceMapBuilder에 추가한다.
-/// sourcesContent 등록 + preamble/wrapper 오프셋 반영 + wrapper closing brace
-/// 영역 mapping 보강을 한 곳에서 처리.
+/// sourcesContent 등록 + preamble/wrapper 오프셋 반영 + module 영역 안의
+/// 매핑 누락 line (region/endregion marker, wrapper closing brace 등) 을
+/// module 의 first/last source line 으로 채움 (#2648).
 ///
-/// `wrap_close_lines` — wrapper 의 closing brace 가 차지하는 line 수. CJS
-/// `__commonJS({...\n\t}\n});\n}` = 3 (마지막 `\n` 까지), ESM `init_X = __esm({...});\n}` =
-/// 1, asset/disabled = 0. 모듈의 마지막 매핑된 source line 으로 추가 mapping
-/// 을 emit 해 빈 generated line (wrapper closing) 을 채움. 이게 없으면 RN
-/// LogBox 의 stack frame 이 source 매핑 안 되고 bundle URL 그대로 표시 (#2648).
+/// **bundle 의 module 영역 layout**:
+/// ```
+/// [base_line]
+///   pre_lines (예: //#region <basename>\n) — 미매핑 시 first source line 으로
+///   preamble_lines (wrap 의 prefix — module wrapper 의 var X = __commonJS({...)
+///   code_lines (codegen mapping 으로 cover — body) + closing brace
+///   post_lines (예: //#endregion\n) — 미매핑 시 last source line 으로
+/// ```
+///
+/// `total_code_lines` — wrap 적용 후 code 의 전체 \\n 갯수. codegen 의 마지막
+/// mapping 이후 ~ total 까지 (= wrapper closing brace) 를 last source line 으로
+/// 채움. 이게 없으면 RN LogBox stack frame 이 source 매핑 안 되고 bundle URL
+/// 그대로 표시 (#2648).
 pub fn addModuleMappings(
     sm: *SourceMap.SourceMapBuilder,
     module_id: []const u8,
@@ -27,7 +36,12 @@ pub fn addModuleMappings(
     sources_content: bool,
     /// dev 모드에서 tab 들여쓰기 보정이 필요하면 true
     indent_offset: bool,
-    wrap_close_lines: u32,
+    /// module wrapper 전 boilerplate line 수 (e.g. //#region, default 0)
+    pre_lines: u32,
+    /// wrap 적용 후 code 의 전체 \\n 갯수
+    total_code_lines: u32,
+    /// module wrapper 후 boilerplate line 수 (e.g. //#endregion, default 0)
+    post_lines: u32,
 ) !void {
     const source_idx = try sm.addSource(module_id);
     if (sources_content and source.len > 0) {
@@ -35,10 +49,11 @@ pub fn addModuleMappings(
     }
     var max_gen_line: u32 = 0;
     var max_orig_line: u32 = 0;
+    var first_orig_line: u32 = 0;
     var has_mapping: bool = false;
     for (maps) |mapping| {
         try sm.addMapping(.{
-            .generated_line = base_line + preamble_lines + mapping.generated_line,
+            .generated_line = base_line + pre_lines + preamble_lines + mapping.generated_line,
             .generated_column = if (indent_offset and mapping.generated_line != 0)
                 mapping.generated_column + 1
             else
@@ -47,19 +62,44 @@ pub fn addModuleMappings(
             .original_line = mapping.original_line,
             .original_column = mapping.original_column,
         });
-        if (!has_mapping or mapping.generated_line >= max_gen_line) {
-            max_gen_line = mapping.generated_line;
-            max_orig_line = mapping.original_line;
+        if (!has_mapping) {
+            first_orig_line = mapping.original_line;
             has_mapping = true;
         }
+        if (mapping.generated_line >= max_gen_line) {
+            max_gen_line = mapping.generated_line;
+            max_orig_line = mapping.original_line;
+        }
     }
-    if (wrap_close_lines == 0 or !has_mapping) return;
-    // wrapper closing brace 의 line 마다 module 의 마지막 source line 으로
-    // identity mapping. 정확한 location 보다 file 단위 frame 표시가 목적.
-    var i: u32 = 1;
-    while (i <= wrap_close_lines) : (i += 1) {
+    if (!has_mapping) return;
+    // pre_lines (region marker) — module 의 first source line 으로 매핑.
+    var i: u32 = 0;
+    while (i < pre_lines) : (i += 1) {
         try sm.addMapping(.{
-            .generated_line = base_line + preamble_lines + max_gen_line + i,
+            .generated_line = base_line + i,
+            .generated_column = 0,
+            .source_index = source_idx,
+            .original_line = first_orig_line,
+            .original_column = 0,
+        });
+    }
+    // codegen 마지막 mapping 이후 ~ total_code_lines (wrap closing brace 영역)
+    // — last source line 으로 매핑.
+    var gen_line: u32 = max_gen_line + 1;
+    while (gen_line < total_code_lines) : (gen_line += 1) {
+        try sm.addMapping(.{
+            .generated_line = base_line + pre_lines + preamble_lines + gen_line,
+            .generated_column = 0,
+            .source_index = source_idx,
+            .original_line = max_orig_line,
+            .original_column = 0,
+        });
+    }
+    // post_lines (endregion marker) — last source line 으로 매핑.
+    i = 0;
+    while (i < post_lines) : (i += 1) {
+        try sm.addMapping(.{
+            .generated_line = base_line + pre_lines + preamble_lines + total_code_lines + i,
             .generated_column = 0,
             .source_index = source_idx,
             .original_line = max_orig_line,
