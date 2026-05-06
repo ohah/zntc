@@ -17,7 +17,6 @@ const UNSUPPORTED_FIELDS = [
   ['serializer', 'getModulesRunBeforeMainModule'],
   ['serializer', 'getPolyfills'],
   ['serializer', 'shouldAddToIgnoreList'],
-  ['serializer', 'inlineSourceMap'],
   // dummy placeholder — bungae 도 declared-but-unused.
   ['server', 'forwardClientLogs'],
   ['server', 'verifyConnections'],
@@ -93,6 +92,8 @@ export function buildRnDevServerInput(opts, config) {
         extraVars: serializer.extraVars ?? undefined,
         prelude: serializer.prelude ?? undefined,
         babel: transformer.babel ?? undefined,
+        inlineSourceMap: serializer.inlineSourceMap ?? undefined,
+        sourceRoot: cfg.sourcemapSourcesRoot ?? undefined,
       },
     },
     port: opts.port ?? server.port ?? 8081,
