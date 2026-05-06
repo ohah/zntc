@@ -593,38 +593,25 @@ pub fn emitChunks(
             break :blk try names.toOwnedSlice(allocator);
         };
 
-        // sourcemap 결과: lazy 경로는 builder 자체를 OutputFile 에 이관 (caller 가
-        // 호출 시점에 generateJSON 수행). eager 는 즉시 JSON 생성. directive
-        // hoisting (위 insertSlice) 후의 줄 shift 는 의도적으로 보정 안 함 —
-        // 단일 번들 path 와 동일 동작.
-        // mode=inline_ 은 base64 embed 가 contents 안에 들어가야 하므로 lazy 와
-        // 호환 안 됨 (lazy 면 emit 단계에 JSON 이 없어서 embed 불가). 이 조합은
-        // lazy 를 무시하고 eager 강제 — silent broken 회피.
-        const effective_lazy = options.sourcemap.lazy and options.sourcemap.mode != .inline_;
-        var chunk_sourcemap: ?[]const u8 = null;
+        // sourcemap builder 를 heap 으로 보관. JSON generate 와 mode 분기
+        // (eager / lazy / inline_) 는 모두 finalizeChunkSourceMaps 가 hash 치환
+        // 후 단일 처리 — sourcemap "file" 필드가 placeholder 없이 정확 (#2661).
         var chunk_sourcemap_builder: ?*SourceMap.SourceMapBuilder = null;
         if (chunk_sm) |*sm| {
-            if (effective_lazy) {
-                chunk_sourcemap_builder = try sm.moveToHeap(allocator);
-                chunk_sm_moved = true;
-            } else {
-                chunk_sourcemap = try sm.generateJSONOwned(filename);
-            }
+            chunk_sourcemap_builder = try sm.moveToHeap(allocator);
+            chunk_sm_moved = true;
         }
-        // lazy/eager 가 mutually exclusive 라 두 errdefer 는 동시에 active 안 됨.
-        errdefer if (chunk_sourcemap) |s| allocator.free(s);
         errdefer if (chunk_sourcemap_builder) |b| b.destroy(allocator);
 
-        // sourceMappingURL 주석 — chunk 별 .map 파일 참조 / inline embed.
-        // resolveContentHashes 가 contents 의 placeholder 를 hash 로 치환하므로
-        // 주석에 들어가는 filename 도 자동 치환됨. 부착 정책은
-        // SourceMap.appendSourceMappingURLComment 가 통합 처리 (#2660).
-        if (options.sourcemap.enable) {
+        // sourceMappingURL 주석 (linked 만): placeholder filename 으로 부착해
+        // resolveContentHashes 가 final hash 로 치환. external 은 부착 안 함.
+        // inline_ 는 finalizeChunkSourceMaps 에서 base64 embed 와 함께 처리
+        // (base64 안 placeholder 가 못 치환되는 이슈 회피).
+        if (options.sourcemap.enable and options.sourcemap.mode == .linked) {
             try SourceMap.appendSourceMappingURLComment(&chunk_output, allocator, .{
-                .mode = options.sourcemap.mode,
+                .mode = .linked,
                 .output_filename = std.fs.path.basename(filename),
-                .inline_json = chunk_sourcemap,
-            }, &chunk_sourcemap);
+            }, null);
         }
 
         try outputs.append(allocator, .{
@@ -632,7 +619,6 @@ pub fn emitChunks(
             .contents = try chunk_output.toOwnedSlice(allocator),
             .module_ids = module_ids,
             .exports = export_names,
-            .sourcemap = chunk_sourcemap,
             .sourcemap_builder = chunk_sourcemap_builder,
         });
     }
@@ -641,6 +627,12 @@ pub fn emitChunks(
     // 각 청크의 content에서 placeholder를 찾아 content hash로 교체한다.
     // esbuild도 동일한 2패스 접근을 사용 (placeholder → content hash).
     try resolveContentHashes(allocator, outputs.items, sorted_indices, chunk_graph);
+
+    // sourcemap finalize: hash 치환 후 final filename 으로 builder generate.
+    // mode 별 분기 (lazy / eager / inline_) 는 finalize 안에서 처리.
+    if (options.sourcemap.enable) {
+        try finalizeChunkSourceMaps(allocator, outputs.items, options.sourcemap);
+    }
 
     return outputs.toOwnedSlice(allocator);
 }
@@ -1106,6 +1098,63 @@ fn rewriteImportCallToWrapper(
     return try std.mem.concat(allocator, u8, &.{ code[0..call_start], replacement, code[call_end..] });
 }
 
+/// hash 치환 후 chunk 별 sourcemap 마무리. chunk loop 는 모든 chunk 의
+/// builder 를 그대로 보관만 하고 mode 결정 (eager / lazy / inline_) 은 본
+/// 함수에 단일화:
+/// - lazy + (linked|external): builder 그대로 sourcemap_builder 유지 (caller 가
+///   호출 시점에 generateJSON)
+/// - eager + (linked|external): generateJSONOwned(out.path) → sourcemap, builder destroy
+/// - inline_: lazy 옵션 무시하고 항상 eager — generateJSONOwned(out.path) →
+///   base64 + contents 끝에 embed, sourcemap=null, builder destroy. base64 가
+///   contents 안에 들어가야 하므로 emit 단계 JSON 이 필수.
+///
+/// `out.path` 가 hash 치환 완료 상태라 sourcemap "file" 필드에 정확한
+/// final filename 이 들어가고, placeholder 치환 full-scan 불필요 (#2661).
+fn finalizeChunkSourceMaps(
+    allocator: std.mem.Allocator,
+    outputs: []OutputFile,
+    sm_options: SourceMap.SourceMapOptions,
+) !void {
+    for (outputs) |*out| {
+        const builder = out.sourcemap_builder orelse continue;
+
+        // inline_ 는 항상 eager 강제 (base64 가 contents 안에 들어가야 하므로
+        // emit 단계 JSON 필요).
+        const effective_lazy = sm_options.lazy and sm_options.mode != .inline_;
+        if (effective_lazy) continue;
+
+        const json = try builder.generateJSONOwned(out.path);
+        // builder 는 이제 사용 끝 — destroy.
+        builder.destroy(allocator);
+        out.sourcemap_builder = null;
+
+        switch (sm_options.mode) {
+            .linked, .external => {
+                // linked 의 sourceMappingURL 주석은 chunk loop 에서 contents 에
+                // 부착됨. external 은 주석 없음. 둘 다 sourcemap JSON 만 보관.
+                out.sourcemap = json;
+            },
+            .inline_ => {
+                // base64 embed → contents 끝에 sourceMappingURL=data: 주석 append.
+                // contents 는 owned slice 라 새 ArrayList 로 복사 후 helper 로
+                // base64 부착. helper 가 json 을 consume (free) — caller (이 함수)
+                // 의 free 책임 해제. slot 은 따로 추적 안 해도 됨 (json 변수
+                // 이후 미사용).
+                var buf: std.ArrayList(u8) = .empty;
+                errdefer buf.deinit(allocator);
+                try buf.appendSlice(allocator, out.contents);
+                try SourceMap.appendSourceMappingURLComment(&buf, allocator, .{
+                    .mode = .inline_,
+                    .inline_json = json,
+                }, null);
+                allocator.free(out.contents);
+                out.contents = try buf.toOwnedSlice(allocator);
+                out.sourcemap = null;
+            },
+        }
+    }
+}
+
 const PlaceholderInfo = struct {
     placeholder: [HASH_PLACEHOLDER_PREFIX.len + HASH_PLACEHOLDER_LEN]u8,
     real_hash: [HASH_PLACEHOLDER_LEN]u8,
@@ -1150,14 +1199,8 @@ fn resolveContentHashes(
         allocator.free(out.path);
         out.path = new_path;
 
-        // sourcemap JSON 의 "file" 필드에 들어간 placeholder 도 치환. lazy 경로는
-        // builder 에 placeholder 없음 — caller 가 generateJSON 시점에 outputs.path
-        // (이미 치환된) 를 넘기면 됨.
-        if (out.sourcemap) |sm| {
-            const new_sm = try replaceAllPlaceholders(allocator, sm, infos, ph_total);
-            allocator.free(sm);
-            out.sourcemap = new_sm;
-        }
+        // sourcemap 은 finalizeChunkSourceMaps 가 hash 치환 후 final filename 으로
+        // generate — 이 시점엔 builder 만 있고 generate 안 된 상태 (#2661).
     }
 
     // 3단계: imports 메타 채우기 (rolldown `chunk.imports` 호환).
