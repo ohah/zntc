@@ -107,13 +107,35 @@ export function setupTerminalActions(
   }
 
   const wasRaw = stdin.isRaw;
-  if (!wasRaw) stdin.setRawMode(true);
+  let rawModeOk = true;
+  if (!wasRaw) {
+    try {
+      stdin.setRawMode(true);
+    } catch (err) {
+      rawModeOk = false;
+      process.stderr.write(
+        `[zts:rn-dev] setRawMode failed (${(err as Error).message ?? err}) — keyboard shortcuts disabled\n`,
+      );
+      return () => {};
+    }
+  }
+  // 진단 — `ZTS_DEBUG_TERMINAL=1` 시 listener 등록 상태 출력. Bun runtime / wrapper
+  // script 의 stdin pipe 문제 추적용.
+  if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+    process.stderr.write(
+      `[zts:rn-dev:debug] terminal-actions: isTTY=${stdin.isTTY} isRaw=${stdin.isRaw} rawModeOk=${rawModeOk} runtime=${process.versions.bun ? `bun-${process.versions.bun}` : `node-${process.versions.node}`}\n`,
+    );
+  }
   stdin.resume();
   stdin.setEncoding('utf8');
 
   const printShortcuts = options.printShortcuts ?? defaultPrintShortcuts;
 
   const handleKey = (key: string): void => {
+    if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+      const hex = Buffer.from(key, 'utf8').toString('hex');
+      process.stderr.write(`[zts:rn-dev:debug] key received: hex=${hex} len=${key.length}\n`);
+    }
     // Bun event loop edge case — raw mode 가 외부에서 false 로 reset 될 수 있음.
     if (stdin.isTTY && !stdin.isRaw) {
       try {
