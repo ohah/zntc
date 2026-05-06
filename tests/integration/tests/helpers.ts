@@ -2,7 +2,7 @@ import { spawn } from 'bun';
 import { mkdtemp, rm, writeFile, mkdir, symlink, stat } from 'node:fs/promises';
 import { readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../..');
 export const ZTS_BIN = join(PROJECT_ROOT, 'zig-out/bin/zts');
@@ -75,11 +75,13 @@ export async function createReactStubFixture(
   });
 }
 
-/// pnpm/bun `.pnpm/` farm symlink 레이아웃 fixture (1-hop, scoped 포함).
+/// pnpm/bun `.pnpm/` farm symlink 레이아웃 fixture.
 /// `@scope/x` 의 farm dir 은 `/` → `+` 로 escape (실 pnpm/bun 패턴).
 export async function createPnpmFarmFixture(opts: {
   files: Record<string, string>;
   packages: Record<string, Record<string, string>>;
+  hoist?: string[];
+  deps?: Record<string, string[]>;
 }): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const parsed = Object.entries(opts.packages).map(([key, files]) => {
     const at = key.lastIndexOf('@');
@@ -88,8 +90,9 @@ export async function createPnpmFarmFixture(opts: {
     }
     const name = key.slice(0, at);
     const version = key.slice(at + 1);
-    return { name, version, farmDirName: `${name.replace('/', '+')}@${version}`, files };
+    return { key, name, version, farmDirName: `${name.replace('/', '+')}@${version}`, files };
   });
+  const byKey = new Map(parsed.map((p) => [p.key, p]));
 
   const allFiles: Record<string, string> = { ...opts.files };
   for (const { name, farmDirName, files } of parsed) {
@@ -100,19 +103,42 @@ export async function createPnpmFarmFixture(opts: {
   }
 
   const fixture = await createFixture(allFiles);
-  const nmDir = join(fixture.dir, 'node_modules');
-  await mkdir(nmDir, { recursive: true });
 
-  const scopes = new Set(
-    parsed.filter(({ name }) => name.includes('/')).map(({ name }) => name.split('/')[0]),
-  );
-  await Promise.all([...scopes].map((s) => mkdir(join(nmDir, s), { recursive: true })));
+  const links: Array<{ linkRel: string; targetRel: string }> = [];
+
+  const hoistSet = new Set(opts.hoist ?? parsed.map(({ key }) => key));
+  for (const { key, name, farmDirName } of parsed) {
+    if (!hoistSet.has(key)) continue;
+    links.push({
+      linkRel: `node_modules/${name}`,
+      targetRel: `.pnpm/${farmDirName}/node_modules/${name}`,
+    });
+  }
+
+  for (const [dependerKey, depKeys] of Object.entries(opts.deps ?? {})) {
+    const depender = byKey.get(dependerKey);
+    if (!depender) {
+      throw new Error(`unknown depender '${dependerKey}' in opts.deps`);
+    }
+    for (const depKey of depKeys) {
+      const dep = byKey.get(depKey);
+      if (!dep) {
+        throw new Error(`unknown dep '${depKey}' for '${dependerKey}'`);
+      }
+      links.push({
+        linkRel: `.pnpm/${depender.farmDirName}/node_modules/${dep.name}`,
+        targetRel: `.pnpm/${dep.farmDirName}/node_modules/${dep.name}`,
+      });
+    }
+  }
+
+  const parentDirs = new Set(links.map(({ linkRel }) => dirname(linkRel)));
+  await Promise.all([...parentDirs].map((d) => mkdir(join(fixture.dir, d), { recursive: true })));
 
   await Promise.all(
-    parsed.map(({ name, farmDirName }) => {
-      const ups = name.includes('/') ? '../..' : '..';
-      return symlink(join(ups, '.pnpm', farmDirName, 'node_modules', name), join(nmDir, name));
-    }),
+    links.map(({ linkRel, targetRel }) =>
+      symlink(relative(dirname(linkRel), targetRel), join(fixture.dir, linkRel)),
+    ),
   );
 
   return fixture;
