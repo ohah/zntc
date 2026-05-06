@@ -1,6 +1,12 @@
 // Plugin factory 들의 공통 config. asset / babel / codegen / require-context /
 // metro-resolve-request 모두 RN-specific 환경 인자 동일 set 공유.
 
+/** Inline babel config — Metro `transformer.babel` 호환. */
+export interface InlineBabelConfig {
+  presets?: (string | [string, Record<string, unknown>])[];
+  plugins?: (string | [string, Record<string, unknown>])[];
+}
+
 export interface PluginConfig {
   /** RN 프로젝트 root — Babel/codegen plugin resolve 의 base. */
   projectRoot: string;
@@ -12,4 +18,10 @@ export interface PluginConfig {
   sourceExts: string[];
   /** Metro 호환 custom file transformer path (예: react-native-svg-transformer). */
   babelTransformerPath?: string;
+  /**
+   * Inline babel preset / plugin (zts.config.ts 의 `transformer.babel`). 사용자
+   * babel.config.js 의 plugins 와 concat 되며 양쪽 모두 ZTS native filter 통과
+   * 후 babel pass 에 등록.
+   */
+  inlineBabel?: InlineBabelConfig;
 }

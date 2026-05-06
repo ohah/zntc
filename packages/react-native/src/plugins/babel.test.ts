@@ -134,6 +134,49 @@ describe("detectCustomPlugins — project-기준 require (#2605 audit)", () => {
   });
 });
 
+describe("detectCustomPlugins — inline config (#2605 transformer.babel)", () => {
+  test("inline.plugins 만 있고 babel.config.js 없음 — true", () => {
+    expect(detectCustomPlugins(dir, { plugins: ["nativewind/babel"] })).toBe(true);
+  });
+
+  test("inline.plugins 가 ZTS native 만 — false (babel.config.js 도 없음)", () => {
+    expect(detectCustomPlugins(dir, { plugins: ["react-native-reanimated/plugin"] })).toBe(false);
+  });
+
+  test("inline.presets non-native — true", () => {
+    expect(detectCustomPlugins(dir, { presets: ["module:metro-react-native-babel-preset"] })).toBe(
+      true,
+    );
+  });
+
+  test("inline.presets 가 ZTS native (`@react-native/babel-preset`) 만 — false (silent drop 방지)", () => {
+    expect(detectCustomPlugins(dir, { presets: ["@react-native/babel-preset"] })).toBe(false);
+  });
+
+  test("inline 비어있고 babel.config.js 도 없음 — false", () => {
+    expect(detectCustomPlugins(dir, { plugins: [], presets: [] })).toBe(false);
+    expect(detectCustomPlugins(dir, undefined)).toBe(false);
+  });
+
+  test("babel.config.js 의 plugins + inline.plugins 둘 다 인식", () => {
+    writeFileSync(
+      join(dir, "babel.config.js"),
+      `module.exports = { plugins: ['react-native-reanimated/plugin'] };`,
+    );
+    // file 의 plugins 는 native 만이라 file 만으로는 false. inline 이 추가되면 true.
+    expect(detectCustomPlugins(dir, undefined)).toBe(false);
+    expect(detectCustomPlugins(dir, { plugins: ["nativewind/babel"] })).toBe(true);
+  });
+
+  test("inline.plugins tuple `[name, options]` 도 인식", () => {
+    expect(
+      detectCustomPlugins(dir, {
+        plugins: [["babel-plugin-root-import", { rootPathPrefix: "~/" }]],
+      }),
+    ).toBe(true);
+  });
+});
+
 describe("ZTS_NATIVE_PLUGIN_PATTERNS", () => {
   test("count >= 15 (sanity)", () => {
     expect(ZTS_NATIVE_PLUGIN_PATTERNS.length).toBeGreaterThanOrEqual(15);

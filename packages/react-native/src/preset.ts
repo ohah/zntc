@@ -38,6 +38,7 @@ import {
   type MetroResolveRequestOptions,
 } from "./plugins/metro-resolve-request.ts";
 import { createRequireContextPlugin } from "./plugins/require-context.ts";
+import type { InlineBabelConfig } from "./plugins/types.ts";
 import { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from "./rn-constants.ts";
 
 export interface RnBundleInput {
@@ -89,6 +90,23 @@ export interface RnBundleInput {
      * runtime-time prelude 의 globals declaration (RN 코드 도착 전에 평가).
      */
     extraVars?: Record<string, unknown>;
+    /**
+     * Entry 전 실행할 module path (Metro `serializer.prelude` 호환). 절대 경로 또는
+     * projectRoot 기준 상대 경로. preset 의 `runBeforeMain` (InitializeCore) 와 concat
+     * 되어 RN runtime 부팅 직후 / entry 전에 실행. babel.config.js 같은 transform 영역
+     * 이 아닌 **번들에 prepend 되는 module list**.
+     */
+    prelude?: string[];
+    /**
+     * 사용자 babel preset / plugin (Metro `transformer.babel` 호환). babel.config.js
+     * 외에 zts.config.ts 안에서 inline 으로 babel 설정. ZTS native 처리 plugin (TS
+     * strip / RN preset / Reanimated 등) 은 자동 제외 — 충돌 회피.
+     *
+     * 사용자 babel.config.js 의 plugins 와 concat 되며 양쪽 모두 ZTS native filter
+     * 통과 후 babel pass 에 forward. presets 는 zts 가 추가하는 `preset-typescript`
+     * 외에 추가됨.
+     */
+    babel?: InlineBabelConfig;
   };
   /** RN prelude 끝에 append 할 사용자 banner string. */
   bannerExtras?: string;
@@ -250,6 +268,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
       assetExts,
       rnPlatform,
       sourceExts,
+      inlineBabel: extra?.babel,
     }),
     createRequireContextPlugin(),
   ];
@@ -275,6 +294,11 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   const runBeforeMain: string[] = [];
   const initCore = tryResolve("react-native/Libraries/Core/InitializeCore", projectRoot);
   if (initCore) runBeforeMain.push(initCore);
+  if (extra?.prelude && extra.prelude.length > 0) {
+    // 사용자 추가 prelude — InitializeCore 이후에 실행. 절대/상대 모두 projectRoot
+    // 기준으로 정규화.
+    for (const p of extra.prelude) runBeforeMain.push(resolve(projectRoot, p));
+  }
 
   const define: Record<string, string> = {
     global: "__ZTS_RN_GLOBAL__",

@@ -16,11 +16,16 @@ import {
   getErrorMessage,
   requireFromCli,
 } from "./internal.ts";
-import type { PluginConfig } from "./types.ts";
+import type { InlineBabelConfig, PluginConfig } from "./types.ts";
 
 interface BabelConfigModule {
   plugins?: unknown[];
 }
+
+// Babel API: `name` 또는 `[name, options]` 또는 `[name, options, instanceName]`
+// (multi-instance plugin/preset 구분용 3번째 요소). 사용자 babel docs 그대로
+// 적은 3-tuple 도 silently drop 안 되도록 spread 보존.
+type BabelEntry = string | [string, Record<string, unknown>?, string?];
 
 /**
  * ZTS native 처리 plugin patterns — Babel pass-through 시 제외 (이 list 에 매칭
@@ -86,12 +91,32 @@ export function applyBabelPluginPrefix(name: string): string {
   return `babel-plugin-${name}`;
 }
 
+function entryName(p: unknown): string {
+  return typeof p === "string" ? p : Array.isArray(p) ? (p[0] as string) : "";
+}
+
+function hasNonNative(plugins: unknown[]): boolean {
+  return plugins.some((p) => {
+    const name = entryName(p);
+    // 빈 string (number/object/null 같은 invalid plugin entry) 은 skip — bungae
+    // 의 minor bug fix (#2540): 원본은 빈 string 도 native 외 로 카운트해 false
+    // negative.
+    return typeof name === "string" && name !== "" && !isZtsNativePlugin(name);
+  });
+}
+
 /**
- * babel.config.js 의 plugins 배열 중 ZTS native list 외 의 plugin 이 하나라도
- * 있으면 true — Babel pass 가 필요하다는 신호. 미존재 / require fail / list
- * 외 plugin 0 → false (Babel pass skip 으로 startup latency 0).
+ * Babel pass 가 필요한지 판정. (a) babel.config.js 의 plugins 또는 (b) inline
+ * config (zts.config.ts `transformer.babel`) 중 하나라도 ZTS native list 외
+ * plugin/preset 이 있으면 true. 둘 다 0 → false (Babel pass skip).
  */
-export function detectCustomPlugins(projectRoot: string): boolean {
+export function detectCustomPlugins(projectRoot: string, inline?: InlineBabelConfig): boolean {
+  // preset/plugin 모두 동일한 native filter 적용 — `@react-native/babel-preset`
+  // 같은 ZTS native 처리 항목을 inline 으로 적은 경우 detect=true 가 되면 transformer
+  // pass 가 켜진 후 filter 에서 제거되어 사용자 의도 (native preset 동작) 가 silent
+  // drop. 둘 다 hasNonNative 통과 시점부터 진정한 custom 인 것.
+  if (inline?.presets && hasNonNative(inline.presets)) return true;
+  if (inline?.plugins && hasNonNative(inline.plugins)) return true;
   try {
     const configPath = join(projectRoot, "babel.config.js");
     if (!existsSync(configPath)) return false;
@@ -100,13 +125,7 @@ export function detectCustomPlugins(projectRoot: string): boolean {
     const projectRequire = createRequire(`${projectRoot}/package.json`);
     const config = projectRequire(configPath) as BabelConfigModule;
     const plugins: unknown[] = config?.plugins ?? [];
-    return plugins.some((p) => {
-      const name = typeof p === "string" ? p : Array.isArray(p) ? (p[0] as string) : "";
-      // 빈 string (number/object/null 같은 invalid plugin entry) 은 skip — bungae
-      // 의 minor bug fix (#2540): 원본은 빈 string 도 native 외 로 카운트해 false
-      // negative.
-      return typeof name === "string" && name !== "" && !isZtsNativePlugin(name);
-    });
+    return hasNonNative(plugins);
   } catch {
     return false;
   }
@@ -114,12 +133,13 @@ export function detectCustomPlugins(projectRoot: string): boolean {
 
 /**
  * Lazy Babel transformer factory. 첫 transform 호출 시점에 require('@babel/core')
- * + babel.config.js 평가. Babel options (preset / plugins / parser flag) 는
- * 한 번 빌드 후 캐시. Reanimated 같은 plugin 의 require.resolve 는 user 의
+ * + babel.config.js 평가 + inline config (zts.config.ts `transformer.babel`)
+ * concat. Babel options 한 번 빌드 후 캐시. plugin require.resolve 는 user 의
  * node_modules 우선 (Bun deep-link symlink 미생성 케이스 대비 fallback 명시).
  */
 export function createBabelTransformer(
   projectRoot: string,
+  inline?: InlineBabelConfig,
 ): (code: string, filename: string) => string | null {
   let babel: BabelInstance | null = null;
   let babelOptions: BabelTransformOptions | null = null;
@@ -154,6 +174,21 @@ export function createBabelTransformer(
         return requireFromCli.resolve(name);
       }
     }
+    function resolveEntry(entry: BabelEntry): unknown {
+      if (Array.isArray(entry)) {
+        try {
+          // 2nd/3rd 요소 (options + instanceName) 그대로 보존 — slice spread.
+          return [resolvePluginPath(entry[0]), ...entry.slice(1)];
+        } catch {
+          return entry;
+        }
+      }
+      try {
+        return resolvePluginPath(entry);
+      } catch {
+        return entry;
+      }
+    }
     babel = (() => {
       try {
         return projectRequire("@babel/core") as BabelInstance;
@@ -163,35 +198,35 @@ export function createBabelTransformer(
     })();
 
     const configPath = join(projectRoot, "babel.config.js");
-    const config = projectRequire(configPath) as BabelConfigModule;
-    const plugins: unknown[] = config?.plugins ?? [];
+    const fileConfig = existsSync(configPath)
+      ? (projectRequire(configPath) as BabelConfigModule)
+      : { plugins: [] };
+    const filePlugins: unknown[] = fileConfig?.plugins ?? [];
+    const inlinePlugins: unknown[] = inline?.plugins ?? [];
 
     const customPlugins: unknown[] = [];
-    for (const plugin of plugins) {
-      const name =
-        typeof plugin === "string" ? plugin : Array.isArray(plugin) ? (plugin[0] as string) : "";
-      if (typeof name === "string" && !isZtsNativePlugin(name)) {
-        if (Array.isArray(plugin)) {
-          try {
-            customPlugins.push([
-              resolvePluginPath(plugin[0] as string),
-              ...(plugin.slice(1) as unknown[]),
-            ]);
-          } catch {
-            customPlugins.push(plugin);
-          }
-        } else {
-          try {
-            customPlugins.push(resolvePluginPath(name));
-          } catch {
-            customPlugins.push(name);
-          }
+    for (const plugin of [...filePlugins, ...inlinePlugins]) {
+      const name = entryName(plugin);
+      if (typeof name === "string" && name !== "" && !isZtsNativePlugin(name)) {
+        customPlugins.push(resolveEntry(plugin as BabelEntry));
+      }
+    }
+
+    // ZTS 가 항상 추가하는 preset (TS strip) + 사용자 inline preset.
+    const customPresets: unknown[] = [
+      ["@babel/preset-typescript", { isTSX: true, allExtensions: true }],
+    ];
+    if (inline?.presets) {
+      for (const preset of inline.presets) {
+        const name = entryName(preset);
+        if (typeof name === "string" && name !== "" && !isZtsNativePlugin(name)) {
+          customPresets.push(resolveEntry(preset as BabelEntry));
         }
       }
     }
 
     babelOptions = {
-      presets: [["@babel/preset-typescript", { isTSX: true, allExtensions: true }]],
+      presets: customPresets,
       plugins: customPlugins,
       babelrc: false,
       configFile: false,
@@ -235,9 +270,9 @@ export function createBabelPlugin(config: PluginConfig): ZtsPlugin {
   return {
     name: "zts:react-native:babel-transform",
     setup(build) {
-      if (!detectCustomPlugins(config.projectRoot)) return;
+      if (!detectCustomPlugins(config.projectRoot, config.inlineBabel)) return;
 
-      const transformer = createBabelTransformer(config.projectRoot);
+      const transformer = createBabelTransformer(config.projectRoot, config.inlineBabel);
 
       const extPatterns = config.sourceExts.map((e) => e.replace(/^\./, "")).join("|");
       const sourcePattern = new RegExp(`\\.(${extPatterns})$`);

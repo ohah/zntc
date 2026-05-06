@@ -13,8 +13,6 @@ const UNSUPPORTED_FIELDS = [
   // graph-bundler (Metro 호환) 전용 — zts NAPI build 는 미수용.
   ["transformer", "inlineRequires"],
   ["transformer", "minifier"],
-  ["transformer", "babel"],
-  ["serializer", "prelude"],
   ["serializer", "bundleType"],
   ["serializer", "getModulesRunBeforeMainModule"],
   ["serializer", "getPolyfills"],
@@ -93,6 +91,8 @@ export function buildRnDevServerInput(opts, config) {
         assetExts: resolver.assetExts ?? undefined,
         polyfills: serializer.polyfills ?? undefined,
         extraVars: serializer.extraVars ?? undefined,
+        prelude: serializer.prelude ?? undefined,
+        babel: transformer.babel ?? undefined,
       },
     },
     port: opts.port ?? server.port ?? 8081,
