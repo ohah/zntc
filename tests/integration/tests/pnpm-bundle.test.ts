@@ -31,4 +31,36 @@ describe('pnpm/bun farm symlink — bundle integration', () => {
       await fixture.cleanup();
     }
   });
+
+  test('scoped package farm symlink resolves and inlines source', async () => {
+    const fixture = await createPnpmFarmFixture({
+      files: {
+        'src/index.ts': `import { greet } from '@scope/foo';\nconsole.log(greet('scoped'));\n`,
+        'package.json': JSON.stringify({ name: 'pnpm-app', version: '0.0.0', type: 'module' }),
+      },
+      packages: {
+        '@scope/foo@1.0.0': {
+          'package.json': JSON.stringify({
+            name: '@scope/foo',
+            version: '1.0.0',
+            main: './index.js',
+          }),
+          'index.js': `export function greet(name) { return 'scoped hello, ' + name + '!'; }\n`,
+        },
+      },
+    });
+
+    try {
+      const outFile = join(fixture.dir, 'out.js');
+      const result = await runZts(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
+
+      expect(result.exitCode).toBe(0);
+
+      const bundle = readFileSync(outFile, 'utf-8');
+      expect(bundle).toContain('scoped hello, ');
+      expect(bundle).toContain('scoped');
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });

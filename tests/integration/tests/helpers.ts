@@ -75,25 +75,25 @@ export async function createReactStubFixture(
   });
 }
 
-/// pnpm/bun `.pnpm/` farm symlink 레이아웃 fixture (unscoped 1-hop).
+/// pnpm/bun `.pnpm/` farm symlink 레이아웃 fixture (1-hop, scoped 포함).
+/// `@scope/x` 의 farm dir 은 `/` → `+` 로 escape (실 pnpm/bun 패턴).
 export async function createPnpmFarmFixture(opts: {
   files: Record<string, string>;
   packages: Record<string, Record<string, string>>;
 }): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const parsed = Object.entries(opts.packages).map(([key, files]) => {
-    if (key.startsWith('@')) {
-      throw new Error(`scoped package not supported: '${key}'`);
-    }
-    const at = key.indexOf('@');
-    if (at < 0) {
+    const at = key.lastIndexOf('@');
+    if (at <= 0) {
       throw new Error(`bad package key '${key}' — expected name@version`);
     }
-    return { name: key.slice(0, at), version: key.slice(at + 1), files };
+    const name = key.slice(0, at);
+    const version = key.slice(at + 1);
+    return { name, version, farmDirName: `${name.replace('/', '+')}@${version}`, files };
   });
 
   const allFiles: Record<string, string> = { ...opts.files };
-  for (const { name, version, files } of parsed) {
-    const prefix = `.pnpm/${name}@${version}/node_modules/${name}`;
+  for (const { name, farmDirName, files } of parsed) {
+    const prefix = `.pnpm/${farmDirName}/node_modules/${name}`;
     for (const [rel, content] of Object.entries(files)) {
       allFiles[`${prefix}/${rel}`] = content;
     }
@@ -102,10 +102,17 @@ export async function createPnpmFarmFixture(opts: {
   const fixture = await createFixture(allFiles);
   const nmDir = join(fixture.dir, 'node_modules');
   await mkdir(nmDir, { recursive: true });
+
+  const scopes = new Set(
+    parsed.filter(({ name }) => name.includes('/')).map(({ name }) => name.split('/')[0]),
+  );
+  await Promise.all([...scopes].map((s) => mkdir(join(nmDir, s), { recursive: true })));
+
   await Promise.all(
-    parsed.map(({ name, version }) =>
-      symlink(join('..', '.pnpm', `${name}@${version}`, 'node_modules', name), join(nmDir, name)),
-    ),
+    parsed.map(({ name, farmDirName }) => {
+      const ups = name.includes('/') ? '../..' : '..';
+      return symlink(join(ups, '.pnpm', farmDirName, 'node_modules', name), join(nmDir, name));
+    }),
   );
 
   return fixture;
