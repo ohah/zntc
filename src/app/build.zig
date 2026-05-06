@@ -182,6 +182,16 @@ pub fn buildApp(allocator: std.mem.Allocator, opts: AppBuildOptions) !usize {
             try writeOutput(allocator, outdir, out.path, out.contents);
             try addReserved(allocator, &reserved, &reserved_keys, out.path);
             output_count += 1;
+            // chunk 별 sourcemap — eager / lazy 두 분기 모두 OutputFile.getSourceMapJSON
+            // 로 통합 처리 (caller 소유 slice 반환, free 책임).
+            if (try out.getSourceMapJSON(allocator)) |sm| {
+                defer allocator.free(sm);
+                const map_path = try std.fmt.allocPrint(allocator, "{s}.map", .{out.path});
+                defer allocator.free(map_path);
+                try writeOutput(allocator, outdir, map_path, sm);
+                try addReserved(allocator, &reserved, &reserved_keys, map_path);
+                output_count += 1;
+            }
         }
     } else {
         try writeOutput(allocator, outdir, "bundle.js", result.output);

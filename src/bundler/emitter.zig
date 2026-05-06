@@ -246,6 +246,15 @@ pub const OutputFile = struct {
         if (self.sourcemap) |sm| allocator.free(sm);
         if (self.sourcemap_builder) |sm| sm.destroy(allocator);
     }
+
+    /// eager (`sourcemap`) / lazy (`sourcemap_builder`) 두 분기의 sourcemap JSON
+    /// 을 caller 소유 slice 로 통합 반환. caller 가 free 책임. NAPI / CLI / dev
+    /// server 가 OutputFile 의 두 필드 분기를 각자 처리하지 않게 캡슐화.
+    pub fn getSourceMapJSON(self: OutputFile, allocator: std.mem.Allocator) !?[]const u8 {
+        if (self.sourcemap) |sm| return try allocator.dupe(u8, sm);
+        if (self.sourcemap_builder) |b| return try b.generateJSONOwned(self.path);
+        return null;
+    }
 };
 
 /// 번들 출력 결과. output + 소스맵.

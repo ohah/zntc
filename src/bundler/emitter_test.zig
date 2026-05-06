@@ -584,6 +584,124 @@ test "emitChunks: sourcemap.lazy=true → builder 이관, JSON 은 caller 시점
     try std.testing.expect(std.mem.indexOf(u8, json, "\"mappings\":") != null);
 }
 
+test "emitChunks: sourcemap.mode=linked 시 contents 끝에 //# sourceMappingURL 주석 + .map basename (#2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{ .sourcemap = .{ .enable = true, .mode = .linked } }, null);
+    defer {
+        for (outputs) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    // contents 에 sourceMappingURL=index.js.map 주석 (basename only).
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "//# sourceMappingURL=index.js.map") != null);
+    try std.testing.expect(outputs[0].sourcemap != null);
+    // sourcemap JSON 의 "file" 필드도 placeholder 없이 final filename.
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].sourcemap.?, "\"file\":\"index.js\"") != null);
+}
+
+test "emitChunks: sourcemap.mode=external 시 .map 파일은 있지만 주석 없음 (#2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{ .sourcemap = .{ .enable = true, .mode = .external } }, null);
+    defer {
+        for (outputs) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expect(outputs[0].sourcemap != null);
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "sourceMappingURL") == null);
+}
+
+test "emitChunks: lazy + inline_ 조합 시 lazy 무시하고 eager 강제 (silent skip 회귀 방지, #2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer cg.deinit();
+
+    // 사용자가 lazy=true + mode=inline_ 동시 요청 — inline 의 base64 embed 가 emit
+    // 단계에 JSON 을 필요로 하므로 lazy 무시하고 eager 강제. silent broken 회피.
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{ .sourcemap = .{ .enable = true, .mode = .inline_, .lazy = true } }, null);
+    defer {
+        for (outputs) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(outputs);
+    }
+
+    // contents 에 base64 embed 가 정상 들어가야 함.
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "//# sourceMappingURL=data:application/json;base64,") != null);
+    // 외부 .map 미생성 + lazy builder 도 없음 (eager 로 처리 후 inline 분기가 free).
+    try std.testing.expect(outputs[0].sourcemap == null);
+    try std.testing.expect(outputs[0].sourcemap_builder == null);
+}
+
+test "emitChunks: sourcemap.mode=inline_ 시 contents 에 base64 embed + sourcemap 필드 null (#2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{ .sourcemap = .{ .enable = true, .mode = .inline_ } }, null);
+    defer {
+        for (outputs) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "//# sourceMappingURL=data:application/json;base64,") != null);
+    // inline 은 외부 .map 파일 미생성.
+    try std.testing.expect(outputs[0].sourcemap == null);
+}
+
 test "emitChunks: lazy 와 eager 의 JSON 은 바이트 동등 (#2654)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
