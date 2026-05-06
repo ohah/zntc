@@ -5,19 +5,30 @@ description: ZTS와 다른 도구들의 성능 비교
 
 import BenchmarkCharts from '../../../components/BenchmarkCharts.tsx';
 
-ZTS의 트랜스파일/번들 성능을 esbuild, SWC, Bun 등과 비교합니다.
+ZTS의 트랜스파일/번들 성능을 esbuild, SWC, Bun, Rolldown, Rspack 등과 비교합니다.
 
 ## 측정 환경
-- **Platform**: macOS Apple Silicon (M-series)
-- **반복 횟수**: 5회 평균
-- **방법**: CLI 바이너리 직접 실행 (npx 오버헤드 제거)
+
+- **Platform**: `darwin arm64`
+- **기준 일시**: 2026-05-06
+- **CLI**: `bench.ts` median 5회, 직접 CLI 바이너리 실행 (npx 오버헤드 제거)
+- **NAPI / WASM / CLI**: `napi-bench.ts` warmup 3회 + median 10회
+- **Bundle perf**: `bundle-perf.ts` warmup 5회 + median 20회, CI와 같은 ZTS/Rolldown/Rspack same-run 비교
+- **Pipeline**: `pipeline.ts` median 5회, profile total 기준
+
+차트는 낮을수록 빠른 값이며, 막대 끝 숫자는 median wall time입니다.
 
 <BenchmarkCharts client:only="react" />
 
 ## 측정 방법
 
-벤치마크 스크립트: `tests/benchmark/bench.ts`
-
 ```bash
-cd tests/benchmark && bun run bench.ts
+zig build -Doptimize=ReleaseFast
+zig build napi
+zig build wasm
+
+bun run tests/benchmark/bench.ts
+bun run tests/benchmark/napi-bench.ts
+bun run tests/benchmark/bundle-perf.ts --no-fail --output bundle-perf.json
+bun run tests/benchmark/pipeline.ts
 ```

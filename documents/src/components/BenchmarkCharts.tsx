@@ -1,43 +1,48 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactEChartsCore from "echarts-for-react/lib/core";
 import * as echarts from "echarts/core";
 import { BarChart } from "echarts/charts";
-import {
-  TooltipComponent,
-  GridComponent,
-  LegendComponent,
-} from "echarts/components";
+import { TooltipComponent, GridComponent, LegendComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
 import benchmarkData from "../data/benchmark-data.json";
 
-echarts.use([
-  BarChart,
-  TooltipComponent,
-  GridComponent,
-  LegendComponent,
-  CanvasRenderer,
-]);
+echarts.use([BarChart, TooltipComponent, GridComponent, LegendComponent, CanvasRenderer]);
 
-const TOOL_COLORS: Record<string, string> = {
+const SERIES_COLORS: Record<string, string> = {
   ZTS: "#f7a41d",
   esbuild: "#eab308",
   SWC: "#ef4444",
   Bun: "#a855f7",
-  oxc: "#f97316",
+  "oxc (node)": "#f97316",
+  Rolldown: "#14b8a6",
+  Rspack: "#f59e0b",
   rolldown: "#14b8a6",
   rspack: "#f59e0b",
   webpack: "#06b6d4",
+  "NAPI (.node)": "#22c55e",
+  "WASM (.wasm)": "#38bdf8",
+  "CLI (subprocess)": "#f97316",
+  simple: "#60a5fa",
+  expr: "#f472b6",
+  string: "#34d399",
+  object: "#fbbf24",
+  react: "#a78bfa",
 };
-
-const PIPELINE_COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa"];
 
 type BenchEntry = {
   tool: string;
   scale: string;
-  avgMs: number;
-  minMs: number;
-  maxMs: number;
+  medianMs: number;
+  minMs?: number;
+  maxMs?: number;
+  p95Ms?: number;
+};
+
+type ChartDefinition = {
+  title: string;
+  description: string;
+  entries: BenchEntry[];
 };
 
 function useIsDark(): boolean {
@@ -59,47 +64,86 @@ function useIsDark(): boolean {
   return isDark;
 }
 
-function buildGroupedBarOption(
-  title: string,
-  entries: BenchEntry[],
-  isDark: boolean,
-) {
-  const scales = [...new Set(entries.map((e) => e.scale))];
-  const tools = [...new Set(entries.map((e) => e.tool))];
+function uniqueInOrder(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function formatMs(value: number): string {
+  if (!Number.isFinite(value)) return "-";
+  if (value === 0) return "0";
+  if (value < 1) {
+    const us = value * 1000;
+    return `${us >= 100 ? us.toFixed(0) : us.toFixed(1)}us`;
+  }
+  if (value < 10) return `${value.toFixed(2)}ms`;
+  if (value < 100) return `${value.toFixed(1)}ms`;
+  return `${value.toFixed(0)}ms`;
+}
+
+function chartHeight(entries: BenchEntry[]): number {
+  const scaleCount = uniqueInOrder(entries.map((entry) => entry.scale)).length;
+  const toolCount = uniqueInOrder(entries.map((entry) => entry.tool)).length;
+  return Math.max(320, 112 + scaleCount * Math.max(48, toolCount * 18));
+}
+
+function buildHorizontalBarOption(entries: BenchEntry[], isDark: boolean) {
+  const scales = uniqueInOrder(entries.map((entry) => entry.scale));
+  const tools = uniqueInOrder(entries.map((entry) => entry.tool));
 
   const textColor = isDark ? "#e5e7eb" : "#374151";
-  const axisLineColor = isDark ? "#4b5563" : "#d1d5db";
+  const axisLineColor = isDark ? "#57534e" : "#d6d3d1";
+  const gridLineColor = isDark ? "#2a2422" : "#e7e5e4";
 
   const series = tools.map((tool) => ({
     name: tool,
     type: "bar" as const,
-    barGap: "10%",
+    barMaxWidth: 14,
+    barGap: "16%",
     emphasis: { focus: "series" as const },
-    itemStyle: { color: TOOL_COLORS[tool] || "#888" },
+    itemStyle: {
+      color: SERIES_COLORS[tool] ?? "#78716c",
+      borderRadius: [0, 5, 5, 0],
+    },
+    label: {
+      show: true,
+      position: "right" as const,
+      color: textColor,
+      fontSize: 11,
+      formatter: ({ value }: { value: number | null }) =>
+        typeof value === "number" ? formatMs(value) : "",
+    },
     data: scales.map((scale) => {
-      const entry = entries.find((e) => e.tool === tool && e.scale === scale);
-      return entry ? entry.avgMs : 0;
+      const entry = entries.find((item) => item.tool === tool && item.scale === scale);
+      return entry ? Number(entry.medianMs.toFixed(4)) : null;
     }),
   }));
 
   return {
-    title: {
-      text: title,
-      left: "center",
-      textStyle: { color: textColor, fontSize: 16 },
-    },
+    animationDuration: 450,
     tooltip: {
       trigger: "axis" as const,
+      confine: true,
       axisPointer: { type: "shadow" as const },
-      formatter: (params: Array<{ seriesName: string; axisValue: string; value: number; marker: string }>) => {
-        let html = `<strong>${params[0].axisValue}</strong><br/>`;
-        for (const p of params) {
+      formatter: (
+        params: Array<{
+          seriesName: string;
+          axisValue: string;
+          value: number | null;
+          marker: string;
+        }>,
+      ) => {
+        let html = `<strong>${params[0]?.axisValue ?? ""}</strong><br/>`;
+        for (const param of params) {
+          if (typeof param.value !== "number") continue;
           const entry = entries.find(
-            (e) => e.tool === p.seriesName && e.scale === p.axisValue,
+            (item) => item.tool === param.seriesName && item.scale === param.axisValue,
           );
-          html += `${p.marker} ${p.seriesName}: <strong>${p.value}ms</strong>`;
-          if (entry) {
-            html += ` <span style="color:#999">(${entry.minMs}-${entry.maxMs}ms)</span>`;
+          html += `${param.marker} ${param.seriesName}: <strong>${formatMs(param.value)}</strong>`;
+          if (entry?.minMs !== undefined && entry.maxMs !== undefined) {
+            html += ` <span style="color:#8a8580">(${formatMs(entry.minMs)}-${formatMs(entry.maxMs)})</span>`;
+          }
+          if (entry?.p95Ms !== undefined) {
+            html += ` <span style="color:#8a8580">p95 ${formatMs(entry.p95Ms)}</span>`;
           }
           html += "<br/>";
         }
@@ -107,140 +151,113 @@ function buildGroupedBarOption(
       },
     },
     legend: {
-      top: 30,
-      textStyle: { color: textColor },
+      type: "scroll" as const,
+      top: 0,
+      left: 0,
+      right: 0,
+      itemWidth: 18,
+      itemHeight: 10,
+      textStyle: { color: textColor, fontSize: 12 },
     },
     grid: {
-      left: "3%",
-      right: "4%",
-      bottom: "3%",
-      top: 80,
-      containLabel: true,
+      left: 160,
+      right: 78,
+      bottom: 28,
+      top: 52,
+      containLabel: false,
     },
     xAxis: {
-      type: "category" as const,
-      data: scales,
-      axisLabel: { color: textColor, fontSize: 11 },
+      type: "value" as const,
+      name: "median wall time",
+      nameLocation: "middle" as const,
+      nameGap: 28,
+      nameTextStyle: { color: textColor, fontSize: 11 },
+      axisLabel: {
+        color: textColor,
+        formatter: (value: number) => formatMs(value),
+      },
       axisLine: { lineStyle: { color: axisLineColor } },
+      splitLine: { lineStyle: { color: gridLineColor } },
     },
     yAxis: {
-      type: "value" as const,
-      name: "ms",
-      nameTextStyle: { color: textColor },
-      axisLabel: { color: textColor },
+      type: "category" as const,
+      inverse: true,
+      data: scales,
+      axisLabel: {
+        color: textColor,
+        fontSize: 12,
+        width: 145,
+        overflow: "break" as const,
+      },
       axisLine: { lineStyle: { color: axisLineColor } },
-      splitLine: { lineStyle: { color: isDark ? "#374151" : "#e5e7eb" } },
+      axisTick: { show: false },
     },
     series,
   };
 }
 
-function buildPipelineOption(isDark: boolean) {
-  const { labels, data } = benchmarkData.results.pipeline;
-  const scaleKeys = Object.keys(data) as Array<keyof typeof data>;
+function ChartPanel({ chart, isDark }: { chart: ChartDefinition; isDark: boolean }) {
+  const option = useMemo(() => buildHorizontalBarOption(chart.entries, isDark), [chart.entries, isDark]);
 
-  const textColor = isDark ? "#e5e7eb" : "#374151";
-  const axisLineColor = isDark ? "#4b5563" : "#d1d5db";
-
-  const series = labels.map((label, i) => ({
-    name: label,
-    type: "bar" as const,
-    stack: "pipeline",
-    emphasis: { focus: "series" as const },
-    itemStyle: { color: PIPELINE_COLORS[i] },
-    data: scaleKeys.map((key) => data[key][i]),
-  }));
-
-  return {
-    title: {
-      text: "ZTS Pipeline Profile (us)",
-      left: "center",
-      textStyle: { color: textColor, fontSize: 16 },
-    },
-    tooltip: {
-      trigger: "axis" as const,
-      axisPointer: { type: "shadow" as const },
-      formatter: (params: Array<{ seriesName: string; value: number; marker: string; axisValue: string }>) => {
-        let html = `<strong>${params[0].axisValue}</strong><br/>`;
-        let total = 0;
-        for (const p of params) {
-          html += `${p.marker} ${p.seriesName}: <strong>${p.value}us</strong><br/>`;
-          total += p.value;
-        }
-        html += `<br/><strong>Total: ${total}us (${(total / 1000).toFixed(2)}ms)</strong>`;
-        return html;
-      },
-    },
-    legend: {
-      top: 30,
-      textStyle: { color: textColor },
-    },
-    grid: {
-      left: "3%",
-      right: "4%",
-      bottom: "3%",
-      top: 80,
-      containLabel: true,
-    },
-    xAxis: {
-      type: "category" as const,
-      data: scaleKeys,
-      axisLabel: { color: textColor },
-      axisLine: { lineStyle: { color: axisLineColor } },
-    },
-    yAxis: {
-      type: "value" as const,
-      name: "us",
-      nameTextStyle: { color: textColor },
-      axisLabel: { color: textColor },
-      axisLine: { lineStyle: { color: axisLineColor } },
-      splitLine: { lineStyle: { color: isDark ? "#374151" : "#e5e7eb" } },
-    },
-    series,
-  };
+  return (
+    <section className="not-content overflow-hidden rounded-lg border border-surface-200 bg-white shadow-sm dark:border-surface-800 dark:bg-surface-950/70">
+      <div className="border-b border-surface-200 px-4 py-3 dark:border-surface-800">
+        <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">{chart.title}</h2>
+        <p className="mt-1 text-sm leading-6 text-neutral-600 dark:text-neutral-400">{chart.description}</p>
+      </div>
+      <div className="overflow-x-auto px-2 py-4">
+        <ReactEChartsCore
+          echarts={echarts}
+          option={option}
+          style={{ height: chartHeight(chart.entries), minWidth: 720, width: "100%" }}
+          lazyUpdate
+        />
+      </div>
+    </section>
+  );
 }
 
 export default function BenchmarkCharts() {
   const isDark = useIsDark();
-
-  const transpileOption = buildGroupedBarOption(
-    "Transpile Performance",
-    benchmarkData.results.transpile,
-    isDark,
-  );
-
-  const bundleOption = buildGroupedBarOption(
-    "Bundle Performance",
-    benchmarkData.results.bundle,
-    isDark,
-  );
-
-  const pipelineOption = buildPipelineOption(isDark);
-
-  const chartStyle = { height: 400, width: "100%" };
+  const charts: ChartDefinition[] = [
+    {
+      title: "CLI Transpile",
+      description: "Single-file TypeScript transpilation through direct CLI binaries.",
+      entries: benchmarkData.results.transpileCli,
+    },
+    {
+      title: "CLI Bundle",
+      description: "Small to large deterministic module graphs through direct CLI binaries.",
+      entries: benchmarkData.results.bundleCli,
+    },
+    {
+      title: "NAPI vs WASM vs CLI",
+      description: "Public in-process bindings compared with subprocess CLI startup cost.",
+      entries: benchmarkData.results.napiWasmCli,
+    },
+    {
+      title: "Bundle Perf CI Matrix",
+      description: "Same-run CI-style wall time comparison for ZTS, Rolldown, and Rspack.",
+      entries: benchmarkData.results.bundlePerf,
+    },
+    {
+      title: "ZTS Pipeline Patterns",
+      description: "ZTS profile totals across generated simple, expression-heavy, string-heavy, object, and React-like sources.",
+      entries: benchmarkData.results.pipelineTotal,
+    },
+  ];
 
   return (
-    <div className="flex flex-col gap-8">
-      <ReactEChartsCore
-        echarts={echarts}
-        option={transpileOption}
-        style={chartStyle}
-        lazyUpdate
-      />
-      <ReactEChartsCore
-        echarts={echarts}
-        option={bundleOption}
-        style={chartStyle}
-        lazyUpdate
-      />
-      <ReactEChartsCore
-        echarts={echarts}
-        option={pipelineOption}
-        style={chartStyle}
-        lazyUpdate
-      />
+    <div className="not-content flex flex-col gap-5">
+      <div className="rounded-lg border border-surface-200 bg-white px-4 py-3 text-sm leading-6 text-neutral-700 shadow-sm dark:border-surface-800 dark:bg-surface-950/70 dark:text-neutral-300">
+        <strong className="text-neutral-900 dark:text-neutral-100">Measurement:</strong> {benchmarkData.platform}, {benchmarkData.date}.
+        CLI charts use median wall time. Lower is better.
+      </div>
+      {charts.map((chart) => (
+        <ChartPanel key={chart.title} chart={chart} isDark={isDark} />
+      ))}
       <p className="text-center text-sm text-neutral-500 dark:text-neutral-400">
-        Measured on {benchmarkData.platform} | {benchmarkData.date} | {benchmarkData.iterations} iterations avg
+        CLI iterations: {benchmarkData.runs.cli.iterations}. NAPI/WASM warmup: {benchmarkData.runs.napi.warmup}, iterations: {benchmarkData.runs.napi.iterations}. Bundle-perf warmup: {benchmarkData.runs.bundlePerf.warmup}, iterations: {benchmarkData.runs.bundlePerf.iterations}.
       </p>
     </div>
   );

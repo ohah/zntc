@@ -13,6 +13,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { computeMetricStats, formatMetric, type MetricStats } from './stats';
@@ -22,6 +23,7 @@ const WARMUP = 3;
 const ITERATIONS = 10;
 const IS_WINDOWS = process.platform === 'win32';
 const ZTS_BIN_NAME = IS_WINDOWS ? 'zts.exe' : 'zts';
+const WASM_WRAPPER_URL = pathToFileURL(resolve(ROOT, 'packages/wasm/index.ts')).href;
 
 // Windows 경로의 백슬래시는 템플릿 문자열에 그대로 삽입하면 이스케이프 시퀀스로
 // 해석돼 잘못된 경로가 됨. JSON.stringify로 감싸 literal string으로 안전하게 주입.
@@ -58,12 +60,11 @@ const NAPI_PATH = ${q(resolve(ROOT, 'zig-out/lib/zts.node'))};
 const native = require(NAPI_PATH);
 
 const source = readFileSync(${q(sourceFile)}, "utf8");
-const flags = (1 << 16) | (1 << 22);
 const WARMUP = ${WARMUP};
 const ITERATIONS = ${ITERATIONS};
 
 function run() {
-  native.transpile(source, "input.ts", flags, 0, "", "", "");
+  native.transpile(source, "input.ts", "{}");
 }
 
 for (let i = 0; i < WARMUP; i++) run();
@@ -86,47 +87,18 @@ console.log(JSON.stringify({ samplesUs: times }));
 import { readFileSync } from "node:fs";
 
 const WASM_PATH = ${q(resolve(ROOT, 'zig-out/bin/zts.wasm'))};
-const encoder = new TextEncoder();
+const WASM_WRAPPER_URL = ${q(WASM_WRAPPER_URL)};
+const { initSync, transpile } = await import(WASM_WRAPPER_URL);
 
 const wasmBytes = readFileSync(WASM_PATH);
-let memory;
-const imports = {
-  wasi_snapshot_preview1: {
-    fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr) {
-      new DataView(memory.buffer).setUint32(nwritten_ptr, 0, true);
-      return 0;
-    },
-    fd_read: () => 8, fd_seek: () => 8, fd_pwrite: () => 8, fd_filestat_get: () => 8,
-    random_get(buf_ptr, buf_len) {
-      crypto.getRandomValues(new Uint8Array(memory.buffer, buf_ptr, buf_len));
-      return 0;
-    },
-  },
-};
-const mod = new WebAssembly.Module(wasmBytes);
-const instance = new WebAssembly.Instance(mod, imports);
-memory = instance.exports.memory;
-const w = instance.exports;
+initSync(wasmBytes);
 
 const source = readFileSync(${q(sourceFile)}, "utf8");
-const flags = (1 << 16) | (1 << 22);
 const WARMUP = ${WARMUP};
 const ITERATIONS = ${ITERATIONS};
 
 function run() {
-  const bytes = encoder.encode(source);
-  const srcPtr = w.alloc(bytes.length);
-  new Uint8Array(w.memory.buffer, srcPtr, bytes.length).set(bytes);
-  const fileBytes = encoder.encode("input.ts");
-  const filePtr = w.alloc(fileBytes.length);
-  new Uint8Array(w.memory.buffer, filePtr, fileBytes.length).set(fileBytes);
-  const packed = w.transpile(srcPtr, bytes.length, filePtr, fileBytes.length, flags, 0, 0, 0, 0, 0, 0, 0);
-  w.dealloc(srcPtr, bytes.length);
-  w.dealloc(filePtr, fileBytes.length);
-  const outPtr = Number(packed >> 32n);
-  const outLen = Number(packed & 0xffffffffn);
-  if (outPtr === 0) throw new Error("WASM failed");
-  w.dealloc(outPtr, outLen);
+  transpile(source, { filename: "input.ts" });
 }
 
 for (let i = 0; i < WARMUP; i++) run();

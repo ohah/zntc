@@ -18,9 +18,32 @@ function loadMermaid(): Promise<MermaidApi> {
   mermaidPromise = import("mermaid").then(({ default: mermaid }) => {
     mermaid.initialize({
       startOnLoad: false,
-      theme: "default",
+      theme: "base",
       securityLevel: "loose",
       fontFamily: "var(--sl-font, sans-serif)",
+      themeVariables: {
+        primaryColor: "#fff7ed",
+        primaryBorderColor: "#f7a41d",
+        primaryTextColor: "#431407",
+        secondaryColor: "#ffedd5",
+        secondaryBorderColor: "#fb923c",
+        tertiaryColor: "#fafaf9",
+        tertiaryBorderColor: "#d6d3d1",
+        clusterBkg: "#1c1816",
+        clusterBorder: "#3a3432",
+        titleColor: "#f5f5f4",
+        edgeLabelBackground: "#141110",
+        lineColor: "#f7a41d",
+        fontSize: "15px",
+      },
+      flowchart: {
+        htmlLabels: true,
+        curve: "basis",
+        nodeSpacing: 44,
+        rankSpacing: 58,
+        padding: 28,
+        useMaxWidth: true,
+      },
     });
     return mermaid;
   });
