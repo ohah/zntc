@@ -144,7 +144,10 @@ describe('withExpo — Expo 모듈 resolve (real node_modules)', () => {
     // node_modules/expo/src/winter/index.ts (또는 build/winter/index.js) 가 있어야 picked up.
     // tmp 안에 simulate — expo/build/winter/index.js 실파일 생성 + package.json.
     mkdirSync(join(dir, 'node_modules/expo/build/winter'), { recursive: true });
-    writeFileSync(join(dir, 'node_modules/expo/package.json'), '{"name":"expo","version":"55.0.0","main":"build/index.js"}');
+    writeFileSync(
+      join(dir, 'node_modules/expo/package.json'),
+      '{"name":"expo","version":"55.0.0","main":"build/index.js"}',
+    );
     writeFileSync(join(dir, 'node_modules/expo/build/winter/index.js'), '// winter');
 
     const config = withExpo({ root: dir });
