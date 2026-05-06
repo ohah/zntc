@@ -45,6 +45,11 @@ export const FLAG_REGISTRY = [
   { kind: 'bool', flag: '--watch', target: 'watch', aliases: ['-w'] },
   { kind: 'bool', flag: '--watch-json', target: 'watchJson', extra: { watch: true } },
   { kind: 'bool', flag: '--open', target: 'open' },
+  // RN CLI 호환 (#2605 audit P0)
+  { kind: 'bool', flag: '--reset-cache', target: 'resetCache' },
+  { kind: 'bool', flag: '--sourcemap-use-absolute-path', target: 'sourcemapUseAbsolutePath' },
+  // Metro UI 의 `--no-interactive` 호환 — terminal actions 비활성. RN CLI 호출 시.
+  { kind: 'bool', flag: '--no-interactive', target: 'noInteractive' },
   { kind: 'bool', flag: '--minify', target: 'minify' },
   { kind: 'bool', flag: '--minify-whitespace', target: 'minifyWhitespace' },
   { kind: 'bool', flag: '--minify-identifiers', target: 'minifyIdentifiers' },
@@ -105,6 +110,17 @@ export const FLAG_REGISTRY = [
   { kind: 'string', flag: '--rn-platform', target: 'rnPlatform', forms: ['equal'] },
   // #2540 PR #7 — RN preset 의 projectRoot. 기본 cwd, 사용자 monorepo root 지정 시 사용.
   { kind: 'string', flag: '--rn-project-root', target: 'rnProjectRoot', forms: ['equal'] },
+  // ─── RN CLI 호환 flag 매트릭스 (#2605 audit P0) ───
+  // `react-native bundle` / Metro CLI 의 standard flag 들 — `zts bundle --platform=react-native`
+  // 가 dropin 으로 동작하기 위한 호환 layer. zts 내부 옵션 (outfile 등) 과 별개로 받아 매핑.
+  { kind: 'string', flag: '--bundle-output', target: 'bundleOutput' },
+  { kind: 'string', flag: '--sourcemap-output', target: 'sourcemapOutput' },
+  { kind: 'string', flag: '--source-map-url', target: 'sourceMapUrl' },
+  { kind: 'string', flag: '--sourcemap-sources-root', target: 'sourcemapSourcesRoot' },
+  { kind: 'string', flag: '--assets-dest', target: 'assetsDest' },
+  { kind: 'string', flag: '--asset-catalog-dest', target: 'assetCatalogDest' },
+  { kind: 'string', flag: '--bundle-encoding', target: 'bundleEncoding' },
+  { kind: 'string', flag: '--unstable-transform-profile', target: 'unstableTransformProfile' },
   { kind: 'string', flag: '--source-root', target: 'sourceRoot', forms: ['equal'] },
   // #2159 — `--output-exports=auto|named|default|none` (Rollup output.exports 호환).
   { kind: 'string', flag: '--output-exports', target: 'outputExports', forms: ['equal'] },
@@ -147,6 +163,8 @@ export const FLAG_REGISTRY = [
   { kind: 'int', flag: '--port', target: 'port' },
   { kind: 'int', flag: '--log-limit', target: 'logLimit', forms: ['equal'] },
   { kind: 'int', flag: '--line-limit', target: 'lineLimit', forms: ['equal'] },
+  // RN CLI 호환 — `--max-workers N` (Metro). zts `--jobs` 와 의미 동일이므로 alias.
+  { kind: 'int', flag: '--max-workers', target: 'jobs', forms: ['equal'] },
 
   // ─── kind=string-default — bool 단독 시 default, `--key=val` 시 val ───
   { kind: 'string-default', flag: '--metafile', target: 'metafile', default: 'meta.json' },
@@ -166,12 +184,21 @@ export const FLAG_REGISTRY = [
   { kind: 'csv', flag: '--conditions', target: 'conditions', forms: ['equal'] },
   { kind: 'csv', flag: '--node-paths', target: 'nodePaths', forms: ['equal'] },
   { kind: 'csv', flag: '--profile', target: 'profile', forms: ['equal'] },
+  // RN CLI 호환 (#2605 audit P0) — Metro 의 camelCase flag.
+  { kind: 'csv', flag: '--watchFolders', target: 'rnWatchFolders' },
+  { kind: 'csv', flag: '--sourceExts', target: 'rnSourceExts' },
 
   // ─── kind=key-value — `--key:K=V` → opts[target][K]=V ───
   { kind: 'key-value', flag: '--define', target: 'define' },
   { kind: 'key-value', flag: '--alias', target: 'alias' },
   { kind: 'key-value', flag: '--loader', target: 'loader' },
   { kind: 'key-value', flag: '--global', target: 'globals' },
+  // RN CLI 호환 (#2605 audit P0) — Metro `--transform-option key=value` /
+  // `--resolver-option key=value`. 반복 지정 가능. zts 내부에는 직접 매핑되지
+  // 않지만 `runRnBundle` 이 collected dict 를 platform-specific 처리 (현재는
+  // 무시 — Metro graph-bundler 전용. 미지원 stderr 경고만).
+  { kind: 'key-value', flag: '--transform-option', target: 'transformOptions' },
+  { kind: 'key-value', flag: '--resolver-option', target: 'resolverOptions' },
 
   // ─── kind=ns-array — `--key:VALUE` → opts[target].push(VALUE) ───
   { kind: 'ns-array', flag: '--inject', target: 'inject' },

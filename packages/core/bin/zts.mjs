@@ -649,6 +649,35 @@ async function loadRnModule() {
   return rnModulePromise;
 }
 
+/**
+ * RN CLI 호환 미지원 영역 — 사용자가 `--asset-catalog-dest` 등을 지정해도 zts 가
+ * 처리 못 함을 한 줄 stderr 로 알림. silent drop 방지 (#2605 audit P0).
+ *
+ * graph-bundler 전용 + production asset 영역은 후속 PR (P0#2 — asset 복사) 에서
+ * 흡수 예정. 현재는 경고만.
+ */
+function warnRnBundleUnsupported(opts) {
+  // `--assets-dest` / `--asset-catalog-dest` 는 후속 PR (P0#2 — asset 복사) 에서
+  // 흡수 예정. `--sourcemap-sources-root` / `--sourcemap-use-absolute-path` 는
+  // zts core 의 sourcemap 생성 영역이라 caller-side 처리 어려움 — 미지원 유지.
+  // graph-bundler 전용 (`transform-option` / `resolver-option`) 도 미지원.
+  const map = {
+    assetsDest: '--assets-dest',
+    assetCatalogDest: '--asset-catalog-dest',
+    unstableTransformProfile: '--unstable-transform-profile',
+    transformOptions: '--transform-option',
+    resolverOptions: '--resolver-option',
+    sourcemapSourcesRoot: '--sourcemap-sources-root',
+    sourcemapUseAbsolutePath: '--sourcemap-use-absolute-path',
+  };
+  for (const [key, flag] of Object.entries(map)) {
+    const v = opts[key];
+    if (v === undefined) continue;
+    if (typeof v === 'object' && Object.keys(v).length === 0) continue;
+    process.stderr.write(`[zts:rn-bundle] ${flag} (zts 미지원, ignore)\n`);
+  }
+}
+
 async function runRnBundle(opts, _config) {
   const rn = await loadRnModule();
   const projectRoot = resolve(opts.rnProjectRoot ?? '.');
@@ -659,19 +688,57 @@ async function runRnBundle(opts, _config) {
     );
     process.exit(1);
   }
+  warnRnBundleUnsupported(opts);
   const rnPlatform = opts.rnPlatform === 'android' ? 'android' : 'ios';
+
+  // RN CLI 호환 — `--bundle-output X` 가 `--outfile X` 와 동일 의미. 양쪽 다 받되
+  // 명시 우선순위: --outfile > --bundle-output. 둘 다 미지정 시 in-memory.
+  const outfile = opts.outfile ?? opts.bundleOutput;
+
+  // `--sourcemap-output` 또는 `--source-map-url` 이 명시되면 sourcemap 자동 활성.
+  // bungae build.ts L38-79 와 동일 패턴 — caller-side write 로 path 처리.
+  const wantsSourcemap = Boolean(opts.sourcemap || opts.sourcemapOutput || opts.sourceMapUrl);
+
+  // outfile 명시 + 추가 path 옵션 (sourcemapOutput / sourceMapUrl / bundleEncoding)
+  // 이 있으면 caller-side 로 직접 write — NAPI write:true 회피.
+  const callerWrite = outfile && (opts.sourcemapOutput || opts.sourceMapUrl || opts.bundleEncoding);
+
   const result = await rn.bundleRn({
     entry,
     projectRoot,
     rnPlatform,
     dev: Boolean(opts.devMode),
-    sourcemap: Boolean(opts.sourcemap),
+    sourcemap: wantsSourcemap,
     minify:
       opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax || false,
-    override: opts.outfile ? { outfile: opts.outfile, write: true } : undefined,
+    extra: {
+      watchFolders: opts.rnWatchFolders ?? undefined,
+      sourceExts: opts.rnSourceExts ?? undefined,
+    },
+    override: outfile && !callerWrite ? { outfile, write: true } : undefined,
   });
+
+  // caller-side write — bundle / sourcemap path 분리 + URL override 적용.
+  if (callerWrite && result.errors.length === 0 && result.outputFiles?.length) {
+    const bundlePath = resolve(outfile);
+    const mapPath = opts.sourcemapOutput ? resolve(opts.sourcemapOutput) : `${bundlePath}.map`;
+    const sourceMappingURL = opts.sourceMapUrl ?? basename(mapPath);
+    const encoding = opts.bundleEncoding ?? 'utf-8';
+    mkdirSync(dirname(bundlePath), { recursive: true });
+    let bundleCode = result.outputFiles[0].text;
+    // sourcemap 이 emit 됐으면 `//# sourceMappingURL=` 주석 append.
+    if (wantsSourcemap && result.outputFiles[1]) {
+      bundleCode = `${bundleCode}\n//# sourceMappingURL=${sourceMappingURL}`;
+    }
+    writeFileSync(bundlePath, bundleCode, encoding);
+    if (wantsSourcemap && result.outputFiles[1]) {
+      mkdirSync(dirname(mapPath), { recursive: true });
+      writeFileSync(mapPath, result.outputFiles[1].text);
+    }
+  }
+
   if (result.errors.length === 0 && opts.logLevel !== 'silent') {
-    console.error(`[bundle] react-native ${rnPlatform} ${opts.outfile ?? '(in-memory)'}`);
+    console.error(`[bundle] react-native ${rnPlatform} ${outfile ?? '(in-memory)'}`);
   }
   return result;
 }

@@ -107,6 +107,16 @@ export interface RnBundleInput {
      * 외에 추가됨.
      */
     babel?: InlineBabelConfig;
+    /**
+     * Sourcemap 을 bundle 에 inline 으로 embed (Metro `serializer.inlineSourceMap`
+     * 호환). zts core 의 `sourcemapMode='inline'` 으로 forward.
+     */
+    inlineSourceMap?: boolean;
+    /**
+     * Sourcemap 의 `sourceRoot` field (Metro `sourcemapSourcesRoot` 호환). 절대
+     * 경로를 source 로 변환하는 base. zts core 의 `sourceRoot` 으로 forward.
+     */
+    sourceRoot?: string;
   };
   /** RN prelude 끝에 append 할 사용자 banner string. */
   bannerExtras?: string;
@@ -408,6 +418,12 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   }
   if (extra?.fallback && Object.keys(extra.fallback).length > 0) {
     preset.fallback = { ...extra.fallback };
+  }
+  if (extra?.inlineSourceMap === true) {
+    preset.sourcemapMode = 'inline';
+  }
+  if (extra?.sourceRoot) {
+    preset.sourceRoot = extra.sourceRoot;
   }
 
   // user override 는 마지막 — define / loader / alias 같은 dict 는 deep merge,

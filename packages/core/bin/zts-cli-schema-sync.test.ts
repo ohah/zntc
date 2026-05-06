@@ -328,6 +328,35 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
     // RN dev server (#2605) — CLI 만 노출
     '--host',
     '--host=',
+    // RN CLI 호환 flag 매트릭스 (#2605 audit P0) — `react-native bundle` / Metro
+    // CLI 의 standard flag 들. zts 내부 BuildOptions 와 1:1 매핑되지 않고 caller
+    // (runRnBundle) 에서 platform-specific 처리 — CLI 만 노출.
+    '--bundle-output',
+    '--bundle-output=',
+    '--sourcemap-output',
+    '--sourcemap-output=',
+    '--source-map-url',
+    '--source-map-url=',
+    '--sourcemap-sources-root',
+    '--sourcemap-sources-root=',
+    '--sourcemap-use-absolute-path',
+    '--assets-dest',
+    '--assets-dest=',
+    '--asset-catalog-dest',
+    '--asset-catalog-dest=',
+    '--bundle-encoding',
+    '--bundle-encoding=',
+    '--unstable-transform-profile',
+    '--unstable-transform-profile=',
+    '--reset-cache',
+    '--no-interactive',
+    '--max-workers=',
+    '--transform-option:*',
+    '--resolver-option:*',
+    '--watchFolders',
+    '--watchFolders=',
+    '--sourceExts',
+    '--sourceExts=',
     // jsx-dev — CLI shorthand for jsx="automatic-dev"
     '--jsx-dev',
     // drop — CLI 의 `--drop=console/debugger` 는 transpile 의 dropConsole/dropDebugger 와 매핑
@@ -437,10 +466,21 @@ describe('CLI flag ↔ BuildOptions / TranspileOptions schema sync', () => {
   });
 
   test('flag 명명 규칙 — 모든 CLI flag 는 lowercase + kebab + `:` namespace 만', () => {
+    // RN CLI / Metro 와의 호환을 위해 camelCase 를 그대로 받아야 하는 flag.
+    // `react-native bundle --watchFolders`, `--sourceExts` 가 RN CLI 의 정식
+    // 표기 — kebab-case 로 받으면 dropin 호환 깨짐. 본 PR (#2605 audit P0) 에서
+    // 의도적 예외 등록.
+    const camelCaseExceptions = new Set([
+      '--watchFolders',
+      '--watchFolders=',
+      '--sourceExts',
+      '--sourceExts=',
+    ]);
     const bad: string[] = [];
     for (const flag of cliFlags) {
       // single-letter short flag (`-o`, `-p`, `-w`) 는 별도 형식.
       if (/^-[a-z]$/.test(flag)) continue;
+      if (camelCaseExceptions.has(flag)) continue;
       const stripped = flag.replace(/^--/, '').replace(/[:=*]/g, '').replace(/\./g, '');
       if (!/^[a-z][a-z0-9-]*$/.test(stripped)) bad.push(flag);
     }

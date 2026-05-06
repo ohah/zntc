@@ -245,6 +245,28 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     const opts = buildRnBundleOptions(baseInput({ extra: { prelude: [] } }));
     expect(opts.runBeforeMain).toBeUndefined();
   });
+
+  test('extra.inlineSourceMap=true — sourcemapMode=inline (#2605 audit P1)', () => {
+    const opts = buildRnBundleOptions(baseInput({ extra: { inlineSourceMap: true } }));
+    expect(opts.sourcemapMode).toBe('inline');
+  });
+
+  test('extra.inlineSourceMap=false 또는 미지정 — sourcemapMode 미설정', () => {
+    const a = buildRnBundleOptions(baseInput({ extra: { inlineSourceMap: false } }));
+    expect(a.sourcemapMode).toBeUndefined();
+    const b = buildRnBundleOptions(baseInput({ extra: {} }));
+    expect(b.sourcemapMode).toBeUndefined();
+  });
+
+  test('extra.sourceRoot — Metro sourcemapSourcesRoot 호환', () => {
+    const opts = buildRnBundleOptions(baseInput({ extra: { sourceRoot: '/abs/proj' } }));
+    expect(opts.sourceRoot).toBe('/abs/proj');
+  });
+
+  test('extra.sourceRoot 미지정 — preset.sourceRoot 미설정', () => {
+    const opts = buildRnBundleOptions(baseInput());
+    expect(opts.sourceRoot).toBeUndefined();
+  });
 });
 
 describe('buildRnBundleOptions — dev mode 분기 (jsx / devMode / reactRefresh / collectModuleCodes)', () => {
