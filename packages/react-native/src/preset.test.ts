@@ -125,9 +125,13 @@ describe("buildRnBundleOptions — define / banner / footer / polyfills", () => 
     expect(opts.footer).toContain("DevLoadingView.hide");
   });
 
-  test("dev=false — footer 미정의", () => {
+  test("dev=false — footer 에 IIFE-wrapped __ZTS_RN_BUNDLER__ flag (DevLoadingView 없음)", () => {
     const opts = buildRnBundleOptions(baseInput({ dev: false }));
-    expect(opts.footer).toBeUndefined();
+    // prod 도 IIFE flag 는 emit (iOS 26.4 spec global trigger 회피 + identifier 표식 유지)
+    expect(opts.footer).toContain("__ZTS_RN_BUNDLER__");
+    expect(opts.footer).toMatch(/\(function\(g\)\{g\.__ZTS_RN_BUNDLER__/);
+    // dev-only 는 부재
+    expect(opts.footer).not.toContain("DevLoadingView.hide");
   });
 
   test("polyfills — resolveRnPolyfills miss 시 미정의 (caller 가 default 빈 배열)", () => {
