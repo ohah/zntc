@@ -7,6 +7,36 @@ description: ZTS 플러그인 시스템 사용법을 알아봅니다.
 
 ZTS 플러그인은 Rollup/Vite 호환 인터페이스로, `@zts/core`의 NAPI를 통해 in-process로 실행됩니다.
 
+## 호환성 요약
+
+| Surface | 상태 | 사용 경로 |
+| ------- | ---- | -------- |
+| esbuild-style `setup(build)` | 부분 지원 | `build.onResolve`, `build.onLoad`, `build.onTransform`, `build.onResolveContext`, `build.onAstFunction` |
+| Rollup/Vite-style `resolveId` / `load` / `transform` | 지원 | `vitePlugin()` wrapper 또는 config plugin |
+| output hook `renderChunk` / `generateBundle` | 부분 지원 | chunk 후처리, output 목록 접근 |
+| lifecycle `buildStart` / `buildEnd` / `closeBundle` | 지원 | `build()`와 `watch()` 초기 build/rebuild마다 호출 |
+| Rollup context `this.resolve()` / `this.emitFile()` | 미지원 | graph mutation이 필요한 별도 surface |
+| `buildSync()` + JS plugin | 미지원 | async `build()` / `watch()` 사용 |
+
+ZTS native worker는 module을 만날 때 NAPI threadsafe function으로 JS hook을 호출하고 응답을 기다립니다. 따라서 hook filter를 좁게 잡고, 단순 확장자 처리는 `loader` 옵션을 먼저 쓰는 편이 빠릅니다.
+
+## 실행 순서
+
+```text
+buildStart
+  -> resolveId / onResolve
+  -> load / onLoad
+  -> transform / onTransform
+  -> native link / tree-shake / emit
+  -> renderChunk
+  -> generateBundle
+buildEnd
+write
+closeBundle
+```
+
+`watch()`에서는 같은 순서가 초기 build와 매 rebuild마다 반복되고, `buildEnd` 이후 `onReady` 또는 `onRebuild` callback이 실행됩니다. 여러 플러그인이 같은 hook을 구현하면 등록 순서대로 처리됩니다.
+
 ## NAPI 플러그인
 
 ```typescript

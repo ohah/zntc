@@ -7,6 +7,36 @@ description: Learn how to use the ZTS plugin system.
 
 ZTS provides a Rollup/Vite-compatible plugin interface. Plugins are written in JS/TS and run in-process via C NAPI (via `@zts/core`).
 
+## Compatibility Summary
+
+| Surface | Status | Use |
+| ------- | ------ | --- |
+| esbuild-style `setup(build)` | Partial | `build.onResolve`, `build.onLoad`, `build.onTransform`, `build.onResolveContext`, `build.onAstFunction` |
+| Rollup/Vite-style `resolveId` / `load` / `transform` | Supported | `vitePlugin()` wrapper or config plugin |
+| output hooks `renderChunk` / `generateBundle` | Partial | chunk post-processing and output-list access |
+| lifecycle `buildStart` / `buildEnd` / `closeBundle` | Supported | called for `build()` and for each initial/rebuild cycle in `watch()` |
+| Rollup context `this.resolve()` / `this.emitFile()` | Unsupported | needs a separate graph mutation surface |
+| `buildSync()` + JS plugins | Unsupported | use async `build()` / `watch()` |
+
+The native ZTS worker calls JS hooks through NAPI threadsafe functions when it reaches a module and waits for the response. Keep hook filters narrow, and prefer the built-in `loader` option for simple extension-based handling.
+
+## Hook Order
+
+```text
+buildStart
+  -> resolveId / onResolve
+  -> load / onLoad
+  -> transform / onTransform
+  -> native link / tree-shake / emit
+  -> renderChunk
+  -> generateBundle
+buildEnd
+write
+closeBundle
+```
+
+In `watch()`, the same order runs for the initial build and every rebuild. `onReady` or `onRebuild` runs after `buildEnd`. When multiple plugins implement the same hook, they run in registration order.
+
 ## Config File
 
 Create a `zts.config.ts` (or `.js`, `.mjs`, `.mts`, `.cjs`, `.cts`) at the project root.

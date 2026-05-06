@@ -160,7 +160,7 @@ scoped class map으로 변환하며 default export와 가능한 named export를 
 | `--asset-names=<pattern>`                | 에셋 파일명 패턴                                                                                |
 | `--loader:.ext=type`                     | 확장자별 로더 (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
 | `--metafile` / `--metafile=<path>`       | 빌드 메타 JSON (stdout 또는 파일)                                                               |
-| `--analyze`                              | 번들 분석 리포트 (stderr 출력). 디스크에 JSON 으로 저장하려면 `--metafile=<path>` 명시.         |
+| `--analyze`                              | 번들 분석 리포트 (stderr 출력). 디스크에 JSON 으로 저장하려면 `--metafile=<path>` 명시. [/analyze/](/zts/analyze/)에서 업로드 가능 |
 | `--legal-comments=<mode>`                | 라이선스 주석: `none\|inline\|eof\|linked\|external` (`linked`/`external` 은 현재 `eof` fallback) |
 | `--packages=external`                    | bare package import를 모두 external 처리                                                        |
 | `--banner:js=<text>`                     | 출력 앞 텍스트 (bare `--banner=` 은 JS wrapper 만 지원)                                         |
@@ -257,5 +257,7 @@ zts bench --phase=parse --compare=baseline.json src/main.ts
 ## 참고
 
 - JS API(`@zts/core`)는 `packages/core/index.ts`에서 동일한 옵션을 프로그램적으로 제공합니다.
+- 옵션 surface별 지원 범위는 [옵션 매트릭스](/zts/reference/options-matrix/)에서 확인하세요.
+- `--metafile` 결과는 [Metafile 분석](/zts/analyze/) 페이지에서 시각화할 수 있습니다.
 - Vite 어댑터는 `vite-plugin-zts` 또는 `vitePlugin()`으로 사용하세요.
 - 미지원 옵션 / 향후 계획은 [docs/ROADMAP.md](https://github.com/ohah/zts/blob/main/docs/ROADMAP.md) 참고.

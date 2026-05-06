@@ -167,6 +167,8 @@ zts --bundle entry.ts -o bundle.js --metafile=meta.json
 zts --bundle entry.ts -o bundle.js --analyze
 ```
 
+Upload `meta.json` to [Metafile Analyze](/zts/analyze/) to inspect output sizes, input sizes, and the import graph.
+
 ## Minify
 
 ```bash

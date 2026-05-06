@@ -167,6 +167,8 @@ zts --bundle entry.ts -o bundle.js --metafile=meta.json
 zts --bundle entry.ts -o bundle.js --analyze
 ```
 
+`meta.json`은 [Metafile 분석](/zts/analyze/) 페이지에 업로드해 output 크기, input 크기, import graph를 확인할 수 있습니다.
+
 ## Minify
 
 ```bash
