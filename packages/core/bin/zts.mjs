@@ -742,13 +742,12 @@ async function runRnBundle(opts, _config) {
   // + flattened naming + keep.xml. 미지정 시 skip (dev server 가 HTTP 서빙).
   if (result.errors.length === 0 && !opts.devMode && opts.assetsDest) {
     const assetsDestAbs = resolve(opts.assetsDest);
-    const assetExts = opts.rnAssetExts ?? rn.DEFAULT_ASSET_EXTS ?? [];
     try {
       const copied = copyRnAssets({
         projectRoot,
         assetsDest: assetsDestAbs,
         rnPlatform,
-        assetExts,
+        assetExts: rn.DEFAULT_ASSET_EXTS ?? [],
       });
       if (opts.logLevel !== 'silent') {
         console.error(`[bundle] copied ${copied} asset(s) to ${assetsDestAbs}`);

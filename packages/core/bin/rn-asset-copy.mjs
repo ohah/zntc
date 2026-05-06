@@ -10,8 +10,8 @@
 //      `__<flatRel>_<basename>.<ext>` naming + keep.xml 생성.
 //   5. node_modules / .git / dist / build / .next / .turbo / .bun / .DS_Store skip.
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, extname, join, relative } from 'node:path';
+import { copyFileSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { basename, extname, join, relative } from 'node:path';
 
 /** scale variant naming — `@2x.png` / `@3x.png` 등. capture group 1 이 scale 숫자. */
 export const SCALE_REGEX = /@(\d+(?:\.\d+)?)x/;
@@ -90,17 +90,14 @@ export function buildKeepXml(drawableNames) {
 }
 
 /**
- * project 안의 asset 파일 walk + scale variant 수집. visited set 으로 같은 파일을
- * 다중 방문 방지 (scale variant 발견 시 둘 다 등록).
- *
- * 반환: `[{ filePath, baseName, scale, ext, relDir }]`. relDir 은 projectRoot
+ * project 안의 asset 파일 walk + scale variant 수집. 반환:
+ * `[{ filePath, baseName, scale, ext, relDir }]`. relDir 은 projectRoot
  * 기준 상대 경로 (POSIX `/`).
  */
 export function discoverAssets(projectRoot, assetExts) {
   const exts = new Set(
     [...assetExts].map((e) => (e.startsWith('.') ? e.toLowerCase() : `.${e.toLowerCase()}`)),
   );
-  const visited = new Set();
   const out = [];
 
   function walk(dir) {
@@ -120,8 +117,6 @@ export function discoverAssets(projectRoot, assetExts) {
       if (!entry.isFile()) continue;
       const ext = extname(entry.name).toLowerCase();
       if (!exts.has(ext)) continue;
-      if (visited.has(full)) continue;
-      visited.add(full);
       const parsed = parseAssetName(entry.name);
       const relDir = relative(projectRoot, dir).replace(/\\/g, '/');
       out.push({ filePath: full, ...parsed, relDir });
@@ -186,9 +181,9 @@ export function copyAssetsForAndroid(assets, assetsDest) {
  * @returns 복사된 파일 수.
  */
 export function copyRnAssets({ projectRoot, assetsDest, rnPlatform, assetExts }) {
-  if (!assetsDest || !existsSync(projectRoot) || !statSync(projectRoot).isDirectory()) {
-    return 0;
-  }
+  // projectRoot 존재 / 디렉토리 검증은 discoverAssets 내부 walk 의 readdirSync
+  // try/catch 가 처리 — 미존재면 빈 array. 별도 guard 불필요.
+  if (!assetsDest) return 0;
   const assets = discoverAssets(projectRoot, assetExts);
   if (assets.length === 0) return 0;
   if (rnPlatform === 'android') {
