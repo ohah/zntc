@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from './cli-flags.mjs';
+import { copyRnAssets } from './rn-asset-copy.mjs';
 import { buildRnDevServerInput } from './rn-dev-input.mjs';
 
 function isMissingBuiltCore(error) {
@@ -657,12 +658,11 @@ async function loadRnModule() {
  * 흡수 예정. 현재는 경고만.
  */
 function warnRnBundleUnsupported(opts) {
-  // `--assets-dest` / `--asset-catalog-dest` 는 후속 PR (P0#2 — asset 복사) 에서
-  // 흡수 예정. `--sourcemap-sources-root` / `--sourcemap-use-absolute-path` 는
+  // `--asset-catalog-dest` 는 iOS Images.xcassets — Xcode catalog 별도 작업이라
+  // 본 스코프 외. `--sourcemap-sources-root` / `--sourcemap-use-absolute-path` 는
   // zts core 의 sourcemap 생성 영역이라 caller-side 처리 어려움 — 미지원 유지.
   // graph-bundler 전용 (`transform-option` / `resolver-option`) 도 미지원.
   const map = {
-    assetsDest: '--assets-dest',
     assetCatalogDest: '--asset-catalog-dest',
     unstableTransformProfile: '--unstable-transform-profile',
     transformOptions: '--transform-option',
@@ -734,6 +734,27 @@ async function runRnBundle(opts, _config) {
     if (wantsSourcemap && result.outputFiles[1]) {
       mkdirSync(dirname(mapPath), { recursive: true });
       writeFileSync(mapPath, result.outputFiles[1].text);
+    }
+  }
+
+  // production asset 복사 (`--assets-dest`) — dev=false + 명시 시. iOS 는
+  // `<assetsDest>/<relPath>/<file>`, Android 는 Metro scaleToDrawable folder
+  // + flattened naming + keep.xml. 미지정 시 skip (dev server 가 HTTP 서빙).
+  if (result.errors.length === 0 && !opts.devMode && opts.assetsDest) {
+    const assetsDestAbs = resolve(opts.assetsDest);
+    const assetExts = opts.rnAssetExts ?? rn.DEFAULT_ASSET_EXTS ?? [];
+    try {
+      const copied = copyRnAssets({
+        projectRoot,
+        assetsDest: assetsDestAbs,
+        rnPlatform,
+        assetExts,
+      });
+      if (opts.logLevel !== 'silent') {
+        console.error(`[bundle] copied ${copied} asset(s) to ${assetsDestAbs}`);
+      }
+    } catch (err) {
+      process.stderr.write(`[zts:rn-bundle] asset copy 실패: ${err?.message ?? err}\n`);
     }
   }
 

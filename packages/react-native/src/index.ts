@@ -113,6 +113,7 @@ export type { PluginConfig } from './plugins/types.ts';
 export {
   buildRnBundleOptions,
   bundleRn,
+  DEFAULT_ASSET_EXTS,
   type RnBundleInput,
   type RnWatchInput,
   watchRn,

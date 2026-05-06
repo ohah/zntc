@@ -95,7 +95,16 @@ export function setupTerminalActions(
   options: TerminalActionsOptions = { enabled: true },
 ): () => void {
   const stdin = options.stdin ?? process.stdin;
-  if (!options.enabled || !stdin.isTTY) return () => {};
+  if (!options.enabled) return () => {};
+  if (!stdin.isTTY) {
+    // 사용자가 단축키 안 먹는다고 보고하는 흔한 원인 — wrapper script (npm run /
+    // bun run) 가 stdin 을 inherit 안 해서 child 의 isTTY false. silent skip 시
+    // 사용자가 디버그 어려움 → 한 번 stderr 알림 (#2605 audit).
+    process.stderr.write(
+      '[zts:rn-dev] stdin is not a TTY — keyboard shortcuts (r/d/j/i/a/c/?) disabled\n',
+    );
+    return () => {};
+  }
 
   const wasRaw = stdin.isRaw;
   if (!wasRaw) stdin.setRawMode(true);

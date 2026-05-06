@@ -159,6 +159,7 @@ describe('CLI: bootstrap', () => {
       cpSync(CLI, join(binDir, 'zts.mjs'));
       cpSync(resolve(import.meta.dir, 'cli-flags.mjs'), join(binDir, 'cli-flags.mjs'));
       cpSync(resolve(import.meta.dir, 'rn-dev-input.mjs'), join(binDir, 'rn-dev-input.mjs'));
+      cpSync(resolve(import.meta.dir, 'rn-asset-copy.mjs'), join(binDir, 'rn-asset-copy.mjs'));
 
       const result = readRedirectedProcessOutput(
         [RUNTIME, join(binDir, 'zts.mjs'), '--help'].map(shellQuote).join(' '),
@@ -5180,6 +5181,19 @@ describe('buildRnDevServerInput — config + opts 추출 (#2605)', () => {
     expect(a?.terminalActions).toBeUndefined();
     const b = buildRnDevServerInput({ entryPoints: ['i.js'] }, {});
     expect(b?.terminalActions).toBeUndefined();
+  });
+
+  test('CLI --no-interactive → terminalActions=false (config.useGlobalHotkey 보다 우선, #2605 audit)', async () => {
+    const { buildRnDevServerInput } = await import('./rn-dev-input.mjs');
+    // CLI flag 가 명시적 disable.
+    const a = buildRnDevServerInput({ entryPoints: ['i.js'], noInteractive: true }, {});
+    expect(a?.terminalActions).toBe(false);
+    // CLI flag 가 config 보다 우선 — useGlobalHotkey:true 라도 noInteractive 가 우선.
+    const b = buildRnDevServerInput(
+      { entryPoints: ['i.js'], noInteractive: true },
+      { server: { useGlobalHotkey: true } },
+    );
+    expect(b?.terminalActions).toBe(false);
   });
 
   test('미지원 필드 (transformer.inlineRequires/minifier, serializer.prelude/bundleType, server.forwardClientLogs/verifyConnections) — stderr 경고', async () => {
