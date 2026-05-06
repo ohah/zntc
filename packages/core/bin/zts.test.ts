@@ -38,6 +38,15 @@ async function waitForServer(port: number, maxRetries = 50, interval = 100, prot
   throw new Error(`Server on port ${port} did not start`);
 }
 
+async function waitForText(read: () => string, text: string, timeoutMs = 1000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (read().includes(text)) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`Timed out waiting for text: ${text}\nObserved: ${read()}`);
+}
+
 /**
  * 같은 process 안에서 unique 한 port 번호를 monotonic counter 로 발급.
  *
@@ -3326,21 +3335,33 @@ describe('CLI: Vite-style app builder', () => {
       cwd: dir,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let stdout = '';
     let stderr = '';
+    let exitState = '';
+    proc.stdout?.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
     proc.stderr?.on('data', (chunk) => {
       stderr += String(chunk);
     });
-    await waitForServer(port);
+    proc.on('exit', (code, signal) => {
+      exitState = `exit:${code ?? ''}:${signal ?? ''}`;
+    });
+    const expectedServeLog = `[serve] http://0.0.0.0:${port}`;
+    await Promise.all([
+      waitForServer(port, 100),
+      waitForText(() => `${stdout}${stderr}${exitState}`, expectedServeLog, 10000),
+    ]);
 
     try {
       const js = await fetch(`http://localhost:${port}/bundle.js`).then((r) => r.text());
       expect(js).toContain('server-config');
-      expect(stderr).toContain(`[serve] http://0.0.0.0:${port}`);
+      expect(`${stdout}${stderr}`).toContain(expectedServeLog);
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 10000);
 
   test('dev [root] CLI --port overrides config server.port', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zts-app-dev-server-cli-'));
