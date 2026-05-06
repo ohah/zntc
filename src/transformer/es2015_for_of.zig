@@ -415,10 +415,26 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         // 헬퍼
         // ================================================================
 
+        /// `_a`/`_b`/.../`_g` 같은 다운레벨 temp 변수의 reference 노드 생성.
+        ///
+        /// `node.span` 을 `name_span` (string_table 의 합성 이름 위치) 으로 설정해야
+        /// `resyncModuleMetadataAfterAstMutation` 의 SemanticAnalyzer 가
+        /// `getSourceText(node.span)` 으로 추출하는 reference 텍스트가 binding 텍스트
+        /// (`_a` 등) 와 일치한다 — 그래야 module-scope 의 binding 과 매칭되어 동일
+        /// symbol_id 가 부여되고 mangler 의 cross-module conflict rename 이 reference
+        /// 까지 일관되게 적용된다 (#TODO Reanimated Easing.ts 회귀).
+        ///
+        /// `node_span` (= 원본 for-of 의 source 위치) 을 `node.span` 으로 두면 analyzer 가
+        /// 그 source 위치에서 `for (const [k,v] of ...)` 같은 *원본 코드* 텍스트를 읽어
+        /// binding 매칭 실패 → reference 의 symbol_id 가 None → mangler rename 추적 누락.
+        ///
+        /// 결과: declaration 만 `_a$N` 으로 rename 되고 reference 는 `_a` 그대로 →
+        /// strict mode ReferenceError → __zts_guarded silent catch → module init 미완.
         fn makeRefFromSpan(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
+            _ = node_span;
             return self.ast.addNode(.{
                 .tag = .identifier_reference,
-                .span = node_span,
+                .span = name_span,
                 .data = .{ .string_ref = name_span },
             });
         }
