@@ -64,7 +64,11 @@ export async function serveRn(
 
   // 두 lazy load 는 독립 — 병렬로 dynamic import resolve.
   const [cliServerApi, devMiddleware] = await Promise.all([
-    loadCliServerApi({ port: options.port, host: options.host }),
+    loadCliServerApi({
+      port: options.port,
+      host: options.host,
+      projectRoot: options.bundle.projectRoot,
+    }),
     loadDevMiddleware({ port: options.port, projectRoot: options.bundle.projectRoot }),
   ]);
 

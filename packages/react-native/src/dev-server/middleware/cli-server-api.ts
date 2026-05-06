@@ -5,6 +5,7 @@
 // broadcast 처리).
 
 import type { IncomingMessage } from 'node:http';
+import { createRequire } from 'node:module';
 import type { Duplex } from 'node:stream';
 
 import type { Broadcast } from '../types.ts';
@@ -29,6 +30,13 @@ export interface CliServerApi {
 export interface LoadCliServerApiOptions {
   port: number;
   host: string;
+  /**
+   * peer dependency resolve base — 사용자 프로젝트 root. cli-server-api 가
+   * `@zts/react-native/node_modules` 가 아니라 caller (예: `examples/react-native-bare`)
+   * 의 node_modules 에 설치된 경우 dynamic import 가 못 찾는 문제 회피용.
+   * 미지정 시 `process.cwd()`.
+   */
+  projectRoot?: string;
 }
 
 /**
@@ -43,10 +51,14 @@ export async function loadCliServerApi(
   options: LoadCliServerApiOptions,
 ): Promise<CliServerApi | null> {
   try {
-    // dynamic import — peer optional. tsc 의 module resolution 회피하려 string
-    // variable 로 우회 (peer 미설치 환경에서 type-check 통과).
-    const specifier: string = '@react-native-community/cli-server-api';
-    const mod = (await import(specifier)) as unknown as {
+    // peer optional — caller (사용자 프로젝트) 의 node_modules 기준으로 resolve.
+    // dynamic `await import('@...')` 만 쓰면 import 호출하는 모듈 (`@zts/react-native/dist`)
+    // 의 node_modules 기준이라 caller 측 peer 를 못 찾음. createRequire(projectRoot)
+    // 로 user-side resolve 우선.
+    const projectRoot = options.projectRoot ?? process.cwd();
+    const projectRequire = createRequire(`${projectRoot}/package.json`);
+    const resolvedPath = projectRequire.resolve('@react-native-community/cli-server-api');
+    const mod = (await import(resolvedPath)) as unknown as {
       createDevServerMiddleware: (input: {
         port: number;
         host: string;
