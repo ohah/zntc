@@ -4,6 +4,8 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
+import * as jscSafeUrl from "jsc-safe-url";
+
 import type { HmrBridge } from "./hmr-bridge.ts";
 import { parseRequestUrl, sendText } from "./http-utils.ts";
 import type { CliServerApi } from "./middleware/cli-server-api.ts";
@@ -57,10 +59,17 @@ export function createBaseMiddleware(
   deps: DevHttpServerDeps,
 ): Middleware {
   return (req, res, next) => {
+    // Metro `Server.js#_rewriteAndNormalizeUrl` 동일 패턴 — iOS/Hermes 의
+    // jsc-safe URL 재요청을 normal URL routing 으로 매칭하기 위한 in-place 변경.
+    if (req.url) {
+      const normalized = jscSafeUrl.toNormalUrl(req.url);
+      const rewritten = options.rewriteRequestUrl
+        ? options.rewriteRequestUrl(normalized)
+        : normalized;
+      req.url = jscSafeUrl.toNormalUrl(rewritten);
+    }
     const url = parseRequestUrl(req, options.host, options.port);
-    const pathname = options.rewriteRequestUrl
-      ? options.rewriteRequestUrl(url.pathname)
-      : url.pathname;
+    const pathname = url.pathname;
     const method = req.method;
 
     if (isIndexRoute(pathname)) {

@@ -13,6 +13,12 @@ export interface RnDevServerOptions {
   /** Asset resolution 의 fallback (monorepo / pnpm / bun 의 .bun 디렉토리 등). */
   nodeModulesPaths: readonly string[];
   enhanceMiddleware?: (mw: Middleware, ctx: MiddlewareEnhanceContext) => Middleware;
+  /**
+   * Request URL 을 routing 전에 rewrite (Metro 호환). Argument 는 jsc-safe URL
+   * normalize 가 적용된 **full URL** (path + query). 반환값은 다시 normalize 후
+   * `req.url` 에 set. iOS/Hermes 의 jsc-safe URL 재요청을 정상 routing 하려면
+   * 미설정해도 OK — 미설정 시 normalize 만 적용.
+   */
   rewriteRequestUrl?: (url: string) => string;
   symbolicator?: { customizeFrame?: CustomizeFrame };
   terminalActions: boolean;
