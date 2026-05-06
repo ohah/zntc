@@ -597,10 +597,14 @@ pub fn emitChunks(
         // 호출 시점에 generateJSON 수행). eager 는 즉시 JSON 생성. directive
         // hoisting (위 insertSlice) 후의 줄 shift 는 의도적으로 보정 안 함 —
         // 단일 번들 path 와 동일 동작.
+        // mode=inline_ 은 base64 embed 가 contents 안에 들어가야 하므로 lazy 와
+        // 호환 안 됨 (lazy 면 emit 단계에 JSON 이 없어서 embed 불가). 이 조합은
+        // lazy 를 무시하고 eager 강제 — silent broken 회피.
+        const effective_lazy = options.sourcemap.lazy and options.sourcemap.mode != .inline_;
         var chunk_sourcemap: ?[]const u8 = null;
         var chunk_sourcemap_builder: ?*SourceMap.SourceMapBuilder = null;
         if (chunk_sm) |*sm| {
-            if (options.sourcemap.lazy) {
+            if (effective_lazy) {
                 chunk_sourcemap_builder = try sm.moveToHeap(allocator);
                 chunk_sm_moved = true;
             } else {
@@ -610,6 +614,38 @@ pub fn emitChunks(
         // lazy/eager 가 mutually exclusive 라 두 errdefer 는 동시에 active 안 됨.
         errdefer if (chunk_sourcemap) |s| allocator.free(s);
         errdefer if (chunk_sourcemap_builder) |b| b.destroy(allocator);
+
+        // sourceMappingURL 주석 — mode 별 분기 (단일 번들 emitter.zig 와 동일 정책).
+        // linked: `<basename>.map` 참조. external: 주석 없음. inline_: base64 embed.
+        // resolveContentHashes 가 contents 의 placeholder 를 hash 로 치환하므로
+        // 주석에 들어가는 filename 도 자동 치환됨.
+        if (options.sourcemap.enable) {
+            const map_basename = std.fs.path.basename(filename);
+            switch (options.sourcemap.mode) {
+                .linked => {
+                    try chunk_output.appendSlice(allocator, "//# sourceMappingURL=");
+                    try chunk_output.appendSlice(allocator, map_basename);
+                    try chunk_output.appendSlice(allocator, ".map\n");
+                },
+                .external => {},
+                .inline_ => {
+                    if (chunk_sourcemap) |json| {
+                        try chunk_output.appendSlice(allocator, "//# sourceMappingURL=data:application/json;base64,");
+                        const Encoder = std.base64.standard.Encoder;
+                        const encoded_len = Encoder.calcSize(json.len);
+                        const old_len = chunk_output.items.len;
+                        try chunk_output.resize(allocator, old_len + encoded_len);
+                        _ = Encoder.encode(chunk_output.items[old_len .. old_len + encoded_len], json);
+                        try chunk_output.append(allocator, '\n');
+                        // base64 embed 했으므로 외부 .map 미생성.
+                        allocator.free(json);
+                        chunk_sourcemap = null;
+                    }
+                    // lazy + inline 조합은 의미 충돌 — lazy 는 외부 fetch 가정.
+                    // 단일 번들 emitter 와 동일하게 lazy 시 inline 무시 (주석 없음).
+                },
+            }
+        }
 
         try outputs.append(allocator, .{
             .path = filename,
@@ -1133,6 +1169,15 @@ fn resolveContentHashes(
         const new_path = try replaceAllPlaceholders(allocator, out.path, infos, ph_total);
         allocator.free(out.path);
         out.path = new_path;
+
+        // sourcemap JSON 의 "file" 필드에 들어간 placeholder 도 치환. lazy 경로는
+        // builder 에 placeholder 없음 — caller 가 generateJSON 시점에 outputs.path
+        // (이미 치환된) 를 넘기면 됨.
+        if (out.sourcemap) |sm| {
+            const new_sm = try replaceAllPlaceholders(allocator, sm, infos, ph_total);
+            allocator.free(sm);
+            out.sourcemap = new_sm;
+        }
     }
 
     // 3단계: imports 메타 채우기 (rolldown `chunk.imports` 호환).
