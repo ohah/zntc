@@ -189,6 +189,17 @@ pub const SourceMapBuilder = struct {
         allocator.destroy(self);
     }
 
+    /// stack/외부 builder 를 heap 으로 옮긴다 (얕은 복사 + self-ref pointer
+    /// 보정). 호출 후 원본 builder 는 drained — caller 는 그 deinit 을 skip
+    /// 해야 한다 (보통 `*_moved = true` flag 로). lazy sourcemap 경로의 다중
+    /// 호출 사이트 (단일 번들 / chunk / HMR per-module) 통합.
+    pub fn moveToHeap(self: *const SourceMapBuilder, allocator: std.mem.Allocator) !*SourceMapBuilder {
+        const heap_sm = try allocator.create(SourceMapBuilder);
+        heap_sm.* = self.*;
+        heap_sm.fixSelfReferences();
+        return heap_sm;
+    }
+
     /// UUID v4 문자열 (36 byte) 를 builder 내부 `debug_id_buf` 에 복사하고 `debug_id` 를
     /// 그 slice 로 설정. lazy 경로에서 builder 가 외부로 이관돼도 pointer 유효성 보장.
     pub fn setDebugId(self: *SourceMapBuilder, uuid: []const u8) void {
