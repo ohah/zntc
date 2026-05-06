@@ -703,7 +703,7 @@ pub const Linker = struct {
                         if (!std.mem.eql(u8, ib.local_name, sym_name)) continue;
                         if (ib.import_record_index >= m.import_records.len) break :blk false;
                         const rec = m.import_records[ib.import_record_index];
-                        if (rec.resolved.isNone()) break :blk true;
+                        if (rec.resolved.isNone()) break :blk !rec.is_lazy_resolved;
                         const target_idx = @intFromEnum(rec.resolved);
                         if (target_idx >= self.graph.moduleCount()) break :blk m.wrap_kind == .esm;
                         const target_wrap = self.getModule(target_idx).?.wrap_kind;
