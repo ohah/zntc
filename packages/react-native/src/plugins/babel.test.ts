@@ -160,9 +160,7 @@ describe("applyBabelPluginPrefix", () => {
   });
 
   test("@scope/foo → @scope/babel-plugin-foo", () => {
-    expect(applyBabelPluginPrefix("@nativewind/preset")).toBe(
-      "@nativewind/babel-plugin-preset",
-    );
+    expect(applyBabelPluginPrefix("@nativewind/preset")).toBe("@nativewind/babel-plugin-preset");
   });
 
   test("이미 prefix 가진 이름은 그대로", () => {
@@ -182,9 +180,7 @@ describe("applyBabelPluginPrefix", () => {
   });
 
   test("preset prefix 도 보존", () => {
-    expect(applyBabelPluginPrefix("@babel/preset-typescript")).toBe(
-      "@babel/preset-typescript",
-    );
+    expect(applyBabelPluginPrefix("@babel/preset-typescript")).toBe("@babel/preset-typescript");
     expect(applyBabelPluginPrefix("babel-preset-expo")).toBe("babel-preset-expo");
   });
 });
