@@ -495,9 +495,14 @@ pub const ASYNC_VALUES_RUNTIME =
 ;
 pub const ASYNC_VALUES_RUNTIME_MIN = "var " ++ NAMES.ASYNC_VALUES_MIN ++ "=function(o){if(!Symbol.asyncIterator)throw new TypeError(\"Symbol.asyncIterator is not defined.\");var m=o[Symbol.asyncIterator],i;return m?m.call(o):(o=typeof __values===\"function\"?__values(o):o[Symbol.iterator](),i={},verb(\"next\"),verb(\"throw\"),verb(\"return\"),i[Symbol.asyncIterator]=function(){return this},i);function verb(n){i[n]=o[n]&&function(v){return new Promise(function(resolve,reject){v=o[n](v);settle(resolve,reject,v.done,v.value)})}}function settle(resolve,reject,d,v){Promise.resolve(v).then(function(v){resolve({value:v,done:d})},reject)}};";
 
-/// __extends: class 상속 prototype chain (ES2015). TypeScript __extends 호환.
-pub const EXTENDS_RUNTIME = "var __extends = function(d, b) {\n  for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p];\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n";
-pub const EXTENDS_RUNTIME_MIN = "var " ++ NAMES.EXTENDS_MIN ++ "=function(d,b){for(var p in b)if(Object.prototype.hasOwnProperty.call(b,p))d[p]=b[p];function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
+/// __extends: class 상속 prototype chain + static (ES2015). TypeScript __extends 호환.
+///
+/// `Object.setPrototypeOf(d, b)` 가 enumerable 무관 모든 static 을 prototype chain 으로
+/// 잇는다. 이전엔 `for...in` 만 써서 `Object.defineProperty(C, ..., { configurable, writable, value })`
+/// (enumerable 기본값 false) 로 정의된 static 이 누락 — Reanimated 의
+/// `LinearTransition.springify` 같은 케이스. Hermes/V8 모두 setPrototypeOf 지원.
+pub const EXTENDS_RUNTIME = "var __extends = function(d, b) {\n  Object.setPrototypeOf(d, b);\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n";
+pub const EXTENDS_RUNTIME_MIN = "var " ++ NAMES.EXTENDS_MIN ++ "=function(d,b){Object.setPrototypeOf(d,b);function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};";
 
 /// __generator: generator 상태 머신 (ES2015). TypeScript __generator 호환.
 /// signature: `__generator(thisArg, body, genFn)` — body 안 `this` 가 enclosing function 의
