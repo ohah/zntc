@@ -917,6 +917,49 @@ describe("ES 다운레벨링 런타임 테스트", () => {
       expect(result.runOutput).toBe("3,4");
     });
 
+    test("class extends — non-enumerable static method 상속 (Reanimated 회귀)", async () => {
+      // Reanimated 의 ComplexAnimationBuilder/LinearTransition 패턴 회귀 — `Object.defineProperty(C, name, ...)`
+      // 로 정의한 static (enumerable=false default) 이 subclass 에서 접근 가능해야 한다.
+      // 이전 __extends 는 `for...in` 만 써서 non-enumerable static 누락 → `LinearTransition.springify is undefined`.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            class Base {}
+            Object.defineProperty(Base, 'staticHello', {
+              configurable: true, writable: true, value: function() { return 'hi'; },
+            });
+            class Sub extends Base {}
+            console.log(typeof Sub.staticHello, Sub.staticHello());
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("function hi");
+    });
+
+    test("class extends — null 상속 시 TypeError (TS __extends 호환)", async () => {
+      // TS 의 __extends 는 b 가 function/null 이 아니면 throw — null 자체는 OK (Object.create(null) prototype).
+      // 회귀: ZTS __extends 가 type check 추가 후 정상 케이스는 통과해야.
+      const result = await bundleAndRun(
+        {
+          "index.ts": `
+            // null prototype 상속 — TypeScript 도 허용. d.prototype = Object.create(null).
+            class A { foo = 42; }
+            class B extends A {}
+            console.log(new B().foo);
+          `,
+        },
+        "index.ts",
+        ["--target=es5"],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe("42");
+    });
+
     test("class extends with method override", async () => {
       const result = await bundleAndRun(
         {
