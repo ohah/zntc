@@ -712,19 +712,24 @@ pub fn emitWithTreeShaking(
             module_line += 1;
         }
 
-        // 소스맵: 모듈 매핑을 번들 오프셋으로 조정하여 추가
+        // 소스맵: 모듈 매핑을 번들 오프셋으로 조정하여 추가. region/endregion
+        // marker 와 wrap closing brace 까지 last source line 으로 채움 (#2648).
         if (bundle_sm) |*sm| {
             if (results[i].mappings) |maps| {
+                const region_lines: u32 = if (options.minify_whitespace) 0 else 1;
+                const endregion_lines: u32 = if (options.minify_whitespace) 0 else 1;
                 try addModuleMappings(
                     sm,
                     sourcemapSourcePath(m.path, options),
                     m.source,
                     maps,
-                    module_line,
+                    module_line - region_lines,
                     results[i].preamble_lines,
                     options.sourcemap.sources_content,
                     false,
-                    wrapCloseLines(m.wrap_kind, options.minify_whitespace),
+                    region_lines,
+                    @intCast(std.mem.count(u8, code, "\n")),
+                    endregion_lines,
                 );
                 // function map: source 추가 순서와 동기화
                 if (options.sourcemap.function_map) {
@@ -807,7 +812,9 @@ pub fn emitWithTreeShaking(
                         results[i].preamble_lines,
                         options.sourcemap.sources_content,
                         false,
-                        wrapCloseLines(m.wrap_kind, options.minify_whitespace),
+                        0, // HMR preamble path 는 region marker 없음
+                        @intCast(std.mem.count(u8, code, "\n")),
+                        0, // endregion 도 없음
                     );
                     if (options.sourcemap.lazy) {
                         const heap_sm = try allocator.create(SourceMap.SourceMapBuilder);
@@ -1229,18 +1236,6 @@ fn adjustMappingsForLineWraps(sm: *SourceMap.SourceMapBuilder, breaks: []const W
 const dev = @import("emitter/dev.zig");
 pub const addModuleMappings = dev.addModuleMappings;
 pub const makeModuleId = dev.makeModuleId;
-
-/// wrapper 의 closing brace 가 차지하는 line 수 (#2648 sourcemap density).
-/// CJS / ESM 둘 다 `\n\t}\n});\n` (3 newlines) — wrapper closing 후 \n 까지 포함.
-/// asset / disabled = 0 (단순 form). minify_whitespace 시 closing 단일 line —
-/// mapping 추가 불필요.
-fn wrapCloseLines(wrap_kind: anytype, minify_whitespace: bool) u32 {
-    if (minify_whitespace) return 0;
-    return switch (wrap_kind) {
-        .cjs, .esm => 3,
-        else => 0,
-    };
-}
 
 /// 소스맵 sources 배열에 사용할 경로를 반환.
 /// RN 플랫폼은 Metro 호환 절대 경로, 다른 플랫폼은 root_dir 기준 상대 경로.
