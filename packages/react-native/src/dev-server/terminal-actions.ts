@@ -137,7 +137,11 @@ export function setupTerminalActions(
   const handleKey = (chunk: string | Buffer): void => {
     const key = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
     if (process.env.ZTS_DEBUG_TERMINAL === '1') {
-      const hex = Buffer.from(key, 'utf8').toString('hex');
+      // 원본 byte 보존 — UTF-8 invalid sequence 디버깅용. string→Buffer round-trip 회피.
+      const hex =
+        typeof chunk === 'string'
+          ? Buffer.from(chunk, 'utf8').toString('hex')
+          : chunk.toString('hex');
       process.stderr.write(
         `[zts:rn-dev:debug] key received: hex=${hex} len=${key.length} type=${typeof chunk}\n`,
       );
