@@ -302,7 +302,7 @@ Key fields on `WatchRebuildEvent`:
 | `delta` | HMR delta extraction. |
 | `total` | Sum of `detect` through `delta`. |
 
-Sub-phases (only populated when `profile: ["..."]` / `ZTS_PROFILE=...` / `BUNGAE_HMR_PROFILE=1` is active; 0 otherwise):
+Sub-phases (only populated when `profile: ["..."]` / `ZTS_PROFILE=...` is active; 0 otherwise):
 
 `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` / `graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` / `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
 

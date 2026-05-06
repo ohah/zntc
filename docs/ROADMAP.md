@@ -147,7 +147,7 @@
 
 - **Runtime helper virtual module** (#1961, PR 1a~1h, 2026-04-26) — splitting + single-bundle 양쪽에서 helper 를 가상 모듈로 모델링 (`__esm`, `__commonJS` 등). HelperBit enum 화 (#1982) 등 후속 정리 5건.
 - **ESM external import preserve** (#1962, #1983) — bare external 을 `require()` 로 변환하지 않고 `import` 그대로 보존.
-- **Lazy sourcemap** (#1727 Phase B, 5 PR) — `serialize` 비용 29ms→0.22ms, NAPI HMR 183→162ms. ZTS 는 `sourceURL` / bungae 는 `sourceMappingURL` 분리.
+- **Lazy sourcemap** (#1727 Phase B, 5 PR) — `serialize` 비용 29ms→0.22ms, NAPI HMR 183→162ms. `sourceURL` 주석 분리 emit.
 - **Type-only import elision** (#1791, #1797 + 7 PR) — named 한정 + oxc-style Reference flags. for-of `let` closure capture fix + sentinel AST layout 수정 동반.
 - **Worker race safety** (#1779 에픽 7 PR) — `StableSegmentedList` 도입, std.SegmentedList.dynamic_segments race 근본 해결.
 - **Tree shaker statement-level symbol graph** (#1558, #1560-1562) — rolldown 방식 단일 소스. reference_count 는 mangler 전용으로 분리.
