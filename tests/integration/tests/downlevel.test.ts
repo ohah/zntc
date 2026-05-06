@@ -577,9 +577,16 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(result.runOutput).toBe('ok');
 
       // 다운레벨 init 패턴: `var _a$N = true, _b$N = false, _c$N = void 0;`
-      const FOR_OF_INIT_RE = /var (_a(?:\$\d+)?) = true,\s*_b(?:\$\d+)?\s*=\s*false,\s*_c(?:\$\d+)?\s*=\s*void 0;/g;
+      const FOR_OF_INIT_RE =
+        /var (_a(?:\$\d+)?) = true,\s*_b(?:\$\d+)?\s*=\s*false,\s*_c(?:\$\d+)?\s*=\s*void 0;/g;
       // suffix 없는 reference 가 등장하면 회귀 — declaration 만 rename, reference 누락.
-      const UNRENAMED_REFS = [/\b_a = \(/, /\b_b = true/, /\b_c = _f\b/, /\b_d\.next\(\)/, /\b_e\.value\b/];
+      const UNRENAMED_REFS = [
+        /\b_a = \(/,
+        /\b_b = true/,
+        /\b_c = _f\b/,
+        /\b_d\.next\(\)/,
+        /\b_e\.value\b/,
+      ];
 
       const decls = [...result.bundleOutput.matchAll(FOR_OF_INIT_RE)];
       expect(decls.length).toBeGreaterThan(0);
