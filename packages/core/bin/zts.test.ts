@@ -7,6 +7,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { spawn, spawnSync, execSync } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import {
   cpSync,
@@ -115,6 +116,38 @@ function runNodeEval(
 ) {
   const command = [RUNTIME, "-e", code].map(shellQuote).join(" ");
   return readRedirectedProcessOutput(command, options);
+}
+
+function spawnWatchJson(args: string[], cwd: string, logPath: string, errPath: string) {
+  const command = [RUNTIME, CLI, ...args, "--watch-json"].map(shellQuote).join(" ");
+  return spawn("sh", ["-c", `exec ${command} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`], {
+    cwd,
+    detached: process.platform !== "win32",
+    stdio: "ignore",
+  });
+}
+
+async function stopSpawnedProcess(proc: ChildProcess) {
+  if (proc.pid === undefined) return;
+  try {
+    if (process.platform === "win32") {
+      proc.kill();
+    } else {
+      process.kill(-proc.pid, "SIGTERM");
+    }
+  } catch {
+    try {
+      proc.kill();
+    } catch {}
+  }
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  await new Promise<void>((resolveExit) => {
+    const timer = setTimeout(resolveExit, 1000);
+    proc.once("exit", () => {
+      clearTimeout(timer);
+      resolveExit();
+    });
+  });
 }
 
 describe("CLI: bootstrap", () => {
@@ -1426,60 +1459,21 @@ describe("CLI: watch", () => {
 
     const logPath = join(dir, "watch.log");
     const errPath = join(dir, "watch.err");
-    const proc = spawn("sh", [
-      "-c",
-      `${[RUNTIME, CLI, "--bundle", join(dir, "index.ts"), "--outdir", outDir, "--watch-json"]
-        .map(shellQuote)
-        .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
-    ]);
-
-    const lines: string[] = [];
-    const linePromise = new Promise<void>((resolve) => {
-      const poll = () => {
-        if (existsSync(logPath)) {
-          lines.splice(
-            0,
-            lines.length,
-            ...readFileSync(logPath, "utf8").split("\n").filter(Boolean),
-          );
-          for (const line of lines) {
-            try {
-              const event = JSON.parse(line);
-              if (event.type === "ready" || event.type === "rebuild") {
-                resolve();
-                return;
-              }
-            } catch {}
-          }
-        }
-        setTimeout(poll, 50);
-      };
-      poll();
-    });
-
-    // 3초 타임아웃
-    const timeout = new Promise<void>((_, reject) =>
-      setTimeout(() => reject(new Error("watch timeout")), 3000),
+    const proc = spawnWatchJson(
+      ["--bundle", join(dir, "index.ts"), "--outdir", outDir],
+      dir,
+      logPath,
+      errPath,
     );
 
     try {
-      await Promise.race([linePromise, timeout]);
+      await waitForEvent(logPath, (e) => e.type === "ready", 3000, errPath);
     } finally {
-      proc.kill();
+      await stopSpawnedProcess(proc);
     }
 
-    expect(lines.length).toBeGreaterThan(0);
-    const events = lines
-      .map((l) => {
-        try {
-          return JSON.parse(l);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-    // rebuild 또는 ready 이벤트가 있어야 함
-    expect(events.some((e) => e.type === "rebuild" || e.type === "ready")).toBe(true);
+    const events = readEvents(logPath);
+    expect(events.some((e) => e.type === "ready")).toBe(true);
 
     rmSync(dir, { recursive: true, force: true });
   });
@@ -1492,28 +1486,24 @@ describe("CLI: watch", () => {
 
     const logPath = join(dir, "watch.log");
     const errPath = join(dir, "watch.err");
-    const proc = spawn(
-      "sh",
-      [
-        "-c",
-        `${[RUNTIME, CLI, "--bundle", join(dir, "index.ts"), "--outdir", outDir, "--watch-json"]
-          .map(shellQuote)
-          .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
-      ],
-      { cwd: dir },
+    const proc = spawnWatchJson(
+      ["--bundle", join(dir, "index.ts"), "--outdir", outDir],
+      dir,
+      logPath,
+      errPath,
     );
 
     // 초기 ready 까지 대기
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
+    await waitForEvent(logPath, (e) => e.type === "ready", 10000, errPath);
 
     // config 변경 trigger
     writeFileSync(join(dir, "zts.config.json"), `{"banner": "/* changed */"}`);
 
     // restart 이벤트 대기
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000, errPath);
     } finally {
-      proc.kill();
+      await stopSpawnedProcess(proc);
     }
 
     const events = readEvents(logPath);
@@ -1532,25 +1522,21 @@ describe("CLI: watch", () => {
 
     const logPath = join(dir, "watch.log");
     const errPath = join(dir, "watch.err");
-    const proc = spawn(
-      "sh",
-      [
-        "-c",
-        `${[RUNTIME, CLI, "--bundle", join(dir, "index.ts"), "--outdir", outDir, "--watch-json"]
-          .map(shellQuote)
-          .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
-      ],
-      { cwd: dir },
+    const proc = spawnWatchJson(
+      ["--bundle", join(dir, "index.ts"), "--outdir", outDir],
+      dir,
+      logPath,
+      errPath,
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
+    await waitForEvent(logPath, (e) => e.type === "ready", 10000, errPath);
 
     writeFileSync(join(dir, ".env"), "VITE_K=changed");
 
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000, errPath);
     } finally {
-      proc.kill();
+      await stopSpawnedProcess(proc);
     }
 
     const events = readEvents(logPath);
@@ -1567,24 +1553,20 @@ describe("CLI: watch", () => {
 
     const logPath = join(dir, "watch.log");
     const errPath = join(dir, "watch.err");
-    const proc = spawn(
-      "sh",
-      [
-        "-c",
-        `${[RUNTIME, CLI, "--bundle", join(dir, "index.ts"), "--outdir", outDir, "--watch-json"]
-          .map(shellQuote)
-          .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
-      ],
-      { cwd: dir },
+    const proc = spawnWatchJson(
+      ["--bundle", join(dir, "index.ts"), "--outdir", outDir],
+      dir,
+      logPath,
+      errPath,
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
+    await waitForEvent(logPath, (e) => e.type === "ready", 10000, errPath);
     writeFileSync(join(dir, "zts.config.ts"), `export default { banner: "/* v2 */" as const };`);
 
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000, errPath);
     } finally {
-      proc.kill();
+      await stopSpawnedProcess(proc);
     }
 
     expect(readEvents(logPath).some((e) => e.type === "restart")).toBe(true);
@@ -1599,33 +1581,20 @@ describe("CLI: watch", () => {
 
     const logPath = join(dir, "watch.log");
     const errPath = join(dir, "watch.err");
-    const proc = spawn(
-      "sh",
-      [
-        "-c",
-        `${[
-          RUNTIME,
-          CLI,
-          "--bundle",
-          "--mode=production",
-          join(dir, "index.ts"),
-          "--outdir",
-          outDir,
-          "--watch-json",
-        ]
-          .map(shellQuote)
-          .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
-      ],
-      { cwd: dir },
+    const proc = spawnWatchJson(
+      ["--bundle", "--mode=production", join(dir, "index.ts"), "--outdir", outDir],
+      dir,
+      logPath,
+      errPath,
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
+    await waitForEvent(logPath, (e) => e.type === "ready", 10000, errPath);
     writeFileSync(join(dir, ".env.production"), "VITE_K=changed");
 
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000, errPath);
     } finally {
-      proc.kill();
+      await stopSpawnedProcess(proc);
     }
 
     expect(readEvents(logPath).some((e) => e.type === "restart")).toBe(true);
@@ -1640,18 +1609,15 @@ describe("CLI: watch", () => {
 
     const logPath = join(dir, "watch.log");
     const errPath = join(dir, "watch.err");
-    const proc = spawn(
-      "sh",
-      [
-        "-c",
-        `${[RUNTIME, CLI, "--bundle", join(dir, "index.ts"), "--outdir", outDir, "--watch-json"]
-          .map(shellQuote)
-          .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
-      ],
-      { cwd: dir },
+    const proc = spawnWatchJson(
+      ["--bundle", join(dir, "index.ts"), "--outdir", outDir],
+      dir,
+      logPath,
+      errPath,
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
+    await waitForEvent(logPath, (e) => e.type === "ready", 10000, errPath);
+    const beforeRebuilds = readEvents(logPath).filter((e) => e.type === "rebuild").length;
     // 초기 ready 후 entry 변경 — rebuild 만 와야 함.
     writeFileSync(join(dir, "index.ts"), "export const x = 2;");
 
@@ -1661,10 +1627,7 @@ describe("CLI: watch", () => {
       let extraRebuild = false;
       while (Date.now() - start < 5000) {
         const events = readEvents(logPath);
-        if (
-          events.filter((e) => e.type === "rebuild").length >= 1 &&
-          events.some((e) => e.type === "ready")
-        ) {
+        if (events.filter((e) => e.type === "rebuild").length > beforeRebuilds) {
           extraRebuild = true;
           break;
         }
@@ -1674,7 +1637,7 @@ describe("CLI: watch", () => {
       // restart 이벤트 없어야 함.
       expect(readEvents(logPath).some((e) => e.type === "restart")).toBe(false);
     } finally {
-      proc.kill();
+      await stopSpawnedProcess(proc);
     }
 
     rmSync(dir, { recursive: true, force: true });
@@ -1688,34 +1651,27 @@ describe("CLI: watch", () => {
 
     const logPath = join(dir, "watch.log");
     const errPath = join(dir, "watch.err");
-    const proc = spawn(
-      "sh",
+    const proc = spawnWatchJson(
       [
-        "-c",
-        `${[
-          RUNTIME,
-          CLI,
-          "--bundle",
-          "--config",
-          join(dir, "custom.config.json"),
-          join(dir, "index.ts"),
-          "--outdir",
-          outDir,
-          "--watch-json",
-        ]
-          .map(shellQuote)
-          .join(" ")} > ${shellQuote(logPath)} 2> ${shellQuote(errPath)}`,
+        "--bundle",
+        "--config",
+        join(dir, "custom.config.json"),
+        join(dir, "index.ts"),
+        "--outdir",
+        outDir,
       ],
-      { cwd: dir },
+      dir,
+      logPath,
+      errPath,
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
+    await waitForEvent(logPath, (e) => e.type === "ready", 10000, errPath);
     writeFileSync(join(dir, "custom.config.json"), `{"banner": "/* changed */"}`);
 
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000, errPath);
     } finally {
-      proc.kill();
+      await stopSpawnedProcess(proc);
     }
 
     expect(readEvents(logPath).some((e) => e.type === "restart")).toBe(true);
@@ -1728,6 +1684,7 @@ async function waitForEvent(
   logPath: string,
   predicate: (e: { type: string; [k: string]: unknown }) => boolean,
   timeoutMs: number,
+  errPath?: string,
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -1735,7 +1692,15 @@ async function waitForEvent(
     if (events.some(predicate)) return;
     await new Promise((r) => setTimeout(r, 50));
   }
-  throw new Error(`waitForEvent timeout (${timeoutMs}ms)`);
+  const stdout = existsSync(logPath) ? readFileSync(logPath, "utf8").trim() : "";
+  const stderr = errPath && existsSync(errPath) ? readFileSync(errPath, "utf8").trim() : "";
+  throw new Error(
+    [
+      `waitForEvent timeout (${timeoutMs}ms)`,
+      stdout ? `stdout:\n${stdout}` : "stdout: <empty>",
+      stderr ? `stderr:\n${stderr}` : "stderr: <empty>",
+    ].join("\n"),
+  );
 }
 
 function readEvents(logPath: string): Array<{ type: string; [k: string]: unknown }> {
