@@ -659,16 +659,13 @@ async function loadRnModule() {
  */
 function warnRnBundleUnsupported(opts) {
   // `--asset-catalog-dest` 는 iOS Images.xcassets — Xcode catalog 별도 작업이라
-  // 본 스코프 외. `--sourcemap-sources-root` / `--sourcemap-use-absolute-path` 는
-  // zts core 의 sourcemap 생성 영역이라 caller-side 처리 어려움 — 미지원 유지.
-  // graph-bundler 전용 (`transform-option` / `resolver-option`) 도 미지원.
+  // 본 스코프 외. graph-bundler 전용 (`transform-option` / `resolver-option`) 도
+  // 미지원.
   const map = {
     assetCatalogDest: '--asset-catalog-dest',
     unstableTransformProfile: '--unstable-transform-profile',
     transformOptions: '--transform-option',
     resolverOptions: '--resolver-option',
-    sourcemapSourcesRoot: '--sourcemap-sources-root',
-    sourcemapUseAbsolutePath: '--sourcemap-use-absolute-path',
   };
   for (const [key, flag] of Object.entries(map)) {
     const v = opts[key];
@@ -699,9 +696,16 @@ async function runRnBundle(opts, _config) {
   // bungae build.ts L38-79 와 동일 패턴 — caller-side write 로 path 처리.
   const wantsSourcemap = Boolean(opts.sourcemap || opts.sourcemapOutput || opts.sourceMapUrl);
 
-  // outfile 명시 + 추가 path 옵션 (sourcemapOutput / sourceMapUrl / bundleEncoding)
-  // 이 있으면 caller-side 로 직접 write — NAPI write:true 회피.
-  const callerWrite = outfile && (opts.sourcemapOutput || opts.sourceMapUrl || opts.bundleEncoding);
+  // outfile 명시 + 추가 path 옵션 (sourcemapOutput / sourceMapUrl / bundleEncoding /
+  // sourcemapSourcesRoot / sourcemapUseAbsolutePath) 있으면 caller-side 로 직접
+  // write — NAPI write:true 회피 후 sourcemap 후처리.
+  const callerWrite =
+    outfile &&
+    (opts.sourcemapOutput ||
+      opts.sourceMapUrl ||
+      opts.bundleEncoding ||
+      typeof opts.sourcemapSourcesRoot === 'string' ||
+      opts.sourcemapUseAbsolutePath === true);
 
   const result = await rn.bundleRn({
     entry,
@@ -733,7 +737,14 @@ async function runRnBundle(opts, _config) {
     writeFileSync(bundlePath, bundleCode, encoding);
     if (wantsSourcemap && result.outputFiles[1]) {
       mkdirSync(dirname(mapPath), { recursive: true });
-      writeFileSync(mapPath, result.outputFiles[1].text);
+      // ignoreList (DevTools) + path 옵션 한 패스. production bundle 의
+      // DevTools 디버깅 시 node_modules / zts:runtime frame 자동 hide.
+      const mapJson = rn.postProcessSourceMap(result.outputFiles[1].text, {
+        sourceRoot: opts.sourcemapSourcesRoot,
+        useAbsolutePath: opts.sourcemapUseAbsolutePath === true,
+        projectRoot,
+      });
+      writeFileSync(mapPath, mapJson);
     }
   }
 
