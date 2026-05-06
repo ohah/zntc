@@ -1,8 +1,7 @@
-// @react-native-community/cli-server-api lazy load — Metro 호환 websocket
-// endpoints (`/message` / `/events` / `/devtools`) + messageSocketEndpoint.broadcast.
-// peer optional 이라 미설치 시 graceful skip — 본 dev server 는 broadcast
-// 없이도 base/asset/bundle/symbolicate 라우트는 동작 (HMR adapter 가 자체
-// broadcast 처리).
+// @react-native-community/cli-server-api — Metro 호환 websocket endpoints
+// (`/message` / `/events` / `/debugger-proxy`) + messageSocketEndpoint.broadcast.
+// `@zts/react-native` 의 dependency 로 자동 install (번개 parity) — 사용자
+// 프로젝트가 별도 버전을 hoist 하면 caller projectRoot 기준 resolve 우선.
 
 import type { IncomingMessage } from 'node:http';
 import { createRequire } from 'node:module';
@@ -47,17 +46,36 @@ export interface LoadCliServerApiOptions {
  * cli-server-api 미설치인지 다른 이유인지 추적. peer 미설치는 흔한 케이스라
  * default 는 silent.
  */
+/**
+ * caller projectRoot → @zts/react-native → process.cwd 순으로 resolve 시도.
+ * 사용자 프로젝트가 `@react-native-community/cli-server-api` 를 hoist 했으면
+ * 그 instance 가 우선 (RN runtime 과의 module identity 보장 — Rozenite 같은
+ * monkey-patch 도구 호환).
+ */
+function resolveCliServerApiPath(projectRoot: string | undefined): string {
+  const candidates: Array<() => string> = [];
+  if (projectRoot) {
+    const projectRequire = createRequire(`${projectRoot}/package.json`);
+    candidates.push(() => projectRequire.resolve('@react-native-community/cli-server-api'));
+  }
+  // `@zts/react-native` 자체 dependency — workspace install 시 자동 hoist.
+  const selfRequire = createRequire(import.meta.url);
+  candidates.push(() => selfRequire.resolve('@react-native-community/cli-server-api'));
+  for (const c of candidates) {
+    try {
+      return c();
+    } catch {
+      /* try next */
+    }
+  }
+  return '@react-native-community/cli-server-api';
+}
+
 export async function loadCliServerApi(
   options: LoadCliServerApiOptions,
 ): Promise<CliServerApi | null> {
   try {
-    // peer optional — caller (사용자 프로젝트) 의 node_modules 기준으로 resolve.
-    // dynamic `await import('@...')` 만 쓰면 import 호출하는 모듈 (`@zts/react-native/dist`)
-    // 의 node_modules 기준이라 caller 측 peer 를 못 찾음. createRequire(projectRoot)
-    // 로 user-side resolve 우선.
-    const projectRoot = options.projectRoot ?? process.cwd();
-    const projectRequire = createRequire(`${projectRoot}/package.json`);
-    const resolvedPath = projectRequire.resolve('@react-native-community/cli-server-api');
+    const resolvedPath = resolveCliServerApiPath(options.projectRoot);
     const mod = (await import(resolvedPath)) as unknown as {
       createDevServerMiddleware: (input: {
         port: number;
