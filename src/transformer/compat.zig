@@ -267,7 +267,7 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .arrow, .engine = .node, .major = 6 },
     .{ .feature = .arrow, .engine = .deno, .major = 1 },
     .{ .feature = .arrow, .engine = .ios, .major = 10 },
-    // hermes: 미지원
+    .{ .feature = .arrow, .engine = .hermes, .major = 0, .minor = 7 },
 
     // ── ES2015: class ──
     .{ .feature = .class, .engine = .chrome, .major = 49 },
@@ -277,6 +277,7 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .class, .engine = .node, .major = 6 },
     .{ .feature = .class, .engine = .deno, .major = 1 },
     .{ .feature = .class, .engine = .ios, .major = 10 },
+    .{ .feature = .class, .engine = .hermes, .major = 0, .minor = 7 },
 
     // ── ES2015: template_literal ──
     // esbuild는 tagged template caching 기준으로 더 높은 버전 요구
@@ -287,6 +288,7 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .template_literal, .engine = .node, .major = 8, .minor = 10 },
     .{ .feature = .template_literal, .engine = .deno, .major = 1 },
     .{ .feature = .template_literal, .engine = .ios, .major = 13 },
+    .{ .feature = .template_literal, .engine = .hermes, .major = 0, .minor = 7 },
 
     // ── ES2015: destructuring ──
     .{ .feature = .destructuring, .engine = .chrome, .major = 51 },
@@ -296,6 +298,7 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .destructuring, .engine = .node, .major = 6, .minor = 5 },
     .{ .feature = .destructuring, .engine = .deno, .major = 1 },
     .{ .feature = .destructuring, .engine = .ios, .major = 10 },
+    .{ .feature = .destructuring, .engine = .hermes, .major = 0, .minor = 7 },
 
     // ── ES2015: for_of ──
     .{ .feature = .for_of, .engine = .chrome, .major = 51 },
@@ -335,6 +338,7 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .default_params, .engine = .node, .major = 6 },
     .{ .feature = .default_params, .engine = .deno, .major = 1 },
     .{ .feature = .default_params, .engine = .ios, .major = 10 },
+    .{ .feature = .default_params, .engine = .hermes, .major = 0, .minor = 7 },
 
     // ── ES2015: block_scoping ──
     .{ .feature = .block_scoping, .engine = .chrome, .major = 49 },
@@ -344,6 +348,7 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .block_scoping, .engine = .node, .major = 6 },
     .{ .feature = .block_scoping, .engine = .deno, .major = 1 },
     .{ .feature = .block_scoping, .engine = .ios, .major = 11 },
+    .{ .feature = .block_scoping, .engine = .hermes, .major = 0, .minor = 7 },
 
     // ── ES2015: generator ──
     .{ .feature = .generator, .engine = .chrome, .major = 50 },
@@ -353,6 +358,7 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .generator, .engine = .node, .major = 6 },
     .{ .feature = .generator, .engine = .deno, .major = 1 },
     .{ .feature = .generator, .engine = .ios, .major = 10 },
+    .{ .feature = .generator, .engine = .hermes, .major = 0, .minor = 7 },
 
     // ── ES2015: new.target ──
     .{ .feature = .new_target, .engine = .chrome, .major = 46 },
@@ -362,6 +368,7 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .new_target, .engine = .node, .major = 5 },
     .{ .feature = .new_target, .engine = .deno, .major = 1 },
     .{ .feature = .new_target, .engine = .ios, .major = 10 },
+    .{ .feature = .new_target, .engine = .hermes, .major = 0, .minor = 7 },
 
     // ── ES2016: exponentiation (**) ──
     .{ .feature = .exponentiation, .engine = .chrome, .major = 52 },
@@ -381,6 +388,8 @@ const compat_table = [_]CompatEntry{
     .{ .feature = .async_await, .engine = .node, .major = 7, .minor = 6 },
     .{ .feature = .async_await, .engine = .deno, .major = 1 },
     .{ .feature = .async_await, .engine = .ios, .major = 11 },
+    // hermes 0.7 = 0/16 미지원, hermes 0.12 = 16/16 (compat-table.github.io 검증)
+    .{ .feature = .async_await, .engine = .hermes, .major = 0, .minor = 12 },
 
     // ── ES2018: object_spread ──
     .{ .feature = .object_spread, .engine = .chrome, .major = 60 },
@@ -731,17 +740,17 @@ test "unsupportedFeatures — chrome80,safari14 교집합" {
     try std.testing.expect(f.class_private_method);
 }
 
-test "unsupportedFeatures — hermes는 많은 feature 미지원" {
+test "unsupportedFeatures — hermes 0.12 지원/미지원 구분" {
     const f = unsupportedFeatures(&.{
         .{ .engine = .hermes, .major = 0, .minor = 12 },
     });
-    // hermes 0.12: arrow 미지원 (compat table에 없음)
-    try std.testing.expect(f.arrow);
-    try std.testing.expect(f.class);
-    try std.testing.expect(f.async_await);
-    // hermes 0.12: for_of(0.7) 지원
+    // hermes 0.7+: ES2015 (arrow/class/template_literal 등) 지원
+    try std.testing.expect(!f.arrow);
+    try std.testing.expect(!f.class);
+    try std.testing.expect(!f.template_literal);
+    // hermes 0.12: async_await + optional_chaining 지원
+    try std.testing.expect(!f.async_await);
     try std.testing.expect(!f.for_of);
-    // hermes 0.12: optional_chaining(0.12) 지원
     try std.testing.expect(!f.optional_chaining);
     // hermes: private methods 미지원 (compat table에 없음)
     try std.testing.expect(f.class_private_method);
@@ -887,7 +896,15 @@ test "unsupportedFeatures — hermes 0.7 지원/미지원 구분" {
     const f = unsupportedFeatures(&.{
         .{ .engine = .hermes, .major = 0, .minor = 7 },
     });
-    // hermes 0.7에서 지원하는 것들
+    // hermes 0.7에서 지원하는 것들 (ES2015 baseline + ES2016~2020 일부)
+    try std.testing.expect(!f.arrow);
+    try std.testing.expect(!f.class);
+    try std.testing.expect(!f.template_literal);
+    try std.testing.expect(!f.destructuring);
+    try std.testing.expect(!f.default_params);
+    try std.testing.expect(!f.block_scoping);
+    try std.testing.expect(!f.generator);
+    try std.testing.expect(!f.new_target);
     try std.testing.expect(!f.for_of);
     try std.testing.expect(!f.spread);
     try std.testing.expect(!f.object_extensions);
@@ -895,27 +912,27 @@ test "unsupportedFeatures — hermes 0.7 지원/미지원 구분" {
     try std.testing.expect(!f.object_spread);
     try std.testing.expect(!f.nullish_coalescing);
     try std.testing.expect(!f.logical_assignment);
-    // hermes 0.7에서 미지원 (compat table에 없음)
-    try std.testing.expect(f.arrow);
-    try std.testing.expect(f.class);
-    try std.testing.expect(f.template_literal);
+    // hermes 0.7 < 0.12 → async_await / optional_chaining 미지원
     try std.testing.expect(f.async_await);
+    try std.testing.expect(f.optional_chaining);
+    // hermes 미지원 (compat table에 없음)
     try std.testing.expect(f.class_static_block);
     try std.testing.expect(f.class_private_method);
-    // hermes 0.7 < 0.12 → optional_chaining 미지원
-    try std.testing.expect(f.optional_chaining);
 }
 
-test "unsupportedFeatures — 단일 엔진 + hermes 교집합은 hermes가 지배" {
+test "unsupportedFeatures — 단일 엔진 + hermes 교집합은 hermes 미지원이 지배" {
     const f = unsupportedFeatures(&.{
         .{ .engine = .chrome, .major = 100 },
         .{ .engine = .hermes, .major = 0, .minor = 12 },
     });
-    // chrome100은 모두 지원하지만 hermes가 arrow 미지원 → 결과도 미지원
-    try std.testing.expect(f.arrow);
-    try std.testing.expect(f.class);
-    // hermes 0.12는 optional_chaining 지원
+    // chrome100 + hermes 0.12 둘 다 ES2015 + ES2020 지원
+    try std.testing.expect(!f.arrow);
+    try std.testing.expect(!f.class);
     try std.testing.expect(!f.optional_chaining);
+    // hermes 가 미지원하는 features 는 결과도 미지원 (지배)
+    try std.testing.expect(f.class_private_method);
+    try std.testing.expect(f.class_private_field);
+    try std.testing.expect(f.top_level_await);
 }
 
 // ─── versionLessThan 엣지 케이스 ───
