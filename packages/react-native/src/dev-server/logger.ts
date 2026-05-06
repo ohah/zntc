@@ -30,6 +30,25 @@ export function logError(...args: unknown[]): void {
 }
 
 /**
+ * RN runtime 의 console.log 를 dev server 터미널로 forward 시 사용 — Metro 호환
+ * level 별 색상 INVERSE BOLD badge. error=red / warn=yellow / debug=magenta /
+ * info=cyan / log=white. bungae graph-bundler/utils.ts 패턴 동등.
+ */
+export function formatLogBadge(level: string): string {
+  const color =
+    level === 'error'
+      ? colors.red
+      : level === 'warn'
+        ? colors.yellow
+        : level === 'debug'
+          ? colors.magenta
+          : level === 'info'
+            ? colors.cyan
+            : colors.white;
+  return `${color}${colors.inverse}${colors.bold} ${level.toUpperCase()} ${colors.reset}`;
+}
+
+/**
  * Metro `TerminalReporter._getBundleStatusMessage` 호환 BUNDLE 상태 라인.
  * `done` 녹색 / `failed` 빨강 / `request` 노랑.
  */

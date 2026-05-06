@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 
-import { colors, logBundle, logError, logInfo, logWarn, printZtsRnBanner } from './logger.ts';
+import {
+  colors,
+  formatLogBadge,
+  logBundle,
+  logError,
+  logInfo,
+  logWarn,
+  printZtsRnBanner,
+} from './logger.ts';
 
 let logSpy: ReturnType<typeof mock>;
 let warnSpy: ReturnType<typeof mock>;
@@ -110,5 +118,42 @@ describe('printZtsRnBanner', () => {
     expect(out).toContain('╔');
     expect(out).toContain('║');
     expect(out).toContain('╚');
+  });
+});
+
+describe('formatLogBadge — RN client console.log forwarding (#2605 audit P2)', () => {
+  test('error → red INVERSE BOLD ERROR', () => {
+    const badge = formatLogBadge('error');
+    expect(badge).toContain(colors.red);
+    expect(badge).toContain(colors.inverse);
+    expect(badge).toContain(colors.bold);
+    expect(badge).toContain(' ERROR ');
+    expect(badge.endsWith(colors.reset)).toBe(true);
+  });
+
+  test('warn → yellow', () => {
+    expect(formatLogBadge('warn')).toContain(colors.yellow);
+  });
+
+  test('debug → magenta', () => {
+    expect(formatLogBadge('debug')).toContain(colors.magenta);
+  });
+
+  test('info → cyan', () => {
+    expect(formatLogBadge('info')).toContain(colors.cyan);
+  });
+
+  test('log (default) → white', () => {
+    expect(formatLogBadge('log')).toContain(colors.white);
+  });
+
+  test('unknown level → white default', () => {
+    expect(formatLogBadge('verbose')).toContain(colors.white);
+    expect(formatLogBadge('verbose')).toContain(' VERBOSE ');
+  });
+
+  test('level uppercase 적용', () => {
+    expect(formatLogBadge('error')).toContain(' ERROR ');
+    expect(formatLogBadge('Warn')).toContain(' WARN ');
   });
 });

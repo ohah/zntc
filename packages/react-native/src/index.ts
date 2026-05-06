@@ -66,6 +66,7 @@ export {
   type PlatformStateCallbacks,
   type PlatformStateRegistry,
   colors,
+  formatLogBadge,
   logBundle,
   logError,
   logInfo,
