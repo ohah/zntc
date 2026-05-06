@@ -60,4 +60,46 @@ describe('postProcessSourceMap', () => {
     const out = JSON.parse(postProcessSourceMap(input));
     expect('x_google_ignoreList' in out).toBe(false);
   });
+
+  test('zts internal source (`zts:` prefix) — DevTools ignoreList 에 추가 (#2605)', () => {
+    const input = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts', 'zts:runtime/spread-array', 'zts:runtime/class-call-check'],
+    });
+    const out = JSON.parse(postProcessSourceMap(input));
+    expect(out.x_google_ignoreList).toEqual([1, 2]);
+  });
+
+  test('NAPI emit 의 leading 공백 (` zts:runtime/...`) 매칭', () => {
+    const input = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts', ' zts:runtime/extends', '\tzts:runtime/read'],
+    });
+    const out = JSON.parse(postProcessSourceMap(input));
+    expect(out.x_google_ignoreList).toEqual([1, 2]);
+  });
+
+  test('Rolldown virtual module null byte prefix (`\\0zts:runtime/...`) 매칭', () => {
+    const NUL = String.fromCharCode(0);
+    const input = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts', `${NUL}zts:runtime/spread-array`, `${NUL}zts:runtime/extends`],
+    });
+    const out = JSON.parse(postProcessSourceMap(input));
+    expect(out.x_google_ignoreList).toEqual([1, 2]);
+  });
+
+  test('node_modules + zts internal 혼재 — 둘 다 ignoreList', () => {
+    const input = JSON.stringify({
+      version: 3,
+      sources: [
+        'src/app.ts',
+        '/node_modules/react/index.js',
+        'zts:runtime/foo',
+        '/node_modules/.bun/whatever/index.js',
+      ],
+    });
+    const out = JSON.parse(postProcessSourceMap(input));
+    expect(out.x_google_ignoreList).toEqual([1, 2, 3]);
+  });
 });
