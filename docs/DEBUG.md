@@ -21,7 +21,7 @@ ZTS 는 두 가지 경량 인프라를 제공한다:
 
 ```bash
 ZTS_DEBUG=compiled_cache zts --bundle entry.ts
-ZTS_DEBUG=compiled_cache,hmr bun run bungae:start
+ZTS_DEBUG=compiled_cache,hmr zts --watch entry.ts
 ```
 
 쉼표 구분. 공백과 대소문자 무시. 알 수 없는 이름은 조용히 무시된다.
@@ -178,7 +178,7 @@ transpile(source, {
 
 ```bash
 ZTS_PROFILE=all ZTS_PROFILE_LEVEL=detailed zts bundle entry.ts
-BUNGAE_HMR_PROFILE=1 bun run start:bungae    # 내부적으로 ZTS_PROFILE=hmr 매핑
+ZTS_PROFILE=hmr zts --watch entry.ts
 ```
 
 ## 2.2 카테고리
@@ -332,7 +332,7 @@ HMR rebuild 의 각 phase 는 `WatchRebuildEvent.phaseDurations` 에 노출.
 - `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`
 - 필드 이름과 실제 값이 일치. 2026-04-22 이전의 `parse`/`semantic` 레거시 이름은 제거됨.
 
-Sub-phase (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` 활성 시):
+Sub-phase (`ZTS_PROFILE=<cat>` 활성 시):
 
 - 파이프라인: `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
 - Graph 내부: `graphBuild` / `graphWorker` / `graphDiscover` (BFS 스캔) / `graphFinalize` (DFS+승격)
@@ -340,16 +340,7 @@ Sub-phase (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` 활성 시):
 - emit_output 내부 (emitter 수준): `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`
 - 비활성 상태에선 모두 0. `parse`/`semantic` 은 진짜 parser/analyzer 시간.
 
-## 4.1 번개 (bungae) HMR 실측
-
-```bash
-BUNGAE_HMR_PROFILE=1 bun run start:bungae
-# Rebuilt [ios] (1 files, 175ms) [detect=27 graph=65 link=3 shake=2 emit=67 delta=1]
-```
-
-번개는 `phaseDurations.*` 필드를 읽어 log formatting. ZTS 는 필드만 제공 — UI 는 번개 쪽 책임.
-
-## 4.2 profile 활성 후 세부 breakdown
+## 4.1 profile 활성 후 세부 breakdown
 
 ```ts
 import { watch } from '@zts/core';

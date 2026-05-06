@@ -16,7 +16,6 @@ ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
 | `--timing` CLI | single-file transpile | `scan / parse / semantic / transform / codegen` 5단계 |
 | `BundleTimings` struct | bundle 모드 내부 | `graph_ns / link_ns / shake_ns / emit_ns` 4 field |
 | HMR `phaseDurations` | NAPI watch 이벤트 | `detect / graph / link / shake / emit / delta / total` + sub |
-| `BUNGAE_HMR_PROFILE=1` | 번개 opt-in 로그 | phase breakdown 한 줄 |
 
 ### 1.2 파편화의 문제
 
@@ -24,7 +23,7 @@ ZTS 에는 여러 측정 도구가 독립적으로 존재한다:
 2. **CLI ↔ NAPI 불일치**: `--timing` 은 single-file 만. NAPI watch 는 HMR 전용 포맷. 공통 출력 형식/옵션 없음.
 3. **Sub-phase 없음**: `emit 67ms` 안의 transform / codegen / metadata 비중 모름.
 4. **벤치마크 부재**: 특정 phase 만 반복 측정하는 도구가 없음. 최적화 전후 비교 수동.
-5. **활성화 방식 파편화**: `ZTS_DEBUG=`, `--timing`, `BUNGAE_HMR_PROFILE=1`, `BundleOptions.debug` 각각 다른 규칙.
+5. **활성화 방식 파편화**: `ZTS_DEBUG=`, `--timing`, `BundleOptions.debug` 각각 다른 규칙.
 
 ### 1.3 요구사항 (2026-04-22 합의)
 
@@ -250,10 +249,6 @@ ZTS_PROFILE=all zts bundle ...
 
 # Specific
 ZTS_PROFILE=parse,transform ZTS_PROFILE_LEVEL=detailed zts bundle ...
-
-# 번개 호환
-BUNGAE_HMR_PROFILE=1 npm run start:bungae
-# → 내부적으로 ZTS_PROFILE=hmr 매핑
 ```
 
 ### 2.6 출력 포맷
@@ -366,7 +361,7 @@ parse           42.3ms    31.8ms   -10.5ms   -24.8%   ✓ improved
 | **6** | Semantic + Graph + Bundler timer | 100 | 0.5일 |
 | **7** | Emitter + Transformer + Codegen timer + Release overhead benchmark | 150 | 1일 |
 | **8** | Linker + TreeShaker timer | 50 | 0.5일 |
-| **9** | HMR `phaseDurations` sub-phase 노출 + 번개 호환 | 150 | 1일 |
+| **9** | HMR `phaseDurations` sub-phase 노출 | 150 | 1일 |
 | **10** | Report formats (table/tree/json/csv) + `tests/benchmark/pipeline.ts` 업데이트 | 200 | 1일 |
 | **11** | 문서 (DEBUG/USAGE/HMR) + `zts help` 최종 + CLI↔NAPI parity 통합 테스트 | 300 | 1일 |
 
@@ -374,7 +369,7 @@ parse           42.3ms    31.8ms   -10.5ms   -24.8%   ✓ improved
 
 **마일스톤**:
 - **PR 5 완료 시점** (~5일): `zts bench --phase=parse` 로 **파서만 격리 측정 가능**
-- **PR 9 완료 시점** (~8일): HMR detailed breakdown 번개에서 실측 가능
+- **PR 9 완료 시점** (~8일): HMR detailed breakdown 외부 host 에서 실측 가능
 - **PR 11 완료**: 설계 완성
 
 ---

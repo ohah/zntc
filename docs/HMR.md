@@ -111,7 +111,7 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 ## HMR Profiling
 
 HMR rebuild 의 각 phase 소요시간은 `WatchRebuildEvent.phaseDurations` 에 노출된다.
-`ZTS_PROFILE=hmr` 또는 `BUNGAE_HMR_PROFILE=1` 활성 시 sub-phase breakdown 수집 가능.
+`ZTS_PROFILE=hmr` 활성 시 sub-phase breakdown 수집 가능.
 
 자세한 내용: [`docs/DEBUG.md`](./DEBUG.md) § 4 HMR Profile.
 

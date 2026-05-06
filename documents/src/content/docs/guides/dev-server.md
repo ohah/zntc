@@ -302,7 +302,7 @@ watch({
 | `delta` | HMR delta 추출. |
 | `total` | `detect` ~ `delta` 합산. |
 
-Sub-phase (`profile: ["..."]` / `ZTS_PROFILE=...` / `BUNGAE_HMR_PROFILE=1` 활성 시에만 채워짐, 비활성 시 0):
+Sub-phase (`profile: ["..."]` / `ZTS_PROFILE=...` 활성 시에만 채워짐, 비활성 시 0):
 
 `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` / `graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` / `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
 
