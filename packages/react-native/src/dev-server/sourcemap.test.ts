@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { postProcessSourceMap } from './sourcemap.ts';
+import { applyMapPathOptions, postProcessSourceMap } from './sourcemap.ts';
 
 describe('postProcessSourceMap', () => {
   test('invalid JSON → rawJson 그대로', () => {
@@ -101,5 +101,147 @@ describe('postProcessSourceMap', () => {
     });
     const out = JSON.parse(postProcessSourceMap(input));
     expect(out.x_google_ignoreList).toEqual([1, 2, 3]);
+  });
+});
+
+describe('postProcessSourceMap — path 옵션 통합 (#2605 audit P2)', () => {
+  test('opts 없음 — ignoreList 만 (backward-compat)', () => {
+    const raw = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts', '/node_modules/x/y.js'],
+    });
+    const out = JSON.parse(postProcessSourceMap(raw));
+    expect(out.x_google_ignoreList).toEqual([1]);
+    expect(out.sourceRoot).toBeUndefined();
+  });
+
+  test('ignoreList + sourceRoot 동시 — round-trip 1회', () => {
+    const raw = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts', '/node_modules/x/y.js'],
+    });
+    const out = JSON.parse(postProcessSourceMap(raw, { sourceRoot: '/abs/proj' }));
+    expect(out.x_google_ignoreList).toEqual([1]);
+    expect(out.sourceRoot).toBe('/abs/proj');
+  });
+
+  test('ignoreList + useAbsolutePath — virtual module skip + framework 표시', () => {
+    const NUL = String.fromCharCode(0);
+    const raw = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts', `${NUL}zts:runtime/foo`, '/node_modules/x/y.js'],
+    });
+    const out = JSON.parse(
+      postProcessSourceMap(raw, { useAbsolutePath: true, projectRoot: '/abs/proj' }),
+    );
+    expect(out.x_google_ignoreList).toEqual([1, 2]);
+    expect(out.sources).toEqual([
+      '/abs/proj/src/app.ts',
+      `${NUL}zts:runtime/foo`,
+      '/node_modules/x/y.js',
+    ]);
+  });
+
+  test('절대 경로는 idempotent (RFC 3986 scheme + path.isAbsolute)', () => {
+    const raw = JSON.stringify({
+      version: 3,
+      sources: [
+        '/abs/already.ts',
+        'http://cdn.example.com/lib.js',
+        'bun:sqlite',
+        'data:text/javascript;base64,Zm9v',
+      ],
+    });
+    const out = JSON.parse(
+      postProcessSourceMap(raw, { useAbsolutePath: true, projectRoot: '/abs/proj' }),
+    );
+    expect(out.sources).toEqual([
+      '/abs/already.ts',
+      'http://cdn.example.com/lib.js',
+      'bun:sqlite',
+      'data:text/javascript;base64,Zm9v',
+    ]);
+  });
+});
+
+describe('applyMapPathOptions — Metro sourcemap path 옵션 (#2605 audit P2)', () => {
+  test('미설정 — raw 그대로 (no-op)', () => {
+    const raw = JSON.stringify({ version: 3, sources: ['a.ts'] });
+    expect(applyMapPathOptions(raw, {})).toBe(raw);
+  });
+
+  test('sourceRoot — Metro sourcemapSourcesRoot 설정', () => {
+    const raw = JSON.stringify({ version: 3, sources: ['a.ts'] });
+    const out = JSON.parse(applyMapPathOptions(raw, { sourceRoot: '/abs/proj' }));
+    expect(out.sourceRoot).toBe('/abs/proj');
+  });
+
+  test('sourceRoot — 빈 string 도 valid (Metro 호환)', () => {
+    const raw = JSON.stringify({ version: 3, sources: ['a.ts'] });
+    const out = JSON.parse(applyMapPathOptions(raw, { sourceRoot: '' }));
+    expect(out.sourceRoot).toBe('');
+  });
+
+  test('useAbsolutePath — sources 의 상대 경로를 projectRoot 기준 절대화', () => {
+    const raw = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts', 'src/utils/foo.ts'],
+    });
+    const out = JSON.parse(
+      applyMapPathOptions(raw, { useAbsolutePath: true, projectRoot: '/abs/proj' }),
+    );
+    expect(out.sources).toEqual(['/abs/proj/src/app.ts', '/abs/proj/src/utils/foo.ts']);
+  });
+
+  test('useAbsolutePath — virtual module (`zts:` / NUL prefix) 는 그대로', () => {
+    const NUL = String.fromCharCode(0);
+    const raw = JSON.stringify({
+      version: 3,
+      sources: ['src/app.ts', `${NUL}zts:runtime/foo`, 'http://cdn.example.com/lib.js'],
+    });
+    const out = JSON.parse(
+      applyMapPathOptions(raw, { useAbsolutePath: true, projectRoot: '/abs/proj' }),
+    );
+    expect(out.sources[0]).toBe('/abs/proj/src/app.ts');
+    expect(out.sources[1]).toBe(`${NUL}zts:runtime/foo`);
+    expect(out.sources[2]).toBe('http://cdn.example.com/lib.js');
+  });
+
+  test('useAbsolutePath — 절대 경로는 idempotent', () => {
+    const raw = JSON.stringify({ version: 3, sources: ['/abs/already.ts'] });
+    const out = JSON.parse(
+      applyMapPathOptions(raw, { useAbsolutePath: true, projectRoot: '/abs/proj' }),
+    );
+    expect(out.sources[0]).toBe('/abs/already.ts');
+  });
+
+  test('sourceRoot + useAbsolutePath 둘 다 적용', () => {
+    const raw = JSON.stringify({ version: 3, sources: ['src/app.ts'] });
+    const out = JSON.parse(
+      applyMapPathOptions(raw, {
+        sourceRoot: '/root',
+        useAbsolutePath: true,
+        projectRoot: '/abs/proj',
+      }),
+    );
+    expect(out.sourceRoot).toBe('/root');
+    expect(out.sources).toEqual(['/abs/proj/src/app.ts']);
+  });
+
+  test('invalid JSON — raw 그대로', () => {
+    expect(applyMapPathOptions('not json', { sourceRoot: '/x' })).toBe('not json');
+  });
+
+  test('version != 3 — raw 그대로', () => {
+    const raw = JSON.stringify({ version: 2 });
+    expect(applyMapPathOptions(raw, { sourceRoot: '/x' })).toBe(raw);
+  });
+
+  test('non-string source 항목 무시 (절대화 skip)', () => {
+    const raw = JSON.stringify({ version: 3, sources: ['src/a.ts', 42, null] });
+    const out = JSON.parse(
+      applyMapPathOptions(raw, { useAbsolutePath: true, projectRoot: '/abs/proj' }),
+    );
+    expect(out.sources).toEqual(['/abs/proj/src/a.ts', 42, null]);
   });
 });
