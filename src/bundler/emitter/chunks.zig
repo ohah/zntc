@@ -91,14 +91,18 @@ pub fn emitChunks(
         errdefer chunk_output.deinit(allocator);
 
         // chunk 별 sourcemap builder. eager 경로는 stack alloc 으로 zero-overhead.
-        // JSON 은 chunk 끝에서 생성 후 OutputFile.sourcemap 에 이관.
+        // lazy 경로는 chunk 끝에서 heap 으로 이관되어 OutputFile.sourcemap_builder
+        // 로 caller 에 전달 — 그때는 본 함수의 defer 가 deinit 을 skip 한다.
         var chunk_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap.enable) blk: {
             var sm = SourceMap.SourceMapBuilder.init(allocator);
             sm.source_root = options.sourcemap.source_root orelse "";
             sm.sources_content = options.sourcemap.sources_content;
             break :blk sm;
         } else null;
-        defer if (chunk_sm) |*sm| sm.deinit();
+        var chunk_sm_moved = false;
+        defer if (!chunk_sm_moved) {
+            if (chunk_sm) |*sm| sm.deinit();
+        };
 
         // RSC: 디렉티브가 파일 첫 문장이어야 React/Next가 인식.
         var hoisted_directives: std.ArrayList(u8) = .empty;
@@ -589,13 +593,23 @@ pub fn emitChunks(
             break :blk try names.toOwnedSlice(allocator);
         };
 
-        // sourcemap JSON 을 chunk 별로 생성. directive hoisting (위 insertSlice)
-        // 후의 줄 shift 는 의도적으로 보정 안 함 — 단일 번들 path 와 동일 동작.
-        const chunk_sourcemap: ?[]const u8 = if (chunk_sm) |*sm|
-            try sm.generateJSONOwned(filename)
-        else
-            null;
+        // sourcemap 결과: lazy 경로는 builder 자체를 OutputFile 에 이관 (caller 가
+        // 호출 시점에 generateJSON 수행). eager 는 즉시 JSON 생성. directive
+        // hoisting (위 insertSlice) 후의 줄 shift 는 의도적으로 보정 안 함 —
+        // 단일 번들 path 와 동일 동작.
+        var chunk_sourcemap: ?[]const u8 = null;
+        var chunk_sourcemap_builder: ?*SourceMap.SourceMapBuilder = null;
+        if (chunk_sm) |*sm| {
+            if (options.sourcemap.lazy) {
+                chunk_sourcemap_builder = try sm.moveToHeap(allocator);
+                chunk_sm_moved = true;
+            } else {
+                chunk_sourcemap = try sm.generateJSONOwned(filename);
+            }
+        }
+        // lazy/eager 가 mutually exclusive 라 두 errdefer 는 동시에 active 안 됨.
         errdefer if (chunk_sourcemap) |s| allocator.free(s);
+        errdefer if (chunk_sourcemap_builder) |b| b.destroy(allocator);
 
         try outputs.append(allocator, .{
             .path = filename,
@@ -603,6 +617,7 @@ pub fn emitChunks(
             .module_ids = module_ids,
             .exports = export_names,
             .sourcemap = chunk_sourcemap,
+            .sourcemap_builder = chunk_sourcemap_builder,
         });
     }
 

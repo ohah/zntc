@@ -222,9 +222,15 @@ pub const OutputFile = struct {
     exports: []const []const u8 = &.{},
     /// "chunk" (JS/TS 번들 결과) / "asset" (binary/text/file/dataurl 로더 output).
     kind: Kind = .chunk,
-    /// chunk 별 sourcemap JSON (V3). null 이면 sourcemap 미생성 혹은 asset output.
-    /// `EmitOptions.sourcemap.enable=true` + `kind == .chunk` 시 채워짐. allocator 소유 — deinit 에서 해제 (#2654).
+    /// chunk 별 eager sourcemap JSON (V3). null 이면 sourcemap 미생성 혹은
+    /// lazy 경로 혹은 asset output. allocator 소유 — deinit 에서 해제. `sourcemap_builder`
+    /// 와 상호 배타.
     sourcemap: ?[]const u8 = null,
+    /// chunk 별 lazy sourcemap builder. `EmitOptions.sourcemap.lazy=true` 일 때
+    /// JSON 을 emit 단계에서 생성하지 않고 builder 를 이관 — caller (NAPI getter
+    /// 등) 가 호출 시점에 generateJSON 수행. allocator 소유 — deinit 에서
+    /// destroy. `sourcemap` 과 상호 배타.
+    sourcemap_builder: ?*SourceMap.SourceMapBuilder = null,
 
     pub const Kind = enum { chunk, asset };
 
@@ -238,6 +244,7 @@ pub const OutputFile = struct {
         for (self.exports) |ex| allocator.free(ex);
         if (self.exports.len > 0) allocator.free(self.exports);
         if (self.sourcemap) |sm| allocator.free(sm);
+        if (self.sourcemap_builder) |sm| sm.destroy(allocator);
     }
 };
 
@@ -821,11 +828,8 @@ pub fn emitWithTreeShaking(
                         0, // endregion 도 없음
                     );
                     if (options.sourcemap.lazy) {
-                        const heap_sm = try allocator.create(SourceMap.SourceMapBuilder);
-                        heap_sm.* = mod_sm;
-                        heap_sm.fixSelfReferences();
+                        module_sm_builder = try mod_sm.moveToHeap(allocator);
                         mod_sm_moved = true;
-                        module_sm_builder = heap_sm;
                     } else {
                         module_map = try mod_sm.generateJSONOwned(mod_id);
                     }
@@ -1052,9 +1056,7 @@ pub fn emitWithTreeShaking(
     const output_slice = try output.toOwnedSlice(allocator);
     const module_codes_slice = if (dev_module_codes.items.len > 0) try dev_module_codes.toOwnedSlice(allocator) else null;
     const builder_to_return: ?*SourceMap.SourceMapBuilder = if (options.sourcemap.lazy and bundle_sm != null) blk: {
-        const heap_sm = try allocator.create(SourceMap.SourceMapBuilder);
-        heap_sm.* = bundle_sm.?;
-        heap_sm.fixSelfReferences();
+        const heap_sm = try bundle_sm.?.moveToHeap(allocator);
         bundle_sm_moved = true;
         break :blk heap_sm;
     } else null;

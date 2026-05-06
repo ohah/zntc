@@ -549,6 +549,84 @@ test "emitChunks: 2 entries + shared module — 각 chunk 가 독립 sourcemap (
     }
 }
 
+test "emitChunks: sourcemap.lazy=true → builder 이관, JSON 은 caller 시점에 생성 (#2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\nconst y = x + 2;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{ .sourcemap = .{ .enable = true, .lazy = true } }, null);
+    defer {
+        for (outputs) |o| {
+            o.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expect(outputs[0].sourcemap == null);
+    try std.testing.expect(outputs[0].sourcemap_builder != null);
+
+    // caller 가 호출 시점에 JSON 생성
+    const json = try outputs[0].sourcemap_builder.?.generateJSON(outputs[0].path);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"version\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"mappings\":") != null);
+}
+
+test "emitChunks: lazy 와 eager 의 JSON 은 바이트 동등 (#2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\nconst y = x + 2;\nconsole.log(y);");
+
+    var dp_buf: [256]u8 = undefined;
+    const dp = try tmp.dir.realpath(".", &dp_buf);
+    var entry_buf: [512]u8 = undefined;
+    const entry_path = try std.fmt.bufPrint(&entry_buf, "{s}/index.ts", .{dp});
+
+    // eager
+    var result1 = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result1.graph.deinit();
+    defer result1.cache.deinit();
+    var cg1 = try chunk_mod.generateChunks(std.testing.allocator, &result1.graph, &.{entry_path}, .{});
+    defer cg1.deinit();
+    const eager_outputs = try emitter.emitChunks(std.testing.allocator, &result1.graph, &cg1, &.{ .sourcemap = .{ .enable = true } }, null);
+    defer {
+        for (eager_outputs) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(eager_outputs);
+    }
+
+    // lazy
+    var result2 = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result2.graph.deinit();
+    defer result2.cache.deinit();
+    var cg2 = try chunk_mod.generateChunks(std.testing.allocator, &result2.graph, &.{entry_path}, .{});
+    defer cg2.deinit();
+    const lazy_outputs = try emitter.emitChunks(std.testing.allocator, &result2.graph, &cg2, &.{ .sourcemap = .{ .enable = true, .lazy = true } }, null);
+    defer {
+        for (lazy_outputs) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(lazy_outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), eager_outputs.len);
+    try std.testing.expectEqual(@as(usize, 1), lazy_outputs.len);
+    try std.testing.expect(eager_outputs[0].sourcemap != null);
+    try std.testing.expect(lazy_outputs[0].sourcemap_builder != null);
+
+    const lazy_json = try lazy_outputs[0].sourcemap_builder.?.generateJSON(lazy_outputs[0].path);
+    try std.testing.expectEqualStrings(eager_outputs[0].sourcemap.?, lazy_json);
+}
+
 test "emitChunks: two entries with shared module — 3 OutputFiles" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
