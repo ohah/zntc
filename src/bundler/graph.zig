@@ -3436,9 +3436,14 @@ pub const ModuleGraph = struct {
         if (self.resolve_cache.platform == .react_native or self.dev_mode) {
             var it = self.modules.iterator(0);
             while (it.next()) |m| {
-                if (m.wrap_kind == .none and m.exports_kind.isEsm()) {
-                    m.wrap_kind = .esm;
-                }
+                if (m.wrap_kind != .none) continue;
+                if (!m.exports_kind.isEsm()) continue;
+                // RN production: side-effect free + non-cyclic + no TLA + no re_export 모듈은
+                // scope-hoist 유지. re_export 가 있는 barrel 은 wrap 필수 (#1340/#1193 —
+                // barrel factory body 의 init 호출이 side-effect import 전파).
+                // dev_mode 는 HMR 위해 모두 wrap (factory 단위 swap).
+                if (!self.dev_mode and !m.side_effects and m.cycle_group == 0 and !m.uses_top_level_await and !m.is_context_dep and !moduleHasReExport(m)) continue;
+                m.wrap_kind = .esm;
             }
         }
 
@@ -3587,6 +3592,16 @@ pub const ModuleGraph = struct {
         const target_idx = @intFromEnum(target_mod_idx);
         if (target_idx >= self.modules.count()) return null;
         return self.modules.at(target_idx);
+    }
+
+    /// 모듈에 re_export binding 이 하나라도 있는지. Pass 3 의 selective scope-hoist
+    /// 가드용 — barrel 모듈은 factory body 의 init 호출로 source 의 side-effect 를
+    /// 전파해야 하므로 wrap 유지 (#1340/#1193).
+    fn moduleHasReExport(m: *const Module) bool {
+        for (m.export_bindings) |eb| {
+            if (eb.kind.isAnyReExport()) return true;
+        }
+        return false;
     }
 
     /// `.none` 상태의 ESM 모듈을 `.esm`으로 promote. 이미 래핑됐거나 ESM이 아니면
