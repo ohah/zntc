@@ -105,6 +105,12 @@ test {
     _ = module_store;
     _ = symbol;
 
+    // emitter/ 하위 파일 (dev.zig 등) 의 인라인 test 블록을 test 빌드가
+    // 발견하도록 명시적으로 reference. emitter.zig 는 dev 를 사용하지만
+    // `pub const` 가 아닌 file-private const 로만 import → 다른 파일이
+    // dev 를 직접 reference 안 하면 test reachability 안 잡힘.
+    _ = @import("emitter/dev.zig");
+
     // test files
     _ = @import("bundler_test.zig");
     _ = @import("tree_shaker_test.zig");
