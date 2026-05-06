@@ -5231,7 +5231,7 @@ describe("buildRnDevServerInput — config + opts 추출 (#2605)", () => {
         { entryPoints: ["i.js"] },
         {
           transformer: { inlineRequires: true, minifier: "terser" },
-          serializer: { prelude: ["./extra-prelude.js"], bundleType: "module" },
+          serializer: { bundleType: "module" },
           server: { forwardClientLogs: true, verifyConnections: true },
         },
       );
@@ -5241,10 +5241,12 @@ describe("buildRnDevServerInput — config + opts 추출 (#2605)", () => {
     const all = writes.join("");
     expect(all).toContain("transformer.inlineRequires");
     expect(all).toContain("transformer.minifier");
-    expect(all).toContain("serializer.prelude");
     expect(all).toContain("serializer.bundleType");
     expect(all).toContain("server.forwardClientLogs");
     expect(all).toContain("server.verifyConnections");
+    // transformer.babel / serializer.prelude 는 매핑 가능해서 경고 없음.
+    expect(all).not.toContain("transformer.babel");
+    expect(all).not.toContain("serializer.prelude");
   });
 
   test("미지원 필드 0 — stderr 경고 0 출력", async () => {
@@ -5284,7 +5286,7 @@ describe("buildRnDevServerInput — config + opts 추출 (#2605)", () => {
     expect(writes.join("")).not.toContain("[zts:rn-dev]");
   });
 
-  test("UNSUPPORTED_FIELDS — transformer.babel + server.unstable_serverRoot 도 경고", async () => {
+  test("UNSUPPORTED_FIELDS — server.unstable_serverRoot 도 경고", async () => {
     const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
     const original = process.stderr.write.bind(process.stderr);
     const writes: string[] = [];
@@ -5294,19 +5296,59 @@ describe("buildRnDevServerInput — config + opts 추출 (#2605)", () => {
       return true;
     };
     try {
-      buildRnDevServerInput(
+      buildRnDevServerInput({ entryPoints: ["i.js"] }, { server: { unstable_serverRoot: "/srv" } });
+    } finally {
+      process.stderr.write = original;
+    }
+    expect(writes.join("")).toContain("server.unstable_serverRoot");
+  });
+
+  test("config.serializer.prelude → bundle.extra.prelude 매핑 (warning 없음)", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+      return true;
+    };
+    let input: ReturnType<typeof buildRnDevServerInput>;
+    try {
+      input = buildRnDevServerInput(
         { entryPoints: ["i.js"] },
-        {
-          transformer: { babel: { presets: ["x"] } },
-          server: { unstable_serverRoot: "/srv" },
-        },
+        { serializer: { prelude: ["./shims/prelude.js"] } },
       );
     } finally {
       process.stderr.write = original;
     }
-    const all = writes.join("");
-    expect(all).toContain("transformer.babel");
-    expect(all).toContain("server.unstable_serverRoot");
+    expect(input?.bundle.extra?.prelude).toEqual(["./shims/prelude.js"]);
+    expect(writes.join("")).not.toContain("serializer.prelude");
+  });
+
+  test("config.transformer.babel → bundle.extra.babel 매핑 (warning 없음)", async () => {
+    const { buildRnDevServerInput } = await import("./rn-dev-input.mjs");
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8"));
+      return true;
+    };
+    const inlineBabel = {
+      presets: ["@ohah/react-native-mcp-server/babel-preset"],
+      plugins: [["@babel/plugin-proposal-decorators", { legacy: true }] as [string, object]],
+    };
+    let input: ReturnType<typeof buildRnDevServerInput>;
+    try {
+      input = buildRnDevServerInput(
+        { entryPoints: ["i.js"] },
+        { transformer: { babel: inlineBabel } },
+      );
+    } finally {
+      process.stderr.write = original;
+    }
+    expect(input?.bundle.extra?.babel).toEqual(inlineBabel);
+    expect(writes.join("")).not.toContain("transformer.babel");
   });
 });
 

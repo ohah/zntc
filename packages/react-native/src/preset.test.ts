@@ -215,6 +215,27 @@ describe("buildRnBundleOptions — define / banner / footer / polyfills", () => 
     const opts = buildRnBundleOptions(baseInput());
     expect(opts.runBeforeMain).toBeUndefined();
   });
+
+  test("extra.prelude — 사용자 prelude 가 projectRoot 기준 절대화 + runBeforeMain 에 append", () => {
+    const opts = buildRnBundleOptions(
+      baseInput({ extra: { prelude: ["./shims/extra-prelude.js"] } }),
+    );
+    expect(opts.runBeforeMain).toEqual([join(dir, "shims/extra-prelude.js")]);
+  });
+
+  test("extra.prelude — 절대 경로 그대로 보존 + 다중 항목 순서 보존", () => {
+    const opts = buildRnBundleOptions(
+      baseInput({
+        extra: { prelude: ["/abs/early.js", "./relative-late.js"] },
+      }),
+    );
+    expect(opts.runBeforeMain).toEqual(["/abs/early.js", join(dir, "relative-late.js")]);
+  });
+
+  test("extra.prelude — 빈 배열은 runBeforeMain 미정의 (preset 의 InitializeCore 도 미설치 fixture)", () => {
+    const opts = buildRnBundleOptions(baseInput({ extra: { prelude: [] } }));
+    expect(opts.runBeforeMain).toBeUndefined();
+  });
 });
 
 describe("buildRnBundleOptions — dev mode 분기 (jsx / devMode / reactRefresh / collectModuleCodes)", () => {
