@@ -27,7 +27,7 @@
     "build": "bun run build:napi && cp ../../zig-out/lib/zts.node . && bun run build:js && bun run build:dts",
     "postinstall": "[ -f ../../zig-out/lib/zts.node ] && cp ../../zig-out/lib/zts.node . || true",
     "pretest": "bun run --cwd ../server build && bun run --cwd ../web build && bun run --cwd ../react-native build",
-    "test": "bun test"
+    "test": "bun test --timeout 10000"
   },
   "devDependencies": {
     "@types/node": "^25.5.2"

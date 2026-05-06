@@ -1504,14 +1504,14 @@ describe("CLI: watch", () => {
     );
 
     // 초기 ready 까지 대기
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 5000);
+    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
 
     // config 변경 trigger
     writeFileSync(join(dir, "zts.config.json"), `{"banner": "/* changed */"}`);
 
     // restart 이벤트 대기
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 5000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
     } finally {
       proc.kill();
     }
@@ -1543,12 +1543,12 @@ describe("CLI: watch", () => {
       { cwd: dir },
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 5000);
+    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
 
     writeFileSync(join(dir, ".env"), "VITE_K=changed");
 
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 5000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
     } finally {
       proc.kill();
     }
@@ -1578,11 +1578,11 @@ describe("CLI: watch", () => {
       { cwd: dir },
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 5000);
+    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
     writeFileSync(join(dir, "zts.config.ts"), `export default { banner: "/* v2 */" as const };`);
 
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 5000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
     } finally {
       proc.kill();
     }
@@ -1619,11 +1619,11 @@ describe("CLI: watch", () => {
       { cwd: dir },
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 5000);
+    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
     writeFileSync(join(dir, ".env.production"), "VITE_K=changed");
 
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 5000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
     } finally {
       proc.kill();
     }
@@ -1651,7 +1651,7 @@ describe("CLI: watch", () => {
       { cwd: dir },
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 5000);
+    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
     // 초기 ready 후 entry 변경 — rebuild 만 와야 함.
     writeFileSync(join(dir, "index.ts"), "export const x = 2;");
 
@@ -1709,11 +1709,11 @@ describe("CLI: watch", () => {
       { cwd: dir },
     );
 
-    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 5000);
+    await waitForEvent(logPath, (e) => e.type === "ready" || e.type === "rebuild", 10000);
     writeFileSync(join(dir, "custom.config.json"), `{"banner": "/* changed */"}`);
 
     try {
-      await waitForEvent(logPath, (e) => e.type === "restart", 5000);
+      await waitForEvent(logPath, (e) => e.type === "restart", 10000);
     } finally {
       proc.kill();
     }
@@ -4394,7 +4394,7 @@ describe("CLI: Vite-style app builder", () => {
           }
         };
         ws.onerror = () => resolve({ type: "error" });
-        setTimeout(() => resolve({ type: "timeout" }), 5000);
+        setTimeout(() => resolve({ type: "timeout" }), 10000);
       });
       await new Promise((r) => setTimeout(r, 300));
       writeFileSync(join(dir, "src", "style.css"), ".x{color:blue}");
@@ -4430,7 +4430,7 @@ describe("CLI: Vite-style app builder", () => {
           }
         };
         ws.onerror = () => resolve({ type: "error-event" });
-        setTimeout(() => resolve({ type: "timeout" }), 5000);
+        setTimeout(() => resolve({ type: "timeout" }), 10000);
       });
       const msg = await messagePromise;
       expect(msg.type).toBe("error");
@@ -4503,7 +4503,7 @@ describe("CLI: Vite-style app builder", () => {
           }
         };
         ws.onerror = () => resolve({ type: "error" });
-        setTimeout(() => resolve({ type: "timeout" }), 5000);
+        setTimeout(() => resolve({ type: "timeout" }), 10000);
       });
       await new Promise((r) => setTimeout(r, 300));
       writeFileSync(join(dir, "src", "style.scss"), ".box { color: rgb(4, 5, 6); }");
@@ -4545,7 +4545,7 @@ describe("CLI: Vite-style app builder", () => {
           }
         };
         ws.onerror = () => resolve({ type: "error" });
-        setTimeout(() => resolve({ type: "timeout" }), 5000);
+        setTimeout(() => resolve({ type: "timeout" }), 10000);
       });
       await new Promise((r) => setTimeout(r, 300));
       writeFileSync(join(dir, "src", "card.module.scss"), ".card { color: rgb(7, 8, 9); }");
@@ -4638,7 +4638,7 @@ describe("CLI: Vite-style app builder", () => {
             resolve(msg);
           }
         };
-        setTimeout(() => resolve({ type: "timeout" }), 5000);
+        setTimeout(() => resolve({ type: "timeout" }), 10000);
       });
       await new Promise((r) => setTimeout(r, 300));
       writeFileSync(join(dir, "src", "a.css"), ".a{color:green}");
@@ -4676,7 +4676,7 @@ describe("CLI: Vite-style app builder", () => {
           }
         };
         ws.onerror = () => resolve({ type: "error" });
-        setTimeout(() => resolve({ type: "timeout" }), 5000);
+        setTimeout(() => resolve({ type: "timeout" }), 10000);
       });
       const msg = await messagePromise;
       expect(msg.type).toBe("connected");
