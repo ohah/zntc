@@ -92,11 +92,12 @@ export function warnUnknownKeys(
 /**
  * 알려진 BuildOptions / TranspileOptions / config-only 키 (`extends` 등) 통합 목록.
  *
- * `BuildOptions` 타입에서 자동 추출하지 못해 (TS 타입 → 런타임 변환 미구현)
- * 수동 동기화. 새 옵션 추가 시 이 리스트에 함께 추가.
+ * TypeScript 타입은 런타임에 지워지므로 `warnUnknownKeys()` 가 이 목록을 직접
+ * `BuildOptions` 에서 읽을 수는 없다. 그래서 런타임 값은 수동 목록으로 유지한다.
  *
- * 단일 source of truth 화는 #2112 (Phase 3-5 schema sync) 의 책임 — 그 PR 이
- * `BuildOptions` ↔ Zig DTO 양방향 검증을 도입하면서 이 리스트도 자동 생성 가능.
+ * drift 는 `typo-suggest.test.ts` 가 `BuildOptionsCommon` 선언을 파싱해 CI 에서
+ * 검출한다. 완전한 단일 source of truth 화는 #2112 (Phase 3-5 schema sync) 에서
+ * `BuildOptions` / Zig DTO / config key 목록을 빌드타임 생성 대상으로 묶을 때 가능하다.
  */
 export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // ─── 진입 ───
