@@ -90,7 +90,9 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     // EXPO_ROUTER_APP_ROOT 는 projectRoot 의 `app/` 절대 경로 — `_ctx.{ios,android,web}.js`
     // 가 node_modules 안에 있어 importer 기준 상대 경로면 ctx 매치 0 → "Welcome to Expo"
     // fallback 화면 트리거됨.
-    expect(opts.define?.['process.env.EXPO_ROUTER_APP_ROOT']).toBe(JSON.stringify(join(dir, 'app')));
+    expect(opts.define?.['process.env.EXPO_ROUTER_APP_ROOT']).toBe(
+      JSON.stringify(join(dir, 'app')),
+    );
     expect(opts.define?.['process.env.EXPO_OS']).toBe('"android"');
     expect(opts.define?.global).toBe('__ZTS_RN_GLOBAL__');
   });
