@@ -5,20 +5,30 @@ description: Performance comparison between ZTS and other tools
 
 import BenchmarkCharts from '../../../../components/BenchmarkCharts.tsx';
 
-ZTS compares transpile and bundle performance against esbuild, SWC, Bun, and related tools.
+ZTS compares transpile and bundle performance against esbuild, SWC, Bun, Rolldown, Rspack, and related tools.
 
 ## Environment
 
-- **Platform**: macOS Apple Silicon (M-series)
-- **Iterations**: average of 5 runs
-- **Method**: direct CLI execution, excluding npx overhead
+- **Platform**: `darwin arm64`
+- **Baseline date**: 2026-05-06
+- **CLI**: `bench.ts`, 5-run median, direct CLI binary execution without npx overhead
+- **NAPI / WASM / CLI**: `napi-bench.ts`, 3 warmups + 10-run median
+- **Bundle perf**: `bundle-perf.ts`, 5 warmups + 20-run median, CI-style same-run ZTS/Rolldown/Rspack comparison
+- **Pipeline**: `pipeline.ts`, 5-run median, profile total
+
+Lower values are faster. The number at the end of each bar is median wall time.
 
 <BenchmarkCharts client:only="react" />
 
 ## How to Run
 
-Benchmark script: `tests/benchmark/bench.ts`
-
 ```bash
-cd tests/benchmark && bun run bench.ts
+zig build -Doptimize=ReleaseFast
+zig build napi
+zig build wasm
+
+bun run tests/benchmark/bench.ts
+bun run tests/benchmark/napi-bench.ts
+bun run tests/benchmark/bundle-perf.ts --no-fail --output bundle-perf.json
+bun run tests/benchmark/pipeline.ts
 ```
