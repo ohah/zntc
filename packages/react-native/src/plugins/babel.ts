@@ -54,6 +54,39 @@ export function isZtsNativePlugin(name: string): boolean {
 }
 
 /**
+ * Babel plugin 이름 컨벤션을 적용 (`@babel/core` 의 `standardizeName` 와 동등).
+ *
+ *  - `'lodash'`         → `'babel-plugin-lodash'`
+ *  - `'@babel/foo'`     → `'@babel/plugin-foo'`
+ *  - `'@scope/foo'`     → `'@scope/babel-plugin-foo'`
+ *  - 절대/상대 경로, `module:` prefix, 이미 prefix 를 가진 이름은 그대로.
+ *
+ * babel CLI 는 이 prefix 를 자동 적용하지만 ZTS 는 plugin 을 사전 절대경로로 resolve
+ * 해 babel 에 넘기므로 직접 적용해야 한다. 안 그러면 `'lodash'` 가 lodash 라이브러리
+ * 자체로 풀려 babel 이 `.__wrapped__ is not a valid Plugin property` 로 reject.
+ */
+export function applyBabelPluginPrefix(name: string): string {
+  if (name.startsWith("./") || name.startsWith("/") || name.startsWith("module:")) return name;
+  if (name.startsWith("@babel/")) {
+    const rest = name.slice("@babel/".length);
+    if (rest.startsWith("plugin-") || rest.startsWith("preset-")) return name;
+    return `@babel/plugin-${rest}`;
+  }
+  if (name.startsWith("@")) {
+    const slashIdx = name.indexOf("/");
+    if (slashIdx > 0) {
+      const scope = name.slice(0, slashIdx);
+      const rest = name.slice(slashIdx + 1);
+      if (rest.startsWith("babel-plugin-") || rest.startsWith("babel-preset-")) return name;
+      return `${scope}/babel-plugin-${rest}`;
+    }
+    return name;
+  }
+  if (name.startsWith("babel-plugin-") || name.startsWith("babel-preset-")) return name;
+  return `babel-plugin-${name}`;
+}
+
+/**
  * babel.config.js 의 plugins 배열 중 ZTS native list 외 의 plugin 이 하나라도
  * 있으면 true — Babel pass 가 필요하다는 신호. 미존재 / require fail / list
  * 외 plugin 0 → false (Babel pass skip 으로 startup latency 0).
@@ -97,6 +130,24 @@ export function createBabelTransformer(
     // 정확히 resolve. fallback 으로 zts CLI require (workspace hoist case).
     const projectRequire = createRequire(`${projectRoot}/package.json`);
     function resolvePluginPath(name: string): string {
+      // Babel plugin 이름 컨벤션 적용: `'lodash'` → `'babel-plugin-lodash'`,
+      // `'@babel/foo'` → `'@babel/plugin-foo'`, `'@scope/foo'` → `'@scope/babel-plugin-foo'`.
+      // (절대/상대 경로, `module:` prefix, 이미 prefix 가진 이름은 그대로.)
+      // prefix 없이 raw require 하면 `'lodash'` 가 lodash 라이브러리 자체로 풀려
+      // babel 이 "__wrapped__ is not a valid Plugin property" 로 reject (#TBD).
+      const prefixed = applyBabelPluginPrefix(name);
+      if (prefixed !== name) {
+        try {
+          return projectRequire.resolve(prefixed);
+        } catch {
+          try {
+            return requireFromCli.resolve(prefixed);
+          } catch {
+            // prefixed 형태로 못 찾으면 raw 로 fallback (사용자가 직접 절대경로/scope plugin
+            // 을 적은 케이스).
+          }
+        }
+      }
       try {
         return projectRequire.resolve(name);
       } catch {

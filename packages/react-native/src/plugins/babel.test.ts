@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { detectCustomPlugins, isZtsNativePlugin, ZTS_NATIVE_PLUGIN_PATTERNS } from "./babel.ts";
+import {
+  applyBabelPluginPrefix,
+  detectCustomPlugins,
+  isZtsNativePlugin,
+  ZTS_NATIVE_PLUGIN_PATTERNS,
+} from "./babel.ts";
 
 let dir: string;
 
@@ -137,5 +142,49 @@ describe("ZTS_NATIVE_PLUGIN_PATTERNS", () => {
   test("중복 없음", () => {
     const set = new Set(ZTS_NATIVE_PLUGIN_PATTERNS);
     expect(set.size).toBe(ZTS_NATIVE_PLUGIN_PATTERNS.length);
+  });
+});
+
+describe("applyBabelPluginPrefix", () => {
+  test("plain name → babel-plugin-{name}", () => {
+    // bare 의 babel.config.js 가 `['lodash']` 를 쓰는데 prefix 없이 resolve 하면
+    // lodash 라이브러리 자체로 풀려 babel 이 reject — 핵심 회귀 케이스.
+    expect(applyBabelPluginPrefix("lodash")).toBe("babel-plugin-lodash");
+    expect(applyBabelPluginPrefix("root-import")).toBe("babel-plugin-root-import");
+  });
+
+  test("@babel/foo → @babel/plugin-foo", () => {
+    expect(applyBabelPluginPrefix("@babel/proposal-decorators")).toBe(
+      "@babel/plugin-proposal-decorators",
+    );
+  });
+
+  test("@scope/foo → @scope/babel-plugin-foo", () => {
+    expect(applyBabelPluginPrefix("@nativewind/preset")).toBe(
+      "@nativewind/babel-plugin-preset",
+    );
+  });
+
+  test("이미 prefix 가진 이름은 그대로", () => {
+    expect(applyBabelPluginPrefix("babel-plugin-lodash")).toBe("babel-plugin-lodash");
+    expect(applyBabelPluginPrefix("@babel/plugin-transform-flow-strip-types")).toBe(
+      "@babel/plugin-transform-flow-strip-types",
+    );
+    expect(applyBabelPluginPrefix("@scope/babel-plugin-foo")).toBe("@scope/babel-plugin-foo");
+  });
+
+  test("절대/상대 경로 + module: prefix 는 그대로", () => {
+    expect(applyBabelPluginPrefix("/abs/path/plugin.js")).toBe("/abs/path/plugin.js");
+    expect(applyBabelPluginPrefix("./local-plugin")).toBe("./local-plugin");
+    expect(applyBabelPluginPrefix("module:@react-native/babel-preset")).toBe(
+      "module:@react-native/babel-preset",
+    );
+  });
+
+  test("preset prefix 도 보존", () => {
+    expect(applyBabelPluginPrefix("@babel/preset-typescript")).toBe(
+      "@babel/preset-typescript",
+    );
+    expect(applyBabelPluginPrefix("babel-preset-expo")).toBe("babel-preset-expo");
   });
 });
