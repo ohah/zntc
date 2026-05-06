@@ -1211,20 +1211,14 @@ async function runWatch(opts, config) {
   // 초기 빌드
   await rebuild();
 
-  if (opts.watchJson) {
-    console.log(JSON.stringify({ type: "ready" }));
-  } else if (opts.logLevel !== "silent") {
-    console.error("[watch] watching for changes...");
-  }
-
   // 파일 감시
   const watchDirs = new Set();
   for (const entry of opts.entryPoints) {
-    watchDirs.add(dirname(resolve(entry)));
+    watchDirs.add(safeRealpath(dirname(resolve(entry))));
   }
   // config/.env 파일 변경 감지를 위해 cwd / envDir / config 디렉토리 추가.
   const restartTriggers = computeRestartTriggers(opts);
-  for (const dir of restartTriggers.dirs) watchDirs.add(dir);
+  for (const dir of restartTriggers.dirs) watchDirs.add(safeRealpath(dir));
 
   for (const dir of watchDirs) {
     const watcher = watch(dir, { recursive: true }, (_event, filename) => {
@@ -1242,6 +1236,12 @@ async function runWatch(opts, config) {
       debounceTimer = setTimeout(rebuild, opts.watchDelay);
     });
     attachWatcherErrorHandler(watcher, dir, opts.logLevel);
+  }
+
+  if (opts.watchJson) {
+    console.log(JSON.stringify({ type: "ready" }));
+  } else if (opts.logLevel !== "silent") {
+    console.error("[watch] watching for changes...");
   }
 }
 
