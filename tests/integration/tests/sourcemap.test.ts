@@ -292,16 +292,16 @@ describe('소스맵', () => {
       expect(m.genLine).toBeLessThanOrEqual(bundleLines.length);
     }
 
-    // 매핑된 번들 줄에 lib.ts 관련 코드가 있어야 한다
-    const firstMapping = libMappings[0];
-    const mappedBundleLine = bundleLines[firstMapping.genLine - 1] || '';
-    expect(
-      mappedBundleLine.includes('greet') ||
-        mappedBundleLine.includes('function') ||
-        mappedBundleLine.includes('console') ||
-        mappedBundleLine.includes('VERSION') ||
-        mappedBundleLine.includes('1.0'),
-    ).toBe(true);
+    // 매핑된 번들 줄 중 적어도 하나는 lib.ts 관련 코드를 포함해야 한다.
+    // 새 single-pass 매핑은 wrap header 줄도 source 의 first line 으로 채우므로
+    // libMappings[0] 만 보면 boilerplate 줄이 잡힐 수 있음. 전체 매핑 중에서
+    // keyword 매칭 search 로 의도된 검증을 표현.
+    const KEYWORDS = ['greet', 'function', 'console', 'VERSION', '1.0'];
+    const hasKeywordMatch = libMappings.some((m) => {
+      const line = bundleLines[m.genLine - 1] || '';
+      return KEYWORDS.some((k) => line.includes(k));
+    });
+    expect(hasKeywordMatch).toBe(true);
   });
 
   test('TypeScript type 선언이 있어도 소스맵 줄 번호가 정확하다 (#954)', async () => {
