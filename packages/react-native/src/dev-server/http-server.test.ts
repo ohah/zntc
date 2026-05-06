@@ -123,6 +123,25 @@ describe("createDevHttpServer — base routes", () => {
   });
 });
 
+function fakeRes() {
+  const headers: Record<string, unknown> = {};
+  const out: { code?: number; body?: string; headers: typeof headers } = { headers };
+  return {
+    res: {
+      setHeader: (k: string, v: string) => {
+        headers[k] = v;
+      },
+      writeHead: (c: number) => {
+        out.code = c;
+      },
+      end: (b: string) => {
+        out.body = b;
+      },
+    } as never,
+    out,
+  };
+}
+
 describe("createBaseMiddleware — rewriteRequestUrl 호출", () => {
   test("rewriteRequestUrl 결과로 매칭", () => {
     const opts = buildRnDevServerOptions({
@@ -130,26 +149,106 @@ describe("createBaseMiddleware — rewriteRequestUrl 호출", () => {
       rewriteRequestUrl: () => "/status",
     });
     const mw = createBaseMiddleware(opts, { broadcast: () => {}, platforms: noopPlatforms });
-    let body: string | undefined;
-    let code: number | undefined;
-    const headers: Record<string, unknown> = {};
+    const { res, out } = fakeRes();
+    mw({ url: "/__weird", headers: { host: "x:1" } } as never, res, () => {});
+    expect(out.code).toBe(200);
+    expect(out.body).toBe("packager-status:running");
+  });
+});
+
+describe("createBaseMiddleware — jsc-safe URL normalize (Metro 호환, #2605 audit)", () => {
+  test("jsc-safe URL 형식의 `/status` request → normalize 후 routing 매칭", () => {
+    const opts = buildRnDevServerOptions({ bundle: BUNDLE });
+    const mw = createBaseMiddleware(opts, { broadcast: () => {}, platforms: noopPlatforms });
+    const { res, out } = fakeRes();
+    // jsc-safe 인코딩: `?` → `//&`, `&` → `&&`. /status?platform=ios&dev=true 의 jsc-safe.
+    const jscSafe = "/status//&platform=ios&&dev=true";
+    mw({ url: jscSafe, headers: { host: "x:1" } } as never, res, () => {});
+    expect(out.code).toBe(200);
+    expect(out.body).toBe("packager-status:running");
+  });
+
+  test("normal URL 도 idempotent — 변경 없이 routing", () => {
+    const opts = buildRnDevServerOptions({ bundle: BUNDLE });
+    const mw = createBaseMiddleware(opts, { broadcast: () => {}, platforms: noopPlatforms });
+    const { res, out } = fakeRes();
+    mw({ url: "/status?platform=ios&dev=true", headers: { host: "x:1" } } as never, res, () => {});
+    expect(out.code).toBe(200);
+    expect(out.body).toBe("packager-status:running");
+  });
+
+  test("rewriteRequestUrl 가 jsc-safe normalize 후 full URL (path + query) 받음", () => {
+    const seen: string[] = [];
+    const opts = buildRnDevServerOptions({
+      bundle: BUNDLE,
+      rewriteRequestUrl: (u) => {
+        seen.push(u);
+        // /old.bundle?... → /index.bundle?... 로 rewrite (Metro doc example).
+        return u.startsWith("/old.bundle") ? u.replace("/old.bundle", "/index.bundle") : u;
+      },
+    });
+    const mw = createBaseMiddleware(opts, { broadcast: () => {}, platforms: noopPlatforms });
+    const { res } = fakeRes();
     mw(
-      { url: "/__weird", headers: { host: "x:1" } } as never,
       {
-        setHeader: (k: string, v: string) => {
-          headers[k] = v;
-        },
-        writeHead: (c: number) => {
-          code = c;
-        },
-        end: (b: string) => {
-          body = b;
-        },
+        url: "/old.bundle//&platform=ios&&dev=true",
+        headers: { host: "x:1" },
       } as never,
+      res,
       () => {},
     );
-    expect(code).toBe(200);
-    expect(body).toBe("packager-status:running");
+    // rewriteRequestUrl 가 받은 URL: jsc-safe normalize 후 — query string 포함된 normal URL.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("/old.bundle");
+    expect(seen[0]).toContain("platform=ios");
+    expect(seen[0]).toContain("dev=true");
+    // jsc-safe 의 `//&` 가 `?` 로 normalize 되었는지.
+    expect(seen[0]).not.toContain("//&");
+  });
+
+  test("rewriteRequestUrl 미설정 시 — normalize 만 적용 (idempotent)", () => {
+    const opts = buildRnDevServerOptions({ bundle: BUNDLE });
+    const mw = createBaseMiddleware(opts, { broadcast: () => {}, platforms: noopPlatforms });
+    const { res, out } = fakeRes();
+    // jsc-safe URL → routing 매칭 OK 인지 (rewrite 없음).
+    mw({ url: "/status//&platform=ios", headers: { host: "x:1" } } as never, res, () => {});
+    expect(out.code).toBe(200);
+  });
+
+  test("jsc-safe `/index.bundle.map` 재요청 routing 매칭 (iOS Hermes 시나리오)", () => {
+    let pathReached: string | null = null;
+    let nextCalled = false;
+    const opts = buildRnDevServerOptions({
+      bundle: BUNDLE,
+      rewriteRequestUrl: (u) => {
+        pathReached = u;
+        return u;
+      },
+    });
+    const mw = createBaseMiddleware(opts, {
+      broadcast: () => {},
+      platforms: noopPlatforms,
+    });
+    const { res } = fakeRes();
+    // .map route 가 platforms.getOrCreate 호출 → noop fixture 가 throw. 매칭
+    // 까지 도달했다는 증거를 throw 로 확인.
+    expect(() => {
+      mw(
+        {
+          url: "/index.bundle.map//&platform=ios&&dev=true",
+          headers: { host: "x:1" },
+        } as never,
+        res,
+        () => {
+          nextCalled = true;
+        },
+      );
+    }).toThrow("not used");
+    // rewriteRequestUrl 가 정상 URL 형태로 받음 — jsc-safe `//&` 가 `?` 로 정규화.
+    expect(pathReached).not.toBeNull();
+    expect(pathReached).toContain("/index.bundle.map");
+    expect(pathReached).not.toContain("//&");
+    expect(nextCalled).toBe(false);
   });
 });
 
