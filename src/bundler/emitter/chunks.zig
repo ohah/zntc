@@ -615,36 +615,16 @@ pub fn emitChunks(
         errdefer if (chunk_sourcemap) |s| allocator.free(s);
         errdefer if (chunk_sourcemap_builder) |b| b.destroy(allocator);
 
-        // sourceMappingURL 주석 — mode 별 분기 (단일 번들 emitter.zig 와 동일 정책).
-        // linked: `<basename>.map` 참조. external: 주석 없음. inline_: base64 embed.
+        // sourceMappingURL 주석 — chunk 별 .map 파일 참조 / inline embed.
         // resolveContentHashes 가 contents 의 placeholder 를 hash 로 치환하므로
-        // 주석에 들어가는 filename 도 자동 치환됨.
+        // 주석에 들어가는 filename 도 자동 치환됨. 부착 정책은
+        // SourceMap.appendSourceMappingURLComment 가 통합 처리 (#2660).
         if (options.sourcemap.enable) {
-            const map_basename = std.fs.path.basename(filename);
-            switch (options.sourcemap.mode) {
-                .linked => {
-                    try chunk_output.appendSlice(allocator, "//# sourceMappingURL=");
-                    try chunk_output.appendSlice(allocator, map_basename);
-                    try chunk_output.appendSlice(allocator, ".map\n");
-                },
-                .external => {},
-                .inline_ => {
-                    if (chunk_sourcemap) |json| {
-                        try chunk_output.appendSlice(allocator, "//# sourceMappingURL=data:application/json;base64,");
-                        const Encoder = std.base64.standard.Encoder;
-                        const encoded_len = Encoder.calcSize(json.len);
-                        const old_len = chunk_output.items.len;
-                        try chunk_output.resize(allocator, old_len + encoded_len);
-                        _ = Encoder.encode(chunk_output.items[old_len .. old_len + encoded_len], json);
-                        try chunk_output.append(allocator, '\n');
-                        // base64 embed 했으므로 외부 .map 미생성.
-                        allocator.free(json);
-                        chunk_sourcemap = null;
-                    }
-                    // lazy + inline 조합은 의미 충돌 — lazy 는 외부 fetch 가정.
-                    // 단일 번들 emitter 와 동일하게 lazy 시 inline 무시 (주석 없음).
-                },
-            }
+            try SourceMap.appendSourceMappingURLComment(&chunk_output, allocator, .{
+                .mode = options.sourcemap.mode,
+                .output_filename = std.fs.path.basename(filename),
+                .inline_json = chunk_sourcemap,
+            }, &chunk_sourcemap);
         }
 
         try outputs.append(allocator, .{
