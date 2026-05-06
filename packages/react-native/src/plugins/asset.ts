@@ -40,7 +40,10 @@ export function createAssetPlugin(config: PluginConfig): ZtsPlugin {
       // HMRClient.js path 매칭 — onLoad 응답으로 ZTS_HMR_CLIENT_CODE 그대로.
       const hmrClientPattern = new RegExp(`${escapeRegex(HMR_CLIENT_SUFFIX)}$`);
       build.onLoad({ filter: hmrClientPattern }, () => ({
-        contents: ZTS_HMR_CLIENT_CODE,
+        contents: ZTS_HMR_CLIENT_CODE.replace(
+          /__ZTS_FORWARD_CLIENT_LOGS__/g,
+          config.forwardClientLogs === true ? 'true' : 'false',
+        ),
       }));
 
       if (config.babelTransformerPath) {

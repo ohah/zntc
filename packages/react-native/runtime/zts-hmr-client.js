@@ -22,6 +22,7 @@ function getDevLoadingView() {
 var HMRClient = {
   _socket: null,
   _enabled: true,
+  _originalConsole: null,
   // Metro 처럼 중첩 update 를 카운트 — 마지막 update-done 에서만 배너 hide.
   _pendingUpdates: 0,
 
@@ -69,42 +70,48 @@ var HMRClient = {
         }),
       );
 
-      // Intercept console methods to forward logs to dev server terminal
-      var levels = ['log', 'info', 'warn', 'error', 'debug'];
-      for (var i = 0; i < levels.length; i++) {
-        (function (level) {
-          var original = console[level];
-          if (typeof original === 'function') {
-            console[level] = function () {
-              // Call original first
-              original.apply(console, arguments);
-              // Forward to server
-              if (socket.readyState === 1) {
-                try {
-                  var args = [];
-                  for (var j = 0; j < arguments.length; j++) {
-                    var arg = arguments[j];
-                    // Serialize safely — avoid circular references
-                    if (arg instanceof Error) {
-                      args.push(arg.message);
-                    } else if (typeof arg === 'object' && arg !== null) {
-                      try {
-                        args.push(JSON.parse(JSON.stringify(arg)));
-                      } catch (_e) {
-                        args.push(String(arg));
+      var forwardClientLogs =
+        typeof __ZTS_FORWARD_CLIENT_LOGS__ !== 'undefined' ? __ZTS_FORWARD_CLIENT_LOGS__ : false;
+      if (forwardClientLogs === true && self._originalConsole == null) {
+        self._originalConsole = {};
+        // Intercept console methods to forward logs to dev server terminal.
+        var levels = ['log', 'info', 'warn', 'error', 'debug'];
+        for (var i = 0; i < levels.length; i++) {
+          (function (level) {
+            var original = console[level];
+            if (typeof original === 'function') {
+              self._originalConsole[level] = original;
+              console[level] = function () {
+                // Call original first
+                original.apply(console, arguments);
+                // Forward to server
+                if (socket.readyState === 1) {
+                  try {
+                    var args = [];
+                    for (var j = 0; j < arguments.length; j++) {
+                      var arg = arguments[j];
+                      // Serialize safely — avoid circular references
+                      if (arg instanceof Error) {
+                        args.push(arg.message);
+                      } else if (typeof arg === 'object' && arg !== null) {
+                        try {
+                          args.push(JSON.parse(JSON.stringify(arg)));
+                        } catch (_e) {
+                          args.push(String(arg));
+                        }
+                      } else {
+                        args.push(arg);
                       }
-                    } else {
-                      args.push(arg);
                     }
+                    socket.send(JSON.stringify({ type: 'log', level: level, data: args }));
+                  } catch (_e) {
+                    // ignore serialization errors
                   }
-                  socket.send(JSON.stringify({ type: 'log', level: level, data: args }));
-                } catch (_e) {
-                  // ignore serialization errors
                 }
-              }
-            };
-          }
-        })(levels[i]);
+              };
+            }
+          })(levels[i]);
+        }
       }
     };
 

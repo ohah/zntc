@@ -5217,7 +5217,7 @@ describe('buildRnDevServerInput — config + opts 추출 (#2605)', () => {
     expect(b?.terminalActions).toBe(false);
   });
 
-  test('미지원 필드 (transformer.inlineRequires/minifier, serializer.prelude/bundleType, server.forwardClientLogs/verifyConnections) — stderr 경고', async () => {
+  test('미지원 필드 (transformer.inlineRequires/minifier, serializer.bundleType, server.verifyConnections) — stderr 경고', async () => {
     const { buildRnDevServerInput } = await import('./rn-dev-input.mjs');
     const original = process.stderr.write.bind(process.stderr);
     const writes: string[] = [];
@@ -5242,13 +5242,23 @@ describe('buildRnDevServerInput — config + opts 추출 (#2605)', () => {
     expect(all).toContain('transformer.inlineRequires');
     expect(all).toContain('transformer.minifier');
     expect(all).toContain('serializer.bundleType');
-    expect(all).toContain('server.forwardClientLogs');
     expect(all).toContain('server.verifyConnections');
     // transformer.babel / serializer.prelude / serializer.inlineSourceMap 는
     // 매핑 가능해서 경고 없음.
     expect(all).not.toContain('transformer.babel');
     expect(all).not.toContain('serializer.prelude');
     expect(all).not.toContain('serializer.inlineSourceMap');
+    expect(all).not.toContain('server.forwardClientLogs');
+  });
+
+  test('config.server.forwardClientLogs / hmr → dev server input 매핑', async () => {
+    const { buildRnDevServerInput } = await import('./rn-dev-input.mjs');
+    const input = buildRnDevServerInput(
+      { entryPoints: ['i.js'] },
+      { server: { forwardClientLogs: true, hmr: false } },
+    );
+    expect(input?.bundle.extra?.forwardClientLogs).toBe(true);
+    expect(input?.hmr).toBe(false);
   });
 
   test('미지원 필드 0 — stderr 경고 0 출력', async () => {

@@ -231,6 +231,10 @@ export function createBabelTransformer(
       babelrc: false,
       configFile: false,
       compact: false,
+      // Plugin 결과 sourcemap compose 는 아직 core transform hook 에 연결되어 있지 않다.
+      // Metro/Bungae 처럼 라인 구조를 유지해야 DevTools x_google_ignoreList 가 console.js 를
+      // 건너뛴 뒤 사용자 소스 프레임으로 올라갈 수 있다.
+      retainLines: true,
       sourceMaps: false,
     };
 

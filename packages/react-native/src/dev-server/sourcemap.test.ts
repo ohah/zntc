@@ -24,16 +24,32 @@ describe('postProcessSourceMap', () => {
     });
     const out = JSON.parse(postProcessSourceMap(input));
     expect(out.x_google_ignoreList).toEqual([1]);
+    expect(out.ignoreList).toBeUndefined();
   });
 
-  test('기존 x_google_ignoreList 보존 + node_modules 추가 (sort + dedup)', () => {
+  test('Metro 호환 — dev-server sourcemap 에서 file 과 기본 빈 sourceRoot 제거', () => {
     const input = JSON.stringify({
       version: 3,
-      sources: ['polyfill.js', 'src/app.ts', '/node_modules/react/index.js'],
-      x_google_ignoreList: [0],
+      file: '/tmp/zts-rn-ios/bundle.js',
+      sourceRoot: '',
+      sources: ['src/app.ts', '/node_modules/react/index.js'],
     });
     const out = JSON.parse(postProcessSourceMap(input));
-    expect(out.x_google_ignoreList).toEqual([0, 2]);
+    expect(out.file).toBeUndefined();
+    expect(out.sourceRoot).toBeUndefined();
+    expect(out.x_google_ignoreList).toEqual([1]);
+  });
+
+  test('기존 ignore hint input 소비 + node_modules 추가 (sort + dedup)', () => {
+    const input = JSON.stringify({
+      version: 3,
+      sources: ['polyfill.js', 'src/app.ts', '/node_modules/react/index.js', 'zts:runtime/foo'],
+      x_google_ignoreList: [0],
+      ignoreList: [3],
+    });
+    const out = JSON.parse(postProcessSourceMap(input));
+    expect(out.x_google_ignoreList).toEqual([0, 2, 3]);
+    expect(out.ignoreList).toBeUndefined();
   });
 
   test('중복 인덱스 dedup', () => {
@@ -44,6 +60,7 @@ describe('postProcessSourceMap', () => {
     });
     const out = JSON.parse(postProcessSourceMap(input));
     expect(out.x_google_ignoreList).toEqual([0]);
+    expect(out.ignoreList).toBeUndefined();
   });
 
   test('non-string source 항목 무시', () => {
@@ -59,9 +76,10 @@ describe('postProcessSourceMap', () => {
     const input = JSON.stringify({ version: 3, sources: ['src/app.ts'] });
     const out = JSON.parse(postProcessSourceMap(input));
     expect('x_google_ignoreList' in out).toBe(false);
+    expect('ignoreList' in out).toBe(false);
   });
 
-  test('zts internal source (`zts:` prefix) — DevTools ignoreList 에 추가 (#2605)', () => {
+  test('zts internal source (`zts:` prefix) — x_google_ignoreList 에 추가 (#2605)', () => {
     const input = JSON.stringify({
       version: 3,
       sources: ['src/app.ts', 'zts:runtime/spread-array', 'zts:runtime/class-call-check'],
@@ -89,7 +107,7 @@ describe('postProcessSourceMap', () => {
     expect(out.x_google_ignoreList).toEqual([1, 2]);
   });
 
-  test('node_modules + zts internal 혼재 — 둘 다 ignoreList', () => {
+  test('node_modules + zts internal 혼재 — 둘 다 x_google_ignoreList', () => {
     const input = JSON.stringify({
       version: 3,
       sources: [
@@ -102,10 +120,25 @@ describe('postProcessSourceMap', () => {
     const out = JSON.parse(postProcessSourceMap(input));
     expect(out.x_google_ignoreList).toEqual([1, 2, 3]);
   });
+
+  test('Metro ignore 기준 — __prelude__ / ?ctx= / node_modules', () => {
+    const input = JSON.stringify({
+      version: 3,
+      sources: [
+        '__prelude__',
+        'src/app.ts',
+        '/abs/project/app?ctx=src',
+        'node_modules/react/index.js',
+        'src/node_modules_like/file.ts',
+      ],
+    });
+    const out = JSON.parse(postProcessSourceMap(input));
+    expect(out.x_google_ignoreList).toEqual([0, 2, 3]);
+  });
 });
 
 describe('postProcessSourceMap — path 옵션 통합 (#2605 audit P2)', () => {
-  test('opts 없음 — ignoreList 만 (backward-compat)', () => {
+  test('opts 없음 — x_google_ignoreList 만 유지', () => {
     const raw = JSON.stringify({
       version: 3,
       sources: ['src/app.ts', '/node_modules/x/y.js'],
@@ -115,7 +148,7 @@ describe('postProcessSourceMap — path 옵션 통합 (#2605 audit P2)', () => {
     expect(out.sourceRoot).toBeUndefined();
   });
 
-  test('ignoreList + sourceRoot 동시 — round-trip 1회', () => {
+  test('x_google_ignoreList + sourceRoot 동시 — round-trip 1회', () => {
     const raw = JSON.stringify({
       version: 3,
       sources: ['src/app.ts', '/node_modules/x/y.js'],
@@ -125,7 +158,7 @@ describe('postProcessSourceMap — path 옵션 통합 (#2605 audit P2)', () => {
     expect(out.sourceRoot).toBe('/abs/proj');
   });
 
-  test('ignoreList + useAbsolutePath — virtual module skip + framework 표시', () => {
+  test('x_google_ignoreList + useAbsolutePath — virtual module skip + framework 표시', () => {
     const NUL = String.fromCharCode(0);
     const raw = JSON.stringify({
       version: 3,

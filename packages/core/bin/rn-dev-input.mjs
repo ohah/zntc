@@ -18,7 +18,6 @@ const UNSUPPORTED_FIELDS = [
   ['serializer', 'getPolyfills'],
   ['serializer', 'shouldAddToIgnoreList'],
   // dummy placeholder — bungae 도 declared-but-unused.
-  ['server', 'forwardClientLogs'],
   ['server', 'verifyConnections'],
   ['server', 'https'],
   ['server', 'key'],
@@ -64,6 +63,7 @@ export function buildRnBundleExtra(config, opts = {}) {
     inlineSourceMap: serializer.inlineSourceMap ?? undefined,
     sourceRoot: cfg.sourcemapSourcesRoot ?? undefined,
     silentConsoleErrorPatterns: server.silentConsoleErrorPatterns ?? undefined,
+    forwardClientLogs: server.forwardClientLogs === true,
   };
 }
 
@@ -125,6 +125,7 @@ export function buildRnDevServerInput(opts, config) {
     symbolicator: symbolicator.customizeFrame
       ? { customizeFrame: symbolicator.customizeFrame }
       : undefined,
+    ...(server.hmr === false ? { hmr: false } : {}),
     ...(terminalActions === false ? { terminalActions: false } : {}),
   };
 }

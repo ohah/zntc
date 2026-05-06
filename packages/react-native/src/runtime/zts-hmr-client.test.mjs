@@ -19,6 +19,7 @@ function loadHmrClient(globalEnv) {
     var __zts_reload = arguments[5];
     var location = arguments[6];
     var window = arguments[7];
+    var __ZTS_FORWARD_CLIENT_LOGS__ = arguments[8];
     ${HMR_CLIENT_SOURCE}
     return module.exports;
   `;
@@ -32,6 +33,7 @@ function loadHmrClient(globalEnv) {
     globalEnv.__zts_reload,
     globalEnv.location,
     globalEnv.window,
+    globalEnv.forwardClientLogs,
   );
 }
 
@@ -94,6 +96,7 @@ beforeEach(() => {
     __zts_reload: mockGlobal.__zts_reload,
     location: { reload: mock(() => {}) },
     window: undefined,
+    forwardClientLogs: true,
   });
 });
 
@@ -171,6 +174,25 @@ describe('onopen — hmr:connected + console wrap', () => {
     expect(log.type).toBe('log');
     expect(log.level).toBe('log');
     expect(log.data).toEqual(['hello']);
+  });
+
+  test('forwardClientLogs=false — console wrap 하지 않음', () => {
+    HMRClient = loadHmrClient({
+      global: mockGlobal,
+      WebSocket: MockWebSocket,
+      console: mockConsole,
+      __zts_apply_update: mockGlobal.__zts_apply_update,
+      __zts_reload: mockGlobal.__zts_reload,
+      location: { reload: mock(() => {}) },
+      window: undefined,
+      forwardClientLogs: false,
+    });
+    HMRClient.setup('ios', '/abs/idx.js', 'localhost', 8081, true, 'http');
+    const ws = MockWebSocket.instances[0];
+    ws.onopen();
+    mockConsole.log('hello');
+    expect(originalConsole.log).toHaveBeenCalledWith('hello');
+    expect(ws.sent.length).toBe(1);
   });
 
   test('Error object 는 message 만 send', () => {

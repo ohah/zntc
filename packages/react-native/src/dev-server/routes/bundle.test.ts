@@ -153,6 +153,10 @@ describe('handleBundleRequest', () => {
     );
     expect(res.statusCode).toBe(200);
     expect(res.headers!['Content-Type']).toBe('application/javascript; charset=UTF-8');
+    expect(res.headers!['Cache-Control']).toBe(
+      'no-store, no-cache, must-revalidate, proxy-revalidate',
+    );
+    expect(res.headers!['Pragma']).toBe('no-cache');
     expect(res.headers!['X-React-Native-Project-Root']).toBe('/proj');
     const body = res.chunks.join('');
     expect(body).toContain('console.log(1);');
@@ -175,6 +179,9 @@ describe('handleBundleRequest', () => {
     );
     expect(res.statusCode).toBe(200);
     expect(res.headers!['Content-Type'] as string).toContain('multipart/mixed');
+    expect(res.headers!['Cache-Control']).toBe(
+      'no-store, no-cache, must-revalidate, proxy-revalidate',
+    );
     const all = res.chunks.join('');
     expect(all).toContain('{"done":3,"total":3}');
     expect(all).toContain('X-Metro-Files-Changed-Count: 3');
@@ -273,6 +280,9 @@ describe('handleMapRequest', () => {
     );
     expect(res.statusCode).toBe(200);
     expect(res.headers!['Content-Type']).toBe('application/json');
+    expect(res.headers!['Cache-Control']).toBe(
+      'no-store, no-cache, must-revalidate, proxy-revalidate',
+    );
     expect(JSON.parse(res.chunks.join('')).version).toBe(3);
   });
 
@@ -294,7 +304,15 @@ describe('handleMapRequest', () => {
 describe('handleHmrMapRequest', () => {
   test('module 매치 → 200 + JSON', () => {
     const state = makeState({
-      handle: fakeHandle({ hmrMaps: { 'src/x.ts': '{"v":3,"id":"x"}' } }),
+      handle: fakeHandle({
+        hmrMaps: {
+          'src/x.ts': JSON.stringify({
+            version: 3,
+            id: 'x',
+            sources: ['src/x.ts', '/node_modules/react/index.js'],
+          }),
+        },
+      }),
     });
     const registry = fixedRegistry(state);
     const res = makeRes();
@@ -306,7 +324,13 @@ describe('handleHmrMapRequest', () => {
       'ios',
     );
     expect(res.statusCode).toBe(200);
-    expect(res.chunks.join('')).toContain('"id":"x"');
+    expect(res.headers!['Cache-Control']).toBe(
+      'no-store, no-cache, must-revalidate, proxy-revalidate',
+    );
+    const body = JSON.parse(res.chunks.join(''));
+    expect(body.id).toBe('x');
+    expect(body.x_google_ignoreList).toEqual([1]);
+    expect(body.ignoreList).toBeUndefined();
   });
 
   test('module 미매치 → 404', () => {
