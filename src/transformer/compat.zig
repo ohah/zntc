@@ -556,59 +556,23 @@ fn getMinVersion(engine: Engine, feature: Feature) ?struct { major: u16, minor: 
     return null;
 }
 
-/// Hermes (React Native) 전용 Unsupported matrix.
-///
-/// 정책: **ESNext → ES5 전체 다운레벨**. `fromESTarget(.es5)`를 직접 쓰지 않고 필드를
-/// 명시적으로 나열한다. Hermes는 일부 ES2015+ feature를 native 지원하지만 edge case가
-/// 누적되어 (#1283 #1299 #1302 등) 보수적으로 전체 다운레벨이 안전. 미래에 특정
-/// feature를 보존하고 싶을 때 개별 필드만 false로 토글할 수 있어야 한다.
-///
-/// 비고:
-/// - async_await=true: ES5와 동일하게 state machine으로 변환 (#1306에서 sent() throw-check
-///   수정 후 정상 동작. 네이티브 async 보존은 벤치마크 필요 시 async_await=false 토글).
-/// - 모든 ES2015+ feature 다운레벨이 Rolldown + `@react-native/babel-preset` 출력과
-///   가장 가까움 (검증 결과).
-/// - `UnsupportedFeatures`에 새 필드가 추가되면 여기도 검토 필요 (자동 반영 안 됨).
-///
-/// 관련 이슈: #1275 #1277 #1278 #1283 #1299 #1302 #1306
+/// React Native (Hermes) preset.
+/// 명시되지 않은 features 는 native keep (default false).
 pub fn fromHermesPreset() UnsupportedFeatures {
     return .{
-        // ES2015
-        .arrow = true,
+        // 호환 마진 다운레벨링 (closure 의미 / state machine 종속 / Hermes runtime 버그 회피)
+        .arrow = true, // #1299: object property arrow ternary 뒤 prop 누락
         .class = true,
-        .template_literal = true,
-        .destructuring = true,
-        .for_of = true,
-        .spread = true,
-        .object_extensions = true,
-        .default_params = true,
         .block_scoping = true,
         .generator = true,
-        .new_target = true,
-        // ES2016
-        .exponentiation = true,
-        // ES2017
         .async_await = true,
-        // ES2018
-        .object_spread = true,
-        // ES2019
-        .optional_catch_binding = true,
-        // ES2020
-        .nullish_coalescing = true,
-        .optional_chaining = true,
-        // ES2021
-        .logical_assignment = true,
-        // ES2022
+        .new_target = true,
+        // Hermes 미지원
         .class_static_block = true,
         .class_private_method = true,
         .class_private_field = true,
         .top_level_await = true,
-        // ES2023
-        .hashbang = true,
-        // ES2025
         .using = true,
-        // Regex
-        .regex_sticky = true,
         .regex_dotall = true,
         .regex_named_groups = true,
         .unicode_brace_escape = true,
