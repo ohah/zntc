@@ -362,14 +362,16 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   const workletVersion = resolveWorkletPluginVersion(projectRoot, input.workletPluginVersion);
   if (workletVersion) preset.workletPluginVersion = workletVersion;
 
+  // Footer 는 항상 — `__ZTS_RN_BUNDLER__` flag 를 IIFE 로 wrap 해 iOS 26.4+ Hermes
+  // spec global trigger 회피 (`buildPrelude` 의 주석 참조). dev 시 DevLoadingView
+  // hide 도 추가.
+  preset.footer = buildFooter(dev);
+
   if (dev) {
     preset.jsx = "automatic-dev";
     preset.devMode = true;
     preset.reactRefresh = true;
     preset.collectModuleCodes = true;
-    // Footer 는 dev 시만 — `__ZTS_RN_BUNDLER__` flag 를 IIFE 로 wrap 해 iOS 26.4+ Hermes
-    // spec global trigger 회피 (`buildPrelude` 의 주석 참조) + DevLoadingView hide.
-    preset.footer = buildFooter(true);
   }
 
   if (extra?.watchFolders && extra.watchFolders.length > 0) {
