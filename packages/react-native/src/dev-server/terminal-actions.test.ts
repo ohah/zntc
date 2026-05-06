@@ -10,6 +10,7 @@ interface FakeStdin extends EventEmitter {
   resume(): FakeStdin;
   setEncoding(_encoding: string): FakeStdin;
   emitKey(key: string): void;
+  emitKeyBuffer(key: string): void;
 }
 
 function makeStdin(opts: { isTTY?: boolean } = {}): FakeStdin {
@@ -23,6 +24,8 @@ function makeStdin(opts: { isTTY?: boolean } = {}): FakeStdin {
   emitter.resume = () => emitter;
   emitter.setEncoding = () => emitter;
   emitter.emitKey = (key) => emitter.emit('data', key);
+  // Bun runtime 동작 — setEncoding('utf8') 후에도 Buffer 로 emit 되는 케이스 모사.
+  emitter.emitKeyBuffer = (key) => emitter.emit('data', Buffer.from(key, 'utf8'));
   return emitter;
 }
 
@@ -130,6 +133,31 @@ describe('setupTerminalActions — keypress 라우팅', () => {
     const cleanup = setupTerminalActions(cb, { enabled: true, stdin });
     stdin.emitKey('r');
     expect(cb.reloadCount).toBe(1);
+    cleanup();
+  });
+
+  test('Bun runtime — Buffer 로 emit 된 r 도 처리 (#2605 사용자 보고)', () => {
+    // Bun 의 stdin.setEncoding('utf8') 후에도 'data' event 가 Buffer 로 올 수 있음.
+    // bungae graph-bundler/terminal-actions.ts 가 동일 패턴으로 처리.
+    const cb = makeCallbacks();
+    const stdin = makeStdin();
+    const cleanup = setupTerminalActions(cb, { enabled: true, stdin });
+    stdin.emitKeyBuffer('r');
+    expect(cb.reloadCount).toBe(1);
+    cleanup();
+  });
+
+  test('Bun runtime — Buffer 로 emit 된 ?` (shortcut help) 도 처리', () => {
+    const cb = makeCallbacks();
+    const stdin = makeStdin();
+    const printed: string[] = [];
+    const cleanup = setupTerminalActions(cb, {
+      enabled: true,
+      stdin,
+      printShortcuts: () => printed.push('shown'),
+    });
+    stdin.emitKeyBuffer('?');
+    expect(printed).toEqual(['shown']);
     cleanup();
   });
 

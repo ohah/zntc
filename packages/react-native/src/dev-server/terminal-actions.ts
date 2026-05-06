@@ -131,10 +131,16 @@ export function setupTerminalActions(
 
   const printShortcuts = options.printShortcuts ?? defaultPrintShortcuts;
 
-  const handleKey = (key: string): void => {
+  // Bun runtime 의 stdin 은 setEncoding('utf8') 호출해도 'data' event 가 Buffer 로
+  // emit 될 수 있다 (Node 와 다른 동작). bungae graph-bundler/terminal-actions.ts
+  // L283-288 가 동일 패턴. string|Buffer 둘 다 받아 toString 으로 정규화.
+  const handleKey = (chunk: string | Buffer): void => {
+    const key = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
     if (process.env.ZTS_DEBUG_TERMINAL === '1') {
       const hex = Buffer.from(key, 'utf8').toString('hex');
-      process.stderr.write(`[zts:rn-dev:debug] key received: hex=${hex} len=${key.length}\n`);
+      process.stderr.write(
+        `[zts:rn-dev:debug] key received: hex=${hex} len=${key.length} type=${typeof chunk}\n`,
+      );
     }
     // Bun event loop edge case — raw mode 가 외부에서 false 로 reset 될 수 있음.
     if (stdin.isTTY && !stdin.isRaw) {
