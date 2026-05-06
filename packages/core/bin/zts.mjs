@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from './cli-flags.mjs';
 import { copyRnAssets } from './rn-asset-copy.mjs';
-import { buildRnDevServerInput } from './rn-dev-input.mjs';
+import { buildRnBundleExtra, buildRnDevServerInput } from './rn-dev-input.mjs';
 
 function isMissingBuiltCore(error) {
   if (!error || error.code !== 'ERR_MODULE_NOT_FOUND') return false;
@@ -675,9 +675,10 @@ function warnRnBundleUnsupported(opts) {
   }
 }
 
-async function runRnBundle(opts, _config) {
+async function runRnBundle(opts, config) {
   const rn = await loadRnModule();
-  const projectRoot = resolve(opts.rnProjectRoot ?? '.');
+  const cfg = config ?? {};
+  const projectRoot = resolve(opts.rnProjectRoot ?? cfg.root ?? '.');
   const entry = opts.entryPoints?.[0];
   if (!entry) {
     console.error(
@@ -715,10 +716,7 @@ async function runRnBundle(opts, _config) {
     sourcemap: wantsSourcemap,
     minify:
       opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax || false,
-    extra: {
-      watchFolders: opts.rnWatchFolders ?? undefined,
-      sourceExts: opts.rnSourceExts ?? undefined,
-    },
+    extra: buildRnBundleExtra(cfg, opts),
     override: outfile && !callerWrite ? { outfile, write: true } : undefined,
   });
 

@@ -117,6 +117,13 @@ export interface RnBundleInput {
      * 경로를 source 로 변환하는 base. zts core 의 `sourceRoot` 으로 forward.
      */
     sourceRoot?: string;
+    /**
+     * `console.error` setter intercept 의 RegExp source string 배열 — match 시
+     * silent swallow. zts core 의 `silentConsoleErrorPatterns` 로 forward
+     * (Metro `server.silentConsoleErrorPatterns` 호환). consumer (e.g.
+     * `withExpo()`) 가 환경 감지 후 패턴 주입.
+     */
+    silentConsoleErrorPatterns?: string[];
   };
   /** RN prelude 끝에 append 할 사용자 banner string. */
   bannerExtras?: string;
@@ -360,8 +367,11 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     global: '__ZTS_RN_GLOBAL__',
     __DEV__: String(dev),
     'process.env.NODE_ENV': `"${dev ? 'development' : 'production'}"`,
-    // Expo Router 의 require.context 인자 정적 평가용 (Phase 2.6 import_scanner).
-    'process.env.EXPO_ROUTER_APP_ROOT': '"./app"',
+    // expo-router `_ctx.{ios,android,web}.js` 의 require.context 인자 정적 평가용
+    // (Phase 2.6 import_scanner). 절대 경로 필수 — `_ctx` 가 node_modules 안에 있어
+    // 상대 경로면 require-context 플러그인의 `resolve(dirname(importer), dir)` 가
+    // `node_modules/expo-router/app/` 를 가리켜 ctx 매치 0.
+    'process.env.EXPO_ROUTER_APP_ROOT': JSON.stringify(resolve(projectRoot, 'app')),
     'process.env.EXPO_ROUTER_IMPORT_MODE': '"sync"',
     'process.env.EXPO_OS': `"${rnPlatform}"`,
   };
@@ -424,6 +434,9 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   }
   if (extra?.sourceRoot) {
     preset.sourceRoot = extra.sourceRoot;
+  }
+  if (extra?.silentConsoleErrorPatterns && extra.silentConsoleErrorPatterns.length > 0) {
+    preset.silentConsoleErrorPatterns = [...extra.silentConsoleErrorPatterns];
   }
 
   // user override 는 마지막 — define / loader / alias 같은 dict 는 deep merge,

@@ -5362,6 +5362,37 @@ describe('buildRnDevServerInput — config + opts 추출 (#2605)', () => {
     );
     expect(input?.bundle.extra?.sourceRoot).toBe('/abs/proj');
   });
+
+  test('config.server.silentConsoleErrorPatterns → bundle.extra.silentConsoleErrorPatterns 매핑 (Metro 호환, withExpo)', async () => {
+    const { buildRnDevServerInput } = await import('./rn-dev-input.mjs');
+    const original = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    // @ts-expect-error — runtime mock
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+      return true;
+    };
+    let input: ReturnType<typeof buildRnDevServerInput>;
+    try {
+      input = buildRnDevServerInput(
+        { entryPoints: ['i.js'] },
+        {
+          server: {
+            silentConsoleErrorPatterns: [
+              '^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$',
+            ],
+          },
+        },
+      );
+    } finally {
+      process.stderr.write = original;
+    }
+    expect(input?.bundle.extra?.silentConsoleErrorPatterns).toEqual([
+      '^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$',
+    ]);
+    // 매핑 가능한 필드라 unsupported 경고 없음.
+    expect(writes.join('')).not.toContain('server.silentConsoleErrorPatterns');
+  });
 });
 
 describe('CLI: dev --platform=react-native (#2605 PR #J)', () => {

@@ -123,3 +123,9 @@ export {
 } from './preset.ts';
 export { resolveRnPolyfills, RN_GLOBAL_IDENTIFIERS, tryResolve } from './rn-constants.ts';
 export { HMR_CLIENT_SUFFIX, ZTS_HMR_CLIENT_CODE } from './runtime-loader.ts';
+export {
+  detectExpo,
+  WINTER_POLYFILL_WARNING_PATTERN,
+  withExpo,
+  type ZtsRnExpoConfig,
+} from './withExpo.ts';
