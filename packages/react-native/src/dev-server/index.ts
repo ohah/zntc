@@ -22,7 +22,15 @@ export {
 export { parseRequestUrl, readJsonBody, sendJson, sendText } from './http-utils.ts';
 export type { CustomizeFrame, RnDevServerOptions, RnDevServerOptionsInput } from './options.ts';
 export { buildRnDevServerOptions } from './options.ts';
-export { colors, logBundle, logError, logInfo, logWarn, printZtsRnBanner } from './logger.ts';
+export {
+  colors,
+  formatLogBadge,
+  logBundle,
+  logError,
+  logInfo,
+  logWarn,
+  printZtsRnBanner,
+} from './logger.ts';
 export {
   createPlatformState,
   createPlatformStateRegistry,

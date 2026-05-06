@@ -12,7 +12,7 @@ import type { Socket } from 'node:net';
 import type { WatchRebuildEvent } from '@zts/core';
 
 import { createMetroHmrAdapter, type MetroHmrAdapter } from '../metro-hmr-adapter.ts';
-import { colors, logError, logInfo } from './logger.ts';
+import { colors, formatLogBadge, logError, logInfo } from './logger.ts';
 import type { PlatformState, PlatformStateCallbacks } from './platform-state.ts';
 
 export interface HmrBridgeOptions {
@@ -116,7 +116,7 @@ function buildIncomingHandler(adapter: MetroHmrAdapter) {
           return String(arg);
         })
         .join(' ');
-      console.log(`[${level.toUpperCase()}] ${formatted}`);
+      console.log(`${formatLogBadge(level)} ${formatted}`);
       // adapter 가 server-broadcast 하지 않음 — log 는 client→server one-way.
       void adapter;
     }
