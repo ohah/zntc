@@ -1,5 +1,5 @@
 // zts sourcemap 후처리 — DevTools 의 x_google_ignoreList 확장 + production
-// bundle 의 sourceRoot / 절대 경로 옵션. zts 가 emit 한 기존 ignoreList 항목
+// bundle 의 sourceRoot / 절대 경로 옵션. zts 가 emit 한 기존 ignore hint 항목
 // 보존 + node_modules + zts internal source (zts: prefix — runtime polyfill /
 // babel transform 등) 추가. 잘못된 JSON 이면 rawJson 반환 (caller 가 빈 응답 회피).
 
@@ -26,13 +26,23 @@ function isVirtualSource(stripped: string): boolean {
 
 /**
  * source string 이 user code 가 아닌 framework / polyfill 영역인지 판정.
+ * Metro `Server._shouldAddModuleToIgnoreList` 기준:
+ * - `__prelude__`
+ * - `?ctx=` context module
+ * - serializer.isThirdPartyModule 기본값인 node_modules path
+ *
  * `zts:` prefix 는 NAPI emitter 의 internal source naming 과 sync — 변경 시
  * zts core (Zig 측 emitter) 와 함께 업데이트 필요.
  */
 function isFrameworkSource(src: unknown): boolean {
   if (typeof src !== 'string') return false;
   const stripped = stripVirtualPrefix(src);
-  return stripped.includes('/node_modules/') || stripped.startsWith('zts:');
+  return (
+    stripped === '__prelude__' ||
+    stripped.includes('?ctx=') ||
+    /(?:^|[/\\])node_modules[/\\]/.test(stripped) ||
+    stripped.startsWith('zts:')
+  );
 }
 
 export interface SourcemapPathOptions {
@@ -55,18 +65,38 @@ export function postProcessSourceMap(rawJson: string, pathOpts?: SourcemapPathOp
     const map = JSON.parse(rawJson);
     if (map.version !== 3 || !map.sources) return rawJson;
 
-    // (1) x_google_ignoreList — 기존 보존 + framework source 추가.
+    // (1) Metro-compatible map shape.
+    // zts core 는 library/file output 을 위해 `file` 과 빈 `sourceRoot` 를 emit 한다.
+    // RN DevTools 는 loaded script URL (`index.bundle?...`) 을 기준으로 blackbox 처리를
+    // 하므로, dev-server map 에서는 Metro 처럼 `file` 을 생략한다. sourceRoot 도
+    // 사용자가 명시하지 않은 빈 값이면 생략해 Metro 기본값과 맞춘다.
+    delete map.file;
+    if (pathOpts?.sourceRoot === undefined && map.sourceRoot === '') {
+      delete map.sourceRoot;
+    }
+
+    // (2) x_google_ignoreList — 기존 보존 + framework source 추가.
+    // Metro-source-map Generator 는 legacy `x_google_ignoreList` 만 직렬화한다.
+    // RN DevTools 는 `ignoreList ?? x_google_ignoreList` 순서로 읽기 때문에,
+    // Metro shape 과 맞추기 위해 output 에서는 standard `ignoreList` 를 제거한다.
     const existing = new Set<number>(
-      Array.isArray(map.x_google_ignoreList) ? map.x_google_ignoreList : [],
+      [
+        ...(Array.isArray(map.x_google_ignoreList) ? map.x_google_ignoreList : []),
+        ...(Array.isArray(map.ignoreList) ? map.ignoreList : []),
+      ].filter((v): v is number => Number.isInteger(v) && v >= 0),
     );
     for (let i = 0; i < map.sources.length; i++) {
       if (isFrameworkSource(map.sources[i])) existing.add(i);
     }
     if (existing.size > 0) {
-      map.x_google_ignoreList = [...existing].sort((a, b) => a - b);
+      const ignoreList = [...existing].sort((a, b) => a - b);
+      map.x_google_ignoreList = ignoreList;
+    } else {
+      delete map.x_google_ignoreList;
     }
+    delete map.ignoreList;
 
-    // (2) path 옵션 (Metro 호환) — sourceRoot field + sources 절대화.
+    // (3) path 옵션 (Metro 호환) — sourceRoot field + sources 절대화.
     if (pathOpts) {
       if (pathOpts.sourceRoot !== undefined) {
         map.sourceRoot = pathOpts.sourceRoot;

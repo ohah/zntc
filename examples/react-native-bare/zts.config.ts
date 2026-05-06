@@ -46,7 +46,7 @@ export default {
     port: 8081,
     host: "localhost",
     useGlobalHotkey: true,
-    forwardClientLogs: true,
+    forwardClientLogs: false,
     verifyConnections: false,
   },
 };

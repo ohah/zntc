@@ -44,7 +44,16 @@ describe('createAssetPlugin', () => {
     expect(hmrHandler.filter.test('/abs/foo.ts')).toBe(false);
 
     const result = hmrHandler.handler({ path: '/abs/Libraries/Utilities/HMRClient.js' });
-    expect(result).toEqual({ contents: ZTS_HMR_CLIENT_CODE });
+    expect(result).toEqual({
+      contents: ZTS_HMR_CLIENT_CODE.replace(/__ZTS_FORWARD_CLIENT_LOGS__/g, 'false'),
+    });
+  });
+
+  test('forwardClientLogs=true — HMR runtime flag true 로 치환', () => {
+    const handlers = captureHandlers({ ...baseConfig, forwardClientLogs: true });
+    const result = handlers[0]!.handler({ path: '/abs/Libraries/Utilities/HMRClient.js' });
+    expect(result?.contents).toContain('typeof true');
+    expect(result?.contents).not.toContain('__ZTS_FORWARD_CLIENT_LOGS__');
   });
 
   test('babelTransformerPath 미지정 — HMRClient.js handler 만 등록 (custom transformer 없음)', () => {

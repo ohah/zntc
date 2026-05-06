@@ -124,6 +124,12 @@ export interface RnBundleInput {
      * `withExpo()`) 가 환경 감지 후 패턴 주입.
      */
     silentConsoleErrorPatterns?: string[];
+    /**
+     * Metro `server.forwardClientLogs` 호환. true면 RN runtime console.* 를 dev
+     * server 터미널로 forwarding. 기본 false — RN 내부/devtool 로그 직렬화가 앱
+     * 메모리를 계속 늘리는 시나리오를 피한다.
+     */
+    forwardClientLogs?: boolean;
   };
   /** RN prelude 끝에 append 할 사용자 banner string. */
   bannerExtras?: string;
@@ -319,6 +325,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
       rnPlatform,
       sourceExts,
       babelTransformerPath: extra?.babelTransformerPath,
+      forwardClientLogs: extra?.forwardClientLogs,
     }),
     createCodegenPlugin({
       projectRoot,

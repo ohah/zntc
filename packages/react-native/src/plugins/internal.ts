@@ -24,6 +24,7 @@ export interface BabelTransformOptions {
   babelrc?: boolean;
   configFile?: boolean;
   compact?: boolean;
+  retainLines?: boolean;
   sourceMaps?: boolean;
   parserOpts?: { plugins?: string[] };
 }

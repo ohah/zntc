@@ -18,6 +18,8 @@ export interface PluginConfig {
   sourceExts: string[];
   /** Metro 호환 custom file transformer path (예: react-native-svg-transformer). */
   babelTransformerPath?: string;
+  /** RN runtime console.* forwarding to dev-server terminal. */
+  forwardClientLogs?: boolean;
   /**
    * Inline babel preset / plugin (zts.config.ts 의 `transformer.babel`). 사용자
    * babel.config.js 의 plugins 와 concat 되며 양쪽 모두 ZTS native filter 통과

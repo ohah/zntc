@@ -1074,8 +1074,14 @@ pub const Bundler = struct {
                 std.log.err("zts: cannot read polyfill file '{s}': {}", .{ poly_path, err });
                 continue;
             };
+            const basename = std.fs.path.basename(poly_path);
             // Flow 모드일 때 트랜스파일하여 타입 구문 제거 (RN 폴리필은 Flow로 작성됨)
-            const content = if (self.options.flow) blk: {
+            //
+            // RN console.js 는 @noflow 이며 DevTools console callsite 의 기준 파일이다.
+            // 이를 변환하면 하단 originalConsole bridge 의 generated line 이 원본 line 과
+            // 어긋나 `console.js:<generated>` 로 노출된다. 원본이 JS 문법으로 parse 가능하므로
+            // 그대로 두고 identity sourcemap 을 유지한다.
+            const content = if (self.options.flow and !std.mem.eql(u8, basename, "console.js")) blk: {
                 const result = transpile_mod.transpile(self.allocator, raw, poly_path, .{
                     .flow = true,
                     .jsx_in_js = self.options.jsx_in_js,
@@ -1088,7 +1094,7 @@ pub const Bundler = struct {
                 break :blk result.code;
             } else raw;
             try polyfill_entries.append(self.allocator, .{
-                .name = std.fs.path.basename(poly_path),
+                .name = basename,
                 .content = content,
                 .path = try self.allocator.dupe(u8, poly_path),
             });

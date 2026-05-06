@@ -8,11 +8,18 @@ import * as jscSafeUrl from 'jsc-safe-url';
 
 import { sendText } from '../http-utils.ts';
 import { getCachedSourceMap, type PlatformStateRegistry, waitForBuild } from '../platform-state.ts';
+import { postProcessSourceMap } from '../sourcemap.ts';
 import { resolvePlatform } from './_shared.ts';
 
 const HMR_MAP_PREFIX = '/__zts_hmr_map/';
 const MULTIPART_BOUNDARY = '3beqjf3apnqeu3h5jqorms4i';
 const CRLF = '\r\n';
+const METRO_NO_STORE_HEADERS = {
+  'Surrogate-Control': 'no-store',
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  Pragma: 'no-cache',
+  Expires: '0',
+};
 
 export function isBundleRoute(pathname: string): boolean {
   return pathname.endsWith('.bundle') || pathname.endsWith('.bundle.js');
@@ -65,7 +72,7 @@ export async function handleBundleRequest(
   if (req.headers.accept === 'multipart/mixed') {
     res.writeHead(200, {
       'Content-Type': `multipart/mixed; boundary="${MULTIPART_BOUNDARY}"`,
-      'Cache-Control': 'no-cache',
+      ...METRO_NO_STORE_HEADERS,
       'X-React-Native-Project-Root': projectRoot,
     });
     res.write('If you are seeing this, your client does not support multipart response');
@@ -90,9 +97,10 @@ export async function handleBundleRequest(
   }
 
   res.writeHead(200, {
+    'X-Content-Type-Options': 'nosniff',
+    ...METRO_NO_STORE_HEADERS,
     'Content-Type': 'application/javascript; charset=UTF-8',
     'Content-Length': Buffer.byteLength(bundle),
-    'Cache-Control': 'no-cache',
     'X-React-Native-Project-Root': projectRoot,
     'Content-Location': bundleUrl,
   });
@@ -113,11 +121,11 @@ export function handleMapRequest(
     return;
   }
   res.writeHead(200, {
+    'X-Content-Type-Options': 'nosniff',
+    ...METRO_NO_STORE_HEADERS,
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(json),
     'Access-Control-Allow-Origin': 'devtools://devtools',
-    'X-Content-Type-Options': 'nosniff',
-    'Cache-Control': 'no-cache',
   });
   res.end(json);
 }
@@ -131,17 +139,18 @@ export function handleHmrMapRequest(
 ): void {
   const state = resolvePlatform(url, registry, defaultPlatform);
   const moduleId = decodeURIComponent(url.pathname.slice(HMR_MAP_PREFIX.length));
-  const json = state.handle.getHmrSourceMap(moduleId);
-  if (!json) {
+  const rawJson = state.handle.getHmrSourceMap(moduleId);
+  if (!rawJson) {
     sendText(res, 404, 'HMR source map not found');
     return;
   }
+  const json = postProcessSourceMap(rawJson);
   res.writeHead(200, {
+    'X-Content-Type-Options': 'nosniff',
+    ...METRO_NO_STORE_HEADERS,
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(json),
     'Access-Control-Allow-Origin': 'devtools://devtools',
-    'X-Content-Type-Options': 'nosniff',
-    'Cache-Control': 'no-cache',
   });
   res.end(json);
 }
