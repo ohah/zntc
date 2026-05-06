@@ -302,6 +302,14 @@ pub const SourceMapBuilder = struct {
         return self.buf.items;
     }
 
+    /// `generateJSON` 의 결과를 caller 소유 slice 로 반환. 내부 `buf` 의 소유권을
+    /// builder 의 allocator 로 이전 (`toOwnedSlice`) 해 dupe + deinit-free 라운드
+    /// 트립을 회피. caller 는 builder 와 동일 allocator 로 free 해야 한다.
+    pub fn generateJSONOwned(self: *SourceMapBuilder, output_file: []const u8) ![]const u8 {
+        _ = try self.generateJSON(output_file);
+        return self.buf.toOwnedSlice(self.allocator);
+    }
+
     /// 소스맵 JSON + x_facebook_sources를 함께 생성한다. 단일 source 전용.
     /// `fn_map`의 내용을 `"x_facebook_sources":[[{names,mappings}]]`로 직렬화.
     pub fn generateJSONWithFunctionMap(

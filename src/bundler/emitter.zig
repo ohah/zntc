@@ -222,6 +222,9 @@ pub const OutputFile = struct {
     exports: []const []const u8 = &.{},
     /// "chunk" (JS/TS 번들 결과) / "asset" (binary/text/file/dataurl 로더 output).
     kind: Kind = .chunk,
+    /// chunk 별 sourcemap JSON (V3). null 이면 sourcemap 미생성 혹은 asset output.
+    /// `EmitOptions.sourcemap.enable=true` + `kind == .chunk` 시 채워짐. allocator 소유 — deinit 에서 해제 (#2654).
+    sourcemap: ?[]const u8 = null,
 
     pub const Kind = enum { chunk, asset };
 
@@ -234,6 +237,7 @@ pub const OutputFile = struct {
         if (self.imports.len > 0) allocator.free(self.imports);
         for (self.exports) |ex| allocator.free(ex);
         if (self.exports.len > 0) allocator.free(self.exports);
+        if (self.sourcemap) |sm| allocator.free(sm);
     }
 };
 
@@ -823,9 +827,7 @@ pub fn emitWithTreeShaking(
                         mod_sm_moved = true;
                         module_sm_builder = heap_sm;
                     } else {
-                        _ = try mod_sm.generateJSON(mod_id);
-                        // buf 소유권 이전 — dupe + deinit-free 라운드트립 회피
-                        module_map = try mod_sm.buf.toOwnedSlice(allocator);
+                        module_map = try mod_sm.generateJSONOwned(mod_id);
                     }
                 }
             }

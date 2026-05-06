@@ -445,6 +445,110 @@ test "emitChunks: single chunk produces one OutputFile" {
     try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "const x = 1;") != null);
 }
 
+test "emitChunks: sourcemap.enable=false 시 OutputFile.sourcemap 은 null (#2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{}, null);
+    defer {
+        for (outputs) |o| {
+            o.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expect(outputs[0].sourcemap == null);
+}
+
+test "emitChunks: sourcemap.enable=true 시 OutputFile.sourcemap 채워짐 + V3 형식 (#2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\nconst y = x + 2;\nconsole.log(y);");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{ .sourcemap = .{ .enable = true } }, null);
+    defer {
+        for (outputs) |o| {
+            o.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expect(outputs[0].sourcemap != null);
+    const sm = outputs[0].sourcemap.?;
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"version\":3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"sources\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"mappings\":") != null);
+    // file 필드는 chunk 의 출력 파일명 — index.js
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"file\":\"index.js\"") != null);
+    // mappings 가 비어있지 않아야 함 (3줄 코드 → 최소 몇 개 매핑)
+    try std.testing.expect(std.mem.indexOf(u8, sm, "\"mappings\":\"\"") == null);
+}
+
+test "emitChunks: 2 entries + shared module — 각 chunk 가 독립 sourcemap (#2654)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "a.ts", "import './shared';\nconsole.log('a');");
+    try writeFile(tmp.dir, "b.ts", "import './shared';\nconsole.log('b');");
+    try writeFile(tmp.dir, "shared.ts", "console.log('shared');");
+
+    var result = try buildGraphMultiEntry(std.testing.allocator, &tmp, &.{ "a.ts", "b.ts" });
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const ep_a = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "a.ts" });
+    defer std.testing.allocator.free(ep_a);
+    const ep_b = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "b.ts" });
+    defer std.testing.allocator.free(ep_b);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{ ep_a, ep_b }, .{});
+    defer cg.deinit();
+    try chunk_mod.computeCrossChunkLinks(&cg, &result.graph, std.testing.allocator, null);
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{ .sourcemap = .{ .enable = true } }, null);
+    defer {
+        for (outputs) |o| {
+            o.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), outputs.len);
+    // 모든 chunk 가 sourcemap 보유 (shared chunk 포함)
+    for (outputs) |o| {
+        try std.testing.expect(o.sourcemap != null);
+        try std.testing.expect(std.mem.indexOf(u8, o.sourcemap.?, "\"version\":3") != null);
+    }
+}
+
 test "emitChunks: two entries with shared module — 3 OutputFiles" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -90,6 +90,16 @@ pub fn emitChunks(
         var chunk_output: std.ArrayList(u8) = .empty;
         errdefer chunk_output.deinit(allocator);
 
+        // chunk 별 sourcemap builder. eager 경로는 stack alloc 으로 zero-overhead.
+        // JSON 은 chunk 끝에서 생성 후 OutputFile.sourcemap 에 이관.
+        var chunk_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap.enable) blk: {
+            var sm = SourceMap.SourceMapBuilder.init(allocator);
+            sm.source_root = options.sourcemap.source_root orelse "";
+            sm.sources_content = options.sourcemap.sources_content;
+            break :blk sm;
+        } else null;
+        defer if (chunk_sm) |*sm| sm.deinit();
+
         // RSC: 디렉티브가 파일 첫 문장이어야 React/Next가 인식.
         var hoisted_directives: std.ArrayList(u8) = .empty;
         defer hoisted_directives.deinit(allocator);
@@ -315,13 +325,38 @@ pub fn emitChunks(
             null;
         var rbm_calls_emitted = false;
 
+        // module emit 영역의 base line. null = sourcemap 비활성 → 추적 비용 0.
+        // non-null = chunk prologue (banner/intro/runtime helpers/imports) 가 이미
+        // 들어간 시점의 줄 수로 초기화 후 module 추가마다 increment.
+        var module_line: ?u32 = if (chunk_sm != null)
+            @intCast(std.mem.count(u8, chunk_output.items, "\n"))
+        else
+            null;
+
         for (sorted_mods, 0..) |mod_idx, sorted_pos| {
             const mi = @intFromEnum(mod_idx);
             if (mi >= module_count) continue;
             const m = graph.getModule(mod_idx) orelse continue;
 
             const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            const raw_code = try emitModule(allocator, m, options, linker, is_entry, null, null, null, null, null, null, null, null) orelse continue;
+            var module_mappings: ?[]const SourceMap.Mapping = null;
+            defer if (module_mappings) |maps| allocator.free(maps);
+            var module_preamble_lines: u32 = 0;
+            const raw_code = try emitModule(
+                allocator,
+                m,
+                options,
+                linker,
+                is_entry,
+                null,
+                null,
+                null,
+                if (chunk_sm != null) &module_mappings else null,
+                if (chunk_sm != null) &module_preamble_lines else null,
+                null,
+                null,
+                null,
+            ) orelse continue;
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
@@ -340,7 +375,9 @@ pub fn emitChunks(
             // after runtime prelude/setup, so insert after rbm definitions and
             // before the first user module in this entry chunk.
             if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(sorted_pos, rbm_insert_after_pos)) {
+                const before_len = chunk_output.items.len;
                 try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options);
+                if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
                 rbm_calls_emitted = true;
             }
 
@@ -348,14 +385,43 @@ pub fn emitChunks(
                 try chunk_output.appendSlice(allocator, "//#region ");
                 try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
                 try chunk_output.append(allocator, '\n');
+                if (module_line) |*ml| ml.* += 1;
             }
+
+            // 모듈 매핑: codegen mapping + region/endregion fill 까지 dev.zig 가 처리.
+            // base_line = module_line - region_lines (region marker 시작 지점 기준).
+            // stripped 의 줄 수는 module_line 누적용 + addModuleMappings 인자에 모두
+            // 쓰이므로 한 번만 카운트.
+            const stripped_lines: u32 = if (chunk_sm != null) @intCast(std.mem.count(u8, stripped, "\n")) else 0;
+            if (chunk_sm) |*sm| if (module_mappings) |maps| {
+                const region_lines: u32 = if (options.minify_whitespace) 0 else 1;
+                const endregion_lines: u32 = if (options.minify_whitespace) 0 else 1;
+                try parent.addModuleMappings(
+                    sm,
+                    parent.sourcemapSourcePath(m.path, options),
+                    m.source,
+                    maps,
+                    module_line.? - region_lines,
+                    module_preamble_lines,
+                    options.sourcemap.sources_content,
+                    false,
+                    region_lines,
+                    stripped_lines,
+                    endregion_lines,
+                );
+            };
+
             try chunk_output.appendSlice(allocator, stripped);
+            if (module_line) |*ml| ml.* += stripped_lines;
             if (!options.minify_whitespace) {
                 try chunk_output.appendSlice(allocator, "//#endregion\n");
+                if (module_line) |*ml| ml.* += 1;
             }
         }
         if (emit_top_level_rbm and !rbm_calls_emitted) {
+            const before_len = chunk_output.items.len;
             try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options);
+            if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
         }
 
         // RSC 디렉티브 충돌 검증 (Next.js 스펙).
@@ -523,11 +589,20 @@ pub fn emitChunks(
             break :blk try names.toOwnedSlice(allocator);
         };
 
+        // sourcemap JSON 을 chunk 별로 생성. directive hoisting (위 insertSlice)
+        // 후의 줄 shift 는 의도적으로 보정 안 함 — 단일 번들 path 와 동일 동작.
+        const chunk_sourcemap: ?[]const u8 = if (chunk_sm) |*sm|
+            try sm.generateJSONOwned(filename)
+        else
+            null;
+        errdefer if (chunk_sourcemap) |s| allocator.free(s);
+
         try outputs.append(allocator, .{
             .path = filename,
             .contents = try chunk_output.toOwnedSlice(allocator),
             .module_ids = module_ids,
             .exports = export_names,
+            .sourcemap = chunk_sourcemap,
         });
     }
 
