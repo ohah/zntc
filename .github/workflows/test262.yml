@@ -11,6 +11,10 @@ on:
       - 'src/**'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test262-unit:
     name: Test262 Runner Unit Tests

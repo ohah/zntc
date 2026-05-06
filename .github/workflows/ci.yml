@@ -6,14 +6,47 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    name: Build & Test
+  debug-test:
+    name: Debug Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build (Debug)
+        run: zig build
+
+      - name: Run Tests
+        run: zig build test
+
+      - name: Run Test262 Runner Tests
+        run: zig build test262
+
+  release-build:
+    name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        optimize: [ReleaseSafe, ReleaseFast, ReleaseSmall]
 
     steps:
       - name: Checkout
@@ -29,26 +62,8 @@ jobs:
       # Windows GitHub runner (7GB RAM) 는 Debug LLVM 메모리 상한에 걸림
       # ("LLVM ERROR: out of memory"). Debug 빌드·테스트 커버리지는 Linux/macOS
       # 에서 유지하고, Windows 에서는 Release 빌드만 검증한다.
-      - name: Build (Debug)
-        if: runner.os != 'Windows'
-        run: zig build
-
-      - name: Run Tests
-        if: runner.os != 'Windows'
-        run: zig build test
-
-      - name: Run Test262 Runner Tests
-        if: runner.os != 'Windows'
-        run: zig build test262
-
-      - name: Build (ReleaseSafe)
-        run: zig build -Doptimize=ReleaseSafe
-
-      - name: Build (ReleaseFast)
-        run: zig build -Doptimize=ReleaseFast
-
-      - name: Build (ReleaseSmall)
-        run: zig build -Doptimize=ReleaseSmall
+      - name: Build (${{ matrix.optimize }})
+        run: zig build -Doptimize=${{ matrix.optimize }}
 
   lint:
     name: Lint
@@ -102,6 +117,14 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -169,6 +192,14 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
       - name: Install dependencies
         run: bun install

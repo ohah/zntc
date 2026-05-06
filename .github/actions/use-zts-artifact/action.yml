@@ -1,0 +1,62 @@
+name: Use ZTS Artifact
+description: Install Bun and restore prebuilt ZTS artifacts for CI jobs.
+
+inputs:
+  artifact-name:
+    description: Name of the uploaded ZTS build artifact.
+    required: true
+  bun-version:
+    description: Bun version to install.
+    required: false
+    default: "1.3.11"
+  napi:
+    description: Verify that the artifact includes NAPI and core JS wrapper outputs.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
+    - name: Cache Bun packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.bun/install/cache
+        key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
+        restore-keys: |
+          ${{ runner.os }}-bun-
+
+    - name: Download ZTS build artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: .
+
+    - name: Normalize CLI artifact layout
+      run: |
+        if [ ! -e zig-out/bin/zts ] && [ -e zts ]; then
+          mkdir -p zig-out/bin
+          mv zts zig-out/bin/zts
+        fi
+      shell: bash
+
+    - name: Restore executable bit
+      if: ${{ runner.os != 'Windows' }}
+      run: chmod +x zig-out/bin/zts
+      shell: bash
+
+    - name: Verify ZTS artifact
+      run: |
+        test -x zig-out/bin/zts
+      shell: bash
+
+    - name: Verify NAPI artifact
+      if: ${{ inputs.napi == 'true' }}
+      run: |
+        test -f zig-out/lib/zts.node
+        test -f packages/core/dist/index.js
+      shell: bash
