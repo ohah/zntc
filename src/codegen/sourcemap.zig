@@ -131,16 +131,17 @@ pub const SourceMappingURLOptions = struct {
 /// - `external`: 주석 없음
 /// - `inline_`: `options.inline_json` 의 base64 를 contents 에 embed. base64
 ///   embed 후 `inline_json_slot.*` 을 `free` + `null` 로 갱신해 caller 의
-///   free 책임을 helper 가 인수. `inline_json_slot.*` 이 null 또는 mode 가
-///   inline_ 가 아니면 slot 갱신 안 함.
+///   free 책임을 helper 가 인수. `inline_json_slot` 이 null 이면 (linked /
+///   external 호출 등) slot 갱신은 skip.
 ///
-/// `options.inline_json` 과 `inline_json_slot` 은 보통 같은 변수의 값/포인터로
-/// caller 가 분리해서 넘긴다 (struct field 가 const 라서 분리 시그니처).
+/// `inline_json_slot` 은 inline_ 호출자가 owned slice 의 slot pointer 를 넘겨
+/// helper 가 free + null 로 ownership 이전. linked / external 만 사용하는
+/// caller 는 null 전달 가능.
 pub fn appendSourceMappingURLComment(
     output: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     options: SourceMappingURLOptions,
-    inline_json_slot: *?[]const u8,
+    inline_json_slot: ?*?[]const u8,
 ) !void {
     switch (options.mode) {
         .linked => {
@@ -160,7 +161,7 @@ pub fn appendSourceMappingURLComment(
                 _ = Encoder.encode(output.items[old_len .. old_len + encoded_len], json);
                 try output.append(allocator, '\n');
                 allocator.free(json);
-                inline_json_slot.* = null;
+                if (inline_json_slot) |slot| slot.* = null;
             }
         },
     }

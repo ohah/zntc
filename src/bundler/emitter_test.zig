@@ -584,6 +584,53 @@ test "emitChunks: sourcemap.lazy=true → builder 이관, JSON 은 caller 시점
     try std.testing.expect(std.mem.indexOf(u8, json, "\"mappings\":") != null);
 }
 
+test "emitChunks: hash 들어간 chunk filename 의 sourcemap \"file\" 필드가 final hash 정확 (#2661)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "const x = 1;\nconsole.log(x);");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const dp = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var cg = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer cg.deinit();
+
+    const outputs = try emitter.emitChunks(std.testing.allocator, &result.graph, &cg, &.{
+        .entry_names = "[name]-[hash]",
+        .sourcemap = .{ .enable = true },
+    }, null);
+    defer {
+        for (outputs) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(outputs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    // path 가 "index-{hash}.js" — placeholder 가 final hash 로 치환된 형태.
+    try std.testing.expect(std.mem.startsWith(u8, outputs[0].path, "index-"));
+    try std.testing.expect(std.mem.endsWith(u8, outputs[0].path, ".js"));
+
+    // sourcemap JSON 의 "file" 필드가 outputs[0].path 와 정확히 일치해야 한다.
+    // #2661 이전: chunk loop 단계의 generateJSON 이 placeholder filename 을
+    // 박아넣음 → resolveContentHashes 의 sourcemap full-scan 으로 사후 치환.
+    // #2661 이후: generateJSON 호출 자체를 hash 치환 후로 미뤄 placeholder 미들어감.
+    try std.testing.expect(outputs[0].sourcemap != null);
+    const expected_file = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "\"file\":\"{s}\"",
+        .{outputs[0].path},
+    );
+    defer std.testing.allocator.free(expected_file);
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].sourcemap.?, expected_file) != null);
+    // placeholder marker (\x00ZH<hex>) 가 sourcemap 안에 절대 없어야 한다.
+    try std.testing.expect(std.mem.indexOf(u8, outputs[0].sourcemap.?, "\x00ZH") == null);
+}
+
 test "emitChunks: sourcemap.mode=linked 시 contents 끝에 //# sourceMappingURL 주석 + .map basename (#2654)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
