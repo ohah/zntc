@@ -36,6 +36,38 @@ function warnUnsupported(config) {
 }
 
 /**
+ * Metro-shape config (`resolver` / `serializer` / `transformer` / `server` /
+ * `watchFolders` / `sourcemapSourcesRoot`) → `RnBundleInput.extra` 평탄화. dev
+ * server (rn-dev-input) 와 prod bundle (zts.mjs runRnBundle) 양쪽이 공유.
+ *
+ * `opts.rnWatchFolders` / `opts.rnSourceExts` 만 CLI flag 가 config 위에 우선 —
+ * 나머지 필드는 config-only.
+ */
+export function buildRnBundleExtra(config, opts = {}) {
+  const cfg = config ?? {};
+  const resolver = cfg.resolver ?? {};
+  const transformer = cfg.transformer ?? {};
+  const serializer = cfg.serializer ?? {};
+  const server = cfg.server ?? {};
+  return {
+    watchFolders: opts.rnWatchFolders ?? cfg.watchFolders ?? undefined,
+    sourceExts: opts.rnSourceExts ?? resolver.sourceExts ?? undefined,
+    assetExts: resolver.assetExts ?? undefined,
+    blockList: resolver.blockList ?? undefined,
+    fallback: resolver.extraNodeModules ?? undefined,
+    metroResolveRequest: resolver.resolveRequest ?? undefined,
+    babelTransformerPath: transformer.babelTransformerPath ?? undefined,
+    polyfills: serializer.polyfills ?? undefined,
+    extraVars: serializer.extraVars ?? undefined,
+    prelude: serializer.prelude ?? undefined,
+    babel: transformer.babel ?? undefined,
+    inlineSourceMap: serializer.inlineSourceMap ?? undefined,
+    sourceRoot: cfg.sourcemapSourcesRoot ?? undefined,
+    silentConsoleErrorPatterns: server.silentConsoleErrorPatterns ?? undefined,
+  };
+}
+
+/**
  * 번개 BungaeConfig 의 `root` / `entry` / `dev` / `minify` / `server.*` /
  * `resolver.*` / `transformer.*` / `serializer.*` / `symbolicator.*` /
  * `watchFolders` 영역 인식.
@@ -55,8 +87,6 @@ export function buildRnDevServerInput(opts, config) {
   const rnPlatform = opts.rnPlatform === 'android' ? 'android' : 'ios';
   const server = cfg.server ?? {};
   const resolver = cfg.resolver ?? {};
-  const transformer = cfg.transformer ?? {};
-  const serializer = cfg.serializer ?? {};
   const symbolicator = cfg.symbolicator ?? {};
 
   warnUnsupported(cfg);
@@ -64,7 +94,7 @@ export function buildRnDevServerInput(opts, config) {
   // server.useGlobalHotkey + CLI `--no-interactive` 둘 다 r/d/? 키보드
   // shortcut 의 enable gate. CLI flag 우선 — 명시 시 config override.
   const terminalActions =
-    opts.noInteractive === true ? false : server.useGlobalHotkey === false ? false : undefined;
+    opts.noInteractive === true || server.useGlobalHotkey === false ? false : undefined;
 
   return {
     bundle: {
@@ -85,21 +115,7 @@ export function buildRnDevServerInput(opts, config) {
         opts.minifySyntax ||
         cfg.minify ||
         false,
-      extra: {
-        watchFolders: cfg.watchFolders ?? undefined,
-        blockList: resolver.blockList ?? undefined,
-        fallback: resolver.extraNodeModules ?? undefined,
-        metroResolveRequest: resolver.resolveRequest ?? undefined,
-        babelTransformerPath: transformer.babelTransformerPath ?? undefined,
-        sourceExts: resolver.sourceExts ?? undefined,
-        assetExts: resolver.assetExts ?? undefined,
-        polyfills: serializer.polyfills ?? undefined,
-        extraVars: serializer.extraVars ?? undefined,
-        prelude: serializer.prelude ?? undefined,
-        babel: transformer.babel ?? undefined,
-        inlineSourceMap: serializer.inlineSourceMap ?? undefined,
-        sourceRoot: cfg.sourcemapSourcesRoot ?? undefined,
-      },
+      extra: buildRnBundleExtra(cfg, opts),
     },
     port: opts.port ?? server.port ?? 8081,
     host: opts.host ?? server.host ?? 'localhost',

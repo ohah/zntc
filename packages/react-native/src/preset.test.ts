@@ -87,7 +87,10 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
     const opts = buildRnBundleOptions(baseInput({ dev: true, rnPlatform: 'android' }));
     expect(opts.define?.__DEV__).toBe('true');
     expect(opts.define?.['process.env.NODE_ENV']).toBe('"development"');
-    expect(opts.define?.['process.env.EXPO_ROUTER_APP_ROOT']).toBe('"./app"');
+    // EXPO_ROUTER_APP_ROOT 는 projectRoot 의 `app/` 절대 경로 — `_ctx.{ios,android,web}.js`
+    // 가 node_modules 안에 있어 importer 기준 상대 경로면 ctx 매치 0 → "Welcome to Expo"
+    // fallback 화면 트리거됨.
+    expect(opts.define?.['process.env.EXPO_ROUTER_APP_ROOT']).toBe(JSON.stringify(join(dir, 'app')));
     expect(opts.define?.['process.env.EXPO_OS']).toBe('"android"');
     expect(opts.define?.global).toBe('__ZTS_RN_GLOBAL__');
   });
@@ -266,6 +269,21 @@ describe('buildRnBundleOptions — define / banner / footer / polyfills', () => 
   test('extra.sourceRoot 미지정 — preset.sourceRoot 미설정', () => {
     const opts = buildRnBundleOptions(baseInput());
     expect(opts.sourceRoot).toBeUndefined();
+  });
+
+  test('extra.silentConsoleErrorPatterns — Metro server.silentConsoleErrorPatterns 호환', () => {
+    const patterns = ['^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$'];
+    const opts = buildRnBundleOptions(
+      baseInput({ extra: { silentConsoleErrorPatterns: patterns } }),
+    );
+    expect(opts.silentConsoleErrorPatterns).toEqual(patterns);
+  });
+
+  test('extra.silentConsoleErrorPatterns — 빈 배열 또는 미지정 시 미설정', () => {
+    const a = buildRnBundleOptions(baseInput({ extra: { silentConsoleErrorPatterns: [] } }));
+    expect(a.silentConsoleErrorPatterns).toBeUndefined();
+    const b = buildRnBundleOptions(baseInput());
+    expect(b.silentConsoleErrorPatterns).toBeUndefined();
   });
 });
 
