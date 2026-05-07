@@ -90,7 +90,7 @@ const ErrorCode = error_codes.Code;
 /// 노출. unknown 은 Zig error name fallback.
 fn setLastErrorFromZigError(err: anyerror) void {
     const name = @errorName(err);
-    const mapped: ?ErrorCode = if (std.mem.eql(u8, name, "CodeSplittingRequiresESM"))
+    const mapped: ?ErrorCode = if (std.mem.eql(u8, name, "CodeSplittingRequiresESM") or std.mem.eql(u8, name, "PreserveModulesRequiresESM"))
         .splitting_requires_esm_format
     else if (std.mem.eql(u8, name, "InvalidEntryModule") or std.mem.eql(u8, name, "InvalidPath"))
         .invalid_entry_path

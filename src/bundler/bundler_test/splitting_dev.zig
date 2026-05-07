@@ -245,6 +245,26 @@ test "CodeSplitting: CJS format returns error" {
     try std.testing.expect(result == error.CodeSplittingRequiresESM);
 }
 
+// preserveModules + non-ESM 은 별도 error name 으로 — code_splitting 미설정 사용자에게
+// "CodeSplittingRequiresESM" 가 misleading 이라 분기.
+test "PreserveModules: CJS format returns PreserveModulesRequiresESM" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "export const x = 1;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var bnd = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .preserve_modules = true,
+        .format = .cjs,
+    });
+    defer bnd.deinit();
+    const result = bnd.bundle();
+    try std.testing.expect(result == error.PreserveModulesRequiresESM);
+}
+
 // ============================================================
 // Tests — 크로스 청크 심볼 수준 import/export
 // ============================================================
