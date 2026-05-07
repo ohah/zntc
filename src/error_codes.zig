@@ -32,11 +32,14 @@ pub const Code = enum(u16) {
     /// Top-level await는 ESM 포맷 전용 — CJS/IIFE/UMD/AMD 에서는 런타임 동작 불가.
     /// bundler emitter 에서 non-ESM 포맷 + TLA 조합 감지 시 경고로 emit.
     tla_requires_esm_format = 2,
-    /// Code splitting / preserveModules 는 dynamic import 활용한 multi-chunk 시나리오 —
-    /// ESM 만 지원 (cjs/iife/umd/amd 의 require/wrapper 시스템과 호환 X). esbuild/rollup 동일.
+    /// Code splitting 은 dynamic import 활용한 multi-chunk 시나리오 — ESM 만 지원
+    /// (cjs/iife/umd/amd 의 require/wrapper 시스템과 호환 X). esbuild/rollup 동일.
     splitting_requires_esm_format = 3,
     /// build / build_chunks 의 entry path 가 비어있거나 VFS 에 미등록.
     invalid_entry_path = 4,
+    /// preserveModules 는 모듈별 individual ESM 파일 출력 — cjs/iife/umd/amd 의
+    /// runtime require/wrapper 모델로는 직접 표현 불가. esbuild/rollup 동일.
+    preserve_modules_requires_esm_format = 5,
 
     // ═══════════════════════════════════════════════════════
     // 0100-0199: 번들러 — import/export/resolve
@@ -269,7 +272,8 @@ pub const Code = enum(u16) {
             // 타겟
             .top_level_await_target => "Set --target=es2022 or later, or wrap the code in an 'async' function.",
             .tla_requires_esm_format => "Use --format=esm, or wrap the top-level await in an async IIFE.",
-            .splitting_requires_esm_format => "Use --format=esm, or disable codeSplitting/preserveModules.",
+            .splitting_requires_esm_format => "Use --format=esm, or disable codeSplitting.",
+            .preserve_modules_requires_esm_format => "Use --format=esm, or disable preserveModules.",
             .invalid_entry_path => "Provide a non-empty entry path that exists in the VFS / file system.",
             // 번들러
             .unresolved_import => "Check the import path spelling and confirm the file exists.",
@@ -303,7 +307,8 @@ pub const Code = enum(u16) {
             // 타겟
             .top_level_await_target => "Top-level await is not available in the configured target environment",
             .tla_requires_esm_format => "Top-level await requires ESM output format",
-            .splitting_requires_esm_format => "Code splitting / preserveModules requires ESM output format",
+            .splitting_requires_esm_format => "Code splitting requires ESM output format",
+            .preserve_modules_requires_esm_format => "preserveModules requires ESM output format",
             .invalid_entry_path => "Entry path is empty or not found",
             // 번들러
             .unresolved_import => "Could not resolve import",
