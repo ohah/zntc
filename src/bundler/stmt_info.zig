@@ -624,6 +624,46 @@ fn isSafeCjsEsModuleMarkerStmt(
     return isSafeEsModuleDefinePropertyDescriptor(ast, descriptor_idx);
 }
 
+/// lazy getter body 가 정확히 `{ return require(...) }` 또는 `{ return require(...).X }`
+/// 패턴인지 — 외부 stmt 의 var 를 reference 하지 않음을 보장. RN core lazy getter
+/// (#2683) 만 cover, 외부 var 의존 패턴 reject. body 가 외부 reference 갖는 경우
+/// `module.exports = {...}` stmt 가 cjs_shape_extracted=true 로 마킹되면서
+/// 외부 declaration stmt 가 BFS 에서 도달 못 해 strip 회귀하는 영역.
+fn isLazyGetterBodyRequireOnly(ast: *const Ast, body_idx: NodeIndex) bool {
+    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+    const body = ast.nodes.items[@intFromEnum(body_idx)];
+    if (body.tag != .block_statement) return false;
+    const list = body.data.list;
+    if (list.len != 1) return false;
+    if (list.start + 1 > ast.extra_data.items.len) return false;
+    const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[list.start]);
+    if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) return false;
+    const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+    if (stmt.tag != .return_statement) return false;
+    const arg_idx = stmt.data.unary.operand;
+    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    // `require('./x')` 또는 `require('./x').default` (member access of require call) 만 허용.
+    // static_member_expression layout: `extra: [object, property, flags]`.
+    const call_idx: NodeIndex = switch (arg.tag) {
+        .call_expression => arg_idx,
+        .static_member_expression => blk: {
+            const obj_idx = ast.readExtraNode(arg.data.extra, 0);
+            if (obj_idx.isNone() or @intFromEnum(obj_idx) >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[@intFromEnum(obj_idx)].tag != .call_expression) return false;
+            break :blk obj_idx;
+        },
+        else => return false,
+    };
+    const call = ast.nodes.items[@intFromEnum(call_idx)];
+    // call_expression layout: `extra: [callee, args_start, args_len]`.
+    const callee_idx: NodeIndex = @enumFromInt(ast.extra_data.items[call.data.extra]);
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.nodes.items[@intFromEnum(callee_idx)];
+    if (callee.tag != .identifier_reference) return false;
+    return std.mem.eql(u8, ast.getText(callee.span), "require");
+}
+
 fn collectCjsObjectExportCandidates(
     allocator: std.mem.Allocator,
     ast: *const Ast,
@@ -664,10 +704,12 @@ fn collectCjsObjectExportCandidates(
         const prop = ast.nodes.items[@intFromEnum(prop_idx)];
 
         // RN core `index.js` 의 lazy getter (`get DevSettings() { return require(...).default }`)
-        // 인식 (#2683 PR β-1). plain getter 만 — setter/async/generator 는 semantic 이
-        // 다르므로 보수적으로 reject (전체 후보 폐기).
+        // 인식 (#2683 PR β-1). plain getter + body 가 정확히 `{ return require(...).X? }`
+        // 패턴만 — body 안 외부 var reference 가 있으면 cjs_shape_extracted=true 마킹이
+        // 그 외부 stmt 를 reachable 못 따라가 strip 회귀 (#2685 hot fix).
         const is_lazy_getter = prop.tag == .method_definition and
-            ast_mod.isPlainGetterFlags(ast.readExtra(prop.data.extra, ast_mod.MethodExtra.flags));
+            ast_mod.isPlainGetterFlags(ast.readExtra(prop.data.extra, ast_mod.MethodExtra.flags)) and
+            isLazyGetterBodyRequireOnly(ast, ast.readExtraNode(prop.data.extra, ast_mod.MethodExtra.body));
 
         if (prop.tag != .object_property and !is_lazy_getter) return null;
 
