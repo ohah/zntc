@@ -102,6 +102,20 @@ pub const TransformCache = struct {
     symbol_ids: []const ?u32,
 };
 
+/// `Module.parse_arena` 용 ArenaAllocator 를 heap 에 생성. 실패 시 null.
+/// 정리는 `destroyParseArena` 로.
+pub fn createParseArena(allocator: std.mem.Allocator) ?*std.heap.ArenaAllocator {
+    const ptr = allocator.create(std.heap.ArenaAllocator) catch return null;
+    ptr.* = std.heap.ArenaAllocator.init(allocator);
+    return ptr;
+}
+
+/// `createParseArena` 의 짝. arena 데이터 free 후 ptr 자체 free.
+pub fn destroyParseArena(allocator: std.mem.Allocator, arena: *std.heap.ArenaAllocator) void {
+    arena.deinit();
+    allocator.destroy(arena);
+}
+
 pub const Module = struct {
     index: ModuleIndex,
     /// 절대 파일 경로. graph의 path_to_module 키와 동일한 메모리를 참조 (빌림).
@@ -143,7 +157,13 @@ pub const Module = struct {
     /// 모든 export 가 사용 가능해야.
     is_context_dep: bool = false,
     /// 모듈별 Arena — Scanner/Parser/AST/Semantic 메모리를 소유. graph.deinit에서 해제.
-    parse_arena: ?std.heap.ArenaAllocator,
+    ///
+    /// 포인터로 보관 — graph ↔ store 사이의 transfer 가 Module struct copy 로 일어나는데,
+    /// `?ArenaAllocator` (value) 면 두 위치가 같은 buffer_list 를 가리키고 그 후 nullify
+    /// 패턴으로 ownership 을 표현해도 어느 한쪽이 dangling 노드를 통해 다음 alloc 에서
+    /// panic 한다 (#2694). ptr 으로 두면 struct copy 가 ptr 만 복사 — 두 위치가 같은
+    /// 객체 참조하고 nullify 한 쪽이 ownership 박탈을 명확히 표현한다.
+    parse_arena: ?*std.heap.ArenaAllocator,
     /// semantic analyzer 결과. parse_arena가 소유. linker에서 사용.
     semantic: ?ModuleSemanticData,
     /// Semantic Analyzer에서 사전 구축한 StmtInfo. parse_arena가 소유.
@@ -512,7 +532,7 @@ pub const Module = struct {
         }
         // parse_arena가 Scanner/Parser/AST/source 메모리를 전부 소유.
         // ast.deinit()는 불필요 — arena.deinit()이 일괄 해제.
-        if (self.parse_arena) |*arena| arena.deinit();
+        if (self.parse_arena) |arena| destroyParseArena(allocator, arena);
     }
 
     /// Lazy 초기화. graph allocator로 합성 심볼 테이블을 만든다.
