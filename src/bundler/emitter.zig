@@ -39,6 +39,7 @@ const Codegen = @import("../codegen/codegen.zig").Codegen;
 const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../codegen/sourcemap.zig");
 const error_codes = @import("../error_codes.zig");
+const runtime_helper_modules = @import("../runtime_helper_modules.zig");
 
 /// ZNTC0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.
 const tla_warning_comment = "/* [" ++ error_codes.Code.tla_requires_esm_format.format() ++ "] " ++ error_codes.Code.tla_requires_esm_format.message() ++ ". */\n";
@@ -562,9 +563,11 @@ pub fn emitWithTreeShaking(
     if (options.compiled_cache) |cache| {
         for (sorted.items, 0..) |m, i| {
             if (hit_mask[i]) continue;
-            if (m.mtime == 0) {
+            // virtual module (\x00zntc:runtime/...) 은 fs stat 불가로 mtime=0 인데
+            // source 가 process lifetime 동안 불변이라 mtime 가드를 우회해 cache 적용.
+            if (m.mtime == 0 and !runtime_helper_modules.isVirtualId(m.path)) {
                 cache.skipped_no_mtime += 1;
-                continue; // mtime unknown → cache 비활성
+                continue;
             }
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
             const input_hash = cache_mod.computeInputHash(m, options_hash, used_names, graph);
@@ -612,7 +615,8 @@ pub fn emitWithTreeShaking(
     if (options.compiled_cache) |cache| {
         for (sorted.items, 0..) |m, i| {
             if (hit_mask[i]) continue;
-            if (m.mtime == 0) continue;
+            // virtual module 은 mtime=0 라도 cache 적용 (lookup 분기와 대칭).
+            if (m.mtime == 0 and !runtime_helper_modules.isVirtualId(m.path)) continue;
             if (results[i].code == null) continue;
             cache.put(m.path, input_hashes[i], results[i]) catch continue;
         }
