@@ -2993,6 +2993,10 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         // Lazy sourcemap (Issue #1727 Phase B): initial build 와 동일 경로 유지. cache 키
         // 일치 필수 — initial 에서 lazy=true 로 put 된 엔트리가 rebuild 에서 hit 해야 함.
         if (bundle_opts.dev_mode and bundle_opts.sourcemap.enable) incremental_opts.sourcemap.lazy = true;
+        // dev_mode + collect_module_codes 인 incremental rebuild 는 풀 bundle output 을
+        // 다시 concat 할 필요가 없다 — RN HMR client 는 dev_codes 만 사용. wall 시간이
+        // emit_concat (~38ms) + emit_sourcemap_finalize (~19ms) 를 절감한다.
+        if (bundle_opts.dev_mode and bundle_opts.collect_module_codes) incremental_opts.skip_bundle_output = true;
         var rebundler = Bundler.initWithResolveCache(allocator, incremental_opts, &persistent_resolve_cache);
         defer rebundler.deinit();
 
