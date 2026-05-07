@@ -158,6 +158,11 @@ pub const BundleOptions = struct {
     emotion_extra_styled_sources: []const []const u8 = &.{},
     /// dev mode에서 per-module codes 수집 (HMR rebuild용). 초기 빌드에서는 false로 메모리 절감.
     collect_module_codes: bool = false,
+    /// dev_mode + collect_module_codes incremental rebuild 의 풀 bundle output (`output`)
+    /// concat 과 sourcemap finalize 를 skip 한다. RN HMR client 는 module_dev_codes 만
+    /// 사용하므로 풀 bundle 은 첫 빌드에서만 필요. wall ~57ms 절감 (565 module fixture
+    /// 측정). caller 가 outfile 을 dev server 에서 file-based serve 하면 활성화 금지.
+    skip_bundle_output: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     /// legacy decorator 변환 (--experimental-decorators / tsconfig)
@@ -1171,6 +1176,7 @@ pub const Bundler = struct {
             dev_emit_opts.dev_mode = true;
             dev_emit_opts.react_refresh = self.options.react_refresh;
             dev_emit_opts.collect_module_codes = self.options.collect_module_codes;
+            dev_emit_opts.skip_bundle_output = self.options.skip_bundle_output;
             dev_emit_opts.polyfills = polyfill_entries.items;
             dev_emit_opts.run_before_main = self.options.run_before_main;
             dev_emit_opts.worker_map_per_module = &worker_map_per_module;
