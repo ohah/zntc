@@ -51,8 +51,15 @@ pub fn emitChunks(
     linker: ?*Linker,
 ) ![]OutputFile {
     const module_count = graph.moduleCount();
-    // Code splitting은 ESM 출력만 지원 — CJS/IIFE에서는 네이티브 import()가 없음
-    if (options.format != .esm) return error.CodeSplittingRequiresESM;
+    // Code splitting / preserve-modules 모두 ESM 출력만 지원 — CJS/IIFE 에는 네이티브
+    // import() 가 없다. 두 경로가 같은 제약을 공유하지만 caller 가 켠 옵션에 맞는 error
+    // name 으로 분기 — preserveModules 만 켠 사용자에게 "CodeSplitting..." 에러는 misleading.
+    if (options.format != .esm) {
+        return if (options.preserve_modules)
+            error.PreserveModulesRequiresESM
+        else
+            error.CodeSplittingRequiresESM;
+    }
 
     var outputs: std.ArrayList(OutputFile) = .empty;
     errdefer {
