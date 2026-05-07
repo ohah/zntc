@@ -7,6 +7,56 @@ description: Learn how to use ZNTC with React Native projects.
 
 ZNTC supports Metro-compatible React Native bundling via the `--platform=react-native` preset.
 
+## Initialize a React Native CLI Project
+
+Use `@zntc/init` to overlay ZNTC onto an existing React Native CLI project. Expo
+project creation/initialization is currently out of scope, and this command does
+not create a new native shell. It patches the existing app.
+
+```bash
+npx @zntc/init
+npx @zntc/init --help
+```
+
+Help output:
+
+```text
+Usage: zntc-init [react-native] [options]
+
+Overlay ZNTC onto an existing React Native CLI project.
+
+Options:
+  --root <dir>               Project root (default: cwd)
+  --platform <ios|android>   Default platform for the start script (default: ios)
+  --zntc-version <range>     Version range for @zntc packages (default: latest)
+  --package-manager <pm>     Install command hint: bun, npm, pnpm, or yarn
+  --no-metro-fallback        Do not add Metro fallback scripts
+  --force                    Overwrite an existing zntc.config.ts
+  --dry-run                  Print planned changes without writing files
+  --help, -h                 Show this help message
+```
+
+The initializer:
+
+- Adds `@zntc/core` and `@zntc/react-native` dev dependencies to `package.json`.
+- Changes the default `start` script to `zntc dev --platform=react-native --rn-platform=<ios|android> index.js`.
+- Adds ZNTC RN bundle scripts as `bundle:ios` and `bundle:android`.
+- Preserves existing Metro commands as `start:metro`, `bundle:metro:ios`, and `bundle:metro:android` fallback scripts.
+- Creates a default `zntc.config.ts` when missing, and does not overwrite an existing file unless `--force` is set.
+
+Key options:
+
+| Option                                     | Description                                                   |
+| ------------------------------------------ | ------------------------------------------------------------- |
+| `--root <dir>`                             | Project root. Defaults to the current directory               |
+| `--platform <ios\|android>`                | Default RN platform for the `start` script. Defaults to `ios` |
+| `--zntc-version <range>`                   | Version range for `@zntc/core` and `@zntc/react-native`       |
+| `--package-manager <bun\|npm\|pnpm\|yarn>` | Install command hint printed after initialization             |
+| `--no-metro-fallback`                      | Do not add `start:metro` / `bundle:metro:*` fallback scripts  |
+| `--force`                                  | Overwrite an existing `zntc.config.ts`                        |
+| `--dry-run`                                | Print planned changes without writing files                   |
+| `--help`, `-h`                             | Show help                                                     |
+
 ## Basic Usage
 
 ```bash
@@ -76,8 +126,8 @@ Metro `resolver.blockList` compatibility. Matching absolute paths cause the reso
 
 ```ts
 defineConfig({
-  platform: "react-native",
-  blockList: [/\.web\.tsx?$/, "fixtures/.*"],
+  platform: 'react-native',
+  blockList: [/\.web\.tsx?$/, 'fixtures/.*'],
 });
 ```
 
@@ -91,8 +141,8 @@ Selectively swallow noise like the RN/Expo native immutable global polyfill conf
 
 ```ts
 defineConfig({
-  platform: "react-native",
-  silentConsoleErrorPatterns: ["^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$"],
+  platform: 'react-native',
+  silentConsoleErrorPatterns: ['^Failed to set polyfill\\.\\s+\\w+\\s+is not configurable\\.?$'],
 });
 ```
 
@@ -106,8 +156,8 @@ Metro AssetRegistry module path. Controls RN-style asset wrapping.
 
 ```ts
 defineConfig({
-  platform: "react-native",
-  assetRegistry: "react-native/Libraries/Image/AssetRegistry",
+  platform: 'react-native',
+  assetRegistry: 'react-native/Libraries/Image/AssetRegistry',
 });
 ```
 
@@ -121,10 +171,10 @@ Metro `watchFolders` compatibility. Includes directories outside the bundle grap
 
 ```ts
 defineConfig({
-  platform: "react-native",
-  watchFolders: ["../shared", "../design-tokens"],
-  watchInclude: ["**/*.ts", "**/*.tsx"],
-  watchExclude: ["**/__tests__/**"],
+  platform: 'react-native',
+  watchFolders: ['../shared', '../design-tokens'],
+  watchInclude: ['**/*.ts', '**/*.tsx'],
+  watchExclude: ['**/__tests__/**'],
 });
 ```
 
@@ -136,8 +186,8 @@ Cherry-pick rewriting for `import { x } from 'mod'` (babel-plugin-lodash equival
 
 ```ts
 defineConfig({
-  platform: "react-native",
-  moduleSpecifierMap: { lodash: "lodash/{name}" },
+  platform: 'react-native',
+  moduleSpecifierMap: { lodash: 'lodash/{name}' },
 });
 // import { map } from 'lodash' -> import map from 'lodash/map'
 ```
@@ -152,10 +202,10 @@ Pre-main resources that run before the entry module.
 
 ```ts
 defineConfig({
-  platform: "react-native",
-  polyfills: ["react-native/Libraries/Core/InitializeCore.js"],
-  runBeforeMain: ["./bootstrap.js"],
-  globalIdentifiers: ["__DEV__", "__r", "__d", "__c", "global"],
+  platform: 'react-native',
+  polyfills: ['react-native/Libraries/Core/InitializeCore.js'],
+  runBeforeMain: ['./bootstrap.js'],
+  globalIdentifiers: ['__DEV__', '__r', '__d', '__c', 'global'],
 });
 ```
 
@@ -171,7 +221,7 @@ One-line summary of options commonly used on the RN platform. See each option's 
 | `strictExecutionOrder` | Downgrades function declarations to in-factory assignments to prevent hoisting (Rolldown equivalent). Auto-enabled on the RN platform.          |
 | `configurableExports`  | Adds `configurable: true` to `Object.defineProperty` (RN/Hermes compatibility).                                                                 |
 | `reactRefresh`         | Enables React Fast Refresh.                                                                                                                     |
-| `devMode`              | Wraps modules in a `__zntc_register()` factory and injects the HMR runtime.                                                                      |
+| `devMode`              | Wraps modules in a `__zntc_register()` factory and injects the HMR runtime.                                                                     |
 | `rootDir`              | Base path for dev-mode module IDs.                                                                                                              |
 | `collectModuleCodes`   | Collects per-module codes in dev mode (for HMR rebuilds).                                                                                       |
 | `workletTransform`     | Injects `__workletHash`/`__closure`/`__initData` into "worklet" directive functions. Auto-enabled on the RN platform.                           |
@@ -227,21 +277,21 @@ In the dev server terminal (Metro compatible):
 ### Programmatic API
 
 ```ts
-import { buildRnDevServerOptions, serveRn } from "@zntc/react-native";
+import { buildRnDevServerOptions, serveRn } from '@zntc/react-native';
 
 const handle = await serveRn(
   buildRnDevServerOptions({
     bundle: {
-      entry: "index.js",
+      entry: 'index.js',
       projectRoot: process.cwd(),
-      rnPlatform: "ios",
+      rnPlatform: 'ios',
       dev: true,
     },
     port: 8081,
-    host: "localhost",
+    host: 'localhost',
     // User enhanceMiddleware hook (Rozenite / other DevTools).
     enhanceMiddleware: (base, ctx) => (req, res, next) => {
-      if (req.url?.startsWith("/rozenite/")) {
+      if (req.url?.startsWith('/rozenite/')) {
         // Custom handling...
         return;
       }
@@ -250,7 +300,7 @@ const handle = await serveRn(
     symbolicator: {
       customizeFrame: async (frame) => ({
         // Collapse node_modules frames in DevTools.
-        collapse: frame.file?.includes("/node_modules/") ?? false,
+        collapse: frame.file?.includes('/node_modules/') ?? false,
       }),
     },
   }),

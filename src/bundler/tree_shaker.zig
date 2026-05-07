@@ -437,7 +437,7 @@ pub const TreeShaker = struct {
     fn foldNumericExportSeeds(_: *TreeShaker, m: *Module, ast: *Ast) !bool {
         const minify_mod = @import("../transformer/minify.zig");
         const sem = if (m.semantic) |*sem| sem else return false;
-        const arena_alloc = if (m.parse_arena) |arena| arena.allocator() else return false;
+        const arena_alloc = if (m.parse_arena) |*arena| arena.allocator() else return false;
         var has_exported_number = false;
 
         for (ast.nodes.items) |node| {

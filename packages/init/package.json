@@ -1,0 +1,32 @@
+{
+  "name": "@zntc/init",
+  "version": "0.1.0",
+  "description": "ZNTC project initializer and React Native CLI overlay",
+  "license": "MIT",
+  "bin": {
+    "zntc-init": "./bin/zntc-init.mjs"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build:js": "bun build src/index.ts src/cli.ts --outdir dist --format esm --target node",
+    "build:dts": "bun x tsc --emitDeclarationOnly",
+    "build": "bun run build:js && bun run build:dts",
+    "test": "bun test --timeout 10000"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2"
+  }
+}

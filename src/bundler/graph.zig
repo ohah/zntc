@@ -1874,14 +1874,11 @@ pub const ModuleGraph = struct {
         if (plugin_runner) |runner| {
             if (self.shouldRunLoad(module.path)) {
                 // 임시 allocator로 load 결과만 확인 (성공 시 arena를 생성)
-                const tmp_arena = module_mod.createParseArena(self.allocator) orelse {
-                    module.state = .ready;
-                    return;
-                };
+                var tmp_arena = std.heap.ArenaAllocator.init(self.allocator);
                 const load_result = runner.runLoad(module.path, tmp_arena.allocator()) catch |err| switch (err) {
                     error.PluginFailed => null,
                     error.OutOfMemory => {
-                        module_mod.destroyParseArena(self.allocator, tmp_arena);
+                        tmp_arena.deinit();
                         module.state = .ready;
                         return;
                     },
@@ -1919,7 +1916,7 @@ pub const ModuleGraph = struct {
                     // module_type 분기를 건너뛰고 JS 파싱 경로로 직접 이동
                     // (아래 "모듈별 Arena" 블록은 parse_arena가 이미 설정되어 있으므로 건너뜀)
                 } else {
-                    module_mod.destroyParseArena(self.allocator, tmp_arena);
+                    tmp_arena.deinit();
                 }
             }
         }
@@ -1943,10 +1940,7 @@ pub const ModuleGraph = struct {
         // `export default <json_value>;` 형태의 AST를 생성하여
         // semantic → import_scanner → binding_scanner를 공유한다.
         if (module.module_type == .json) {
-            module.parse_arena = module_mod.createParseArena(self.allocator) orelse {
-                module.state = .ready;
-                return;
-            };
+            module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
             const arena_alloc = module.parse_arena.?.allocator();
             module.source = self.readModuleSourceWithMtime(module, arena_alloc, 10 * 1024 * 1024, .parse) orelse return;
 
@@ -2060,10 +2054,7 @@ pub const ModuleGraph = struct {
         // 모듈별 Arena: Scanner/Parser/AST 메모리를 소유 (D061)
         // 플러그인 load 훅에서 이미 설정된 경우 건너뜀
         if (module.parse_arena == null) {
-            module.parse_arena = module_mod.createParseArena(self.allocator) orelse {
-                module.state = .ready;
-                return;
-            };
+            module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         }
         const arena_alloc = module.parse_arena.?.allocator();
 
@@ -3527,7 +3518,7 @@ pub const ModuleGraph = struct {
             const needs_require = m.wrap_kind == .cjs and m.require_symbol == null;
             if (!needs_init and !needs_exports and !needs_require) continue;
             const sem_ptr = if (m.semantic) |*s| s else continue;
-            const arena = if (m.parse_arena) |a| a.allocator() else continue;
+            const arena = if (m.parse_arena) |*a| a.allocator() else continue;
 
             if (needs_init) {
                 const init_base = types.makeInitVarName(arena, m.path) catch continue;
@@ -3733,10 +3724,7 @@ pub const ModuleGraph = struct {
             return;
         }
 
-        module.parse_arena = module_mod.createParseArena(self.allocator) orelse {
-            module.state = .ready;
-            return;
-        };
+        module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         const arena_alloc = module.parse_arena.?.allocator();
 
         // 파일 읽기
@@ -3826,10 +3814,7 @@ pub const ModuleGraph = struct {
     }
 
     fn parseAssetModule(self: *ModuleGraph, module: *Module) void {
-        module.parse_arena = module_mod.createParseArena(self.allocator) orelse {
-            module.state = .ready;
-            return;
-        };
+        module.parse_arena = std.heap.ArenaAllocator.init(self.allocator);
         const arena_alloc = module.parse_arena.?.allocator();
 
         switch (module.loader) {
@@ -4489,7 +4474,7 @@ fn expandRequireContextRecords(self: *ModuleGraph, mod_idx: usize) void {
     // require.context 는 parse 산출물이라 arena 가 항상 존재. 없으면 (disabled/asset 등)
     // expand 자체가 의미 없고, graph allocator fallback 은 module.deinit 에서 free 누락 →
     // leak. 안전하게 early return.
-    const arena = if (module.parse_arena) |a| a else return;
+    const arena = if (module.parse_arena) |*a| a else return;
     const arena_alloc = arena.allocator();
     var expansion = std.ArrayList(types.ImportRecord).empty;
 
