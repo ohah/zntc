@@ -193,6 +193,55 @@ fn isInsideAnySpan(span: Span, ranges: []const Span) bool {
     return false;
 }
 
+/// `records` 중 require/dynamic import call 의 span 이 `ranges` 중 하나 안에
+/// 들어가면 `field` 에 해당하는 ImportRecord bool field 를 true 로 마킹.
+/// `markOptionalRequiresInTryBlocks` / `markLazyRequiresInCallbacks` 공통 코어.
+/// static `import` 선언은 try-block / callback 안에 못 들어가므로 require/dynamic
+/// import 만 검사.
+fn markRecordsInsideSpans(
+    records: []ImportRecord,
+    ranges: []const Span,
+    comptime field: []const u8,
+) void {
+    if (ranges.len == 0) return;
+    for (records) |*rec| {
+        if (rec.kind != .require and rec.kind != .dynamic_import) continue;
+        if (isInsideAnySpan(rec.span, ranges)) @field(rec, field) = true;
+    }
+}
+
+/// function/arrow/method body 안의 require/dynamic import call records 에
+/// `in_lazy_callback = true` 마킹. RN core `index.js` 의 lazy getter 패턴
+/// (`get X() { return require(...).default }`) 처럼 호출 시점에만 평가되는
+/// require 를 식별 (#2681 Phase 1). graph reachability 분석이 이 flag 를 보고
+/// 호출 사이트가 reachable 일 때만 source 모듈 included.
+///
+/// 보수 scope: function_declaration 은 hoisting 으로 module top-level 호출 가능
+/// 하므로 일단 제외. function/arrow/method_definition 은 expression context 라
+/// 호출 사이트 추적 가능.
+pub fn markLazyRequiresInCallbacks(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    records: []ImportRecord,
+) !void {
+    var lazy_ranges: std.ArrayList(Span) = .empty;
+    defer lazy_ranges.deinit(allocator);
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            .method_definition,
+            => {},
+            else => continue,
+        }
+        const body_idx = ast.functionBodyBlock(node) orelse continue;
+        if (@intFromEnum(body_idx) >= ast.nodes.items.len) continue;
+        try lazy_ranges.append(allocator, ast.getNode(body_idx).span);
+    }
+    markRecordsInsideSpans(records, lazy_ranges.items, "in_lazy_callback");
+}
+
 /// `try { ... } catch {}` 의 try-block 안에 있는 require/import call records 에
 /// `is_optional = true` 마킹. parser 가 만든 records 와 import_scanner 가 만든
 /// records 양쪽에서 공용. AST 평탄 순회로 try_statement.a (block) span 수집 후
@@ -214,12 +263,19 @@ pub fn markOptionalRequiresInTryBlocks(
         if (@intFromEnum(block_idx) >= ast.nodes.items.len) continue;
         try try_ranges.append(allocator, ast.getNode(block_idx).span);
     }
-    if (try_ranges.items.len == 0) return;
-    for (records) |*rec| {
-        // require / dynamic import 만 — static `import` 선언은 try-block 안에 못 들어감.
-        if (rec.kind != .require and rec.kind != .dynamic_import) continue;
-        if (isInsideAnySpan(rec.span, try_ranges.items)) rec.is_optional = true;
-    }
+    markRecordsInsideSpans(records, try_ranges.items, "is_optional");
+}
+
+/// `markOptionalRequiresInTryBlocks` + `markLazyRequiresInCallbacks` 한 호출.
+/// graph build 의 모든 import_scan 후처리 사이트가 이 두 마킹을 짝으로 호출하므로
+/// wrapper 로 묶어 일관성 유지 + 한쪽 누락 회귀 차단.
+pub fn markPostScanFlags(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    records: []ImportRecord,
+) !void {
+    try markOptionalRequiresInTryBlocks(allocator, ast, records);
+    try markLazyRequiresInCallbacks(allocator, ast, records);
 }
 
 pub fn evalToBoolean(ast: *const Ast, idx: NodeIndex, defines: []const DefineEntry) ?bool {

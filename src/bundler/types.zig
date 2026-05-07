@@ -633,6 +633,12 @@ pub const ImportRecord = struct {
     /// 못 받기 때문에 wrapper module 호출로 emit (#1579 Phase 4 follow-up).
     /// element 가 null = 해당 매치 resolve 실패 (codegen 이 throw stub 으로 emit).
     context_resolved_paths: []const ?[]const u8 = &.{},
+    /// require/dynamic import call 이 function/arrow/method/getter body 안에 있어
+    /// 호출 시점에만 평가되는 lazy callback 인지. RN core `index.js` 의
+    /// `get DevSettings() { return require(...).default }` 같은 lazy getter 패턴
+    /// (#2681). graph reachability 분석이 이 flag 를 보고 호출 사이트가 reachable
+    /// 일 때만 source 모듈을 included 처리.
+    in_lazy_callback: bool = false,
 };
 
 // ============================================================
