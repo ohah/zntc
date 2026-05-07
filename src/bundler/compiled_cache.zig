@@ -123,9 +123,9 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.worklet_transform);
     h.addOptStr(options.worklet_plugin_version);
     h.addBool(options.collect_module_codes);
-    // skip_bundle_output 은 emit 결과의 풀 bundle 부분만 영향 — per-module dev_codes 는
-    // 동일 — 즉 module-level cache key 와 무관하지만, 일관성을 위해 hash 에 포함.
-    h.addBool(options.skip_bundle_output);
+    // skip_bundle_output 은 emit 의 풀 bundle concat 만 영향 — per-module emit 결과는
+    // 동일하다. hash 에 포함하면 first build (false) 와 rebuild (true) 의 module-level
+    // cache key 가 갈려 incremental cache hit 이 강제 miss 된다 — 의도적 미포함.
 
     h.addU64(options.define.len);
     for (options.define) |d| {

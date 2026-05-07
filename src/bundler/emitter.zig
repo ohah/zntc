@@ -722,8 +722,11 @@ pub fn emitWithTreeShaking(
     var rbm_calls_emitted = false;
 
     for (sorted.items, 0..) |m, i| {
-        // helpers 합산 (bitwise OR)
-        collected_helpers = @bitCast(@as(u32, @bitCast(collected_helpers)) | @as(u32, @bitCast(results[i].helpers)));
+        // helpers 합산은 풀 bundle prologue 의 runtime helper 출력에만 쓰인다.
+        // skip_bundle_concat 시 prologue 자체가 의미 없으므로 누적 skip.
+        if (!skip_bundle_concat) {
+            collected_helpers = @bitCast(@as(u32, @bitCast(collected_helpers)) | @as(u32, @bitCast(results[i].helpers)));
+        }
 
         const code = results[i].code orelse continue;
 
@@ -776,17 +779,18 @@ pub fn emitWithTreeShaking(
         // 우회하는 single-file 전용 헬퍼 사용. wrap_kind=.esm 인 dynamic target 의
         // `import("./x")` 를 `Promise.resolve().then(() => (init_x(), exports_x))`
         // 로 변환 → bundle self-contained (외부 sibling 파일 fallback 제거).
-        const rewritten = chunks.rewriteDynamicImportsSingleFile(allocator, code, m, graph) catch null;
-        defer if (rewritten) |r| allocator.free(r);
-        const code_after_rewrite = rewritten orelse code;
-
-        // RSC: ESM entry 모듈만 호이스트 대상. IIFE/CJS는 의미 없음.
-        const code_to_append = if (is_entry and options.format == .esm)
-            chunks.extractLeadingDirectives(code_after_rewrite, &hoisted_directives, allocator) catch code_after_rewrite
-        else
-            code_after_rewrite;
-
+        // skip_bundle_concat 시 결과는 module_output 에만 쓰이므로 호출 자체 skip.
         if (!skip_bundle_concat) {
+            const rewritten = chunks.rewriteDynamicImportsSingleFile(allocator, code, m, graph) catch null;
+            defer if (rewritten) |r| allocator.free(r);
+            const code_after_rewrite = rewritten orelse code;
+
+            // RSC: ESM entry 모듈만 호이스트 대상. IIFE/CJS는 의미 없음.
+            const code_to_append = if (is_entry and options.format == .esm)
+                chunks.extractLeadingDirectives(code_after_rewrite, &hoisted_directives, allocator) catch code_after_rewrite
+            else
+                code_after_rewrite;
+
             try module_output.appendSlice(allocator, code_to_append);
             module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
             if (!options.minify_whitespace) {
