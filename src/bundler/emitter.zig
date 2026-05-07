@@ -90,12 +90,6 @@ pub const EmitOptions = struct {
     /// false면 output만 생성하고 module_dev_codes를 건너뛴다 (초기 빌드용, 메모리 절감).
     /// true면 HMR 업데이트용 module_dev_codes를 수집한다 (rebuild용).
     collect_module_codes: bool = false,
-    /// dev_mode + collect_module_codes incremental rebuild 시, 풀 bundle output (`output`)
-    /// concat 과 sourcemap finalize 를 skip 한다. RN HMR client 는 `module_dev_codes`
-    /// 만 사용하므로 풀 bundle 은 매 rebuild 마다 갱신될 필요 없다 — 첫 빌드에서만
-    /// 필요하고, 이후 rebuild 의 outfile 갱신은 caller (예: dev server) 가 in-memory
-    /// 로 모듈 단위로 처리. 비활성 시 (default) 기존 동작 유지.
-    skip_bundle_output: bool = false,
     /// define 글로벌 치환 (--define:KEY=VALUE)
     define: []const @import("../transformer/transformer.zig").DefineEntry = &.{},
     /// legacy decorator 변환
@@ -630,11 +624,6 @@ pub fn emitWithTreeShaking(
     // helper 합산 + 소스맵 매핑 누적 + renderChunk 훅 + epilogue.
     var concat_scope = profile.begin(.emit_concat);
 
-    // dev_mode + collect_module_codes incremental rebuild 시 풀 bundle output 을 skip.
-    // RN HMR client 는 dev_module_codes 만 사용 — 풀 bundle 은 첫 빌드만 필요하다.
-    // module_output 에 byte append 와 bundle 단위 sourcemap mapping 계산을 둘 다 우회.
-    const skip_bundle_concat = options.skip_bundle_output and options.dev_mode and options.collect_module_codes;
-
     // Phase 3: 순차 합류 — exec_index 순서대로 concat + helpers 합산 + 소스맵 수집
     var module_output: std.ArrayList(u8) = .empty;
     defer module_output.deinit(allocator);
@@ -665,7 +654,7 @@ pub fn emitWithTreeShaking(
     // lazy 경로 (Issue #1727) 에서만 return 직전 heap 으로 얕은 복사 이동 — ArrayList 의 items
     // 포인터는 이미 allocator 소유이므로 payload 를 heap SourceMapBuilder 로 옮겨도 double-free
     // 없음. `bundle_sm_moved = true` 시 본 함수의 defer 가 deinit 을 건너뛰어 원본은 drain 된다.
-    var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap.enable and !skip_bundle_concat) blk: {
+    var bundle_sm: ?SourceMap.SourceMapBuilder = if (options.sourcemap.enable) blk: {
         var sm = SourceMap.SourceMapBuilder.init(allocator);
         sm.source_root = options.sourcemap.source_root orelse "";
         sm.sources_content = options.sourcemap.sources_content;
@@ -689,18 +678,16 @@ pub fn emitWithTreeShaking(
 
     // module_output pre-size: 합계 capacity 를 한 번 확보해 concat 루프의 모듈별 appendSlice
     // 가 매번 grow (~log2(N) realloc) 하는 비용을 제거 (Issue #1727 §1).
-    if (!skip_bundle_concat) {
-        var module_output_estimate: usize = 0;
-        for (sorted.items, 0..) |m, i| {
-            const code = results[i].code orelse continue;
-            module_output_estimate += code.len;
-            if (!options.minify_whitespace) {
-                // `"//#region " + basename + "\n"` (11 + basename) + `"//#endregion\n"` (13)
-                module_output_estimate += std.fs.path.basename(m.path).len + 24;
-            }
+    var module_output_estimate: usize = 0;
+    for (sorted.items, 0..) |m, i| {
+        const code = results[i].code orelse continue;
+        module_output_estimate += code.len;
+        if (!options.minify_whitespace) {
+            // `"//#region " + basename + "\n"` (11 + basename) + `"//#endregion\n"` (13)
+            module_output_estimate += std.fs.path.basename(m.path).len + 24;
         }
-        try module_output.ensureTotalCapacity(allocator, module_output_estimate);
     }
+    try module_output.ensureTotalCapacity(allocator, module_output_estimate);
 
     if (linker) |l| if (l.use_shared_ns_preamble) {
         const before_len = module_output.items.len;
@@ -738,7 +725,7 @@ pub fn emitWithTreeShaking(
         }
 
         const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
-        if (!options.minify_whitespace and !skip_bundle_concat) {
+        if (!options.minify_whitespace) {
             try module_output.appendSlice(allocator, "//#region ");
             try module_output.appendSlice(allocator, std.fs.path.basename(m.path));
             try module_output.append(allocator, '\n');
@@ -786,13 +773,11 @@ pub fn emitWithTreeShaking(
         else
             code_after_rewrite;
 
-        if (!skip_bundle_concat) {
-            try module_output.appendSlice(allocator, code_to_append);
-            module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
-            if (!options.minify_whitespace) {
-                try module_output.appendSlice(allocator, "//#endregion\n");
-                module_line += 1;
-            }
+        try module_output.appendSlice(allocator, code_to_append);
+        module_line += @intCast(std.mem.count(u8, code_to_append, "\n"));
+        if (!options.minify_whitespace) {
+            try module_output.appendSlice(allocator, "//#endregion\n");
+            module_line += 1;
         }
 
         // dev mode: per-module code를 HMR eval 가능한 형태로 수집.

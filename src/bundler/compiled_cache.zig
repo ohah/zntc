@@ -90,7 +90,7 @@ pub const InputHasher = struct {
 /// `EmitOptions` 필드 개수. 구조체가 바뀌면 이 값을 갱신하고 hashEmitOptions
 /// 에 새 필드를 반영해야 한다 — comptime 에 필드 누락을 감지하는 fail-stop.
 /// 누락이 invisible bug (stale cache) 로 번지므로 이 barrier 는 load-bearing.
-const expected_emit_options_field_count: usize = 54;
+const expected_emit_options_field_count: usize = 53;
 
 comptime {
     const actual = @typeInfo(EmitOptions).@"struct".fields.len;
@@ -123,9 +123,6 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.worklet_transform);
     h.addOptStr(options.worklet_plugin_version);
     h.addBool(options.collect_module_codes);
-    // skip_bundle_output 은 emit 결과의 풀 bundle 부분만 영향 — per-module dev_codes 는
-    // 동일 — 즉 module-level cache key 와 무관하지만, 일관성을 위해 hash 에 포함.
-    h.addBool(options.skip_bundle_output);
 
     h.addU64(options.define.len);
     for (options.define) |d| {

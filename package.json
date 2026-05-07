@@ -1,9 +1,10 @@
 {
-  "private": true,
   "name": "zntc",
   "version": "0.1.0",
+  "private": true,
   "workspaces": [
     "./packages/core",
+    "./packages/init",
     "./packages/server",
     "./packages/web",
     "./packages/react-native",

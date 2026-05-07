@@ -190,6 +190,16 @@
         "lightningcss": "^1.28.0",
       },
     },
+    "packages/init": {
+      "name": "@zntc/init",
+      "version": "0.1.0",
+      "bin": {
+        "zntc-init": "./bin/zntc-init.mjs",
+      },
+      "devDependencies": {
+        "@types/node": "^25.5.2",
+      },
+    },
     "packages/react-native": {
       "name": "@zntc/react-native",
       "version": "0.1.0",
@@ -1918,6 +1928,8 @@
     "@zntc/e2e": ["@zntc/e2e@workspace:tests/e2e"],
 
     "@zntc/example-web": ["@zntc/example-web@workspace:examples/web"],
+
+    "@zntc/init": ["@zntc/init@workspace:packages/init"],
 
     "@zntc/integration": ["@zntc/integration@workspace:tests/integration"],
 
