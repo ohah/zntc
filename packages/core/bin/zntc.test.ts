@@ -5129,6 +5129,19 @@ describe('buildRnDevServerInput — config + opts 추출 (#2605)', () => {
     expect(input?.bundle.extra?.watchFolders).toEqual(['../shared', '../tokens']);
   });
 
+  test('config.alias / moduleSpecifierMap → bundle.override 매핑', async () => {
+    const { buildRnDevServerInput } = await import('./rn-dev-input.mjs');
+    const input = buildRnDevServerInput(
+      { entryPoints: ['i.js'] },
+      {
+        alias: { '~': '/abs/src' },
+        moduleSpecifierMap: { lodash: 'lodash/{name}' },
+      },
+    );
+    expect(input?.bundle.override?.alias).toEqual({ '~': '/abs/src' });
+    expect(input?.bundle.override?.moduleSpecifierMap).toEqual({ lodash: 'lodash/{name}' });
+  });
+
   test('config.transformer.babelTransformerPath 매핑', async () => {
     const { buildRnDevServerInput } = await import('./rn-dev-input.mjs');
     const input = buildRnDevServerInput(

@@ -67,6 +67,21 @@ export function buildRnBundleExtra(config, opts = {}) {
   };
 }
 
+export function buildRnBundleOverride(config, override) {
+  const cfg = config ?? {};
+  const out = {};
+  if (cfg.alias && typeof cfg.alias === 'object') {
+    out.alias = cfg.alias;
+  }
+  if (cfg.moduleSpecifierMap && typeof cfg.moduleSpecifierMap === 'object') {
+    out.moduleSpecifierMap = cfg.moduleSpecifierMap;
+  }
+  if (override && typeof override === 'object') {
+    Object.assign(out, override);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /**
  * 번개 BungaeConfig 의 `root` / `entry` / `dev` / `minify` / `server.*` /
  * `resolver.*` / `transformer.*` / `serializer.*` / `symbolicator.*` /
@@ -116,6 +131,7 @@ export function buildRnDevServerInput(opts, config) {
         cfg.minify ||
         false,
       extra: buildRnBundleExtra(cfg, opts),
+      override: buildRnBundleOverride(cfg),
     },
     port: opts.port ?? server.port ?? 8081,
     host: opts.host ?? server.host ?? 'localhost',

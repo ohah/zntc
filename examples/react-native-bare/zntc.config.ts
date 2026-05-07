@@ -14,7 +14,7 @@ export default {
   minify: false,
   outDir: join(__dirname, ".zntc"),
   resolver: {
-    sourceExts: [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json", ".svg"],
+    sourceExts: [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".json"],
     assetExts: [
       ".bmp",
       ".gif",
@@ -22,6 +22,7 @@ export default {
       ".jpeg",
       ".png",
       ".webp",
+      ".svg",
       ".avif",
       ".ico",
       ".icns",
@@ -34,8 +35,9 @@ export default {
   transformer: {
     minifier: "terser",
     inlineRequires: false,
-    babelTransformerPath: "react-native-svg-transformer/react-native",
-    babel: {},
+  },
+  alias: {
+    "~": join(__dirname, "src"),
   },
   serializer: {
     polyfills: [],
