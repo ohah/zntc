@@ -1996,7 +1996,7 @@ pub const ModuleGraph = struct {
             }
             // OOM 시 silent skip 하면 axios/follow-redirects 같은 optional require 가 hard
             // error 로 회귀해 build 자체가 깨진다. 1108줄 extractImports 와 동일하게 fallback.
-            import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, &(module.ast.?), module.import_records) catch {
+            import_scanner.markPostScanFlags(arena_alloc, &(module.ast.?), module.import_records) catch {
                 module.state = .ready;
                 return;
             };
@@ -2325,7 +2325,7 @@ pub const ModuleGraph = struct {
             {
                 var optional_scope = profile.begin(.graph_discover_pm_post_optional_requires);
                 defer optional_scope.end();
-                import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, &(module.ast.?), module.import_records) catch {
+                import_scanner.markPostScanFlags(arena_alloc, &(module.ast.?), module.import_records) catch {
                     module.state = .ready;
                     return;
                 };
@@ -2795,7 +2795,7 @@ pub const ModuleGraph = struct {
             for (module.import_records) |*r| {
                 if (arena_alloc.dupe(u8, r.specifier)) |owned| r.specifier = owned else |_| {}
             }
-            try import_scanner.markOptionalRequiresInTryBlocks(arena_alloc, ast, module.import_records);
+            try import_scanner.markPostScanFlags(arena_alloc, ast, module.import_records);
         }
 
         {

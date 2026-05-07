@@ -27,6 +27,24 @@ fn parseAndExtract(allocator: std.mem.Allocator, source: []const u8) ![]ImportRe
     return parseAndExtractExt(allocator, source, null);
 }
 
+/// `extractImports` 후 `markLazyRequiresInCallbacks` 까지 적용해서 반환.
+/// graph.zig 가 호출하는 후처리와 동등 — record.in_lazy_callback 검증용.
+fn parseAndExtractWithLazyMarking(allocator: std.mem.Allocator, source: []const u8) ![]ImportRecord {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc, source);
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+
+    const records = try import_scanner.extractImports(allocator, &parser.ast);
+    try import_scanner.markLazyRequiresInCallbacks(allocator, &parser.ast, records);
+    return records;
+}
+
 fn parseAndExtractExt(allocator: std.mem.Allocator, source: []const u8, ext: ?[]const u8) ![]ImportRecord {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -493,6 +511,172 @@ test "optional: try-block 이 없으면 모든 require 가 is_optional=false" {
     try std.testing.expectEqual(@as(usize, 2), records.len);
     try std.testing.expect(!records[0].is_optional);
     try std.testing.expect(!records[1].is_optional);
+}
+
+test "lazy: getter 안 require 는 in_lazy_callback=true (#2681 RN core 패턴)" {
+    // RN core `react-native/index.js` 의 `get DevSettings() { return require('...').default }`
+    // 패턴 — Group A 모듈 strip 의 핵심.
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\const RN = {
+        \\  get DevSettings() {
+        \\    return require('./DevSettings').default;
+        \\  },
+        \\};
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expectEqualStrings("./DevSettings", records[0].specifier);
+    try std.testing.expect(records[0].in_lazy_callback);
+}
+
+test "lazy: arrow function 안 require 는 in_lazy_callback=true" {
+    // `Object.defineProperty(obj, 'X', { get: () => require('./X') })` 같은 패턴.
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\const lazyGetter = () => require('./lazy');
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].in_lazy_callback);
+}
+
+test "lazy: method shorthand 안 require 는 in_lazy_callback=true" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\const obj = {
+        \\  load() { return require('./mod'); }
+        \\};
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].in_lazy_callback);
+}
+
+test "lazy: function expression 안 require 는 in_lazy_callback=true" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\const f = function() { return require('./mod'); };
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].in_lazy_callback);
+}
+
+test "lazy: top-level require 는 in_lazy_callback=false (회귀 가드)" {
+    // 일반 top-level require 는 eager — lazy 마킹되면 안 됨.
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\const a = require('./a');
+        \\const b = require('./b');
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 2), records.len);
+    try std.testing.expect(!records[0].in_lazy_callback);
+    try std.testing.expect(!records[1].in_lazy_callback);
+}
+
+test "lazy: function_declaration 안 require 는 일단 eager (보수 scope)" {
+    // function_declaration 은 hoisting 으로 module top-level 호출 가능 — Phase 2
+    // (Metro inline-requires) 에서 별도 처리. PR α 는 conservative scope.
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\function load() { return require('./mod'); }
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(!records[0].in_lazy_callback);
+}
+
+test "lazy: dynamic import 도 in_lazy_callback 처리" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\const load = () => import('./dyn');
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].in_lazy_callback);
+}
+
+test "lazy: function_declaration 안 nested arrow 의 require 는 in_lazy_callback=true" {
+    // outer 가 function_declaration (보수 scope 제외) 이지만 inner arrow body 안의
+    // require 는 lazy callback. span containment 가 inner 의 body 안임을 확인.
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\function outer() {
+        \\  const inner = () => require('./mod');
+        \\}
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].in_lazy_callback);
+}
+
+test "lazy: class method 안 require 는 in_lazy_callback=true" {
+    const alloc = std.testing.allocator;
+    const records = try parseAndExtractWithLazyMarking(
+        alloc,
+        \\class Loader {
+        \\  load() { return require('./mod'); }
+        \\}
+        ,
+    );
+    defer alloc.free(records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].in_lazy_callback);
+}
+
+test "lazy: try-block 안 lazy callback 의 require 는 두 flag 모두 true (직교성)" {
+    // function body 안 + try block 안 → in_lazy_callback + is_optional 둘 다.
+    // markPostScanFlags 가 두 마킹을 독립 적용 회귀 가드.
+    const alloc = std.testing.allocator;
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var scanner = try Scanner.init(arena_alloc,
+        \\const f = function() {
+        \\  try { require('./mod'); } catch (e) {}
+        \\};
+    );
+    var parser = Parser.init(arena_alloc, &scanner);
+    parser.is_module = true;
+    scanner.is_module = true;
+    _ = try parser.parse();
+
+    const records = try import_scanner.extractImports(alloc, &parser.ast);
+    defer alloc.free(records);
+    try import_scanner.markPostScanFlags(alloc, &parser.ast, records);
+
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0].in_lazy_callback);
+    try std.testing.expect(records[0].is_optional);
 }
 
 test "CJS: define boolean으로 죽은 if 분기의 require는 스캔하지 않음" {
