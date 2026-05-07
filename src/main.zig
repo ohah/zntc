@@ -71,6 +71,9 @@ const CliOptions = struct {
     es_target: ?lib.transformer.TransformOptions.compat.ESTarget = null,
     /// 사용자가 --target을 명시적으로 전달했는지 (RN 프리셋 경고용).
     target_explicit: bool = false,
+    /// 사용자가 명시적으로 `--legal-comments=` 를 전달했는지. RN preset 의 default
+    /// override (.none) 가 사용자 명시값을 덮어쓰지 않게 하기 위함.
+    legal_comments_explicit: bool = false,
     conditions_list: std.ArrayList([]const u8) = .empty,
     /// --profile=<CSV>: 활성화할 profile category 목록. e.g. "all", "parse,transform".
     profile_csv: ?[]const u8 = null,
@@ -1173,6 +1176,7 @@ fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator) !?C
                 try stderr.print("zts: unknown legal-comments mode '{s}' (expected: none, inline, eof, linked, external)\n", .{val});
                 std.process.exit(1);
             };
+            opts.legal_comments_explicit = true;
             if (opts.legal_comments == .linked or opts.legal_comments == .external) {
                 try stderr.print("zts: --legal-comments={s} is not yet fully implemented, falling back to eof behavior\n", .{val});
             }
@@ -2089,6 +2093,8 @@ pub fn main() !void {
             }
             opts.unsupported = lib.transformer.TransformOptions.compat.fromHermesPreset();
             opts.es_target = null;
+            // RN preset: 사용자가 `--legal-comments=` 명시 안 했으면 .none default (Metro 패턴 정합).
+            if (!opts.legal_comments_explicit) opts.legal_comments = .none;
 
             if (opts.resolve_extensions_list.items.len == 0) {
                 // Metro/롤다운 호환: ts → tsx 순서 (sourceExtensions 기본 순서)

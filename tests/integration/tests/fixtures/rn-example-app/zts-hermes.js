@@ -58199,6 +58199,47 @@ module.exports = (init_react_native_Libraries_Image_AssetRegistry(), __toCommonJ
 	}
 });
 //#endregion
+//#region NativeSafeAreaProvider.tsx
+var exports_react_native_safe_area_context_src_NativeSafeAreaProvider = {};
+__export(exports_react_native_safe_area_context_src_NativeSafeAreaProvider, {
+	NativeSafeAreaProvider: function() { return _default$128; },
+});
+var init_react_native_safe_area_context_src_NativeSafeAreaProvider = __esm({
+	"NativeSafeAreaProvider.tsx"() {
+	
+	
+	
+	}
+});
+//#endregion
+//#region index.tsx
+var exports_react_native_safe_area_context_src_index = {};
+__export(exports_react_native_safe_area_context_src_index, {
+	useSafeAreaInsets: function() { return useSafeAreaInsets; },
+	SafeAreaConsumer: function() { return SafeAreaConsumer; },
+	SafeAreaFrameContext: function() { return SafeAreaFrameContext; },
+	SafeAreaListener: function() { return SafeAreaListener; },
+	SafeAreaContext: function() { return SafeAreaContext; },
+	withSafeAreaInsets: function() { return withSafeAreaInsets; },
+	SafeAreaInsetsContext: function() { return SafeAreaInsetsContext; },
+	useSafeArea: function() { return useSafeArea; },
+	useSafeAreaFrame: function() { return useSafeAreaFrame; },
+	SafeAreaProvider: function() { return SafeAreaProvider; },
+	SafeAreaView: function() { return SafeAreaView$7; },
+	initialWindowSafeAreaInsets: function() { return initialWindowSafeAreaInsets; },
+	initialWindowMetrics: function() { return initialWindowMetrics; },
+});
+var init_react_native_safe_area_context_src_index = __esm({
+	"index.tsx"() {
+	"use client";
+	
+	
+	
+	
+	
+	}
+});
+//#endregion
 //#region App.tsx
 var exports_App = {};
 var testIcon, App, AppContent, styles$45;
@@ -58308,6 +58349,7 @@ var init_App = __esm({
 		return (/* @__PURE__ */ React.createElement(require_react_native_index().View, { style: styles$45.container }, /* @__PURE__ */ React.createElement(NewAppScreen, { templateFileName: "App.tsx", safeAreaInsets: safeAreaInsets }), bundlerInfo && (/* @__PURE__ */ React.createElement(require_react_native_index().View, { style: [styles$45.bundlerBadge, { backgroundColor: bundlerInfo.isBungae ? "rgba(251, 191, 36, 0.9)" : "rgba(59, 130, 246, 0.9)" }] }, /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$45.bundlerText }, bundlerInfo.isBungae ? "⚡" : "📦", bundlerInfo.name, bundlerInfo.version && ` v${bundlerInfo.version}`))), hermesEnabled !== null && (/* @__PURE__ */ React.createElement(require_react_native_index().View, { style: [styles$45.hermesBadge, { backgroundColor: hermesEnabled ? "rgba(34, 197, 94, 0.9)" : "rgba(239, 68, 68, 0.9)" }] }, /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$45.bundlerText }, hermesEnabled ? "✅ Hermes" : "❌ JSC (No Hermes)"))), /* @__PURE__ */ React.createElement(require_react_native_index().View, { style: styles$45.assetBadge }, /* @__PURE__ */ React.createElement(require_react_native_index().Image, { source: testIcon, style: styles$45.testIcon }), /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$45.assetText }, "Asset OK")), /* @__PURE__ */ React.createElement(require_react_native_index().TouchableOpacity, { onPress: handleTestPress, style: styles$45.testButton, activeOpacity: 0.7 }, /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$45.testButtonText }, "🧪 Test Button (Event Handler Test)")), /* @__PURE__ */ React.createElement(require_react_native_index().TouchableOpacity, { onPress: handleSourceMapTest, style: styles$45.sourceMapTestButton, activeOpacity: 0.7 }, /* @__PURE__ */ React.createElement(require_react_native_index().Text, { style: styles$45.sourceMapTestButtonText }, "🗺️ Source Map Test (Error Test)"))));
 	};
 		init__react_native_new_app_screen_src_index();
+	init_react_native_safe_area_context_src_index();
 		
 	
 	
@@ -58344,6 +58386,7 @@ var _default$128 = NativeComponentRegistry$21.get(nativeComponentName$12, functi
 var React$101 = __toESM(require_react_index());
 var Dimensions$6 = require_react_native_index().Dimensions;
 var StyleSheet$53 = require_react_native_index().StyleSheet;
+init_react_native_safe_area_context_src_NativeSafeAreaProvider();
 var isDev = false;
 var SafeAreaInsetsContext = React$101.createContext(null);
 if (isDev) {
