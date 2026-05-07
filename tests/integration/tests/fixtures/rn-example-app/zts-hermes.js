@@ -5847,6 +5847,57 @@ var init_react_native_Libraries_Utilities_differ_deepDiffer = __esm({
 	}
 });
 //#endregion
+//#region NativeAccessibilityManager.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager = {};
+var TurboModuleRegistry$6, _default$9;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager, {
+	"default": function() { return _default$9; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager = __esm({
+	"NativeAccessibilityManager.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$6=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$9=get("AccessibilityManager");
+	
+	}
+});
+//#endregion
+//#region NativeAccessibilityManager.js
+var exports_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityManager = {};
+var _default$10;
+__export(exports_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityManager, {
+	"default": function() { return _default$10; },
+});
+var init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityManager = __esm({
+	"NativeAccessibilityManager.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager();
+		
+	
+		_default$10 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityManager)).default;
+	
+	}
+});
+//#endregion
+//#region legacySendAccessibilityEvent.ios.js
+var exports_react_native_Libraries_Components_AccessibilityInfo_legacySendAccessibilityEvent_ios = {};
+var legacySendAccessibilityEvent;
+__export(exports_react_native_Libraries_Components_AccessibilityInfo_legacySendAccessibilityEvent_ios, {
+	"default": function() { return legacySendAccessibilityEvent; },
+});
+var init_react_native_Libraries_Components_AccessibilityInfo_legacySendAccessibilityEvent_ios = __esm({
+	"legacySendAccessibilityEvent.ios.js"() {
+	legacySendAccessibilityEvent = function(reactTag,eventType) {
+		if (eventType === "focus" && _default$9) {
+			_default$9.setAccessibilityFocus(reactTag);
+		}
+	};
+		init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityManager();
+		
+	
+	
+	}
+});
+//#endregion
 //#region PlatformObjects.js
 var exports_react_native_src_private_webapis_webidl_PlatformObjects = {};
 var IS_PLATFORM_OBJECT_KEY, CLONE_PLATFORM_OBJECT_KEY, setPlatformObject, isPlatformObject, getPlatformObjectClone;
@@ -26494,6 +26545,145 @@ var init_react_native_Libraries_Components_View_View = __esm({
 	}
 });
 //#endregion
+//#region UnimplementedView.js
+var exports_react_native_Libraries_Components_UnimplementedViews_UnimplementedView = {};
+var UnimplementedView, styles$1, React$14;
+__export(exports_react_native_Libraries_Components_UnimplementedViews_UnimplementedView, {
+	"default": function() { return UnimplementedView; },
+});
+var init_react_native_Libraries_Components_UnimplementedViews_UnimplementedView = __esm({
+	"UnimplementedView.js"() {
+	init_extends();
+	init_class_call_check();
+	init_call_super();
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	React$14 = __toESM(require_react_index());
+		
+	
+	
+	"use strict";
+	
+	
+	UnimplementedView = (function(_super) {
+		function UnimplementedView() {
+			__classCallCheck(this, UnimplementedView);
+			var _newTarget = this.constructor;
+			return __callSuper(_super, arguments, _newTarget);
+		}
+		__extends(UnimplementedView, _super);
+		Object.defineProperty(UnimplementedView.prototype, "render", { configurable: true, writable: true, value: function() {
+			var View = (init_react_native_Libraries_Components_View_View(), __toCommonJS(exports_react_native_Libraries_Components_View_View)).default;
+			return (/* @__PURE__ */ React$14.createElement(View, { style: [styles$1.unimplementedView, this.props.style] }, this.props.children));
+		} });
+		return UnimplementedView;
+	})(React$14.Component);
+	styles$1 = StyleSheet.create({ unimplementedView: {} });
+	;
+	
+	
+	}
+});
+//#endregion
+//#region ProgressBarAndroid.js
+var exports_react_native_Libraries_Components_ProgressBarAndroid_ProgressBarAndroid = {};
+var ProgressBarAndroid;
+__export(exports_react_native_Libraries_Components_ProgressBarAndroid_ProgressBarAndroid, {
+	"default": function() { return ProgressBarAndroid; },
+});
+var init_react_native_Libraries_Components_ProgressBarAndroid_ProgressBarAndroid = __esm({
+	"ProgressBarAndroid.js"() {
+	init_react_native_Libraries_Utilities_Platform_ios();
+		"use strict";
+	
+	ProgressBarAndroid = void 0;
+	if (Platform.OS === "android") {
+		ProgressBarAndroid = __toCommonJS(exports_react_native_Libraries_Components_ProgressBarAndroid_ProgressBarAndroid)().default;
+	} else {
+		ProgressBarAndroid = (init_react_native_Libraries_Components_UnimplementedViews_UnimplementedView(), __toCommonJS(exports_react_native_Libraries_Components_UnimplementedViews_UnimplementedView)).default;
+	}
+	
+	
+	}
+});
+//#endregion
+//#region ActivityIndicatorViewNativeComponent.js
+var exports_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent = {};
+var NativeComponentRegistry$3, nativeComponentName, __INTERNAL_VIEW_CONFIG$2, _default$35;
+__export(exports_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent, {
+	"default": function() { return _default$35; },
+});
+var init_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent = __esm({
+	"ActivityIndicatorViewNativeComponent.js"() {
+	NativeComponentRegistry$3 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	nativeComponentName = "RCTActivityIndicatorView";
+	__INTERNAL_VIEW_CONFIG$2 = { uiViewClassName: "RCTActivityIndicatorView", validAttributes: { hidesWhenStopped: true, animating: true, color: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, size: true } };
+	_default$35=NativeComponentRegistry$3.get(nativeComponentName, function() {
+		return __INTERNAL_VIEW_CONFIG$2;
+	});
+	
+	}
+});
+//#endregion
+//#region ActivityIndicatorViewNativeComponent.js
+var exports_react_native_Libraries_Components_ActivityIndicator_ActivityIndicatorViewNativeComponent = {};
+var _default$36;
+__export(exports_react_native_Libraries_Components_ActivityIndicator_ActivityIndicatorViewNativeComponent, {
+	"default": function() { return _default$36; },
+});
+var init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicatorViewNativeComponent = __esm({
+	"ActivityIndicatorViewNativeComponent.js"() {
+	init_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent();
+		
+	
+		_default$36 = (init_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_ActivityIndicatorViewNativeComponent)).default;
+	
+	}
+});
+//#endregion
+//#region ActivityIndicator.js
+var exports_react_native_Libraries_Components_ActivityIndicator_ActivityIndicator = {};
+var PlatformActivityIndicator, GRAY, ActivityIndicator, styles$2, React$15;
+__export(exports_react_native_Libraries_Components_ActivityIndicator_ActivityIndicator, {
+	"default": function() { return ActivityIndicator; },
+});
+var init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicator = __esm({
+	"ActivityIndicator.js"() {
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_View_View();
+	React$15 = __toESM(require_react_index());
+		"use strict";
+	
+	
+	
+	
+	PlatformActivityIndicator = Platform.OS === "android" ? (init_react_native_Libraries_Components_ProgressBarAndroid_ProgressBarAndroid(), __toCommonJS(exports_react_native_Libraries_Components_ProgressBarAndroid_ProgressBarAndroid)).default : (init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicatorViewNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_ActivityIndicator_ActivityIndicatorViewNativeComponent)).default;
+	GRAY = "#999999";
+	ActivityIndicator = function({ ref:forwardedRef, animating:animating=true, color:color=Platform.OS === "ios" ? GRAY : null, hidesWhenStopped:hidesWhenStopped=true, onLayout:onLayout, size:size="small", style:style, ...restProps }) {
+		var sizeStyle = void 0,sizeProp = void 0;
+		switch (size) {
+			case "small":
+				sizeStyle = styles$2.sizeSmall;
+				sizeProp = "small";
+				break;
+			case "large":
+				sizeStyle = styles$2.sizeLarge;
+				sizeProp = "large";
+				break;
+			default:
+				sizeStyle = { height: size, width: size };
+				break;
+		}
+		var nativeProps = { animating, color, hidesWhenStopped, ...restProps, ref: forwardedRef, style: sizeStyle, size: sizeProp },androidProps = { styleAttr: "Normal", indeterminate: true };
+		return (/* @__PURE__ */ React$15.createElement(View$1, { onLayout: onLayout, style: StyleSheet.compose(styles$2.container, style) }, Platform.OS === "android" ? (/* @__PURE__ */ React$15.createElement(PlatformActivityIndicator, { ...nativeProps, ...androidProps })) : (/* @__PURE__ */ React$15.createElement(PlatformActivityIndicator, { ...nativeProps }))));
+	};
+	ActivityIndicator.displayName = "ActivityIndicator";
+	styles$2 = StyleSheet.create({ container: { alignItems: "center", justifyContent: "center" }, sizeSmall: { width: 20, height: 20 }, sizeLarge: { width: 36, height: 36 } });
+	
+	
+	}
+});
+//#endregion
 //#region Rect.js
 var exports_react_native_Libraries_StyleSheet_Rect = {};
 var createSquare, normalizeRect;
@@ -27473,6 +27663,138 @@ var init_react_native_Libraries_Text_Text = __esm({
 	};
 	userSelectToSelectableMap = { auto: true, text: true, none: false, contain: true, all: true };
 	verticalAlignToTextAlignVerticalMap = { auto: "auto", top: "top", bottom: "bottom", middle: "center" };
+	
+	
+	}
+});
+//#endregion
+//#region TouchableNativeFeedback.js
+var exports_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = {};
+var TouchableNativeFeedback, getBackgroundProp, invariant$21, React$18;
+__export(exports_react_native_Libraries_Components_Touchable_TouchableNativeFeedback, {
+	"default": function() { return TouchableNativeFeedback; },
+});
+var init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback = __esm({
+	"TouchableNativeFeedback.js"() {
+	init_extends();
+	init_class_call_check();
+	init_call_super();
+	init_derived_constructor();
+	init_react_native_Libraries_Components_View_View();
+	init_react_native_Libraries_Pressability_Pressability();
+	init_react_native_Libraries_Pressability_PressabilityDebug();
+	init_react_native_Libraries_ReactNative_RendererProxy();
+	init_react_native_Libraries_StyleSheet_processColor();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_View_ViewNativeComponent();
+	invariant$21 = require_invariant_browser();
+	React$18 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	TouchableNativeFeedback = (function(_super) {
+		function TouchableNativeFeedback() {
+			__classCallCheck(this, TouchableNativeFeedback);
+			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
+			;
+			_this.state = { pressability: new Pressability(__assertThisInitialized(_this)._createPressabilityConfig()) };
+			return _this;
+		}
+		__extends(TouchableNativeFeedback, _super);
+		Object.defineProperty(TouchableNativeFeedback.prototype, "_createPressabilityConfig", { configurable: true, writable: true, value: function() {
+			var _this = this,accessibilityStateDisabled = this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled;
+			return { cancelable: !this.props.rejectResponderTermination, disabled: this.props.disabled != null ? this.props.disabled : accessibilityStateDisabled, hitSlop: this.props.hitSlop, delayLongPress: this.props.delayLongPress, delayPressIn: this.props.delayPressIn, delayPressOut: this.props.delayPressOut, minPressDuration: 0, pressRectOffset: this.props.pressRetentionOffset, android_disableSound: this.props.touchSoundDisabled, onLongPress: this.props.onLongPress, onPress: this.props.onPress, onPressIn: function(event) {
+				if (Platform.OS === "android") {
+					_this._dispatchHotspotUpdate(event);
+					_this._dispatchPressedStateChange(true);
+				}
+				if (_this.props.onPressIn != null) {
+					_this.props.onPressIn(event);
+				}
+			}, onPressMove: function(event) {
+				if (Platform.OS === "android") {
+					_this._dispatchHotspotUpdate(event);
+				}
+			}, onPressOut: function(event) {
+				if (Platform.OS === "android") {
+					_this._dispatchPressedStateChange(false);
+				}
+				if (_this.props.onPressOut != null) {
+					_this.props.onPressOut(event);
+				}
+			} };
+		} });
+		Object.defineProperty(TouchableNativeFeedback.prototype, "_dispatchPressedStateChange", { configurable: true, writable: true, value: function(pressed) {
+			if (Platform.OS === "android") {
+				var hostComponentRef = findHostInstance_DEPRECATED(this);
+				if (hostComponentRef == null) {
+					console.warn("Touchable: Unable to find HostComponent instance. Has your Touchable component been unmounted?");
+				} else {
+					Commands$2.setPressed(hostComponentRef, pressed);
+				}
+			}
+		} });
+		Object.defineProperty(TouchableNativeFeedback.prototype, "_dispatchHotspotUpdate", { configurable: true, writable: true, value: function(event) {
+			if (Platform.OS === "android") {
+				var { locationX:locationX, locationY:locationY } = event.nativeEvent,hostComponentRef = findHostInstance_DEPRECATED(this);
+				if (hostComponentRef == null) {
+					console.warn("Touchable: Unable to find HostComponent instance. Has your Touchable component been unmounted?");
+				} else {
+					Commands$2.hotspotUpdate(hostComponentRef, locationX ?? 0, locationY ?? 0);
+				}
+			}
+		} });
+		Object.defineProperty(TouchableNativeFeedback.prototype, "render", { configurable: true, writable: true, value: function() {
+			var element = React$18.Children.only(this.props.children),children = [element.props.children];
+			;
+			var { onBlur:onBlur, onFocus:onFocus, ...eventHandlersWithoutBlurAndFocus } = this.state.pressability.getEventHandlers(),_accessibilityState = { busy: this.props["aria-busy"] ?? this.props.accessibilityState?.busy, checked: this.props["aria-checked"] ?? this.props.accessibilityState?.checked, disabled: this.props["aria-disabled"] ?? this.props.accessibilityState?.disabled, expanded: this.props["aria-expanded"] ?? this.props.accessibilityState?.expanded, selected: this.props["aria-selected"] ?? this.props.accessibilityState?.selected };
+			_accessibilityState = this.props.disabled != null ? { ..._accessibilityState, disabled: this.props.disabled } : _accessibilityState;
+			var accessibilityValue = { max: this.props["aria-valuemax"] ?? this.props.accessibilityValue?.max, min: this.props["aria-valuemin"] ?? this.props.accessibilityValue?.min, now: this.props["aria-valuenow"] ?? this.props.accessibilityValue?.now, text: this.props["aria-valuetext"] ?? this.props.accessibilityValue?.text },accessibilityLiveRegion = this.props["aria-live"] === "off" ? "none" : (this.props["aria-live"] ?? this.props.accessibilityLiveRegion),accessibilityLabel = this.props["aria-label"] ?? this.props.accessibilityLabel;
+			return require_react_index().cloneElement(element, { ...eventHandlersWithoutBlurAndFocus, ...getBackgroundProp(this.props.background === undefined ? TouchableNativeFeedback.SelectableBackground() : this.props.background, this.props.useForeground === true), accessible: this.props.accessible !== false, accessibilityHint: this.props.accessibilityHint, accessibilityLanguage: this.props.accessibilityLanguage, accessibilityLabel: accessibilityLabel, accessibilityRole: this.props.accessibilityRole, accessibilityState: _accessibilityState, accessibilityActions: this.props.accessibilityActions, onAccessibilityAction: this.props.onAccessibilityAction, accessibilityValue: accessibilityValue, importantForAccessibility: this.props["aria-hidden"] === true ? "no-hide-descendants" : this.props.importantForAccessibility, accessibilityViewIsModal: this.props["aria-modal"] ?? this.props.accessibilityViewIsModal, accessibilityLiveRegion: accessibilityLiveRegion, accessibilityElementsHidden: this.props["aria-hidden"] ?? this.props.accessibilityElementsHidden, hasTVPreferredFocus: this.props.hasTVPreferredFocus, hitSlop: this.props.hitSlop, focusable: this.props.focusable !== false && this.props.onPress !== undefined && !this.props.disabled, nativeID: this.props.id ?? this.props.nativeID, nextFocusDown: this.props.nextFocusDown, nextFocusForward: this.props.nextFocusForward, nextFocusLeft: this.props.nextFocusLeft, nextFocusRight: this.props.nextFocusRight, nextFocusUp: this.props.nextFocusUp, onLayout: this.props.onLayout, testID: this.props.testID }, ...children);
+		} });
+		Object.defineProperty(TouchableNativeFeedback.prototype, "componentDidUpdate", { configurable: true, writable: true, value: function(prevProps,prevState) {
+			this.state.pressability.configure(this._createPressabilityConfig());
+		} });
+		Object.defineProperty(TouchableNativeFeedback.prototype, "componentDidMount", { configurable: true, writable: true, value: function() {
+			this.state.pressability.configure(this._createPressabilityConfig());
+		} });
+		Object.defineProperty(TouchableNativeFeedback.prototype, "componentWillUnmount", { configurable: true, writable: true, value: function() {
+			this.state.pressability.reset();
+		} });
+		Object.defineProperty(TouchableNativeFeedback, "SelectableBackground", { configurable: true, enumerable: true, writable: true, value: function(rippleRadius) {
+			return ({ type: "ThemeAttrAndroid", attribute: "selectableItemBackground", rippleRadius });
+		} });
+		Object.defineProperty(TouchableNativeFeedback, "SelectableBackgroundBorderless", { configurable: true, enumerable: true, writable: true, value: function(rippleRadius) {
+			return ({ type: "ThemeAttrAndroid", attribute: "selectableItemBackgroundBorderless", rippleRadius });
+		} });
+		Object.defineProperty(TouchableNativeFeedback, "Ripple", { configurable: true, enumerable: true, writable: true, value: function(color,borderless,rippleRadius) {
+			var processedColor = processColor(color);
+			invariant$21(processedColor == null || typeof processedColor === "number", "Unexpected color given for Ripple color");
+			return { type: "RippleAndroid", color: processedColor, borderless, rippleRadius };
+		} });
+		Object.defineProperty(TouchableNativeFeedback, "canUseNativeForeground", { configurable: true, enumerable: true, writable: true, value: function() {
+			return Platform.OS === "android";
+		} });
+		return TouchableNativeFeedback;
+	})(React$18.Component);
+	getBackgroundProp = Platform.OS === "android" ? function(background,useForeground) {
+		return useForeground && TouchableNativeFeedback.canUseNativeForeground() ? { nativeForegroundAndroid: background } : { nativeBackgroundAndroid: background };
+	} : function(background,useForeground) {
+		return null;
+	};
+	;
+	TouchableNativeFeedback.displayName = "TouchableNativeFeedback";
 	
 	
 	}
@@ -36135,6 +36457,243 @@ var init_react_native_Libraries_Components_Touchable_TouchableOpacity = __esm({
 	}
 });
 //#endregion
+//#region Button.js
+var exports_react_native_Libraries_Components_Button = {};
+var NativeTouchable, Button, styles$9, invariant$40, React$44;
+__export(exports_react_native_Libraries_Components_Button, {
+	"default": function() { return Button; },
+});
+var init_react_native_Libraries_Components_Button = __esm({
+	"Button.js"() {
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Text_Text();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_Touchable_TouchableNativeFeedback();
+	init_react_native_Libraries_Components_Touchable_TouchableOpacity();
+	init_react_native_Libraries_Components_View_View();
+	invariant$40 = require_invariant_browser();
+	React$44 = __toESM(require_react_index());
+		"use strict";
+	
+	
+	
+	
+	
+	
+	
+	
+	NativeTouchable = Platform.OS === "android" ? TouchableNativeFeedback : Touchable;
+	Button = function({ ref:ref, ...props }) {
+		var { accessibilityLabel:accessibilityLabel, accessibilityState:accessibilityState, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, importantForAccessibility:importantForAccessibility, color:color, onPress:onPress, touchSoundDisabled:touchSoundDisabled, title:title, hasTVPreferredFocus:hasTVPreferredFocus, nextFocusDown:nextFocusDown, nextFocusForward:nextFocusForward, nextFocusLeft:nextFocusLeft, nextFocusRight:nextFocusRight, nextFocusUp:nextFocusUp, testID:testID, accessible:accessible, accessibilityActions:accessibilityActions, accessibilityHint:accessibilityHint, accessibilityLanguage:accessibilityLanguage, onAccessibilityAction:onAccessibilityAction } = props,buttonStyles = [styles$9.button],textStyles = [styles$9.text];
+		if (color) {
+			if (Platform.OS === "ios") {
+				textStyles.push({ color: color });
+			} else {
+				buttonStyles.push({ backgroundColor: color });
+			}
+		}
+		var _accessibilityState = { busy: ariaBusy ?? accessibilityState?.busy, checked: ariaChecked ?? accessibilityState?.checked, disabled: ariaDisabled ?? accessibilityState?.disabled, expanded: ariaExpanded ?? accessibilityState?.expanded, selected: ariaSelected ?? accessibilityState?.selected },disabled = props.disabled != null ? props.disabled : _accessibilityState?.disabled;
+		_accessibilityState = disabled !== _accessibilityState?.disabled ? { ..._accessibilityState, disabled } : _accessibilityState;
+		if (disabled) {
+			buttonStyles.push(styles$9.buttonDisabled);
+			textStyles.push(styles$9.textDisabled);
+		}
+		invariant$40(typeof title === "string", "The title prop of a Button must be a string");
+		var formattedTitle = Platform.OS === "android" ? title.toUpperCase() : title,_importantForAccessibility = importantForAccessibility === "no" ? "no-hide-descendants" : importantForAccessibility;
+		return (/* @__PURE__ */ React$44.createElement(NativeTouchable, { accessible: accessible, accessibilityActions: accessibilityActions, onAccessibilityAction: onAccessibilityAction, accessibilityLabel: ariaLabel || accessibilityLabel, accessibilityHint: accessibilityHint, accessibilityLanguage: accessibilityLanguage, accessibilityRole: "button", accessibilityState: _accessibilityState, importantForAccessibility: _importantForAccessibility, hasTVPreferredFocus: hasTVPreferredFocus, nextFocusDown: nextFocusDown, nextFocusForward: nextFocusForward, nextFocusLeft: nextFocusLeft, nextFocusRight: nextFocusRight, nextFocusUp: nextFocusUp, testID: testID, disabled: disabled, onPress: onPress, touchSoundDisabled: touchSoundDisabled, ref: ref }, /* @__PURE__ */ React$44.createElement(View$1, { style: buttonStyles }, /* @__PURE__ */ React$44.createElement(TextImpl, { style: textStyles, disabled: disabled }, formattedTitle))));
+	};
+	Button.displayName = "Button";
+	styles$9 = StyleSheet.create({ button: Platform.select({ ios: {}, android: { elevation: 4, backgroundColor: "#2196F3", borderRadius: 2 } }), text: { textAlign: "center", margin: 8, ...Platform.select({ ios: { color: "#007AFF", fontSize: 18 }, android: { color: "white", fontWeight: "500" } }) }, buttonDisabled: Platform.select({ ios: {}, android: { elevation: 0, backgroundColor: "#dfdfdf" } }), textDisabled: Platform.select({ ios: { color: "#cdcdcd" }, android: { color: "#a1a1a1" } }) });
+	
+	
+	}
+});
+//#endregion
+//#region DrawerLayoutAndroidFallback.js
+var exports_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFallback = {};
+var DrawerLayoutAndroid, React$45;
+__export(exports_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFallback, {
+	"default": function() { return DrawerLayoutAndroid; },
+});
+var init_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFallback = __esm({
+	"DrawerLayoutAndroidFallback.js"() {
+	init_extends();
+	init_class_call_check();
+	init_call_super();
+	init_react_native_Libraries_Components_UnimplementedViews_UnimplementedView();
+	React$45 = __toESM(require_react_index());
+		
+	
+	
+	"use strict";
+	
+	
+	DrawerLayoutAndroid = (function(_super) {
+		function DrawerLayoutAndroid() {
+			__classCallCheck(this, DrawerLayoutAndroid);
+			var _newTarget = this.constructor;
+			return __callSuper(_super, arguments, _newTarget);
+		}
+		__extends(DrawerLayoutAndroid, _super);
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "render", { configurable: true, writable: true, value: function() {
+			return /* @__PURE__ */ React$45.createElement(UnimplementedView, { ...this.props });
+		} });
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "openDrawer", { configurable: true, writable: true, value: function() {
+			throw new Error("DrawerLayoutAndroid is only available on Android");
+		} });
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "closeDrawer", { configurable: true, writable: true, value: function() {
+			throw new Error("DrawerLayoutAndroid is only available on Android");
+		} });
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "blur", { configurable: true, writable: true, value: function() {
+			throw new Error("DrawerLayoutAndroid is only available on Android");
+		} });
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "focus", { configurable: true, writable: true, value: function() {
+			throw new Error("DrawerLayoutAndroid is only available on Android");
+		} });
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "measure", { configurable: true, writable: true, value: function(callback) {
+			throw new Error("DrawerLayoutAndroid is only available on Android");
+		} });
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "measureInWindow", { configurable: true, writable: true, value: function(callback) {
+			throw new Error("DrawerLayoutAndroid is only available on Android");
+		} });
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "measureLayout", { configurable: true, writable: true, value: function(relativeToNativeNode,onSuccess,onFail) {
+			throw new Error("DrawerLayoutAndroid is only available on Android");
+		} });
+		Object.defineProperty(DrawerLayoutAndroid.prototype, "setNativeProps", { configurable: true, writable: true, value: function(nativeProps) {
+			throw new Error("DrawerLayoutAndroid is only available on Android");
+		} });
+		return DrawerLayoutAndroid;
+	})(React$45.Component);
+	
+	
+	}
+});
+//#endregion
+//#region DrawerLayoutAndroid.ios.js
+var exports_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroid_ios = {};
+var _default$65;
+__export(exports_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroid_ios, {
+	"default": function() { return _default$65; },
+});
+var init_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroid_ios = __esm({
+	"DrawerLayoutAndroid.ios.js"() {
+	init_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFallback();
+		init_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFallback();
+		"use strict";
+	
+	_default$65=DrawerLayoutAndroid;
+		_default$65 = (init_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFallback(), __toCommonJS(exports_react_native_Libraries_Components_DrawerAndroid_DrawerLayoutAndroidFallback)).default;
+	
+	}
+});
+//#endregion
+//#region ImageBackground.js
+var exports_react_native_Libraries_Image_ImageBackground = {};
+var ImageBackground, React$46;
+__export(exports_react_native_Libraries_Image_ImageBackground, {
+	"default": function() { return ImageBackground; },
+});
+var init_react_native_Libraries_Image_ImageBackground = __esm({
+	"ImageBackground.js"() {
+	init_extends();
+	init_class_call_check();
+	init_call_super();
+	init_react_native_Libraries_Components_View_View();
+	init_react_native_Libraries_StyleSheet_flattenStyle();
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Image_Image_ios();
+	React$46 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	
+	
+	ImageBackground = (function(_super) {
+		function ImageBackground() {
+			__classCallCheck(this, ImageBackground);
+			var _newTarget = this.constructor,_this = __callSuper(_super, arguments, _newTarget);
+			;
+			_this._viewRef = null;
+			_this._captureRef = function(ref) {
+				_this._viewRef = ref;
+			};
+			return _this;
+		}
+		__extends(ImageBackground, _super);
+		Object.defineProperty(ImageBackground.prototype, "setNativeProps", { configurable: true, writable: true, value: function(props) {
+			var viewRef = this._viewRef;
+			if (viewRef) {
+				viewRef.setNativeProps(props);
+			}
+		} });
+		Object.defineProperty(ImageBackground.prototype, "render", { configurable: true, writable: true, value: function() {
+			var { children:children, style:style, imageStyle:imageStyle, imageRef:imageRef, importantForAccessibility:importantForAccessibility, ...props } = this.props,flattenedStyle = flattenStyle(style);
+			return (/* @__PURE__ */ React$46.createElement(View$1, { accessibilityIgnoresInvertColors: true, importantForAccessibility: importantForAccessibility, style: style, ref: this._captureRef }, /* @__PURE__ */ React$46.createElement(Image, { ...props, importantForAccessibility: importantForAccessibility, style: [StyleSheet.absoluteFill, { width: flattenedStyle?.width, height: flattenedStyle?.height }, imageStyle], ref: imageRef }), children));
+		} });
+		return ImageBackground;
+	})(React$46.Component);
+	
+	
+	}
+});
+//#endregion
+//#region RCTSafeAreaViewNativeComponent.js
+var exports_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent = {};
+var NativeComponentRegistry$11, nativeComponentName$4, __INTERNAL_VIEW_CONFIG$10, _default$66;
+__export(exports_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent, {
+	"default": function() { return _default$66; },
+});
+var init_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent = __esm({
+	"RCTSafeAreaViewNativeComponent.js"() {
+	NativeComponentRegistry$11 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	nativeComponentName$4 = "RCTSafeAreaView";
+	__INTERNAL_VIEW_CONFIG$10 = { uiViewClassName: "RCTSafeAreaView", validAttributes: {} };
+	_default$66=NativeComponentRegistry$11.get(nativeComponentName$4, function() {
+		return __INTERNAL_VIEW_CONFIG$10;
+	});
+	
+	}
+});
+//#endregion
+//#region RCTSafeAreaViewNativeComponent.js
+var exports_react_native_Libraries_Components_SafeAreaView_RCTSafeAreaViewNativeComponent = {};
+var _default$67;
+__export(exports_react_native_Libraries_Components_SafeAreaView_RCTSafeAreaViewNativeComponent, {
+	"default": function() { return _default$67; },
+});
+var init_react_native_Libraries_Components_SafeAreaView_RCTSafeAreaViewNativeComponent = __esm({
+	"RCTSafeAreaViewNativeComponent.js"() {
+	init_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent();
+		
+	
+		_default$67 = (init_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_RCTSafeAreaViewNativeComponent)).default;
+	
+	}
+});
+//#endregion
+//#region SafeAreaView.js
+var exports_react_native_Libraries_Components_SafeAreaView_SafeAreaView = {};
+var SafeAreaView, React$47;
+__export(exports_react_native_Libraries_Components_SafeAreaView_SafeAreaView, {
+	"default": function() { return SafeAreaView; },
+});
+var init_react_native_Libraries_Components_SafeAreaView_SafeAreaView = __esm({
+	"SafeAreaView.js"() {
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_View_View();
+	React$47 = __toESM(require_react_index());
+		
+	
+	
+	SafeAreaView = Platform.select({ ios: (init_react_native_Libraries_Components_SafeAreaView_RCTSafeAreaViewNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_SafeAreaView_RCTSafeAreaViewNativeComponent)).default, default: View$1 });
+	
+	
+	}
+});
+//#endregion
 //#region useWindowDimensions.js
 var exports_react_native_Libraries_Utilities_useWindowDimensions = {};
 var useWindowDimensions;
@@ -36164,6 +36723,635 @@ var init_react_native_Libraries_Utilities_useWindowDimensions = __esm({
 		init_react_native_Libraries_Utilities_Dimensions();
 		
 	
+	
+	}
+});
+//#endregion
+//#region RCTInputAccessoryViewNativeComponent.js
+var exports_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent = {};
+var NativeComponentRegistry$12, nativeComponentName$5, __INTERNAL_VIEW_CONFIG$11, _default$68;
+__export(exports_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent, {
+	"default": function() { return _default$68; },
+});
+var init_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent = __esm({
+	"RCTInputAccessoryViewNativeComponent.js"() {
+	NativeComponentRegistry$12 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	nativeComponentName$5 = "RCTInputAccessoryView";
+	__INTERNAL_VIEW_CONFIG$11 = { uiViewClassName: "RCTInputAccessoryView", validAttributes: { backgroundColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default } } };
+	_default$68=NativeComponentRegistry$12.get(nativeComponentName$5, function() {
+		return __INTERNAL_VIEW_CONFIG$11;
+	});
+	
+	}
+});
+//#endregion
+//#region RCTInputAccessoryViewNativeComponent.js
+var exports_react_native_Libraries_Components_TextInput_RCTInputAccessoryViewNativeComponent = {};
+var _default$69;
+__export(exports_react_native_Libraries_Components_TextInput_RCTInputAccessoryViewNativeComponent, {
+	"default": function() { return _default$69; },
+});
+var init_react_native_Libraries_Components_TextInput_RCTInputAccessoryViewNativeComponent = __esm({
+	"RCTInputAccessoryViewNativeComponent.js"() {
+	init_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent();
+		
+	
+		_default$69 = (init_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_RCTInputAccessoryViewNativeComponent)).default;
+	
+	}
+});
+//#endregion
+//#region InputAccessoryView.js
+var exports_react_native_Libraries_Components_TextInput_InputAccessoryView = {};
+var InputAccessoryView, styles$10, React$48;
+__export(exports_react_native_Libraries_Components_TextInput_InputAccessoryView, {
+	"default": function() { return InputAccessoryView; },
+});
+var init_react_native_Libraries_Components_TextInput_InputAccessoryView = __esm({
+	"InputAccessoryView.js"() {
+	init_react_native_Libraries_Components_SafeAreaView_SafeAreaView();
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Utilities_useWindowDimensions();
+	init_react_native_Libraries_Components_TextInput_RCTInputAccessoryViewNativeComponent();
+	React$48 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	InputAccessoryView = function(props) {
+		var { width:width } = useWindowDimensions();
+		if (Platform.OS === "ios") {
+			if (React$48.Children.count(props.children) === 0) {
+				return null;
+			}
+			return (/* @__PURE__ */ React$48.createElement(_default$68, { style: [props.style, styles$10.container], nativeID: props.nativeID, backgroundColor: props.backgroundColor }, /* @__PURE__ */ React$48.createElement(SafeAreaView, { style: [styles$10.safeAreaView, { width }] }, props.children)));
+		} else {
+			console.warn("<InputAccessoryView> is only supported on iOS.");
+			return null;
+		}
+	};
+	styles$10 = StyleSheet.create({ container: { position: "absolute" }, safeAreaView: { flex: 1 } });
+	
+	
+	}
+});
+//#endregion
+//#region NativeAccessibilityInfo.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo = {};
+var TurboModuleRegistry$27, _default$70;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo, {
+	"default": function() { return _default$70; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo = __esm({
+	"NativeAccessibilityInfo.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$27=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$70=get("AccessibilityInfo");
+	
+	}
+});
+//#endregion
+//#region NativeAccessibilityInfo.js
+var exports_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityInfo = {};
+var _default$71;
+__export(exports_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityInfo, {
+	"default": function() { return _default$71; },
+});
+var init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityInfo = __esm({
+	"NativeAccessibilityInfo.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo();
+		
+	
+		_default$71 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeAccessibilityInfo)).default;
+	
+	}
+});
+//#endregion
+//#region AccessibilityInfo.js
+var exports_react_native_Libraries_Components_AccessibilityInfo_AccessibilityInfo = {};
+var EventNames, AccessibilityInfo;
+__export(exports_react_native_Libraries_Components_AccessibilityInfo_AccessibilityInfo, {
+	"default": function() { return AccessibilityInfo; },
+});
+var init_react_native_Libraries_Components_AccessibilityInfo_AccessibilityInfo = __esm({
+	"AccessibilityInfo.js"() {
+	init_react_native_Libraries_EventEmitter_RCTDeviceEventEmitter();
+	init_react_native_Libraries_ReactNative_RendererProxy();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_AccessibilityInfo_legacySendAccessibilityEvent_ios();
+	init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityInfo();
+	init_react_native_Libraries_Components_AccessibilityInfo_NativeAccessibilityManager();
+		
+	
+	
+	
+	
+	
+	EventNames = Platform.OS === "android" ? new Map([["change", "touchExplorationDidChange"], ["reduceMotionChanged", "reduceMotionDidChange"], ["highTextContrastChanged", "highTextContrastDidChange"], ["screenReaderChanged", "touchExplorationDidChange"], ["accessibilityServiceChanged", "accessibilityServiceDidChange"], ["invertColorsChanged", "invertColorDidChange"], ["grayscaleChanged", "grayscaleModeDidChange"]]) : new Map([["announcementFinished", "announcementFinished"], ["boldTextChanged", "boldTextChanged"], ["change", "screenReaderChanged"], ["grayscaleChanged", "grayscaleChanged"], ["invertColorsChanged", "invertColorsChanged"], ["reduceMotionChanged", "reduceMotionChanged"], ["reduceTransparencyChanged", "reduceTransparencyChanged"], ["screenReaderChanged", "screenReaderChanged"], ["darkerSystemColorsChanged", "darkerSystemColorsChanged"]]);
+	AccessibilityInfo = { isBoldTextEnabled() {
+		if (Platform.OS === "android") {
+			return Promise.resolve(false);
+		} else {
+			return new Promise(function(resolve,reject) {
+				if (_default$9 != null) {
+					_default$9.getCurrentBoldTextState(resolve, reject);
+				} else {
+					reject(new Error("NativeAccessibilityManagerIOS is not available"));
+				}
+			});
+		}
+	}, isGrayscaleEnabled() {
+		if (Platform.OS === "android") {
+			return new Promise(function(resolve,reject) {
+				if (_default$70?.isGrayscaleEnabled != null) {
+					_default$70.isGrayscaleEnabled(resolve);
+				} else {
+					reject(new Error("NativeAccessibilityInfoAndroid.isGrayscaleEnabled is not available"));
+				}
+			});
+		} else {
+			return new Promise(function(resolve,reject) {
+				if (_default$9 != null) {
+					_default$9.getCurrentGrayscaleState(resolve, reject);
+				} else {
+					reject(new Error("AccessibilityInfo native module is not available"));
+				}
+			});
+		}
+	}, isInvertColorsEnabled() {
+		if (Platform.OS === "android") {
+			return new Promise(function(resolve,reject) {
+				if (_default$70?.isInvertColorsEnabled != null) {
+					_default$70.isInvertColorsEnabled(resolve);
+				} else {
+					reject(new Error("NativeAccessibilityInfoAndroid.isInvertColorsEnabled is not available"));
+				}
+			});
+		} else {
+			return new Promise(function(resolve,reject) {
+				if (_default$9 != null) {
+					_default$9.getCurrentInvertColorsState(resolve, reject);
+				} else {
+					reject(new Error("AccessibilityInfo native module is not available"));
+				}
+			});
+		}
+	}, isReduceMotionEnabled() {
+		return new Promise(function(resolve,reject) {
+			if (Platform.OS === "android") {
+				if (_default$70 != null) {
+					_default$70.isReduceMotionEnabled(resolve);
+				} else {
+					reject(new Error("AccessibilityInfo native module is not available"));
+				}
+			} else {
+				if (_default$9 != null) {
+					_default$9.getCurrentReduceMotionState(resolve, reject);
+				} else {
+					reject(new Error("NativeAccessibilityManagerIOS is not available"));
+				}
+			}
+		});
+	}, isHighTextContrastEnabled() {
+		return new Promise(function(resolve,reject) {
+			if (Platform.OS === "android") {
+				if (_default$70?.isHighTextContrastEnabled != null) {
+					_default$70.isHighTextContrastEnabled(resolve);
+				} else {
+					reject(new Error("NativeAccessibilityInfoAndroid.isHighTextContrastEnabled is not available"));
+				}
+			} else {
+				return Promise.resolve(false);
+			}
+		});
+	}, isDarkerSystemColorsEnabled() {
+		return new Promise(function(resolve,reject) {
+			if (Platform.OS === "android") {
+				return Promise.resolve(false);
+			} else {
+				if (_default$9?.getCurrentDarkerSystemColorsState != null) {
+					_default$9.getCurrentDarkerSystemColorsState(resolve, reject);
+				} else {
+					reject(new Error("NativeAccessibilityManagerIOS.getCurrentDarkerSystemColorsState is not available"));
+				}
+			}
+		});
+	}, prefersCrossFadeTransitions() {
+		return new Promise(function(resolve,reject) {
+			if (Platform.OS === "android") {
+				return Promise.resolve(false);
+			} else {
+				if (_default$9?.getCurrentPrefersCrossFadeTransitionsState != null) {
+					_default$9.getCurrentPrefersCrossFadeTransitionsState(resolve, reject);
+				} else {
+					reject(new Error("NativeAccessibilityManagerIOS.getCurrentPrefersCrossFadeTransitionsState is not available"));
+				}
+			}
+		});
+	}, isReduceTransparencyEnabled() {
+		if (Platform.OS === "android") {
+			return Promise.resolve(false);
+		} else {
+			return new Promise(function(resolve,reject) {
+				if (_default$9 != null) {
+					_default$9.getCurrentReduceTransparencyState(resolve, reject);
+				} else {
+					reject(new Error("NativeAccessibilityManagerIOS is not available"));
+				}
+			});
+		}
+	}, isScreenReaderEnabled() {
+		return new Promise(function(resolve,reject) {
+			if (Platform.OS === "android") {
+				if (_default$70 != null) {
+					_default$70.isTouchExplorationEnabled(resolve);
+				} else {
+					reject(new Error("NativeAccessibilityInfoAndroid is not available"));
+				}
+			} else {
+				if (_default$9 != null) {
+					_default$9.getCurrentVoiceOverState(resolve, reject);
+				} else {
+					reject(new Error("NativeAccessibilityManagerIOS is not available"));
+				}
+			}
+		});
+	}, isAccessibilityServiceEnabled() {
+		return new Promise(function(resolve,reject) {
+			if (Platform.OS === "android") {
+				if (_default$70 != null && _default$70.isAccessibilityServiceEnabled != null) {
+					_default$70.isAccessibilityServiceEnabled(resolve);
+				} else {
+					reject(new Error("NativeAccessibilityInfoAndroid.isAccessibilityServiceEnabled is not available"));
+				}
+			} else {
+				reject(new Error("isAccessibilityServiceEnabled is only available on Android"));
+			}
+		});
+	}, addEventListener(eventName,handler) {
+		var deviceEventName = EventNames.get(eventName);
+		return deviceEventName == null ? { remove() {
+		} } : RCTDeviceEventEmitter.addListener(deviceEventName, handler);
+	}, setAccessibilityFocus(reactTag) {
+		legacySendAccessibilityEvent(reactTag, "focus");
+	}, sendAccessibilityEvent(handle,eventType) {
+		if (Platform.OS === "ios" && eventType === "click") {
+			return;
+		}
+		sendAccessibilityEvent(handle, eventType);
+	}, announceForAccessibility(announcement) {
+		if (Platform.OS === "android") {
+			_default$70?.announceForAccessibility(announcement);
+		} else {
+			_default$9?.announceForAccessibility(announcement);
+		}
+	}, announceForAccessibilityWithOptions(announcement,options) {
+		if (Platform.OS === "android") {
+			_default$70?.announceForAccessibility(announcement);
+		} else {
+			if (_default$9?.announceForAccessibilityWithOptions) {
+				_default$9?.announceForAccessibilityWithOptions(announcement, options);
+			} else {
+				_default$9?.announceForAccessibility(announcement);
+			}
+		}
+	}, getRecommendedTimeoutMillis(originalTimeout) {
+		if (Platform.OS === "android") {
+			return new Promise(function(resolve,reject) {
+				if (_default$70?.getRecommendedTimeoutMillis) {
+					_default$70.getRecommendedTimeoutMillis(originalTimeout, resolve);
+				} else {
+					resolve(originalTimeout);
+				}
+			});
+		} else {
+			return Promise.resolve(originalTimeout);
+		}
+	} };
+	
+	
+	}
+});
+//#endregion
+//#region KeyboardAvoidingView.js
+var exports_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = {};
+var _a$5, KeyboardAvoidingView, React$49;
+__export(exports_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView, {
+	"default": function() { return KeyboardAvoidingView; },
+});
+var init_react_native_Libraries_Components_Keyboard_KeyboardAvoidingView = __esm({
+	"KeyboardAvoidingView.js"() {
+	init_async();
+	init_extends();
+	init_generator();
+	init_class_call_check();
+	init_call_super();
+	init_derived_constructor();
+	init_react_native_Libraries_LayoutAnimation_LayoutAnimation();
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_AccessibilityInfo_AccessibilityInfo();
+	init_react_native_Libraries_Components_View_View();
+	init_react_native_Libraries_Components_Keyboard_Keyboard();
+	React$49 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	KeyboardAvoidingView = (function(_super) {
+		function KeyboardAvoidingView(props) {
+			__classCallCheck(this, KeyboardAvoidingView);
+			var _newTarget = this.constructor,_this;
+			;
+			{
+				__assertThisUninitialized(_this),_this = __callSuper(_super, [props], _newTarget);
+				_this._frame = null;
+				_this._keyboardEvent = null;
+				_this._subscriptions = [];
+				_this._initialFrameHeight = 0;
+				_this._bottom = 0;
+				_this._onKeyboardChange = function(event) {
+					_this._keyboardEvent = event;
+					_this._updateBottomIfNecessary();
+				};
+				_this._onKeyboardHide = function(event) {
+					_this._keyboardEvent = null;
+					_this._updateBottomIfNecessary();
+				};
+				_this._onLayout = function(event) {
+					var oldFrame;
+					return __async(function() {
+						return __generator(this, function(_state) {
+							switch (_state.label) {
+								case 0:
+									event.persist();
+									oldFrame = _this._frame;
+									_this._frame = event.nativeEvent.layout;
+									if (!_this._initialFrameHeight) {
+										_this._initialFrameHeight = _this._frame.height;
+									}
+									if (!(!oldFrame || oldFrame.height !== _this._frame.height)) {
+										return [3, 2];
+									}
+									return [4, _this._updateBottomIfNecessary()];
+								case 1:
+									_state.sent();
+									return [3, 2];
+								case 2:
+									if (_this.props.onLayout) {
+										_this.props.onLayout(event);
+									}
+									return [2];
+							}
+						});
+					}).call(this);
+				};
+				_this._setBottom = function(value) {
+					var enabled = _this.props.enabled ?? true;
+					_this._bottom = value;
+					if (enabled) {
+						_this.setState({ bottom: value });
+					}
+				};
+				_this._updateBottomIfNecessary = function() {
+					var duration,easing,endCoordinates,height,enabled;
+					return __async(function() {
+						return __generator(this, function(_state) {
+							switch (_state.label) {
+								case 0:
+									if (!(_this._keyboardEvent == null)) {
+										return [3, 1];
+									}
+									_this._setBottom(0);
+									return [2];
+								case 1:
+									({ duration:duration, easing:easing, endCoordinates:endCoordinates } = _this._keyboardEvent);
+									return [4, _this._relativeKeyboardHeight(endCoordinates)];
+								case 2:
+									height = _state.sent();
+									if (!(_this._bottom === height)) {
+										return [3, 3];
+									}
+									return [2];
+								case 3:
+									_this._setBottom(height);
+									enabled = _this.props.enabled ?? true;
+									if (enabled && duration && easing) {
+										LayoutAnimation.configureNext({ duration: duration > 10 ? duration : 10, update: { duration: duration > 10 ? duration : 10, type: LayoutAnimation.Types[easing] || "keyboard" } });
+									}
+									return [2];
+							}
+						});
+					}).call(this);
+				};
+			}
+			__assertThisInitialized(_this).state = { bottom: 0 };
+			__assertThisInitialized(_this).viewRef = require_react_index().createRef();
+			return __assertThisInitialized(_this);
+		}
+		__extends(KeyboardAvoidingView, _super);
+		Object.defineProperty(KeyboardAvoidingView.prototype, "_relativeKeyboardHeight", { configurable: true, writable: true, value: function(keyboardFrame) {
+			var frame,keyboardY,_a;
+			return __async(function() {
+				return __generator(this, function(_state) {
+					switch (_state.label) {
+						case 0:
+							frame = this._frame;
+							if (!(!frame || !keyboardFrame)) {
+								return [3, 1];
+							}
+							return [2, 0];
+						case 1:
+							return [4, AccessibilityInfo.prefersCrossFadeTransitions()];
+						case 2:
+							_a = _state.sent();
+							if (!(Platform.OS === "ios" && keyboardFrame.screenY === 0 && (_a))) {
+								return [3, 3];
+							}
+							return [2, 0];
+						case 3:
+							keyboardY = keyboardFrame.screenY - (this.props.keyboardVerticalOffset ?? 0);
+							if (!(this.props.behavior === "height")) {
+								return [3, 4];
+							}
+							return [2, Math.max(this.state.bottom + frame.y + frame.height - keyboardY, 0)];
+						case 4:
+							return [2, Math.max(frame.y + frame.height - keyboardY, 0)];
+					}
+				});
+			}).call(this);
+		} });
+		Object.defineProperty(KeyboardAvoidingView.prototype, "componentDidUpdate", { configurable: true, writable: true, value: function(_,prevState) {
+			var enabled = this.props.enabled ?? true;
+			if (enabled && this._bottom !== prevState.bottom) {
+				this.setState({ bottom: this._bottom });
+			}
+		} });
+		Object.defineProperty(KeyboardAvoidingView.prototype, "componentDidMount", { configurable: true, writable: true, value: function() {
+			if (!Keyboard.isVisible()) {
+				this._keyboardEvent = null;
+				this._setBottom(0);
+			}
+			if (Platform.OS === "ios") {
+				this._subscriptions = [Keyboard.addListener("keyboardWillHide", this._onKeyboardHide), Keyboard.addListener("keyboardWillShow", this._onKeyboardChange)];
+			} else {
+				this._subscriptions = [Keyboard.addListener("keyboardDidHide", this._onKeyboardChange), Keyboard.addListener("keyboardDidShow", this._onKeyboardChange)];
+			}
+		} });
+		Object.defineProperty(KeyboardAvoidingView.prototype, "componentWillUnmount", { configurable: true, writable: true, value: function() {
+			this._subscriptions.forEach(function(subscription) {
+				subscription.remove();
+			});
+		} });
+		Object.defineProperty(KeyboardAvoidingView.prototype, "render", { configurable: true, writable: true, value: function() {
+			var { behavior:behavior, children:children, contentContainerStyle:contentContainerStyle, enabled:enabled=true, keyboardVerticalOffset:keyboardVerticalOffset=0, style:style, onLayout:onLayout, ...props } = this.props,bottomHeight = enabled === true ? this.state.bottom : 0;
+			switch (behavior) {
+				case "height":
+					var heightStyle = void 0;
+					if (this._frame != null && this.state.bottom > 0) {
+						heightStyle = { height: this._initialFrameHeight - bottomHeight, flex: 0 };
+					}
+					return (/* @__PURE__ */ React$49.createElement(View$1, { ref: this.viewRef, style: StyleSheet.compose(style, heightStyle), onLayout: this._onLayout, ...props }, children));
+				case "position":
+					return (/* @__PURE__ */ React$49.createElement(View$1, { ref: this.viewRef, style: style, onLayout: this._onLayout, ...props }, /* @__PURE__ */ React$49.createElement(View$1, { style: StyleSheet.compose(contentContainerStyle, { bottom: bottomHeight }) }, children)));
+				case "padding":
+					return (/* @__PURE__ */ React$49.createElement(View$1, { ref: this.viewRef, style: StyleSheet.compose(style, { paddingBottom: bottomHeight }), onLayout: this._onLayout, ...props }, children));
+				default:
+					return (/* @__PURE__ */ React$49.createElement(View$1, { ref: this.viewRef, onLayout: this._onLayout, style: style, ...props }, children));
+			}
+		} });
+		return KeyboardAvoidingView;
+	})(React$49.Component);
+	
+	
+	
+	
+	
+	
+	
+	
+	;
+	
+	
+	}
+});
+//#endregion
+//#region LayoutConformanceNativeComponent.js
+var exports_react_native_Libraries_Components_LayoutConformance_LayoutConformanceNativeComponent = {};
+var NativeComponentRegistry$13, LayoutConformanceNativeComponent;
+__export(exports_react_native_Libraries_Components_LayoutConformance_LayoutConformanceNativeComponent, {
+	"default": function() { return LayoutConformanceNativeComponent; },
+});
+var init_react_native_Libraries_Components_LayoutConformance_LayoutConformanceNativeComponent = __esm({
+	"LayoutConformanceNativeComponent.js"() {
+	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
+		NativeComponentRegistry$13=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
+	LayoutConformanceNativeComponent = get$2("LayoutConformance", function() {
+		return ({ uiViewClassName: "LayoutConformance", validAttributes: { mode: true } });
+	});
+	
+	
+	}
+});
+//#endregion
+//#region LayoutConformance.js
+var exports_react_native_Libraries_Components_LayoutConformance_LayoutConformance = {};
+var isFabricUIManagerInstalled, LayoutConformance, UnimplementedLayoutConformance, _default$72, styles$11, React$50;
+__export(exports_react_native_Libraries_Components_LayoutConformance_LayoutConformance, {
+	"default": function() { return _default$72; },
+});
+var init_react_native_Libraries_Components_LayoutConformance_LayoutConformance = __esm({
+	"LayoutConformance.js"() {
+	LayoutConformance = function(props) {
+		return (/* @__PURE__ */ React$50.createElement(LayoutConformanceNativeComponent, { ...props, style: styles$11.container }));
+	};
+	UnimplementedLayoutConformance = function(props) {
+		;
+		return props.children;
+	};
+		init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Components_LayoutConformance_LayoutConformanceNativeComponent();
+	React$50 = __toESM(require_react_index());
+		
+	
+	
+	isFabricUIManagerInstalled = global?.nativeFabricUIManager != null;
+	_default$72=(isFabricUIManagerInstalled ? LayoutConformance : UnimplementedLayoutConformance);
+	styles$11 = StyleSheet.create({ container: { display: "contents" } });
+	
+	}
+});
+//#endregion
+//#region NativeModalManager.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager = {};
+var TurboModuleRegistry$28, _default$73;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager, {
+	"default": function() { return _default$73; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager = __esm({
+	"NativeModalManager.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$28=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$73=get("ModalManager");
+	
+	}
+});
+//#endregion
+//#region NativeModalManager.js
+var exports_react_native_Libraries_Modal_NativeModalManager = {};
+var _default$74;
+__export(exports_react_native_Libraries_Modal_NativeModalManager, {
+	"default": function() { return _default$74; },
+});
+var init_react_native_Libraries_Modal_NativeModalManager = __esm({
+	"NativeModalManager.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager();
+		
+	
+	_default$74=_default$73;
+		_default$74 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeModalManager)).default;
+	
+	}
+});
+//#endregion
+//#region RCTModalHostViewNativeComponent.js
+var exports_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent = {};
+var NativeComponentRegistry$14, nativeComponentName$6, __INTERNAL_VIEW_CONFIG$12, _default$75;
+__export(exports_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent, {
+	"default": function() { return _default$75; },
+});
+var init_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent = __esm({
+	"RCTModalHostViewNativeComponent.js"() {
+	NativeComponentRegistry$14 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	nativeComponentName$6 = "RCTModalHostView";
+	__INTERNAL_VIEW_CONFIG$12 = { uiViewClassName: "RCTModalHostView", validAttributes: { animationType: true, presentationStyle: true, transparent: true, statusBarTranslucent: true, navigationBarTranslucent: true, hardwareAccelerated: true, onRequestClose: true, onShow: true, onDismiss: true, visible: true, animated: true, allowSwipeDismissal: true, supportedOrientations: true, onOrientationChange: true, identifier: true } };
+	_default$75=NativeComponentRegistry$14.get(nativeComponentName$6, function() {
+		return __INTERNAL_VIEW_CONFIG$12;
+	});
+	
+	}
+});
+//#endregion
+//#region RCTModalHostViewNativeComponent.js
+var exports_react_native_Libraries_Modal_RCTModalHostViewNativeComponent = {};
+var _default$76;
+__export(exports_react_native_Libraries_Modal_RCTModalHostViewNativeComponent, {
+	"default": function() { return _default$76; },
+});
+var init_react_native_Libraries_Modal_RCTModalHostViewNativeComponent = __esm({
+	"RCTModalHostViewNativeComponent.js"() {
+	init_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent();
+		init_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent();
+		
+	
+	_default$76=_default$75;
+		_default$76 = (init_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_RCTModalHostViewNativeComponent)).default;
 	
 	}
 });
@@ -36237,6 +37425,250 @@ var init_react_native_Libraries_ReactNative_I18nManager = __esm({
 		}
 		_default$77.swapLeftAndRightInRTL(flipStyles);
 	}, isRTL: i18nConstants.isRTL, doLeftAndRightSwapInRTL: i18nConstants.doLeftAndRightSwapInRTL };
+	
+	}
+});
+//#endregion
+//#region Modal.js
+var exports_react_native_Libraries_Modal_Modal = {};
+var ScrollView$2, View$13, AppContainer$3, I18nManager, StyleSheet$14, Platform$40, VirtualizedListContextResetter$1, ModalEventEmitter, uniqueModalIdentifier, confirmProps, Modal, side, styles$12, Wrapper, React$51;
+__export(exports_react_native_Libraries_Modal_Modal, {
+	"default": function() { return Wrapper; },
+});
+var init_react_native_Libraries_Modal_Modal = __esm({
+	"Modal.js"() {
+	confirmProps = function(props) {
+		;
+	};
+	Wrapper = function({ ref:ref, ...props }) {
+		return /* @__PURE__ */ React$51.createElement(Modal, { ...props, modalRef: ref });
+	};
+		init_extends();
+	init_class_call_check();
+	init_call_super();
+	init_derived_constructor();
+	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
+	init_react_native_Libraries_Modal_NativeModalManager();
+	init_react_native_Libraries_Modal_RCTModalHostViewNativeComponent();
+	init__react_native_virtualized_lists_index();
+	React$51 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	
+	
+	
+	var ScrollView$2 = (init_react_native_Libraries_Components_ScrollView_ScrollView(), __toCommonJS(exports_react_native_Libraries_Components_ScrollView_ScrollView)).default,View$13 = (init_react_native_Libraries_Components_View_View(), __toCommonJS(exports_react_native_Libraries_Components_View_View)).default,AppContainer$3 = (init_react_native_Libraries_ReactNative_AppContainer(), __toCommonJS(exports_react_native_Libraries_ReactNative_AppContainer)).default,I18nManager = (init_react_native_Libraries_ReactNative_I18nManager(), __toCommonJS(exports_react_native_Libraries_ReactNative_I18nManager)).default,{ RootTagContext:RootTagContext$2 } = (init_react_native_Libraries_ReactNative_RootTag(), __toCommonJS(exports_react_native_Libraries_ReactNative_RootTag)),StyleSheet$14 = (init_react_native_Libraries_StyleSheet_StyleSheet(), __toCommonJS(exports_react_native_Libraries_StyleSheet_StyleSheet)).default,Platform$40 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default,VirtualizedListContextResetter$1 = _default$51.VirtualizedListContextResetter,ModalEventEmitter = Platform$40.OS === "ios" && _default$73 != null ? new NativeEventEmitter(Platform$40.OS !== "ios" ? null : _default$73) : null,uniqueModalIdentifier = 0;
+	;
+	;
+	;
+	;
+	;
+	;
+	;
+	;
+	;
+	Modal = (function(_super) {
+		function Modal(props) {
+			__classCallCheck(this, Modal);
+			var _newTarget = this.constructor,_this;
+			;
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [props], _newTarget);
+			;
+			__assertThisInitialized(_this)._identifier = uniqueModalIdentifier++;
+			__assertThisInitialized(_this).state = { isRendered: props.visible === true };
+			return __assertThisInitialized(_this);
+		}
+		__extends(Modal, _super);
+		Object.defineProperty(Modal.prototype, "componentDidMount", { configurable: true, writable: true, value: function() {
+			var _this = this;
+			if (ModalEventEmitter) {
+				this._eventSubscription = ModalEventEmitter.addListener("modalDismissed", function(event) {
+					_this.setState({ isRendered: false }, function() {
+						if (event.modalID === _this._identifier && _this.props.onDismiss) {
+							_this.props.onDismiss();
+						}
+					});
+				});
+			}
+		} });
+		Object.defineProperty(Modal.prototype, "componentWillUnmount", { configurable: true, writable: true, value: function() {
+			if (Platform$40.OS === "ios") {
+				this.setState({ isRendered: false });
+			}
+			if (this._eventSubscription) {
+				this._eventSubscription.remove();
+			}
+		} });
+		Object.defineProperty(Modal.prototype, "componentDidUpdate", { configurable: true, writable: true, value: function(prevProps) {
+			if (prevProps.visible === false && this.props.visible === true) {
+				this.setState({ isRendered: true });
+			}
+			;
+		} });
+		Object.defineProperty(Modal.prototype, "_shouldShowModal", { configurable: true, writable: true, value: function() {
+			if (Platform$40.OS === "ios") {
+				return this.props.visible === true || this.state.isRendered === true;
+			}
+			return this.props.visible === true;
+		} });
+		Object.defineProperty(Modal.prototype, "render", { configurable: true, writable: true, value: function() {
+			var _this = this;
+			if (!this._shouldShowModal()) {
+				return null;
+			}
+			var containerStyles = { backgroundColor: this.props.transparent === true ? "transparent" : (this.props.backdropColor ?? "white") },animationType = this.props.animationType || "none",presentationStyle = this.props.presentationStyle;
+			;
+			;
+			if (!presentationStyle) {
+				presentationStyle = "fullScreen";
+				if (this.props.transparent === true) {
+					presentationStyle = "overFullScreen";
+				}
+			}
+			var innerChildren = (this.props.children),onDismiss = function() {
+				if (Platform$40.OS === "ios") {
+					_this.setState({ isRendered: false }, function() {
+						if (_this.props.onDismiss) {
+							_this.props.onDismiss();
+						}
+					});
+				}
+			};
+			;
+			return (/* @__PURE__ */ React$51.createElement(_default$75, { animationType: animationType, presentationStyle: presentationStyle, transparent: this.props.transparent, hardwareAccelerated: this.props.hardwareAccelerated, onRequestClose: this.props.onRequestClose, onShow: this.props.onShow, onDismiss: onDismiss, ref: this.props.modalRef, visible: this.props.visible, statusBarTranslucent: this.props.statusBarTranslucent, navigationBarTranslucent: this.props.navigationBarTranslucent, identifier: this._identifier, style: styles$12.modal, onStartShouldSetResponder: this._shouldSetResponder, supportedOrientations: this.props.supportedOrientations, onOrientationChange: this.props.onOrientationChange, allowSwipeDismissal: this.props.allowSwipeDismissal, testID: this.props.testID }, /* @__PURE__ */ React$51.createElement(VirtualizedListContextResetter$1, null, /* @__PURE__ */ React$51.createElement(ScrollView$2.Context.Provider, { value: null }, /* @__PURE__ */ React$51.createElement(View$13, { style: [styles$12.container, containerStyles], collapsable: false }, innerChildren)))));
+		} });
+		Object.defineProperty(Modal.prototype, "_shouldSetResponder", { configurable: true, writable: true, value: function() {
+			return true;
+		} });
+		Object.defineProperty(Modal, "defaultProps", { configurable: true, enumerable: true, writable: true, value: { visible: true, hardwareAccelerated: false } });
+		Object.defineProperty(Modal, "contextType", { configurable: true, enumerable: true, writable: true, value: RootTagContext$2 });
+		return Modal;
+	})(React$51.Component);
+	side = I18nManager.getConstants().isRTL ? "right" : "left";
+	styles$12 = StyleSheet$14.create({ modal: { position: "absolute" }, container: { [side]: 0, top: 0, flex: 1 } });
+	;
+	;
+	Wrapper.displayName = "Modal";
+	Wrapper.Context = VirtualizedListContextResetter$1;
+	
+	
+	}
+});
+//#endregion
+//#region useAndroidRippleForView.js
+var exports_react_native_Libraries_Components_Pressable_useAndroidRippleForView = {};
+var useAndroidRippleForView, invariant$41, React$52;
+__export(exports_react_native_Libraries_Components_Pressable_useAndroidRippleForView, {
+	"default": function() { return useAndroidRippleForView; },
+});
+var init_react_native_Libraries_Components_Pressable_useAndroidRippleForView = __esm({
+	"useAndroidRippleForView.js"() {
+	useAndroidRippleForView = function(rippleConfig,viewRef) {
+		var { color:color, borderless:borderless, radius:radius, foreground:foreground } = rippleConfig ?? {};
+		return require_react_index().useMemo(function() {
+			if (Platform.OS === "android" && (color != null || borderless != null || radius != null)) {
+				var processedColor = processColor(color);
+				invariant$41(processedColor == null || typeof processedColor === "number", "Unexpected color given for Ripple color");
+				var nativeRippleValue = { type: "RippleAndroid", color: processedColor, borderless: borderless === true, rippleRadius: radius };
+				return { viewProps: foreground === true ? { nativeForegroundAndroid: nativeRippleValue } : { nativeBackgroundAndroid: nativeRippleValue }, onPressIn(event) {
+					var view = viewRef.current;
+					if (view != null) {
+						Commands$2.hotspotUpdate(view, event.nativeEvent.locationX ?? 0, event.nativeEvent.locationY ?? 0);
+						Commands$2.setPressed(view, true);
+					}
+				}, onPressMove(event) {
+					var view = viewRef.current;
+					if (view != null) {
+						Commands$2.hotspotUpdate(view, event.nativeEvent.locationX ?? 0, event.nativeEvent.locationY ?? 0);
+					}
+				}, onPressOut(event) {
+					var view = viewRef.current;
+					if (view != null) {
+						Commands$2.setPressed(view, false);
+					}
+				} };
+			}
+			return null;
+		}, [borderless, color, foreground, radius, viewRef]);
+	};
+		init_react_native_Libraries_StyleSheet_processColor();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_View_View();
+	init_react_native_Libraries_Components_View_ViewNativeComponent();
+	invariant$41 = require_invariant_browser();
+	React$52 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	
+	
+	}
+});
+//#endregion
+//#region Pressable.js
+var exports_react_native_Libraries_Components_Pressable_Pressable = {};
+var Pressable, usePressState, MemoedPressable, React$53;
+__export(exports_react_native_Libraries_Components_Pressable_Pressable, {
+	"default": function() { return MemoedPressable; },
+});
+var init_react_native_Libraries_Components_Pressable_Pressable = __esm({
+	"Pressable.js"() {
+	Pressable = function({ ref:forwardedRef, ...props }) {
+		var { accessible:accessible, accessibilityState:accessibilityState, 'aria-live':ariaLive, android_disableSound:android_disableSound, android_ripple:android_ripple, 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-label':ariaLabel, 'aria-selected':ariaSelected, blockNativeResponder:blockNativeResponder, cancelable:cancelable, children:children, delayHoverIn:delayHoverIn, delayHoverOut:delayHoverOut, delayLongPress:delayLongPress, disabled:disabled, focusable:focusable, hitSlop:hitSlop, onBlur:onBlur, onFocus:onFocus, onHoverIn:onHoverIn, onHoverOut:onHoverOut, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressMove:onPressMove, onPressOut:onPressOut, pressRetentionOffset:pressRetentionOffset, style:style, testOnly_pressed:testOnly_pressed, unstable_pressDelay:unstable_pressDelay, ...restProps } = props,viewRef = require_react_index().useRef(null),mergedRef = useMergeRefs(forwardedRef, viewRef),android_rippleConfig = useAndroidRippleForView(android_ripple, viewRef),[pressed, setPressed] = usePressState(testOnly_pressed === true),shouldUpdatePressed = typeof children === "function" || typeof style === "function",_accessibilityState = { busy: ariaBusy ?? accessibilityState?.busy, checked: ariaChecked ?? accessibilityState?.checked, disabled: ariaDisabled ?? accessibilityState?.disabled, expanded: ariaExpanded ?? accessibilityState?.expanded, selected: ariaSelected ?? accessibilityState?.selected };
+		_accessibilityState = disabled != null ? { ..._accessibilityState, disabled } : _accessibilityState;
+		var accessibilityValue = { max: props["aria-valuemax"] ?? props.accessibilityValue?.max, min: props["aria-valuemin"] ?? props.accessibilityValue?.min, now: props["aria-valuenow"] ?? props.accessibilityValue?.now, text: props["aria-valuetext"] ?? props.accessibilityValue?.text },accessibilityLiveRegion = ariaLive === "off" ? "none" : (ariaLive ?? props.accessibilityLiveRegion),accessibilityLabel = ariaLabel ?? props.accessibilityLabel,restPropsWithDefaults = { ...restProps, ...android_rippleConfig?.viewProps, accessible: accessible !== false, accessibilityViewIsModal: restProps["aria-modal"] ?? restProps.accessibilityViewIsModal, accessibilityLiveRegion, accessibilityLabel, accessibilityState: _accessibilityState, focusable: focusable !== false, accessibilityValue, hitSlop },config = require_react_index().useMemo(function() {
+			return ({ cancelable, disabled, hitSlop, pressRectOffset: pressRetentionOffset, android_disableSound, delayHoverIn, delayHoverOut, delayLongPress, delayPressIn: unstable_pressDelay, onBlur, onFocus, onHoverIn, onHoverOut, onLongPress, onPress, onPressIn(event) {
+				if (android_rippleConfig != null) {
+					android_rippleConfig.onPressIn(event);
+				}
+				shouldUpdatePressed && setPressed(true);
+				if (onPressIn != null) {
+					onPressIn(event);
+				}
+			}, onPressMove(event) {
+				android_rippleConfig?.onPressMove(event);
+				if (onPressMove != null) {
+					onPressMove(event);
+				}
+			}, onPressOut(event) {
+				if (android_rippleConfig != null) {
+					android_rippleConfig.onPressOut(event);
+				}
+				shouldUpdatePressed && setPressed(false);
+				if (onPressOut != null) {
+					onPressOut(event);
+				}
+			}, blockNativeResponder });
+		}, [android_disableSound, android_rippleConfig, blockNativeResponder, cancelable, delayHoverIn, delayHoverOut, delayLongPress, disabled, hitSlop, onBlur, onFocus, onHoverIn, onHoverOut, onLongPress, onPress, onPressIn, onPressMove, onPressOut, pressRetentionOffset, setPressed, shouldUpdatePressed, unstable_pressDelay]),eventHandlers = usePressability(config);
+		return (/* @__PURE__ */ React$53.createElement(View$1, { ...restPropsWithDefaults, ...eventHandlers, ref: mergedRef, style: typeof style === "function" ? style({ pressed }) : style, collapsable: false }, typeof children === "function" ? children({ pressed }) : children, null));
+	};
+	usePressState = function(forcePressed) {
+		var [pressed, setPressed] = require_react_index().useState(false);
+		return [pressed || forcePressed, setPressed];
+	};
+		init_react_native_Libraries_Pressability_PressabilityDebug();
+	init_react_native_Libraries_Pressability_usePressability();
+	init_react_native_Libraries_Utilities_useMergeRefs();
+	init_react_native_Libraries_Components_View_View();
+	init_react_native_Libraries_Components_Pressable_useAndroidRippleForView();
+	React$53 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	
+	MemoedPressable = require_react_index().memo(Pressable);
+	MemoedPressable.displayName = "Pressable";
+	
 	
 	}
 });
@@ -36519,6 +37951,715 @@ var init_react_native_Libraries_Components_StatusBar_StatusBar = __esm({
 	}
 });
 //#endregion
+//#region AndroidSwitchNativeComponent.js
+var exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent = {};
+var NativeComponentRegistry$15, nativeComponentName$7, __INTERNAL_VIEW_CONFIG$13, Commands$9, _default$82;
+__export(exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent, {
+	Commands: function() { return Commands$9; },
+	"default": function() { return _default$82; },
+});
+var init_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent = __esm({
+	"AndroidSwitchNativeComponent.js"() {
+	var NativeComponentRegistry$15 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)),{ dispatchCommand:dispatchCommand$4 } = (init_react_native_Libraries_ReactNative_RendererProxy(), __toCommonJS(exports_react_native_Libraries_ReactNative_RendererProxy)),nativeComponentName$7 = "AndroidSwitch",__INTERNAL_VIEW_CONFIG$13 = { uiViewClassName: "AndroidSwitch", validAttributes: { disabled: true, enabled: true, thumbColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, trackColorForFalse: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, trackColorForTrue: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, value: true, on: true, thumbTintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, trackTintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, onChange: true }, bubblingEventTypes: { topChange: { phasedRegistrationNames: { bubbled: "onChange", captured: "onChangeCapture" } } } };
+	Commands$9 = { setNativeValue(ref,value) {
+		dispatchCommand$4(ref, "setNativeValue", [value]);
+	} };
+	_default$82=NativeComponentRegistry$15.get(nativeComponentName$7, function() {
+		return __INTERNAL_VIEW_CONFIG$13;
+	});
+	
+	}
+});
+//#endregion
+//#region AndroidSwitchNativeComponent.js
+var exports_react_native_Libraries_Components_Switch_AndroidSwitchNativeComponent = {};
+var _default$83;
+__export(exports_react_native_Libraries_Components_Switch_AndroidSwitchNativeComponent, {
+	"default": function() { return _default$83; },
+	Commands: function() { return exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent.Commands; },
+});
+var init_react_native_Libraries_Components_Switch_AndroidSwitchNativeComponent = __esm({
+	"AndroidSwitchNativeComponent.js"() {
+	init_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent();
+		
+	
+		_default$83 = (init_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_AndroidSwitchNativeComponent)).default;
+	
+	}
+});
+//#endregion
+//#region SwitchNativeComponent.js
+var exports_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent = {};
+var NativeComponentRegistry$16, nativeComponentName$8, __INTERNAL_VIEW_CONFIG$14, Commands$10, _default$84;
+__export(exports_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent, {
+	Commands: function() { return Commands$10; },
+	"default": function() { return _default$84; },
+});
+var init_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent = __esm({
+	"SwitchNativeComponent.js"() {
+	var NativeComponentRegistry$16 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)),{ dispatchCommand:dispatchCommand$5 } = (init_react_native_Libraries_ReactNative_RendererProxy(), __toCommonJS(exports_react_native_Libraries_ReactNative_RendererProxy)),nativeComponentName$8 = "RCTSwitch",__INTERNAL_VIEW_CONFIG$14 = { uiViewClassName: "RCTSwitch", validAttributes: { disabled: true, value: true, tintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, onTintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, thumbTintColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, thumbColor: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, trackColorForFalse: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, trackColorForTrue: { process: (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default }, onChange: true } };
+	Commands$10 = { setValue(ref,value) {
+		dispatchCommand$5(ref, "setValue", [value]);
+	} };
+	_default$84=NativeComponentRegistry$16.get(nativeComponentName$8, function() {
+		return __INTERNAL_VIEW_CONFIG$14;
+	});
+	
+	}
+});
+//#endregion
+//#region SwitchNativeComponent.js
+var exports_react_native_Libraries_Components_Switch_SwitchNativeComponent = {};
+var _default$85;
+__export(exports_react_native_Libraries_Components_Switch_SwitchNativeComponent, {
+	"default": function() { return _default$85; },
+	Commands: function() { return exports_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent.Commands; },
+});
+var init_react_native_Libraries_Components_Switch_SwitchNativeComponent = __esm({
+	"SwitchNativeComponent.js"() {
+	init_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent();
+		
+	
+		_default$85 = (init_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_components_SwitchNativeComponent)).default;
+	
+	}
+});
+//#endregion
+//#region Switch.js
+var exports_react_native_Libraries_Components_Switch_Switch = {};
+var returnsFalse, returnsTrue, Switch, React$55;
+__export(exports_react_native_Libraries_Components_Switch_Switch, {
+	"default": function() { return Switch; },
+});
+var init_react_native_Libraries_Components_Switch_Switch = __esm({
+	"Switch.js"() {
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Utilities_useMergeRefs();
+	init_react_native_Libraries_Components_Switch_AndroidSwitchNativeComponent();
+	init_react_native_Libraries_Components_Switch_SwitchNativeComponent();
+	React$55 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	
+	returnsFalse = function() {
+		return false;
+	};
+	returnsTrue = function() {
+		return true;
+	};
+	Switch = function({ ref:forwardedRef, ...props }) {
+		var { disabled:disabled, ios_backgroundColor:ios_backgroundColor, onChange:onChange, onValueChange:onValueChange, style:style, thumbColor:thumbColor, trackColor:trackColor, value:value, ...restProps } = props,trackColorForFalse = trackColor?.false,trackColorForTrue = trackColor?.true,nativeSwitchRef = require_react_index().useRef(null),ref = useMergeRefs(nativeSwitchRef, forwardedRef),[native, setNative] = require_react_index().useState({ value: null }),handleChange = function(event) {
+			onChange?.(event);
+			onValueChange?.(event.nativeEvent.value);
+			setNative({ value: event.nativeEvent.value });
+		};
+		require_react_index().useLayoutEffect(function() {
+			var jsValue = value === true,shouldUpdateNativeSwitch = native.value != null && native.value !== jsValue;
+			if (shouldUpdateNativeSwitch && nativeSwitchRef.current?.setNativeProps != null) {
+				if (Platform.OS === "android") {
+					Commands$9.setNativeValue(nativeSwitchRef.current, jsValue);
+				} else {
+					Commands$10.setValue(nativeSwitchRef.current, jsValue);
+				}
+			}
+		}, [value, native]);
+		if (Platform.OS === "android") {
+			var { onTintColor:onTintColor, tintColor:tintColor, ...androidProps } = restProps,{ accessibilityState:accessibilityState } = androidProps,_disabled = disabled != null ? disabled : accessibilityState?.disabled,_accessibilityState = _disabled !== accessibilityState?.disabled ? { ...accessibilityState, disabled: _disabled } : accessibilityState,platformProps = { accessibilityState: _accessibilityState, enabled: _disabled !== true, on: value === true, style, thumbTintColor: thumbColor, trackColorForFalse: trackColorForFalse, trackColorForTrue: trackColorForTrue, trackTintColor: value === true ? trackColorForTrue : trackColorForFalse };
+			return (/* @__PURE__ */ React$55.createElement(_default$82, { ...androidProps, ...platformProps, accessibilityRole: props.accessibilityRole ?? "switch", onChange: handleChange, onResponderTerminationRequest: returnsFalse, onStartShouldSetResponder: returnsTrue, ref: ref }));
+		} else {
+			var platformProps = { disabled, onTintColor: trackColorForTrue, style: StyleSheet.compose({ alignSelf: "flex-start" }, StyleSheet.compose(style, ios_backgroundColor == null ? null : { backgroundColor: ios_backgroundColor, borderRadius: 16 })), thumbTintColor: thumbColor, tintColor: trackColorForFalse, value: value === true };
+			return (/* @__PURE__ */ React$55.createElement(_default$84, { ...restProps, ...platformProps, accessibilityRole: props.accessibilityRole ?? "switch", onChange: handleChange, onResponderTerminationRequest: returnsFalse, onStartShouldSetResponder: returnsTrue, ref: ref }));
+		}
+	};
+	
+	
+	}
+});
+//#endregion
+//#region RCTMultilineTextInputNativeComponent.js
+var exports_react_native_Libraries_Components_TextInput_RCTMultilineTextInputNativeComponent = {};
+var NativeComponentRegistry$17, Commands$11, __INTERNAL_VIEW_CONFIG$15, MultilineTextInputNativeComponent;
+__export(exports_react_native_Libraries_Components_TextInput_RCTMultilineTextInputNativeComponent, {
+	Commands: function() { return Commands$11; },
+	__INTERNAL_VIEW_CONFIG: function() { return __INTERNAL_VIEW_CONFIG$15; },
+	"default": function() { return MultilineTextInputNativeComponent; },
+});
+var init_react_native_Libraries_Components_TextInput_RCTMultilineTextInputNativeComponent = __esm({
+	"RCTMultilineTextInputNativeComponent.js"() {
+	init_react_native_Libraries_NativeComponent_NativeComponentRegistry();
+	init_react_native_Libraries_Utilities_codegenNativeCommands();
+	init_react_native_Libraries_Components_TextInput_RCTTextInputViewConfig();
+		NativeComponentRegistry$17=__toESM((init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry)));
+	
+	
+	Commands$11 = codegenNativeCommands$2({ supportedCommands: ["focus", "blur", "setTextAndSelection"] });
+	__INTERNAL_VIEW_CONFIG$15 = { uiViewClassName: "RCTMultilineTextInputView", ...RCTTextInputViewConfig, validAttributes: { ...RCTTextInputViewConfig.validAttributes, dataDetectorTypes: true } };
+	MultilineTextInputNativeComponent = get$2("RCTMultilineTextInputView", function() {
+		return __INTERNAL_VIEW_CONFIG$15;
+	});
+	
+	
+	}
+});
+//#endregion
+//#region TextInput.js
+var exports_react_native_Libraries_Components_TextInput_TextInput = {};
+var AndroidTextInput, AndroidTextInputCommands$1, RCTSinglelineTextInputView, RCTSinglelineTextInputNativeCommands, RCTMultilineTextInputView, RCTMultilineTextInputNativeCommands, emptyFunctionThatReturnsTrue, useTextInputStateSynchronization, InternalTextInput, enterKeyHintToReturnTypeMap, inputModeToKeyboardTypeMap, autoCompleteWebToAutoCompleteAndroidMap, autoCompleteWebToTextContentTypeMap, TextInput, styles$13, verticalAlignToTextAlignVerticalMap$1, invariant$43, nullthrows$12, React$56;
+__export(exports_react_native_Libraries_Components_TextInput_TextInput, {
+	"default": function() { return TextInput; },
+});
+var init_react_native_Libraries_Components_TextInput_TextInput = __esm({
+	"TextInput.js"() {
+	useTextInputStateSynchronization = function({ props:props, mostRecentEventCount:mostRecentEventCount, selection:selection, inputRef:inputRef, text:text, viewCommands:viewCommands }) {
+		var [lastNativeText, setLastNativeText] = require_react_index().useState(props.value),[lastNativeSelectionState, setLastNativeSelection] = require_react_index().useState({ selection: { start: -1, end: -1 }, mostRecentEventCount: mostRecentEventCount }),lastNativeSelection = lastNativeSelectionState.selection;
+		require_react_index().useLayoutEffect(function() {
+			var nativeUpdate = {};
+			if (lastNativeText !== props.value && typeof props.value === "string") {
+				nativeUpdate.text = props.value;
+				setLastNativeText(props.value);
+			}
+			if (selection && lastNativeSelection && (lastNativeSelection.start !== selection.start || lastNativeSelection.end !== selection.end)) {
+				nativeUpdate.selection = selection;
+				setLastNativeSelection({ selection, mostRecentEventCount });
+			}
+			if (Object.keys(nativeUpdate).length === 0) {
+				return;
+			}
+			if (inputRef.current != null) {
+				viewCommands.setTextAndSelection(inputRef.current, mostRecentEventCount, text, selection?.start ?? -1, selection?.end ?? -1);
+			}
+		}, [mostRecentEventCount, inputRef, props.value, props.defaultValue, lastNativeText, selection, lastNativeSelection, text, viewCommands]);
+		return { setLastNativeText, setLastNativeSelection };
+	};
+	InternalTextInput = function(props) {
+		var { 'aria-busy':ariaBusy, 'aria-checked':ariaChecked, 'aria-disabled':ariaDisabled, 'aria-expanded':ariaExpanded, 'aria-selected':ariaSelected, accessibilityState:accessibilityState, id:id, tabIndex:tabIndex, selection:propsSelection, selectionColor:selectionColor, selectionHandleColor:selectionHandleColor, cursorColor:cursorColor, ...otherProps } = props,inputRef = require_react_index().useRef(null),selection = propsSelection == null ? null : { start: propsSelection.start, end: propsSelection.end ?? propsSelection.start },text = typeof props.value === "string" ? props.value : typeof props.defaultValue === "string" ? props.defaultValue : undefined,viewCommands = AndroidTextInputCommands$1 || (props.multiline === true ? RCTMultilineTextInputNativeCommands : RCTSinglelineTextInputNativeCommands),[mostRecentEventCount, setMostRecentEventCount] = require_react_index().useState(0),{ setLastNativeText:setLastNativeText, setLastNativeSelection:setLastNativeSelection } = useTextInputStateSynchronization({ props, inputRef, mostRecentEventCount, selection, text, viewCommands });
+		require_react_index().useLayoutEffect(function() {
+			var inputRefValue = inputRef.current;
+			if (inputRefValue != null) {
+				TextInputState.registerInput(inputRefValue);
+				return function() {
+					TextInputState.unregisterInput(inputRefValue);
+					if (TextInputState.currentlyFocusedInput() === inputRefValue) {
+						nullthrows$12(inputRefValue).blur();
+					}
+				};
+			}
+		}, []);
+		var setLocalRef = require_react_index().useCallback(function(instance) {
+			inputRef.current = instance;
+			if (instance != null) {
+				TextInputState.registerInput(instance);
+				Object.assign(instance, { clear() {
+					if (inputRef.current != null) {
+						viewCommands.setTextAndSelection(inputRef.current, mostRecentEventCount, "", 0, 0);
+					}
+				}, isFocused() {
+					return TextInputState.currentlyFocusedInput() === inputRef.current;
+				}, getNativeRef() {
+					return inputRef.current;
+				}, setSelection(start,end) {
+					if (inputRef.current != null) {
+						viewCommands.setTextAndSelection(inputRef.current, mostRecentEventCount, null, start, end);
+					}
+				} });
+			}
+		}, [mostRecentEventCount, viewCommands]),ref = useMergeRefs(setLocalRef, props.forwardedRef),_onChange = function(event) {
+			var currentText = event.nativeEvent.text;
+			props.onChange && props.onChange(event);
+			props.onChangeText && props.onChangeText(currentText);
+			if (inputRef.current == null) {
+				return;
+			}
+			setLastNativeText(currentText);
+			setMostRecentEventCount(event.nativeEvent.eventCount);
+		},_onSelectionChange = function(event) {
+			props.onSelectionChange && props.onSelectionChange(event);
+			if (inputRef.current == null) {
+				return;
+			}
+			setLastNativeSelection({ selection: event.nativeEvent.selection, mostRecentEventCount });
+		},_onFocus = function(event) {
+			TextInputState.focusInput(inputRef.current);
+			if (props.onFocus) {
+				props.onFocus(event);
+			}
+		},_onBlur = function(event) {
+			TextInputState.blurInput(inputRef.current);
+			if (props.onBlur) {
+				props.onBlur(event);
+			}
+		},_onScroll = function(event) {
+			props.onScroll && props.onScroll(event);
+		},textInput = null,multiline = props.multiline ?? false,submitBehavior = void 0;
+		if (props.submitBehavior != null) {
+			if (!multiline && props.submitBehavior === "newline") {
+				submitBehavior = "blurAndSubmit";
+			} else {
+				submitBehavior = props.submitBehavior;
+			}
+		} else if (multiline) {
+			if (props.blurOnSubmit === true) {
+				submitBehavior = "blurAndSubmit";
+			} else {
+				submitBehavior = "newline";
+			}
+		} else {
+			if (props.blurOnSubmit !== false) {
+				submitBehavior = "blurAndSubmit";
+			} else {
+				submitBehavior = "submit";
+			}
+		}
+		var accessible = props.accessible !== false,focusable = props.focusable !== false,{ editable:editable, hitSlop:hitSlop, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut, rejectResponderTermination:rejectResponderTermination } = props,config = require_react_index().useMemo(function() {
+			return ({ hitSlop, onPress: function(event) {
+				onPress?.(event);
+				if (editable !== false) {
+					if (inputRef.current != null) {
+						inputRef.current.focus();
+					}
+				}
+			}, onPressIn: onPressIn, onPressOut: onPressOut, cancelable: Platform.OS === "ios" ? !rejectResponderTermination : null });
+		}, [editable, hitSlop, onPress, onPressIn, onPressOut, rejectResponderTermination]),caretHidden = props.caretHidden;
+		if (Platform.isTesting) {
+			caretHidden = true;
+		}
+		var { onBlur:onBlur, onFocus:onFocus, ...eventHandlers } = usePressability(config),_accessibilityLabel = props?.["aria-label"] ?? props?.accessibilityLabel,_accessibilityState = void 0;
+		if (accessibilityState != null || ariaBusy != null || ariaChecked != null || ariaDisabled != null || ariaExpanded != null || ariaSelected != null) {
+			_accessibilityState = { busy: ariaBusy ?? accessibilityState?.busy, checked: ariaChecked ?? accessibilityState?.checked, disabled: ariaDisabled ?? accessibilityState?.disabled, expanded: ariaExpanded ?? accessibilityState?.expanded, selected: ariaSelected ?? accessibilityState?.selected };
+		}
+		var _style = props.style,flattenedStyle = flattenStyle(props.style);
+		if (flattenedStyle != null) {
+			var overrides = null;
+			if (typeof flattenedStyle?.fontWeight === "number") {
+				overrides = overrides || {};
+				overrides.fontWeight = flattenedStyle.fontWeight.toString();
+			}
+			if (flattenedStyle.verticalAlign != null) {
+				overrides = overrides || {};
+				overrides.textAlignVertical = verticalAlignToTextAlignVerticalMap$1[flattenedStyle.verticalAlign];
+				overrides.verticalAlign = undefined;
+			}
+			if (overrides != null) {
+				_style = [_style, overrides];
+			}
+		}
+		if (Platform.OS === "ios") {
+			var RCTTextInputView = props.multiline === true ? RCTMultilineTextInputView : RCTSinglelineTextInputView,useMultilineDefaultStyle = props.multiline === true && (flattenedStyle == null || (flattenedStyle.padding == null && flattenedStyle.paddingVertical == null && flattenedStyle.paddingTop == null)),_accessibilityElementsHidden = props["aria-hidden"] ?? props.accessibilityElementsHidden;
+			textInput = (/* @__PURE__ */ React$56.createElement(RCTTextInputView, { ref: ref, ...otherProps, ...eventHandlers, acceptDragAndDropTypes: props.experimental_acceptDragAndDropTypes, accessibilityLabel: _accessibilityLabel, accessibilityState: _accessibilityState, accessibilityElementsHidden: _accessibilityElementsHidden, accessible: accessible, submitBehavior: submitBehavior, caretHidden: caretHidden, dataDetectorTypes: props.dataDetectorTypes, focusable: tabIndex !== undefined ? !tabIndex : focusable, mostRecentEventCount: mostRecentEventCount, nativeID: id ?? props.nativeID, numberOfLines: props.rows ?? props.numberOfLines, onBlur: _onBlur, onChange: _onChange, onContentSizeChange: props.onContentSizeChange, onFocus: _onFocus, onScroll: _onScroll, onSelectionChange: _onSelectionChange, onSelectionChangeShouldSetResponder: emptyFunctionThatReturnsTrue, selection: selection, selectionColor: selectionColor, style: StyleSheet.compose(useMultilineDefaultStyle ? styles$13.multilineDefault : null, _style), text: text }));
+		} else if (Platform.OS === "android") {
+			var autoCapitalize = props.autoCapitalize || "sentences",_accessibilityLabelledBy = props?.["aria-labelledby"] ?? props?.accessibilityLabelledBy,_importantForAccessibility = props["aria-hidden"] === true ? "no-hide-descendants" : undefined,placeholder = props.placeholder ?? "",children = props.children,childCount = React$56.Children.count(children);
+			invariant$43(!(props.value != null && childCount), "Cannot specify both value and children.");
+			if (childCount > 1) {
+				children = /* @__PURE__ */ React$56.createElement(TextImpl, null, children);
+			}
+			var colorProps = { selectionColor, selectionHandleColor: selectionHandleColor === undefined ? selectionColor : selectionHandleColor, cursorColor: cursorColor === undefined ? selectionColor : cursorColor };
+			textInput = (/* @__PURE__ */ React$56.createElement(AndroidTextInput, { ref: ref, ...otherProps, ...colorProps, ...eventHandlers, accessibilityLabel: _accessibilityLabel, accessibilityLabelledBy: _accessibilityLabelledBy, accessibilityState: _accessibilityState, accessible: accessible, acceptDragAndDropTypes: props.experimental_acceptDragAndDropTypes, autoCapitalize: autoCapitalize, submitBehavior: submitBehavior, caretHidden: caretHidden, children: children, disableFullscreenUI: props.disableFullscreenUI, focusable: tabIndex !== undefined ? !tabIndex : focusable, importantForAccessibility: _importantForAccessibility, mostRecentEventCount: mostRecentEventCount, nativeID: id ?? props.nativeID, numberOfLines: props.rows ?? props.numberOfLines, onBlur: _onBlur, onChange: _onChange, onFocus: _onFocus, onScroll: _onScroll, onSelectionChange: _onSelectionChange, placeholder: placeholder, style: _style, text: text, textBreakStrategy: props.textBreakStrategy }));
+		}
+		return /* @__PURE__ */ React$56.createElement(TextAncestorContext, { value: true }, textInput);
+	};
+		init_react_native_Libraries_Pressability_usePressability();
+	init_react_native_Libraries_StyleSheet_flattenStyle();
+	init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_Libraries_Text_Text();
+	init_react_native_Libraries_Text_TextAncestorContext();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Utilities_useMergeRefs();
+	init_react_native_Libraries_Components_TextInput_TextInputState();
+	invariant$43 = require_invariant_browser();
+	nullthrows$12 = __toESM(require_nullthrows_nullthrows()).default;
+	React$56 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	AndroidTextInput = void 0;
+	AndroidTextInputCommands$1 = void 0;
+	RCTSinglelineTextInputView = void 0;
+	RCTSinglelineTextInputNativeCommands = void 0;
+	RCTMultilineTextInputView = void 0;
+	RCTMultilineTextInputNativeCommands = void 0;
+	if (Platform.OS === "android") {
+		AndroidTextInput = (init_react_native_Libraries_Components_TextInput_AndroidTextInputNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_TextInput_AndroidTextInputNativeComponent)).default;
+		AndroidTextInputCommands$1 = (init_react_native_Libraries_Components_TextInput_AndroidTextInputNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_TextInput_AndroidTextInputNativeComponent)).Commands;
+	} else if (Platform.OS === "ios") {
+		RCTSinglelineTextInputView = (init_react_native_Libraries_Components_TextInput_RCTSingelineTextInputNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_TextInput_RCTSingelineTextInputNativeComponent)).default;
+		RCTSinglelineTextInputNativeCommands = (init_react_native_Libraries_Components_TextInput_RCTSingelineTextInputNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_TextInput_RCTSingelineTextInputNativeComponent)).Commands;
+		RCTMultilineTextInputView = (init_react_native_Libraries_Components_TextInput_RCTMultilineTextInputNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_TextInput_RCTMultilineTextInputNativeComponent)).default;
+		RCTMultilineTextInputNativeCommands = (init_react_native_Libraries_Components_TextInput_RCTMultilineTextInputNativeComponent(), __toCommonJS(exports_react_native_Libraries_Components_TextInput_RCTMultilineTextInputNativeComponent)).Commands;
+	}
+	emptyFunctionThatReturnsTrue = function() {
+		return true;
+	};
+	enterKeyHintToReturnTypeMap = { enter: "default", done: "done", go: "go", next: "next", previous: "previous", search: "search", send: "send" };
+	inputModeToKeyboardTypeMap = { none: "default", text: "default", decimal: "decimal-pad", numeric: "number-pad", tel: "phone-pad", search: Platform.OS === "ios" ? "web-search" : "default", email: "email-address", url: "url" };
+	autoCompleteWebToAutoCompleteAndroidMap = { "address-line1": "postal-address-region", "address-line2": "postal-address-locality", bday: "birthdate-full", "bday-day": "birthdate-day", "bday-month": "birthdate-month", "bday-year": "birthdate-year", "cc-csc": "cc-csc", "cc-exp": "cc-exp", "cc-exp-month": "cc-exp-month", "cc-exp-year": "cc-exp-year", "cc-number": "cc-number", country: "postal-address-country", "current-password": "password", email: "email", "honorific-prefix": "name-prefix", "honorific-suffix": "name-suffix", name: "name", "additional-name": "name-middle", "family-name": "name-family", "given-name": "name-given", "new-password": "password-new", off: "off", "one-time-code": "sms-otp", "postal-code": "postal-code", sex: "gender", "street-address": "street-address", tel: "tel", "tel-country-code": "tel-country-code", "tel-national": "tel-national", username: "username" };
+	autoCompleteWebToTextContentTypeMap = { "address-line1": "streetAddressLine1", "address-line2": "streetAddressLine2", bday: "birthdate", "bday-day": "birthdateDay", "bday-month": "birthdateMonth", "bday-year": "birthdateYear", "cc-csc": "creditCardSecurityCode", "cc-exp-month": "creditCardExpirationMonth", "cc-exp-year": "creditCardExpirationYear", "cc-exp": "creditCardExpiration", "cc-given-name": "creditCardGivenName", "cc-additional-name": "creditCardMiddleName", "cc-family-name": "creditCardFamilyName", "cc-name": "creditCardName", "cc-number": "creditCardNumber", "cc-type": "creditCardType", "current-password": "password", country: "countryName", email: "emailAddress", name: "name", "additional-name": "middleName", "family-name": "familyName", "given-name": "givenName", nickname: "nickname", "honorific-prefix": "namePrefix", "honorific-suffix": "nameSuffix", "new-password": "newPassword", off: "none", "one-time-code": "oneTimeCode", organization: "organizationName", "organization-title": "jobTitle", "postal-code": "postalCode", "street-address": "fullStreetAddress", tel: "telephoneNumber", url: "URL", username: "username" };
+	TextInput = function({ ref:forwardedRef, allowFontScaling:allowFontScaling=true, rejectResponderTermination:rejectResponderTermination=true, underlineColorAndroid:underlineColorAndroid="transparent", autoComplete:autoComplete, textContentType:textContentType, readOnly:readOnly, editable:editable, enterKeyHint:enterKeyHint, returnKeyType:returnKeyType, inputMode:inputMode, showSoftInputOnFocus:showSoftInputOnFocus, keyboardType:keyboardType, ...restProps }) {
+		return (/* @__PURE__ */ React$56.createElement(InternalTextInput, { allowFontScaling: allowFontScaling, rejectResponderTermination: rejectResponderTermination, underlineColorAndroid: underlineColorAndroid, editable: readOnly !== undefined ? !readOnly : editable, returnKeyType: enterKeyHint ? enterKeyHintToReturnTypeMap[enterKeyHint] : returnKeyType, keyboardType: inputMode ? inputModeToKeyboardTypeMap[inputMode] : keyboardType, showSoftInputOnFocus: inputMode == null ? showSoftInputOnFocus : inputMode !== "none", autoComplete: Platform.OS === "android" ? (autoCompleteWebToAutoCompleteAndroidMap[autoComplete] ?? autoComplete) : undefined, textContentType: textContentType != null ? textContentType : Platform.OS === "ios" && autoComplete && autoComplete in autoCompleteWebToTextContentTypeMap ? autoCompleteWebToTextContentTypeMap[autoComplete] : textContentType, ...restProps, forwardedRef: forwardedRef }));
+	};
+	TextInput.displayName = "TextInput";
+	TextInput.State = { currentlyFocusedInput: TextInputState.currentlyFocusedInput, currentlyFocusedField: TextInputState.currentlyFocusedField, focusTextInput: TextInputState.focusTextInput, blurTextInput: TextInputState.blurTextInput };
+	styles$13 = StyleSheet.create({ multilineDefault: { paddingTop: 5 } });
+	verticalAlignToTextAlignVerticalMap$1 = { auto: "auto", top: "top", bottom: "bottom", middle: "center" };
+	
+	
+	}
+});
+//#endregion
+//#region PooledClass.js
+var exports_react_native_Libraries_Components_Touchable_PooledClass = {};
+var oneArgumentPooler, twoArgumentPooler, threeArgumentPooler, fourArgumentPooler, standardReleaser, DEFAULT_POOL_SIZE, DEFAULT_POOLER, addPoolingTo, PooledClass, invariant$44;
+__export(exports_react_native_Libraries_Components_Touchable_PooledClass, {
+	"default": function() { return PooledClass; },
+});
+var init_react_native_Libraries_Components_Touchable_PooledClass = __esm({
+	"PooledClass.js"() {
+	invariant$44 = require_invariant_browser();
+		"use strict";
+	
+	oneArgumentPooler = function(copyFieldsFrom) {
+		var Klass = this;
+		if (Klass.instancePool.length) {
+			var instance = Klass.instancePool.pop();
+			Klass.call(instance, copyFieldsFrom);
+			return instance;
+		} else {
+			return new Klass(copyFieldsFrom);
+		}
+	};
+	twoArgumentPooler = function(a1,a2) {
+		var Klass = this;
+		if (Klass.instancePool.length) {
+			var instance = Klass.instancePool.pop();
+			Klass.call(instance, a1, a2);
+			return instance;
+		} else {
+			return new Klass(a1, a2);
+		}
+	};
+	threeArgumentPooler = function(a1,a2,a3) {
+		var Klass = this;
+		if (Klass.instancePool.length) {
+			var instance = Klass.instancePool.pop();
+			Klass.call(instance, a1, a2, a3);
+			return instance;
+		} else {
+			return new Klass(a1, a2, a3);
+		}
+	};
+	fourArgumentPooler = function(a1,a2,a3,a4) {
+		var Klass = this;
+		if (Klass.instancePool.length) {
+			var instance = Klass.instancePool.pop();
+			Klass.call(instance, a1, a2, a3, a4);
+			return instance;
+		} else {
+			return new Klass(a1, a2, a3, a4);
+		}
+	};
+	standardReleaser = function(instance) {
+		var Klass = this;
+		invariant$44(instance instanceof Klass, "Trying to release an instance into a pool of a different type.");
+		instance.destructor();
+		if (Klass.instancePool.length < Klass.poolSize) {
+			Klass.instancePool.push(instance);
+		}
+	};
+	DEFAULT_POOL_SIZE = 10;
+	DEFAULT_POOLER = oneArgumentPooler;
+	addPoolingTo = function(CopyConstructor,pooler) {
+		var NewKlass = CopyConstructor;
+		NewKlass.instancePool = [];
+		NewKlass.getPooled = pooler || DEFAULT_POOLER;
+		if (!NewKlass.poolSize) {
+			NewKlass.poolSize = DEFAULT_POOL_SIZE;
+		}
+		NewKlass.release = standardReleaser;
+		return NewKlass;
+	};
+	PooledClass = { addPoolingTo: addPoolingTo, oneArgumentPooler: oneArgumentPooler, twoArgumentPooler: twoArgumentPooler, threeArgumentPooler: threeArgumentPooler, fourArgumentPooler: fourArgumentPooler };
+	
+	
+	}
+});
+//#endregion
+//#region BoundingDimensions.js
+var exports_react_native_Libraries_Components_Touchable_BoundingDimensions = {};
+var twoArgumentPooler$1, BoundingDimensions;
+__export(exports_react_native_Libraries_Components_Touchable_BoundingDimensions, {
+	"default": function() { return BoundingDimensions; },
+});
+var init_react_native_Libraries_Components_Touchable_BoundingDimensions = __esm({
+	"BoundingDimensions.js"() {
+	BoundingDimensions = function(width,height) {
+		this.width = width;
+		this.height = height;
+	};
+		init_react_native_Libraries_Components_Touchable_PooledClass();
+		"use strict";
+	
+	twoArgumentPooler$1 = PooledClass.twoArgumentPooler;
+	BoundingDimensions.prototype.destructor = function() {
+		this.width = null;
+		this.height = null;
+	};
+	BoundingDimensions.getPooledFromElement = function(element) {
+		return BoundingDimensions.getPooled(element.offsetWidth, element.offsetHeight);
+	};
+	PooledClass.addPoolingTo(BoundingDimensions, twoArgumentPooler$1);
+	
+	
+	}
+});
+//#endregion
+//#region Position.js
+var exports_react_native_Libraries_Components_Touchable_Position = {};
+var twoArgumentPooler$2, Position;
+__export(exports_react_native_Libraries_Components_Touchable_Position, {
+	"default": function() { return Position; },
+});
+var init_react_native_Libraries_Components_Touchable_Position = __esm({
+	"Position.js"() {
+	Position = function(left,top) {
+		this.left = left;
+		this.top = top;
+	};
+		init_react_native_Libraries_Components_Touchable_PooledClass();
+		"use strict";
+	
+	twoArgumentPooler$2 = PooledClass.twoArgumentPooler;
+	Position.prototype.destructor = function() {
+		this.left = null;
+		this.top = null;
+	};
+	PooledClass.addPoolingTo(Position, twoArgumentPooler$2);
+	
+	
+	}
+});
+//#endregion
+//#region Touchable.js
+var exports_react_native_Libraries_Components_Touchable_Touchable = {};
+var extractSingleTouch, States, baseStatesConditions, IsActive, IsPressingIn, IsLongPressingIn, Signals, Transitions$1, HIGHLIGHT_DELAY_MS, PRESS_EXPAND_PX, LONG_PRESS_THRESHOLD, LONG_PRESS_DELAY_MS, LONG_PRESS_ALLOWED_MOVEMENT, TouchableMixinImpl, TouchableImpl, React$57;
+__export(exports_react_native_Libraries_Components_Touchable_Touchable, {
+	"default": function() { return TouchableImpl; },
+});
+var init_react_native_Libraries_Components_Touchable_Touchable = __esm({
+	"Touchable.js"() {
+	init_react_native_Libraries_Pressability_PressabilityDebug();
+	init_react_native_Libraries_ReactNative_UIManager();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Components_Sound_SoundManager();
+	init_react_native_Libraries_Components_Touchable_BoundingDimensions();
+	init_react_native_Libraries_Components_Touchable_Position();
+	React$57 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	
+	
+	var extractSingleTouch = function(nativeEvent) {
+		var touches = nativeEvent.touches,changedTouches = nativeEvent.changedTouches,hasTouches = touches && touches.length > 0,hasChangedTouches = changedTouches && changedTouches.length > 0;
+		return !hasTouches && hasChangedTouches ? changedTouches[0] : hasTouches ? touches[0] : nativeEvent;
+	},States = { NOT_RESPONDER: "NOT_RESPONDER", RESPONDER_INACTIVE_PRESS_IN: "RESPONDER_INACTIVE_PRESS_IN", RESPONDER_INACTIVE_PRESS_OUT: "RESPONDER_INACTIVE_PRESS_OUT", RESPONDER_ACTIVE_PRESS_IN: "RESPONDER_ACTIVE_PRESS_IN", RESPONDER_ACTIVE_PRESS_OUT: "RESPONDER_ACTIVE_PRESS_OUT", RESPONDER_ACTIVE_LONG_PRESS_IN: "RESPONDER_ACTIVE_LONG_PRESS_IN", RESPONDER_ACTIVE_LONG_PRESS_OUT: "RESPONDER_ACTIVE_LONG_PRESS_OUT", ERROR: "ERROR" },baseStatesConditions = { NOT_RESPONDER: false, RESPONDER_INACTIVE_PRESS_IN: false, RESPONDER_INACTIVE_PRESS_OUT: false, RESPONDER_ACTIVE_PRESS_IN: false, RESPONDER_ACTIVE_PRESS_OUT: false, RESPONDER_ACTIVE_LONG_PRESS_IN: false, RESPONDER_ACTIVE_LONG_PRESS_OUT: false, ERROR: false },IsActive = { ...baseStatesConditions, RESPONDER_ACTIVE_PRESS_OUT: true, RESPONDER_ACTIVE_PRESS_IN: true },IsPressingIn = { ...baseStatesConditions, RESPONDER_INACTIVE_PRESS_IN: true, RESPONDER_ACTIVE_PRESS_IN: true, RESPONDER_ACTIVE_LONG_PRESS_IN: true },IsLongPressingIn = { ...baseStatesConditions, RESPONDER_ACTIVE_LONG_PRESS_IN: true },Signals = { DELAY: "DELAY", RESPONDER_GRANT: "RESPONDER_GRANT", RESPONDER_RELEASE: "RESPONDER_RELEASE", RESPONDER_TERMINATED: "RESPONDER_TERMINATED", ENTER_PRESS_RECT: "ENTER_PRESS_RECT", LEAVE_PRESS_RECT: "LEAVE_PRESS_RECT", LONG_PRESS_DETECTED: "LONG_PRESS_DETECTED" },Transitions$1 = { NOT_RESPONDER: { DELAY: States.ERROR, RESPONDER_GRANT: States.RESPONDER_INACTIVE_PRESS_IN, RESPONDER_RELEASE: States.ERROR, RESPONDER_TERMINATED: States.ERROR, ENTER_PRESS_RECT: States.ERROR, LEAVE_PRESS_RECT: States.ERROR, LONG_PRESS_DETECTED: States.ERROR }, RESPONDER_INACTIVE_PRESS_IN: { DELAY: States.RESPONDER_ACTIVE_PRESS_IN, RESPONDER_GRANT: States.ERROR, RESPONDER_RELEASE: States.NOT_RESPONDER, RESPONDER_TERMINATED: States.NOT_RESPONDER, ENTER_PRESS_RECT: States.RESPONDER_INACTIVE_PRESS_IN, LEAVE_PRESS_RECT: States.RESPONDER_INACTIVE_PRESS_OUT, LONG_PRESS_DETECTED: States.ERROR }, RESPONDER_INACTIVE_PRESS_OUT: { DELAY: States.RESPONDER_ACTIVE_PRESS_OUT, RESPONDER_GRANT: States.ERROR, RESPONDER_RELEASE: States.NOT_RESPONDER, RESPONDER_TERMINATED: States.NOT_RESPONDER, ENTER_PRESS_RECT: States.RESPONDER_INACTIVE_PRESS_IN, LEAVE_PRESS_RECT: States.RESPONDER_INACTIVE_PRESS_OUT, LONG_PRESS_DETECTED: States.ERROR }, RESPONDER_ACTIVE_PRESS_IN: { DELAY: States.ERROR, RESPONDER_GRANT: States.ERROR, RESPONDER_RELEASE: States.NOT_RESPONDER, RESPONDER_TERMINATED: States.NOT_RESPONDER, ENTER_PRESS_RECT: States.RESPONDER_ACTIVE_PRESS_IN, LEAVE_PRESS_RECT: States.RESPONDER_ACTIVE_PRESS_OUT, LONG_PRESS_DETECTED: States.RESPONDER_ACTIVE_LONG_PRESS_IN }, RESPONDER_ACTIVE_PRESS_OUT: { DELAY: States.ERROR, RESPONDER_GRANT: States.ERROR, RESPONDER_RELEASE: States.NOT_RESPONDER, RESPONDER_TERMINATED: States.NOT_RESPONDER, ENTER_PRESS_RECT: States.RESPONDER_ACTIVE_PRESS_IN, LEAVE_PRESS_RECT: States.RESPONDER_ACTIVE_PRESS_OUT, LONG_PRESS_DETECTED: States.ERROR }, RESPONDER_ACTIVE_LONG_PRESS_IN: { DELAY: States.ERROR, RESPONDER_GRANT: States.ERROR, RESPONDER_RELEASE: States.NOT_RESPONDER, RESPONDER_TERMINATED: States.NOT_RESPONDER, ENTER_PRESS_RECT: States.RESPONDER_ACTIVE_LONG_PRESS_IN, LEAVE_PRESS_RECT: States.RESPONDER_ACTIVE_LONG_PRESS_OUT, LONG_PRESS_DETECTED: States.RESPONDER_ACTIVE_LONG_PRESS_IN }, RESPONDER_ACTIVE_LONG_PRESS_OUT: { DELAY: States.ERROR, RESPONDER_GRANT: States.ERROR, RESPONDER_RELEASE: States.NOT_RESPONDER, RESPONDER_TERMINATED: States.NOT_RESPONDER, ENTER_PRESS_RECT: States.RESPONDER_ACTIVE_LONG_PRESS_IN, LEAVE_PRESS_RECT: States.RESPONDER_ACTIVE_LONG_PRESS_OUT, LONG_PRESS_DETECTED: States.ERROR }, error: { DELAY: States.NOT_RESPONDER, RESPONDER_GRANT: States.RESPONDER_INACTIVE_PRESS_IN, RESPONDER_RELEASE: States.NOT_RESPONDER, RESPONDER_TERMINATED: States.NOT_RESPONDER, ENTER_PRESS_RECT: States.NOT_RESPONDER, LEAVE_PRESS_RECT: States.NOT_RESPONDER, LONG_PRESS_DETECTED: States.NOT_RESPONDER } },HIGHLIGHT_DELAY_MS = 130,PRESS_EXPAND_PX = 20,LONG_PRESS_THRESHOLD = 500,LONG_PRESS_DELAY_MS = LONG_PRESS_THRESHOLD - HIGHLIGHT_DELAY_MS,LONG_PRESS_ALLOWED_MOVEMENT = 10,TouchableMixinImpl = { componentDidMount: function() {
+		if (!Platform.isTV) {
+			return;
+		}
+	}, componentWillUnmount: function() {
+		this.touchableDelayTimeout && clearTimeout(this.touchableDelayTimeout);
+		this.longPressDelayTimeout && clearTimeout(this.longPressDelayTimeout);
+		this.pressOutDelayTimeout && clearTimeout(this.pressOutDelayTimeout);
+	}, touchableGetInitialState: function() {
+		return { touchable: { touchState: undefined, responderID: null } };
+	}, touchableHandleResponderTerminationRequest: function() {
+		return !this.props.rejectResponderTermination;
+	}, touchableHandleStartShouldSetResponder: function() {
+		return !this.props.disabled;
+	}, touchableLongPressCancelsPress: function() {
+		return true;
+	}, touchableHandleResponderGrant: function(e) {
+		var dispatchID = e.currentTarget;
+		e.persist();
+		this.pressOutDelayTimeout && clearTimeout(this.pressOutDelayTimeout);
+		this.pressOutDelayTimeout = null;
+		this.state.touchable.touchState = States.NOT_RESPONDER;
+		this.state.touchable.responderID = dispatchID;
+		this._receiveSignal(Signals.RESPONDER_GRANT, e);
+		var delayMS = this.touchableGetHighlightDelayMS !== undefined ? Math.max(this.touchableGetHighlightDelayMS(), 0) : HIGHLIGHT_DELAY_MS;
+		delayMS = isNaN(delayMS) ? HIGHLIGHT_DELAY_MS : delayMS;
+		if (delayMS !== 0) {
+			this.touchableDelayTimeout = setTimeout(this._handleDelay.bind(this, e), delayMS);
+		} else {
+			this._handleDelay(e);
+		}
+		var longDelayMS = this.touchableGetLongPressDelayMS !== undefined ? Math.max(this.touchableGetLongPressDelayMS(), 10) : LONG_PRESS_DELAY_MS;
+		longDelayMS = isNaN(longDelayMS) ? LONG_PRESS_DELAY_MS : longDelayMS;
+		this.longPressDelayTimeout = setTimeout(this._handleLongDelay.bind(this, e), longDelayMS + delayMS);
+	}, touchableHandleResponderRelease: function(e) {
+		this.pressInLocation = null;
+		this._receiveSignal(Signals.RESPONDER_RELEASE, e);
+	}, touchableHandleResponderTerminate: function(e) {
+		this.pressInLocation = null;
+		this._receiveSignal(Signals.RESPONDER_TERMINATED, e);
+	}, touchableHandleResponderMove: function(e) {
+		if (!this.state.touchable.positionOnActivate) {
+			return;
+		}
+		var positionOnActivate = this.state.touchable.positionOnActivate,dimensionsOnActivate = this.state.touchable.dimensionsOnActivate,pressRectOffset = this.touchableGetPressRectOffset ? this.touchableGetPressRectOffset() : { left: PRESS_EXPAND_PX, right: PRESS_EXPAND_PX, top: PRESS_EXPAND_PX, bottom: PRESS_EXPAND_PX },pressExpandLeft = pressRectOffset.left,pressExpandTop = pressRectOffset.top,pressExpandRight = pressRectOffset.right,pressExpandBottom = pressRectOffset.bottom,hitSlop = this.touchableGetHitSlop ? this.touchableGetHitSlop() : null;
+		if (hitSlop) {
+			pressExpandLeft += hitSlop.left || 0;
+			pressExpandTop += hitSlop.top || 0;
+			pressExpandRight += hitSlop.right || 0;
+			pressExpandBottom += hitSlop.bottom || 0;
+		}
+		var touch = extractSingleTouch(e.nativeEvent),pageX = touch && touch.pageX,pageY = touch && touch.pageY;
+		if (this.pressInLocation) {
+			var movedDistance = this._getDistanceBetweenPoints(pageX, pageY, this.pressInLocation.pageX, this.pressInLocation.pageY);
+			if (movedDistance > LONG_PRESS_ALLOWED_MOVEMENT) {
+				this._cancelLongPressDelayTimeout();
+			}
+		}
+		var isTouchWithinActive = pageX > positionOnActivate.left - pressExpandLeft && pageY > positionOnActivate.top - pressExpandTop && pageX < positionOnActivate.left + dimensionsOnActivate.width + pressExpandRight && pageY < positionOnActivate.top + dimensionsOnActivate.height + pressExpandBottom;
+		if (isTouchWithinActive) {
+			var prevState = this.state.touchable.touchState;
+			this._receiveSignal(Signals.ENTER_PRESS_RECT, e);
+			var curState = this.state.touchable.touchState;
+			if (curState === States.RESPONDER_INACTIVE_PRESS_IN && prevState !== States.RESPONDER_INACTIVE_PRESS_IN) {
+				this._cancelLongPressDelayTimeout();
+			}
+		} else {
+			this._cancelLongPressDelayTimeout();
+			this._receiveSignal(Signals.LEAVE_PRESS_RECT, e);
+		}
+	}, touchableHandleFocus: function(e) {
+		this.props.onFocus && this.props.onFocus(e);
+	}, touchableHandleBlur: function(e) {
+		this.props.onBlur && this.props.onBlur(e);
+	}, _remeasureMetricsOnActivation: function() {
+		var responderID = this.state.touchable.responderID;
+		if (responderID == null) {
+			return;
+		}
+		if (typeof responderID === "number") {
+			UIManager.measure(responderID, this._handleQueryLayout);
+		} else {
+			responderID.measure(this._handleQueryLayout);
+		}
+	}, _handleQueryLayout: function(l,t,w,h,globalX,globalY) {
+		if (!l && !t && !w && !h && !globalX && !globalY) {
+			return;
+		}
+		this.state.touchable.positionOnActivate && Position.release(this.state.touchable.positionOnActivate);
+		this.state.touchable.dimensionsOnActivate && BoundingDimensions.release(this.state.touchable.dimensionsOnActivate);
+		this.state.touchable.positionOnActivate = Position.getPooled(globalX, globalY);
+		this.state.touchable.dimensionsOnActivate = BoundingDimensions.getPooled(w, h);
+	}, _handleDelay: function(e) {
+		this.touchableDelayTimeout = null;
+		this._receiveSignal(Signals.DELAY, e);
+	}, _handleLongDelay: function(e) {
+		this.longPressDelayTimeout = null;
+		var curState = this.state.touchable.touchState;
+		if (curState === States.RESPONDER_ACTIVE_PRESS_IN || curState === States.RESPONDER_ACTIVE_LONG_PRESS_IN) {
+			this._receiveSignal(Signals.LONG_PRESS_DETECTED, e);
+		}
+	}, _receiveSignal: function(signal,e) {
+		var responderID = this.state.touchable.responderID,curState = this.state.touchable.touchState,nextState = Transitions$1[curState] && Transitions$1[curState][signal];
+		if (!responderID && signal === Signals.RESPONDER_RELEASE) {
+			return;
+		}
+		if (!nextState) {
+			throw new Error("Unrecognized signal `" + signal + "` or state `" + curState + "` for Touchable responder `" + typeof this.state.touchable.responderID === "number" ? this.state.touchable.responderID : "host component`");
+		}
+		if (nextState === States.ERROR) {
+			throw new Error("Touchable cannot transition from `" + curState + "` to `" + signal + "` for responder `" + typeof this.state.touchable.responderID === "number" ? this.state.touchable.responderID : "<<host component>>`");
+		}
+		if (curState !== nextState) {
+			this._performSideEffectsForTransition(curState, nextState, signal, e);
+			this.state.touchable.touchState = nextState;
+		}
+	}, _cancelLongPressDelayTimeout: function() {
+		this.longPressDelayTimeout && clearTimeout(this.longPressDelayTimeout);
+		this.longPressDelayTimeout = null;
+	}, _isHighlight: function(state) {
+		return (state === States.RESPONDER_ACTIVE_PRESS_IN || state === States.RESPONDER_ACTIVE_LONG_PRESS_IN);
+	}, _savePressInLocation: function(e) {
+		var touch = extractSingleTouch(e.nativeEvent),pageX = touch && touch.pageX,pageY = touch && touch.pageY,locationX = touch && touch.locationX,locationY = touch && touch.locationY;
+		this.pressInLocation = { pageX, pageY, locationX, locationY };
+	}, _getDistanceBetweenPoints: function(aX,aY,bX,bY) {
+		var deltaX = aX - bX,deltaY = aY - bY;
+		return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+	}, _performSideEffectsForTransition: function(curState,nextState,signal,e) {
+		var curIsHighlight = this._isHighlight(curState),newIsHighlight = this._isHighlight(nextState),isFinalSignal = signal === Signals.RESPONDER_TERMINATED || signal === Signals.RESPONDER_RELEASE;
+		if (isFinalSignal) {
+			this._cancelLongPressDelayTimeout();
+		}
+		var isInitialTransition = curState === States.NOT_RESPONDER && nextState === States.RESPONDER_INACTIVE_PRESS_IN,isActiveTransition = !IsActive[curState] && IsActive[nextState];
+		if (isInitialTransition || isActiveTransition) {
+			this._remeasureMetricsOnActivation();
+		}
+		if (IsPressingIn[curState] && signal === Signals.LONG_PRESS_DETECTED) {
+			this.touchableHandleLongPress && this.touchableHandleLongPress(e);
+		}
+		if (newIsHighlight && !curIsHighlight) {
+			this._startHighlight(e);
+		} else if (!newIsHighlight && curIsHighlight) {
+			this._endHighlight(e);
+		}
+		if (IsPressingIn[curState] && signal === Signals.RESPONDER_RELEASE) {
+			var hasLongPressHandler = !!this.props.onLongPress,pressIsLongButStillCallOnPress = IsLongPressingIn[curState] && (!hasLongPressHandler || !this.touchableLongPressCancelsPress()),shouldInvokePress = !IsLongPressingIn[curState] || pressIsLongButStillCallOnPress;
+			if (shouldInvokePress && this.touchableHandlePress) {
+				if (!newIsHighlight && !curIsHighlight) {
+					this._startHighlight(e);
+					this._endHighlight(e);
+				}
+				if (Platform.OS === "android" && !this.props.touchSoundDisabled) {
+					SoundManager.playTouchSound();
+				}
+				this.touchableHandlePress(e);
+			}
+		}
+		this.touchableDelayTimeout && clearTimeout(this.touchableDelayTimeout);
+		this.touchableDelayTimeout = null;
+	}, _startHighlight: function(e) {
+		this._savePressInLocation(e);
+		this.touchableHandleActivePressIn && this.touchableHandleActivePressIn(e);
+	}, _endHighlight: function(e) {
+		var _this = this;
+		if (this.touchableHandleActivePressOut) {
+			if (this.touchableGetPressOutDelayMS && this.touchableGetPressOutDelayMS()) {
+				this.pressOutDelayTimeout = setTimeout(function() {
+					_this.touchableHandleActivePressOut(e);
+				}, this.touchableGetPressOutDelayMS());
+			} else {
+				this.touchableHandleActivePressOut(e);
+			}
+		}
+	}, withoutDefaultFocusAndBlur: {} },{ touchableHandleFocus:touchableHandleFocus, touchableHandleBlur:touchableHandleBlur, ...TouchableMixinWithoutDefaultFocusAndBlur } = TouchableMixinImpl;
+	TouchableMixinImpl.withoutDefaultFocusAndBlur = TouchableMixinWithoutDefaultFocusAndBlur;
+	TouchableImpl = { Mixin: TouchableMixinImpl, renderDebugView: function({ color:color, hitSlop:hitSlop }) {
+		;
+		return null;
+	} };
+	
+	
+	}
+});
+//#endregion
 //#region TouchableHighlight.js
 var exports_react_native_Libraries_Components_Touchable_TouchableHighlight = {};
 var TouchableHighlightImpl, TouchableHighlight, React$58;
@@ -36665,6 +38806,331 @@ var init_react_native_Libraries_Components_Touchable_TouchableHighlight = __esm(
 	}
 });
 //#endregion
+//#region ViewAccessibility.js
+var require_react_native_Libraries_Components_View_ViewAccessibility = __commonJS({
+	"ViewAccessibility.js"(exports, module) {
+"use strict";
+	
+	}
+});
+//#endregion
+//#region TouchableWithoutFeedback.js
+var exports_react_native_Libraries_Components_Touchable_TouchableWithoutFeedback = {};
+var PASSTHROUGH_PROPS, TouchableWithoutFeedback, React$59;
+__export(exports_react_native_Libraries_Components_Touchable_TouchableWithoutFeedback, {
+	"default": function() { return TouchableWithoutFeedback; },
+});
+var init_react_native_Libraries_Components_Touchable_TouchableWithoutFeedback = __esm({
+	"TouchableWithoutFeedback.js"() {
+	TouchableWithoutFeedback = function(props) {
+		var { disabled:disabled, rejectResponderTermination:rejectResponderTermination, 'aria-disabled':ariaDisabled, accessibilityState:accessibilityState, hitSlop:hitSlop, delayLongPress:delayLongPress, delayPressIn:delayPressIn, delayPressOut:delayPressOut, pressRetentionOffset:pressRetentionOffset, touchSoundDisabled:touchSoundDisabled, onBlur:_onBlur, onFocus:_onFocus, onLongPress:onLongPress, onPress:onPress, onPressIn:onPressIn, onPressOut:onPressOut } = props,pressabilityConfig = require_react_index().useMemo(function() {
+			return ({ cancelable: !rejectResponderTermination, disabled: disabled !== null ? disabled : (ariaDisabled ?? accessibilityState?.disabled), hitSlop: hitSlop, delayLongPress: delayLongPress, delayPressIn: delayPressIn, delayPressOut: delayPressOut, minPressDuration: 0, pressRectOffset: pressRetentionOffset, android_disableSound: touchSoundDisabled, onBlur: _onBlur, onFocus: _onFocus, onLongPress: onLongPress, onPress: onPress, onPressIn: onPressIn, onPressOut: onPressOut });
+		}, [rejectResponderTermination, disabled, ariaDisabled, accessibilityState?.disabled, hitSlop, delayLongPress, delayPressIn, delayPressOut, pressRetentionOffset, touchSoundDisabled, _onBlur, _onFocus, onLongPress, onPress, onPressIn, onPressOut]),eventHandlers = usePressability(pressabilityConfig),element = React$59.Children.only(props.children),children = [element.props.children],ariaLive = props["aria-live"];
+		;
+		var _accessibilityState = { busy: props["aria-busy"] ?? props.accessibilityState?.busy, checked: props["aria-checked"] ?? props.accessibilityState?.checked, disabled: props["aria-disabled"] ?? props.accessibilityState?.disabled, expanded: props["aria-expanded"] ?? props.accessibilityState?.expanded, selected: props["aria-selected"] ?? props.accessibilityState?.selected },{ onBlur:onBlur, onFocus:onFocus, ...eventHandlersWithoutBlurAndFocus } = eventHandlers,elementProps = { ...eventHandlersWithoutBlurAndFocus, accessible: props.accessible !== false, accessibilityState: props.disabled != null ? { ..._accessibilityState, disabled: props.disabled } : _accessibilityState, focusable: props.focusable !== false && props.onPress !== undefined && !props.disabled, accessibilityElementsHidden: props["aria-hidden"] ?? props.accessibilityElementsHidden, importantForAccessibility: props["aria-hidden"] === true ? "no-hide-descendants" : props.importantForAccessibility, accessibilityLiveRegion: ariaLive === "off" ? "none" : (ariaLive ?? props.accessibilityLiveRegion), nativeID: props.id ?? props.nativeID };
+		for (var prop of PASSTHROUGH_PROPS) {
+			if (props[prop] !== undefined) {
+				elementProps[prop] = props[prop];
+			}
+		}
+		return require_react_index().cloneElement(element, elementProps, ...children);
+	};
+		init_react_native_Libraries_Components_View_View();
+	init_react_native_Libraries_Pressability_PressabilityDebug();
+	init_react_native_Libraries_Pressability_usePressability();
+	React$59 = __toESM(require_react_index());
+		
+	
+	
+	
+	
+	PASSTHROUGH_PROPS = ["accessibilityActions", "accessibilityElementsHidden", "accessibilityHint", "accessibilityLanguage", "accessibilityIgnoresInvertColors", "accessibilityLabel", "accessibilityLiveRegion", "accessibilityRole", "accessibilityValue", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext", "accessibilityViewIsModal", "aria-modal", "hitSlop", "importantForAccessibility", "nativeID", "onAccessibilityAction", "onBlur", "onFocus", "onLayout", "testID"];
+	
+	}
+});
+//#endregion
+//#region VirtualizedList.js
+var exports_react_native_Libraries_Lists_VirtualizedList = {};
+var VirtualizedListComponent;
+__export(exports_react_native_Libraries_Lists_VirtualizedList, {
+	"default": function() { return VirtualizedListComponent; },
+});
+var init_react_native_Libraries_Lists_VirtualizedList = __esm({
+	"VirtualizedList.js"() {
+	init__react_native_virtualized_lists_index();
+		"use strict";
+	
+	VirtualizedListComponent = _default$51.VirtualizedList;
+	
+	
+	}
+});
+//#endregion
+//#region VirtualizedSectionList.js
+var exports_react_native_Libraries_Lists_VirtualizedSectionList = {};
+var VirtualizedSectionList$2;
+__export(exports_react_native_Libraries_Lists_VirtualizedSectionList, {
+	"default": function() { return VirtualizedSectionList$2; },
+});
+var init_react_native_Libraries_Lists_VirtualizedSectionList = __esm({
+	"VirtualizedSectionList.js"() {
+	init__react_native_virtualized_lists_index();
+		"use strict";
+	
+	VirtualizedSectionList$2 = _default$51.VirtualizedSectionList;
+	
+	
+	}
+});
+//#endregion
+//#region VirtualViewExperimentalNativeComponent.js
+var exports_react_native_src_private_components_virtualview_VirtualViewExperimentalNativeComponent = {};
+var NativeComponentRegistry$18, nativeComponentName$9, __INTERNAL_VIEW_CONFIG$16, _default$86;
+__export(exports_react_native_src_private_components_virtualview_VirtualViewExperimentalNativeComponent, {
+	"default": function() { return _default$86; },
+});
+var init_react_native_src_private_components_virtualview_VirtualViewExperimentalNativeComponent = __esm({
+	"VirtualViewExperimentalNativeComponent.js"() {
+	NativeComponentRegistry$18 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	nativeComponentName$9 = "VirtualViewExperimental";
+	__INTERNAL_VIEW_CONFIG$16 = { uiViewClassName: "VirtualViewExperimental", validAttributes: { initialHidden: true, renderState: true, removeClippedSubviews: true, onModeChange: true } };
+	_default$86=NativeComponentRegistry$18.get(nativeComponentName$9, function() {
+		return __INTERNAL_VIEW_CONFIG$16;
+	});
+	
+	}
+});
+//#endregion
+//#region VirtualViewNativeComponent.js
+var exports_react_native_src_private_components_virtualview_VirtualViewNativeComponent = {};
+var NativeComponentRegistry$19, nativeComponentName$10, __INTERNAL_VIEW_CONFIG$17, _default$87;
+__export(exports_react_native_src_private_components_virtualview_VirtualViewNativeComponent, {
+	"default": function() { return _default$87; },
+});
+var init_react_native_src_private_components_virtualview_VirtualViewNativeComponent = __esm({
+	"VirtualViewNativeComponent.js"() {
+	NativeComponentRegistry$19 = (init_react_native_Libraries_NativeComponent_NativeComponentRegistry(), __toCommonJS(exports_react_native_Libraries_NativeComponent_NativeComponentRegistry));
+	nativeComponentName$10 = "VirtualView";
+	__INTERNAL_VIEW_CONFIG$17 = { uiViewClassName: "VirtualView", validAttributes: { initialHidden: true, removeClippedSubviews: true, renderState: true, onModeChange: true } };
+	_default$87=NativeComponentRegistry$19.get(nativeComponentName$10, function() {
+		return __INTERNAL_VIEW_CONFIG$17;
+	});
+	
+	}
+});
+//#endregion
+//#region index.js
+var require_flow_enums_runtime_index = __commonJS({
+	"index.js"(exports, module) {
+"use strict";
+	var hasOwnProperty = Object.prototype.hasOwnProperty,reverseMapCache = typeof WeakMap === "function" ? new WeakMap() : new Map();
+	function getReverseMap(enumObject) {
+		var reverseMap = reverseMapCache.get(enumObject);
+		if (reverseMap !== undefined) {
+			return reverseMap;
+		}
+		var newReverseMap = new Map();
+		Object.getOwnPropertyNames(enumObject).forEach(function(name) {
+			newReverseMap.set(enumObject[name], name);
+		});
+		reverseMapCache.set(enumObject, newReverseMap);
+		return newReverseMap;
+	}
+	var EnumPrototype = Object.freeze(Object.defineProperties(Object.create(null), { isValid: { value: function(x) {
+		return getReverseMap(this).has(x);
+	} }, cast: { value: function(x) {
+		return this.isValid(x) ? x : undefined;
+	} }, members: { value: function() {
+		return getReverseMap(this).keys();
+	} }, getName: { value: function(value) {
+		return getReverseMap(this).get(value);
+	} } }));
+	function Enum(members) {
+		var o = Object.create(EnumPrototype);
+		for (var k in members) {
+			if (hasOwnProperty.call(members, k)) {
+				Object.defineProperty(o, k, { value: members[k] });
+			}
+		}
+		return Object.freeze(o);
+	}
+	var EnumMirroredPrototype = Object.freeze(Object.defineProperties(Object.create(null), { isValid: { value: function(x) {
+		if (typeof x === "string") {
+			return hasOwnProperty.call(this, x);
+		}
+		return false;
+	} }, cast: { value: EnumPrototype.cast }, members: { value: function() {
+		return Object.getOwnPropertyNames(this).values();
+	} }, getName: { value: function(value) {
+		return value;
+	} } }));
+	Enum.Mirrored = function EnumMirrored(members) {
+		var o = Object.create(EnumMirroredPrototype);
+		for (var i = 0,len = members.length; i < len; ++i) {
+			Object.defineProperty(o, members[i], { value: members[i] });
+		}
+		return Object.freeze(o);
+	};
+	Object.freeze(Enum.Mirrored);
+	module.exports = Object.freeze(Enum);
+	
+	}
+});
+//#endregion
+//#region VirtualView.js
+var exports_react_native_src_private_components_virtualview_VirtualView = {};
+var ReactNativeFeatureFlags$18, VirtualViewNativeComponent, NotHidden, defaultHiddenStyle, createVirtualView, _default$88, createHiddenVirtualView, _logs, nullthrows$13, React$60;
+__export(exports_react_native_src_private_components_virtualview_VirtualView, {
+	"default": function() { return _default$88; },
+	createHiddenVirtualView: function() { return createHiddenVirtualView; },
+	_logs: function() { return _logs; },
+});
+var init_react_native_src_private_components_virtualview_VirtualView = __esm({
+	"VirtualView.js"() {
+	defaultHiddenStyle = function(targetRect) {
+		return { minHeight: targetRect.height, minWidth: targetRect.width };
+	};
+	createVirtualView = function(initialState) {
+		var initialHidden = initialState !== NotHidden;
+		function VirtualView_withRef({ children:children, hiddenStyle:hiddenStyle=defaultHiddenStyle, nativeID:nativeID, style:style, onModeChange:onModeChange, removeClippedSubviews:removeClippedSubviews },ref) {
+			var _a,_b,[state, setState] = require_react_index().useState(initialState);
+			;
+			var isHidden = state !== NotHidden,handleModeChange = function(event) {
+				var mode = nullthrows$13(VirtualViewMode.cast(event.nativeEvent.mode)),emitModeChange = onModeChange == null ? null : onModeChange.bind(null, { mode, target: event.currentTarget, targetRect: event.nativeEvent.targetRect, thresholdRect: event.nativeEvent.thresholdRect });
+				(function(_a) {
+					if (_a === VirtualViewMode.Visible) {
+						setState(NotHidden);
+						emitModeChange?.();
+					} else if (_a === VirtualViewMode.Prerender) {
+						startTransition(function() {
+							setState(NotHidden);
+							emitModeChange?.();
+						});
+					} else if (_a === VirtualViewMode.Hidden) {
+						startTransition(function() {
+							setState(hiddenStyle(event.nativeEvent.targetRect) ?? {});
+							emitModeChange?.();
+						});
+					}
+				})(mode);
+			};
+			;
+			return (/* @__PURE__ */ React$60.createElement(VirtualViewNativeComponent, { initialHidden: initialHidden, nativeID: nativeID, ref: ref, removeClippedSubviews: removeClippedSubviews, renderState: (isHidden ? VirtualViewRenderState.None : VirtualViewRenderState.Rendered), style: isHidden ? StyleSheet.compose(style, nullthrows$13(state)) : style, onModeChange: handleModeChange }, (function(_b) {
+				if (_b === "activity-without-mode") {
+					return /* @__PURE__ */ React$60.createElement(Activity, null, isHidden ? null : children);
+				} else if (_b === "activity-with-hidden-mode") {
+					return /* @__PURE__ */ React$60.createElement(Activity, { mode: isHidden ? "hidden" : "visible" }, children);
+				} else if (_b === "no-activity" | _) {
+					return isHidden ? null : children;
+				}
+			})(virtualViewActivityBehavior())));
+		}
+		var VirtualView = React$60.forwardRef(VirtualView_withRef);
+		return VirtualView;
+	};
+	createHiddenVirtualView = function(style) {
+		return createVirtualView((style ?? {}));
+	};
+		init_react_native_Libraries_StyleSheet_StyleSheet();
+	init_react_native_src_private_featureflags_ReactNativeFeatureFlags();
+	init_react_native_src_private_components_virtualview_VirtualViewExperimentalNativeComponent();
+	init_react_native_src_private_components_virtualview_VirtualViewNativeComponent();
+	nullthrows$13 = __toESM(require_nullthrows_nullthrows()).default;
+	React$60 = __toESM(require_react_index());
+		
+	ReactNativeFeatureFlags$18=__toESM((init_react_native_src_private_featureflags_ReactNativeFeatureFlags(), __toCommonJS(exports_react_native_src_private_featureflags_ReactNativeFeatureFlags)));
+	
+	
+	
+	
+	
+	const VirtualViewMode=require_flow_enums_runtime_index()({Visible:0,Prerender:1,Hidden:2});
+	const VirtualViewRenderState=require_flow_enums_runtime_index()({Unknown:0,Rendered:1,None:2});
+	VirtualViewNativeComponent = enableVirtualViewExperimental() ? _default$86 : _default$87;
+	NotHidden = null;
+	_default$88=createVirtualView(NotHidden);
+	_logs = {};
+	
+	}
+});
+//#endregion
+//#region NativeActionSheetManager.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager = {};
+var TurboModuleRegistry$32, _default$89;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager, {
+	"default": function() { return _default$89; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager = __esm({
+	"NativeActionSheetManager.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$32=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$89=get("ActionSheetManager");
+	
+	}
+});
+//#endregion
+//#region NativeActionSheetManager.js
+var exports_react_native_Libraries_ActionSheetIOS_NativeActionSheetManager = {};
+var _default$90;
+__export(exports_react_native_Libraries_ActionSheetIOS_NativeActionSheetManager, {
+	"default": function() { return _default$90; },
+});
+var init_react_native_Libraries_ActionSheetIOS_NativeActionSheetManager = __esm({
+	"NativeActionSheetManager.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager();
+		
+	
+	_default$90=_default$89;
+		_default$90 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeActionSheetManager)).default;
+	
+	}
+});
+//#endregion
+//#region ActionSheetIOS.js
+var exports_react_native_Libraries_ActionSheetIOS_ActionSheetIOS = {};
+var processColor$13, invariant$45, ActionSheetIOS;
+__export(exports_react_native_Libraries_ActionSheetIOS_ActionSheetIOS, {
+	"default": function() { return ActionSheetIOS; },
+});
+var init_react_native_Libraries_ActionSheetIOS_ActionSheetIOS = __esm({
+	"ActionSheetIOS.js"() {
+	init_react_native_Libraries_ActionSheetIOS_NativeActionSheetManager();
+		
+	processColor$13 = (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default;
+	invariant$45 = require_invariant_browser();
+	ActionSheetIOS = { showActionSheetWithOptions(options,callback) {
+		invariant$45(typeof options === "object" && options !== null, "Options must be a valid object");
+		invariant$45(typeof callback === "function", "Must provide a valid callback");
+		invariant$45(_default$89, "ActionSheetManager doesn't exist");
+		var { tintColor:tintColor, cancelButtonTintColor:cancelButtonTintColor, disabledButtonTintColor:disabledButtonTintColor, destructiveButtonIndex:destructiveButtonIndex, ...remainingOptions } = options,destructiveButtonIndices = null;
+		if (Array.isArray(destructiveButtonIndex)) {
+			destructiveButtonIndices = destructiveButtonIndex;
+		} else if (typeof destructiveButtonIndex === "number") {
+			destructiveButtonIndices = [destructiveButtonIndex];
+		}
+		var processedTintColor = processColor$13(tintColor),processedCancelButtonTintColor = processColor$13(cancelButtonTintColor),processedDisabledButtonTintColor = processColor$13(disabledButtonTintColor);
+		invariant$45(processedTintColor == null || typeof processedTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions tintColor");
+		invariant$45(processedCancelButtonTintColor == null || typeof processedCancelButtonTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions cancelButtonTintColor");
+		invariant$45(processedDisabledButtonTintColor == null || typeof processedDisabledButtonTintColor === "number", "Unexpected color given for ActionSheetIOS.showActionSheetWithOptions disabledButtonTintColor");
+		_default$89.showActionSheetWithOptions({ ...remainingOptions, tintColor: processedTintColor, cancelButtonTintColor: processedCancelButtonTintColor, disabledButtonTintColor: processedDisabledButtonTintColor, destructiveButtonIndices }, callback);
+	}, showShareActionSheetWithOptions(options,failureCallback,successCallback) {
+		invariant$45(typeof options === "object" && options !== null, "Options must be a valid object");
+		invariant$45(typeof failureCallback === "function", "Must provide a valid failureCallback");
+		invariant$45(typeof successCallback === "function", "Must provide a valid successCallback");
+		invariant$45(_default$89, "ActionSheetManager doesn't exist");
+		_default$89.showShareActionSheetWithOptions({ ...options, tintColor: processColor$13(options.tintColor) }, failureCallback, successCallback);
+	}, dismissActionSheet: function() {
+		invariant$45(_default$89, "ActionSheetManager doesn't exist");
+		if (typeof _default$89.dismissActionSheet === "function") {
+			_default$89.dismissActionSheet();
+		}
+	} };
+	
+	
+	}
+});
+//#endregion
 //#region NativeAppearance.js
 var exports_react_native_src_private_specs_DEPRECATED_modules_NativeAppearance = {};
 var TurboModuleRegistry$33, _default$91;
@@ -36754,6 +39220,1162 @@ var init_react_native_Libraries_Utilities_Appearance = __esm({
 	}
 });
 //#endregion
+//#region logError.js
+var exports_react_native_Libraries_Utilities_logError = {};
+var logError;
+__export(exports_react_native_Libraries_Utilities_logError, {
+	"default": function() { return logError; },
+});
+var init_react_native_Libraries_Utilities_logError = __esm({
+	"logError.js"() {
+	"use strict";
+	logError = function(...args) {
+		if (args.length === 1 && args[0] instanceof Error) {
+			var err = args[0];
+			console.error("Error: \"" + err.message + "\".  Stack:\n" + err.stack);
+		} else {
+			console.error.apply(console, args);
+		}
+	};
+	
+	
+	}
+});
+//#endregion
+//#region NativeAppState.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeAppState = {};
+var TurboModuleRegistry$34, _default$93;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeAppState, {
+	"default": function() { return _default$93; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeAppState = __esm({
+	"NativeAppState.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$34=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$93=getEnforcing("AppState");
+	
+	}
+});
+//#endregion
+//#region NativeAppState.js
+var exports_react_native_Libraries_AppState_NativeAppState = {};
+var _default$94;
+__export(exports_react_native_Libraries_AppState_NativeAppState, {
+	"default": function() { return _default$94; },
+});
+var init_react_native_Libraries_AppState_NativeAppState = __esm({
+	"NativeAppState.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeAppState();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeAppState();
+		
+	
+	_default$94=_default$93;
+		_default$94 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeAppState(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeAppState)).default;
+	
+	}
+});
+//#endregion
+//#region AppState.js
+var exports_react_native_Libraries_AppState_AppState = {};
+var AppStateImpl, AppState;
+__export(exports_react_native_Libraries_AppState_AppState, {
+	"default": function() { return AppState; },
+});
+var init_react_native_Libraries_AppState_AppState = __esm({
+	"AppState.js"() {
+	init_class_call_check();
+	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
+	init_react_native_Libraries_Utilities_logError();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_AppState_NativeAppState();
+		
+	
+	
+	
+	
+	AppStateImpl = (function() {
+		function AppStateImpl() {
+			__classCallCheck(this, AppStateImpl);
+			this.currentState = null;
+			var _this = this;
+			if (_default$93 == null) {
+				this.isAvailable = false;
+			} else {
+				this.isAvailable = true;
+				var emitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$93);
+				this._emitter = emitter;
+				this.currentState = _default$93.getConstants().initialAppState;
+				var eventUpdated = false;
+				emitter.addListener("appStateDidChange", function(appStateData) {
+					eventUpdated = true;
+					_this.currentState = appStateData.app_state;
+				});
+				_default$93.getCurrentAppState(function(appStateData) {
+					if (!eventUpdated && _this.currentState !== appStateData.app_state) {
+						_this.currentState = appStateData.app_state;
+						emitter.emit("appStateDidChange", appStateData);
+					}
+				}, logError);
+			}
+		}
+		Object.defineProperty(AppStateImpl.prototype, "addEventListener", { configurable: true, writable: true, value: function(type,handler) {
+			var emitter = this._emitter;
+			if (emitter == null) {
+				throw new Error("Cannot use AppState when `isAvailable` is false.");
+			}
+			switch (type) {
+				case "change":
+					var changeHandler = handler;
+					return emitter.addListener("appStateDidChange", function(appStateData) {
+						changeHandler(appStateData.app_state);
+					});
+				case "memoryWarning":
+					var memoryWarningHandler = handler;
+					return emitter.addListener("memoryWarning", memoryWarningHandler);
+				case "blur":
+				case "focus":
+					var focusOrBlurHandler = handler;
+					return emitter.addListener("appStateFocusChange", function(hasFocus) {
+						if (type === "blur" && !hasFocus) {
+							focusOrBlurHandler();
+						}
+						if (type === "focus" && hasFocus) {
+							focusOrBlurHandler();
+						}
+					});
+			}
+			throw new Error("Trying to subscribe to unknown event: " + type);
+		} });
+		return AppStateImpl;
+	})();
+	AppState = new AppStateImpl();
+	;
+	
+	
+	}
+});
+//#endregion
+//#region NativeClipboard.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard = {};
+var TurboModuleRegistry$35, _default$95;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard, {
+	"default": function() { return _default$95; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard = __esm({
+	"NativeClipboard.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$35=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$95=getEnforcing("Clipboard");
+	
+	}
+});
+//#endregion
+//#region NativeClipboard.js
+var exports_react_native_Libraries_Components_Clipboard_NativeClipboard = {};
+var _default$96;
+__export(exports_react_native_Libraries_Components_Clipboard_NativeClipboard, {
+	"default": function() { return _default$96; },
+});
+var init_react_native_Libraries_Components_Clipboard_NativeClipboard = __esm({
+	"NativeClipboard.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard();
+		
+	
+		_default$96 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeClipboard)).default;
+	
+	}
+});
+//#endregion
+//#region Clipboard.js
+var exports_react_native_Libraries_Components_Clipboard_Clipboard = {};
+var _default$97;
+__export(exports_react_native_Libraries_Components_Clipboard_Clipboard, {
+	"default": function() { return _default$97; },
+});
+var init_react_native_Libraries_Components_Clipboard_Clipboard = __esm({
+	"Clipboard.js"() {
+	init_react_native_Libraries_Components_Clipboard_NativeClipboard();
+		
+	_default$97={ getString() {
+		return _default$95.getString();
+	}, setString(content) {
+		_default$95.setString(content);
+	} };
+	
+	}
+});
+//#endregion
+//#region requireNativeComponent.js
+var exports_react_native_Libraries_ReactNative_requireNativeComponent = {};
+var createReactNativeComponentClass$2, getNativeComponentAttributes$2, requireNativeComponent;
+__export(exports_react_native_Libraries_ReactNative_requireNativeComponent, {
+	"default": function() { return requireNativeComponent; },
+});
+var init_react_native_Libraries_ReactNative_requireNativeComponent = __esm({
+	"requireNativeComponent.js"() {
+	"use strict";
+	createReactNativeComponentClass$2 = (init_react_native_Libraries_Renderer_shims_createReactNativeComponentClass(), __toCommonJS(exports_react_native_Libraries_Renderer_shims_createReactNativeComponentClass)).default;
+	getNativeComponentAttributes$2 = (init_react_native_Libraries_ReactNative_getNativeComponentAttributes(), __toCommonJS(exports_react_native_Libraries_ReactNative_getNativeComponentAttributes)).default;
+	requireNativeComponent = function(uiViewClassName) {
+		return createReactNativeComponentClass$2(uiViewClassName, function() {
+			return getNativeComponentAttributes$2(uiViewClassName);
+		});
+	};
+	
+	
+	}
+});
+//#endregion
+//#region codegenNativeComponent.js
+var exports_react_native_Libraries_Utilities_codegenNativeComponent = {};
+var codegenNativeComponent;
+__export(exports_react_native_Libraries_Utilities_codegenNativeComponent, {
+	"default": function() { return codegenNativeComponent; },
+});
+var init_react_native_Libraries_Utilities_codegenNativeComponent = __esm({
+	"codegenNativeComponent.js"() {
+	codegenNativeComponent = function(componentName,options) {
+		if (global.RN$Bridgeless === true && false) {
+			console.warn(`Codegen didn't run for ${componentName}. This will be an error in the future. Make sure you are using @react-native/babel-preset when building your JavaScript code.`);
+		}
+		var componentNameInUse = options && options.paperComponentName != null ? options.paperComponentName : componentName;
+		if (options != null && options.paperComponentNameDeprecated != null) {
+			if (UIManager.hasViewManagerConfig(componentName)) {
+				componentNameInUse = componentName;
+			} else if (options.paperComponentNameDeprecated != null && UIManager.hasViewManagerConfig(options.paperComponentNameDeprecated)) {
+				componentNameInUse = options.paperComponentNameDeprecated;
+			} else {
+				throw new Error(`Failed to find native component for either ${componentName} or ${options.paperComponentNameDeprecated ?? "(unknown)"}`);
+			}
+		}
+		return requireNativeComponent(componentNameInUse);
+	};
+		init_react_native_Libraries_ReactNative_requireNativeComponent();
+	init_react_native_Libraries_ReactNative_UIManager();
+		
+	
+	
+	
+	}
+});
+//#endregion
+//#region DeviceInfo.js
+var exports_react_native_Libraries_Utilities_DeviceInfo = {};
+var _default$98;
+__export(exports_react_native_Libraries_Utilities_DeviceInfo, {
+	"default": function() { return _default$98; },
+});
+var init_react_native_Libraries_Utilities_DeviceInfo = __esm({
+	"DeviceInfo.js"() {
+	init_react_native_Libraries_Utilities_NativeDeviceInfo();
+		init_react_native_Libraries_Utilities_NativeDeviceInfo();
+		
+	_default$98=NativeDeviceInfo;
+		_default$98 = (init_react_native_Libraries_Utilities_NativeDeviceInfo(), __toCommonJS(exports_react_native_Libraries_Utilities_NativeDeviceInfo)).default;
+	
+	}
+});
+//#endregion
+//#region NativeDevMenu.js
+var exports_react_native_src_private_devsupport_devmenu_specs_NativeDevMenu = {};
+var TurboModuleRegistry$36, _default$99;
+__export(exports_react_native_src_private_devsupport_devmenu_specs_NativeDevMenu, {
+	"default": function() { return _default$99; },
+});
+var init_react_native_src_private_devsupport_devmenu_specs_NativeDevMenu = __esm({
+	"NativeDevMenu.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$36=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$99=getEnforcing("DevMenu");
+	
+	}
+});
+//#endregion
+//#region DevMenu.js
+var exports_react_native_src_private_devsupport_devmenu_DevMenu = {};
+var DevMenu;
+__export(exports_react_native_src_private_devsupport_devmenu_DevMenu, {
+	"default": function() { return DevMenu; },
+});
+var init_react_native_src_private_devsupport_devmenu_DevMenu = __esm({
+	"DevMenu.js"() {
+	init_react_native_src_private_devsupport_devmenu_specs_NativeDevMenu();
+		
+	DevMenu = { show() {
+		;
+	} };
+	
+	
+	}
+});
+//#endregion
+//#region NativeDevSettings.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings = {};
+var TurboModuleRegistry$37, _default$100;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings, {
+	"default": function() { return _default$100; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings = __esm({
+	"NativeDevSettings.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$37=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$100=getEnforcing("DevSettings");
+	
+	}
+});
+//#endregion
+//#region NativeDevSettings.js
+var exports_react_native_Libraries_NativeModules_specs_NativeDevSettings = {};
+var _default$101;
+__export(exports_react_native_Libraries_NativeModules_specs_NativeDevSettings, {
+	"default": function() { return _default$101; },
+});
+var init_react_native_Libraries_NativeModules_specs_NativeDevSettings = __esm({
+	"NativeDevSettings.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings();
+		
+	
+	_default$101=_default$100;
+		_default$101 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeDevSettings)).default;
+	
+	}
+});
+//#endregion
+//#region DevSettings.js
+var exports_react_native_Libraries_Utilities_DevSettings = {};
+var DevSettings;
+__export(exports_react_native_Libraries_Utilities_DevSettings, {
+	"default": function() { return DevSettings; },
+});
+var init_react_native_Libraries_Utilities_DevSettings = __esm({
+	"DevSettings.js"() {
+	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
+	init_react_native_Libraries_NativeModules_specs_NativeDevSettings();
+	init_react_native_Libraries_Utilities_Platform_ios();
+		
+	
+	
+	DevSettings = { addMenuItem(title,handler) {
+	}, reload(reason) {
+	}, onFastRefresh() {
+	} };
+	;
+	
+	
+	}
+});
+//#endregion
+//#region PlatformColorValueTypesIOS.ios.js
+var exports_react_native_Libraries_StyleSheet_PlatformColorValueTypesIOS_ios = {};
+var DynamicColorIOS;
+__export(exports_react_native_Libraries_StyleSheet_PlatformColorValueTypesIOS_ios, {
+	DynamicColorIOS: function() { return DynamicColorIOS; },
+});
+var init_react_native_Libraries_StyleSheet_PlatformColorValueTypesIOS_ios = __esm({
+	"PlatformColorValueTypesIOS.ios.js"() {
+	init_react_native_Libraries_StyleSheet_PlatformColorValueTypes_ios();
+		
+	DynamicColorIOS = function(tuple) {
+		return DynamicColorIOSPrivate({ light: tuple.light, dark: tuple.dark, highContrastLight: tuple.highContrastLight, highContrastDark: tuple.highContrastDark });
+	};
+	
+	}
+});
+//#endregion
+//#region InteractionManager.js
+var exports_react_native_Libraries_Interaction_InteractionManager = {};
+var invariant$46, reject, InteractionManagerStub;
+__export(exports_react_native_Libraries_Interaction_InteractionManager, {
+	"default": function() { return InteractionManagerStub; },
+});
+var init_react_native_Libraries_Interaction_InteractionManager = __esm({
+	"InteractionManager.js"() {
+	reject = function(error) {
+		setTimeout(function() {
+			throw error;
+		}, 0);
+	};
+		invariant$46 = require_invariant_browser();
+	InteractionManagerStub = { Events: { interactionStart: "interactionStart", interactionComplete: "interactionComplete" }, runAfterInteractions(task) {
+		var immediateID = void 0,promise = new Promise(function(resolve) {
+			immediateID = setImmediate(function() {
+				if (typeof task === "object" && task !== null) {
+					if (typeof task.gen === "function") {
+						task.gen().then(resolve, reject);
+					} else if (typeof task.run === "function") {
+						try {
+							task.run();
+							resolve();
+						} catch (error) {
+							reject(error);
+						}
+					} else {
+						reject(new TypeError(`Task "${task.name}" missing gen or run.`));
+					}
+				} else if (typeof task === "function") {
+					try {
+						task();
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				} else {
+					reject(new TypeError("Invalid task of type: " + typeof task));
+				}
+			});
+		});
+		return { then: promise.then.bind(promise), cancel() {
+			clearImmediate(immediateID);
+		} };
+	}, createInteractionHandle() {
+		return -1;
+	}, clearInteractionHandle(handle) {
+		invariant$46(!!handle, "InteractionManager: Must provide a handle to clear.");
+	}, addListener(eventType,listener,context) {
+		return { remove() {
+		} };
+	}, setDeadline(deadline) {
+	} };
+	
+	
+	}
+});
+//#endregion
+//#region NativeIntentAndroid.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid = {};
+var TurboModuleRegistry$38, _default$102;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid, {
+	"default": function() { return _default$102; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid = __esm({
+	"NativeIntentAndroid.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$38=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$102=get("IntentAndroid");
+	
+	}
+});
+//#endregion
+//#region NativeIntentAndroid.js
+var exports_react_native_Libraries_Linking_NativeIntentAndroid = {};
+var _default$103;
+__export(exports_react_native_Libraries_Linking_NativeIntentAndroid, {
+	"default": function() { return _default$103; },
+});
+var init_react_native_Libraries_Linking_NativeIntentAndroid = __esm({
+	"NativeIntentAndroid.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid();
+		
+	
+	_default$103=_default$102;
+		_default$103 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeIntentAndroid)).default;
+	
+	}
+});
+//#endregion
+//#region NativeLinkingManager.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeLinkingManager = {};
+var TurboModuleRegistry$39, _default$104;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeLinkingManager, {
+	"default": function() { return _default$104; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeLinkingManager = __esm({
+	"NativeLinkingManager.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$39=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$104=get("LinkingManager");
+	
+	}
+});
+//#endregion
+//#region NativeLinkingManager.js
+var exports_react_native_Libraries_Linking_NativeLinkingManager = {};
+var _default$105;
+__export(exports_react_native_Libraries_Linking_NativeLinkingManager, {
+	"default": function() { return _default$105; },
+});
+var init_react_native_Libraries_Linking_NativeLinkingManager = __esm({
+	"NativeLinkingManager.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeLinkingManager();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeLinkingManager();
+		
+	
+	_default$105=_default$104;
+		_default$105 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeLinkingManager(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeLinkingManager)).default;
+	
+	}
+});
+//#endregion
+//#region Linking.js
+var exports_react_native_Libraries_Linking_Linking = {};
+var LinkingImpl, Linking, invariant$47, nullthrows$14;
+__export(exports_react_native_Libraries_Linking_Linking, {
+	"default": function() { return Linking; },
+});
+var init_react_native_Libraries_Linking_Linking = __esm({
+	"Linking.js"() {
+	init_extends();
+	init_class_call_check();
+	init_call_super();
+	init_derived_constructor();
+	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Linking_NativeIntentAndroid();
+	init_react_native_Libraries_Linking_NativeLinkingManager();
+	invariant$47 = require_invariant_browser();
+	nullthrows$14 = __toESM(require_nullthrows_nullthrows()).default;
+		
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	LinkingImpl = (function(_super) {
+		function LinkingImpl() {
+			__classCallCheck(this, LinkingImpl);
+			var _newTarget = this.constructor,_this;
+			;
+			__assertThisUninitialized(_this),_this = __callSuper(_super, [Platform.OS === "ios" ? nullthrows$14(_default$104) : undefined], _newTarget);
+			return __assertThisInitialized(_this);
+		}
+		__extends(LinkingImpl, _super);
+		Object.defineProperty(LinkingImpl.prototype, "addEventListener", { configurable: true, writable: true, value: function(eventType,listener) {
+			return this.addListener(eventType, listener);
+		} });
+		Object.defineProperty(LinkingImpl.prototype, "openURL", { configurable: true, writable: true, value: function(url) {
+			this._validateURL(url);
+			if (Platform.OS === "android") {
+				return nullthrows$14(_default$102).openURL(url);
+			} else {
+				return nullthrows$14(_default$104).openURL(url);
+			}
+		} });
+		Object.defineProperty(LinkingImpl.prototype, "canOpenURL", { configurable: true, writable: true, value: function(url) {
+			this._validateURL(url);
+			if (Platform.OS === "android") {
+				return nullthrows$14(_default$102).canOpenURL(url);
+			} else {
+				return nullthrows$14(_default$104).canOpenURL(url);
+			}
+		} });
+		Object.defineProperty(LinkingImpl.prototype, "openSettings", { configurable: true, writable: true, value: function() {
+			if (Platform.OS === "android") {
+				return nullthrows$14(_default$102).openSettings();
+			} else {
+				return nullthrows$14(_default$104).openSettings();
+			}
+		} });
+		Object.defineProperty(LinkingImpl.prototype, "getInitialURL", { configurable: true, writable: true, value: function() {
+			return Platform.OS === "android" ? nullthrows$14(_default$102).getInitialURL() : nullthrows$14(_default$104).getInitialURL();
+		} });
+		Object.defineProperty(LinkingImpl.prototype, "sendIntent", { configurable: true, writable: true, value: function(action,extras) {
+			if (Platform.OS === "android") {
+				return nullthrows$14(_default$102).sendIntent(action, extras);
+			} else {
+				return new Promise(function(resolve,reject) {
+					return reject(new Error("Unsupported"));
+				});
+			}
+		} });
+		Object.defineProperty(LinkingImpl.prototype, "_validateURL", { configurable: true, writable: true, value: function(url) {
+			invariant$47(typeof url === "string", "Invalid URL: should be a string. Was: " + url);
+			invariant$47(url, "Invalid URL: cannot be empty");
+		} });
+		return LinkingImpl;
+	})(NativeEventEmitter);
+	Linking = new LinkingImpl();
+	;
+	
+	
+	}
+});
+//#endregion
+//#region LogBox.js
+var exports_react_native_Libraries_LogBox_LogBox = {};
+var LogBox, React$61;
+__export(exports_react_native_Libraries_LogBox_LogBox, {
+	"default": function() { return LogBox; },
+});
+var init_react_native_Libraries_LogBox_LogBox = __esm({
+	"LogBox.js"() {
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_Utilities_RCTLog();
+	React$61 = __toESM(require_react_index());
+		
+	
+	
+	LogBox = void 0;
+	{
+		LogBox = { install() {
+		}, uninstall() {
+		}, isInstalled() {
+			return false;
+		}, ignoreLogs(patterns) {
+		}, ignoreAllLogs(value) {
+		}, clearAllLogs() {
+		}, addLog(log) {
+		}, addConsoleLog(level,...args) {
+		}, addException(error) {
+		} };
+	}
+	
+	
+	}
+});
+//#endregion
+//#region TouchHistoryMath.js
+var exports_react_native_Libraries_Interaction_TouchHistoryMath = {};
+var TouchHistoryMath;
+__export(exports_react_native_Libraries_Interaction_TouchHistoryMath, {
+	"default": function() { return TouchHistoryMath; },
+});
+var init_react_native_Libraries_Interaction_TouchHistoryMath = __esm({
+	"TouchHistoryMath.js"() {
+	TouchHistoryMath = { centroidDimension: function(touchHistory,touchesChangedAfter,isXAxis,ofCurrent) {
+		var touchBank = touchHistory.touchBank,total = 0,count = 0,oneTouchData = touchHistory.numberActiveTouches === 1 ? touchHistory.touchBank[touchHistory.indexOfSingleActiveTouch] : null;
+		if (oneTouchData !== null) {
+			if (oneTouchData.touchActive && oneTouchData.currentTimeStamp > touchesChangedAfter) {
+				total += ofCurrent && isXAxis ? oneTouchData.currentPageX : ofCurrent && !isXAxis ? oneTouchData.currentPageY : !ofCurrent && isXAxis ? oneTouchData.previousPageX : oneTouchData.previousPageY;
+				count = 1;
+			}
+		} else {
+			for (var i = 0; i < touchBank.length; i++) {
+				var touchTrack = touchBank[i];
+				if (touchTrack !== null && touchTrack !== undefined && touchTrack.touchActive && touchTrack.currentTimeStamp >= touchesChangedAfter) {
+					var toAdd = void 0;
+					if (ofCurrent && isXAxis) {
+						toAdd = touchTrack.currentPageX;
+					} else if (ofCurrent && !isXAxis) {
+						toAdd = touchTrack.currentPageY;
+					} else if (!ofCurrent && isXAxis) {
+						toAdd = touchTrack.previousPageX;
+					} else {
+						toAdd = touchTrack.previousPageY;
+					}
+					total += toAdd;
+					count++;
+				}
+			}
+		}
+		return count > 0 ? total / count : TouchHistoryMath.noCentroid;
+	}, currentCentroidXOfTouchesChangedAfter: function(touchHistory,touchesChangedAfter) {
+		return TouchHistoryMath.centroidDimension(touchHistory, touchesChangedAfter, true, true);
+	}, currentCentroidYOfTouchesChangedAfter: function(touchHistory,touchesChangedAfter) {
+		return TouchHistoryMath.centroidDimension(touchHistory, touchesChangedAfter, false, true);
+	}, previousCentroidXOfTouchesChangedAfter: function(touchHistory,touchesChangedAfter) {
+		return TouchHistoryMath.centroidDimension(touchHistory, touchesChangedAfter, true, false);
+	}, previousCentroidYOfTouchesChangedAfter: function(touchHistory,touchesChangedAfter) {
+		return TouchHistoryMath.centroidDimension(touchHistory, touchesChangedAfter, false, false);
+	}, currentCentroidX: function(touchHistory) {
+		return TouchHistoryMath.centroidDimension(touchHistory, 0, true, true);
+	}, currentCentroidY: function(touchHistory) {
+		return TouchHistoryMath.centroidDimension(touchHistory, 0, false, true);
+	}, noCentroid: -1 };
+	
+	
+	}
+});
+//#endregion
+//#region PanResponder.js
+var exports_react_native_Libraries_Interaction_PanResponder = {};
+var TouchHistoryMath$1, currentCentroidXOfTouchesChangedAfter, currentCentroidYOfTouchesChangedAfter, previousCentroidXOfTouchesChangedAfter, previousCentroidYOfTouchesChangedAfter, currentCentroidX, currentCentroidY, PanResponder;
+__export(exports_react_native_Libraries_Interaction_PanResponder, {
+	"default": function() { return PanResponder; },
+});
+var init_react_native_Libraries_Interaction_PanResponder = __esm({
+	"PanResponder.js"() {
+	"use strict";
+	TouchHistoryMath$1 = (init_react_native_Libraries_Interaction_TouchHistoryMath(), __toCommonJS(exports_react_native_Libraries_Interaction_TouchHistoryMath)).default;
+	currentCentroidXOfTouchesChangedAfter = TouchHistoryMath$1.currentCentroidXOfTouchesChangedAfter;
+	currentCentroidYOfTouchesChangedAfter = TouchHistoryMath$1.currentCentroidYOfTouchesChangedAfter;
+	previousCentroidXOfTouchesChangedAfter = TouchHistoryMath$1.previousCentroidXOfTouchesChangedAfter;
+	previousCentroidYOfTouchesChangedAfter = TouchHistoryMath$1.previousCentroidYOfTouchesChangedAfter;
+	currentCentroidX = TouchHistoryMath$1.currentCentroidX;
+	currentCentroidY = TouchHistoryMath$1.currentCentroidY;
+	PanResponder = { _initializeGestureState(gestureState) {
+		gestureState.moveX = 0;
+		gestureState.moveY = 0;
+		gestureState.x0 = 0;
+		gestureState.y0 = 0;
+		gestureState.dx = 0;
+		gestureState.dy = 0;
+		gestureState.vx = 0;
+		gestureState.vy = 0;
+		gestureState.numberActiveTouches = 0;
+		gestureState._accountsForMovesUpTo = 0;
+	}, _updateGestureStateOnMove(gestureState,touchHistory) {
+		gestureState.numberActiveTouches = touchHistory.numberActiveTouches;
+		gestureState.moveX = currentCentroidXOfTouchesChangedAfter(touchHistory, gestureState._accountsForMovesUpTo);
+		gestureState.moveY = currentCentroidYOfTouchesChangedAfter(touchHistory, gestureState._accountsForMovesUpTo);
+		var movedAfter = gestureState._accountsForMovesUpTo,prevX = previousCentroidXOfTouchesChangedAfter(touchHistory, movedAfter),x = currentCentroidXOfTouchesChangedAfter(touchHistory, movedAfter),prevY = previousCentroidYOfTouchesChangedAfter(touchHistory, movedAfter),y = currentCentroidYOfTouchesChangedAfter(touchHistory, movedAfter),nextDX = gestureState.dx + (x - prevX),nextDY = gestureState.dy + (y - prevY),dt = touchHistory.mostRecentTimeStamp - gestureState._accountsForMovesUpTo;
+		gestureState.vx = (nextDX - gestureState.dx) / dt;
+		gestureState.vy = (nextDY - gestureState.dy) / dt;
+		gestureState.dx = nextDX;
+		gestureState.dy = nextDY;
+		gestureState._accountsForMovesUpTo = touchHistory.mostRecentTimeStamp;
+	}, create(config) {
+		var gestureState = { stateID: Math.random(), moveX: 0, moveY: 0, x0: 0, y0: 0, dx: 0, dy: 0, vx: 0, vy: 0, numberActiveTouches: 0, _accountsForMovesUpTo: 0 },panHandlers = { onStartShouldSetResponder(event) {
+			return config.onStartShouldSetPanResponder == null ? false : config.onStartShouldSetPanResponder(event, gestureState);
+		}, onMoveShouldSetResponder(event) {
+			return config.onMoveShouldSetPanResponder == null ? false : config.onMoveShouldSetPanResponder(event, gestureState);
+		}, onStartShouldSetResponderCapture(event) {
+			if (event.nativeEvent.touches.length === 1) {
+				PanResponder._initializeGestureState(gestureState);
+			}
+			gestureState.numberActiveTouches = event.touchHistory.numberActiveTouches;
+			return config.onStartShouldSetPanResponderCapture != null ? config.onStartShouldSetPanResponderCapture(event, gestureState) : false;
+		}, onMoveShouldSetResponderCapture(event) {
+			var touchHistory = event.touchHistory;
+			if (gestureState._accountsForMovesUpTo === touchHistory.mostRecentTimeStamp) {
+				return false;
+			}
+			PanResponder._updateGestureStateOnMove(gestureState, touchHistory);
+			return config.onMoveShouldSetPanResponderCapture ? config.onMoveShouldSetPanResponderCapture(event, gestureState) : false;
+		}, onResponderGrant(event) {
+			gestureState.x0 = currentCentroidX(event.touchHistory);
+			gestureState.y0 = currentCentroidY(event.touchHistory);
+			gestureState.dx = 0;
+			gestureState.dy = 0;
+			if (config.onPanResponderGrant) {
+				config.onPanResponderGrant(event, gestureState);
+			}
+			return config.onShouldBlockNativeResponder == null ? true : config.onShouldBlockNativeResponder(event, gestureState);
+		}, onResponderReject(event) {
+			config.onPanResponderReject?.call(undefined, event, gestureState);
+		}, onResponderRelease(event) {
+			config.onPanResponderRelease?.call(undefined, event, gestureState);
+			PanResponder._initializeGestureState(gestureState);
+		}, onResponderStart(event) {
+			var touchHistory = event.touchHistory;
+			gestureState.numberActiveTouches = touchHistory.numberActiveTouches;
+			if (config.onPanResponderStart) {
+				config.onPanResponderStart(event, gestureState);
+			}
+		}, onResponderMove(event) {
+			var touchHistory = event.touchHistory;
+			if (gestureState._accountsForMovesUpTo === touchHistory.mostRecentTimeStamp) {
+				return;
+			}
+			PanResponder._updateGestureStateOnMove(gestureState, touchHistory);
+			if (config.onPanResponderMove) {
+				config.onPanResponderMove(event, gestureState);
+			}
+		}, onResponderEnd(event) {
+			var touchHistory = event.touchHistory;
+			gestureState.numberActiveTouches = touchHistory.numberActiveTouches;
+			config.onPanResponderEnd?.call(undefined, event, gestureState);
+		}, onResponderTerminate(event) {
+			config.onPanResponderTerminate?.call(undefined, event, gestureState);
+			PanResponder._initializeGestureState(gestureState);
+		}, onResponderTerminationRequest(event) {
+			return config.onPanResponderTerminationRequest == null ? true : config.onPanResponderTerminationRequest(event, gestureState);
+		} };
+		return { panHandlers, getInteractionHandle() {
+			return null;
+		} };
+	} };
+	
+	
+	}
+});
+//#endregion
+//#region NativePermissionsAndroid.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativePermissionsAndroid = {};
+var TurboModuleRegistry$40, _default$106;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativePermissionsAndroid, {
+	"default": function() { return _default$106; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativePermissionsAndroid = __esm({
+	"NativePermissionsAndroid.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$40=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$106=get("PermissionsAndroid");
+	
+	}
+});
+//#endregion
+//#region NativePermissionsAndroid.js
+var exports_react_native_Libraries_PermissionsAndroid_NativePermissionsAndroid = {};
+var _default$107;
+__export(exports_react_native_Libraries_PermissionsAndroid_NativePermissionsAndroid, {
+	"default": function() { return _default$107; },
+});
+var init_react_native_Libraries_PermissionsAndroid_NativePermissionsAndroid = __esm({
+	"NativePermissionsAndroid.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativePermissionsAndroid();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativePermissionsAndroid();
+		
+	
+	_default$107=_default$106;
+		_default$107 = (init_react_native_src_private_specs_DEPRECATED_modules_NativePermissionsAndroid(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativePermissionsAndroid)).default;
+	
+	}
+});
+//#endregion
+//#region PermissionsAndroid.js
+var exports_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = {};
+var Platform$51, PERMISSION_REQUEST_RESULT, PERMISSIONS, PermissionsAndroidImpl, PermissionsAndroidInstance, invariant$48;
+__export(exports_react_native_Libraries_PermissionsAndroid_PermissionsAndroid, {
+	"default": function() { return PermissionsAndroidInstance; },
+});
+var init_react_native_Libraries_PermissionsAndroid_PermissionsAndroid = __esm({
+	"PermissionsAndroid.js"() {
+	init_async();
+	init_generator();
+	init_class_call_check();
+	init_react_native_Libraries_NativeModules_specs_NativeDialogManagerAndroid();
+	init_react_native_Libraries_PermissionsAndroid_NativePermissionsAndroid();
+	invariant$48 = require_invariant_browser();
+		
+	
+	
+	
+	
+	
+	Platform$51 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	PERMISSION_REQUEST_RESULT = Object.freeze({ GRANTED: "granted", DENIED: "denied", NEVER_ASK_AGAIN: "never_ask_again" });
+	PERMISSIONS = Object.freeze({ READ_CALENDAR: "android.permission.READ_CALENDAR", WRITE_CALENDAR: "android.permission.WRITE_CALENDAR", CAMERA: "android.permission.CAMERA", READ_CONTACTS: "android.permission.READ_CONTACTS", WRITE_CONTACTS: "android.permission.WRITE_CONTACTS", GET_ACCOUNTS: "android.permission.GET_ACCOUNTS", ACCESS_FINE_LOCATION: "android.permission.ACCESS_FINE_LOCATION", ACCESS_COARSE_LOCATION: "android.permission.ACCESS_COARSE_LOCATION", ACCESS_BACKGROUND_LOCATION: "android.permission.ACCESS_BACKGROUND_LOCATION", RECORD_AUDIO: "android.permission.RECORD_AUDIO", READ_PHONE_STATE: "android.permission.READ_PHONE_STATE", CALL_PHONE: "android.permission.CALL_PHONE", READ_CALL_LOG: "android.permission.READ_CALL_LOG", WRITE_CALL_LOG: "android.permission.WRITE_CALL_LOG", ADD_VOICEMAIL: "com.android.voicemail.permission.ADD_VOICEMAIL", READ_VOICEMAIL: "com.android.voicemail.permission.READ_VOICEMAIL", WRITE_VOICEMAIL: "com.android.voicemail.permission.WRITE_VOICEMAIL", USE_SIP: "android.permission.USE_SIP", PROCESS_OUTGOING_CALLS: "android.permission.PROCESS_OUTGOING_CALLS", BODY_SENSORS: "android.permission.BODY_SENSORS", BODY_SENSORS_BACKGROUND: "android.permission.BODY_SENSORS_BACKGROUND", SEND_SMS: "android.permission.SEND_SMS", RECEIVE_SMS: "android.permission.RECEIVE_SMS", READ_SMS: "android.permission.READ_SMS", RECEIVE_WAP_PUSH: "android.permission.RECEIVE_WAP_PUSH", RECEIVE_MMS: "android.permission.RECEIVE_MMS", READ_EXTERNAL_STORAGE: "android.permission.READ_EXTERNAL_STORAGE", READ_MEDIA_IMAGES: "android.permission.READ_MEDIA_IMAGES", READ_MEDIA_VIDEO: "android.permission.READ_MEDIA_VIDEO", READ_MEDIA_AUDIO: "android.permission.READ_MEDIA_AUDIO", READ_MEDIA_VISUAL_USER_SELECTED: "android.permission.READ_MEDIA_VISUAL_USER_SELECTED", WRITE_EXTERNAL_STORAGE: "android.permission.WRITE_EXTERNAL_STORAGE", BLUETOOTH_CONNECT: "android.permission.BLUETOOTH_CONNECT", BLUETOOTH_SCAN: "android.permission.BLUETOOTH_SCAN", BLUETOOTH_ADVERTISE: "android.permission.BLUETOOTH_ADVERTISE", ACCESS_MEDIA_LOCATION: "android.permission.ACCESS_MEDIA_LOCATION", ACCEPT_HANDOVER: "android.permission.ACCEPT_HANDOVER", ACTIVITY_RECOGNITION: "android.permission.ACTIVITY_RECOGNITION", ANSWER_PHONE_CALLS: "android.permission.ANSWER_PHONE_CALLS", READ_PHONE_NUMBERS: "android.permission.READ_PHONE_NUMBERS", UWB_RANGING: "android.permission.UWB_RANGING", POST_NOTIFICATIONS: "android.permission.POST_NOTIFICATIONS", NEARBY_WIFI_DEVICES: "android.permission.NEARBY_WIFI_DEVICES" });
+	PermissionsAndroidImpl = (function() {
+		function PermissionsAndroidImpl() {
+			__classCallCheck(this, PermissionsAndroidImpl);
+			this.PERMISSIONS = PERMISSIONS;
+			this.RESULTS = PERMISSION_REQUEST_RESULT;
+		}
+		Object.defineProperty(PermissionsAndroidImpl.prototype, "checkPermission", { configurable: true, writable: true, value: function(permission) {
+			console.warn("\"PermissionsAndroid.checkPermission\" is deprecated. Use \"PermissionsAndroid.check\" instead");
+			if (Platform$51.OS !== "android") {
+				console.warn("\"PermissionsAndroid\" module works only for Android platform.");
+				return Promise.resolve(false);
+			}
+			invariant$48(_default$106, "PermissionsAndroid is not installed correctly.");
+			return _default$106.checkPermission(permission);
+		} });
+		Object.defineProperty(PermissionsAndroidImpl.prototype, "check", { configurable: true, writable: true, value: function(permission) {
+			if (Platform$51.OS !== "android") {
+				console.warn("\"PermissionsAndroid\" module works only for Android platform.");
+				return Promise.resolve(false);
+			}
+			invariant$48(_default$106, "PermissionsAndroid is not installed correctly.");
+			return _default$106.checkPermission(permission);
+		} });
+		Object.defineProperty(PermissionsAndroidImpl.prototype, "requestPermission", { configurable: true, writable: true, value: function(permission,rationale) {
+			var response;
+			return __async(function() {
+				return __generator(this, function(_state) {
+					switch (_state.label) {
+						case 0:
+							console.warn("\"PermissionsAndroid.requestPermission\" is deprecated. Use \"PermissionsAndroid.request\" instead");
+							if (!(Platform$51.OS !== "android")) {
+								return [3, 1];
+							}
+							console.warn("\"PermissionsAndroid\" module works only for Android platform.");
+							return [2, Promise.resolve(false)];
+						case 1:
+							return [4, this.request(permission, rationale)];
+						case 2:
+							response = _state.sent();
+							return [2, response === this.RESULTS.GRANTED];
+					}
+				});
+			}).call(this);
+		} });
+		Object.defineProperty(PermissionsAndroidImpl.prototype, "request", { configurable: true, writable: true, value: function(permission,rationale) {
+			var shouldShowRationale;
+			return __async(function() {
+				return __generator(this, function(_state) {
+					switch (_state.label) {
+						case 0:
+							if (!(Platform$51.OS !== "android")) {
+								return [3, 1];
+							}
+							console.warn("\"PermissionsAndroid\" module works only for Android platform.");
+							return [2, Promise.resolve(this.RESULTS.DENIED)];
+						case 1:
+							invariant$48(_default$106, "PermissionsAndroid is not installed correctly.");
+							if (!(rationale)) {
+								return [3, 4];
+							}
+							return [4, _default$106.shouldShowRequestPermissionRationale(permission)];
+						case 2:
+							shouldShowRationale = _state.sent();
+							if (!(shouldShowRationale && !!_default$28)) {
+								return [3, 3];
+							}
+							return [2, new Promise(function(resolve,reject) {
+								var options = { ...rationale };
+								_default$28.showAlert(options, function() {
+									return reject(new Error("Error showing rationale"));
+								}, function() {
+									return resolve(_default$106.requestPermission(permission));
+								});
+							})];
+						case 3:
+							return [3, 4];
+						case 4:
+							return [2, _default$106.requestPermission(permission)];
+					}
+				});
+			}).call(this);
+		} });
+		Object.defineProperty(PermissionsAndroidImpl.prototype, "requestMultiple", { configurable: true, writable: true, value: function(permissions) {
+			if (Platform$51.OS !== "android") {
+				console.warn("\"PermissionsAndroid\" module works only for Android platform.");
+				return Promise.resolve({});
+			}
+			invariant$48(_default$106, "PermissionsAndroid is not installed correctly.");
+			return _default$106.requestMultiplePermissions(permissions);
+		} });
+		return PermissionsAndroidImpl;
+	})();
+	PermissionsAndroidInstance = new PermissionsAndroidImpl();
+	;
+	;
+	;
+	;
+	
+	
+	}
+});
+//#endregion
+//#region NativePushNotificationManagerIOS.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativePushNotificationManagerIOS = {};
+var TurboModuleRegistry$41, _default$108;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativePushNotificationManagerIOS, {
+	"default": function() { return _default$108; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativePushNotificationManagerIOS = __esm({
+	"NativePushNotificationManagerIOS.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$41=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$108=get("PushNotificationManager");
+	
+	}
+});
+//#endregion
+//#region NativePushNotificationManagerIOS.js
+var exports_react_native_Libraries_PushNotificationIOS_NativePushNotificationManagerIOS = {};
+var _default$109;
+__export(exports_react_native_Libraries_PushNotificationIOS_NativePushNotificationManagerIOS, {
+	"default": function() { return _default$109; },
+});
+var init_react_native_Libraries_PushNotificationIOS_NativePushNotificationManagerIOS = __esm({
+	"NativePushNotificationManagerIOS.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativePushNotificationManagerIOS();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativePushNotificationManagerIOS();
+		
+	
+	_default$109=_default$108;
+		_default$109 = (init_react_native_src_private_specs_DEPRECATED_modules_NativePushNotificationManagerIOS(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativePushNotificationManagerIOS)).default;
+	
+	}
+});
+//#endregion
+//#region PushNotificationIOS.js
+var exports_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = {};
+var PushNotificationEmitter, _notifHandlers, DEVICE_NOTIF_EVENT, NOTIF_REGISTER_EVENT, NOTIF_REGISTRATION_ERROR_EVENT, DEVICE_LOCAL_NOTIF_EVENT, PushNotificationIOS, invariant$49;
+__export(exports_react_native_Libraries_PushNotificationIOS_PushNotificationIOS, {
+	"default": function() { return PushNotificationIOS; },
+});
+var init_react_native_Libraries_PushNotificationIOS_PushNotificationIOS = __esm({
+	"PushNotificationIOS.js"() {
+	init_class_call_check();
+	init_react_native_Libraries_EventEmitter_NativeEventEmitter();
+	init_react_native_Libraries_Utilities_Platform_ios();
+	init_react_native_Libraries_PushNotificationIOS_NativePushNotificationManagerIOS();
+	invariant$49 = require_invariant_browser();
+		
+	
+	
+	
+	
+	PushNotificationEmitter = new NativeEventEmitter(Platform.OS !== "ios" ? null : _default$108);
+	_notifHandlers = new Map();
+	DEVICE_NOTIF_EVENT = "remoteNotificationReceived";
+	NOTIF_REGISTER_EVENT = "remoteNotificationsRegistered";
+	NOTIF_REGISTRATION_ERROR_EVENT = "remoteNotificationRegistrationError";
+	DEVICE_LOCAL_NOTIF_EVENT = "localNotificationReceived";
+	PushNotificationIOS = (function() {
+		function PushNotificationIOS(nativeNotif) {
+			__classCallCheck(this, PushNotificationIOS);
+			var _this = this;
+			this._data = {};
+			this._remoteNotificationCompleteCallbackCalled = false;
+			this._isRemote = nativeNotif.remote;
+			if (this._isRemote) {
+				this._notificationId = nativeNotif.notificationId;
+			}
+			if (nativeNotif.remote) {
+				Object.keys(nativeNotif).forEach(function(notifKey) {
+					var notifVal = nativeNotif[notifKey];
+					if (notifKey === "aps") {
+						_this._alert = notifVal.alert;
+						_this._sound = notifVal.sound;
+						_this._badgeCount = notifVal.badge;
+						_this._category = notifVal.category;
+						_this._contentAvailable = notifVal["content-available"];
+						_this._threadID = notifVal["thread-id"];
+					} else {
+						_this._data[notifKey] = notifVal;
+					}
+				});
+			} else {
+				this._badgeCount = nativeNotif.applicationIconBadgeNumber;
+				this._sound = nativeNotif.soundName;
+				this._alert = nativeNotif.alertBody;
+				this._data = nativeNotif.userInfo;
+				this._category = nativeNotif.category;
+			}
+		}
+		Object.defineProperty(PushNotificationIOS, "presentLocalNotification", { configurable: true, writable: true, value: function(details) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.presentLocalNotification(details);
+		} });
+		Object.defineProperty(PushNotificationIOS, "scheduleLocalNotification", { configurable: true, writable: true, value: function(details) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.scheduleLocalNotification(details);
+		} });
+		Object.defineProperty(PushNotificationIOS, "cancelAllLocalNotifications", { configurable: true, writable: true, value: function() {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.cancelAllLocalNotifications();
+		} });
+		Object.defineProperty(PushNotificationIOS, "removeAllDeliveredNotifications", { configurable: true, writable: true, value: function() {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.removeAllDeliveredNotifications();
+		} });
+		Object.defineProperty(PushNotificationIOS, "getDeliveredNotifications", { configurable: true, writable: true, value: function(callback) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.getDeliveredNotifications(callback);
+		} });
+		Object.defineProperty(PushNotificationIOS, "removeDeliveredNotifications", { configurable: true, writable: true, value: function(identifiers) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.removeDeliveredNotifications(identifiers);
+		} });
+		Object.defineProperty(PushNotificationIOS, "setApplicationIconBadgeNumber", { configurable: true, writable: true, value: function(number) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.setApplicationIconBadgeNumber(number);
+		} });
+		Object.defineProperty(PushNotificationIOS, "getApplicationIconBadgeNumber", { configurable: true, writable: true, value: function(callback) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.getApplicationIconBadgeNumber(callback);
+		} });
+		Object.defineProperty(PushNotificationIOS, "cancelLocalNotifications", { configurable: true, writable: true, value: function(userInfo) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.cancelLocalNotifications(userInfo);
+		} });
+		Object.defineProperty(PushNotificationIOS, "getScheduledLocalNotifications", { configurable: true, writable: true, value: function(callback) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.getScheduledLocalNotifications(callback);
+		} });
+		Object.defineProperty(PushNotificationIOS, "addEventListener", { configurable: true, writable: true, value: function(type,handler) {
+			invariant$49(type === "notification" || type === "register" || type === "registrationError" || type === "localNotification", "PushNotificationIOS only supports `notification`, `register`, `registrationError`, and `localNotification` events");
+			var listener = void 0;
+			if (type === "notification") {
+				listener = PushNotificationEmitter.addListener(DEVICE_NOTIF_EVENT, function(notifData) {
+					handler(new PushNotificationIOS(notifData));
+				});
+			} else if (type === "localNotification") {
+				listener = PushNotificationEmitter.addListener(DEVICE_LOCAL_NOTIF_EVENT, function(notifData) {
+					handler(new PushNotificationIOS(notifData));
+				});
+			} else if (type === "register") {
+				listener = PushNotificationEmitter.addListener(NOTIF_REGISTER_EVENT, function(registrationInfo) {
+					handler(registrationInfo.deviceToken);
+				});
+			} else if (type === "registrationError") {
+				listener = PushNotificationEmitter.addListener(NOTIF_REGISTRATION_ERROR_EVENT, function(errorInfo) {
+					handler(errorInfo);
+				});
+			}
+			_notifHandlers.set(type, listener);
+		} });
+		Object.defineProperty(PushNotificationIOS, "removeEventListener", { configurable: true, writable: true, value: function(type) {
+			invariant$49(type === "notification" || type === "register" || type === "registrationError" || type === "localNotification", "PushNotificationIOS only supports `notification`, `register`, `registrationError`, and `localNotification` events");
+			var listener = _notifHandlers.get(type);
+			if (!listener) {
+				return;
+			}
+			listener.remove();
+			_notifHandlers.delete(type);
+		} });
+		Object.defineProperty(PushNotificationIOS, "requestPermissions", { configurable: true, writable: true, value: function(permissions) {
+			var requestedPermissions = { alert: true, badge: true, sound: true };
+			if (permissions) {
+				requestedPermissions = { alert: !!permissions.alert, badge: !!permissions.badge, sound: !!permissions.sound };
+			}
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			return _default$108.requestPermissions(requestedPermissions);
+		} });
+		Object.defineProperty(PushNotificationIOS, "abandonPermissions", { configurable: true, writable: true, value: function() {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.abandonPermissions();
+		} });
+		Object.defineProperty(PushNotificationIOS, "checkPermissions", { configurable: true, writable: true, value: function(callback) {
+			invariant$49(typeof callback === "function", "Must provide a valid callback");
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.checkPermissions(callback);
+		} });
+		Object.defineProperty(PushNotificationIOS, "getInitialNotification", { configurable: true, writable: true, value: function() {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			return _default$108.getInitialNotification().then(function(notification) {
+				return notification && new PushNotificationIOS(notification);
+			});
+		} });
+		Object.defineProperty(PushNotificationIOS, "getAuthorizationStatus", { configurable: true, writable: true, value: function(callback) {
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.getAuthorizationStatus(callback);
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "finish", { configurable: true, writable: true, value: function(fetchResult) {
+			if (!this._isRemote || !this._notificationId || this._remoteNotificationCompleteCallbackCalled) {
+				return;
+			}
+			this._remoteNotificationCompleteCallbackCalled = true;
+			invariant$49(_default$108, "PushNotificationManager is not available.");
+			_default$108.onFinishRemoteNotification(this._notificationId, fetchResult);
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "getMessage", { configurable: true, writable: true, value: function() {
+			return this._alert;
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "getSound", { configurable: true, writable: true, value: function() {
+			return this._sound;
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "getCategory", { configurable: true, writable: true, value: function() {
+			return this._category;
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "getAlert", { configurable: true, writable: true, value: function() {
+			return this._alert;
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "getContentAvailable", { configurable: true, writable: true, value: function() {
+			return this._contentAvailable;
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "getBadgeCount", { configurable: true, writable: true, value: function() {
+			return this._badgeCount;
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "getData", { configurable: true, writable: true, value: function() {
+			return this._data;
+		} });
+		Object.defineProperty(PushNotificationIOS.prototype, "getThreadID", { configurable: true, writable: true, value: function() {
+			return this._threadID;
+		} });
+		Object.defineProperty(PushNotificationIOS, "FetchResult", { configurable: true, enumerable: true, writable: true, value: { NewData: "UIBackgroundFetchResultNewData", NoData: "UIBackgroundFetchResultNoData", ResultFailed: "UIBackgroundFetchResultFailed" } });
+		return PushNotificationIOS;
+	})();
+	;
+	;
+	;
+	;
+	;
+	;
+	
+	
+	}
+});
+//#endregion
 //#region ReactNativeVersion.js
 var exports_react_native_Libraries_Core_ReactNativeVersion = {};
 var ReactNativeVersion, version;
@@ -36784,6 +40406,247 @@ var init_react_native_Libraries_Core_ReactNativeVersion = __esm({
 	}
 });
 //#endregion
+//#region NativeSettingsManager.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeSettingsManager = {};
+var TurboModuleRegistry$42, _default$110;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeSettingsManager, {
+	"default": function() { return _default$110; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeSettingsManager = __esm({
+	"NativeSettingsManager.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$42=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$110=getEnforcing("SettingsManager");
+	
+	}
+});
+//#endregion
+//#region NativeSettingsManager.js
+var exports_react_native_Libraries_Settings_NativeSettingsManager = {};
+var _default$111;
+__export(exports_react_native_Libraries_Settings_NativeSettingsManager, {
+	"default": function() { return _default$111; },
+});
+var init_react_native_Libraries_Settings_NativeSettingsManager = __esm({
+	"NativeSettingsManager.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeSettingsManager();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeSettingsManager();
+		
+	
+	_default$111=_default$110;
+		_default$111 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeSettingsManager(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeSettingsManager)).default;
+	
+	}
+});
+//#endregion
+//#region Settings.ios.js
+var exports_react_native_Libraries_Settings_Settings_ios = {};
+var subscriptions$1, Settings, invariant$50;
+__export(exports_react_native_Libraries_Settings_Settings_ios, {
+	"default": function() { return Settings; },
+});
+var init_react_native_Libraries_Settings_Settings_ios = __esm({
+	"Settings.ios.js"() {
+	init_react_native_Libraries_EventEmitter_RCTDeviceEventEmitter();
+	init_react_native_Libraries_Settings_NativeSettingsManager();
+	invariant$50 = require_invariant_browser();
+		
+	
+	
+	subscriptions$1 = [];
+	Settings = { _settings: _default$110 && _default$110.getConstants().settings, get(key) {
+		return this._settings[key];
+	}, set(settings) {
+		this._settings = Object.assign(this._settings, settings);
+		_default$110.setValues(settings);
+	}, watchKeys(keys,callback) {
+		if (typeof keys === "string") {
+			keys = [keys];
+		}
+		invariant$50(Array.isArray(keys), "keys should be a string or array of strings");
+		var sid = subscriptions$1.length;
+		subscriptions$1.push({ keys: keys, callback: callback });
+		return sid;
+	}, clearWatch(watchId) {
+		if (watchId < subscriptions$1.length) {
+			subscriptions$1[watchId] = { keys: [], callback: null };
+		}
+	}, _sendObservations(body) {
+		var _this = this;
+		Object.keys(body).forEach(function(key) {
+			var newValue = body[key],didChange = _this._settings[key] !== newValue;
+			_this._settings[key] = newValue;
+			if (didChange) {
+				subscriptions$1.forEach(function(sub) {
+					if (sub.keys.indexOf(key) !== -1 && sub.callback) {
+						sub.callback();
+					}
+				});
+			}
+		});
+	} };
+	RCTDeviceEventEmitter.addListener("settingsUpdated", Settings._sendObservations.bind(Settings));
+	
+	
+	}
+});
+//#endregion
+//#region NativeShareModule.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeShareModule = {};
+var TurboModuleRegistry$43, _default$112;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeShareModule, {
+	"default": function() { return _default$112; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeShareModule = __esm({
+	"NativeShareModule.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$43=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$112=get("ShareModule");
+	
+	}
+});
+//#endregion
+//#region NativeShareModule.js
+var exports_react_native_Libraries_Share_NativeShareModule = {};
+var _default$113;
+__export(exports_react_native_Libraries_Share_NativeShareModule, {
+	"default": function() { return _default$113; },
+});
+var init_react_native_Libraries_Share_NativeShareModule = __esm({
+	"NativeShareModule.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeShareModule();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeShareModule();
+		
+	
+	_default$113=_default$112;
+		_default$113 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeShareModule(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeShareModule)).default;
+	
+	}
+});
+//#endregion
+//#region Share.js
+var exports_react_native_Libraries_Share_Share = {};
+var processColor$14, Platform$53, invariant$51, Share;
+__export(exports_react_native_Libraries_Share_Share, {
+	"default": function() { return Share; },
+});
+var init_react_native_Libraries_Share_Share = __esm({
+	"Share.js"() {
+	init_class_call_check();
+	init_react_native_Libraries_ActionSheetIOS_NativeActionSheetManager();
+	init_react_native_Libraries_Share_NativeShareModule();
+		
+	
+	
+	processColor$14 = (init_react_native_Libraries_StyleSheet_processColor(), __toCommonJS(exports_react_native_Libraries_StyleSheet_processColor)).default;
+	Platform$53 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	invariant$51 = require_invariant_browser();
+	Share = (function() {
+		function Share() {
+			__classCallCheck(this, Share);
+		}
+		Object.defineProperty(Share, "share", { configurable: true, writable: true, value: function(content,options={}) {
+			invariant$51(typeof content === "object" && content !== null, "Content to share must be a valid object");
+			invariant$51(typeof content.url === "string" || typeof content.message === "string", "At least one of URL or message is required");
+			invariant$51(typeof options === "object" && options !== null, "Options must be a valid object");
+			if (Platform$53.OS === "android") {
+				invariant$51(_default$112, "ShareModule should be registered on Android.");
+				invariant$51(content.title == null || typeof content.title === "string", "Invalid title: title should be a string.");
+				var newContent = { title: content.title, message: typeof content.message === "string" ? content.message : undefined };
+				return _default$112.share(newContent, options.dialogTitle).then(function(result) {
+					return ({ activityType: null, ...result });
+				});
+			} else if (Platform$53.OS === "ios") {
+				return new Promise(function(resolve,reject) {
+					var tintColor = processColor$14(options.tintColor);
+					invariant$51(tintColor == null || typeof tintColor === "number", "Unexpected color given for options.tintColor");
+					invariant$51(_default$89, "NativeActionSheetManager is not registered on iOS, but it should be.");
+					_default$89.showShareActionSheetWithOptions({ message: typeof content.message === "string" ? content.message : undefined, url: typeof content.url === "string" ? content.url : undefined, subject: options.subject, tintColor: typeof tintColor === "number" ? tintColor : undefined, anchor: typeof options.anchor === "number" ? options.anchor : undefined, excludedActivityTypes: options.excludedActivityTypes }, function(error) {
+						return reject(error);
+					}, function(success,activityType) {
+						if (success) {
+							resolve({ action: "sharedAction", activityType: activityType });
+						} else {
+							resolve({ action: "dismissedAction", activityType: null });
+						}
+					});
+				});
+			} else {
+				return Promise.reject(new Error("Unsupported platform"));
+			}
+		} });
+		Object.defineProperty(Share, "sharedAction", { configurable: true, enumerable: true, writable: true, value: "sharedAction" });
+		Object.defineProperty(Share, "dismissedAction", { configurable: true, enumerable: true, writable: true, value: "dismissedAction" });
+		return Share;
+	})();
+	;
+	;
+	;
+	
+	
+	}
+});
+//#endregion
+//#region ToastAndroidFallback.js
+var exports_react_native_Libraries_Components_ToastAndroid_ToastAndroidFallback = {};
+var ToastAndroid;
+__export(exports_react_native_Libraries_Components_ToastAndroid_ToastAndroidFallback, {
+	"default": function() { return ToastAndroid; },
+});
+var init_react_native_Libraries_Components_ToastAndroid_ToastAndroidFallback = __esm({
+	"ToastAndroidFallback.js"() {
+	"use strict";
+	ToastAndroid = { SHORT: 0, LONG: 0, TOP: 0, BOTTOM: 0, CENTER: 0, show: function(message,duration) {
+		console.warn("ToastAndroid is not supported on this platform.");
+	}, showWithGravity: function(message,duration,gravity) {
+		console.warn("ToastAndroid is not supported on this platform.");
+	}, showWithGravityAndOffset: function(message,duration,gravity,xOffset,yOffset) {
+		console.warn("ToastAndroid is not supported on this platform.");
+	} };
+	
+	
+	}
+});
+//#endregion
+//#region ToastAndroid.ios.js
+var exports_react_native_Libraries_Components_ToastAndroid_ToastAndroid_ios = {};
+var _default$114;
+__export(exports_react_native_Libraries_Components_ToastAndroid_ToastAndroid_ios, {
+	"default": function() { return _default$114; },
+});
+var init_react_native_Libraries_Components_ToastAndroid_ToastAndroid_ios = __esm({
+	"ToastAndroid.ios.js"() {
+	init_react_native_Libraries_Components_ToastAndroid_ToastAndroidFallback();
+		init_react_native_Libraries_Components_ToastAndroid_ToastAndroidFallback();
+		
+	_default$114=ToastAndroid;
+		_default$114 = (init_react_native_Libraries_Components_ToastAndroid_ToastAndroidFallback(), __toCommonJS(exports_react_native_Libraries_Components_ToastAndroid_ToastAndroidFallback)).default;
+	
+	}
+});
+//#endregion
+//#region useAnimatedValue.js
+var exports_react_native_Libraries_Animated_useAnimatedValue = {};
+var useAnimatedValue;
+__export(exports_react_native_Libraries_Animated_useAnimatedValue, {
+	"default": function() { return useAnimatedValue; },
+});
+var init_react_native_Libraries_Animated_useAnimatedValue = __esm({
+	"useAnimatedValue.js"() {
+	useAnimatedValue = function(initialValue,config) {
+		var ref = require_react_index().useRef(null);
+		if (ref.current == null) {
+			ref.current = new Animated$2.Value(initialValue, config);
+		}
+		return ref.current;
+	};
+		init_react_native_Libraries_Animated_Animated();
+		
+	
+	
+	}
+});
+//#endregion
 //#region useColorScheme.js
 var exports_react_native_Libraries_Utilities_useColorScheme = {};
 var subscribe, useColorScheme;
@@ -36809,12 +40672,142 @@ var init_react_native_Libraries_Utilities_useColorScheme = __esm({
 	}
 });
 //#endregion
+//#region UTFSequence.js
+var exports_react_native_Libraries_UTFSequence = {};
+var deepFreezeAndThrowOnMutationInDev$2, UTFSequence;
+__export(exports_react_native_Libraries_UTFSequence, {
+	"default": function() { return UTFSequence; },
+});
+var init_react_native_Libraries_UTFSequence = __esm({
+	"UTFSequence.js"() {
+	"use strict";
+	deepFreezeAndThrowOnMutationInDev$2 = (init_react_native_Libraries_Utilities_deepFreezeAndThrowOnMutationInDev(), __toCommonJS(exports_react_native_Libraries_Utilities_deepFreezeAndThrowOnMutationInDev)).default;
+	UTFSequence = deepFreezeAndThrowOnMutationInDev$2({ BOM: "\ufeff", BULLET: "\u2022", BULLET_SP: "\u00A0\u2022\u00A0", MIDDOT: "\u00B7", MIDDOT_SP: "\u00A0\u00B7\u00A0", MIDDOT_KATAKANA: "\u30FB", MDASH: "\u2014", MDASH_SP: "\u00A0\u2014\u00A0", NDASH: "\u2013", NDASH_SP: "\u00A0\u2013\u00A0", NEWLINE: "\u000A", NBSP: "\u00A0", PIZZA: "\uD83C\uDF55", TRIANGLE_LEFT: "\u25c0", TRIANGLE_RIGHT: "\u25b6" });
+	
+	
+	}
+});
+//#endregion
+//#region NativeVibration.js
+var exports_react_native_src_private_specs_DEPRECATED_modules_NativeVibration = {};
+var TurboModuleRegistry$44, _default$115;
+__export(exports_react_native_src_private_specs_DEPRECATED_modules_NativeVibration, {
+	"default": function() { return _default$115; },
+});
+var init_react_native_src_private_specs_DEPRECATED_modules_NativeVibration = __esm({
+	"NativeVibration.js"() {
+	init_react_native_Libraries_TurboModule_TurboModuleRegistry();
+		TurboModuleRegistry$44=__toESM((init_react_native_Libraries_TurboModule_TurboModuleRegistry(), __toCommonJS(exports_react_native_Libraries_TurboModule_TurboModuleRegistry)));
+	_default$115=getEnforcing("Vibration");
+	
+	}
+});
+//#endregion
+//#region NativeVibration.js
+var exports_react_native_Libraries_Vibration_NativeVibration = {};
+var _default$116;
+__export(exports_react_native_Libraries_Vibration_NativeVibration, {
+	"default": function() { return _default$116; },
+});
+var init_react_native_Libraries_Vibration_NativeVibration = __esm({
+	"NativeVibration.js"() {
+	init_react_native_src_private_specs_DEPRECATED_modules_NativeVibration();
+		init_react_native_src_private_specs_DEPRECATED_modules_NativeVibration();
+		
+	
+	_default$116=_default$115;
+		_default$116 = (init_react_native_src_private_specs_DEPRECATED_modules_NativeVibration(), __toCommonJS(exports_react_native_src_private_specs_DEPRECATED_modules_NativeVibration)).default;
+	
+	}
+});
+//#endregion
+//#region Vibration.js
+var exports_react_native_Libraries_Vibration_Vibration = {};
+var Platform$54, _vibrating, _id, _default_vibration_length, vibrateByPattern, vibrateScheduler, Vibration;
+__export(exports_react_native_Libraries_Vibration_Vibration, {
+	"default": function() { return Vibration; },
+});
+var init_react_native_Libraries_Vibration_Vibration = __esm({
+	"Vibration.js"() {
+	vibrateByPattern = function(pattern,repeat=false) {
+		if (_vibrating) {
+			return;
+		}
+		_vibrating = true;
+		if (pattern[0] === 0) {
+			_default$115.vibrate(_default_vibration_length);
+			pattern = pattern.slice(1);
+		}
+		if (pattern.length === 0) {
+			_vibrating = false;
+			return;
+		}
+		setTimeout(function() {
+			return vibrateScheduler(++_id, pattern, repeat, 1);
+		}, pattern[0]);
+	};
+	vibrateScheduler = function(id,pattern,repeat,nextIndex) {
+		if (!_vibrating || id !== _id) {
+			return;
+		}
+		_default$115.vibrate(_default_vibration_length);
+		if (nextIndex >= pattern.length) {
+			if (repeat) {
+				nextIndex = 0;
+			} else {
+				_vibrating = false;
+				return;
+			}
+		}
+		setTimeout(function() {
+			return vibrateScheduler(id, pattern, repeat, nextIndex + 1);
+		}, pattern[nextIndex]);
+	};
+		init_react_native_Libraries_Vibration_NativeVibration();
+		
+	Platform$54 = (init_react_native_Libraries_Utilities_Platform_ios(), __toCommonJS(exports_react_native_Libraries_Utilities_Platform_ios)).default;
+	_vibrating = false;
+	_id = 0;
+	_default_vibration_length = 400;
+	Vibration = { vibrate: function(pattern=_default_vibration_length,repeat=false) {
+		if (Platform$54.OS === "android") {
+			if (typeof pattern === "number") {
+				_default$115.vibrate(pattern);
+			} else if (Array.isArray(pattern)) {
+				_default$115.vibrateByPattern(pattern, repeat ? 0 : -1);
+			} else {
+				throw new Error("Vibration pattern should be a number or array");
+			}
+		} else {
+			if (_vibrating) {
+				return;
+			}
+			if (typeof pattern === "number") {
+				_default$115.vibrate(pattern);
+			} else if (Array.isArray(pattern)) {
+				vibrateByPattern(pattern, repeat);
+			} else {
+				throw new Error("Vibration pattern should be a number or array");
+			}
+		}
+	}, cancel: function() {
+		if (Platform$54.OS === "ios") {
+			_vibrating = false;
+		} else {
+			_default$115.cancel();
+		}
+	} };
+	
+	
+	}
+});
+//#endregion
 //#region index.js
 var require_react_native_index = __commonJS({
 	"index.js"(exports, module) {
 "use strict";
 	"use client";
-	var invariant = require_invariant_browser();
+	var warnOnce = (init_react_native_Libraries_Utilities_warnOnce(), __toCommonJS(exports_react_native_Libraries_Utilities_warnOnce)).default,invariant = require_invariant_browser();
 	module.exports = { get ActivityIndicator() {
 		return (init_react_native_Libraries_Components_ActivityIndicator_ActivityIndicator(), __toCommonJS(exports_react_native_Libraries_Components_ActivityIndicator_ActivityIndicator)).default;
 	}, get Button() {
