@@ -173,6 +173,106 @@ jobs:
         continue-on-error: true
         run: bun scripts/napi-bundler-bug-check.ts
 
+  napi-package-smoke:
+    name: NAPI Package Smoke (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64-gnu
+            os: ubuntu-latest
+            zig_target: native
+          - platform: linux-arm64-gnu
+            os: ubuntu-24.04-arm
+            zig_target: native
+          - platform: darwin-arm64
+            os: macos-latest
+            zig_target: native
+          - platform: darwin-x64
+            os: macos-15-intel
+            zig_target: native
+          - platform: win32-x64-gnu
+            os: windows-latest
+            zig_target: x86_64-windows-gnu
+          - platform: win32-x64-msvc
+            os: windows-latest
+            zig_target: x86_64-windows-msvc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ matrix.platform }}-bun-${{ hashFiles('bun.lock', 'tests/benchmark/bun.lock', 'tests/integration/fixtures/emotion-v10/bun.lock', 'package.json', 'tests/integration/package.json', 'tests/benchmark/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.platform }}-bun-
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build NAPI module
+        shell: bash
+        run: |
+          if [ "${{ matrix.zig_target }}" = "native" ]; then
+            zig build napi
+          else
+            zig build napi -Dtarget=${{ matrix.zig_target }}
+          fi
+
+      - name: Build JS wrapper + dts
+        run: cd packages/core && bun run build:js && bun run build:dts
+
+      - name: Copy .node into package
+        run: |
+          node -e "const fs=require('node:fs'); const from=['zig-out/lib/zntc.node','zig-out/bin/zntc.node'].find(fs.existsSync); if(!from) throw new Error('zntc.node build artifact not found'); fs.copyFileSync(from, 'packages/core/zntc.node');"
+
+      - name: Pack and run installed package
+        shell: bash
+        run: |
+          rm -rf tmp-napi-pack tmp-napi-smoke
+          mkdir -p tmp-napi-pack tmp-napi-smoke
+          tarball="$(npm pack ./packages/core --pack-destination tmp-napi-pack --silent | tail -n 1)"
+          cd tmp-napi-smoke
+          npm init -y >/dev/null
+          npm install "../tmp-napi-pack/${tarball}" --ignore-scripts --omit=optional
+          node --input-type=module <<'EOF'
+          import { init, tokenize, transpile } from "@zntc/core";
+
+          init();
+
+          const result = transpile("const value: number = 1;", { filename: "input.ts" });
+          if (!result.code.includes("const value = 1")) {
+            throw new Error(`unexpected transpile output: ${result.code}`);
+          }
+
+          const tokens = tokenize("const x = 1;", { filename: "input.ts" });
+          if (!Array.isArray(tokens) || tokens.length === 0) {
+            throw new Error("tokenize returned no tokens");
+          }
+          EOF
+
   wasm:
     name: WASM Build & Test
     runs-on: ubuntu-latest
