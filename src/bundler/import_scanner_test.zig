@@ -504,6 +504,24 @@ test "CJS: define boolean으로 죽은 if 분기의 require는 스캔하지 않�
     try std.testing.expectEqualStrings("./prod-only", result.records[0].specifier);
 }
 
+test "CJS: define boolean으로 죽은 ternary 분기의 require는 스캔하지 않음" {
+    // RN core 의 `const X = __DEV__ ? require('./X-dev').default : require('./X-prod').default`
+    // 패턴 — ternary expression 의 dead branch require strip.
+    const alloc = std.testing.allocator;
+    const result = try parseAndExtractFullWithDefines(
+        alloc,
+        \\const X = __DEV__
+        \\  ? require('./dev-only').default
+        \\  : require('./prod-only').default;
+    ,
+        &.{.{ .key = "__DEV__", .value = "false" }},
+    );
+    defer alloc.free(result.records);
+
+    try std.testing.expectEqual(@as(usize, 1), result.records.len);
+    try std.testing.expectEqualStrings("./prod-only", result.records[0].specifier);
+}
+
 test "CJS: require with non-string argument ignored" {
     const alloc = std.testing.allocator;
     const result = try parseAndExtractFull(alloc, "const x = require(variable);");

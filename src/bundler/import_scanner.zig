@@ -173,7 +173,10 @@ fn collectDeadIfRanges(
 
     for (reachable) |ni| {
         const node = ast.nodes.items[ni];
-        if (node.tag != .if_statement) continue;
+        // if_statement: `if (__DEV__) require(...)` — dead branch 의 stmt
+        // conditional_expression: `__DEV__ ? requireA : requireB` — dead branch 의 expr
+        // 둘 다 동일한 `data.ternary` layout (a=cond, b=consequent, c=alternate).
+        if (node.tag != .if_statement and node.tag != .conditional_expression) continue;
         const parts = node.data.ternary;
         const known = evalToBoolean(ast, parts.a, defines) orelse continue;
         const dead_idx = if (known) parts.c else parts.b;
