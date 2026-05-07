@@ -1,4 +1,4 @@
-//! ZTS runtime helper virtual module loader (#1961).
+//! ZNTC runtime helper virtual module loader (#1961).
 //!
 //! ## 배경
 //!
@@ -15,7 +15,7 @@
 //!
 //! ## 식별자 규약
 //!
-//! - **Internal ID** (graph 안): `\x00zts:runtime/<short>` (oxc 식 NULL prefix).
+//! - **Internal ID** (graph 안): `\x00zntc:runtime/<short>` (oxc 식 NULL prefix).
 //!   NULL byte 가 다른 plugin/resolver 가 건드리지 못하게 하는 sentinel.
 //! - **External ID** (chunk 파일명/import specifier/sourcemap source URL):
 //!   `sanitizeId` 가 NULL prefix 제거 + `runtime-` prefix 부여. e.g. `runtime-generator`.
@@ -45,7 +45,7 @@ const plugin_mod = @import("bundler/plugin.zig");
 const names = @import("runtime_helper_names.zig");
 
 /// Internal virtual module ID prefix. NULL byte sentinel.
-pub const ID_PREFIX = "\x00zts:runtime/";
+pub const ID_PREFIX = "\x00zntc:runtime/";
 
 /// 외부 노출 prefix. sanitize 결과 chunk 파일명/import specifier/sourcemap 에서 사용.
 pub const EXTERNAL_PREFIX = "runtime-";
@@ -341,7 +341,7 @@ pub fn removeRegisteredHelperBaseNames(map: *std.StringHashMap(void)) void {
 }
 
 /// helper base name → virtual module 의 internal ID 생성.
-/// 예: `__generator` → `\x00zts:runtime/generator`. caller 가 소유.
+/// 예: `__generator` → `\x00zntc:runtime/generator`. caller 가 소유.
 /// 미등록 helper 는 null.
 pub fn idForBase(allocator: std.mem.Allocator, base_name: []const u8) !?[]const u8 {
     const short = moduleShortFor(base_name) orelse return null;
@@ -351,7 +351,7 @@ pub fn idForBase(allocator: std.mem.Allocator, base_name: []const u8) !?[]const 
 /// virtual module specifier 를 외부 노출용 안전 ID 로 변환.
 /// chunk 파일명 / import specifier (chunk 간) / sourcemap source URL 에서 NULL byte 가
 /// 새지 않도록 sanitize. caller 가 소유.
-/// `\x00zts:runtime/generator` → `runtime-generator`
+/// `\x00zntc:runtime/generator` → `runtime-generator`
 /// virtual prefix 가 아니면 입력 그대로 dupe.
 pub fn sanitizeId(allocator: std.mem.Allocator, id: []const u8) ![]const u8 {
     if (!isVirtualId(id)) return try allocator.dupe(u8, id);
@@ -368,7 +368,7 @@ pub fn isVirtualId(id: []const u8) bool {
 /// `opts` 는 caller 소유 — bundler 가 빌드 옵션 기반으로 만들어 lifetime 동안 유지.
 pub fn makePlugin(opts: *const SourceOptions) plugin_mod.Plugin {
     return .{
-        .name = "zts:runtime-helpers",
+        .name = "zntc:runtime-helpers",
         .context = @ptrCast(@constCast(opts)),
         .resolveId = resolveIdHook,
         .load = loadHook,
@@ -513,7 +513,7 @@ test "idForBase: helper base → virtual ID" {
     const allocator = std.testing.allocator;
     const id = (try idForBase(allocator, "__generator")).?;
     defer allocator.free(id);
-    try std.testing.expectEqualStrings("\x00zts:runtime/generator", id);
+    try std.testing.expectEqualStrings("\x00zntc:runtime/generator", id);
 }
 
 test "idForBase: 미등록 helper 는 null" {
@@ -524,7 +524,7 @@ test "idForBase: 미등록 helper 는 null" {
 
 test "sanitizeId: NULL prefix 제거 + runtime- prefix" {
     const allocator = std.testing.allocator;
-    const safe = try sanitizeId(allocator, "\x00zts:runtime/generator");
+    const safe = try sanitizeId(allocator, "\x00zntc:runtime/generator");
     defer allocator.free(safe);
     try std.testing.expectEqualStrings("runtime-generator", safe);
 }
@@ -537,7 +537,7 @@ test "sanitizeId: 비 virtual ID 는 그대로 (dupe)" {
 }
 
 test "isVirtualId" {
-    try std.testing.expect(isVirtualId("\x00zts:runtime/generator"));
+    try std.testing.expect(isVirtualId("\x00zntc:runtime/generator"));
     try std.testing.expect(!isVirtualId("/local/path.ts"));
     try std.testing.expect(!isVirtualId(""));
 }
@@ -608,7 +608,7 @@ test "smoke: 모든 MODULES 의 helper 가 source 에 export 됨" {
 test "loadHook: virtual ID → source 반환" {
     const allocator = std.testing.allocator;
     const opts = SourceOptions{};
-    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/generator", allocator)).?;
+    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/generator", allocator)).?;
     defer allocator.free(result.contents);
     try std.testing.expect(std.mem.indexOf(u8, result.contents, "__generator") != null);
 }
@@ -622,7 +622,7 @@ test "loadHook: 비 virtual ID 는 null" {
 test "loadHook: 미등록 short 는 null" {
     const allocator = std.testing.allocator;
     const opts = SourceOptions{};
-    const result = try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/no-such-helper", allocator);
+    const result = try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/no-such-helper", allocator);
     try std.testing.expect(result == null);
 }
 
@@ -630,21 +630,21 @@ test "loadHook: ctx 의 minify 옵션이 source 에 반영 (alias export)" {
     // ctx 캐스트 회귀 방지 — ctx 가 무시되면 default_opts 사용해서 alias 가 없을 것.
     const allocator = std.testing.allocator;
     const opts = SourceOptions{ .minify = true };
-    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zts:runtime/generator", allocator)).?;
+    const result = (try loadHook(@ptrCast(@constCast(&opts)), "\x00zntc:runtime/generator", allocator)).?;
     defer allocator.free(result.contents);
     try std.testing.expect(std.mem.indexOf(u8, result.contents, "$gn as __generator") != null);
 }
 
 test "resolveIdHook: virtual specifier 만 가로챔" {
     const allocator = std.testing.allocator;
-    const r1 = try resolveIdHook(null, "\x00zts:runtime/generator", null, allocator);
+    const r1 = try resolveIdHook(null, "\x00zntc:runtime/generator", null, allocator);
     try std.testing.expect(r1 != null);
     try std.testing.expect(r1.? == .virtual);
 
     const r2 = try resolveIdHook(null, "./local.ts", null, allocator);
     try std.testing.expect(r2 == null);
 
-    const r3 = try resolveIdHook(null, "\x00zts:runtime/no-such-helper", null, allocator);
+    const r3 = try resolveIdHook(null, "\x00zntc:runtime/no-such-helper", null, allocator);
     try std.testing.expect(r3 == null);
 }
 
@@ -653,12 +653,12 @@ test "makePlugin: hook 호출이 ctx 통해 동작" {
     const allocator = std.testing.allocator;
     const opts = SourceOptions{};
     const p = makePlugin(&opts);
-    try std.testing.expectEqualStrings("zts:runtime-helpers", p.name);
+    try std.testing.expectEqualStrings("zntc:runtime-helpers", p.name);
 
-    const resolved = (try p.resolveId.?(p.context, "\x00zts:runtime/generator", null, allocator)).?;
+    const resolved = (try p.resolveId.?(p.context, "\x00zntc:runtime/generator", null, allocator)).?;
     try std.testing.expect(resolved == .virtual);
 
-    const loaded = (try p.load.?(p.context, "\x00zts:runtime/generator", allocator)).?;
+    const loaded = (try p.load.?(p.context, "\x00zntc:runtime/generator", allocator)).?;
     defer allocator.free(loaded.contents);
     try std.testing.expect(std.mem.indexOf(u8, loaded.contents, "__generator") != null);
 }

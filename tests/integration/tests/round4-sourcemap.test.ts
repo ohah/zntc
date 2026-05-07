@@ -9,7 +9,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { runZts } from './helpers';
+import { runZntc } from './helpers';
 
 const FIXTURES_DIR = join(import.meta.dir, 'fixtures/round4-sourcemap');
 const fixtures = readdirSync(FIXTURES_DIR)
@@ -20,12 +20,12 @@ describe('Round 4 sourcemap footer/file', () => {
   for (const fix of fixtures) {
     test(fix, async () => {
       const sourceText = readFileSync(join(FIXTURES_DIR, fix), 'utf-8');
-      const dir = await mkdtemp(join(tmpdir(), 'zts-round4-'));
+      const dir = await mkdtemp(join(tmpdir(), 'zntc-round4-'));
       try {
         const inFile = join(dir, fix);
         await writeFile(inFile, sourceText);
         const outFile = join(dir, fix.replace(/\.(ts|tsx)$/, '.js'));
-        const r = await runZts([inFile, '-o', outFile, '--sourcemap']);
+        const r = await runZntc([inFile, '-o', outFile, '--sourcemap']);
         expect(r.exitCode).toBe(0);
 
         const outText = readFileSync(outFile, 'utf-8');

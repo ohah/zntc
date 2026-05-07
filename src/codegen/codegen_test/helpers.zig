@@ -192,7 +192,7 @@ pub fn e2eES5Async(allocator: std.mem.Allocator, source: []const u8) !TestResult
 /// `case N:_state.sent();return [3,N]` (await resume 직후 자기 case label 으로 jump = self-loop).
 /// 정상은 forward jump (`[3,M]` with M > N) 또는 end (`[2]`). 모든 `_state.sent();return [3,M]` 출현
 /// 별로 그 직전 `case N:` 를 찾아 N == M 이면 self-loop. case 수 무제한.
-/// (zts/issues/1887 회귀 방지 — `collectIfOperations` sentinel/fixup 패턴 검증.)
+/// (zntc/issues/1887 회귀 방지 — `collectIfOperations` sentinel/fixup 패턴 검증.)
 ///
 /// 패턴은 emitter 의 minified emit format 에 의존 — `es2015_generator.zig` 의 `__generator`
 /// state machine 출력 + `_state` identifier (mangle 대상 제외) + `case N:` 형태.

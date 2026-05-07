@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 
-import type { WatchHandle } from '@zts/core';
+import type { WatchHandle } from '@zntc/core';
 
 import type { PlatformState, PlatformStateRegistry } from '../platform-state.ts';
 import { handleSymbolicateRequest, isSymbolicateRoute } from './symbolicate.ts';

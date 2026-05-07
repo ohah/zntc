@@ -200,7 +200,7 @@ pub const ConfigOptionsDto = struct {
     stopAfter: ?StopAfter = null,
 
     // ─── bundler-only 필드 (#2105 / Phase 2-3) ─────────────────────────────────
-    // 이 필드들은 transpile 모드에선 무시. `applyZtsConfigJson` 이 CliOptions 의
+    // 이 필드들은 transpile 모드에선 무시. `applyZntcConfigJson` 이 CliOptions 의
     // bundler 리스트로 매핑한다. function-form `manualChunks` 는 JS-only 라
     // JSON 에서는 record form (`[{name, patterns}]`) 만 지원.
     external: ?[]const []const u8 = null,
@@ -232,7 +232,7 @@ pub const LoaderDto = struct {
 };
 
 /// `ConfigOptionsDto` 의 transpile-shaped 필드를 target 으로 매핑하는 공통 helper.
-/// `optionsFromJson` (TranspileOptions) 와 `main.applyZtsConfigJson` (CliOptions) 가 공유 —
+/// `optionsFromJson` (TranspileOptions) 와 `main.applyZntcConfigJson` (CliOptions) 가 공유 —
 /// 두 함수의 매핑이 drift 하지 않도록 single source of truth. (memory P2 deferred)
 ///
 /// `dupe_strings` 가 true 면 string 필드를 `allocator.dupe` 로 복사 (long-lived target).
@@ -445,7 +445,7 @@ fn computeFastPathDisabledByEnv() void {
         fast_path_disabled_value = false;
         return;
     }
-    fast_path_disabled_value = std.process.hasEnvVarConstant("ZTS_DISABLE_TRANSPILE_FAST_PATH");
+    fast_path_disabled_value = std.process.hasEnvVarConstant("ZNTC_DISABLE_TRANSPILE_FAST_PATH");
 }
 
 fn transpileFastPathDisabledByEnv() bool {
@@ -1224,7 +1224,7 @@ fn transpileWithCallbackInternal(
     }
     _ = parser.parse() catch return error.ParseError;
     // Ast 가 arena 안에 살아 Ast.deinit() 가 호출되지 않으므로, intern stats dump 를
-    // arena 해제 직전(LIFO) 에 명시 호출. ZTS_STRING_INTERN_STATS=1 일 때만 출력.
+    // arena 해제 직전(LIFO) 에 명시 호출. ZNTC_STRING_INTERN_STATS=1 일 때만 출력.
     defer parser.ast.dumpStringInternStatsIfEnabled();
     if (parser.errors.items.len > 0) {
         if (on_error) |cb| cb(source, file_path, &scanner, parser.errors.items);

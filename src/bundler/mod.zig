@@ -1,4 +1,4 @@
-//! ZTS Bundler
+//! ZNTC Bundler
 //!
 //! 여러 JS/TS 파일을 하나의 번들로 합치는 모듈 번들러.
 //! Phase 6 — resolver, 모듈 그래프, 스코프 호이스팅, tree-shaking, code splitting.

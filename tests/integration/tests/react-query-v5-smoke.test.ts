@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createFixture, hasPackage, linkNodeModules, runNode, runZtsInDir } from './helpers';
+import { createFixture, hasPackage, linkNodeModules, runNode, runZntcInDir } from './helpers';
 
 const hasReactQuery = hasPackage('@tanstack/react-query');
 
@@ -47,7 +47,7 @@ describe.skipIf(!hasReactQuery)('React Query v5 smoke', () => {
     await linkNodeModules(fixture.dir, ['@tanstack/react-query', '@tanstack/query-core', 'react']);
 
     const outFile = join(fixture.dir, 'out.cjs');
-    const bundle = await runZtsInDir(
+    const bundle = await runZntcInDir(
       fixture.dir,
       [
         '--bundle',

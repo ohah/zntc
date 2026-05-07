@@ -33,7 +33,7 @@ const pure_zig_only_fields = [_][]const u8{
 
 /// #2105 bundler-only 필드. `TranspileOptions` 가 아닌 `BuildOptions` 의
 /// 일부 — TS 공개 API 는 `packages/core/index.ts:BuildOptionsCommon` 에 있다.
-/// Zig CLI 의 `applyZtsConfigJson` 이 한 번에 파싱하기 위해 같은 DTO 에 모음.
+/// Zig CLI 의 `applyZntcConfigJson` 이 한 번에 파싱하기 위해 같은 DTO 에 모음.
 ///
 /// `BuildOptionsCommon` 검증 테스트가 이 리스트의 모든 필드가 거기에도 있는지
 /// (그리고 그 역도) 확인 — #2112 schema sync.
@@ -179,7 +179,7 @@ test "parseTsInterface: basic extraction" {
 // ─── #2112 BuildOptions schema sync ──────────────────────────────────────────
 
 /// Zig 의 `bundler_only_fields` 가 `BuildOptionsCommon` 에 노출돼야 사용자가
-/// `zts.config.{ts,json}` 에서 IDE 자동완성을 받을 수 있다.
+/// `zntc.config.{ts,json}` 에서 IDE 자동완성을 받을 수 있다.
 ///
 /// CLI 에만 있고 사용자에게 노출 안 하는 필드 (예: `tsconfigPath` 는 별도 alias).
 const ts_buildoptions_only_allowlist = [_][]const u8{

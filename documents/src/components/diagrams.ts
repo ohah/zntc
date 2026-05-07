@@ -15,7 +15,7 @@ export const NAPI_ARCHITECTURE_CHART = `flowchart TB
         API <--> PD
     end
 
-    NAPI["NAPI Bridge<br/>zts.node · JSON payload"]
+    NAPI["NAPI Bridge<br/>zntc.node · JSON payload"]
 
     subgraph Native["Zig Native Engine"]
         direction TB

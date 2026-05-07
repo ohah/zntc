@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve, extname } from 'node:path';
 
-const ZTS_BIN = resolve(__dirname, '../../../zig-out/bin/zts');
+const ZNTC_BIN = resolve(__dirname, '../../../zig-out/bin/zntc');
 
 interface BrowserSmokeCase {
   name: string;
@@ -16,7 +16,7 @@ interface BrowserSmokeCase {
 }
 
 /**
- * 브라우저 스모크 테스트 — ZTS로 --platform=browser 번들링 후
+ * 브라우저 스모크 테스트 — ZNTC로 --platform=browser 번들링 후
  * Playwright에서 실제 브라우저로 실행하여 console.log 출력 검증.
  *
  * Node.js 전용 패키지(express, jsonwebtoken 등)는 제외.
@@ -598,7 +598,7 @@ const cases: BrowserSmokeCase[] = [
     entry: `import { Pipe } from 'hotscript';\nconsole.log(typeof Pipe);`,
     expected: 'undefined',
   },
-  // remeda: pipe 함수 인자 수 검증 에러 — ZTS tree-shaking/scope hoisting 버그 (#1457)
+  // remeda: pipe 함수 인자 수 검증 에러 — ZNTC tree-shaking/scope hoisting 버그 (#1457)
   // --- Node 전용 패키지 (브라우저 스킵) ---
   // express, commander, dotenv, jsonwebtoken, yargs, supports-color,
   // cross-spawn, signal-exit, which, on-finished, fast-glob, zx
@@ -633,7 +633,7 @@ function serve(dir: string): Promise<{ server: Server; port: number }> {
 let fixtureDir: string;
 
 test.beforeAll(async () => {
-  fixtureDir = await mkdtemp(join(tmpdir(), 'zts-browser-smoke-'));
+  fixtureDir = await mkdtemp(join(tmpdir(), 'zntc-browser-smoke-'));
 });
 
 test.afterAll(async () => {
@@ -662,7 +662,7 @@ for (const c of cases) {
     await writeFile(join(caseDir, 'index.ts'), c.entry);
     const outFile = join(caseDir, 'bundle.js');
     const build = spawnSync(
-      ZTS_BIN,
+      ZNTC_BIN,
       [
         '--bundle',
         join(caseDir, 'index.ts'),
@@ -673,7 +673,7 @@ for (const c of cases) {
       ],
       { stdio: 'pipe', timeout: 30000 },
     );
-    expect(build.status, `ZTS build failed: ${build.stderr?.toString().slice(0, 300)}`).toBe(0);
+    expect(build.status, `ZNTC build failed: ${build.stderr?.toString().slice(0, 300)}`).toBe(0);
 
     if (c.name === 'effect') {
       const bundle = await readFile(outFile, 'utf8');

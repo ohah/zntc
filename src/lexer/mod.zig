@@ -1,4 +1,4 @@
-//! ZTS Lexer
+//! ZNTC Lexer
 //!
 //! JavaScript / TypeScript / JSX / Flow 소스 코드를 토큰으로 분리한다.
 //! 파서가 렉서를 호출하는 방식으로 연동 (D036).

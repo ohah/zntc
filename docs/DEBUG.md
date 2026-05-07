@@ -1,11 +1,11 @@
 # Debug & Profile
 
-ZTS 는 두 가지 경량 인프라를 제공한다:
+ZNTC 는 두 가지 경량 인프라를 제공한다:
 
 1. **Debug Logging** (`src/debug_log.zig`) — 이벤트 로그 (AST mutation, cache hit/miss 등).
-2. **Profile** (`src/profile.zig`) — 파이프라인 phase 별 **타이밍 측정** + CLI `zts bench` 로 통계 벤치마크.
+2. **Profile** (`src/profile.zig`) — 파이프라인 phase 별 **타이밍 측정** + CLI `zntc bench` 로 통계 벤치마크.
 
-둘 다 ZTS 바이너리와 `@zts/core` NAPI 양쪽에서 동일 구조로 동작. 비활성 상태 hot path 오버헤드 < 1%.
+둘 다 ZNTC 바이너리와 `@zntc/core` NAPI 양쪽에서 동일 구조로 동작. 비활성 상태 hot path 오버헤드 < 1%.
 
 ---
 
@@ -20,8 +20,8 @@ ZTS 는 두 가지 경량 인프라를 제공한다:
 ### 환경 변수
 
 ```bash
-ZTS_DEBUG=compiled_cache zts --bundle entry.ts
-ZTS_DEBUG=compiled_cache,hmr zts --watch entry.ts
+ZNTC_DEBUG=compiled_cache zntc --bundle entry.ts
+ZNTC_DEBUG=compiled_cache,hmr zntc --watch entry.ts
 ```
 
 쉼표 구분. 공백과 대소문자 무시. 알 수 없는 이름은 조용히 무시된다.
@@ -29,7 +29,7 @@ ZTS_DEBUG=compiled_cache,hmr zts --watch entry.ts
 ### NAPI 옵션
 
 ```ts
-import { build } from '@zts/core';
+import { build } from '@zntc/core';
 
 await build({
   entryPoints: ['src/index.ts'],
@@ -37,7 +37,7 @@ await build({
 });
 ```
 
-`ZTS_DEBUG` env 와 **합집합** — 한쪽만 설정해도 충분하고, 둘 다 설정하면 양쪽 카테고리 모두 활성.
+`ZNTC_DEBUG` env 와 **합집합** — 한쪽만 설정해도 충분하고, 둘 다 설정하면 양쪽 카테고리 모두 활성.
 
 ### CLI 플래그
 
@@ -88,7 +88,7 @@ append 하는 흐름을 추적하는 데 사용. `transform_boundary` 는 parser
 ## 코드 사용법
 
 ```zig
-const debug_log = @import("debug_log.zig");  // 또는 @import("zts_lib").debug_log
+const debug_log = @import("debug_log.zig");  // 또는 @import("zntc_lib").debug_log
 
 // 단순 로그
 debug_log.print(.compiled_cache, "hits={d} misses={d}\n", .{ hits, misses });
@@ -111,13 +111,13 @@ if (debug_log.enabled(.compiled_cache)) {
 
 ## 스레드 안전성
 
-`enabled_mask` 는 단일 `u64`. `initFromEnv` / `addCategories` 는 프로세스 시작 직후 또는 `Bundler.init` 시점에만 호출된다고 가정하며, 로그 호출 시점에는 **read-only** 로 사용된다. 일반적인 ZTS 호출 흐름에서는 mask 변경과 `enabled` 조회가 교차하지 않아 별도 동기화는 두지 않는다.
+`enabled_mask` 는 단일 `u64`. `initFromEnv` / `addCategories` 는 프로세스 시작 직후 또는 `Bundler.init` 시점에만 호출된다고 가정하며, 로그 호출 시점에는 **read-only** 로 사용된다. 일반적인 ZNTC 호출 흐름에서는 mask 변경과 `enabled` 조회가 교차하지 않아 별도 동기화는 두지 않는다.
 
 ## 장기 확장
 
 - 카테고리 세부 레벨 (info/debug/trace) 필요하면 `Category` 를 `{category, level}` 쌍으로 확장
-- 구조화 출력 (JSON) 이 필요하면 별도 포매터 분기 — env `ZTS_DEBUG_FORMAT=json` 등
-- 와일드카드 (`ZTS_DEBUG=*` 혹은 `ZTS_DEBUG=bundler:*`) 는 현재 미지원. 카테고리 수가 많아지기 전에는 쉼표 구분이 충분
+- 구조화 출력 (JSON) 이 필요하면 별도 포매터 분기 — env `ZNTC_DEBUG_FORMAT=json` 등
+- 와일드카드 (`ZNTC_DEBUG=*` 혹은 `ZNTC_DEBUG=bundler:*`) 는 현재 미지원. 카테고리 수가 많아지기 전에는 쉼표 구분이 충분
 
 ---
 
@@ -135,16 +135,16 @@ if (debug_log.enabled(.compiled_cache)) {
 
 ```bash
 # 전체 phase
-zts input.ts --profile=all
+zntc input.ts --profile=all
 
 # 특정 phase 만
-zts bundle entry.ts --profile=parse,transform
+zntc bundle entry.ts --profile=parse,transform
 
 # 상세 level (sub-phase 포함)
-zts input.ts --profile=all --profile-level=detailed
+zntc input.ts --profile=all --profile-level=detailed
 
 # JSON output (스크립트 용)
-zts bundle entry.ts --profile=all --profile-format=json > profile.json
+zntc bundle entry.ts --profile=all --profile-format=json > profile.json
 ```
 
 옵션:
@@ -159,7 +159,7 @@ zts bundle entry.ts --profile=all --profile-format=json > profile.json
 ### NAPI
 
 ```ts
-import { build, transpile } from '@zts/core';
+import { build, transpile } from '@zntc/core';
 
 await build({
   entryPoints: ['src/index.ts'],
@@ -177,8 +177,8 @@ transpile(source, {
 ### Env
 
 ```bash
-ZTS_PROFILE=all ZTS_PROFILE_LEVEL=detailed zts bundle entry.ts
-ZTS_PROFILE=hmr zts --watch entry.ts
+ZNTC_PROFILE=all ZNTC_PROFILE_LEVEL=detailed zntc bundle entry.ts
+ZNTC_PROFILE=hmr zntc --watch entry.ts
 ```
 
 ## 2.2 카테고리
@@ -212,7 +212,7 @@ ZTS_PROFILE=hmr zts --watch entry.ts
 ### table (default)
 
 ```
-=== ZTS Profile ===
+=== ZNTC Profile ===
 Phase                Total       %      Count
 --------------------|-----------|-------|------
 parse                   0.43ms  54.7%      1
@@ -223,7 +223,7 @@ total                   0.78ms  100.0%
 ### tree (detailed)
 
 ```
-=== ZTS Profile (detailed) ===
+=== ZNTC Profile (detailed) ===
 total: 1.20ms
 ├─ parse             0.77ms  (64.2%)
 │  └─ ast.build      0.72ms  (93.5% of parse)
@@ -259,7 +259,7 @@ codegen,0.089,1,7.46
 
 ---
 
-# 3. Benchmark (`zts bench`)
+# 3. Benchmark (`zntc bench`)
 
 특정 phase 를 N 회 반복 실행하며 통계 (mean/median/p95/p99/stddev/min/max) 출력. 최적화 전후 비교 가능.
 
@@ -267,22 +267,22 @@ codegen,0.089,1,7.46
 
 ```bash
 # 100 회 반복 (기본)
-zts bench --phase=parse ./src/App.tsx
+zntc bench --phase=parse ./src/App.tsx
 
 # 여러 phase 동시
-zts bench --phase=parse,transform,codegen ./src/App.tsx
+zntc bench --phase=parse,transform,codegen ./src/App.tsx
 
 # baseline 저장
-zts bench --phase=parse ./App.tsx --save=./perf/baseline.json
+zntc bench --phase=parse ./App.tsx --save=./perf/baseline.json
 
 # baseline 과 비교
-zts bench --phase=parse ./App.tsx --compare=./perf/baseline.json
+zntc bench --phase=parse ./App.tsx --compare=./perf/baseline.json
 # Phase       before     after      delta     %         verdict
 # parse        42.3ms    31.8ms   -10.5ms  -24.8%  + improved
 
 # JSON / CSV
-zts bench --phase=parse ./App.tsx --format=json > stats.json
-zts bench --phase=parse ./App.tsx --format=csv >> history.csv
+zntc bench --phase=parse ./App.tsx --format=json > stats.json
+zntc bench --phase=parse ./App.tsx --format=csv >> history.csv
 ```
 
 옵션:
@@ -297,7 +297,7 @@ zts bench --phase=parse ./App.tsx --format=csv >> history.csv
 ## 3.2 NAPI
 
 ```ts
-import { benchmark } from '@zts/core';
+import { benchmark } from '@zntc/core';
 
 const result = benchmark({
   source: '...', // 또는 file: "./App.tsx"
@@ -319,7 +319,7 @@ result.phases.parse.stddev_ms; // 2.1
 | oxc / swc        | ❌ — `cargo bench` (criterion.rs) 개발자 전용            |
 | esbuild          | ❌                                                       |
 | TypeScript (tsc) | `--extendedDiagnostics` (반복/통계 없음)                 |
-| **ZTS**          | **`zts bench` + NAPI `benchmark()` (CLI ↔ NAPI parity)** |
+| **ZNTC**          | **`zntc bench` + NAPI `benchmark()` (CLI ↔ NAPI parity)** |
 
 ---
 
@@ -332,7 +332,7 @@ HMR rebuild 의 각 phase 는 `WatchRebuildEvent.phaseDurations` 에 노출.
 - `detect` / `graph` / `link` / `shake` / `emit` / `delta` / `total`
 - 필드 이름과 실제 값이 일치. 2026-04-22 이전의 `parse`/`semantic` 레거시 이름은 제거됨.
 
-Sub-phase (`ZTS_PROFILE=<cat>` 활성 시):
+Sub-phase (`ZNTC_PROFILE=<cat>` 활성 시):
 
 - 파이프라인: `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
 - Graph 내부: `graphBuild` / `graphWorker` / `graphDiscover` (BFS 스캔) / `graphFinalize` (DFS+승격)
@@ -343,7 +343,7 @@ Sub-phase (`ZTS_PROFILE=<cat>` 활성 시):
 ## 4.1 profile 활성 후 세부 breakdown
 
 ```ts
-import { watch } from '@zts/core';
+import { watch } from '@zntc/core';
 
 watch({
   entryPoints: ['src/index.ts'],

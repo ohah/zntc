@@ -8,8 +8,8 @@ on:
       - 'packages/**'
       - 'tests/**'
       - '.github/workflows/integration.yml'
-      - '.github/actions/setup-zts/**'
-      - '.github/actions/use-zts-artifact/**'
+      - '.github/actions/setup-zntc/**'
+      - '.github/actions/use-zntc-artifact/**'
   pull_request:
     branches: [main]
     paths:
@@ -17,8 +17,8 @@ on:
       - 'packages/**'
       - 'tests/**'
       - '.github/workflows/integration.yml'
-      - '.github/actions/setup-zts/**'
-      - '.github/actions/use-zts-artifact/**'
+      - '.github/actions/setup-zntc/**'
+      - '.github/actions/use-zntc-artifact/**'
   workflow_dispatch:
 
 concurrency:
@@ -55,85 +55,85 @@ jobs:
       - name: Format check (oxfmt)
         run: bun run fmt:check
 
-  prepare-zts-ubuntu:
-    name: Prepare ZTS (ubuntu-latest)
+  prepare-zntc-ubuntu:
+    name: Prepare ZNTC (ubuntu-latest)
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: ./.github/actions/setup-zts
+      - uses: ./.github/actions/setup-zntc
         with:
           cpu: baseline
           install: "false"
 
-      - name: Upload ZTS build artifact
+      - name: Upload ZNTC build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zts-build-ubuntu-latest
+          name: zntc-build-ubuntu-latest
           if-no-files-found: error
           retention-days: 1
           path: |
-            zig-out/bin/zts
-            zig-out/lib/zts.node
+            zig-out/bin/zntc
+            zig-out/lib/zntc.node
             packages/core/dist/**
 
-  prepare-zts-cli-ubuntu:
-    name: Prepare ZTS CLI (ubuntu-latest)
+  prepare-zntc-cli-ubuntu:
+    name: Prepare ZNTC CLI (ubuntu-latest)
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: ./.github/actions/setup-zts
+      - uses: ./.github/actions/setup-zntc
         with:
           cpu: baseline
           napi: "false"
           install: "false"
 
-      - name: Upload ZTS CLI artifact
+      - name: Upload ZNTC CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zts-cli-ubuntu-latest
+          name: zntc-cli-ubuntu-latest
           if-no-files-found: error
           retention-days: 1
-          path: zig-out/bin/zts
+          path: zig-out/bin/zntc
 
-  prepare-zts-macos:
-    name: Prepare ZTS (macos-latest)
+  prepare-zntc-macos:
+    name: Prepare ZNTC (macos-latest)
     runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: ./.github/actions/setup-zts
+      - uses: ./.github/actions/setup-zntc
         with:
           install: "false"
 
-      - name: Upload ZTS build artifact
+      - name: Upload ZNTC build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zts-build-macos-latest
+          name: zntc-build-macos-latest
           if-no-files-found: error
           retention-days: 1
           path: |
-            zig-out/bin/zts
-            zig-out/lib/zts.node
+            zig-out/bin/zntc
+            zig-out/lib/zntc.node
             packages/core/dist/**
 
   integration-ubuntu:
     name: Integration Tests (ubuntu-latest)
     runs-on: ubuntu-latest
-    needs: prepare-zts-ubuntu
+    needs: prepare-zntc-ubuntu
 
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/use-zts-artifact
+      - uses: ./.github/actions/use-zntc-artifact
         with:
-          artifact-name: zts-build-ubuntu-latest
+          artifact-name: zntc-build-ubuntu-latest
 
       - name: Install dependencies
         run: bun install
@@ -144,13 +144,13 @@ jobs:
   integration-macos:
     name: Integration Tests (macos-latest)
     runs-on: macos-latest
-    needs: prepare-zts-macos
+    needs: prepare-zntc-macos
 
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/use-zts-artifact
+      - uses: ./.github/actions/use-zntc-artifact
         with:
-          artifact-name: zts-build-macos-latest
+          artifact-name: zntc-build-macos-latest
 
       - name: Install dependencies
         run: bun install
@@ -161,13 +161,13 @@ jobs:
   hermes:
     name: Hermes Validation (RN Bundle)
     runs-on: macos-latest
-    needs: prepare-zts-macos
+    needs: prepare-zntc-macos
 
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/use-zts-artifact
+      - uses: ./.github/actions/use-zntc-artifact
         with:
-          artifact-name: zts-build-macos-latest
+          artifact-name: zntc-build-macos-latest
 
       - name: Install RN example app dependencies
         run: cd tests/integration/tests/fixtures/rn-example-app && bun install
@@ -181,13 +181,13 @@ jobs:
   compat-table:
     name: compat-table ES Downlevel
     runs-on: ubuntu-latest
-    needs: prepare-zts-cli-ubuntu
+    needs: prepare-zntc-cli-ubuntu
 
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/use-zts-artifact
+      - uses: ./.github/actions/use-zntc-artifact
         with:
-          artifact-name: zts-cli-ubuntu-latest
+          artifact-name: zntc-cli-ubuntu-latest
           napi: "false"
 
       - name: Install compat-table
@@ -212,22 +212,22 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: prepare-zts-ubuntu
+    needs: prepare-zntc-ubuntu
 
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/use-zts-artifact
+      - uses: ./.github/actions/use-zntc-artifact
         with:
-          artifact-name: zts-build-ubuntu-latest
+          artifact-name: zntc-build-ubuntu-latest
 
       - name: Install dependencies
         run: bun install
 
-      # E2E test fixture 가 spawn 한 `zts build` (app 모드) 가 `@zts/web` 을
-      # lazy import. ZTS artifact 는 core build:js 까지만 — web/server 와 core
+      # E2E test fixture 가 spawn 한 `zntc build` (app 모드) 가 `@zntc/web` 을
+      # lazy import. ZNTC artifact 는 core build:js 까지만 — web/server 와 core
       # dts 를 별도 빌드 (#2539 PR #6d 후 web 의 tsc emit 가 core 의
       # `prepareAppDevSync` declaration 의존).
-      - name: Build @zts/core dts + @zts/server + @zts/web (E2E app 모드 의존)
+      - name: Build @zntc/core dts + @zntc/server + @zntc/web (E2E app 모드 의존)
         run: |
           bun run --cwd packages/core build:dts
           bun run --cwd packages/server build
@@ -242,13 +242,13 @@ jobs:
   smoke:
     name: Smoke Tests (Real Projects)
     runs-on: ubuntu-latest
-    needs: prepare-zts-cli-ubuntu
+    needs: prepare-zntc-cli-ubuntu
 
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/use-zts-artifact
+      - uses: ./.github/actions/use-zntc-artifact
         with:
-          artifact-name: zts-cli-ubuntu-latest
+          artifact-name: zntc-cli-ubuntu-latest
           napi: "false"
 
       - name: Install smoke dependencies

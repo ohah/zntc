@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { bundleAndRun, createFixture, runZts } from './helpers';
+import { bundleAndRun, createFixture, runZntc } from './helpers';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
@@ -142,7 +142,7 @@ describe('런타임 헬퍼: __copyProps / __toCommonJS', () => {
     cleanup = c;
 
     const outFile = join(dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const code = readFileSync(outFile, 'utf-8');

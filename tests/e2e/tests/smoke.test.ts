@@ -4,22 +4,22 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const ZTS_BIN = resolve(__dirname, '../../../zig-out/bin/zts');
+const ZNTC_BIN = resolve(__dirname, '../../../zig-out/bin/zntc');
 const TEST_PORT = 3999;
 
 let server: ChildProcess | null = null;
 let fixtureDir: string;
 
 test.beforeAll(async () => {
-  fixtureDir = await mkdtemp(join(tmpdir(), 'zts-e2e-'));
+  fixtureDir = await mkdtemp(join(tmpdir(), 'zntc-e2e-'));
   await writeFile(
     join(fixtureDir, 'app.ts'),
-    'const msg: string = "hello from zts"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
+    'const msg: string = "hello from zntc"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
   );
   await writeFile(join(fixtureDir, 'style.css'), 'body { background: white; }');
 
   server = spawn(
-    ZTS_BIN,
+    ZNTC_BIN,
     ['--serve', '--bundle', join(fixtureDir, 'app.ts'), '--port', String(TEST_PORT)],
     { stdio: 'pipe' },
   );
@@ -38,7 +38,7 @@ test.afterAll(async () => {
 test.describe('Dev Server E2E', () => {
   test('페이지가 로드되고 번들이 실행된다', async ({ page }) => {
     await page.goto(`http://localhost:${TEST_PORT}/`);
-    await expect(page.locator('#root')).toHaveText('hello from zts');
+    await expect(page.locator('#root')).toHaveText('hello from zntc');
   });
 
   test('HMR WebSocket 연결이 수립된다', async ({ page }) => {
@@ -82,7 +82,7 @@ test.describe('Dev Server E2E', () => {
     const response = await page.goto(`http://localhost:${TEST_PORT}/bundle.js`);
     const body = await response!.text();
 
-    expect(body).toContain('hello from zts');
+    expect(body).toContain('hello from zntc');
     expect(body).not.toContain(': string');
   });
 
@@ -155,7 +155,7 @@ test.describe('Dev Server E2E', () => {
     // 파일 원복
     await writeFile(
       join(fixtureDir, 'app.ts'),
-      'const msg: string = "hello from zts"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
+      'const msg: string = "hello from zntc"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
     );
     await new Promise((r) => setTimeout(r, 1500));
   });
@@ -177,18 +177,18 @@ test.describe('Dev Server E2E', () => {
     await writeFile(join(fixtureDir, 'app.ts'), 'const x: = ;');
 
     // 에러 오버레이가 나타날 때까지 대기
-    await expect(page.locator('#zts-error-overlay')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('#zts-error-overlay')).toContainText('Build Error');
+    await expect(page.locator('#zntc-error-overlay')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('#zntc-error-overlay')).toContainText('Build Error');
 
     // 에러 수정 → 오버레이 사라짐 + 페이지 리로드
     await writeFile(
       join(fixtureDir, 'app.ts'),
-      'const msg: string = "hello from zts"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
+      'const msg: string = "hello from zntc"; console.log(msg); var el = document.getElementById("root"); if (el) { el.textContent = msg; }',
     );
 
     // full-reload가 발생하면 페이지가 새로고침되어 오버레이가 사라짐
-    await expect(page.locator('#zts-error-overlay')).not.toBeVisible({ timeout: 5000 });
-    await expect(page.locator('#root')).toHaveText('hello from zts', { timeout: 5000 });
+    await expect(page.locator('#zntc-error-overlay')).not.toBeVisible({ timeout: 5000 });
+    await expect(page.locator('#root')).toHaveText('hello from zntc', { timeout: 5000 });
   });
 
   test.skip(!!process.env.CI && process.platform === 'linux', 'inotify timing on Linux CI');

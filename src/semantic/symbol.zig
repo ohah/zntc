@@ -1,4 +1,4 @@
-//! ZTS Semantic — 심볼 정의
+//! ZNTC Semantic — 심볼 정의
 //!
 //! 비트플래그 기반 심볼 모델 (oxc 참고).
 //! SymbolKind는 enum으로 선언 종류를 표현하고,

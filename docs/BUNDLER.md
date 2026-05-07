@@ -1,4 +1,4 @@
-# ZTS Bundler Design
+# ZNTC Bundler Design
 
 번들러 상세 설계 문서.
 
@@ -8,7 +8,7 @@
 - **Bun** (Zig+C++): 런타임 내장 번들러, 속도 최우선
 - **Turbopack** (Rust, SWC 기반): Next.js 전용, 증분 컴파일 특화
 
-## ZTS 번들러 포지셔닝
+## ZNTC 번들러 포지셔닝
 - **전략: 품질 먼저 → 속도 추가 (방법 B)** — Rollup→Rolldown 전략을 Zig로
   - 1단계: 정확한 파서/트랜스포머 (✅ 완료, Test262 100%)
   - 2단계: 정확한 tree-shaking/스코프 호이스팅 (Rollup 알고리즘 참고)
@@ -171,7 +171,7 @@ const Module = struct {
 - ✅ **2.5b**: sideEffects 글롭 패턴 — `sideEffects: ["*.css"]` 배열 형태 (matchGlob 기반)
 - ✅ **statement-level**: rolldown 방식 symbol graph + BFS 도달성 (`stmt_info.zig` / `statement_shaker.zig`)
 - ⬜ **3단계**: 깊은 사이드 이펙트 분석 — getter/proxy/global 변수 판단 (후순위)
-- ZTS 유리점: semantic analyzer의 스코프/심볼이 이미 있고, `@__PURE__` 렉서 지원, 인덱스 기반 AST로 노드 제거가 태그 변경만으로 가능
+- ZNTC 유리점: semantic analyzer의 스코프/심볼이 이미 있고, `@__PURE__` 렉서 지원, 인덱스 기반 AST로 노드 제거가 태그 변경만으로 가능
 
 ## Tree-shaking 구현 (모듈 수준 + statement 수준)
 
@@ -338,9 +338,9 @@ pub const CjsExportFact = struct {
 - **도입 순서**: B1에서 유닛+픽스처 → B2에서 실행 비교+호환 → ✅ 프로덕션 전 스모크
 
 ## 실전 검증 로드맵
-- **1단계 (지금 가능)**: 실제 .ts/.tsx 파일을 ZTS로 변환, esbuild/SWC 출력과 비교
-- **2단계 (Arena 후)**: `hyperfine`으로 대형 파일 벤치마크 (ZTS vs esbuild vs SWC)
-- **3단계 (N-API 후)**: `vite-plugin-zts`로 실제 React/Vue 프로젝트 개발 서버
+- **1단계 (지금 가능)**: 실제 .ts/.tsx 파일을 ZNTC로 변환, esbuild/SWC 출력과 비교
+- **2단계 (Arena 후)**: `hyperfine`으로 대형 파일 벤치마크 (ZNTC vs esbuild vs SWC)
+- **3단계 (N-API 후)**: `vite-plugin-zntc`로 실제 React/Vue 프로젝트 개발 서버
 - ✅ **4단계 (번들러 MVP)**: 실제 프로젝트 빌드 스모크 테스트 — 111/111 통과, CI 통합 완료
 
 ## 성능 저하 위험 포인트
@@ -375,11 +375,11 @@ pub const CjsExportFact = struct {
   - RAM 번들 — code splitting으로 대체
 - **필요한 RN 특화 기능**:
   - ~~`platformResolverPlugin`~~ — ✅ 코어 옵션으로 구현 (`--resolve-extensions`, `--main-fields`)
-  - ~~`flowStripPlugin`~~ — ✅ ZTS 코어에서 직접 구현 (`--flow`, flow.zig)
+  - ~~`flowStripPlugin`~~ — ✅ ZNTC 코어에서 직접 구현 (`--flow`, flow.zig)
   - `preludePlugin` — polyfill/InitializeCore 주입 (플러그인으로)
   - `assetPlugin` — 이미지 등 에셋 처리 (플러그인으로)
   - ~~`hermesCompatPlugin`~~ — ✅ `--target=es5`로 대응
-  - ~~`react-refresh`~~ — ✅ ZTS dev server에 내장
+  - ~~`react-refresh`~~ — ✅ ZNTC dev server에 내장
   - ~~글로벌 주입~~ — ✅ `--define:__DEV__=true` 등
 - **핵심 설정**: `strictExecutionOrder: true` (ESM 실행 순서 보장)
 - **Hermes 바이트코드**: `.hbc` 출력 — Hermes 컴파일러와 C ABI 연동
@@ -391,11 +391,11 @@ Zig 코어 (parser + transformer + codegen)
     ├─ CLI (직접 사용) — ✅ 이미 구현
     ├─ C ABI (.so/.dylib) — Zig export fn으로 노출
     │   └─ N-API 네이티브 모듈 (npm 패키지, 최고 속도)
-    │       ├─ vite-plugin-zts    (esbuild 자리 대체)
-    │       ├─ zts-loader         (swc-loader 자리 대체)
-    │       └─ rollup-plugin-zts
+    │       ├─ vite-plugin-zntc    (esbuild 자리 대체)
+    │       ├─ zntc-loader         (swc-loader 자리 대체)
+    │       └─ rollup-plugin-zntc
     └─ WASM (.wasm) — ✅ 빌드 이미 가능
-        └─ @zts/wasm (npm 패키지)
+        └─ @zntc/wasm (npm 패키지)
             ├─ 브라우저 playground / 온라인 REPL
             └─ Deno/Bun/Cloudflare Workers 호환
 ```
@@ -412,8 +412,8 @@ playground 가 trans pile-only 모드에선 작은 binary 만 다운로드, bund
 
 | Target | Role | Raw | Gzip (-9) | Brotli (q=11) |
 |---|---|---:|---:|---:|
-| `zts.wasm` | transpile-only | 908.5 KiB | 321.0 KiB | 250.0 KiB |
-| `zts-bundler.wasm` | bundler | 1.57 MiB | 512.6 KiB | 393.7 KiB |
+| `zntc.wasm` | transpile-only | 908.5 KiB | 321.0 KiB | 250.0 KiB |
+| `zntc-bundler.wasm` | bundler | 1.57 MiB | 512.6 KiB | 393.7 KiB |
 
 - 분리 결정: 단일 binary (1.57 MiB) 면 transpile-only playground 도 풀 bundler 다운로드 강제 → 분리 우위. 후속 wasm-opt (binaryen) 적용 시 추가 10-30% 절감 가능 (별도 follow-up).
 - `playground/bundler` 페이지에서만 `initBundler()` 호출 → bundler binary 가 lazy 로드.

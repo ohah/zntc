@@ -10,7 +10,7 @@
 //!   - severity: error/warning/info
 //!   - 멀티 스팬 라벨: 여러 위치에 밑줄 + 설명
 //!   - help/note: 수정 제안, 추가 정보
-//!   - 에러 코드: [ZTS0001] 형식
+//!   - 에러 코드: [ZNTC0001] 형식
 
 const std = @import("std");
 const Span = @import("lexer/token.zig").Span;
@@ -25,7 +25,7 @@ pub const Label = diag_mod.Label;
 pub const RichDiagnostic = struct {
     /// 심각도
     severity: Severity,
-    /// 에러 코드 (예: "ZTS0001"). null이면 코드를 표시하지 않음.
+    /// 에러 코드 (예: "ZNTC0001"). null이면 코드를 표시하지 않음.
     code: ?[]const u8 = null,
     /// 주 메시지 (예: "Top-level await is not available in the configured target environment")
     message: []const u8,
@@ -238,7 +238,7 @@ test "fromDiagnostic: uses explicit error code" {
     };
     const rich = fromDiagnostic(d, "test.ts");
     try std.testing.expect(rich.code != null);
-    try std.testing.expectEqualStrings("ZTS0300", rich.code.?);
+    try std.testing.expectEqualStrings("ZNTC0300", rich.code.?);
 }
 
 test "fromDiagnostic: forwards labels" {

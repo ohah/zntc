@@ -1,4 +1,4 @@
-//! ZTS Bundler — Expression Purity Analysis
+//! ZNTC Bundler — Expression Purity Analysis
 //!
 //! tree_shaker(모듈 수준)와 statement_shaker(문 수준) 양쪽에서 공유하는
 //! 표현식 순수성 판정 로직. 순수 표현식은 side effect가 없어 안전하게 제거 가능.

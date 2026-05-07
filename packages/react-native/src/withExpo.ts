@@ -1,8 +1,8 @@
 /**
- * withExpo — Apply Expo-specific options to a ZTS RN config.
+ * withExpo — Apply Expo-specific options to a ZNTC RN config.
  *
  * Mirrors the runtime opt-in pattern of `@expo/metro-config`:
- *   import { withExpo } from '@zts/react-native';
+ *   import { withExpo } from '@zntc/react-native';
  *   export default withExpo({ root: __dirname, entry: 'index.js', ... });
  *
  * Adds:
@@ -14,8 +14,8 @@
  * Resolves all paths from `config.root`, so monorepo hoisting in unrelated
  * workspace packages cannot leak Expo into a vanilla RN config.
  *
- * 번개 packages/bungae/src/bundler/zts-bundler/withExpo.ts 의 ZTS 포팅.
- * BungaeConfig 대신 ZTS 의 Metro-shape config (rn-dev-input.mjs 가 인식하는
+ * 번개 packages/bungae/src/bundler/zntc-bundler/withExpo.ts 의 ZNTC 포팅.
+ * BungaeConfig 대신 ZNTC 의 Metro-shape config (rn-dev-input.mjs 가 인식하는
  * `resolver.assetExts` / `resolver.blockList` / `serializer.prelude` /
  * `server.silentConsoleErrorPatterns` 영역) 를 변형.
  */
@@ -86,11 +86,11 @@ function resolveExpoModules(root: string): {
 }
 
 /**
- * ZTS 의 Metro-shape config 가 가질 수 있는 영역 — withExpo 가 만지는 부분만
+ * ZNTC 의 Metro-shape config 가 가질 수 있는 영역 — withExpo 가 만지는 부분만
  * 명시. caller 가 `defineConfig` 없이 plain object 로 export 하므로 `T extends`
  * 형태로 generic 보존 — 추가 필드는 그대로 통과.
  */
-export interface ZtsRnExpoConfig {
+export interface ZntcRnExpoConfig {
   root?: string;
   resolver?: {
     assetExts?: string[];
@@ -108,7 +108,7 @@ export interface ZtsRnExpoConfig {
   [key: string]: unknown;
 }
 
-export function withExpo<T extends ZtsRnExpoConfig>(config: T): T {
+export function withExpo<T extends ZntcRnExpoConfig>(config: T): T {
   const root = config.root ?? process.cwd();
   const { winter, metroRuntime } = resolveExpoModules(root);
 

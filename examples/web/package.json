@@ -1,15 +1,15 @@
 {
-  "name": "@zts/example-web",
+  "name": "@zntc/example-web",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "predev": "bun run --cwd ../../packages/core build:js",
-    "dev": "zts dev",
+    "dev": "zntc dev",
     "prebuild": "bun run --cwd ../../packages/core build:js",
-    "build": "zts build",
+    "build": "zntc build",
     "prepreview": "bun run --cwd ../../packages/core build:js",
-    "preview": "zts preview"
+    "preview": "zntc preview"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -21,7 +21,7 @@
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@zts/core": "workspace:*",
+    "@zntc/core": "workspace:*",
     "typescript": "^6.0.3"
   }
 }

@@ -7,7 +7,7 @@ import {
   watch,
   close,
   vitePlugin,
-  type ZtsPlugin,
+  type ZntcPlugin,
   type RollupPlugin,
 } from './index';
 import { resolve } from 'node:path';
@@ -33,7 +33,7 @@ afterAll(() => {
   close();
 });
 
-describe('@zts/core', () => {
+describe('@zntc/core', () => {
   test('기본 standalone transpile은 JS로 파싱해 TypeScript syntax를 거부', () => {
     expect(() => transpile('const x: number = 1;')).toThrow('ParseError');
   });
@@ -274,11 +274,11 @@ describe('@zts/core', () => {
   });
 });
 
-describe('@zts/core buildSync', () => {
+describe('@zntc/core buildSync', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-napi-build-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-napi-build-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       'import { hello } from "./util";\nconsole.log(hello("world"));',
@@ -302,7 +302,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('browser bundle defaults process.env.NODE_ENV to production', () => {
-    const nodeEnvDir = mkdtempSync(join(tmpdir(), 'zts-napi-node-env-'));
+    const nodeEnvDir = mkdtempSync(join(tmpdir(), 'zntc-napi-node-env-'));
     writeFileSync(join(nodeEnvDir, 'entry.ts'), 'console.log(process.env.NODE_ENV);');
     const result = buildSync({ entryPoints: [join(nodeEnvDir, 'entry.ts')] });
     expect(result.errors.length).toBe(0);
@@ -312,7 +312,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('react-native bundle defaults __DEV__ and NODE_ENV from devMode', () => {
-    const rnDir = mkdtempSync(join(tmpdir(), 'zts-napi-rn-env-'));
+    const rnDir = mkdtempSync(join(tmpdir(), 'zntc-napi-rn-env-'));
     writeFileSync(join(rnDir, 'entry.ts'), 'console.log(__DEV__, process.env.NODE_ENV);');
     const result = buildSync({
       entryPoints: [join(rnDir, 'entry.ts')],
@@ -368,7 +368,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('에러 반환', () => {
-    const badDir = mkdtempSync(join(tmpdir(), 'zts-napi-err-'));
+    const badDir = mkdtempSync(join(tmpdir(), 'zntc-napi-err-'));
     writeFileSync(join(badDir, 'bad.ts'), 'import { x } from "./nonexistent";\nconsole.log(x);');
     const result = buildSync({ entryPoints: [join(badDir, 'bad.ts')] });
     expect(result.errors.length).toBeGreaterThan(0);
@@ -376,7 +376,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('external', () => {
-    const extDir = mkdtempSync(join(tmpdir(), 'zts-napi-ext-'));
+    const extDir = mkdtempSync(join(tmpdir(), 'zntc-napi-ext-'));
     writeFileSync(join(extDir, 'app.ts'), 'import React from "react";\nconsole.log(React);');
     const result = buildSync({
       entryPoints: [join(extDir, 'app.ts')],
@@ -389,7 +389,7 @@ describe('@zts/core buildSync', () => {
 
   // ─── #2155 bundle 모드도 drop console / debugger 적용 ────────────────────────
   test('dropConsole: bundle 모드에서 console 호출 제거', () => {
-    const dropDir = mkdtempSync(join(tmpdir(), 'zts-bundle-drop-console-'));
+    const dropDir = mkdtempSync(join(tmpdir(), 'zntc-bundle-drop-console-'));
     writeFileSync(
       join(dropDir, 'app.ts'),
       'console.log("DROP_CONSOLE_REMOVED"); export const x = "DROP_CONSOLE_KEPT";',
@@ -405,7 +405,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('dropDebugger: bundle 모드에서 debugger 문 제거', () => {
-    const dropDir = mkdtempSync(join(tmpdir(), 'zts-bundle-drop-debugger-'));
+    const dropDir = mkdtempSync(join(tmpdir(), 'zntc-bundle-drop-debugger-'));
     writeFileSync(join(dropDir, 'app.ts'), 'debugger;\nexport const x = "DROP_DEBUGGER_KEPT";');
     const result = buildSync({
       entryPoints: [join(dropDir, 'app.ts')],
@@ -418,7 +418,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('dropConsole 미지정: bundle 모드는 console 호출 보존 (기존 동작)', () => {
-    const keepDir = mkdtempSync(join(tmpdir(), 'zts-bundle-drop-keep-'));
+    const keepDir = mkdtempSync(join(tmpdir(), 'zntc-bundle-drop-keep-'));
     writeFileSync(join(keepDir, 'app.ts'), 'console.log("KEEP_CONSOLE_VALUE");');
     const result = buildSync({
       entryPoints: [join(keepDir, 'app.ts')],
@@ -429,7 +429,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('graph pre-pass skip: no-op ESM/TS bundle still folds numeric const imports', () => {
-    const skipDir = mkdtempSync(join(tmpdir(), 'zts-prepass-skip-esm-'));
+    const skipDir = mkdtempSync(join(tmpdir(), 'zntc-prepass-skip-esm-'));
     writeFileSync(join(skipDir, 'dep.ts'), 'export const value: number = 41;');
     writeFileSync(
       join(skipDir, 'app.ts'),
@@ -445,7 +445,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('graph pre-pass skip: target downlevel without helper syntax stays stable', () => {
-    const skipDir = mkdtempSync(join(tmpdir(), 'zts-prepass-skip-target-'));
+    const skipDir = mkdtempSync(join(tmpdir(), 'zntc-prepass-skip-target-'));
     writeFileSync(
       join(skipDir, 'app.ts'),
       'export const value: number = 1;\nconsole.log("TARGET_SIMPLE_KEPT", value);',
@@ -463,7 +463,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('graph pre-pass skip: type-only imports do not pull runtime modules', () => {
-    const skipDir = mkdtempSync(join(tmpdir(), 'zts-prepass-skip-type-only-'));
+    const skipDir = mkdtempSync(join(tmpdir(), 'zntc-prepass-skip-type-only-'));
     writeFileSync(
       join(skipDir, 'types.ts'),
       'console.log("TYPE_ONLY_MODULE_SHOULD_NOT_APPEAR"); export interface User { id: string }',
@@ -481,7 +481,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('graph pre-pass skip: re-export and namespace access stay linked', () => {
-    const skipDir = mkdtempSync(join(tmpdir(), 'zts-prepass-skip-reexport-'));
+    const skipDir = mkdtempSync(join(tmpdir(), 'zntc-prepass-skip-reexport-'));
     writeFileSync(join(skipDir, 'dep.ts'), 'export const value = "REEXPORT_NAMESPACE_VALUE";');
     writeFileSync(join(skipDir, 'barrel.ts'), 'export { value } from "./dep";');
     writeFileSync(
@@ -496,7 +496,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = value → module.exports = value (rolldown/oxc 패턴)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-value-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-value-'));
     writeFileSync(join(dir, 'app.ts'), 'const value = { name: "exp-eq", n: 42 };\nexport = value;');
     const result = buildSync({ entryPoints: [join(dir, 'app.ts')] });
     expect(result.errors.length).toBe(0);
@@ -507,7 +507,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = class → module.exports = class', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-class-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-class-'));
     writeFileSync(
       join(dir, 'app.ts'),
       "export = class Foo { greet() { return 'hi from class'; } };",
@@ -521,7 +521,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = function → module.exports = function', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-function-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-function-'));
     writeFileSync(
       join(dir, 'app.ts'),
       'export = function add(a: number, b: number) { return a + b; };',
@@ -536,7 +536,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = require().default cherry-pick (CJS interop)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-require-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-require-'));
     writeFileSync(join(dir, 'app.ts'), "export = require('foo').default;");
     const result = buildSync({ entryPoints: [join(dir, 'app.ts')], external: ['foo'] });
     expect(result.errors.length).toBe(0);
@@ -574,7 +574,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = identifier (bundle + minify): __commonJS wrapper 안에서 일관된 mangle', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-bundle-minify-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-bundle-minify-'));
     writeFileSync(
       join(dir, 'app.ts'),
       'class Box { v = 1; greet() { return this.v; } }\nexport = Box;',
@@ -589,7 +589,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = class + target=es5: 다운레벨링과 export = 호환', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-es5-class-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-es5-class-'));
     writeFileSync(join(dir, 'app.ts'), "class Foo { greet() { return 'hi'; } }\nexport = Foo;");
     const result = buildSync({ entryPoints: [join(dir, 'app.ts')], target: 'es5' });
     expect(result.errors.length).toBe(0);
@@ -601,7 +601,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = async function + target=es5: __async helper 와 함께 lower', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-es5-async-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-es5-async-'));
     writeFileSync(join(dir, 'app.ts'), 'export = async function () { return 42; };');
     const result = buildSync({ entryPoints: [join(dir, 'app.ts')], target: 'es5' });
     expect(result.errors.length).toBe(0);
@@ -612,7 +612,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = arrow + target=es5: 화살표가 function expression 으로 lower', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-es5-arrow-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-es5-arrow-'));
     writeFileSync(join(dir, 'app.ts'), 'export = (x: number) => x * 2;');
     const result = buildSync({ entryPoints: [join(dir, 'app.ts')], target: 'es5' });
     expect(result.errors.length).toBe(0);
@@ -624,7 +624,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('TS export = process.env ternary + define: 컴파일 시 분기 결정 + constant fold', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-export-equals-define-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-export-equals-define-'));
     writeFileSync(
       join(dir, 'app.ts'),
       'const value = process.env.NODE_ENV === "production" ? "prod" : "dev";\nexport = { mode: value };',
@@ -643,7 +643,7 @@ describe('@zts/core buildSync', () => {
   });
 
   test('graph pre-pass keep: JSX and decorator/downlevel helper cases still transform', () => {
-    const keepDir = mkdtempSync(join(tmpdir(), 'zts-prepass-keep-transform-'));
+    const keepDir = mkdtempSync(join(tmpdir(), 'zntc-prepass-keep-transform-'));
     writeFileSync(join(keepDir, 'jsx.tsx'), 'export const App = () => <div>ok</div>;');
     writeFileSync(join(keepDir, 'decorator.ts'), '@sealed\nexport class Box { value = 1; }');
     writeFileSync(
@@ -676,11 +676,11 @@ describe('@zts/core buildSync', () => {
   });
 });
 
-describe('@zts/core build (async)', () => {
+describe('@zntc/core build (async)', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-napi-async-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-napi-async-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       'import { hello } from "./util";\nconsole.log(hello("world"));',
@@ -728,11 +728,11 @@ describe('@zts/core build (async)', () => {
   });
 });
 
-describe('@zts/core build + plugins', () => {
+describe('@zntc/core build + plugins', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-napi-plugin-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-napi-plugin-'));
     writeFileSync(join(dir, 'entry.ts'), 'import css from "./style.css";\nconsole.log(css);');
     writeFileSync(
       join(dir, 'app.ts'),
@@ -752,7 +752,7 @@ describe('@zts/core build + plugins', () => {
       join(dir, 'entry-disabled.ts'),
       `import * as m from "should-be-empty"; console.log(typeof m);`,
     );
-    const disabledPlugin: ZtsPlugin = {
+    const disabledPlugin: ZntcPlugin = {
       name: 'disabled-resolver',
       setup(build) {
         build.onResolve({ filter: /^should-be-empty$/ }, () => ({
@@ -771,7 +771,7 @@ describe('@zts/core build + plugins', () => {
   });
 
   test('onResolve + onLoad 플러그인 (CSS → JS 변환)', async () => {
-    const cssPlugin: ZtsPlugin = {
+    const cssPlugin: ZntcPlugin = {
       name: 'css-plugin',
       setup(build) {
         build.onResolve({ filter: /\.css$/ }, (args) => ({
@@ -792,7 +792,7 @@ describe('@zts/core build + plugins', () => {
   });
 
   test('multiple plugins 체이닝', async () => {
-    const plugin1: ZtsPlugin = {
+    const plugin1: ZntcPlugin = {
       name: 'css-resolve',
       setup(build) {
         build.onResolve({ filter: /\.css$/ }, (args) => ({
@@ -800,7 +800,7 @@ describe('@zts/core build + plugins', () => {
         }));
       },
     };
-    const plugin2: ZtsPlugin = {
+    const plugin2: ZntcPlugin = {
       name: 'css-load',
       setup(build) {
         build.onLoad({ filter: /\.css$/ }, () => ({
@@ -818,7 +818,7 @@ describe('@zts/core build + plugins', () => {
   });
 
   test('onTransform 플러그인 (코드 변환)', async () => {
-    const transformPlugin: ZtsPlugin = {
+    const transformPlugin: ZntcPlugin = {
       name: 'transform-plugin',
       setup(build) {
         build.onTransform({ filter: /\.ts$/ }, (args) => ({
@@ -827,7 +827,7 @@ describe('@zts/core build + plugins', () => {
       },
     };
 
-    const entryDir = mkdtempSync(join(tmpdir(), 'zts-transform-'));
+    const entryDir = mkdtempSync(join(tmpdir(), 'zntc-transform-'));
     writeFileSync(join(entryDir, 'main.ts'), 'console.log("hello");');
 
     const result = await build({
@@ -841,7 +841,7 @@ describe('@zts/core build + plugins', () => {
   });
 
   test('#2038: onTransform이 추가한 sideEffects:false 패키지 import도 tree-shaking 입력이 됨', async () => {
-    const entryDir = mkdtempSync(join(tmpdir(), 'zts-2038-plugin-pkg-'));
+    const entryDir = mkdtempSync(join(tmpdir(), 'zntc-2038-plugin-pkg-'));
     writeFileSync(join(entryDir, 'main.ts'), "console.log('__ORIGINAL_2038__');");
     mkdirSync(join(entryDir, 'node_modules', 'pure-lib-2038'), { recursive: true });
     writeFileSync(
@@ -856,7 +856,7 @@ describe('@zts/core build + plugins', () => {
       ].join('\n'),
     );
 
-    const transformPlugin: ZtsPlugin = {
+    const transformPlugin: ZntcPlugin = {
       name: 'transform-adds-package-import',
       setup(build) {
         build.onTransform({ filter: /main\.ts$/ }, () => ({
@@ -884,7 +884,7 @@ describe('@zts/core build + plugins', () => {
   test.skipIf(!existsSync(join(ROOT_NODE_MODULES, 'lodash-es', 'package.json')))(
     '#2038: 실제 lodash-es import를 onTransform으로 주입해도 dead export가 새지 않음',
     async () => {
-      const entryDir = mkdtempSync(join(tmpdir(), 'zts-2038-lodash-plugin-'));
+      const entryDir = mkdtempSync(join(tmpdir(), 'zntc-2038-lodash-plugin-'));
       writeFileSync(join(entryDir, 'main.ts'), "console.log('__ORIGINAL_LODASH_2038__');");
       mkdirSync(join(entryDir, 'node_modules'), { recursive: true });
       symlinkSync(
@@ -892,7 +892,7 @@ describe('@zts/core build + plugins', () => {
         join(entryDir, 'node_modules', 'lodash-es'),
       );
 
-      const transformPlugin: ZtsPlugin = {
+      const transformPlugin: ZntcPlugin = {
         name: 'transform-adds-lodash-import',
         setup(build) {
           build.onTransform({ filter: /main\.ts$/ }, () => ({
@@ -929,14 +929,14 @@ describe('@zts/core build + plugins', () => {
   // ============================================================
 
   test('onResolveContext: hook 호출 + args 전달 (dir/recursive/filter/flags/importer)', async () => {
-    const entryDir = mkdtempSync(join(tmpdir(), 'zts-rc-'));
+    const entryDir = mkdtempSync(join(tmpdir(), 'zntc-rc-'));
     writeFileSync(
       join(entryDir, 'entry.ts'),
       "const ctx = require.context('./pages', true, /\\.tsx?$/, 'sync'); console.log(ctx);",
     );
 
     let captured: any = null;
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'rc-capture',
       setup(build) {
         build.onResolveContext({ filter: /.*/ }, (args) => {
@@ -960,7 +960,7 @@ describe('@zts/core build + plugins', () => {
   });
 
   test('onResolveContext: plugin 미구현 → require_context_no_handler warning', async () => {
-    const entryDir = mkdtempSync(join(tmpdir(), 'zts-rc-noplug-'));
+    const entryDir = mkdtempSync(join(tmpdir(), 'zntc-rc-noplug-'));
     writeFileSync(
       join(entryDir, 'entry.ts'),
       "const ctx = require.context('./pages'); console.log(ctx);",
@@ -981,7 +981,7 @@ describe('@zts/core build + plugins', () => {
   });
 
   test('onResolveContext: invalid require.context (numeric arg) → require_context_invalid error', async () => {
-    const entryDir = mkdtempSync(join(tmpdir(), 'zts-rc-invalid-'));
+    const entryDir = mkdtempSync(join(tmpdir(), 'zntc-rc-invalid-'));
     writeFileSync(join(entryDir, 'entry.ts'), 'const ctx = require.context(42); console.log(ctx);');
 
     const result = await build({
@@ -998,13 +998,13 @@ describe('@zts/core build + plugins', () => {
   });
 
   test('onResolveContext: 빈 매칭 결과 (empty context) — diagnostic 없음', async () => {
-    const entryDir = mkdtempSync(join(tmpdir(), 'zts-rc-empty-'));
+    const entryDir = mkdtempSync(join(tmpdir(), 'zntc-rc-empty-'));
     writeFileSync(
       join(entryDir, 'entry.ts'),
       "const ctx = require.context('./nonexistent'); console.log(ctx);",
     );
 
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'rc-empty',
       setup(build) {
         build.onResolveContext({ filter: /.*/ }, () => ({ context: [] }));
@@ -1036,7 +1036,7 @@ describe('@zts/core build + plugins', () => {
   });
 
   test('플러그인 콜백이 throw해도 빌드가 중단되지 않음', async () => {
-    const throwPlugin: ZtsPlugin = {
+    const throwPlugin: ZntcPlugin = {
       name: 'throw-plugin',
       setup(build) {
         build.onLoad({ filter: /never-match-anything/ }, () => {
@@ -1056,7 +1056,7 @@ describe('@zts/core build + plugins', () => {
 
   test('lifecycle hooks (#2156): buildStart → buildEnd → closeBundle 순서 + 1회씩', async () => {
     const events: string[] = [];
-    const lifecyclePlugin: ZtsPlugin = {
+    const lifecyclePlugin: ZntcPlugin = {
       name: 'lifecycle-tracker',
       setup(build) {
         build.onBuildStart(() => events.push('buildStart'));
@@ -1085,7 +1085,7 @@ describe('@zts/core build + plugins', () => {
 
   test('lifecycle hooks (#2156): plugin error 는 swallow 되고 다른 plugin 차단 안 함', async () => {
     const events: string[] = [];
-    const throwingPlugin: ZtsPlugin = {
+    const throwingPlugin: ZntcPlugin = {
       name: 'thrower',
       setup(build) {
         const boom = () => {
@@ -1096,7 +1096,7 @@ describe('@zts/core build + plugins', () => {
         build.onCloseBundle(boom);
       },
     };
-    const trackingPlugin: ZtsPlugin = {
+    const trackingPlugin: ZntcPlugin = {
       name: 'tracker',
       setup(build) {
         build.onBuildStart(() => events.push('start'));
@@ -1139,7 +1139,7 @@ describe('@zts/core build + plugins', () => {
 
 // ─── 엣지케이스 테스트 ───
 
-describe('@zts/core edge cases', () => {
+describe('@zntc/core edge cases', () => {
   // transpile 엣지케이스
   test('매우 긴 소스코드 트랜스파일', () => {
     const lines = Array.from({ length: 10000 }, (_, i) => `export const v${i}: number = ${i};`);
@@ -1184,7 +1184,7 @@ describe('@zts/core edge cases', () => {
   });
 
   test('build target es5 keeps optional chaining temp declarations in nested functions', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-es5-optional-temp-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-optional-temp-'));
     try {
       writeFileSync(
         join(dir, 'entry.ts'),
@@ -1282,7 +1282,7 @@ describe('@zts/core edge cases', () => {
   });
 
   test('buildSync: 모든 옵션 동시 사용', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-edge-all-opts-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-edge-all-opts-'));
     writeFileSync(join(dir, 'index.ts'), 'export const x = 1;');
     const result = buildSync({
       entryPoints: [join(dir, 'index.ts')],
@@ -1315,7 +1315,7 @@ describe('@zts/core edge cases', () => {
   });
 
   test('build: 병렬 호출', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-edge-parallel-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-edge-parallel-'));
     writeFileSync(join(dir, 'a.ts'), 'export const a = 1;');
     writeFileSync(join(dir, 'b.ts'), 'export const b = 2;');
 
@@ -1332,10 +1332,10 @@ describe('@zts/core edge cases', () => {
 
   // 플러그인 엣지케이스
   test('plugin: null 반환 시 기본 동작', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-edge-plugin-null-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-edge-plugin-null-'));
     writeFileSync(join(dir, 'index.ts'), 'export const x = 1;');
 
-    const noopPlugin: ZtsPlugin = {
+    const noopPlugin: ZntcPlugin = {
       name: 'noop',
       setup(build) {
         build.onLoad({ filter: /never-match/ }, () => null);
@@ -1352,7 +1352,7 @@ describe('@zts/core edge cases', () => {
   });
 
   test('plugin: setup에서 아무 훅도 등록하지 않음', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-edge-empty-plugin-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-edge-empty-plugin-'));
     writeFileSync(join(dir, 'index.ts'), 'export const x = 1;');
 
     const result = await build({
@@ -1373,12 +1373,12 @@ describe('@zts/core edge cases', () => {
 
 // ─── 추가 커버리지 테스트 ───
 
-describe('@zts/core 플러그인 심화', () => {
+describe('@zntc/core 플러그인 심화', () => {
   test('플러그인 콜백이 매치 후 throw — 에러로 전파', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-plugin-throw-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-throw-'));
     writeFileSync(join(dir, 'index.ts'), 'import "./data.json";');
 
-    const throwPlugin: ZtsPlugin = {
+    const throwPlugin: ZntcPlugin = {
       name: 'throw-on-load',
       setup(build) {
         build.onResolve({ filter: /\.json$/ }, (args) => ({
@@ -1401,7 +1401,7 @@ describe('@zts/core 플러그인 심화', () => {
   });
 
   test('다중 모듈 번들 + 플러그인', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-plugin-large-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-large-'));
 
     // 5개 모듈 생성
     for (let i = 0; i < 5; i++) {
@@ -1412,7 +1412,7 @@ describe('@zts/core 플러그인 심화', () => {
     writeFileSync(join(dir, 'entry.ts'), `${imports.join('\n')}\nconsole.log(${usage});`);
 
     let transformCount = 0;
-    const countPlugin: ZtsPlugin = {
+    const countPlugin: ZntcPlugin = {
       name: 'count-transforms',
       setup(build) {
         build.onTransform({ filter: /\.ts$/ }, (_args) => {
@@ -1434,10 +1434,10 @@ describe('@zts/core 플러그인 심화', () => {
   });
 
   test('플러그인 콜백이 undefined 반환 (null과 동일 처리)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-plugin-undef-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-undef-'));
     writeFileSync(join(dir, 'index.ts'), 'export const x = 1;');
 
-    const undefPlugin: ZtsPlugin = {
+    const undefPlugin: ZntcPlugin = {
       name: 'undef-return',
       setup(build) {
         build.onLoad({ filter: /\.ts$/ }, () => undefined as any);
@@ -1454,7 +1454,7 @@ describe('@zts/core 플러그인 심화', () => {
   });
 
   test('멀티스레드: 10개 모듈 + onTransform 플러그인 (#985)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-plugin-mt-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-mt-'));
     for (let i = 0; i < 10; i++) {
       writeFileSync(join(dir, `mod${i}.ts`), `export const val${i} = ${i};`);
     }
@@ -1463,7 +1463,7 @@ describe('@zts/core 플러그인 심화', () => {
     writeFileSync(join(dir, 'entry.ts'), `${imports.join('\n')}\nconsole.log(${usage});`);
 
     let callCount = 0;
-    const countPlugin: ZtsPlugin = {
+    const countPlugin: ZntcPlugin = {
       name: 'count',
       setup(build) {
         build.onTransform({ filter: /\.ts$/ }, (_args) => {
@@ -1484,11 +1484,11 @@ describe('@zts/core 플러그인 심화', () => {
   });
 
   test('멀티스레드: 동시 resolveId + load + transform (#985)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-plugin-mt2-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-mt2-'));
     writeFileSync(join(dir, 'entry.ts'), 'import css from "./style.css";\nconsole.log(css);');
 
     const hooksCalled: string[] = [];
-    const multiHookPlugin: ZtsPlugin = {
+    const multiHookPlugin: ZntcPlugin = {
       name: 'multi-hook',
       setup(build) {
         build.onResolve({ filter: /\.css$/ }, (args) => {
@@ -1519,14 +1519,14 @@ describe('@zts/core 플러그인 심화', () => {
   });
 
   test('멀티스레드: 플러그인 + minify + sourcemap 동시 (#985)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-plugin-mt3-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-mt3-'));
     for (let i = 0; i < 5; i++) {
       writeFileSync(join(dir, `mod${i}.ts`), `export const val${i} = ${i};`);
     }
     const imports = Array.from({ length: 5 }, (_, i) => `import { val${i} } from "./mod${i}";`);
     writeFileSync(join(dir, 'entry.ts'), `${imports.join('\n')}\nconsole.log(val0);`);
 
-    const noopPlugin: ZtsPlugin = {
+    const noopPlugin: ZntcPlugin = {
       name: 'noop',
       setup(build) {
         build.onTransform({ filter: /\.ts$/ }, () => null);
@@ -1545,11 +1545,11 @@ describe('@zts/core 플러그인 심화', () => {
   });
 });
 
-describe('@zts/core 번들 포맷/플랫폼', () => {
+describe('@zntc/core 번들 포맷/플랫폼', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-format-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-format-'));
     writeFileSync(join(dir, 'index.ts'), 'export const greeting = "hello";\nexport default 42;');
   });
 
@@ -1582,7 +1582,7 @@ describe('@zts/core 번들 포맷/플랫폼', () => {
   });
 
   test('IIFE + globalName: aliased/default exports become return object properties', () => {
-    const aliasDir = mkdtempSync(join(tmpdir(), 'zts-iife-export-return-'));
+    const aliasDir = mkdtempSync(join(tmpdir(), 'zntc-iife-export-return-'));
     writeFileSync(
       join(aliasDir, 'index.ts'),
       'const internal = 1;\nexport { internal as answer };\nexport default internal;',
@@ -1629,11 +1629,11 @@ describe('@zts/core 번들 포맷/플랫폼', () => {
   });
 });
 
-describe('@zts/core build 옵션 조합', () => {
+describe('@zntc/core build 옵션 조합', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-combo-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-combo-'));
     writeFileSync(
       join(dir, 'index.ts'),
       'import { helper } from "./util";\nconsole.log(helper());',
@@ -1683,7 +1683,7 @@ describe('@zts/core build 옵션 조합', () => {
   });
 
   test('treeShaking=false로 미사용 export 보존', () => {
-    const tsDir = mkdtempSync(join(tmpdir(), 'zts-tree-'));
+    const tsDir = mkdtempSync(join(tmpdir(), 'zntc-tree-'));
     writeFileSync(join(tsDir, 'index.ts'), 'import { used } from "./lib";\nconsole.log(used);');
     writeFileSync(join(tsDir, 'lib.ts'), 'export const used = 1;\nexport const unused = 2;');
 
@@ -1703,7 +1703,7 @@ describe('@zts/core build 옵션 조합', () => {
   });
 
   test('JSX automatic + build', () => {
-    const jsxDir = mkdtempSync(join(tmpdir(), 'zts-jsx-build-'));
+    const jsxDir = mkdtempSync(join(tmpdir(), 'zntc-jsx-build-'));
     writeFileSync(join(jsxDir, 'app.tsx'), 'export default () => <div>hello</div>;');
 
     const result = buildSync({
@@ -1718,7 +1718,7 @@ describe('@zts/core build 옵션 조합', () => {
   });
 
   test('Flow 파일 번들링', () => {
-    const flowDir = mkdtempSync(join(tmpdir(), 'zts-flow-build-'));
+    const flowDir = mkdtempSync(join(tmpdir(), 'zntc-flow-build-'));
     writeFileSync(
       join(flowDir, 'index.js'),
       '// @flow\nfunction foo(x: string): number { return x.length; }\nconsole.log(foo("test"));',
@@ -1747,7 +1747,7 @@ describe('@zts/core build 옵션 조합', () => {
 
 // ─── ES2023 + hashbang ───
 
-describe('@zts/core ES2023/hashbang', () => {
+describe('@zntc/core ES2023/hashbang', () => {
   test('target es5: hashbang이 제거됨', () => {
     const result = transpile("#!/usr/bin/env node\nconsole.log('hello');", {
       target: 'es5',
@@ -1790,7 +1790,7 @@ describe('@zts/core ES2023/hashbang', () => {
   });
 
   test('es2023 타겟 번들링', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-es2023-build-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es2023-build-'));
     writeFileSync(join(dir, 'index.ts'), '#!/usr/bin/env node\nconsole.log(1);');
     // buildSync에 target 옵션이 없으므로 transpile로 테스트
     const result = transpile(readFileSync(join(dir, 'index.ts'), 'utf8'), {
@@ -1803,9 +1803,9 @@ describe('@zts/core ES2023/hashbang', () => {
 
 // ─── define/alias 옵션 ───
 
-describe('@zts/core define/alias', () => {
+describe('@zntc/core define/alias', () => {
   test('define: 글로벌 상수 치환', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-define-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-define-'));
     writeFileSync(
       join(dir, 'index.ts'),
       'console.log(process.env.NODE_ENV);\nconsole.log(__DEV__);',
@@ -1826,7 +1826,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test('alias: import 경로 치환', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-alias-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-'));
     writeFileSync(join(dir, 'real.ts'), 'export const x = 42;');
     writeFileSync(join(dir, 'index.ts'), 'import { x } from "@alias/mod";\nconsole.log(x);');
 
@@ -1841,7 +1841,7 @@ describe('@zts/core define/alias', () => {
 
   // ─── #2153 array-form alias (Vite 식 RegExp / 함수형 find) ──────────────────
   test('alias array: string find — exact 매칭', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-alias-array-string-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-string-'));
     writeFileSync(join(dir, 'real.ts'), 'export const x = "ALIAS_ARRAY_STRING_VALUE";');
     writeFileSync(join(dir, 'index.ts'), 'import { x } from "virtual";\nconsole.log(x);');
 
@@ -1855,7 +1855,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test('alias array: RegExp find — capture group 치환 ($1)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-alias-array-regex-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-regex-'));
     writeFileSync(join(dir, 'components.ts'), 'export const Btn = "ALIAS_REGEX_BTN";');
     writeFileSync(join(dir, 'index.ts'), 'import { Btn } from "@/components";\nconsole.log(Btn);');
 
@@ -1870,7 +1870,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test('alias array: 매칭 순서 — 첫번째 매치 적용', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-alias-array-order-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-order-'));
     writeFileSync(join(dir, 'first.ts'), 'export const v = "ALIAS_FIRST_MATCH";');
     writeFileSync(join(dir, 'second.ts'), 'export const v = "ALIAS_SECOND_MATCH";');
     writeFileSync(join(dir, 'index.ts'), 'import { v } from "shared";\nconsole.log(v);');
@@ -1889,7 +1889,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test('alias array: RegExp `g` flag 도 매 import 안전 적용 (lastIndex 부작용 없음)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-alias-array-gflag-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-gflag-'));
     writeFileSync(join(dir, 'a.ts'), 'export const a = "ALIAS_GFLAG_A";');
     writeFileSync(join(dir, 'b.ts'), 'export const b = "ALIAS_GFLAG_B";');
     writeFileSync(
@@ -1911,7 +1911,7 @@ describe('@zts/core define/alias', () => {
 
   // ─── #2159 outputExports — Rollup output.exports 호환 ─────────────────────
   test("outputExports='auto' default-only → module.exports = X", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-output-exports-auto-default-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-output-exports-auto-default-'));
     writeFileSync(join(dir, 'index.ts'), 'const x = "AUTO_DEFAULT_ONLY";\nexport default x;');
 
     const result = await build({
@@ -1927,7 +1927,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test("outputExports='auto' named-only → exports.X = X (no esModule flag)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-output-exports-auto-named-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-output-exports-auto-named-'));
     writeFileSync(join(dir, 'index.ts'), 'export const a = 1;\nexport const b = "AUTO_NAMED";');
 
     const result = await build({
@@ -1945,7 +1945,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test("outputExports='auto' mixed → exports.X + esModule flag", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-output-exports-auto-mixed-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-output-exports-auto-mixed-'));
     writeFileSync(
       join(dir, 'index.ts'),
       'export const a = "AUTO_MIXED_NAMED";\nexport default { x: "AUTO_MIXED_DEFAULT" };',
@@ -1965,7 +1965,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test("outputExports='named' default-only → exports.default + esModule flag", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-output-exports-named-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-output-exports-named-'));
     writeFileSync(join(dir, 'index.ts'), 'const x = "NAMED_DEFAULT";\nexport default x;');
 
     const result = await build({
@@ -1982,7 +1982,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test("outputExports='default' default-only → module.exports = X", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-output-exports-default-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-output-exports-default-'));
     writeFileSync(join(dir, 'index.ts'), 'const x = "DEFAULT_MODE";\nexport default x;');
 
     const result = await build({
@@ -1997,7 +1997,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test("outputExports='default' + named 섞이면 result.errors 에 명시 진단", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-output-exports-conflict-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-output-exports-conflict-'));
     writeFileSync(
       join(dir, 'index.ts'),
       'export const a = 1;\nexport default { x: "ALSO_HAS_DEFAULT" };',
@@ -2017,7 +2017,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test("outputExports='none' → 모든 export 출력 안 함", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-output-exports-none-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-output-exports-none-'));
     writeFileSync(join(dir, 'index.ts'), 'export const a = 1;\nexport default { x: 2 };');
 
     const result = await build({
@@ -2034,11 +2034,11 @@ describe('@zts/core define/alias', () => {
   });
 
   // ─── #2158 logLevel / logLimit NAPI 필터링 ─────────────────────────────────
-  // unresolved import 은 ZTS 에서 errors 로 분류 (worker / optional 만 warnings).
+  // unresolved import 은 ZNTC 에서 errors 로 분류 (worker / optional 만 warnings).
   // 따라서 errors 검증 위주로 logLevel/logLimit 동작 확인.
 
   test("logLevel='silent': errors 도 빈 배열 (build 객체로만 결과 확인)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-loglevel-silent-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-loglevel-silent-'));
     writeFileSync(
       join(dir, 'index.ts'),
       'import * as r from "unresolved-pkg-zzz";\nconsole.log(r);',
@@ -2057,7 +2057,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test("logLevel='warning' (default): errors 그대로 보존", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-loglevel-warning-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-loglevel-warning-'));
     writeFileSync(
       join(dir, 'index.ts'),
       'import * as r from "unresolved-pkg-yyy";\nconsole.log(r);',
@@ -2072,7 +2072,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test('logLimit=1: errors 가 여러 개여도 1개로 truncate', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-loglimit-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-loglimit-'));
     writeFileSync(
       join(dir, 'index.ts'),
       [
@@ -2095,7 +2095,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test('alias array: buildSync 에서 throw (host RegExp 위임 plugin 필요)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-alias-array-sync-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-alias-array-sync-'));
     writeFileSync(join(dir, 'index.ts'), 'console.log("hi");');
 
     expect(() =>
@@ -2109,7 +2109,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test('define: async build에서도 동작', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-define-async-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-define-async-'));
     writeFileSync(join(dir, 'index.ts'), 'console.log(VERSION);');
 
     const result = await build({
@@ -2122,7 +2122,7 @@ describe('@zts/core define/alias', () => {
   });
 
   test('빈 define/alias 객체 → 무시', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-empty-define-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-empty-define-'));
     writeFileSync(join(dir, 'index.ts'), 'export const x = 1;');
 
     const result = buildSync({
@@ -2141,7 +2141,7 @@ describe('vitePlugin 어댑터', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-vite-adapter-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-vite-adapter-'));
     writeFileSync(join(dir, 'entry.ts'), 'import css from "./style.css";\nconsole.log(css);');
     writeFileSync(join(dir, 'app.ts'), 'import { greet } from "./util";\nconsole.log(greet());');
     writeFileSync(join(dir, 'util.ts'), "export function greet(): string { return 'Hello!'; }");
@@ -2317,8 +2317,8 @@ describe('vitePlugin 어댑터', () => {
     expect(result.outputFiles[0].text).toContain('MULTI-TRANSFORMED');
   });
 
-  test('ZTS 플러그인과 Vite 플러그인 혼합', async () => {
-    const nativePlugin: ZtsPlugin = {
+  test('ZNTC 플러그인과 Vite 플러그인 혼합', async () => {
+    const nativePlugin: ZntcPlugin = {
       name: 'native-resolve',
       setup(build) {
         build.onResolve({ filter: /\.css$/ }, (args) => ({
@@ -2368,7 +2368,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('실전 패턴: JSON 플러그인 (Rollup 스타일)', async () => {
-    const jsonDir = mkdtempSync(join(tmpdir(), 'zts-vite-json-'));
+    const jsonDir = mkdtempSync(join(tmpdir(), 'zntc-vite-json-'));
     writeFileSync(join(jsonDir, 'data.json'), '{"name":"test","version":"1.0"}');
     writeFileSync(
       join(jsonDir, 'index.ts'),
@@ -2403,7 +2403,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('실전 패턴: 환경 변수 치환 플러그인', async () => {
-    const envDir = mkdtempSync(join(tmpdir(), 'zts-vite-env-'));
+    const envDir = mkdtempSync(join(tmpdir(), 'zntc-vite-env-'));
     writeFileSync(join(envDir, 'index.ts'), 'console.log(import.meta.env.MODE);');
 
     const envPlugin: RollupPlugin = {
@@ -2423,7 +2423,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('실전 패턴: YAML 로더 플러그인', async () => {
-    const yamlDir = mkdtempSync(join(tmpdir(), 'zts-vite-yaml-'));
+    const yamlDir = mkdtempSync(join(tmpdir(), 'zntc-vite-yaml-'));
     writeFileSync(join(yamlDir, 'config.yaml'), 'name: test\nversion: 2.0');
     writeFileSync(
       join(yamlDir, 'index.ts'),
@@ -2461,7 +2461,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('실전 패턴: SVG → React 컴포넌트 플러그인', async () => {
-    const svgDir = mkdtempSync(join(tmpdir(), 'zts-vite-svg-'));
+    const svgDir = mkdtempSync(join(tmpdir(), 'zntc-vite-svg-'));
     writeFileSync(join(svgDir, 'icon.svg'), '<svg><circle r="10"/></svg>');
     writeFileSync(join(svgDir, 'index.tsx'), 'import Icon from "./icon.svg";\nconsole.log(Icon);');
 
@@ -2491,7 +2491,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('실전 패턴: GraphQL 쿼리 로더', async () => {
-    const gqlDir = mkdtempSync(join(tmpdir(), 'zts-vite-gql-'));
+    const gqlDir = mkdtempSync(join(tmpdir(), 'zntc-vite-gql-'));
     writeFileSync(join(gqlDir, 'query.graphql'), 'query GetUser { user { name } }');
     writeFileSync(
       join(gqlDir, 'index.ts'),
@@ -2523,7 +2523,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('실전 패턴: 코드 내 console.log 자동 제거 transform', async () => {
-    const stripDir = mkdtempSync(join(tmpdir(), 'zts-vite-strip-'));
+    const stripDir = mkdtempSync(join(tmpdir(), 'zntc-vite-strip-'));
     writeFileSync(
       join(stripDir, 'index.ts'),
       'console.log("debug");\nconst x = 1;\nconsole.log("also debug");\nconsole.warn("keep");',
@@ -2548,7 +2548,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('실전 패턴: 다중 vitePlugin transform 체이닝', async () => {
-    const chainDir = mkdtempSync(join(tmpdir(), 'zts-vite-chain-'));
+    const chainDir = mkdtempSync(join(tmpdir(), 'zntc-vite-chain-'));
     writeFileSync(join(chainDir, 'index.ts'), 'const msg = "HELLO_WORLD";');
 
     // 첫 번째 플러그인: HELLO → Hello
@@ -2578,7 +2578,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('실전 패턴: 3개 플러그인 transform 체이닝', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-vite-chain3-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-vite-chain3-'));
     writeFileSync(join(dir, 'index.ts'), 'const x = "AAA_BBB_CCC";');
 
     const result = await build({
@@ -2595,7 +2595,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('vitePlugin: resolveId에 importer가 올바르게 전달됨', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-vite-importer-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-vite-importer-'));
     writeFileSync(join(dir, 'entry.ts'), 'import x from "./data.custom";\nconsole.log(x);');
 
     let receivedImporter: string | null | undefined = undefined;
@@ -2625,7 +2625,7 @@ describe('vitePlugin 어댑터', () => {
   });
 
   test('vitePlugin: transform이 { code, map } 반환 시 map 무시', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-vite-map-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-vite-map-'));
     writeFileSync(join(dir, 'index.ts'), 'const x = 1;');
 
     const plugin: RollupPlugin = {
@@ -2647,7 +2647,7 @@ describe('vitePlugin 어댑터', () => {
 
 // ─── 옵션 조합 심화 테스트 ───
 
-describe('@zts/core 옵션 조합 심화', () => {
+describe('@zntc/core 옵션 조합 심화', () => {
   test('hashbang + minify', () => {
     const result = transpile(
       '#!/usr/bin/env node\nconst longVariableName = 42;\nconsole.log(longVariableName);',
@@ -2670,7 +2670,7 @@ describe('@zts/core 옵션 조합 심화', () => {
   });
 
   test('buildSync + define + alias + sourcemap 동시', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-combo-all-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-combo-all-'));
     writeFileSync(join(dir, 'real.ts'), 'export const val = 42;');
     writeFileSync(
       join(dir, 'index.ts'),
@@ -2720,7 +2720,7 @@ describe('@zts/core 옵션 조합 심화', () => {
   });
 
   test('build + platform=node + jsx=automatic + plugins (실제 코드 변환)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-combo-node-jsx-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-combo-node-jsx-'));
     writeFileSync(join(dir, 'app.tsx'), 'export default () => <div>hello</div>;');
 
     const result = await build({
@@ -2747,13 +2747,13 @@ describe('@zts/core 옵션 조합 심화', () => {
   });
 
   test('build + define + plugins (define은 NAPI, plugin은 JS)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-define-plugin-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-define-plugin-'));
     writeFileSync(
       join(dir, 'index.ts'),
       'import css from "./style.css";\nconsole.log(__MODE__, css);',
     );
 
-    const cssPlugin: ZtsPlugin = {
+    const cssPlugin: ZntcPlugin = {
       name: 'css',
       setup(build) {
         build.onResolve({ filter: /\.css$/ }, (args) => ({ path: resolve(dir, args.path) }));
@@ -2779,7 +2779,7 @@ describe('BuildOptions: 누락 옵션 노출 (#1005)', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-build-opts-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-build-opts-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const fn = () => 1;');
     writeFileSync(join(dir, 'data.txt'), 'hello text');
   });
@@ -2818,7 +2818,7 @@ describe('BuildOptions: 누락 옵션 노출 (#1005)', () => {
   });
 
   test('loader: JSON/CSS/asset disk reads + plugin load source stay stable', async () => {
-    const fixture = mkdtempSync(join(tmpdir(), 'zts-resource-read-mtime-'));
+    const fixture = mkdtempSync(join(tmpdir(), 'zntc-resource-read-mtime-'));
     try {
       writeFileSync(
         join(fixture, 'entry.ts'),
@@ -2836,7 +2836,7 @@ describe('BuildOptions: 누락 옵션 노출 (#1005)', () => {
       writeFileSync(join(fixture, 'note.txt'), 'hello resource\n');
       writeFileSync(join(fixture, 'logo.png'), 'png-bytes');
 
-      const plugin: ZtsPlugin = {
+      const plugin: ZntcPlugin = {
         name: 'virtual-source',
         setup(build) {
           build.onResolve({ filter: /\.virtual$/ }, (args) => ({
@@ -3061,7 +3061,7 @@ describe('vitePlugin async 훅 지원', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-async-plugin-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-async-plugin-'));
     writeFileSync(join(dir, 'entry.ts'), 'import val from "./data.custom";\nconsole.log(val);');
     writeFileSync(join(dir, 'data.custom'), 'CUSTOM_DATA');
   });
@@ -3170,7 +3170,7 @@ describe('renderChunk/generateBundle 훅', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-chunk-hooks-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-chunk-hooks-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
   });
 
@@ -3330,7 +3330,7 @@ describe('BuildOptions: 엣지 케이스', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-edge-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-edge-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = () => 1;');
   });
 
@@ -3363,7 +3363,7 @@ describe('배치 E: S급 BuildOptions', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-batch-e-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-batch-e-'));
     writeFileSync(join(dir, 'entry.ts'), 'DEV: { console.log("dev only"); }\nexport const x = 1;');
     writeFileSync(
       join(dir, 'pure-test.ts'),
@@ -3528,7 +3528,7 @@ describe('BundleOptions: 전체 옵션 노출', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-all-opts-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-all-opts-'));
     writeFileSync(join(dir, 'entry.ts'), '/** @license MIT */\nexport const x = 1;');
   });
 
@@ -3592,7 +3592,7 @@ describe('BundleOptions: 전체 옵션 노출', () => {
       devMode: true,
     });
     expect(result.errors.length).toBe(0);
-    expect(result.outputFiles[0].text).toContain('__zts_modules');
+    expect(result.outputFiles[0].text).toContain('__zntc_modules');
   });
 
   test('devMode: RN HMR reload fallback은 DevSettings wrapper를 우선 사용', () => {
@@ -3605,7 +3605,7 @@ describe('BundleOptions: 전체 옵션 노출', () => {
     expect(code).toContain('require("react-native")');
     expect(code).toContain('rn.DevSettings.reload(why)');
     expect(code).toContain('setTimeout(fn, 0)');
-    expect(code).not.toContain('__zts_g.nativeModuleProxy.DevSettings.reload()');
+    expect(code).not.toContain('__zntc_g.nativeModuleProxy.DevSettings.reload()');
   });
 
   test('reactRefresh: Fast Refresh 활성화', () => {
@@ -3650,7 +3650,7 @@ describe('옵션 조합 통합 테스트', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-combo-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-combo-'));
     writeFileSync(
       join(dir, 'app.ts'),
       'import { util } from "./lib";\nDEV: { console.log("debug"); }\nconsole.log(util());',
@@ -4006,7 +4006,7 @@ describe('실제 라이브러리 번들링', () => {
   const projectNodeModules = resolve(__dirname, '../../node_modules');
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-real-lib-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-real-lib-'));
   });
 
   afterAll(() => {
@@ -4162,7 +4162,7 @@ describe('import.meta.glob', () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-glob-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-glob-'));
     mkdirSync(join(dir, 'pages'), { recursive: true });
     writeFileSync(join(dir, 'pages', 'Home.tsx'), 'export default "Home";');
     writeFileSync(join(dir, 'pages', 'About.tsx'), 'export default "About";');
@@ -4262,7 +4262,7 @@ describe('엣지 케이스 + 조합 보강', () => {
   const projectNodeModules = resolve(__dirname, '../../node_modules');
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), 'zts-edge2-'));
+    dir = mkdtempSync(join(tmpdir(), 'zntc-edge2-'));
     writeFileSync(join(dir, 'simple.ts'), 'export const x = () => 1;');
     writeFileSync(
       join(dir, 'multi-export.ts'),
@@ -4475,7 +4475,7 @@ describe('엣지 케이스 + 조합 보강', () => {
 
 describe('React Refresh: function expression', () => {
   test('function expression 이름이 $RefreshReg$에 등록되지 않아야 함', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-refresh-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       `
@@ -4498,7 +4498,7 @@ describe('React Refresh: function expression', () => {
   });
 
   test('function declaration은 정상적으로 $RefreshReg$에 등록', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-refresh-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       `
@@ -4520,7 +4520,7 @@ describe('React Refresh: function expression', () => {
   });
 
   test('named function expression을 인자로 전달해도 $RefreshReg$ 미등록', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-refresh-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       `
@@ -4543,7 +4543,7 @@ describe('React Refresh: function expression', () => {
   });
 
   test('arrow function은 변수명이 PascalCase면 $RefreshReg$ 등록', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-refresh-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-'));
     writeFileSync(join(dir, 'entry.ts'), `const MyArrow = () => null;\nexport default MyArrow;\n`);
     const result = buildSync({
       entryPoints: [join(dir, 'entry.ts')],
@@ -4557,7 +4557,7 @@ describe('React Refresh: function expression', () => {
   });
 
   test('lowercase function name은 $RefreshReg$ 미등록 (컴포넌트 아님)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-refresh-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       `function helper() { return 1; }\nexport default helper;\n`,
@@ -4575,7 +4575,7 @@ describe('React Refresh: function expression', () => {
   });
 
   test('export default function declaration은 $RefreshReg$ 등록', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-refresh-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-'));
     writeFileSync(join(dir, 'entry.ts'), `export default function MyScreen() { return null; }\n`);
     const result = buildSync({
       entryPoints: [join(dir, 'entry.ts')],
@@ -4591,7 +4591,7 @@ describe('React Refresh: function expression', () => {
   });
 
   test('class component는 $RefreshReg$ 미등록 (함수만 등록)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-refresh-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       `class MyClassComp { render() { return null; } }\nexport default MyClassComp;\n`,
@@ -4615,7 +4615,7 @@ describe('React Refresh: function expression', () => {
 
 describe('watch()', () => {
   test('초기 빌드 후 onReady 콜백 호출', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise, resolve: done } = Promise.withResolvers<{ files: number; bytes: number }>();
@@ -4635,7 +4635,7 @@ describe('watch()', () => {
   });
 
   test('파일 변경 시 onRebuild 콜백 호출', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -4668,7 +4668,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('plugin lifecycle hooks: 초기 build 와 rebuild 마다 buildStart → buildEnd → callback → closeBundle 순서', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-lifecycle-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-lifecycle-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const events: string[] = [];
@@ -4677,7 +4677,7 @@ describe('watch()', () => {
     let closeCount = 0;
     let handle: ReturnType<typeof watch> | undefined;
 
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'watch-lifecycle',
       setup(build) {
         build.onBuildStart(() => {
@@ -4734,7 +4734,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('vitePlugin watch lifecycle: Rollup buildStart / buildEnd / closeBundle 을 초기 build 와 rebuild 에서 호출', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-vite-lifecycle-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-vite-lifecycle-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const events: string[] = [];
@@ -4803,7 +4803,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('plugin lifecycle hooks: watch 사용자 콜백 실패 후에도 closeBundle 호출', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-lifecycle-error-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-lifecycle-error-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const events: string[] = [];
@@ -4812,7 +4812,7 @@ describe('watch()', () => {
     let closeCount = 0;
     let handle: ReturnType<typeof watch> | undefined;
 
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'watch-lifecycle-error',
       setup(build) {
         build.onCloseBundle(() => {
@@ -4853,7 +4853,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('plugin lifecycle hooks: watch 사용자 콜백이 없어도 closeBundle 호출', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-lifecycle-no-callback-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-lifecycle-no-callback-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const events: string[] = [];
@@ -4862,7 +4862,7 @@ describe('watch()', () => {
     let closeCount = 0;
     let handle: ReturnType<typeof watch> | undefined;
 
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'watch-lifecycle-no-callback',
       setup(build) {
         build.onBuildStart(() => events.push('buildStart'));
@@ -4904,7 +4904,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('plugin lifecycle hooks: watch rebuild diagnostic 은 buildEnd error 후 closeBundle 호출', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-lifecycle-diagnostic-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-lifecycle-diagnostic-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const events: string[] = [];
@@ -4913,7 +4913,7 @@ describe('watch()', () => {
     let closeCount = 0;
     let handle: ReturnType<typeof watch> | undefined;
 
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'watch-lifecycle-diagnostic',
       setup(build) {
         build.onBuildStart(() => events.push('buildStart'));
@@ -4965,7 +4965,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('plugin lifecycle hooks: watch closeBundle throw 는 다른 plugin 과 watch 를 막지 않음', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-lifecycle-close-throw-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-lifecycle-close-throw-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const events: string[] = [];
@@ -4974,7 +4974,7 @@ describe('watch()', () => {
     let trackingCloseCount = 0;
     let handle: ReturnType<typeof watch> | undefined;
 
-    const throwingPlugin: ZtsPlugin = {
+    const throwingPlugin: ZntcPlugin = {
       name: 'watch-close-thrower',
       setup(build) {
         build.onCloseBundle(() => {
@@ -4983,7 +4983,7 @@ describe('watch()', () => {
         });
       },
     };
-    const trackingPlugin: ZtsPlugin = {
+    const trackingPlugin: ZntcPlugin = {
       name: 'watch-close-tracker',
       setup(build) {
         build.onCloseBundle(() => {
@@ -5021,7 +5021,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('devMode에서 moduleCodes diff → updates 전달', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5066,7 +5066,7 @@ describe('watch()', () => {
 
   test('Issue #1248: 다중 모듈에서 변경 모듈만 updates에 + map은 자기 모듈만', async () => {
     // entry → a, b 그래프에서 a.ts만 수정 → updates=[a]만, map.sources=[a]만 검증.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-partial-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-partial-'));
     writeFileSync(join(dir, 'a.ts'), "export const A = 'A-original';\n");
     writeFileSync(join(dir, 'b.ts'), "export const B = 'B-original';\n");
     writeFileSync(
@@ -5120,14 +5120,14 @@ describe('watch()', () => {
     // Linker 의 conflict rename 은 initial build 와 첫 rebuild 간 `$N` 접미사가
     // 비결정적으로 움직여 cache-hit 모듈의 emit 결과가 미세하게 달라진다.
     // module_code_cache 는 바이트 비교라 이런 모듈을 phantom 변경으로 오인,
-    // 첫 rebuild HMR payload 에 포함시켜 — 런타임 `__zts_apply_update` 가
-    // hot-accept 없는 모듈을 만나자마자 `__zts_reload()` 로 빠지게 만든다.
+    // 첫 rebuild HMR payload 에 포함시켜 — 런타임 `__zntc_apply_update` 가
+    // hot-accept 없는 모듈을 만나자마자 `__zntc_reload()` 로 빠지게 만든다.
     //
     // 수정 (BundleResult.reparsed_paths 필터): cache-hit 모듈은 source 변경이
     // 증명되지 않았으므로 HMR payload 에서 제외. 회귀 테스트로 같은 이름 export
     // 두 개를 가진 fixture 를 만든 뒤, entry 만 수정한 rebuild 에서 updates 에
     // a.ts / b.ts 가 들어가지 않는지 확인.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-phantom-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-phantom-'));
     // 두 모듈에서 같은 top-level 이름 export → Linker 가 한쪽을 `$1` 로 rename.
     writeFileSync(join(dir, 'a.ts'), 'export const count = 1;\n');
     writeFileSync(join(dir, 'b.ts'), 'export const count = 2;\n');
@@ -5174,7 +5174,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('새 import 추가 시 graphChanged 감지', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5208,7 +5208,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('stop() 후 리빌드 발생하지 않음', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5237,7 +5237,7 @@ describe('watch()', () => {
   }, 5000);
 
   test('double stop()은 에러 없이 무시', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5257,13 +5257,13 @@ describe('watch()', () => {
   });
 
   test('플러그인과 함께 watch', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'import "./style.css"; export const x = 1;');
     writeFileSync(join(dir, 'style.css'), 'body { color: red; }');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
 
-    const cssPlugin: ZtsPlugin = {
+    const cssPlugin: ZntcPlugin = {
       name: 'css-loader',
       setup(build) {
         build.onLoad({ filter: /\.css$/ }, () => ({
@@ -5287,7 +5287,7 @@ describe('watch()', () => {
   });
 
   test('콜백 없이 watch — crash 없이 동작', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     // onReady, onRebuild 모두 미제공
@@ -5302,7 +5302,7 @@ describe('watch()', () => {
   }, 5000);
 
   test('리빌드 중 문법 에러 시 success: false + error', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5329,14 +5329,14 @@ describe('watch()', () => {
 
     const event = await rebuildP;
     // 에러가 발생하더라도 watch는 계속 동작해야 함
-    // (ZTS 파서가 에러 복구를 하므로 success: true일 수도 있음)
+    // (ZNTC 파서가 에러 복구를 하므로 success: true일 수도 있음)
     expect(typeof event.success).toBe('boolean');
     handle.stop();
     rmSync(dir, { recursive: true });
   }, 10000);
 
   test('changed 배열에 변경된 파일 경로 포함', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-watch-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-watch-'));
     const entryPath = join(dir, 'entry.ts');
     writeFileSync(entryPath, 'export const x = 1;');
 
@@ -5373,7 +5373,7 @@ describe('watch()', () => {
   // ── Issue #1727 Phase B: Lazy sourcemap NAPI getters ─────────────────────
 
   test('getBundleSourceMap — sourcemap + devMode 시 초기 빌드 후 V3 JSON 반환', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-sm-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-sm-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x: number = 1;\nconsole.log(x);\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5399,7 +5399,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('getBundleSourceMap — sourcemap 비활성 시 null', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-sm-off-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-sm-off-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5419,7 +5419,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('getHmrSourceMap — 모듈 id 로 JSON 반환, 미존재 id 는 null', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-hmr-sm-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-hmr-sm-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x: number = 42;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5459,7 +5459,7 @@ describe('watch()', () => {
   }, 15000);
 
   test('emitDiskSourcemap=false — rebuild 후 bundle.js.map 을 디스크에 쓰지 않는다', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-disk-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-disk-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5485,7 +5485,7 @@ describe('watch()', () => {
 
   test('getBundleSourceMap — 반복 호출 시 동일 JSON 반환 (재진입 안전)', async () => {
     // NAPI mutex + builder.buf clearRetainingCapacity 로 여러 번 호출해도 동일 결과.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-repeat-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-repeat-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5514,7 +5514,7 @@ describe('watch()', () => {
 
   test('getBundleSourceMap — rebuild 후 swap 이 반영되고 이전 mappings 와 달라짐', async () => {
     // rebuild 마다 새 builder 로 swap. 내용이 바뀐 코드에 대한 mappings 가 업데이트되어야.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-swap-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-swap-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5556,7 +5556,7 @@ describe('watch()', () => {
   }, 15000);
 
   test('getHmrSourceMap — multi-module rebuild 에서 모든 모듈 id 로 조회 가능', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-multi-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-multi-'));
     writeFileSync(join(dir, 'a.ts'), 'export const A = 1;\n');
     writeFileSync(join(dir, 'b.ts'), 'export const B = 2;\n');
     writeFileSync(
@@ -5604,7 +5604,7 @@ describe('watch()', () => {
   }, 15000);
 
   test('getBundleSourceMap — sources_content 옵션 반영 (false 면 sourcesContent 제외)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-sc-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-sc-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5631,7 +5631,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('getBundleSourceMap — debug_ids 활성 시 JSON 과 bundle.js 가 동일 UUID 공유', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-did-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-did-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5663,7 +5663,7 @@ describe('watch()', () => {
 
   test('getHmrSourceMap — initial build 직후 (rebuild 전) 모듈 id 조회 가능', async () => {
     // swap 이 rebuild 뿐 아니라 initial build 완료 시에도 호출돼야 한다.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-init-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-init-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5703,7 +5703,7 @@ describe('watch()', () => {
   }, 15000);
 
   test('getBundleSourceMap — custom output_filename 이 map.file 에 반영', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-file-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-file-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5733,7 +5733,7 @@ describe('watch()', () => {
     // graph_changed=true 이면 NAPI 가 updates 배열을 비우므로, 2단계로 진행:
     //   1) b.ts 추가 → graphChanged 이벤트
     //   2) b.ts 재수정 → updates=[b] — 이 시점에 b 의 id 를 획득
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-graph-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-graph-'));
     writeFileSync(join(dir, 'a.ts'), 'export const A = 1;\n');
     writeFileSync(join(dir, 'entry.ts'), "import { A } from './a';\nconsole.log(A);\n");
 
@@ -5794,7 +5794,7 @@ describe('watch()', () => {
   test('getBundleSourceMap — rebuild 실패 후 이전 JSON 이 캐시로 유지된다', async () => {
     // rebuild 가 parse error 등으로 실패하면 swap 이 호출되지 않아 이전 rebuild 의 builder 유지.
     // dev 서버가 의미있는 sourcemap 을 계속 제공할 수 있어야 함.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-err-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-err-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5839,7 +5839,7 @@ describe('watch()', () => {
   test('getBundleSourceMap — sourcemap_function_map 활성 시에도 lazy JSON 생성 성공', async () => {
     // lazy 경로는 generateJSON 을 일반 경로로 호출 (infra PR 은 per-source fn_map 통합 미지원).
     // function_map 옵션이 켜져 있어도 bundle sourcemap JSON 이 crash 없이 반환되고 V3 형식.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-fnmap-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-fnmap-'));
     writeFileSync(join(dir, 'entry.ts'), "export function hello() { return 'hi'; }\n");
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5869,7 +5869,7 @@ describe('watch()', () => {
   test('bundle.js — lazy 경로에서도 sourceMappingURL 주석 출력 (DevTools fetch 경로)', async () => {
     // lazy 는 .map 을 디스크에 쓰지 않지만 bundle.js 의 sourceMappingURL 주석은 유지.
     // DevTools / Sentry 가 이 URL 을 fetch → NAPI getter → JSON 응답 경로.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-url-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-url-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5894,7 +5894,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('getBundleSourceMap — 연쇄 rebuild (3회) 에서 최신 swap 만 유효', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-chain-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-chain-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5949,7 +5949,7 @@ describe('watch()', () => {
   test('getBundleSourceMap + getHmrSourceMap 교대 호출 — 상호 간섭 없음', async () => {
     // 같은 handle 에서 bundle/hmr getter 를 번갈아 호출. mutex 가 재진입 아니므로
     // 동일 thread 순차 호출은 안전. JSON 내용이 서로 섞이지 않는지 확인.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-mix-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-mix-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 42;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -5997,7 +5997,7 @@ describe('watch()', () => {
   test('emitDiskSourcemap=false + eager (devMode=false) — .map 디스크 skip 유지', async () => {
     // devMode=false 면 NAPI 가 lazy 를 안 켬 → eager 경로. 이 상태에서도 emitDiskSourcemap
     // 옵션이 .map 디스크 write 제어 가능해야 한다. getter 는 lazy 가 꺼져있으니 null.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-eager-nodev-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-eager-nodev-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -6023,7 +6023,7 @@ describe('watch()', () => {
   }, 10000);
 
   test('getBundleSourceMap — stop() 후 null 반환 (use-after-stop 방어)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lazy-stop-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lazy-stop-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;\n');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -6056,7 +6056,7 @@ describe('watch()', () => {
 describe('Issue #1223 HMR perf 재현', () => {
   // ---- Phase 3: 관측성 (phaseDurations) ----
   test('phase3: WatchRebuildEvent에 phaseDurations 필드가 노출되어야 함', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase3-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase3-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -6092,7 +6092,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- Phase 1a: 워처 latency (목표 < 200ms, 현재 폴링 500ms) ----
   test('phase1a: 변경 감지부터 onRebuild까지 200ms 이내여야 함 (현재 500ms 폴링)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase1a-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase1a-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const { promise: readyP, resolve: readyDone } = Promise.withResolvers<void>();
@@ -6123,7 +6123,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- Phase 1b: content hash (mtime만 갱신, 내용 동일 → 알림 없음) ----
   test('phase1b: 내용이 동일하면 onRebuild가 호출되지 않아야 함 (content hash)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase1b-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase1b-'));
     const entry = join(dir, 'entry.ts');
     const src = 'export const x = 1;';
     writeFileSync(entry, src);
@@ -6157,7 +6157,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- Phase 1c: 디바운스 (idle 상태에서 50ms 내 두 번 저장 → 1회 리빌드) ----
   test('phase1c: 첫 리빌드 후 50ms 내 두 번 저장은 한 번으로 병합되어야 함', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase1c-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase1c-'));
     const entry = join(dir, 'entry.ts');
     writeFileSync(entry, 'export const x = 1;');
 
@@ -6203,7 +6203,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- Phase 2: 증분 그래프 (1개 변경 → 1개만 재파싱) ----
   test('phase2: 의존 그래프에서 leaf 1개만 변경 시 reparsedModules=1 이어야 함', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase2-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase2-'));
     writeFileSync(join(dir, 'a.ts'), 'import { b } from "./b"; export const a = b + 1;');
     writeFileSync(join(dir, 'b.ts'), 'import { c } from "./c"; export const b = c + 1;');
     writeFileSync(join(dir, 'c.ts'), 'export const c = 1;');
@@ -6237,7 +6237,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- phase2b: deep dependency chain (10단계) ----
   test('phase2b: 10단계 체인에서 leaf 변경 시 reparsedModules=1', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase2b-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase2b-'));
     const N = 10;
     for (let i = 0; i < N - 1; i++) {
       writeFileSync(
@@ -6273,7 +6273,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- phase2c: 체인 중간 모듈 변경 시 해당 모듈만 재파싱 ----
   test('phase2c: 체인 중간(b)만 변경 — 상위(a)/하위(c) 캐시 유지', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase2c-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase2c-'));
     writeFileSync(join(dir, 'a.ts'), 'import { b } from "./b"; export const a = b + 1;');
     writeFileSync(join(dir, 'b.ts'), 'import { c } from "./c"; export const b = c + 1;');
     writeFileSync(join(dir, 'c.ts'), 'export const c = 1;');
@@ -6304,7 +6304,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- phase1d: stale content_hash 엔트리 정리 ----
   test('phase1d: import 제거 후 이전 파일 변경은 리빌드 트리거 안 함', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase1d-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase1d-'));
     const entry = join(dir, 'entry.ts');
     const extra = join(dir, 'extra.ts');
     writeFileSync(extra, 'export const y = 1;');
@@ -6342,7 +6342,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- phase1e: 중복 이벤트 dedup (같은 파일 여러 번 touch → 1회 리빌드) ----
   test('phase1e: 같은 파일 연속 touch 시 리빌드 1회만 발생', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase1e-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase1e-'));
     const entry = join(dir, 'entry.ts');
     writeFileSync(entry, 'export const x = 1;');
 
@@ -6374,7 +6374,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- phase1f: 디바운스 starvation cap (지속 변경되는 파일에도 리빌드 진행) ----
   test('phase1f: 디바운스 윈도우를 계속 갱신해도 500ms 상한 내 리빌드 발생', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase1f-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase1f-'));
     const entry = join(dir, 'entry.ts');
     writeFileSync(entry, 'export const x = 1;');
 
@@ -6413,7 +6413,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- phase1g: 경계 — 빈 파일 해시 ----
   test('phase1g: 빈 파일도 해시되어 리빌드 동작 정상', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase1g-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase1g-'));
     const entry = join(dir, 'entry.ts');
     writeFileSync(entry, '');
 
@@ -6441,7 +6441,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
   // ---- phase1h: 경계 — 대형 파일(>10MB) 해시 폴백 경로 ----
   test('phase1h: 대형 파일(15MB)에서도 크래시 없이 리빌드 트리거', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-1223-phase1h-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-1223-phase1h-'));
     const entry = join(dir, 'entry.ts');
     writeFileSync(entry, 'import "./big.json"; export const x = 1;');
     // 15MB JSON 배열 — watch_hash_max_bytes(256MB) 이내라 정상 해시 경로 사용,
@@ -6479,7 +6479,7 @@ describe('Issue #1223 HMR perf 재현', () => {
 
 describe('buildResult moduleCodes/modulePaths', () => {
   test('buildSync: collectModuleCodes=true → moduleCodes 반환', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-mc-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-mc-'));
     writeFileSync(join(dir, 'entry.ts'), 'import { y } from "./util"; export const x = y;');
     writeFileSync(join(dir, 'util.ts'), 'export const y = 42;');
 
@@ -6500,7 +6500,7 @@ describe('buildResult moduleCodes/modulePaths', () => {
   });
 
   test('buildSync: collectModuleCodes 미지정 → moduleCodes 없음', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-mc-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-mc-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const result = buildSync({
@@ -6511,7 +6511,7 @@ describe('buildResult moduleCodes/modulePaths', () => {
   });
 
   test('buildSync: modulePaths 반환 (번들에 포함된 모듈 경로)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-mp-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-mp-'));
     writeFileSync(join(dir, 'entry.ts'), 'import { y } from "./util"; export const x = y;');
     writeFileSync(join(dir, 'util.ts'), 'export const y = 42;');
 
@@ -6552,7 +6552,7 @@ describe('buildResult moduleCodes/modulePaths', () => {
     });
 
     test('buildSync preserve-modules: 각 파일이 자기 디렉티브 첫 문장으로 보존', () => {
-      const d = mkdtempSync(join(tmpdir(), 'zts-napi-rsc-'));
+      const d = mkdtempSync(join(tmpdir(), 'zntc-napi-rsc-'));
       writeFileSync(join(d, 'client.tsx'), `"use client";\nexport default function C(){return 1;}`);
       writeFileSync(join(d, 'server.ts'), `"use server";\nexport async function act(){return 1;}`);
       writeFileSync(
@@ -6576,7 +6576,7 @@ describe('buildResult moduleCodes/modulePaths', () => {
     });
 
     test('buildSync ESM 단일 번들: entry 디렉티브 최상단', () => {
-      const d = mkdtempSync(join(tmpdir(), 'zts-napi-esm-'));
+      const d = mkdtempSync(join(tmpdir(), 'zntc-napi-esm-'));
       writeFileSync(join(d, 'dep.ts'), `export const x = 1;`);
       writeFileSync(
         join(d, 'entry.tsx'),
@@ -6597,7 +6597,7 @@ describe('buildResult moduleCodes/modulePaths', () => {
   });
 
   test('build (async): moduleCodes + modulePaths 반환', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-mc-async-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-mc-async-'));
     writeFileSync(join(dir, 'entry.ts'), 'import { y } from "./util"; export const x = y;');
     writeFileSync(join(dir, 'util.ts'), 'export const y = 42;');
 
@@ -6617,7 +6617,7 @@ describe('buildResult moduleCodes/modulePaths', () => {
 
 // ─── browserslist 옵션 ───
 
-describe('@zts/core browserslist', () => {
+describe('@zntc/core browserslist', () => {
   test('browserslist: 모던 브라우저 쿼리는 변환 안 함', () => {
     const src = 'async function f() { return await Promise.resolve(1); }';
     const r = transpile(src, { browserslist: 'last 2 chrome versions' });
@@ -6653,7 +6653,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: 매핑 불가능한 엔진(samsung)만 있으면 보수적으로 esnext', () => {
-    // samsung 브라우저는 ZTS Engine에 없음 → 빈 engines → 0 (esnext)
+    // samsung 브라우저는 ZNTC Engine에 없음 → 빈 engines → 0 (esnext)
     const src = 'async function f() {}';
     const r = transpile(src, { browserslist: 'samsung 20' });
     expect(r.code).toContain('async function');
@@ -6687,7 +6687,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API도 해석 (BuildOptions.browserslist)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-build-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-build-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       'export async function run() { return await Promise.resolve(1); }',
@@ -6703,7 +6703,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API — 모던 타겟은 async 유지', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-build2-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-build2-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       'export async function run() { return await Promise.resolve(1); }',
@@ -6719,7 +6719,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API — 여러 엔진 union 중 가장 오래된 기준 (보수적)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-union-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-union-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       // optional chaining 사용
@@ -6735,7 +6735,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills auto: used replaceAll is injected before entry execution', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-auto-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-auto-'));
     try {
       writeFileSync(join(dir, 'entry.ts'), `globalThis.__RESULT__ = "a-a".replaceAll("a", "b");`);
       const r = buildSync({
@@ -6756,7 +6756,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills auto scans local dependencies and respects modern targets', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-dep-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-dep-'));
     try {
       writeFileSync(
         join(dir, 'entry.ts'),
@@ -6783,7 +6783,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills auto scans package exports resolved modules', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-pkg-exports-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-pkg-exports-'));
     try {
       const pkgDir = join(dir, 'node_modules', 'runtime-exports-pkg', 'dist');
       mkdirSync(pkgDir, { recursive: true });
@@ -6845,7 +6845,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills auto ignores shadowed globals and dynamic computed access', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-negative-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-negative-'));
     try {
       writeFileSync(
         join(dir, 'entry.ts'),
@@ -6880,7 +6880,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills auto ignores imported runtime global names', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-import-shadow-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-import-shadow-'));
     try {
       writeFileSync(
         join(dir, 'locals.ts'),
@@ -6943,7 +6943,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills include covers intentional dynamic computed access', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-computed-include-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-computed-include-'));
     try {
       writeFileSync(
         join(dir, 'entry.ts'),
@@ -6981,7 +6981,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills auto detects explicit globalThis runtime API usage', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-globalthis-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-globalthis-'));
     try {
       writeFileSync(
         join(dir, 'entry.ts'),
@@ -7028,7 +7028,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills auto injects expanded core-js built-ins', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-expanded-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-expanded-'));
     try {
       writeFileSync(
         join(dir, 'entry.ts'),
@@ -7084,10 +7084,10 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills auto detects usage added by transform plugins', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-transform-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-transform-'));
     try {
       writeFileSync(join(dir, 'entry.ts'), `globalThis.__VALUE__ = "__ORIGINAL__";`);
-      const transformPlugin: ZtsPlugin = {
+      const transformPlugin: ZntcPlugin = {
         name: 'runtime-polyfill-transform',
         setup(build) {
           build.onTransform({ filter: /entry\.ts$/ }, () => ({
@@ -7113,7 +7113,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills include is forced and exclude removes final selected modules', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-include-exclude-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-include-exclude-'));
     try {
       writeFileSync(
         join(dir, 'entry.ts'),
@@ -7143,7 +7143,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills entry and off modes stay separate from usage collection', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-modes-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-modes-'));
     try {
       writeFileSync(join(dir, 'entry.ts'), `globalThis.__VALUE__ = "a".replaceAll("a", "b");`);
 
@@ -7168,7 +7168,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills prelude runs after manual polyfills and before runBeforeMain', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-order-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-order-'));
     try {
       const polyfillFile = join(dir, 'manual-polyfill.js');
       const initFile = join(dir, 'init.ts');
@@ -7207,7 +7207,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('runtimePolyfills rejects compact target shorthand through build API', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-runtime-polyfills-shorthand-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-runtime-polyfills-shorthand-'));
     try {
       writeFileSync(join(dir, 'entry.ts'), `"a".replaceAll("a", "b");`);
       expect(() =>
@@ -7222,7 +7222,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API — target + browserslist 동시 지정 시 browserslist 우선', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-both-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-both-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       'export async function run() { return await Promise.resolve(1); }',
@@ -7238,7 +7238,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API — 매핑 불가능한 엔진만 있으면 esnext', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-unknown-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-unknown-'));
     writeFileSync(join(dir, 'entry.ts'), 'export async function run() { return 1; }');
     const r = buildSync({
       entryPoints: [join(dir, 'entry.ts')],
@@ -7249,7 +7249,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API — 빈 배열 입력 시 기본 (보수적 esnext)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-empty-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-empty-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
     // 빈 배열 → browserslist가 default 쿼리로 처리하므로 에러 없어야 함
     expect(() =>
@@ -7262,7 +7262,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API — ios_saf 버전 매핑 (RN 시나리오)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-ios-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-ios-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       // ES2020 optional_chaining — ios 13 미만 미지원
@@ -7277,7 +7277,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API — 출력 파일 수 일치 (트랜스파일 결과 누락 방지)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-outfiles-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-outfiles-'));
     writeFileSync(join(dir, 'a.ts'), 'export const A = 1;');
     writeFileSync(join(dir, 'b.ts'), 'export const B = 2;');
     writeFileSync(
@@ -7295,7 +7295,7 @@ describe('@zts/core browserslist', () => {
   });
 
   test('browserslist: build API — minify 동시 적용', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bs-minify-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bs-minify-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       'export const longVariableName = 42;\nconsole.log(longVariableName);',
@@ -7320,7 +7320,7 @@ describe('@zts/core browserslist', () => {
   // ─── tsconfigPath (NAPI 에서 tsconfig.json 자동 로드) ───
   describe('tsconfigPath', () => {
     test('tsconfigPath=<file>: verbatimModuleSyntax 가 적용되어 미사용 import 보존', () => {
-      const dir = mkdtempSync(join(tmpdir(), 'zts-tscpath-file-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-tscpath-file-'));
       writeFileSync(
         join(dir, 'tsconfig.json'),
         '{"compilerOptions":{"verbatimModuleSyntax":true}}',
@@ -7334,7 +7334,7 @@ describe('@zts/core browserslist', () => {
     });
 
     test('tsconfigPath=<dir>: 디렉토리 내 tsconfig.json 자동 탐지', () => {
-      const dir = mkdtempSync(join(tmpdir(), 'zts-tscpath-dir-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-tscpath-dir-'));
       writeFileSync(
         join(dir, 'tsconfig.json'),
         '{"compilerOptions":{"verbatimModuleSyntax":true}}',
@@ -7348,7 +7348,7 @@ describe('@zts/core browserslist', () => {
     });
 
     test('JS 옵션이 tsconfig 보다 우선 — 명시적 false 로 tsconfig true override', () => {
-      const dir = mkdtempSync(join(tmpdir(), 'zts-tscpath-prio-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-tscpath-prio-'));
       writeFileSync(
         join(dir, 'tsconfig.json'),
         '{"compilerOptions":{"verbatimModuleSyntax":true}}',
@@ -7370,7 +7370,7 @@ describe('@zts/core browserslist', () => {
     test('build API 도 tsconfigPath 옵션을 받음 (no-throw)', () => {
       // 참고: build 의 verbatim 은 tree-shaker 와 상호작용하므로 표면 효과는 번들 구성에 따라
       // 다르다 — 여기서는 옵션 통과 경로만 검증 (no throw + 출력 생성).
-      const dir = mkdtempSync(join(tmpdir(), 'zts-tscpath-build-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-tscpath-build-'));
       writeFileSync(
         join(dir, 'tsconfig.json'),
         '{"compilerOptions":{"verbatimModuleSyntax":true}}',
@@ -7392,7 +7392,7 @@ describe('@zts/core browserslist', () => {
   // 가 삽입된 뒤부터 기록된다.
   describe('profile options (PR 2 — entry point integration)', () => {
     test('BundleOptions.profile 을 받아들인다 (no throw)', () => {
-      const dir = mkdtempSync(join(tmpdir(), 'zts-profile-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-profile-'));
       writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
       const r = buildSync({
         entryPoints: [join(dir, 'entry.ts')],
@@ -7403,7 +7403,7 @@ describe('@zts/core browserslist', () => {
     });
 
     test('BundleOptions.profileLevel 을 받아들인다 (no throw)', () => {
-      const dir = mkdtempSync(join(tmpdir(), 'zts-profile-lvl-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-profile-lvl-'));
       writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
       const r = buildSync({
         entryPoints: [join(dir, 'entry.ts')],
@@ -7417,7 +7417,7 @@ describe('@zts/core browserslist', () => {
     test('BundleOptions.profileFormat 은 타입에 존재 (향후 결과 노출용)', () => {
       // PR 10 에서 build/buildSync 결과에 profile report 를 실제 포함시킬 예정.
       // PR 2 는 옵션 파싱만 검증.
-      const dir = mkdtempSync(join(tmpdir(), 'zts-profile-fmt-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-profile-fmt-'));
       writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
       const r = buildSync({
         entryPoints: [join(dir, 'entry.ts')],
@@ -7430,7 +7430,7 @@ describe('@zts/core browserslist', () => {
 
     test('잘못된 profileLevel 은 무시 (graceful degrade)', () => {
       // Level.fromString 이 null 반환 → profile 모듈이 level 변경 안 함. build 는 성공.
-      const dir = mkdtempSync(join(tmpdir(), 'zts-profile-bad-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-profile-bad-'));
       writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
       const r = buildSync({
         entryPoints: [join(dir, 'entry.ts')],
@@ -7443,7 +7443,7 @@ describe('@zts/core browserslist', () => {
     });
 
     test('profile 미지정 시 빌드는 정상 동작 (default: 비활성)', () => {
-      const dir = mkdtempSync(join(tmpdir(), 'zts-noprofile-'));
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-noprofile-'));
       writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
       const r = buildSync({
         entryPoints: [join(dir, 'entry.ts')],
@@ -7456,13 +7456,13 @@ describe('@zts/core browserslist', () => {
 
 // ─── plugin lifecycle hooks (#2156) ───
 
-describe('@zts/core plugin lifecycle', () => {
+describe('@zntc/core plugin lifecycle', () => {
   test('buildStart / buildEnd / closeBundle 정상 build 시 호출 + 호출 순서', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lifecycle-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lifecycle-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     const order: string[] = [];
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'lifecycle',
       setup(build) {
         build.onBuildStart(() => {
@@ -7491,9 +7491,9 @@ describe('@zts/core plugin lifecycle', () => {
   });
 
   test('buildStart / buildEnd / closeBundle 미등록 plugin 도 정상 build', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lifecycle-empty-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lifecycle-empty-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'no-lifecycle',
       setup(build) {
         build.onTransform({ filter: /\.ts$/ }, (args) => ({ code: args.code }));
@@ -7505,7 +7505,7 @@ describe('@zts/core plugin lifecycle', () => {
   });
 
   test('다중 plugin: 모든 plugin 의 buildStart / buildEnd / closeBundle 호출', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lifecycle-multi-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lifecycle-multi-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     let p1Start = 0,
@@ -7514,7 +7514,7 @@ describe('@zts/core plugin lifecycle', () => {
       p2End = 0,
       p1Close = 0,
       p2Close = 0;
-    const p1: ZtsPlugin = {
+    const p1: ZntcPlugin = {
       name: 'p1',
       setup(b) {
         b.onBuildStart(() => {
@@ -7528,7 +7528,7 @@ describe('@zts/core plugin lifecycle', () => {
         });
       },
     };
-    const p2: ZtsPlugin = {
+    const p2: ZntcPlugin = {
       name: 'p2',
       setup(b) {
         b.onBuildStart(() => {
@@ -7552,10 +7552,10 @@ describe('@zts/core plugin lifecycle', () => {
     rmSync(dir, { recursive: true });
   });
 
-  test('vitePlugin 어댑터: Rollup plugin 의 buildStart / buildEnd / closeBundle 을 ZTS build 에서 호출', async () => {
-    // vitePlugin: RollupPlugin → ZtsPlugin 변환 어댑터. 사용자가 작성한 Rollup plugin 의
-    // lifecycle hook 들이 ZTS bundle() 시 호출되는지 검증.
-    const dir = mkdtempSync(join(tmpdir(), 'zts-lifecycle-vite-'));
+  test('vitePlugin 어댑터: Rollup plugin 의 buildStart / buildEnd / closeBundle 을 ZNTC build 에서 호출', async () => {
+    // vitePlugin: RollupPlugin → ZntcPlugin 변환 어댑터. 사용자가 작성한 Rollup plugin 의
+    // lifecycle hook 들이 ZNTC bundle() 시 호출되는지 검증.
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-lifecycle-vite-'));
     writeFileSync(join(dir, 'entry.ts'), 'export const x = 1;');
 
     let buildStartCalled = false;
@@ -7587,7 +7587,7 @@ describe('@zts/core plugin lifecycle', () => {
  *  end-to-end 동작 검증 — bundle 결과가 실제 런타임에서 import 바인딩과 default export 가
  *  올바르게 매칭됨을 검증한다. */
 async function runBundleStdout(code: string): Promise<string> {
-  const dir = mkdtempSync(join(tmpdir(), 'zts-onload-run-'));
+  const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-run-'));
   const out = join(dir, 'out.mjs');
   writeFileSync(out, code);
   const captured: string[] = [];
@@ -7604,12 +7604,12 @@ async function runBundleStdout(code: string): Promise<string> {
   return captured.join('\n');
 }
 
-describe('@zts/core plugin onLoad loader', () => {
+describe('@zntc/core plugin onLoad loader', () => {
   test("loader='text': string default export + Node 실행 결과 일치", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-text-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-text-'));
     writeFileSync(join(dir, 'entry.ts'), "import data from './README.md';\nconsole.log(data);");
     writeFileSync(join(dir, 'README.md'), '# hello world');
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'md-as-text',
       setup(build) {
         build.onLoad({ filter: /\.md$/ }, (args) => ({
@@ -7625,10 +7625,10 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test("loader='dataurl': data URL 인라인 + Node 실행 결과 일치", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-dataurl-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-dataurl-'));
     writeFileSync(join(dir, 'entry.ts'), "import url from './pic.svg';\nconsole.log(url);");
     writeFileSync(join(dir, 'pic.svg'), '<svg/>');
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'svg-as-dataurl',
       setup(build) {
         build.onLoad({ filter: /\.svg$/ }, (args) => ({
@@ -7645,10 +7645,10 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test("loader='base64': 순수 base64 문자열 (data URL prefix 없음)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-b64-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-b64-'));
     writeFileSync(join(dir, 'entry.ts'), "import s from './data.bin';\nconsole.log(s);");
     writeFileSync(join(dir, 'data.bin'), 'Hi'); // base64('Hi') = 'SGk='
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'bin-as-base64',
       setup(build) {
         build.onLoad({ filter: /\.bin$/ }, (args) => ({
@@ -7667,16 +7667,16 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test("loader='binary': Uint8Array default export + Node 실행 결과 일치", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-binary-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-binary-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       "import bytes from './data.dat';\nconsole.log(bytes instanceof Uint8Array, bytes.length, bytes[0], bytes[1]);",
     );
     writeFileSync(join(dir, 'data.dat'), 'AB'); // ASCII safe
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'dat-as-binary',
       setup(build) {
-        // .dat 의 default loader 는 .none — onResolve 로 ZTS 가 모듈 등록할 path 를 명시,
+        // .dat 의 default loader 는 .none — onResolve 로 ZNTC 가 모듈 등록할 path 를 명시,
         // onLoad 가 raw bytes + binary loader override. NAPI string 한계로 utf-8 safe 데이터.
         build.onResolve({ filter: /\.dat$/ }, (args) => ({ path: resolve(dir, args.path) }));
         build.onLoad({ filter: /\.dat$/ }, (args) => ({
@@ -7692,7 +7692,7 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test('contents=Uint8Array (binary safe): 비-utf8 bytes 도 손실 없이 forward (#2157 follow-up)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-uint8-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-uint8-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       "import bytes from './data.bin';\nconsole.log(bytes.length, bytes[0], bytes[1], bytes[2], bytes[3]);",
@@ -7700,7 +7700,7 @@ describe('@zts/core plugin onLoad loader', () => {
     // PNG magic header — 0x89 / 0xFF 같은 utf-8 invalid bytes 포함
     const rawBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
     writeFileSync(join(dir, 'data.bin'), rawBytes);
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'bin-as-binary-uint8',
       setup(build) {
         build.onResolve({ filter: /\.bin$/ }, (args) => ({ path: resolve(dir, args.path) }));
@@ -7719,11 +7719,11 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test("contents=Uint8Array + loader='dataurl' (PNG raw bytes 보존)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-png-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-png-'));
     writeFileSync(join(dir, 'entry.ts'), "import url from './tiny.png';\nconsole.log(url);");
     const rawBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // PNG magic
     writeFileSync(join(dir, 'tiny.png'), rawBytes);
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'png-as-dataurl-uint8',
       setup(build) {
         build.onLoad({ filter: /\.png$/ }, (args) => ({
@@ -7739,12 +7739,12 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test('contents=Buffer (Node Buffer): napi_is_buffer 경로로 raw bytes forward', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-buffer-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-buffer-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       "import bytes from './data.raw';\nconsole.log(bytes.length, bytes[0], bytes[1]);",
     );
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'raw-as-buffer',
       setup(build) {
         build.onResolve({ filter: /\.raw$/ }, (args) => ({ path: resolve(dir, args.path) }));
@@ -7761,13 +7761,13 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test("loader='empty': default export 가 undefined", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-empty-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-empty-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       "import x from './any.skip';\nconsole.log(x === undefined);",
     );
     writeFileSync(join(dir, 'any.skip'), 'doesnt matter');
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'skip-as-empty',
       setup(build) {
         build.onResolve({ filter: /\.skip$/ }, (args) => ({ path: resolve(dir, args.path) }));
@@ -7780,13 +7780,13 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test("loader='tsx': onLoad contents를 TSX parser mode로 처리", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-tsx-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-tsx-'));
     writeFileSync(
       join(dir, 'entry.ts'),
       "import { value } from './virtual.foo';\nconsole.log(value);",
     );
     writeFileSync(join(dir, 'virtual.foo'), '');
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'foo-as-tsx',
       setup(build) {
         build.onLoad({ filter: /\.foo$/ }, () => ({
@@ -7809,13 +7809,13 @@ describe('@zts/core plugin onLoad loader', () => {
 
   test("loader='js'/'jsx'/'ts'/'tsx': onLoad parser mode strictness", async () => {
     async function runOnLoadCase(loader: 'js' | 'jsx' | 'ts' | 'tsx', contents: string) {
-      const dir = mkdtempSync(join(tmpdir(), `zts-onload-${loader}-strict-`));
+      const dir = mkdtempSync(join(tmpdir(), `zntc-onload-${loader}-strict-`));
       writeFileSync(
         join(dir, 'entry.ts'),
         "import { value } from './virtual.foo';\nconsole.log(value);",
       );
       writeFileSync(join(dir, 'virtual.foo'), '');
-      const plugin: ZtsPlugin = {
+      const plugin: ZntcPlugin = {
         name: `foo-as-${loader}`,
         setup(build) {
           build.onLoad({ filter: /\.foo$/ }, () => ({ contents, loader }));
@@ -7868,9 +7868,9 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test("loader='bogus' (미지원 string): override 무시 → JS 모듈로 처리 (fromString null)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-bogus-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-bogus-'));
     writeFileSync(join(dir, 'entry.ts'), "import x from './v.custom';\nconsole.log(x);");
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'custom-bogus',
       setup(build) {
         build.onResolve({ filter: /\.custom$/ }, (args) => ({ path: resolve(dir, args.path) }));
@@ -7888,9 +7888,9 @@ describe('@zts/core plugin onLoad loader', () => {
   });
 
   test('loader 없이 반환: 기존 동작 (JS 모듈)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-onload-default-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-onload-default-'));
     writeFileSync(join(dir, 'entry.ts'), "import x from './v.custom';\nconsole.log(x);");
-    const plugin: ZtsPlugin = {
+    const plugin: ZntcPlugin = {
       name: 'custom-as-js',
       setup(build) {
         build.onResolve({ filter: /\.custom$/ }, (args) => ({ path: resolve(dir, args.path) }));

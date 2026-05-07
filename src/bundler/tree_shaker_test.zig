@@ -651,7 +651,7 @@ test "complex: re-export default through barrel" {
 
 // ============================================================
 // reference_count 기반 미사용 import 감지 테스트
-// (esbuild/rollup/rolldown이 지원하지만 ZTS가 아직 못 하는 것)
+// (esbuild/rollup/rolldown이 지원하지만 ZNTC가 아직 못 하는 것)
 // ============================================================
 
 // --- esbuild: import 후 사용 안 한 named import + sideEffects=false → 미사용 export ---

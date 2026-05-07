@@ -4,7 +4,7 @@ import {
   hasEmotionV10Fixture,
   EMOTION_V10_FIXTURE_NODE_MODULES,
   linkNodeModules,
-  runZtsInDir,
+  runZntcInDir,
 } from './helpers';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
@@ -51,20 +51,20 @@ async function runV10Bundle(opts: {
   const entry = opts.entry ?? 'index.ts';
   const fixture = await createFixture({
     [entry]: opts.source,
-    'zts.config.json': JSON.stringify(opts.config),
+    'zntc.config.json': JSON.stringify(opts.config),
   });
   await linkNodeModules(fixture.dir, opts.packages ?? V10_CSS_PACKAGES, {
     extraRoots: [EMOTION_V10_FIXTURE_NODE_MODULES],
   });
 
   const outFile = join(fixture.dir, 'out.js');
-  const result = await runZtsInDir(fixture.dir, ['--bundle', entry, '-o', outFile], {
+  const result = await runZntcInDir(fixture.dir, ['--bundle', entry, '-o', outFile], {
     bin: 'js',
   });
   if (result.exitCode !== 0) {
     await fixture.cleanup();
     throw new Error(
-      `zts bundle failed (exit ${result.exitCode})\nstderr:\n${result.stderr}\nstdout:\n${result.stdout}`,
+      `zntc bundle failed (exit ${result.exitCode})\nstderr:\n${result.stderr}\nstdout:\n${result.stdout}`,
     );
   }
   const out = await readFile(outFile, 'utf-8');

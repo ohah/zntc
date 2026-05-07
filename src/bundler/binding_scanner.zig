@@ -1,4 +1,4 @@
-//! ZTS Bundler — Binding Scanner
+//! ZNTC Bundler — Binding Scanner
 //!
 //! AST에서 import/export의 바인딩 상세를 추출한다.
 //! import_scanner.zig는 specifier 경로만 추출하지만,

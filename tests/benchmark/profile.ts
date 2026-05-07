@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * ZTS Scaling Profiler — 파일 크기별 스케일링 비교
+ * ZNTC Scaling Profiler — 파일 크기별 스케일링 비교
  *
  * 모든 도구의 파일 크기 대비 성능 스케일링을 측정한다.
  */
@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ROOT, ZTS_BIN, findNodeModulesBin } from './_runner';
+import { ROOT, ZNTC_BIN, findNodeModulesBin } from './_runner';
 
 const ITERATIONS = 10;
 
@@ -78,10 +78,10 @@ function tracePlan(sample: PlanSample, dir: string): PlanHit {
   const inputFile = join(dir, sample.filename);
   const outFile = join(dir, `${sample.name.replaceAll(/[^a-zA-Z0-9_-]/g, '_')}.js`);
   writeFileSync(inputFile, sample.source);
-  const result = spawnSync(ZTS_BIN, [inputFile, ...(sample.args ?? []), '-o', outFile], {
+  const result = spawnSync(ZNTC_BIN, [inputFile, ...(sample.args ?? []), '-o', outFile], {
     stdio: 'pipe',
     timeout: 30000,
-    env: { ...process.env, ZTS_DEBUG: 'transform_plan' },
+    env: { ...process.env, ZNTC_DEBUG: 'transform_plan' },
     encoding: 'utf8',
   });
   const match = result.stderr.match(
@@ -190,7 +190,7 @@ function printPlanHitRates(dir: string): void {
     }
   }
 
-  console.log('\nZTS TransformPlan Hit Rates — representative route roots');
+  console.log('\nZNTC TransformPlan Hit Rates — representative route roots');
   console.log(`| Semantic | Reason | Count | Share |`);
   console.log(`| --- | --- | --- | --- |`);
   const rows = [...hits.values()].sort((a, b) =>
@@ -206,17 +206,17 @@ function printPlanHitRates(dir: string): void {
 }
 
 const scales = [100, 500, 1000, 2000, 5000, 10000];
-const dir = mkdtempSync(join(tmpdir(), 'zts-profile-'));
+const dir = mkdtempSync(join(tmpdir(), 'zntc-profile-'));
 
 const esbuildBin = findNodeModulesBin('esbuild');
 const swcBin = findNodeModulesBin('swc');
 
-console.log('ZTS Scaling Profiler — All Tools');
+console.log('ZNTC Scaling Profiler — All Tools');
 console.log(`  Iterations: ${ITERATIONS} (median)`);
 console.log(`  Platform: ${process.platform} ${process.arch}\n`);
 
 // Header
-const tools = ['ZTS'];
+const tools = ['ZNTC'];
 if (esbuildBin) tools.push('esbuild');
 tools.push('Bun');
 if (swcBin) tools.push('SWC');
@@ -234,8 +234,8 @@ for (const lines of scales) {
 
   const row: (string | number)[] = [lines, sizeKB];
 
-  // ZTS
-  row.push(measure(ZTS_BIN, [inputFile, '-o', join(dir, `out_zts_${lines}.js`)]));
+  // ZNTC
+  row.push(measure(ZNTC_BIN, [inputFile, '-o', join(dir, `out_zntc_${lines}.js`)]));
 
   // esbuild
   if (esbuildBin) {
@@ -277,7 +277,7 @@ for (const lines of scales) {
   console.log(`| ${row.join(' | ')} |`);
 }
 
-console.log('\nZTS Fast Path A/B — import-bearing TS strip');
+console.log('\nZNTC Fast Path A/B — import-bearing TS strip');
 const fastScales = [25_000, 50_000, 100_000];
 console.log(`| Lines | Size (KB) | fast on (ms) | fast off (ms) | delta (ms) | ratio |`);
 console.log(`| --- | --- | --- | --- | --- | --- |`);
@@ -289,9 +289,9 @@ for (const lines of fastScales) {
   const fullOut = join(dir, `out_fast_off_${lines}.js`);
   writeFileSync(inputFile, source);
 
-  const fastOn = measure(ZTS_BIN, [inputFile, '-o', fastOut]);
-  const fastOff = measure(ZTS_BIN, [inputFile, '-o', fullOut], {
-    ZTS_DISABLE_TRANSPILE_FAST_PATH: '1',
+  const fastOn = measure(ZNTC_BIN, [inputFile, '-o', fastOut]);
+  const fastOff = measure(ZNTC_BIN, [inputFile, '-o', fullOut], {
+    ZNTC_DISABLE_TRANSPILE_FAST_PATH: '1',
   });
   const delta = fastOff - fastOn;
   const ratio = fastOn === 0 ? 'n/a' : `${(fastOff / fastOn).toFixed(2)}x`;

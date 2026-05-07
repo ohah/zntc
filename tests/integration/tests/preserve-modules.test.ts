@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { spawn } from 'bun';
 
 describe('preserve-modules', () => {
@@ -29,7 +29,7 @@ describe('preserve-modules', () => {
     cleanup = c;
 
     const outdir = join(dir, 'dist');
-    const result = await runZts([
+    const result = await runZntc([
       '--bundle',
       join(dir, 'src/index.ts'),
       '--preserve-modules',
@@ -59,7 +59,7 @@ describe('preserve-modules', () => {
     cleanup = c;
 
     const outdir = join(dir, 'dist');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(dir, 'src/index.ts'),
       '--preserve-modules',
@@ -85,7 +85,7 @@ describe('preserve-modules', () => {
     cleanup = c;
 
     const outdir = join(dir, 'dist');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(dir, 'src/index.ts'),
       '--preserve-modules',
@@ -118,7 +118,7 @@ describe('preserve-modules', () => {
     cleanup = c;
 
     const outdir = join(dir, 'dist');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(dir, 'src/index.ts'),
       '--preserve-modules',
@@ -154,7 +154,7 @@ describe('preserve-modules', () => {
     cleanup = c;
 
     const outdir = join(dir, 'dist');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(dir, 'src/index.ts'),
       '--preserve-modules',
@@ -174,7 +174,7 @@ describe('preserve-modules', () => {
     });
     cleanup = c;
 
-    const result = await runZts(['--bundle', join(dir, 'index.ts'), '--preserve-modules']);
+    const result = await runZntc(['--bundle', join(dir, 'index.ts'), '--preserve-modules']);
 
     expect(result.stderr).toContain('--preserve-modules requires --outdir');
   });
@@ -192,7 +192,7 @@ describe('preserve-modules', () => {
     cleanup = c;
 
     const outdir = join(dir, 'dist');
-    const result = await runZts([
+    const result = await runZntc([
       '--bundle',
       join(dir, 'src/index.ts'),
       '--preserve-modules',

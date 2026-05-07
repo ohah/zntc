@@ -461,7 +461,7 @@ function loadCoreJsCompat(): CoreJsCompat {
 
 function throwCoreJsCompatMissing(): never {
   throw new Error(
-    "@zts/core: runtimePolyfills requires the optional 'core-js-compat' package. Install it with `bun add core-js core-js-compat`.",
+    "@zntc/core: runtimePolyfills requires the optional 'core-js-compat' package. Install it with `bun add core-js core-js-compat`.",
   );
 }
 
@@ -481,7 +481,7 @@ function readInstalledCoreJsVersion(): string | undefined {
 function assertNotPhysicalDeviceTarget(raw: string): void {
   if (!DEVICE_TARGET_RE.test(raw)) return;
   throw new Error(
-    `@zts/core: unsupported runtime target '${raw}'. Physical device names are not supported; use Browserslist targets such as 'ios_saf 12', 'chrome >= 85', or 'node 18'.`,
+    `@zntc/core: unsupported runtime target '${raw}'. Physical device names are not supported; use Browserslist targets such as 'ios_saf 12', 'chrome >= 85', or 'node 18'.`,
   );
 }
 
@@ -491,14 +491,14 @@ function assertNotCompactRuntimeTarget(raw: string): void {
   );
   if (!compact) return;
   throw new Error(
-    `@zts/core: unsupported runtime target '${raw}'. Compact runtime target shorthands are not supported; use Browserslist targets such as 'ios_saf 12', 'chrome >= 85', or 'node 18'.`,
+    `@zntc/core: unsupported runtime target '${raw}'. Compact runtime target shorthands are not supported; use Browserslist targets such as 'ios_saf 12', 'chrome >= 85', or 'node 18'.`,
   );
 }
 
 function assertBrowserslistRuntimeTarget(raw: string): void {
   if (!/^(?:hermes|react-native|reactnative)\b/i.test(raw)) return;
   throw new Error(
-    `@zts/core: unsupported runtime target '${raw}'. runtimePolyfills.targets follows Rspack/SWC env.targets and accepts Browserslist queries; use platform: 'react-native' for the default Hermes runtime target.`,
+    `@zntc/core: unsupported runtime target '${raw}'. runtimePolyfills.targets follows Rspack/SWC env.targets and accepts Browserslist queries; use platform: 'react-native' for the default Hermes runtime target.`,
   );
 }
 
@@ -550,7 +550,7 @@ function normalizeCoreJsModuleName(raw: string): string {
   if (value.endsWith('.js')) value = value.slice(0, -3);
   if (!/^(?:es|web)\.[a-z0-9.-]+$/i.test(value)) {
     throw new Error(
-      `@zts/core: invalid core-js module '${raw}'. Expected e.g. 'es.string.replace-all'.`,
+      `@zntc/core: invalid core-js module '${raw}'. Expected e.g. 'es.string.replace-all'.`,
     );
   }
   return value;
@@ -565,11 +565,11 @@ export function normalizeRuntimePolyfillOptions(
   const runtime: RuntimePolyfillOptions = typeof raw === 'string' ? { mode: raw } : { ...raw };
   const mode = runtime.mode ?? 'auto';
   if (mode !== 'auto' && mode !== 'usage' && mode !== 'entry') {
-    throw new Error("@zts/core: runtimePolyfills.mode must be 'auto', 'usage', or 'entry'.");
+    throw new Error("@zntc/core: runtimePolyfills.mode must be 'auto', 'usage', or 'entry'.");
   }
   const provider = runtime.provider ?? 'core-js';
   if (provider !== 'core-js') {
-    throw new Error("@zts/core: runtimePolyfills.provider currently supports only 'core-js'.");
+    throw new Error("@zntc/core: runtimePolyfills.provider currently supports only 'core-js'.");
   }
 
   return {
@@ -619,7 +619,7 @@ function buildCoreJsResolver(entryPoints: readonly string[]): (moduleName: strin
       }
     }
     throw new Error(
-      `@zts/core: runtimePolyfills could not resolve '${specifier}'. Install core-js with \`bun add core-js\`.\n${firstError ?? ''}`,
+      `@zntc/core: runtimePolyfills could not resolve '${specifier}'. Install core-js with \`bun add core-js\`.\n${firstError ?? ''}`,
     );
   };
 }

@@ -1,17 +1,17 @@
 ---
 title: Migration Guide
-description: How to migrate from esbuild, Vite, and webpack to ZTS.
+description: How to migrate from esbuild, Vite, and webpack to ZNTC.
 ---
 
 ## Migrating from esbuild
 
-ZTS provides a similar bundling model to esbuild, but the CLI flag surface is still a subset. The table below reflects options actually exposed by the current `zts` CLI.
+ZNTC provides a similar bundling model to esbuild, but the CLI flag surface is still a subset. The table below reflects options actually exposed by the current `zntc` CLI.
 
 ### CLI option mapping
 
-| esbuild                         | ZTS                                         | Note                                                                |
+| esbuild                         | ZNTC                                         | Note                                                                |
 | ------------------------------- | ------------------------------------------- | ------------------------------------------------------------------- |
-| `esbuild src/index.ts --bundle` | `zts --bundle src/index.ts`                 | Same                                                                |
+| `esbuild src/index.ts --bundle` | `zntc --bundle src/index.ts`                 | Same                                                                |
 | `--outfile=dist/out.js`         | `-o dist/out.js`                            | Short form supported                                                |
 | `--outdir=dist`                 | `--outdir dist`                             | Same                                                                |
 | `--outbase=src`                 | `--outbase=src`                             | Same                                                                |
@@ -24,7 +24,7 @@ ZTS provides a similar bundling model to esbuild, but the CLI flag surface is st
 | `--external:react`              | `--external react`                          | Space instead of `:`                                                |
 | `--minify`                      | `--minify`                                  | Same (`--minify-{whitespace,syntax,identifiers}` granular)          |
 | `--sourcemap`                   | `--sourcemap`                               | Same                                                                |
-| (config only: `sourceRoot`)     | `--source-root=...`                         | ZTS exposes as CLI flag                                             |
+| (config only: `sourceRoot`)     | `--source-root=...`                         | ZNTC exposes as CLI flag                                             |
 | `--sources-content=false`       | `--sources-content=false`                   | Same                                                                |
 | `--define:X=Y`                  | `--define:X=Y`                              | Same                                                                |
 | `--alias:react=preact/compat`   | `--alias:react=preact/compat`               | Same                                                                |
@@ -59,7 +59,7 @@ ZTS provides a similar bundling model to esbuild, but the CLI flag surface is st
 | `--preserve-symlinks`           | `--preserve-symlinks`                       | Same                                                                |
 | `--node-paths=...`              | `--node-paths=...`                          | Additional lookup paths for bare specifiers                         |
 | `--charset=utf8`                | `--charset=utf8`                            | Same (preserve UTF-8)                                               |
-| `--charset=ascii`               | `--ascii-only`                              | ZTS uses dedicated flag; escapes non-ASCII to `\uXXXX`              |
+| `--charset=ascii`               | `--ascii-only`                              | ZNTC uses dedicated flag; escapes non-ASCII to `\uXXXX`              |
 | `--legal-comments=eof`          | `--legal-comments=eof`                      | Same (`none`/`inline`/`eof`/`linked`/`external`)                    |
 | `--metafile=meta.json`          | `--metafile=meta.json`                      | Same                                                                |
 | `--analyze`                     | `--analyze`                                 | Same (JSON now, tree format planned)                                |
@@ -84,8 +84,8 @@ await esbuild.build({
   minify: true,
 });
 
-// ZTS — almost identical
-import { build } from '@zts/core';
+// ZNTC — almost identical
+import { build } from '@zntc/core';
 await build({
   entryPoints: ['src/index.ts'],
   bundle: true,
@@ -97,7 +97,7 @@ await build({
 
 ### esbuild plugin migration
 
-ZTS native plugins use the **esbuild-style** `setup(build)` structure directly. Return value keys (`path`/`contents`) are identical.
+ZNTC native plugins use the **esbuild-style** `setup(build)` structure directly. Return value keys (`path`/`contents`) are identical.
 
 ```typescript
 // esbuild plugin
@@ -115,10 +115,10 @@ const myPlugin = {
   },
 };
 
-// ZTS plugin — same esbuild style (use path prefix instead of namespace)
-import type { ZtsPlugin } from '@zts/core';
+// ZNTC plugin — same esbuild style (use path prefix instead of namespace)
+import type { ZntcPlugin } from '@zntc/core';
 
-const myPlugin: ZtsPlugin = {
+const myPlugin: ZntcPlugin = {
   name: 'my-plugin',
   setup(build) {
     build.onResolve({ filter: /^virtual:/ }, (args) => ({
@@ -134,7 +134,7 @@ const myPlugin: ZtsPlugin = {
 If you want to use Rollup/Vite-style plugins (`resolveId`/`load`/`transform`) as-is, wrap them with `vitePlugin()`.
 
 ```typescript
-import { vitePlugin } from '@zts/core';
+import { vitePlugin } from '@zntc/core';
 
 export default defineConfig({
   plugins: [
@@ -160,9 +160,9 @@ export default defineConfig({
 | `--mangle-props=<regex>`          | Not supported (mangling limited to `--minify-identifiers` on internal names) |
 | `--mangle-cache=<path>`           | Not supported                                                                |
 | `--mangle-quoted`                 | Not supported                                                                |
-| `--analyze` (tree format)         | `--analyze` JSON + [/analyze/](/zts/analyze/) visualization. CLI tree format planned |
+| `--analyze` (tree format)         | `--analyze` JSON + [/analyze/](/zntc/analyze/) visualization. CLI tree format planned |
 | `--servedir=<path>`               | `--serve <dir>` (positional arg)                                             |
-| `--bundle=false` (off by default) | Same default. ZTS transpiles only without `--bundle`                         |
+| `--bundle=false` (off by default) | Same default. ZNTC transpiles only without `--bundle`                         |
 | `--splitting=false`               | Off by default. No flag means default                                        |
 | `--tree-shaking=false`            | Not supported. Per-package `--external` can reduce bundle scope              |
 | `--color=true\|false`             | Not supported. Auto-detected from terminal                                   |
@@ -172,10 +172,10 @@ export default defineConfig({
 
 ## Migrating from Vite
 
-Vite is a combination of dev server + production bundler (Rollup/Rolldown). ZTS is a standalone bundler and doesn't replace all Vite features.
+Vite is a combination of dev server + production bundler (Rollup/Rolldown). ZNTC is a standalone bundler and doesn't replace all Vite features.
 
 :::caution[ConfigEnv `command` value differs]
-In a function-form config (`defineConfig(({ command, mode }) => ...)`), Vite's `command` is `"build" | "serve"`, while ZTS uses `"bundle" | "serve" | "watch"`. Migrate any `command === "build"` branches to `"bundle"`; watch mode (`zts --watch`) arrives as a distinct value.
+In a function-form config (`defineConfig(({ command, mode }) => ...)`), Vite's `command` is `"build" | "serve"`, while ZNTC uses `"bundle" | "serve" | "watch"`. Migrate any `command === "build"` branches to `"bundle"`; watch mode (`zntc --watch`) arrives as a distinct value.
 :::
 
 ### Vite production build replacement
@@ -184,8 +184,8 @@ In a function-form config (`defineConfig(({ command, mode }) => ...)`), Vite's `
 # Vite
 vite build
 
-# ZTS
-zts --bundle src/main.ts --outdir dist --format=esm --splitting --minify --sourcemap
+# ZNTC
+zntc --bundle src/main.ts --outdir dist --format=esm --splitting --minify --sourcemap
 ```
 
 ### vite.config.ts mapping
@@ -206,20 +206,20 @@ export default defineConfig({
   },
 });
 
-// ZTS CLI equivalent
-// zts --bundle src/main.ts --outdir dist --minify --sourcemap --external react --external react-dom \
+// ZNTC CLI equivalent
+// zntc --bundle src/main.ts --outdir dist --minify --sourcemap --external react --external react-dom \
 //   --global:react=React --global:react-dom=ReactDOM
 ```
 
-Rollup `output.globals` maps to ZTS CLI `--global:<specifier>=<global>` or `defineConfig({ globals: { react: "React" } })`. Used when IIFE/UMD output needs to substitute external specifiers with global variables.
+Rollup `output.globals` maps to ZNTC CLI `--global:<specifier>=<global>` or `defineConfig({ globals: { react: "React" } })`. Used when IIFE/UMD output needs to substitute external specifiers with global variables.
 
-### Vite plugin → ZTS plugin
+### Vite plugin → ZNTC plugin
 
 Vite/Rollup plugin hooks (`resolveId`/`load`/`transform`) work when wrapped with `vitePlugin()`. Return value keys follow the Rollup convention (`{ id, code }`).
 
 ```typescript
-// zts.config.ts
-import { defineConfig, vitePlugin } from '@zts/core';
+// zntc.config.ts
+import { defineConfig, vitePlugin } from '@zntc/core';
 import fs from 'node:fs';
 
 export default defineConfig({
@@ -242,11 +242,11 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 
 ### Vite feature mapping
 
-| Vite feature                         | ZTS equivalent                                                                                           |
+| Vite feature                         | ZNTC equivalent                                                                                           |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| `vite` (dev server)                  | `zts dev` (HTML/env/public prepare + HMR/Fast Refresh + CSS-only HMR)                                    |
-| `vite build`                         | `zts build`, or `zts --bundle <entry> --outdir dist --splitting --minify --sourcemap` for library builds |
-| `vite preview`                       | `zts preview dist`                                                                                       |
+| `vite` (dev server)                  | `zntc dev` (HTML/env/public prepare + HMR/Fast Refresh + CSS-only HMR)                                    |
+| `vite build`                         | `zntc build`, or `zntc --bundle <entry> --outdir dist --splitting --minify --sourcemap` for library builds |
+| `vite preview`                       | `zntc preview dist`                                                                                       |
 | `import.meta.env.MODE`               | App mode auto-loads `.env*`; CLI bundles can use `--define:import.meta.env.MODE=\"production\"`          |
 | `import.meta.env.DEV`                | App mode injects dev/build mode automatically; CLI bundles can use `--define:import.meta.env.DEV=true`   |
 | `.env` / `.env.production` auto-load | Supported in app mode (`--env-dir`, `--env-prefix`)                                                      |
@@ -259,11 +259,11 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 | `@vitejs/plugin-legacy`              | Partial via `--target=es5` etc.                                                                          |
 | CSS Modules (`.module.css`)          | Supported in app mode. Provides default exports and valid named exports                                  |
 | CSS `@import`                        | Built-in Lightning CSS or `--loader:.css=text`                                                           |
-| PostCSS (`postcss.config.js`)        | Supported in app mode. `zts dev` watches PostCSS dependencies and sends CSS-only HMR                     |
+| PostCSS (`postcss.config.js`)        | Supported in app mode. `zntc dev` watches PostCSS dependencies and sends CSS-only HMR                     |
 | Sass/Less/Stylus                     | Sass/SCSS is supported in app mode. Less/Stylus are not supported                                        |
 | `public/` static directory           | Supported in app mode (`--public-dir`)                                                                   |
 | HTML entry (`index.html`)            | Supported in app mode (`--entry-html`)                                                                   |
-| SPA fallback                         | `zts preview --spa-fallback`                                                                             |
+| SPA fallback                         | `zntc preview --spa-fallback`                                                                             |
 | `resolve.alias` (object)             | `--alias:name=target` or `defineConfig({ alias: { ... } })`                                              |
 | `resolve.alias` (array, RegExp)      | `defineConfig({ alias: [{ find: /^@\//, replacement: "./src/" }] })` (build() only, not in buildSync)    |
 | `resolve.conditions`                 | `conditions: ["prod", "foo"]` or `--conditions=prod,foo`                                                 |
@@ -274,9 +274,9 @@ To write native-style plugins, use `setup(build) { build.onLoad(...) }`.
 
 ## Migrating from webpack
 
-webpack configuration is complex, but ZTS handles most of it via CLI options.
+webpack configuration is complex, but ZNTC handles most of it via CLI options.
 
-### webpack.config.js → ZTS CLI
+### webpack.config.js → ZNTC CLI
 
 ```javascript
 // webpack.config.js
@@ -294,16 +294,16 @@ module.exports = {
   optimization: { minimize: true },
 };
 
-// ZTS equivalent
-// zts --bundle src/index.ts -o dist/bundle.js --minify --loader:.svg=file --loader:.css=text
+// ZNTC equivalent
+// zntc --bundle src/index.ts -o dist/bundle.js --minify --loader:.svg=file --loader:.css=text
 ```
 
-### webpack loaders → ZTS loaders/plugins
+### webpack loaders → ZNTC loaders/plugins
 
-| webpack loader                                  | ZTS equivalent                                                 |
+| webpack loader                                  | ZNTC equivalent                                                 |
 | ----------------------------------------------- | -------------------------------------------------------------- |
-| `ts-loader` / `babel-loader`                    | Not needed. ZTS handles TS/JSX directly                        |
-| `@swc/swc-loader` / `esbuild-loader`            | Not needed. Replaced by ZTS                                    |
+| `ts-loader` / `babel-loader`                    | Not needed. ZNTC handles TS/JSX directly                        |
+| `@swc/swc-loader` / `esbuild-loader`            | Not needed. Replaced by ZNTC                                    |
 | `css-loader` + `style-loader`                   | `--loader:.css=text` or built-in Lightning CSS post-processing |
 | `file-loader` / `asset/resource`                | `--loader:.png=file`                                           |
 | `url-loader` / `asset/inline`                   | `--loader:.png=dataurl`                                        |
@@ -314,12 +314,12 @@ module.exports = {
 | `postcss-loader`                                | Supported in app mode. Use a plugin or pre-processing for library bundling |
 | `html-loader`                                   | App mode rewrites `index.html`; `--loader:.html=text` can stringify imports |
 | `worker-loader`                                 | Not supported (general Worker bundle support separate)         |
-| `thread-loader`                                 | Not needed. ZTS has built-in parallel pipeline (`--jobs=N`)    |
+| `thread-loader`                                 | Not needed. ZNTC has built-in parallel pipeline (`--jobs=N`)    |
 | `cache-loader`                                  | Not needed. Uses `.zig-cache` / module-level cache             |
 
-### webpack plugins → ZTS equivalents
+### webpack plugins → ZNTC equivalents
 
-| webpack plugin                     | ZTS equivalent                                               |
+| webpack plugin                     | ZNTC equivalent                                               |
 | ---------------------------------- | ------------------------------------------------------------ |
 | `DefinePlugin`                     | `--define:KEY=VALUE`                                         |
 | `ProvidePlugin`                    | `--inject:./shim.js`                                         |
@@ -343,7 +343,7 @@ module.exports = {
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
 | `require.context`                                      | Supported (`require.context(dir, deep, regex)` — resolved via plugin `onResolveContext` hook) |
 | Lazy chunk (`import(/* webpackChunkName: "x" */ ...)`) | Dynamic import itself supported. Magic comments are not                                       |
-| `webpack.config.js` function / multi-config            | Not supported. Single-export `zts.config.ts`                                                  |
+| `webpack.config.js` function / multi-config            | Not supported. Single-export `zntc.config.ts`                                                  |
 | `devServer.proxy`                                      | Supported (`--proxy /api=http://localhost:3000`)                                              |
 | Dev server overlay                                     | Supported (build/runtime error overlay + source map remap)                                    |
 | Persistent cache (`cache.type: 'filesystem'`)          | Not needed. Built-in cache                                                                    |

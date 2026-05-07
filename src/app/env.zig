@@ -8,7 +8,7 @@ pub const DefineEntry = struct {
 pub const LoadOptions = struct {
     mode: []const u8,
     env_dir: []const u8 = ".",
-    prefixes: []const []const u8 = &.{ "VITE_", "ZTS_" },
+    prefixes: []const []const u8 = &.{ "VITE_", "ZNTC_" },
 };
 
 pub const EnvMap = std.StringHashMap([]const u8);
@@ -227,13 +227,13 @@ test "app env loader honors Vite file priority and prefixes" {
 
     try tmp.dir.writeFile(.{ .sub_path = ".env", .data = "VITE_KEY=base\nSECRET=hidden\n" });
     try tmp.dir.writeFile(.{ .sub_path = ".env.local", .data = "VITE_KEY=local\n" });
-    try tmp.dir.writeFile(.{ .sub_path = ".env.production", .data = "VITE_KEY=prod\nZTS_FLAG=yes\n" });
+    try tmp.dir.writeFile(.{ .sub_path = ".env.production", .data = "VITE_KEY=prod\nZNTC_FLAG=yes\n" });
     try tmp.dir.writeFile(.{ .sub_path = ".env.production.local", .data = "VITE_KEY=prod-local\n" });
 
     var env_map = try loadEnv(std.testing.allocator, .{ .mode = "production", .env_dir = dir });
     defer deinitMap(&env_map, std.testing.allocator);
     try std.testing.expectEqualStrings("prod-local", env_map.get("VITE_KEY").?);
-    try std.testing.expectEqualStrings("yes", env_map.get("ZTS_FLAG").?);
+    try std.testing.expectEqualStrings("yes", env_map.get("ZNTC_FLAG").?);
     try std.testing.expect(env_map.get("SECRET") == null);
 }
 

@@ -1,5 +1,5 @@
 /// #1633 회귀 가드:
-/// `zts <file> --minify-identifiers` (단일 파일 transpile) 경로에서
+/// `zntc <file> --minify-identifiers` (단일 파일 transpile) 경로에서
 /// export 심볼의 이름과 `export` 키워드가 보존되어야 한다.
 /// 번들러 경로(scope hoisting)와 구분된다 — 번들러는 export 키워드를 생략해도 맞음.
 
@@ -7,15 +7,15 @@ import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runZts } from './helpers';
+import { runZntc } from './helpers';
 
 async function transpileMinify(src: string): Promise<string> {
-  const dir = mkdtempSync(join(tmpdir(), 'zts-1633-'));
+  const dir = mkdtempSync(join(tmpdir(), 'zntc-1633-'));
   const file = join(dir, 't.ts');
   writeFileSync(file, src);
   try {
-    const { stdout, exitCode, stderr } = await runZts([file, '--minify-identifiers']);
-    if (exitCode !== 0) throw new Error(`zts failed: ${stderr}`);
+    const { stdout, exitCode, stderr } = await runZntc([file, '--minify-identifiers']);
+    if (exitCode !== 0) throw new Error(`zntc failed: ${stderr}`);
     return stdout;
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -1,18 +1,18 @@
 ---
 title: Bundling
-description: A detailed guide to ZTS bundling features.
+description: A detailed guide to ZNTC bundling features.
 ---
 
 ## Basic Bundling
 
 ```bash
-zts --bundle entry.ts -o bundle.js
+zntc --bundle entry.ts -o bundle.js
 ```
 
 ## Output Directory
 
 ```bash
-zts --bundle entry.ts --outdir dist/
+zntc --bundle entry.ts --outdir dist/
 ```
 
 ## Code Splitting
@@ -20,7 +20,7 @@ zts --bundle entry.ts --outdir dist/
 Splits dynamic imports and shared modules into separate chunks.
 
 ```bash
-zts --bundle entry.ts --splitting --outdir dist/
+zntc --bundle entry.ts --splitting --outdir dist/
 ```
 
 ## Preserve Modules
@@ -28,16 +28,16 @@ zts --bundle entry.ts --splitting --outdir dist/
 Preserves the original directory structure for library builds (Rollup/Rolldown compatible).
 
 ```bash
-zts --bundle src/index.ts --preserve-modules --outdir dist/
-zts --bundle src/index.ts --preserve-modules --preserve-modules-root=src --outdir dist/
+zntc --bundle src/index.ts --preserve-modules --outdir dist/
+zntc --bundle src/index.ts --preserve-modules --preserve-modules-root=src --outdir dist/
 ```
 
 ## Platforms
 
 ```bash
-zts --bundle entry.ts --platform=browser       # Default, IIFE wrapping
-zts --bundle entry.ts --platform=node          # Node built-ins are external
-zts --bundle entry.ts --platform=react-native  # RN preset
+zntc --bundle entry.ts --platform=browser       # Default, IIFE wrapping
+zntc --bundle entry.ts --platform=node          # Node built-ins are external
+zntc --bundle entry.ts --platform=react-native  # RN preset
 ```
 
 ### browser (default)
@@ -59,13 +59,13 @@ zts --bundle entry.ts --platform=react-native  # RN preset
 ## External
 
 ```bash
-zts --bundle entry.ts --external react --external react-dom
+zntc --bundle entry.ts --external react --external react-dom
 ```
 
 ## Alias
 
 ```bash
-zts --bundle entry.ts --alias:react=preact/compat
+zntc --bundle entry.ts --alias:react=preact/compat
 ```
 
 In the config, two forms are supported (esbuild / Vite compatible).
@@ -125,7 +125,7 @@ defineConfig({
 ## Loader
 
 ```bash
-zts --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
+zntc --bundle entry.ts --loader:.png=file --loader:.svg=dataurl
 ```
 
 Supported loaders: `js`, `ts`, `json`, `text`, `css`, `file`, `dataurl`, `binary`, `copy`, `empty`
@@ -133,7 +133,7 @@ Supported loaders: `js`, `ts`, `json`, `text`, `css`, `file`, `dataurl`, `binary
 ## Filename Patterns
 
 ```bash
-zts --bundle entry.ts --outdir dist/ \
+zntc --bundle entry.ts --outdir dist/ \
   --entry-names="[name]-[hash]" \
   --chunk-names="chunks/[name]-[hash]" \
   --asset-names="assets/[name]-[hash]"
@@ -144,7 +144,7 @@ zts --bundle entry.ts --outdir dist/ \
 `banner` / `footer` insert text **outside** the format wrapper, at the very top/bottom (license headers, shebangs). `intro` / `outro` insert text **inside** the wrapper, before/after the bundle code (Rollup `output.intro`/`output.outro` compatible). The difference is most visible with wrapper formats like IIFE/UMD.
 
 ```bash
-zts --bundle entry.ts -o bundle.js \
+zntc --bundle entry.ts -o bundle.js \
   --banner:js="/* MIT License */" \
   --footer:js="/* End of bundle */" \
   --intro="'use strict';" \
@@ -163,28 +163,28 @@ defineConfig({
 ## Metafile
 
 ```bash
-zts --bundle entry.ts -o bundle.js --metafile=meta.json
-zts --bundle entry.ts -o bundle.js --analyze
+zntc --bundle entry.ts -o bundle.js --metafile=meta.json
+zntc --bundle entry.ts -o bundle.js --analyze
 ```
 
-Upload `meta.json` to [Metafile Analyze](/zts/analyze/) to inspect output sizes, input sizes, and the import graph.
+Upload `meta.json` to [Metafile Analyze](/zntc/analyze/) to inspect output sizes, input sizes, and the import graph.
 
 ## Minify
 
 ```bash
-zts --bundle entry.ts -o bundle.js --minify  # All three
+zntc --bundle entry.ts -o bundle.js --minify  # All three
 
 # Granular (esbuild-compatible) — toggle individually
-zts --bundle entry.ts -o bundle.js --minify-whitespace
-zts --bundle entry.ts -o bundle.js --minify-syntax
-zts --bundle entry.ts -o bundle.js --minify-identifiers
+zntc --bundle entry.ts -o bundle.js --minify-whitespace
+zntc --bundle entry.ts -o bundle.js --minify-syntax
+zntc --bundle entry.ts -o bundle.js --minify-identifiers
 ```
 
 ## Code Dropping
 
 ```bash
-zts --bundle entry.ts --drop=console --drop=debugger
-zts --bundle entry.ts --drop-labels=DEV,TEST
+zntc --bundle entry.ts --drop=console --drop=debugger
+zntc --bundle entry.ts --drop-labels=DEV,TEST
 ```
 
 `--drop-labels` removes the whole labeled statement for matching labels. For example,
@@ -194,12 +194,12 @@ zts --bundle entry.ts --drop-labels=DEV,TEST
 
 ```bash
 # ES version (es2015~esnext)
-zts --bundle entry.ts -o bundle.js --target=es2020
+zntc --bundle entry.ts -o bundle.js --target=es2020
 
 # Engine target — feature-level downleveling
-zts --bundle entry.ts -o bundle.js --target=chrome80,safari14
-zts --bundle entry.ts -o bundle.js --target=node18
-zts --bundle entry.ts -o bundle.js --target=hermes0.70
+zntc --bundle entry.ts -o bundle.js --target=chrome80,safari14
+zntc --bundle entry.ts -o bundle.js --target=node18
+zntc --bundle entry.ts -o bundle.js --target=hermes0.70
 ```
 
 ### `browserslist`
@@ -218,12 +218,12 @@ The matrix is shared with CSS post-processing (Lightning CSS).
 
 ## Runtime Polyfills (core-js)
 
-`--target` lowers syntax. `--runtime-polyfills` fills runtime API gaps with `core-js`. When APIs such as `String.prototype.replaceAll`, `Array.prototype.at`, `Object.hasOwn`, `Promise`, `Map`, `Set`, or `structuredClone` are detected in the bundle graph, ZTS injects the required `core-js/modules/*.js` prelude before the user entry runs.
+`--target` lowers syntax. `--runtime-polyfills` fills runtime API gaps with `core-js`. When APIs such as `String.prototype.replaceAll`, `Array.prototype.at`, `Object.hasOwn`, `Promise`, `Map`, `Set`, or `structuredClone` are detected in the bundle graph, ZNTC injects the required `core-js/modules/*.js` prelude before the user entry runs.
 
 ```bash
 bun add core-js core-js-compat
 
-zts --bundle entry.ts -o bundle.js \
+zntc --bundle entry.ts -o bundle.js \
   --target=es5 \
   --runtime-polyfills=auto \
   --runtime-target="ios_saf 12" \
@@ -244,7 +244,7 @@ Modes:
 Config/API usage can pass an object for `include`/`exclude` control.
 
 ```ts
-import { build } from "@zts/core";
+import { build } from "@zntc/core";
 
 await build({
   entryPoints: ["src/index.ts"],
@@ -284,7 +284,7 @@ defineConfig({
 For observability, enable the runtime polyfill debug category with graph profiling.
 
 ```bash
-ZTS_DEBUG=runtime_polyfills zts --bundle entry.ts \
+ZNTC_DEBUG=runtime_polyfills zntc --bundle entry.ts \
   --runtime-polyfills=auto \
   --runtime-target="safari 12" \
   --profile=graph \
@@ -295,11 +295,11 @@ ZTS_DEBUG=runtime_polyfills zts --bundle entry.ts \
 ## Output Format
 
 ```bash
-zts --bundle entry.ts --format=esm    # ESM (default)
-zts --bundle entry.ts --format=cjs    # CommonJS
-zts --bundle entry.ts --format=iife --global-name=MyLib  # IIFE
-zts --bundle entry.ts --format=umd --global-name=MyLib   # UMD
-zts --bundle entry.ts --format=amd                       # AMD
+zntc --bundle entry.ts --format=esm    # ESM (default)
+zntc --bundle entry.ts --format=cjs    # CommonJS
+zntc --bundle entry.ts --format=iife --global-name=MyLib  # IIFE
+zntc --bundle entry.ts --format=umd --global-name=MyLib   # UMD
+zntc --bundle entry.ts --format=amd                       # AMD
 ```
 
 ### IIFE/UMD external → global mapping (`globals`)
@@ -307,7 +307,7 @@ zts --bundle entry.ts --format=amd                       # AMD
 Compatible with Rollup `output.globals`. In IIFE/UMD output, substitutes `external` specifiers with runtime global variables.
 
 ```bash
-zts --bundle entry.ts -o bundle.js --format=umd --global-name=MyLib \
+zntc --bundle entry.ts -o bundle.js --format=umd --global-name=MyLib \
   --external react --external react-dom \
   --global:react=React --global:react-dom=ReactDOM
 ```
@@ -324,6 +324,6 @@ defineConfig({
 ## Watch Mode
 
 ```bash
-zts --bundle entry.ts -o bundle.js --watch
-zts --bundle entry.ts -o bundle.js --watch-json  # NDJSON event output
+zntc --bundle entry.ts -o bundle.js --watch
+zntc --bundle entry.ts -o bundle.js --watch-json  # NDJSON event output
 ```

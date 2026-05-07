@@ -1,9 +1,9 @@
 ---
 title: Tool Comparison
-description: Compare ZTS against Rolldown, esbuild, SWC, Rspack, and Vite.
+description: Compare ZNTC against Rolldown, esbuild, SWC, Rspack, and Vite.
 ---
 
-ZTS focuses on providing a **TypeScript/Flow transpiler, library/app bundler, and dev server** from one binary/package. It is not trying to clone the entire Vite ecosystem or webpack loader/plugin universe.
+ZNTC focuses on providing a **TypeScript/Flow transpiler, library/app bundler, and dev server** from one binary/package. It is not trying to clone the entire Vite ecosystem or webpack loader/plugin universe.
 
 ## Status Terms
 
@@ -11,12 +11,12 @@ ZTS focuses on providing a **TypeScript/Flow transpiler, library/app bundler, an
 | ---- | ------- |
 | Supported | Public surface is documented and covered by regression tests |
 | Partial | The main path works, but some options, hooks, formats, or edge cases are limited |
-| Policy difference | ZTS intentionally chooses different semantics |
+| Policy difference | ZNTC intentionally chooses different semantics |
 | Unsupported | No current public surface |
 
 ## Bundling / Transpilation
 
-| Area | ZTS | Rolldown | esbuild | SWC | Rspack/Vite |
+| Area | ZNTC | Rolldown | esbuild | SWC | Rspack/Vite |
 | ---- | --- | -------- | ------- | --- | ----------- |
 | TS/JSX/Flow single-file transform | Supported | Partial | TS/JSX, no Flow | Supported | loader/plugin layer |
 | Library bundling | Supported | Supported | Supported | spack/swcpack planned to be dropped in v2 | Rspack supported, Vite uses Rollup/Rolldown |
@@ -29,7 +29,7 @@ ZTS focuses on providing a **TypeScript/Flow transpiler, library/app bundler, an
 
 ## Plugin/API Compatibility
 
-| Area | ZTS status | Notes |
+| Area | ZNTC status | Notes |
 | ---- | ---------- | ----- |
 | esbuild-style `setup(build)` | Partial | Focused on `onResolve`, `onLoad`, `onTransform`, `onResolveContext`, `onAstFunction` |
 | Rollup/Vite-style `resolveId` / `load` / `transform` | Supported | Use the `vitePlugin()` wrapper |
@@ -39,24 +39,24 @@ ZTS focuses on providing a **TypeScript/Flow transpiler, library/app bundler, an
 | `buildSync()` + JS plugins | Unsupported | Conflicts with the native worker waiting on JS callbacks |
 | Plugin hook filter | Partial | esbuild-style filters are supported; not identical to Rolldown object-hook filters |
 
-Rolldown has a stronger Rollup-compatible plugin API and lifecycle reference. ZTS accepts common hooks through `vitePlugin()`, but advanced Rollup context APIs are still narrow.
+Rolldown has a stronger Rollup-compatible plugin API and lifecycle reference. ZNTC accepts common hooks through `vitePlugin()`, but advanced Rollup context APIs are still narrow.
 
 ## CLI and Analysis
 
-| Area | ZTS | Comparison |
+| Area | ZNTC | Comparison |
 | ---- | --- | ---------- |
-| CLI/JS API/config options | Mostly covered | See [Options Matrix](/zts/en/reference/options-matrix/) |
+| CLI/JS API/config options | Mostly covered | See [Options Matrix](/zntc/en/reference/options-matrix/) |
 | `metafile` JSON | Supported | esbuild-compatible basic format |
-| Interactive bundle analyzer | Supported | Upload `meta.json` at [/analyze/](/zts/analyze/) |
+| Interactive bundle analyzer | Supported | Upload `meta.json` at [/analyze/](/zntc/analyze/) |
 | `--analyze` tree output | Partial | Currently JSON-oriented. CLI tree format is follow-up work |
-| Profile/benchmark | Supported | `--profile*`, `zts bench`, JS `benchmark()` |
-| Diagnostic docs URL | Supported | Linked to `ZTSxxxx` error-code docs |
+| Profile/benchmark | Supported | `--profile*`, `zntc bench`, JS `benchmark()` |
+| Diagnostic docs URL | Supported | Linked to `ZNTCxxxx` error-code docs |
 
 ## App Features vs Vite/Rspack
 
-| Feature | ZTS | Notes |
+| Feature | ZNTC | Notes |
 | ------- | --- | ----- |
-| `zts dev` / `zts build` / `zts preview` | Supported | dev/build/preview semantics are kept aligned |
+| `zntc dev` / `zntc build` / `zntc preview` | Supported | dev/build/preview semantics are kept aligned |
 | HTML entry rewrite | Supported | uses `<script type="module" src>` as entry |
 | `.env*` / `import.meta.env.*` | Supported | `--env-dir`, `--env-prefix` |
 | `public/` copy | Supported | `--public-dir` |
@@ -72,7 +72,7 @@ Rolldown has a stronger Rollup-compatible plugin API and lifecycle reference. ZT
 
 ## Intentional Policy Differences
 
-| Item | ZTS policy |
+| Item | ZNTC policy |
 | ---- | ---------- |
 | Import attributes loader override | `with { type }` is pass-through metadata. Loader selection is extension/loader-option based |
 | Physical device runtime target | physical names such as `iPhone 8` are rejected. Use Browserslist queries |

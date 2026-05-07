@@ -1,12 +1,12 @@
 // SSE / Control API / MCP 통합 테스트
 //
-// `zts --serve --bundle entry.ts`를 subprocess로 띄우고, 같은 프로세스의 fetch로
+// `zntc --serve --bundle entry.ts`를 subprocess로 띄우고, 같은 프로세스의 fetch로
 // HTTP 엔드포인트(`/sse/events`, `/reset-cache`, `/mcp`)를 검증한다.
 //
 // IMPORTANT: 반드시 tests/integration 디렉토리에서 `bun test`로 실행할 것.
 
 import { describe, test, expect, afterEach } from 'bun:test';
-import { createFixture, ZTS_BIN } from './helpers';
+import { createFixture, ZNTC_BIN } from './helpers';
 import { join } from 'node:path';
 
 interface Server {
@@ -25,7 +25,7 @@ async function findFreePort(): Promise<number> {
 async function startServer(args: string[]): Promise<Server> {
   const port = await findFreePort();
   const proc = Bun.spawn({
-    cmd: [ZTS_BIN, ...args, '--port', String(port)],
+    cmd: [ZNTC_BIN, ...args, '--port', String(port)],
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -174,7 +174,7 @@ describe('Dev Server: SSE / Control API / MCP', () => {
     expect(result.jsonrpc).toBe('2.0');
     expect(result.id).toBe(1);
     expect(result.result.protocolVersion).toBe('2024-11-05');
-    expect(result.result.serverInfo.name).toBe('zts-dev-server');
+    expect(result.result.serverInfo.name).toBe('zntc-dev-server');
     expect(result.result.capabilities.tools).toBeDefined();
   });
 

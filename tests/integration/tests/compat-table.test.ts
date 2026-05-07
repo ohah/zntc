@@ -4,7 +4,7 @@
  * 사전 준비: node tests/compat-table-extract.cjs > tests/fixtures/compat-table-tests.json
  *
  * ES5~ES2022 각 타겟별로 구문 변환 대상 feature의 exec 코드를
- * ZTS로 트랜스파일 후 실행하여 검증.
+ * ZNTC로 트랜스파일 후 실행하여 검증.
  */
 import { describe, test } from 'bun:test';
 import { resolve, join } from 'node:path';
@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'bun';
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../..');
-const ZTS_BIN = join(PROJECT_ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(PROJECT_ROOT, 'zig-out/bin/zntc');
 
 // compat-table 전용 헬퍼 (테스트 코드에서 참조하는 전역 함수)
 const COMPAT_HELPERS = `
@@ -187,7 +187,7 @@ interface Result {
 
 async function runTarget(target: string): Promise<Result[]> {
   const year = targetYear(target);
-  const tmpDir = await mkdtemp(join(tmpdir(), `zts-compat-${target}-`));
+  const tmpDir = await mkdtemp(join(tmpdir(), `zntc-compat-${target}-`));
   const results: Result[] = [];
   let counter = 0;
 
@@ -215,24 +215,24 @@ async function runTarget(target: string): Promise<Result[]> {
 
       await writeFile(inputFile, `${COMPAT_HELPERS}\n(function() {\n${sub.code}\n})()`);
 
-      const zts = spawn({
-        cmd: [ZTS_BIN, inputFile, '-o', outputFile, `--target=${target}`],
+      const zntc = spawn({
+        cmd: [ZNTC_BIN, inputFile, '-o', outputFile, `--target=${target}`],
         stdout: 'pipe',
         stderr: 'pipe',
       });
 
-      const [, ztsStderr, ztsExit] = await Promise.all([
-        new Response(zts.stdout).text(),
-        new Response(zts.stderr).text(),
-        zts.exited,
+      const [, zntcStderr, zntcExit] = await Promise.all([
+        new Response(zntc.stdout).text(),
+        new Response(zntc.stderr).text(),
+        zntc.exited,
       ]);
 
-      if (ztsExit !== 0) {
+      if (zntcExit !== 0) {
         results.push({
           feature: feature.name,
           subtest: sub.name,
           passed: false,
-          error: `Transpile: ${ztsStderr.slice(0, 200)}`,
+          error: `Transpile: ${zntcStderr.slice(0, 200)}`,
         });
         continue;
       }

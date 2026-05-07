@@ -1,5 +1,5 @@
 // RN production bundle 의 asset 복사. bungae packages/bungae/src/build.ts L100~L260
-// + zts-bundler/build.ts copyAssets / plugin-core.ts SCALE_REGEX/IOS_SCALES 이식.
+// + zntc-bundler/build.ts copyAssets / plugin-core.ts SCALE_REGEX/IOS_SCALES 이식.
 //
 // caller (`runRnBundle`) 가 production (dev=false) + `--assets-dest` 명시 시 호출.
 // 동작:

@@ -177,7 +177,7 @@ export function MetafileAnalyzer() {
       <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 lg:px-6">
         <header className="flex flex-col gap-3 border-b border-surface-800 pb-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-[12px] font-semibold uppercase text-zig-400">ZTS Metafile</p>
+            <p className="text-[12px] font-semibold uppercase text-zig-400">ZNTC Metafile</p>
             <h1 className="mt-1 text-2xl font-semibold tracking-normal text-neutral-50">Analyze bundle metadata</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -254,7 +254,7 @@ export function MetafileAnalyzer() {
                             .map((item) => <BarRow key={item.path} label={item.path} bytes={item.bytes} maxBytes={maxBytes} />)
                         ) : (
                           <p className="text-[12px] leading-5 text-neutral-500">
-                            이 output에는 input 기여도 정보가 없습니다. 현재 ZTS metafile의 basic form에서는 output 크기와 graph
+                            이 output에는 input 기여도 정보가 없습니다. 현재 ZNTC metafile의 basic form에서는 output 크기와 graph
                             input/import 목록을 함께 확인하세요.
                           </p>
                         )}

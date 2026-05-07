@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bundleAndRun, createFixture, runZts, transpileAndRun } from './helpers';
+import { bundleAndRun, createFixture, runZntc, transpileAndRun } from './helpers';
 
 // 런타임 헬퍼는 번들러가 자동 주입 (emitter.zig의 appendRuntimeHelpers)
 
@@ -372,7 +372,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       });
       cleanup = cl;
       const outFile = join(dir, 'out.js');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         join(dir, 'index.ts'),
         '-o',
@@ -397,7 +397,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       });
       cleanup = cl;
       const outFile = join(dir, 'out.js');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         join(dir, 'index.ts'),
         '-o',
@@ -420,7 +420,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       });
       cleanup = cl;
       const outFile = join(dir, 'out.js');
-      const bundle = await runZts([
+      const bundle = await runZntc([
         '--bundle',
         join(dir, 'index.ts'),
         '-o',
@@ -1000,7 +1000,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
 
     test('class extends — null 상속 시 TypeError (TS __extends 호환)', async () => {
       // TS 의 __extends 는 b 가 function/null 이 아니면 throw — null 자체는 OK (Object.create(null) prototype).
-      // 회귀: ZTS __extends 가 type check 추가 후 정상 케이스는 통과해야.
+      // 회귀: ZNTC __extends 가 type check 추가 후 정상 케이스는 통과해야.
       const result = await bundleAndRun(
         {
           'index.ts': `
@@ -1409,7 +1409,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       });
       cleanup = cl;
       const outFile = join(dir, 'out.js');
-      const transpile = await runZts([join(dir, 'index.ts'), '-o', outFile, '--target=es5']);
+      const transpile = await runZntc([join(dir, 'index.ts'), '-o', outFile, '--target=es5']);
       expect(transpile.exitCode).toBe(0);
 
       const code = readFileSync(outFile, 'utf-8');
@@ -1429,7 +1429,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       });
       cleanup = cl;
       const outFile = join(dir, 'out.js');
-      const transpile = await runZts([join(dir, 'index.ts'), '-o', outFile, '--target=es5']);
+      const transpile = await runZntc([join(dir, 'index.ts'), '-o', outFile, '--target=es5']);
       expect(transpile.exitCode).toBe(0);
       const code = readFileSync(outFile, 'utf-8');
       expect(code).toContain('export default greet');
@@ -1447,7 +1447,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       });
       cleanup = cl;
       const outFile = join(dir, 'out.js');
-      const transpile = await runZts([join(dir, 'index.tsx'), '-o', outFile, '--target=es5']);
+      const transpile = await runZntc([join(dir, 'index.tsx'), '-o', outFile, '--target=es5']);
       expect(transpile.exitCode).toBe(0);
       const code = readFileSync(outFile, 'utf-8');
       // let/const가 var로 변환되었는지 확인
@@ -3776,7 +3776,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
               return "hello " + name;
             }
             console.log(greet());
-            console.log(greet({name: "zts"}));
+            console.log(greet({name: "zntc"}));
           `,
         },
         'index.ts',
@@ -3785,7 +3785,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toContain('hello world');
-      expect(result.runOutput).toContain('hello zts');
+      expect(result.runOutput).toContain('hello zntc');
     });
   });
 
@@ -5182,7 +5182,7 @@ describe('ES 다운레벨링 런타임 테스트', () => {
   describe('Annex B B.3.3.1 sloppy hoist skip', () => {
     // outer scope 의 lexical (let/const) 와 같은 이름의 function declaration 이
     // 안쪽 block 에 있을 때, var-scope hoist 를 시도하면 redeclaration 으로 막혀
-    // ZTS1000 에러가 나던 회귀. spec 은 hoist 자체를 skip (B.3.3.1).
+    // ZNTC1000 에러가 나던 회귀. spec 은 hoist 자체를 skip (B.3.3.1).
     test('if/else body 의 function declaration 이 outer let 과 충돌 안 한다', async () => {
       const result = await bundleAndRun(
         {

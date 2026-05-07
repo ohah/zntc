@@ -29,7 +29,7 @@ export {
   logError,
   logInfo,
   logWarn,
-  printZtsRnBanner,
+  printZntcRnBanner,
 } from './logger.ts';
 export {
   createPlatformState,

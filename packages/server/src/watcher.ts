@@ -83,7 +83,7 @@ export function createWatcher(options: CreateWatcherOptions): WatcherHandle {
       });
       watcher.on('error', (err) => {
         if (closed) return;
-        // zts.mjs parity (L2466-2482): error 후 fail-soft 자동 close.
+        // zntc.mjs parity (L2466-2482): error 후 fail-soft 자동 close.
         // EMFILE/ENOSPC 등 OS 한도 메시지는 caller 가 onError 안에서 처리.
         options.onError?.(err, abs);
         safeClose(watcher);

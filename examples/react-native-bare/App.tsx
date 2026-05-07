@@ -586,7 +586,7 @@ function ReanimatedDemo({
           entering={SlideInRight.duration(300).withCallback((finished) => {
             'worklet';
             if (finished) {
-              console.log('[ZTS] SlideInRight.withCallback 완료');
+              console.log('[ZNTC] SlideInRight.withCallback 완료');
             }
           })}
           exiting={FadeOut.duration(200)}
@@ -1021,9 +1021,9 @@ function SharedMorphDemo({
 }
 
 // =============================================================================
-// ZTS Worklet Parity Demos — Phase별 AST 변환 시연
+// ZNTC Worklet Parity Demos — Phase별 AST 변환 시연
 // =============================================================================
-// 각 예제는 빌드 시 ZTS가 워크릿 변환을 올바르게 적용하는지 확인하기 위한 샘플.
+// 각 예제는 빌드 시 ZNTC가 워크릿 변환을 올바르게 적용하는지 확인하기 위한 샘플.
 // 런타임 실행 여부는 Reanimated runtime 통합에 따라 다름.
 
 // Phase 4: class field arrow worklet

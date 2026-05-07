@@ -49,7 +49,7 @@ describe('createDevHttpServer — index page (`/` `/index.html`)', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('text/html; charset=utf-8');
     const body = await res.text();
-    expect(body).toContain('ZTS RN Dev Server');
+    expect(body).toContain('ZNTC RN Dev Server');
     expect(body).toContain('/index.bundle?platform=ios&dev=true');
     expect(body).toContain('/index.bundle?platform=android&dev=true');
     expect(body).toContain('/index.bundle.map?platform=ios');

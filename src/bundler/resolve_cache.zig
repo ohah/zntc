@@ -1,4 +1,4 @@
-//! ZTS Bundler — Resolve Cache + External 처리
+//! ZNTC Bundler — Resolve Cache + External 처리
 //!
 //! D064 (import kind별 resolver), D069 (external 옵션), D081 (3계층 Layer 2).
 //!

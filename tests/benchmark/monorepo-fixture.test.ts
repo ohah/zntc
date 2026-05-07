@@ -6,21 +6,21 @@ import { makeSyntheticMonorepo, parseProfileOutput } from './monorepo-fixture';
 
 describe('monorepo benchmark fixture', () => {
   test('workspace package graph를 결정론적으로 생성한다', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-monorepo-fixture-test-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-monorepo-fixture-test-'));
     try {
       const fixture = makeSyntheticMonorepo(dir, { packageCount: 3, modulesPerPackage: 4 });
 
       expect(fixture.moduleCount).toBe(16);
       expect(fixture.packages).toEqual([
-        '@zts-fixture/pkg-0',
-        '@zts-fixture/pkg-1',
-        '@zts-fixture/pkg-2',
+        '@zntc-fixture/pkg-0',
+        '@zntc-fixture/pkg-1',
+        '@zntc-fixture/pkg-2',
       ]);
       expect(readFileSync(fixture.entry, 'utf8')).toContain(
-        'import { pkgValue as pkg2 } from "@zts-fixture/pkg-2";',
+        'import { pkgValue as pkg2 } from "@zntc-fixture/pkg-2";',
       );
       expect(readFileSync(join(dir, 'packages', 'pkg-2', 'src', 'mod-0.ts'), 'utf8')).toContain(
-        'from "@zts-fixture/pkg-1"',
+        'from "@zntc-fixture/pkg-1"',
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -34,7 +34,7 @@ pub fn validate(component_schema: schema.ComponentSchema) ?[]const u8 {
 }
 
 /// `schema_builder.Error` → `error_codes.Code` 매핑. 진단 출력 시 사용 — 사용자가 docs 사이트
-/// (`https://ohah.github.io/zts/reference/errors/zts1400/`) 로 찾아갈 수 있도록 ZTS 표준 코드.
+/// (`https://ohah.github.io/zntc/reference/errors/zntc1400/`) 로 찾아갈 수 있도록 ZNTC 표준 코드.
 ///
 /// `OutOfMemory` 는 codegen 도메인 외 — caller 가 먼저 분기해 처리해야 함.
 /// 본 함수에 OOM 을 넘기는 건 프로그래밍 버그 (`unreachable`).

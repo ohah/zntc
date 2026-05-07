@@ -1,26 +1,26 @@
 ---
 title: React Native
-description: Learn how to use ZTS with React Native projects.
+description: Learn how to use ZNTC with React Native projects.
 ---
 
 ## Overview
 
-ZTS supports Metro-compatible React Native bundling via the `--platform=react-native` preset.
+ZNTC supports Metro-compatible React Native bundling via the `--platform=react-native` preset.
 
 ## Basic Usage
 
 ```bash
-zts --bundle index.js --platform=react-native -o bundle.js
+zntc --bundle index.js --platform=react-native -o bundle.js
 ```
 
 ## RN Sub-platform
 
 ```bash
 # iOS build
-zts --bundle index.js --platform=react-native --rn-platform=ios -o bundle.js
+zntc --bundle index.js --platform=react-native --rn-platform=ios -o bundle.js
 
 # Android build
-zts --bundle index.js --platform=react-native --rn-platform=android -o bundle.js
+zntc --bundle index.js --platform=react-native --rn-platform=android -o bundle.js
 ```
 
 ### Extension Resolution Order
@@ -47,10 +47,10 @@ react-native -> browser -> module -> main
 
 ## Hermes Compatibility
 
-ZTS ES5 downleveling produces output compatible with the Hermes engine.
+ZNTC ES5 downleveling produces output compatible with the Hermes engine.
 
 ```bash
-zts --bundle index.js --platform=react-native --target=hermes0.70 -o bundle.js
+zntc --bundle index.js --platform=react-native --target=hermes0.70 -o bundle.js
 ```
 
 ## Watch + NDJSON
@@ -58,7 +58,7 @@ zts --bundle index.js --platform=react-native --target=hermes0.70 -o bundle.js
 NDJSON event output for integration with external tools:
 
 ```bash
-zts --bundle index.js --platform=react-native -o bundle.js --watch-json
+zntc --bundle index.js --platform=react-native -o bundle.js --watch-json
 ```
 
 ```jsonl
@@ -171,17 +171,17 @@ One-line summary of options commonly used on the RN platform. See each option's 
 | `strictExecutionOrder` | Downgrades function declarations to in-factory assignments to prevent hoisting (Rolldown equivalent). Auto-enabled on the RN platform.          |
 | `configurableExports`  | Adds `configurable: true` to `Object.defineProperty` (RN/Hermes compatibility).                                                                 |
 | `reactRefresh`         | Enables React Fast Refresh.                                                                                                                     |
-| `devMode`              | Wraps modules in a `__zts_register()` factory and injects the HMR runtime.                                                                      |
+| `devMode`              | Wraps modules in a `__zntc_register()` factory and injects the HMR runtime.                                                                      |
 | `rootDir`              | Base path for dev-mode module IDs.                                                                                                              |
 | `collectModuleCodes`   | Collects per-module codes in dev mode (for HMR rebuilds).                                                                                       |
 | `workletTransform`     | Injects `__workletHash`/`__closure`/`__initData` into "worklet" directive functions. Auto-enabled on the RN platform.                           |
 
 ## Dev server (#2605)
 
-`zts dev --platform=react-native` starts a Metro-compatible dev server.
+`zntc dev --platform=react-native` starts a Metro-compatible dev server.
 
 ```bash
-zts dev --platform=react-native --rn-platform=ios index.js \
+zntc dev --platform=react-native --rn-platform=ios index.js \
   --port=8081 --host=localhost
 ```
 
@@ -190,7 +190,7 @@ Endpoints (Metro compatible):
 - `GET /status` — packager live check (`packager-status:running`).
 - `GET /index.bundle?platform=ios&dev=true` — main bundle. With `Accept: multipart/mixed`, returns progress + bundle chunks.
 - `GET /index.map?platform=ios` — bundle source map (lazy, build-scoped cache).
-- `GET /__zts_hmr_map/<id>?platform=ios` — per-module HMR source map.
+- `GET /__zntc_hmr_map/<id>?platform=ios` — per-module HMR source map.
 - `GET /assets/*`, `/node_modules/*` — asset registry (iOS @2x/@3x scale variants + 7-strategy package resolve).
 - `WS /hot` — HMR (`hmr:update-start` → `hmr:update` → `hmr:update-done` / `hmr:reload` / `hmr:error`).
 - `POST /symbolicate` — RN runtime LogBox stack trace symbolication.
@@ -227,7 +227,7 @@ In the dev server terminal (Metro compatible):
 ### Programmatic API
 
 ```ts
-import { buildRnDevServerOptions, serveRn } from "@zts/react-native";
+import { buildRnDevServerOptions, serveRn } from "@zntc/react-native";
 
 const handle = await serveRn(
   buildRnDevServerOptions({
@@ -262,12 +262,12 @@ console.log(`Listening on ${handle.url}`);
 
 ### Examples
 
-Validation matrix (both use \`bun run start:zts\` for the ZTS dev server):
+Validation matrix (both use \`bun run start:zntc\` for the ZNTC dev server):
 
-- [`examples/react-native-bare/`](https://github.com/ohah/zts/tree/main/examples/react-native-bare) — RN 0.85 bare.
-- [`examples/react-native-expo/`](https://github.com/ohah/zts/tree/main/examples/react-native-expo) — Expo 55 / RN 0.83 (Expo Router).
+- [`examples/react-native-bare/`](https://github.com/ohah/zntc/tree/main/examples/react-native-bare) — RN 0.85 bare.
+- [`examples/react-native-expo/`](https://github.com/ohah/zntc/tree/main/examples/react-native-expo) — Expo 55 / RN 0.83 (Expo Router).
 
 ### Compatibility
 
-- RN `>= 0.83` peer optional. `@zts/react-native` is compatible with Hermes / the RN runtime HMRClient interface and sourceMappingURL route conventions.
+- RN `>= 0.83` peer optional. `@zntc/react-native` is compatible with Hermes / the RN runtime HMRClient interface and sourceMappingURL route conventions.
 - Runs on Bun and Node 22+. Dev-server lifecycle guarantees graceful shutdown on SIGINT/SIGTERM.

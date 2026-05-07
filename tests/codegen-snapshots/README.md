@@ -1,8 +1,8 @@
 # RN Codegen Snapshot 회귀
 
-ZTS native codegen 의 출력이 `@react-native/codegen` reference 출력과
+ZNTC native codegen 의 출력이 `@react-native/codegen` reference 출력과
 **의미적으로 동등** (RN runtime 이 등록하는 attribute / event 키 set 일치) 한지
-검증하는 fixture 모음. ZTS PR #2348 의 contract: reference 와 동등 결과 emit 이
+검증하는 fixture 모음. ZNTC PR #2348 의 contract: reference 와 동등 결과 emit 이
 곧 RN 호환 보장.
 
 ## 디렉토리 구조
@@ -68,12 +68,12 @@ Script 는 suite 이름에서 RN 버전을 추출 (`rn-0.85` → `0.85`) 하고 
 `references/react-native-codegen-0.85/` 를 사용. 매칭 reference 가 없으면 해당
 suite 만 skip + 에러 — 다른 suite 는 계속 진행.
 
-골든은 commit 됨 — CI 가 reference 재install 없이 ZTS 출력만 비교 가능.
+골든은 commit 됨 — CI 가 reference 재install 없이 ZNTC 출력만 비교 가능.
 
-## ZTS 측 검증
+## ZNTC 측 검증
 
 `src/transformer/plugins/rn_codegen/snapshot_test.zig` 가 각 suite 의 fixture
-마다 ZTS plugin 출력 vs golden 의 의미적 동등성 (key set) 검증. 새 suite 추가 시
+마다 ZNTC plugin 출력 vs golden 의 의미적 동등성 (key set) 검증. 새 suite 추가 시
 같은 파일에 test block 한 묶음 추가.
 
 ## 새 RN 버전 추적

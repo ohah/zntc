@@ -1,4 +1,4 @@
-//! ZTS Semantic Analysis
+//! ZNTC Semantic Analysis
 //!
 //! AST에서 스코프/심볼을 구축하고 의미 검증을 수행한다.
 //! 파서와 분리된 별도 패스 (D038, oxc 방식).

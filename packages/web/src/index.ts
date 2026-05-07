@@ -1,7 +1,7 @@
-// @zts/web — dev server / postcss·sass / HMR overlay 가 자리잡는 패키지 (#2539).
-// lightningcss 는 @zts/core 가 직접 사용 (CSS minify 후처리), web 영역 아님.
+// @zntc/web — dev server / postcss·sass / HMR overlay 가 자리잡는 패키지 (#2539).
+// lightningcss 는 @zntc/core 가 직접 사용 (CSS minify 후처리), web 영역 아님.
 
-// `@zts/server` 의 HMR / Watcher 표면을 web 사용자 (zts.mjs CLI / RN bridge /
+// `@zntc/server` 의 HMR / Watcher 표면을 web 사용자 (zntc.mjs CLI / RN bridge /
 // future edge runtime) 가 단일 entry 로 받도록 재수출. server 는 private 패키지라
 // web 의 dist 에 inline 되므로 consumer 는 별도 install 불필요.
 export {
@@ -25,7 +25,7 @@ export {
   type WatchListener,
   type WatcherHandle,
   type WatcherInstance,
-} from '@zts/server';
+} from '@zntc/server';
 export {
   type BundleResult,
   injectAppDevBundleCssLinks,

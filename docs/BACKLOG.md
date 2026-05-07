@@ -1,4 +1,4 @@
-# ZTS Backlog
+# ZNTC Backlog
 
 구현 중 발견된 개선 사항을 추적한다. 해결된 항목은 제거.
 
@@ -55,14 +55,14 @@ CSS Modules + Sass 도입 (PR #2225) 후 식별된 후속 작업.
 |---|------|------|
 | ~~70~~ | ~~dev rebuild full re-prep (cpSync) 비용~~ | ✅ 해결: `prepare(dirtyPaths)` 가 incremental — 변경 파일만 cpSync, sass/css-modules transform 도 dirty 입력만 재처리, postcss prep 호출 자체도 CSS 관련 dirty 가 없으면 skip. JS-only 변경은 cpSync (dirty 만) + rewriter (dirty 만) 만 수행 — 풀 prep 의 비용 거의 전부 회피. |
 | ~~71~~ | ~~`.scss` 단일 파일 fast-path~~ | ✅ 해결: 단일 non-module `.scss/.sass` 변경은 `isCssOnlyChange=true` 로 분류되어 `rebuildScssIncremental` 진입 — 그 파일만 sass.compile + tempRoot/outdir 갱신 + `CssUpdate` broadcast. import dep 추적 없으므로 다른 sass 파일이 이 파일을 import 하면 갱신 누락 (별 issue 로 sass loadPaths dep tracking) |
-| 72 | E2E `setTimeout(2000-2500)` → readiness poll | `tests/e2e/tests/zts-app-builder-e2e.test.ts` 가 dev/preview 서버 기동 대기로 fixed `setTimeout` 사용 — 느린 CI 에서 flaky 가능성. `fetch(url)` 폴링 helper (ECONNREFUSED 재시도 / 200 까지) 도입해 일괄 대체 |
+| 72 | E2E `setTimeout(2000-2500)` → readiness poll | `tests/e2e/tests/zntc-app-builder-e2e.test.ts` 가 dev/preview 서버 기동 대기로 fixed `setTimeout` 사용 — 느린 CI 에서 flaky 가능성. `fetch(url)` 폴링 helper (ECONNREFUSED 재시도 / 200 까지) 도입해 일괄 대체 |
 | ~~73~~ | ~~Dev mode 에서 bundler 가 CSS chunk 를 emit 하지 않음~~ | ✅ 해결: bundler 측은 그대로 두고, JS 파이프라인이 sass / css-modules 컴파일 산출물을 tempRoot → outdir 로 mirror 하고 HTML 에 `<link>` 를 주입. inline `<style>` 우회 (`buildDevStyleInjector`) 제거. |
 
 ---
 
 ## TS 타입 전용 (d.ts 생성 시 필요)
 
-ZTS는 타입 체크를 하지 않으므로 (스트리핑만) 당장 필요하지 않음.
+ZNTC는 타입 체크를 하지 않으므로 (스트리핑만) 당장 필요하지 않음.
 AST Tag는 정의되어 있으나 파싱 미구현 — isolatedDeclarations 구현 시 추가.
 
 | # | 항목 | 비고 |

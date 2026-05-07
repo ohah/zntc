@@ -101,7 +101,7 @@ export function setupTerminalActions(
     // bun run) 가 stdin 을 inherit 안 해서 child 의 isTTY false. silent skip 시
     // 사용자가 디버그 어려움 → 한 번 stderr 알림 (#2605 audit).
     process.stderr.write(
-      '[zts:rn-dev] stdin is not a TTY — keyboard shortcuts (r/d/j/i/a/c/?) disabled\n',
+      '[zntc:rn-dev] stdin is not a TTY — keyboard shortcuts (r/d/j/i/a/c/?) disabled\n',
     );
     return () => {};
   }
@@ -114,16 +114,16 @@ export function setupTerminalActions(
     } catch (err) {
       rawModeOk = false;
       process.stderr.write(
-        `[zts:rn-dev] setRawMode failed (${(err as Error).message ?? err}) — keyboard shortcuts disabled\n`,
+        `[zntc:rn-dev] setRawMode failed (${(err as Error).message ?? err}) — keyboard shortcuts disabled\n`,
       );
       return () => {};
     }
   }
-  // 진단 — `ZTS_DEBUG_TERMINAL=1` 시 listener 등록 상태 출력. Bun runtime / wrapper
+  // 진단 — `ZNTC_DEBUG_TERMINAL=1` 시 listener 등록 상태 출력. Bun runtime / wrapper
   // script 의 stdin pipe 문제 추적용.
-  if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+  if (process.env.ZNTC_DEBUG_TERMINAL === '1') {
     process.stderr.write(
-      `[zts:rn-dev:debug] terminal-actions: isTTY=${stdin.isTTY} isRaw=${stdin.isRaw} rawModeOk=${rawModeOk} runtime=${process.versions.bun ? `bun-${process.versions.bun}` : `node-${process.versions.node}`}\n`,
+      `[zntc:rn-dev:debug] terminal-actions: isTTY=${stdin.isTTY} isRaw=${stdin.isRaw} rawModeOk=${rawModeOk} runtime=${process.versions.bun ? `bun-${process.versions.bun}` : `node-${process.versions.node}`}\n`,
     );
   }
   stdin.resume();
@@ -136,14 +136,14 @@ export function setupTerminalActions(
   // L283-288 가 동일 패턴. string|Buffer 둘 다 받아 toString 으로 정규화.
   const handleKey = (chunk: string | Buffer): void => {
     const key = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+    if (process.env.ZNTC_DEBUG_TERMINAL === '1') {
       // 원본 byte 보존 — UTF-8 invalid sequence 디버깅용. string→Buffer round-trip 회피.
       const hex =
         typeof chunk === 'string'
           ? Buffer.from(chunk, 'utf8').toString('hex')
           : chunk.toString('hex');
       process.stderr.write(
-        `[zts:rn-dev:debug] key received: hex=${hex} len=${key.length} type=${typeof chunk}\n`,
+        `[zntc:rn-dev:debug] key received: hex=${hex} len=${key.length} type=${typeof chunk}\n`,
       );
     }
     // Bun event loop edge case — raw mode 가 외부에서 false 로 reset 될 수 있음.

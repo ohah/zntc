@@ -1,5 +1,5 @@
 /**
- * Benchmark runner 들이 공유하는 zts 바이너리 호출/git/CLI 파싱 헬퍼.
+ * Benchmark runner 들이 공유하는 zntc 바이너리 호출/git/CLI 파싱 헬퍼.
  *
  * 동일한 buildBin/getCommit/parsePositiveInt/parseProfileJson 가
  * bundle-perf / monorepo-perf / const-prepass 에 중복돼 있어 통합.
@@ -10,11 +10,11 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 export const ROOT = resolve(__dirname, '../..');
-export const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+export const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 
 export function buildBin(label: string): void {
-  if (existsSync(ZTS_BIN)) return;
-  console.log(`[${label}] zts binary not found, building ReleaseFast...`);
+  if (existsSync(ZNTC_BIN)) return;
+  console.log(`[${label}] zntc binary not found, building ReleaseFast...`);
   const r = spawnSync('zig', ['build', '-Doptimize=ReleaseFast'], {
     cwd: ROOT,
     stdio: 'inherit',

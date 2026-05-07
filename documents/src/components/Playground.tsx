@@ -247,7 +247,7 @@ export default function Playground() {
         endLineNumber: line,
         endColumn: col + 1,
         message: match[3].trim(),
-        source: 'ZTS',
+        source: 'ZNTC',
       });
     }
     if (markers.length === 0 && errorStr) {
@@ -258,7 +258,7 @@ export default function Playground() {
         endLineNumber: 1,
         endColumn: 1000,
         message: errorStr,
-        source: 'ZTS',
+        source: 'ZNTC',
       });
     }
     return markers;
@@ -271,12 +271,12 @@ export default function Playground() {
     if (!model) return;
 
     if (!errorStr) {
-      monaco.editor.setModelMarkers(model, 'zts', []);
+      monaco.editor.setModelMarkers(model, 'zntc', []);
       return;
     }
 
     const markers = parseErrors(errorStr);
-    monaco.editor.setModelMarkers(model, 'zts', markers);
+    monaco.editor.setModelMarkers(model, 'zntc', markers);
   }
 
   const runTranspile = useCallback((code: string, opts: Options) => {
@@ -291,8 +291,8 @@ export default function Playground() {
     (async () => {
       try {
         const mod = await import("../../../packages/wasm/index.ts");
-        const base = "/zts/";
-        const wasmUrl = new URL(`${base}zts.wasm`, window.location.origin);
+        const base = "/zntc/";
+        const wasmUrl = new URL(`${base}zntc.wasm`, window.location.origin);
         await mod.init(wasmUrl);
         transpileFnRef.current = mod.transpile;
         setLoading(false);
@@ -359,7 +359,7 @@ export default function Playground() {
       allowNonTsExtensions: true,
     });
 
-    // Disable TS diagnostics (ZTS provides its own error markers)
+    // Disable TS diagnostics (ZNTC provides its own error markers)
     monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
       noSemanticValidation: true,
       noSyntaxValidation: true,
@@ -392,8 +392,8 @@ export default function Playground() {
           <button type="button" onClick={() => setShowConfig(!showConfig)} className={BTN_CLASS}>
             {showConfig ? "◀" : "▶"}
           </button>
-          <a href="/zts/" className="text-sm font-bold text-neutral-200 no-underline">
-            ZTS Playground
+          <a href="/zntc/" className="text-sm font-bold text-neutral-200 no-underline">
+            ZNTC Playground
           </a>
           {loading && <Badge variant="loading" text="Loading WASM..." />}
           {!loading && !error && <Badge variant="ready" />}
@@ -421,7 +421,7 @@ export default function Playground() {
           <a href={`${(import.meta.env.BASE_URL ?? "/").replace(/\/?$/, "/")}playground/bundler/`} className={BTN_CLASS}>
             Bundler 모드
           </a>
-          <a href="https://github.com/ohah/zts" target="_blank" rel="noreferrer" className={BTN_CLASS}>
+          <a href="https://github.com/ohah/zntc" target="_blank" rel="noreferrer" className={BTN_CLASS}>
             GitHub
           </a>
         </div>

@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * ZTS Pipeline Profiler — 파이프라인 단계별 성능 측정
+ * ZNTC Pipeline Profiler — 파이프라인 단계별 성능 측정
  *
- * ZTS의 --timing 옵션으로 scan/parse/semantic/transform/codegen
+ * ZNTC의 --timing 옵션으로 scan/parse/semantic/transform/codegen
  * 각 단계의 소요 시간을 패턴별 + 규모별로 측정한다.
  * esbuild와의 벽시계 시간 비교도 포함.
  */
@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const ROOT = resolve(__dirname, '../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const ESBUILD_BIN = join(ROOT, 'node_modules/.bin/esbuild');
 const ITERATIONS = 5;
 
@@ -89,7 +89,7 @@ const GENERATORS: Record<PatternName, (lines: number) => string> = {
 };
 
 // ============================================================
-// Timing parser — ZTS `--profile=all --profile-format=json` stderr 파싱
+// Timing parser — ZNTC `--profile=all --profile-format=json` stderr 파싱
 // (기존 `--timing` 은 제거됨 — #1672 D2 profile infrastructure)
 // ============================================================
 
@@ -156,18 +156,18 @@ function medianTiming(timings: PipelineTiming[]): PipelineTiming {
   return result as unknown as PipelineTiming;
 }
 
-function measureZtsTiming(inputFile: string, outFile: string): PipelineTiming | null {
+function measureZntcTiming(inputFile: string, outFile: string): PipelineTiming | null {
   const timings: PipelineTiming[] = [];
   const profileArgs = ['--profile=all', '--profile-format=json'];
 
   // warmup
-  spawnSync(ZTS_BIN, [inputFile, ...profileArgs, '-o', outFile], {
+  spawnSync(ZNTC_BIN, [inputFile, ...profileArgs, '-o', outFile], {
     stdio: 'pipe',
     timeout: 60000,
   });
 
   for (let i = 0; i < ITERATIONS; i++) {
-    const result = spawnSync(ZTS_BIN, [inputFile, ...profileArgs, '-o', outFile], {
+    const result = spawnSync(ZNTC_BIN, [inputFile, ...profileArgs, '-o', outFile], {
       stdio: 'pipe',
       timeout: 60000,
     });
@@ -209,7 +209,7 @@ interface WallTimeResult {
   pattern: PatternName;
   lines: number;
   sizeKB: number;
-  ztsMs: number;
+  zntcMs: number;
   esbuildMs: number;
 }
 
@@ -239,14 +239,14 @@ const PATTERNS: PatternName[] = ['simple', 'expr', 'string', 'object', 'react'];
 
 const hasEsbuild = existsSync(ESBUILD_BIN);
 
-console.log('ZTS Pipeline Profiler');
+console.log('ZNTC Pipeline Profiler');
 console.log(`  Iterations: ${ITERATIONS} (median)`);
 console.log(`  Patterns: ${PATTERNS.join(', ')}`);
 console.log(`  Scales: ${LINE_COUNTS.map((l) => `${l / 1000}K`).join(', ')} lines`);
 console.log(`  esbuild: ${hasEsbuild ? 'available' : 'not found'}`);
 console.log(`  Platform: ${process.platform} ${process.arch}\n`);
 
-const dir = mkdtempSync(join(tmpdir(), 'zts-pipeline-'));
+const dir = mkdtempSync(join(tmpdir(), 'zntc-pipeline-'));
 const pipelineResults: PipelineResult[] = [];
 const wallTimeResults: WallTimeResult[] = [];
 
@@ -261,8 +261,8 @@ for (const pattern of PATTERNS) {
     writeFileSync(inputFile, source);
     const sizeKB = Math.round(Buffer.byteLength(source) / 1024);
 
-    // ZTS --timing
-    const timing = measureZtsTiming(inputFile, outFile);
+    // ZNTC --timing
+    const timing = measureZntcTiming(inputFile, outFile);
     if (timing) {
       pipelineResults.push({ pattern, lines, sizeKB, timing });
       console.log(
@@ -276,8 +276,8 @@ for (const pattern of PATTERNS) {
       console.log(`  ${lines / 1000}K lines: FAILED (--timing parse error)`);
     }
 
-    // Wall time: ZTS vs esbuild
-    const ztsMs = measureWallTime(ZTS_BIN, [inputFile, '-o', outFile]);
+    // Wall time: ZNTC vs esbuild
+    const zntcMs = measureWallTime(ZNTC_BIN, [inputFile, '-o', outFile]);
     let esbuildMs = -1;
     if (hasEsbuild) {
       esbuildMs = measureWallTime(ESBUILD_BIN, [
@@ -285,7 +285,7 @@ for (const pattern of PATTERNS) {
         `--outfile=${join(dir, `${pattern}_${lines}_es.js`)}`,
       ]);
     }
-    wallTimeResults.push({ pattern, lines, sizeKB, ztsMs, esbuildMs });
+    wallTimeResults.push({ pattern, lines, sizeKB, zntcMs, esbuildMs });
   }
 
   console.log('');
@@ -337,20 +337,20 @@ for (const pattern of PATTERNS) {
 console.log('');
 
 // ============================================================
-// Output — ZTS vs esbuild wall time
+// Output — ZNTC vs esbuild wall time
 // ============================================================
 
-console.log('===== ZTS vs esbuild (wall time, ms, median) =====\n');
+console.log('===== ZNTC vs esbuild (wall time, ms, median) =====\n');
 
-console.log('| Pattern | Lines | Size (KB) | ZTS (ms) | esbuild (ms) | ratio |');
+console.log('| Pattern | Lines | Size (KB) | ZNTC (ms) | esbuild (ms) | ratio |');
 console.log('|---------|------:|----------:|---------:|-------------:|------:|');
 
 for (const r of wallTimeResults) {
-  const ratio = r.esbuildMs > 0 ? `${(r.ztsMs / r.esbuildMs).toFixed(2)}x` : '-';
+  const ratio = r.esbuildMs > 0 ? `${(r.zntcMs / r.esbuildMs).toFixed(2)}x` : '-';
   const esStr = r.esbuildMs > 0 ? fmt(r.esbuildMs) : 'N/A';
   console.log(
     `| ${r.pattern} | ${r.lines.toLocaleString()} | ${r.sizeKB} | ` +
-      `${fmt(r.ztsMs)} | ${esStr} | ${ratio} |`,
+      `${fmt(r.zntcMs)} | ${esStr} | ${ratio} |`,
   );
 }
 

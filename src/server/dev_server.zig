@@ -372,7 +372,7 @@ pub const DevServer = struct {
     const max_file_size: u64 = 50 * 1024 * 1024;
     const bundle_path = "/bundle.js";
     const hmr_path = "/__hmr";
-    const app_dev_client_path = "/__zts_app_dev_client__";
+    const app_dev_client_path = "/__zntc_app_dev_client__";
     const watch_interval_ms = 500;
     const app_dev_client_js =
         \\const socketProtocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -437,7 +437,7 @@ pub const DevServer = struct {
         \\  return values;
         \\}
         \\function parseSourceMapMappings(map) {
-        \\  if (map.__ztsParsedMappings) return map.__ztsParsedMappings;
+        \\  if (map.__zntcParsedMappings) return map.__zntcParsedMappings;
         \\  let source = 0;
         \\  let originalLine = 0;
         \\  let originalColumn = 0;
@@ -461,7 +461,7 @@ pub const DevServer = struct {
         \\    }
         \\    parsed.push(segments);
         \\  }
-        \\  Object.defineProperty(map, "__ztsParsedMappings", { value: parsed });
+        \\  Object.defineProperty(map, "__zntcParsedMappings", { value: parsed });
         \\  return parsed;
         \\}
         \\function findOriginalPosition(map, line, column) {
@@ -561,7 +561,7 @@ pub const DevServer = struct {
         \\  hideOverlay();
         \\  const items = normalizeErrors(errors);
         \\  overlay = document.createElement("div");
-        \\  overlay.id = "zts-error-overlay";
+        \\  overlay.id = "zntc-error-overlay";
         \\  const root = overlay.attachShadow({ mode: "open" });
         \\  const style = document.createElement("style");
         \\  style.textContent = ":host{position:fixed;inset:0;z-index:2147483647;display:block;--font:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--red:#fb7185;--text:#f8fafc;--blue:#93c5fd;--window:#181818;}" +
@@ -616,10 +616,10 @@ pub const DevServer = struct {
         \\  document.addEventListener("keydown", closeOverlayOnEsc);
         \\  (document.body || document.documentElement).appendChild(overlay);
         \\}
-        \\globalThis.__zts_show_error_overlay = showOverlay;
-        \\globalThis.__zts_clear_error_overlay = hideOverlay;
-        \\if (!globalThis.__zts_runtime_listeners_attached) {
-        \\  globalThis.__zts_runtime_listeners_attached = true;
+        \\globalThis.__zntc_show_error_overlay = showOverlay;
+        \\globalThis.__zntc_clear_error_overlay = hideOverlay;
+        \\if (!globalThis.__zntc_runtime_listeners_attached) {
+        \\  globalThis.__zntc_runtime_listeners_attached = true;
         \\  window.addEventListener("error", function(event) {
         \\    const file = event.filename ? event.filename + ":" + event.lineno + ":" + event.colno : "";
         \\    showRuntimeOverlay(event.error || event.message, file);
@@ -638,7 +638,7 @@ pub const DevServer = struct {
         \\  if (msg.type === "full-reload") { hideOverlay(); location.reload(); return; }
         \\  if (msg.type === "update") {
         \\    hideOverlay();
-        \\    if (typeof __zts_apply_update === "function") __zts_apply_update(msg.modules);
+        \\    if (typeof __zntc_apply_update === "function") __zntc_apply_update(msg.modules);
         \\    else location.reload();
         \\    return;
         \\  }
@@ -679,14 +679,14 @@ pub const DevServer = struct {
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !DevServer {
         const root_dir = std.fs.cwd().openDir(options.root_dir, .{ .iterate = true }) catch |err| {
-            getLog().print("zts: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
+            getLog().print("zntc: cannot open directory '{s}': {}\n", .{ options.root_dir, err }) catch {};
             return err;
         };
 
         var abs_entry: ?[]const u8 = null;
         if (options.entry_point) |ep| {
             abs_entry = std.fs.cwd().realpathAlloc(allocator, ep) catch |err| {
-                getLog().print("zts: cannot resolve entry '{s}': {}\n", .{ ep, err }) catch {};
+                getLog().print("zntc: cannot resolve entry '{s}': {}\n", .{ ep, err }) catch {};
                 var dir_copy = root_dir;
                 dir_copy.close();
                 return err;
@@ -723,18 +723,18 @@ pub const DevServer = struct {
         // host 바인딩: "localhost" → 127.0.0.1, "0.0.0.0" → 모든 인터페이스
         const bind_ip = if (std.mem.eql(u8, self.host, "localhost")) "127.0.0.1" else self.host;
         const address = std.net.Address.parseIp4(bind_ip, self.port) catch {
-            getLog().print("zts: invalid host address: {s}\n", .{self.host}) catch {};
+            getLog().print("zntc: invalid host address: {s}\n", .{self.host}) catch {};
             return error.InvalidAddress;
         };
         self.tcp_server = address.listen(.{
             .reuse_address = true,
         }) catch |err| {
-            getLog().print("zts: failed to listen on {s}:{d}: {}\n", .{ self.host, self.port, err }) catch {};
+            getLog().print("zntc: failed to listen on {s}:{d}: {}\n", .{ self.host, self.port, err }) catch {};
             return err;
         };
 
         const w = getLog();
-        w.print("\n  zts dev server\n\n", .{}) catch {};
+        w.print("\n  zntc dev server\n\n", .{}) catch {};
         w.print("  Local: http://{s}:{d}/\n", .{ self.host, self.port }) catch {};
         if (std.mem.eql(u8, self.host, "0.0.0.0")) {
             w.print("  Network: http://0.0.0.0:{d}/\n", .{self.port}) catch {};
@@ -761,7 +761,7 @@ pub const DevServer = struct {
         // entry가 있으면 watch 스레드 시작
         if (self.abs_entry != null) {
             const watch_thread = std.Thread.spawn(.{}, watchLoop, .{self}) catch |err| {
-                getLog().print("zts: failed to start watch thread: {}\n", .{err}) catch {};
+                getLog().print("zntc: failed to start watch thread: {}\n", .{err}) catch {};
                 return err;
             };
             watch_thread.detach();
@@ -876,7 +876,7 @@ pub const DevServer = struct {
             if (self.shutdown_requested.load(.acquire)) return;
             const connection = self.tcp_server.?.accept() catch |err| {
                 if (self.shutdown_requested.load(.acquire)) return;
-                getLog().print("zts: accept failed: {}\n", .{err}) catch {};
+                getLog().print("zntc: accept failed: {}\n", .{err}) catch {};
                 continue;
             };
             const thread = std.Thread.spawn(.{ .stack_size = 8 * 1024 * 1024 }, handleConnection, .{ self, connection }) catch {
@@ -913,7 +913,7 @@ pub const DevServer = struct {
             var request = server.receiveHead() catch |err| switch (err) {
                 error.HttpConnectionClosing => return,
                 else => {
-                    getLog().print("zts: receiveHead failed: {}\n", .{err}) catch {};
+                    getLog().print("zntc: receiveHead failed: {}\n", .{err}) catch {};
                     return;
                 },
             };
@@ -921,7 +921,7 @@ pub const DevServer = struct {
             switch (request.upgradeRequested()) {
                 .websocket => |opt_key| {
                     const key = opt_key orelse {
-                        getLog().print("zts: WebSocket upgrade missing key\n", .{}) catch {};
+                        getLog().print("zntc: WebSocket upgrade missing key\n", .{}) catch {};
                         return;
                     };
 
@@ -937,7 +937,7 @@ pub const DevServer = struct {
                     }
 
                     var ws = request.respondWebSocket(.{ .key = key }) catch {
-                        getLog().print("zts: WebSocket handshake failed\n", .{}) catch {};
+                        getLog().print("zntc: WebSocket handshake failed\n", .{}) catch {};
                         return;
                     };
                     self.handleWebSocket(&ws, &conn_writer.interface);
@@ -954,7 +954,7 @@ pub const DevServer = struct {
             }
 
             self.handleRequest(&request) catch |err| {
-                getLog().print("zts: request '{s}' failed: {}\n", .{ request.head.target, err }) catch {};
+                getLog().print("zntc: request '{s}' failed: {}\n", .{ request.head.target, err }) catch {};
                 return;
             };
         }
@@ -1357,7 +1357,7 @@ pub const DevServer = struct {
 
         if (std.mem.eql(u8, method, "initialize")) {
             try w.writeAll(
-                \\"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"zts-dev-server","version":"0.1.0"}}
+                \\"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"zntc-dev-server","version":"0.1.0"}}
             );
         } else if (std.mem.eql(u8, method, "tools/list")) {
             try w.writeAll(
@@ -1511,7 +1511,7 @@ pub const DevServer = struct {
             // MCP JSON-RPC 서버 — POST /mcp
             if (std.mem.eql(u8, raw_path_early, "/mcp")) {
                 self.handleMcp(request) catch |err| {
-                    getLog().print("zts: /mcp handler error: {}\n", .{err}) catch {};
+                    getLog().print("zntc: /mcp handler error: {}\n", .{err}) catch {};
                     request.respond("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}", .{
                         .status = .ok,
                         .extra_headers = &json_headers,
@@ -1562,7 +1562,7 @@ pub const DevServer = struct {
 
             if (std.mem.eql(u8, raw_path, bundle_path)) {
                 self.serveBundle(request) catch |err| {
-                    getLog().print("zts: bundle failed: {}\n", .{err}) catch {};
+                    getLog().print("zntc: bundle failed: {}\n", .{err}) catch {};
                     request.respond("500 Bundle Error", .{
                         .status = .internal_server_error,
                         .extra_headers = &cors_headers,
@@ -1629,7 +1629,7 @@ pub const DevServer = struct {
             var msg: std.ArrayList(u8) = .empty;
             defer msg.deinit(self.allocator);
             const w = msg.writer(self.allocator);
-            try w.print("// ZTS Bundle Error\n", .{});
+            try w.print("// ZNTC Bundle Error\n", .{});
             for (diags) |d| {
                 try w.print("// [{s}] {s}: {s}\n", .{
                     @tagName(d.severity),
@@ -1637,7 +1637,7 @@ pub const DevServer = struct {
                     d.message,
                 });
             }
-            try w.print("console.error('ZTS: bundle failed, see server logs');\n", .{});
+            try w.print("console.error('ZNTC: bundle failed, see server logs');\n", .{});
 
             try request.respond(msg.items, .{
                 .status = .internal_server_error,
@@ -1747,11 +1747,11 @@ pub const DevServer = struct {
         const html =
             \\<!DOCTYPE html>
             \\<html>
-            \\<head><meta charset="utf-8"><title>ZTS Dev Server</title></head>
+            \\<head><meta charset="utf-8"><title>ZNTC Dev Server</title></head>
             \\<body>
             \\<div id="root"></div>
             \\<script src="/@react-refresh"></script>
-            \\<script type="module" src="/__zts_app_dev_client__"></script>
+            \\<script type="module" src="/__zntc_app_dev_client__"></script>
             \\<script type="module" src="/bundle.js"></script>
             \\</body>
             \\</html>

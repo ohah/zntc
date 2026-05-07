@@ -13,7 +13,7 @@ import {
 } from "../packages/wasm/index";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const wasmBytes = readFileSync(join(repoRoot, "zig-out/bin/zts-bundler.wasm"));
+const wasmBytes = readFileSync(join(repoRoot, "zig-out/bin/zntc-bundler.wasm"));
 
 const FILES: Record<string, string> = {
   "/main.ts": `import { greet } from "./shared";

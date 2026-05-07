@@ -11,7 +11,7 @@
  * - HMR update 시 performReactRefresh가 호출되는지
  */
 import { describe, test, expect, afterEach } from 'bun:test';
-import { createFixture, runZtsInDir } from './helpers';
+import { createFixture, runZntcInDir } from './helpers';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'bun';
@@ -99,7 +99,7 @@ describe('RN react-refresh prelude', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'index.tsx',
       '-o',
@@ -133,7 +133,7 @@ describe('RN react-refresh prelude', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'index.tsx',
       '-o',
@@ -195,7 +195,7 @@ describe('RN react-refresh prelude', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'index.tsx',
       '-o',
@@ -259,7 +259,7 @@ describe('RN react-refresh prelude', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'index.tsx',
       '-o',
@@ -280,7 +280,7 @@ describe('RN react-refresh prelude', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'index.tsx',
       '-o',
@@ -292,7 +292,7 @@ describe('RN react-refresh prelude', () => {
     const bundle = readFileSync(outFile, 'utf-8');
 
     // non-dev에서는 HMR 런타임과 InitializeCore prelude가 없어야 함
-    expect(bundle).not.toContain('__zts_modules');
+    expect(bundle).not.toContain('__zntc_modules');
     expect(bundle).not.toContain('injectIntoGlobalHook');
   });
 
@@ -305,7 +305,7 @@ describe('RN react-refresh prelude', () => {
       'node_modules/react-native/Libraries/Core/InitializeCore.js',
     );
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'index.tsx',
       '-o',
@@ -330,7 +330,7 @@ describe('RN react-refresh prelude', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       'index.tsx',
       '-o',
@@ -343,6 +343,6 @@ describe('RN react-refresh prelude', () => {
     const bundle = readFileSync(outFile, 'utf-8');
 
     // HMR 런타임의 디버그 로그가 제거되었는지 확인
-    expect(bundle).not.toContain('[zts:hmr]');
+    expect(bundle).not.toContain('[zntc:hmr]');
   });
 });

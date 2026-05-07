@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { WatchHandle } from '@zts/core';
+import type { WatchHandle } from '@zntc/core';
 
 import { buildRnDevServerOptions } from './options.ts';
 import {
@@ -17,7 +17,7 @@ let dir: string;
 let entryPath: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-platform-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-platform-'));
   mkdirSync(join(dir, 'src'), { recursive: true });
   entryPath = join(dir, 'src/index.ts');
   writeFileSync(entryPath, 'console.log("hi");\n');

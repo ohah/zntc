@@ -1,9 +1,9 @@
 ---
 title: Transpile Options
-description: Full reference of ZTS transpile options, generated from the Zig `TranspileOptionsDto` struct.
+description: Full reference of ZNTC transpile options, generated from the Zig `TranspileOptionsDto` struct.
 ---
 
-ZTS transpile options are sourced from a **JSON Schema auto-generated at comptime from the Zig `TranspileOptionsDto` struct**. After editing the struct, run `zig build schema` to regenerate the schema that powers this page.
+ZNTC transpile options are sourced from a **JSON Schema auto-generated at comptime from the Zig `TranspileOptionsDto` struct**. After editing the struct, run `zig build schema` to regenerate the schema that powers this page.
 
 ## Schema URL
 
@@ -11,13 +11,13 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 
 ```json
 {
-  "$schema": "https://ohah.github.io/zts/schemas/transpile-options.schema.json",
+  "$schema": "https://ohah.github.io/zntc/schemas/transpile-options.schema.json",
   "target": "es2022",
   "sourcemap": true
 }
 ```
 
-> **Note**: This schema describes the **internal JSON payload** that WASM/NAPI forwards to the Zig engine. User-facing `zts.config.*` loading and CLI merge logic are implemented separately in `@zts/core` and accept camelCase options. This schema uses Zig-native enum spellings such as `"react_native"`, so it is not always identical to config-file/API syntax.
+> **Note**: This schema describes the **internal JSON payload** that WASM/NAPI forwards to the Zig engine. User-facing `zntc.config.*` loading and CLI merge logic are implemented separately in `@zntc/core` and accept camelCase options. This schema uses Zig-native enum spellings such as `"react_native"`, so it is not always identical to config-file/API syntax.
 
 ## Options
 
@@ -35,7 +35,7 @@ Use `$schema` to get autocomplete in VSCode / IntelliJ / any JSON-schema-aware e
 `target` handles syntax downleveling. `runtimePolyfills` handles runtime APIs such as `Promise`, `Map`, `Object.values`, `String.prototype.replaceAll`, `Array.prototype.at`, and `structuredClone` by adding a `core-js` prelude.
 
 ```ts
-import { defineConfig } from "@zts/core";
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   entryPoints: ["src/index.ts"],
@@ -58,12 +58,12 @@ The `runtimePolyfills` object accepts these fields.
 | `mode` | `"auto" \| "usage" \| "entry"` | `"auto"` and `"usage"` both select target-compatible modules from graph-detected usage. `"entry"` injects every ES/Web module that `core-js-compat` reports as required by the target |
 | `provider` | `"core-js"` | Only `core-js` is currently supported |
 | `targets` | `string \| string[]` | Browserslist queries passed to `core-js-compat`, using the same shape as Rspack/SWC `env.targets` |
-| `coreJs` | `string` | core-js version used by `core-js-compat`. When omitted, ZTS reads the installed `core-js/package.json` version |
+| `coreJs` | `string` | core-js version used by `core-js-compat`. When omitted, ZNTC reads the installed `core-js/package.json` version |
 | `include` | `string[]` | `core-js` modules to always inject. Both `es.array.at` and `core-js/modules/es.array.at.js` are accepted |
 | `exclude` | `string[]` | `core-js` modules to remove after target and usage calculation |
 | `proposals` | `boolean` | Include proposal polyfills when querying `core-js-compat` |
 
-`runtimePolyfills: "off"` is the default. In this mode, ZTS does not load `core-js-compat`, run the graph collector, or enter the profile/debug paths. With `"auto"` or `"usage"`, the JS wrapper computes target-compatible `core-js` candidates and absolute paths, then the native bundler reads the real graph AST after resolve/load/plugin transforms and injects only the modules that were actually used.
+`runtimePolyfills: "off"` is the default. In this mode, ZNTC does not load `core-js-compat`, run the graph collector, or enter the profile/debug paths. With `"auto"` or `"usage"`, the JS wrapper computes target-compatible `core-js` candidates and absolute paths, then the native bundler reads the real graph AST after resolve/load/plugin transforms and injects only the modules that were actually used.
 
 `core-js-compat` and `core-js` are optional dependencies. Install them in projects that enable runtime polyfills.
 
@@ -80,7 +80,7 @@ runtimePolyfills: {
 }
 ```
 
-Explicit queries such as `ios_saf 12`, `safari 12`, and `node 18` are supported. Compact shorthand such as `ios12` or `node18`, and physical device names such as `"iPhone 8"`, are not supported. Use `platform: "react-native"` for the default Hermes runtime target. ZTS does not expose a top-level `runtimeTargets` option.
+Explicit queries such as `ios_saf 12`, `safari 12`, and `node 18` are supported. Compact shorthand such as `ios12` or `node18`, and physical device names such as `"iPhone 8"`, are not supported. Use `platform: "react-native"` for the default Hermes runtime target. ZNTC does not expose a top-level `runtimeTargets` option.
 
 Detection is based on the static graph AST. Local bindings/imports that shadow `Map`, `Object`, `Promise`, and similar globals are not treated as global API usage, and dynamic computed access such as `obj["replaceAll"]()` is not inferred. Use `include` or `"entry"` for those cases.
 
@@ -120,7 +120,7 @@ Detection is based on the static graph AST. Local bindings/imports that shadow `
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `splitting` | `boolean` | `false` | Split chunks at dynamic-import boundaries and extract shared modules |
-| `manualChunks` | `(id, meta) => string \| null` or `[{name, patterns}]` | — | Rollup-compatible custom chunking. Function form via JS API; record form via `zts.config.json` (#2186). [See guide](/zts/guides/manual-chunks/) |
+| `manualChunks` | `(id, meta) => string \| null` or `[{name, patterns}]` | — | Rollup-compatible custom chunking. Function form via JS API; record form via `zntc.config.json` (#2186). [See guide](/zntc/guides/manual-chunks/) |
 | `inlineDynamicImports` | `boolean` | `false` | Absorb dynamic-import targets into the importer chunk + `__esm` wrapping (single-file output). CLI: `--inline-dynamic-imports` (#2185) |
 | `external` | `string[]` | `[]` | Specifiers to exclude from the bundle. Registered as phantom modules in the graph |
 | `preserveModules` | `boolean` | `false` | Preserve original directory structure instead of bundling (Rollup compatible) |
@@ -177,10 +177,10 @@ Detection is based on the static graph AST. Local bindings/imports that shadow `
 
 ## Relation to the TS API
 
-When calling the transpiler programmatically, use the `TranspileOptions` interface from `@zts/core` / `@zts/wasm` — it accepts camelCase + kebab-case enums. Project configuration is handled by the `zts.config.{ts,mts,cts,mjs,js,cjs,json}` / `zts.workspace.*` loaders:
+When calling the transpiler programmatically, use the `TranspileOptions` interface from `@zntc/core` / `@zntc/wasm` — it accepts camelCase + kebab-case enums. Project configuration is handled by the `zntc.config.{ts,mts,cts,mjs,js,cjs,json}` / `zntc.workspace.*` loaders:
 
 ```ts
-import { transpile } from "@zts/wasm";
+import { transpile } from "@zntc/wasm";
 
 transpile(source, {
   target: "es2021",
@@ -199,4 +199,4 @@ After editing the DTO:
 zig build schema
 ```
 
-`documents/public/schemas/transpile-options.schema.json` is updated and served at `/zts/schemas/transpile-options.schema.json` on the docs site.
+`documents/public/schemas/transpile-options.schema.json` is updated and served at `/zntc/schemas/transpile-options.schema.json` on the docs site.

@@ -659,7 +659,7 @@ test "styled-components: TS non-null `...!` 인식" {
 }
 
 test "styled-components: 사용자 명시 .withConfig 에 displayName MERGE" {
-    // 사용자 componentId 는 보존 + ZTS 가 displayName 자동 추가.
+    // 사용자 componentId 는 보존 + ZNTC 가 displayName 자동 추가.
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -672,14 +672,14 @@ test "styled-components: 사용자 명시 .withConfig 에 displayName MERGE" {
     defer r.deinit();
     // user 의 componentId 그대로 보존.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "user-id") != null);
-    // displayName 은 ZTS 가 추가.
+    // displayName 은 ZNTC 가 추가.
     try std.testing.expect(containsDisplayName(r.output, "X"));
     // 추가 .withConfig 호출 없음 (merge 라 한 번만).
     try expectWithConfigCount(r.output, 1);
 }
 
 test "styled-components: spread element 도 prepend 전략으로 안전하게 MERGE" {
-    // ZTS 자동값을 spread 보다 앞에 두면 user 의 spread 또는 explicit key 가 자연스럽게
+    // ZNTC 자동값을 spread 보다 앞에 두면 user 의 spread 또는 explicit key 가 자연스럽게
     // 우리 값을 override (= user-intended). later-wins footgun 회피.
     var r = try e2eFull(
         std.testing.allocator,
@@ -691,7 +691,7 @@ test "styled-components: spread element 도 prepend 전략으로 안전하게 ME
         ".tsx",
     );
     defer r.deinit();
-    // ZTS 자동 displayName 추가됨. spread 보다 앞에 있어야 user 의 spread 가 override 가능.
+    // ZNTC 자동 displayName 추가됨. spread 보다 앞에 있어야 user 의 spread 가 override 가능.
     try std.testing.expect(containsDisplayName(r.output, "Sp"));
     // displayName 이 spread 보다 먼저 나타나야 함.
     // displayName 위치 확인 — fileName prefix 까지 고려해 substring 검색.
@@ -701,7 +701,7 @@ test "styled-components: spread element 도 prepend 전략으로 안전하게 ME
 }
 
 test "styled-components: 사용자가 displayName 도 박았으면 그대로 보존" {
-    // 사용자가 자체 displayName 을 명시 — ZTS 자동값으로 override 안 함.
+    // 사용자가 자체 displayName 을 명시 — ZNTC 자동값으로 override 안 함.
     var r = try e2eFull(
         std.testing.allocator,
         \\import styled from "styled-components";
@@ -1533,7 +1533,7 @@ test "styled (namespace): 사용자 .withConfig MERGE 케이스도 적용" {
         ".tsx",
     );
     defer r.deinit();
-    // 사용자 displayName 보존, ZTS 가 추가하는 componentId 에 prefix 적용
+    // 사용자 displayName 보존, ZNTC 가 추가하는 componentId 에 prefix 적용
     try std.testing.expect(std.mem.indexOf(u8, r.output, "Custom") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "componentId: \"myorg__sc-") != null);
 }

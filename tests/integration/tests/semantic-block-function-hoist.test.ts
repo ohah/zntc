@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { join } from 'node:path';
 
 /**
@@ -54,7 +54,7 @@ describe('bundle: block function declaration keeps canonical rename', () => {
     });
 
     try {
-      const result = await runZts([
+      const result = await runZntc([
         '--bundle',
         '--platform=react-native',
         '--rn-platform=ios',

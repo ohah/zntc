@@ -1,4 +1,4 @@
-//! ZTS Bundler — Compiled module output
+//! ZNTC Bundler — Compiled module output
 //!
 //! 모듈 컴파일 결과 (Transformer → Codegen 산출물) 를 표현한다.
 //! emit 병렬 결과 수집 (emitter.zig) 및 HMR/watch compiled output cache 의
@@ -21,7 +21,7 @@ pub const CompiledModule = struct {
     /// per-source function map JSON. null = 비활성/함수 없음.
     fn_map_json: ?[]const u8 = null,
     /// `entry_error_guard` 활성 + entry 모듈에서 factory body 와 분리해 emitter 가
-    /// 별 top-level statement 로 unroll. 각 chain 이 독립 `__zts_guarded(...)` 가 되어
+    /// 별 top-level statement 로 unroll. 각 chain 이 독립 `__zntc_guarded(...)` 가 되어
     /// 한 layer throw 가 다른 layer 부팅을 막지 않음 (Metro `__r(N)` per-path 와 동등).
     entry_chain: ?[]const u8 = null,
     /// 이 module code 가 참조하는 shared namespace object 선언 목록.

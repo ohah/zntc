@@ -1,7 +1,7 @@
 // CSS low-level scanner — postcss/sass/css-modules pipeline 의 공통 helper.
 // platform-agnostic 이지만 web 의 dev pipeline 안에서만 사용되므로 web 의 style/
-// 디렉토리에 자리잡음. zts.mjs 의 동등 함수 (L1177-1213) 는 PR #5e (css-modules
-// 추출) 시점에 본 모듈 import 로 redirect 후 zts.mjs 잔존본 제거.
+// 디렉토리에 자리잡음. zntc.mjs 의 동등 함수 (L1177-1213) 는 PR #5e (css-modules
+// 추출) 시점에 본 모듈 import 로 redirect 후 zntc.mjs 잔존본 제거.
 
 /**
  * `start` 가 가리키는 css string literal 끝 다음 위치 반환. `\` escape 와

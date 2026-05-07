@@ -1,7 +1,7 @@
 /**
  * PlaygroundBundler — `/playground/bundler` 라우트 메인 컴포넌트.
  *
- * transpile playground 와 분리: 별도 wasm binary (`zts-bundler.wasm`) lazy 로드,
+ * transpile playground 와 분리: 별도 wasm binary (`zntc-bundler.wasm`) lazy 로드,
  * 멀티파일 입력 (좌측 사이드바 + Monaco model swap), output 패널은 chunk 별 탭.
  */
 import { useEffect, useRef, useState } from "react";
@@ -44,7 +44,7 @@ const PRESETS: Preset[] = [
         language: "typescript",
         content: `import { greet } from "./utils";
 
-const user = { name: "ZTS" };
+const user = { name: "ZNTC" };
 console.log(greet(user.name));
 `,
       },
@@ -414,7 +414,7 @@ export default function PlaygroundBundler() {
     (async () => {
       try {
         const mod = await import("../../../packages/wasm/index.ts");
-        const wasmUrl = new URL(`${BASE_URL}zts-bundler.wasm`, window.location.origin);
+        const wasmUrl = new URL(`${BASE_URL}zntc-bundler.wasm`, window.location.origin);
         const vfs = new mod.VirtualFileSystem();
         for (const f of files) vfs.set(f.path, f.content);
         await mod.initBundler(vfs, wasmUrl);
@@ -547,7 +547,7 @@ export default function PlaygroundBundler() {
             {showSidebar ? "◀" : "▶"}
           </button>
           <a href={`${BASE_URL}playground/`} className="text-sm font-bold text-neutral-200 no-underline">
-            ZTS Bundler Playground
+            ZNTC Bundler Playground
           </a>
           {loading && <Badge variant="loading" text="Loading bundler..." />}
           {!loading && !error && <Badge variant="ready" />}
@@ -579,7 +579,7 @@ export default function PlaygroundBundler() {
             Transpile 모드
           </a>
           <a
-            href="https://github.com/ohah/zts"
+            href="https://github.com/ohah/zntc"
             target="_blank"
             rel="noreferrer"
             className={BTN_CLASS}

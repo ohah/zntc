@@ -1,7 +1,7 @@
 /// Round 5 sourcemap mapping 깊이 회귀 테스트.
 ///
 /// 17개 fixture 각각:
-///   1. ZTS 로 `--sourcemap` 트랜스파일
+///   1. ZNTC 로 `--sourcemap` 트랜스파일
 ///   2. 생성 코드에서 MARKER_* 식별자 위치(gen line/col) 추출
 ///   3. sourcemap mappings VLQ decode 후 debugger-style lookup
 ///   4. 매핑된 (src_line, src_col) 이 원본의 같은 이름 marker 위치와 일치하는지 검증
@@ -12,7 +12,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runZts } from './helpers';
+import { runZntc } from './helpers';
 import { decodeMappings, findMarkers, lookupMapping } from './sourcemap-helpers';
 
 const FIXTURES_DIR = join(import.meta.dir, 'fixtures/round5-sourcemap');
@@ -33,12 +33,12 @@ describe('Round 5 sourcemap mapping', () => {
         sourceByName.set(h.name, arr);
       }
 
-      const dir = await mkdtemp(join(tmpdir(), 'zts-round5-'));
+      const dir = await mkdtemp(join(tmpdir(), 'zntc-round5-'));
       try {
         const inFile = join(dir, fix);
         await writeFile(inFile, sourceText);
         const outFile = join(dir, fix.replace(/\.(ts|tsx)$/, '.js'));
-        const r = await runZts([inFile, '-o', outFile, '--sourcemap']);
+        const r = await runZntc([inFile, '-o', outFile, '--sourcemap']);
         expect(r.exitCode).toBe(0);
 
         const outText = readFileSync(outFile, 'utf-8');

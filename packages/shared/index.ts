@@ -1,5 +1,5 @@
 /**
- * @zts/shared — @zts/core와 @zts/wasm에서 공유하는 타입 및 유틸리티
+ * @zntc/shared — @zntc/core와 @zntc/wasm에서 공유하는 타입 및 유틸리티
  */
 
 // ─── Types ───
@@ -276,7 +276,7 @@ export function parseBrowserslistEntry(entry: string): EngineVersion | null {
   const minor = parseInt(minStr, 10);
   if (Number.isNaN(major)) return null;
 
-  // browserslist 이름 → ZTS Engine 매핑
+  // browserslist 이름 → ZNTC Engine 매핑
   // 미매핑 엔진(op_mini, samsung, and_chr 등)은 null 반환 → 호출자가 filter.
   const map: Record<string, Engine> = {
     chrome: 'chrome',
@@ -299,7 +299,7 @@ export function parseBrowserslistEntry(entry: string): EngineVersion | null {
 
 /**
  * browserslist가 반환한 문자열 배열 → unsupported bitmask.
- * 매핑 불가능한 엔진(samsung, kaios 등)은 무시 (ZTS가 타겟팅하지 않는 엔진).
+ * 매핑 불가능한 엔진(samsung, kaios 등)은 무시 (ZNTC가 타겟팅하지 않는 엔진).
  */
 export function browserslistToUnsupported(entries: string[]): number {
   const engines: EngineVersion[] = [];

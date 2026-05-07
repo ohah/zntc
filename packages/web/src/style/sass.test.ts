@@ -17,7 +17,7 @@ import {
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-sass-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-sass-'));
 });
 
 afterEach(() => {

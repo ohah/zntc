@@ -1,12 +1,12 @@
 {
-  "name": "@zts/wasm",
+  "name": "@zntc/wasm",
   "version": "0.1.0",
-  "description": "ZTS TypeScript transpiler — WASM build",
+  "description": "ZNTC native transpiler compiler — WASM build",
   "license": "MIT",
   "files": [
     "dist/",
-    "zts.wasm",
-    "zts-bundler.wasm"
+    "zntc.wasm",
+    "zntc-bundler.wasm"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -16,13 +16,13 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./zts.wasm": "./zts.wasm",
-    "./zts-bundler.wasm": "./zts-bundler.wasm"
+    "./zntc.wasm": "./zntc.wasm",
+    "./zntc-bundler.wasm": "./zntc-bundler.wasm"
   },
   "scripts": {
     "build:wasm": "cd ../.. && zig build wasm && zig build wasm-bundler",
     "build:js": "bun build index.ts --outdir dist --format esm --target browser",
-    "build": "bun run build:wasm && cp ../../zig-out/bin/zts.wasm . && cp ../../zig-out/bin/zts-bundler.wasm . && bun run build:js",
+    "build": "bun run build:wasm && cp ../../zig-out/bin/zntc.wasm . && cp ../../zig-out/bin/zntc-bundler.wasm . && bun run build:js",
     "test": "bun test --timeout 10000"
   }
 }

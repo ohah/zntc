@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * ZTS NAPI vs WASM vs CLI 벤치마크
+ * ZNTC NAPI vs WASM vs CLI 벤치마크
  *
  * 세 가지 호출 방식의 트랜스파일 성능을 비교한다:
  *   - NAPI: .node addon in-process (C NAPI)
@@ -22,7 +22,7 @@ const ROOT = resolve(import.meta.dir, '../..');
 const WARMUP = 3;
 const ITERATIONS = 10;
 const IS_WINDOWS = process.platform === 'win32';
-const ZTS_BIN_NAME = IS_WINDOWS ? 'zts.exe' : 'zts';
+const ZNTC_BIN_NAME = IS_WINDOWS ? 'zntc.exe' : 'zntc';
 const WASM_WRAPPER_URL = pathToFileURL(resolve(ROOT, 'packages/wasm/index.ts')).href;
 
 // Windows 경로의 백슬래시는 템플릿 문자열에 그대로 삽입하면 이스케이프 시퀀스로
@@ -48,7 +48,7 @@ function generateTS(lines: number): string {
 // ─── 워커 스크립트 생성 ───
 
 function createWorkerScript(method: 'napi' | 'wasm' | 'cli', sourceFile: string): string {
-  const dir = mkdtempSync(resolve(tmpdir(), 'zts-bench-worker-'));
+  const dir = mkdtempSync(resolve(tmpdir(), 'zntc-bench-worker-'));
 
   if (method === 'napi') {
     const script = `
@@ -56,7 +56,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const NAPI_PATH = ${q(resolve(ROOT, 'zig-out/lib/zts.node'))};
+const NAPI_PATH = ${q(resolve(ROOT, 'zig-out/lib/zntc.node'))};
 const native = require(NAPI_PATH);
 
 const source = readFileSync(${q(sourceFile)}, "utf8");
@@ -86,7 +86,7 @@ console.log(JSON.stringify({ samplesUs: times }));
     const script = `
 import { readFileSync } from "node:fs";
 
-const WASM_PATH = ${q(resolve(ROOT, 'zig-out/bin/zts.wasm'))};
+const WASM_PATH = ${q(resolve(ROOT, 'zig-out/bin/zntc.wasm'))};
 const WASM_WRAPPER_URL = ${q(WASM_WRAPPER_URL)};
 const { initSync, transpile } = await import(WASM_WRAPPER_URL);
 
@@ -121,13 +121,13 @@ console.log(JSON.stringify({ samplesUs: times }));
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-const ZTS_BIN = ${q(resolve(ROOT, 'zig-out/bin', ZTS_BIN_NAME))};
+const ZNTC_BIN = ${q(resolve(ROOT, 'zig-out/bin', ZNTC_BIN_NAME))};
 const source = readFileSync(${q(sourceFile)}, "utf8");
 const WARMUP = ${WARMUP};
 const ITERATIONS = ${ITERATIONS};
 
 function run() {
-  spawnSync(ZTS_BIN, ["-"], { input: source, stdio: ["pipe", "pipe", "pipe"] });
+  spawnSync(ZNTC_BIN, ["-"], { input: source, stdio: ["pipe", "pipe", "pipe"] });
 }
 
 for (let i = 0; i < WARMUP; i++) run();
@@ -191,7 +191,7 @@ function runWorker(
 
 // ─── Main ───
 
-console.log('ZTS NAPI vs WASM vs CLI Benchmark');
+console.log('ZNTC NAPI vs WASM vs CLI Benchmark');
 console.log(`  Warmup: ${WARMUP}, Iterations: ${ITERATIONS} (median, trimmed mean)`);
 console.log(`  Platform: ${process.platform} ${process.arch}\n`);
 
@@ -208,7 +208,7 @@ for (const scale of scales) {
   const source = generateTS(scale.lines);
   const sizeKB = (Buffer.byteLength(source) / 1024).toFixed(0);
 
-  const tmpDir = mkdtempSync(resolve(tmpdir(), 'zts-bench-src-'));
+  const tmpDir = mkdtempSync(resolve(tmpdir(), 'zntc-bench-src-'));
   const sourceFile = resolve(tmpDir, 'input.ts');
   writeFileSync(sourceFile, source);
 

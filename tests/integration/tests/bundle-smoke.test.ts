@@ -1,22 +1,22 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import {
   bundleAndRun,
-  runZts,
-  runZtsInDir,
+  runZntc,
+  runZntcInDir,
   createFixture,
   createRNFixture,
-  ZTS_BIN,
+  ZNTC_BIN,
 } from './helpers';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-describe('ZTS CLI', () => {
+describe('ZNTC CLI', () => {
   test('바이너리가 존재한다', () => {
-    expect(existsSync(ZTS_BIN)).toBe(true);
+    expect(existsSync(ZNTC_BIN)).toBe(true);
   });
 
   test('--help 플래그가 동작한다', async () => {
-    const { exitCode, stdout } = await runZts(['--help']);
+    const { exitCode, stdout } = await runZntc(['--help']);
     expect(exitCode).toBe(0);
     expect(stdout).toContain('Usage');
   });
@@ -85,7 +85,7 @@ describe('번들 스모크 테스트', () => {
     cleanup = c;
 
     const jsOut = join(dir, 'js.js');
-    const jsResult = await runZts([
+    const jsResult = await runZntc([
       '--bundle',
       join(dir, 'entry-js.ts'),
       '-o',
@@ -96,7 +96,7 @@ describe('번들 스모크 테스트', () => {
     expect(jsResult.stderr).toContain('TypeScript');
 
     const tsOut = join(dir, 'ts.js');
-    const tsResult = await runZts([
+    const tsResult = await runZntc([
       '--bundle',
       join(dir, 'entry-ts.ts'),
       '-o',
@@ -106,7 +106,7 @@ describe('번들 스모크 테스트', () => {
     expect(tsResult.exitCode).toBe(0);
 
     const tsJsxOut = join(dir, 'ts-jsx.js');
-    const tsJsxResult = await runZts([
+    const tsJsxResult = await runZntc([
       '--bundle',
       join(dir, 'entry-ts-jsx.ts'),
       '-o',
@@ -118,7 +118,7 @@ describe('번들 스모크 테스트', () => {
     expect(tsJsxResult.exitCode).not.toBe(0);
 
     const jsxOut = join(dir, 'jsx.js');
-    const jsxResult = await runZts([
+    const jsxResult = await runZntc([
       '--bundle',
       join(dir, 'entry-jsx.ts'),
       '-o',
@@ -130,7 +130,7 @@ describe('번들 스모크 테스트', () => {
     expect(jsxResult.exitCode).toBe(0);
 
     const jsxTsOut = join(dir, 'jsx-ts.js');
-    const jsxTsResult = await runZts([
+    const jsxTsResult = await runZntc([
       '--bundle',
       join(dir, 'entry-jsx-ts.ts'),
       '-o',
@@ -143,7 +143,7 @@ describe('번들 스모크 테스트', () => {
     expect(jsxTsResult.stderr).toContain('TypeScript');
 
     const tsxOut = join(dir, 'tsx.js');
-    const tsxResult = await runZts([
+    const tsxResult = await runZntc([
       '--bundle',
       join(dir, 'entry-tsx.ts'),
       '-o',
@@ -247,7 +247,7 @@ describe('번들 스모크 테스트', () => {
     cleanup = c;
 
     const outFile = join(dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const output = await Bun.file(outFile).text();
@@ -603,7 +603,7 @@ describe('번들 스모크 테스트', () => {
     });
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const output = await Bun.file(outFile).text();
@@ -625,7 +625,7 @@ describe('번들 스모크 테스트', () => {
     });
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const output = await Bun.file(outFile).text();
@@ -645,7 +645,7 @@ describe('번들 스모크 테스트', () => {
     });
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const output = await Bun.file(outFile).text();
@@ -810,7 +810,7 @@ describe('__esm 실행 순서 보장', () => {
     });
     cleanup = c;
     const outFile = join(dir, 'out.js');
-    await runZts(['--bundle', join(dir, 'entry.cjs'), '-o', outFile]);
+    await runZntc(['--bundle', join(dir, 'entry.cjs'), '-o', outFile]);
 
     // wrapper의 __esm body에서 init_dep가 1회만 호출되는지 검증
     const output = await Bun.file(outFile).text();
@@ -839,7 +839,7 @@ describe('__esm 실행 순서 보장', () => {
     });
     cleanup = c;
     const outFile = join(dir, 'out.js');
-    await runZts(['--bundle', join(dir, 'entry.cjs'), '-o', outFile]);
+    await runZntc(['--bundle', join(dir, 'entry.cjs'), '-o', outFile]);
 
     const output = await Bun.file(outFile).text();
     const modEsm = output.match(/init_mod\s*=\s*__esm\(\{[\s\S]*?\}\s*\}\);/);
@@ -1185,7 +1185,7 @@ describe('_default 합성 변수 충돌 방지', () => {
     });
     cleanup = fixture.cleanup;
 
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts')]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts')]);
     expect(bundle.exitCode).toBe(0);
 
     // var 선언 행에서 같은 이름이 두 번 나오지 않아야 한다
@@ -1209,7 +1209,7 @@ describe('_default 합성 변수 충돌 방지', () => {
     });
     cleanup = fixture.cleanup;
 
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts')]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts')]);
     expect(bundle.exitCode).toBe(0);
     // foo가 __esm으로 래핑되어 init_foo 안에서 _default 할당이 일어나야 한다
     expect(bundle.stdout).toMatch(/init_foo\s*=\s*__esm/);
@@ -1228,7 +1228,7 @@ describe('_default 합성 변수 충돌 방지', () => {
     });
     cleanup = fixture.cleanup;
 
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts')]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts')]);
     expect(bundle.exitCode).toBe(0);
     // foo가 __esm으로 래핑되고 init_foo 안에서 _default 할당이 있어야 함
     expect(bundle.stdout).toMatch(/init_foo\s*=\s*__esm/);
@@ -1281,7 +1281,7 @@ describe('_default 합성 변수 충돌 방지', () => {
     });
     cleanup = fixture.cleanup;
 
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '--flow']);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '--flow']);
     expect(bundle.exitCode).toBe(0);
     // comp.js body의 use 참조는 안전한 경로로 가야 함:
     //   - canonical rename `use$N("ctx")`, 또는
@@ -1846,7 +1846,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     // 바이너리 파일은 createFixture(문자열 전용)로 못 만들므로 직접 작성
     writeFileSync(join(fixture.dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const result = await runZtsInDir(fixture.dir, ['--bundle', join(fixture.dir, 'entry.ts')]);
+    const result = await runZntcInDir(fixture.dir, ['--bundle', join(fixture.dir, 'entry.ts')]);
     expect(result.stderr).toContain('No loader is configured');
   });
 
@@ -1857,7 +1857,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     cleanup = fixture.cleanup;
     writeFileSync(join(fixture.dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--loader:.png=file',
@@ -1873,7 +1873,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     cleanup = fixture.cleanup;
     writeFileSync(join(fixture.dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--platform=react-native',
@@ -1890,7 +1890,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     writeFileSync(join(fixture.dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
     // 사용자가 --loader:.png=dataurl 지정 → file 대신 dataurl 사용
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--platform=react-native',
@@ -1907,7 +1907,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     cleanup = fixture.cleanup;
     writeFileSync(join(fixture.dir, 'sound.mp3'), 'fake-mp3-data');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--platform=react-native',
@@ -1923,7 +1923,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     cleanup = fixture.cleanup;
     writeFileSync(join(fixture.dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const result = await runZtsInDir(fixture.dir, ['--bundle', join(fixture.dir, 'entry.ts')]);
+    const result = await runZntcInDir(fixture.dir, ['--bundle', join(fixture.dir, 'entry.ts')]);
     expect(result.stderr).toContain('No loader is configured');
   });
 
@@ -1934,7 +1934,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     cleanup = fixture.cleanup;
     writeFileSync(join(fixture.dir, 'data.bin'), 'binary-data');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--loader:.bin=empty',
@@ -1999,15 +1999,15 @@ describe('에셋 로더 + RN 프리셋', () => {
       'entry.ts': `const greeting = require('./greeting.txt');\nconsole.log(greeting);`,
     });
     cleanup = fixture.cleanup;
-    writeFileSync(join(fixture.dir, 'greeting.txt'), 'Hello, ZTS!');
+    writeFileSync(join(fixture.dir, 'greeting.txt'), 'Hello, ZNTC!');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--loader:.txt=text',
     ]);
     expect(result.stderr).not.toContain('No loader');
-    expect(result.stdout).toContain('Hello, ZTS!');
+    expect(result.stdout).toContain('Hello, ZNTC!');
   });
 
   test('loader=base64 → 순수 base64 string (data URL prefix 없음)', async () => {
@@ -2017,7 +2017,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     cleanup = fixture.cleanup;
     writeFileSync(join(fixture.dir, 'blob.bin'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--loader:.bin=base64',
@@ -2036,7 +2036,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     cleanup = fixture.cleanup;
     writeFileSync(join(fixture.dir, 'blob.bin'), Buffer.from([0x01, 0x02, 0x03, 0x04, 0x05]));
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--loader:.bin=binary',
@@ -2055,7 +2055,7 @@ describe('에셋 로더 + RN 프리셋', () => {
     cleanup = fixture.cleanup;
     writeFileSync(join(fixture.dir, 'vec.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
 
-    const result = await runZtsInDir(fixture.dir, [
+    const result = await runZntcInDir(fixture.dir, [
       '--bundle',
       join(fixture.dir, 'entry.ts'),
       '--loader:.svg=dataurl',
@@ -2140,7 +2140,7 @@ describe('JSX classic 모드 번들러 rename', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.tsx'),
       '-o',
@@ -2181,7 +2181,7 @@ describe('JSX classic 모드 번들러 rename', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.tsx'),
       '-o',
@@ -2218,7 +2218,7 @@ describe('JSX classic 모드 번들러 rename', () => {
       'entry.cjs': 'const { val } = require("./esm.js"); console.log(val);',
     });
     const outFile = join(dir, 'out.js');
-    await runZts(['--bundle', join(dir, 'entry.cjs'), '-o', outFile, '--format=cjs']);
+    await runZntc(['--bundle', join(dir, 'entry.cjs'), '-o', outFile, '--format=cjs']);
     const code = readFileSync(outFile, 'utf-8');
     expect(code).toContain('async "esm.js"()');
   });
@@ -2233,7 +2233,7 @@ describe('JSX classic 모드 번들러 rename', () => {
     });
     cleanup = cl;
     const outFile = join(dir, 'out.js');
-    await runZts(['--bundle', join(dir, 'index.ts'), '-o', outFile, '--platform=browser']);
+    await runZntc(['--bundle', join(dir, 'index.ts'), '-o', outFile, '--platform=browser']);
     const code = readFileSync(outFile, 'utf-8');
     expect(code).toContain('(async ');
     expect(code).not.toContain('(function()');
@@ -2248,7 +2248,7 @@ describe('JSX classic 모드 번들러 rename', () => {
     });
     cleanup = cl;
     const outFile = join(dir, 'out.js');
-    await runZts(['--bundle', join(dir, 'entry.cjs'), '-o', outFile, '--format=cjs']);
+    await runZntc(['--bundle', join(dir, 'entry.cjs'), '-o', outFile, '--format=cjs']);
     const code = readFileSync(outFile, 'utf-8');
     // mid.js의 __esm body에 async가 포함되어야 함 (TLA 전이)
     expect(code).toContain('async "mid.js"()');
@@ -2404,7 +2404,7 @@ describe('ESM default re-export CJS interop (#812)', () => {
     });
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.js'), '-o', outFile]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.js'), '-o', outFile]);
     const output = readFileSync(outFile, 'utf-8');
     expect(output).toContain('__toESM');
     // __toESM 없이 require_cjs().default 직접 접근이 없어야 함
@@ -2847,7 +2847,7 @@ describe('dev 모드: re-export 소스 모듈 init', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -2889,7 +2889,7 @@ describe('dev 모드: re-export 소스 모듈 init', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -2937,7 +2937,7 @@ describe('dev 모드: re-export 소스 모듈 init', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -2984,7 +2984,7 @@ describe('dev 모드: re-export 소스 모듈 init', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -3021,7 +3021,7 @@ describe('dev 모드: re-export 소스 모듈 init', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -3055,7 +3055,7 @@ describe('dev 모드: re-export 소스 모듈 init', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',

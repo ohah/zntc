@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { bundleAndRun, createFixture, runZts } from './helpers';
+import { bundleAndRun, createFixture, runZntc } from './helpers';
 
 // 크로스-모듈 const_value 인라인의 correctness 보장.
 // 핵심 버그: `let` 재할당이 있는데도 초기값을 const처럼 인라인하는 pre-existing 이슈.
@@ -252,7 +252,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const r = await runZts(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
+    const r = await runZntc(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
     expect(r.exitCode).toBe(0);
     const src = readFileSync(out, 'utf8');
     expect(src).toMatch(/console\.log\(3\)/);
@@ -297,7 +297,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     const fx = await createFixture(files);
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const r = await runZts(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
+    const r = await runZntc(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
     expect(r.exitCode).toBe(0);
     const src = readFileSync(out, 'utf8');
     expect(src).toMatch(/console\.log\(40\)/);
@@ -318,7 +318,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const build = await runZts([
+    const build = await runZntc([
       '--bundle',
       join(fx.dir, 'index.ts'),
       '-o',
@@ -408,7 +408,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const build = await runZts([
+    const build = await runZntc([
       '--bundle',
       join(fx.dir, 'index.ts'),
       '-o',
@@ -442,7 +442,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const build = await runZts([
+    const build = await runZntc([
       '--bundle',
       join(fx.dir, 'index.ts'),
       '-o',
@@ -574,7 +574,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const r = await runZts(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
+    const r = await runZntc(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
     expect(r.exitCode).toBe(0);
     const src = readFileSync(out, 'utf8');
     // console.log 호출부에 literal "true"가 나타나야 함 (인라인됨).
@@ -591,7 +591,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const r = await runZts(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
+    const r = await runZntc(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
     expect(r.exitCode).toBe(0);
     const src = readFileSync(out, 'utf8');
     expect(src).toMatch(/console\.log\(null\)/);
@@ -611,7 +611,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const r = await runZts(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
+    const r = await runZntc(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
     expect(r.exitCode).toBe(0);
     const src = readFileSync(out, 'utf8');
     // 인라인되면 console.log(false) 가 될 것 — 재할당 있으니 금지.
@@ -632,7 +632,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const r = await runZts(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
+    const r = await runZntc(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
     expect(r.exitCode).toBe(0);
     const src = readFileSync(out, 'utf8');
     // console.log에 null literal이 인라인되면 안 됨.
@@ -651,7 +651,7 @@ describe('const_value cross-module 인라인 correctness', () => {
     });
     cleanup = fx.cleanup;
     const out = join(fx.dir, 'out.js');
-    const r = await runZts(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
+    const r = await runZntc(['--bundle', join(fx.dir, 'index.ts'), '-o', out, '--platform=node']);
     expect(r.exitCode).toBe(0);
     const src = readFileSync(out, 'utf8');
     // DEV이 false로 인라인되면 if 분기가 DCE로 제거되어 "debug-only"는 출력에 없어야 함.

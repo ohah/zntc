@@ -20,7 +20,7 @@ const DOCS_DIR = join(ROOT, "documents/src/content/docs/reference/errors");
 // Playground URL 생성 (hash 기반 base64)
 // options가 있으면 JSON { code, options } 포맷, 없으면 코드만
 function playgroundUrl(code, opts = {}) {
-  const base = "https://ohah.github.io/zts/playground/";
+  const base = "https://ohah.github.io/zntc/playground/";
   const hasOpts = Object.keys(opts).length > 0;
   const payload = hasOpts
     ? JSON.stringify({ code, options: opts })
@@ -120,17 +120,17 @@ mkdirSync(DOCS_DIR, { recursive: true });
 
 let indexContent = `---
 title: 에러 코드 레퍼런스
-description: ZTS 에러 코드 전체 목록
+description: ZNTC 에러 코드 전체 목록
 ---
 
-ZTS는 모든 에러에 고유 코드를 부여합니다. 에러 코드를 클릭하면 상세 설명과 재현 코드를 볼 수 있습니다.
+ZNTC는 모든 에러에 고유 코드를 부여합니다. 에러 코드를 클릭하면 상세 설명과 재현 코드를 볼 수 있습니다.
 
 `;
 
 let currentCategory = "";
 
 for (const v of variants) {
-  const code = `ZTS${String(v.number).padStart(4, "0")}`;
+  const code = `ZNTC${String(v.number).padStart(4, "0")}`;
   const msg = messages[v.name] || v.name;
   const cat = getCategory(v.number);
   const example = examples[v.name];
@@ -140,7 +140,7 @@ for (const v of variants) {
     currentCategory = cat.name;
     indexContent += `\n## ${cat.name}\n\n| 코드 | 메시지 |\n|------|--------|\n`;
   }
-  indexContent += `| [\`${code}\`](/zts/reference/errors/${code.toLowerCase()}) | ${msg} |\n`;
+  indexContent += `| [\`${code}\`](/zntc/reference/errors/${code.toLowerCase()}) | ${msg} |\n`;
 
   // YAML frontmatter: single quote로 감싸서 double quote 문제 회피
   // single quote 안의 single quote는 '' 로 이스케이프

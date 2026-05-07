@@ -5,8 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
-const zts = join(root, "zig-out/bin/zts");
-const tmp = mkdtempSync(join(tmpdir(), "zts-syntax-audit-"));
+const zntc = join(root, "zig-out/bin/zntc");
+const tmp = mkdtempSync(join(tmpdir(), "zntc-syntax-audit-"));
 
 const singleFileCases = [
   {
@@ -649,8 +649,8 @@ try {
     }
 
     for (const target of ["es5", "es2015", "es2019", "es2022"]) {
-      const out = join(dir, `zts-${target}.mjs`);
-      const built = run(zts, [input, "--target=" + target, "--format=esm", "-o", out]);
+      const out = join(dir, `zntc-${target}.mjs`);
+      const built = run(zntc, [input, "--target=" + target, "--format=esm", "-o", out]);
       if (!built.ok) {
         fail(`${test.name}: transpile ${target}`, built.stderr || built.stdout);
         continue;
@@ -684,7 +684,7 @@ try {
 
     for (const target of ["es5", "es2015", "es2022"]) {
       const out = join(dir, `bundle-${target}.mjs`);
-      const built = run(zts, ["--bundle", entry, "--target=" + target, "--format=esm", "-o", out]);
+      const built = run(zntc, ["--bundle", entry, "--target=" + target, "--format=esm", "-o", out]);
       if (!built.ok) {
         fail(`${test.name}: bundle ${target}`, built.stderr || built.stdout);
         continue;

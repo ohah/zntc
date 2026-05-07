@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 const DIST = join(import.meta.dir, 'dist');
 
-describe('@zts/core TypeScript declaration', () => {
+describe('@zntc/core TypeScript declaration', () => {
   test('dist/core/index.d.ts가 존재해야 함 (build:dts 산출물)', () => {
     const dtsPath = join(DIST, 'core/index.d.ts');
     expect(existsSync(dtsPath)).toBe(true);
@@ -61,9 +61,9 @@ describe('@zts/core TypeScript declaration', () => {
     expect(dts).toMatch(/export declare function build/);
   });
 
-  test('ZtsPlugin 타입 + 플러그인 훅이 Promise 반환 타입 수용', () => {
+  test('ZntcPlugin 타입 + 플러그인 훅이 Promise 반환 타입 수용', () => {
     const dts = readFileSync(join(DIST, 'core/index.d.ts'), 'utf8');
-    expect(dts).toContain('ZtsPlugin');
+    expect(dts).toContain('ZntcPlugin');
     // onLoad / onTransform 등은 async 콜백 지원해야 함 — Promise<...> 타입 포함
     expect(dts).toContain('Promise<');
   });

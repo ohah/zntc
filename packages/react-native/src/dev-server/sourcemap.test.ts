@@ -30,7 +30,7 @@ describe('postProcessSourceMap', () => {
   test('Metro 호환 — dev-server sourcemap 에서 file 과 기본 빈 sourceRoot 제거', () => {
     const input = JSON.stringify({
       version: 3,
-      file: '/tmp/zts-rn-ios/bundle.js',
+      file: '/tmp/zntc-rn-ios/bundle.js',
       sourceRoot: '',
       sources: ['src/app.ts', '/node_modules/react/index.js'],
     });
@@ -43,7 +43,7 @@ describe('postProcessSourceMap', () => {
   test('기존 ignore hint input 소비 + node_modules 추가 (sort + dedup)', () => {
     const input = JSON.stringify({
       version: 3,
-      sources: ['polyfill.js', 'src/app.ts', '/node_modules/react/index.js', 'zts:runtime/foo'],
+      sources: ['polyfill.js', 'src/app.ts', '/node_modules/react/index.js', 'zntc:runtime/foo'],
       x_google_ignoreList: [0],
       ignoreList: [3],
     });
@@ -79,41 +79,41 @@ describe('postProcessSourceMap', () => {
     expect('ignoreList' in out).toBe(false);
   });
 
-  test('zts internal source (`zts:` prefix) — x_google_ignoreList 에 추가 (#2605)', () => {
+  test('zntc internal source (`zntc:` prefix) — x_google_ignoreList 에 추가 (#2605)', () => {
     const input = JSON.stringify({
       version: 3,
-      sources: ['src/app.ts', 'zts:runtime/spread-array', 'zts:runtime/class-call-check'],
+      sources: ['src/app.ts', 'zntc:runtime/spread-array', 'zntc:runtime/class-call-check'],
     });
     const out = JSON.parse(postProcessSourceMap(input));
     expect(out.x_google_ignoreList).toEqual([1, 2]);
   });
 
-  test('NAPI emit 의 leading 공백 (` zts:runtime/...`) 매칭', () => {
+  test('NAPI emit 의 leading 공백 (` zntc:runtime/...`) 매칭', () => {
     const input = JSON.stringify({
       version: 3,
-      sources: ['src/app.ts', ' zts:runtime/extends', '\tzts:runtime/read'],
+      sources: ['src/app.ts', ' zntc:runtime/extends', '\tzntc:runtime/read'],
     });
     const out = JSON.parse(postProcessSourceMap(input));
     expect(out.x_google_ignoreList).toEqual([1, 2]);
   });
 
-  test('Rolldown virtual module null byte prefix (`\\0zts:runtime/...`) 매칭', () => {
+  test('Rolldown virtual module null byte prefix (`\\0zntc:runtime/...`) 매칭', () => {
     const NUL = String.fromCharCode(0);
     const input = JSON.stringify({
       version: 3,
-      sources: ['src/app.ts', `${NUL}zts:runtime/spread-array`, `${NUL}zts:runtime/extends`],
+      sources: ['src/app.ts', `${NUL}zntc:runtime/spread-array`, `${NUL}zntc:runtime/extends`],
     });
     const out = JSON.parse(postProcessSourceMap(input));
     expect(out.x_google_ignoreList).toEqual([1, 2]);
   });
 
-  test('node_modules + zts internal 혼재 — 둘 다 x_google_ignoreList', () => {
+  test('node_modules + zntc internal 혼재 — 둘 다 x_google_ignoreList', () => {
     const input = JSON.stringify({
       version: 3,
       sources: [
         'src/app.ts',
         '/node_modules/react/index.js',
-        'zts:runtime/foo',
+        'zntc:runtime/foo',
         '/node_modules/.bun/whatever/index.js',
       ],
     });
@@ -162,7 +162,7 @@ describe('postProcessSourceMap — path 옵션 통합 (#2605 audit P2)', () => {
     const NUL = String.fromCharCode(0);
     const raw = JSON.stringify({
       version: 3,
-      sources: ['src/app.ts', `${NUL}zts:runtime/foo`, '/node_modules/x/y.js'],
+      sources: ['src/app.ts', `${NUL}zntc:runtime/foo`, '/node_modules/x/y.js'],
     });
     const out = JSON.parse(
       postProcessSourceMap(raw, { useAbsolutePath: true, projectRoot: '/abs/proj' }),
@@ -170,7 +170,7 @@ describe('postProcessSourceMap — path 옵션 통합 (#2605 audit P2)', () => {
     expect(out.x_google_ignoreList).toEqual([1, 2]);
     expect(out.sources).toEqual([
       '/abs/proj/src/app.ts',
-      `${NUL}zts:runtime/foo`,
+      `${NUL}zntc:runtime/foo`,
       '/node_modules/x/y.js',
     ]);
   });
@@ -226,17 +226,17 @@ describe('applyMapPathOptions — Metro sourcemap path 옵션 (#2605 audit P2)',
     expect(out.sources).toEqual(['/abs/proj/src/app.ts', '/abs/proj/src/utils/foo.ts']);
   });
 
-  test('useAbsolutePath — virtual module (`zts:` / NUL prefix) 는 그대로', () => {
+  test('useAbsolutePath — virtual module (`zntc:` / NUL prefix) 는 그대로', () => {
     const NUL = String.fromCharCode(0);
     const raw = JSON.stringify({
       version: 3,
-      sources: ['src/app.ts', `${NUL}zts:runtime/foo`, 'http://cdn.example.com/lib.js'],
+      sources: ['src/app.ts', `${NUL}zntc:runtime/foo`, 'http://cdn.example.com/lib.js'],
     });
     const out = JSON.parse(
       applyMapPathOptions(raw, { useAbsolutePath: true, projectRoot: '/abs/proj' }),
     );
     expect(out.sources[0]).toBe('/abs/proj/src/app.ts');
-    expect(out.sources[1]).toBe(`${NUL}zts:runtime/foo`);
+    expect(out.sources[1]).toBe(`${NUL}zntc:runtime/foo`);
     expect(out.sources[2]).toBe('http://cdn.example.com/lib.js');
   });
 

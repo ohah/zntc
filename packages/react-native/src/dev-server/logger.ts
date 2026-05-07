@@ -1,5 +1,5 @@
 // 터미널 출력 helpers — ANSI colors + Metro 호환 INFO/WARN/ERROR badge +
-// BUNDLE 상태 라인 + ZTS RN startup banner.
+// BUNDLE 상태 라인 + ZNTC RN startup banner.
 
 export const colors = {
   reset: '\x1b[0m',
@@ -76,14 +76,14 @@ function bannerLine(content: string): string {
   return `${colors.cyan}║${colors.reset}${' '.repeat(left)}${content}${' '.repeat(right)}${colors.cyan}║${colors.reset}`;
 }
 
-/** ZTS RN dev server 시작 banner. */
-export function printZtsRnBanner(version?: string): void {
+/** ZNTC RN dev server 시작 banner. */
+export function printZntcRnBanner(version?: string): void {
   const versionText = version ? ` v${version}` : '';
   const lines = [
     '',
     `${colors.cyan}╔${'═'.repeat(BANNER_WIDTH)}╗${colors.reset}`,
     bannerLine(''),
-    bannerLine(`${colors.bold}${colors.cyan}@zts/react-native${colors.reset}${versionText}`),
+    bannerLine(`${colors.bold}${colors.cyan}@zntc/react-native${colors.reset}${versionText}`),
     bannerLine(`${colors.gray}Metro-compatible RN dev server${colors.reset}`),
     bannerLine(''),
     `${colors.cyan}╚${'═'.repeat(BANNER_WIDTH)}╝${colors.reset}`,

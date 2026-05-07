@@ -1,11 +1,11 @@
 ---
 title: Performance Benchmarks
-description: Performance comparison between ZTS and other tools
+description: Performance comparison between ZNTC and other tools
 ---
 
 import BenchmarkCharts from '../../../../components/BenchmarkCharts.tsx';
 
-ZTS compares transpile and bundle performance against esbuild, SWC, Bun, Rolldown, Rspack, and related tools.
+ZNTC compares transpile and bundle performance against esbuild, SWC, Bun, Rolldown, Rspack, and related tools.
 
 ## Environment
 
@@ -13,7 +13,7 @@ ZTS compares transpile and bundle performance against esbuild, SWC, Bun, Rolldow
 - **Baseline date**: 2026-05-06
 - **CLI**: `bench.ts`, 5-run median, direct CLI binary execution without npx overhead
 - **NAPI / WASM / CLI**: `napi-bench.ts`, 3 warmups + 10-run median
-- **Bundle perf**: `bundle-perf.ts`, 5 warmups + 20-run median, CI-style same-run ZTS/Rolldown/Rspack comparison
+- **Bundle perf**: `bundle-perf.ts`, 5 warmups + 20-run median, CI-style same-run ZNTC/Rolldown/Rspack comparison
 - **Pipeline**: `pipeline.ts`, 5-run median, profile total
 
 Lower values are faster. The number at the end of each bar is median wall time.

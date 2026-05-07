@@ -36,7 +36,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const ROOT = resolve(__dirname, '../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const ITERATIONS = 10;
 
 function generateFlowInterfaces(count: number): string {
@@ -73,10 +73,10 @@ function median(times: number[]): number {
 function measure(file: string): number {
   const times: number[] = [];
   // warmup
-  spawnSync(ZTS_BIN, [file, '--platform=react-native'], { stdio: 'pipe', timeout: 60000 });
+  spawnSync(ZNTC_BIN, [file, '--platform=react-native'], { stdio: 'pipe', timeout: 60000 });
   for (let i = 0; i < ITERATIONS; i++) {
     const start = performance.now();
-    spawnSync(ZTS_BIN, [file, '--platform=react-native'], { stdio: 'pipe', timeout: 60000 });
+    spawnSync(ZNTC_BIN, [file, '--platform=react-native'], { stdio: 'pipe', timeout: 60000 });
     times.push(performance.now() - start);
   }
   return median(times);

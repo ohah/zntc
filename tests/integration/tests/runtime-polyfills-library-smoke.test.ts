@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createFixture, hasPackage, linkNodeModules, runNode, runZtsInDir } from './helpers';
+import { createFixture, hasPackage, linkNodeModules, runNode, runZntcInDir } from './helpers';
 
 const OLD_RUNTIME_ARGS = [
   '--format=cjs',
@@ -50,7 +50,7 @@ describe('runtime polyfills library smoke', () => {
       await linkNodeModules(fixture.dir, ['immer']);
 
       const outFile = join(fixture.dir, 'out.cjs');
-      const bundle = await runZtsInDir(
+      const bundle = await runZntcInDir(
         fixture.dir,
         ['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, ...OLD_RUNTIME_ARGS],
         { bin: 'js' },
@@ -100,7 +100,7 @@ describe('runtime polyfills library smoke', () => {
       await linkNodeModules(fixture.dir, ['rxjs']);
 
       const outFile = join(fixture.dir, 'out.cjs');
-      const bundle = await runZtsInDir(
+      const bundle = await runZntcInDir(
         fixture.dir,
         ['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, ...OLD_RUNTIME_ARGS],
         { bin: 'js' },
@@ -156,7 +156,7 @@ describe('runtime polyfills library smoke', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.cjs');
-    const bundle = await runZtsInDir(
+    const bundle = await runZntcInDir(
       fixture.dir,
       ['--bundle', join(fixture.dir, 'entry.ts'), '-o', outFile, ...OLD_RUNTIME_ARGS],
       { bin: 'js' },
@@ -203,7 +203,7 @@ describe('runtime polyfills library smoke', () => {
     cleanup = fixture.cleanup;
 
     const outDir = join(fixture.dir, 'dist');
-    const bundle = await runZtsInDir(
+    const bundle = await runZntcInDir(
       fixture.dir,
       [
         '--bundle',
@@ -258,7 +258,7 @@ describe('runtime polyfills library smoke', () => {
     cleanup = fixture.cleanup;
 
     const outDir = join(fixture.dir, 'dist');
-    const bundle = await runZtsInDir(
+    const bundle = await runZntcInDir(
       fixture.dir,
       [
         '--bundle',

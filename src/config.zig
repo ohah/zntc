@@ -1,6 +1,6 @@
-//! ZTS tsconfig.json Reader
+//! ZNTC tsconfig.json Reader
 //!
-//! tsconfig.json 파일을 파싱하여 ZTS가 사용하는 컴파일러 옵션을 추출한다.
+//! tsconfig.json 파일을 파싱하여 ZNTC가 사용하는 컴파일러 옵션을 추출한다.
 //! - JSONC (주석 포함 JSON) 지원: 파싱 전에 주석을 제거
 //! - "extends" 필드를 통한 설정 상속 지원
 //! - 누락된 필드는 기본값 사용
@@ -44,7 +44,7 @@ pub const TsConfig = struct {
     emit_decorator_metadata: bool = false,
     /// "useDefineForClassFields": class field를 define(ES 표준) 또는 assign(legacy) semantics로 처리.
     /// null = 설정 안 됨 (기본값은 target에 따라 결정: ES2022+ → true, 이전 → false).
-    /// ZTS에서는 명시적으로 false로 설정한 경우에만 assign semantics 적용.
+    /// ZNTC에서는 명시적으로 false로 설정한 경우에만 assign semantics 적용.
     use_define_for_class_fields: ?bool = null,
     /// "verbatimModuleSyntax" (TS 5.0+): true면 값 import를 elide하지 않는다.
     /// esbuild/vite/swc(isolatedModules) 의 표준 동작과 동일.
@@ -108,7 +108,7 @@ pub const TsConfig = struct {
     /// 1. dir_path/tsconfig.json 파일을 읽는다.
     /// 2. JSONC 주석을 제거한다.
     /// 3. "extends" 필드가 있으면 base config를 먼저 로드하고 merge한다.
-    /// 4. compilerOptions에서 ZTS가 사용하는 필드를 추출한다.
+    /// 4. compilerOptions에서 ZNTC가 사용하는 필드를 추출한다.
     ///
     /// tsconfig.json이 없으면 기본값 TsConfig를 반환한다 (에러 아님).
     /// 파일 내용이 유효하지 않은 JSON이면 에러를 반환한다.
@@ -497,7 +497,7 @@ fn parsePathsObject(
 
         const parsed_key = splitWildcard(key) orelse {
             // ts(5073): Pattern '...' can have at most one '*' character.
-            warnToStderr("zts: tsconfig paths key '{s}' has more than one '*' — skipped (ts 5073)\n", .{key});
+            warnToStderr("zntc: tsconfig paths key '{s}' has more than one '*' — skipped (ts 5073)\n", .{key});
             continue;
         };
         const key_prefix_d = try dupeAndTrack(allocator, parsed_key.prefix, allocated_strings);
@@ -508,13 +508,13 @@ fn parsePathsObject(
         for (val.array.items) |v| {
             if (v != .string) continue;
             const parsed_t = splitWildcard(v.string) orelse {
-                warnToStderr("zts: tsconfig paths target '{s}' has more than one '*' — skipped (ts 5073)\n", .{v.string});
+                warnToStderr("zntc: tsconfig paths target '{s}' has more than one '*' — skipped (ts 5073)\n", .{v.string});
                 continue;
             };
             // ts(5063): key/target 의 wildcard 유무가 대칭이어야 함. 비대칭이면 해당 후보만 skip.
             if (parsed_t.has_wildcard != parsed_key.has_wildcard) {
                 warnToStderr(
-                    "zts: tsconfig paths '{s}' → '{s}' has mismatched '*' — target skipped (ts 5063)\n",
+                    "zntc: tsconfig paths '{s}' → '{s}' has mismatched '*' — target skipped (ts 5063)\n",
                     .{ key, v.string },
                 );
                 continue;

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZts, bundleAndRun } from './helpers';
+import { createFixture, runZntc, bundleAndRun } from './helpers';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
@@ -39,7 +39,7 @@ describe('--fallback', () => {
     });
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode, stderr } = await runZts([
+      const { exitCode, stderr } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -81,7 +81,7 @@ describe('--fallback', () => {
     });
     const outFile = join(dir, 'out.js');
     try {
-      const { stderr } = await runZts(['--bundle', join(dir, 'entry.ts'), '-o', outFile]);
+      const { stderr } = await runZntc(['--bundle', join(dir, 'entry.ts'), '-o', outFile]);
       expect(stderr.toLowerCase()).toContain('cannot resolve');
     } finally {
       await cleanup();
@@ -96,7 +96,7 @@ describe('--fallback', () => {
     });
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',

@@ -1,11 +1,11 @@
-//! ZTS 벤치마크 인프라.
+//! ZNTC 벤치마크 인프라.
 //!
 //! 특정 phase 를 N 회 반복 실행하며 `profile` 모듈이 수집한 수치로부터 통계
 //! (mean / median / p95 / p99 / stddev / min / max) 를 계산한다. baseline
 //! save/compare 로 최적화 전후 비교 가능.
 //!
 //! 사용자 진입점:
-//! - CLI: `zts bench --phase=parse ./App.tsx` (PR 5 / main.zig)
+//! - CLI: `zntc bench --phase=parse ./App.tsx` (PR 5 / main.zig)
 //! - NAPI: `benchmark({ phases: ["parse"], iterations: 100, ... })` (PR 5 / napi_entry.zig)
 //!
 //! ### Flow

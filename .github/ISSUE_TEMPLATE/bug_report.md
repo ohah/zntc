@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug in zts
+about: Report a bug in zntc
 title: "[Bug] "
 labels: bug
 ---
@@ -29,6 +29,6 @@ labels: bug
 
 ## Environment
 
-- zts version:
+- zntc version:
 - OS:
 - Zig version:

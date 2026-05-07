@@ -7,7 +7,7 @@
 //! file 당 5–10 fs syscall 제거.
 //!
 //! 디자인은 rolldown `TsconfigCache` (`reference/rolldown/.../transform_cache.rs`)
-//! 와 정합 — `FxDashMap<PathBuf, Arc<TsConfig>>` 의 ZTS 변형. 본 1차 구현은
+//! 와 정합 — `FxDashMap<PathBuf, Arc<TsConfig>>` 의 ZNTC 변형. 본 1차 구현은
 //! _walk 결과만_ 캐시 (entry_dir → tsconfig_path). parse 결과 캐시는 후속 개선
 //! 여지로 남김 (OS page cache 가 같은 file 의 fs read 비용을 작게 만들기 때문).
 //!

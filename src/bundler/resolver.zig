@@ -1,4 +1,4 @@
-//! ZTS Bundler — Module Resolver
+//! ZNTC Bundler — Module Resolver
 //!
 //! import 경로를 절대 파일 경로로 해석한다 (D081 Layer 1).
 //! 상대 경로(`./`, `../`)와 절대 경로를 처리.

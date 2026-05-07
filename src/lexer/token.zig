@@ -1,4 +1,4 @@
-//! ZTS Token Definitions
+//! ZNTC Token Definitions
 //!
 //! ECMAScript / TypeScript / JSX / Flow 토큰 종류를 정의한다.
 //! oxc의 Kind enum을 참고하여 설계 (D034).

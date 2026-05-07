@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // 각 RN 버전별 vendored `@react-native/codegen` (references/react-native-codegen-<version>)
-// 의 reference 출력을 fixture 마다 생성해 golden 으로 저장. ZTS native codegen 과
+// 의 reference 출력을 fixture 마다 생성해 golden 으로 저장. ZNTC native codegen 과
 // byte-diff 0 보장의 ground truth.
 //
 // suite 디렉토리명 컨벤션: `rn-<version>` (예: `rn-0.85`, `rn-0.78`). 버전 부분이

@@ -902,7 +902,7 @@ test "glob: import.meta.glob with import option" {
 // ============================================================
 // require.context (#1579 Phase 1)
 // Reference: Metro `collectDependencies-test.js`,
-//            ZTS 의 기존 tryExtractGlob mirror 패턴
+//            ZNTC 의 기존 tryExtractGlob mirror 패턴
 // ============================================================
 
 /// require_context kind 인 첫 record 만 반환.
@@ -1606,7 +1606,7 @@ test "require.context: bare member access without invocation is ignored" {
 }
 
 test "require.context: shadowed `require` parameter — currently still recognized" {
-    // babel-plugin 은 scope tracking 으로 shadowing 시 무시. ZTS 의 tryExtractRequire 도
+    // babel-plugin 은 scope tracking 으로 shadowing 시 무시. ZNTC 의 tryExtractRequire 도
     // scope 추적 안 하므로 일관성 차원에서 인지함. shadowing 시 무시는 별도 정책 결정 필요
     // (Phase 2 또는 별도 이슈). 이 테스트는 현재 정책 (인지) 을 명시한다.
     const alloc = std.testing.allocator;

@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach, beforeAll, afterAll } from 'bun:test';
 import { join } from 'node:path';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { init, close, benchmark } from '../../../packages/core/index';
 
 // PR 11: CLI ↔ NAPI feature parity 검증.
@@ -31,7 +31,7 @@ describe('CLI ↔ NAPI profile/benchmark parity', () => {
       const fixture = await createFixture({ 'input.ts': source });
       cleanup = fixture.cleanup;
 
-      const cliResult = await runZts([
+      const cliResult = await runZntc([
         'bench',
         '--phase=parse',
         '--iterations=5',
@@ -78,7 +78,7 @@ describe('CLI ↔ NAPI profile/benchmark parity', () => {
       const fixture = await createFixture({ 'input.ts': source });
       cleanup = fixture.cleanup;
 
-      const cliResult = await runZts([
+      const cliResult = await runZntc([
         'bench',
         '--phase=parse,transform,codegen',
         '--iterations=3',
@@ -106,7 +106,7 @@ describe('CLI ↔ NAPI profile/benchmark parity', () => {
       const fixture = await createFixture({ 'input.ts': source });
       cleanup = fixture.cleanup;
 
-      const result = await runZts([
+      const result = await runZntc([
         join(fixture.dir, 'input.ts'),
         '--profile=all',
         '--profile-format=json',

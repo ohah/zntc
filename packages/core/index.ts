@@ -1,12 +1,12 @@
 /**
- * @zts/core — ZTS TypeScript 트랜스파일러 네이티브 NAPI 바인딩
+ * @zntc/core — ZNTC TypeScript 트랜스파일러 네이티브 NAPI 바인딩
  *
  * Node.js, Bun, Deno 모두 지원하는 NAPI 네이티브 모듈.
  * 전역 상태 없이 JS 힙에 직접 결과를 반환한다.
  *
  * @example
  * ```ts
- * import { init, transpile } from "@zts/core";
+ * import { init, transpile } from "@zntc/core";
  * init();
  * const result = transpile("const x: number = 1;", { filename: "input.ts" });
  * console.log(result.code);
@@ -145,28 +145,28 @@ function findAddon(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
 
   // 1. zig-out 빌드 산출물 우선 (개발 시 항상 최신 바이너리 사용)
-  const zigOut = join(__dirname, '../../zig-out/lib/zts.node');
+  const zigOut = join(__dirname, '../../zig-out/lib/zntc.node');
   if (existsSync(zigOut)) return zigOut;
 
   // 2. dist에서 3단계 위 (packages/core/dist/ → zig-out/lib/)
-  const zigOut2 = join(__dirname, '../../../zig-out/lib/zts.node');
+  const zigOut2 = join(__dirname, '../../../zig-out/lib/zntc.node');
   if (existsSync(zigOut2)) return zigOut2;
 
   // 3. 같은 디렉토리 (npm 배포 패키지)
-  const local = join(__dirname, 'zts.node');
+  const local = join(__dirname, 'zntc.node');
   if (existsSync(local)) return local;
 
   // 4. 한 단계 위 (dist/index.js에서 사용 시)
-  const parent = join(__dirname, '../zts.node');
+  const parent = join(__dirname, '../zntc.node');
   if (existsSync(parent)) return parent;
 
-  throw new Error('@zts/core: zts.node not found. Run `zig build napi` first.');
+  throw new Error('@zntc/core: zntc.node not found. Run `zig build napi` first.');
 }
 
 // ─── Public API ───
 
 /**
- * `zts.config.{ts,js}` 타입 체크/자동완성용 identity 헬퍼.
+ * `zntc.config.{ts,js}` 타입 체크/자동완성용 identity 헬퍼.
  *
  * 객체 또는 함수형 config 둘 다 지원:
  * ```ts
@@ -252,7 +252,7 @@ function loadBrowserslist(): ((q: string | string[]) => string[]) | null {
   try {
     // ESM 환경이라 Node/Bun의 createRequire로 런타임 require를 얻는다.
     // 동적 문자열 key를 넘겨 Bun 번들러의 정적 분석을 회피 → browserslist
-    // 미설치여도 zts 자체는 로드 가능 (optional dep).
+    // 미설치여도 zntc 자체는 로드 가능 (optional dep).
     const req = createRequire(import.meta.url);
     const name = 'browserslist';
     _browserslist = req(name) as (q: string | string[]) => string[];
@@ -271,7 +271,7 @@ function resolveUnsupported(options: TranspileOptions): number {
     const bl = loadBrowserslist();
     if (!bl) {
       throw new Error(
-        "@zts/core: 'browserslist' option requires the 'browserslist' package. Install it: bun add browserslist",
+        "@zntc/core: 'browserslist' option requires the 'browserslist' package. Install it: bun add browserslist",
       );
     }
     return browserslistToUnsupported(bl(options.browserslist));
@@ -300,7 +300,7 @@ export class TsconfigCache {
   private readonly _handle: NativeTsconfigCacheHandle;
 
   constructor() {
-    if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+    if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
     this._handle = native.createTsconfigCache();
   }
 
@@ -334,8 +334,8 @@ export function transpile(
   source: string,
   options: TranspileOptions & { cache?: TsconfigCache } = {},
 ): TranspileResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
-  if (!source) throw new Error('@zts/core: empty source');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
+  if (!source) throw new Error('@zntc/core: empty source');
   validateTsConfigRaw(options.tsconfigRaw);
 
   const optionsJson = buildOptionsJson(options, resolveUnsupported(options));
@@ -348,8 +348,8 @@ export function transpile(
 }
 
 export function tokenize(source: string, options: TokenizeOptions = {}): TokenizeToken[] {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
-  if (!source) throw new Error('@zts/core: empty source');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
+  if (!source) throw new Error('@zntc/core: empty source');
   return native.tokenize(source, options.filename ?? 'input.js');
 }
 
@@ -357,12 +357,12 @@ export function configureProfile(
   profile: string[],
   level?: 'summary' | 'detailed' | 'per-module' | 'per-pass',
 ): void {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   native.configureProfile(profile, level);
 }
 
 export function profileReport(format: 'table' | 'tree' | 'json' | 'csv' = 'table'): string {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   return native.profileReport(format);
 }
 
@@ -392,10 +392,10 @@ export interface ManualChunksModuleInfo {
    * external 은 빈 배열 (graph 가 export 정보 없음). */
   exports: string[];
   /** Plugin 이 정의한 synthetic named exports (Rollup `syntheticNamedExports` 호환).
-   * ZTS 는 plugin context API 확장 (#1880) 까지 항상 false. */
+   * ZNTC 는 plugin context API 확장 (#1880) 까지 항상 false. */
   syntheticNamedExports: boolean;
   /** `this.emitFile` 의 `implicitlyLoadedAfterOneOf` 옵션 결과 (Rollup 호환).
-   * ZTS plugin context API (#1880) 까지 항상 빈 배열. */
+   * ZNTC plugin context API (#1880) 까지 항상 빈 배열. */
   implicitlyLoadedAfterOneOf: string[];
   /** 위와 반대 방향 — 이 모듈을 implicitly 로드 후에 로드돼야 하는 모듈들. */
   implicitlyLoadedBefore: string[];
@@ -486,7 +486,7 @@ export interface EmotionOptions {
   importMap?: Record<string, Record<string, { canonicalImport: [string, string] }>>;
 }
 
-/** Vite-style dev server options used by `zts dev` / `zts --serve`. */
+/** Vite-style dev server options used by `zntc dev` / `zntc --serve`. */
 export interface DevServerOptions {
   /** Port to listen on. CLI `--port` overrides this value. */
   port?: number;
@@ -545,7 +545,7 @@ interface BuildOptionsCommon {
   useDefineForClassFields?: boolean;
   experimentalDecorators?: boolean;
   emitDecoratorMetadata?: boolean;
-  /** `import { x } from 'mod'` cherry-pick 분해 매핑. babel-plugin-lodash 등의 ZTS 동등 (#2393).
+  /** `import { x } from 'mod'` cherry-pick 분해 매핑. babel-plugin-lodash 등의 ZNTC 동등 (#2393).
    * key = source module 이름 (정확 매칭), value = template (`{name}` placeholder 가
    * specifier 이름으로 치환).
    *
@@ -583,7 +583,7 @@ interface BuildOptionsCommon {
    * 키는 식별자 또는 `obj.prop` 같은 멤버 표현식, 값은 JS 표현식 문자열.
    * 예: `{ "__DEV__": "false", "process.env.NODE_ENV": '"production"' }` */
   define?: Record<string, string>;
-  /** Dev server defaults for `zts dev` / `zts --serve`. CLI flags still take precedence. */
+  /** Dev server defaults for `zntc dev` / `zntc --serve`. CLI flags still take precedence. */
   server?: DevServerOptions;
   /** Import 경로 별칭 — 두 형태 지원 (esbuild / Vite 호환):
    *
@@ -614,7 +614,7 @@ interface BuildOptionsCommon {
   blockList?: (RegExp | string)[];
   inject?: string[];
   jobs?: number;
-  plugins?: ZtsPlugin[];
+  plugins?: ZntcPlugin[];
   /** 사용자 정의 청크 분할 — Rollup/rolldown `manualChunks` 호환 (#1027).
    * 모듈 id (절대경로) 를 받아 청크 이름을 반환하면 해당 모듈은 그 이름의 청크로 묶임.
    * null/undefined 반환 시 기존 자동 분배. transitive dependency 도 같은 청크로 따라감
@@ -725,7 +725,7 @@ interface BuildOptionsCommon {
   /** preserve-modules 출력 디렉토리 구조 기준 경로 */
   preserveModulesRoot?: string;
   /**
-   * 활성화할 profile category 목록 (ZTS_PROFILE env 와 합집합).
+   * 활성화할 profile category 목록 (ZNTC_PROFILE env 와 합집합).
    * 예: `["all"]`, `["parse", "transform"]`, `["transform.jsx"]`.
    * Parent 를 지정하면 child 도 자동 활성 (e.g. "transform" → "transform.jsx"/"transform.ts_strip"/...).
    * 사용 가능한 category: docs/design/profile-infrastructure.md 참조.
@@ -747,7 +747,7 @@ interface BuildOptionsCommon {
    * - "csv": 스프레드시트
    */
   profileFormat?: 'table' | 'tree' | 'json' | 'csv';
-  /** dev mode: 모듈을 __zts_register() 팩토리로 래핑 + HMR 런타임 주입 */
+  /** dev mode: 모듈을 __zntc_register() 팩토리로 래핑 + HMR 런타임 주입 */
   devMode?: boolean;
   /** dev mode 모듈 ID 기준 경로 */
   rootDir?: string;
@@ -896,7 +896,7 @@ export interface WatchRebuildEvent {
    * 사실 각각 `graph` / `link+shake` 를 담았던 레거시 이름이었으며 제거됨 —
    * 이제 sub-phase 로만 (실제 parser / SemanticAnalyzer 시간) 노출된다.
    *
-   * **Sub-phase** (`ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` / `profile: ["<cat>"]` 활성 시):
+   * **Sub-phase** (`ZNTC_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` / `profile: ["<cat>"]` 활성 시):
    * - `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata`
    * - 비활성 상태에선 모두 0. `parse` 는 이제 진짜 parser 시간, `semantic` 은 진짜 SemanticAnalyzer.
    */
@@ -995,7 +995,7 @@ export interface WatchHandle {
   getHmrSourceMap(moduleId: string): string | null;
 }
 
-export interface ZtsPlugin {
+export interface ZntcPlugin {
   name: string;
   setup(build: PluginBuild): void;
 }
@@ -1056,7 +1056,7 @@ export interface PluginBuild {
   ): void;
   /**
    * `require.context(dir, recursive, filter, mode)` 의 매칭 결과를 호스트 런타임에서 채운다. (#1579)
-   * ZTS 자체 regex executor 가 없어서 (#1771) host 의 RegExp 에 위임 — Node V8 / Bun JSC.
+   * ZNTC 자체 regex executor 가 없어서 (#1771) host 의 RegExp 에 위임 — Node V8 / Bun JSC.
    *
    * `options.filter` 는 `dir` 에 적용 (예: `/^\.\/app/` 으로 특정 디렉토리만 처리).
    * 콜백 반환:
@@ -1142,7 +1142,7 @@ export interface AppBuildOptions {
 export interface AppDevPrepareOptions {
   /** Application root directory used to resolve index.html, public/, and env files. */
   root?: string;
-  /** Temporary output directory used by the dev server. Defaults to ".zts-dev". */
+  /** Temporary output directory used by the dev server. Defaults to ".zntc-dev". */
   outdir?: string;
   /** HTML entry file to scan for module scripts, stylesheets, and static assets. */
   entryHtml?: string;
@@ -1189,7 +1189,7 @@ async function runFireAndForget<T>(
  * plugins 배열을 처리하여 단일 dispatcher 함수를 생성한다.
  * dispatcher(hookName, arg1, arg2) → result | null
  */
-function createPluginDispatcher(plugins: ZtsPlugin[]) {
+function createPluginDispatcher(plugins: ZntcPlugin[]) {
   type HookEntry = { filter: RegExp; callback: (...args: any[]) => any };
   const hooks: Record<string, HookEntry[]> = {
     resolveId: [],
@@ -1384,9 +1384,9 @@ function createPluginDispatcher(plugins: ZtsPlugin[]) {
  */
 function arrayAliasToPlugin(
   aliasArray: ReadonlyArray<{ find: string | RegExp; replacement: string }>,
-): ZtsPlugin {
+): ZntcPlugin {
   return {
-    name: 'zts:array-alias',
+    name: 'zntc:array-alias',
     setup(build) {
       build.onResolve({ filter: /.*/ }, (args) => {
         for (const { find, replacement } of aliasArray) {
@@ -1550,7 +1550,7 @@ const EMOTION_CSS_CANONICAL_SOURCES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * babel-plugin-emotion `importMap` 의 vendored re-export 케이스를 ZTS 의 단순화된
+ * babel-plugin-emotion `importMap` 의 vendored re-export 케이스를 ZNTC 의 단순화된
  * `extraCssSources` / `extraStyledSources` array 로 collapse.
  *
  * 같은 source 안에 styled / css canonicalImport 가 섞여 있으면 양쪽에 모두 등록.
@@ -1623,7 +1623,7 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
     for (const entry of options.entryPoints) {
       if (resolve(entry) === outResolved) {
         throw new Error(
-          `@zts/core: output file '${options.outfile}' would overwrite input file (set allowOverwrite: true to permit)`,
+          `@zntc/core: output file '${options.outfile}' would overwrite input file (set allowOverwrite: true to permit)`,
         );
       }
     }
@@ -1663,8 +1663,8 @@ function writeOutputFiles(result: BuildResult, options: BuildOptions): void {
  * `closeBundle` 은 write 성공 시에만 호출.
  */
 export async function build(options: BuildOptions): Promise<BuildResult> {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
-  if (!options.entryPoints?.length) throw new Error('@zts/core: entryPoints is required');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
+  if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
 
   const { napiOptions, cleanup } = prepareNapiOptions(options);
@@ -1693,18 +1693,18 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
  * 주의: JS 플러그인은 build() (async) / watch()에서만 지원됨.
  */
 export function buildSync(options: BuildOptions): BuildResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
-  if (!options.entryPoints?.length) throw new Error('@zts/core: entryPoints is required');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
+  if (!options.entryPoints?.length) throw new Error('@zntc/core: entryPoints is required');
   validateTsConfigRaw(options.tsconfigRaw);
   if (options.plugins?.length) {
     throw new Error(
-      '@zts/core: plugins are only supported with build() (async). Use build() instead of buildSync().',
+      '@zntc/core: plugins are only supported with build() (async). Use build() instead of buildSync().',
     );
   }
   // Array 형태 alias 는 host RegExp 위임이 plugin hook 기반이라 buildSync 미지원.
   if (Array.isArray(options.alias)) {
     throw new Error(
-      '@zts/core: array-form alias (with RegExp / Vite-style) requires async build(). Use Record<string, string> form for buildSync, or call build() instead.',
+      '@zntc/core: array-form alias (with RegExp / Vite-style) requires async build(). Use Record<string, string> form for buildSync, or call build() instead.',
     );
   }
 
@@ -1720,7 +1720,7 @@ export function buildSync(options: BuildOptions): BuildResult {
 }
 
 export function buildAppSync(options: AppBuildOptions = {}): BuildResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   const { publicDir, compiler, ...rest } = options;
   return native.buildAppSync({
     ...rest,
@@ -1778,7 +1778,7 @@ function buildCompilerNapiFields(compiler: AppBuildOptions['compiler']): Record<
 }
 
 export function prepareAppDevSync(options: AppDevPrepareOptions = {}): AppDevPrepareResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   const { publicDir, ...rest } = options;
   return native.prepareAppDevSync({
     ...rest,
@@ -1798,7 +1798,7 @@ export function close(): void {
   native = null;
 }
 
-// ─── Benchmark API (CLI `zts bench` 의 NAPI 대응) ───
+// ─── Benchmark API (CLI `zntc bench` 의 NAPI 대응) ───
 
 /**
  * 벤치마크 옵션. `source` 또는 `file` 중 하나는 반드시 지정.
@@ -1846,11 +1846,11 @@ export interface BenchmarkResult {
 /**
  * 특정 phase 를 N 회 반복 실행하고 통계 (mean/median/p95/p99/stddev/min/max) 를 반환한다.
  *
- * CLI `zts bench --phase=...` 의 NAPI 대응 — 같은 engine 사용.
+ * CLI `zntc bench --phase=...` 의 NAPI 대응 — 같은 engine 사용.
  *
  * @example
  * ```ts
- * import { init, benchmark } from "@zts/core";
+ * import { init, benchmark } from "@zntc/core";
  * init();
  *
  * const result = benchmark({
@@ -1862,12 +1862,12 @@ export interface BenchmarkResult {
  * ```
  */
 export function benchmark(options: BenchmarkOptions): BenchmarkResult {
-  if (!native) throw new Error('@zts/core: not initialized. Call init() first.');
+  if (!native) throw new Error('@zntc/core: not initialized. Call init() first.');
   if (!options.source && !options.file) {
-    throw new Error("@zts/core.benchmark: 'source' or 'file' is required");
+    throw new Error("@zntc/core.benchmark: 'source' or 'file' is required");
   }
   if (!Array.isArray(options.phases) || options.phases.length === 0) {
-    throw new Error("@zts/core.benchmark: 'phases' must be a non-empty string array");
+    throw new Error("@zntc/core.benchmark: 'phases' must be a non-empty string array");
   }
   return native.benchmark({
     source: options.source,
@@ -1882,11 +1882,11 @@ export function benchmark(options: BenchmarkOptions): BenchmarkResult {
 // ─── Vite/Rollup 플러그인 어댑터 ───
 
 /**
- * Rollup/Vite 스타일 플러그인을 ZTS 플러그인으로 변환한다.
+ * Rollup/Vite 스타일 플러그인을 ZNTC 플러그인으로 변환한다.
  *
  * @example
  * ```ts
- * import { vitePlugin } from "@zts/core";
+ * import { vitePlugin } from "@zntc/core";
  *
  * const result = await build({
  *   entryPoints: ["src/index.ts"],
@@ -1923,7 +1923,7 @@ export interface RollupPlugin {
   ): MaybePromise<string | null | undefined | void | { code: string }>;
   generateBundle?(outputs: OutputFile[]): MaybePromise<void>;
   /** Bundle 시작 시 1회. esbuild `onStart` / Rollup `buildStart` 호환 (#2156).
-   *  ZTS 는 인자 없이 호출 (esbuild 스타일) — Rollup plugin 이 `options` 인자를 기대하면
+   *  ZNTC 는 인자 없이 호출 (esbuild 스타일) — Rollup plugin 이 `options` 인자를 기대하면
    *  plugin 자체 closure 로 받아둘 것. `this` context 는 미지원. */
   buildStart?(): MaybePromise<void>;
   /** Bundle 종료 시 1회. Rollup `buildEnd` 호환 — error 가 있으면 빌드 실패. */
@@ -1932,7 +1932,7 @@ export interface RollupPlugin {
   closeBundle?(): MaybePromise<void>;
 }
 
-export function vitePlugin(rollupPlugin: RollupPlugin): ZtsPlugin {
+export function vitePlugin(rollupPlugin: RollupPlugin): ZntcPlugin {
   return {
     name: rollupPlugin.name,
     setup(build) {

@@ -1,9 +1,9 @@
 ---
 title: Dev Server
-description: SSE event stream, Control API, and MCP server in the ZTS dev server
+description: SSE event stream, Control API, and MCP server in the ZNTC dev server
 ---
 
-`zts --serve --bundle <entry>` starts a dev server that exposes **3 interfaces for external automation/observability** in addition to standard HTTP/HMR.
+`zntc --serve --bundle <entry>` starts a dev server that exposes **3 interfaces for external automation/observability** in addition to standard HTTP/HMR.
 
 | Endpoint | Purpose | Compatible |
 |---|---|---|
@@ -14,7 +14,7 @@ description: SSE event stream, Control API, and MCP server in the ZTS dev server
 ## Quick start
 
 ```bash
-zts --serve --bundle src/index.tsx --port 12300
+zntc --serve --bundle src/index.tsx --port 12300
 ```
 
 ```bash
@@ -101,7 +101,7 @@ LLM agents (Claude Code etc.) interact with the dev bundler via the standard MCP
 ```json
 {
   "mcpServers": {
-    "zts": {
+    "zntc": {
       "type": "http",
       "url": "http://localhost:12300/mcp"
     }
@@ -188,13 +188,13 @@ Response (`content[0].text` is a JSON string):
 - **Event buffer**: `get_build_events` reads from a 256-entry ring buffer. Older events are overwritten.
 - **SSE concurrent connections**: 64. Additional connections rejected.
 
-## `server` config (zts.config)
+## `server` config (zntc.config)
 
 The same fields exposed via CLI `--port` / `--host` / `--open` can be set in the config file (Vite `server` compatible). CLI flags always take precedence.
 
 ```ts
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   server: {
@@ -215,10 +215,10 @@ export default defineConfig({
 
 ## Lazy sourcemap — `emitDiskSourcemap` + `WatchHandle`
 
-When you host a dev server directly on top of `@zts/core`'s `watch()` handle, this moves the `.map` disk-write cost out of HMR latency.
+When you host a dev server directly on top of `@zntc/core`'s `watch()` handle, this moves the `.map` disk-write cost out of HMR latency.
 
 ```ts
-import { watch } from "@zts/core";
+import { watch } from "@zntc/core";
 
 const handle = watch({
   entryPoints: ["src/index.tsx"],
@@ -302,7 +302,7 @@ Key fields on `WatchRebuildEvent`:
 | `delta` | HMR delta extraction. |
 | `total` | Sum of `detect` through `delta`. |
 
-Sub-phases (only populated when `profile: ["..."]` / `ZTS_PROFILE=...` is active; 0 otherwise):
+Sub-phases (only populated when `profile: ["..."]` / `ZNTC_PROFILE=...` is active; 0 otherwise):
 
 `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` / `graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` / `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
 

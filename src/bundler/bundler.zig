@@ -1,4 +1,4 @@
-//! ZTS Bundler — Orchestrator
+//! ZNTC Bundler — Orchestrator
 //!
 //! 번들러의 최상위 공개 API. ResolveCache → ModuleGraph → Emitter 파이프라인을 조율.
 //!
@@ -118,7 +118,7 @@ pub const BundleOptions = struct {
     manual_chunks_resolver: ?types.ManualChunksResolveFn = null,
     /// resolver 에 전달할 user context (TSFN 핸들, 상태 포인터 등).
     manual_chunks_ctx: ?*anyopaque = null,
-    /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
+    /// dev mode: 각 모듈을 __zntc_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
     /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
@@ -293,7 +293,7 @@ pub const BundleOptions = struct {
     silent_console_error_patterns: []const []const u8 = &.{},
     /// Reanimated worklet 네이티브 변환. --platform=react-native에서 자동 활성화.
     worklet_transform: bool = false,
-    /// worklet의 `__pluginVersion` 값. null이면 ZTS 기본 상수 사용.
+    /// worklet의 `__pluginVersion` 값. null이면 ZNTC 기본 상수 사용.
     /// Reanimated dev mode runtime이 jsVersion과 대조하므로 사용자의 react-native-worklets
     /// 패키지 버전을 그대로 전달해야 런타임 mismatch 에러 없음.
     worklet_plugin_version: ?[]const u8 = null,
@@ -311,7 +311,7 @@ pub const BundleOptions = struct {
     /// Compiled output cache. HMR/watch 에서 변경 안 된 모듈의 emit 을 스킵.
     /// IncrementalBundler 가 소유.
     compiled_cache: ?*@import("compiled_cache.zig").CompiledOutputCache = null,
-    /// 활성화할 디버그 로그 카테고리 (ZTS_DEBUG env 와 합집합).
+    /// 활성화할 디버그 로그 카테고리 (ZNTC_DEBUG env 와 합집합).
     /// 예: `&.{"compiled_cache", "hmr"}`. 카테고리 enum 은 `src/debug_log.zig` 참조.
     debug: []const []const u8 = &.{},
     /// --outbase: 엔트리 포인트 공통 기준 경로
@@ -366,7 +366,7 @@ pub const BundleResult = struct {
     diagnostics: ?[]OwnedDiagnostic,
     /// 번들에 포함된 모든 모듈의 절대 경로. allocator 소유. dev server watch용.
     module_paths: ?[]const []const u8 = null,
-    /// dev mode: JS 모듈별 __zts_register(...) 코드. HMR 모듈 단위 업데이트용.
+    /// dev mode: JS 모듈별 __zntc_register(...) 코드. HMR 모듈 단위 업데이트용.
     /// id로 매칭 (module_paths와 인덱스 대응 아님). allocator 소유.
     module_dev_codes: ?[]const ModuleDevCode = null,
     /// asset 파일 출력 (file/copy 로더). allocator 소유.
@@ -768,7 +768,7 @@ pub const Bundler = struct {
 
         // 0. RN dev mode: InitializeCore prelude 자동 주입.
         // InitializeCore → setUpReactRefresh에서 injectIntoGlobalHook을 호출한다.
-        // __ReactRefresh 글로벌은 HMR 런타임의 __zts_resolveRefresh()가
+        // __ReactRefresh 글로벌은 HMR 런타임의 __zntc_resolveRefresh()가
         // $RefreshReg$ 첫 호출 시 lazy하게 require("react-refresh/runtime")으로 설정.
         const original_rbm = self.options.run_before_main;
         defer {
@@ -1071,7 +1071,7 @@ pub const Bundler = struct {
         var polyfill_scope = profile.begin(.emit_polyfill);
         for (self.options.polyfills) |poly_path| {
             const raw = std.fs.cwd().readFileAlloc(self.allocator, poly_path, 10 * 1024 * 1024) catch |err| {
-                std.log.err("zts: cannot read polyfill file '{s}': {}", .{ poly_path, err });
+                std.log.err("zntc: cannot read polyfill file '{s}': {}", .{ poly_path, err });
                 continue;
             };
             const basename = std.fs.path.basename(poly_path);
@@ -1103,7 +1103,7 @@ pub const Bundler = struct {
 
         // 2.8. React Refresh 런타임 주입 (dev mode, 브라우저만)
         var refresh_scope = profile.begin(.emit_refresh);
-        // RN: HMR 런타임의 __zts_resolveRefresh()가 모듈 컨텍스트에서 lazy하게
+        // RN: HMR 런타임의 __zntc_resolveRefresh()가 모듈 컨텍스트에서 lazy하게
         //      require("react-refresh/runtime")을 호출하여 __ReactRefresh 글로벌에 캐싱.
         //      polyfill 불필요 (polyfill 시점에는 모듈 시스템 미초기화).
         // 브라우저: react-refresh/runtime을 파일에서 읽어 polyfill로 주입.
@@ -1127,7 +1127,7 @@ pub const Bundler = struct {
                     defer self.allocator.free(real);
                     if (fs.readFile(self.allocator, real, 1024 * 1024)) |r| break :blk2 r.contents else |_| {}
                 } else |_| {}
-                std.log.warn("zts: react-refresh not found — install react-refresh for HMR", .{});
+                std.log.warn("zntc: react-refresh not found — install react-refresh for HMR", .{});
                 break :blk;
             };
             const preamble =
@@ -1543,7 +1543,7 @@ fn appendJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []
             '\r' => try buf.appendSlice(allocator, "\\r"),
             '\t' => try buf.appendSlice(allocator, "\\t"),
             // JSON spec: 0x00–0x1F 모든 control char 는 반드시 escape.
-            // ZTS virtual specifier (NUL+"zts:runtime/...") 등이 raw NUL 그대로
+            // ZNTC virtual specifier (NUL+"zntc:runtime/...") 등이 raw NUL 그대로
             // 들어가면 JSON.parse 가 "Bad control character" 로 reject.
             0x00...0x07, 0x0B, 0x0E...0x1F => {
                 var tmp: [6]u8 = .{ '\\', 'u', '0', '0', 0, 0 };

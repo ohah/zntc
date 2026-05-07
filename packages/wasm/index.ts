@@ -1,9 +1,9 @@
 /**
- * @zts/wasm — ZTS TypeScript 트랜스파일러 WASM 바인딩
+ * @zntc/wasm — ZNTC TypeScript 트랜스파일러 WASM 바인딩
  *
  * @example
  * ```ts
- * import { init, transpile } from "@zts/wasm";
+ * import { init, transpile } from "@zntc/wasm";
  * await init();
  * const result = transpile("const x: number = 1;", { target: "es5" });
  * console.log(result.code);
@@ -115,11 +115,11 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
       },
       environ_get: ok,
       proc_exit(code: number): void {
-        throw new Error(`zts-wasm: proc_exit(${code})`);
+        throw new Error(`zntc-wasm: proc_exit(${code})`);
       },
       sched_yield: ok,
       poll_oneoff: ok,
-      // path_* — bundler 는 fs.zig 의 zts_fs callback 통과, 정상 경로에선 wasi path_*
+      // path_* — bundler 는 fs.zig 의 zntc_fs callback 통과, 정상 경로에선 wasi path_*
       // 미호출. 단 wasi-musl 의 일부 함수 (e.g. realpath) 가 path_filestat_get 호출
       // 시도 가능 → EBADF 로 fallback. ok 반환 (0) 하면 gibberish 메모리 read panic.
       path_open: () => 8,
@@ -146,7 +146,7 @@ function createWasiImports(memory: () => WebAssembly.Memory) {
 function writeString(s: string): [number, number] {
   const bytes = encoder.encode(s);
   const ptr = wasm!.alloc(bytes.length);
-  if (ptr === 0) throw new Error('zts-wasm: alloc failed');
+  if (ptr === 0) throw new Error('zntc-wasm: alloc failed');
   new Uint8Array(wasm!.memory.buffer, ptr, bytes.length).set(bytes);
   return [ptr, bytes.length];
 }
@@ -198,7 +198,7 @@ export async function init(
   input?: URL | string | Request | Response | BufferSource | WebAssembly.Module,
 ): Promise<void> {
   if (wasm) return;
-  const source = await resolveWasmSource(input, 'zts.wasm');
+  const source = await resolveWasmSource(input, 'zntc.wasm');
 
   let memory: WebAssembly.Memory;
   const imports = createWasiImports(() => memory);
@@ -228,7 +228,7 @@ export function initSync(input: WebAssembly.Module | BufferSource): void {
 
 export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
   if (!wasm) {
-    throw new Error('zts-wasm: not initialized. Call init() or initSync() first.');
+    throw new Error('zntc-wasm: not initialized. Call init() or initSync() first.');
   }
 
   const [srcPtr, srcLen] = writeString(source);
@@ -253,7 +253,7 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
     // 빈 출력은 errors 없이 code=""로 반환하고, 에러 경로에서만 throw한다.
     if (outPtr === 0) {
       if (outLen === 0 && errLen === 0) return { code: '' };
-      throw new Error(`zts-wasm: ${errMsg || 'unknown error'}`);
+      throw new Error(`zntc-wasm: ${errMsg || 'unknown error'}`);
     }
 
     const raw = readString(outPtr, outLen);
@@ -274,11 +274,11 @@ export function transpile(source: string, options: TranspileOptions = {}): Trans
 
 // ─── Bundler (#1885 Phase 2) ───
 //
-// 별도 wasm instance (zts-bundler.wasm, wasm32-wasi + threads). transpile-only
-// (zts.wasm) 와 격리 — bundler 는 SharedArrayBuffer 필요 (COOP/COEP 헤더).
+// 별도 wasm instance (zntc-bundler.wasm, wasm32-wasi + threads). transpile-only
+// (zntc.wasm) 와 격리 — bundler 는 SharedArrayBuffer 필요 (COOP/COEP 헤더).
 
 /// Host 가 제공하는 in-memory file system. bundler 가 fs syscall 시 host JS callback
-/// 으로 위임 (zts_fs imports). path → bytes 매핑.
+/// 으로 위임 (zntc_fs imports). path → bytes 매핑.
 export class VirtualFileSystem {
   private files = new Map<string, Uint8Array>();
 
@@ -363,7 +363,7 @@ function createBundlerImports(memory: () => WebAssembly.Memory) {
   const wasi = createWasiImports(memory);
   return {
     ...wasi,
-    zts_fs: {
+    zntc_fs: {
       readFile(pathPtr: number, pathLen: number, _maxBytes: number): bigint {
         const path = readBundlerString(pathPtr, pathLen);
         const data = bundlerVfs?.get(path);
@@ -414,14 +414,14 @@ function createBundlerImports(memory: () => WebAssembly.Memory) {
   };
 }
 
-/// Bundler WASM (zts-bundler.wasm) 초기화. transpile init 와 별도 instance.
+/// Bundler WASM (zntc-bundler.wasm) 초기화. transpile init 와 별도 instance.
 /// vfs = host 가 제공하는 in-memory file system. bundler 가 fs syscall 시 위임.
 export async function initBundler(
   vfs: VirtualFileSystem,
   input?: URL | string | Request | Response | BufferSource | WebAssembly.Module,
 ): Promise<void> {
   if (bundler) return;
-  const source = await resolveWasmSource(input, 'zts-bundler.wasm');
+  const source = await resolveWasmSource(input, 'zntc-bundler.wasm');
 
   // wasm32-wasi + threads features → shared_memory 강제 → env.memory import 필요.
   // wasi-musl libc 가 stack/heap 위해 ~257 page 요구 — 1024 (64 MiB) initial 로 여유.
@@ -447,7 +447,7 @@ export async function initBundler(
 /// Bundler ABI version. host 가 호환성 체크용.
 export function bundlerVersion(): number {
   if (!bundler) {
-    throw new Error('zts-wasm: bundler not initialized. Call initBundler() first.');
+    throw new Error('zntc-wasm: bundler not initialized. Call initBundler() first.');
   }
   return bundler.bundler_version();
 }
@@ -456,7 +456,7 @@ export interface BundleResult {
   code: string;
 }
 
-/// build() / buildChunks() 가 받는 옵션. ZTS bundler 의 BundleOptions subset.
+/// build() / buildChunks() 가 받는 옵션. ZNTC bundler 의 BundleOptions subset.
 export interface BundleOptionsInput {
   /// 출력 모듈 형식. 기본 "esm". umd/amd 는 IIFE 계열 (함수 래퍼).
   format?: 'esm' | 'cjs' | 'iife' | 'umd' | 'amd';
@@ -513,7 +513,7 @@ function encodeBundleOptions(options?: BundleOptionsInput): { ptr: number; len: 
   delete expanded.target;
   const optsBytes = encoder.encode(JSON.stringify(expanded));
   const ptr = bundler!.alloc(optsBytes.length);
-  if (ptr === 0) throw new Error('zts-wasm: bundler alloc failed');
+  if (ptr === 0) throw new Error('zntc-wasm: bundler alloc failed');
   new Uint8Array(bundlerMemory!.buffer, ptr, optsBytes.length).set(optsBytes);
   return { ptr, len: optsBytes.length };
 }
@@ -536,12 +536,12 @@ export function bundlerLastErrorMessage(): string {
 /// 자세한 에러는 `bundlerLastErrorMessage()` 로 조회.
 export function build(entryPath: string, options?: BundleOptionsInput): BundleResult | null {
   if (!bundler || !bundlerMemory) {
-    throw new Error('zts-wasm: bundler not initialized. Call initBundler() first.');
+    throw new Error('zntc-wasm: bundler not initialized. Call initBundler() first.');
   }
 
   const entryBytes = encoder.encode(entryPath);
   const entryPtr = bundler.alloc(entryBytes.length);
-  if (entryPtr === 0) throw new Error('zts-wasm: bundler alloc failed');
+  if (entryPtr === 0) throw new Error('zntc-wasm: bundler alloc failed');
   new Uint8Array(bundlerMemory.buffer, entryPtr, entryBytes.length).set(entryBytes);
 
   const { ptr: optsPtr, len: optsLen } = encodeBundleOptions(options);
@@ -575,12 +575,12 @@ export interface OutputChunk {
 /// 실패 시 null. 빈 array 는 정상 (entry 가 빈 출력).
 export function buildChunks(entryPath: string, options?: BundleOptionsInput): OutputChunk[] | null {
   if (!bundler || !bundlerMemory) {
-    throw new Error('zts-wasm: bundler not initialized. Call initBundler() first.');
+    throw new Error('zntc-wasm: bundler not initialized. Call initBundler() first.');
   }
 
   const entryBytes = encoder.encode(entryPath);
   const entryPtr = bundler.alloc(entryBytes.length);
-  if (entryPtr === 0) throw new Error('zts-wasm: bundler alloc failed');
+  if (entryPtr === 0) throw new Error('zntc-wasm: bundler alloc failed');
   new Uint8Array(bundlerMemory.buffer, entryPtr, entryBytes.length).set(entryBytes);
 
   const { ptr: optsPtr, len: optsLen } = encodeBundleOptions(options);

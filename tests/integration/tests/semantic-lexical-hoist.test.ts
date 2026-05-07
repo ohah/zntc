@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, ZTS_BIN } from './helpers';
+import { createFixture, ZNTC_BIN } from './helpers';
 import { resolve } from 'node:path';
 
 /**
@@ -14,7 +14,7 @@ import { resolve } from 'node:path';
  *   const registerWarning = (...args) => { ... };
  * }
  * ```
- * ZTS 번들에서 `var registerWarning = ...` 이 사라져 RN 부팅 시
+ * ZNTC 번들에서 `var registerWarning = ...` 이 사라져 RN 부팅 시
  * `ReferenceError: Property 'registerWarning' doesn't exist` 로 크래시.
  *
  * 수정: `visitBlockStatement` 가 statement 순회 전에 block 안의 let/const/class 선언을
@@ -52,7 +52,7 @@ describe('bundle: lexical hoist for block-scoped const referenced from nested fn
     try {
       const entry = resolve(fixture.dir, 'entry.js');
       const proc = Bun.spawnSync([
-        ZTS_BIN,
+        ZNTC_BIN,
         '--bundle',
         '--platform=react-native',
         '--rn-platform=ios',
@@ -85,7 +85,7 @@ describe('bundle: lexical hoist for block-scoped const referenced from nested fn
     try {
       const entry = resolve(fixture.dir, 'entry.js');
       const proc = Bun.spawnSync([
-        ZTS_BIN,
+        ZNTC_BIN,
         '--bundle',
         '--platform=react-native',
         '--rn-platform=ios',

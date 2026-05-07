@@ -5,14 +5,14 @@
 
 ## 1. 한 줄 요약
 
-ZTS 자체 AST를 **estree 표준 노드**로 변환·노출하여 eslint·prettier·babel-plugin·jscodeshift 등 estree 기반 도구 생태계에 직접 통합 가능하게 한다.
+ZNTC 자체 AST를 **estree 표준 노드**로 변환·노출하여 eslint·prettier·babel-plugin·jscodeshift 등 estree 기반 도구 생태계에 직접 통합 가능하게 한다.
 
 ## 2. 동기 (Why)
 
-### 현재 ZTS 약점
-- estree 비호환 → ZTS AST를 외부 도구가 못 읽음
+### 현재 ZNTC 약점
+- estree 비호환 → ZNTC AST를 외부 도구가 못 읽음
 - 산업 표준 호환성 점수 C
-- ZTS 사용자가 eslint·prettier 쓰려면 다른 parser로 다시 parse → 이중 비용
+- ZNTC 사용자가 eslint·prettier 쓰려면 다른 parser로 다시 parse → 이중 비용
 
 ### 산업 추세
 - Rust 기반 차세대 (swc/oxc/Rolldown) 모두 **native AST + estree 어댑터** 패턴
@@ -21,9 +21,9 @@ ZTS 자체 AST를 **estree 표준 노드**로 변환·노출하여 eslint·prett
 
 ### 기대 효과
 - eslint, prettier, babel-plugin, typescript-eslint, jscodeshift 등 **수백 개 도구 즉시 호환**
-- ZTS의 "성능"과 "호환성" 둘 다 확보
+- ZNTC의 "성능"과 "호환성" 둘 다 확보
 - AST 안정화의 가장 명확한 외부 사용처
-- ZTS 차별화: oxc/swc보다 빠른 어댑터 (Zig 활용) 가능
+- ZNTC 차별화: oxc/swc보다 빠른 어댑터 (Zig 활용) 가능
 
 ## 3. 산업 사례
 
@@ -41,14 +41,14 @@ ZTS 자체 AST를 **estree 표준 노드**로 변환·노출하여 eslint·prett
 | Parcel | ❌ | SWC 사용 |
 | Turbopack | ❌ | SWC 기반 |
 
-ZTS 추천 진영: **Rust 차세대 (native + adapter)**.
+ZNTC 추천 진영: **Rust 차세대 (native + adapter)**.
 
 ## 4. 결정 항목 (각 결정 전 사용자 확인 필요)
 
 각 항목에 추천만 적음. 시작 전 사용자에게 묻고 합의 후 본 문서에 결정 기록.
 
 ### 4.1 방향
-- **추천**: producer 먼저 (ZTS → estree). consumer는 1년 후 재검토.
+- **추천**: producer 먼저 (ZNTC → estree). consumer는 1년 후 재검토.
 - **확인 필요**: 양방향 동시 진행 의향 있나?
 
 ### 4.2 출력 형태
@@ -72,7 +72,7 @@ ZTS 추천 진영: **Rust 차세대 (native + adapter)**.
 - **확인 필요**: eslint/prettier가 line/col 필수면 기본 ON으로 갈지?
 
 ### 4.7 노출 위치
-- **추천 (Phase A)**: NAPI + CLI (`zts --emit-ast`)
+- **추천 (Phase A)**: NAPI + CLI (`zntc --emit-ast`)
 - **추천 (Phase B)**: WASM + Playground (후속)
 - **확인 필요**: Phase A에 WASM도 포함할지? (Playground 가치)
 
@@ -80,7 +80,7 @@ ZTS 추천 진영: **Rust 차세대 (native + adapter)**.
 
 producer가 정보 drop하면 consumer가 복원 불가. 무조건 지킨다:
 
-- **모든 ZTS 정보를 estree 노드에 담을 것** (필요시 비표준 필드 — `ts*`, `_zts*` 접두사)
+- **모든 ZNTC 정보를 estree 노드에 담을 것** (필요시 비표준 필드 — `ts*`, `_zntc*` 접두사)
 - **매핑 표를 단일 source of truth로 분리** (`src/estree/mapping.zig` 또는 comptime)
 - producer/consumer가 같은 표 참조 → 향후 consumer 작업 시 50% 재사용
 - **snapshot 테스트 누적** — 미래 consumer 만들 때 입력 재활용
@@ -113,24 +113,24 @@ producer가 정보 drop하면 consumer가 복원 불가. 무조건 지킨다:
 estree 호환성 보장 방법:
 
 ### 7.1 Snapshot 테스트
-- 100~200개 입력 → ZTS estree 출력 JSON snapshot
+- 100~200개 입력 → ZNTC estree 출력 JSON snapshot
 - 회귀 검출
 
 ### 7.2 Reference parser와 비교
 - 같은 입력을 acorn / typescript-eslint / babel parse
-- ZTS estree 출력과 diff
-- 동일하지 않은 부분 = 알려진 차이로 문서화 또는 ZTS 수정
+- ZNTC estree 출력과 diff
+- 동일하지 않은 부분 = 알려진 차이로 문서화 또는 ZNTC 수정
 
 ### 7.3 실제 도구 동작 검증
-- ZTS estree → eslint 직접 통과 (실제 lint rule 동작)
-- ZTS estree → prettier 직접 통과
-- Round-trip: ZTS → estree → eslint AST visit → 에러 없음
+- ZNTC estree → eslint 직접 통과 (실제 lint rule 동작)
+- ZNTC estree → prettier 직접 통과
+- Round-trip: ZNTC → estree → eslint AST visit → 에러 없음
 
 ## 8. 보안 / 안정성 고려
 
 - estree JSON 직렬화 시 매우 큰 트리 → 메모리 폭발 가능 → **size limit 옵션** 권장
-- 비표준 필드 prefix 컨벤션 (`zts*`/`ts*`) 명시 — 충돌 방지
-- AST 버전 정보 estree 출력에 포함 (`{ "type": "Program", "_zts_version": 1, ... }`)
+- 비표준 필드 prefix 컨벤션 (`zntc*`/`ts*`) 명시 — 충돌 방지
+- AST 버전 정보 estree 출력에 포함 (`{ "type": "Program", "_zntc_version": 1, ... }`)
 
 ## 9. 결정 기록 (확정 후 채울 곳)
 

@@ -1,6 +1,6 @@
 //! NAPI callback hot-path 마이크로 벤치 (#1891).
 //!
-//! 두 dispatch 모드의 raw cost 를 측정해 ZTS plugin layer 도입 시 회귀를 추정한다.
+//! 두 dispatch 모드의 raw cost 를 측정해 ZNTC plugin layer 도입 시 회귀를 추정한다.
 //!   1. benchSync(N)  — main thread 에서 napi_call_function N 회 (sync, no worker)
 //!   2. benchTsf(N)   — worker 1개에서 napi_call_threadsafe_function N 회 (worker → main, blocking)
 //!

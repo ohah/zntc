@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://ohah.github.io/zts/schemas/transpile-options.schema.json",
-  "title": "ZTS Transpile Options",
-  "description": "Options for the ZTS transpiler. Generated from Zig `TranspileOptionsDto` — edit src/transpile.zig and run `zig build schema` to regenerate.",
+  "$id": "https://ohah.github.io/zntc/schemas/transpile-options.schema.json",
+  "title": "ZNTC Transpile Options",
+  "description": "Options for the ZNTC transpiler. Generated from Zig `TranspileOptionsDto` — edit src/transpile.zig and run `zig build schema` to regenerate.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

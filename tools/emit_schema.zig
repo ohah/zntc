@@ -5,7 +5,7 @@
 //! 로 자동 수집하므로 수동 매핑 없음. 필드를 바꾸면 schema가 자동 갱신.
 
 const std = @import("std");
-const TranspileOptionsDto = @import("zts_lib").transpile.TranspileOptionsDto;
+const TranspileOptionsDto = @import("zntc_lib").transpile.TranspileOptionsDto;
 
 /// 필드별 사용자용 설명. Zig comptime에 남길 수 없는 자연어 텍스트라 별도 정의.
 /// 키는 DTO 필드명과 정확히 일치. CI에서 누락 검증 권장.
@@ -128,9 +128,9 @@ pub fn main() !void {
     try writer.writeAll(
         \\{
         \\  "$schema": "http://json-schema.org/draft-07/schema#",
-        \\  "$id": "https://ohah.github.io/zts/schemas/transpile-options.schema.json",
-        \\  "title": "ZTS Transpile Options",
-        \\  "description": "Options for the ZTS transpiler. Generated from Zig `TranspileOptionsDto` — edit src/transpile.zig and run `zig build schema` to regenerate.",
+        \\  "$id": "https://ohah.github.io/zntc/schemas/transpile-options.schema.json",
+        \\  "title": "ZNTC Transpile Options",
+        \\  "description": "Options for the ZNTC transpiler. Generated from Zig `TranspileOptionsDto` — edit src/transpile.zig and run `zig build schema` to regenerate.",
         \\  "type": "object",
         \\  "additionalProperties": false,
         \\  "properties": {

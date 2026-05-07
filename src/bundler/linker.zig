@@ -1,4 +1,4 @@
-//! ZTS Bundler — Linker
+//! ZNTC Bundler — Linker
 //!
 //! 크로스 모듈 심볼 바인딩: 각 import를 대응하는 export에 연결한다.
 //! re-export 체인을 따라가서 canonical export를 찾는다.
@@ -405,18 +405,18 @@ pub const Linker = struct {
     /// 모듈 변수로 사용하지 않도록 리네이밍.
     global_identifiers: []const []const u8 = &.{},
 
-    /// dev mode: HMR용 모듈 참조를 __zts_modules["id"].fn()으로 생성.
+    /// dev mode: HMR용 모듈 참조를 __zntc_modules["id"].fn()으로 생성.
     /// init_xxx() 대신 동적 lookup을 사용하여 new Function()에서도 접근 가능.
     dev_mode: bool = false,
 
     /// `EmitOptions.entry_error_guard` propagate. preamble 의 module init 호출을
-    /// `__zts_guarded(fn)` 으로 wrap 하여 outermost 에서 `ErrorUtils.reportFatalError`
+    /// `__zntc_guarded(fn)` 으로 wrap 하여 outermost 에서 `ErrorUtils.reportFatalError`
     /// 로 swallow. helper 자체는 emitter prologue 에 주입.
     entry_error_guard: bool = false,
 
     /// #1621: minify 시 preamble/metadata 에서 __toESM/__toCommonJS 등을
     /// $tE/$tC 등 축약 이름으로 emit. bundler 가 `self.options.minify_whitespace`
-    /// 를 linker 생성 직후 설정한다. dev_mode 에서는 `__zts_g.__xxx` 경로를
+    /// 를 linker 생성 직후 설정한다. dev_mode 에서는 `__zntc_g.__xxx` 경로를
     /// 사용하므로 이 플래그는 무시된다.
     minify_whitespace: bool = false,
 
@@ -966,7 +966,7 @@ pub const Linker = struct {
             bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
             created += 1;
 
-            // #1961 PR 1h: ZTS runtime helper virtual module 의 top-level 식별자
+            // #1961 PR 1h: ZNTC runtime helper virtual module 의 top-level 식별자
             // (`$aS` / `$gn` 등) 는 transformer 가 이미 축약 이름으로 emit 한 결과.
             // mangler 가 추가 rename 하면 cross-module binding 이 깨진다 (main 의
             // `$aS` import 호출 site 와 helper 의 var declaration 이 다른 이름).
@@ -2917,14 +2917,14 @@ pub const PreambleWriter = struct {
         return self.writeDevRequireInterop(local_name, path, suffix, false, false);
     }
 
-    /// CJS interop 포함: [var ]x = [__toESM(]__zts_require("path")[)][.default];
+    /// CJS interop 포함: [var ]x = [__toESM(]__zntc_require("path")[)][.default];
     /// assign_only=true 일 때 var 키워드 생략 (namespace 패턴에서 호이스팅된 변수에 할당만).
     pub fn writeDevRequireInterop(self: *PreambleWriter, local_name: []const u8, path: []const u8, suffix: ?[]const u8, to_esm: bool, assign_only: bool) !void {
         if (!assign_only) try self.write("var ");
         try self.write(local_name);
         try self.write(" = ");
         if (to_esm) try self.write("__toESM(");
-        try self.write("__zts_require(\"");
+        try self.write("__zntc_require(\"");
         try self.write(path);
         try self.write("\")");
         if (to_esm) try self.write(")");
@@ -2950,7 +2950,7 @@ pub const PreambleWriter = struct {
                 try self.write(nb.local);
             }
         }
-        try self.write(" } = __zts_require(\"");
+        try self.write(" } = __zntc_require(\"");
         try self.write(path);
         try self.write("\");\n");
     }

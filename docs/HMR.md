@@ -1,4 +1,4 @@
-# ZTS Dev Server & HMR Design
+# ZNTC Dev Server & HMR Design
 
 Dev 서버 + Hot Module Replacement 상세 설계 문서.
 
@@ -6,7 +6,7 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 
 ### D056. HTTP 서버: `std.http.Server` (Zig 표준 라이브러리)
 - Bun은 uWebSockets(C++) 사용하지만, Bun.serve()가 프로덕션 서버를 겸하기 때문
-- ZTS dev server는 로컬 개발 전용 (동시 접속 1-2개) → std.http.Server로 충분
+- ZNTC dev server는 로컬 개발 전용 (동시 접속 1-2개) → std.http.Server로 충분
 - 외부 C/C++ 의존성 없음, WASM 빌드 영향 없음
 - 나중에 성능 병목 시 uWebSockets로 교체 가능 (인터페이스 동일하게 설계)
 
@@ -44,7 +44,7 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 │ Vite        │ import.meta.hot     │ ESM 네이티브                 │
 │ Rolldown    │ import.meta.hot     │ Vite 호환                    │
 │ Metro       │ module.hot (커스텀)  │ CJS + RN 내장 HMRClient     │
-│ ZTS (결정)  │ import.meta.hot 기본 │ Vite 호환 + RN module.hot   │
+│ ZNTC (결정)  │ import.meta.hot 기본 │ Vite 호환 + RN module.hot   │
 └─────────────┴─────────────────────┴─────────────────────────────┘
 ```
 
@@ -70,7 +70,7 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 
 ## 에러 오버레이
 
-`zts dev`는 브라우저 개발 클라이언트를 HTML에 주입해 빌드 에러와 런타임 에러를
+`zntc dev`는 브라우저 개발 클라이언트를 HTML에 주입해 빌드 에러와 런타임 에러를
 전체 화면 오버레이로 표시한다. 오버레이는 앱 CSS와 충돌하지 않도록 Shadow DOM 안에
 렌더링되며, 배경 클릭으로 닫히지 않는다. 사용자가 명시적으로 닫을 때는 `x` 버튼을
 누른다.
@@ -91,7 +91,7 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 ```
 브라우저/RN 앱
     │
-    ├─ HTTP GET /bundle.js ──→ ZTS Dev Server ──→ on-the-fly 번들링 ──→ 응답
+    ├─ HTTP GET /bundle.js ──→ ZNTC Dev Server ──→ on-the-fly 번들링 ──→ 응답
     │
     └─ WebSocket /__hmr ─────→ HMR 채널
                                   │
@@ -111,7 +111,7 @@ Dev 서버 + Hot Module Replacement 상세 설계 문서.
 ## HMR Profiling
 
 HMR rebuild 의 각 phase 소요시간은 `WatchRebuildEvent.phaseDurations` 에 노출된다.
-`ZTS_PROFILE=hmr` 활성 시 sub-phase breakdown 수집 가능.
+`ZNTC_PROFILE=hmr` 활성 시 sub-phase breakdown 수집 가능.
 
 자세한 내용: [`docs/DEBUG.md`](./DEBUG.md) § 4 HMR Profile.
 

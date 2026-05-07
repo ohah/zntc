@@ -11,7 +11,7 @@ import { getCachedSourceMap, type PlatformStateRegistry, waitForBuild } from '..
 import { postProcessSourceMap } from '../sourcemap.ts';
 import { resolvePlatform } from './_shared.ts';
 
-const HMR_MAP_PREFIX = '/__zts_hmr_map/';
+const HMR_MAP_PREFIX = '/__zntc_hmr_map/';
 const MULTIPART_BOUNDARY = '3beqjf3apnqeu3h5jqorms4i';
 const CRLF = '\r\n';
 const METRO_NO_STORE_HEADERS = {

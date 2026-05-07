@@ -606,8 +606,8 @@ test "JSON require: CJS consumer emits default object without duplicate named ex
         \\{
         \\  "name": "fixture",
         \\  "version": "1.2.3",
-        \\  "scripts": { "test": "zts" },
-        \\  "devDependencies": { "zts": "workspace:*" }
+        \\  "scripts": { "test": "zntc" },
+        \\  "devDependencies": { "zntc": "workspace:*" }
         \\}
     );
 

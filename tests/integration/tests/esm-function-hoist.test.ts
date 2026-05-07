@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { bundleAndRun, createFixture, runZts } from './helpers';
+import { bundleAndRun, createFixture, runZntc } from './helpers';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
@@ -47,7 +47,7 @@ describe('ESM function hoist 양쪽 경로', () => {
     const { dir, cleanup } = await createFixture(multiFuncFixture);
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode } = await runZts(['--bundle', join(dir, 'index.js'), '-o', outFile]);
+      const { exitCode } = await runZntc(['--bundle', join(dir, 'index.js'), '-o', outFile]);
       expect(exitCode).toBe(0);
       const output = readFileSync(outFile, 'utf-8');
       // `function hasFlag` 는 정의된 함수 형태로 한 번만 등장해야 함 — var 와 함께 선언되면 중복.
@@ -74,7 +74,7 @@ describe('ESM function hoist 양쪽 경로', () => {
     });
     const outFile = join(dir, 'out-rn.js');
     try {
-      const { exitCode } = await runZts([
+      const { exitCode } = await runZntc([
         '--bundle',
         join(dir, 'index.js'),
         '-o',

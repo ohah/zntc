@@ -1,9 +1,9 @@
 ---
 title: Plugin Recipes
-description: A collection of commonly used ZTS plugin examples.
+description: A collection of commonly used ZNTC plugin examples.
 ---
 
-Ready-to-use plugin examples for real-world scenarios. All plugins are written in `zts.config.ts` and used with `--plugin zts.config.ts`.
+Ready-to-use plugin examples for real-world scenarios. All plugins are written in `zntc.config.ts` and used with `--plugin zntc.config.ts`.
 
 ## CSS — Lightning CSS
 
@@ -14,8 +14,8 @@ npm install lightningcss
 ```
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 import { transform, bundleAsync } from "lightningcss";
 import { readFileSync } from "fs";
 
@@ -49,7 +49,7 @@ export default ${JSON.stringify(css)};
 ```
 
 ```bash
-zts --bundle src/index.ts --plugin zts.config.ts -o dist/bundle.js
+zntc --bundle src/index.ts --plugin zntc.config.ts -o dist/bundle.js
 ```
 
 ## CSS Modules
@@ -57,8 +57,8 @@ zts --bundle src/index.ts --plugin zts.config.ts -o dist/bundle.js
 Process CSS Modules with Lightning CSS to hash class names.
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 import { transformStyleAttribute, transform } from "lightningcss";
 import { readFileSync } from "fs";
 
@@ -104,7 +104,7 @@ el.className = styles.container; // → hashed class name
 
 ## PostCSS + Tailwind CSS
 
-The `zts dev` / `zts build` app mode reads `postcss.config.*` automatically and
+The `zntc dev` / `zntc build` app mode reads `postcss.config.*` automatically and
 handles CSS-only HMR in the dev server. Tailwind v4 uses the
 `@tailwindcss/postcss` plugin.
 
@@ -133,8 +133,8 @@ export default {
 ```
 
 ```bash
-zts dev
-zts build
+zntc dev
+zntc build
 ```
 
 App-mode CSS Modules (`.module.css`) are transformed into scoped class maps
@@ -145,8 +145,8 @@ For library builds that need to inject CSS from a JS plugin, run PostCSS from a
 `load` hook:
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 import postcss from "postcss";
 import tailwindcss from "@tailwindcss/postcss";
 import { readFileSync } from "fs";
@@ -180,8 +180,8 @@ export default ${JSON.stringify(result.css)};
 Convert SVG files to React components.
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 import { readFileSync } from "fs";
 
 export default defineConfig({
@@ -228,8 +228,8 @@ npm install yaml
 ```
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 import { parse } from "yaml";
 import { readFileSync } from "fs";
 
@@ -255,8 +255,8 @@ export default defineConfig({
 Import `.graphql` / `.gql` files as strings.
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 import { readFileSync } from "fs";
 
 export default defineConfig({
@@ -280,8 +280,8 @@ export default defineConfig({
 Inject `.env` values at build time.
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 import { readFileSync, existsSync } from "fs";
 
 function loadEnv(path = ".env"): Record<string, string> {
@@ -324,8 +324,8 @@ export default defineConfig({
 Inject runtime info as a virtual module.
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   plugins: [

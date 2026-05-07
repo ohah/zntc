@@ -1,4 +1,4 @@
-//! RN 버전별 spec snapshot 에 대해 ZTS rn_codegen_plugin 의 출력이
+//! RN 버전별 spec snapshot 에 대해 ZNTC rn_codegen_plugin 의 출력이
 //! `@react-native/codegen` reference 와 **의미적으로** 동등한지 검증.
 //!
 //! 비교 단위: view config 객체에 등록되는 키 set (= RN runtime contract) +
@@ -15,7 +15,7 @@
 //! ConditionallyIgnoredEventHandlers wrapper) 는 무시 — 양쪽이 같은 attribute / event 를
 //! 등록하면 RN runtime 동작 동등.
 //!
-//! 본 PR 시점에는 모든 spec 의 key set 이 일치해야 통과 — ZTS 가 attribute 누락하면 fail.
+//! 본 PR 시점에는 모든 spec 의 key set 이 일치해야 통과 — ZNTC 가 attribute 누락하면 fail.
 //!
 //! 디렉토리 구조: `tests/codegen-snapshots/rn-<version>/{fixtures,golden}/`. 새 RN
 //! 버전 추가는 디렉토리 생성 + golden 재생성 + 본 파일에 test block 추가.
@@ -378,25 +378,25 @@ fn compareKeySets(
     alloc: std.mem.Allocator,
     section: []const u8,
     ref_body: []const u8,
-    zts_body: []const u8,
+    zntc_body: []const u8,
 ) !void {
     var ref_keys = try parseKeysFromExpr(alloc, ref_body);
     defer ref_keys.deinit(alloc);
-    var zts_keys = try parseKeysFromExpr(alloc, zts_body);
-    defer zts_keys.deinit(alloc);
+    var zntc_keys = try parseKeysFromExpr(alloc, zntc_body);
+    defer zntc_keys.deinit(alloc);
 
-    if (ref_keys.count() == zts_keys.count()) {
+    if (ref_keys.count() == zntc_keys.count()) {
         var match = true;
         var it = ref_keys.iterator();
         while (it.next()) |e| {
-            if (!zts_keys.contains(e.key_ptr.*)) {
+            if (!zntc_keys.contains(e.key_ptr.*)) {
                 match = false;
                 break;
             }
         }
         if (match) return;
     }
-    try formatKeyDiff(alloc, section, &ref_keys, &zts_keys, "reference", "ZTS");
+    try formatKeyDiff(alloc, section, &ref_keys, &zntc_keys, "reference", "ZNTC");
     return error.TestKeySetMismatch;
 }
 
@@ -426,14 +426,14 @@ fn compareCase(suite: []const u8, fixture_name: []const u8, golden_name: []const
     defer alloc.free(golden);
 
     const plugin = codegen_plugin.plugin();
-    const zts_out = (try plugin.transform.?(plugin.context, fixture, fixture_name, alloc)) orelse {
-        std.debug.print("[{s}] ZTS plugin returned null — fixture not transformed\n", .{fixture_name});
+    const zntc_out = (try plugin.transform.?(plugin.context, fixture, fixture_name, alloc)) orelse {
+        std.debug.print("[{s}] ZNTC plugin returned null — fixture not transformed\n", .{fixture_name});
         return error.TestUnexpectedNull;
     };
-    defer alloc.free(zts_out);
+    defer alloc.free(zntc_out);
 
-    const zts_obj = extractViewConfig(zts_out) orelse {
-        std.debug.print("[{s}] ZTS output has no __INTERNAL_VIEW_CONFIG\n", .{fixture_name});
+    const zntc_obj = extractViewConfig(zntc_out) orelse {
+        std.debug.print("[{s}] ZNTC output has no __INTERNAL_VIEW_CONFIG\n", .{fixture_name});
         return error.TestExpectedExtraction;
     };
     const ref_obj = extractViewConfig(golden) orelse {
@@ -443,37 +443,37 @@ fn compareCase(suite: []const u8, fixture_name: []const u8, golden_name: []const
 
     // top-level: uiViewClassName / validAttributes / directEventTypes / bubblingEventTypes 가
     // 모두 같은 set 으로 등록되었는지.
-    try compareKeySets(alloc, fixture_name, ref_obj, zts_obj);
+    try compareKeySets(alloc, fixture_name, ref_obj, zntc_obj);
 
     // 각 section 의 attribute / event 이름 set. 한 쪽만 section 이 있으면 silent skip
     // 이 아니라 명시적 fail — 회귀 보호 신호 누락 방지.
-    try compareSectionKeySets(alloc, "validAttributes", ref_obj, zts_obj);
-    try compareSectionKeySets(alloc, "directEventTypes", ref_obj, zts_obj);
-    try compareSectionKeySets(alloc, "bubblingEventTypes", ref_obj, zts_obj);
+    try compareSectionKeySets(alloc, "validAttributes", ref_obj, zntc_obj);
+    try compareSectionKeySets(alloc, "directEventTypes", ref_obj, zntc_obj);
+    try compareSectionKeySets(alloc, "bubblingEventTypes", ref_obj, zntc_obj);
 
     // uiViewClassName value 일치 — `paperComponentName` 옵션이 있는 spec 에서 잘못된
     // 클래스 이름을 emit 하면 RN native 측에서 컴포넌트 not found.
     const ref_cls = extractUiViewClassName(ref_obj);
-    const zts_cls = extractUiViewClassName(zts_obj);
-    if (ref_cls == null or zts_cls == null or !std.mem.eql(u8, ref_cls.?, zts_cls.?)) {
+    const zntc_cls = extractUiViewClassName(zntc_obj);
+    if (ref_cls == null or zntc_cls == null or !std.mem.eql(u8, ref_cls.?, zntc_cls.?)) {
         std.debug.print(
-            "[{s}] uiViewClassName mismatch — ref={s} zts={s}\n",
-            .{ fixture_name, ref_cls orelse "<missing>", zts_cls orelse "<missing>" },
+            "[{s}] uiViewClassName mismatch — ref={s} zntc={s}\n",
+            .{ fixture_name, ref_cls orelse "<missing>", zntc_cls orelse "<missing>" },
         );
         return error.TestUiViewClassNameMismatch;
     }
 
     // `codegenNativeCommands` 호출이 fixture 에 있으면 reference 가 `export const Commands`
-    // 를 emit. ZTS 가 같은 emit 을 안 하면 imperative `Commands.X(ref, ...)` 호출이 깨짐.
+    // 를 emit. ZNTC 가 같은 emit 을 안 하면 imperative `Commands.X(ref, ...)` 호출이 깨짐.
     const ref_has_cmds = hasCommandsExport(golden);
-    const zts_has_cmds = hasCommandsExport(zts_out);
-    if (ref_has_cmds != zts_has_cmds) {
+    const zntc_has_cmds = hasCommandsExport(zntc_out);
+    if (ref_has_cmds != zntc_has_cmds) {
         std.debug.print(
-            "[{s}] Commands export presence mismatch — ref={s} zts={s}\n",
+            "[{s}] Commands export presence mismatch — ref={s} zntc={s}\n",
             .{
                 fixture_name,
                 if (ref_has_cmds) "present" else "missing",
-                if (zts_has_cmds) "present" else "missing",
+                if (zntc_has_cmds) "present" else "missing",
             },
         );
         return error.TestCommandsExportMismatch;
@@ -484,20 +484,20 @@ fn compareSectionKeySets(
     alloc: std.mem.Allocator,
     section: []const u8,
     ref_obj: []const u8,
-    zts_obj: []const u8,
+    zntc_obj: []const u8,
 ) !void {
     const ref_sec = extractSection(ref_obj, section);
-    const zts_sec = extractSection(zts_obj, section);
-    if (ref_sec == null and zts_sec == null) return;
-    if (ref_sec == null or zts_sec == null) {
-        std.debug.print("[{s}] section presence mismatch — ref={s} zts={s}\n", .{
+    const zntc_sec = extractSection(zntc_obj, section);
+    if (ref_sec == null and zntc_sec == null) return;
+    if (ref_sec == null or zntc_sec == null) {
+        std.debug.print("[{s}] section presence mismatch — ref={s} zntc={s}\n", .{
             section,
             if (ref_sec) |_| "present" else "missing",
-            if (zts_sec) |_| "present" else "missing",
+            if (zntc_sec) |_| "present" else "missing",
         });
         return error.TestSectionPresenceMismatch;
     }
-    try compareKeySets(alloc, section, ref_sec.?, zts_sec.?);
+    try compareKeySets(alloc, section, ref_sec.?, zntc_sec.?);
 }
 
 test "snapshot rn-0.85: ScreenNativeComponent semantic-eq @react-native/codegen" {

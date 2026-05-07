@@ -4,7 +4,7 @@
 
 import { createRequire } from 'node:module';
 
-/** ZTS CLI 의 createRequire — fallback / require 의 모든 plugin 공용. */
+/** ZNTC CLI 의 createRequire — fallback / require 의 모든 plugin 공용. */
 export const requireFromCli = createRequire(import.meta.url);
 
 /** Babel @babel/core 의 transformSync 표면. babel.ts / codegen.ts 가 lazy load 후 사용. */

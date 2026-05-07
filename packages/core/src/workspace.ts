@@ -1,18 +1,18 @@
 /**
- * `zts.workspace.{ts,mts,cts,mjs,js,cjs,json}` 모노레포 워크스페이스 로더 (#2111).
+ * `zntc.workspace.{ts,mts,cts,mjs,js,cjs,json}` 모노레포 워크스페이스 로더 (#2111).
  *
  * Vitest `vitest.workspace.ts` 패턴 벤치마킹. root 디렉토리에 단일 워크스페이스
  * 파일을 두고, 그 안에서 패키지별 build target 을 정의한다.
  *
  * ```ts
  * export default defineWorkspace([
- *   "./packages/app",          // 디렉토리 — 안의 zts.config.* 자동 탐색
+ *   "./packages/app",          // 디렉토리 — 안의 zntc.config.* 자동 탐색
  *   "./packages/*",             // glob — 매칭 디렉토리들 일괄
  *   { name: "shared", entryPoints: [...] },  // inline — 즉시 워크스페이스화
  * ])
  * ```
  *
- * `--workspace=<name>` 으로 단일 entry 만 빌드 가능. root config (`zts.config.*`)
+ * `--workspace=<name>` 으로 단일 entry 만 빌드 가능. root config (`zntc.config.*`)
  * 와 같은 디렉토리에 두면 root 옵션을 모든 entry 가 상속.
  */
 
@@ -34,7 +34,7 @@ const CONFIG_EXT_PRIORITY_LOCAL = ['.ts', '.mts', '.cts', '.mjs', '.js', '.cjs',
 /**
  * 디렉토리 경로 또는 단일 `*` 가 포함된 glob.
  *
- * - `"./packages/app"` — 단일 디렉토리. 안의 `zts.config.*` 가 있으면 자동 로드.
+ * - `"./packages/app"` — 단일 디렉토리. 안의 `zntc.config.*` 가 있으면 자동 로드.
  * - `"./packages/*"` — trailing wildcard. baseDir 의 직속 디렉토리 모두 매칭 (hidden / `node_modules` 제외).
  * - `"./apps/web-*"` — prefix 매칭도 동일 규칙.
  *
@@ -82,7 +82,7 @@ export type WorkspaceInput = Workspace | WorkspaceFn;
  *
  * @example
  * ```ts
- * import { defineWorkspace } from "@zts/core";
+ * import { defineWorkspace } from "@zntc/core";
  *
  * export default defineWorkspace([
  *   "./packages/*",
@@ -101,7 +101,7 @@ export function defineWorkspace<T extends WorkspaceInput>(input: T): T {
 export const WORKSPACE_EXT_PRIORITY = CONFIG_EXT_PRIORITY_LOCAL;
 
 /**
- * `cwd` 에서 `zts.workspace.{ext}` 를 자동 탐색.
+ * `cwd` 에서 `zntc.workspace.{ext}` 를 자동 탐색.
  *
  * @param cwd 탐색 시작 디렉토리 (보통 `process.cwd()`)
  * @returns 발견된 절대 경로 또는 `null`
@@ -111,7 +111,7 @@ export const WORKSPACE_EXT_PRIORITY = CONFIG_EXT_PRIORITY_LOCAL;
  */
 export function findWorkspacePath(cwd: string): string | null {
   for (const ext of WORKSPACE_EXT_PRIORITY) {
-    const p = join(cwd, `zts.workspace${ext}`);
+    const p = join(cwd, `zntc.workspace${ext}`);
     if (existsSync(p)) return p;
   }
   return null;
@@ -126,14 +126,14 @@ export function findWorkspacePath(cwd: string): string | null {
  * @param env 함수형 workspace 호출 시 주입할 컨텍스트. 미제공 시 `defaultConfigEnv()`.
  * @returns 검증된 entries 배열 (순서 유지)
  *
- * @throws `@zts/core: workspace must export an array (got X) from <path>` — top-level 배열 아님
- * @throws `@zts/core: workspace[i] is empty string in <path>` — 빈 문자열 entry
- * @throws `@zts/core: workspace[i] must be a string or object (got X) in <path>` — 잘못된 타입
- * @throws `@zts/core: workspace[i] inline entry requires non-empty 'name' in <path>` — inline 인데 name 없음
+ * @throws `@zntc/core: workspace must export an array (got X) from <path>` — top-level 배열 아님
+ * @throws `@zntc/core: workspace[i] is empty string in <path>` — 빈 문자열 entry
+ * @throws `@zntc/core: workspace[i] must be a string or object (got X) in <path>` — 잘못된 타입
+ * @throws `@zntc/core: workspace[i] inline entry requires non-empty 'name' in <path>` — inline 인데 name 없음
  *
  * @example
  * ```ts
- * const ws = await loadWorkspace("zts.workspace.ts", { command: "bundle", mode: "production", env: process.env });
+ * const ws = await loadWorkspace("zntc.workspace.ts", { command: "bundle", mode: "production", env: process.env });
  * // ws: WorkspaceEntry[]
  * ```
  */
@@ -146,20 +146,20 @@ export async function loadWorkspace(filePath: string, env?: ConfigEnv): Promise<
 
   if (!Array.isArray(entries)) {
     const got = entries === null ? 'null' : typeof entries;
-    throw new Error(`@zts/core: workspace must export an array (got ${got}) from ${absPath}`);
+    throw new Error(`@zntc/core: workspace must export an array (got ${got}) from ${absPath}`);
   }
 
   for (let i = 0; i < entries.length; i += 1) {
     const e = entries[i];
     if (typeof e === 'string') {
       if (!e.length) {
-        throw new Error(`@zts/core: workspace[${i}] is empty string in ${absPath}`);
+        throw new Error(`@zntc/core: workspace[${i}] is empty string in ${absPath}`);
       }
       continue;
     }
     if (!isPlainObject(e)) {
       throw new Error(
-        `@zts/core: workspace[${i}] must be a string or object (got ${
+        `@zntc/core: workspace[${i}] must be a string or object (got ${
           Array.isArray(e) ? 'array' : e === null ? 'null' : typeof e
         }) in ${absPath}`,
       );
@@ -167,7 +167,7 @@ export async function loadWorkspace(filePath: string, env?: ConfigEnv): Promise<
     const name = (e as { name?: unknown }).name;
     if (typeof name !== 'string' || !name) {
       throw new Error(
-        `@zts/core: workspace[${i}] inline entry requires non-empty 'name' in ${absPath}`,
+        `@zntc/core: workspace[${i}] inline entry requires non-empty 'name' in ${absPath}`,
       );
     }
   }
@@ -206,12 +206,12 @@ export interface IdentifiedWorkspace {
  * @param rootDir workspace 파일이 있는 디렉토리 (절대 경로 권장)
  * @returns 식별된 워크스페이스 목록 (선언 순서 유지, dedup 적용)
  *
- * @throws `@zts/core: workspace glob '**' is not supported (got '<pattern>')` — `**` glob 사용
- * @throws `@zts/core: workspace glob with '*' in directory part is not supported (got '<pattern>')` — 디렉토리부 wildcard
+ * @throws `@zntc/core: workspace glob '**' is not supported (got '<pattern>')` — `**` glob 사용
+ * @throws `@zntc/core: workspace glob with '*' in directory part is not supported (got '<pattern>')` — 디렉토리부 wildcard
  *
  * @example
  * ```ts
- * const ws = await loadWorkspace("zts.workspace.ts");
+ * const ws = await loadWorkspace("zntc.workspace.ts");
  * const ids = identifyWorkspaceEntries(ws, "/repo");
  * const target = filterWorkspaces(ids, "my-app");
  * const resolved = await Promise.all(target.map((w) => loadIdentifiedConfig(w)));
@@ -254,7 +254,7 @@ export function identifyWorkspaceEntries(
 
 /**
  * 식별된 entry 의 config 를 디스크에서 로드. path/glob 은 `findConfigPath` 로 cwd 안의
- * `zts.config.*` 자동 탐색 후 `loadConfig` (extends 처리, 함수형 호출 포함). inline 은
+ * `zntc.config.*` 자동 탐색 후 `loadConfig` (extends 처리, 함수형 호출 포함). inline 은
  * 이미 갖고 있는 `inlineConfig` 그대로.
  *
  * 비싸다 — TS config 면 NAPI transpile + tmp `.mjs` write/import/unlink. 필터링된 entry
@@ -287,7 +287,7 @@ export async function loadIdentifiedConfig(
 function expandGlob(pattern: string, rootDir: string): string[] {
   if (pattern.includes('**')) {
     throw new Error(
-      `@zts/core: workspace glob '**' is not supported (got '${pattern}'). Use single-level '*' patterns.`,
+      `@zntc/core: workspace glob '**' is not supported (got '${pattern}'). Use single-level '*' patterns.`,
     );
   }
   const lastSep = pattern.lastIndexOf('/');
@@ -299,7 +299,7 @@ function expandGlob(pattern: string, rootDir: string): string[] {
   const namePart = pattern.slice(lastSep + 1);
   if (dirPart.includes('*')) {
     throw new Error(
-      `@zts/core: workspace glob with '*' in directory part is not supported (got '${pattern}'). Use trailing-only '*'.`,
+      `@zntc/core: workspace glob with '*' in directory part is not supported (got '${pattern}'). Use trailing-only '*'.`,
     );
   }
   if (!namePart.includes('*')) {
@@ -370,7 +370,7 @@ function detectPackageName(absDir: string): string {
  * @param filter `--workspace=<name>` 값. `undefined`/빈 문자열이면 전체 그대로 반환.
  * @returns `name === filter` 인 entries (보통 1개). filter 미지정 시 입력 동일 참조 반환.
  *
- * @throws `@zts/core: --workspace='<filter>' matched 0 entries (available: ...)` — 매칭 실패
+ * @throws `@zntc/core: --workspace='<filter>' matched 0 entries (available: ...)` — 매칭 실패
  */
 export function filterWorkspaces<T extends { name: string }>(
   workspaces: T[],
@@ -381,7 +381,7 @@ export function filterWorkspaces<T extends { name: string }>(
   if (filtered.length === 0) {
     const available = workspaces.map((w) => w.name).join(', ');
     throw new Error(
-      `@zts/core: --workspace='${filter}' matched 0 entries (available: ${available || '<none>'})`,
+      `@zntc/core: --workspace='${filter}' matched 0 entries (available: ${available || '<none>'})`,
     );
   }
   return filtered;

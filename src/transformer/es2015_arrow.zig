@@ -21,7 +21,7 @@
 //!
 //! 참고:
 //! - SWC: crates/swc_ecma_compat_es2015/src/arrow.rs (~253줄)
-//! - ZTS ES2017: es2017.zig lowerAsyncArrow
+//! - ZNTC ES2017: es2017.zig lowerAsyncArrow
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");

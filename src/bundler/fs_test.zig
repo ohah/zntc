@@ -27,7 +27,7 @@ test "RealFS.readFile — 정상 케이스" {
 
 test "RealFS.readFile — 존재하지 않는 파일은 NotFound" {
     const real = fs.RealFS.init();
-    const result = real.readFile(testing.allocator, "/zts/no_such_path/abcdef", 1024);
+    const result = real.readFile(testing.allocator, "/zntc/no_such_path/abcdef", 1024);
     try testing.expectError(fs.FsError.NotFound, result);
 }
 
@@ -42,7 +42,7 @@ test "RealFS.access — 존재하면 void, 없으면 NotFound" {
 
     const real = fs.RealFS.init();
     try real.access(abs_path);
-    try testing.expectError(fs.FsError.NotFound, real.access("/zts/no_such_path/abcdef"));
+    try testing.expectError(fs.FsError.NotFound, real.access("/zntc/no_such_path/abcdef"));
 }
 
 test "RealFS.statFile — file kind + size 정확" {
@@ -157,7 +157,7 @@ test "RealFS.listDir — 항목 수집 + free" {
 
 test "RealFS.listDir — 존재하지 않는 디렉토리는 NotFound" {
     const real = fs.RealFS.init();
-    const result = real.listDir(testing.allocator, "/zts/no_such_dir/abcdef");
+    const result = real.listDir(testing.allocator, "/zntc/no_such_dir/abcdef");
     try testing.expectError(fs.FsError.NotFound, result);
 }
 
@@ -215,7 +215,7 @@ test "RealFS.realpath — symlink 정규화" {
 
 test "RealFS.realpath — 존재하지 않는 path 는 NotFound" {
     const real = fs.RealFS.init();
-    const result = real.realpath(testing.allocator, "/zts/no_such_path/xyz");
+    const result = real.realpath(testing.allocator, "/zntc/no_such_path/xyz");
     try testing.expectError(fs.FsError.NotFound, result);
 }
 

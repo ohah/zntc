@@ -146,7 +146,7 @@ describe('createWatcher — fs.watch wrapper', () => {
     handle.close();
   });
 
-  test("watcher emit 'error' → onError 콜백 + 자동 close (zts.mjs parity)", () => {
+  test("watcher emit 'error' → onError 콜백 + 자동 close (zntc.mjs parity)", () => {
     const { watch, registered } = createMockWatch();
     const onError = mock((_err: Error, _path: string) => {});
     const handle = createWatcher({

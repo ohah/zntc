@@ -4,7 +4,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { joinUrl } from '../url.ts';
 import { collectAppFiles, type NodeRequire, requireFromAppRoot } from './loader.ts';
 
-// 순서는 zts.mjs L892-902 와 동일 — postcss.config.* 이 .postcssrc.* 보다 우선.
+// 순서는 zntc.mjs L892-902 와 동일 — postcss.config.* 이 .postcssrc.* 보다 우선.
 // PR #5e 의 redirect 시점까지 양쪽 sync 유지 (#2539).
 export const POSTCSS_CONFIG_NAMES: readonly string[] = [
   'postcss.config.mjs',
@@ -104,7 +104,7 @@ interface ConfigEnv {
  * config 로드. config 없거나 plugin 0 이면 null.
  *
  * `fallbackRequire` 는 caller 의 CLI context — postcss/postcss-load-config 를
- * app 이 갖지 않을 때 fallback (e.g. ZTS CLI 의 node_modules).
+ * app 이 갖지 않을 때 fallback (e.g. ZNTC CLI 의 node_modules).
  */
 export async function loadPostcssConfig(
   root: string,

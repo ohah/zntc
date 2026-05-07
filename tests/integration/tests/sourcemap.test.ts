@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { createFixture, createReactStubFixture, runZts } from './helpers';
+import { createFixture, createReactStubFixture, runZntc } from './helpers';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -72,7 +72,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZts([
+    const result = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -117,7 +117,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
     const output = readFileSync(outFile, 'utf-8');
     expect(output).toContain('//# sourceMappingURL=out.js.map');
@@ -130,7 +130,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -153,7 +153,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
@@ -172,7 +172,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'output.js');
-    const result = await runZts([join(fixture.dir, 'input.ts'), '-o', outFile, '--sourcemap']);
+    const result = await runZntc([join(fixture.dir, 'input.ts'), '-o', outFile, '--sourcemap']);
     expect(result.exitCode).toBe(0);
 
     const mapPath = outFile + '.map';
@@ -192,18 +192,18 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'dist/out.js');
-    await runZts(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile, '--sourcemap']);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
-    // 두 모듈 모두 sources에 포함되어야 한다 (node_modules/.zts/runtime.js 제외)
-    const moduleSources = map.sources.filter((s: string) => s !== 'node_modules/.zts/runtime.js');
+    // 두 모듈 모두 sources에 포함되어야 한다 (node_modules/.zntc/runtime.js 제외)
+    const moduleSources = map.sources.filter((s: string) => s !== 'node_modules/.zntc/runtime.js');
     expect(moduleSources.length).toBe(2);
     const joined = moduleSources.join('|');
     expect(joined).toContain('index.ts');
     expect(joined).toContain('util.ts');
 
-    // sourcesContent도 각 모듈의 내용을 포함해야 한다 (node_modules/.zts/runtime.js 제외)
+    // sourcesContent도 각 모듈의 내용을 포함해야 한다 (node_modules/.zntc/runtime.js 제외)
     expect(moduleSources.length).toBe(2);
     const allContent = map.sourcesContent.join('\n');
     expect(allContent).toContain('function greet');
@@ -219,7 +219,7 @@ describe('소스맵', () => {
     wfs(join(tmpDir, 'lib.ts'), `export const x = 42;`);
 
     const outFile = join(tmpDir, 'out.js');
-    await runZts(['--bundle', join(tmpDir, 'index.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc(['--bundle', join(tmpDir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
@@ -236,7 +236,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
     const bundleLines = readFileSync(outFile, 'utf-8').split('\n').length;
@@ -261,7 +261,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -328,7 +328,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
@@ -366,7 +366,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts([join(fixture.dir, 'input.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc([join(fixture.dir, 'input.ts'), '-o', outFile, '--sourcemap']);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
     const srcIdx = map.sources.findIndex((s: string) => s.includes('input.ts'));
@@ -397,7 +397,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
     const bundleCode = readFileSync(outFile, 'utf-8');
@@ -422,7 +422,7 @@ describe('소스맵', () => {
     expect(bundleLine4).toContain('from lib line 4');
   });
 
-  test('prologue 영역이 node_modules/.zts/runtime.js 소스로 매핑되고 x_google_ignoreList에 등록된다', async () => {
+  test('prologue 영역이 node_modules/.zntc/runtime.js 소스로 매핑되고 x_google_ignoreList에 등록된다', async () => {
     const { mkdtempSync, writeFileSync: wfs, rmSync } = await import('node:fs');
     const tmpDir = mkdtempSync(join(process.cwd(), '.tmp-sm-prologue-'));
     cleanup = async () => rmSync(tmpDir, { recursive: true, force: true });
@@ -431,7 +431,7 @@ describe('소스맵', () => {
     wfs(join(tmpDir, 'poly.js'), `console.log("polyfill loaded");`);
 
     const outFile = join(tmpDir, 'out.js');
-    const result = await runZts([
+    const result = await runZntc([
       '--bundle',
       join(tmpDir, 'index.ts'),
       '-o',
@@ -443,29 +443,29 @@ describe('소스맵', () => {
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
 
-    // node_modules/.zts/runtime.js 가상 소스가 sources에 포함
-    const rtIdx = map.sources.findIndex((s: string) => s === 'node_modules/.zts/runtime.js');
+    // node_modules/.zntc/runtime.js 가상 소스가 sources에 포함
+    const rtIdx = map.sources.findIndex((s: string) => s === 'node_modules/.zntc/runtime.js');
     expect(rtIdx).toBeGreaterThanOrEqual(0);
 
-    // x_google_ignoreList에 node_modules/.zts/runtime.js 인덱스 등록
+    // x_google_ignoreList에 node_modules/.zntc/runtime.js 인덱스 등록
     expect(map.x_google_ignoreList).toBeArray();
     expect(map.x_google_ignoreList).toContain(rtIdx);
 
-    // node_modules/.zts/runtime.js에 대한 매핑이 prologue 줄을 커버
+    // node_modules/.zntc/runtime.js에 대한 매핑이 prologue 줄을 커버
     const rtMappings = getMappedSourceLines(map.mappings, rtIdx);
     expect(rtMappings.length).toBeGreaterThan(0);
     // 첫 번째 매핑이 번들 앞부분(prologue)에 있어야 함
     expect(rtMappings[0].genLine).toBeLessThanOrEqual(10);
   });
 
-  test('prologue가 없는 ESM 번들에서는 node_modules/.zts/runtime.js과 x_google_ignoreList가 없다', async () => {
+  test('prologue가 없는 ESM 번들에서는 node_modules/.zntc/runtime.js과 x_google_ignoreList가 없다', async () => {
     const fixture = await createFixture({
       'index.ts': `console.log("hello");`,
     });
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -475,7 +475,7 @@ describe('소스맵', () => {
     ]);
 
     const map = JSON.parse(readFileSync(outFile + '.map', 'utf-8'));
-    const hasRuntime = map.sources.some((s: string) => s === 'node_modules/.zts/runtime.js');
+    const hasRuntime = map.sources.some((s: string) => s === 'node_modules/.zntc/runtime.js');
     expect(hasRuntime).toBe(false);
   });
 
@@ -488,14 +488,14 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const result = await runZts([
+    const result = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
       outFile,
       '--sourcemap=linked',
     ]);
-    if (result.exitCode !== 0) throw new Error(`zts failed: ${result.stderr}`);
+    if (result.exitCode !== 0) throw new Error(`zntc failed: ${result.stderr}`);
 
     expect(existsSync(outFile + '.map')).toBe(true);
     const output = readFileSync(outFile, 'utf-8');
@@ -510,7 +510,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts([
+    await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -533,7 +533,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap=inline']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap=inline']);
 
     // 별도 .map 파일 미생성.
     expect(existsSync(outFile + '.map')).toBe(false);
@@ -554,7 +554,7 @@ describe('소스맵', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile, '--sourcemap']);
 
     // mode 미지정 → linked 동작 (기존 동작).
     expect(existsSync(outFile + '.map')).toBe(true);

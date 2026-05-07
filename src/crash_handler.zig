@@ -1,4 +1,4 @@
-//! ZTS crash report (Bun 스타일).
+//! ZNTC crash report (Bun 스타일).
 //!
 //! `std.debug.FullPanic`에 꽂아 쓰는 커스텀 panic 핸들러 + 신고 안내 URL 출력.
 //! Phase 1 — panic handler 커스터마이징 + issue URL. POSIX signal (SIGBUS/SIGSEGV)
@@ -6,7 +6,7 @@
 //!
 //! 사용법 (각 root 파일에서):
 //! ```zig
-//! const crash_handler = @import("zts_lib").crash_handler; // CLI root는 "crash_handler.zig" 직접 import
+//! const crash_handler = @import("zntc_lib").crash_handler; // CLI root는 "crash_handler.zig" 직접 import
 //! pub const panic = crash_handler.panic;
 //! ```
 //!
@@ -17,7 +17,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 /// GitHub repo URL — 사용자가 직접 issues 탭에서 검색/신고하도록.
-const REPO_URL = "https://github.com/ohah/zts";
+const REPO_URL = "https://github.com/ohah/zntc";
 
 /// 진입점에서 best-effort로 채워 두는 크래시 컨텍스트.
 /// panic 출력에 현재 변환 중인 파일/타겟을 포함시키기 위함.
@@ -59,7 +59,7 @@ fn panicFn(msg: []const u8, first_trace_addr: ?usize) noreturn {
 
 fn printBanner(out: anytype, msg: []const u8) !void {
     try out.writeAll("\n");
-    try out.print("zts: fatal: {s}\n", .{msg});
+    try out.print("zntc: fatal: {s}\n", .{msg});
 
     const ctx = current_context;
     if (ctx.entry) |e| try out.print("  entry:  {s}\n", .{e});
@@ -70,7 +70,7 @@ fn printBanner(out: anytype, msg: []const u8) !void {
 
     try out.writeAll(
         \\
-        \\This is a bug in zts. Please report at:
+        \\This is a bug in zntc. Please report at:
         \\
     );
     try out.print("  {s}\n\n", .{REPO_URL});

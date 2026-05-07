@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { bundleAndRun, createFixture, runZts } from './helpers';
+import { bundleAndRun, createFixture, runZntc } from './helpers';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
@@ -26,7 +26,7 @@ describe('ESM enum hoisting in scope hoisting (__esm wrap)', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',

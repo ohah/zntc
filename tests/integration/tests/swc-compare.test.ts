@@ -1,7 +1,7 @@
 /**
- * ZTS vs SWC ES5 다운레벨링 비교 테스트
+ * ZNTC vs SWC ES5 다운레벨링 비교 테스트
  *
- * 각 ES 타겟(ES5~ES2022)별로 복잡한 edge case를 ZTS로 트랜스파일 후
+ * 각 ES 타겟(ES5~ES2022)별로 복잡한 edge case를 ZNTC로 트랜스파일 후
  * 실행하여 SWC와 동등한 런타임 동작을 보장합니다.
  */
 import { describe, test, expect } from 'bun:test';
@@ -11,9 +11,9 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'bun';
 
 const PROJECT_ROOT = resolve(import.meta.dir, '../../..');
-const ZTS_BIN = join(PROJECT_ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(PROJECT_ROOT, 'zig-out/bin/zntc');
 
-async function transpileZts(
+async function transpileZntc(
   code: string,
   target: string,
   tmpDir: string,
@@ -24,7 +24,7 @@ async function transpileZts(
   await writeFile(input, code);
 
   const proc = spawn({
-    cmd: [ZTS_BIN, input, '-o', output, `--target=${target}`],
+    cmd: [ZNTC_BIN, input, '-o', output, `--target=${target}`],
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -33,7 +33,7 @@ async function transpileZts(
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  if (exitCode !== 0) throw new Error(`ZTS transpile failed: ${stderr.slice(0, 300)}`);
+  if (exitCode !== 0) throw new Error(`ZNTC transpile failed: ${stderr.slice(0, 300)}`);
   return readFile(output, 'utf-8');
 }
 
@@ -343,7 +343,7 @@ function targetYear(t: string): number {
   return t === 'es5' ? 2009 : parseInt(t.replace('es', ''));
 }
 
-describe('ZTS vs SWC 다운레벨링 비교', () => {
+describe('ZNTC vs SWC 다운레벨링 비교', () => {
   for (const target of TARGETS) {
     const year = targetYear(target);
     const applicable = CASES.filter((c) => {
@@ -354,13 +354,13 @@ describe('ZTS vs SWC 다운레벨링 비교', () => {
     if (applicable.length === 0) continue;
 
     test(`--target=${target} (${applicable.length} cases)`, async () => {
-      const tmpDir = await mkdtemp(join(tmpdir(), `zts-swc-${target}-`));
+      const tmpDir = await mkdtemp(join(tmpdir(), `zntc-swc-${target}-`));
       const failures: string[] = [];
 
       for (let i = 0; i < applicable.length; i++) {
         const c = applicable[i]!;
         try {
-          const transpiled = await transpileZts(c.code, target, tmpDir, `t${i}`);
+          const transpiled = await transpileZntc(c.code, target, tmpDir, `t${i}`);
           const result = await runCode(transpiled, tmpDir, `t${i}`);
           if (!result.ok) {
             failures.push(`${c.name}: ${result.error}`);

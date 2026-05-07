@@ -1,4 +1,4 @@
-//! ZTS Source Map V3
+//! ZNTC Source Map V3
 //!
 //! 소스맵 V3 생성기. VLQ 인코딩 + JSON 출력.
 //!

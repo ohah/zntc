@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createPnpmFarmFixture, runZts } from './helpers';
+import { createPnpmFarmFixture, runZntc } from './helpers';
 
 describe('pnpm/bun farm symlink — bundle integration', () => {
   test('farm symlink resolves to real package and inlines source', async () => {
     const fixture = await createPnpmFarmFixture({
       files: {
-        'src/index.ts': `import { greet } from 'foo';\nconsole.log(greet('zts'));\n`,
+        'src/index.ts': `import { greet } from 'foo';\nconsole.log(greet('zntc'));\n`,
         'package.json': JSON.stringify({ name: 'pnpm-app', version: '0.0.0', type: 'module' }),
       },
       packages: {
@@ -20,13 +20,13 @@ describe('pnpm/bun farm symlink — bundle integration', () => {
 
     try {
       const outFile = join(fixture.dir, 'out.js');
-      const result = await runZts(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
+      const result = await runZntc(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
 
       expect(result.exitCode).toBe(0);
 
       const bundle = readFileSync(outFile, 'utf-8');
       expect(bundle).toContain('hello, ');
-      expect(bundle).toContain('zts');
+      expect(bundle).toContain('zntc');
     } finally {
       await fixture.cleanup();
     }
@@ -61,7 +61,7 @@ describe('pnpm/bun farm symlink — bundle integration', () => {
 
     try {
       const outFile = join(fixture.dir, 'out.js');
-      const result = await runZts(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
+      const result = await runZntc(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
 
       expect(result.exitCode).toBe(0);
 
@@ -101,7 +101,7 @@ describe('pnpm/bun farm symlink — bundle integration', () => {
 
     try {
       const outFile = join(fixture.dir, 'out.js');
-      const result = await runZts(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
+      const result = await runZntc(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
 
       expect(result.exitCode).toBe(0);
 
@@ -132,7 +132,7 @@ describe('pnpm/bun farm symlink — bundle integration', () => {
 
     try {
       const outFile = join(fixture.dir, 'out.js');
-      const result = await runZts(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
+      const result = await runZntc(['--bundle', join(fixture.dir, 'src/index.ts'), '-o', outFile]);
 
       expect(result.exitCode).toBe(0);
 

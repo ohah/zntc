@@ -1,4 +1,4 @@
-//! ZTS Native Codegen Plugin — `@react-native/codegen` 의 view config inline 등가.
+//! ZNTC Native Codegen Plugin — `@react-native/codegen` 의 view config inline 등가.
 //!
 //! `*NativeComponent.{js,ts}` spec 파일을 변환:
 //!
@@ -22,7 +22,7 @@
 //! 파이프라인:
 //!   1. 파일명 / `codegenNativeComponent` substring fast-skip
 //!   2. 소스 텍스트 스캔으로 type argument 이름 추출 (`<NativeProps>`)
-//!   3. ZTS Parser 로 파싱 → type_index 빌드
+//!   3. ZNTC Parser 로 파싱 → type_index 빌드
 //!   4. NativeProps 의 declaration 을 schema_builder 에 넘겨 ComponentShape 빌드
 //!   5. view_config_emitter 로 JS 문자열 생성
 //!   6. 전체 파일 교체용 wrapper 조립
@@ -51,7 +51,7 @@ const stmt_info = @import("../../bundler/stmt_info.zig");
 
 // `@react-native/codegen` (`parsers-commons.js:689,968,1048` + `parsers-primitives.js:538`)
 // 와 `babel-plugin-codegen/index.js:74-149` 가 marker 이름을 inline literal 로 직접 비교.
-// ZTS 도 동일 패턴 — 별도 상수 없이 텍스트 스캔 / AST callee 비교에 inline 사용.
+// ZNTC 도 동일 패턴 — 별도 상수 없이 텍스트 스캔 / AST callee 비교에 inline 사용.
 
 pub fn plugin() Plugin {
     return .{

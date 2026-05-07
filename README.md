@@ -1,6 +1,7 @@
-# zts
+# ZNTC - Zig Native Transpiler Compiler
 
-Zig 로 작성한 고성능 JavaScript / TypeScript / Flow 트랜스파일러 + 번들러.
+JavaScript / TypeScript / Flow 를 네이티브 속도로 처리하는 Zig Native Transpiler Compiler.
+트랜스파일과 번들링 파이프라인을 함께 제공합니다.
 
 > **Status**: Phase 1–6 전반 완료 (렉서/파서/세만틱/트랜스포머/코드젠/번들러/Dev 서버/HMR).
 > Test262 50,504건 / 50,504 통과 (100%, 0 fail). 144 npm 패키지 스모크 테스트 통과 (esbuild 대비 평균 0.82x 사이즈, 합성 벤치 7ms vs Bun 10ms / esbuild 13ms / rolldown 62ms).
@@ -20,14 +21,14 @@ Zig 로 작성한 고성능 JavaScript / TypeScript / Flow 트랜스파일러 + 
 mise install
 
 # 빌드
-zig build                       # zts CLI + lib (Debug)
+zig build                       # zntc CLI + lib (Debug)
 zig build -Doptimize=ReleaseFast  # 성능 측정용
 zig build run -- src/index.ts   # CLI 직접 실행
 
 # 테스트
 zig build test                  # Zig 유닛 / 통합 테스트
 zig build test262-run           # Test262 50,504건 실행
-zig build napi                  # @zts/core 용 NAPI .node
+zig build napi                  # @zntc/core 용 NAPI .node
 zig build wasm                  # transpile-only WASM
 zig build wasm-bundler          # bundler 포함 WASM (wasm32-wasi + threads)
 zig build schema                # BuildOptions JSON 스키마 자동 생성
@@ -43,7 +44,7 @@ cd tests/benchmark && bun run smoke.ts   # 144 패키지 빌드+실행 vs esbuil
 ## Usage (JS / NAPI)
 
 ```typescript
-import { init, transpile, build } from "@zts/core";
+import { init, transpile, build } from "@zntc/core";
 init();
 
 // 단일 파일 트랜스파일
@@ -76,18 +77,18 @@ const result = await build({
 
 CLI:
 ```bash
-zts src/index.ts --bundle --outdir dist --format=esm --target=es2022
-zts --watch src/index.ts                           # NDJSON 이벤트 (--watch-json)
-zts serve src/main.tsx --port 5173                 # Dev 서버 + HMR + Fast Refresh
+zntc src/index.ts --bundle --outdir dist --format=esm --target=es2022
+zntc --watch src/index.ts                           # NDJSON 이벤트 (--watch-json)
+zntc serve src/main.tsx --port 5173                 # Dev 서버 + HMR + Fast Refresh
 ```
 
-Vite 어댑터 — `vite-plugin-zts` 가 Vite 의 esbuild transform 을 ZTS 로 교체합니다.
+Vite 어댑터 — `vite-plugin-zntc` 가 Vite 의 esbuild transform 을 ZNTC 로 교체합니다.
 
 ## Documentation
 
 - [CLAUDE.md](./CLAUDE.md) — 프로젝트 요약 + Dev workflow
-- [docs/USAGE.md](./docs/USAGE.md) — CLI / `@zts/core` JS API / 플랫폼 / watch / ES 타겟 / CSS
-- [docs/CONFIG.md](./docs/CONFIG.md) — `zts.config.{ts,js,json}` / tsconfig / .env / CLI flag 우선순위
+- [docs/USAGE.md](./docs/USAGE.md) — CLI / `@zntc/core` JS API / 플랫폼 / watch / ES 타겟 / CSS
+- [docs/CONFIG.md](./docs/CONFIG.md) — `zntc.config.{ts,js,json}` / tsconfig / .env / CLI flag 우선순위
 - [docs/STRUCTURE.md](./docs/STRUCTURE.md) — 디렉토리 구조
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — 파이프라인 / 메모리 / 설계 결정
 - [docs/ROADMAP.md](./docs/ROADMAP.md) — Phase 현황, 성능, 미지원
@@ -98,24 +99,24 @@ Vite 어댑터 — `vite-plugin-zts` 가 Vite 의 esbuild transform 을 ZTS 로 
 - [docs/FLOW.md](./docs/FLOW.md) — Flow 지원 전략
 - [docs/DECISIONS.md](./docs/DECISIONS.md) / [docs/INVARIANTS.md](./docs/INVARIANTS.md) — 설계 결정 / 불변
 - [docs/DEBUG.md](./docs/DEBUG.md) — 디버그 / 진단
-- [docs/BACKLOG.md](./docs/BACKLOG.md) — 백로그 (미해결 버그는 [GitHub Issues](https://github.com/ohah/zts/issues))
+- [docs/BACKLOG.md](./docs/BACKLOG.md) — 백로그 (미해결 버그는 [GitHub Issues](https://github.com/ohah/zntc/issues))
 
 ## Packages
 
 | 패키지 | 역할 |
 |--------|------|
-| `@zts/core` | NAPI .node 바인딩 + Node.js / Bun CLI (`zts` 커맨드) + transpile / bundle / lightningcss |
-| `@zts/web` | dev server + HMR overlay + postcss / sass pipeline + dev controller (#2539) |
-| `@zts/server` | private — protocol / WS frame / watcher / HMR channel (web 의 dist 에 inline, 사용자 install 불필요) |
-| `@zts/wasm` | WASM 빌드 (브라우저 playground / Deno / Workers) |
-| `@zts/shared` | core / wasm 공유 타입 (TranspileOptions, Target, compat-engines) |
-| `vite-plugin-zts` | Vite 의 esbuild transform 을 ZTS 로 교체 (`@zts/core` 만 사용) |
+| `@zntc/core` | NAPI .node 바인딩 + Node.js / Bun CLI (`zntc` 커맨드) + transpile / bundle / lightningcss |
+| `@zntc/web` | dev server + HMR overlay + postcss / sass pipeline + dev controller (#2539) |
+| `@zntc/server` | private — protocol / WS frame / watcher / HMR channel (web 의 dist 에 inline, 사용자 install 불필요) |
+| `@zntc/wasm` | WASM 빌드 (브라우저 playground / Deno / Workers) |
+| `@zntc/shared` | core / wasm 공유 타입 (TranspileOptions, Target, compat-engines) |
+| `vite-plugin-zntc` | Vite 의 esbuild transform 을 ZNTC 로 교체 (`@zntc/core` 만 사용) |
 
 ### Install matrix
 
-- `@zts/core` 단독 — `zts transpile` / `zts bundle` (라이브러리 모드) / WASM 환경
-- `@zts/core` + `@zts/web` — `zts dev` / `zts preview` / `zts build` (app 모드 with postcss / sass / CSS Modules / HMR overlay)
-- `vite-plugin-zts` — Vite 사용자 (Vite 자체 dev server / HMR — `@zts/web` 불필요)
+- `@zntc/core` 단독 — `zntc transpile` / `zntc bundle` (라이브러리 모드) / WASM 환경
+- `@zntc/core` + `@zntc/web` — `zntc dev` / `zntc preview` / `zntc build` (app 모드 with postcss / sass / CSS Modules / HMR overlay)
+- `vite-plugin-zntc` — Vite 사용자 (Vite 자체 dev server / HMR — `@zntc/web` 불필요)
 
 ## References
 

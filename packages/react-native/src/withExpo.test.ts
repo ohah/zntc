@@ -8,7 +8,7 @@ import { detectExpo, WINTER_POLYFILL_WARNING_PATTERN, withExpo } from './withExp
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-withexpo-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-withexpo-'));
 });
 
 afterEach(() => {

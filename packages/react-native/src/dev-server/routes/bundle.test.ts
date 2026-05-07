@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import type { WatchHandle } from '@zts/core';
+import type { WatchHandle } from '@zntc/core';
 
 import type { PlatformState, PlatformStateRegistry } from '../platform-state.ts';
 import {
@@ -93,8 +93,8 @@ describe('isBundleRoute / isMapRoute / isHmrMapRoute', () => {
     expect(isMapRoute('/index.bundle.map')).toBe(true);
   });
 
-  test('/__zts_hmr_map/<id>', () => {
-    expect(isHmrMapRoute('/__zts_hmr_map/foo')).toBe(true);
+  test('/__zntc_hmr_map/<id>', () => {
+    expect(isHmrMapRoute('/__zntc_hmr_map/foo')).toBe(true);
     expect(isHmrMapRoute('/foo')).toBe(false);
   });
 });
@@ -319,7 +319,7 @@ describe('handleHmrMapRequest', () => {
     handleHmrMapRequest(
       {} as never,
       res as unknown as ServerResponse,
-      new URL('http://x/__zts_hmr_map/src%2Fx.ts?platform=ios'),
+      new URL('http://x/__zntc_hmr_map/src%2Fx.ts?platform=ios'),
       registry,
       'ios',
     );
@@ -340,7 +340,7 @@ describe('handleHmrMapRequest', () => {
     handleHmrMapRequest(
       {} as never,
       res as unknown as ServerResponse,
-      new URL('http://x/__zts_hmr_map/missing'),
+      new URL('http://x/__zntc_hmr_map/missing'),
       registry,
       'ios',
     );

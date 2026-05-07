@@ -19,7 +19,7 @@ import {
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-cssmod-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-cssmod-'));
 });
 
 afterEach(() => {
@@ -50,9 +50,9 @@ describe('isCssModuleFile', () => {
 });
 
 describe('cssModuleGeneratedCssPath', () => {
-  test('.module.css → .module.zts.css', () => {
-    expect(cssModuleGeneratedCssPath('a.module.css')).toBe('a.module.zts.css');
-    expect(cssModuleGeneratedCssPath('/x/styles.module.css')).toBe('/x/styles.module.zts.css');
+  test('.module.css → .module.zntc.css', () => {
+    expect(cssModuleGeneratedCssPath('a.module.css')).toBe('a.module.zntc.css');
+    expect(cssModuleGeneratedCssPath('/x/styles.module.css')).toBe('/x/styles.module.zntc.css');
   });
 });
 
@@ -167,11 +167,11 @@ describe('isValidExportName', () => {
 
 describe('buildCssModuleProxy', () => {
   test('default export + named export 생성', () => {
-    const proxy = buildCssModuleProxy('/x/a.module.zts.css', {
+    const proxy = buildCssModuleProxy('/x/a.module.zntc.css', {
       btn: 'btn__h1',
       card: 'card__h2',
     });
-    expect(proxy).toContain(`import "./a.module.zts.css";`);
+    expect(proxy).toContain(`import "./a.module.zntc.css";`);
     expect(proxy).toContain(`const styles = {"btn":"btn__h1","card":"card__h2"};`);
     expect(proxy).toContain(`export default styles;`);
     expect(proxy).toContain(`export const btn = "btn__h1";`);
@@ -179,7 +179,7 @@ describe('buildCssModuleProxy', () => {
   });
 
   test('invalid identifier 는 named export 안 함', () => {
-    const proxy = buildCssModuleProxy('/x/a.module.zts.css', {
+    const proxy = buildCssModuleProxy('/x/a.module.zntc.css', {
       'btn-primary': 'x__h1',
     });
     expect(proxy).not.toContain('export const btn-primary');
@@ -188,7 +188,7 @@ describe('buildCssModuleProxy', () => {
   });
 
   test('JS keyword 도 named export 제외', () => {
-    const proxy = buildCssModuleProxy('/x/a.module.zts.css', { class: 'x' });
+    const proxy = buildCssModuleProxy('/x/a.module.zntc.css', { class: 'x' });
     expect(proxy).not.toContain('export const class');
   });
 });

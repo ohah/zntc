@@ -1151,11 +1151,11 @@ test "Bundler: dev mode single file" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // __esm 래핑 출력 (모듈이 __zts_register로 래핑되지 않음)
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_register(\"") == null);
+    // __esm 래핑 출력 (모듈이 __zntc_register로 래핑되지 않음)
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_register(\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm") != null);
     // HMR 런타임이 주입됨
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_modules") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules") != null);
     // 모듈 코드가 번들에 포함됨 (hoisted var + __esm wrapper)
     try std.testing.expect(std.mem.indexOf(u8, result.output, "x = 42") != null);
 }
@@ -1181,8 +1181,8 @@ test "Bundler: dev mode two files with import" {
 
     try std.testing.expect(!result.hasErrors());
     const output = result.output;
-    // __esm 래핑 (모듈이 __zts_register로 래핑되지 않음)
-    try std.testing.expect(std.mem.indexOf(u8, output, "__zts_register(\"") == null);
+    // __esm 래핑 (모듈이 __zntc_register로 래핑되지 않음)
+    try std.testing.expect(std.mem.indexOf(u8, output, "__zntc_register(\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "__esm") != null);
     // 두 모듈의 코드가 모두 포함됨
     try std.testing.expect(std.mem.indexOf(u8, output, "add") != null);
@@ -1511,7 +1511,7 @@ test "Bundler: dev mode ES5 runtime helpers injected globally" {
 }
 
 // NOTE: "dev mode factory receives module/exports/require" 테스트 삭제 (Phase 2).
-// __zts_register factory 래핑은 프로덕션 __commonJS/__esm 래핑으로 대체됨.
+// __zntc_register factory 래핑은 프로덕션 __commonJS/__esm 래핑으로 대체됨.
 
 // NOTE: "dev mode dependency map for CJS require resolve" 테스트 삭제 (Phase 2).
 // 프로덕션 linker가 import binding을 직접 해결하므로 dep_map 불필요.
@@ -1719,7 +1719,7 @@ test "Bundler: dev mode alias named import does not emit raw require" {
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require(\"@/hooks/use-color-scheme\")") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require('@/hooks/use-color-scheme')") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zts_modules[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__zntc_modules[") != null);
 
     const codes = result.module_dev_codes orelse return error.TestUnexpectedResult;
     var saw_layout = false;

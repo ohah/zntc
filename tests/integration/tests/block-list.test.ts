@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { join } from 'node:path';
 
 /**
@@ -15,7 +15,7 @@ describe('--block-list', () => {
     });
     const outFile = join(dir, 'out.js');
     try {
-      const { stderr } = await runZts([
+      const { stderr } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -35,7 +35,12 @@ describe('--block-list', () => {
     });
     const outFile = join(dir, 'out.js');
     try {
-      const { exitCode, stderr } = await runZts(['--bundle', join(dir, 'entry.ts'), '-o', outFile]);
+      const { exitCode, stderr } = await runZntc([
+        '--bundle',
+        join(dir, 'entry.ts'),
+        '-o',
+        outFile,
+      ]);
       expect(exitCode).toBe(0);
       expect(stderr).not.toContain('Cannot resolve');
     } finally {
@@ -50,7 +55,7 @@ describe('--block-list', () => {
     });
     const outFile = join(dir, 'out.js');
     try {
-      const { stderr } = await runZts([
+      const { stderr } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',
@@ -71,7 +76,7 @@ describe('--block-list', () => {
     });
     const outFile = join(dir, 'out.js');
     try {
-      const { stderr } = await runZts([
+      const { stderr } = await runZntc([
         '--bundle',
         join(dir, 'entry.ts'),
         '-o',

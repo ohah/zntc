@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { createFixture, runZts, ZTS_BIN } from './helpers';
+import { createFixture, runZntc, ZNTC_BIN } from './helpers';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'bun';
@@ -23,7 +23,7 @@ describe('HMR 통합 테스트', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.tsx'),
       '-o',
@@ -37,9 +37,9 @@ describe('HMR 통합 테스트', () => {
 
     // 3. 기본 구조 확인
     expect(bundleCode).toContain('__esm');
-    expect(bundleCode).toContain('__zts_modules');
-    expect(bundleCode).toContain('__zts_make_hot');
-    expect(bundleCode).toContain('__zts_apply_update');
+    expect(bundleCode).toContain('__zntc_modules');
+    expect(bundleCode).toContain('__zntc_make_hot');
+    expect(bundleCode).toContain('__zntc_apply_update');
 
     // 4. 번들을 bun으로 실행하여 에러가 없는지 확인
     const run = spawn({ cmd: ['bun', 'run', outFile], stdout: 'pipe', stderr: 'pipe' });
@@ -61,10 +61,10 @@ describe('HMR 통합 테스트', () => {
 
     const outFile = join(fixture.dir, 'out.js');
 
-    // --watch-json으로 ZTS 시작
-    const zts = spawn({
+    // --watch-json으로 ZNTC 시작
+    const zntc = spawn({
       cmd: [
-        ZTS_BIN,
+        ZNTC_BIN,
         '--bundle',
         join(fixture.dir, 'index.tsx'),
         '-o',
@@ -77,13 +77,13 @@ describe('HMR 통합 테스트', () => {
     });
 
     const events: any[] = [];
-    const reader = zts.stdout.getReader();
+    const reader = zntc.stdout.getReader();
     let buffer = '';
 
     // 이벤트 수집 (최대 3개 또는 5초)
     const collectEvents = async () => {
       const timeout = setTimeout(() => {
-        zts.kill();
+        zntc.kill();
       }, 5000);
       try {
         while (events.length < 3) {
@@ -118,7 +118,7 @@ describe('HMR 통합 테스트', () => {
         }
       } finally {
         clearTimeout(timeout);
-        zts.kill();
+        zntc.kill();
       }
     };
 
@@ -152,7 +152,7 @@ describe('HMR 통합 테스트', () => {
 
   test('per-module code를 번들 컨텍스트에서 eval하면 에러 없이 실행된다', async () => {
     // 이 테스트는 HMR의 핵심 메커니즘을 검증:
-    // 번들 IIFE 안에서 __zts_apply_update → eval(per_module_code) 가 동작하는지
+    // 번들 IIFE 안에서 __zntc_apply_update → eval(per_module_code) 가 동작하는지
     const fixture = await createFixture({
       'App.tsx': `export default function App() { return "original"; }`,
       'index.tsx': `import App from "./App";\nconsole.log(App());`,
@@ -162,7 +162,7 @@ describe('HMR 통합 테스트', () => {
     const outFile = join(fixture.dir, 'out.js');
 
     // dev 번들 생성
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.tsx'),
       '-o',
@@ -180,7 +180,7 @@ describe('HMR 통합 테스트', () => {
     // --watch-json 없이 다시 빌드 (collect_module_codes는 CLI에서 자동)
     // 대신 두 번째 번들을 생성하여 per-module code 차이 확인
     const outFile2 = join(fixture.dir, 'out2.js');
-    const bundle2 = await runZts([
+    const bundle2 = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.tsx'),
       '-o',
@@ -197,7 +197,7 @@ describe('HMR 통합 테스트', () => {
     expect(bundleCode2).toContain('updated');
 
     // 핵심 테스트: 첫 번째 번들 실행 후, 두 번째 번들의 App 모듈 코드를
-    // __zts_apply_update로 eval하면 에러 없이 실행되는지
+    // __zntc_apply_update로 eval하면 에러 없이 실행되는지
     // → JS 테스트 파일을 생성하여 검증
     const testScript = join(fixture.dir, 'hmr_test.js');
     writeFileSync(
@@ -207,15 +207,15 @@ describe('HMR 통합 테스트', () => {
       ${bundleCode1}
 
       // HMR API가 전역에 노출되는지 확인
-      if (typeof globalThis.__zts_apply_update !== "function") {
-        console.error("FAIL: __zts_apply_update not found on globalThis");
+      if (typeof globalThis.__zntc_apply_update !== "function") {
+        console.error("FAIL: __zntc_apply_update not found on globalThis");
         process.exit(1);
       }
 
-      // __zts_modules에 모듈이 등록되었는지
-      var moduleCount = Object.keys(globalThis.__zts_modules).length;
+      // __zntc_modules에 모듈이 등록되었는지
+      var moduleCount = Object.keys(globalThis.__zntc_modules).length;
       if (moduleCount === 0) {
-        console.error("FAIL: __zts_modules is empty");
+        console.error("FAIL: __zntc_modules is empty");
         process.exit(1);
       }
 
@@ -239,7 +239,7 @@ describe('HMR 통합 테스트', () => {
     expect(testOut).toContain('modules registered');
   });
 
-  test('__zts_apply_update 후 __esm factory가 재실행되어 exports가 업데이트된다', async () => {
+  test('__zntc_apply_update 후 __esm factory가 재실행되어 exports가 업데이트된다', async () => {
     // HMR의 핵심 계약 검증: eval → entry.fn() → exports 업데이트
     const fixture = await createFixture({
       'App.tsx': `export default function App() { return "v1"; }`,
@@ -248,10 +248,10 @@ describe('HMR 통합 테스트', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.tsx'), '-o', outFile, '--dev']);
+    await runZntc(['--bundle', join(fixture.dir, 'index.tsx'), '-o', outFile, '--dev']);
     const bundleCode = readFileSync(outFile, 'utf-8');
 
-    // __zts_apply_update의 entry.fn() 호출을 합성 모듈로 검증
+    // __zntc_apply_update의 entry.fn() 호출을 합성 모듈로 검증
     const testScript = join(fixture.dir, 'hmr_fn_test.js');
     writeFileSync(
       testScript,
@@ -260,7 +260,7 @@ describe('HMR 통합 테스트', () => {
       ${bundleCode}
 
       var g = globalThis;
-      var modules = g.__zts_modules;
+      var modules = g.__zntc_modules;
       var appId = Object.keys(modules).find(k => k.includes("App"));
       if (!appId) { console.error("FAIL: App module not found"); process.exit(1); }
 
@@ -270,15 +270,15 @@ describe('HMR 통합 테스트', () => {
       var v1 = entry.exports.default();
       if (v1 !== "v1") { console.error("FAIL: v1 expected, got " + v1); process.exit(1); }
 
-      // __zts_apply_update가 entry.fn()을 호출하는지 검증:
+      // __zntc_apply_update가 entry.fn()을 호출하는지 검증:
       // 합성 per-module IIFE를 만들어 v2 exports로 업데이트.
       // 모듈 key는 번들에서 사용된 실제 ID와 일치해야 함.
       var updateCode = "(function(){" +
-        "var __zts_g=typeof globalThis!=='undefined'?globalThis:global;" +
-        "var __esm=__zts_g.__esm,__export=__zts_g.__export,__zts_modules=__zts_g.__zts_modules," +
-        "__zts_make_hot=__zts_g.__zts_make_hot,__zts_resolveRefresh=__zts_g.__zts_resolveRefresh||function(){return null}," +
-        "__zts_isReactRefreshBoundary=__zts_g.__zts_isReactRefreshBoundary," +
-        "__zts_enqueueUpdate=__zts_g.__zts_enqueueUpdate,__zts_reload=__zts_g.__zts_reload;" +
+        "var __zntc_g=typeof globalThis!=='undefined'?globalThis:global;" +
+        "var __esm=__zntc_g.__esm,__export=__zntc_g.__export,__zntc_modules=__zntc_g.__zntc_modules," +
+        "__zntc_make_hot=__zntc_g.__zntc_make_hot,__zntc_resolveRefresh=__zntc_g.__zntc_resolveRefresh||function(){return null}," +
+        "__zntc_isReactRefreshBoundary=__zntc_g.__zntc_isReactRefreshBoundary," +
+        "__zntc_enqueueUpdate=__zntc_g.__zntc_enqueueUpdate,__zntc_reload=__zntc_g.__zntc_reload;" +
         "var exports_App = {};" +
         "var init_App = __esm({" +
         "  '" + appId + "'() {" +
@@ -289,9 +289,9 @@ describe('HMR 통합 테스트', () => {
         "})();";
 
       // accept 콜백 등록 (HMR이 full-reload 대신 accept하도록)
-      g.__zts_make_hot(appId).accept(true);
+      g.__zntc_make_hot(appId).accept(true);
 
-      g.__zts_apply_update([{ id: appId, code: updateCode }]);
+      g.__zntc_apply_update([{ id: appId, code: updateCode }]);
 
       // entry.fn()이 호출되었으면 exports가 업데이트됨
       var entry2 = modules[appId];

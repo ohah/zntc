@@ -1,9 +1,9 @@
 ---
 title: Dev Server
-description: ZTS dev server의 SSE 이벤트 스트림, Control API, MCP 서버
+description: ZNTC dev server의 SSE 이벤트 스트림, Control API, MCP 서버
 ---
 
-`zts --serve --bundle <entry>`로 시작하는 dev 서버는 일반 HTTP/HMR 외에 **외부 자동화/관측 도구를 위한 3가지 인터페이스**를 제공한다.
+`zntc --serve --bundle <entry>`로 시작하는 dev 서버는 일반 HTTP/HMR 외에 **외부 자동화/관측 도구를 위한 3가지 인터페이스**를 제공한다.
 
 | 엔드포인트 | 용도 | 호환 |
 |---|---|---|
@@ -14,7 +14,7 @@ description: ZTS dev server의 SSE 이벤트 스트림, Control API, MCP 서버
 ## 빠른 시작
 
 ```bash
-zts --serve --bundle src/index.tsx --port 12300
+zntc --serve --bundle src/index.tsx --port 12300
 ```
 
 ```bash
@@ -101,7 +101,7 @@ LLM 에이전트(Claude Code 등)가 표준 MCP 프로토콜로 dev 번들러와
 ```json
 {
   "mcpServers": {
-    "zts": {
+    "zntc": {
       "type": "http",
       "url": "http://localhost:12300/mcp"
     }
@@ -188,13 +188,13 @@ dev 서버를 먼저 띄운 뒤 MCP 클라이언트(Claude Code 등) 시작.
 - **이벤트 버퍼**: `get_build_events`가 참조하는 ring buffer는 최근 256개. 그 이상은 덮어쓰임.
 - **SSE 동시 연결**: 64개. 초과 시 거부.
 
-## `server` config (zts.config)
+## `server` config (zntc.config)
 
 CLI `--port` / `--host` / `--open` 외에 config 파일에서도 같은 항목을 지정할 수 있다 (Vite `server` 호환). CLI flag 가 항상 우선.
 
 ```ts
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   server: {
@@ -215,10 +215,10 @@ export default defineConfig({
 
 ## Lazy sourcemap — `emitDiskSourcemap` + `WatchHandle`
 
-`@zts/core` 의 `watch()` 핸들로 dev server 를 직접 호스팅할 때 — `.map` 디스크 쓰기 비용을 HMR latency 밖으로 빼낸다.
+`@zntc/core` 의 `watch()` 핸들로 dev server 를 직접 호스팅할 때 — `.map` 디스크 쓰기 비용을 HMR latency 밖으로 빼낸다.
 
 ```ts
-import { watch } from "@zts/core";
+import { watch } from "@zntc/core";
 
 const handle = watch({
   entryPoints: ["src/index.tsx"],
@@ -302,7 +302,7 @@ watch({
 | `delta` | HMR delta 추출. |
 | `total` | `detect` ~ `delta` 합산. |
 
-Sub-phase (`profile: ["..."]` / `ZTS_PROFILE=...` 활성 시에만 채워짐, 비활성 시 0):
+Sub-phase (`profile: ["..."]` / `ZNTC_PROFILE=...` 활성 시에만 채워짐, 비활성 시 0):
 
 `scan` / `parse` / `resolve` / `semantic` / `transform` / `codegen` / `metadata` / `graphBuild` / `graphWorker` / `graphDiscover` / `graphFinalize` / `emitPolyfill` / `emitRefresh` / `emitOutput` / `emitMetafile` / `emitCss` / `emitPrelude` / `emitModulePass` / `emitConcat` / `emitSourcemapFinalize`.
 

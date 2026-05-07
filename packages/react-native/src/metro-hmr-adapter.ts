@@ -1,4 +1,4 @@
-// Metro HMR adapter — `@zts/server.HmrChannel` 위 thin wrapper. caller (번개
+// Metro HMR adapter — `@zntc/server.HmrChannel` 위 thin wrapper. caller (번개
 // dev server) 가 RN runtime 의 HMRClient interface 호환 메시지 (`hmr:update-start`
 // / `hmr:update` / `hmr:update-done` / `hmr:reload` / `hmr:error`) 를 type-safe
 // 하게 송출. revisionId 기반 delta 자체는 caller 가 관리 — adapter 는 메시지
@@ -12,19 +12,19 @@ import {
   type HmrRnErrorBody,
   type HmrRnErrorEntry,
   type HmrRnUpdateModule,
-} from '@zts/server';
+} from '@zntc/server';
 
-// ZTS error string 의 위치 추출 — `<file>.tsx?:<line>:<col>` 형태. Metro 의
+// ZNTC error string 의 위치 추출 — `<file>.tsx?:<line>:<col>` 형태. Metro 의
 // BuildError 의 file:line:col 과 같은 형식으로 정규화 — RN LogBox 의 source link.
-const ZTS_LOCATION_RE = /([^\s]+\.[jt]sx?):(\d+):(\d+)/;
+const ZNTC_LOCATION_RE = /([^\s]+\.[jt]sx?):(\d+):(\d+)/;
 
 /**
- * ZTS build error → Metro 호환 `BuildError` body 로 변환. file:line:col 추출
+ * ZNTC build error → Metro 호환 `BuildError` body 로 변환. file:line:col 추출
  * 실패해도 단일 entry 의 description 만으로 fallback. bungae 의 formatHmrError
- * (zts-bundler/server/index.ts L824) 와 동일 로직 (#2605 audit).
+ * (zntc-bundler/server/index.ts L824) 와 동일 로직 (#2605 audit).
  */
 export function formatBuildError(message: string): HmrRnErrorBody {
-  const match = message.match(ZTS_LOCATION_RE);
+  const match = message.match(ZNTC_LOCATION_RE);
   const errors: HmrRnErrorEntry[] = match
     ? [
         {
@@ -53,9 +53,9 @@ export interface MetroHmrAdapter {
   sendInitialGreeting(): void;
   /** Module delta 송출. caller 가 revisionId 따라 modules 배열 구성. */
   sendUpdate(modules: readonly HmrRnUpdateModule[]): void;
-  /** RN runtime 의 `__zts_reload()` 또는 `location.reload()` 호출. */
+  /** RN runtime 의 `__zntc_reload()` 또는 `location.reload()` 호출. */
   sendReload(): void;
-  /** RN runtime 의 `console.error('[ZTS HMR]', message)` 호출. */
+  /** RN runtime 의 `console.error('[ZNTC HMR]', message)` 호출. */
   sendError(message: string): void;
 }
 

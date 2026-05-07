@@ -1,11 +1,11 @@
 ---
 title: Plugins
-description: Learn how to use the ZTS plugin system.
+description: Learn how to use the ZNTC plugin system.
 ---
 
 ## Overview
 
-ZTS provides a Rollup/Vite-compatible plugin interface. Plugins are written in JS/TS and run in-process via C NAPI (via `@zts/core`).
+ZNTC provides a Rollup/Vite-compatible plugin interface. Plugins are written in JS/TS and run in-process via C NAPI (via `@zntc/core`).
 
 ## Compatibility Summary
 
@@ -18,7 +18,7 @@ ZTS provides a Rollup/Vite-compatible plugin interface. Plugins are written in J
 | Rollup context `this.resolve()` / `this.emitFile()` | Unsupported | needs a separate graph mutation surface |
 | `buildSync()` + JS plugins | Unsupported | use async `build()` / `watch()` |
 
-The native ZTS worker calls JS hooks through NAPI threadsafe functions when it reaches a module and waits for the response. Keep hook filters narrow, and prefer the built-in `loader` option for simple extension-based handling.
+The native ZNTC worker calls JS hooks through NAPI threadsafe functions when it reaches a module and waits for the response. Keep hook filters narrow, and prefer the built-in `loader` option for simple extension-based handling.
 
 ## Hook Order
 
@@ -39,11 +39,11 @@ In `watch()`, the same order runs for the initial build and every rebuild. `onRe
 
 ## Config File
 
-Create a `zts.config.ts` (or `.js`, `.mjs`, `.mts`, `.cjs`, `.cts`) at the project root.
+Create a `zntc.config.ts` (or `.js`, `.mjs`, `.mts`, `.cjs`, `.cts`) at the project root.
 
 ```typescript
-// zts.config.ts
-import { defineConfig } from "@zts/core";
+// zntc.config.ts
+import { defineConfig } from "@zntc/core";
 
 export default defineConfig({
   plugins: [
@@ -197,7 +197,7 @@ Called after bundle generation is complete.
 
 ### onResolveContext
 
-Lets the host runtime fill in `require.context(dir, recursive, filter, mode)` matches. ZTS has no built-in regex executor, so it delegates to the host's RegExp (Node V8 / Bun JSC).
+Lets the host runtime fill in `require.context(dir, recursive, filter, mode)` matches. ZNTC has no built-in regex executor, so it delegates to the host's RegExp (Node V8 / Bun JSC).
 
 Callback arguments:
 - `dir` — first arg of `require.context`.
@@ -294,7 +294,7 @@ With multiple plugins each hook fires in sequence. Errors thrown from `buildEnd`
 ## Build API
 
 ```typescript
-import { build } from "@zts/core";
+import { build } from "@zntc/core";
 
 const result = await build({
   entryPoints: ["src/index.ts"],

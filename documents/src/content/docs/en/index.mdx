@@ -1,6 +1,6 @@
 ---
-title: ZTS
-description: A TypeScript Transpiler & Bundler written in Zig
+title: ZNTC
+description: Zig Native Transpiler Compiler for JavaScript and TypeScript
 template: splash
 head:
   - tag: style
@@ -27,17 +27,17 @@ import CtaCard from "../../../components/landing/CtaCard.astro";
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 <Hero
-  eyebrow="Zig TypeScript Transpiler & Bundler"
+  eyebrow="Zig Native Transpiler Compiler"
   title={`Fast, lightweight\nTypeScript toolchain`}
   subtitle="A transpiler + bundler written in Zig. JavaScript · TypeScript · JSX · Flow at native speed, with a Vite/Rollup-compatible plugin system."
   actions={[
-    { text: "Get Started →", href: "/zts/en/guides/introduction/", primary: true },
-    { text: "Playground", href: "/zts/en/playground/" },
-    { text: "GitHub", href: "https://github.com/ohah/zts" },
+    { text: "Get Started →", href: "/zntc/en/guides/introduction/", primary: true },
+    { text: "Playground", href: "/zntc/en/playground/" },
+    { text: "GitHub", href: "https://github.com/ohah/zntc" },
   ]}
   codeFilename="example.ts"
   codeLang="ts"
-  codeExample={`import { transpile } from '@zts/core';
+  codeExample={`import { transpile } from '@zntc/core';
 
 const { code } = await transpile({
   code: source,
@@ -57,7 +57,7 @@ const { code } = await transpile({
 />
 
 <FeatureGrid
-  heading="Why ZTS"
+  heading="Why ZNTC"
   subheading="A JS/TS toolchain that combines the strengths of existing tools."
   features={[
     {
@@ -95,19 +95,19 @@ const { code } = await transpile({
     <TabItem label="CLI">
       ```bash
       # install
-      npm install -g @zts/core
+      npm install -g @zntc/core
 
       # bundle
-      zts build src/index.ts --bundle --outdir dist
+      zntc build src/index.ts --bundle --outdir dist
 
       # watch mode
-      zts build src/index.ts --bundle --watch
+      zntc build src/index.ts --bundle --watch
       ```
     </TabItem>
 
     <TabItem label="JS API">
       ```ts
-      import { build } from "@zts/core";
+      import { build } from "@zntc/core";
 
       const result = await build({
         entryPoints: ["src/index.ts"],
@@ -125,11 +125,11 @@ const { code } = await transpile({
       ```ts
       // vite.config.ts
       import { defineConfig } from "vite";
-      import zts from "@zts/vite-plugin-zts";
+      import zntc from "vite-plugin-zntc";
 
       export default defineConfig({
         plugins: [
-          zts({
+          zntc({
             jsx: "automatic",
             target: "es2022",
           }),
@@ -143,6 +143,6 @@ const { code } = await transpile({
 <CtaCard
   heading="Start building today"
   description="First bundle in 5 minutes. Or try it right in the browser via Playground."
-  primary={{ text: "Install guide →", href: "/zts/en/guides/installation/" }}
-  secondary={{ text: "Playground", href: "/zts/en/playground/" }}
+  primary={{ text: "Install guide →", href: "/zntc/en/guides/installation/" }}
+  secondary={{ text: "Playground", href: "/zntc/en/playground/" }}
 />

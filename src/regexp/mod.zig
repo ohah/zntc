@@ -1,4 +1,4 @@
-//! ZTS RegExp Validator
+//! ZNTC RegExp Validator
 //!
 //! ECMAScript 정규식 리터럴의 유효성을 검증한다.
 //! 렉서에서 `/pattern/flags` 토큰을 스캔한 후 호출.

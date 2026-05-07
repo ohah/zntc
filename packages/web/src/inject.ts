@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 
-import { APP_DEV_HMR_CLIENT_PATH } from '@zts/server';
+import { APP_DEV_HMR_CLIENT_PATH } from '@zntc/server';
 
 import { isCssFile } from './style/postcss.ts';
 import { joinUrl } from './url.ts';
@@ -36,7 +36,7 @@ export function injectIntoDevHtml(outdir: string, build: (html: string) => strin
   writeFileSync(htmlPath, next);
 }
 
-/** `<script type="module" src="/__zts_app_dev_hmr__"></script>` 를 head 에 1회 삽입. */
+/** `<script type="module" src="/__zntc_app_dev_hmr__"></script>` 를 head 에 1회 삽입. */
 export function injectAppDevHmrClient(outdir: string): void {
   injectIntoDevHtml(outdir, (html) => {
     if (html.includes(APP_DEV_HMR_CLIENT_PATH)) return null;

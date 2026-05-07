@@ -2,7 +2,7 @@
 // frontend / fusebox 등. peer optional 이라 미설치 시 graceful skip.
 //
 // project 기준 resolve — Rozenite 같은 monkey-patch 도구가 같은 module instance
-// 를 패치할 수 있도록 (zts 가 자기 node_modules 에서 resolve 하면 다른 instance
+// 를 패치할 수 있도록 (zntc 가 자기 node_modules 에서 resolve 하면 다른 instance
 // 가 되어 패치 누락).
 
 import { createRequire } from 'node:module';
@@ -27,7 +27,7 @@ export interface DevMiddleware {
 
 /**
  * project → react-native → @react-native/community-cli-plugin →
- * @react-native/dev-middleware 체인. fallback 으로 project 직접 / zts 자기.
+ * @react-native/dev-middleware 체인. fallback 으로 project 직접 / zntc 자기.
  */
 function resolveDevMiddlewarePath(projectRoot: string): string | null {
   const projectRequire = createRequire(`${projectRoot}/package.json`);
@@ -85,7 +85,7 @@ export async function loadDevMiddleware(
       logger: {
         info: () => {},
         warn: () => {},
-        error: (...args) => console.error('[zts/rn dev-middleware]', ...args),
+        error: (...args) => console.error('[zntc/rn dev-middleware]', ...args),
       },
     });
   } catch {

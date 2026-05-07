@@ -2,10 +2,10 @@ import { describe, test, expect, afterEach, beforeAll, afterAll } from 'bun:test
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { init, close, benchmark } from '../../../packages/core/index';
 
-// PR 5: zts bench 서브커맨드 + NAPI benchmark() API.
+// PR 5: zntc bench 서브커맨드 + NAPI benchmark() API.
 //
 // CLI 와 NAPI 동일 기능:
 //   - 특정 phase 를 N 회 반복 실행
@@ -18,7 +18,7 @@ const smallSource = `
   export class K { constructor(public name: string) {} }
 `;
 
-describe('zts bench subcommand (CLI)', () => {
+describe('zntc bench subcommand (CLI)', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -32,7 +32,7 @@ describe('zts bench subcommand (CLI)', () => {
     const fixture = await createFixture({ 'input.ts': smallSource });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       'bench',
       '--phase=parse',
       '--iterations=10',
@@ -41,7 +41,7 @@ describe('zts bench subcommand (CLI)', () => {
     ]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain('=== ZTS Benchmark ===');
+    expect(result.stdout).toContain('=== ZNTC Benchmark ===');
     expect(result.stdout).toContain('parse');
     expect(result.stdout).toContain('ms');
   });
@@ -50,7 +50,7 @@ describe('zts bench subcommand (CLI)', () => {
     const fixture = await createFixture({ 'input.ts': smallSource });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       'bench',
       '--phase=parse',
       '--iterations=10',
@@ -77,7 +77,7 @@ describe('zts bench subcommand (CLI)', () => {
     const fixture = await createFixture({ 'input.ts': smallSource });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       'bench',
       '--phase=parse',
       '--iterations=5',
@@ -96,10 +96,10 @@ describe('zts bench subcommand (CLI)', () => {
   test('--save --compare 워크플로우', async () => {
     const fixture = await createFixture({ 'input.ts': smallSource });
     cleanup = fixture.cleanup;
-    const baselinePath = join(tmpdir(), `zts-bench-${Date.now()}.json`);
+    const baselinePath = join(tmpdir(), `zntc-bench-${Date.now()}.json`);
 
     // 1. 저장
-    const save = await runZts([
+    const save = await runZntc([
       'bench',
       '--phase=parse',
       '--iterations=5',
@@ -114,7 +114,7 @@ describe('zts bench subcommand (CLI)', () => {
     expect(baseline.phases.parse).toBeDefined();
 
     // 2. 비교
-    const cmp = await runZts([
+    const cmp = await runZntc([
       'bench',
       '--phase=parse',
       '--iterations=5',
@@ -133,7 +133,7 @@ describe('zts bench subcommand (CLI)', () => {
     const fixture = await createFixture({ 'input.ts': smallSource });
     cleanup = fixture.cleanup;
 
-    const result = await runZts([
+    const result = await runZntc([
       'bench',
       '--phase=parse,transform',
       '--iterations=5',
@@ -153,13 +153,13 @@ describe('zts bench subcommand (CLI)', () => {
     const fixture = await createFixture({ 'input.ts': smallSource });
     cleanup = fixture.cleanup;
 
-    const result = await runZts(['bench', join(fixture.dir, 'input.ts')]);
+    const result = await runZntc(['bench', join(fixture.dir, 'input.ts')]);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain('--phase=');
   });
 
   test('input file 없으면 exit 1', async () => {
-    const result = await runZts(['bench', '--phase=parse']);
+    const result = await runZntc(['bench', '--phase=parse']);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain('missing input file');
   });
@@ -168,7 +168,7 @@ describe('zts bench subcommand (CLI)', () => {
     const fixture = await createFixture({ 'input.ts': smallSource });
     cleanup = fixture.cleanup;
 
-    const result = await runZts(['bench', '--phase=bogus_phase', join(fixture.dir, 'input.ts')]);
+    const result = await runZntc(['bench', '--phase=bogus_phase', join(fixture.dir, 'input.ts')]);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain('unknown phase');
   });
@@ -177,14 +177,14 @@ describe('zts bench subcommand (CLI)', () => {
     const fixture = await createFixture({ 'input.ts': smallSource });
     cleanup = fixture.cleanup;
 
-    const result = await runZts(['bench', '--phase=all', join(fixture.dir, 'input.ts')]);
+    const result = await runZntc(['bench', '--phase=all', join(fixture.dir, 'input.ts')]);
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain('not allowed');
   });
 
-  test('--help 에 zts bench 섹션 포함', async () => {
-    const result = await runZts(['--help']);
-    expect(result.stdout).toContain('zts bench');
+  test('--help 에 zntc bench 섹션 포함', async () => {
+    const result = await runZntc(['--help']);
+    expect(result.stdout).toContain('zntc bench');
     expect(result.stdout).toContain('--phase=');
     expect(result.stdout).toContain('--iterations=');
     expect(result.stdout).toContain('--save=');

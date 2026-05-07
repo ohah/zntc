@@ -1,39 +1,39 @@
 ---
 title: CLI Reference
-description: Complete list of ZTS CLI options
+description: Complete list of ZNTC CLI options
 ---
 
 ## Transpile
 
 ```bash
-zts <file.ts>                      # → stdout
-zts <file.ts> -o <out.js>          # → file
-zts <dir/> --outdir <out/>         # recursive directory
-zts - < input.ts                   # stdin
+zntc <file.ts>                      # → stdout
+zntc <file.ts> -o <out.js>          # → file
+zntc <dir/> --outdir <out/>         # recursive directory
+zntc - < input.ts                   # stdin
 ```
 
 ## Bundle
 
 ```bash
-zts --bundle <entry.ts>                               # → stdout
-zts --bundle <entry.ts> -o out.js                     # → file
-zts --bundle <entry.ts> --splitting --outdir dist     # code splitting
-zts --bundle <entry.ts> --preserve-modules --outdir dist  # per-module (library)
-zts --bundle <entry.ts> --plugin zts.config.js        # JS plugin
+zntc --bundle <entry.ts>                               # → stdout
+zntc --bundle <entry.ts> -o out.js                     # → file
+zntc --bundle <entry.ts> --splitting --outdir dist     # code splitting
+zntc --bundle <entry.ts> --preserve-modules --outdir dist  # per-module (library)
+zntc --bundle <entry.ts> --plugin zntc.config.js        # JS plugin
 ```
 
 ## App Builder
 
 ```bash
-zts dev [root]             # index.html-based dev server
-zts build [root]           # HTML rewrite + hashed assets → dist/
-zts preview [outdir]       # serve built files only
+zntc dev [root]             # index.html-based dev server
+zntc build [root]           # HTML rewrite + hashed assets → dist/
+zntc preview [outdir]       # serve built files only
 ```
 
 The default app layout is `index.html`, `public/`, `src/main.ts(x)`, and `.env*`.
-`zts build` uses `<script type="module" src>` as bundle entries and rewrites CSS
+`zntc build` uses `<script type="module" src>` as bundle entries and rewrites CSS
 `url()`, HTML asset URLs, and `%ENV%` tokens, and injects `modulepreload` links
-for static split chunks. `zts dev` uses the same HTML/env/public prepare step and
+for static split chunks. `zntc dev` uses the same HTML/env/public prepare step and
 updates stylesheets for CSS edits without a full page reload.
 
 | Option                      | Description                                                                       |
@@ -42,12 +42,12 @@ updates stylesheets for CSS edits without a full page reload.
 | `--public-dir <dir\|false>` | public copy directory or disabled                                                 |
 | `--base <path>`             | HTML/CSS asset URL prefix                                                         |
 | `--mode <name>`             | env/config mode (`dev`: `development`, `build`: `production`)                     |
-| `--env-prefix <list>`       | exposed env prefix CSV (default: `VITE_,ZTS_`)                                    |
+| `--env-prefix <list>`       | exposed env prefix CSV (default: `VITE_,ZNTC_`)                                    |
 | `--env-dir <dir>`           | directory for `.env*` files                                                       |
 | `--spa-fallback[=file]`     | in `preview`, fall back route-like 404 requests to `index.html` or the given file |
 
 If the app root contains `postcss.config.{js,mjs,cjs,json}` or `.postcssrc*`,
-ZTS automatically applies it to CSS. In `zts dev`, original CSS files and PostCSS
+ZNTC automatically applies it to CSS. In `zntc dev`, original CSS files and PostCSS
 `dependency` / `dir-dependency` messages are watched and CSS-only edits are sent
 as stylesheet HMR updates. Tailwind v4 works via `@tailwindcss/postcss`. CSS
 Modules (`.module.css`) in app mode are transformed into scoped class maps with
@@ -161,7 +161,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--asset-names=<pattern>`                | Asset name pattern                                                                                    |
 | `--loader:.ext=type`                     | Loader by extension (`file\|dataurl\|base64\|text\|binary\|copy\|empty\|json\|css\|js\|ts\|jsx\|tsx`) |
 | `--metafile` / `--metafile=<path>`       | Build meta JSON (stdout or file)                                                                      |
-| `--analyze`                              | Bundle analysis report (printed to stderr). Pair with `--metafile=<path>` to also write JSON to disk; upload it at [/analyze/](/zts/analyze/) |
+| `--analyze`                              | Bundle analysis report (printed to stderr). Pair with `--metafile=<path>` to also write JSON to disk; upload it at [/analyze/](/zntc/analyze/) |
 | `--legal-comments=<mode>`                | License comments: `none\|inline\|eof\|linked\|external` (`linked`/`external` currently fall back to `eof`) |
 | `--packages=external`                    | Treat all bare package imports as external                                                            |
 | `--banner:js=<text>`                     | Prepend text (the bare `--banner=` form is JS-wrapper-only)                                           |
@@ -215,8 +215,8 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | --------------------------- | ----------------------------------------------------------- |
 | `--plugin <path>`           | JS/TS plugin or config file                                 |
 | `--jobs=<n>`                | Parallel thread count                                       |
-| `--config <path>`           | Use an explicit `zts.config.*` instead of auto-discovery    |
-| `--workspace-config <path>` | Use an explicit `zts.workspace.*` instead of auto-discovery |
+| `--config <path>`           | Use an explicit `zntc.config.*` instead of auto-discovery    |
+| `--workspace-config <path>` | Use an explicit `zntc.workspace.*` instead of auto-discovery |
 | `--workspace <name>`        | Select one workspace entry                                  |
 
 ## Diagnostics / Logging
@@ -235,7 +235,7 @@ CSS before PostCSS when the optional `sass` dependency is installed.
 | `--allow-overwrite`          | Explicitly permit an output path to overwrite an input file. Blocked by default. |
 | `-h, --help`                 | Show help                                                                        |
 
-## Benchmark (`zts bench`)
+## Benchmark (`zntc bench`)
 
 A subcommand that runs the requested phases N times and prints mean/median/p95/p99/stddev/min/max statistics. Use baseline save/compare for before/after optimization analysis.
 
@@ -250,15 +250,15 @@ A subcommand that runs the requested phases N times and prints mean/median/p95/p
 | `--profile-level=<level>` | Profile detail level (`summary\|detailed\|per-module\|per-pass`)                             |
 
 ```bash
-zts bench --phase=parse,transform --iterations=200 --warmup=20 src/large.ts
-zts bench --phase=parse --save=baseline.json src/main.ts
-zts bench --phase=parse --compare=baseline.json src/main.ts
+zntc bench --phase=parse,transform --iterations=200 --warmup=20 src/large.ts
+zntc bench --phase=parse --save=baseline.json src/main.ts
+zntc bench --phase=parse --compare=baseline.json src/main.ts
 ```
 
 ## See Also
 
-- JS API (`@zts/core`) in `packages/core/index.ts` provides the same options programmatically.
-- Surface-level option coverage is listed in the [Options Matrix](/zts/en/reference/options-matrix/).
-- Visualize `--metafile` output on the [Metafile Analyze](/zts/analyze/) page.
-- Use `vite-plugin-zts` or `vitePlugin()` for the Vite adapter.
-- Unsupported options and future plans: [docs/ROADMAP.md](https://github.com/ohah/zts/blob/main/docs/ROADMAP.md).
+- JS API (`@zntc/core`) in `packages/core/index.ts` provides the same options programmatically.
+- Surface-level option coverage is listed in the [Options Matrix](/zntc/en/reference/options-matrix/).
+- Visualize `--metafile` output on the [Metafile Analyze](/zntc/analyze/) page.
+- Use `vite-plugin-zntc` or `vitePlugin()` for the Vite adapter.
+- Unsupported options and future plans: [docs/ROADMAP.md](https://github.com/ohah/zntc/blob/main/docs/ROADMAP.md).

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * ZTS Benchmark Suite — 공정한 다규모 성능 비교
+ * ZNTC Benchmark Suite — 공정한 다규모 성능 비교
  *
  * 모든 도구를 CLI 바이너리 직접 호출 (npx 오버헤드 제거).
  * 소규모/중규모/대규모 시나리오로 스케일 특성 측정.
@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path';
 import { computeMetricStats, formatMetric, type MetricStats } from './stats';
 
 const ROOT = resolve(__dirname, '../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const BIN = join(ROOT, 'node_modules/.bin');
 const ITERATIONS = 5;
 
@@ -138,7 +138,7 @@ function benchTranspile(): BenchResult[] {
   const swcBin = findBin('swc');
 
   for (const scale of scales) {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bench-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bench-'));
     const inputFile = join(dir, 'input.ts');
     writeFileSync(inputFile, generateTS(scale.lines));
     writeFileSync(join(dir, 'helper.ts'), generateHelper());
@@ -146,8 +146,8 @@ function benchTranspile(): BenchResult[] {
     console.log(`\n--- Transpile: ${scale.name} ---`);
 
     results.push(
-      runBench('ZTS', 'transpile', scale.name, () => {
-        execBin(ZTS_BIN, [inputFile, '-o', join(dir, 'out-zts.js')]);
+      runBench('ZNTC', 'transpile', scale.name, () => {
+        execBin(ZNTC_BIN, [inputFile, '-o', join(dir, 'out-zntc.js')]);
       }),
     );
 
@@ -213,7 +213,7 @@ function benchBundle(): BenchResult[] {
   const rspackBin = findBin('rspack');
 
   for (const scale of scales) {
-    const dir = mkdtempSync(join(tmpdir(), 'zts-bench-bundle-'));
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bench-bundle-'));
     generateProject(dir, scale.files);
     const entry = join(dir, 'src', 'index.ts');
     const outDir = join(dir, 'dist');
@@ -222,8 +222,8 @@ function benchBundle(): BenchResult[] {
     console.log(`\n--- Bundle: ${scale.name} ---`);
 
     results.push(
-      runBench('ZTS', 'bundle', scale.name, () => {
-        execBin(ZTS_BIN, ['--bundle', entry, '-o', join(outDir, 'zts.js')]);
+      runBench('ZNTC', 'bundle', scale.name, () => {
+        execBin(ZNTC_BIN, ['--bundle', entry, '-o', join(outDir, 'zntc.js')]);
       }),
     );
 
@@ -343,7 +343,7 @@ const args = process.argv.slice(2);
 const doTranspile = args.includes('--transpile') || args.includes('--all') || args.length === 0;
 const doBundle = args.includes('--bundle') || args.includes('--all') || args.length === 0;
 
-console.log('ZTS Benchmark Suite');
+console.log('ZNTC Benchmark Suite');
 console.log(`  Iterations: ${ITERATIONS} (median, trimmed mean)`);
 console.log('  Method: CLI binary direct execution (no npx overhead)');
 console.log(`  Platform: ${process.platform} ${process.arch}`);

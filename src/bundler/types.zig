@@ -1,4 +1,4 @@
-//! ZTS Bundler — 공유 타입 정의
+//! ZNTC Bundler — 공유 타입 정의
 //!
 //! 번들러의 모든 모듈이 공유하는 기본 타입.
 //! D066 (에러 핸들링), D070 (모듈 ID), D073 (모듈 타입), D079 (import 추출) 설계 반영.
@@ -141,10 +141,10 @@ pub const ModuleInfo = struct {
     /// external 모듈은 빈 슬라이스.
     exports: []const []const u8,
     /// Plugin 이 정의한 synthetic named exports (Rollup `syntheticNamedExports` 호환).
-    /// ZTS 는 plugin 시스템 확장 (#1880) 까지 항상 false. 노출 시그니처만 맞춤.
+    /// ZNTC 는 plugin 시스템 확장 (#1880) 까지 항상 false. 노출 시그니처만 맞춤.
     synthetic_named_exports: bool,
     /// `this.emitFile` 의 `implicitlyLoadedAfterOneOf` 옵션 결과 (Rollup 호환).
-    /// ZTS 는 plugin context API (#1880) 까지 항상 빈 배열.
+    /// ZNTC 는 plugin context API (#1880) 까지 항상 빈 배열.
     implicitly_loaded_after_one_of: []const ModuleIndex,
     /// 위와 반대 방향 — 이 모듈을 implicitly 로드 후에 로드돼야 하는 모듈들.
     implicitly_loaded_before: []const ModuleIndex,
@@ -629,7 +629,7 @@ pub const ImportRecord = struct {
     context_matches: ?[]const []const u8 = null,
     /// require.context: context_matches 와 1:1 매핑되는 resolved abs path. Phase 4 의
     /// `applyContextDepResults` 가 채움 (parse_arena 소유). codegen 의 webpackContext IIFE 가
-    /// 매치별 `__zts_modules[<abs_path>].fn()` 호출에 사용. RN/Hermes runtime 이 raw `require()` 를
+    /// 매치별 `__zntc_modules[<abs_path>].fn()` 호출에 사용. RN/Hermes runtime 이 raw `require()` 를
     /// 못 받기 때문에 wrapper module 호출로 emit (#1579 Phase 4 follow-up).
     /// element 가 null = 해당 매치 resolve 실패 (codegen 이 throw stub 으로 emit).
     context_resolved_paths: []const ?[]const u8 = &.{},
@@ -756,11 +756,11 @@ pub fn makeExportsVarName(allocator: std.mem.Allocator, path: []const u8) ![]con
     return makeVarNameWithPrefix(allocator, path, "exports_");
 }
 
-/// dev mode: `(__zts_modules["<dev_id>"].fn(), __toCommonJS(__zts_modules["<dev_id>"].exports))`
+/// dev mode: `(__zntc_modules["<dev_id>"].fn(), __toCommonJS(__zntc_modules["<dev_id>"].exports))`
 /// HMR에서 new Function()이 번들 스코프 밖에서 실행되므로 레지스트리 동적 lookup 사용.
 /// require_rewrites(metadata.zig) 및 default re-export(esm_wrap.zig)에서 공유.
 pub fn fmtDevRequireExpr(allocator: std.mem.Allocator, dev_id: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "(__zts_modules[\"{s}\"].fn(), __toCommonJS(__zts_modules[\"{s}\"].exports))", .{ dev_id, dev_id });
+    return std.fmt.allocPrint(allocator, "(__zntc_modules[\"{s}\"].fn(), __toCommonJS(__zntc_modules[\"{s}\"].exports))", .{ dev_id, dev_id });
 }
 
 /// npm 패키지 specifier를 UMD/AMD factory 매개변수명으로 변환.

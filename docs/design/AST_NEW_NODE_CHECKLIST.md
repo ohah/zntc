@@ -1,6 +1,6 @@
 # AST 신규 노드 추가 체크리스트
 
-ZTS는 AST tag 자동 생성을 아직 도입하지 않았기 때문에 (oxc는 `tasks/ast_tools/`로 1144개 자동), 새 노드를 추가할 때 수동으로 8~10곳을 수정해야 한다. 빠뜨리면 런타임 `unreachable` panic 또는 silent miss로 이어진다. 이 체크리스트는 추가 시 검토해야 할 곳을 한 번에 본다.
+ZNTC는 AST tag 자동 생성을 아직 도입하지 않았기 때문에 (oxc는 `tasks/ast_tools/`로 1144개 자동), 새 노드를 추가할 때 수동으로 8~10곳을 수정해야 한다. 빠뜨리면 런타임 `unreachable` panic 또는 silent miss로 이어진다. 이 체크리스트는 추가 시 검토해야 할 곳을 한 번에 본다.
 
 ## 0. 사전 확인
 

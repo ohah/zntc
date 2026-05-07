@@ -80,7 +80,7 @@ pub const PropTypeAnnotation = union(enum) {
 ///   image_source → resolveAssetSource
 ///   point        → pointsDiffer
 ///   edge_insets  → insetsDiffer
-///   image_request, dimension → 매핑 미정 (현재 ZTS 미지원, fail-fast)
+///   image_request, dimension → 매핑 미정 (현재 ZNTC 미지원, fail-fast)
 pub const ReservedPropPrimitive = enum {
     color,
     image_source,

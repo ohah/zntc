@@ -1,4 +1,4 @@
-//! ZTS Bundler — package.json 파서
+//! ZNTC Bundler — package.json 파서
 //!
 //! node_modules 패키지의 package.json을 파싱하여
 //! 모듈 해석에 필요한 필드를 추출한다.

@@ -17,19 +17,19 @@ jobs:
         include:
           - target: x86_64-linux
             os: ubuntu-latest
-            artifact: zts-x86_64-linux
+            artifact: zntc-x86_64-linux
           - target: aarch64-linux
             os: ubuntu-latest
-            artifact: zts-aarch64-linux
+            artifact: zntc-aarch64-linux
           - target: x86_64-macos
             os: macos-latest
-            artifact: zts-x86_64-macos
+            artifact: zntc-x86_64-macos
           - target: aarch64-macos
             os: macos-latest
-            artifact: zts-aarch64-macos
+            artifact: zntc-aarch64-macos
           - target: x86_64-windows
             os: windows-latest
-            artifact: zts-x86_64-windows
+            artifact: zntc-x86_64-windows
 
     steps:
       - name: Checkout

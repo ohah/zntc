@@ -1,4 +1,4 @@
-//! ZTS Bundler — Emitter
+//! ZNTC Bundler — Emitter
 //!
 //! 모듈 그래프의 모듈들을 exec_index 순서로 변환+코드젠하여
 //! 단일 파일 번들로 출력한다.
@@ -40,7 +40,7 @@ const CodegenOptions = @import("../codegen/codegen.zig").CodegenOptions;
 const SourceMap = @import("../codegen/sourcemap.zig");
 const error_codes = @import("../error_codes.zig");
 
-/// ZTS0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.
+/// ZNTC0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.
 const tla_warning_comment = "/* [" ++ error_codes.Code.tla_requires_esm_format.format() ++ "] " ++ error_codes.Code.tla_requires_esm_format.message() ++ ". */\n";
 const linker_mod = @import("linker.zig");
 const Linker = linker_mod.Linker;
@@ -74,7 +74,7 @@ pub const EmitOptions = struct {
     /// 소스맵 관련 옵션 묶음. 하위 필드: enable / debug_ids / function_map / lazy /
     /// source_root / sources_content. `SourceMapOptions` 정의는 `codegen/sourcemap.zig`.
     sourcemap: SourceMap.SourceMapOptions = .{},
-    /// dev mode: 각 모듈을 __zts_register() 팩토리로 래핑하고
+    /// dev mode: 각 모듈을 __zntc_register() 팩토리로 래핑하고
     /// HMR 런타임을 주입한다. import.meta.hot API 지원.
     dev_mode: bool = false,
     /// dev mode에서 모듈 ID 생성 시 기준 경로 (상대 경로 계산용).
@@ -84,7 +84,7 @@ pub const EmitOptions = struct {
     react_refresh: bool = false,
     /// Reanimated worklet 네이티브 변환.
     worklet_transform: bool = false,
-    /// worklet의 `__pluginVersion` 값. null이면 ZTS 기본 상수.
+    /// worklet의 `__pluginVersion` 값. null이면 ZNTC 기본 상수.
     worklet_plugin_version: ?[]const u8 = null,
     /// dev mode에서 per-module codes 수집 여부.
     /// false면 output만 생성하고 module_dev_codes를 건너뛴다 (초기 빌드용, 메모리 절감).
@@ -788,7 +788,7 @@ pub fn emitWithTreeShaking(
             // sourcemap 활성 시 `//# sourceURL=<mod_id>` 주석을 eval 코드 끝에 덧붙여
             // DevTools 가 익명 eval 스크립트(VM:1) 대신 모듈 경로로 표시하게 한다.
             // `sourceMappingURL` 은 dev server 가 라우트 컨벤션에 맞춰 별도 부착 —
-            // ZTS 는 서버 URL 구조를 모르므로 여기서는 `sourceURL` 만 담당.
+            // ZNTC 는 서버 URL 구조를 모르므로 여기서는 `sourceURL` 만 담당.
             // IIFE 끝 뒤에 위치하므로 `HMR_PREAMBLE_LINES` 오프셋에는 영향 없음.
             var source_url_buf: []const u8 = "";
             defer if (source_url_buf.len > 0) allocator.free(source_url_buf);
@@ -798,13 +798,13 @@ pub fn emitWithTreeShaking(
 
             const hmr_code = try std.mem.concat(allocator, u8, &.{
                 "(function(){\n",
-                "var __esm=__zts_g.__esm,__export=__zts_g.__export,__commonJS=__zts_g.__commonJS,",
-                "__defProp=__zts_g.__defProp,__toESM=__zts_g.__toESM,__toCommonJS=__zts_g.__toCommonJS,",
-                "__zts_modules=__zts_g.__zts_modules,__zts_make_hot=__zts_g.__zts_make_hot,",
-                "__zts_resolveRefresh=__zts_g.__zts_resolveRefresh||function(){return null},",
-                "__zts_isReactRefreshBoundary=__zts_g.__zts_isReactRefreshBoundary,",
-                "__zts_enqueueUpdate=__zts_g.__zts_enqueueUpdate,",
-                "__zts_reload=__zts_g.__zts_reload;\n",
+                "var __esm=__zntc_g.__esm,__export=__zntc_g.__export,__commonJS=__zntc_g.__commonJS,",
+                "__defProp=__zntc_g.__defProp,__toESM=__zntc_g.__toESM,__toCommonJS=__zntc_g.__toCommonJS,",
+                "__zntc_modules=__zntc_g.__zntc_modules,__zntc_make_hot=__zntc_g.__zntc_make_hot,",
+                "__zntc_resolveRefresh=__zntc_g.__zntc_resolveRefresh||function(){return null},",
+                "__zntc_isReactRefreshBoundary=__zntc_g.__zntc_isReactRefreshBoundary,",
+                "__zntc_enqueueUpdate=__zntc_g.__zntc_enqueueUpdate,",
+                "__zntc_reload=__zntc_g.__zntc_reload;\n",
                 code,
                 "\n})();\n",
                 source_url_buf,
@@ -893,7 +893,7 @@ pub fn emitWithTreeShaking(
     }
 
     // 래핑된 엔트리 자동 호출. Metro `getAppendScripts` 와 동등 — `runBeforeMainModule`
-    // + entry 각 path 마다 separate `__r(N);` (= 독립 outer `__zts_guarded(...)`) 로 emit.
+    // + entry 각 path 마다 separate `__r(N);` (= 독립 outer `__zntc_guarded(...)`) 로 emit.
     if (entry_idx) |ei| {
         for (sorted.items, 0..) |em, ei_idx| {
             if (em.index.toU32() == ei and em.wrap_kind.isWrapped()) {
@@ -948,7 +948,7 @@ pub fn emitWithTreeShaking(
         // prologue를 가상 소스 "<runtime>"으로 매핑하고 polyfill은 별도 source로 매핑.
         // DevTools가 vendored 프레임을 ignoreList로 스킵 → 유저 코드 프레임을 노출.
         if (prologue_lines > 0) {
-            const runtime_src_idx = try addIdentitySource(sm, "node_modules/.zts/runtime.js", "// zts bundle runtime (polyfills, helpers)\n", options.sourcemap.sources_content);
+            const runtime_src_idx = try addIdentitySource(sm, "node_modules/.zntc/runtime.js", "// zntc bundle runtime (polyfills, helpers)\n", options.sourcemap.sources_content);
             try sm.addIgnoredSource(runtime_src_idx);
 
             // polyfill content 라인을 건너뛰며 runtime identity 매핑 추가.
@@ -1323,8 +1323,8 @@ pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator
     try output.appendSlice(allocator, "();\n");
 }
 
-/// `entry_error_guard` 활성 시 init 호출을 `__zts_guarded(callName)` 패턴으로 emit.
-/// helper (`__zts_guarded`) 는 prologue 에 주입되어 outermost 호출만 실제 wrap.
+/// `entry_error_guard` 활성 시 init 호출을 `__zntc_guarded(callName)` 패턴으로 emit.
+/// helper (`__zntc_guarded`) 는 prologue 에 주입되어 outermost 호출만 실제 wrap.
 /// 비활성 시 기존 `appendModuleCall` 와 동등.
 /// TLA (`uses_top_level_await`) 인 경우 `await` 가 lambda 안에 들어가야 하므로 wrap 안 함.
 pub fn appendGuardedModuleCall(
@@ -1350,7 +1350,7 @@ pub fn appendGuardedModuleCall(
 }
 
 /// run-before-main 모듈의 호출 코드를 output에 추가한다.
-/// `entry_error_guard` 활성 시 각 rbm 호출도 `__zts_guarded(...)` 로 wrap —
+/// `entry_error_guard` 활성 시 각 rbm 호출도 `__zntc_guarded(...)` 로 wrap —
 /// Metro `getAppendScripts` 가 `runBeforeMainModule` 의 각 path 마다 별도
 /// `__r(N);` (= guardedLoadModule outer 호출) 을 emit 하는 것과 동등.
 pub fn appendRunBeforeMainCalls(output: *std.ArrayList(u8), allocator: std.mem.Allocator, graph: *const @import("graph.zig").ModuleGraph, run_before_main: []const []const u8, options: *const EmitOptions) !void {
@@ -1801,7 +1801,7 @@ pub fn emitModule(
         .sourcemap_function_map = options.sourcemap.enable and options.sourcemap.function_map,
         // JSX: Transformer가 이미 call_expression으로 lowering 완료.
         // codegen은 jsx_element/jsx_fragment를 만나지 않으므로 JSX 옵션 불필요.
-        // dev mode: import.meta.hot → __zts_make_hot("dev_id")
+        // dev mode: import.meta.hot → __zntc_make_hot("dev_id")
         .dev_module_id = if (options.dev_mode and module.dev_id.len > 0) module.dev_id else null,
         .require_context_module_id_root = options.root_dir,
         .import_records = module.import_records,
@@ -1816,12 +1816,12 @@ pub fn emitModule(
     var code = try cg.generate(root);
 
     // React Fast Refresh: 컴포넌트가 있는 모듈에 hot.accept() 자동 삽입.
-    // accept() 없으면 __zts_apply_update가 full reload로 fallback.
+    // accept() 없으면 __zntc_apply_update가 full reload로 fallback.
     if (options.dev_mode and options.react_refresh and module.dev_id.len > 0) {
         if (std.mem.indexOf(u8, code, "$RefreshReg$") != null) {
             code = try std.mem.concat(arena_alloc, u8, &.{
                 code,
-                "\n__zts_make_hot(\"",
+                "\n__zntc_make_hot(\"",
                 module.dev_id,
                 "\").accept();\n",
             });
@@ -2346,7 +2346,7 @@ fn emitBundleRuntimeHelpers(
     }
     // __async는 이후 appendRuntimeHelpers(collected_helpers)에서 실제 사용 여부 기반으로
     // 주입됨 — 여기서 target 기반으로 또 주입하면 중복 emit 된다.
-    // dev mode: HMR 런타임 주입 (__zts_modules, __zts_require, __zts_apply_update 등).
+    // dev mode: HMR 런타임 주입 (__zntc_modules, __zntc_require, __zntc_apply_update 등).
     // HMR 런타임이 $RefreshReg$/$RefreshSig$도 정의하므로 별도 스텁 불필요.
     if (options.dev_mode) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.HMR_RUNTIME_MIN else rt.HMR_RUNTIME);
@@ -2355,7 +2355,7 @@ fn emitBundleRuntimeHelpers(
         try output.appendSlice(allocator, rt.REFRESH_STUB);
     }
     // entry_error_guard: Metro `guardedLoadModule` 동등 mechanism 의 helper 주입.
-    // 실제 wrap 은 emit 단계에서 module init 호출 site 별로 `__zts_guarded(fn)` 으로 emit.
+    // 실제 wrap 은 emit 단계에서 module init 호출 site 별로 `__zntc_guarded(fn)` 으로 emit.
     if (options.entry_error_guard) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.GUARDED_RUNTIME_MIN else rt.GUARDED_RUNTIME);
     }
@@ -3057,7 +3057,7 @@ const esm_wrap = @import("emitter/esm_wrap.zig");
 const emitEsmWrappedModule = esm_wrap.emitEsmWrappedModule;
 
 /// source 등록 + (선택) sourcesContent 등록을 한 번에. source_index 반환.
-/// `\x00zts:runtime/...` 같은 virtual module ID 는 NULL byte 가 sourcemap JSON 으로
+/// `\x00zntc:runtime/...` 같은 virtual module ID 는 NULL byte 가 sourcemap JSON 으로
 /// 새지 않도록 `runtime-...` 형태로 sanitize (#1961).
 fn addIdentitySource(sm: *SourceMap.SourceMapBuilder, path: []const u8, content: []const u8, include_content: bool) !u32 {
     const helper_modules = @import("../runtime_helper_modules.zig");
@@ -3100,7 +3100,7 @@ fn emitFormatPrologue(
         .iife => {
             if (global_name) |gn| {
                 if (std.mem.indexOfScalar(u8, gn, '.') != null) {
-                    try output.appendSlice(allocator, "/* [ZTS WARNING] Dotted globalName (\"");
+                    try output.appendSlice(allocator, "/* [ZNTC WARNING] Dotted globalName (\"");
                     try output.appendSlice(allocator, gn);
                     try output.appendSlice(allocator, "\") is not yet supported. Use a simple name. */\n");
                     try output.appendSlice(allocator, factory_fn);

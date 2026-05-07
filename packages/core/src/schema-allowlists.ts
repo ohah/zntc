@@ -4,8 +4,8 @@
  *
  * 사용처:
  *  - `packages/core/src/typo-suggest.test.ts`: `KNOWN_CONFIG_KEYS` 미포함 정당화 (사용자가
- *    `zts.config.*` 에 적을 일 없으므로 typo 검출 대상 아님)
- *  - `packages/core/bin/zts-cli-schema-sync.test.ts`: CLI flag 미노출 정당화
+ *    `zntc.config.*` 에 적을 일 없으므로 typo 검출 대상 아님)
+ *  - `packages/core/bin/zntc-cli-schema-sync.test.ts`: CLI flag 미노출 정당화
  *
  * Zig DTO sync (`src/transpile_options_dto_test.zig:ts_buildoptions_only_allowlist`) 는 별
  * 언어라 별도 유지 — 새 internal 키 추가 시 양쪽 모두 갱신 필요. (TypeScript Compiler API

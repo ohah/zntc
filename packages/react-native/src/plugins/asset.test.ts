@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { ZTS_HMR_CLIENT_CODE } from '../runtime-loader.ts';
+import { ZNTC_HMR_CLIENT_CODE } from '../runtime-loader.ts';
 import { createAssetPlugin } from './asset.ts';
 import type { PluginConfig } from './types.ts';
 
@@ -36,7 +36,7 @@ describe('createAssetPlugin', () => {
     sourceExts: ['.ts', '.tsx', '.js', '.jsx'],
   };
 
-  test('HMRClient.js path → ZTS HMR runtime code 반환 (onLoad)', () => {
+  test('HMRClient.js path → ZNTC HMR runtime code 반환 (onLoad)', () => {
     const handlers = captureHandlers(baseConfig);
     expect(handlers.length).toBe(1); // HMRClient.js 만 (sourceExts 에 RN-specific 확장자 0)
     const hmrHandler = handlers[0]!;
@@ -45,7 +45,7 @@ describe('createAssetPlugin', () => {
 
     const result = hmrHandler.handler({ path: '/abs/Libraries/Utilities/HMRClient.js' });
     expect(result).toEqual({
-      contents: ZTS_HMR_CLIENT_CODE.replace(/__ZTS_FORWARD_CLIENT_LOGS__/g, 'false'),
+      contents: ZNTC_HMR_CLIENT_CODE.replace(/__ZNTC_FORWARD_CLIENT_LOGS__/g, 'false'),
     });
   });
 
@@ -53,7 +53,7 @@ describe('createAssetPlugin', () => {
     const handlers = captureHandlers({ ...baseConfig, forwardClientLogs: true });
     const result = handlers[0]!.handler({ path: '/abs/Libraries/Utilities/HMRClient.js' });
     expect(result?.contents).toContain('typeof true');
-    expect(result?.contents).not.toContain('__ZTS_FORWARD_CLIENT_LOGS__');
+    expect(result?.contents).not.toContain('__ZNTC_FORWARD_CLIENT_LOGS__');
   });
 
   test('babelTransformerPath 미지정 — HMRClient.js handler 만 등록 (custom transformer 없음)', () => {
@@ -96,8 +96,8 @@ describe('createAssetPlugin', () => {
     expect(customHandler.filter.test('/abs/x.mjs')).toBe(false);
   });
 
-  test('plugin name 은 zts:react-native:runtime', () => {
+  test('plugin name 은 zntc:react-native:runtime', () => {
     const plugin = createAssetPlugin(baseConfig);
-    expect(plugin.name).toBe('zts:react-native:runtime');
+    expect(plugin.name).toBe('zntc:react-native:runtime');
   });
 });

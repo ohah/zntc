@@ -1,4 +1,4 @@
-//! ZTS Semantic Analyzer
+//! ZNTC Semantic Analyzer
 //!
 //! AST를 순회하면서 스코프 트리를 구축하고 심볼(변수/함수/클래스 선언)을 수집한다.
 //! 수집된 정보로 재선언 에러 등을 검증한다.
@@ -82,7 +82,7 @@ pub const SemanticAnalyzer = struct {
     /// 진단 트리거 자체는 `unsupported` 비트로 판단 — WASM/NAPI 경로에도 적용된다.
     es_target: ?@import("../transformer/compat.zig").ESTarget = null,
 
-    /// 타겟에서 미지원 feature 비트. `top_level_await` 비트가 set이면 ZTS0001 발생.
+    /// 타겟에서 미지원 feature 비트. `top_level_await` 비트가 set이면 ZNTC0001 발생.
     /// CLI/WASM/NAPI 모두 동일한 비트마스크로 타겟 정보를 전달하므로,
     /// 이 필드를 기준으로 진단하면 모든 진입점에서 일관된 동작 보장.
     unsupported: @import("../transformer/compat.zig").UnsupportedFeatures = .{},
@@ -1105,7 +1105,7 @@ pub const SemanticAnalyzer = struct {
         try self.addRedeclarationError(span, name, null);
     }
 
-    /// ZTS1000 identifier_redeclared — "Identifier '{name}' has already been declared" 메시지.
+    /// ZNTC1000 identifier_redeclared — "Identifier '{name}' has already been declared" 메시지.
     fn addRedeclarationError(self: *SemanticAnalyzer, span: Span, name: []const u8, previous_span: ?Span) AllocError!void {
         const msg = try std.fmt.allocPrint(self.allocator, "Identifier '{s}' has already been declared", .{name});
         try self.addErrorMsgCodeWithPrevious(span, msg, .identifier_redeclared, previous_span);

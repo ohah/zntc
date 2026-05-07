@@ -1,6 +1,6 @@
 //! RN View Config Codegen 모듈 — 진입점.
 //!
-//! `@react-native/codegen` 의 view config 인라인 기능을 ZTS native 로 옮긴
+//! `@react-native/codegen` 의 view config 인라인 기능을 ZNTC native 로 옮긴
 //! 플러그인 (#2348). 다음 단계:
 //!
 //!   schema.zig            — Schema 데이터 구조 (PR #1, merged)

@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
- * ZTS 트랜스파일 적합성 테스트
+ * ZNTC 트랜스파일 적합성 테스트
  *
  * esbuild ts_parser_test.go + SWC fixtures에서 추출한 테스트 케이스로
- * ZTS의 TS→JS 트랜스파일 정확도를 측정한다.
+ * ZNTC의 TS→JS 트랜스파일 정확도를 측정한다.
  *
- * 비교 기준: esbuild 출력 (expected)과 ZTS 출력이 일치하는지.
+ * 비교 기준: esbuild 출력 (expected)과 ZNTC 출력이 일치하는지.
  * 공백/줄바꿈 차이는 정규화하여 비교.
  */
 
@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 
 const ROOT = resolve(__dirname, '../..');
-const ZTS_BIN = join(ROOT, 'zig-out/bin/zts');
+const ZNTC_BIN = join(ROOT, 'zig-out/bin/zntc');
 const TEST_GO = resolve(ROOT, 'references/esbuild/internal/js_parser/ts_parser_test.go');
 const SWC_FIXTURE_DIR = resolve(
   ROOT,
@@ -170,7 +170,7 @@ function extractSwcCases(): TestCase[] {
 }
 
 // ============================================================
-// 3. ZTS 실행 + 비교
+// 3. ZNTC 실행 + 비교
 // ============================================================
 
 function normalize(s: string): string {
@@ -178,7 +178,7 @@ function normalize(s: string): string {
     s
       .replace(/\r\n/g, '\n')
       .replace(/\t/g, '  ') // tab → 2 spaces
-      // 포맷팅 차이 정규화 (ZTS: 한 줄 compact, esbuild: pretty-print)
+      // 포맷팅 차이 정규화 (ZNTC: 한 줄 compact, esbuild: pretty-print)
       .replace(/\{\n\s*/g, '{') // {\n  → {
       .replace(/;\n\s*/g, ';') // ;\n  → ;
       .replace(/\n\s*\}/g, '}') //  \n} → }
@@ -188,12 +188,12 @@ function normalize(s: string): string {
   );
 }
 
-function runZts(
+function runZntc(
   input: string,
   isTsx: boolean,
   category?: string,
 ): { ok: boolean; output: string; error: string } {
-  const tmpDir = mkdtempSync(join(tmpdir(), 'zts-conform-'));
+  const tmpDir = mkdtempSync(join(tmpdir(), 'zntc-conform-'));
   const ext = isTsx ? 'input.tsx' : 'input.ts';
   const inputPath = join(tmpDir, ext);
   writeFileSync(inputPath, input);
@@ -207,7 +207,7 @@ function runZts(
     args.push('--experimental-decorators');
   }
 
-  const result = spawnSync(ZTS_BIN, args, {
+  const result = spawnSync(ZNTC_BIN, args, {
     stdio: 'pipe',
     timeout: 5000,
   });
@@ -223,7 +223,7 @@ function runZts(
 // 4. 메인
 // ============================================================
 
-console.log('ZTS Transpile Conformance Test\n');
+console.log('ZNTC Transpile Conformance Test\n');
 
 const esbuildCases = extractEsbuildCases();
 const swcCases = extractSwcCases();
@@ -249,9 +249,9 @@ let errors = 0;
 for (let i = 0; i < allCases.length; i++) {
   const c = allCases[i];
   const isTsx = c.category === 'TSX';
-  const { ok, output, error } = runZts(c.input, isTsx, c.category);
+  const { ok, output, error } = runZntc(c.input, isTsx, c.category);
 
-  // ZTS가 에러를 출력해도 exit 0으로 나올 수 있음 (에러 복구)
+  // ZNTC가 에러를 출력해도 exit 0으로 나올 수 있음 (에러 복구)
   const hasParseError = error.includes('error:');
   if (!ok || (hasParseError && output.trim() === '')) {
     results.push({

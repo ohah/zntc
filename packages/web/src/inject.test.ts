@@ -15,7 +15,7 @@ let outdir: string;
 let htmlPath: string;
 
 beforeEach(() => {
-  outdir = mkdtempSync(join(tmpdir(), 'zts-web-inject-'));
+  outdir = mkdtempSync(join(tmpdir(), 'zntc-web-inject-'));
   htmlPath = join(outdir, 'index.html');
 });
 
@@ -80,17 +80,17 @@ describe('injectAppDevHmrClient', () => {
     writeHtml('<html><head></head></html>');
     injectAppDevHmrClient(outdir);
     const html = readHtml();
-    expect(html).toContain(`<script type="module" src="/__zts_app_dev_hmr__"></script>`);
+    expect(html).toContain(`<script type="module" src="/__zntc_app_dev_hmr__"></script>`);
     expect(html).toContain('</head>');
   });
 
   test('이미 client 가 있으면 중복 삽입 안 함', () => {
     writeHtml(
-      `<html><head><script type="module" src="/__zts_app_dev_hmr__"></script></head></html>`,
+      `<html><head><script type="module" src="/__zntc_app_dev_hmr__"></script></head></html>`,
     );
     injectAppDevHmrClient(outdir);
     const html = readHtml();
-    const occurrences = html.match(/__zts_app_dev_hmr__/g) ?? [];
+    const occurrences = html.match(/__zntc_app_dev_hmr__/g) ?? [];
     expect(occurrences.length).toBe(1);
   });
 });

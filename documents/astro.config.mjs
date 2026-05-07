@@ -9,11 +9,11 @@ import starlightTypeDoc, { typeDocSidebarGroup } from "starlight-typedoc";
 // https://astro.build/config
 export default defineConfig({
   site: "https://ohah.github.io",
-  base: "/zts",
+  base: "/zntc",
   integrations: [
     starlight({
-      title: "ZTS",
-      description: "Zig TypeScript Transpiler & Bundler",
+      title: "ZNTC",
+      description: "Zig Native Transpiler Compiler",
       expressiveCode: {
         themes: ["github-dark", "github-light"],
         styleOverrides: {
@@ -33,7 +33,7 @@ export default defineConfig({
       },
       plugins: [
         starlightLinksValidator({
-          exclude: ["/zts/playground/", "/zts/en/playground/", "/zts/analyze/", "/zts/en/analyze/"],
+          exclude: ["/zntc/playground/", "/zntc/en/playground/", "/zntc/analyze/", "/zntc/en/analyze/"],
         }),
         starlightTypeDoc({
           entryPoints: ["../packages/core/index.ts"],
@@ -58,7 +58,7 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/ohah/zts",
+          href: "https://github.com/ohah/zntc",
         },
       ],
       sidebar: [

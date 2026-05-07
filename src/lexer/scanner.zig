@@ -1,4 +1,4 @@
-//! ZTS Lexer Scanner
+//! ZNTC Lexer Scanner
 //!
 //! 소스 코드를 순회하며 토큰을 하나씩 생성하는 핵심 모듈.
 //! 파서가 `next()`를 호출하면 다음 토큰을 스캔한다 (D036).

@@ -32,10 +32,10 @@ async function sampleRSS(pid: number): Promise<number> {
   return rss;
 }
 
-/** shell 부모 PID의 자식(zts) 찾기. Linux/macOS 공용. */
-async function findZtsChildPid(parentPid: number): Promise<number> {
+/** shell 부모 PID의 자식(zntc) 찾기. Linux/macOS 공용. */
+async function findZntcChildPid(parentPid: number): Promise<number> {
   const proc = Bun.spawn({
-    cmd: ['pgrep', '-P', String(parentPid), 'zts'],
+    cmd: ['pgrep', '-P', String(parentPid), 'zntc'],
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -43,7 +43,7 @@ async function findZtsChildPid(parentPid: number): Promise<number> {
   await proc.exited;
   const pid = Number.parseInt(stdout.trim().split('\n')[0], 10);
   if (Number.isNaN(pid)) {
-    throw new Error(`failed to find zts child of pid ${parentPid}`);
+    throw new Error(`failed to find zntc child of pid ${parentPid}`);
   }
   return pid;
 }
@@ -87,9 +87,9 @@ describe('watch 메모리 스트레스 (시뮬레이션)', () => {
       try {
         await waitForNdjsonLines(jsonOut, 1, tail, { timeoutMs: 15000 });
 
-        const ztsPid = await findZtsChildPid(proc.pid!);
+        const zntcPid = await findZntcChildPid(proc.pid!);
         const samples: Array<{ x: number; y: number }> = [];
-        samples.push({ x: 0, y: await sampleRSS(ztsPid) });
+        samples.push({ x: 0, y: await sampleRSS(zntcPid) });
 
         for (let i = 1; i <= ITERATIONS; i++) {
           // content hash 변화 유도 — 변수 값을 iter마다 바꿈
@@ -97,7 +97,7 @@ describe('watch 메모리 스트레스 (시뮬레이션)', () => {
           await waitForNdjsonLines(jsonOut, 1 + i, tail, { timeoutMs: 10000 });
 
           if (i % SAMPLE_EVERY === 0) {
-            samples.push({ x: i, y: await sampleRSS(ztsPid) });
+            samples.push({ x: i, y: await sampleRSS(zntcPid) });
           }
         }
 

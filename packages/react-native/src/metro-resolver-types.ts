@@ -1,8 +1,8 @@
 // Metro 호환 resolver type. createMetroResolveRequestPlugin (PR #5) 의 caller
-// 가 사용자 resolveRequest 를 그대로 받아 ZTS `onResolve` hook 으로 어댑팅.
+// 가 사용자 resolveRequest 를 그대로 받아 ZNTC `onResolve` hook 으로 어댑팅.
 //
 // `metro-resolver` 의 full type 을 직접 import 하지 않는 이유 — metro-resolver
-// 는 optionalDependencies, lazy require. 정의만 ZTS 측에 두면 type-level 호환
+// 는 optionalDependencies, lazy require. 정의만 ZNTC 측에 두면 type-level 호환
 // 검증 가능 + 패키지 미설치 시 declaration 누락 회피.
 
 /**
@@ -39,7 +39,7 @@ export interface ResolutionContext {
  * 사용자 resolveRequest 함수 시그니처 (Metro 호환).
  * - `context.resolveRequest(context, moduleName, platform)` 로 default 위임 가능.
  * - 결과로 Resolution 반환 또는 throw — throw 시 caller (createMetroResolveRequestPlugin)
- *   가 sentinel `__ZTS_RN_DELEGATE_TO_DEFAULT__` 를 잡아 default resolver fallthrough.
+ *   가 sentinel `__ZNTC_RN_DELEGATE_TO_DEFAULT__` 를 잡아 default resolver fallthrough.
  */
 export type CustomResolver = (
   context: ResolutionContext,

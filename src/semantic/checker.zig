@@ -1,4 +1,4 @@
-//! ZTS Semantic Early Error Checker
+//! ZNTC Semantic Early Error Checker
 //!
 //! AST 노드별 early error 검증 함수 모음 (oxc 방식).
 //! analyzer.zig의 visit 함수에서 직접 호출한다.

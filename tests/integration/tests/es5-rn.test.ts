@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { ZTS_BIN } from './helpers';
+import { ZNTC_BIN } from './helpers';
 import { resolve } from 'node:path';
 
 /**
@@ -23,7 +23,7 @@ async function transpileES5(file: string): Promise<{
   stderr: string;
 }> {
   const filePath = resolve(FIXTURES, file);
-  const proc = Bun.spawnSync([ZTS_BIN, '--target=es5', '--flow', '--jsx-in-js', filePath]);
+  const proc = Bun.spawnSync([ZNTC_BIN, '--target=es5', '--flow', '--jsx-in-js', filePath]);
   return {
     exitCode: proc.exitCode,
     stdout: proc.stdout.toString(),
@@ -77,7 +77,7 @@ describe('RN ES5: ExampleApp 번들 테스트', () => {
 
     // 번들링 (no target — ES6+ 출력)
     const bundle = Bun.spawnSync([
-      ZTS_BIN,
+      ZNTC_BIN,
       '--bundle',
       resolve(EXAMPLE_APP, 'index.js'),
       '--platform=react-native',
@@ -126,7 +126,7 @@ describe('RN ES5: ExampleApp 번들 테스트', () => {
 
   test('bundle --target=es5', { timeout: 30_000 }, async () => {
     const bundle = Bun.spawnSync([
-      ZTS_BIN,
+      ZNTC_BIN,
       '--bundle',
       resolve(EXAMPLE_APP, 'index.js'),
       '--platform=react-native',
@@ -190,7 +190,7 @@ describe('RN ES5: ExampleApp 번들 테스트', () => {
   );
 });
 
-describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
+describe('RN 번들: Metro vs ZNTC 모듈 수 비교', () => {
   const EXAMPLE_APP = resolve(import.meta.dir, 'fixtures/rn-example-app');
 
   test('Metro 번들 모듈 수 기준선', async () => {
@@ -216,9 +216,9 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
     const metroOutput = await Bun.file(resolve(EXAMPLE_APP, 'metro-out.js')).text();
     const metroModules = (metroOutput.match(/^__d\(function/gm) || []).length;
 
-    // ZTS 번들 (--rn-platform=ios: Metro의 --platform ios와 동일한 확장자 해석)
-    const zts = Bun.spawnSync([
-      ZTS_BIN,
+    // ZNTC 번들 (--rn-platform=ios: Metro의 --platform ios와 동일한 확장자 해석)
+    const zntc = Bun.spawnSync([
+      ZNTC_BIN,
       '--bundle',
       resolve(EXAMPLE_APP, 'index.js'),
       '--platform=react-native',
@@ -226,25 +226,25 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
       '--flow',
       '--metafile=' + resolve(EXAMPLE_APP, 'meta.json'),
       '-o',
-      resolve(EXAMPLE_APP, 'zts-out.js'),
+      resolve(EXAMPLE_APP, 'zntc-out.js'),
     ]);
-    expect(zts.exitCode).toBe(0);
+    expect(zntc.exitCode).toBe(0);
 
     const meta = JSON.parse(await Bun.file(resolve(EXAMPLE_APP, 'meta.json')).text());
-    const ztsModules = Object.keys(meta.inputs || {}).length;
+    const zntcModules = Object.keys(meta.inputs || {}).length;
 
     // 로그 출력 (CI에서 확인용)
-    console.log(`Metro modules: ${metroModules}, ZTS modules: ${ztsModules}`);
+    console.log(`Metro modules: ${metroModules}, ZNTC modules: ${zntcModules}`);
     console.log(
-      `Metro bytes: ${metroOutput.length}, ZTS bytes: ${(await Bun.file(resolve(EXAMPLE_APP, 'zts-out.js')).text()).length}`,
+      `Metro bytes: ${metroOutput.length}, ZNTC bytes: ${(await Bun.file(resolve(EXAMPLE_APP, 'zntc-out.js')).text()).length}`,
     );
 
-    // ZTS 의 module graph 가 Metro 와 동등 수준이어야 한다. Metro 보다 적은 경우 =
+    // ZNTC 의 module graph 가 Metro 와 동등 수준이어야 한다. Metro 보다 적은 경우 =
     // 더 정밀한 tree-shake (#2679: __DEV__=false ternary dead branch 안의 require 를
     // strip — Metro 는 이 모듈을 graph 에 그대로 둠). 너무 적으면 resolve 누락,
     // 너무 많으면 dead-strip 회귀. 양쪽 ±10% 가드.
     const METRO_PARITY_TOLERANCE = 0.1;
-    const ratio = ztsModules / metroModules;
+    const ratio = zntcModules / metroModules;
     console.log(`Module resolve ratio: ${(ratio * 100).toFixed(1)}%`);
     expect(ratio).toBeGreaterThanOrEqual(1 - METRO_PARITY_TOLERANCE);
     expect(ratio).toBeLessThanOrEqual(1 + METRO_PARITY_TOLERANCE);
@@ -257,10 +257,10 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
       `node_modules/hermes-compiler/hermesc/${hermescDir}/hermesc`,
     );
 
-    // ZTS 번들
-    const outFile = resolve(EXAMPLE_APP, 'zts-hermes.js');
-    const zts = Bun.spawnSync([
-      ZTS_BIN,
+    // ZNTC 번들
+    const outFile = resolve(EXAMPLE_APP, 'zntc-hermes.js');
+    const zntc = Bun.spawnSync([
+      ZNTC_BIN,
       '--bundle',
       resolve(EXAMPLE_APP, 'index.js'),
       '--platform=react-native',
@@ -269,10 +269,10 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
       '-o',
       outFile,
     ]);
-    expect(zts.exitCode).toBe(0);
+    expect(zntc.exitCode).toBe(0);
 
     // hermesc로 구문 검증
-    const hbc = resolve(EXAMPLE_APP, 'zts-hermes.hbc');
+    const hbc = resolve(EXAMPLE_APP, 'zntc-hermes.hbc');
     const hermes = Bun.spawnSync([hermesc, '-emit-binary', '-out', hbc, outFile]);
     const stderr = hermes.stderr?.toString() ?? '';
     if (hermes.exitCode !== 0) {
@@ -287,9 +287,9 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
     // __commonJS 래퍼 안에서 ESM import가 require()로 변환될 때
     // require_xxx()로 치환되어야 함. raw require("specifier")가 남아있으면 런타임 에러.
     // 이전 ��스트(Hermes 구문 검증)에 의존하지 않고 자체 번들 생성
-    const outFile = resolve(EXAMPLE_APP, 'zts-require-check.js');
-    const zts = Bun.spawnSync([
-      ZTS_BIN,
+    const outFile = resolve(EXAMPLE_APP, 'zntc-require-check.js');
+    const zntc = Bun.spawnSync([
+      ZNTC_BIN,
       '--bundle',
       resolve(EXAMPLE_APP, 'index.js'),
       '--platform=react-native',
@@ -298,7 +298,7 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
       '-o',
       outFile,
     ]);
-    expect(zts.exitCode).toBe(0);
+    expect(zntc.exitCode).toBe(0);
     const output = await Bun.file(outFile).text();
 
     // 번들 내 raw require("...") 패턴 검출 (require_ 접두사가 아닌 것만)
@@ -318,7 +318,7 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
   test('__esm 래퍼 내 exports/module.exports 부재 검증', async () => {
     // __esm 래퍼 안에서 exports.x=x 또는 module.exports=x가 있으면 런타임 에러 발생.
     // __esm은 exports/module 파라미터를 제공하지 않으므로, CJS export 출력이 없어야 함.
-    const outFile = resolve(EXAMPLE_APP, 'zts-require-check.js');
+    const outFile = resolve(EXAMPLE_APP, 'zntc-require-check.js');
     const output = await Bun.file(outFile).text();
 
     // __esm 래퍼 안의 코드 추출하여 exports. / module.exports 검사
@@ -346,7 +346,7 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
   test('__esm 래퍼 내 __export getter 변수 정의 검증', async () => {
     // __export의 getter가 참조하는 변수가 같은 __esm 래퍼 안에 정의되어 있는지 검증.
     // 미정의 변수 참조 시 런타임 ReferenceError 발생.
-    const outFile = resolve(EXAMPLE_APP, 'zts-require-check.js');
+    const outFile = resolve(EXAMPLE_APP, 'zntc-require-check.js');
     const output = await Bun.file(outFile).text();
 
     // __esm 블록에서 __export의 getter 변수명 추출
@@ -375,17 +375,17 @@ describe('RN 번들: Metro vs ZTS 모듈 수 비교', () => {
 });
 
 /**
- * inline 코드를 임시 파일로 만들어 ZTS CLI로 트랜스파일하는 헬퍼.
+ * inline 코드를 임시 파일로 만들어 ZNTC CLI로 트랜스파일하는 헬퍼.
  * ext: 확장자 (기본 ".ts"), flags: 추가 CLI 플래그
  */
 function transpileInline(code: string, ext = '.ts', flags: string[] = []): string {
   const { mkdtempSync, writeFileSync, rmSync } = require('fs');
   const { join } = require('path');
   const { tmpdir } = require('os');
-  const dir = mkdtempSync(join(tmpdir(), 'zts-inline-'));
+  const dir = mkdtempSync(join(tmpdir(), 'zntc-inline-'));
   const file = join(dir, `input${ext}`);
   writeFileSync(file, code);
-  const proc = Bun.spawnSync([ZTS_BIN, ...flags, file]);
+  const proc = Bun.spawnSync([ZNTC_BIN, ...flags, file]);
   const stdout = proc.stdout.toString();
   rmSync(dir, { recursive: true });
   expect(proc.exitCode).toBe(0);

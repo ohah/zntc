@@ -1,11 +1,11 @@
 ---
 title: Installation
-description: Learn how to install ZTS.
+description: Learn how to install ZNTC.
 ---
 
 ## Build from Source
 
-ZTS currently needs to be built from source.
+ZNTC currently needs to be built from source.
 
 ### Prerequisites
 
@@ -15,28 +15,28 @@ ZTS currently needs to be built from source.
 ### Build
 
 ```bash
-git clone https://github.com/ohah/zts.git
-cd zts
+git clone https://github.com/ohah/zntc.git
+cd zntc
 zig build -Doptimize=ReleaseFast
 ```
 
-The built binary is located at `zig-out/bin/zts`.
+The built binary is located at `zig-out/bin/zntc`.
 
 ### Add to PATH
 
 ```bash
 # ~/.zshrc or ~/.bashrc
-export PATH="$PATH:/path/to/zts/zig-out/bin"
+export PATH="$PATH:/path/to/zntc/zig-out/bin"
 ```
 
 ## WASM (Browser/Node.js)
 
 ```bash
-bun add @zts/wasm
+bun add @zntc/wasm
 ```
 
 ```typescript
-import { init, transpile } from "@zts/wasm";
+import { init, transpile } from "@zntc/wasm";
 
 await init();
 const result = transpile("const x: number = 1;");
@@ -46,11 +46,11 @@ console.log(result.code); // "const x = 1;"
 ## NAPI (Node.js/Bun — Recommended)
 
 ```bash
-bun add @zts/core
+bun add @zntc/core
 ```
 
 ```typescript
-import { init, transpile, build, buildSync, vitePlugin } from "@zts/core";
+import { init, transpile, build, buildSync, vitePlugin } from "@zntc/core";
 
 init();
 
@@ -76,10 +76,10 @@ const result2 = await build({
 
 ## JS Build API (NAPI, in-process)
 
-Use `@zts/core`'s `build()` / `buildSync()` / `watch()` to bundle directly inside Node.js/Bun:
+Use `@zntc/core`'s `build()` / `buildSync()` / `watch()` to bundle directly inside Node.js/Bun:
 
 ```typescript
-import { init, build } from "@zts/core";
+import { init, build } from "@zntc/core";
 init();
 
 const result = await build({

@@ -5,24 +5,24 @@
 
 ## 1. 한 줄 요약
 
-사용자 플러그인을 **WebAssembly로 컴파일하여 ZTS 안에서 실행**하게 하는 시스템.
-사용자는 Rust/Zig/AssemblyScript/Go(TinyGo)/C++ 등으로 작성, ZTS는 `.wasm`을 로드해서 transform pass에 주입.
+사용자 플러그인을 **WebAssembly로 컴파일하여 ZNTC 안에서 실행**하게 하는 시스템.
+사용자는 Rust/Zig/AssemblyScript/Go(TinyGo)/C++ 등으로 작성, ZNTC는 `.wasm`을 로드해서 transform pass에 주입.
 
 ## 2. 동기 (Why)
 
-### 현재 ZTS 플러그인의 한계
+### 현재 ZNTC 플러그인의 한계
 
 | 방식 | 제약 |
 |---|---|
 | NAPI plugin (JS/TS) | Node 환경 필요. WASM 빌드(브라우저 Playground)에서 미지원. JS↔native 왕복 비용. |
-| AST plugin (Zig) | ZTS 소스를 직접 수정해야 함 — 사용자 불가. |
+| AST plugin (Zig) | ZNTC 소스를 직접 수정해야 함 — 사용자 불가. |
 
 ### WASM 플러그인이 해결
 
 - **언어 자유**: Rust/Zig/AssemblyScript/Go(TinyGo)/C++ — 사용자 선호 언어
 - **속도**: JS 대비 5~50배 (네이티브 WASM)
 - **샌드박스**: WASI 권한으로 fs/env 접근 제어 (보안 경계 명확)
-- **이식성**: 한 번 컴파일하면 ZTS의 native·NAPI·WASM 빌드 어디서나 동일 동작
+- **이식성**: 한 번 컴파일하면 ZNTC의 native·NAPI·WASM 빌드 어디서나 동일 동작
 - **생태계 흡수**: swc-plugin ABI 호환 시 Next.js의 SWC 플러그인 그대로 사용 (`@swc/plugin-emotion` 등)
 
 ## 3. 산업 사례
@@ -62,7 +62,7 @@
 
 ### 4.2 AST 직렬화 ABI
 
-플러그인이 ZTS AST를 어떻게 보고 수정하나?
+플러그인이 ZNTC AST를 어떻게 보고 수정하나?
 
 | 옵션 | 특징 |
 |---|---|
@@ -78,13 +78,13 @@
 
 ### 4.3 호스트 함수 (host imports)
 
-WASM 플러그인이 호출 가능한 ZTS 함수:
+WASM 플러그인이 호출 가능한 ZNTC 함수:
 
-- `zts.error(level, message)` — 에러/경고 보고
-- `zts.read_file(path)` — (WASI 권한 시) 파일 읽기
-- `zts.resolve(specifier, importer)` — 모듈 resolution
-- `zts.ast_get(node_id)` / `zts.ast_replace(node_id, new)` — Phase 2
-- `zts.intern(string) → id` — 식별자 풀
+- `zntc.error(level, message)` — 에러/경고 보고
+- `zntc.read_file(path)` — (WASI 권한 시) 파일 읽기
+- `zntc.resolve(specifier, importer)` — 모듈 resolution
+- `zntc.ast_get(node_id)` / `zntc.ast_replace(node_id, new)` — Phase 2
+- `zntc.intern(string) → id` — 식별자 풀
 
 ### 4.4 WASI 권한 모델
 
@@ -98,7 +98,7 @@ env.allow = ["NODE_ENV"]
 network = false
 ```
 
-## 5. ZTS 입장 트레이드오프
+## 5. ZNTC 입장 트레이드오프
 
 ### 찬성
 - **swc-plugin 흡수** = Next.js 사용자 즉시 마이그레이션 (큰 시장)
@@ -145,7 +145,7 @@ network = false
 2. **시작 단계**: Phase 1만 (string transform)? 아니면 Phase 2 (AST)까지 한 번에?
 3. **swc ABI 호환 우선순위**: 처음부터 호환 vs 자체 ABI 후 별도 어댑터?
 4. **Browser WASM 빌드에서 WASM 플러그인**: 가능? (WASM in WASM — 가능하지만 큰 작업)
-5. **빌드 크기 허용치**: 현재 zts.wasm 크기 + plugin runtime이 얼마까지 OK?
+5. **빌드 크기 허용치**: 현재 zntc.wasm 크기 + plugin runtime이 얼마까지 OK?
 6. **Plugin 배포 채널**: npm? Cargo? 자체 레지스트리?
 7. **Plugin manifest 형식**: TOML/JSON/JS?
 

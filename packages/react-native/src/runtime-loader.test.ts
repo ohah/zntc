@@ -1,51 +1,51 @@
 import { describe, expect, test } from 'bun:test';
 
-import { HMR_CLIENT_SUFFIX, ZTS_HMR_CLIENT_CODE } from './runtime-loader.ts';
+import { HMR_CLIENT_SUFFIX, ZNTC_HMR_CLIENT_CODE } from './runtime-loader.ts';
 
-describe('ZTS_HMR_CLIENT_CODE', () => {
-  test('빈 string 아님 (runtime/zts-hmr-client.js 정상 로드)', () => {
-    expect(ZTS_HMR_CLIENT_CODE.length).toBeGreaterThan(0);
+describe('ZNTC_HMR_CLIENT_CODE', () => {
+  test('빈 string 아님 (runtime/zntc-hmr-client.js 정상 로드)', () => {
+    expect(ZNTC_HMR_CLIENT_CODE.length).toBeGreaterThan(0);
   });
 
   test('module.exports default 포함 — RN setUpBatchedBridge 호환', () => {
-    expect(ZTS_HMR_CLIENT_CODE).toContain('module.exports');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('.default');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('module.exports');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('.default');
   });
 
   test('Metro HMRClient interface 의 핵심 method 포함', () => {
-    expect(ZTS_HMR_CLIENT_CODE).toContain('setup');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('enable');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('disable');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('registerBundle');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('log');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('setup');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('enable');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('disable');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('registerBundle');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('log');
   });
 
   test('WebSocket 사용 (Metro `/hot` endpoint)', () => {
-    expect(ZTS_HMR_CLIENT_CODE).toContain('WebSocket');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('/hot');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('WebSocket');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('/hot');
   });
 
   test('Metro 메시지 type 분기 모두 포함', () => {
-    expect(ZTS_HMR_CLIENT_CODE).toContain('hmr:connected');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('hmr:update-start');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('hmr:update');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('hmr:update-done');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('hmr:reload');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('hmr:error');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('hmr:connected');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('hmr:update-start');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('hmr:update');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('hmr:update-done');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('hmr:reload');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('hmr:error');
   });
 
-  test('ZTS HMR runtime hook 호출 (`__zts_apply_update`, `__zts_reload`)', () => {
-    expect(ZTS_HMR_CLIENT_CODE).toContain('__zts_apply_update');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('__zts_reload');
+  test('ZNTC HMR runtime hook 호출 (`__zntc_apply_update`, `__zntc_reload`)', () => {
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('__zntc_apply_update');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('__zntc_reload');
   });
 
   test("DevLoadingView 의 'Refreshing...' 배너 호출", () => {
-    expect(ZTS_HMR_CLIENT_CODE).toContain('DevLoadingView');
-    expect(ZTS_HMR_CLIENT_CODE).toContain('Refreshing');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('DevLoadingView');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('Refreshing');
   });
 
   test('초기 update sequence (isInitialUpdate flag) 분기 존재', () => {
-    expect(ZTS_HMR_CLIENT_CODE).toContain('isInitialUpdate');
+    expect(ZNTC_HMR_CLIENT_CODE).toContain('isInitialUpdate');
   });
 });
 

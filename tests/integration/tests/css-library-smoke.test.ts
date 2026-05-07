@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { createFixture, hasPackage, linkNodeModules, runZts, runZtsInDir } from './helpers';
+import { createFixture, hasPackage, linkNodeModules, runZntc, runZntcInDir } from './helpers';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 // CSS 라이브러리 스모크 테스트
-// Tailwind CSS, Emotion, Styled-Components를 ZTS로 번들링 성공 검증
+// Tailwind CSS, Emotion, Styled-Components를 ZNTC로 번들링 성공 검증
 // 런타임 동작은 브라우저 환경이 필요하므로 e2e 테스트로 분리
 
 const hasEmotion = hasPackage('@emotion/css');
@@ -12,7 +12,7 @@ const hasEmotionReact = hasPackage('@emotion/react');
 const hasStyledComponents = hasPackage('styled-components');
 const hasTailwind = hasPackage('tailwindcss');
 
-// ─── ZTS 네이티브 CSS 번들링 + 외부 CSS 라이브러리 패턴 ───
+// ─── ZNTC 네이티브 CSS 번들링 + 외부 CSS 라이브러리 패턴 ───
 
 describe('CSS Library Smoke — Native CSS Bundling', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -33,7 +33,7 @@ describe('CSS Library Smoke — Native CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     // base → utilities → app 순서
@@ -55,7 +55,7 @@ describe('CSS Library Smoke — Native CSS Bundling', () => {
     cleanup = fixture.cleanup;
 
     const outFile = join(fixture.dir, 'out.js');
-    await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
     expect(css).toContain('--primary: #3b82f6');
@@ -98,7 +98,7 @@ describe.skipIf(!hasEmotion)('CSS Library Smoke — Emotion', () => {
     ]);
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const js = await readFile(outFile, 'utf-8');
@@ -133,7 +133,7 @@ describe.skipIf(!hasEmotion)('CSS Library Smoke — Emotion', () => {
     ]);
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const js = await readFile(outFile, 'utf-8');
@@ -187,7 +187,7 @@ describe.skipIf(!hasEmotionReact)('CSS Library Smoke — @emotion/react', () => 
     // #1824: `--format=iife` + `--globals` 로 external 을 factory-param 에 주입.
     // rollup `output.globals` 호환 — React/ReactDOM 은 런타임에 전역에서 가져온다.
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.tsx'),
       '-o',
@@ -237,7 +237,7 @@ describe.skipIf(!hasTailwind)('CSS Library Smoke — Tailwind CSS v4', () => {
     await linkNodeModules(fixture.dir, ['tailwindcss']);
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
@@ -257,7 +257,7 @@ describe.skipIf(!hasTailwind)('CSS Library Smoke — Tailwind CSS v4', () => {
     await linkNodeModules(fixture.dir, ['tailwindcss']);
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
+    const bundle = await runZntc(['--bundle', join(fixture.dir, 'index.ts'), '-o', outFile]);
     expect(bundle.exitCode).toBe(0);
 
     const css = await readFile(join(fixture.dir, 'index.css'), 'utf-8');
@@ -301,7 +301,7 @@ describe.skipIf(!hasStyledComponents)('CSS Library Smoke — Styled-Components',
 
     // #1824: IIFE + --globals 로 rollup 호환 라이브러리 번들.
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -352,7 +352,7 @@ describe.skipIf(!hasStyledComponents)('CSS Library Smoke — Styled-Components',
 
     // #1824: IIFE + --globals 로 rollup 호환 라이브러리 번들.
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'index.ts'),
       '-o',
@@ -385,7 +385,7 @@ describe.skipIf(!hasStyledComponents)('CSS Library Smoke — Styled-Components',
         const Button = styled.button\`color: red;\`;
         console.log(typeof Button);
       `,
-      'zts.config.json': JSON.stringify({
+      'zntc.config.json': JSON.stringify({
         compiler: { styledComponents: { namespace: 'myorg' } },
       }),
     });
@@ -403,7 +403,7 @@ describe.skipIf(!hasStyledComponents)('CSS Library Smoke — Styled-Components',
     ]);
 
     const outFile = join(fixture.dir, 'out.js');
-    const bundle = await runZtsInDir(
+    const bundle = await runZntcInDir(
       fixture.dir,
       ['--bundle', 'index.ts', '-o', outFile, '--external', 'react', '--external', 'react-dom'],
       { bin: 'js' },

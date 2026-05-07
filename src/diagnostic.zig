@@ -1,4 +1,4 @@
-//! ZTS Diagnostic
+//! ZNTC Diagnostic
 //!
 //! 파서와 시맨틱 분석기가 공통으로 사용하는 진단 정보 타입.
 //! ParseError와 SemanticError를 통합한다.
@@ -14,7 +14,7 @@ const Span = @import("lexer/token.zig").Span;
 const ErrorCode = @import("error_codes.zig").Code;
 
 /// 재선언 계열 에러의 secondary label 문구.
-/// ZTS1000/1100/1200/1202/1300/515/703 등에서 원본 선언 위치를 가리킬 때 재사용.
+/// ZNTC1000/1100/1200/1202/1300/515/703 등에서 원본 선언 위치를 가리킬 때 재사용.
 pub const PREVIOUSLY_DECLARED_HERE = "previously declared here";
 
 /// 진단 라벨 — 에러의 primary span(`Diagnostic.span`) 외 관련 위치를 가리킨다.
@@ -32,7 +32,7 @@ pub const Diagnostic = struct {
     span: Span,
     /// 에러 메시지 (예: "Expected ';'", "Identifier 'x' has already been declared")
     message: []const u8,
-    /// 에러 코드 (예: .import_in_script → ZTS0300). null이면 kind 기반 기본 코드 사용.
+    /// 에러 코드 (예: .import_in_script → ZNTC0300). null이면 kind 기반 기본 코드 사용.
     code: ?ErrorCode = null,
     /// 실제로 발견된 토큰 (예: "'}'"). null이면 표시하지 않음.
     found: ?[]const u8 = null,

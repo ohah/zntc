@@ -89,5 +89,5 @@ test "hashFileStreaming over-limit falls back to size+mtime pseudo-hash" {
 }
 
 test "hashFileStreaming missing file returns null" {
-    try std.testing.expect(hashFileStreaming("/nonexistent/zts_wyhash_test.txt", 1024) == null);
+    try std.testing.expect(hashFileStreaming("/nonexistent/zntc_wyhash_test.txt", 1024) == null);
 }

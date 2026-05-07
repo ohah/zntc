@@ -1,11 +1,11 @@
 ---
 title: 소개
-description: ZTS가 무엇인지, 왜 만들었는지 알아봅니다.
+description: ZNTC가 무엇인지, 왜 만들었는지 알아봅니다.
 ---
 
-## ZTS란?
+## ZNTC란?
 
-ZTS는 **Zig로 작성한 TypeScript/JavaScript 트랜스파일러 & 번들러**입니다. SWC, oxc 수준의 프로덕션 레벨 품질을 목표로 합니다.
+ZNTC는 **Zig Native Transpiler Compiler**의 약자로, JavaScript/TypeScript/Flow를 네이티브 속도로 처리하는 트랜스파일 및 번들링 툴체인입니다. SWC, oxc 수준의 프로덕션 레벨 품질을 목표로 합니다.
 
 ## 주요 기능
 
@@ -18,9 +18,9 @@ ZTS는 **Zig로 작성한 TypeScript/JavaScript 트랜스파일러 & 번들러**
 
 ## esbuild와의 비교
 
-ZTS는 esbuild의 CLI 옵션과 동작을 호환하면서도, Rollup/Rolldown 스타일의 플러그인 시스템을 제공합니다.
+ZNTC는 esbuild의 CLI 옵션과 동작을 호환하면서도, Rollup/Rolldown 스타일의 플러그인 시스템을 제공합니다.
 
-| 기능 | ZTS | esbuild |
+| 기능 | ZNTC | esbuild |
 |------|-----|---------|
 | 언어 | Zig | Go |
 | TypeScript | O | O |

@@ -1,18 +1,18 @@
-//! ZTS WASM bundler 진입점 (#1885 Phase 2/3).
+//! ZNTC WASM bundler 진입점 (#1885 Phase 2/3).
 //!
 //! wasm32-wasip1-threads 타겟용 — bundler 전용. transpile-only 빌드 (wasm_entry.zig)
 //! 와 분리해서 brower 호환성/번들 사이즈 트레이드오프 분리.
 
 const std = @import("std");
-const zts_lib = @import("zts_lib");
-const bundler_mod = zts_lib.bundler;
+const zntc_lib = @import("zntc_lib");
+const bundler_mod = zntc_lib.bundler;
 const Bundler = bundler_mod.Bundler;
 const BundleOptions = bundler_mod.BundleOptions;
 const BundleResult = bundler_mod.bundler_core.BundleResult;
 const Format = bundler_mod.types.Format;
 const Platform = bundler_mod.Platform;
 
-pub const panic = zts_lib.crash_handler.panic;
+pub const panic = zntc_lib.crash_handler.panic;
 
 // Zig 0.15 의 wasm_allocator 는 multi-threaded 미지원 (page_allocator 도 내부 wasm_allocator
 // 사용) — wasi-musl 의 c_allocator (thread-safe malloc) 사용. JS 측은 wasi_snapshot_preview1
@@ -24,8 +24,8 @@ const wasm_alloc = std.heap.c_allocator;
 pub fn main() void {}
 
 /// Bundler ABI version. host 가 호환성 체크용.
-/// v6 — last_error_message_get 출력이 ZTS 표준 진단 형식 (`× <message> [ZTS####]
-/// + hint`). 새 ZTS 에러 코드: splitting_requires_esm_format, invalid_entry_path.
+/// v6 — last_error_message_get 출력이 ZNTC 표준 진단 형식 (`× <message> [ZNTC####]
+/// + hint`). 새 ZNTC 에러 코드: splitting_requires_esm_format, invalid_entry_path.
 export fn bundler_version() u32 {
     return 6;
 }
@@ -47,7 +47,7 @@ export fn dealloc(ptr: u32, len: u32) void {
 
 /// 마지막 에러 메시지 — wasm_alloc 소유. 새 메시지 setLastError 시 이전 free.
 /// single-threaded JS bridge 가정 (wasm instance per page).
-/// 형식: ZTS 표준 진단 (`× <message> [<tag>]\n  hint: <suggestion>`).
+/// 형식: ZNTC 표준 진단 (`× <message> [<tag>]\n  hint: <suggestion>`).
 /// 사용자 친화 (영문 error name 직접 노출 X). #1965.
 var last_error_msg: ?[]u8 = null;
 
@@ -59,7 +59,7 @@ fn clearLastError() void {
 }
 
 /// 형식화된 에러 메시지 작성. `× <message> [<tag>]` (+ optional `\n  hint: <hint>`).
-/// tag 는 ZTS error code (`ZTS####`) 또는 internal Zig error name (fallback).
+/// tag 는 ZNTC error code (`ZNTC####`) 또는 internal Zig error name (fallback).
 fn setLastErrorDiag(message: []const u8, tag: []const u8, hint: ?[]const u8) void {
     clearLastError();
     if (hint) |h| {
@@ -83,10 +83,10 @@ fn setLastError(msg: []const u8) void {
     last_error_msg = std.fmt.allocPrint(wasm_alloc, "× {s}", .{msg}) catch null;
 }
 
-const error_codes = zts_lib.error_codes;
+const error_codes = zntc_lib.error_codes;
 const ErrorCode = error_codes.Code;
 
-/// Zig error → ZTS error code 매핑. 알려진 케이스는 ZTS#### 코드 + message + help
+/// Zig error → ZNTC error code 매핑. 알려진 케이스는 ZNTC#### 코드 + message + help
 /// 노출. unknown 은 Zig error name fallback.
 fn setLastErrorFromZigError(err: anyerror) void {
     const name = @errorName(err);
@@ -106,7 +106,7 @@ fn setLastErrorFromZigError(err: anyerror) void {
         return;
     }
 
-    // ZTS 코드 미매핑 — Zig error name 직접 노출 (디버깅 fallback).
+    // ZNTC 코드 미매핑 — Zig error name 직접 노출 (디버깅 fallback).
     if (std.mem.eql(u8, name, "OutOfMemory")) {
         setLastErrorDiag("메모리 부족", name, null);
     } else if (std.mem.eql(u8, name, "NameTooLong")) {
@@ -159,7 +159,7 @@ const BuildOptionsJson = struct {
     sourcemap: ?bool = null,
 };
 
-fn parseJsxRuntime(s: []const u8) ?@import("zts_lib").codegen.codegen.JsxRuntime {
+fn parseJsxRuntime(s: []const u8) ?@import("zntc_lib").codegen.codegen.JsxRuntime {
     if (std.mem.eql(u8, s, "classic")) return .classic;
     if (std.mem.eql(u8, s, "automatic")) return .automatic;
     if (std.mem.eql(u8, s, "automatic-dev") or std.mem.eql(u8, s, "automatic_dev")) return .automatic_dev;
@@ -255,7 +255,7 @@ fn applyOptionsJson(
 }
 
 /// bundle() 결과의 fatal diagnostic 첫 번째를 last_error_msg 로 캡처 (있으면).
-/// ZTS 표준 형식: `× [path: ]<message> [<code>][\n  hint: <suggestion>]`.
+/// ZNTC 표준 형식: `× [path: ]<message> [<code>][\n  hint: <suggestion>]`.
 /// caller 가 직후 arena.deinit 해도 메시지는 wasm_alloc 으로 dupe 되어 안전.
 fn captureDiagnostic(result: *const BundleResult) void {
     const diags = result.diagnostics orelse return;

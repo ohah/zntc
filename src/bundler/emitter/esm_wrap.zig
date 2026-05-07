@@ -667,9 +667,9 @@ pub fn emitEsmWrappedModule(
                             try reexport_buf.appendSlice(allocator, "(");
                         }
                         if (options.dev_mode) {
-                            try reexport_buf.appendSlice(allocator, "__zts_modules[\"");
+                            try reexport_buf.appendSlice(allocator, "__zntc_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
-                            try reexport_buf.appendSlice(allocator, "\"].fn(), __toCommonJS(__zts_modules[\"");
+                            try reexport_buf.appendSlice(allocator, "\"].fn(), __toCommonJS(__zntc_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].exports))");
                         } else {
@@ -791,7 +791,7 @@ pub fn emitEsmWrappedModule(
     // chain init 호출 (rbm + preamble + star_init) 을 별 buffer 로 capture 후
     // EsmEmitResult.entry_chain 으로 export. emitter 가 entry trigger 위치에서
     // separate top-level statement 로 unroll emit → 각 chain 호출이 별 outer
-    // `__zts_guarded(...)` (Metro `__r(N)` 와 동등). nested 호출은 inGuard 로
+    // `__zntc_guarded(...)` (Metro `__r(N)` 와 동등). nested 호출은 inGuard 로
     // wrap 효과 없이 throw propagate (Metro 100% 동등 mechanism).
     const unroll_entry_chain = module.is_entry_point and options.entry_error_guard;
     var entry_chain_buf: std.ArrayList(u8) = .empty;
@@ -815,11 +815,11 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"(){");
         if (has_refresh) {
-            try wrapped.appendSlice(allocator, "var __prevRefreshReg=__zts_g.$RefreshReg$,__prevRefreshSig=__zts_g.$RefreshSig$;");
-            try wrapped.appendSlice(allocator, "__zts_g.$RefreshReg$=function(type,id){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)rt.register(type,\"");
+            try wrapped.appendSlice(allocator, "var __prevRefreshReg=__zntc_g.$RefreshReg$,__prevRefreshSig=__zntc_g.$RefreshSig$;");
+            try wrapped.appendSlice(allocator, "__zntc_g.$RefreshReg$=function(type,id){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)rt.register(type,\"");
             try wrapped.appendSlice(allocator, module.dev_id);
             try wrapped.appendSlice(allocator, " \"+id)};");
-            try wrapped.appendSlice(allocator, "__zts_g.$RefreshSig$=function(){var rt=__zts_g.__ReactRefresh||__zts_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
+            try wrapped.appendSlice(allocator, "__zntc_g.$RefreshSig$=function(){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
         }
         try writeChainPiece(&entry_chain_buf, &wrapped, allocator, rbm_code.items, unroll_entry_chain, false);
         if (func_code.len > 0) {
@@ -833,10 +833,10 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         if (has_refresh) {
-            try wrapped.appendSlice(allocator, "__zts_g.$RefreshReg$=__prevRefreshReg;__zts_g.$RefreshSig$=__prevRefreshSig;");
-            try wrapped.appendSlice(allocator, "__zts_make_hot(\"");
+            try wrapped.appendSlice(allocator, "__zntc_g.$RefreshReg$=__prevRefreshReg;__zntc_g.$RefreshSig$=__prevRefreshSig;");
+            try wrapped.appendSlice(allocator, "__zntc_make_hot(\"");
             try wrapped.appendSlice(allocator, module.dev_id);
-            try wrapped.appendSlice(allocator, "\").accept(function(m){if(__zts_isReactRefreshBoundary(m))__zts_enqueueUpdate();else __zts_reload()});");
+            try wrapped.appendSlice(allocator, "\").accept(function(m){if(__zntc_isReactRefreshBoundary(m))__zntc_enqueueUpdate();else __zntc_reload()});");
         }
         if (options.dev_mode) {
             try wrapped.appendSlice(allocator, "}},void 0,");
@@ -854,15 +854,15 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, basename);
         try wrapped.appendSlice(allocator, "\"() {\n");
         if (has_refresh) {
-            try wrapped.appendSlice(allocator, "\tvar __prevRefreshReg = __zts_g.$RefreshReg$, __prevRefreshSig = __zts_g.$RefreshSig$;\n");
-            try wrapped.appendSlice(allocator, "\t__zts_g.$RefreshReg$ = function(type, id) {\n");
-            try wrapped.appendSlice(allocator, "\t\tvar rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();\n");
+            try wrapped.appendSlice(allocator, "\tvar __prevRefreshReg = __zntc_g.$RefreshReg$, __prevRefreshSig = __zntc_g.$RefreshSig$;\n");
+            try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshReg$ = function(type, id) {\n");
+            try wrapped.appendSlice(allocator, "\t\tvar rt = __zntc_g.__ReactRefresh || __zntc_resolveRefresh();\n");
             try wrapped.appendSlice(allocator, "\t\tif (rt) rt.register(type, \"");
             try wrapped.appendSlice(allocator, module.dev_id);
             try wrapped.appendSlice(allocator, " \" + id);\n");
             try wrapped.appendSlice(allocator, "\t};\n");
-            try wrapped.appendSlice(allocator, "\t__zts_g.$RefreshSig$ = function() {\n");
-            try wrapped.appendSlice(allocator, "\t\tvar rt = __zts_g.__ReactRefresh || __zts_resolveRefresh();\n");
+            try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshSig$ = function() {\n");
+            try wrapped.appendSlice(allocator, "\t\tvar rt = __zntc_g.__ReactRefresh || __zntc_resolveRefresh();\n");
             try wrapped.appendSlice(allocator, "\t\tif (rt) return rt.createSignatureFunctionForTransform();\n");
             try wrapped.appendSlice(allocator, "\t\treturn function(t) { return t; };\n");
             try wrapped.appendSlice(allocator, "\t};\n");
@@ -889,13 +889,13 @@ pub fn emitEsmWrappedModule(
             try appendIndented(&wrapped, allocator, reexport_buf.items);
         }
         if (has_refresh) {
-            try wrapped.appendSlice(allocator, "\t__zts_g.$RefreshReg$ = __prevRefreshReg;\n");
-            try wrapped.appendSlice(allocator, "\t__zts_g.$RefreshSig$ = __prevRefreshSig;\n");
-            try wrapped.appendSlice(allocator, "\t__zts_make_hot(\"");
+            try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshReg$ = __prevRefreshReg;\n");
+            try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshSig$ = __prevRefreshSig;\n");
+            try wrapped.appendSlice(allocator, "\t__zntc_make_hot(\"");
             try wrapped.appendSlice(allocator, module.dev_id);
             try wrapped.appendSlice(allocator, "\").accept(function(m) {\n");
-            try wrapped.appendSlice(allocator, "\t\tif (__zts_isReactRefreshBoundary(m)) __zts_enqueueUpdate();\n");
-            try wrapped.appendSlice(allocator, "\t\telse __zts_reload();\n");
+            try wrapped.appendSlice(allocator, "\t\tif (__zntc_isReactRefreshBoundary(m)) __zntc_enqueueUpdate();\n");
+            try wrapped.appendSlice(allocator, "\t\telse __zntc_reload();\n");
             try wrapped.appendSlice(allocator, "\t});\n");
         }
         if (options.dev_mode) {
@@ -991,8 +991,8 @@ fn writeChainPiece(
 /// re-export (`export * from`, `export { x } from`) 및 side-effect-only import
 /// (`import './x';`)에서 소스 모듈 초기화 코드를 생성할 때 공용으로 쓴다.
 ///
-/// `entry_error_guard` 활성 시 `__zts_guarded(function(){return <call>;})` 으로 wrap.
-/// helper 의 `__zts_in_guard` state 가 nested 호출을 자동 skip 하므로 outermost
+/// `entry_error_guard` 활성 시 `__zntc_guarded(function(){return <call>;})` 으로 wrap.
+/// helper 의 `__zntc_in_guard` state 가 nested 호출을 자동 skip 하므로 outermost
 /// (entry trigger 등) 만 실제 catch. TLA 모듈은 await 가 lambda 안에 못 들어가서 wrap 안 함.
 fn appendWrappedInitCall(
     buf: *std.ArrayList(u8),
@@ -1007,7 +1007,7 @@ fn appendWrappedInitCall(
             if (is_tla) try buf.appendSlice(allocator, "await ");
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
             if (options.dev_mode) {
-                try buf.appendSlice(allocator, "__zts_modules[\"");
+                try buf.appendSlice(allocator, "__zntc_modules[\"");
                 try buf.appendSlice(allocator, src_mod.dev_id);
                 try buf.appendSlice(allocator, "\"].fn()");
             } else {

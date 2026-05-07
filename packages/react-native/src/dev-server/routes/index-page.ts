@@ -13,7 +13,7 @@ export function handleIndexPage(_req: IncomingMessage, res: ServerResponse, port
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ZTS RN Dev Server</title>
+<title>ZNTC RN Dev Server</title>
 <style>
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.6; color: #333; margin: 0; padding: 30px; background: #fafafa; }
 h1 { font-size: 28px; margin-bottom: 8px; font-weight: 600; color: #222; }
@@ -29,7 +29,7 @@ a:hover code { background: #d0e9fc; }
 </style>
 </head>
 <body>
-<h1>ZTS RN Dev Server</h1>
+<h1>ZNTC RN Dev Server</h1>
 <p>Metro-compatible React Native dev server (port ${port})</p>
 <h2>Bundles</h2>
 <ul>

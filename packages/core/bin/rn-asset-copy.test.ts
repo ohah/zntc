@@ -26,8 +26,8 @@ let dir: string;
 let dest: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-asset-src-'));
-  dest = mkdtempSync(join(tmpdir(), 'zts-rn-asset-dest-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-asset-src-'));
+  dest = mkdtempSync(join(tmpdir(), 'zntc-rn-asset-dest-'));
 });
 
 afterEach(() => {

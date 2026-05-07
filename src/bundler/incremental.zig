@@ -61,7 +61,7 @@ pub const IncrementalBundler = struct {
     allocator: std.mem.Allocator,
     options: BundleOptions,
 
-    /// 캐시된 모듈별 dev code (module_id → __zts_register code)
+    /// 캐시된 모듈별 dev code (module_id → __zntc_register code)
     module_cache: std.StringHashMap(CachedModule),
     /// 마지막 번들의 모듈 경로 목록
     last_paths: ?[]const []const u8 = null,
@@ -77,7 +77,7 @@ pub const IncrementalBundler = struct {
     compiled_cache: CompiledOutputCache,
 
     /// 모듈 단위 dev/HMR 캐시 엔트리.
-    /// `code` = `__zts_register` wrapper (HMR 경로).
+    /// `code` = `__zntc_register` wrapper (HMR 경로).
     /// `compiled` / `input_hash` = compiled output cache 재사용용 (populate 는 별도 PR).
     const CachedModule = struct {
         id: []const u8,

@@ -12,7 +12,7 @@ import {
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'zts-rn-devmw-'));
+  dir = mkdtempSync(join(tmpdir(), 'zntc-rn-devmw-'));
   // 빈 package.json — projectRoot/package.json 이 createRequire 에 필요
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'test' }));
 });

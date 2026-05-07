@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { bundleAndRun, createFixture, runZts } from './helpers';
+import { bundleAndRun, createFixture, runZntc } from './helpers';
 import { join } from 'node:path';
 
 // TC39 Stage 3 Decorator E2E 테스트
-// ZTS로 번들링 후 Bun으로 실행하여 런타임 동작 검증
+// ZNTC로 번들링 후 Bun으로 실행하여 런타임 동작 검증
 
 describe('Stage 3 Decorators', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -330,7 +330,7 @@ describe('Stage 3 Decorators', () => {
     });
     cleanup = c;
 
-    const result = await runZts([join(dir, 'input.ts')]);
+    const result = await runZntc([join(dir, 'input.ts')]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('__esDecorate');
     expect(result.stdout).toContain('__runInitializers');

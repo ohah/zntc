@@ -1,15 +1,15 @@
-// @zts/web 의 브라우저 inject 코드 — `<script type="module" src="/__zts_app_dev_hmr__">`
+// @zntc/web 의 브라우저 inject 코드 — `<script type="module" src="/__zntc_app_dev_hmr__">`
 // 로 dev server 가 내려보내는 텍스트. WebSocket 연결 + Shadow DOM error overlay
 // + sourcemap 디코더 + runtime error capture 를 모두 포함.
 //
 // 이 파일 자체는 module 로 평가되지만 export 하는 `APP_DEV_HMR_CLIENT` 는
 // **string** 이라 브라우저로 그대로 전송됨. template literal 안의 `${...}` 는
 // module 평가 시점에 치환되어 protocol 상수 (`/__hmr`, "error" 같은 것) 가
-// 정확히 박힘 — server 측 `@zts/server/protocol` 과 single source of truth.
+// 정확히 박힘 — server 측 `@zntc/server/protocol` 과 single source of truth.
 
-import { APP_DEV_HMR_WS_PATH, HMR_MSG } from '@zts/server';
+import { APP_DEV_HMR_WS_PATH, HMR_MSG } from '@zntc/server';
 
-// biome-ignore format: 안의 코드는 브라우저 inject 텍스트라 zts.mjs 의 원본 (#2539
+// biome-ignore format: 안의 코드는 브라우저 inject 텍스트라 zntc.mjs 의 원본 (#2539
 // PR #4) 과 byte-for-byte parity 유지. 사소한 escape/들여쓰기 차이도 sourcemap
 // VLQ 디코더 정확성에 영향.
 export const APP_DEV_HMR_CLIENT = `
@@ -75,7 +75,7 @@ function decodeSourceMapVlq(segment) {
   return values;
 }
 function parseSourceMapMappings(map) {
-  if (map.__ztsParsedMappings) return map.__ztsParsedMappings;
+  if (map.__zntcParsedMappings) return map.__zntcParsedMappings;
   let source = 0;
   let originalLine = 0;
   let originalColumn = 0;
@@ -99,7 +99,7 @@ function parseSourceMapMappings(map) {
     }
     parsed.push(segments);
   }
-  Object.defineProperty(map, "__ztsParsedMappings", { value: parsed });
+  Object.defineProperty(map, "__zntcParsedMappings", { value: parsed });
   return parsed;
 }
 function findOriginalPosition(map, line, column) {
@@ -199,7 +199,7 @@ function showOverlay(errors, titleText = "Build Error") {
   hideOverlay();
   const items = normalizeErrors(errors);
   overlay = document.createElement("div");
-  overlay.id = "zts-error-overlay";
+  overlay.id = "zntc-error-overlay";
   const root = overlay.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = ":host{position:fixed;inset:0;z-index:2147483647;display:block;--font:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--red:#fb7185;--text:#f8fafc;--blue:#93c5fd;--window:#181818;}" +
@@ -254,10 +254,10 @@ function showOverlay(errors, titleText = "Build Error") {
   document.addEventListener("keydown", closeOverlayOnEsc);
   (document.body || document.documentElement).appendChild(overlay);
 }
-globalThis.__zts_show_error_overlay = showOverlay;
-globalThis.__zts_clear_error_overlay = hideOverlay;
-if (!globalThis.__zts_runtime_listeners_attached) {
-  globalThis.__zts_runtime_listeners_attached = true;
+globalThis.__zntc_show_error_overlay = showOverlay;
+globalThis.__zntc_clear_error_overlay = hideOverlay;
+if (!globalThis.__zntc_runtime_listeners_attached) {
+  globalThis.__zntc_runtime_listeners_attached = true;
   window.addEventListener("error", (event) => {
     const file = event.filename ? event.filename + ":" + event.lineno + ":" + event.colno : "";
     showRuntimeOverlay(event.error || event.message, file);

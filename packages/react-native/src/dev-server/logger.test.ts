@@ -7,7 +7,7 @@ import {
   logError,
   logInfo,
   logWarn,
-  printZtsRnBanner,
+  printZntcRnBanner,
 } from './logger.ts';
 
 let logSpy: ReturnType<typeof mock>;
@@ -96,24 +96,24 @@ describe('logBundle — Metro `BUNDLE` 상태 라인', () => {
   });
 });
 
-describe('printZtsRnBanner', () => {
+describe('printZntcRnBanner', () => {
   test('version 지정 시 banner 에 포함', () => {
-    printZtsRnBanner('0.1.0');
+    printZntcRnBanner('0.1.0');
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
-    expect(out).toContain('@zts/react-native');
+    expect(out).toContain('@zntc/react-native');
     expect(out).toContain('v0.1.0');
     expect(out).toContain('Metro-compatible RN dev server');
   });
 
   test('version 없음 → version 영역 비움', () => {
-    printZtsRnBanner();
+    printZntcRnBanner();
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
-    expect(out).toContain('@zts/react-native');
+    expect(out).toContain('@zntc/react-native');
     expect(out).not.toMatch(/v\d/);
   });
 
   test('box drawing characters (║ ╔ ╚)', () => {
-    printZtsRnBanner('0.1.0');
+    printZntcRnBanner('0.1.0');
     const out = (logSpy.mock.calls[0] as unknown[])[0] as string;
     expect(out).toContain('╔');
     expect(out).toContain('║');

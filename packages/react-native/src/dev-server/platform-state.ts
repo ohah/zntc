@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { WatchHandle, WatchReadyEvent, WatchRebuildEvent } from '@zts/core';
+import type { WatchHandle, WatchReadyEvent, WatchRebuildEvent } from '@zntc/core';
 
 import { watchRn } from '../preset.ts';
 import type { RnDevServerOptions } from './options.ts';
@@ -31,9 +31,9 @@ export interface PlatformState {
 export function getCachedSourceMap(state: PlatformState): string | null {
   if (state.sourceMapCache) return state.sourceMapCache;
   const raw = state.handle.getBundleSourceMap();
-  if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+  if (process.env.ZNTC_DEBUG_TERMINAL === '1') {
     process.stderr.write(
-      `[zts:rn-dev:debug] getBundleSourceMap[${state.platform}]: ${raw ? `len=${raw.length}` : 'null'}\n`,
+      `[zntc:rn-dev:debug] getBundleSourceMap[${state.platform}]: ${raw ? `len=${raw.length}` : 'null'}\n`,
     );
   }
   if (!raw) return null;
@@ -56,7 +56,7 @@ export function createPlatformState(
   platform: 'ios' | 'android',
   callbacks?: PlatformStateCallbacks,
 ): PlatformState {
-  const outputDir = mkdtempSync(join(tmpdir(), `zts-rn-${platform}-`));
+  const outputDir = mkdtempSync(join(tmpdir(), `zntc-rn-${platform}-`));
   const outputPath = join(outputDir, 'bundle.js');
 
   // bundle 의 RnBundleInput 의 rnPlatform 만 override — 다른 필드 그대로 유지.
@@ -77,9 +77,9 @@ export function createPlatformState(
     lastRebuildTime: Date.now(),
   };
 
-  if (process.env.ZTS_DEBUG_TERMINAL === '1') {
+  if (process.env.ZNTC_DEBUG_TERMINAL === '1') {
     process.stderr.write(
-      `[zts:rn-dev:debug] watchRn[${platform}] sourcemap=${platformBundle.sourcemap} dev=${platformBundle.dev} outfile=${outputPath}\n`,
+      `[zntc:rn-dev:debug] watchRn[${platform}] sourcemap=${platformBundle.sourcemap} dev=${platformBundle.dev} outfile=${outputPath}\n`,
     );
   }
   state.handle = watchRn({

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZts } from './helpers';
+import { createFixture, runZntc } from './helpers';
 import { spawnSync } from 'node:child_process';
 
 // Stage 3 decorator + --target=es5 다운레벨링 검증.
@@ -9,8 +9,8 @@ import { spawnSync } from 'node:child_process';
 async function transpileES5(code: string): Promise<string> {
   const fixture = await createFixture({ 'input.ts': code });
   try {
-    const result = await runZts([`${fixture.dir}/input.ts`, '--target=es5']);
-    if (result.exitCode !== 0) throw new Error(`zts failed: ${result.stderr}`);
+    const result = await runZntc([`${fixture.dir}/input.ts`, '--target=es5']);
+    if (result.exitCode !== 0) throw new Error(`zntc failed: ${result.stderr}`);
     return result.stdout;
   } finally {
     await fixture.cleanup();

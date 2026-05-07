@@ -26,7 +26,7 @@ describe('HMR_MSG enum', () => {
 
 describe('protocol 상수', () => {
   test('client/ws path 가 정의된 namespace', () => {
-    expect(APP_DEV_HMR_CLIENT_PATH).toBe('/__zts_app_dev_hmr__');
+    expect(APP_DEV_HMR_CLIENT_PATH).toBe('/__zntc_app_dev_hmr__');
     expect(APP_DEV_HMR_WS_PATH).toBe('/__hmr');
   });
 

@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bundleAndRun, createFixture, runNode, runZts } from './helpers';
+import { bundleAndRun, createFixture, runNode, runZntc } from './helpers';
 
 /**
  * Runtime regression for `import * as M; const x = (i) => M.x(i)` self-shadow.
@@ -184,7 +184,7 @@ console.log(fa() + "/" + fb());`,
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
 
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'entry.js'),
       '--format=esm',
@@ -215,7 +215,7 @@ console.log(fa() + "/" + fb());`,
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
 
-    const bundle = await runZts([
+    const bundle = await runZntc([
       '--bundle',
       join(fixture.dir, 'entry.js'),
       '--format=esm',

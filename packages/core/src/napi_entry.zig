@@ -1,30 +1,30 @@
-//! ZTS NAPI 진입점
+//! ZNTC NAPI 진입점
 //!
 //! Node.js/Bun/Deno에서 .node addon으로 로드되는 네이티브 모듈.
 //! 전역 상태 없이 napi_create_string_utf8로 JS 값을 직접 반환한다.
 //!
 //! JS에서의 사용:
-//!   const { transpile } = require('./zts.node');
+//!   const { transpile } = require('./zntc.node');
 //!   const result = transpile(source, filename, flags, unsupported, factory, fragment, importSource);
 //!   // result = { code: string, map?: string }
 
 const std = @import("std");
-const zts_lib = @import("zts_lib");
+const zntc_lib = @import("zntc_lib");
 
 /// Bun 스타일 crash report: NAPI addon에서 panic이 터지면 Node 프로세스 전체가
-/// 죽는다 — 그 전에 ZTS 배너 + 이슈 URL을 찍어 사용자가 신고하기 쉽게 한다.
-pub const panic = zts_lib.crash_handler.panic;
-const transpile_mod = zts_lib.transpile;
-const Scanner = zts_lib.lexer.Scanner;
-const TsconfigCache = zts_lib.tsconfig_cache.TsconfigCache;
-const rich_diagnostic = zts_lib.rich_diagnostic;
-const diagnostic_renderer = zts_lib.diagnostic_renderer;
+/// 죽는다 — 그 전에 ZNTC 배너 + 이슈 URL을 찍어 사용자가 신고하기 쉽게 한다.
+pub const panic = zntc_lib.crash_handler.panic;
+const transpile_mod = zntc_lib.transpile;
+const Scanner = zntc_lib.lexer.Scanner;
+const TsconfigCache = zntc_lib.tsconfig_cache.TsconfigCache;
+const rich_diagnostic = zntc_lib.rich_diagnostic;
+const diagnostic_renderer = zntc_lib.diagnostic_renderer;
 const napi_render_opts: diagnostic_renderer.RenderOptions = .{ .color = false, .unicode = true };
-const bundler_mod = zts_lib.bundler;
+const bundler_mod = zntc_lib.bundler;
 const Bundler = bundler_mod.Bundler;
-const TrackedFileSet = zts_lib.server.TrackedFileSet;
-const profile_mod = zts_lib.profile;
-const bench_mod = zts_lib.bench;
+const TrackedFileSet = zntc_lib.server.TrackedFileSet;
+const profile_mod = zntc_lib.profile;
+const bench_mod = zntc_lib.bench;
 
 /// Issue #1223 Phase 1: 워처 튜닝 상수.
 /// - watch_poll_timeout_ms: stop_flag 체크 주기 (이벤트 워처에서도 주기적으로 깨어나기 위함).
@@ -48,7 +48,7 @@ const watch_hash_max_bytes: usize = 256 * 1024 * 1024;
 fn collectTouched(
     set: *std.StringHashMap(void),
     alloc: std.mem.Allocator,
-    evts: []const zts_lib.server.ChangeEvent,
+    evts: []const zntc_lib.server.ChangeEvent,
 ) void {
     for (evts) |e| {
         if (set.contains(e.path)) continue;
@@ -57,12 +57,12 @@ fn collectTouched(
     }
 }
 const BundleOptions = bundler_mod.BundleOptions;
-const Platform = zts_lib.codegen.codegen.Platform;
-const JsxRuntime = zts_lib.codegen.codegen.JsxRuntime;
+const Platform = zntc_lib.codegen.codegen.Platform;
+const JsxRuntime = zntc_lib.codegen.codegen.JsxRuntime;
 const EmitFormat = bundler_mod.emitter.EmitOptions.Format;
-const SourceMap = zts_lib.codegen.sourcemap;
-const types_mod = zts_lib.bundler.types;
-const transformer_mod = zts_lib.transformer.transformer;
+const SourceMap = zntc_lib.codegen.sourcemap;
+const types_mod = zntc_lib.bundler.types;
+const transformer_mod = zntc_lib.transformer.transformer;
 const c = @cImport({
     @cDefine("NAPI_VERSION", "8");
     @cInclude("node_api.h");
@@ -449,7 +449,7 @@ fn getObjectString(env: c.napi_env, obj: c.napi_value, key: [*:0]const u8, alloc
 /// `emotionAutoLabel` 옵션을 enum 값으로 파싱. JS 측에서 string ("never"/"always"/
 /// "dev-only") 또는 boolean (legacy: false=never, true=always) 으로 보낼 수 있음.
 /// 누락 시 기본 `.always`.
-fn getAutoLabelMode(env: c.napi_env, obj: c.napi_value, alloc: std.mem.Allocator) @import("zts_lib").transformer.transformer.AutoLabelMode {
+fn getAutoLabelMode(env: c.napi_env, obj: c.napi_value, alloc: std.mem.Allocator) @import("zntc_lib").transformer.transformer.AutoLabelMode {
     const val = getNamedProperty(env, obj, "emotionAutoLabel") orelse return .always;
     var ty: c.napi_valuetype = undefined;
     if (c.napi_typeof(env, val, &ty) != c.napi_ok) return .always;
@@ -945,7 +945,7 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
         owned_arrays.append(native_alloc, arr) catch return throwError(env, "OutOfMemory");
     }
 
-    const output_count = @import("zts_lib").app.build.buildApp(native_alloc, .{
+    const output_count = @import("zntc_lib").app.build.buildApp(native_alloc, .{
         .root = root,
         .outdir = outdir,
         .entry_html = entry_html,
@@ -953,7 +953,7 @@ fn napiBuildAppSync(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.
         .base = base,
         .mode = mode,
         .env_dir = env_dir,
-        .env_prefixes = env_prefixes orelse &.{ "VITE_", "ZTS_" },
+        .env_prefixes = env_prefixes orelse &.{ "VITE_", "ZNTC_" },
         .define = define_entries,
         .minify = getObjectBool(env, opts_obj, "minify", false),
         .sourcemap = getObjectBool(env, opts_obj, "sourcemap", false),
@@ -1027,7 +1027,7 @@ fn napiPrepareAppDevSync(env: c.napi_env, info: c.napi_callback_info) callconv(.
     }.f;
 
     const root = ownStr(env, opts_obj, "root", &owned_strings) orelse ".";
-    const outdir = ownStr(env, opts_obj, "outdir", &owned_strings) orelse ".zts-dev";
+    const outdir = ownStr(env, opts_obj, "outdir", &owned_strings) orelse ".zntc-dev";
     const entry_html = ownStr(env, opts_obj, "entryHtml", &owned_strings) orelse "index.html";
     const public_dir_value = ownStr(env, opts_obj, "publicDir", &owned_strings);
     const public_dir: ?[]const u8 = if (getObjectBool(env, opts_obj, "disablePublicDir", false)) null else (public_dir_value orelse "public");
@@ -1041,7 +1041,7 @@ fn napiPrepareAppDevSync(env: c.napi_env, info: c.napi_callback_info) callconv(.
         owned_arrays.append(native_alloc, arr) catch return throwError(env, "OutOfMemory");
     }
 
-    var result = @import("zts_lib").app.build.prepareDev(native_alloc, .{
+    var result = @import("zntc_lib").app.build.prepareDev(native_alloc, .{
         .root = root,
         .outdir = outdir,
         .entry_html = entry_html,
@@ -1049,7 +1049,7 @@ fn napiPrepareAppDevSync(env: c.napi_env, info: c.napi_callback_info) callconv(.
         .base = base,
         .mode = mode,
         .env_dir = env_dir,
-        .env_prefixes = env_prefixes orelse &.{ "VITE_", "ZTS_" },
+        .env_prefixes = env_prefixes orelse &.{ "VITE_", "ZNTC_" },
     }) catch |err| {
         return throwError(env, @errorName(err));
     };
@@ -1264,7 +1264,7 @@ const NapiPlugin = struct {
         resolved_path: ?[]const u8 = null,
         is_external: bool = false,
         /// 빈 모듈로 처리 (Metro `{ type: 'empty' }`, webpack `false` 폴백 매핑용).
-        /// resolveId가 `{ disabled: true }` 반환 시 ZTS가 `module.exports = {}` 처리.
+        /// resolveId가 `{ disabled: true }` 반환 시 ZNTC가 `module.exports = {}` 처리.
         is_disabled: bool = false,
         code: ?[]const u8 = null,
         /// AST plugin: 제거할 디렉티브 이름
@@ -1680,8 +1680,8 @@ const NapiPlugin = struct {
 
     // ─── AST 훅 구현 ───
 
-    const AstTransformCtx = zts_lib.transformer.ast_plugin_mod.AstTransformCtx;
-    const FunctionInfo = zts_lib.transformer.ast_plugin_mod.FunctionInfo;
+    const AstTransformCtx = zntc_lib.transformer.ast_plugin_mod.AstTransformCtx;
+    const FunctionInfo = zntc_lib.transformer.ast_plugin_mod.FunctionInfo;
 
     fn pluginAstFunction(ctx: ?*anyopaque, api: *AstTransformCtx, func: FunctionInfo) PluginError!void {
         const self: *NapiPlugin = @ptrCast(@alignCast(ctx.?));
@@ -1939,7 +1939,7 @@ fn installManualChunksResolver(
     resolver.* = .{ .tsfn = undefined };
 
     var resource_name: c.napi_value = undefined;
-    _ = c.napi_create_string_utf8(env, "zts_manual_chunks", "zts_manual_chunks".len, &resource_name);
+    _ = c.napi_create_string_utf8(env, "zntc_manual_chunks", "zntc_manual_chunks".len, &resource_name);
     if (c.napi_create_threadsafe_function(
         env,
         fn_val,
@@ -1962,7 +1962,7 @@ fn installManualChunksResolver(
     return resolver;
 }
 
-const appendJsonEscaped = zts_lib.string_escape.appendEscaped;
+const appendJsonEscaped = zntc_lib.string_escape.appendEscaped;
 
 /// FunctionInfo를 JSON 문자열로 직렬화한다.
 /// JS dispatcher에 arg1로 전달되어 JS 측에서 JSON.parse()로 역직렬화.
@@ -1986,7 +1986,7 @@ fn serializeFunctionInfo(
     var has_directives = false;
     try buf.appendSlice(alloc, ",\"directives\":[");
     if (!func.body_idx.isNone()) {
-        const Ast = zts_lib.parser.ast;
+        const Ast = zntc_lib.parser.ast;
         const body = api.transformer.ast.getNode(func.body_idx);
         if ((body.tag == .block_statement or body.tag == .function_body) and body.data.list.len > 0) {
             const first_raw = api.transformer.ast.extra_data.items[body.data.list.start];
@@ -2038,7 +2038,7 @@ fn serializeFunctionInfo(
         while (pi < func.params.len) : (pi += 1) {
             if (pi > 0) try buf.append(alloc, ',');
             const param_raw = api.transformer.ast.extra_data.items[func.params.start + pi];
-            const param_idx: zts_lib.parser.ast.NodeIndex = @enumFromInt(param_raw);
+            const param_idx: zntc_lib.parser.ast.NodeIndex = @enumFromInt(param_raw);
             if (!param_idx.isNone()) {
                 const param_node = api.transformer.ast.getNode(param_idx);
                 const param_text = api.transformer.ast.getText(param_node.span);
@@ -2236,7 +2236,7 @@ fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
 
         // threadsafe function 생성
         var resource_name_str: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, "zts_plugin", "zts_plugin".len, &resource_name_str);
+        _ = c.napi_create_string_utf8(env, "zntc_plugin", "zntc_plugin".len, &resource_name_str);
         if (c.napi_create_threadsafe_function(
             env,
             dispatcher_fn,
@@ -2282,7 +2282,7 @@ fn napiBuild(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
 
     // 완료 TSFN 생성 (빌드 완료 시 메인 스레드에서 Promise resolve)
     var resource_name: c.napi_value = undefined;
-    _ = c.napi_create_string_utf8(env, "zts_build_complete", "zts_build_complete".len, &resource_name);
+    _ = c.napi_create_string_utf8(env, "zntc_build_complete", "zntc_build_complete".len, &resource_name);
     if (c.napi_create_threadsafe_function(
         env,
         null, // js_func: 사용 안 함 (call_js에서 직접 처리)
@@ -2453,7 +2453,7 @@ const WatchReadyEvent = struct {
 /// 는 profile 비활성 상태에서도 항상 측정 (bundler `BundleTimings` 기반 — 가벼움).
 ///
 /// Sub-phase (`scan_ms`/`parse_ms`/`resolve_ms`/`semantic_ms`/`transform_ms`/`codegen_ms`/
-/// `metadata_ms`) 는 `ZTS_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` / `BundleOptions.profile`
+/// `metadata_ms`) 는 `ZNTC_PROFILE=<cat>` / `BUNGAE_HMR_PROFILE=1` / `BundleOptions.profile`
 /// 활성 상태에서만 의미있는 값. 비활성 시 모두 0.
 ///
 /// 이름 매핑 이력: 2026-04-22 이전의 `parse_ms` / `semantic_ms` 는 실제로는 `graph_ns` /
@@ -2474,7 +2474,7 @@ const PhaseDurations = struct {
     delta_ms: f64 = 0,
     total_ms: f64 = 0,
 
-    // ── Sub-phase (ZTS_PROFILE=<cat> 활성 시에만 값 기록) ──
+    // ── Sub-phase (ZNTC_PROFILE=<cat> 활성 시에만 값 기록) ──
     scan_ms: f64 = 0,
     parse_ms: f64 = 0,
     resolve_ms: f64 = 0,
@@ -2652,7 +2652,7 @@ fn watchRebuildTsfn(env: c.napi_env, js_func: c.napi_value, _: ?*anyopaque, data
                 .{ .name = "emit", .value = pd.emit_ms },
                 .{ .name = "delta", .value = pd.delta_ms },
                 .{ .name = "total", .value = pd.total_ms },
-                // Sub-phase (ZTS_PROFILE=<cat> 활성 시 의미있는 값, 아니면 0).
+                // Sub-phase (ZNTC_PROFILE=<cat> 활성 시 의미있는 값, 아니면 0).
                 .{ .name = "scan", .value = pd.scan_ms },
                 .{ .name = "parse", .value = pd.parse_ms },
                 .{ .name = "resolve", .value = pd.resolve_ms },
@@ -2714,17 +2714,17 @@ fn addWatchRootFiles(
     root: []const u8,
     include: []const []const u8,
     exclude: []const []const u8,
-    tracked: *zts_lib.server.TrackedFileSet,
+    tracked: *zntc_lib.server.TrackedFileSet,
     count: *usize,
 ) void {
-    const Ctx = struct { tracked: *zts_lib.server.TrackedFileSet, count: *usize };
+    const Ctx = struct { tracked: *zntc_lib.server.TrackedFileSet, count: *usize };
     const visit = struct {
         fn f(ctx: Ctx, full_path: []const u8) bool {
             if (ctx.tracked.addPath(full_path, true)) ctx.count.* += 1;
             return false;
         }
     }.f;
-    zts_lib.server.watch_scan.scanRoot(
+    zntc_lib.server.watch_scan.scanRoot(
         allocator,
         root,
         .{ .include = include, .exclude = exclude },
@@ -2934,7 +2934,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
 
     // Issue #1223 Phase 1: 이벤트 기반 워처 + 디바운스 + content hash 필터링.
     while (!async_data.stop_flag.load(.acquire)) {
-        const first_events = tracked.waitForChanges(watch_poll_timeout_ms) catch &[_]zts_lib.server.ChangeEvent{};
+        const first_events = tracked.waitForChanges(watch_poll_timeout_ms) catch &[_]zntc_lib.server.ChangeEvent{};
         if (async_data.stop_flag.load(.acquire)) break;
 
         var total_timer: ?std.time.Timer = std.time.Timer.start() catch null;
@@ -2977,7 +2977,7 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
         if (changed_files.items.len == 0) continue;
 
         // Profile counters reset — 이전 rebuild 의 누적치가 이월되지 않도록.
-        // mask 와 level 은 유지 (`ZTS_PROFILE=hmr` 등의 활성 상태는 보존).
+        // mask 와 level 은 유지 (`ZNTC_PROFILE=hmr` 등의 활성 상태는 보존).
         // profile 비활성 상태에선 skip — 불필요한 memset 회피.
         if (profile_mod.anyEnabled()) profile_mod.resetCounters();
 
@@ -3091,8 +3091,8 @@ fn watchWorkerThread(async_data: *WatchAsyncData) void {
                 // 재파싱된 모듈의 path 집합 — cache-hit 모듈의 phantom update 필터용.
                 // canonical-name 배정이 rebuild 간 비결정적으로 움직여, 소스가 안 변한
                 // 모듈의 emit 결과도 cache 와 달라져 HMR payload 에 섞여 들어오면
-                // runtime 의 `__zts_apply_update` 가 hot-accept 없는 모듈 (React 내부
-                // 등) 에 대해 `__zts_reload` 를 호출해 첫 rebuild 가 full reload 로
+                // runtime 의 `__zntc_apply_update` 가 hot-accept 없는 모듈 (React 내부
+                // 등) 에 대해 `__zntc_reload` 를 호출해 첫 rebuild 가 full reload 로
                 // 끝나는 문제가 있었다 (#번개 실측). reparsed_paths 가 있으면 그
                 // 교집합만 업데이트로 올린다.
                 var reparsed_set: std.StringHashMap(void) = .init(allocator);
@@ -3421,7 +3421,7 @@ fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
         };
 
         var resource_name_str: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, "zts_watch_plugin", "zts_watch_plugin".len, &resource_name_str);
+        _ = c.napi_create_string_utf8(env, "zntc_watch_plugin", "zntc_watch_plugin".len, &resource_name_str);
         if (c.napi_create_threadsafe_function(
             env,
             dispatcher_fn,
@@ -3470,7 +3470,7 @@ fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
     // onReady TSFN 생성
     {
         var resource_name: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, "zts_watch_ready", "zts_watch_ready".len, &resource_name);
+        _ = c.napi_create_string_utf8(env, "zntc_watch_ready", "zntc_watch_ready".len, &resource_name);
         if (c.napi_create_threadsafe_function(
             env,
             on_ready_fn orelse null,
@@ -3492,7 +3492,7 @@ fn napiWatch(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_va
     // onRebuild TSFN 생성
     {
         var resource_name: c.napi_value = undefined;
-        _ = c.napi_create_string_utf8(env, "zts_watch_rebuild", "zts_watch_rebuild".len, &resource_name);
+        _ = c.napi_create_string_utf8(env, "zntc_watch_rebuild", "zntc_watch_rebuild".len, &resource_name);
         if (c.napi_create_threadsafe_function(
             env,
             on_rebuild_fn orelse null,
@@ -3618,7 +3618,7 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, exts)) return null;
     }
 
-    // debug: 활성화할 디버그 로그 카테고리 목록 (ZTS_DEBUG env 와 합집합).
+    // debug: 활성화할 디버그 로그 카테고리 목록 (ZNTC_DEBUG env 와 합집합).
     const debug_categories = getObjectStringArray(env, opts_obj, "debug", native_alloc);
     if (debug_categories) |cats| {
         for (cats) |s| if (!trackStr(owned_strings, s)) return null;
@@ -3627,7 +3627,7 @@ fn parseBuildOptions(
 
     // profile / profileLevel / profileFormat: 프로세스 전역 `profile` 모듈 상태를 조작.
     // JS 에서 \{ profile: ["parse", "transform"], profileLevel: "detailed", profileFormat: "json" \}
-    // 식으로 전달. env (ZTS_PROFILE) 와 합집합. CLI `--profile=...` 와 동일한 의미.
+    // 식으로 전달. env (ZNTC_PROFILE) 와 합집합. CLI `--profile=...` 와 동일한 의미.
     if (getObjectStringArray(env, opts_obj, "profile", native_alloc)) |cats| {
         for (cats) |s| if (!trackStr(owned_strings, s)) return null;
         if (!trackArr(owned_string_arrays, cats)) return null;
@@ -3715,9 +3715,9 @@ fn parseBuildOptions(
 
     // define: { "key": "value" } → []DefineEntry
     const define_pairs = getObjectKeyValuePairs(env, opts_obj, "define", native_alloc);
-    var define_entries: []const @import("zts_lib").transformer.transformer.DefineEntry = &.{};
+    var define_entries: []const @import("zntc_lib").transformer.transformer.DefineEntry = &.{};
     if (define_pairs) |pairs| {
-        const defs = native_alloc.alloc(@import("zts_lib").transformer.transformer.DefineEntry, pairs.len) catch return null;
+        const defs = native_alloc.alloc(@import("zntc_lib").transformer.transformer.DefineEntry, pairs.len) catch return null;
         for (pairs, 0..) |pair, idx| {
             if (!trackStr(owned_strings, pair[0])) return null;
             if (!trackStr(owned_strings, pair[1])) return null;
@@ -3731,10 +3731,10 @@ fn parseBuildOptions(
     // moduleSpecifierMap: { 'lodash': 'lodash/{name}' } → []ModuleSpecifierMapEntry (#2393).
     // babel-plugin-lodash 등 cherry-pick 분해 generic 매핑.
     const msm_pairs = getObjectKeyValuePairs(env, opts_obj, "moduleSpecifierMap", native_alloc);
-    var module_specifier_map: []const @import("zts_lib").transformer.transformer.ModuleSpecifierMapEntry = &.{};
+    var module_specifier_map: []const @import("zntc_lib").transformer.transformer.ModuleSpecifierMapEntry = &.{};
     if (msm_pairs) |pairs| {
         defer native_alloc.free(pairs);
-        const msm_entries = native_alloc.alloc(@import("zts_lib").transformer.transformer.ModuleSpecifierMapEntry, pairs.len) catch return null;
+        const msm_entries = native_alloc.alloc(@import("zntc_lib").transformer.transformer.ModuleSpecifierMapEntry, pairs.len) catch return null;
         for (pairs, 0..) |pair, idx| {
             if (!trackStr(owned_strings, pair[0])) return null;
             if (!trackStr(owned_strings, pair[1])) return null;
@@ -3822,7 +3822,7 @@ fn parseBuildOptions(
         if (!trackArr(owned_string_arrays, arr)) return null;
     }
 
-    const compat = @import("zts_lib").transformer.transformer.TransformOptions.compat;
+    const compat = @import("zntc_lib").transformer.transformer.TransformOptions.compat;
     const target_str = getObjectString(env, opts_obj, "target", native_alloc);
     if (target_str) |s| if (!trackStr(owned_strings, s)) return null;
     // JS side (browserslist 해석 등)에서 미리 계산한 unsupported bitmask가 있으면 우선.
@@ -3844,8 +3844,8 @@ fn parseBuildOptions(
     // raw 우선 (esbuild 동등): `tsconfigRaw` 가 있으면 file 기반 path / 자동 탐색을 모두 무시.
     // raw parse 실패는 silent (빈 TsConfig) — JS 측이 NAPI 호출 전 사전 검증해 명시 에러를 던진다.
     // 머지 규칙은 `src/tsconfig_merge.zig` 의 공용 helper — transpile.zig 와 일관.
-    const TsConfig = @import("zts_lib").config.TsConfig;
-    const tsconfig_merge = @import("zts_lib").tsconfig_merge;
+    const TsConfig = @import("zntc_lib").config.TsConfig;
+    const tsconfig_merge = @import("zntc_lib").tsconfig_merge;
     var tsconfig_holder: TsConfig = .{};
     var autodiscovered_dir: ?[]const u8 = null;
     defer if (autodiscovered_dir) |d| native_alloc.free(d);
@@ -3885,9 +3885,9 @@ fn parseBuildOptions(
 
     // tsconfig paths → resolver 의 ts_paths 로 전달 (alias 와 독립 경로).
     // TS 스펙대로 wildcard anywhere + 다중 후보 순차 시도를 resolver 가 담당.
-    var ts_path_entries: []const @import("zts_lib").config.TsConfig.PathEntry = &.{};
+    var ts_path_entries: []const @import("zntc_lib").config.TsConfig.PathEntry = &.{};
     if (tsconfig_path_opt != null and tsconfig_holder.paths.len > 0) {
-        const lib_config = @import("zts_lib").config;
+        const lib_config = @import("zntc_lib").config;
         const dir_for_join = lib_config.tsconfigDirFromPath(tsconfig_path_opt.?);
         if (lib_config.resolveTsPaths(native_alloc, dir_for_join, &tsconfig_holder)) |resolved| {
             // target.prefix 로 join 된 절대 경로들을 tracker 에 등록 — opts 수명 동안 살아있도록.
@@ -4117,7 +4117,7 @@ fn parseBuildOptions(
         .entry_error_guard = getObjectBool(env, opts_obj, "entryErrorGuard", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.entry_error_guard),
         .worklet_transform = getObjectBool(env, opts_obj, "workletTransform", false) or (platform == .react_native and bundler_mod.RN_BOOL_PRESET.worklet_transform),
         .worklet_plugin_version = ownStr(env, opts_obj, "workletPluginVersion", owned_strings),
-        // ZTS native codegen — default 가 RN preset (platform=react-native 시 true). 사용자가
+        // ZNTC native codegen — default 가 RN preset (platform=react-native 시 true). 사용자가
         // `codegenTransform: false` 명시하면 그게 우선 (escape hatch 동작 보장). OR 패턴은
         // false override 가 RN preset 의 true 에 묻혀 무력화되는 버그 있었음.
         .codegen_transform = getObjectBool(env, opts_obj, "codegenTransform", platform == .react_native and bundler_mod.RN_BOOL_PRESET.codegen_transform),
@@ -4132,16 +4132,16 @@ fn parseBuildOptions(
 // ─── 모듈 등록 ───
 
 export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi_value {
-    // ZTS_DEBUG env 를 프로세스 시작 시 1회 파싱해 mask 초기화.
+    // ZNTC_DEBUG env 를 프로세스 시작 시 1회 파싱해 mask 초기화.
     // 개별 build/watch 호출마다 BundleOptions.debug 로 카테고리 추가 가능.
-    @import("zts_lib").debug_log.initFromEnv(native_alloc);
+    @import("zntc_lib").debug_log.initFromEnv(native_alloc);
 
-    // ZTS_PROFILE / ZTS_PROFILE_LEVEL 도 동일하게 1회 파싱. 개별 build 호출마다
+    // ZNTC_PROFILE / ZNTC_PROFILE_LEVEL 도 동일하게 1회 파싱. 개별 build 호출마다
     // `BundleOptions.profile` / `profileLevel` 로 추가 가능.
     profile_mod.initFromEnv(native_alloc);
 
     // BUNGAE_HMR_PROFILE=1 호환 — 번개의 기존 HMR profile 토글을 새 인프라로 매핑.
-    // 내부적으로 ZTS_PROFILE=hmr 과 동등.
+    // 내부적으로 ZNTC_PROFILE=hmr 과 동등.
     if (std.process.getEnvVarOwned(native_alloc, "BUNGAE_HMR_PROFILE")) |v| {
         defer native_alloc.free(v);
         if (v.len > 0 and !std.mem.eql(u8, v, "0") and !std.ascii.eqlIgnoreCase(v, "false")) {
@@ -4197,7 +4197,7 @@ export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi
     return exports;
 }
 
-// ─── benchmark 함수 (CLI `zts bench` 의 NAPI 대응) ───
+// ─── benchmark 함수 (CLI `zntc bench` 의 NAPI 대응) ───
 
 /// benchmark(optionsObj) → { phases: { <name>: { mean_ms, median_ms, p95_ms, p99_ms, min_ms, max_ms, stddev_ms, samples } } }
 ///

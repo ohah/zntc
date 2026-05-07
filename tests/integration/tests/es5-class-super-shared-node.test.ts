@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, ZTS_BIN } from './helpers';
+import { createFixture, ZNTC_BIN } from './helpers';
 import { resolve } from 'node:path';
 
 /**
@@ -52,7 +52,7 @@ describe('bundle es5: extends + super + rest param class ctor', () => {
 
     try {
       const entry = resolve(fixture.dir, 'entry.ts');
-      const proc = Bun.spawnSync([ZTS_BIN, '--bundle', '--target=es5', entry]);
+      const proc = Bun.spawnSync([ZNTC_BIN, '--bundle', '--target=es5', entry]);
       expect(proc.exitCode).toBe(0);
       const output = proc.stdout.toString();
 

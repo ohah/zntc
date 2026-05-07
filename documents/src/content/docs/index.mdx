@@ -1,6 +1,6 @@
 ---
-title: ZTS
-description: Zig로 작성한 TypeScript 트랜스파일러 & 번들러
+title: ZNTC
+description: JavaScript/TypeScript를 위한 Zig Native Transpiler Compiler
 template: splash
 head:
   - tag: style
@@ -27,17 +27,17 @@ import CtaCard from "../../components/landing/CtaCard.astro";
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 <Hero
-  eyebrow="Zig TypeScript Transpiler & Bundler"
+  eyebrow="Zig Native Transpiler Compiler"
   title={`빠르고 가벼운\nTypeScript 트랜스파일러`}
   subtitle="Zig 로 작성한 트랜스파일러 + 번들러. JavaScript · TypeScript · JSX · Flow 를 네이티브 속도로 처리하고, Vite/Rollup 호환 플러그인 시스템을 제공합니다."
   actions={[
-    { text: "시작하기 →", href: "/zts/guides/introduction/", primary: true },
-    { text: "Playground", href: "/zts/playground/" },
-    { text: "GitHub", href: "https://github.com/ohah/zts" },
+    { text: "시작하기 →", href: "/zntc/guides/introduction/", primary: true },
+    { text: "Playground", href: "/zntc/playground/" },
+    { text: "GitHub", href: "https://github.com/ohah/zntc" },
   ]}
   codeFilename="example.ts"
   codeLang="ts"
-  codeExample={`import { transpile } from '@zts/core';
+  codeExample={`import { transpile } from '@zntc/core';
 
 const { code } = await transpile({
   code: source,
@@ -57,7 +57,7 @@ const { code } = await transpile({
 />
 
 <FeatureGrid
-  heading="왜 ZTS 인가"
+  heading="왜 ZNTC 인가"
   subheading="기존 도구의 장점을 조합한 JavaScript/TypeScript 툴체인."
   features={[
     {
@@ -95,19 +95,19 @@ const { code } = await transpile({
     <TabItem label="CLI">
       ```bash
       # 설치
-      npm install -g @zts/core
+      npm install -g @zntc/core
 
       # 번들
-      zts build src/index.ts --bundle --outdir dist
+      zntc build src/index.ts --bundle --outdir dist
 
       # watch 모드
-      zts build src/index.ts --bundle --watch
+      zntc build src/index.ts --bundle --watch
       ```
     </TabItem>
 
     <TabItem label="JS API">
       ```ts
-      import { build } from "@zts/core";
+      import { build } from "@zntc/core";
 
       const result = await build({
         entryPoints: ["src/index.ts"],
@@ -125,11 +125,11 @@ const { code } = await transpile({
       ```ts
       // vite.config.ts
       import { defineConfig } from "vite";
-      import zts from "@zts/vite-plugin-zts";
+      import zntc from "vite-plugin-zntc";
 
       export default defineConfig({
         plugins: [
-          zts({
+          zntc({
             jsx: "automatic",
             target: "es2022",
           }),
@@ -143,6 +143,6 @@ const { code } = await transpile({
 <CtaCard
   heading="지금 바로 시작하세요"
   description="5분이면 첫 번들이 나옵니다. Playground 에서 브라우저 안에서도 바로 실행 가능."
-  primary={{ text: "설치 가이드 →", href: "/zts/guides/installation/" }}
-  secondary={{ text: "Playground", href: "/zts/playground/" }}
+  primary={{ text: "설치 가이드 →", href: "/zntc/guides/installation/" }}
+  secondary={{ text: "Playground", href: "/zntc/playground/" }}
 />

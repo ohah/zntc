@@ -1,11 +1,11 @@
 ---
 title: Introduction
-description: Learn what ZTS is and why it was built.
+description: Learn what ZNTC is and why it was built.
 ---
 
-## What is ZTS?
+## What is ZNTC?
 
-ZTS is a **TypeScript/JavaScript transpiler and bundler written in Zig**. It aims for production-level quality on par with SWC and oxc.
+ZNTC stands for **Zig Native Transpiler Compiler**. It is a native-speed transpile and bundling toolchain for JavaScript, TypeScript, and Flow, aiming for production-level quality on par with SWC and oxc.
 
 ## Key Features
 
@@ -18,9 +18,9 @@ ZTS is a **TypeScript/JavaScript transpiler and bundler written in Zig**. It aim
 
 ## Comparison with esbuild
 
-ZTS is compatible with esbuild's CLI options and behavior while providing a Rollup/Rolldown-style plugin system.
+ZNTC is compatible with esbuild's CLI options and behavior while providing a Rollup/Rolldown-style plugin system.
 
-| Feature | ZTS | esbuild |
+| Feature | ZNTC | esbuild |
 |---------|-----|---------|
 | Language | Zig | Go |
 | TypeScript | O | O |

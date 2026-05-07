@@ -468,7 +468,7 @@ pub fn buildMetadataForAst(
                     if (is_tla) try preamble.write("await ");
                     if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
                     if (self.dev_mode) {
-                        try preamble.write("__zts_modules[\"");
+                        try preamble.write("__zntc_modules[\"");
                         try preamble.write(target_mod.dev_id);
                         try preamble.write("\"].fn()");
                     } else {
@@ -727,7 +727,7 @@ pub fn buildMetadataForAst(
                     if (is_tla) try preamble.write("await ");
                     if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
                     if (self.dev_mode) {
-                        try preamble.write("__zts_modules[\"");
+                        try preamble.write("__zntc_modules[\"");
                         try preamble.write(target_mod.dev_id);
                         try preamble.write("\"].fn()");
                     } else {
@@ -1104,7 +1104,7 @@ fn findSymbolIdBySpan(symbol_ids: []const ?u32, ast: *const Ast, span: Span) ?u3
 ///
 /// 프로덕션 buildMetadataForAst와의 차이:
 ///   - renames: named import에 한해 namespace 접근 패턴 renames 생성
-///   - cjs_import_preamble: `__ns_N = __zts_require("./path")` 형태 (namespace 할당)
+///   - cjs_import_preamble: `__ns_N = __zntc_require("./path")` 형태 (namespace 할당)
 ///   - final_exports: 모든 모듈에 `exports.x = x;` 형태 (entry만이 아닌 전체)
 pub fn buildDevMetadataForAst(
     self: *const Linker,
@@ -1140,7 +1140,7 @@ pub fn buildDevMetadataForAst(
     var skip_nodes = try buildSkipNodes(self.allocator, ast, true);
     errdefer skip_nodes.deinit();
 
-    // 2. __zts_require preamble 생성
+    // 2. __zntc_require preamble 생성
     var dev_preamble = PreambleWriter.init(self.allocator);
     defer dev_preamble.deinit();
 
@@ -1192,8 +1192,8 @@ pub fn buildDevMetadataForAst(
     // 호이스팅된 함수에서 import binding을 안전하게 참조하기 위해
     // 개별 구조분해 대신 namespace 객체를 사용한다 (rolldown 방식).
     //
-    // Before: var { useState } = __zts_require("react");  (inside __esm, function-scoped)
-    // After:  __ns_0 = __zts_require("react");             (inside __esm, assign-only)
+    // Before: var { useState } = __zntc_require("react");  (inside __esm, function-scoped)
+    // After:  __ns_0 = __zntc_require("react");             (inside __esm, assign-only)
     //         var __ns_0;                                   (hoisted outside __esm)
     //         → codegen: useState → __ns_0.useState
 
@@ -1290,7 +1290,7 @@ pub fn buildDevMetadataForAst(
             if (std.mem.eql(u8, eb.exported_name, "*")) continue;
 
             // exports.name = local_name;
-            // re-export의 경우: exports.name = __zts_require("./dep").name;
+            // re-export의 경우: exports.name = __zntc_require("./dep").name;
             if (eb.kind == .re_export) {
                 if (eb.import_record_index) |iri| {
                     if (iri < m.import_records.len) {
@@ -1299,7 +1299,7 @@ pub fn buildDevMetadataForAst(
                             const re_path = if (self.graph.getModule(irec.resolved)) |re_m| re_m.dev_id else irec.specifier;
                             try buf.appendSlice(self.allocator, "exports.");
                             try buf.appendSlice(self.allocator, eb.exported_name);
-                            try buf.appendSlice(self.allocator, " = __zts_require(\"");
+                            try buf.appendSlice(self.allocator, " = __zntc_require(\"");
                             try buf.appendSlice(self.allocator, re_path);
                             try buf.appendSlice(self.allocator, "\").");
                             try buf.appendSlice(self.allocator, m.exportBindingLocalName(eb));

@@ -1,5 +1,5 @@
 /**
- * zts.config.{ts,mts,cts,mjs,js,cjs,json} 로더.
+ * zntc.config.{ts,mts,cts,mjs,js,cjs,json} 로더.
  *
  * `.ts/.mts/.cts` 는 NAPI `transpile()` 로 self-compile 후 dynamic import.
  * `.mjs/.js/.cjs` 는 직접 dynamic import. `.json` 은 readFileSync + JSON.parse.
@@ -95,7 +95,7 @@ async function loadConfigWithExtends(
 ): Promise<UserConfig> {
   if (visited.has(absPath)) {
     throw new Error(
-      `@zts/core: circular extends detected at ${absPath} (chain: ${[...visited, absPath].join(' → ')})`,
+      `@zntc/core: circular extends detected at ${absPath} (chain: ${[...visited, absPath].join(' → ')})`,
     );
   }
   visited.add(absPath);
@@ -157,7 +157,7 @@ async function resolveConfigValue(
   if (!isPlainObject(result)) {
     const got = Array.isArray(result) ? 'array' : typeof result;
     throw new Error(
-      `@zts/core: functional config must return an object (got ${got}) from ${absPath}`,
+      `@zntc/core: functional config must return an object (got ${got}) from ${absPath}`,
     );
   }
   return result as UserConfig;
@@ -167,7 +167,7 @@ async function resolveConfigValue(
  * `loadModuleDefault` 가 받는 모듈 종류 라벨.
  *
  * - 에러 메시지에 라벨로 삽입 (`"config file not found"` vs `"workspace file not found"`).
- * - tmp 컴파일 파일명에도 사용 (`.zts-config.bundled-*.mjs` / `.zts-workspace.bundled-*.mjs`).
+ * - tmp 컴파일 파일명에도 사용 (`.zntc-config.bundled-*.mjs` / `.zntc-workspace.bundled-*.mjs`).
  *
  * 새 모듈 종류 추가 시 이 union 을 확장하고 호출 사이트도 맞춰 갱신.
  */
@@ -191,11 +191,11 @@ export type ModuleKind = 'config' | 'workspace';
  * @param options `allowArray: true` 면 default export 가 배열일 때도 통과 (workspace 용).
  * @returns default export (또는 default 가 없으면 namespace 객체).
  *
- * @throws `@zts/core: <kind> file not found: <path>` — 파일 부재
- * @throws `@zts/core: failed to parse JSON <kind> ...` — JSON 파싱 실패
- * @throws `@zts/core: <kind> compile failed in ...` — TS self-compile 실패 (ZTS parser 에러)
- * @throws `@zts/core: <kind> must export an object or function (got X)` — default 가 잘못된 타입
- * @throws `@zts/core: unsupported <kind> extension "<ext>"` — 지원 안 하는 확장자
+ * @throws `@zntc/core: <kind> file not found: <path>` — 파일 부재
+ * @throws `@zntc/core: failed to parse JSON <kind> ...` — JSON 파싱 실패
+ * @throws `@zntc/core: <kind> compile failed in ...` — TS self-compile 실패 (ZNTC parser 에러)
+ * @throws `@zntc/core: <kind> must export an object or function (got X)` — default 가 잘못된 타입
+ * @throws `@zntc/core: unsupported <kind> extension "<ext>"` — 지원 안 하는 확장자
  */
 export async function loadModuleDefault<T>(
   absPath: string,
@@ -210,7 +210,7 @@ export async function loadModuleDefault<T>(
       return JSON.parse(raw) as T;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      throw new Error(`@zts/core: failed to parse JSON ${kind} ${absPath}: ${reason}`);
+      throw new Error(`@zntc/core: failed to parse JSON ${kind} ${absPath}: ${reason}`);
     }
   }
   if (TS_EXTS.has(ext)) {
@@ -232,7 +232,7 @@ export async function loadModuleDefault<T>(
     }
   }
   throw new Error(
-    `@zts/core: unsupported ${kind} extension "${ext}" for ${absPath}. Supported: .ts/.mts/.cts/.mjs/.js/.cjs/.json`,
+    `@zntc/core: unsupported ${kind} extension "${ext}" for ${absPath}. Supported: .ts/.mts/.cts/.mjs/.js/.cjs/.json`,
   );
 }
 
@@ -243,7 +243,7 @@ async function loadTsModule(
 ): Promise<unknown> {
   init();
   const source = readFileOrThrowNotFound(absPath);
-  // ZTS parser 는 filename 의 `.cts` 확장자를 보고 CommonJS Script 모드로 진입해
+  // ZNTC parser 는 filename 의 `.cts` 확장자를 보고 CommonJS Script 모드로 진입해
   // 최상위 `export default` 를 거부한다 (`src/parser/parser.zig:283` 부근). 사용자가
   // `.cts` 에 `export default {...}` 를 쓴 의도는 TS 식 ESM 이므로 파싱 단계에서만
   // 가상의 `.ts` 로 호출한다 — 에러 메시지·sourcemap 에는 실제 경로가 그대로 사용된다.
@@ -254,10 +254,10 @@ async function loadTsModule(
     format: 'esm',
   });
   if (result.errors) {
-    throw new Error(`@zts/core: ${kind} compile failed in ${absPath}\n${result.errors}`);
+    throw new Error(`@zntc/core: ${kind} compile failed in ${absPath}\n${result.errors}`);
   }
 
-  const tmpName = `.zts-${kind}.bundled-${randomBytes(6).toString('hex')}.mjs`;
+  const tmpName = `.zntc-${kind}.bundled-${randomBytes(6).toString('hex')}.mjs`;
   const tmpPath = join(dirname(absPath), tmpName);
   writeFileSync(tmpPath, result.code, 'utf8');
   try {
@@ -267,7 +267,7 @@ async function loadTsModule(
       unlinkSync(tmpPath);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      console.warn(`@zts/core: failed to remove tmp ${kind} ${tmpPath}: ${reason}`);
+      console.warn(`@zntc/core: failed to remove tmp ${kind} ${tmpPath}: ${reason}`);
     }
   }
 }
@@ -296,7 +296,7 @@ export async function importAndResolveDefault<T = UserConfig>(
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     if (code === 'ERR_MODULE_NOT_FOUND' || code === 'ENOENT') {
-      throw new Error(`@zts/core: module not found: ${absPath}`);
+      throw new Error(`@zntc/core: module not found: ${absPath}`);
     }
     throw err;
   }
@@ -306,7 +306,9 @@ export async function importAndResolveDefault<T = UserConfig>(
   const validObject = valueType === 'object' && value !== null && (allowArray || !isArray);
   if (valueType !== 'function' && !validObject) {
     const got = value === null ? 'null' : isArray ? 'array' : valueType;
-    throw new Error(`@zts/core: module must be an object or function (got ${got}) from ${absPath}`);
+    throw new Error(
+      `@zntc/core: module must be an object or function (got ${got}) from ${absPath}`,
+    );
   }
   return value as T;
 }
@@ -316,7 +318,7 @@ function readFileOrThrowNotFound(absPath: string): string {
     return readFileSync(absPath, 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`@zts/core: config file not found: ${absPath}`);
+      throw new Error(`@zntc/core: config file not found: ${absPath}`);
     }
     throw err;
   }
@@ -340,33 +342,33 @@ export function readFileIfExists(absPath: string): string | null {
 }
 
 /**
- * cwd 에서 `zts.config.*` 자동 탐색. 우선순위는 `CONFIG_EXT_PRIORITY` 참조.
+ * cwd 에서 `zntc.config.*` 자동 탐색. 우선순위는 `CONFIG_EXT_PRIORITY` 참조.
  *
  * 동기 stat (`existsSync`) 사용 — CLI 시작 시 한 번만 호출되므로 비용 무시 가능.
  * parent 디렉토리 traversal 은 모노레포 워크스페이스 (#2111 / Phase 3-4) 에서 처리.
  *
- * Note: Zig CLI (`src/main.zig:293` `applyZtsConfigJson`) 은 현재 `.json` 만
- * 직접 처리한다. 다른 확장자는 JS CLI (`zts.mjs`) 만 자동 탐색하므로 두 경로의
+ * Note: Zig CLI (`src/main.zig:293` `applyZntcConfigJson`) 은 현재 `.json` 만
+ * 직접 처리한다. 다른 확장자는 JS CLI (`zntc.mjs`) 만 자동 탐색하므로 두 경로의
  * 동작이 의도적으로 갈린다. 통합은 #2105 (Phase 2-3 bundler 옵션 매핑) 에서.
  */
 export function findConfigPath(cwd: string): string | null {
   for (const ext of CONFIG_EXT_PRIORITY) {
-    const candidate = join(cwd, `zts.config${ext}`);
+    const candidate = join(cwd, `zntc.config${ext}`);
     if (existsSync(candidate)) return candidate;
   }
   return null;
 }
 
 /**
- * mode-specific config 파일 자동 탐색 — `zts.config.${mode}.{ext}` 형태 (#2110).
+ * mode-specific config 파일 자동 탐색 — `zntc.config.${mode}.{ext}` 형태 (#2110).
  *
- * Vite 의 mode 별 config 패턴: base `zts.config.ts` 가 default, `zts.config.production.ts`
+ * Vite 의 mode 별 config 패턴: base `zntc.config.ts` 가 default, `zntc.config.production.ts`
  * 같은 mode-specific 파일이 base 를 부분 override. mode 가 비어있거나 매칭 파일 없으면 null.
  */
 export function findModeConfigPath(cwd: string, mode: string): string | null {
   if (!mode) return null;
   for (const ext of CONFIG_EXT_PRIORITY) {
-    const candidate = join(cwd, `zts.config.${mode}${ext}`);
+    const candidate = join(cwd, `zntc.config.${mode}${ext}`);
     if (existsSync(candidate)) return candidate;
   }
   return null;
