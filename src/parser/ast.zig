@@ -1583,14 +1583,6 @@ pub fn parseNumericText(text: []const u8) ?f64 {
     return std.fmt.parseFloat(f64, text) catch null;
 }
 
-/// `get x() {}` plain accessor 판별 — async/generator/setter 비트 모두 0.
-/// CJS lazy-getter 패턴 (RN core `module.exports = { get X() {} }`) 인식 + 같은
-/// 모양 검사가 추가될 때 단일 술어로 공유. (#2683)
-pub inline fn isPlainGetterFlags(flags: u32) bool {
-    const others = MethodFlags.is_setter | MethodFlags.is_async | MethodFlags.is_generator;
-    return (flags & MethodFlags.is_getter) != 0 and (flags & others) == 0;
-}
-
 /// method_definition → function_declaration/expression으로 추출할 때
 /// async/generator 비트를 FunctionFlags 위치로 옮긴다.
 /// 두 공간의 비트 위치가 달라 복사할 때마다 같은 매핑이 반복되던 것을 한 곳에 모았다.

@@ -662,20 +662,9 @@ fn collectCjsObjectExportCandidates(
         const prop_idx: NodeIndex = @enumFromInt(raw_prop);
         if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
         const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        if (prop.tag != .object_property) return null;
 
-        // RN core `index.js` 의 lazy getter (`get DevSettings() { return require(...).default }`)
-        // 인식 (#2683 PR β-1). plain getter 만 — setter/async/generator 는 semantic 이
-        // 다르므로 보수적으로 reject (전체 후보 폐기).
-        const is_lazy_getter = prop.tag == .method_definition and
-            ast_mod.isPlainGetterFlags(ast.readExtra(prop.data.extra, ast_mod.MethodExtra.flags));
-
-        if (prop.tag != .object_property and !is_lazy_getter) return null;
-
-        const key_idx: NodeIndex = if (is_lazy_getter)
-            ast.readExtraNode(prop.data.extra, ast_mod.MethodExtra.key)
-        else
-            prop.data.binary.left;
-        const name = (try ast.staticKeyName(allocator, key_idx)) orelse return null;
+        const name = (try ast.staticKeyName(allocator, prop.data.binary.left)) orelse return null;
         var name_transferred = false;
         defer if (!name_transferred) allocator.free(name);
 
@@ -684,13 +673,7 @@ fn collectCjsObjectExportCandidates(
         const entry = try seen.getOrPut(allocator, name);
         if (entry.found_existing) return null;
 
-        // lazy getter 의 경우 method_definition node 자체를 seed 로 사용 — body 안 require 는
-        // tree_shaker 가 record.span 과 property_node body span 매핑으로 별도 처리 (PR β-2).
-        // 일반 object_property 는 기존대로 value 의 purity 검사.
-        const seed_node = if (is_lazy_getter)
-            prop_idx
-        else
-            cjsObjectPropertyValueSeedNode(ast, Ast.objectPropertyValue(prop), unresolved_globals) orelse return null;
+        const seed_node = cjsObjectPropertyValueSeedNode(ast, Ast.objectPropertyValue(prop), unresolved_globals) orelse return null;
 
         try out.append(allocator, .{
             .export_name = name,

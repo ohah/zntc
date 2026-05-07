@@ -30,7 +30,6 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const ast_walk = @import("../parser/ast_walk.zig");
 const Kind = @import("../lexer/token.zig").Kind;
-const Span = @import("../lexer/token.zig").Span;
 const purity = @import("purity.zig");
 const stmt_info_mod = @import("stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
@@ -1142,15 +1141,6 @@ pub const TreeShaker = struct {
                         const target = @intFromEnum(rec.resolved);
                         const tmod = self.graph.getModule(rec.resolved) orelse continue;
 
-                        // #2683 PR β-2: lazy require 가 RN core `module.exports = { get X() {} }`
-                        // 패턴의 lazy getter body 안인 경우 — 그 getter 의 export 가 consumer 에서
-                        // used 가 아니면 source 모듈 included 안 함. statement 단위 reachability 가
-                        // single-statement object literal 을 분리 못 하는 한계를 cjs_export_fact
-                        // (sub-statement 단위) 로 cover.
-                        if (rec.kind == .require and rec.in_lazy_callback) {
-                            if (!self.lazyRequireMatchedExportUsed(@intCast(i), rec.span)) continue;
-                        }
-
                         const preserve = try self.shouldPreserveImportRecordForEvaluation(m, @intCast(i), @intCast(rec_i), live_idx);
                         const must_include = rec.kind == .require or
                             ((rec.kind == .side_effect or rec.kind == .re_export) and preserve) or
@@ -1238,30 +1228,6 @@ pub const TreeShaker = struct {
         var key_buf: [4096]u8 = undefined;
         const key = types.makeModuleKeyBuf(&key_buf, module_index, export_name);
         return self.used_exports.contains(key);
-    }
-
-    /// lazy require 의 source span 이 module 의 cjs_export_fact (lazy getter property) 의
-    /// method body 안인지 매핑 + 그 fact 의 export_name 이 consumer 에서 used 인지 확인.
-    /// matched fact 없으면 보수적으로 true (retain) — non-RN-core 패턴의 lazy callback 등.
-    /// (#2683 PR β-2) RN core `module.exports = { get DevSettings() { require('./X') } }`
-    /// 같은 single-statement object literal 의 sub-unit 단위 reachability.
-    fn lazyRequireMatchedExportUsed(self: *const TreeShaker, mod_idx: u32, rec_span: Span) bool {
-        const m = self.getModule(mod_idx) orelse return true;
-        const ast = &(m.ast orelse return true);
-        if (mod_idx >= self.module_stmt_infos.len) return true;
-        const infos = self.module_stmt_infos[mod_idx] orelse return true;
-        for (infos.cjs_export_facts) |fact| {
-            const prop_n = fact.property_node orelse continue;
-            if (prop_n >= ast.nodes.items.len) continue;
-            const prop = ast.nodes.items[prop_n];
-            if (prop.tag != .method_definition) continue;
-            const body_idx = ast.functionBodyBlock(prop) orelse continue;
-            if (@intFromEnum(body_idx) >= ast.nodes.items.len) continue;
-            const body_span = ast.getNode(body_idx).span;
-            if (!body_span.contains(rec_span)) continue;
-            return self.isExportUsed(mod_idx, fact.export_name);
-        }
-        return true;
     }
 
     fn markSeedExportVisited(self: *TreeShaker, module_index: u32, export_name: []const u8) !bool {
