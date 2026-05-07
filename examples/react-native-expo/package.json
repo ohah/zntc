@@ -8,7 +8,7 @@
     "start": "expo start",
     "start:zntc": "zntc dev --platform=react-native --rn-platform=ios index.js",
     "prestart:zntc": "bun run build:zntc:core",
-    "build:zntc:core": "bun run --cwd ../../packages/core build && bun run --cwd ../../packages/server build && bun run --cwd ../../packages/react-native build",
+    "build:zntc:core": "bun install --cwd ../.. --frozen-lockfile && bun run --cwd ../../packages/core build && bun run --cwd ../../packages/server build && bun run --cwd ../../packages/react-native build",
     "bundle:zntc:ios": "zntc bundle index.js --platform=react-native --rn-platform=ios -o dist/main.ios.jsbundle",
     "bundle:zntc:android": "zntc bundle index.js --platform=react-native --rn-platform=android -o dist/main.android.jsbundle",
     "reset-project": "node ./scripts/reset-project.js",
