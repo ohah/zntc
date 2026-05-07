@@ -2203,3 +2203,70 @@ test "emitter: sourceURL 은 IIFE 뒤에 위치 — HMR_PREAMBLE_LINES 오프셋
         try std.testing.expect(source_url_idx > iife_end);
     }
 }
+
+// skip_bundle_output: dev_mode + collect_module_codes incremental rebuild path 에서
+// 풀 bundle output (`output` ArrayList concat) 과 sourcemap finalize 를 skip 하면서
+// 도 module_dev_codes 는 정상 수집되어야 한다 (HMR client 가 사용).
+test "emitter: skip_bundle_output 활성 — output 은 모듈 byte 미포함, module_codes 는 정상 수집" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const HMR_TEST_MARKER_42 = 'hello';\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+    for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
+        m.dev_id = try std.testing.allocator.dupe(u8, m.path);
+    }
+    defer for (0..result.graph.moduleCount()) |i| {
+        const m = result.graph.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
+        if (m.dev_id.len > 0) std.testing.allocator.free(m.dev_id);
+        m.dev_id = "";
+    };
+
+    const res = try emit(std.testing.allocator, &result.graph, &.{
+        .sourcemap = .{ .enable = true },
+        .dev_mode = true,
+        .collect_module_codes = true,
+        .skip_bundle_output = true,
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    // output 은 prelude/runtime/epilogue 만 포함 — 모듈 source 의 marker 가 없어야.
+    try std.testing.expect(std.mem.indexOf(u8, res.output, "HMR_TEST_MARKER_42") == null);
+    // module_codes 에는 변경된 module 의 코드가 marker 와 함께 정상 수집.
+    const codes = res.module_codes orelse return error.TestUnexpectedResult;
+    try std.testing.expect(codes.len >= 1);
+    var found = false;
+    for (codes) |c| {
+        if (std.mem.indexOf(u8, c.code, "HMR_TEST_MARKER_42") != null) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// skip_bundle_output 가드는 `dev_mode and collect_module_codes` 가 모두 true 일 때만 활성.
+// 셋 중 하나라도 false 면 기존 동작 유지 (정합성 fallback).
+test "emitter: skip_bundle_output — collect_module_codes=false 면 가드 비활성, output 정상 emit" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.ts", "export const FALLBACK_GUARD_MARKER = 1;\n");
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+
+    const res = try emit(std.testing.allocator, &result.graph, &.{
+        .sourcemap = .{ .enable = true },
+        .dev_mode = true,
+        .collect_module_codes = false, // 핵심: false → guard inactive
+        .skip_bundle_output = true,
+    }, null);
+    defer res.deinit(std.testing.allocator);
+
+    // collect_module_codes=false 라 가드가 비활성 → output 에 모듈 source 정상 포함.
+    try std.testing.expect(std.mem.indexOf(u8, res.output, "FALLBACK_GUARD_MARKER") != null);
+}
