@@ -1,11 +1,10 @@
-import _ from 'lodash';
+import capitalize from 'lodash/capitalize';
 
 /**
- * Test module for babel-plugin-root-import (~/utils/greeting)
- * and babel-plugin-lodash (tree-shaking)
+ * Test module for direct lodash path import without Babel.
  */
 export function getGreeting(name: string): string {
-  return _.capitalize(`hello ${name} from bungae`);
+  return capitalize(`hello ${name} from bungae`);
 }
 
 export function getVersion(): string {

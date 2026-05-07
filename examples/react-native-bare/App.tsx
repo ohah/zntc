@@ -40,11 +40,8 @@ import Animated, {
   Extrapolation,
 } from 'react-native-reanimated';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-// ~/  alias test (babel-plugin-root-import: ~/ → ./src)
+import Svg, { Polyline, type SvgProps } from 'react-native-svg';
 import { getGreeting, getVersion } from '~/utils/greeting';
-
-// SVG test (react-native-svg-transformer)
-import CheckIcon from '~/assets/check.svg';
 
 // ES5 다운레벨 스트레스 테스트 — 번들 출력 검증용. 런타임엔 호출 안 해도 됨.
 import { es5DownlevelCases } from './src/es5-downlevel-cases';
@@ -63,6 +60,26 @@ interface TestResult {
   status: TestStatus;
   message: string;
   duration?: number;
+}
+
+function CheckIcon({
+  stroke = 'currentColor',
+  strokeWidth = 2,
+  strokeLinecap = 'round',
+  strokeLinejoin = 'round',
+  ...svgProps
+}: SvgProps) {
+  return (
+    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" {...svgProps}>
+      <Polyline
+        points="20 6 9 17 4 12"
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        strokeLinecap={strokeLinecap}
+        strokeLinejoin={strokeLinejoin}
+      />
+    </Svg>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -295,8 +312,8 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
     });
     console.log('Array test:', [1, 'two', { three: 3 }, [4, 5]]);
 
-    // babel-plugin-root-import (~/ alias) + lodash tree-shaking test
-    console.log('Root import test:', getGreeting('world'));
+    // native import + lodash path import test
+    console.log('Lodash import test:', getGreeting('world'));
     console.log('Version:', getVersion());
 
     setConsoleTest({
@@ -446,11 +463,11 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
           dimColor={dimColor}
         />
 
-        {/* Babel Plugin Tests */}
+        {/* Native Transform Tests */}
         <View style={[styles.card, { backgroundColor: cardBg }]}>
-          <Text style={[styles.cardTitle, { color: textColor }]}>Babel Plugins</Text>
+          <Text style={[styles.cardTitle, { color: textColor }]}>Native Transforms</Text>
           <Text style={[styles.cardDesc, { color: dimColor }]}>
-            root-import, lodash, SVG, decorators
+            SVG component, lodash path import, worklets
           </Text>
           <View style={{ marginTop: 8, gap: 4 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -462,7 +479,7 @@ function AppContent({ isDarkMode }: { isDarkMode: boolean }) {
               </Text>
             </View>
             <Text style={{ color: textColor, fontSize: 13 }}>
-              ~/ alias: {getGreeting('dev')}
+              greeting: {getGreeting('dev')}
             </Text>
             <Text style={{ color: textColor, fontSize: 13 }}>
               version: {getVersion()}

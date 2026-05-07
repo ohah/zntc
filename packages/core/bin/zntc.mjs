@@ -16,7 +16,11 @@ import { fileURLToPath } from 'node:url';
 
 import { applyFlagAction, KNOWN_FLAGS, matchFlagFromRegistry } from './cli-flags.mjs';
 import { copyRnAssets } from './rn-asset-copy.mjs';
-import { buildRnBundleExtra, buildRnDevServerInput } from './rn-dev-input.mjs';
+import {
+  buildRnBundleExtra,
+  buildRnBundleOverride,
+  buildRnDevServerInput,
+} from './rn-dev-input.mjs';
 
 function isMissingBuiltCore(error) {
   if (!error || error.code !== 'ERR_MODULE_NOT_FOUND') return false;
@@ -719,7 +723,10 @@ async function runRnBundle(opts, config) {
     minify:
       opts.minify || opts.minifyWhitespace || opts.minifyIdentifiers || opts.minifySyntax || false,
     extra: buildRnBundleExtra(cfg, opts),
-    override: outfile && !callerWrite ? { outfile, write: true } : undefined,
+    override: buildRnBundleOverride(
+      cfg,
+      outfile && !callerWrite ? { outfile, write: true } : undefined,
+    ),
   });
 
   // caller-side write — bundle / sourcemap path 분리 + URL override 적용.

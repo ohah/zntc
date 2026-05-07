@@ -39,7 +39,7 @@ describe('buildRnBundleOptions — 기본 RN preset 필드', () => {
     expect(opts.platform).toBe('react-native');
   });
 
-  test('RN-specific 자동 활성 필드 (target/flow/jsxInJs/configurableExports/strictExecutionOrder/workletTransform)', () => {
+  test('RN-specific 자동 활성 필드 (target/flow/jsxInJs/configurableExports/strictExecutionOrder/workletTransform/codegenTransform)', () => {
     const opts = buildRnBundleOptions(baseInput());
     expect(opts.target).toBe('es5');
     expect(opts.flow).toBe(true);
@@ -47,6 +47,7 @@ describe('buildRnBundleOptions — 기본 RN preset 필드', () => {
     expect(opts.configurableExports).toBe(true);
     expect(opts.strictExecutionOrder).toBe(true);
     expect(opts.workletTransform).toBe(true);
+    expect(opts.codegenTransform).toBe(true);
   });
 
   test('emitDiskSourcemap — dev 시 false, prod 시 true', () => {
@@ -307,20 +308,30 @@ describe('buildRnBundleOptions — dev mode 분기 (jsx / devMode / reactRefresh
   });
 });
 
-describe('buildRnBundleOptions — plugins (asset/codegen/babel/require-context/[+metro-resolve])', () => {
-  test('기본 4 plugin (asset/codegen/babel/require-context)', () => {
+describe('buildRnBundleOptions — plugins (asset/optional-babel/require-context/[+metro-resolve])', () => {
+  test('기본 2 plugin (asset/require-context)', () => {
     const opts = buildRnBundleOptions(baseInput());
-    expect(opts.plugins?.length).toBe(4);
+    expect(opts.plugins?.length).toBe(2);
     const names = opts.plugins?.map((p) => p.name);
-    expect(names).toEqual([
+    expect(names).toEqual(['zntc:react-native:runtime', 'zntc:react-native:require-context']);
+  });
+
+  test('native 외 inline babel plugin 지정 시 babel plugin 추가', () => {
+    const opts = buildRnBundleOptions(
+      baseInput({
+        extra: {
+          babel: { plugins: ['nativewind/babel'] },
+        },
+      }),
+    );
+    expect(opts.plugins?.map((p) => p.name)).toEqual([
       'zntc:react-native:runtime',
-      'zntc:react-native:codegen-view-config',
       'zntc:react-native:babel-transform',
       'zntc:react-native:require-context',
     ]);
   });
 
-  test('extra.metroResolveRequest 지정 시 5 plugin (metro-resolve-request 추가)', () => {
+  test('extra.metroResolveRequest 지정 시 3 plugin (metro-resolve-request 추가)', () => {
     const opts = buildRnBundleOptions(
       baseInput({
         extra: {
@@ -328,8 +339,8 @@ describe('buildRnBundleOptions — plugins (asset/codegen/babel/require-context/
         },
       }),
     );
-    expect(opts.plugins?.length).toBe(5);
-    expect(opts.plugins?.[4]?.name).toBe('zntc:react-native:metro-resolve-request');
+    expect(opts.plugins?.length).toBe(3);
+    expect(opts.plugins?.[2]?.name).toBe('zntc:react-native:metro-resolve-request');
   });
 
   test('extra.additionalPlugins → plugins 끝에 append', () => {
@@ -341,8 +352,8 @@ describe('buildRnBundleOptions — plugins (asset/codegen/babel/require-context/
         },
       }),
     );
-    expect(opts.plugins?.length).toBe(5);
-    expect(opts.plugins?.[4]).toBe(userPlugin);
+    expect(opts.plugins?.length).toBe(3);
+    expect(opts.plugins?.[2]).toBe(userPlugin);
   });
 });
 

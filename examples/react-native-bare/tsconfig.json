@@ -4,6 +4,10 @@
     "types": ["jest", "node"],
     "lib": ["ESNext", "DOM"],
     "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "~/*": ["src/*"]
+    },
     "esModuleInterop": true,
     "skipLibCheck": true
   },

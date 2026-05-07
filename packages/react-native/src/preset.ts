@@ -30,8 +30,7 @@ import {
 
 import type { CustomResolver, MetroPlatform } from './metro-resolver-types.ts';
 import { createAssetPlugin } from './plugins/asset.ts';
-import { createBabelPlugin } from './plugins/babel.ts';
-import { createCodegenPlugin } from './plugins/codegen.ts';
+import { createBabelPlugin, detectCustomPlugins } from './plugins/babel.ts';
 import { requireFromCli } from './plugins/internal.ts';
 import {
   createMetroResolveRequestPlugin,
@@ -317,7 +316,8 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
   const sourceExts = extra?.sourceExts ?? DEFAULT_SOURCE_EXTS;
   const assetExts = extra?.assetExts ?? DEFAULT_ASSET_EXTS;
 
-  // Plugin set — RN preset 기본 4 + (옵션) MetroResolveRequest + (옵션) additional.
+  // Plugin set — RN preset 기본 runtime/require-context + optional Babel compatibility
+  // + optional MetroResolveRequest + optional additional.
   const plugins: ZntcPlugin[] = [
     createAssetPlugin({
       projectRoot,
@@ -327,21 +327,24 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
       babelTransformerPath: extra?.babelTransformerPath,
       forwardClientLogs: extra?.forwardClientLogs,
     }),
-    createCodegenPlugin({
-      projectRoot,
-      assetExts,
-      rnPlatform,
-      sourceExts,
-    }),
-    createBabelPlugin({
-      projectRoot,
-      assetExts,
-      rnPlatform,
-      sourceExts,
-      inlineBabel: extra?.babel,
-    }),
-    createRequireContextPlugin(),
   ];
+
+  // Babel compatibility is opt-in by detection. Native RN preset/worklet/codegen
+  // paths cover the default case, so projects with only native-equivalent Babel
+  // config do not pay a per-file Babel pass.
+  if (detectCustomPlugins(projectRoot, extra?.babel)) {
+    plugins.push(
+      createBabelPlugin({
+        projectRoot,
+        assetExts,
+        rnPlatform,
+        sourceExts,
+        inlineBabel: extra?.babel,
+      }),
+    );
+  }
+
+  plugins.push(createRequireContextPlugin());
   if (extra?.metroResolveRequest) {
     const opts: MetroResolveRequestOptions = {
       resolveRequest: extra.metroResolveRequest,
@@ -398,6 +401,7 @@ export function buildRnBundleOptions(input: RnBundleInput): BuildOptions {
     configurableExports: true,
     strictExecutionOrder: true,
     workletTransform: true,
+    codegenTransform: true,
     resolveExtensions: buildResolveExtensions(rnPlatform),
     mainFields: ['react-native', 'browser', 'module', 'main'],
     loader: baseLoader,
