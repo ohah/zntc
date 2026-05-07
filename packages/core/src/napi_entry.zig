@@ -3906,10 +3906,13 @@ fn parseBuildOptions(
     const preserve_modules_root = ownStr(env, opts_obj, "preserveModulesRoot", owned_strings);
 
     // legalComments: "none" | "inline" | "eof" | "linked"
+    // RN preset: 사용자가 명시 안 했으면 .none default (Metro 패턴 정합).
     const legal_str = getObjectString(env, opts_obj, "legalComments", native_alloc);
     if (legal_str) |s| if (!trackStr(owned_strings, s)) return null;
     const legal_comments: bundler_mod.types.LegalComments = if (legal_str) |s|
         if (std.mem.eql(u8, s, "none")) .none else if (std.mem.eql(u8, s, "inline")) .@"inline" else if (std.mem.eql(u8, s, "eof")) .eof else if (std.mem.eql(u8, s, "linked")) .linked else .default
+    else if (platform == .react_native)
+        .none
     else
         .default;
 
