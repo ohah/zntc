@@ -5,7 +5,8 @@
 //! Module.parse_arena가 데이터를 소유하므로, arena 소유권 이전으로 캐시를 구현.
 
 const std = @import("std");
-const Module = @import("module.zig").Module;
+const Module_mod = @import("module.zig");
+const Module = Module_mod.Module;
 const types = @import("types.zig");
 
 pub const PersistentModuleStore = struct {
@@ -49,7 +50,7 @@ pub const PersistentModuleStore = struct {
             }
         }
         // parse_arena / alias_table 가 아직 store 에 있으면 해제.
-        if (cached.module.parse_arena) |*arena| arena.deinit();
+        if (cached.module.parse_arena) |arena| Module_mod.destroyParseArena(self.allocator, arena);
         if (cached.module.alias_table) |*t| t.deinit();
         // dependencies/importers/dynamic_imports/dynamic_importers ArrayList 해제
         cached.module.dependencies.deinit(self.allocator);
@@ -111,14 +112,14 @@ pub const PersistentModuleStore = struct {
                 .module = cached_module,
                 .import_specifiers = specs,
             }) catch {
-                if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
                 if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
             };
         } else {
             const key = self.allocator.dupe(u8, path) catch {
-                if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
                 if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
@@ -131,7 +132,7 @@ pub const PersistentModuleStore = struct {
                 .import_specifiers = specs,
             }) catch {
                 self.allocator.free(key);
-                if (cached_module.parse_arena) |*a| a.deinit();
+                if (cached_module.parse_arena) |a| Module_mod.destroyParseArena(self.allocator, a);
                 if (cached_module.alias_table) |*t| t.deinit();
                 for (specs) |s| self.allocator.free(s);
                 self.allocator.free(specs);
@@ -228,4 +229,46 @@ test "PersistentModuleStore: alias_table ownership 왕복 (rebuild 2회)" {
     const cached2 = store.getIfFresh("/virtual/mod.ts", 2) orelse return error.CacheMiss;
     try testing.expect(cached2.module.alias_table != null);
     try testing.expectEqual(@as(u32, 3), cached2.module.alias_table.?.count());
+}
+
+// Regression #2694: 가상 모듈 (mtime=0) 이 cache-hit 으로 store ↔ graph 왕복할 때
+// 다음 rebuild 의 첫 alloc 이 panic 하지 않아야 한다. 과거에는 `parse_arena` 가
+// `?ArenaAllocator` (value) 라 putModule/getIfFresh 의 struct copy 가 buffer_list 의
+// first BufNode 를 두 위치에서 공유해 한쪽 deinit 이후 다른 쪽이 dangling 포인터로
+// alloc 시 `start index 16 is larger than end index 0` panic.
+test "PersistentModuleStore: parse_arena ownership 왕복 후 alloc 정상 (#2694)" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var store = PersistentModuleStore.init(allocator);
+    defer store.deinit();
+
+    var module = Module.init(@enumFromInt(0), "\x00zntc:runtime/extends");
+    module.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
+    // 첫 빌드에서 arena 에 alloc — buffer_list 에 BufNode 등록.
+    _ = try module.parse_arena.?.allocator().alloc(u8, 256);
+
+    store.putModule("\x00zntc:runtime/extends", &module, 1);
+    try testing.expect(module.parse_arena == null);
+    module.deinit(allocator);
+
+    // build 2: cache-hit. graph 가 ownership 환수.
+    const cached = store.getIfFresh("\x00zntc:runtime/extends", 1) orelse return error.CacheMiss;
+    var mod2 = Module.init(@enumFromInt(0), "\x00zntc:runtime/extends");
+    const saved_deps = mod2.dependencies;
+    const saved_importers = mod2.importers;
+    mod2 = cached.module;
+    mod2.dependencies = saved_deps;
+    mod2.importers = saved_importers;
+    cached.module.parse_arena = null;
+    cached.module.alias_table = null;
+
+    // 두 번째 빌드 emit 단계의 fold pass 가 ast.allocator (= parse_arena) 로 새 노드
+    // 푸시하는 시나리오. 과거에는 buffer_list 의 first 가 dangling 이라 panic.
+    try testing.expect(mod2.parse_arena != null);
+    const buf2 = try mod2.parse_arena.?.allocator().alloc(u8, 512);
+    try testing.expectEqual(@as(usize, 512), buf2.len);
+
+    store.putModule("\x00zntc:runtime/extends", &mod2, 2);
+    mod2.deinit(allocator);
 }

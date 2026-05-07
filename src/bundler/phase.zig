@@ -83,7 +83,7 @@ pub const ParseAccessor = struct {
         if (self.graph.moduleAtMut(idx)) |m| m.semantic = semantic;
     }
 
-    pub inline fn setParseArena(self: ParseAccessor, idx: ModuleIndex, arena: ?std.heap.ArenaAllocator) void {
+    pub inline fn setParseArena(self: ParseAccessor, idx: ModuleIndex, arena: ?*std.heap.ArenaAllocator) void {
         if (self.graph.moduleAtMut(idx)) |m| m.parse_arena = arena;
     }
 
